@@ -1,0 +1,102 @@
+/* ============================================
+   Global Custom Tooltip
+   Replaces native title tooltip with a dark-themed, animated version
+   ============================================ */
+[data-tooltip] {
+  position: relative;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(2px);
+  padding: 5px 10px;
+  background: #1a1a26;
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #e8e8ed;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.03);
+  z-index: 9999;
+  letter-spacing: 0.01em;
+}
+[data-tooltip]:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+/* Tiny arrow (top edge when tooltip is above) */
+[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%) translateY(2px);
+  border-width: 4px;
+  border-style: solid;
+  border-color: #2a2a3a transparent transparent transparent;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 9999;
+}
+[data-tooltip]:hover::before {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ── Sidebar buttons: tooltip to the right ── */
+.sidebar-btn-v3[data-tooltip]::after {
+  top: 50%;
+  bottom: auto;
+  left: calc(100% + 10px);
+  transform: translateY(-50%) translateX(2px);
+}
+.sidebar-btn-v3[data-tooltip]:hover::after {
+  transform: translateY(-50%) translateX(0);
+}
+.sidebar-btn-v3[data-tooltip]::before {
+  top: 50%;
+  bottom: auto;
+  left: calc(100% + 5px);
+  transform: translateY(-50%) translateX(2px);
+  border-color: transparent #2a2a3a transparent transparent;
+}
+.sidebar-btn-v3[data-tooltip]:hover::before {
+  transform: translateY(-50%) translateX(0);
+}
+
+/* ── Header buttons: tooltip below ── */
+header [data-tooltip]::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+  transform: translateX(-50%) translateY(-2px);
+}
+header [data-tooltip]:hover::after {
+  transform: translateX(-50%) translateY(0);
+}
+header [data-tooltip]::before {
+  top: calc(100% + 1px);
+  bottom: auto;
+  transform: translateX(-50%) translateY(-2px);
+  border-color: transparent transparent #2a2a3a transparent;
+}
+header [data-tooltip]:hover::before {
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ── Floating toolbar buttons: smaller tooltip ── */
+.ftb-btn[data-tooltip] {
+  position: relative;
+}
+.ftb-btn[data-tooltip]::after {
+  font-size: 10px;
+  padding: 3px 8px;
+}

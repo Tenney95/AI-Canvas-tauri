@@ -1,0 +1,188 @@
+/* ============================================
+   Quality & Aspect Ratio Selector Styles
+   ============================================ */
+.ui-schema-renderer {
+  position: relative;
+  display: inline-block;
+}
+.ui-schema-quality-ratio-pill {
+  display: flex;
+  align-items: center;
+}
+.img-pill-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #8888a0;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+.img-pill-btn:hover {
+  color: #e8e8ed;
+  background: rgba(255, 255, 255, 0.03);
+}
+.img-pill-btn svg {
+  color: #8888a0;
+}
+.img-ratio-popup {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 6px;
+  width: 290px;
+  background: #14141c;
+  border: 1px solid #2a2a3a;
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  z-index: 110;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: fadeIn 0.15s ease;
+}
+.img-rp-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #555566;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.img-rp-quality-segmented {
+  display: flex;
+  background: #0a0a0f;
+  padding: 3px;
+  border-radius: 8px;
+  border: 1px solid #1a1a26;
+  gap: 2px;
+}
+.img-rp-quality-item {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #8888a0;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+  font-family: inherit;
+  font-weight: 500;
+}
+.img-rp-quality-item:hover {
+  color: #e8e8ed;
+  background: rgba(255, 255, 255, 0.02);
+}
+.img-rp-quality-item.active {
+  color: #ffffff;
+  background: #6366f1;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+.img-rp-ratio-split {
+  display: flex;
+  gap: 8px;
+}
+.img-rp-ratio-left {
+  flex-shrink: 0;
+}
+.img-rp-large-adaptive {
+  width: 60px;
+  height: 100%;
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #2a2a3a;
+  background: #0a0a0f;
+  color: #8888a0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+  font-size: 11px;
+}
+.img-rp-large-adaptive svg {
+  color: #8888a0;
+  transition: color 0.15s ease;
+}
+.img-rp-large-adaptive:hover {
+  color: #e8e8ed;
+  border-color: #3a3a4a;
+  background: rgba(255, 255, 255, 0.02);
+}
+.img-rp-large-adaptive.active {
+  color: #ffffff;
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.15);
+}
+.img-rp-large-adaptive.active svg {
+  color: #818cf8;
+}
+.img-rp-ratio-right {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.img-rp-ratio-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 4px;
+  border: 1px solid #1a1a26;
+  background: #0a0a0f;
+  color: #8888a0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+  font-size: 10px;
+}
+.img-rp-ratio-item:hover {
+  color: #e8e8ed;
+  border-color: #2a2a3a;
+  background: rgba(255, 255, 255, 0.02);
+}
+.img-rp-ratio-item.active {
+  color: #ffffff;
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.12);
+}
+.img-rp-icon {
+  display: inline-block;
+  border: 1.5px solid currentColor;
+  border-radius: 1.5px;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+}
+.img-rp-ratio-item.active .img-rp-icon {
+  opacity: 1;
+  color: #818cf8;
+}
+.img-rp-sq { width: 12px; height: 12px; }
+.img-rp-tall { width: 8px; height: 14px; }
+.img-rp-wide { width: 14px; height: 8px; }
+.img-rp-p34 { width: 9px; height: 12px; }
+.img-rp-l43 { width: 12px; height: 9px; }
+.img-rp-l32 { width: 13px; height: 9px; }
+.img-rp-p23 { width: 9px; height: 13px; }
+.img-rp-l54 { width: 12px; height: 10px; }
+.img-rp-p45 { width: 10px; height: 12px; }
+.img-rp-ultra { width: 16px; height: 7px; }
+.img-rp-p14 { width: 5px; height: 15px; }
+.img-rp-l41 { width: 15px; height: 5px; }
+.img-rp-p18 { width: 3px; height: 16px; }
+.img-rp-l81 { width: 16px; height: 3px; }

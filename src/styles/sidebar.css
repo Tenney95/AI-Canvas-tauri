@@ -1,0 +1,316 @@
+/* ============================================
+   Sidebar v3 — fixed left icon bar
+   ============================================ */
+.sidebar-floating {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  background: rgba(20, 20, 28, 0.78);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+/* Sidebar button base */
+.sidebar-btn-v3 {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: rgba(136, 136, 160, 0.7);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+  position: relative;
+}
+.sidebar-btn-v3:hover {
+  color: #e8e8ed;
+  background: rgba(255, 255, 255, 0.05);
+}
+.sidebar-btn-v3 .ico-normal {
+  display: block;
+}
+.sidebar-btn-v3 .ico-hover {
+  display: none;
+}
+.sidebar-btn-v3:hover .ico-normal,
+.sidebar-btn-v3.active .ico-normal {
+  display: none;
+}
+.sidebar-btn-v3:hover .ico-hover,
+.sidebar-btn-v3.active .ico-hover {
+  display: block;
+  color: #818cf8;
+}
+
+/* Add button */
+.add-btn-v3 {
+  color: rgba(129, 140, 248, 0.7);
+}
+.add-btn-v3:hover,
+.add-btn-v3.active {
+  color: #818cf8;
+  background: rgba(99, 102, 241, 0.12);
+}
+
+/* Canvas logo button */
+.sidebar-logo-wrap {
+  margin-bottom: 2px;
+}
+.sidebar-canvas-btn {
+  color: rgba(136, 136, 160, 0.5);
+}
+
+/* Flex spacer pushes task center to bottom */
+.sidebar-flex-spacer {
+  flex: 1;
+  min-height: 6px;
+}
+
+/* Task center button */
+.task-center-btn {
+  position: relative;
+}
+.task-center-tooltip {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  background: #1a1a26;
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #e8e8ed;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.task-center-btn:hover .task-center-tooltip {
+  opacity: 1;
+}
+.task-center-tooltip-beta {
+  font-size: 10px;
+  color: #818cf8;
+  background: rgba(99, 102, 241, 0.15);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+/* Separator */
+.sidebar-sep-v3 {
+  width: 22px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 2px 0;
+}
+
+/* Avatar wrap */
+.avatar-wrap {
+  position: relative;
+}
+.user-gear-plain {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: rgba(136, 136, 160, 0.6);
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 18px;
+  transition: color 0.15s, background 0.15s;
+}
+.user-gear-plain:hover {
+  color: #e8e8ed;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Avatar dropdown menu */
+.avatar-menu {
+  position: absolute;
+  left: calc(100% + 16px);
+  bottom: 0;
+  min-width: 160px;
+  background: #1a1a26;
+  border: 1px solid #2a2a3a;
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  animation: menuSlideIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: right bottom;
+}
+@keyframes menuSlideIn {
+  from { opacity: 0; transform: translateX(-8px) translateY(8px) scale(0.94); }
+  to   { opacity: 1; transform: translateX(0) translateY(0) scale(1); }
+}
+.avatar-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: #e8e8ed;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.1s;
+  text-align: left;
+}
+.avatar-menu-item:hover {
+  background: #252535;
+}
+.avatar-menu-sep {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 4px 8px;
+}
+
+/* ============================================
+   Node Picker — popup from + button
+   ============================================ */
+.node-picker {
+  position: absolute;
+  left: calc(100% + 16px);
+  top: 0;
+  width: 272px;
+  background: #1a1a26;
+  border: 1px solid #2a2a3a;
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  z-index: 100;
+  animation: pickerSlideIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: auto;
+  transform-origin: left top;
+}
+@keyframes pickerSlideIn {
+  from { opacity: 0; transform: translateX(-12px) scale(0.94); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+.menu-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 4px;
+}
+.menu-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #555566;
+  white-space: nowrap;
+}
+.menu-rule {
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.menu-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px;
+  border: none;
+  background: transparent;
+  color: #e8e8ed;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 0.1s;
+  text-align: left;
+}
+.menu-row:hover {
+  background: #252535;
+}
+.menu-ico {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  color: rgba(232, 232, 237, 0.5);
+  flex-shrink: 0;
+}
+.menu-row:hover .menu-ico {
+  color: rgba(232, 232, 237, 0.85);
+  background: rgba(255, 255, 255, 0.07);
+}
+.menu-txt-wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.menu-lbl {
+  font-size: 13px;
+  color: #e8e8ed;
+}
+.menu-sub {
+  font-size: 11px;
+  color: #555566;
+  margin-top: 1px;
+}
+
+/* Current project display row (non-interactive) */
+.menu-row-current {
+  cursor: default;
+  pointer-events: none;
+}
+.menu-row-current:hover {
+  background: transparent;
+}
+
+/* Project list scrollable area */
+.project-list-scroll {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Project delete inline button */
+.project-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: #555566;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+}
+.project-delete-btn:hover {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.12);
+}

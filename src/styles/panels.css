@@ -1,0 +1,496 @@
+/* ============================================
+   AI Node Dialog — floating frosted-glass prompt
+   ============================================ */
+.ai-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+}
+.ai-dialog-float {
+  position: fixed;
+  z-index: 200;
+  width: 540px;
+  max-width: calc(100vw - 32px);
+  background: rgba(48, 48, 66, 0.55);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.03),
+    0 8px 40px rgba(0, 0, 0, 0.5),
+    0 2px 8px rgba(0, 0, 0, 0.3);
+  animation: floatIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes floatIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.97); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+.ai-dialog-float .prompt-panel {
+  border-top: none;
+}
+.ai-dialog-float .prompt-editor {
+  min-height: 80px;
+  max-height: 140px;
+  font-size: 14px;
+  padding: 4px;
+}
+
+/* ============================================
+   Workflow Panel — center modal
+   ============================================ */
+.wf-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.5);
+  animation: fadeIn 0.15s ease;
+}
+.wf-panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 201;
+  width: 480px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  background: rgba(26, 26, 38, 0.72);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  animation: floatIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Workflow panel header */
+.wf-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 12px;
+}
+.wf-panel-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #e8e8ed;
+  margin: 0;
+}
+.wf-panel-close {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #8888a0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+}
+.wf-panel-close:hover {
+  color: #e8e8ed;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Panel section */
+.wf-panel-section {
+  padding: 8px 20px 16px;
+}
+.wf-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #555566;
+  margin-bottom: 8px;
+}
+.wf-section-rule {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin-bottom: 12px;
+}
+.wf-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 10px;
+  color: #8888a0;
+  background: #252535;
+}
+
+/* Form fields */
+.wf-field {
+  margin-bottom: 12px;
+}
+.wf-label {
+  display: block;
+  font-size: 12px;
+  color: #8888a0;
+  margin-bottom: 5px;
+}
+.wf-input {
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  color: #e8e8ed;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+  font-family: inherit;
+}
+.wf-input:focus {
+  border-color: #6366f1;
+}
+.wf-input::placeholder {
+  color: #555566;
+}
+
+/* Category chips */
+.wf-category-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.wf-cat-chip {
+  padding: 5px 12px;
+  font-size: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: #8888a0;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.wf-cat-chip:hover {
+  color: #e8e8ed;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.wf-cat-chip.active {
+  color: #818cf8;
+  border-color: rgba(99, 102, 241, 0.4);
+  background: rgba(99, 102, 241, 0.12);
+}
+
+/* File picker area */
+.wf-file-area {
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 16px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.wf-file-area:hover {
+  border-color: rgba(99, 102, 241, 0.3);
+  background: rgba(99, 102, 241, 0.04);
+}
+.wf-file-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: #555566;
+  font-size: 13px;
+}
+.wf-file-selected {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #4ade80;
+  font-size: 13px;
+}
+.wf-file-name {
+  color: #e8e8ed;
+  font-weight: 500;
+}
+.wf-file-size {
+  color: #555566;
+  font-size: 12px;
+}
+
+/* Actions row */
+.wf-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.wf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  font-size: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.wf-btn-primary {
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  border-color: rgba(99, 102, 241, 0.25);
+}
+.wf-btn-primary:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.25);
+  border-color: rgba(99, 102, 241, 0.4);
+}
+.wf-btn-primary:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.wf-msg {
+  font-size: 12px;
+}
+.wf-msg-error {
+  color: #f87171;
+}
+.wf-msg-success {
+  color: #4ade80;
+}
+
+/* Empty state */
+.wf-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 28px 16px;
+  color: #555566;
+  font-size: 13px;
+  text-align: center;
+}
+
+/* Workflow list */
+.wf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wf-group {
+  margin-bottom: 4px;
+}
+.wf-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 4px;
+}
+.wf-cat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #555566;
+}
+.wf-cat-dot[data-cat="ai-text"]  { background: #6366f1; }
+.wf-cat-dot[data-cat="ai-image"] { background: #22c55e; }
+.wf-cat-dot[data-cat="ai-video"] { background: #3b82f6; }
+.wf-cat-dot[data-cat="ai-audio"] { background: #f97316; }
+.wf-group-label {
+  font-size: 12px;
+  color: #8888a0;
+  font-weight: 500;
+}
+.wf-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 24px;
+  border-radius: 6px;
+  transition: background 0.1s;
+}
+.wf-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.wf-item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.wf-item-name {
+  font-size: 13px;
+  color: #e8e8ed;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-item-meta {
+  font-size: 11px;
+  color: #555566;
+  margin-top: 1px;
+}
+.wf-item-del {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #555566;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+  flex-shrink: 0;
+}
+.wf-item-del:hover {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+/* ── IO node badges for workflow upload & list ── */
+.wf-ionodes-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.wf-item-ionodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.wf-ionode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.wf-ionode-badge code {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 10px;
+  opacity: 0.7;
+}
+.wf-ionode-prompt {
+  background: rgba(99, 102, 241, 0.12);
+  color: #a5b4fc;
+}
+.wf-ionode-image {
+  background: rgba(16, 185, 129, 0.12);
+  color: #6ee7b7;
+}
+.wf-ionode-video {
+  background: rgba(59, 130, 246, 0.12);
+  color: #93c5fd;
+}
+.wf-ionode-audio {
+  background: rgba(249, 115, 22, 0.12);
+  color: #fdba74;
+}
+
+/* ============================================
+   Workflow Selector in Prompt Panel
+   ============================================ */
+.wf-selector {
+  position: relative;
+  margin-left: 0;
+}
+.wf-selector-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #8888a0;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  font-family: inherit;
+}
+.wf-selector-trigger:hover {
+  color: #e8e8ed;
+  background: rgba(255, 255, 255, 0.03);
+}
+.wf-selector-trigger.active {
+  color: #818cf8;
+  border-color: rgba(99, 102, 241, 0.2);
+  background: rgba(99, 102, 241, 0.08);
+}
+.wf-selector-trigger .caret {
+  flex-shrink: 0;
+  opacity: 0.5;
+  transition: transform 0.15s;
+}
+.wf-selector-trigger .caret.open {
+  transform: rotate(180deg);
+}
+
+.wf-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  width: 220px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: #1a1a26;
+  border: 1px solid #2a2a3a;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  padding: 4px;
+}
+.wf-dropdown-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: #555566;
+}
+.wf-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  background: transparent;
+  color: #e8e8ed;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 6px;
+  text-align: left;
+  transition: background 0.1s;
+  font-family: inherit;
+}
+.wf-dropdown-item:hover {
+  background: #252535;
+}
+.wf-dropdown-item.active {
+  background: rgba(99, 102, 241, 0.12);
+  color: #818cf8;
+}
+.wf-dropdown-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-dropdown-item-none {
+  color: #555566;
+  font-style: italic;
+}

@@ -1,0 +1,310 @@
+/* ============================================
+   Node Components — Frosted Glass Design System
+   ============================================ */
+
+/* Node Wrapper — label sits above the glass card */
+.node-wrapper {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Base Node — frosted glass card */
+.node {
+  display: flex;
+  flex-direction: column;
+  background: rgba(34, 34, 48, 0.75);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.node.selected {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.35), 0 8px 32px rgba(99, 102, 241, 0.16);
+}
+.node.loading .node-preview {
+  box-shadow: inset 0 0 30px rgba(99, 102, 241, 0.06);
+}
+
+/* Node Label Header — floats above the glass card */
+.node-label { 
+  position: absolute;
+  padding: 0 4px 4px 4px;
+}
+.node-label-icon {
+  flex-shrink: 0;
+}
+
+/* Floating Toolbar */
+.node-floating-toolbar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.15s, transform 0.15s;
+  pointer-events: none;
+}
+.node:hover .node-floating-toolbar,
+.node.selected .node-floating-toolbar {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.ftb-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: rgba(26, 26, 38, 0.9);
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  color: #8888a0;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+}
+.ftb-btn:hover {
+  color: #e8e8ed;
+  background: #252535;
+}
+
+/* Preview Area */
+.node-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.text-preview {
+  padding: 12px;
+  min-height: 80px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.image-preview {
+  position: relative;
+  aspect-ratio: 1;
+  background: #14141c;
+  margin: 8px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.video-preview {
+  position: relative;
+  aspect-ratio: 16/9;
+  background: #14141c;
+  margin: 8px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.audio-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  min-height: 70px;
+  background: #14141c;
+  margin: 8px;
+  border-radius: 8px;
+}
+
+.text-output-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #e8e8ed;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.image-preview-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.video-preview-player {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.audio-player {
+  max-width: 100%;
+}
+.image-preview-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Preview Placeholder / Loading */
+.node-preview-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #555566;
+  font-size: 13px;
+}
+.node-preview-loading {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #8888a0;
+  font-size: 10px;
+}
+
+/* Spinner */
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(99, 102, 241, 0.2);
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.spinner.large {
+  width: 32px;
+  height: 32px;
+  border-width: 3px;
+}
+
+/* Node Error */
+.node-error {
+  margin: 0px 12px 8px;
+  padding: 4px 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 6px;
+  font-size: 10px;
+  color: #f87171;
+}
+
+/* ============================================
+   Node Handles (React Flow)
+   ============================================ */
+.node-handle {
+  width: 12px !important;
+  height: 12px !important;
+  border: 2px solid #2a2a3a !important;
+  background: #1a1a26 !important;
+  transition: transform 0.15s, border-color 0.15s, background 0.15s, left 0.15s, right 0.15s !important;
+}
+.node-handle:hover {
+  transform: scale(1.3);
+}
+/* Hover: nudge outward — left handles shift left, right handles shift right */
+.react-flow__handle-left:hover {
+  left: -5px !important;
+  transform: translate(-50%, -50%) scale(1.4) !important;
+}
+.react-flow__handle-right:hover {
+  right: -5px !important;
+  transform: translate(50%, -50%) scale(1.4) !important;
+}
+/* Per-type handle colors (applied via handle-source class on visible handles) */
+.handle-text  { background: #6366f1 !important; border-color: #818cf8 !important; pointer-events: auto !important; z-index: 10; }
+.handle-image { background: #22c55e !important; border-color: #4ade80 !important; pointer-events: auto !important; z-index: 10; }
+.handle-video { background: #3b82f6 !important; border-color: #60a5fa !important; pointer-events: auto !important; z-index: 10; }
+.handle-audio { background: #f97316 !important; border-color: #fb923c !important; pointer-events: auto !important; z-index: 10; }
+
+/* ============================================
+   Compact Node (simplified, no prompt panel)
+   ============================================ */
+.node-preview.compact {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 4px;
+  overflow: hidden;
+}
+.text-output-content.compact {
+  align-self: stretch;
+  display: block;
+  overflow-y: auto;
+  font-size: 10px;
+  line-height: 1.6;
+  color: #e8e8ed;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 4px;
+}
+/* Edit mode textarea */
+.text-output-edit {
+  align-self: stretch;
+  width: 100%;
+  min-height: 100%;
+  font-size: 10px;
+  line-height: 1.6;
+  color: #e8e8ed;
+  background: rgba(10, 10, 15, 0.6);
+  border: 1px solid #6366f1;
+  border-radius: 4px;
+  resize: none;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 6px;
+  font-family: inherit;
+}
+/* Resize handle — bottom-right corner */
+.text-node {
+  position: relative;
+  overflow: visible !important;
+}
+.image-node {
+  overflow: visible !important;
+}
+.video-node {
+  overflow: visible !important;
+}
+.audio-node {
+  overflow: visible !important;
+}
+.node-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  z-index: 5;
+}
+.node-resize-handle::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0 0 8px 8px;
+  border-color: transparent transparent #555566 transparent;
+  border-radius: 0 2px 8px 0;
+}
+.node-resize-handle:hover::after {
+  border-color: transparent transparent #a8a8f3 transparent;
+}
+.image-preview-img.compact,
+.video-preview-player.compact {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 8px;
+}

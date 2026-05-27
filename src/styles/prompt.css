@@ -1,0 +1,189 @@
+/* ============================================
+   Prompt Panel
+   ============================================ */
+.prompt-panel {
+  border-top: 1px solid #2a2a3a;
+  flex-shrink: 0;
+  transition: border-color 0.2s;
+}
+.prompt-panel.focused {
+  border-top-color: #6366f1;
+}
+.prompt-input-wrap {
+  position: relative;
+  padding: 8px 8px 2px;
+}
+/* ── Contenteditable editor (replaces textarea + backdrop) ── */
+.prompt-editor {
+  width: 100%;
+  min-height: 80px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #e8e8ed;
+  caret-color: #6366f1;
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.prompt-editor.is-empty::before {
+  content: attr(data-placeholder);
+  color: #555566;
+  pointer-events: none;
+  display: block;
+  white-space: pre-wrap;
+}
+.prompt-editor::selection {
+  background: rgba(99, 102, 241, 0.3);
+}
+
+/* @mention chip token */
+.prompt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  vertical-align: middle;
+  margin: 0 1px;
+  line-height: 1.4;
+}
+.prompt-chip-icon {
+  font-weight: 700;
+  font-size: 11px;
+}
+.prompt-chip-id {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.prompt-chip.chip-text    { background: rgba(99, 102, 241, 0.15); color: #818cf8; }
+.prompt-chip.chip-image   { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+.prompt-chip.chip-video   { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+.prompt-chip.chip-audio   { background: rgba(249, 115, 22, 0.15); color: #fb923c; }
+
+/* ── Workflow IO chip — distinct style ── */
+.prompt-chip.prompt-chip-wf {
+  height: 26px;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  background: rgba(245, 158, 11, 0.08);
+  color: #fbbf24;
+  padding: 1px 6px 1px 5px;
+  gap: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.prompt-chip.prompt-chip-wf.chip-workflow-prompt  { background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.25); color: #818cf8; }
+.prompt-chip.prompt-chip-wf.chip-workflow-image   { background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.25); color: #34d399; }
+.prompt-chip.prompt-chip-wf.chip-workflow-video   { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.25); color: #60a5fa; }
+.prompt-chip.prompt-chip-wf.chip-workflow-audio   { background: rgba(249, 115, 22, 0.1); border-color: rgba(249, 115, 22, 0.25); color: #fb923c; }
+
+/* Non-editable label prefix */
+.prompt-chip-wf-prefix {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.prompt-chip-wf-icon {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.prompt-chip-wf-id {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.prompt-chip-wf-colon {
+  font-weight: 600;
+  margin: 0 2px 0 1px;
+}
+
+/* Editable value area inside workflow chip */
+.prompt-chip-wf-value {
+  display: inline;
+  outline: none;
+  min-width: 2em;
+  cursor: text;
+  caret-color: currentColor;
+}
+.prompt-chip-wf-value br {
+  display: inline;
+}
+.prompt-chip-wf-value:empty::before {
+  content: '';
+  display: inline-block;
+  width: 4px;
+}
+
+/* Prompt Footer */
+.prompt-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 8px 4px;
+  gap: 8px;
+}
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.prompt-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #8888a0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+}
+.prompt-btn:hover {
+  color: #e8e8ed;
+  background: #252535;
+}
+.prompt-submit-btn {
+  color: #6366f1;
+}
+.prompt-submit-btn:hover {
+  color: #818cf8;
+  background: rgba(99, 102, 241, 0.15);
+}
+.prompt-submit-btn.disabled {
+  color: #444455;
+  cursor: not-allowed;
+}
+.prompt-submit-btn.disabled:hover {
+  background: transparent;
+  color: #444455;
+}
+.prompt-pass-through-btn {
+  color: #10b981;
+}
+.prompt-pass-through-btn:hover {
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.15);
+}
+.prompt-pass-through-btn.disabled {
+  color: #444455;
+  cursor: not-allowed;
+}
+.prompt-pass-through-btn.disabled:hover {
+  background: transparent;
+  color: #444455;
+}
