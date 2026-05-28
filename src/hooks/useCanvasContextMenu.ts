@@ -1,0 +1,135 @@
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { useReactFlow } from '@xyflow/react';
+import type { Node as RFNode } from '@xyflow/react';
+import { useAppStore, generateId } from '../store/useAppStore';
+import type { BaseNodeData, NodeType } from '../types';
+
+interface ContextMenuState {
+  visible: boolean;
+  position: { x: number; y: number };
+  flowPosition: { x: number; y: number };
+  hoverMenu: 'addNode' | 'genNode' | 'srcNode' | null;
+}
+
+export function useCanvasContextMenu() {
+  const reactFlowInstance = useReactFlow();
+  const addNode = useAppStore((s) => s.addNode);
+  const undo = useAppStore((s) => s.undo);
+  const redo = useAppStore((s) => s.redo);
+  const pasteNodes = useAppStore((s) => s.pasteNodes);
+  const clipboard = useAppStore((s) => s.clipboard);
+
+  const [menu, setMenu] = useState<ContextMenuState>({
+    visible: false,
+    position: { x: 0, y: 0 },
+    flowPosition: { x: 0, y: 0 },
+    hoverMenu: null,
+  });
+  const menuRef = useRef<HTMLDivElement>(null);
+  const submenuRef = useRef<HTMLDivElement>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const closeMenu = useCallback(() => {
+    setMenu({ visible: false, position: { x: 0, y: 0 }, flowPosition: { x: 0, y: 0 }, hoverMenu: null });
+  }, []);
+
+  // Close on click outside or Escape
+  useEffect(() => {
+    if (!menu.visible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMenu();
+    };
+    const onClick = (e: MouseEvent) => {
+      const target = e.target as Element;
+      const ctxEl = menuRef.current;
+      const subEl = submenuRef.current;
+      if ((ctxEl && ctxEl.contains(target)) || (subEl && subEl.contains(target))) return;
+      if (target.closest('.v2-canvas-ctx-menu')) return;
+      closeMenu();
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onClick);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onClick);
+    };
+  }, [menu.visible, closeMenu]);
+
+  const addNodeAtCtxPos = useCallback(
+    (type: NodeType, label: string, role: 'generator' | 'source' = 'generator') => {
+      const pos = menu.flowPosition;
+      const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
+      const isImage = type === 'ai-image';
+      const isSource = role === 'source';
+      const newWidth = type === 'ai-audio' ? 260 : 280;
+      const newHeight = type === 'ai-audio' ? 140 : isImage ? 158 : 160;
+      const newNode: RFNode<BaseNodeData> = {
+        id: `node-${generateId()}`,
+        type,
+        position: { x: flowPos.x - newWidth / 2, y: flowPos.y - newHeight / 2 },
+        data: {
+          label,
+          type,
+          role,
+          prompt: '',
+          status: 'idle',
+          nodeWidth: newWidth,
+          nodeHeight: newHeight,
+          ...(isImage && !isSource ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
+        },
+      };
+      addNode(newNode);
+      closeMenu();
+    },
+    [menu.flowPosition, reactFlowInstance, addNode, closeMenu],
+  );
+
+  const handleUndo = useCallback(() => { undo(); closeMenu(); }, [undo, closeMenu]);
+  const handleRedo = useCallback(() => { redo(); closeMenu(); }, [redo, closeMenu]);
+
+  const handlePaste = useCallback(() => {
+    const pos = menu.flowPosition;
+    const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
+    pasteNodes(flowPos);
+    closeMenu();
+  }, [menu.flowPosition, reactFlowInstance, pasteNodes, closeMenu]);
+
+  const showSubmenu = useCallback((m: ContextMenuState['hoverMenu']) => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    setMenu((s) => ({ ...s, hoverMenu: m }));
+  }, []);
+
+  const hideSubmenu = useCallback((backTo: ContextMenuState['hoverMenu']) => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      setMenu((s) => ({ ...s, hoverMenu: backTo }));
+    }, 250);
+  }, []);
+
+  const openMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const target = e.target as HTMLElement;
+    if (!target.classList.contains('react-flow__pane')) return;
+    setMenu({
+      visible: true,
+      position: { x: e.clientX, y: e.clientY },
+      flowPosition: { x: e.clientX, y: e.clientY },
+      hoverMenu: null,
+    });
+  }, []);
+
+  return {
+    menu,
+    menuRef,
+    submenuRef,
+    clipboardLen: clipboard.length,
+    openMenu,
+    closeMenu,
+    addNodeAtCtxPos,
+    handleUndo,
+    handleRedo,
+    handlePaste,
+    showSubmenu,
+    hideSubmenu,
+  };
+}

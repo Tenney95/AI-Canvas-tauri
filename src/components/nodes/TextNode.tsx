@@ -76,9 +76,8 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     [id, nodeWidth, nodeHeight, updateNodeData],
   );
 
-  // ── Toolbar actions ──
-  const hasOutput = Boolean(data.output);
 
+  // ── Toolbar actions ──
   const handleCopy = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     if (data.output) copy(data.output);
@@ -181,8 +180,8 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   return (
     <>
     <div className="node-wrapper relative" style={{ width: nodeWidth }}>
-      {/* Floating toolbar — only when selected AND has text output AND not source */}
-      {!isSource && selected && hasOutput && (
+      {/* Floating toolbar — when selected */}
+      {selected && (
         <div className="node-floating-toolbar text-toolbar">
           <button
             className="ftb-btn icon-only act-copy"
