@@ -97,7 +97,7 @@ export default function VideoParamSelector({
         {open && (
           <div className="img-ratio-popup ui-schema-popup ui-schema-video-params-popup" style={{ display: 'block' }}>
             {/* 分辨率 */}
-            <div className="img-rp-quality-area" data-ui-schema-field="rhVideoResolution" data-ui-schema-type="segmented" data-ui-schema-value-type="number" data-ui-schema-default="832">
+            <div className="img-rp-quality-area mb-2" data-ui-schema-field="rhVideoResolution" data-ui-schema-type="segmented" data-ui-schema-value-type="number" data-ui-schema-default="832">
               <div className="img-rp-section-label">
                 分辨率
                 <span
@@ -160,41 +160,42 @@ export default function VideoParamSelector({
                   >
                     !
                   </span>
-                </div>
-                <div className="rh-stepper rh-v5-frames-stepper">
-                  <div className="rh-v5-source-framecount" aria-label="源视频总帧数">
-                    —
-                  </div>
-                  {editingFrames !== null ? (
-                    <input
-                      ref={framesInputRef}
-                      type="number"
-                      className="rh-stepper-value rh-stepper-input"
-                      min={0}
-                      max={999999}
-                      step={1}
-                      value={editingFrames}
-                      onChange={(e) => setEditingFrames(e.target.value)}
-                      onBlur={handleFramesBlur}
-                      onKeyDown={handleFramesKeyDown}
-                      autoFocus
-                    />
-                  ) : (
-                    <div
-                      className="rh-stepper-value"
-                      role="spinbutton"
-                      aria-label="生成帧数"
-                      aria-valuenow={videoFrames}
-                      tabIndex={0}
-                      onClick={() => {
-                        setEditingFrames(String(videoFrames));
-                        setTimeout(() => framesInputRef.current?.focus(), 0);
-                      }}
-                    >
-                      {videoFrames}
+                  <div className="rh-stepper rh-v5-frames-stepper">
+                    <div className="rh-v5-source-framecount" aria-label="源视频总帧数">
+                      —
                     </div>
-                  )}
+                    {editingFrames !== null ? (
+                      <input
+                        ref={framesInputRef}
+                        type="number"
+                        className="rh-stepper-value rh-stepper-input"
+                        min={0}
+                        max={999999}
+                        step={1}
+                        value={editingFrames}
+                        onChange={(e) => setEditingFrames(e.target.value)}
+                        onBlur={handleFramesBlur}
+                        onKeyDown={handleFramesKeyDown}
+                        autoFocus
+                      />
+                    ) : (
+                      <div
+                        className="rh-stepper-value"
+                        role="spinbutton"
+                        aria-label="生成帧数"
+                        aria-valuenow={videoFrames}
+                        tabIndex={0}
+                        onClick={() => {
+                          setEditingFrames(String(videoFrames));
+                          setTimeout(() => framesInputRef.current?.focus(), 0);
+                        }}
+                      >
+                        {videoFrames}
+                      </div>
+                    )}
+                  </div>
                 </div>
+
               </div>
             </div>
           </div>

@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import type { BaseNodeData, ModelOption } from '../../types';
-import { generateText, generateImage } from '../../services/aiService';
+import { generateText, generateImage, generateVideo } from '../../services/aiService';
 import PromptPanel from './shared/PromptPanel';
 
 function AINodeDialog() {
@@ -70,6 +70,24 @@ function AINodeDialog() {
           imageHeight: result.height,
         });
         showToast('图片生成完成');
+      } else if (nodeType === 'ai-video') {
+        const result = await generateVideo({
+          prompt: data.prompt,
+          model: data.model,
+          provider: data.provider,
+          videoResolution: (data.videoResolution as number) || 832,
+          videoFps: (data.videoFps as number) || 24,
+          videoFrames: (data.videoFrames as number) || 77,
+          workflowId: data.workflowId,
+          workflowInputs: data.workflowInputs,
+        });
+        updateNodeData(activeNodeId!, {
+          videoUrl: result.url,
+          thumbnailUrl: result.url,
+          output: result.url,
+          status: 'success',
+        });
+        showToast('视频生成完成');
       } else {
         const result = await generateText({
           prompt: data.prompt,
@@ -83,7 +101,7 @@ function AINodeDialog() {
       updateNodeData(activeNodeId!, { status: 'error', error: msg });
       showToast(msg, 'error');
     }
-  }, [activeNodeId, nodeType, data?.prompt, data?.model, data?.provider, data?.imageSize, data?.aspectRatio, data?.workflowId, data?.workflowInputs, updateNodeData, showToast]);
+  }, [activeNodeId, nodeType, data?.prompt, data?.model, data?.provider, data?.imageSize, data?.aspectRatio, data?.videoResolution, data?.videoFps, data?.videoFrames, data?.workflowId, data?.workflowInputs, updateNodeData, showToast]);
 
   // 直接将输入内容作为节点输出（跳过模型调用）
   const onPassThrough = useCallback(() => {
@@ -193,7 +211,7 @@ function AINodeDialog() {
           onSubmit={onSubmit}
           onModelSelect={onModelSelect}
           onWorkflowSelect={onWorkflowSelect}
-          onPassThrough={nodeType !== 'ai-image' ? onPassThrough : undefined}
+          onPassThrough={(nodeType !== 'ai-image' &&  nodeType !== 'ai-video') ? onPassThrough : undefined}
           imageSize={(data.imageSize as string) || '2K'}
           aspectRatio={(data.aspectRatio as string) || '1:1'}
           onChangeImageSize={onChangeImageSize}
