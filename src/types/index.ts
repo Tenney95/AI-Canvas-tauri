@@ -30,6 +30,9 @@ export interface BaseNodeData {
   imageHeight?: number;       // 生成图片实际高度
   imageSize?: string;         // 画质选择：'1K' | '2K' | '4K'
   aspectRatio?: string;       // 图片比例：'1:1' | '16:9' | ...
+  videoResolution?: number;   // 视频分辨率：832 | 1024 | 1280 | 1440
+  videoFps?: number;          // 视频帧率：16 | 24 | 30
+  videoFrames?: number;       // 视频生成帧数（时长）
   error?: string;             // 错误信息
   [key: string]: unknown;
 }

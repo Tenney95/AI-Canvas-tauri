@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import type { NodeType } from '../../../types';
-import type { ModelOption } from '../../../types';
+import type { NodeType, ModelOption, WorkflowDefinition } from '../../../types';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
+import VideoParamSelector from './VideoParamSelector';
 import MentionEditor from './MentionEditor';
 
 interface PromptPanelProps {
@@ -24,6 +24,13 @@ interface PromptPanelProps {
   aspectRatio?: string;
   onChangeImageSize?: (size: string) => void;
   onChangeAspectRatio?: (ratio: string) => void;
+  videoResolution?: number;
+  videoFps?: number;
+  videoFrames?: number;
+  onChangeVideoResolution?: (value: number) => void;
+  onChangeVideoFps?: (value: number) => void;
+  onChangeVideoFrames?: (value: number) => void;
+  workflows?: WorkflowDefinition[];
 }
 
 export default function PromptPanel({
@@ -45,6 +52,13 @@ export default function PromptPanel({
   aspectRatio,
   onChangeImageSize,
   onChangeAspectRatio,
+  videoResolution,
+  videoFps,
+  videoFrames,
+  onChangeVideoResolution,
+  onChangeVideoFps,
+  onChangeVideoFrames,
+  workflows = [],
 }: PromptPanelProps) {
   const [focused, setFocused] = useState(false);
 
@@ -71,6 +85,7 @@ export default function PromptPanel({
           selectedWorkflowId={selectedWorkflowId}
           onSelect={onModelSelect}
           onWorkflowSelect={onWorkflowSelect}
+          workflows={workflows}
         />
 
         {nodeType === 'ai-image' && (
@@ -79,6 +94,17 @@ export default function PromptPanel({
             aspectRatio={aspectRatio}
             onChangeImageSize={onChangeImageSize || (() => {})}
             onChangeAspectRatio={onChangeAspectRatio || (() => {})}
+          />
+        )}
+
+        {nodeType === 'ai-video' && (
+          <VideoParamSelector
+            videoResolution={videoResolution}
+            videoFps={videoFps}
+            videoFrames={videoFrames}
+            onChangeResolution={onChangeVideoResolution || (() => {})}
+            onChangeFps={onChangeVideoFps || (() => {})}
+            onChangeFrames={onChangeVideoFrames || (() => {})}
           />
         )}
 

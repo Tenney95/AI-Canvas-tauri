@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { WorkflowIONodeType } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
+import { Icon } from '@iconify/react';
 
 // ── Props ──
 export interface MentionEditorProps {
@@ -49,7 +50,7 @@ const WF_IO_ICON: Record<string, string> = {
 // DOM ↔ String helpers
 // ═══════════════════════════════════════════════
 
-/** Serialize contenteditable DOM back to @{id:label} / @wf{id:title:type} marker string. */
+/** Serialize contenteditable DOM back to @{id:label} / @wf{id|title|type} marker string (pipe-separated to avoid ambiguity with `:` in node IDs). */
 function serializeDOM(root: HTMLElement): string {
   let result = '';
   const walk = (node: Node) => {
@@ -65,7 +66,7 @@ function serializeDOM(root: HTMLElement): string {
         const id = el.getAttribute('data-wf-id') || '';
         const title = el.getAttribute('data-wf-title') || '';
         const type = el.getAttribute('data-wf-type') || 'prompt';
-        result += `@wf{${id}:${title}:${type}}(`;
+        result += `@wf{${id}|${title}|${type}}(`;
         const valueEl = el.querySelector('.prompt-chip-wf-value');
         if (valueEl) {
           for (const child of Array.from(valueEl.childNodes)) walk(child);
@@ -125,7 +126,7 @@ function buildWorkflowChipEl(
   prefix.className = 'prompt-chip-wf-prefix';
   prefix.contentEditable = 'false';
   prefix.innerHTML =
-    `<span class="prompt-chip-wf-icon">⚡</span>` +
+    `<svg width="14" height="14" viewBox="0 0 16 16"><path fill="none" stroke="#f5a97f" stroke-linecap="round" stroke-linejoin="round" d="M3.5 1.5h2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2v-2c0-1.1.9-2 2-2m7 7h2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2v-2c0-1.1.9-2 2-2m-6-1V10q0 1.5 1.5 1.5h2.5"/></svg>` +
     `<span class="prompt-chip-icon">${icon}</span>` +
     `<span class="prompt-chip-wf-id">#${ioNodeId}</span>` +
     `<span class="prompt-chip-wf-colon">:</span>`;
@@ -145,7 +146,7 @@ function renderPromptToNodes(
   text: string,
   metaMap: Map<string, { type: string; displayId: number | undefined }>,
 ): Node[] {
-  const regex = /@\{([^:]+):([^}]+)\}|@wf\{([^:]+):([^:]+):([^}]+)\}/g;
+  const regex = /@\{([^:]+):([^}]+)\}|@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}/g;
   const nodes: Node[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -350,6 +351,7 @@ export default function MentionEditor({
         id: n.id,
         label: (n.data.label as string) || '节点',
         type: n.data.type,
+        displayId: n.data.displayId as number | undefined,
         hasOutput: !!n.data.output,
         outputType: n.data.imageUrl ? 'image' : n.data.videoUrl ? 'video' : n.data.audioUrl ? 'audio' : 'text',
       }));
@@ -726,6 +728,7 @@ export default function MentionEditor({
                     </span>
                     <div>
                       <span className="text-sm text-canvas-text">{node.label}</span>
+                      <span className='text-[10px] text-canvas-text-muted'> #{node.displayId}</span>
                       {!node.hasOutput && (
                         <span className="ml-2 text-[10px] text-canvas-text-muted">等待生成</span>
                       )}
@@ -744,7 +747,7 @@ export default function MentionEditor({
           {workflowMentionNodes.length > 0 && (
             <>
               <div className="px-3 py-2 text-[11px] text-amber-400/70 uppercase tracking-wider flex items-center gap-1.5 border-t border-canvas-border">
-                <span>⚡</span>
+                <span><Icon icon="catppuccin:workflow" /></span>
                 <span>工作流: {selectedWorkflow?.name || ''}</span>
               </div>
               {filteredWorkflowMentions.length > 0 ? (

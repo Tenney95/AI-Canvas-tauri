@@ -29,9 +29,11 @@
 }
 
 /* Node Label Header — floats above the glass card */
-.node-label { 
+.node-label {
+  width: 100%;
   position: absolute;
-  padding: 0 4px 4px 4px;
+  top: -24px;
+  padding: 0 4px;
 }
 .node-label-icon {
   flex-shrink: 0;

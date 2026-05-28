@@ -5,7 +5,7 @@ import { generateText, generateImage } from '../../services/aiService';
 import PromptPanel from './shared/PromptPanel';
 
 function AINodeDialog() {
-  const { nodes, activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, showToast } = useAppStore();
+  const { nodes, activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, showToast, workflows } = useAppStore();
 
   const node = useMemo(() => nodes.find((n) => n.id === activeNodeId), [nodes, activeNodeId]);
   const data: BaseNodeData | undefined = node?.data;
@@ -29,13 +29,13 @@ function AINodeDialog() {
   const onPromptChange = useCallback(
     (value: string) => {
       // Extract workflow IO node assignments from the prompt string
-      // Format: @wf{ioNodeId:title:type}(value content)
-      // ioNodeId can contain ":" (e.g. "57:27"), so the first two colon-separated parts form the ID
+      // Format: @wf{ioNodeId|title|type}(value content)
+      // ioNodeId can contain ":" (e.g. "57:27"), fields are pipe-separated to avoid ambiguity
       const workflowInputs: Record<string, string> = {};
-      const wfRegex = /@wf\{([^:]+):([^:]+):([^}]+)\}\(([\s\S]*?)\)/g;
+      const wfRegex = /@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}\(([\s\S]*?)\)/g;
       let match: RegExpExecArray | null;
       while ((match = wfRegex.exec(value)) !== null) {
-        const ioNodeId = match[1] + ':' + match[2]; // Reconstruct "57:27" from two colon-separated parts
+        const ioNodeId = match[1]; // Full ID (may contain ":")
         const valueText = match[4].replace(/\n$/, '');
         workflowInputs[ioNodeId] = valueText;
       }
@@ -143,6 +143,21 @@ function AINodeDialog() {
     [activeNodeId, updateNodeData]
   );
 
+  const onChangeVideoResolution = useCallback(
+    (value: number) => updateNodeData(activeNodeId!, { videoResolution: value }),
+    [activeNodeId, updateNodeData]
+  );
+
+  const onChangeVideoFps = useCallback(
+    (value: number) => updateNodeData(activeNodeId!, { videoFps: value }),
+    [activeNodeId, updateNodeData]
+  );
+
+  const onChangeVideoFrames = useCallback(
+    (value: number) => updateNodeData(activeNodeId!, { videoFrames: value }),
+    [activeNodeId, updateNodeData]
+  );
+
   // Early return must come after ALL hooks
   if (!activeNodeId || !node || !data || !nodeType) return null;
 
@@ -183,6 +198,13 @@ function AINodeDialog() {
           aspectRatio={(data.aspectRatio as string) || '1:1'}
           onChangeImageSize={onChangeImageSize}
           onChangeAspectRatio={onChangeAspectRatio}
+          videoResolution={(data.videoResolution as number) || 832}
+          videoFps={(data.videoFps as number) || 24}
+          videoFrames={(data.videoFrames as number) || 77}
+          onChangeVideoResolution={onChangeVideoResolution}
+          onChangeVideoFps={onChangeVideoFps}
+          onChangeVideoFrames={onChangeVideoFrames}
+          workflows={workflows}
         />
       </div>
     </>
