@@ -39,6 +39,32 @@
   flex-shrink: 0;
 }
 
+/* Upload button on node-preview top-right corner (source nodes) */
+.node-upload-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 10, 15, 0.75);
+  backdrop-filter: blur(6px);
+  color: #8888a0;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.node-upload-btn:hover {
+  background: rgba(20, 20, 28, 0.9);
+  color: #e8e8ed;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
 /* Floating Toolbar */
 .node-floating-toolbar {
   position: absolute;

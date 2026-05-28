@@ -184,6 +184,60 @@ function getMimeType(ext: string): string {
 }
 
 // ============================================
+// Source node file upload (returns dataUrl + fileName)
+// ============================================
+
+export interface UploadResult {
+  dataUrl: string;
+  fileName: string;
+  fileSize: number;
+}
+
+/** 为源节点上传文件 — 返回 data URL + 文件名 + 大小 */
+export async function uploadSourceFile(accept?: string): Promise<UploadResult | null> {
+  try {
+    if (isTauriEnv()) {
+      const filePath = await open({
+        multiple: false,
+        title: '选择文件',
+        filters: accept ? [{ name: '支持的文件', extensions: accept.split(',').map((e) => e.trim().replace('.', '')) }] : [],
+      });
+
+      if (!filePath) return null;
+
+      const content = await tauriReadFile(filePath);
+      const base64 = arrayBufferToBase64(content.buffer);
+      const fileName = filePath.split(/[\\/]/).pop() || 'file';
+      const ext = fileName.split('.').pop()?.toLowerCase() || '';
+      const mimeType = getMimeType(ext);
+      return {
+        dataUrl: `data:${mimeType};base64,${base64}`,
+        fileName,
+        fileSize: content.byteLength,
+      };
+    }
+
+    // 浏览器降级：通过 file input 读取
+    const file = await browserOpenFile(accept || '*/*');
+    if (!file) return null;
+
+    const buffer = await file.arrayBuffer();
+    const base64 = arrayBufferToBase64(buffer);
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    const mimeType = getMimeType(ext);
+
+    return {
+      dataUrl: `data:${mimeType};base64,${base64}`,
+      fileName: file.name,
+      fileSize: file.size,
+    };
+  } catch (error) {
+    console.error('Source file upload failed:', error);
+    throw error;
+  }
+}
+
+// ============================================
 // Workflow CRUD
 // ============================================
 

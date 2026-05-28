@@ -32,6 +32,32 @@ interface ConnectionMenuOption {
   special?: '360-panorama';
 }
 
+// ── Canvas right-click context menu ──
+interface ContextMenuState {
+  visible: boolean;
+  position: { x: number; y: number };
+  /** 右键点击时对应的画布坐标 */
+  flowPosition: { x: number; y: number };
+  /** 当前悬停展开的子菜单层级 */
+  hoverMenu: 'addNode' | 'genNode' | 'srcNode' | null;
+}
+
+// 生成节点子菜单项
+const GEN_NODE_ITEMS: { label: string; type: NodeType }[] = [
+  { label: '生成文本', type: 'ai-text' },
+  { label: '生成图像', type: 'ai-image' },
+  { label: '生成视频', type: 'ai-video' },
+  { label: '生成音频', type: 'ai-audio' },
+];
+
+// 源节点子菜单项
+const SRC_NODE_ITEMS: { label: string; type: NodeType }[] = [
+  { label: '文本', type: 'ai-text' },
+  { label: '图像', type: 'ai-image' },
+  { label: '视频', type: 'ai-video' },
+  { label: '音频', type: 'ai-audio' },
+];
+
 const CONNECTION_MENU_MAP: Record<string, ConnectionMenuOption[]> = {
   'ai-text': [
     { label: '生成文本', type: 'ai-text' },
@@ -159,6 +185,44 @@ function CanvasInner() {
     position: { x: 0, y: 0 },
   });
   const connectionMenuRef = useRef<HTMLDivElement>(null);
+
+  // ── Right-click context menu ──
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState>({
+    visible: false,
+    position: { x: 0, y: 0 },
+    flowPosition: { x: 0, y: 0 },
+    hoverMenu: null,
+  });
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
+  const ctxSubmenuRef = useRef<HTMLDivElement>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const closeCtxMenu = useCallback(() => {
+    setCtxMenu({ visible: false, position: { x: 0, y: 0 }, flowPosition: { x: 0, y: 0 }, hoverMenu: null });
+  }, []);
+
+  // Close context menu on click outside or Escape
+  useEffect(() => {
+    if (!ctxMenu.visible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeCtxMenu();
+    };
+    const onClick = (e: MouseEvent) => {
+      const target = e.target as Element;
+      const ctxEl = ctxMenuRef.current;
+      const subEl = ctxSubmenuRef.current;
+      if ((ctxEl && ctxEl.contains(target)) || (subEl && subEl.contains(target))) return;
+      // Also check if the target is inside any v2-canvas-ctx-menu (Level 3 submenus)
+      if (target.closest('.v2-canvas-ctx-menu')) return;
+      closeCtxMenu();
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onClick);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onClick);
+    };
+  }, [ctxMenu.visible, closeCtxMenu]);
 
   // Close connection menu on click outside or Escape
   useEffect(() => {
@@ -338,10 +402,78 @@ function CanvasInner() {
     [connectionMenu, reactFlowInstance, addNode, addNodeWithEdge],
   );
 
+  // ── Context menu actions ──
+  const undo = useAppStore((s) => s.undo);
+  const redo = useAppStore((s) => s.redo);
+  const pasteNodes = useAppStore((s) => s.pasteNodes);
+  const clipboard = useAppStore((s) => s.clipboard);
+
+  // Add a single node at the right-click position
+  const addNodeAtCtxPos = useCallback(
+    (type: NodeType, label: string, role: 'generator' | 'source' = 'generator') => {
+      const pos = ctxMenu.flowPosition;
+      const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
+      const isImage = type === 'ai-image';
+      const isSource = role === 'source';
+      const newWidth = type === 'ai-audio' ? 260 : 280;
+      const newHeight = type === 'ai-audio' ? 140 : isImage ? 158 : 160;
+      const newNode: RFNode<BaseNodeData> = {
+        id: `node-${generateId()}`,
+        type,
+        position: { x: flowPos.x - newWidth / 2, y: flowPos.y - newHeight / 2 },
+        data: {
+          label,
+          type,
+          role,
+          prompt: '',
+          status: 'idle',
+          nodeWidth: newWidth,
+          nodeHeight: newHeight,
+          ...(isImage && !isSource ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
+        },
+      };
+      addNode(newNode);
+      closeCtxMenu();
+    },
+    [ctxMenu.flowPosition, reactFlowInstance, addNode, closeCtxMenu],
+  );
+
+  const handleCtxUndo = useCallback(() => {
+    undo();
+    closeCtxMenu();
+  }, [undo, closeCtxMenu]);
+
+  const handleCtxRedo = useCallback(() => {
+    redo();
+    closeCtxMenu();
+  }, [redo, closeCtxMenu]);
+
+  const handleCtxPaste = useCallback(() => {
+    const pos = ctxMenu.flowPosition;
+    const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
+    pasteNodes(flowPos);
+    closeCtxMenu();
+  }, [ctxMenu.flowPosition, reactFlowInstance, pasteNodes, closeCtxMenu]);
+
+  // Submenu hover: show immediately, hide with a delay (to allow cursor to cross gaps)
+  const showSubmenu = useCallback((menu: ContextMenuState['hoverMenu']) => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    setCtxMenu((s) => ({ ...s, hoverMenu: menu }));
+  }, []);
+
+  const hideSubmenu = useCallback((backTo: ContextMenuState['hoverMenu']) => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      setCtxMenu((s) => ({ ...s, hoverMenu: backTo }));
+    }, 250);
+  }, []);
+
   // Handle node click to open AI dialog
   const openNodeDialog = useAppStore((s) => s.openNodeDialog);
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: RFNode<BaseNodeData>) => {
+      // Source nodes have no AI dialog
+      if (node.data?.role === 'source') return;
       // Text nodes with existing output don't need the prompt dialog
       if (node.data?.type === 'ai-text' && node.data?.output) return;
 
@@ -415,7 +547,18 @@ function CanvasInner() {
         proOptions={{ hideAttribution: true }}
         className="bg-canvas-bg"
         panOnDrag={[1, 2]}
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={(e: React.MouseEvent) => {
+          e.preventDefault();
+          // Only show on canvas background, not on nodes
+          const target = e.target as HTMLElement;
+          if (!target.classList.contains('react-flow__pane')) return;
+          setCtxMenu({
+            visible: true,
+            position: { x: e.clientX, y: e.clientY },
+            flowPosition: { x: e.clientX, y: e.clientY },
+            hoverMenu: null,
+          });
+        }}
       >
         {/* Snap alignment lines */}
         <SnapLinesOverlay lines={snapLines} />
@@ -632,6 +775,109 @@ function CanvasInner() {
             })}
           </div>
         </div>
+      )}
+
+      {/* ── 右键上下文菜单 ── */}
+      {ctxMenu.visible && (
+        <>
+          {/* Level 1: Root menu */}
+          <div
+            ref={ctxMenuRef}
+            className="v2-canvas-ctx-menu"
+            style={{ left: ctxMenu.position.x, top: ctxMenu.position.y }}
+          >
+            <div
+              className={`v2-menu-row v2-menu-row-split${ctxMenu.hoverMenu === 'addNode' ? ' highlight' : ''}`}
+              onMouseEnter={() => showSubmenu('addNode')}
+              onMouseLeave={() => hideSubmenu(null)}
+            >
+              <span className="v2-menu-rowlabel">添加节点</span>
+              <span className="v2-menu-arrow v2-menu-arrow-ml8">▶</span>
+            </div>
+            <div className="v2-menu-sep" />
+            <div
+              className={`v2-menu-row v2-menu-row-split${clipboard.length === 0 ? ' disabled' : ''}`}
+              onClick={clipboard.length > 0 ? handleCtxPaste : undefined}
+            >
+              <span>粘贴</span>
+              <span className="v2-menu-kbd">Ctrl V</span>
+            </div>
+            <div className="v2-menu-row v2-menu-row-split" onClick={handleCtxUndo}>
+              <span>撤销</span>
+              <span className="v2-menu-kbd">Ctrl Z</span>
+            </div>
+            <div className="v2-menu-row v2-menu-row-split" onClick={handleCtxRedo}>
+              <span>重做</span>
+              <span className="v2-menu-kbd">Ctrl Y</span>
+            </div>
+          </div>
+
+          {/* Level 2: 添加节点 submenu — stay visible while navigating to Level 3 */}
+          {(ctxMenu.hoverMenu === 'addNode' || ctxMenu.hoverMenu === 'genNode' || ctxMenu.hoverMenu === 'srcNode') && (
+            <div
+              ref={ctxSubmenuRef}
+              className="v2-canvas-ctx-menu v2-submenu"
+              style={{ left: ctxMenu.position.x + 180, top: ctxMenu.position.y + 4 }}
+              onMouseEnter={() => showSubmenu('addNode')}
+              onMouseLeave={() => hideSubmenu(null)}
+            >
+              <div
+                className={`v2-menu-row v2-menu-row-split${ctxMenu.hoverMenu === 'genNode' ? ' highlight' : ''}`}
+                onMouseEnter={() => showSubmenu('genNode')}
+              >
+                <span className="v2-menu-rowlabel">生成节点</span>
+                <span className="v2-menu-arrow v2-menu-arrow-ml8">▶</span>
+              </div>
+              <div
+                className={`v2-menu-row v2-menu-row-split${ctxMenu.hoverMenu === 'srcNode' ? ' highlight' : ''}`}
+                onMouseEnter={() => showSubmenu('srcNode')}
+              >
+                <span className="v2-menu-rowlabel">源节点</span>
+                <span className="v2-menu-arrow v2-menu-arrow-ml8">▶</span>
+              </div>
+            </div>
+          )}
+
+          {/* Level 3a: 生成节点 submenu */}
+          {ctxMenu.hoverMenu === 'genNode' && (
+            <div
+              className="v2-canvas-ctx-menu v2-submenu"
+              style={{ left: ctxMenu.position.x + 364, top: ctxMenu.position.y + 4 }}
+              onMouseEnter={() => showSubmenu('genNode')}
+              onMouseLeave={() => hideSubmenu('addNode')}
+            >
+              {GEN_NODE_ITEMS.map((item) => (
+                <div
+                  key={item.type}
+                  className="v2-menu-row"
+                  onClick={() => addNodeAtCtxPos(item.type, item.label, 'generator')}
+                >
+                  <span>{item.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Level 3b: 源节点 submenu */}
+          {ctxMenu.hoverMenu === 'srcNode' && (
+            <div
+              className="v2-canvas-ctx-menu v2-submenu"
+              style={{ left: ctxMenu.position.x + 364, top: ctxMenu.position.y + 36 }}
+              onMouseEnter={() => showSubmenu('srcNode')}
+              onMouseLeave={() => hideSubmenu('addNode')}
+            >
+              {SRC_NODE_ITEMS.map((item) => (
+                <div
+                  key={item.type}
+                  className="v2-menu-row"
+                  onClick={() => addNodeAtCtxPos(item.type, item.label, 'source')}
+                >
+                  <span>{item.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

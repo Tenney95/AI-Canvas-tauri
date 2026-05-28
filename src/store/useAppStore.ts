@@ -45,7 +45,6 @@ interface AppState {
   avatarMenuOpen: boolean;
   activeNodeId: string | null;
   dialogPosition: { x: number; y: number } | null;
-  nextNodeDisplayId: number;
 
   // 配置
   config: AppConfig;
@@ -100,6 +99,11 @@ interface AppState {
   redo: () => void;
   commitToHistory: () => void;
 
+  // Actions - Clipboard
+  clipboard: Node<BaseNodeData>[];
+  copySelectedNodes: () => void;
+  pasteNodes: (position: { x: number; y: number }) => void;
+
   // Actions - Workflows
   setWorkflowPanelOpen: (open: boolean) => void;
   addWorkflow: (wf: WorkflowDefinition) => void;
@@ -118,6 +122,16 @@ const defaultConfig: AppConfig = {
   localLLMUrl: '',
   comfyUIUrl: '',
 };
+
+// Computes the next displayId by scanning existing nodes for the max, then +1.
+function getNextDisplayId(nodes: Node<BaseNodeData>[]): number {
+  let max = 9;
+  for (const n of nodes) {
+    const id = (n.data as BaseNodeData).displayId;
+    if (typeof id === 'number' && id > max) max = id;
+  }
+  return max + 1;
+}
 
 export const useAppStore = create<AppState>((set, get) => ({
   nodes: [],
@@ -138,7 +152,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   avatarMenuOpen: false,
   activeNodeId: null,
   dialogPosition: null,
-  nextNodeDisplayId: 10,
+  clipboard: [],
   workflows: [],
   workflowPanelOpen: false,
   toast: { visible: false, message: '', type: 'success' },
@@ -150,21 +164,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   addNode: (node) =>
     set((state) => {
-      const displayId = state.nextNodeDisplayId;
+      const displayId = getNextDisplayId(state.nodes);
       return {
         nodes: [...state.nodes, { ...node, data: { ...node.data, displayId } } as Node<BaseNodeData>],
-        nextNodeDisplayId: displayId + 1,
       };
     }),
 
   // Atomically add a node and a connecting edge in one state update
   addNodeWithEdge: (node, edge) =>
     set((state) => {
-      const displayId = state.nextNodeDisplayId;
+      const displayId = getNextDisplayId(state.nodes);
       return {
         nodes: [...state.nodes, { ...node, data: { ...node.data, displayId } } as Node<BaseNodeData>],
         edges: [...state.edges, edge],
-        nextNodeDisplayId: displayId + 1,
       };
     }),
 
@@ -429,6 +441,38 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Limit max history size
     if (newHistory.length > MAX_HISTORY) newHistory.shift();
     set({ history: newHistory, historyIndex: Math.min(newHistory.length - 1, historyIndex + 1) });
+  },
+
+  // Clipboard — copy selected nodes, paste at position
+  copySelectedNodes: () => {
+    const { selectedNodeIds, nodes } = get();
+    if (selectedNodeIds.length === 0) return;
+    const copied = nodes
+      .filter((n) => selectedNodeIds.includes(n.id))
+      .map((n) => JSON.parse(JSON.stringify(n)) as Node<BaseNodeData>);
+    set({ clipboard: copied });
+  },
+
+  pasteNodes: (position) => {
+    const { clipboard, nodes } = get();
+    if (clipboard.length === 0) return;
+    let baseDisplayId = getNextDisplayId(nodes);
+    const pasted: Node<BaseNodeData>[] = clipboard.map((n, i) => {
+      const newId = `node-${generateId()}`;
+      const displayId = baseDisplayId + i;
+      const offsetX = i * 40;
+      const offsetY = i * 40;
+      return {
+        ...n,
+        id: newId,
+        position: { x: position.x + offsetX, y: position.y + offsetY },
+        data: { ...n.data, displayId } as BaseNodeData,
+      };
+    });
+    set((s) => ({
+      nodes: [...s.nodes, ...pasted],
+      selectedNodeIds: pasted.map((n) => n.id),
+    }));
   },
 
   // Save/Load — all via IndexedDB

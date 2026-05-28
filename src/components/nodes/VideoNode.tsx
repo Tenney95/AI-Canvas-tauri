@@ -1,17 +1,65 @@
-import { memo } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
+import { useAppStore } from '../../store/useAppStore';
+import { uploadSourceFile } from '../../services/fileService';
 
-function AIVideoNode({ data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
+function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
+  const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const isSource = data.role === 'source';
+
+  // ── Upload handler for source nodes ──
+  const [isUploading, setIsUploading] = useState(false);
+
+  const handleUpload = useCallback(async () => {
+    setIsUploading(true);
+    try {
+      const result = await uploadSourceFile('.mp4,.webm,.avi,.mov,.mkv');
+      if (!result) return;
+
+      updateNodeData(id, {
+        videoUrl: result.dataUrl,
+        fileName: result.fileName,
+        label: result.fileName,
+        status: 'success',
+      } as Partial<BaseNodeData>);
+    } catch {
+      // silently ignore
+    } finally {
+      setIsUploading(false);
+    }
+  }, [id, updateNodeData]);
+
+  // ── Display label ──
+  const displayLabel = data.fileName || data.label || '粘贴视频';
+
   return (
     <div className="node-wrapper" style={{ width: 280 }}>
-      <NodeLabel kind="ai-video" label={data.label || '生成视频'} displayId={data.displayId as number | undefined} />
+      <NodeLabel
+        kind="ai-video"
+        label={displayLabel}
+        displayId={data.displayId as number | undefined}
+      />
       <div
-        className={`node video-node ${selected ? 'selected' : ''} ${data.status === 'loading' ? 'loading' : ''}`}
+        className={`node video-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''}`}
         style={{ minHeight: 160 }}
       >
         <div className="node-preview compact">
+          {isSource && (
+            <button
+              className="node-upload-btn"
+              onClick={(e) => { e.stopPropagation(); handleUpload(); }}
+              title="上传视频"
+              aria-label="上传视频"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+            </button>
+          )}
           {data.videoUrl ? (
             <video
               src={data.videoUrl}
@@ -25,6 +73,11 @@ function AIVideoNode({ data, selected }: { id: string; data: BaseNodeData; selec
               alt="Video thumbnail"
               className="image-preview-img compact"
             />
+          ) : isUploading ? (
+            <div className="node-preview-loading">
+              <div className="spinner large" />
+              <span>上传中...</span>
+            </div>
           ) : data.status === 'loading' ? (
             <div className="node-preview-loading">
               <div className="spinner large" />
@@ -32,10 +85,18 @@ function AIVideoNode({ data, selected }: { id: string; data: BaseNodeData; selec
             </div>
           ) : (
             <div className="node-preview-placeholder">
-              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
-                <polygon points="23 7 16 12 23 17 23 7" />
-                <rect x="1" y="5" width="15" height="14" rx="2" />
-              </svg>
+              {isSource ? (
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+              ) : (
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
+                  <polygon points="23 7 16 12 23 17 23 7" />
+                  <rect x="1" y="5" width="15" height="14" rx="2" />
+                </svg>
+              )}
             </div>
           )}
         </div>

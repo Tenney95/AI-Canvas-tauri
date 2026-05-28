@@ -13,7 +13,7 @@ import { useAppStore } from '../store/useAppStore';
  * Web 环境：使用 document keydown 捕获阶段
  */
 export function useKeyboardShortcuts() {
-  const { undo, redo, saveCurrentProject } = useAppStore();
+  const { undo, redo, saveCurrentProject, copySelectedNodes, pasteNodes } = useAppStore();
 
   useEffect(() => {
     let active = true; // guard against callbacks firing after unmount / HMR reload
@@ -37,6 +37,23 @@ export function useKeyboardShortcuts() {
         return;
       }
       if (isEditing) return;
+
+      // Ctrl+C: Copy selected nodes to clipboard
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        copySelectedNodes();
+        return;
+      }
+
+      // Ctrl+V: Paste nodes from clipboard
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        e.preventDefault();
+        const { clipboard } = useAppStore.getState();
+        if (clipboard.length > 0) {
+          // Paste near center of viewport or at mouse position
+          pasteNodes({ x: 300, y: 300 });
+        }
+        return;
+      }
 
       // Ctrl+Z: Undo
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
@@ -156,5 +173,5 @@ export function useKeyboardShortcuts() {
         .then(({ unregisterAll }) => unregisterAll())
         .catch(() => {});
     };
-  }, [undo, redo, saveCurrentProject]);
+  }, [undo, redo, saveCurrentProject, copySelectedNodes, pasteNodes]);
 }

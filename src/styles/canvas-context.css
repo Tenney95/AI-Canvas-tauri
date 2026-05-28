@@ -1,0 +1,104 @@
+/* ============================================
+   Canvas Right-click Context Menu
+   ============================================ */
+
+.v2-canvas-ctx-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 176px;
+  padding: 4px;
+  background: rgba(26, 26, 38, 0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.03),
+    0 8px 32px rgba(0, 0, 0, 0.5);
+  animation: ctxFadeIn 0.12s ease;
+}
+
+@keyframes ctxFadeIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.v2-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #c8c8d4;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: background 0.1s, color 0.1s;
+}
+
+.v2-menu-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.v2-menu-row.disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.v2-menu-row.disabled:hover {
+  background: transparent;
+  color: #c8c8d4;
+}
+
+.v2-menu-row-split {
+  justify-content: space-between;
+}
+
+.v2-menu-rowlabel {
+  flex: 1;
+}
+
+.v2-menu-arrow {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #666680;
+  margin-top: 1px;
+}
+
+.v2-menu-arrow-ml8 {
+  margin-left: 8px;
+}
+
+.v2-menu-row:hover .v2-menu-arrow {
+  color: #9999b0;
+}
+
+.v2-menu-kbd {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #555566;
+  letter-spacing: 0.02em;
+}
+
+.v2-menu-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Submenu positioning */
+.v2-submenu {
+  animation: ctxFadeIn 0.1s ease;
+}
+
+/* Submenu hover highlight on parent */
+.v2-menu-row.highlight {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.v2-menu-row.highlight .v2-menu-arrow {
+  color: #9999b0;
+}

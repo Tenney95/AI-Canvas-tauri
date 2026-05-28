@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { Inspector } from 'react-dev-inspector';
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import Canvas from './components/Canvas';
@@ -10,6 +11,8 @@ import Toast from './components/Toast';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAppStore } from './store/useAppStore';
 
+const isDev = import.meta.env.DEV;
+
 export default function App() {
   useKeyboardShortcuts();
 
@@ -19,7 +22,7 @@ export default function App() {
     initFromDb();
   }, [initFromDb]);
 
-  return (
+  const appContent = (
     <div className="w-screen h-screen relative bg-canvas-bg text-canvas-text overflow-hidden font-sans">
       <Canvas />
       <Header />
@@ -30,5 +33,21 @@ export default function App() {
       <WorkflowPanel />
       <Toast />
     </div>
+  );
+
+  // 仅在开发模式下启用 Inspect 功能
+  if (!isDev) return appContent;
+
+  return (
+    <Inspector
+      keys={['control', 'shift', 'c']}
+      onInspectElement={({ codeInfo }) => {
+        if (!codeInfo?.absolutePath) return;
+        const { absolutePath, lineNumber, columnNumber } = codeInfo;
+        window.open(`codebuddycn://file/${absolutePath}:${lineNumber}:${columnNumber}`);
+      }}
+    >
+      {appContent}
+    </Inspector>
   );
 }

@@ -25,8 +25,8 @@ export default function NodeLabel({ kind, label, displayId, isBeta }: NodeLabelP
       >
         {config.icon}
       </span>
-      <span className="node-label-text text-xs font-medium text-canvas-text">{label}</span>
-      <span className="ml-auto flex items-center gap-1.5">
+      <span className="node-label-text text-xs font-medium text-canvas-text truncate flex-1 min-w-0">{label}</span>
+      <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
         {displayId != null && (
           <span className="text-[10px] text-canvas-text-muted font-mono tabular-nums">
             #{displayId}
