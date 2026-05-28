@@ -86,6 +86,8 @@ interface AppState {
   // Actions - Config
   updateConfig: (config: Partial<AppConfig>) => void;
   setProviderKey: (providerName: string, key: string) => void;
+  setProviderUrl: (providerName: string, url: string) => void;
+  setProviderConfig: (providerName: string, config: Partial<{ apiKey: string; baseUrl: string }>) => void;
   saveConfig: () => Promise<void>;
   loadConfig: () => Promise<void>;
 
@@ -293,6 +295,34 @@ export const useAppStore = create<AppState>((set, get) => ({
           [providerName]: {
             ...(state.config.providers[providerName] || { name: providerName }),
             apiKey: key,
+          },
+        },
+      },
+    })),
+
+  setProviderUrl: (providerName, url) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        providers: {
+          ...state.config.providers,
+          [providerName]: {
+            ...(state.config.providers[providerName] || { name: providerName }),
+            baseUrl: url,
+          },
+        },
+      },
+    })),
+
+  setProviderConfig: (providerName, cfg) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        providers: {
+          ...state.config.providers,
+          [providerName]: {
+            ...(state.config.providers[providerName] || { name: providerName }),
+            ...cfg,
           },
         },
       },

@@ -32,10 +32,16 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Scrollbar Styling */
+/* ── Global Scrollbar ── */
+* {
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a50 transparent;
+}
+
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -43,12 +49,23 @@ html, body, #root {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #2a2a3a;
-  border-radius: 3px;
+  background: #3a3a50;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  transition: background 0.2s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a3a4a;
+  background: #555570;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: #6b6b88;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* Custom Textarea & Input Styles */

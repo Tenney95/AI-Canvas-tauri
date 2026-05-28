@@ -165,7 +165,7 @@
   width: 280px;
   max-height: 360px;
   overflow-y: auto;
-  background: #1a1a26;
+  background: rgba(26, 26, 38, 0.998);
   border: 1px solid #2a2a3a;
   border-radius: 10px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);

@@ -342,6 +342,9 @@ function CanvasInner() {
   const openNodeDialog = useAppStore((s) => s.openNodeDialog);
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: RFNode<BaseNodeData>) => {
+      // Text nodes with existing output don't need the prompt dialog
+      if (node.data?.type === 'ai-text' && node.data?.output) return;
+
       const el = document.querySelector(`.react-flow__node[data-id="${node.id}"]`);
       if (el) {
         const rect = el.getBoundingClientRect();

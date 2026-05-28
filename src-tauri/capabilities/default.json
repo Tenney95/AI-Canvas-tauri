@@ -18,6 +18,8 @@
     "fs:default",
     "fs:allow-read",
     "fs:allow-write",
+    "shell:default",
+    "shell:allow-open",
     {
       "identifier": "fs:scope",
       "allow": [
