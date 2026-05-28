@@ -163,7 +163,6 @@ function CanvasInner() {
     menu: ctxMenu,
     menuRef: ctxMenuRef,
     submenuRef: ctxSubmenuRef,
-    clipboardLen,
     openMenu: openCtxMenu,
     addNodeAtCtxPos,
     handleUndo: handleCtxUndo,
@@ -172,6 +171,27 @@ function CanvasInner() {
     showSubmenu,
     hideSubmenu,
   } = useCanvasContextMenu();
+
+  // ── External clipboard paste (native paste event → DataTransfer) ──
+  useEffect(() => {
+    const handler = (e: ClipboardEvent) => {
+      // Skip if user is editing an input
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.contentEditable === 'true') return;
+      // Skip if internal clipboard has nodes (handled by keyboard shortcut)
+      if (useAppStore.getState().clipboard.length > 0) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const vp = reactFlowInstance.getViewport();
+      const centerX = (window.innerWidth / 2 - vp.x) / vp.zoom;
+      const centerY = (window.innerHeight / 2 - vp.y) / vp.zoom;
+      useAppStore.getState().pasteExternalFromDataTransfer(e.clipboardData, { x: centerX, y: centerY });
+    };
+    window.addEventListener('paste', handler, true);
+    return () => window.removeEventListener('paste', handler, true);
+  }, [reactFlowInstance]);
 
   // ── Double-click: add text node ──
   const onDoubleClick = useCallback(
@@ -349,7 +369,6 @@ function CanvasInner() {
         visible={ctxMenu.visible}
         position={ctxMenu.position}
         hoverMenu={ctxMenu.hoverMenu}
-        clipboardLen={clipboardLen}
         menuRef={ctxMenuRef}
         submenuRef={ctxSubmenuRef}
         onAddNode={addNodeAtCtxPos}

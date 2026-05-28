@@ -17,7 +17,6 @@ export function useCanvasContextMenu() {
   const undo = useAppStore((s) => s.undo);
   const redo = useAppStore((s) => s.redo);
   const pasteNodes = useAppStore((s) => s.pasteNodes);
-  const clipboard = useAppStore((s) => s.clipboard);
 
   const [menu, setMenu] = useState<ContextMenuState>({
     visible: false,
@@ -90,7 +89,12 @@ export function useCanvasContextMenu() {
   const handlePaste = useCallback(() => {
     const pos = menu.flowPosition;
     const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
-    pasteNodes(flowPos);
+    const { clipboard } = useAppStore.getState();
+    if (clipboard.length > 0) {
+      pasteNodes(flowPos);
+    } else {
+      useAppStore.getState().pasteExternalContent(flowPos);
+    }
     closeMenu();
   }, [menu.flowPosition, reactFlowInstance, pasteNodes, closeMenu]);
 
@@ -122,7 +126,6 @@ export function useCanvasContextMenu() {
     menu,
     menuRef,
     submenuRef,
-    clipboardLen: clipboard.length,
     openMenu,
     closeMenu,
     addNodeAtCtxPos,

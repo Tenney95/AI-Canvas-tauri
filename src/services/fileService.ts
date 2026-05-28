@@ -168,6 +168,35 @@ export async function uploadFile(): Promise<string | null> {
   }
 }
 
+/** 读取本地文件路径，返回 data URL（供剪贴板粘贴等场景使用） */
+export async function readFileToDataUrl(filePath: string): Promise<string | null> {
+  try {
+    // Normalize Windows backslash paths
+    const normalized = filePath.replace(/\\/g, '/');
+    const ext = normalized.split('.').pop()?.toLowerCase() || '';
+
+    if (isTauriEnv()) {
+      const content = await tauriReadFile(filePath);
+      const base64 = arrayBufferToBase64(content.buffer);
+      const mimeType = getMimeType(ext);
+      return `data:${mimeType};base64,${base64}`;
+    }
+
+    // Browser fallback: try fetch for http(s) URLs, or file:// for local dev
+    const resp = await fetch(normalized);
+    const blob = await resp.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (error) {
+    console.error('readFileToDataUrl failed:', filePath, error);
+    return null;
+  }
+}
+
 function getMimeType(ext: string): string {
   const mimeMap: Record<string, string> = {
     png: 'image/png',
@@ -175,13 +204,23 @@ function getMimeType(ext: string): string {
     jpeg: 'image/jpeg',
     gif: 'image/gif',
     webp: 'image/webp',
+    bmp: 'image/bmp',
+    svg: 'image/svg+xml',
     mp4: 'video/mp4',
     webm: 'video/webm',
+    avi: 'video/x-msvideo',
+    mov: 'video/quicktime',
+    mkv: 'video/x-matroska',
     mp3: 'audio/mpeg',
     wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    flac: 'audio/flac',
+    aac: 'audio/aac',
   };
   return mimeMap[ext] || 'application/octet-stream';
 }
+
+export { getMimeType, arrayBufferToBase64 };
 
 // ============================================
 // Source node file upload (returns dataUrl + fileName)

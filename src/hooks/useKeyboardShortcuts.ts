@@ -46,12 +46,15 @@ export function useKeyboardShortcuts() {
 
       // Ctrl+V: Paste nodes from clipboard
       if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
-        e.preventDefault();
         const { clipboard } = useAppStore.getState();
         if (clipboard.length > 0) {
-          // Paste near center of viewport or at mouse position
+          e.preventDefault();
+          e.stopPropagation();
+          // Paste near center of viewport
           pasteNodes({ x: 300, y: 300 });
         }
+        // When internal clipboard is empty, let the native paste event fire —
+        // the paste listener in Canvas.tsx handles external clipboard content.
         return;
       }
 

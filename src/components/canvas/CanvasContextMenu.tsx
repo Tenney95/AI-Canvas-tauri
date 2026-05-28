@@ -19,7 +19,6 @@ interface CanvasContextMenuProps {
   visible: boolean;
   position: { x: number; y: number };
   hoverMenu: 'addNode' | 'genNode' | 'srcNode' | null;
-  clipboardLen: number;
   menuRef: React.RefObject<HTMLDivElement | null>;
   submenuRef: React.RefObject<HTMLDivElement | null>;
   onAddNode: (type: NodeType, label: string, role: 'generator' | 'source') => void;
@@ -34,7 +33,6 @@ function CanvasContextMenu({
   visible,
   position,
   hoverMenu,
-  clipboardLen,
   menuRef,
   submenuRef,
   onAddNode,
@@ -63,10 +61,7 @@ function CanvasContextMenu({
           <span className="v2-menu-arrow v2-menu-arrow-ml8">▶</span>
         </div>
         <div className="v2-menu-sep" />
-        <div
-          className={`v2-menu-row v2-menu-row-split${clipboardLen === 0 ? ' disabled' : ''}`}
-          onClick={clipboardLen > 0 ? onPaste : undefined}
-        >
+        <div className="v2-menu-row v2-menu-row-split" onClick={onPaste}>
           <span>粘贴</span>
           <span className="v2-menu-kbd">Ctrl V</span>
         </div>

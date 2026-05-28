@@ -6,6 +6,29 @@ import * as fileService from '../services/fileService';
 // 生成唯一 ID
 export const generateId = () => Math.random().toString(36).substring(2, 11);
 
+/** Load an image from dataUrl and compute proportional node dimensions */
+function computeImageNodeDimensions(dataUrl: string): Promise<{ nodeWidth: number; nodeHeight: number }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const naturalRatio = img.naturalWidth / img.naturalHeight;
+      // Clamp nodeWidth between 160 and 280 based on image width
+      const maxWidth = 280;
+      const minWidth = 160;
+      let nodeWidth = img.naturalWidth;
+      if (nodeWidth > maxWidth) nodeWidth = maxWidth;
+      if (nodeWidth < minWidth) nodeWidth = minWidth;
+      // Content area = nodeWidth - 4px padding (2px each side)
+      const contentWidth = nodeWidth - 4;
+      const previewHeight = Math.round(contentWidth / naturalRatio);
+      const nodeHeight = Math.max(120, previewHeight + 4);
+      resolve({ nodeWidth, nodeHeight });
+    };
+    img.onerror = () => resolve({ nodeWidth: 280, nodeHeight: 158 });
+    img.src = dataUrl;
+  });
+}
+
 // Undo/Redo history
 interface HistoryEntry {
   nodes: Node<BaseNodeData>[];
@@ -103,6 +126,9 @@ interface AppState {
   clipboard: Node<BaseNodeData>[];
   copySelectedNodes: () => void;
   pasteNodes: (position: { x: number; y: number }) => void;
+  pasteExternalContent: (position: { x: number; y: number }) => Promise<void>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pasteExternalFromDataTransfer: (dt: any, position: { x: number; y: number }) => Promise<void>;
 
   // Actions - Workflows
   setWorkflowPanelOpen: (open: boolean) => void;
@@ -131,6 +157,16 @@ function getNextDisplayId(nodes: Node<BaseNodeData>[]): number {
     if (typeof id === 'number' && id > max) max = id;
   }
   return max + 1;
+}
+
+// Convert Blob to base64 data URL
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -481,6 +517,469 @@ export const useAppStore = create<AppState>((set, get) => ({
       nodes: [...s.nodes, ...pasted],
       selectedNodeIds: pasted.map((n) => n.id),
     }));
+  },
+
+  // Paste external content from a native paste event's DataTransfer (WebView2 reliable path)
+  pasteExternalFromDataTransfer: async (dt, position) => {
+    if (!dt) return;
+
+    const offsets = [
+      { x: 0, y: 0 },
+      { x: 40, y: 40 },
+      { x: 80, y: 80 },
+      { x: -40, y: 40 },
+      { x: -80, y: 80 },
+    ];
+
+    // Helper: create image node (proportional to image aspect ratio)
+    const addImageNode = async (dataUrl: string, idx: number) => {
+      const dims = await computeImageNodeDimensions(dataUrl);
+      const off = offsets[idx] || { x: idx * 40, y: idx * 40 };
+      const newNode: Node<BaseNodeData> = {
+        id: `node-${generateId()}`,
+        type: 'ai-image',
+        position: { x: position.x + off.x, y: position.y + off.y },
+        data: { label: '粘贴图像', type: 'ai-image', role: 'source', imageUrl: dataUrl, status: 'success', ...dims },
+      };
+      get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+    };
+
+    // Helper: create video node
+    const addVideoNode = (dataUrl: string, idx: number) => {
+      const off = offsets[idx] || { x: idx * 40, y: idx * 40 };
+      const newNode: Node<BaseNodeData> = {
+        id: `node-${generateId()}`,
+        type: 'ai-video',
+        position: { x: position.x + off.x, y: position.y + off.y },
+        data: { label: '粘贴视频', type: 'ai-video', role: 'source', videoUrl: dataUrl, status: 'success' },
+      };
+      get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+    };
+
+    // Helper: create audio node
+    const addAudioNode = (dataUrl: string, idx: number) => {
+      const off = offsets[idx] || { x: idx * 40, y: idx * 40 };
+      const newNode: Node<BaseNodeData> = {
+        id: `node-${generateId()}`,
+        type: 'ai-audio',
+        position: { x: position.x + off.x, y: position.y + off.y },
+        data: { label: '粘贴音频', type: 'ai-audio', role: 'source', audioUrl: dataUrl, status: 'success', nodeWidth: 260, nodeHeight: 140 },
+      };
+      get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+    };
+
+    // Helper: create text node
+    const addTextNode = (text: string, idx: number) => {
+      const lineCount = text.split('\n').length;
+      const h = Math.max(120, Math.min(600, 40 + lineCount * 20));
+      const off = offsets[idx] || { x: idx * 40, y: idx * 40 };
+      const newNode: Node<BaseNodeData> = {
+        id: `node-${generateId()}`,
+        type: 'ai-text',
+        position: { x: position.x + off.x, y: position.y + off.y },
+        data: { label: '粘贴文本', type: 'ai-text', role: 'source', output: text, status: 'success', nodeWidth: 280, nodeHeight: h },
+      };
+      get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+    };
+
+    let pastedCount = 0;
+
+    // ── Collect all pending work, then execute ──
+    type PendingItem =
+      | { kind: 'file'; file: File }
+      | { kind: 'dataUrl'; dataUrl: string; mediaType: 'image' | 'video' | 'audio' }
+      | { kind: 'text'; text: string }
+      | { kind: 'file-path'; filePath: string; ext: string };
+
+    const pending: PendingItem[] = [];
+
+    // 1) File objects (OS file copy — most reliable on Windows)
+    if (dt.files.length > 0) {
+      for (let i = 0; i < dt.files.length && pending.length < offsets.length; i++) {
+        pending.push({ kind: 'file', file: dt.files[i] });
+      }
+    }
+
+    // 2) Items by type (used when no File objects, or as additional processing)
+    if (pending.length === 0 && dt.items.length > 0) {
+      for (let i = 0; i < dt.items.length && pending.length < offsets.length; i++) {
+        const item = dt.items[i];
+
+        if (item.type.startsWith('image/') || item.type.startsWith('video/') || item.type.startsWith('audio/')) {
+          const file = item.getAsFile();
+          if (file) {
+            pending.push({ kind: 'file', file });
+            continue;
+          }
+        }
+
+        // text/html — extract image src
+        if (item.type === 'text/html') {
+          const html = dt.getData('text/html');
+          if (html) {
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const img = doc.querySelector('img');
+            if (img?.src) {
+              if (img.src.startsWith('data:')) {
+                pending.push({ kind: 'dataUrl', dataUrl: img.src, mediaType: 'image' });
+              } else if (img.src.startsWith('file://')) {
+                const filePath = decodeURIComponent(img.src.replace(/^file:\/\/\//, ''));
+                const ext = filePath.split('.').pop()?.toLowerCase() || '';
+                pending.push({ kind: 'file-path', filePath, ext });
+              } else if (img.src.startsWith('http')) {
+                pending.push({ kind: 'dataUrl', dataUrl: img.src, mediaType: 'image' });
+              }
+            }
+          }
+          continue;
+        }
+
+        // text/uri-list — file paths from OS file copy
+        if (item.type === 'text/uri-list') {
+          const uriText = dt.getData('text/uri-list');
+          if (uriText) {
+            const uris = uriText.split('\n').filter((u) => u.trim().startsWith('file://'));
+            for (const uri of uris) {
+              if (pending.length >= offsets.length) break;
+              const filePath = decodeURIComponent(uri.trim().replace(/^file:\/\/\//, ''));
+              const ext = filePath.split('.').pop()?.toLowerCase() || '';
+              pending.push({ kind: 'file-path', filePath, ext });
+            }
+          }
+          continue;
+        }
+
+        // text/plain
+        if (item.type === 'text/plain') {
+          const text = dt.getData('text/plain');
+          if (text?.trim()) {
+            pending.push({ kind: 'text', text });
+          }
+          continue;
+        }
+      }
+    }
+
+    // ── Execute all pending items ──
+    for (const p of pending) {
+      if (pastedCount >= offsets.length) break;
+
+      if (p.kind === 'file') {
+        const dataUrl = await blobToDataUrl(p.file);
+        if (p.file.type.startsWith('image/')) {
+          await addImageNode(dataUrl, pastedCount);
+        } else if (p.file.type.startsWith('video/')) {
+          addVideoNode(dataUrl, pastedCount);
+        } else if (p.file.type.startsWith('audio/')) {
+          addAudioNode(dataUrl, pastedCount);
+        } else {
+          continue;
+        }
+        pastedCount++;
+      } else if (p.kind === 'dataUrl') {
+        // If it's a remote URL, try to fetch it
+        if (p.dataUrl.startsWith('http')) {
+          try {
+            const resp = await fetch(p.dataUrl);
+            const blob = await resp.blob();
+            const realDataUrl = await blobToDataUrl(blob);
+            if (p.mediaType === 'image') await addImageNode(realDataUrl, pastedCount);
+            else if (p.mediaType === 'video') addVideoNode(realDataUrl, pastedCount);
+            else if (p.mediaType === 'audio') addAudioNode(realDataUrl, pastedCount);
+            else continue;
+            pastedCount++;
+          } catch {
+            // fetch failed, skip
+          }
+        } else {
+          if (p.mediaType === 'image') await addImageNode(p.dataUrl, pastedCount);
+          else if (p.mediaType === 'video') addVideoNode(p.dataUrl, pastedCount);
+          else if (p.mediaType === 'audio') addAudioNode(p.dataUrl, pastedCount);
+          else continue;
+          pastedCount++;
+        }
+      } else if (p.kind === 'file-path') {
+        const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
+        const videoExts = ['mp4', 'webm', 'avi', 'mov', 'mkv'];
+        const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'aac'];
+        if (imageExts.includes(p.ext) || videoExts.includes(p.ext) || audioExts.includes(p.ext)) {
+          const dataUrl = await fileService.readFileToDataUrl(p.filePath);
+          if (dataUrl) {
+            if (imageExts.includes(p.ext)) await addImageNode(dataUrl, pastedCount);
+            else if (videoExts.includes(p.ext)) addVideoNode(dataUrl, pastedCount);
+            else addAudioNode(dataUrl, pastedCount);
+            pastedCount++;
+          }
+        }
+      } else if (p.kind === 'text') {
+        addTextNode(p.text, pastedCount);
+        pastedCount++;
+      }
+    }
+
+    if (pastedCount > 0) {
+      get().showToast(`已粘贴 ${pastedCount} 个源节点`);
+    } else {
+      get().showToast('剪贴板无可识别内容', 'error');
+    }
+  },
+
+  // Paste external content from OS clipboard (text / image / video / audio) → source nodes
+  pasteExternalContent: async (position) => {
+    const state = get();
+    if (typeof navigator === 'undefined' || !navigator.clipboard?.read) {
+      state.showToast('当前环境不支持读取剪贴板', 'error');
+      return;
+    }
+
+    const offsets = [
+      { x: 0, y: 0 },
+      { x: 40, y: 40 },
+      { x: 80, y: 80 },
+      { x: -40, y: 40 },
+      { x: -80, y: 80 },
+    ];
+
+    let pastedCount = 0;
+
+    try {
+      const items = await navigator.clipboard.read();
+      if (!items || items.length === 0) {
+        state.showToast('剪贴板为空', 'error');
+        return;
+      }
+
+      for (let i = 0; i < items.length && i < offsets.length; i++) {
+        const item = items[i];
+        const offset = offsets[i];
+        const nodePos = { x: position.x + offset.x, y: position.y + offset.y };
+
+        // Check by priority: image > video > audio > text
+        if (item.types.some((t) => t.startsWith('image/'))) {
+          const imageType = item.types.find((t) => t.startsWith('image/'))!;
+          const blob = await item.getType(imageType);
+          const dataUrl = await blobToDataUrl(blob);
+          const dims = await computeImageNodeDimensions(dataUrl);
+
+          const newNode: Node<BaseNodeData> = {
+            id: `node-${generateId()}`,
+            type: 'ai-image',
+            position: nodePos,
+            data: {
+              label: '粘贴图像',
+              type: 'ai-image',
+              role: 'source',
+              imageUrl: dataUrl,
+              status: 'success',
+              ...dims,
+            },
+          };
+          get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+          pastedCount++;
+        } else if (item.types.some((t) => t.startsWith('video/'))) {
+          const videoType = item.types.find((t) => t.startsWith('video/'))!;
+          const blob = await item.getType(videoType);
+          const dataUrl = await blobToDataUrl(blob);
+
+          const newNode: Node<BaseNodeData> = {
+            id: `node-${generateId()}`,
+            type: 'ai-video',
+            position: nodePos,
+            data: {
+              label: '粘贴视频',
+              type: 'ai-video',
+              role: 'source',
+              videoUrl: dataUrl,
+              status: 'success',
+            },
+          };
+          get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+          pastedCount++;
+        } else if (item.types.some((t) => t.startsWith('audio/'))) {
+          const audioType = item.types.find((t) => t.startsWith('audio/'))!;
+          const blob = await item.getType(audioType);
+          const dataUrl = await blobToDataUrl(blob);
+
+          const newNode: Node<BaseNodeData> = {
+            id: `node-${generateId()}`,
+            type: 'ai-audio',
+            position: nodePos,
+            data: {
+              label: '粘贴音频',
+              type: 'ai-audio',
+              role: 'source',
+              audioUrl: dataUrl,
+              status: 'success',
+              nodeWidth: 260,
+              nodeHeight: 140,
+            },
+          };
+          get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+          pastedCount++;
+        } else if (item.types.includes('text/html')) {
+          // Image copied from browser — often stored as HTML with <img> tag
+          const htmlBlob = await item.getType('text/html');
+          const html = await htmlBlob.text();
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const img = doc.querySelector('img');
+          if (img?.src) {
+            let dataUrl: string | null = null;
+            if (img.src.startsWith('data:')) {
+              dataUrl = img.src;
+            } else if (img.src.startsWith('file://')) {
+              // Local file reference — read via Tauri FS
+              const filePath = decodeURIComponent(img.src.replace(/^file:\/\/\//, ''));
+              dataUrl = await fileService.readFileToDataUrl(filePath);
+            } else if (img.src.startsWith('http://') || img.src.startsWith('https://')) {
+              try {
+                const resp = await fetch(img.src);
+                const fetchedBlob = await resp.blob();
+                dataUrl = await blobToDataUrl(fetchedBlob);
+              } catch {
+                // Fetch failed, skip this item
+              }
+            }
+
+            if (dataUrl) {
+              const dims = await computeImageNodeDimensions(dataUrl);
+              const newNode: Node<BaseNodeData> = {
+                id: `node-${generateId()}`,
+                type: 'ai-image',
+                position: nodePos,
+                data: {
+                  label: '粘贴图像',
+                  type: 'ai-image',
+                  role: 'source',
+                  imageUrl: dataUrl,
+                  status: 'success',
+                  ...dims,
+                },
+              };
+              get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+              pastedCount++;
+            }
+          }
+        } else if (item.types.includes('text/uri-list')) {
+          // File copied from file manager — URI list of file:// paths
+          const uriBlob = await item.getType('text/uri-list');
+          const uriText = await uriBlob.text();
+          const uris = uriText.split('\n').filter((u) => u.trim().startsWith('file://'));
+
+          for (let j = 0; j < uris.length && pastedCount < offsets.length; j++) {
+            const uri = uris[j].trim();
+            // Decode and normalize: file:///C:/path/file.png → C:/path/file.png
+            const filePath = decodeURIComponent(uri.replace(/^file:\/\/\//, ''));
+            const ext = filePath.split('.').pop()?.toLowerCase() || '';
+
+            // Determine media type from extension
+            const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
+            const videoExts = ['mp4', 'webm', 'avi', 'mov', 'mkv'];
+            const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'aac'];
+
+            let mediaType: 'image' | 'video' | 'audio' | null = null;
+            if (imageExts.includes(ext)) mediaType = 'image';
+            else if (videoExts.includes(ext)) mediaType = 'video';
+            else if (audioExts.includes(ext)) mediaType = 'audio';
+
+            if (mediaType) {
+              const dataUrl = await fileService.readFileToDataUrl(filePath);
+              if (dataUrl) {
+                const uriOffset = offsets[pastedCount] || { x: pastedCount * 40, y: pastedCount * 40 };
+                const uriNodePos = { x: position.x + uriOffset.x, y: position.y + uriOffset.y };
+
+                if (mediaType === 'image') {
+                  const dims = await computeImageNodeDimensions(dataUrl);
+                  const newNode: Node<BaseNodeData> = {
+                    id: `node-${generateId()}`,
+                    type: 'ai-image',
+                    position: uriNodePos,
+                    data: {
+                      label: '粘贴图像',
+                      type: 'ai-image',
+                      role: 'source',
+                      imageUrl: dataUrl,
+                      status: 'success',
+                      ...dims,
+                    },
+                  };
+                  get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+                } else if (mediaType === 'video') {
+                  const newNode: Node<BaseNodeData> = {
+                    id: `node-${generateId()}`,
+                    type: 'ai-video',
+                    position: uriNodePos,
+                    data: {
+                      label: '粘贴视频',
+                      type: 'ai-video',
+                      role: 'source',
+                      videoUrl: dataUrl,
+                      status: 'success',
+                    },
+                  };
+                  get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+                } else if (mediaType === 'audio') {
+                  const newNode: Node<BaseNodeData> = {
+                    id: `node-${generateId()}`,
+                    type: 'ai-audio',
+                    position: uriNodePos,
+                    data: {
+                      label: '粘贴音频',
+                      type: 'ai-audio',
+                      role: 'source',
+                      audioUrl: dataUrl,
+                      status: 'success',
+                      nodeWidth: 260,
+                      nodeHeight: 140,
+                    },
+                  };
+                  get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+                }
+                pastedCount++;
+              }
+            }
+          }
+        } else if (item.types.includes('text/plain')) {
+          const blob = await item.getType('text/plain');
+          const text = await blob.text();
+
+          if (!text.trim()) continue;
+
+          const lineCount = text.split('\n').length;
+          const estimatedHeight = Math.max(120, Math.min(600, 40 + lineCount * 20));
+
+          const newNode: Node<BaseNodeData> = {
+            id: `node-${generateId()}`,
+            type: 'ai-text',
+            position: nodePos,
+            data: {
+              label: '粘贴文本',
+              type: 'ai-text',
+              role: 'source',
+              output: text,
+              status: 'success',
+              nodeWidth: 280,
+              nodeHeight: estimatedHeight,
+            },
+          };
+          get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+          pastedCount++;
+        }
+      }
+
+      if (pastedCount > 0) {
+        get().showToast(`已粘贴 ${pastedCount} 个源节点`);
+      } else {
+        get().showToast('剪贴板无可识别内容', 'error');
+      }
+    } catch (err: unknown) {
+      const e = err as { name?: string };
+      if (e?.name === 'NotAllowedError') {
+        get().showToast('无剪贴板读取权限', 'error');
+      } else {
+        console.error('External clipboard paste failed:', err);
+        get().showToast('无法读取剪贴板', 'error');
+      }
+    }
   },
 
   // Save/Load — all via IndexedDB
