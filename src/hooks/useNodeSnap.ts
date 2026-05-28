@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../types';
+import { useAppStore } from '../store/useAppStore';
 
 export interface SnapLine {
   type: 'horizontal' | 'vertical';
@@ -184,6 +185,7 @@ export function useNodeSnap(
   const onNodeDragStop = useCallback(() => {
     dragStartPositions.current.clear();
     setSnapLines([]);
+    useAppStore.getState().commitToHistory();
   }, []);
 
   return {

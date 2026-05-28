@@ -20,10 +20,12 @@ import VideoNode from './nodes/VideoNode';
 import AudioNode from './nodes/AudioNode';
 import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
+import NodeContextMenu from './canvas/NodeContextMenu';
 import CanvasToolbar from './canvas/CanvasToolbar';
 import CanvasEmptyState from './canvas/CanvasEmptyState';
 import { useConnectionDropMenu } from '../hooks/useConnectionDropMenu';
 import { useCanvasContextMenu } from '../hooks/useCanvasContextMenu';
+import { useNodeContextMenu } from '../hooks/useNodeContextMenu';
 import { useAppStore, generateId } from '../store/useAppStore';
 import type { BaseNodeData } from '../types';
 import type { Node as RFNode, NodeTypes } from '@xyflow/react';
@@ -145,7 +147,18 @@ function CanvasInner() {
     sourceNode,
   } = useConnectionDropMenu(smoothLine);
 
-  // ── Context menu ──
+  // ── Node context menu ──
+  const {
+    menu: nodeCtxMenu,
+    menuRef: nodeCtxMenuRef,
+    openMenu: openNodeCtxMenu,
+    handleCopy,
+    handleCut,
+    handleDuplicate,
+    handleDelete,
+  } = useNodeContextMenu();
+
+  // ── Canvas context menu ──
   const {
     menu: ctxMenu,
     menuRef: ctxMenuRef,
@@ -222,6 +235,7 @@ function CanvasInner() {
         .filter((c) => c.type === 'remove')
         .map((c: any) => c.id!);
       if (removedIds.length > 0) {
+        useAppStore.getState().commitToHistory();
         useAppStore.setState((s) => ({
           nodes: updated,
           edges: s.edges.filter(
@@ -270,6 +284,7 @@ function CanvasInner() {
         className="bg-canvas-bg"
         panOnDrag={[1, 2]}
         onContextMenu={openCtxMenu}
+        onNodeContextMenu={openNodeCtxMenu}
       >
         {/* Snap alignment lines */}
         <SnapLinesOverlay lines={snapLines} />
@@ -343,6 +358,17 @@ function CanvasInner() {
         onPaste={handleCtxPaste}
         onShowSubmenu={showSubmenu}
         onHideSubmenu={hideSubmenu}
+      />
+
+      {/* Node context menu */}
+      <NodeContextMenu
+        visible={nodeCtxMenu.visible}
+        position={nodeCtxMenu.position}
+        menuRef={nodeCtxMenuRef}
+        onCopy={handleCopy}
+        onCut={handleCut}
+        onDuplicate={handleDuplicate}
+        onDelete={handleDelete}
       />
     </div>
   );

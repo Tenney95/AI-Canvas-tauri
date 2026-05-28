@@ -251,7 +251,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
             </button>
           )}
           {data.output ? (
-            <div className="text-output-content compact nodrag nowheel">
+            <div className="text-output-content compact nowheel">
               {data.output}
             </div>
           ) : isUploading ? (

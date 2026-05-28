@@ -162,23 +162,27 @@ export const useAppStore = create<AppState>((set, get) => ({
   setEdges: (edges) => set({ edges }),
   setSelectedNodeIds: (ids) => set({ selectedNodeIds: ids }),
 
-  addNode: (node) =>
+  addNode: (node) => {
+    get().commitToHistory();
     set((state) => {
       const displayId = getNextDisplayId(state.nodes);
       return {
         nodes: [...state.nodes, { ...node, data: { ...node.data, displayId } } as Node<BaseNodeData>],
       };
-    }),
+    });
+  },
 
   // Atomically add a node and a connecting edge in one state update
-  addNodeWithEdge: (node, edge) =>
+  addNodeWithEdge: (node, edge) => {
+    get().commitToHistory();
     set((state) => {
       const displayId = getNextDisplayId(state.nodes);
       return {
         nodes: [...state.nodes, { ...node, data: { ...node.data, displayId } } as Node<BaseNodeData>],
         edges: [...state.edges, edge],
       };
-    }),
+    });
+  },
 
   updateNodeData: (nodeId, data) =>
     set((state) => ({
@@ -187,13 +191,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       ),
     })),
 
-  deleteNode: (nodeId) =>
+  deleteNode: (nodeId) => {
+    get().commitToHistory();
     set((state) => ({
       nodes: state.nodes.filter((n) => n.id !== nodeId),
       edges: state.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
-    })),
+    }));
+  },
 
   onConnect: (connection) => {
+    get().commitToHistory();
     const id = `edge-${generateId()}`;
     const edge: Edge = {
       id,
@@ -456,6 +463,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pasteNodes: (position) => {
     const { clipboard, nodes } = get();
     if (clipboard.length === 0) return;
+    get().commitToHistory();
     let baseDisplayId = getNextDisplayId(nodes);
     const pasted: Node<BaseNodeData>[] = clipboard.map((n, i) => {
       const newId = `node-${generateId()}`;

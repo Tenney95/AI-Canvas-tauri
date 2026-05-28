@@ -63,8 +63,16 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Ctrl+Shift+Z or Ctrl+Y: Redo
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'Z' || e.key === 'y') && e.shiftKey) {
+      // Ctrl+Shift+Z: Redo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Z' && e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        redo();
+        return;
+      }
+
+      // Ctrl+Y: Redo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'y' && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
         redo();
@@ -76,6 +84,8 @@ export function useKeyboardShortcuts() {
         const ids = useAppStore.getState().selectedNodeIds;
         if (ids.length > 0) {
           e.preventDefault();
+          e.stopPropagation();
+          useAppStore.getState().commitToHistory();
           useAppStore.setState((s) => ({
             nodes: s.nodes.filter((n) => !ids.includes(n.id)),
             edges: s.edges.filter(

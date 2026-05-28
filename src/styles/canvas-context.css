@@ -102,3 +102,12 @@
 .v2-menu-row.highlight .v2-menu-arrow {
   color: #9999b0;
 }
+
+.v2-menu-row-danger {
+  color: #f87171;
+}
+
+.v2-menu-row-danger:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+}
