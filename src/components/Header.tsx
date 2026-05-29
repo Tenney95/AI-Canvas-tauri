@@ -12,10 +12,37 @@ export default function Header() {
       {/* Logo */}
       <div className="flex items-center gap-2 pr-2 mr-0.5 border-r border-white/[0.08]">
         <div className="w-6 h-6 rounded-md bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0">
-          <svg width="12" height="12" viewBox="0 0 26 26" fill="none">
-            <path d="M9 13c0-2.21 1.79-4 4-4s4 1.79 4 4-1.79 4-4 4"
-              stroke="white" strokeWidth="1.8" strokeLinecap="round" />
-            <circle cx="13" cy="13" r="1.8" fill="white" />
+          <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="iconGradient" x1="200" y1="200" x2="824" y2="824" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#4196FF" />
+                <stop offset="50%" stop-color="#A259FF" />
+                <stop offset="100%" stop-color="#FF5D70" />
+              </linearGradient>
+
+              <filter id="shadow" x="0" y="0" width="100%" height="100%" filterUnits="userSpaceOnUse">
+                <feDropShadow dx="0" dy="20" stdDeviation="30" flood-opacity="0.1" />
+              </filter>
+            </defs>
+
+            <path d="M512 0C900 0 1024 124 1024 512C1024 900 900 1024 512 1024C124 1024 0 900 0 512C0 124 124 0 512 0Z" fill="white" filter="url(#shadow)" />
+
+            <path d="M512 2C900 2 1022 124 1022 512C1022 900 900 1022 512 1022C124 1022 2 900 2 512C2 124 124 2 512 2Z" stroke="black" stroke-opacity="0.05" stroke-width="2" />
+
+            <g transform="translate(512, 512) scale(1.4)">
+              <path d="M0 -260 
+             C15 -120 120 -15 260 0 
+             C120 15 15 120 0 260 
+             C-15 120 -120 15 -260 0 
+             C-120 -15 -15 -120 0 -260Z"
+                fill="url(#iconGradient)" />
+
+              <circle r="45" fill="white" />
+
+              <circle cx="0" cy="-120" r="12" fill="white" opacity="0.8" />
+              <circle cx="104" cy="60" r="12" fill="white" opacity="0.8" />
+              <circle cx="-104" cy="60" r="12" fill="white" opacity="0.8" />
+            </g>
           </svg>
         </div>
         <span className="text-[11px] font-semibold text-canvas-text/90 tracking-wide">AI Canvas</span>

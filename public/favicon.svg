@@ -1,6 +1,42 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" fill="none">
-  <circle cx="13" cy="13" r="12" fill="url(#g)" />
-  <path d="M9 13c0-2.21 1.79-4 4-4s4 1.79 4 4-1.79 4-4 4" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
-  <circle cx="13" cy="13" r="1.8" fill="#fff"/>
-  <defs><linearGradient id="g" x1="0" y1="0" x2="26" y2="26"><stop stop-color="#6366f1"/><stop offset="100%" stop-color="#a855f7"/></linearGradient></defs>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- 定义渐变与阴影 -->
+  <defs>
+    <!-- macOS 风格的 AI 渐变 (蓝、紫、红交汇) -->
+    <linearGradient id="iconGradient" x1="200" y1="200" x2="824" y2="824" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4196FF"/>  <!-- 视频-蓝 -->
+      <stop offset="50%" stop-color="#A259FF"/> <!-- 文本-紫 -->
+      <stop offset="100%" stop-color="#FF5D70"/> <!-- 图像-红 -->
+    </linearGradient>
+    
+    <!-- 极轻微的底盘阴影 -->
+    <filter id="shadow" x="0" y="0" width="100%" height="100%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="20" stdDeviation="30" flood-opacity="0.1"/>
+    </filter>
+  </defs>
+
+  <!-- 1. macOS 标准 Squircle 外框 (符合 Apple 图标规范) -->
+  <path d="M512 0C900 0 1024 124 1024 512C1024 900 900 1024 512 1024C124 1024 0 900 0 512C0 124 124 0 512 0Z" fill="white" filter="url(#shadow)"/>
+  
+  <!-- 2. 内微描边 (增加精致感) -->
+  <path d="M512 2C900 2 1022 124 1022 512C1022 900 900 1022 512 1022C124 1022 2 900 2 512C2 124 124 2 512 2Z" stroke="black" stroke-opacity="0.05" stroke-width="2"/>
+
+  <!-- 3. 核心图标：简约 AI Sparkle -->
+  <!-- 造型结合了星形与画布的四个角落 -->
+  <g transform="translate(512, 512) scale(1.4)">
+    <path d="M0 -260 
+             C15 -120 120 -15 260 0 
+             C120 15 15 120 0 260 
+             C-15 120 -120 15 -260 0 
+             C-120 -15 -15 -120 0 -260Z" 
+          fill="url(#iconGradient)"/>
+    
+    <!-- 4. 镂空设计：象征 Canvas 的多样性 -->
+    <!-- 中心的圆形镂空，增加通透感 -->
+    <circle r="45" fill="white"/>
+    
+    <!-- 极简的三个点，分别代表 文本、图像、视频 -->
+    <circle cx="0" cy="-120" r="12" fill="white" opacity="0.8"/>
+    <circle cx="104" cy="60" r="12" fill="white" opacity="0.8"/>
+    <circle cx="-104" cy="60" r="12" fill="white" opacity="0.8"/>
+  </g>
 </svg>

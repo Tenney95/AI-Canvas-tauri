@@ -24,8 +24,8 @@ function CanvasEmptyState() {
           </svg>
         </div>
         <div className="text-center">
-          <div className="text-lg font-medium text-canvas-text mb-1">双击画布</div>
-          <div className="text-sm text-canvas-text-muted">自由生成节点，或从左侧面板选择节点类型</div>
+          <div className="text-lg font-medium text-canvas-text mb-1">AI画布</div>
+          <div className="text-sm text-canvas-text-muted">右键自由生成节点，或从左侧面板选择节点类型</div>
         </div>
         <div className="flex gap-2 mt-2 pointer-events-auto">
           {EMPTY_STATE_NODE_TYPES.map((type) => (
