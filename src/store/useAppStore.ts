@@ -362,7 +362,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         providers: {
           ...state.config.providers,
           [providerName]: {
-            ...(state.config.providers[providerName] || { name: providerName }),
+            ...(state.config.providers[providerName] || { name: providerName, apiKey: '' }),
             baseUrl: url,
           },
         },
@@ -376,7 +376,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         providers: {
           ...state.config.providers,
           [providerName]: {
-            ...(state.config.providers[providerName] || { name: providerName }),
+            ...(state.config.providers[providerName] || { name: providerName, apiKey: '' }),
             ...cfg,
           },
         },

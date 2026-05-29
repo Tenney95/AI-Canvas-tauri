@@ -562,12 +562,11 @@ export default function SettingsPanel() {
                 {[
                   { action: '保存画布', key: 'Ctrl + S' },
                   { action: '撤销', key: 'Ctrl + Z' },
-                  { action: '重做', key: 'Ctrl + Shift + Z' },
-                  { action: '删除节点', key: 'Delete / D' },
+                  { action: '重做', key: 'Ctrl + Y' },
+                  { action: '删除节点', key: 'Delete / Backspace' },
                   { action: '适应画布', key: 'F' },
                   { action: '小地图', key: 'M' },
                   { action: '网格吸附', key: 'L' },
-                  { action: '添加节点', key: '双击画布' },
                 ].map(({ action, key }) => (
                   <div key={action} className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-canvas-hover">
                     <span className="text-sm text-canvas-text">{action}</span>

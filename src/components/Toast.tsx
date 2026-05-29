@@ -8,10 +8,10 @@ export default function Toast() {
   return (
     <div className="fixed top-16 left-1/2 -translate-x-1/2 z-[100] animate-in fade-in slide-in-from-top-2 duration-200">
       <div
-        className={`flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-lg border text-sm backdrop-blur-md ${
+        className={`flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-2xl shadow-black/30 border text-sm backdrop-blur-xl ${
           toast.type === 'success'
-            ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-            : 'bg-red-500/10 border-red-500/20 text-red-400'
+            ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300 ring-1 ring-emerald-400/10'
+            : 'bg-red-500/15 border-red-500/30 text-red-300 ring-1 ring-red-400/10'
         }`}
       >
         {toast.type === 'success' ? (

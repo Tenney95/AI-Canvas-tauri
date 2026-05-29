@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Inspector } from 'react-dev-inspector';
 import Header from './components/Header';
+import Titlebar from './components/Titlebar';
 import Sidebar from './components/Sidebar';
 import Canvas from './components/Canvas';
 import NodeMenu from './components/NodeMenu';
@@ -12,6 +13,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAppStore } from './store/useAppStore';
 
 const isDev = import.meta.env.DEV;
+const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 export default function App() {
   useKeyboardShortcuts();
@@ -23,15 +25,27 @@ export default function App() {
   }, [initFromDb]);
 
   const appContent = (
-    <div className="w-screen h-screen relative bg-canvas-bg text-canvas-text overflow-hidden font-sans">
-      <Canvas />
-      <Header />
+    <div
+      data-tauri-window={isTauri ? '' : undefined}
+      className={`h-screen relative text-canvas-text font-sans ${
+        isTauri ? 'ml-[30px] w-[calc(100vw-30px)]' : 'w-screen'
+      }`}
+    >
+      {/* Content area — clipped by overflow-hidden so rounded corners work */}
+      <div className="absolute inset-0 overflow-hidden rounded-[16px] bg-canvas-bg">
+        {/* Top drag region */}
+        <div data-tauri-drag-region className="fixed top-0 left-0 right-0 h-8 z-10" />
+        <Canvas />
+        <Header />
+        <Titlebar />
+        <NodeMenu />
+        <SettingsPanel />
+        <AINodeDialog />
+        <WorkflowPanel />
+        <Toast />
+      </div>
+      {/* Sidebar — outside the overflow-hidden container so it's not clipped */}
       <Sidebar />
-      <NodeMenu />
-      <SettingsPanel />
-      <AINodeDialog />
-      <WorkflowPanel />
-      <Toast />
     </div>
   );
 

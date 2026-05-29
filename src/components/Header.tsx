@@ -5,6 +5,7 @@ export default function Header() {
 
   return (
     <header
+      data-tauri-drag-region
       className="absolute top-3 left-3 z-40 flex items-center gap-1 px-2.5 py-2
                  bg-canvas-surface/60 backdrop-blur-xl border border-white/[0.06] rounded-2xl
                  shadow-lg shadow-black/30 select-none"
@@ -15,19 +16,19 @@ export default function Header() {
           <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <linearGradient id="iconGradient" x1="200" y1="200" x2="824" y2="824" gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stop-color="#4196FF" />
-                <stop offset="50%" stop-color="#A259FF" />
-                <stop offset="100%" stop-color="#FF5D70" />
+                <stop offset="0%" stopColor="#4196FF" />
+                <stop offset="50%" stopColor="#A259FF" />
+                <stop offset="100%" stopColor="#FF5D70" />
               </linearGradient>
 
               <filter id="shadow" x="0" y="0" width="100%" height="100%" filterUnits="userSpaceOnUse">
-                <feDropShadow dx="0" dy="20" stdDeviation="30" flood-opacity="0.1" />
+                <feDropShadow dx="0" dy="20" stdDeviation="30" floodOpacity="0.1" />
               </filter>
             </defs>
 
             <path d="M512 0C900 0 1024 124 1024 512C1024 900 900 1024 512 1024C124 1024 0 900 0 512C0 124 124 0 512 0Z" fill="white" filter="url(#shadow)" />
 
-            <path d="M512 2C900 2 1022 124 1022 512C1022 900 900 1022 512 1022C124 1022 2 900 2 512C2 124 124 2 512 2Z" stroke="black" stroke-opacity="0.05" stroke-width="2" />
+            <path d="M512 2C900 2 1022 124 1022 512C1022 900 900 1022 512 1022C124 1022 2 900 2 512C2 124 124 2 512 2Z" stroke="black" strokeOpacity="0.05" strokeWidth="2" />
 
             <g transform="translate(512, 512) scale(1.4)">
               <path d="M0 -260 

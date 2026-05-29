@@ -108,9 +108,12 @@ function CanvasInner() {
   } = useAppStore();
   const reactFlowInstance = useReactFlow();
 
-  // ── UI toggles ──
-  const [showGrid, setShowGrid] = useState(true);
-  const [smoothLine, setSmoothLine] = useState(true);
+  // ── UI toggles (persisted to localStorage) ──
+  const [showGrid, setShowGrid] = useState(() => localStorage.getItem('canvas-showGrid') !== 'false');
+  const [smoothLine, setSmoothLine] = useState(() => localStorage.getItem('canvas-smoothLine') !== 'false');
+
+  useEffect(() => { localStorage.setItem('canvas-showGrid', String(showGrid)); }, [showGrid]);
+  useEffect(() => { localStorage.setItem('canvas-smoothLine', String(smoothLine)); }, [smoothLine]);
 
   // Sync existing edges when line type changes
   useEffect(() => {
@@ -274,7 +277,7 @@ function CanvasInner() {
     useNodeSnap(nodes, setNodes);
 
   return (
-    <div className="absolute inset-0 bg-canvas-bg overflow-hidden">
+    <div className="absolute inset-0 bg-canvas-bg">
       <ReactFlow
         nodes={nodes}
         edges={edges}
