@@ -291,6 +291,7 @@
 .project-list-scroll {
   max-height: 200px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* Project delete inline button */

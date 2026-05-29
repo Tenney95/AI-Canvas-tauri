@@ -3,6 +3,11 @@
    ============================================ */
 
 /* ── Pane layout ── */
+.settings-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
 .settings-pane-title {
   font-size: 15px;
   font-weight: 600;
@@ -314,6 +319,42 @@
   color: #e8e8ed;
   background: rgba(255, 255, 255, 0.04);
   border-color: #3a3a4a;
+}
+
+/* ── Test spinner ── */
+.settings-spin {
+  animation: settings-spin 0.8s linear infinite;
+}
+@keyframes settings-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Error tooltip on status badge ── */
+.settings-status-with-tip {
+  position: relative;
+  cursor: help;
+}
+.settings-status-with-tip .settings-error-tip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  white-space: normal;
+  max-width: 260px;
+  background: #252535;
+  border: 1px solid #ef4444;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #fca5a5;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  font-weight: 400;
+}
+.settings-status-with-tip:hover .settings-error-tip {
+  display: block;
 }
 
 /* ── Service address section ── */

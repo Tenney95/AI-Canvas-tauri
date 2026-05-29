@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
+import type { TestResult } from '../services/testConnection';
+import { testProviderConnection, type ProviderTestKey } from '../services/testConnection';
 
 /* ── External URLs ── */
 const PROVIDER_URLS: Record<string, string> = {
@@ -9,6 +11,8 @@ const PROVIDER_URLS: Record<string, string> = {
   grsai: 'https://grsai.com/zh/dashboard/user-info',
   ppio: 'https://ppio.com/user/register?invited_by=SF4VL3',
 };
+
+type TestState = { status: 'idle' | 'testing' | 'done'; result?: TestResult };
 
 /* ── Link Icon SVG ── */
 function LinkIcon() {
@@ -31,22 +35,70 @@ function TestIcon() {
   );
 }
 
+/* ── Spinner SVG ── */
+function SpinnerIcon() {
+  return (
+    <svg className="settings-btn-icon settings-spin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+    </svg>
+  );
+}
+
 /* ── Test Button ── */
-function TestButton({ provider, label }: { provider: string; label: string }) {
+function TestButton({
+  label,
+  state,
+  onTest,
+}: {
+  label: string;
+  state: TestState;
+  onTest: () => void;
+}) {
+  const testing = state.status === 'testing';
   return (
     <button
       type="button"
       className="settings-provider-test-btn"
       aria-label={`测试 ${label} 连接`}
       title={`测试 ${label} 连接`}
-      onClick={() => {
-        // TODO: implement connection test
-        console.log(`Test connection for ${provider}`);
-      }}
+      disabled={testing}
+      onClick={onTest}
     >
-      <TestIcon />
-      <span className="settings-btn-label">测试连接</span>
+      {testing ? <SpinnerIcon /> : <TestIcon />}
+      <span className="settings-btn-label">{testing ? '测试中…' : '测试连接'}</span>
     </button>
+  );
+}
+
+/* ── Provider Status Badge ── */
+function ProviderStatusBadge({ result }: { result?: TestResult }) {
+  if (!result) return null;
+  if (result.success) {
+    return (
+      <span className="settings-provider-status settings-provider-status--success">通过</span>
+    );
+  }
+  return (
+    <span className="settings-provider-status settings-provider-status--danger" title={result.error}>
+      {result.error ? (
+        <span className="settings-status-with-tip">
+          失败
+          <span className="settings-error-tip">{result.error}</span>
+        </span>
+      ) : (
+        '失败'
+      )}
+    </span>
+  );
+}
+
+/* ── Provider Balance Badge ── */
+function ProviderBalanceBadge({ balance }: { balance?: string }) {
+  if (!balance) return null;
+  return (
+    <span className="settings-provider-balance" title={`账户余额：${balance}`}>
+      {balance}
+    </span>
   );
 }
 
@@ -143,6 +195,13 @@ export default function SettingsPanel() {
   const { settingsOpen, setSettingsOpen, config, setProviderKey, setProviderUrl, updateConfig, saveConfig } =
     useAppStore();
   const [activeTab, setActiveTab] = useState<'general' | 'api' | 'shortcuts'>('api');
+  const [testStates, setTestStates] = useState<Record<string, TestState>>({});
+
+  const handleTest = async (provider: ProviderTestKey, apiKey: string, baseUrl?: string) => {
+    setTestStates((prev) => ({ ...prev, [provider]: { status: 'testing' } }));
+    const result = await testProviderConnection(provider, apiKey, baseUrl);
+    setTestStates((prev) => ({ ...prev, [provider]: { status: 'done', result } }));
+  };
 
   if (!settingsOpen) return null;
 
@@ -218,9 +277,9 @@ export default function SettingsPanel() {
           </nav>
 
           {/* Content */}
-          <div className="flex-1 overflow-y-auto p-5">
+          <div className="settings-content flex-1 overflow-y-auto p-5">
             {activeTab === 'api' && (
-              <div>
+              <div className="settings-pane">
                 <h2 className="settings-pane-title">API Key</h2>
                 <div className="settings-pane-body">
                   <p className="settings-desc settings-desc-lead">
@@ -232,8 +291,14 @@ export default function SettingsPanel() {
                     <div className="settings-card-head">
                       <div className="settings-card-badge">AM</div>
                       <span className="settings-card-title">APIMart</span>
+                      <ProviderStatusBadge result={testStates.apimart?.result} />
+                      <ProviderBalanceBadge balance={testStates.apimart?.result?.balance} />
                       <span className="settings-card-head-spacer" style={{ flex: 1 }} />
-                      <TestButton provider="apimart" label="APIMart" />
+                      <TestButton
+                        label="APIMart"
+                        state={testStates.apimart || { status: 'idle' }}
+                        onTest={() => handleTest('apimart', config.providers.apimart?.apiKey || '', config.providers.apimart?.baseUrl)}
+                      />
                       <GetKeyButton provider="apimart" label="APIMart" />
                     </div>
                     <div className="settings-label">API 密钥</div>
@@ -251,8 +316,14 @@ export default function SettingsPanel() {
                       {/* Volcano engine icon — place-initial */}
                       <div className="settings-card-badge" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa' }}>火</div>
                       <span className="settings-card-title">火山方舟</span>
+                      <ProviderStatusBadge result={testStates.volcengine?.result} />
+                      <ProviderBalanceBadge balance={testStates.volcengine?.result?.balance} />
                       <span className="settings-card-head-spacer" style={{ flex: 1 }} />
-                      <TestButton provider="volcengine" label="火山方舟" />
+                      <TestButton
+                        label="火山方舟"
+                        state={testStates.volcengine || { status: 'idle' }}
+                        onTest={() => handleTest('volcengine', config.providers.volcengine?.apiKey || '')}
+                      />
                       <GetKeyButton provider="volcengine" label="火山方舟" />
                     </div>
                     <div className="settings-label">API 密钥</div>
@@ -269,8 +340,14 @@ export default function SettingsPanel() {
                     <div className="settings-card-head">
                       <div className="settings-card-badge" style={{ background: 'rgba(139, 92, 246, 0.15)', color: '#8b5cf6' }}>RH</div>
                       <span className="settings-card-title">RunningHUB</span>
+                      <ProviderStatusBadge result={testStates['runninghub-model']?.result} />
+                      <ProviderBalanceBadge balance={testStates['runninghub-model']?.result?.balance} />
                       <span className="settings-card-head-spacer" style={{ flex: 1 }} />
-                      <TestButton provider="runninghub" label="RunningHUB" />
+                      <TestButton
+                        label="RunningHUB"
+                        state={testStates['runninghub-model'] || { status: 'idle' }}
+                        onTest={() => handleTest('runninghub-model', config.providers['runninghub-model']?.apiKey || '')}
+                      />
                       <GetKeyButton provider="runninghub" label="RunningHUB" />
                     </div>
                     <div className="settings-label">工作流 API 密钥 （消费级-会员）</div>
@@ -295,12 +372,14 @@ export default function SettingsPanel() {
                     <div className="settings-card-head">
                       <div className="settings-card-badge" style={{ background: 'rgba(244, 114, 182, 0.15)', color: '#f472b6' }}>GR</div>
                       <span className="settings-card-title">GRSAI</span>
-                      <span className="settings-provider-status settings-provider-status--success">通过</span>
-                      <span className="settings-provider-balance" title="账户积分：4,967">
-                        积分 4,967
-                      </span>
+                      <ProviderStatusBadge result={testStates.grsai?.result} />
+                      <ProviderBalanceBadge balance={testStates.grsai?.result?.balance} />
                       <span className="settings-card-head-spacer" style={{ flex: 1 }} />
-                      <TestButton provider="grsai" label="GRSAI" />
+                      <TestButton
+                        label="GRSAI"
+                        state={testStates.grsai || { status: 'idle' }}
+                        onTest={() => handleTest('grsai', config.providers.grsai?.apiKey || '', config.providers.grsai?.baseUrl)}
+                      />
                       <GetKeyButton provider="grsai" label="GRSAI" />
                     </div>
                     <div className="settings-label">API 密钥</div>
@@ -312,46 +391,6 @@ export default function SettingsPanel() {
                     />
                   </div>
 
-                  {/* ── 派欧云 (PPIO) ── */}
-                  <div className="settings-section settings-card">
-                    <div className="settings-card-head">
-                      <div className="settings-card-badge" style={{ background: 'rgba(251, 191, 36, 0.15)', color: '#fbbf24' }}>PP</div>
-                      <span className="settings-card-title">派欧云 (PPIO)</span>
-                      <span className="settings-provider-status settings-provider-status--deprecated">准备下架</span>
-                      <span className="settings-card-head-spacer" style={{ flex: 1 }} />
-                      <TestButton provider="ppio" label="PPIO" />
-                      <GetKeyButton provider="ppio" label="PPIO" />
-                    </div>
-                    <div className="settings-label">API 密钥</div>
-                    <ApiKeyInput
-                      id="providerKey-ppio"
-                      defaultValue={config.providers.ppio?.apiKey || ''}
-                      placeholder="sk-..."
-                      onSave={(v) => setProviderKey('ppio', v)}
-                    />
-                  </div>
-
-                  {/* ── AICanvas (dev-mode) ── */}
-                  <div className="settings-section settings-card">
-                    <div className="settings-card-head">
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8888a0" strokeWidth="1.5" className="flex-shrink-0">
-                        <rect x="3" y="3" width="18" height="18" rx="3" />
-                        <circle cx="12" cy="12" r="4" />
-                      </svg>
-                      <span className="settings-card-title">AICanvas</span>
-                      <span className="settings-provider-status settings-provider-status--danger">不可用</span>
-                      <span className="settings-card-head-spacer" style={{ flex: 1 }} />
-                      <span className="settings-getkey settings-getkey--muted">前端占位</span>
-                    </div>
-                    <div className="settings-label">API 密钥</div>
-                    <ApiKeyInput
-                      id="providerKey-aicanvas"
-                      defaultValue={config.providers.aicanvas?.apiKey || ''}
-                      placeholder="sk-..."
-                      onSave={(v) => setProviderKey('aicanvas', v)}
-                    />
-                  </div>
-
                   {/* ── OpenAI兼容的API格式 ── */}
                   <div className="settings-section settings-card">
                     <div className="settings-card-head">
@@ -360,6 +399,8 @@ export default function SettingsPanel() {
                         <path d="M12 8v4l3 3" />
                       </svg>
                       <span className="settings-card-title">OpenAI兼容的API格式</span>
+                      <ProviderStatusBadge result={testStates.openai?.result} />
+                      <ProviderBalanceBadge balance={testStates.openai?.result?.balance} />
                       <span className="settings-hint-icon settings-hint-icon--inline" id="openai-format-hint">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                           <circle cx="12" cy="12" r="10" />
@@ -375,7 +416,11 @@ export default function SettingsPanel() {
                         </div>
                       </span>
                       <span className="settings-card-head-spacer" style={{ flex: 1 }} />
-                      <TestButton provider="openai" label="OpenAI 兼容" />
+                      <TestButton
+                        label="OpenAI 兼容"
+                        state={testStates.openai || { status: 'idle' }}
+                        onTest={() => handleTest('openai', config.providers.openai?.apiKey || '', config.providers.openai?.baseUrl)}
+                      />
                     </div>
                     <div className="settings-label">接口地址</div>
                     <UrlInput
