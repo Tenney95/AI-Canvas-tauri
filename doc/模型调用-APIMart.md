@@ -1160,7 +1160,7 @@ _____________________________________APIMart____________________________________
             ]
         },
         {
-            "id": "kling-v2-6",
+            "id": "kling-6",
             "object": "model",
             "created": 1626777600,
             "owned_by": "custom",
@@ -1169,7 +1169,7 @@ _____________________________________APIMart____________________________________
             ]
         },
         {
-            "id": "kling-v2-6-motion-control",
+            "id": "kling-6-motion-control",
             "object": "model",
             "created": 1626777600,
             "owned_by": "custom",

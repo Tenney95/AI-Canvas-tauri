@@ -49,29 +49,29 @@ function CanvasContextMenu({
       {/* Level 1: Root menu */}
       <div
         ref={menuRef}
-        className="v2-canvas-ctx-menu"
+        className="canvas-ctx-menu"
         style={{ left: position.x, top: position.y }}
       >
         <div
-          className={`v2-menu-row v2-menu-row-split${hoverMenu === 'addNode' ? ' highlight' : ''}`}
+          className={`menu-row menu-row-split${hoverMenu === 'addNode' ? ' highlight' : ''}`}
           onMouseEnter={() => onShowSubmenu('addNode')}
           onMouseLeave={() => onHideSubmenu(null)}
         >
-          <span className="v2-menu-rowlabel">添加节点</span>
-          <span className="v2-menu-arrow v2-menu-arrow-ml8">▶</span>
+          <span className="menu-rowlabel">添加节点</span>
+          <span className="menu-arrow menu-arrow-ml8">▶</span>
         </div>
-        <div className="v2-menu-sep" />
-        <div className="v2-menu-row v2-menu-row-split" onClick={onPaste}>
+        <div className="menu-sep" />
+        <div className="menu-row menu-row-split" onClick={onPaste}>
           <span>粘贴</span>
-          <span className="v2-menu-kbd">Ctrl V</span>
+          <span className="menu-kbd">Ctrl V</span>
         </div>
-        <div className="v2-menu-row v2-menu-row-split" onClick={onUndo}>
+        <div className="menu-row menu-row-split" onClick={onUndo}>
           <span>撤销</span>
-          <span className="v2-menu-kbd">Ctrl Z</span>
+          <span className="menu-kbd">Ctrl Z</span>
         </div>
-        <div className="v2-menu-row v2-menu-row-split" onClick={onRedo}>
+        <div className="menu-row menu-row-split" onClick={onRedo}>
           <span>重做</span>
-          <span className="v2-menu-kbd">Ctrl Y</span>
+          <span className="menu-kbd">Ctrl Y</span>
         </div>
       </div>
 
@@ -79,24 +79,24 @@ function CanvasContextMenu({
       {(hoverMenu === 'addNode' || hoverMenu === 'genNode' || hoverMenu === 'srcNode') && (
         <div
           ref={submenuRef}
-          className="v2-canvas-ctx-menu v2-submenu"
+          className="canvas-ctx-menu submenu"
           style={{ left: position.x + 180, top: position.y + 4 }}
           onMouseEnter={() => onShowSubmenu('addNode')}
           onMouseLeave={() => onHideSubmenu(null)}
         >
           <div
-            className={`v2-menu-row v2-menu-row-split${hoverMenu === 'genNode' ? ' highlight' : ''}`}
+            className={`menu-row menu-row-split${hoverMenu === 'genNode' ? ' highlight' : ''}`}
             onMouseEnter={() => onShowSubmenu('genNode')}
           >
-            <span className="v2-menu-rowlabel">生成节点</span>
-            <span className="v2-menu-arrow v2-menu-arrow-ml8">▶</span>
+            <span className="menu-rowlabel">生成节点</span>
+            <span className="menu-arrow menu-arrow-ml8">▶</span>
           </div>
           <div
-            className={`v2-menu-row v2-menu-row-split${hoverMenu === 'srcNode' ? ' highlight' : ''}`}
+            className={`menu-row menu-row-split${hoverMenu === 'srcNode' ? ' highlight' : ''}`}
             onMouseEnter={() => onShowSubmenu('srcNode')}
           >
-            <span className="v2-menu-rowlabel">源节点</span>
-            <span className="v2-menu-arrow v2-menu-arrow-ml8">▶</span>
+            <span className="menu-rowlabel">源节点</span>
+            <span className="menu-arrow menu-arrow-ml8">▶</span>
           </div>
         </div>
       )}
@@ -104,7 +104,7 @@ function CanvasContextMenu({
       {/* Level 3a: 生成节点 submenu */}
       {hoverMenu === 'genNode' && (
         <div
-          className="v2-canvas-ctx-menu v2-submenu"
+          className="canvas-ctx-menu submenu"
           style={{ left: position.x + 364, top: position.y + 4 }}
           onMouseEnter={() => onShowSubmenu('genNode')}
           onMouseLeave={() => onHideSubmenu('addNode')}
@@ -112,7 +112,7 @@ function CanvasContextMenu({
           {GEN_NODE_ITEMS.map((item) => (
             <div
               key={item.type}
-              className="v2-menu-row"
+              className="menu-row"
               onClick={() => onAddNode(item.type, item.label, 'generator')}
             >
               <span>{item.label}</span>
@@ -124,7 +124,7 @@ function CanvasContextMenu({
       {/* Level 3b: 源节点 submenu */}
       {hoverMenu === 'srcNode' && (
         <div
-          className="v2-canvas-ctx-menu v2-submenu"
+          className="canvas-ctx-menu submenu"
           style={{ left: position.x + 364, top: position.y + 36 }}
           onMouseEnter={() => onShowSubmenu('srcNode')}
           onMouseLeave={() => onHideSubmenu('addNode')}
@@ -132,7 +132,7 @@ function CanvasContextMenu({
           {SRC_NODE_ITEMS.map((item) => (
             <div
               key={item.type}
-              className="v2-menu-row"
+              className="menu-row"
               onClick={() => onAddNode(item.type, item.label, 'source')}
             >
               <span>{item.label}</span>

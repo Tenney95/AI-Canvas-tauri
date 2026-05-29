@@ -38,18 +38,18 @@ function NodeContextMenu({
   return (
     <div
       ref={menuRef}
-      className="v2-node-ctx-menu v2-canvas-ctx-menu"
+      className="node-ctx-menu canvas-ctx-menu"
       style={{ left: position.x, top: position.y }}
     >
       {MENU_ITEMS.map((item) => (
         <div key={item.action}>
-          {item.danger && <div className="v2-menu-sep" />}
+          {item.danger && <div className="menu-sep" />}
           <div
-            className={`v2-menu-row v2-menu-row-split${item.danger ? ' v2-menu-row-danger' : ''}`}
+            className={`menu-row menu-row-split${item.danger ? ' menu-row-danger' : ''}`}
             onClick={actionMap[item.action]}
           >
             <span>{item.label}</span>
-            <span className="v2-menu-kbd">{item.shortcut}</span>
+            <span className="menu-kbd">{item.shortcut}</span>
           </div>
         </div>
       ))}

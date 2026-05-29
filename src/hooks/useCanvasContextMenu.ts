@@ -43,7 +43,7 @@ export function useCanvasContextMenu() {
       const ctxEl = menuRef.current;
       const subEl = submenuRef.current;
       if ((ctxEl && ctxEl.contains(target)) || (subEl && subEl.contains(target))) return;
-      if (target.closest('.v2-canvas-ctx-menu')) return;
+      if (target.closest('.canvas-ctx-menu')) return;
       closeMenu();
     };
     document.addEventListener('keydown', onKey);

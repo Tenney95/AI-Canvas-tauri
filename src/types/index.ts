@@ -28,6 +28,7 @@ export interface BaseNodeData {
   videoUrl?: string;          // 生成的视频 URL
   audioUrl?: string;          // 生成的音频 URL
   thumbnailUrl?: string;      // 缩略图
+  mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
   imageWidth?: number;        // 生成图片实际宽度
   imageHeight?: number;       // 生成图片实际高度
   imageSize?: string;         // 画质选择：'1K' | '2K' | '4K'

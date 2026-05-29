@@ -36,7 +36,7 @@ export function useNodeContextMenu() {
     const onClick = (e: MouseEvent) => {
       const target = e.target as Element;
       if (menuRef.current?.contains(target)) return;
-      if (target.closest('.v2-canvas-ctx-menu') || target.closest('.v2-node-ctx-menu')) return;
+      if (target.closest('.canvas-ctx-menu') || target.closest('.node-ctx-menu')) return;
       closeMenu();
     };
     document.addEventListener('keydown', onKey);

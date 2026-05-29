@@ -561,7 +561,7 @@ async function pollComfyUIHistory(
   dimensions: { width: number; height: number },
 ): Promise<{ url: string; width: number; height: number }> {
   // 最多轮询 900 次，每次间隔 2 秒 = 2700 秒（45 分钟）超时
-  for (let attempt = 0; attempt < 1000; attempt++) {
+  for (let attempt = 0; attempt < 900; attempt++) {
     await new Promise((r) => setTimeout(r, 3000));
 
     try {

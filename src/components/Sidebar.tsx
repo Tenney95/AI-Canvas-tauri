@@ -402,7 +402,7 @@ export default function Sidebar() {
   };
 
   return (
-    <aside className="sidebar-floating">
+    <aside data-tauri-drag-region className="sidebar-floating">
       {/* Add button — hover to open node picker */}
       <button
         id="btn-add-node"

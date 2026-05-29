@@ -2,7 +2,7 @@
    Canvas Right-click Context Menu
    ============================================ */
 
-.v2-canvas-ctx-menu {
+.canvas-ctx-menu {
   position: fixed;
   z-index: 300;
   min-width: 176px;
@@ -23,7 +23,7 @@
   to { opacity: 1; transform: scale(1); }
 }
 
-.v2-menu-row {
+.menu-row {
   display: flex;
   align-items: center;
   gap: 24px;
@@ -37,77 +37,77 @@
   transition: background 0.1s, color 0.1s;
 }
 
-.v2-menu-row:hover {
+.menu-row:hover {
   background: rgba(255, 255, 255, 0.06);
   color: #fff;
 }
 
-.v2-menu-row.disabled {
+.menu-row.disabled {
   opacity: 0.35;
   cursor: default;
 }
 
-.v2-menu-row.disabled:hover {
+.menu-row.disabled:hover {
   background: transparent;
   color: #c8c8d4;
 }
 
-.v2-menu-row-split {
+.menu-row-split {
   justify-content: space-between;
 }
 
-.v2-menu-rowlabel {
+.menu-rowlabel {
   flex: 1;
 }
 
-.v2-menu-arrow {
+.menu-arrow {
   flex-shrink: 0;
   font-size: 10px;
   color: #666680;
   margin-top: 1px;
 }
 
-.v2-menu-arrow-ml8 {
+.menu-arrow-ml8 {
   margin-left: 8px;
 }
 
-.v2-menu-row:hover .v2-menu-arrow {
+.menu-row:hover .menu-arrow {
   color: #9999b0;
 }
 
-.v2-menu-kbd {
+.menu-kbd {
   flex-shrink: 0;
   font-size: 11px;
   color: #555566;
   letter-spacing: 0.02em;
 }
 
-.v2-menu-sep {
+.menu-sep {
   height: 1px;
   margin: 4px 8px;
   background: rgba(255, 255, 255, 0.06);
 }
 
 /* Submenu positioning */
-.v2-submenu {
+.submenu {
   animation: ctxFadeIn 0.1s ease;
 }
 
 /* Submenu hover highlight on parent */
-.v2-menu-row.highlight {
+.menu-row.highlight {
   background: rgba(255, 255, 255, 0.06);
   color: #fff;
 }
 
-.v2-menu-row.highlight .v2-menu-arrow {
+.menu-row.highlight .menu-arrow {
   color: #9999b0;
 }
 
-.v2-menu-row-danger {
+.menu-row-danger {
   color: #f87171;
 }
 
-.v2-menu-row-danger:hover {
+.menu-row-danger:hover {
   background: rgba(239, 68, 68, 0.12);
   color: #fca5a5;
 }
