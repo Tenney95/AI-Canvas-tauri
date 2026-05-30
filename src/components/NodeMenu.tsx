@@ -1,3 +1,6 @@
+/**
+ * NodeMenu 浮动节点菜单 — 半透明悬浮按钮，点击展开节点类型选择列表，快速添加节点到画布
+ */
 import { useEffect, useRef } from 'react';
 import type { JSX } from 'react';
 import { useAppStore } from '../store/useAppStore';

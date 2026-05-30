@@ -1,3 +1,6 @@
+/**
+ * CanvasContextMenu 画布右键菜单 — 在画布空白区域右键弹出，支持添加节点（生成/来源）、撤销、重做、粘贴
+ */
 import { memo } from 'react';
 import type { NodeType } from '../../types';
 

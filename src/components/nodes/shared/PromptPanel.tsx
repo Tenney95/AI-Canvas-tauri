@@ -1,3 +1,6 @@
+/**
+ * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮
+ */
 import { useState } from 'react';
 import type { NodeType, ModelOption, WorkflowDefinition } from '../../../types';
 import ModelSelector from './ModelSelector';

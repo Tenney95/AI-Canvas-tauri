@@ -1,3 +1,6 @@
+/**
+ * useNodeContextMenu 节点右键菜单 Hook — 管理节点上右键弹出操作菜单的显示/隐藏，处理复制、剪切、创建副本、删除
+ */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAppStore, generateId } from '../store/useAppStore';
 import type { BaseNodeData } from '../types';

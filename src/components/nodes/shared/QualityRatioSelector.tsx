@@ -1,3 +1,6 @@
+/**
+ * QualityRatioSelector 图像质量/比例选择器 — 弹出面板选择图像尺寸(1K/2K/4K)和宽高比
+ */
 import { useState, useRef, useEffect } from 'react';
 
 interface QualityRatioSelectorProps {

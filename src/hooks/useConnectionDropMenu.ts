@@ -1,3 +1,6 @@
+/**
+ * useConnectionDropMenu 连线拖放菜单 Hook — 处理从节点输出 Handle 拖出连线时，弹出目标节点类型选择菜单并创建连线
+ */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import type { Node as RFNode, Edge, FinalConnectionState } from '@xyflow/react';

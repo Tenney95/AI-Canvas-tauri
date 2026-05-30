@@ -1,3 +1,6 @@
+/**
+ * defaultModels 默认模型配置 — 按类型（文本/图像/视频/音频）定义各厂商预置模型列表和分组
+ */
 import type { ModelGroup } from '../../../types';
 
 export const defaultModelGroups: ModelGroup[] = [

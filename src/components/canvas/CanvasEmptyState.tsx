@@ -1,3 +1,6 @@
+/**
+ * CanvasEmptyState 画布空状态提示 — 画布无节点时显示引导界面，提供快速添加节点的入口按钮
+ */
 import { memo } from 'react';
 import type { NodeType } from '../../types';
 import { useAppStore, generateId } from '../../store/useAppStore';

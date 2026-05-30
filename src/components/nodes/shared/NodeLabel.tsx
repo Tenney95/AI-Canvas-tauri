@@ -1,3 +1,6 @@
+/**
+ * NodeLabel 节点标签 — 渲染节点顶部标题栏，按节点类型显示对应图标/颜色/编号/Beta 角标
+ */
 import type { NodeType } from '../../../types';
 
 interface NodeLabelProps {

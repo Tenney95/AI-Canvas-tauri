@@ -1,17 +1,9 @@
+/**
+ * useKeyboardShortcuts 全局键盘快捷键 Hook — 注册 Ctrl+S 保存、Ctrl+Z 撤销、Ctrl+Shift+Z 重做、Delete 删除、F 自适应等快捷键
+ * Tauri 环境优先使用 tauri-plugin-global-shortcut 原生拦截，Web 环境退化为 document keydown 捕获
+ */
 import { useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
-
-/**
- * 全局键盘快捷键
- * - Ctrl+S / Alt+S: 保存项目
- * - Ctrl+Z: 撤销
- * - Ctrl+Shift+Z / Ctrl+Y: 重做
- * - Delete / Backspace: 删除选中节点
- * - F: 适应画布
- *
- * Tauri 环境：使用 tauri-plugin-global-shortcut（原生级拦截，绕过 WebView2 浏览器快捷键）
- * Web 环境：使用 document keydown 捕获阶段
- */
 export function useKeyboardShortcuts() {
   const { undo, redo, saveCurrentProject, copySelectedNodes, pasteNodes } = useAppStore();
 

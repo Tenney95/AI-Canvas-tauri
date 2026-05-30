@@ -1,3 +1,7 @@
+/**
+ * App 根组件 — 装配 Header / Sidebar / Canvas / NodeMenu / SettingsPanel / Titlebar / Toast / AINodeDialog / WorkflowPanel
+ * Tauri 环境下启用自定义窗口装饰和透明圆角窗口
+ */
 import { useEffect } from 'react';
 import { Inspector } from 'react-dev-inspector';
 import Header from './components/Header';

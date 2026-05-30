@@ -1,3 +1,6 @@
+/**
+ * MentionEditor @提及编辑器 — 支持 @引用其他节点输出的富文本输入框，实时渲染为彩色标签芯片
+ */
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { WorkflowIONodeType } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';

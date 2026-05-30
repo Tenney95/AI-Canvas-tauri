@@ -1,5 +1,5 @@
 /**
- * 测试连接服务 — 按厂商调用对应 API 端点验证密钥有效性和余额
+ * testConnection 连接测试服务 — 按厂商调用对应 API 端点验证密钥有效性和余额（APIMart/GRSAI/OpenAI/火山方舟/RunningHUB/ppio）
  */
 
 export interface TestResult {

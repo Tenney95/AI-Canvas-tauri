@@ -1,3 +1,6 @@
+/**
+ * Header 顶部栏 — Logo、项目名编辑、侧边栏切换、设置入口、窗口拖拽区域
+ */
 import { useAppStore } from '../store/useAppStore';
 
 export default function Header() {

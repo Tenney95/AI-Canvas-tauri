@@ -1,3 +1,6 @@
+/**
+ * useAppStore Zustand 全局状态存储 — 管理画布节点/边/项目/配置/UI 状态，提供撤销/重做、节点增删改查等所有 Actions
+ */
 import { create } from 'zustand';
 import type { Node, Edge, Connection } from '@xyflow/react';
 import type { BaseNodeData, CanvasProject, AppConfig, WorkflowDefinition } from '../types';

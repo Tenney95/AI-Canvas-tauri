@@ -1,3 +1,6 @@
+/**
+ * MattingToolbar 遮罩编辑工具栏 — 图像遮罩编辑模式下的工具条，提供画笔(绘制/擦除)、橡皮擦、油漆桶及笔刷大小调整
+ */
 import { memo, useCallback, useState, useRef } from 'react';
 
 type MattingTool = 'brush' | 'eraser' | 'bucket';

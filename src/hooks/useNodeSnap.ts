@@ -1,3 +1,6 @@
+/**
+ * useNodeSnap 节点对齐吸附 Hook — 拖拽节点时自动吸附对齐到其他节点的边缘/中心，绘制辅助线
+ */
 import { useCallback, useRef, useState } from 'react';
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../types';

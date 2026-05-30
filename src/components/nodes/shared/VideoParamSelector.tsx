@@ -1,3 +1,6 @@
+/**
+ * VideoParamSelector 视频参数选择器 — 弹出面板配置视频分辨率、帧率、帧数等生成参数
+ */
 import { useState, useRef, useEffect, useCallback } from 'react';
 
 interface VideoParamSelectorProps {

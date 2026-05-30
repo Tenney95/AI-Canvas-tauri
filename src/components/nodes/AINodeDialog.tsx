@@ -1,3 +1,6 @@
+/**
+ * AINodeDialog AI 生成弹窗 — 点击节点后弹出的浮动面板，包含 Prompt 输入、模型选择、参数配置、生成按钮
+ */
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import type { BaseNodeData, ModelOption } from '../../types';

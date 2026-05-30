@@ -1,3 +1,6 @@
+/**
+ * SettingsPanel 设置面板 — 模态弹窗，管理各 AI 厂商 API Key/Base URL 配置、连接测试、主题切换
+ */
 import { useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import type { TestResult } from '../services/testConnection';

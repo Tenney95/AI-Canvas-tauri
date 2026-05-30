@@ -1,3 +1,6 @@
+/**
+ * CanvasToolbar 画布工具栏 — 画布右下角浮动工具条，控制网格显隐、连线样式、缩放比例
+ */
 import { memo } from 'react';
 
 interface CanvasToolbarProps {

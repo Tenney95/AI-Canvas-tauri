@@ -1,3 +1,6 @@
+/**
+ * Canvas 画布主组件 — React Flow 画布核心，管理节点/边渲染、拖放、连线、右键菜单、空状态
+ */
 import { useCallback, useState, useEffect } from 'react';
 import {
   ReactFlow,

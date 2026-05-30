@@ -1,3 +1,6 @@
+/**
+ * NodeContextMenu 节点右键菜单 — 在节点上右键弹出，支持复制、剪切、创建副本、删除操作
+ */
 import { memo } from 'react';
 
 const MENU_ITEMS = [

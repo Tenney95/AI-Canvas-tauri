@@ -1,3 +1,6 @@
+/**
+ * TextNodeToolbar 文本节点浮动工具栏 — 鼠标悬停文本节点时显示，提供复制、清除空行、全屏操作
+ */
 import { memo, useState, useCallback } from 'react';
 import type { BaseNodeData } from '../../../types';
 

@@ -1,3 +1,6 @@
+/**
+ * AudioNode 音频节点 — 在画布上渲染音频内容，支持上传本地音频、波形可视化、连接其他节点
+ */
 import { memo, useCallback, useState, useRef, useEffect } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';

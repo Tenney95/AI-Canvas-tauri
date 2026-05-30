@@ -1,3 +1,6 @@
+/**
+ * aiService AI 生成服务 — 统一封装各厂商 AI 生成 API，支持文本/图像/视频/音频生成、ComfyUI/RunningHUB 工作流执行
+ */
 import { useAppStore } from '../store/useAppStore';
 import type { WorkflowIONode } from '../types';
 

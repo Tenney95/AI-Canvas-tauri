@@ -1,3 +1,6 @@
+/**
+ * ConnectionMenu 连线目标选择菜单 — 从节点输出 Handle 拖出连线时弹出，选择要创建的目标节点类型
+ */
 import { memo } from 'react';
 import type { NodeType } from '../../types';
 import type { BaseNodeData } from '../../types';

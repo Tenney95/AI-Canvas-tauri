@@ -1,3 +1,7 @@
+/**
+ * types 全局类型定义 — 定义 NodeType、BaseNodeData、CanvasProject、AppConfig、ModelOption、WorkflowDefinition 等核心类型
+ */
+
 // 节点类型定义
 export type NodeType =
   | 'ai-text'

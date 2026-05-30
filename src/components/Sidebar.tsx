@@ -3,6 +3,10 @@ import type { JSX } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import type { NodeType } from '../types';
 
+/**
+ * Sidebar 侧边栏面板 — 左侧节点类型列表、上传入口、项目切换、拖拽添加节点
+ */
+
 /* ============================================
    Node picker menu items
    ============================================ */

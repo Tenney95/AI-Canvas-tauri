@@ -1,3 +1,6 @@
+/**
+ * VideoNode 视频节点 — 在画布上渲染视频内容，支持上传本地视频、播放控制、连接其他节点
+ */
 import { memo, useCallback, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';

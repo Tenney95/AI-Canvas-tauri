@@ -1,3 +1,6 @@
+/**
+ * ModelSelector 模型选择器 — 下拉面板选择 AI 模型或工作流，支持按供应商分组折叠、搜索过滤、当前选中高亮
+ */
 import { useState, useRef, useEffect, useMemo } from 'react';
 import type { NodeType, ModelOption, ModelGroup, WorkflowDefinition } from '../../../types';
 import { getWorkflowCategory } from '../../../types';

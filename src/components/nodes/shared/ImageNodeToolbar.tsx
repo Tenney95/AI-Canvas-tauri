@@ -1,3 +1,6 @@
+/**
+ * ImageNodeToolbar 图像节点浮动工具栏 — 鼠标悬停图像节点时显示，提供遮罩、扩图、360全景、裁切、重绘、高清、下载等操作
+ */
 import { memo, useCallback } from 'react';
 
 interface ImageNodeToolbarProps {
