@@ -2,6 +2,14 @@
    React Flow Overrides — Dark Theme
    ============================================ */
 
+/* Suppress non-passive touchstart warning in Chromium (Tauri WebView2).
+   React Flow needs preventDefault() for drag/pan, so its listeners are
+   intentionally non-passive. Telling the browser we handle touch ourselves
+   eliminates the console violation warning. */
+.react-flow__pane {
+  touch-action: none;
+}
+
 .react-flow__panel {
   margin: 10px !important;
 }

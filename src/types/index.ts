@@ -28,9 +28,10 @@ export interface BaseNodeData {
   provider?: string;          // 选择的供应商 ID（如 ppio）
   workflowId?: string;        // 选择的工作流 ID
   workflowInputs?: Record<string, string>; // 工作流 IO 节点赋值: ioNodeId → value
-  imageUrl?: string;          // 生成的图片 URL
+  imageUrl?: string;          // 生成的图片 URL（Tauri: asset://localhost/..., 浏览器: data:...）
   videoUrl?: string;          // 生成的视频 URL
   audioUrl?: string;          // 生成的音频 URL
+  filePath?: string;          // 本地文件路径（项目 data 目录下，重建 asset URL 用）
   thumbnailUrl?: string;      // 缩略图
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
   imageWidth?: number;        // 生成图片实际宽度

@@ -1,7 +1,7 @@
 /**
  * fileService 文件操作服务 — 封装 Tauri 原生文件对话框和读写能力，管理项目/工作流/配置的保存、加载、导出、导入（IndexedDB 降级）
  */
-import { writeFile, readFile as tauriReadFile } from '@tauri-apps/plugin-fs';
+import { writeFile, readFile as tauriReadFile, mkdir, exists, stat, remove, readDir, type DirEntry } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import {
   saveProjectToDb,
@@ -226,6 +226,286 @@ function getMimeType(ext: string): string {
 export { getMimeType, arrayBufferToBase64 };
 
 // ============================================
+// Project data directory — local file storage for media assets
+// ============================================
+
+/** 项目媒体文件大小上限：2GB，超过则引用原路径不拷贝到项目目录（仅 Tauri 下生效） */
+export const MAX_MEDIA_FILE_SIZE = 2 * 1024 * 1024 * 1024;
+
+/** 获取 Tauri 的 convertFileSrc 函数（浏览器端返回 null） */
+let _convertFileSrc: ((path: string) => string) | null = null;
+async function getConvertFileSrc(): Promise<((path: string) => string) | null> {
+  if (_convertFileSrc !== null) return _convertFileSrc;
+  if (!isTauriEnv()) return null;
+  try {
+    const core = await import('@tauri-apps/api/core');
+    _convertFileSrc = (core as { convertFileSrc?: (path: string) => string }).convertFileSrc || null;
+  } catch {
+    _convertFileSrc = null;
+  }
+  return _convertFileSrc;
+}
+
+/** 获取应用数据根目录（Tauri: appDataDir, 浏览器: null） */
+async function getAppDataDir(): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+  try {
+    const { appDataDir } = await import('@tauri-apps/api/path');
+    return await appDataDir();
+  } catch {
+    return null;
+  }
+}
+
+/** 获取项目的本地数据目录路径 */
+export async function getProjectDataDir(projectId: string): Promise<string | null> {
+  const base = await getAppDataDir();
+  if (!base) return null;
+  return `${base.replace(/\\/g, '/').replace(/\/$/, '')}/data/${projectId}`;
+}
+
+/** 确保项目数据目录存在（Tauri 端） */
+export async function ensureProjectDataDir(projectId: string): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+  const dirPath = await getProjectDataDir(projectId);
+  if (!dirPath) return null;
+  try {
+    const dirExists = await exists(dirPath);
+    if (!dirExists) await mkdir(dirPath, { recursive: true });
+    return dirPath;
+  } catch (err) {
+    console.error('Failed to create project data dir:', dirPath, err);
+    return null;
+  }
+}
+
+/**
+ * 将文件拷贝到项目数据目录，返回本地路径和 asset URL
+ * 如文件已存在于目标目录则跳过拷贝
+ */
+export async function copyFileToProjectData(
+  sourcePath: string,
+  projectId: string,
+): Promise<{ filePath: string; assetUrl: string; fileName: string } | null> {
+  if (!isTauriEnv()) return null;
+
+  const dataDir = await ensureProjectDataDir(projectId);
+  if (!dataDir) return null;
+
+  const fileName = sourcePath.split(/[/\\]/).pop() || 'file';
+  const sanitized = fileName.replace(/[<>:"|?*]/g, '_');
+
+  // Base destination path
+  let destPath = `${dataDir}/${sanitized}`;
+
+  // Handle name conflicts: append _1, _2 ...
+  try {
+    let counter = 1;
+    const parts = sanitized.split('.');
+    const ext = parts.length > 1 ? parts.pop()! : '';
+    const baseName = parts.join('.');
+    while (await exists(destPath)) {
+      destPath = ext ? `${dataDir}/${baseName}_${counter}.${ext}` : `${dataDir}/${sanitized}_${counter}`;
+      counter++;
+    }
+  } catch {
+    // exists may throw; proceed with current destPath
+  }
+
+  try {
+    // Try to check source file size (may fail for paths outside fs scope, e.g., external drives)
+    let sourceSize = 0;
+    try {
+      const sourceStat = await stat(sourcePath);
+      sourceSize = sourceStat.size;
+    } catch {
+      // stat not allowed for this path — skip size check and proceed with read+write
+    }
+
+    if (sourceSize > MAX_MEDIA_FILE_SIZE) {
+      console.warn('File too large for project data copy:', sourcePath, sourceSize);
+      // For oversized files, use convertFileSrc on the original path instead
+      const convertFileSrc = await getConvertFileSrc();
+      if (!convertFileSrc) return null;
+      return { filePath: sourcePath, assetUrl: convertFileSrc(sourcePath), fileName };
+    }
+
+    // Use readFile + writeFile instead of copyFile to avoid fs scope issues
+    // readFile on drag-dropped paths bypasses fs scope permission check
+    const content = await tauriReadFile(sourcePath);
+    await writeFile(destPath, new Uint8Array(content));
+  } catch (err) {
+    console.error('Failed to copy file to project data:', sourcePath, err);
+    // Don't fallback to convertFileSrc on external paths — asset protocol won't serve them
+    // Return null so caller can fallback to readFile → base64 in-memory loading
+    return null;
+  }
+
+  const convertFileSrc = await getConvertFileSrc();
+  if (!convertFileSrc) {
+    // If convertFileSrc unavailable, still return the path
+    return { filePath: destPath, assetUrl: '', fileName };
+  }
+
+  return { filePath: destPath, assetUrl: convertFileSrc(destPath), fileName };
+}
+
+/**
+ * 将 data URL 的内容保存到项目数据目录
+ * 用于 AI 生成的图片等场景
+ */
+export async function saveDataUrlToProjectData(
+  dataUrl: string,
+  projectId: string,
+  fileName: string,
+): Promise<{ filePath: string; assetUrl: string } | null> {
+  if (!isTauriEnv()) return null;
+
+  const dataDir = await ensureProjectDataDir(projectId);
+  if (!dataDir) return null;
+
+  try {
+    // Parse data URL to binary
+    const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
+    let bytes: Uint8Array;
+    if (match) {
+      const b64 = match[2];
+      const binaryStr = atob(b64);
+      bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+    } else {
+      // Non-base64 data URL: fetch and convert
+      const resp = await fetch(dataUrl);
+      const buffer = await resp.arrayBuffer();
+      bytes = new Uint8Array(buffer);
+    }
+
+    const destPath = `${dataDir}/${fileName}`;
+    await writeFile(destPath, bytes);
+
+    const convertFileSrc = await getConvertFileSrc();
+    const assetUrl = convertFileSrc ? convertFileSrc(destPath) : '';
+
+    return { filePath: destPath, assetUrl };
+  } catch (err) {
+    console.error('Failed to save data URL to project data:', fileName, err);
+    return null;
+  }
+}
+
+/**
+ * 将二进制数据保存到项目数据目录（用于粘贴/裁剪等无源路径的场景）
+ * @returns { filePath, assetUrl } 或 null（非 Tauri 或失败）
+ */
+export async function saveBinaryToProjectData(
+  data: Uint8Array,
+  projectId: string,
+  fileName: string,
+): Promise<{ filePath: string; assetUrl: string } | null> {
+  if (!isTauriEnv()) return null;
+
+  const dataDir = await ensureProjectDataDir(projectId);
+  if (!dataDir) return null;
+
+  const sanitized = fileName.replace(/[<>:"|?*]/g, '_');
+
+  // Handle name conflicts
+  let destPath = `${dataDir}/${sanitized}`;
+  try {
+    let counter = 1;
+    const parts = sanitized.split('.');
+    const ext = parts.length > 1 ? parts.pop()! : '';
+    const baseName = parts.join('.');
+    while (await exists(destPath)) {
+      destPath = ext ? `${dataDir}/${baseName}_${counter}.${ext}` : `${dataDir}/${sanitized}_${counter}`;
+      counter++;
+    }
+  } catch {
+    // exists may throw; proceed with current destPath
+  }
+
+  try {
+    await writeFile(destPath, data);
+  } catch (err) {
+    console.error('Failed to save binary to project data:', destPath, err);
+    return null;
+  }
+
+  const convertFileSrc = await getConvertFileSrc();
+  const assetUrl = convertFileSrc ? convertFileSrc(destPath) : '';
+
+  return { filePath: destPath, assetUrl };
+}
+
+/**
+ * 通过文件路径获取 asset URL（Tauri 端）
+ */
+export async function getAssetUrlFromPath(filePath: string): Promise<string> {
+  const convertFileSrc = await getConvertFileSrc();
+  return convertFileSrc ? convertFileSrc(filePath) : filePath;
+}
+
+// ============================================
+// File & directory deletion
+// ============================================
+
+/** 删除单个文件（Tauri 端），浏览器环境无操作 */
+export async function deleteFile(filePath: string): Promise<void> {
+  if (!isTauriEnv()) return;
+  try {
+    await remove(filePath);
+    console.log('[fileService] Deleted file:', filePath);
+  } catch (err) {
+    console.warn('[fileService] Failed to delete file:', filePath, err);
+  }
+}
+
+/** 递归删除目录及其所有内容 */
+async function removeDirRecursive(dirPath: string): Promise<void> {
+  let entries: DirEntry[];
+  try {
+    entries = await readDir(dirPath);
+  } catch {
+    // Directory doesn't exist or can't be read
+    return;
+  }
+  for (const entry of entries) {
+    const fullPath = `${dirPath}/${entry.name}`;
+    if (entry.isDirectory) {
+      await removeDirRecursive(fullPath);
+    } else {
+      try { await remove(fullPath); } catch { /* 忽略单个文件删除失败 */ }
+    }
+  }
+  try {
+    await remove(dirPath);
+  } catch { /* 忽略目录删除失败 */ }
+}
+
+/** 删除项目的本地数据目录（Tauri 端），包括所有媒体文件 */
+export async function deleteProjectDataDir(projectId: string): Promise<void> {
+  if (!isTauriEnv()) return;
+  const dirPath = await getProjectDataDir(projectId);
+  if (!dirPath) return;
+  try {
+    await removeDirRecursive(dirPath);
+    console.log('[fileService] Deleted project data dir:', dirPath);
+  } catch (err) {
+    console.warn('[fileService] Failed to delete project data dir:', dirPath, err);
+  }
+}
+
+/** 尝试删除节点关联的本地文件（如果存在 filePath） */
+export async function deleteNodeFile(nodeData: { filePath?: string }): Promise<void> {
+  const fp = nodeData.filePath;
+  if (fp && typeof fp === 'string') {
+    await deleteFile(fp);
+  }
+}
+
+// ============================================
 // Source node file upload (returns dataUrl + fileName)
 // ============================================
 
@@ -235,8 +515,14 @@ export interface UploadResult {
   fileSize: number;
 }
 
-/** 为源节点上传文件 — 返回 data URL + 文件名 + 大小 */
-export async function uploadSourceFile(accept?: string): Promise<UploadResult | null> {
+/** 
+ * 上传文件并保存到项目数据目录（Tauri 端拷贝，浏览器端 base64） 
+ * @param projectId 项目 ID，为空时退回 base64 模式
+ */
+export async function uploadSourceFileToProject(
+  accept?: string,
+  projectId?: string | null,
+): Promise<UploadResult & { filePath?: string } | null> {
   try {
     if (isTauriEnv()) {
       const filePath = await open({
@@ -247,9 +533,28 @@ export async function uploadSourceFile(accept?: string): Promise<UploadResult | 
 
       if (!filePath) return null;
 
+      const fileName = filePath.split(/[\\/]/).pop() || 'file';
+
+      // Try to get file size (may fail for paths outside fs scope)
+      let fileSize = 0;
+      try {
+        const sourceStat = await stat(filePath);
+        fileSize = sourceStat.size;
+      } catch {
+        // stat not allowed — size will be obtained from content.byteLength later
+      }
+
+      // If projectId is provided, copy to project data dir
+      if (projectId && projectId !== 'default') {
+        const result = await copyFileToProjectData(filePath, projectId);
+        if (result) {
+          return { dataUrl: result.assetUrl, fileName: result.fileName, fileSize, filePath: result.filePath };
+        }
+      }
+
+      // Fallback: read into memory
       const content = await tauriReadFile(filePath);
       const base64 = arrayBufferToBase64(content.buffer);
-      const fileName = filePath.split(/[\\/]/).pop() || 'file';
       const ext = fileName.split('.').pop()?.toLowerCase() || '';
       const mimeType = getMimeType(ext);
       return {
@@ -259,7 +564,7 @@ export async function uploadSourceFile(accept?: string): Promise<UploadResult | 
       };
     }
 
-    // 浏览器降级：通过 file input 读取
+    // Browser fallback
     const file = await browserOpenFile(accept || '*/*');
     if (!file) return null;
 
@@ -274,9 +579,14 @@ export async function uploadSourceFile(accept?: string): Promise<UploadResult | 
       fileSize: file.size,
     };
   } catch (error) {
-    console.error('Source file upload failed:', error);
+    console.error('Upload to project failed:', error);
     throw error;
   }
+}
+
+/** 为源节点上传文件 — 返回 data URL + 文件名 + 大小（向后兼容，不保存到项目目录） */
+export async function uploadSourceFile(accept?: string): Promise<UploadResult | null> {
+  return uploadSourceFileToProject(accept);
 }
 
 // ============================================

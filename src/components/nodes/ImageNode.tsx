@@ -11,7 +11,7 @@ import ImageNodeToolbar from './shared/ImageNodeToolbar';
 import MattingToolbar from './shared/MattingToolbar';
 import FreeAnglePanel from './shared/FreeAnglePanel';
 import { useAppStore, generateId } from '../../store/useAppStore';
-import { uploadSourceFile } from '../../services/fileService';
+import { uploadSourceFileToProject, saveDataUrlToProjectData } from '../../services/fileService';
 import { generateAngleImage } from '../../services/apimartService';
 
 /* ── Matting types ── */
@@ -103,6 +103,7 @@ function floodFill(
    ════════════════════════════════════════════ */
 function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const currentProjectId = useAppStore((s) => s.currentProjectId);
   const isSource = data.role === 'source';
 
   // ── Resize ──
@@ -149,7 +150,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const handleUpload = useCallback(async () => {
     setIsUploading(true);
     try {
-      const result = await uploadSourceFile('.png,.jpg,.jpeg,.gif,.webp,.svg');
+      const result = await uploadSourceFileToProject('.png,.jpg,.jpeg,.gif,.webp,.svg', currentProjectId);
       if (!result) return;
       const img = new Image();
       img.onload = () => {
@@ -159,6 +160,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         const newHeight = Math.max(120, previewHeight + 4);
         updateNodeData(id, {
           imageUrl: result.dataUrl,
+          filePath: result.filePath,
           fileName: result.fileName,
           label: result.fileName,
           status: 'success',
@@ -173,7 +175,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     } finally {
       setIsUploading(false);
     }
-  }, [id, nodeWidth, updateNodeData]);
+  }, [id, nodeWidth, updateNodeData, currentProjectId]);
 
   /* ════════════════════════════════════════════
      Free Angle State
@@ -238,14 +240,28 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           // 下载图片并转为 data URL
           const resp = await fetch(genUrl);
           const blob = await resp.blob();
-          const dataUrl = await new Promise<string>((resolve, reject) => {
+          let dataUrl = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = () => resolve(reader.result as string);
             reader.onerror = reject;
             reader.readAsDataURL(blob);
           });
 
-          const dims = await computeImageNodeDimensions(dataUrl);
+          // Tauri: save generated image to project data dir
+          let filePath: string | undefined;
+          let assetUrl = dataUrl;
+          const projectId = store.currentProjectId;
+          if (projectId && projectId !== 'default') {
+            const ext = blob.type.split('/').pop() || 'png';
+            const savedName = `angle_${params.rotation.toFixed(0)}_${i}.${ext}`;
+            const saved = await saveDataUrlToProjectData(dataUrl, projectId, savedName);
+            if (saved && saved.assetUrl) {
+              assetUrl = saved.assetUrl;
+              filePath = saved.filePath;
+            }
+          }
+
+          const dims = await computeImageNodeDimensions(assetUrl);
           const newNode: Node<BaseNodeData> = {
             id: `node-${generateId()}`,
             type: 'ai-image',
@@ -254,7 +270,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               label: `角度视图 ${params.rotation.toFixed(0)}°`,
               type: 'ai-image',
               role: 'source',
-              imageUrl: dataUrl,
+              imageUrl: assetUrl,
+              filePath,
               status: 'success',
               imageWidth: dims.nodeWidth,
               imageHeight: dims.nodeHeight,

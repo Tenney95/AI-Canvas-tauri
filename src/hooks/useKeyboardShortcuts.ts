@@ -4,6 +4,8 @@
  */
 import { useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
+import * as fileService from '../services/fileService';
+import type { BaseNodeData } from '../types';
 export function useKeyboardShortcuts() {
   const { undo, redo, saveCurrentProject, copySelectedNodes, pasteNodes } = useAppStore();
 
@@ -76,10 +78,16 @@ export function useKeyboardShortcuts() {
 
       // Delete / Backspace
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        const ids = useAppStore.getState().selectedNodeIds;
+        const state = useAppStore.getState();
+        const ids = state.selectedNodeIds;
         if (ids.length > 0) {
           e.preventDefault();
           e.stopPropagation();
+          // Delete associated local files
+          const nodesToDelete = state.nodes.filter((n) => ids.includes(n.id));
+          for (const node of nodesToDelete) {
+            fileService.deleteNodeFile(node.data as BaseNodeData).catch(() => {});
+          }
           useAppStore.getState().commitToHistory();
           useAppStore.setState((s) => ({
             nodes: s.nodes.filter((n) => !ids.includes(n.id)),

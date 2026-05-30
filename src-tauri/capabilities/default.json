@@ -20,12 +20,27 @@
     "global-shortcut:allow-is-registered",
     "global-shortcut:allow-unregister-all",
     "fs:default",
-    "fs:allow-read",
-    "fs:allow-write",
     "shell:default",
     "shell:allow-open",
     {
       "identifier": "fs:scope",
+      "allow": [
+        { "path": "$APPDATA/**" },
+        { "path": "$HOME/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "**" }
+      ]
+    },
+    {
+      "identifier": "fs:write-files",
+      "allow": [
+        { "path": "$APPDATA/**" }
+      ]
+    },
+    {
+      "identifier": "fs:read-files",
       "allow": [
         { "path": "$APPDATA/**" },
         { "path": "$HOME/**" },

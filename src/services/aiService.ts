@@ -10,7 +10,7 @@ const LOCAL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_BASE_URLS: Record<string, string> = {
   openai: 'https://api.openai.com',
   ppio: 'https://api.ppio.ai',
-  apimart: 'https://api.apimart.com',
+  apimart: 'https://api.apimart.ai/v1',
   volcengine: 'https://ark.cn-beijing.volces.com/api/v3',
   grsai: 'https://api.grsai.com',
   dreamina: 'https://api.dreamina.com',
@@ -73,8 +73,10 @@ function mapImageDimensions(
  * 根据 provider 自动解析 API Key 和 Base URL
  */
 export async function generateText(params: AIGenerateParams): Promise<string> {
-  const { prompt, model, provider } = params;
+  const { prompt: rawPrompt, model, provider } = params;
 
+  // 解析 @{nodeId:label} 引用为对应节点的实际输出内容
+  const prompt = resolveNodeReferences(rawPrompt);
   if (!prompt.trim()) {
     throw new Error('提示词不能为空');
   }
@@ -154,20 +156,44 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
 /**
  * 调用 OpenAI 兼容的 /images/generations 接口生成图片
  * 主流图片 API 均遵循此格式（DALL-E、Flux、Stable Diffusion 等）
+ * APIMart 走异步轮询路径（其 API 格式与 OpenAI 不兼容）
  */
 export async function generateImage(params: AIImageGenParams): Promise<{ url: string; width: number; height: number }> {
+  const { prompt: rawPrompt, model, provider, imageSize = '2K', aspectRatio = '1:1' } = params;
+
+  // 解析 @{nodeId:label} 引用为对应节点的实际输出内容
+  const prompt = resolveNodeReferences(rawPrompt);
+
   // ComfyUI 工作流执行路径
   if (params.workflowId) {
-    return executeComfyUIGenerate(params);
+    return executeComfyUIGenerate({ ...params, prompt });
   }
-
-  const { prompt, model, provider, imageSize = '2K', aspectRatio = '1:1' } = params;
 
   if (!prompt.trim()) {
     throw new Error('提示词不能为空');
   }
 
   const config = useAppStore.getState().config;
+
+  // APIMart 使用异步任务轮询格式（与 OpenAI 不兼容）
+  if (provider === 'apimart') {
+    let apiKey: string;
+    let baseUrl: string;
+    const providerConfig = config.providers.apimart;
+    apiKey = providerConfig?.apiKey || '';
+    if (!apiKey) {
+      throw new Error('未配置 apimart 的 API Key\n请在「设置 → API Key」中配置');
+    }
+    baseUrl = providerConfig?.baseUrl || DEFAULT_BASE_URLS.apimart || '';
+    if (!baseUrl) {
+      throw new Error('未配置 apimart 的服务地址\n请在「设置 → API Key」中添加');
+    }
+    baseUrl = baseUrl.replace(/\/+$/, '');
+    const modelName = extractModelName(model, provider);
+    const dimensions = mapImageDimensions(imageSize, aspectRatio);
+    return generateApimartImage(apiKey, baseUrl, modelName, prompt, imageSize, aspectRatio, dimensions);
+  }
+
   const dimensions = mapImageDimensions(imageSize, aspectRatio);
 
   let baseUrl: string;
@@ -242,6 +268,82 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
   }
 
   return { url: imageUrl, width: dimensions.width, height: dimensions.height };
+}
+
+/** APIMart 图片生成 — 异步提交 + 轮询，格式与 FreeAngle 面板一致 */
+async function generateApimartImage(
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  prompt: string,
+  imageSize: string,
+  aspectRatio: string,
+  dimensions: { width: number; height: number },
+): Promise<{ url: string; width: number; height: number }> {
+  // 步骤 1: 提交生成任务
+  const submitResp = await fetch(`${baseUrl}/images/generations`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      prompt,
+      n: 1,
+      resolution: imageSize,
+      size: aspectRatio,
+    }),
+  });
+
+  if (!submitResp.ok) {
+    const errBody = await submitResp.text().catch(() => '');
+    throw new Error(`APIMart 生成提交失败 (${submitResp.status}): ${errBody.slice(0, 200)}`);
+  }
+
+  const submitResult = await submitResp.json() as { code: number; data: Array<{ task_id: string; status: string }> };
+  const taskId = submitResult.data?.[0]?.task_id;
+  if (!taskId) {
+    throw new Error('APIMart 生成提交失败: 未返回 task_id');
+  }
+
+  // 步骤 2: 轮询任务直到完成
+  const MAX_WAIT_MS = 5 * 60 * 1000;
+  const POLL_INTERVAL = 2000;
+  const start = Date.now();
+
+  while (Date.now() - start < MAX_WAIT_MS) {
+    const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!pollResp.ok) {
+      const errBody = await pollResp.text().catch(() => '');
+      throw new Error(`APIMart 任务查询失败 (${pollResp.status}): ${errBody.slice(0, 200)}`);
+    }
+
+    const pollResult = await pollResp.json() as {
+      code: number;
+      data: { status: string; progress?: number; result?: { images?: Array<{ url: string[] }> } };
+    };
+    const task = pollResult.data ?? pollResult;
+
+    if (task.status === 'completed') {
+      const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
+      if (imageUrls.length === 0) {
+        throw new Error('APIMart 生成完成但未返回图片');
+      }
+      return { url: imageUrls[0], width: dimensions.width, height: dimensions.height };
+    }
+
+    if (task.status === 'failed' || task.status === 'error') {
+      throw new Error(`APIMart 生成任务失败: ${task.status}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+  }
+
+  throw new Error('APIMart 生成任务超时，请稍后再试');
 }
 
 // ============================================
@@ -700,7 +802,7 @@ async function executeComfyUIVideoGenerate(params: AIVideoGenParams): Promise<{ 
 export async function generateVideo(params: AIVideoGenParams): Promise<{ url: string }> {
   // ComfyUI 工作流执行路径
   if (params.workflowId) {
-    return executeComfyUIVideoGenerate(params);
+    return executeComfyUIVideoGenerate({ ...params, prompt: resolveNodeReferences(params.prompt) });
   }
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置

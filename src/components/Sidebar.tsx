@@ -241,6 +241,7 @@ function LogoMenu() {
     deleteProject,
   } = useAppStore();
   const [open, setOpen] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -339,7 +340,7 @@ function LogoMenu() {
                     className="project-delete-btn"
                     onClick={(e) => {
                       e.stopPropagation();
-                      deleteProject(p.id);
+                      setConfirmDeleteId(p.id);
                     }}
                     data-tooltip="删除项目"
                     role="button"
@@ -379,6 +380,49 @@ function LogoMenu() {
           </button>
         </div>
       )}
+
+      {/* Delete Project Confirm Dialog */}
+      {confirmDeleteId && (() => {
+        const target = projects.find((p) => p.id === confirmDeleteId);
+        return (
+          <div className="delete-confirm-overlay" onClick={() => setConfirmDeleteId(null)}>
+            <div className="delete-confirm-dialog" onClick={(e) => e.stopPropagation()}>
+              <div className="delete-confirm-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+              </div>
+              <div className="delete-confirm-text">
+                <p className="delete-confirm-title">确认删除项目</p>
+                <p className="delete-confirm-name">「{target?.name ?? '未命名项目'}」</p>
+                <p className="delete-confirm-hint">此操作不可撤销，项目中的节点、连线和本地媒体文件将被永久删除。</p>
+              </div>
+              <div className="delete-confirm-actions">
+                <button
+                  type="button"
+                  className="delete-confirm-btn cancel"
+                  onClick={() => setConfirmDeleteId(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="delete-confirm-btn confirm"
+                  onClick={() => {
+                    deleteProject(confirmDeleteId);
+                    setConfirmDeleteId(null);
+                    setOpen(false);
+                  }}
+                >
+                  确认删除
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

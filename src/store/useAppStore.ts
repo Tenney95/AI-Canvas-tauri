@@ -6,11 +6,16 @@ import type { Node, Edge, Connection } from '@xyflow/react';
 import type { BaseNodeData, CanvasProject, AppConfig, WorkflowDefinition } from '../types';
 import * as fileService from '../services/fileService';
 
-// 生成唯一 ID
+// 生成唯一 ID（节点等短 ID）
 export const generateId = () => Math.random().toString(36).substring(2, 11);
 
+/** 生成项目 ID（UUID v4，固定不重复） */
+export function generateProjectId(): string {
+  return crypto.randomUUID();
+}
+
 /** Load an image from dataUrl and compute proportional node dimensions */
-function computeImageNodeDimensions(dataUrl: string): Promise<{ nodeWidth: number; nodeHeight: number }> {
+export function computeImageNodeDimensions(dataUrl: string): Promise<{ nodeWidth: number; nodeHeight: number }> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -129,7 +134,7 @@ interface AppState {
   pasteNodes: (position: { x: number; y: number }) => void;
   pasteExternalContent: (position: { x: number; y: number }) => Promise<void>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pasteExternalFromDataTransfer: (dt: any, position: { x: number; y: number }) => Promise<void>;
+  pasteExternalFromDataTransfer: (dt: any, position: { x: number; y: number }, maxItems?: number, actionName?: string) => Promise<void>;
 
   // Actions - Workflows
   setWorkflowPanelOpen: (open: boolean) => void;
@@ -229,6 +234,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   deleteNode: (nodeId) => {
     get().commitToHistory();
+    // Try to delete the associated local file
+    const node = get().nodes.find((n) => n.id === nodeId);
+    if (node) {
+      fileService.deleteNodeFile(node.data as BaseNodeData).catch(() => {});
+    }
     set((state) => ({
       nodes: state.nodes.filter((n) => n.id !== nodeId),
       edges: state.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
@@ -277,8 +287,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
 
   createProject: (name) => {
+    const id = generateProjectId();
     const project: CanvasProject = {
-      id: generateId(),
+      id,
       name: name || `项目 ${get().projects.length + 1}`,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -292,6 +303,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
     // Persist to IndexedDB
     fileService.saveProject({ ...project, nodes: [], edges: [] }).catch(() => {});
+    // Ensure local data directory for media assets
+    fileService.ensureProjectDataDir(id).catch(() => {});
   },
 
   deleteProject: (id) => {
@@ -305,6 +318,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     // Remove from IndexedDB
     fileService.deleteProjectData(id).catch(() => {});
+    // Remove local data directory (media files)
+    fileService.deleteProjectDataDir(id).catch(() => {});
   },
 
   switchProject: async (id) => {
@@ -313,6 +328,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const project = get().projects.find((p) => p.id === id);
     if (!project) return;
+
+    // Ensure local data directory for the target project
+    fileService.ensureProjectDataDir(id).catch(() => {});
 
     // Load project data from IndexedDB
     const data = await fileService.loadProjectData(id);
@@ -519,16 +537,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   // Paste external content from a native paste event's DataTransfer (WebView2 reliable path)
-  pasteExternalFromDataTransfer: async (dt, position) => {
+  pasteExternalFromDataTransfer: async (dt, position, maxItems = 5, actionName = '已粘贴') => {
     if (!dt) return;
 
-    const offsets = [
-      { x: 0, y: 0 },
-      { x: 40, y: 40 },
-      { x: 80, y: 80 },
-      { x: -40, y: 40 },
-      { x: -80, y: 80 },
-    ];
+    // Generate position offsets for multiple items (cascading diagonal layout)
+    const offsets: { x: number; y: number }[] = [];
+    for (let i = 0; i < maxItems; i++) {
+      offsets.push({ x: i * 30, y: i * 30 });
+    }
 
     // Helper: create image node (proportional to image aspect ratio)
     const addImageNode = async (dataUrl: string, idx: number) => {
@@ -594,14 +610,14 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     // 1) File objects (OS file copy — most reliable on Windows)
     if (dt.files.length > 0) {
-      for (let i = 0; i < dt.files.length && pending.length < offsets.length; i++) {
+      for (let i = 0; i < dt.files.length && pending.length < maxItems; i++) {
         pending.push({ kind: 'file', file: dt.files[i] });
       }
     }
 
     // 2) Items by type (used when no File objects, or as additional processing)
     if (pending.length === 0 && dt.items.length > 0) {
-      for (let i = 0; i < dt.items.length && pending.length < offsets.length; i++) {
+      for (let i = 0; i < dt.items.length && pending.length < maxItems; i++) {
         const item = dt.items[i];
 
         if (item.type.startsWith('image/') || item.type.startsWith('video/') || item.type.startsWith('audio/')) {
@@ -639,7 +655,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (uriText) {
             const uris = uriText.split('\n').filter((u) => u.trim().startsWith('file://'));
             for (const uri of uris) {
-              if (pending.length >= offsets.length) break;
+              if (pending.length >= maxItems) break;
               const filePath = decodeURIComponent(uri.trim().replace(/^file:\/\/\//, ''));
               const ext = filePath.split('.').pop()?.toLowerCase() || '';
               pending.push({ kind: 'file-path', filePath, ext });
@@ -661,20 +677,183 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     // ── Execute all pending items ──
     for (const p of pending) {
-      if (pastedCount >= offsets.length) break;
+      if (pastedCount >= maxItems) break;
 
       if (p.kind === 'file') {
-        const dataUrl = await blobToDataUrl(p.file);
-        if (p.file.type.startsWith('image/')) {
-          await addImageNode(dataUrl, pastedCount);
-        } else if (p.file.type.startsWith('video/')) {
-          addVideoNode(dataUrl, pastedCount);
-        } else if (p.file.type.startsWith('audio/')) {
-          addAudioNode(dataUrl, pastedCount);
+        const off = offsets[pastedCount] || { x: pastedCount * 40, y: pastedCount * 40 };
+        const nodePos = { x: position.x + off.x, y: position.y + off.y };
+        const projectId = get().currentProjectId;
+        const isTauri = projectId && projectId !== 'default' && typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+        const file = p.file; // capture for async closure
+
+        if (file.type.startsWith('image/')) {
+          const nodeId = `node-${generateId()}`;
+          const newNode: Node<BaseNodeData> = {
+            id: nodeId,
+            type: 'ai-image',
+            position: nodePos,
+            data: {
+              label: file.name || '粘贴图像',
+              type: 'ai-image', role: 'source',
+              status: 'loading',
+              nodeWidth: 280, nodeHeight: 158,
+            },
+          };
+          get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+          pastedCount++;
+
+          // Upload in background
+          (async () => {
+            try {
+              let assetUrl: string | null = null;
+              let savedPath: string | null = null;
+              if (isTauri) {
+                try {
+                  const buf = await file.arrayBuffer();
+                  const result = await fileService.saveBinaryToProjectData(
+                    new Uint8Array(buf),
+                    projectId!,
+                    file.name,
+                  );
+                  if (result) {
+                    assetUrl = result.assetUrl;
+                    savedPath = result.filePath;
+                    console.log(`[pasteFile] saved "${file.name}" (${(buf.byteLength / 1024 / 1024).toFixed(1)}MB) → ${result.filePath}`);
+                  } else {
+                    console.warn(`[pasteFile] saveBinaryToProjectData returned null for "${file.name}", falling back to base64`);
+                  }
+                } catch (err) {
+                  console.error(`[pasteFile] failed to save "${file.name}":`, err);
+                }
+              }
+              const imgUrl = assetUrl || await blobToDataUrl(file);
+              const dims = await computeImageNodeDimensions(imgUrl);
+              get().updateNodeData(nodeId, {
+                imageUrl: imgUrl,
+                label: savedPath ? file.name : '粘贴图像',
+                status: 'success',
+                ...(savedPath ? { filePath: savedPath, fileName: file.name } : {}),
+                ...dims,
+              });
+            } catch (err) {
+              console.error(`[pasteFile] upload failed for "${file.name}":`, err);
+              get().updateNodeData(nodeId, {
+                status: 'error',
+                error: err instanceof Error ? err.message : '上传失败',
+              });
+            }
+          })();
+        } else if (file.type.startsWith('video/')) {
+          const nodeId = `node-${generateId()}`;
+          const newNode: Node<BaseNodeData> = {
+            id: nodeId,
+            type: 'ai-video',
+            position: nodePos,
+            data: {
+              label: file.name || '粘贴视频',
+              type: 'ai-video', role: 'source',
+              status: 'loading',
+              nodeWidth: 280, nodeHeight: 160,
+            },
+          };
+          get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+          pastedCount++;
+
+          (async () => {
+            try {
+              let assetUrl: string | null = null;
+              let savedPath: string | null = null;
+              if (isTauri) {
+                try {
+                  const buf = await file.arrayBuffer();
+                  const result = await fileService.saveBinaryToProjectData(
+                    new Uint8Array(buf),
+                    projectId!,
+                    file.name,
+                  );
+                  if (result) {
+                    assetUrl = result.assetUrl;
+                    savedPath = result.filePath;
+                    console.log(`[pasteFile] saved "${file.name}" (${(buf.byteLength / 1024 / 1024).toFixed(1)}MB) → ${result.filePath}`);
+                  } else {
+                    console.warn(`[pasteFile] saveBinaryToProjectData returned null for "${file.name}", falling back to base64`);
+                  }
+                } catch (err) {
+                  console.error(`[pasteFile] failed to save "${file.name}":`, err);
+                }
+              }
+              const vidUrl = assetUrl || await blobToDataUrl(file);
+              get().updateNodeData(nodeId, {
+                videoUrl: vidUrl,
+                label: savedPath ? file.name : '粘贴视频',
+                status: 'success',
+                ...(savedPath ? { filePath: savedPath, fileName: file.name } : {}),
+              });
+            } catch (err) {
+              console.error(`[pasteFile] upload failed for "${file.name}":`, err);
+              get().updateNodeData(nodeId, {
+                status: 'error',
+                error: err instanceof Error ? err.message : '上传失败',
+              });
+            }
+          })();
+        } else if (file.type.startsWith('audio/')) {
+          const nodeId = `node-${generateId()}`;
+          const newNode: Node<BaseNodeData> = {
+            id: nodeId,
+            type: 'ai-audio',
+            position: nodePos,
+            data: {
+              label: file.name || '粘贴音频',
+              type: 'ai-audio', role: 'source',
+              status: 'loading',
+              nodeWidth: 260, nodeHeight: 140,
+            },
+          };
+          get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+          pastedCount++;
+
+          (async () => {
+            try {
+              let assetUrl: string | null = null;
+              let savedPath: string | null = null;
+              if (isTauri) {
+                try {
+                  const buf = await file.arrayBuffer();
+                  const result = await fileService.saveBinaryToProjectData(
+                    new Uint8Array(buf),
+                    projectId!,
+                    file.name,
+                  );
+                  if (result) {
+                    assetUrl = result.assetUrl;
+                    savedPath = result.filePath;
+                    console.log(`[pasteFile] saved "${file.name}" (${(buf.byteLength / 1024 / 1024).toFixed(1)}MB) → ${result.filePath}`);
+                  } else {
+                    console.warn(`[pasteFile] saveBinaryToProjectData returned null for "${file.name}", falling back to base64`);
+                  }
+                } catch (err) {
+                  console.error(`[pasteFile] failed to save "${file.name}":`, err);
+                }
+              }
+              const audUrl = assetUrl || await blobToDataUrl(file);
+              get().updateNodeData(nodeId, {
+                audioUrl: audUrl,
+                label: savedPath ? file.name : '粘贴音频',
+                status: 'success',
+                ...(savedPath ? { filePath: savedPath, fileName: file.name } : {}),
+              });
+            } catch (err) {
+              console.error(`[pasteFile] upload failed for "${file.name}":`, err);
+              get().updateNodeData(nodeId, {
+                status: 'error',
+                error: err instanceof Error ? err.message : '上传失败',
+              });
+            }
+          })();
         } else {
           continue;
         }
-        pastedCount++;
       } else if (p.kind === 'dataUrl') {
         // If it's a remote URL, try to fetch it
         if (p.dataUrl.startsWith('http')) {
@@ -702,6 +881,106 @@ export const useAppStore = create<AppState>((set, get) => ({
         const videoExts = ['mp4', 'webm', 'avi', 'mov', 'mkv'];
         const audioExts = ['mp3', 'wav', 'ogg', 'flac', 'aac'];
         if (imageExts.includes(p.ext) || videoExts.includes(p.ext) || audioExts.includes(p.ext)) {
+          const projectId = get().currentProjectId;
+          const off = offsets[pastedCount] || { x: pastedCount * 40, y: pastedCount * 40 };
+          const filePath = p.filePath;
+          const extLower = p.ext.toLowerCase();
+          const fileName = filePath.split(/[/\\]/).pop() || filePath;
+
+          if (projectId && projectId !== 'default') {
+            // Create node immediately with loading, copy file in background
+            if (imageExts.includes(extLower)) {
+              const nodeId = `node-${generateId()}`;
+              const newNode: Node<BaseNodeData> = {
+                id: nodeId,
+                type: 'ai-image',
+                position: { x: position.x + off.x, y: position.y + off.y },
+                data: { label: fileName, type: 'ai-image', role: 'source', status: 'loading', nodeWidth: 280, nodeHeight: 158 },
+              };
+              get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+              pastedCount++;
+              (async () => {
+                try {
+                  const result = await fileService.copyFileToProjectData(filePath, projectId);
+                  if (result && result.assetUrl) {
+                    const dims = await computeImageNodeDimensions(result.assetUrl);
+                    get().updateNodeData(nodeId, { label: result.fileName, imageUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success', ...dims });
+                  } else {
+                    // Fallback: read into memory
+                    const dataUrl = await fileService.readFileToDataUrl(filePath);
+                    if (dataUrl) {
+                      const dims = await computeImageNodeDimensions(dataUrl);
+                      get().updateNodeData(nodeId, { imageUrl: dataUrl, status: 'success', ...dims });
+                    } else {
+                      get().updateNodeData(nodeId, { status: 'error', error: '无法读取文件' });
+                    }
+                  }
+                } catch (err) {
+                  console.error(`[pasteFile] file-path copy failed for "${filePath}":`, err);
+                  get().updateNodeData(nodeId, { status: 'error', error: err instanceof Error ? err.message : '拷贝失败' });
+                }
+              })();
+            } else if (videoExts.includes(extLower)) {
+              const nodeId = `node-${generateId()}`;
+              const newNode: Node<BaseNodeData> = {
+                id: nodeId,
+                type: 'ai-video',
+                position: { x: position.x + off.x, y: position.y + off.y },
+                data: { label: fileName, type: 'ai-video', role: 'source', status: 'loading', nodeWidth: 280, nodeHeight: 160 },
+              };
+              get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+              pastedCount++;
+              (async () => {
+                try {
+                  const result = await fileService.copyFileToProjectData(filePath, projectId);
+                  if (result && result.assetUrl) {
+                    get().updateNodeData(nodeId, { label: result.fileName, videoUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success' });
+                  } else {
+                    const dataUrl = await fileService.readFileToDataUrl(filePath);
+                    if (dataUrl) {
+                      get().updateNodeData(nodeId, { videoUrl: dataUrl, status: 'success' });
+                    } else {
+                      get().updateNodeData(nodeId, { status: 'error', error: '无法读取文件' });
+                    }
+                  }
+                } catch (err) {
+                  console.error(`[pasteFile] file-path copy failed for "${filePath}":`, err);
+                  get().updateNodeData(nodeId, { status: 'error', error: err instanceof Error ? err.message : '拷贝失败' });
+                }
+              })();
+            } else {
+              const nodeId = `node-${generateId()}`;
+              const newNode: Node<BaseNodeData> = {
+                id: nodeId,
+                type: 'ai-audio',
+                position: { x: position.x + off.x, y: position.y + off.y },
+                data: { label: fileName, type: 'ai-audio', role: 'source', status: 'loading', nodeWidth: 260, nodeHeight: 140 },
+              };
+              get().addNode(newNode as Parameters<AppState['addNode']>[0]);
+              pastedCount++;
+              (async () => {
+                try {
+                  const result = await fileService.copyFileToProjectData(filePath, projectId);
+                  if (result && result.assetUrl) {
+                    get().updateNodeData(nodeId, { label: result.fileName, audioUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success' });
+                  } else {
+                    const dataUrl = await fileService.readFileToDataUrl(filePath);
+                    if (dataUrl) {
+                      get().updateNodeData(nodeId, { audioUrl: dataUrl, status: 'success' });
+                    } else {
+                      get().updateNodeData(nodeId, { status: 'error', error: '无法读取文件' });
+                    }
+                  }
+                } catch (err) {
+                  console.error(`[pasteFile] file-path copy failed for "${filePath}":`, err);
+                  get().updateNodeData(nodeId, { status: 'error', error: err instanceof Error ? err.message : '拷贝失败' });
+                }
+              })();
+            }
+            continue;
+          }
+
+          // Fallback (no project): read into memory synchronously
           const dataUrl = await fileService.readFileToDataUrl(p.filePath);
           if (dataUrl) {
             if (imageExts.includes(p.ext)) await addImageNode(dataUrl, pastedCount);
@@ -717,9 +996,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     if (pastedCount > 0) {
-      get().showToast(`已粘贴 ${pastedCount} 个源节点`);
+      get().showToast(`${actionName} ${pastedCount} 个源节点`);
     } else {
-      get().showToast('剪贴板无可识别内容', 'error');
+      get().showToast('无可识别内容', 'error');
     }
   },
 
@@ -1069,20 +1348,25 @@ export const useAppStore = create<AppState>((set, get) => ({
             nodes: (data.nodes as Node<BaseNodeData>[]) || [],
             edges: (data.edges as Edge[]) || [],
           });
-          return;
+        } else {
+          set({ projects: mapped, currentProjectId: lastId });
         }
-        set({ projects: mapped, currentProjectId: lastId });
+        // Ensure data dir for current project
+        fileService.ensureProjectDataDir(lastId).catch(() => {});
       } else {
-        // No saved projects, persist default
+        // No saved projects, persist default with UUID
+        const id = generateProjectId();
         const defaultProject = {
-          id: 'default',
+          id,
           name: '默认画布',
           createdAt: Date.now(),
           updatedAt: Date.now(),
           nodes: [],
           edges: [],
         };
+        set({ currentProjectId: id, projectName: '默认画布' });
         await fileService.saveProject(defaultProject).catch(() => {});
+        fileService.ensureProjectDataDir(id).catch(() => {});
       }
     } catch (error) {
       console.error('Init from IndexedDB failed:', error);

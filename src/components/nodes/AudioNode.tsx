@@ -6,7 +6,7 @@ import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import { useAppStore } from '../../store/useAppStore';
-import { uploadSourceFile } from '../../services/fileService';
+import { uploadSourceFileToProject } from '../../services/fileService';
 
 /* ── Waveform data ── */
 interface WaveformData {
@@ -148,6 +148,7 @@ function formatTime(seconds: number): string {
 
 function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const currentProjectId = useAppStore((s) => s.currentProjectId);
   const isSource = data.role === 'source';
 
   // ── Upload state ──
@@ -257,11 +258,12 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const handleUpload = useCallback(async () => {
     setIsUploading(true);
     try {
-      const result = await uploadSourceFile('.mp3,.wav,.ogg,.flac,.aac,.m4a,.wma');
+      const result = await uploadSourceFileToProject('.mp3,.wav,.ogg,.flac,.aac,.m4a,.wma', currentProjectId);
       if (!result) return;
 
       updateNodeData(id, {
         audioUrl: result.dataUrl,
+        filePath: result.filePath,
         fileName: result.fileName,
         label: result.fileName,
         status: 'success',
@@ -271,7 +273,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     } finally {
       setIsUploading(false);
     }
-  }, [id, updateNodeData]);
+  }, [id, updateNodeData, currentProjectId]);
 
   // ── Render ──
   return (

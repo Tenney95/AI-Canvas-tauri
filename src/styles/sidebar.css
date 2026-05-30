@@ -319,3 +319,106 @@
   color: #f87171;
   background: rgba(239, 68, 68, 0.12);
 }
+
+/* ============================================
+   Delete Project Confirm Dialog
+   ============================================ */
+.delete-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 120px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: confirmFadeIn 0.15s ease;
+}
+@keyframes confirmFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.delete-confirm-dialog {
+  width: 380px;
+  max-width: 90vw;
+  background: #1a1a26;
+  border: 1px solid #2a2a3a;
+  border-radius: 14px;
+  padding: 24px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  animation: confirmSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes confirmSlideIn {
+  from { opacity: 0; transform: translateY(-12px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.delete-confirm-icon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 10px;
+  color: #f87171;
+  margin-bottom: 16px;
+}
+
+.delete-confirm-text {
+  margin-bottom: 20px;
+}
+.delete-confirm-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e8e8ed;
+  margin: 0 0 4px;
+}
+.delete-confirm-name {
+  font-size: 13px;
+  color: #818cf8;
+  margin: 0 0 8px;
+  word-break: break-all;
+}
+.delete-confirm-hint {
+  font-size: 12px;
+  color: #555566;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.delete-confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.delete-confirm-btn {
+  padding: 8px 18px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.delete-confirm-btn.cancel {
+  background: rgba(255, 255, 255, 0.06);
+  color: #8888a0;
+}
+.delete-confirm-btn.cancel:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e8e8ed;
+}
+.delete-confirm-btn.confirm {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+.delete-confirm-btn.confirm:hover {
+  background: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+}

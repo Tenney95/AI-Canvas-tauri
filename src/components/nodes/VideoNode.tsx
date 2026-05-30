@@ -6,10 +6,11 @@ import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import { useAppStore } from '../../store/useAppStore';
-import { uploadSourceFile } from '../../services/fileService';
+import { uploadSourceFileToProject } from '../../services/fileService';
 
 function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const currentProjectId = useAppStore((s) => s.currentProjectId);
   const isSource = data.role === 'source';
 
   // ── Upload handler for source nodes ──
@@ -18,11 +19,12 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const handleUpload = useCallback(async () => {
     setIsUploading(true);
     try {
-      const result = await uploadSourceFile('.mp4,.webm,.avi,.mov,.mkv');
+      const result = await uploadSourceFileToProject('.mp4,.webm,.avi,.mov,.mkv', currentProjectId);
       if (!result) return;
 
       updateNodeData(id, {
         videoUrl: result.dataUrl,
+        filePath: result.filePath,
         fileName: result.fileName,
         label: result.fileName,
         status: 'success',
@@ -32,7 +34,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     } finally {
       setIsUploading(false);
     }
-  }, [id, updateNodeData]);
+  }, [id, updateNodeData, currentProjectId]);
 
   // ── Display label ──
   const displayLabel = data.fileName || data.label || '粘贴视频';
