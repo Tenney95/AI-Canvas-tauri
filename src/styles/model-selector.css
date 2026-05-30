@@ -295,3 +295,33 @@
   flex-shrink: 0;
   color: #818cf8;
 }
+
+/* Disabled group header (no API Key configured) */
+.model-group-header.disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  pointer-events: auto; /* retain hover for tooltip */
+}
+.model-group-header.disabled:hover {
+  background: transparent;
+}
+
+/* Disabled model item */
+.model-item.disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+.model-item.disabled:hover {
+  background: transparent;
+  color: #c0c0d0;
+}
+.model-item.disabled.active {
+  background: rgba(99, 102, 241, 0.06);
+}
+
+/* Lock icon for disabled groups */
+.model-lock-icon {
+  flex-shrink: 0;
+  color: #555566;
+}

@@ -81,3 +81,19 @@ _____________________________________GRSAI_____________________________________
     "system_fingerprint": ""
 }
 __________________________________________________________________________
+// 自由视角
+上传图片 ：https://up-z2.qiniup.com/
+
+
+{
+    "apiUrl": "https://grsai.dakka.com.cn/v1/api/generate",
+    "apiKey": "******************",
+    "model": "nano-banana-2",
+    "prompt": "switch the camera perspective: medium shot, front-right quarter view, eye-level shot",
+    "images": [
+        "https://grsai-file.dakka.com.cn/2686f995-9060-4d38-b33e-100f61168434.png"
+    ],
+    "replyType": "json",
+    "imageSize": "2K",
+    "aspectRatio": "2:3"
+}

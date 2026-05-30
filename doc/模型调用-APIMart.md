@@ -1,4 +1,5 @@
 _____________________________________APIMart_____________________________________
+```
 // 测试链接
 {
     "apiUrl": "https://api.apimart.ai/v1",
@@ -1658,3 +1659,133 @@ _____________________________________APIMart____________________________________
     "object": "list",
     "success": true
 }
+```
+—————————————————————————————————————————————————————————————————————————————————
+// 角度控制
+```
+{
+    "apiUrl": "https://api.apimart.ai/v1/images/generations",
+    "apiKey": "****************",
+    "model": "gpt-image-2",
+    "prompt": "switch the camera perspective: wide shot, front-right quarter view, eye-level shot",
+    "n": 1,
+    "resolution": "2k",
+    "size": "4:3",
+    "image_urls": [
+        "https://cdn.apimart.ai/files/1780128461402-qnhcogy5ks.jpg"
+    ]
+}
+{
+    "task_id": "task_01KSVYSEAMAA5H3Y3WAX50HT2N",
+    "status": "submitted",
+    "source": "body-probe"
+}
+
+https://api.apimart.ai/v1/tasks/task_01KSVYSEAMAA5H3Y3WAX50HT2N?language=zh
+{
+    "code": 200,
+    "data": {
+        "cost": 0.012,
+        "created": 1780128463,
+        "estimated_time": 100,
+        "id": "task_01KSVYSEAMAA5H3Y3WAX50HT2N",
+        "progress": 0,
+        "status": "pending"
+    }
+}
+{
+    "code": 200,
+    "data": {
+        "actual_time": 58,
+        "completed": 1780128521,
+        "cost": 0.012,
+        "created": 1780128463,
+        "estimated_time": 100,
+        "id": "task_01KSVYSEAMAA5H3Y3WAX50HT2N",
+        "progress": 100,
+        "result": {
+            "images": [
+                {
+                    "expires_at": 1780214921,
+                    "url": [
+                        "https://upload.apimart.ai/f/image/9998219871480189-865ea5b1-c2d7-4f40-bcc3-cc910f009ba4-gpt_image_2_codex_task_01KSVYV5KW187HKN5JQT7HB6JR_0.png"
+                    ]
+                }
+            ]
+        },
+        "status": "completed"
+    }
+}
+```
+
+—————————————————————————————————————————上传图片———————————————————————————————————————
+```
+// 上传图片
+const formData = new FormData();
+formData.append('file', fileInput.files[0]);
+
+const uploadResponse = await fetch('https://api.apimart.ai/v1/uploads/images', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer <token>'
+  },
+  body: formData
+});
+
+const uploadResult = await uploadResponse.json();
+const imageUrl = uploadResult.url;
+console.log(`图片 URL: ${imageUrl}`);
+
+// 使用上传的图片进行生成
+const genResponse = await fetch('https://api.apimart.ai/v1/images/generations', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer <token>',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    model: 'gemini-3-pro-image-preview',
+    prompt: '基于这张图片创作变体',
+    image_urls: [{url: imageUrl}]
+  })
+});
+
+// 200
+{
+  "url": "https://upload.apimart.ai/f/image/9990000123456-a1b2c3d4-photo.jpg",
+  "filename": "photo.jpg",
+  "content_type": "image/jpeg",
+  "bytes": 235680,
+  "created_at": 1743436800
+}
+// 400
+{
+  "error": {
+    "message": "missing or invalid file field: http: no such file",
+    "type": "invalid_request_error"
+  }
+}
+// 431
+{
+  "error": {
+    "message": "file size 25165824 exceeds maximum 20971520 bytes",
+    "type": "invalid_request_error"
+  }
+}
+// 429
+{
+  "error": {
+    "code": 429,
+    "message": "Rate limit exceeded. Please try again later",
+    "type": "rate_limit_error"
+  }
+}
+// 500 上传失败
+{
+  "error": {
+    "message": "failed to upload image",
+    "type": "server_error"
+  }
+}
+```
+————————————————————————————————————————————————————————————————————————————————————————

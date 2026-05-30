@@ -1,10 +1,12 @@
 /**
  * ModelSelector 模型选择器 — 下拉面板选择 AI 模型或工作流，支持按供应商分组折叠、搜索过滤、当前选中高亮
+ * 未配置 API Key 的供应商分组自动禁用（锁图标 + tooltip + 不可展开）
  */
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { NodeType, ModelOption, ModelGroup, WorkflowDefinition } from '../../../types';
 import { getWorkflowCategory } from '../../../types';
 import { defaultModelGroups } from './defaultModels';
+import { useAppStore } from '../../../store/useAppStore';
 
 interface ModelSelectorProps {
   nodeType: NodeType;
@@ -15,6 +17,8 @@ interface ModelSelectorProps {
   onWorkflowSelect?: (workflowId: string | undefined) => void;
   groups?: ModelGroup[];
   workflows?: WorkflowDefinition[];
+  /** 默认展开的分组 ID 列表（其余分组默认收起） */
+  defaultExpandedGroupIds?: string[];
 }
 
 export default function ModelSelector({
@@ -26,16 +30,31 @@ export default function ModelSelector({
   onWorkflowSelect,
   groups = defaultModelGroups,
   workflows = [],
+  defaultExpandedGroupIds = [],
 }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
-  // 默认所有分组都收起
+  // 默认分组收起，except defaultExpandedGroupIds
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
     const ids = groups
       .map((g) => ({ ...g, models: g.models.filter((m) => m.nodeTypes.includes(nodeType)) }))
       .filter((g) => g.models.length > 0)
-      .map((g) => g.id);
+      .map((g) => g.id)
+      .filter((id) => !defaultExpandedGroupIds.includes(id));
     return new Set(ids);
   });
+
+  // 读取配置 — 判断哪些 provider 有 API Key
+  const configProviders = useAppStore((s) => s.config.providers);
+
+  /** 判断某个 group 是否可用（该 group 的 provider 已配置 API Key） */
+  const isGroupAvailable = useCallback(
+    (groupId: string) => {
+      const providerKey = groupId === 'runninghubwf' ? 'runninghub' : groupId;
+      const provider = configProviders[providerKey];
+      return !!provider?.apiKey;
+    },
+    [configProviders],
+  );
   const ref = useRef<HTMLDivElement>(null);
 
   // 点击外部关闭
@@ -89,7 +108,9 @@ export default function ModelSelector({
     ? currentWorkflow.name
     : currentModel?.label ?? '选择模型';
 
+  // 切换分组折叠（不可用分组拒绝展开）
   const toggleGroup = (groupId: string) => {
+    if (!isGroupAvailable(groupId)) return;
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
@@ -132,11 +153,13 @@ export default function ModelSelector({
           {filteredGroups.map((group) => {
             const isCollapsed = collapsedGroups.has(group.id);
             const hasActiveModel = group.models.some((m) => m.value === selectedModel);
+            const groupAvailable = isGroupAvailable(group.id);
             return (
               <div key={group.id} className={`model-group${hasActiveModel ? ' has-active' : ''}`}>
                 <button
                   type="button"
-                  className="model-group-header"
+                  className={`model-group-header${groupAvailable ? '' : ' disabled'}`}
+                  title={groupAvailable ? undefined : `请先在设置中配置 ${group.name} API Key`}
                   onClick={(e) => {
                     e.stopPropagation();
                     toggleGroup(group.id);
@@ -151,26 +174,34 @@ export default function ModelSelector({
                     <div className="model-group-name">{group.name}</div>
                     <div className="model-group-desc">{group.description}</div>
                   </div>
-                  <svg
-                    className={`model-group-chevron${isCollapsed ? ' collapsed' : ''}`}
-                    width="12"
-                    height="12"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <polyline points="6 9 12 15 18 9" />
-                  </svg>
+                  {groupAvailable ? (
+                    <svg
+                      className={`model-group-chevron${isCollapsed ? ' collapsed' : ''}`}
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  ) : (
+                    <svg className="model-lock-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </svg>
+                  )}
                 </button>
                 <div className={`model-group-items${isCollapsed ? ' collapsed' : ''}`}>
                   {group.models.map((model) => (
                     <button
                       key={model.value}
                       type="button"
-                      className={`model-item${selectedModel === model.value ? ' active' : ''}`}
+                      className={`model-item${selectedModel === model.value ? ' active' : ''}${groupAvailable ? '' : ' disabled'}`}
                       onClick={(e) => {
                         e.stopPropagation();
+                        if (!groupAvailable) return;
                         onSelect(model);
                         onWorkflowSelect?.(undefined);
                         setOpen(false);

@@ -63,7 +63,6 @@ interface AppState {
   workflowPanelOpen: boolean;
 
   // UI 状态
-  sidebarOpen: boolean;
   settingsOpen: boolean;
   nodeMenuVisible: boolean;
   nodeMenuPosition: { x: number; y: number };
@@ -90,7 +89,6 @@ interface AppState {
   onEdgesChange: (changes: unknown[]) => void;
 
   // Actions - UI
-  toggleSidebar: () => void;
   setSettingsOpen: (open: boolean) => void;
   showNodeMenu: (position: { x: number; y: number }) => void;
   hideNodeMenu: () => void;
@@ -183,7 +181,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   ],
   currentProjectId: 'default',
   projectName: '新项目',
-  sidebarOpen: true,
   settingsOpen: false,
   nodeMenuVisible: false,
   nodeMenuPosition: { x: 0, y: 0 },
@@ -260,7 +257,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     console.log('onEdgesChange:', changes);
   },
 
-  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   showNodeMenu: (position) => set({ nodeMenuVisible: true, nodeMenuPosition: position }),
   hideNodeMenu: () => set({ nodeMenuVisible: false }),

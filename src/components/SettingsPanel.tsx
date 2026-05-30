@@ -63,7 +63,7 @@ function TestButton({
       type="button"
       className="settings-provider-test-btn"
       aria-label={`测试 ${label} 连接`}
-      title={`测试 ${label} 连接`}
+      data-tooltip={`测试 ${label} 连接`}
       disabled={testing}
       onClick={onTest}
     >
@@ -82,7 +82,7 @@ function ProviderStatusBadge({ result }: { result?: TestResult }) {
     );
   }
   return (
-    <span className="settings-provider-status settings-provider-status--danger" title={result.error}>
+    <span className="settings-provider-status settings-provider-status--danger">
       {result.error ? (
         <span className="settings-status-with-tip">
           失败
@@ -99,7 +99,7 @@ function ProviderStatusBadge({ result }: { result?: TestResult }) {
 function ProviderBalanceBadge({ balance }: { balance?: string }) {
   if (!balance) return null;
   return (
-    <span className="settings-provider-balance" title={`账户余额：${balance}`}>
+    <span className="settings-provider-balance" data-tooltip={`账户余额：${balance}`}>
       {balance}
     </span>
   );
@@ -116,7 +116,7 @@ function GetKeyButton({ provider, label }: { provider: string; label: string }) 
       rel="noopener noreferrer"
       className="settings-getkey"
       aria-label={`前往 ${label} 获取 API Key`}
-      title={`前往 ${label} 获取 API Key`}
+      data-tooltip={`前往 ${label} 获取 API Key`}
       onClick={(e) => {
         e.preventDefault();
         import('@tauri-apps/plugin-shell')

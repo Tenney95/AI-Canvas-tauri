@@ -291,7 +291,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             <button
               className="node-upload-btn"
               onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-              title="上传音频"
+              data-tooltip="上传音频"
               aria-label="上传音频"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">

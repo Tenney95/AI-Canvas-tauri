@@ -100,3 +100,25 @@ header [data-tooltip]:hover::before {
   font-size: 10px;
   padding: 3px 8px;
 }
+
+/* ── Node-internal buttons: tooltip below to avoid overflow clipping ── */
+.node-upload-btn[data-tooltip] {
+  position: absolute; /* override [data-tooltip]'s position:relative */
+}
+.node-upload-btn[data-tooltip]::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+  transform: translateX(-50%) translateY(-2px);
+}
+.node-upload-btn[data-tooltip]:hover::after {
+  transform: translateX(-50%) translateY(0);
+}
+.node-upload-btn[data-tooltip]::before {
+  top: calc(100% + 1px);
+  bottom: auto;
+  transform: translateX(-50%) translateY(-2px);
+  border-color: transparent transparent #2a2a3a transparent;
+}
+.node-upload-btn[data-tooltip]:hover::before {
+  transform: translateX(-50%) translateY(0);
+}

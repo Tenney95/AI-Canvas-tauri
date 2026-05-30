@@ -4,16 +4,40 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
+import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import ImageNodeToolbar from './shared/ImageNodeToolbar';
 import MattingToolbar from './shared/MattingToolbar';
-import { useAppStore } from '../../store/useAppStore';
+import FreeAnglePanel from './shared/FreeAnglePanel';
+import { useAppStore, generateId } from '../../store/useAppStore';
 import { uploadSourceFile } from '../../services/fileService';
+import { generateAngleImage } from '../../services/apimartService';
 
 /* ── Matting types ── */
 type MattingTool = 'brush' | 'eraser' | 'bucket';
 type BrushMode = 'normal' | 'alpha';
+
+/* ── 图像节点尺寸计算 ── */
+function computeImageNodeDimensions(dataUrl: string): Promise<{ nodeWidth: number; nodeHeight: number }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const naturalRatio = img.naturalWidth / img.naturalHeight;
+      const maxWidth = 280;
+      const minWidth = 160;
+      let nodeWidth = img.naturalWidth;
+      if (nodeWidth > maxWidth) nodeWidth = maxWidth;
+      if (nodeWidth < minWidth) nodeWidth = minWidth;
+      const contentWidth = nodeWidth - 4;
+      const previewHeight = Math.round(contentWidth / naturalRatio);
+      const nodeHeight = Math.max(120, previewHeight + 4);
+      resolve({ nodeWidth, nodeHeight });
+    };
+    img.onerror = () => resolve({ nodeWidth: 280, nodeHeight: 158 });
+    img.src = dataUrl;
+  });
+}
 
 /* ── Flood fill helper ── */
 function floodFill(
@@ -150,6 +174,107 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       setIsUploading(false);
     }
   }, [id, nodeWidth, updateNodeData]);
+
+  /* ════════════════════════════════════════════
+     Free Angle State
+     ════════════════════════════════════════════ */
+  const [isFreeAngle, setIsFreeAngle] = useState(false);
+
+  const handleOpenFreeAngle = useCallback(() => {
+    setIsFreeAngle(true);
+  }, []);
+
+  const handleCloseFreeAngle = useCallback(() => {
+    setIsFreeAngle(false);
+  }, []);
+
+  const handleFreeAngleGenerate = useCallback(
+    async (params: { rotation: number; pitch: number; scale: number; model: string; provider: string }) => {
+      const store = useAppStore.getState();
+      const imageUrl = (data.imageUrl || data.thumbnailUrl) as string | undefined;
+      if (!imageUrl) {
+        store.showToast('没有可用的图片', 'error');
+        return;
+      }
+
+      setIsFreeAngle(false);
+
+      // 仅处理 apimart provider，其他 provider 暂未实现
+      if (params.provider !== 'apimart') {
+        store.showToast(`${params.provider} 角度控制暂未实现`, 'error');
+        return;
+      }
+
+      const apiKey = store.config.providers.apimart?.apiKey;
+      if (!apiKey) {
+        store.showToast('请先在设置中配置 APIMart API Key', 'error');
+        return;
+      }
+
+      // 去掉 model 值中的 'apimart/' 前缀
+      const model = params.model.startsWith('apimart/')
+        ? params.model.slice('apimart/'.length)
+        : params.model;
+
+      // 当前节点设为 loading
+      updateNodeData(id, { status: 'loading', output: undefined, error: undefined });
+
+      try {
+        const result = await generateAngleImage(
+          { apiKey, model, imageUrl, rotation: params.rotation, pitch: params.pitch },
+          (progress) => {
+            updateNodeData(id, { output: `生成中 ${progress}%...` });
+          },
+        );
+
+        // 获取当前节点位置（用于放置新节点）
+        const currentNodes = store.nodes;
+        const currentPos = currentNodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
+
+        // 逐个创建新图片节点
+        for (let i = 0; i < result.imageUrls.length; i++) {
+          const genUrl = result.imageUrls[i];
+
+          // 下载图片并转为 data URL
+          const resp = await fetch(genUrl);
+          const blob = await resp.blob();
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+
+          const dims = await computeImageNodeDimensions(dataUrl);
+          const newNode: Node<BaseNodeData> = {
+            id: `node-${generateId()}`,
+            type: 'ai-image',
+            position: { x: currentPos.x + nodeWidth + 40 + i * 40, y: currentPos.y },
+            data: {
+              label: `角度视图 ${params.rotation.toFixed(0)}°`,
+              type: 'ai-image',
+              role: 'source',
+              imageUrl: dataUrl,
+              status: 'success',
+              imageWidth: dims.nodeWidth,
+              imageHeight: dims.nodeHeight,
+              nodeWidth: dims.nodeWidth,
+              nodeHeight: dims.nodeHeight,
+            } as BaseNodeData,
+          };
+          store.addNode(newNode);
+        }
+
+        updateNodeData(id, { status: 'success' });
+        store.showToast(`已生成 ${result.imageUrls.length} 张角度图片`);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : '生成失败';
+        updateNodeData(id, { status: 'error', error: message });
+        store.showToast(message, 'error');
+      }
+    },
+    [id, data.imageUrl, data.thumbnailUrl, updateNodeData],
+  );
 
   /* ════════════════════════════════════════════
      Matting State
@@ -517,7 +642,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               <button
                 className="node-upload-btn"
                 onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-                title="上传图片"
+                data-tooltip="上传图片"
                 aria-label="上传图片"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
@@ -584,6 +709,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           <ImageNodeToolbar
             nodeId={id}
             onMatting={handleOpenMatting}
+            onMultiAngle={handleOpenFreeAngle}
           />
         )}
       </div>
@@ -662,6 +788,16 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         </div>,
         document.body,
       )}
+
+      {/* ════════════════════════════════════════════
+           Free Angle Panel — 3D 正方体角度控制面板 (portal to body)
+           ════════════════════════════════════════════ */}
+      <FreeAnglePanel
+        isOpen={isFreeAngle}
+        imageUrl={(data.imageUrl || data.thumbnailUrl) as string | undefined}
+        onClose={handleCloseFreeAngle}
+        onGenerate={handleFreeAngleGenerate}
+      />
     </>
   );
 }

@@ -6,12 +6,13 @@ import { memo, useCallback } from 'react';
 interface ImageNodeToolbarProps {
   nodeId: string;
   onMatting?: () => void;
+  onMultiAngle?: () => void;
   onFullscreen?: () => void;
   onDownload?: () => void;
   onResetSize?: () => void;
 }
 
-function ImageNodeToolbar({ onMatting, onFullscreen, onDownload, onResetSize }: ImageNodeToolbarProps) {
+function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onDownload, onResetSize }: ImageNodeToolbarProps) {
   const noop = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
   }, []);
@@ -25,10 +26,10 @@ function ImageNodeToolbar({ onMatting, onFullscreen, onDownload, onResetSize }: 
   );
 
   return (
-    <div className="node-floating-toolbar img-toolbar">
-      <div className="img-toolbar-main">
+    <div className="node-floating-toolbar img-toolbar nodrag">
+      <div className="img-toolbar-main nodrag">
         {/* Primary zone */}
-        <div className="img-toolbar-zone img-toolbar-zone-primary">
+        <div className="img-toolbar-zone img-toolbar-zone-primary nodrag">
           <button
             className="ftb-btn icon-only act-matting"
             data-tooltip="遮罩编辑器"
@@ -66,7 +67,7 @@ function ImageNodeToolbar({ onMatting, onFullscreen, onDownload, onResetSize }: 
               <rect x="3" y="14" width="7" height="7" />
             </svg>
           </button>
-          <button className="ftb-btn icon-only act-multiangle" data-tooltip="控制角度" aria-label="控制角度" onClick={noop}>
+          <button className="ftb-btn icon-only act-multiangle" data-tooltip="控制角度" aria-label="控制角度" onClick={handleAction(onMultiAngle)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
               <path d="M12 22V12" />

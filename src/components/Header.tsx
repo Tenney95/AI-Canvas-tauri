@@ -4,7 +4,7 @@
 import { useAppStore } from '../store/useAppStore';
 
 export default function Header() {
-  const { projectName, setProjectName, toggleSidebar, setSettingsOpen } = useAppStore();
+  const { projectName, setProjectName } = useAppStore();
 
   return (
     <header
@@ -87,30 +87,6 @@ export default function Header() {
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
           <line x1="12" y1="5" x2="12" y2="19" />
           <line x1="5" y1="12" x2="19" y2="12" />
-        </svg>
-      </button>
-
-      <button
-        onClick={toggleSidebar}
-        className="w-7 h-7 rounded-lg hover:bg-white/[0.08] flex items-center justify-center
-                   text-canvas-text-secondary hover:text-canvas-text transition-all"
-        data-tooltip="侧边栏"
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <rect x="3" y="3" width="18" height="18" rx="2" />
-          <line x1="9" y1="3" x2="9" y2="21" />
-        </svg>
-      </button>
-
-      <button
-        onClick={() => setSettingsOpen(true)}
-        className="w-7 h-7 rounded-lg hover:bg-white/[0.08] flex items-center justify-center
-                   text-canvas-text-secondary hover:text-canvas-text transition-all"
-        data-tooltip="设置"
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
         </svg>
       </button>
     </header>

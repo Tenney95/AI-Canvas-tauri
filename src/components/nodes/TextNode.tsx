@@ -197,7 +197,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
             <button
               className="node-upload-btn"
               onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-              title="上传文本文件"
+              data-tooltip="上传文本文件"
               aria-label="上传文本文件"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
