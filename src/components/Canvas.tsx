@@ -280,7 +280,7 @@ function CanvasInner() {
     useNodeSnap(nodes, setNodes);
 
   return (
-    <div className="absolute inset-0 bg-canvas-bg">
+    <div className="absolute inset-0">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -307,7 +307,6 @@ function CanvasInner() {
         }}
         onMove={handleMove}
         proOptions={{ hideAttribution: true }}
-        className="bg-canvas-bg"
         panOnDrag={[1, 2]}
         onContextMenu={openCtxMenu}
         onNodeContextMenu={openNodeCtxMenu}

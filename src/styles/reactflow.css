@@ -2,10 +2,6 @@
    React Flow Overrides — Dark Theme
    ============================================ */
 
-.react-flow {
-  background-color: #0a0a0f !important;
-}
-
 .react-flow__panel {
   margin: 10px !important;
 }

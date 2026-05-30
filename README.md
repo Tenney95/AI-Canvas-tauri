@@ -48,28 +48,55 @@
 ```
 src/
 ├── components/
-│   ├── nodes/           # 自定义节点组件
-│   │   ├── TextNode.tsx    # 文本生成节点
-│   │   ├── ImageNode.tsx   # 图像生成节点
-│   │   ├── VideoNode.tsx   # 视频生成节点
-│   │   ├── AudioNode.tsx   # 音频生成节点
-│   │   └── MentionInput.tsx # @引用输入组件
-│   ├── Header.tsx       # 顶栏（Logo、项目名、标签页）
-│   ├── Sidebar.tsx      # 左侧边栏（节点类型列表）
-│   ├── NodeMenu.tsx     # 浮动节点添加菜单
-│   ├── SettingsPanel.tsx # 设置弹窗
-│   └── Canvas.tsx       # ReactFlow 画布主区域
+│   ├── canvas/                # 画布交互子组件
+│   │   ├── CanvasContextMenu.tsx  # 画布右键菜单（添加节点/撤销/重做）
+│   │   ├── CanvasEmptyState.tsx   # 画布空状态引导界面
+│   │   ├── CanvasToolbar.tsx      # 右下角浮动工具条（网格/连线/缩放）
+│   │   ├── ConnectionMenu.tsx     # 连线拖放目标选择菜单
+│   │   └── NodeContextMenu.tsx    # 节点右键菜单（复制/剪切/副本/删除）
+│   ├── nodes/                 # 画布节点组件
+│   │   ├── shared/                # 节点共享子组件
+│   │   │   ├── defaultModels.ts       # 预置模型配置（文本/图像/视频/音频）
+│   │   │   ├── ImageNodeToolbar.tsx   # 图像节点浮动工具栏（遮罩/扩图/裁切等）
+│   │   │   ├── MattingToolbar.tsx     # 遮罩编辑工具栏（画笔/橡皮擦/油漆桶）
+│   │   │   ├── MentionEditor.tsx      # @提及编辑器（引用其他节点输出）
+│   │   │   ├── ModelSelector.tsx      # 模型/工作流下拉选择器
+│   │   │   ├── NodeLabel.tsx          # 节点标题栏（图标/颜色/编号）
+│   │   │   ├── PromptPanel.tsx        # 提示词输入面板（模型/参数/生成）
+│   │   │   ├── QualityRatioSelector.tsx # 图像质量/比例选择器
+│   │   │   ├── TextNodeToolbar.tsx    # 文本节点浮动工具栏
+│   │   │   └── VideoParamSelector.tsx # 视频参数选择器
+│   │   ├── AINodeDialog.tsx       # AI 生成弹窗（Prompt + 模型 + 生成按钮）
+│   │   ├── AudioNode.tsx          # 音频节点（上传/波形可视化）
+│   │   ├── ImageNode.tsx          # 图像节点（上传/遮罩/工具栏/全屏）
+│   │   ├── TextNode.tsx           # 文本节点（编辑/复制/调整大小）
+│   │   └── VideoNode.tsx          # 视频节点（上传/播放）
+│   ├── Header.tsx           # 顶部栏（Logo、项目名、侧边栏/设置入口）
+│   ├── Sidebar.tsx          # 左侧面板（节点列表、上传、项目切换）
+│   ├── NodeMenu.tsx         # 浮动节点添加菜单
+│   ├── SettingsPanel.tsx    # 设置弹窗（API Key 配置、连接测试）
+│   ├── Titlebar.tsx         # 自定义窗口标题栏（最小化/最大化/关闭）
+│   ├── Toast.tsx            # 全局消息提示（成功/错误）
+│   ├── WorkflowPanel.tsx    # 工作流管理面板（导入 JSON/分类筛选）
+│   └── Canvas.tsx           # React Flow 画布主区域
+├── hooks/                   # 自定义 React Hooks
+│   ├── useCanvasContextMenu.ts   # 画布右键菜单逻辑
+│   ├── useConnectionDropMenu.ts  # 连线拖放创建节点逻辑
+│   ├── useKeyboardShortcuts.ts   # 全局键盘快捷键
+│   ├── useNodeContextMenu.ts     # 节点右键菜单逻辑
+│   └── useNodeSnap.ts            # 节点拖拽吸附对齐
+├── services/                # 服务层
+│   ├── aiService.ts         # AI 生成 API 封装（多厂商/工作流）
+│   ├── fileService.ts       # 文件操作（Tauri + IndexedDB 双通道）
+│   ├── indexedDbService.ts  # IndexedDB 本地持久化
+│   └── testConnection.ts    # API 密钥连接测试服务
 ├── store/
-│   └── useAppStore.ts   # Zustand 全局状态管理
-├── hooks/
-│   └── useKeyboardShortcuts.ts # 全局快捷键
-├── services/
-│   └── fileService.ts   # Tauri 文件操作服务
+│   └── useAppStore.ts       # Zustand 全局状态（节点/边/项目/配置/撤销历史）
 ├── types/
-│   └── index.ts         # TypeScript 类型定义
-├── App.tsx              # 主应用组件
-├── main.tsx             # 入口文件
-└── index.css            # 全局样式 + ReactFlow 覆写
+│   └── index.ts             # 核心类型定义
+├── App.tsx                  # 根组件装配
+├── main.tsx                 # 应用入口
+└── index.css                # 全局样式 + Tailwind + React Flow 覆写
 ```
 
 ## 开发指南

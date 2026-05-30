@@ -36,7 +36,7 @@ export default function App() {
       }`}
     >
       {/* Content area — clipped by overflow-hidden so rounded corners work */}
-      <div className="absolute inset-0 overflow-hidden rounded-[16px] bg-canvas-bg">
+      <div className="absolute inset-0 overflow-hidden rounded-[16px] bg-canvas-bg/[0.988] shadow-2xl">
         {/* Top drag region */}
         <div data-tauri-drag-region className="fixed top-0 left-0 right-0 h-8 z-10" />
         <Canvas />

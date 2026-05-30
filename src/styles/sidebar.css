@@ -4,20 +4,19 @@
 .sidebar-floating {
   position: absolute;
   left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 20%;
   z-index: 30;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
   padding: 6px;
-  background: rgba(20, 20, 28, 0.88);
+  background: rgba(20, 20, 28, 0.866);
   backdrop-filter: blur(26px);
   -webkit-backdrop-filter: blur(26px);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 16px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  box-shadow: 8px 0 32px rgba(0, 0, 0, 0.4);
 }
 
 /* Tauri: sidebar half outside the content area (transparent left strip) */
