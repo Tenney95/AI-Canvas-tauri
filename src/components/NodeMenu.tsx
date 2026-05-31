@@ -3,6 +3,7 @@
  */
 import { useEffect, useRef } from 'react';
 import type { JSX } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
 import type { NodeType } from '../types';
 
@@ -75,8 +76,6 @@ export default function NodeMenu() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [nodeMenuVisible, hideNodeMenu]);
 
-  if (!nodeMenuVisible) return null;
-
   const handleAddNode = (type: NodeType) => {
     const offset = nodes.length * 40;
     const isImage = type === 'ai-image';
@@ -99,11 +98,17 @@ export default function NodeMenu() {
   };
 
   return (
-    <div
-      ref={menuRef}
-      className="fixed z-50 w-[240px] bg-canvas-card border border-canvas-border rounded-xl shadow-2xl shadow-black/40 overflow-hidden animate-in fade-in zoom-in-95 duration-150"
-      style={{ left: nodeMenuPosition.x, top: nodeMenuPosition.y }}
-    >
+    <AnimatePresence>
+      {nodeMenuVisible && (
+        <motion.div
+          ref={menuRef}
+          className="fixed z-50 w-[240px] bg-canvas-card border border-canvas-border rounded-xl shadow-2xl shadow-black/40 overflow-hidden"
+          style={{ left: nodeMenuPosition.x, top: nodeMenuPosition.y }}
+          initial={{ opacity: 0, scale: 0.95, y: -6 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: -6 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        >
       <div className="p-2">
         <div className="text-[11px] font-medium text-canvas-text-muted uppercase tracking-wider px-2 py-1.5">
           添加节点
@@ -140,6 +145,8 @@ export default function NodeMenu() {
           <span className="text-sm text-canvas-text-secondary">上传文件</span>
         </button>
       </div>
-    </div>
+      </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

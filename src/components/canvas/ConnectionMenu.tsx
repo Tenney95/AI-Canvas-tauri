@@ -2,6 +2,7 @@
  * ConnectionMenu 连线目标选择菜单 — 从节点输出 Handle 拖出连线时弹出，选择要创建的目标节点类型
  */
 import { memo } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import type { NodeType } from '../../types';
 import type { BaseNodeData } from '../../types';
 import type { Node as RFNode } from '@xyflow/react';
@@ -44,11 +45,17 @@ function ConnectionMenu({
   if (!items?.length) return null;
 
   return (
-    <div
-      ref={menuRef}
-      className="fixed z-50 w-[260px] bg-canvas-card border border-canvas-border rounded-xl shadow-2xl shadow-black/50 overflow-hidden animate-in fade-in zoom-in-95 duration-150"
-      style={{ left: position.x, top: position.y }}
-    >
+    <AnimatePresence>
+      {visible && (
+        <motion.div
+          ref={menuRef}
+          className="fixed z-50 w-[260px] bg-canvas-card border border-canvas-border rounded-xl shadow-2xl shadow-black/50 overflow-hidden"
+          style={{ left: position.x, top: position.y }}
+          initial={{ opacity: 0, scale: 0.95, y: -4 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: -4 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        >
       {/* Header */}
       <div className="px-3 py-2.5 border-b border-canvas-border">
         <div className="text-[11px] font-medium text-canvas-text-muted uppercase tracking-wider mb-1">
@@ -117,7 +124,9 @@ function ConnectionMenu({
           );
         })}
       </div>
-    </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 

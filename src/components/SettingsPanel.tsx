@@ -2,6 +2,7 @@
  * SettingsPanel 设置面板 — 模态弹窗，管理各 AI 厂商 API Key/Base URL 配置、连接测试、主题切换
  */
 import { useState, useEffect } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
 import type { TestResult } from '../services/testConnection';
 import { testProviderConnection, type ProviderTestKey } from '../services/testConnection';
@@ -235,18 +236,36 @@ export default function SettingsPanel() {
     setTestStates((prev) => ({ ...prev, [provider]: { status: 'done', result } }));
   };
 
-  if (!settingsOpen) return null;
+  const modalEase = [0.16, 1, 0.3, 1];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setSettingsOpen(false)}>
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+    <AnimatePresence>
+      {settingsOpen && (
+        <motion.div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2 }}
+          onClick={() => setSettingsOpen(false)}
+        >
+          {/* Backdrop */}
+          <motion.div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          />
 
-      {/* Modal */}
-      <div
-        className="relative w-[640px] max-h-[80vh] bg-canvas-surface border border-canvas-border rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200"
-        onClick={(e) => e.stopPropagation()}
-      >
+          {/* Modal */}
+          <motion.div
+            className="relative w-[640px] max-h-[80vh] bg-canvas-surface border border-canvas-border rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+            initial={{ opacity: 0, scale: 0.95, y: 12 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 12 }}
+            transition={{ duration: 0.25, ease: modalEase }}
+            onClick={(e) => e.stopPropagation()}
+          >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-canvas-border">
           <h2 className="text-base font-semibold text-canvas-text">设置</h2>
@@ -650,7 +669,9 @@ export default function SettingsPanel() {
             )}
           </div>
         </div>
-      </div>
-    </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

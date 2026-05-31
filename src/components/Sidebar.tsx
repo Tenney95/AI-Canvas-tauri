@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { JSX } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
 import type { NodeType } from '../types';
 
@@ -93,8 +94,6 @@ function NodePicker({
   const { nodePickerOpen, closeNodePicker, addNode, nodes } = useAppStore();
   const pickerRef = useRef<HTMLDivElement>(null);
 
-  if (!nodePickerOpen) return null;
-
   const handleAddNode = (type: NodeType) => {
     const offset = nodes.length * 40;
     const isImage = type === 'ai-image';
@@ -120,12 +119,18 @@ function NodePicker({
   };
 
   return (
-    <div
-      ref={pickerRef}
-      className="node-picker"
-      onMouseEnter={onEnter}
-      onMouseLeave={onLeave}
-    >
+    <AnimatePresence>
+      {nodePickerOpen && (
+        <motion.div
+          ref={pickerRef}
+          className="node-picker"
+          onMouseEnter={onEnter}
+          onMouseLeave={onLeave}
+          initial={{ opacity: 0, scale: 0.95, y: -4 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: -4 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        >
       <div className="menu-section">
         <span className="menu-title">画布自由生成</span>
         <div className="menu-rule" />
@@ -159,7 +164,9 @@ function NodePicker({
           </div>
         </button>
       ))}
-    </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -184,48 +191,57 @@ function AvatarMenu() {
     return () => document.removeEventListener('mousedown', handler, true);
   }, [avatarMenuOpen, closeAvatarMenu]);
 
-  if (!avatarMenuOpen) return null;
-
   return (
-    <div ref={menuRef} className="avatar-menu">
-      <button
-        type="button"
-        className="avatar-menu-item"
-        onClick={() => {
-          setSettingsOpen(true);
-          closeAvatarMenu();
-        }}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-        设置
-      </button>
-      <div className="avatar-menu-sep" />
-      <button
-        type="button"
-        className="avatar-menu-item"
-        onClick={() => window.open('https://github.com/ashuoAI/AI-CanvasPro', '_blank')}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.52 2.87 8.35 6.84 9.7.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.73-2.78.62-3.37-1.38-3.37-1.38-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.71 0 0 .84-.28 2.75 1.05A9.3 9.3 0 0 1 12 6.95c.85 0 1.7.12 2.5.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.4.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.8 0 .27.18.59.69.49A10.14 10.14 0 0 0 22 12.26C22 6.58 17.52 2 12 2z" />
-        </svg>
-        GitHub
-      </button>
-      <button
-        type="button"
-        className="avatar-menu-item"
-        onClick={() => alert('AI Canvas v1.0.0')}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="10" />
-          <line x1="12" y1="16" x2="12" y2="12" />
-          <line x1="12" y1="8" x2="12.01" y2="8" />
-        </svg>
-        关于
-      </button>
-    </div>
+    <AnimatePresence>
+      {avatarMenuOpen && (
+        <motion.div
+          ref={menuRef}
+          className="avatar-menu"
+          initial={{ opacity: 0, scale: 0.95, y: -4 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: -4 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        >
+          <button
+            type="button"
+            className="avatar-menu-item"
+            onClick={() => {
+              setSettingsOpen(true);
+              closeAvatarMenu();
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+            设置
+          </button>
+          <div className="avatar-menu-sep" />
+          <button
+            type="button"
+            className="avatar-menu-item"
+            onClick={() => window.open('https://github.com/ashuoAI/AI-CanvasPro', '_blank')}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.52 2.87 8.35 6.84 9.7.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.73-2.78.62-3.37-1.38-3.37-1.38-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.71 0 0 .84-.28 2.75 1.05A9.3 9.3 0 0 1 12 6.95c.85 0 1.7.12 2.5.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.4.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.8 0 .27.18.59.69.49A10.14 10.14 0 0 0 22 12.26C22 6.58 17.52 2 12 2z" />
+            </svg>
+            GitHub
+          </button>
+          <button
+            type="button"
+            className="avatar-menu-item"
+            onClick={() => alert('AI Canvas v1.0.0')}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="16" x2="12" y2="12" />
+              <line x1="12" y1="8" x2="12.01" y2="8" />
+            </svg>
+            关于
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -280,12 +296,19 @@ function LogoMenu() {
         </svg>
       </button>
 
-      {open && (
-        <div className="node-picker">
-          <div className="menu-section">
-            <span className="menu-title">当前项目</span>
-            <div className="menu-rule" />
-          </div>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            className="node-picker"
+            initial={{ opacity: 0, scale: 0.95, y: -4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: -4 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <div className="menu-section">
+              <span className="menu-title">当前项目</span>
+              <div className="menu-rule" />
+            </div>
           <div className="menu-row menu-row-current">
             <div className="menu-ico" style={{ color: 'rgba(129,140,248,0.85)' }}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -384,8 +407,9 @@ function LogoMenu() {
               <span className="menu-lbl">新建项目</span>
             </div>
           </button>
-        </div>
-      )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Delete Project Confirm Popover — portal to body, positioned above the delete button */}
       {confirmDelete && createPortal((() => {

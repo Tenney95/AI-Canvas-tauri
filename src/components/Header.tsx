@@ -1,6 +1,7 @@
 /**
  * Header 顶部栏 — Logo、项目名编辑、侧边栏切换、设置入口、窗口拖拽区域
  */
+import { motion } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
 
 export default function Header() {
@@ -78,17 +79,20 @@ export default function Header() {
       <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
 
       {/* Actions */}
-      <button
+      <motion.button
         onClick={() => useAppStore.getState().createProject()}
         className="w-7 h-7 rounded-lg hover:bg-white/[0.08] flex items-center justify-center
-                   text-canvas-text-secondary hover:text-canvas-text transition-all"
+                   text-canvas-text-secondary hover:text-canvas-text"
         data-tooltip="新建画布"
+        whileHover={{ scale: 1.1 }}
+        whileTap={{ scale: 0.92 }}
+        transition={{ type: 'spring', stiffness: 400, damping: 17 }}
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
           <line x1="12" y1="5" x2="12" y2="19" />
           <line x1="5" y1="12" x2="19" y2="12" />
         </svg>
-      </button>
+      </motion.button>
     </header>
   );
 }
