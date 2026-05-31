@@ -3,6 +3,7 @@
  */
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { motion } from 'framer-motion';
 import { Handle, Position } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
@@ -297,12 +298,6 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
      Matting State
      ════════════════════════════════════════════ */
   const [isMatting, setIsMatting] = useState(false);
-  const [mattingPhase, setMattingPhase] = useState<'idle' | 'entering' | 'active'>('idle');
-  const [mattingEnterAnimating, setMattingEnterAnimating] = useState(false);
-  const [mattingAnimRect, setMattingAnimRect] = useState<{
-    from: { top: number; left: number; width: number; height: number };
-    to: { top: number; left: number; width: number; height: number };
-  } | null>(null);
   const mattingCanvasRef = useRef<HTMLCanvasElement>(null);
   const mattingImageRef = useRef<HTMLImageElement>(null);
   const previewImgRef = useRef<HTMLImageElement>(null);
@@ -384,33 +379,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   /* Enter matting mode */
   const handleOpenMatting = useCallback(() => {
-    const img = previewImgRef.current;
-    if (img) {
-      const r = img.getBoundingClientRect();
-      const viewportW = window.innerWidth;
-      const viewportH = window.innerHeight;
-      const maxW = viewportW * 0.9;
-      const maxH = viewportH * 0.82; // account for toolbar
-
-      const scaleW = maxW / r.width;
-      const scaleH = maxH / r.height;
-      const scale = Math.min(scaleW, scaleH);
-
-      const targetW = r.width * scale;
-      const targetH = r.height * scale;
-      const targetTop = (viewportH - targetH) / 2;
-      const targetLeft = (viewportW - targetW) / 2;
-
-      setMattingAnimRect({
-        from: { top: r.top, left: r.left, width: r.width, height: r.height },
-        to: { top: targetTop, left: targetLeft, width: targetW, height: targetH },
-      });
-    } else {
-      setMattingAnimRect(null);
-    }
     setIsMatting(true);
-    setMattingPhase('entering');
-    setMattingEnterAnimating(false);
     setMattingTool('brush');
     setMattingBrushMode('normal');
     setMattingBrushSize(40);
@@ -421,9 +390,6 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   /* Exit matting mode */
   const handleCloseMatting = useCallback(() => {
     setIsMatting(false);
-    setMattingPhase('idle');
-    setMattingAnimRect(null);
-    setMattingEnterAnimating(false);
   }, []);
 
   /* Handle matting canvas pointer events */
@@ -560,9 +526,6 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     const maskUrl = canvas.toDataURL('image/png');
     updateNodeData(id, { mattingMask: maskUrl } as Partial<BaseNodeData>);
     setIsMatting(false);
-    setMattingPhase('idle');
-    setMattingAnimRect(null);
-    setMattingEnterAnimating(false);
   }, [id, updateNodeData]);
 
   /* Keyboard shortcuts in matting mode */
@@ -615,29 +578,6 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   }, [isMatting, handleCloseMatting, mattingBrushMode, handleMattingClear, handleMattingUndo, handleMattingRedo]);
-
-  /* Trigger enter animation after mount */
-  useEffect(() => {
-    if (mattingPhase === 'entering' && mattingAnimRect && !mattingEnterAnimating) {
-      // Double rAF: browser paints initial position first, then we kick off CSS transition
-      const raf = requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          setMattingEnterAnimating(true);
-        });
-      });
-      return () => cancelAnimationFrame(raf);
-    }
-  }, [mattingPhase, mattingAnimRect, mattingEnterAnimating]);
-
-  /* Init canvas when matting enters active phase */
-  useEffect(() => {
-    if (mattingPhase === 'active') {
-      const timer = requestAnimationFrame(() => {
-        requestAnimationFrame(initMattingCanvas);
-      });
-      return () => cancelAnimationFrame(timer);
-    }
-  }, [mattingPhase, initMattingCanvas]);
 
   // ── Display label ──
   const displayLabel = data.fileName || data.label || '粘贴图像';
@@ -732,40 +672,10 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       </div>
 
       {/* ════════════════════════════════════════════
-           Matting Enter Animation — image scales from node to fullscreen
-           ════════════════════════════════════════════ */}
-      {isMatting && mattingPhase === 'entering' && mattingAnimRect && createPortal(
-        <div className="matting-enter-overlay">
-          <img
-            src={data.imageUrl || data.thumbnailUrl}
-            alt=""
-            className={`matting-enter-image${mattingEnterAnimating ? ' matting-enter-image--animating' : ''}`}
-            style={mattingEnterAnimating
-              ? {
-                  position: 'fixed',
-                  top: mattingAnimRect.to.top,
-                  left: mattingAnimRect.to.left,
-                  width: mattingAnimRect.to.width,
-                  height: mattingAnimRect.to.height,
-                }
-              : {
-                  position: 'fixed',
-                  top: mattingAnimRect.from.top,
-                  left: mattingAnimRect.from.left,
-                  width: mattingAnimRect.from.width,
-                  height: mattingAnimRect.from.height,
-                }
-            }
-            onTransitionEnd={() => setMattingPhase('active')}
-          />
-        </div>,
-        document.body,
-      )}
-
-      {/* ════════════════════════════════════════════
            Matting Overlay — fullscreen mask editor (portal to body)
+           Entrance animated via framer-motion
            ════════════════════════════════════════════ */}
-      {isMatting && mattingPhase === 'active' && createPortal(
+      {isMatting && createPortal(
         <div className="matting-overlay">
           {/* Toolbar */}
           <MattingToolbar
@@ -781,8 +691,13 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             canRedo={mattingHistoryIdx < mattingHistoryRef.current.length - 1}
           />
 
-          {/* Image + canvas container */}
-          <div className="matting-stage">
+          {/* Image + canvas container — scales in on enter */}
+          <motion.div
+            className="matting-stage"
+            initial={{ scale: 0.5 }}
+            animate={{ scale: 1 }}
+            transition={{ duration: 2, ease: [0.16, 1, 0.1, 1] }}
+          >
             <img
               ref={mattingImageRef}
               src={data.imageUrl || data.thumbnailUrl}
@@ -801,7 +716,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               onPointerMove={handleMattingPointerMove}
               onPointerUp={handleMattingPointerUp}
             />
-          </div>
+          </motion.div>
         </div>,
         document.body,
       )}

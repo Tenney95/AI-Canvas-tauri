@@ -616,36 +616,6 @@
 }
 
 /* ============================================
-   Matting enter animation
-   ============================================ */
-.matting-enter-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 10000;
-  background: rgba(0, 0, 0, 0);
-  transition: background 1s cubic-bezier(0.05, 0.7, 0.1, 1);
-  pointer-events: none;
-}
-.matting-enter-image {
-  border-radius: 4px;
-  object-fit: contain;
-  z-index: 10001;
-  pointer-events: none;
-  /* No transition initially — starts from inline style position */
-}
-.matting-enter-image--animating {
-  transition: top 1s cubic-bezier(0.05, 0.7, 0.1, 1),
-              left 1s cubic-bezier(0.05, 0.7, 0.1, 1),
-              width 1s cubic-bezier(0.05, 0.7, 0.1, 1),
-              height 1s cubic-bezier(0.05, 0.7, 0.1, 1);
-}
-.matting-enter-overlay:has(.matting-enter-image--animating) {
-  background: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-
-/* ============================================
    Fullscreen text overlay
    ============================================ */
 .text-fullscreen-overlay {
@@ -658,6 +628,23 @@
   background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(4px);
 }
+
+/* ════════════════════════════════════════════
+   Tauri: portaled fullscreen overlays
+   In Tauri mode, the app-box has a 30px left margin,
+   so portaled-to-body overlays (position:fixed;inset:0)
+   must be confined to the same area to avoid bleeding
+   past the rounded corners.
+   ════════════════════════════════════════════ */
+[data-tauri] .matting-overlay,
+[data-tauri] .text-fullscreen-overlay,
+[data-tauri] .free-angle-overlay {
+  left: 30px;
+  right: 0;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
 .text-fullscreen-panel {
   width: min(90vw, 900px) !important;
   max-height: 90vh;

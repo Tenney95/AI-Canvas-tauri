@@ -13,7 +13,7 @@
 | [Tailwind CSS](https://tailwindcss.com/) | 样式系统 |
 | [@iconify/react](https://iconify.design/) ([Icônes.js](https://icones.js.org/)) | 图标库 |
 | [TypeScript](https://www.typescriptlang.org/) | 类型安全 |
-
+| framer-motion | 动画库 |
 ## 功能特性
 
 ### 核心功能

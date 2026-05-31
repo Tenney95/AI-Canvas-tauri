@@ -1,12 +1,13 @@
 /**
- * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮
+ * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import type { NodeType, ModelOption, WorkflowDefinition } from '../../../types';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
 import VideoParamSelector from './VideoParamSelector';
 import MentionEditor from './MentionEditor';
+import SlashCommandMenu from './SlashCommandMenu';
 
 interface PromptPanelProps {
   nodeType: NodeType;
@@ -64,8 +65,16 @@ export default function PromptPanel({
   workflows = [],
 }: PromptPanelProps) {
   const [focused, setFocused] = useState(false);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const slashBtnRef = useRef<HTMLButtonElement>(null);
+
+  const handleSlashSelect = useCallback((filledPrompt: string) => {
+    onChange(filledPrompt);
+    setSlashOpen(false);
+  }, [onChange]);
 
   return (
+    <>
     <div className={`prompt-panel ${focused ? 'focused' : ''}`}>
       <div className="prompt-input-wrap">
         <MentionEditor
@@ -112,6 +121,21 @@ export default function PromptPanel({
         )}
 
         <div className="prompt-actions">
+          {/* Slash command button — only for ai-image and ai-text node types */}
+          {(nodeType === 'ai-image' || nodeType === 'ai-text') && (
+            <button
+              ref={slashBtnRef}
+              type="button"
+              className={`prompt-btn prompt-slash-btn${slashOpen ? ' slash-active' : ''}`}
+              data-tooltip="预设提示词"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSlashOpen(!slashOpen);
+              }}
+            >
+              /
+            </button>
+          )}
           {onDebug && (
             <button
               type="button"
@@ -159,5 +183,15 @@ export default function PromptPanel({
         </div>
       </div>
     </div>
+    {slashOpen && (
+      <SlashCommandMenu
+        nodeType={nodeType}
+        currentPrompt={prompt}
+        anchorEl={slashBtnRef.current}
+        onSelect={handleSlashSelect}
+        onClose={() => setSlashOpen(false)}
+      />
+    )}
+    </>
   );
 }

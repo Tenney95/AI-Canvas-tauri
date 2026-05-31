@@ -28,6 +28,16 @@ export default function App() {
     initFromDb();
   }, [initFromDb]);
 
+  // Mark Tauri environment on <html> so portaled overlays can adjust via CSS
+  useEffect(() => {
+    if (isTauri) {
+      document.documentElement.setAttribute('data-tauri', '');
+    }
+    return () => {
+      document.documentElement.removeAttribute('data-tauri');
+    };
+  }, []);
+
   const appContent = (
     <div
       data-tauri-window={isTauri ? '' : undefined}
@@ -35,8 +45,8 @@ export default function App() {
         isTauri ? 'ml-[30px] w-[calc(100vw-30px)]' : 'w-screen'
       }`}
     >
-      {/* Content area — clipped by overflow-hidden so rounded corners work */}
-      <div className="absolute inset-0 overflow-hidden rounded-[16px] bg-canvas-bg/[0.988] shadow-2xl">
+      {/* Content area — clip-path clips ALL descendants including fixed-position backdrops */}
+      <div className="app-box absolute inset-0 rounded-[16px] bg-canvas-bg/[0.988] shadow-2xl [clip-path:inset(0_round_16px)]">
         {/* Top drag region */}
         <div data-tauri-drag-region className="fixed top-0 left-0 right-0 h-8 z-10" />
         <Canvas />

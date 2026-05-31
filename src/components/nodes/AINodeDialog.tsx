@@ -201,11 +201,7 @@ function AINodeDialog() {
           nodeType={nodeType}
           nodeId={activeNodeId}
           prompt={data.prompt || ''}
-          placeholder={
-            nodeType === 'ai-image'
-              ? '描述任何你想要生成的内容，按 @ 引用素材，/呼出指令   (Enter 生成，Shift+Enter 换行)'
-              : '输入提示词开始创作   (Enter 生成，Shift+Enter 换行)'
-          }
+          placeholder={`描述任何你想要生成的内容，按 @ 引用素材，/呼出指令\n(Enter 生成，Shift+Enter 换行)`}
           selectedModel={data.model}
           selectedProvider={data.provider}
           selectedWorkflowId={data.workflowId}
