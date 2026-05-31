@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { JSX } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import type { NodeType } from '../types';
@@ -241,11 +242,15 @@ function LogoMenu() {
     deleteProject,
   } = useAppStore();
   const [open, setOpen] = useState(false);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; rect: DOMRect } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
+    // Suppress outside-click close while delete confirmation is showing,
+    // otherwise the capture-phase mousedown fires setOpen(false) which
+    // causes a re-render that prevents the confirm button's onClick.
+    if (confirmDelete) return;
     const handler = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -253,7 +258,7 @@ function LogoMenu() {
     };
     document.addEventListener('mousedown', handler, true);
     return () => document.removeEventListener('mousedown', handler, true);
-  }, [open]);
+  }, [open, confirmDelete]);
 
   return (
     <div ref={menuRef} style={{ position: 'relative' }}>
@@ -335,12 +340,13 @@ function LogoMenu() {
                     {new Date(p.updatedAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                   </span>
                 </div>
-                {p.id !== 'default' && (
+                {p.id !== 'default' && projects.filter(proj => proj.id !== 'default').length > 1 && (
                   <span
                     className="project-delete-btn"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setConfirmDeleteId(p.id);
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      setConfirmDelete({ id: p.id, rect });
                     }}
                     data-tooltip="删除项目"
                     role="button"
@@ -381,12 +387,19 @@ function LogoMenu() {
         </div>
       )}
 
-      {/* Delete Project Confirm Dialog */}
-      {confirmDeleteId && (() => {
-        const target = projects.find((p) => p.id === confirmDeleteId);
+      {/* Delete Project Confirm Popover — portal to body, positioned above the delete button */}
+      {confirmDelete && createPortal((() => {
+        const target = projects.find((p) => p.id === confirmDelete.id);
+        const dialogStyle: React.CSSProperties = {
+          position: 'fixed' as const,
+          left: `${confirmDelete.rect.left + confirmDelete.rect.width / 2}px`,
+          bottom: `${window.innerHeight - confirmDelete.rect.top + 10}px`,
+          transform: 'translateX(-50%)',
+        };
         return (
-          <div className="delete-confirm-overlay" onClick={() => setConfirmDeleteId(null)}>
-            <div className="delete-confirm-dialog" onClick={(e) => e.stopPropagation()}>
+          <>
+            <div className="delete-confirm-overlay" onClick={() => setConfirmDelete(null)} />
+            <div className="delete-confirm-dialog" style={dialogStyle} onClick={(e) => e.stopPropagation()}>
               <div className="delete-confirm-icon">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="12" cy="12" r="10" />
@@ -395,15 +408,14 @@ function LogoMenu() {
                 </svg>
               </div>
               <div className="delete-confirm-text">
-                <p className="delete-confirm-title">确认删除项目</p>
-                <p className="delete-confirm-name">「{target?.name ?? '未命名项目'}」</p>
-                <p className="delete-confirm-hint">此操作不可撤销，项目中的节点、连线和本地媒体文件将被永久删除。</p>
+                <p className="delete-confirm-title">确认删除「{target?.name ?? '未命名项目'}」</p>
+                <p className="delete-confirm-hint">此操作不可撤销</p>
               </div>
               <div className="delete-confirm-actions">
                 <button
                   type="button"
                   className="delete-confirm-btn cancel"
-                  onClick={() => setConfirmDeleteId(null)}
+                  onClick={() => setConfirmDelete(null)}
                 >
                   取消
                 </button>
@@ -411,8 +423,8 @@ function LogoMenu() {
                   type="button"
                   className="delete-confirm-btn confirm"
                   onClick={() => {
-                    deleteProject(confirmDeleteId);
-                    setConfirmDeleteId(null);
+                    deleteProject(confirmDelete.id);
+                    setConfirmDelete(null);
                     setOpen(false);
                   }}
                 >
@@ -420,9 +432,9 @@ function LogoMenu() {
                 </button>
               </div>
             </div>
-          </div>
+          </>
         );
-      })()}
+      })(), document.body)}
     </div>
   );
 }

@@ -226,6 +226,52 @@ function getMimeType(ext: string): string {
 export { getMimeType, arrayBufferToBase64 };
 
 // ============================================
+// Cross-platform utilities
+// ============================================
+
+/** Cross-platform path join using forward slashes (Tauri FS accepts both / and \ on all platforms) */
+export function joinPath(...segments: string[]): string {
+  return segments
+    .map((s) => s.replace(/\\/g, '/').replace(/\/+$/, ''))
+    .join('/')
+    .replace(/\/+/g, '/');
+}
+
+/**
+ * Convert a file:// URI to a native file-system path.
+ * Works correctly on Windows (file:///C:/...) and Unix (file:///home/...).
+ */
+export function fileUriToPath(uri: string): string {
+  try {
+    const url = new URL(uri);
+    let pathname = decodeURIComponent(url.pathname);
+    // Windows: /C:/Users/... → C:/Users/...
+    if (/^\/[A-Za-z]:[/\\]/.test(pathname)) {
+      return pathname.slice(1);
+    }
+    return pathname;
+  } catch {
+    // Fallback: strip the file:// prefix
+    const stripped = decodeURIComponent(uri.replace(/^file:\/\/+/, ''));
+    // If it looks like a Windows absolute path (e.g. C:/foo), return as-is
+    if (/^[A-Za-z]:[/\\]/.test(stripped)) {
+      return stripped;
+    }
+    // Unix absolute path
+    return '/' + stripped;
+  }
+}
+
+/** Characters illegal in filenames. Windows is stricter; Unix only forbids / and \0. */
+const IS_WINDOWS = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || '');
+const FILENAME_ILLEGAL_CHARS = IS_WINDOWS ? /[<>:"|?*]/g : /[/]/g;
+
+/** Sanitize a filename for the current platform */
+export function sanitizeFileName(name: string): string {
+  return name.replace(FILENAME_ILLEGAL_CHARS, '_');
+}
+
+// ============================================
 // Project data directory — local file storage for media assets
 // ============================================
 
@@ -261,7 +307,7 @@ async function getAppDataDir(): Promise<string | null> {
 export async function getProjectDataDir(projectId: string): Promise<string | null> {
   const base = await getAppDataDir();
   if (!base) return null;
-  return `${base.replace(/\\/g, '/').replace(/\/$/, '')}/data/${projectId}`;
+  return joinPath(base, 'data', projectId);
 }
 
 /** 确保项目数据目录存在（Tauri 端） */
@@ -293,10 +339,10 @@ export async function copyFileToProjectData(
   if (!dataDir) return null;
 
   const fileName = sourcePath.split(/[/\\]/).pop() || 'file';
-  const sanitized = fileName.replace(/[<>:"|?*]/g, '_');
+  const sanitized = sanitizeFileName(fileName);
 
   // Base destination path
-  let destPath = `${dataDir}/${sanitized}`;
+  let destPath = joinPath(dataDir, sanitized);
 
   // Handle name conflicts: append _1, _2 ...
   try {
@@ -305,7 +351,7 @@ export async function copyFileToProjectData(
     const ext = parts.length > 1 ? parts.pop()! : '';
     const baseName = parts.join('.');
     while (await exists(destPath)) {
-      destPath = ext ? `${dataDir}/${baseName}_${counter}.${ext}` : `${dataDir}/${sanitized}_${counter}`;
+      destPath = ext ? joinPath(dataDir, `${baseName}_${counter}.${ext}`) : joinPath(dataDir, `${sanitized}_${counter}`);
       counter++;
     }
   } catch {
@@ -382,7 +428,7 @@ export async function saveDataUrlToProjectData(
       bytes = new Uint8Array(buffer);
     }
 
-    const destPath = `${dataDir}/${fileName}`;
+    const destPath = joinPath(dataDir, fileName);
     await writeFile(destPath, bytes);
 
     const convertFileSrc = await getConvertFileSrc();
@@ -409,17 +455,17 @@ export async function saveBinaryToProjectData(
   const dataDir = await ensureProjectDataDir(projectId);
   if (!dataDir) return null;
 
-  const sanitized = fileName.replace(/[<>:"|?*]/g, '_');
+  const sanitized = sanitizeFileName(fileName);
 
   // Handle name conflicts
-  let destPath = `${dataDir}/${sanitized}`;
+  let destPath = joinPath(dataDir, sanitized);
   try {
     let counter = 1;
     const parts = sanitized.split('.');
     const ext = parts.length > 1 ? parts.pop()! : '';
     const baseName = parts.join('.');
     while (await exists(destPath)) {
-      destPath = ext ? `${dataDir}/${baseName}_${counter}.${ext}` : `${dataDir}/${sanitized}_${counter}`;
+      destPath = ext ? joinPath(dataDir, `${baseName}_${counter}.${ext}`) : joinPath(dataDir, `${sanitized}_${counter}`);
       counter++;
     }
   } catch {
@@ -472,7 +518,7 @@ async function removeDirRecursive(dirPath: string): Promise<void> {
     return;
   }
   for (const entry of entries) {
-    const fullPath = `${dirPath}/${entry.name}`;
+    const fullPath = joinPath(dirPath, entry.name);
     if (entry.isDirectory) {
       await removeDirRecursive(fullPath);
     } else {

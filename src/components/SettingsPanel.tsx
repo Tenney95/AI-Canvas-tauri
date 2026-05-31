@@ -1,10 +1,11 @@
 /**
  * SettingsPanel 设置面板 — 模态弹窗，管理各 AI 厂商 API Key/Base URL 配置、连接测试、主题切换
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import type { TestResult } from '../services/testConnection';
 import { testProviderConnection, type ProviderTestKey } from '../services/testConnection';
+import { getProjectDataDir, ensureProjectDataDir } from '../services/fileService';
 
 /* ── External URLs ── */
 const PROVIDER_URLS: Record<string, string> = {
@@ -195,10 +196,38 @@ function UrlInput({
 }
 
 export default function SettingsPanel() {
-  const { settingsOpen, setSettingsOpen, config, setProviderKey, setProviderUrl, updateConfig, saveConfig } =
+  const { settingsOpen, setSettingsOpen, config, setProviderKey, setProviderUrl, updateConfig, saveConfig, currentProjectId } =
     useAppStore();
   const [activeTab, setActiveTab] = useState<'general' | 'api' | 'shortcuts'>('api');
   const [testStates, setTestStates] = useState<Record<string, TestState>>({});
+  const [projectDir, setProjectDir] = useState<string | null>(null);
+  const [dirLoading, setDirLoading] = useState(false);
+
+  // 加载项目文件夹路径
+  useEffect(() => {
+    if (!settingsOpen || activeTab !== 'general' || !currentProjectId) return;
+    setDirLoading(true);
+    getProjectDataDir(currentProjectId)
+      .then(setProjectDir)
+      .catch(() => setProjectDir(null))
+      .finally(() => setDirLoading(false));
+  }, [settingsOpen, activeTab, currentProjectId]);
+
+  /** 在系统文件管理器中打开项目文件夹 */
+  const handleOpenProjectDir = async () => {
+    if (!currentProjectId) return;
+    try {
+      const dir = await ensureProjectDataDir(currentProjectId);
+      if (!dir) return;
+      const { Command } = await import('@tauri-apps/plugin-shell');
+      // 根据平台选择文件管理器命令
+      const platform = navigator.platform || '';
+      const cmd = /^win/i.test(platform) ? 'explorer' : /^mac/i.test(platform) ? 'open' : 'xdg-open';
+      await Command.create(cmd, [dir]).execute();
+    } catch (err) {
+      console.warn('无法打开项目文件夹:', err);
+    }
+  };
 
   const handleTest = async (provider: ProviderTestKey, apiKey: string, baseUrl?: string) => {
     setTestStates((prev) => ({ ...prev, [provider]: { status: 'testing' } }));
@@ -554,6 +583,45 @@ export default function SettingsPanel() {
                         ))}
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                {/* 项目文件夹 */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">项目文件夹</h3>
+                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-4">
+                    {dirLoading ? (
+                      <div className="text-sm text-canvas-text-muted">加载中…</div>
+                    ) : projectDir ? (
+                      <div className="space-y-3">
+                        <div className="flex items-start gap-2 min-w-0">
+                          {/* Folder icon */}
+                          <svg className="shrink-0 mt-0.5" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                          </svg>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs text-canvas-text-muted mb-0.5">当前项目数据目录</div>
+                            <div className="text-[11px] text-canvas-text-secondary break-all font-mono leading-relaxed select-all">
+                              {projectDir}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="settings-save-btn"
+                          onClick={handleOpenProjectDir}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                            <polyline points="15 3 21 3 21 9" />
+                            <line x1="10" y1="14" x2="21" y2="3" />
+                          </svg>
+                          打开文件夹
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-canvas-text-muted">仅在 Tauri 桌面环境中可用</div>
+                    )}
                   </div>
                 </div>
               </div>

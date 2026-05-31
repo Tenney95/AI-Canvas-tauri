@@ -108,7 +108,7 @@ interface AppState {
   // Actions - Projects
   setProjectName: (name: string) => void;
   createProject: (name?: string) => void;
-  deleteProject: (id: string) => void;
+  deleteProject: (id: string) => Promise<void>;
   switchProject: (id: string) => void;
 
   // Actions - Config
@@ -288,9 +288,24 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   createProject: (name) => {
     const id = generateProjectId();
+    // Derive default name from existing project names, not projects.length
+    // (projects.length can include the legacy 'default' placeholder, causing duplicates)
+    let defaultName: string;
+    if (name) {
+      defaultName = name;
+    } else {
+      const existing = get().projects
+        .filter((p) => p.id !== 'default')
+        .map((p) => {
+          const m = p.name.match(/^项目\s+(\d+)$/);
+          return m ? parseInt(m[1], 10) : 0;
+        });
+      const nextNum = existing.length > 0 ? Math.max(...existing) + 1 : 1;
+      defaultName = `项目 ${nextNum}`;
+    }
     const project: CanvasProject = {
       id,
-      name: name || `项目 ${get().projects.length + 1}`,
+      name: defaultName,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -307,15 +322,61 @@ export const useAppStore = create<AppState>((set, get) => ({
     fileService.ensureProjectDataDir(id).catch(() => {});
   },
 
-  deleteProject: (id) => {
-    set((state) => {
-      const filtered = state.projects.filter((p) => p.id !== id);
-      return {
+  deleteProject: async (id) => {
+    const state = get();
+    const filtered = state.projects.filter((p) => p.id !== id);
+    const isCurrent = state.currentProjectId === id;
+
+    // If the only remaining entry is the legacy 'default' placeholder,
+    // auto-create a fresh UUID project so files are saved to disk.
+    if (isCurrent && filtered.length === 1 && filtered[0]?.id === 'default') {
+      const newId = generateProjectId();
+      const now = Date.now();
+      set({
+        projects: [{ id: newId, name: '默认画布', createdAt: now, updatedAt: now }],
+        currentProjectId: newId,
+        projectName: '默认画布',
+        nodes: [],
+        edges: [],
+        history: [],
+        historyIndex: -1,
+      });
+      fileService.saveProject({ id: newId, name: '默认画布', createdAt: now, updatedAt: now, nodes: [], edges: [] }).catch(() => {});
+      fileService.ensureProjectDataDir(newId).catch(() => {});
+    } else {
+      const nextId = isCurrent ? filtered[0]?.id ?? null : state.currentProjectId;
+      const nextName = isCurrent ? filtered[0]?.name ?? '' : state.projectName;
+
+      set({
         projects: filtered,
-        currentProjectId:
-          state.currentProjectId === id ? filtered[0]?.id ?? null : state.currentProjectId,
-      };
-    });
+        currentProjectId: nextId,
+        ...(isCurrent
+          ? {
+              projectName: nextName,
+              nodes: [],
+              edges: [],
+              history: [],
+              historyIndex: -1,
+            }
+          : {}),
+      });
+
+      // When deleting the current project, load the next project's data
+      if (isCurrent && nextId) {
+        try {
+          const data = await fileService.loadProjectData(nextId);
+          if (data && data.nodes) {
+            set({
+              nodes: data.nodes as Node<BaseNodeData>[],
+              edges: (data.edges as Edge[]) || [],
+            });
+          }
+        } catch {
+          // Keep empty canvas if loading fails
+        }
+      }
+    }
+
     // Remove from IndexedDB
     fileService.deleteProjectData(id).catch(() => {});
     // Remove local data directory (media files)
@@ -638,7 +699,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               if (img.src.startsWith('data:')) {
                 pending.push({ kind: 'dataUrl', dataUrl: img.src, mediaType: 'image' });
               } else if (img.src.startsWith('file://')) {
-                const filePath = decodeURIComponent(img.src.replace(/^file:\/\/\//, ''));
+                const filePath = fileService.fileUriToPath(img.src);
                 const ext = filePath.split('.').pop()?.toLowerCase() || '';
                 pending.push({ kind: 'file-path', filePath, ext });
               } else if (img.src.startsWith('http')) {
@@ -656,7 +717,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             const uris = uriText.split('\n').filter((u) => u.trim().startsWith('file://'));
             for (const uri of uris) {
               if (pending.length >= maxItems) break;
-              const filePath = decodeURIComponent(uri.trim().replace(/^file:\/\/\//, ''));
+              const filePath = fileService.fileUriToPath(uri.trim());
               const ext = filePath.split('.').pop()?.toLowerCase() || '';
               pending.push({ kind: 'file-path', filePath, ext });
             }
@@ -1106,7 +1167,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               dataUrl = img.src;
             } else if (img.src.startsWith('file://')) {
               // Local file reference — read via Tauri FS
-              const filePath = decodeURIComponent(img.src.replace(/^file:\/\/\//, ''));
+              const filePath = fileService.fileUriToPath(img.src);
               dataUrl = await fileService.readFileToDataUrl(filePath);
             } else if (img.src.startsWith('http://') || img.src.startsWith('https://')) {
               try {
@@ -1145,8 +1206,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
           for (let j = 0; j < uris.length && pastedCount < offsets.length; j++) {
             const uri = uris[j].trim();
-            // Decode and normalize: file:///C:/path/file.png → C:/path/file.png
-            const filePath = decodeURIComponent(uri.replace(/^file:\/\/\//, ''));
+            const filePath = fileService.fileUriToPath(uri);
             const ext = filePath.split('.').pop()?.toLowerCase() || '';
 
             // Determine media type from extension
@@ -1328,8 +1388,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       await Promise.all([get().loadConfig(), get().loadWorkflows()]);
 
       const allProjects = await fileService.loadProjectsList();
-      if (allProjects.length > 0) {
-        const mapped: CanvasProject[] = allProjects.map((p) => ({
+      // Filter out any stale 'default' placeholder that may have leaked
+      // into IndexedDB (e.g. saveCurrentProject before initFromDb finished)
+      const valid = allProjects.filter((p) => p.id !== 'default');
+      // Clean up stale 'default' entry from IndexedDB if present
+      if (valid.length < allProjects.length) {
+        fileService.deleteProjectData('default').catch(() => {});
+      }
+      if (valid.length > 0) {
+        const mapped: CanvasProject[] = valid.map((p) => ({
           id: p.id,
           name: p.name,
           createdAt: p.createdAt,
@@ -1355,16 +1422,24 @@ export const useAppStore = create<AppState>((set, get) => ({
         fileService.ensureProjectDataDir(lastId).catch(() => {});
       } else {
         // No saved projects, persist default with UUID
+        // Must also update `projects` so the legacy {id:'default'} placeholder
+        // is replaced — otherwise fallback after deleting the last project would
+        // put us back to 'default' and files would be stored as base64.
         const id = generateProjectId();
+        const now = Date.now();
         const defaultProject = {
           id,
           name: '默认画布',
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
+          createdAt: now,
+          updatedAt: now,
           nodes: [],
           edges: [],
         };
-        set({ currentProjectId: id, projectName: '默认画布' });
+        set({
+          projects: [{ id, name: '默认画布', createdAt: now, updatedAt: now }],
+          currentProjectId: id,
+          projectName: '默认画布',
+        });
         await fileService.saveProject(defaultProject).catch(() => {});
         fileService.ensureProjectDataDir(id).catch(() => {});
       }
