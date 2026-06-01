@@ -6,10 +6,18 @@
   position: fixed;
   inset: 0;
   z-index: 10010;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
+  animation: presetOverlayFadeIn 0.2s ease-out;
+}
+
+@keyframes presetOverlayFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 .preset-modal {
@@ -27,6 +35,18 @@
 .preset-modal--manager {
   width: 800px;
   max-height: 85vh;
+  animation: presetModalSlideIn 0.25s ease-out;
+}
+
+@keyframes presetModalSlideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
 /* ── Header ── */
