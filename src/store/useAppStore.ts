@@ -3,7 +3,8 @@
  */
 import { create } from 'zustand';
 import type { Node, Edge, Connection } from '@xyflow/react';
-import type { BaseNodeData, CanvasProject, AppConfig, WorkflowDefinition, UserPreset, PresetNodeType } from '../types';
+import type { BaseNodeData, CanvasProject, AppConfig, WorkflowDefinition, UserPreset, PresetNodeType, NodeGroup } from '../types';
+import { GROUP_COLOR_PALETTE } from '../types';
 import * as fileService from '../services/fileService';
 
 // 生成唯一 ID（节点等短 ID）
@@ -144,6 +145,12 @@ interface AppState {
   deleteWorkflow: (id: string) => Promise<void>;
   loadWorkflows: () => Promise<void>;
 
+  // Actions - Groups
+  groups: NodeGroup[];
+  groupSelectedNodes: () => void;
+  ungroupSelectedNodes: () => void;
+  renameGroup: (id: string, name: string) => void;
+
   // Actions - Presets
   setPresetManagerOpen: (open: boolean) => void;
   addUserPreset: (preset: UserPreset) => Promise<void>;
@@ -207,6 +214,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   workflowPanelOpen: false,
   userPresets: [],
   presetManagerOpen: false,
+  groups: [],
   toast: { visible: false, message: '', type: 'success' },
   config: defaultConfig,
 
@@ -326,9 +334,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       projectName: project.name,
       nodes: [],
       edges: [],
+      groups: [],
     }));
     // Persist to IndexedDB
-    fileService.saveProject({ ...project, nodes: [], edges: [] }).catch(() => {});
+    fileService.saveProject({ ...project, nodes: [], edges: [], groups: [] }).catch(() => {});
     // Ensure local data directory for media assets
     fileService.ensureProjectDataDir(id).catch(() => {});
   },
@@ -412,6 +421,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         projectName: project.name,
         nodes: data.nodes as Node<BaseNodeData>[],
         edges: (data.edges as Edge[]) || [],
+        groups: (data as any).groups || [],
         history: [],
         historyIndex: -1,
       });
@@ -419,6 +429,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         currentProjectId: id,
         projectName: project.name,
+        groups: [],
         nodes: [],
         edges: [],
         history: [],
@@ -576,6 +587,198 @@ export const useAppStore = create<AppState>((set, get) => ({
         })),
       });
     }
+  },
+
+  // Group actions
+  groupSelectedNodes: () => {
+    const { selectedNodeIds, groups, nodes } = get();
+    if (selectedNodeIds.length < 2) {
+      get().showToast('请至少选中 2 个节点', 'error');
+      return;
+    }
+
+    // Filter out nodes that are already in a group
+    const alreadyGrouped = nodes.filter((n) => n.parentId != null && selectedNodeIds.includes(n.id));
+    const candidateIds = selectedNodeIds.filter((id) => !alreadyGrouped.some((n) => n.id === id));
+    if (candidateIds.length < 2) {
+      if (alreadyGrouped.length > 0) {
+        get().showToast('部分节点已属于分组，请先解散', 'error');
+      } else {
+        get().showToast('可分组节点不足 2 个', 'error');
+      }
+      return;
+    }
+
+    get().commitToHistory();
+
+    // Compute bounding box from absolute positions
+    const selectedNodes = nodes.filter((n) => candidateIds.includes(n.id));
+    const sizes = selectedNodes.map((n) => ({
+      width: (n.data?.nodeWidth as number) || (n.measured?.width) || 280,
+      height: (n.data?.nodeHeight as number) || (n.measured?.height) || 160,
+    }));
+    const minLeft = Math.min(...selectedNodes.map((n, i) => {
+      const absX = n.parentId ? n.position.x + (nodes.find(p => p.id === n.parentId)?.position.x || 0) : n.position.x;
+      return absX;
+    }));
+    const minTop = Math.min(...selectedNodes.map((n, i) => {
+      const absY = n.parentId ? n.position.y + (nodes.find(p => p.id === n.parentId)?.position.y || 0) : n.position.y;
+      return absY;
+    }));
+    const maxRight = Math.max(...selectedNodes.map((n, i) => {
+      const absX = n.parentId ? n.position.x + (nodes.find(p => p.id === n.parentId)?.position.x || 0) : n.position.x;
+      return absX + sizes[i].width;
+    }));
+    const maxBottom = Math.max(...selectedNodes.map((n, i) => {
+      const absY = n.parentId ? n.position.y + (nodes.find(p => p.id === n.parentId)?.position.y || 0) : n.position.y;
+      return absY + sizes[i].height;
+    }));
+
+    const pad = 12;
+    const headerH = 28;
+    const groupId = `group-${generateId()}`;
+    const groupX = minLeft - pad;
+    const groupY = minTop - pad - headerH;
+    const groupW = maxRight - minLeft + pad * 2;
+    const groupH = maxBottom - minTop + pad * 2 + headerH;
+
+    // Compute group name
+    const nextNum = groups.length + 1;
+    const color = GROUP_COLOR_PALETTE[(groups.length) % GROUP_COLOR_PALETTE.length];
+
+    // Create group node (as a real React Flow node)
+    const groupNode: Node<BaseNodeData> = {
+      id: groupId,
+      type: 'group',
+      position: { x: groupX, y: groupY },
+      style: { width: groupW, height: groupH },
+      data: {
+        groupId,
+        color,
+        label: `分组 ${nextNum}`,
+        type: 'ai-text' as any, // required by BaseNodeData but unused for groups
+      } as any,
+      selected: false,
+      draggable: true,
+    };
+
+    // Reparent selected nodes — positions become relative to group
+    const childNodes = nodes.map((n) => {
+      if (!candidateIds.includes(n.id)) return n;
+      const absX = n.parentId ? n.position.x + (nodes.find(p => p.id === n.parentId)?.position.x || 0) : n.position.x;
+      const absY = n.parentId ? n.position.y + (nodes.find(p => p.id === n.parentId)?.position.y || 0) : n.position.y;
+      return {
+        ...n,
+        position: { x: absX - groupX, y: absY - groupY },
+        parentId: groupId,
+      };
+    });
+
+    // Group metadata for persistence
+    const newGroup: NodeGroup = {
+      id: groupId,
+      name: `分组 ${nextNum}`,
+      nodeIds: [...candidateIds],
+      color,
+      createdAt: Date.now(),
+    };
+
+    set({
+      nodes: [groupNode, ...childNodes],
+      groups: [...groups, newGroup],
+      selectedNodeIds: [],
+    });
+    get().showToast(`已创建「${newGroup.name}」（${candidateIds.length} 个节点）`);
+  },
+
+  ungroupSelectedNodes: () => {
+    const { nodes, groups, selectedNodeIds } = get();
+    if (selectedNodeIds.length === 0) {
+      get().showToast('请先选中节点或分组', 'error');
+      return;
+    }
+
+    // 1) Find directly selected group nodes
+    const selectedGroupNodeIds = new Set(
+      nodes
+        .filter((n) => n.type === 'group' && selectedNodeIds.includes(n.id))
+        .map((n) => n.id),
+    );
+
+    // 2) Find parents of selected child nodes
+    const parentIdsFromChildren = new Set(
+      nodes
+        .filter((n) => selectedNodeIds.includes(n.id) && n.parentId)
+        .map((n) => n.parentId!),
+    );
+
+    const allGroupNodeIds = new Set([...selectedGroupNodeIds, ...parentIdsFromChildren]);
+
+    let matchedGroups: NodeGroup[];
+
+    if (allGroupNodeIds.size > 0) {
+      // Match groups by their group-node ids
+      matchedGroups = groups.filter((g) => {
+        const gn = nodes.find(
+          (n) => n.type === 'group' && (n.data as any).groupId === g.id,
+        );
+        return gn && allGroupNodeIds.has(gn.id);
+      });
+    } else {
+      // 3) Fallback: match groups whose nodeIds include any selected node
+      matchedGroups = groups.filter((g) =>
+        g.nodeIds.some((gid) => selectedNodeIds.includes(gid)),
+      );
+    }
+
+    if (matchedGroups.length === 0) {
+      get().showToast('选中节点未属于任何分组', 'error');
+      return;
+    }
+
+    get().commitToHistory();
+    const dissolvedNames = matchedGroups.map((g) => g.name).join('、');
+
+    // Collect all group nodes that need to be removed
+    const groupNodes = nodes.filter(
+      (n) =>
+        n.type === 'group' &&
+        matchedGroups.some((g) => g.id === (n.data as any).groupId),
+    );
+    const groupPositions = new Map(groupNodes.map((gn) => [gn.id, gn.position]));
+    const gnIdSet = new Set(groupNodes.map((gn) => gn.id));
+
+    // Reposition children to absolute coordinates
+    const updatedNodes = nodes
+      .filter((n) => !gnIdSet.has(n.id))
+      .map((n) => {
+        if (!n.parentId || !groupPositions.has(n.parentId)) return n;
+        const gp = groupPositions.get(n.parentId)!;
+        return {
+          ...n,
+          position: { x: n.position.x + gp.x, y: n.position.y + gp.y },
+          parentId: undefined,
+        };
+      });
+
+    set({
+      nodes: updatedNodes,
+      groups: groups.filter((g) => !matchedGroups.includes(g)),
+    });
+    get().showToast(`已解散分组「${dissolvedNames}」`);
+  },
+
+  renameGroup: (id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    set((s) => ({
+      groups: s.groups.map((g) => (g.id === id ? { ...g, name: trimmed } : g)),
+      nodes: s.nodes.map((n) =>
+        n.type === 'group' && (n.data as any).groupId === id
+          ? { ...n, data: { ...n.data, label: trimmed } }
+          : n,
+      ),
+    }));
   },
 
   // Toast actions
@@ -1388,6 +1591,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         updatedAt: Date.now(),
         nodes,
         edges,
+        groups: get().groups,
       };
       await fileService.saveProject(record);
       // Update local project metadata
@@ -1427,6 +1631,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             projectName: data.name || '已加载项目',
             nodes: data.nodes as Node<BaseNodeData>[],
             edges: (data.edges as Edge[]) || [],
+            groups: (data as any).groups || [],
             history: [],
             historyIndex: -1,
           });
@@ -1469,9 +1674,10 @@ export const useAppStore = create<AppState>((set, get) => ({
             projectName: data.name || '新项目',
             nodes: (data.nodes as Node<BaseNodeData>[]) || [],
             edges: (data.edges as Edge[]) || [],
+            groups: (data as any).groups || [],
           });
         } else {
-          set({ projects: mapped, currentProjectId: lastId });
+          set({ projects: mapped, currentProjectId: lastId, groups: [] });
         }
         // Ensure data dir for current project
         fileService.ensureProjectDataDir(lastId).catch(() => {});

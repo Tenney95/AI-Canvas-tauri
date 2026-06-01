@@ -180,3 +180,29 @@ export interface UserPreset {
   thumbnail?: string;        // base64 data URL
   triggerMode: PresetTriggerMode;  // direct=替换全文, insertPrompt=追加到提示词
 }
+
+// ============================================
+// 节点分组
+// ============================================
+
+export interface NodeGroup {
+  id: string;
+  name: string;
+  nodeIds: string[];
+  color: string;
+  createdAt: number;
+}
+
+/** 分组色板 — 循环分配 */
+export const GROUP_COLOR_PALETTE = [
+  '#6366f1',
+  '#ec4899',
+  '#10b981',
+  '#f59e0b',
+  '#3b82f6',
+  '#ef4444',
+  '#8b5cf6',
+  '#06b6d4',
+  '#14b8a6',
+  '#f97316',
+];

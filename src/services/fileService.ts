@@ -64,6 +64,7 @@ export interface ProjectSaveData {
   updatedAt: number;
   nodes: unknown;
   edges: unknown;
+  groups?: unknown;
 }
 
 /** 保存项目到 IndexedDB */

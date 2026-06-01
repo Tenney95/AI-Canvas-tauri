@@ -111,6 +111,29 @@ export function useKeyboardShortcuts() {
         useAppStore.getState().hideNodeMenu();
         useAppStore.getState().setSettingsOpen(false);
       }
+
+      // Ctrl+G / Alt+G: Group / Ungroup
+      if ((e.ctrlKey || e.metaKey || e.altKey) && (e.key === 'g' || e.key === 'G')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const st = useAppStore.getState();
+        const ids = st.selectedNodeIds;
+        if (ids.length < 2) {
+          st.showToast('请至少框选 2 个节点', 'error');
+          return;
+        }
+        // Check if all selected nodes belong to the same group
+        const foundGroup = st.groups.find((g) => {
+          const set = new Set(g.nodeIds);
+          return ids.every((id) => set.has(id));
+        });
+        if (foundGroup) {
+          st.ungroupSelectedNodes();
+        } else {
+          st.groupSelectedNodes();
+        }
+        return;
+      }
     }
 
     document.addEventListener('keydown', handleKeyDown, true);

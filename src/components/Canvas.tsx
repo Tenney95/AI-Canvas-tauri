@@ -2,8 +2,7 @@
  * Canvas 画布主组件 — React Flow 画布核心，管理节点/边渲染、拖放、连线、右键菜单、空状态
  */
 import { useCallback, useState, useEffect } from 'react';
-import {
-  ReactFlow,
+import { ReactFlow,
   Background,
   Controls,
   MiniMap,
@@ -21,6 +20,7 @@ import TextNode from './nodes/TextNode';
 import ImageNode from './nodes/ImageNode';
 import VideoNode from './nodes/VideoNode';
 import AudioNode from './nodes/AudioNode';
+import GroupNode from './nodes/GroupNode';
 import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
 import NodeContextMenu from './canvas/NodeContextMenu';
@@ -41,6 +41,7 @@ const nodeTypes: NodeTypes = {
   'ai-image': ImageNode,
   'ai-video': VideoNode,
   'ai-audio': AudioNode,
+  group: GroupNode,
 };
 
 // ── Snap lines overlay ──
@@ -210,7 +211,9 @@ function CanvasInner() {
   // ── Node click → AI dialog ──
   const openNodeDialog = useAppStore((s) => s.openNodeDialog);
   const onNodeClick = useCallback(
-    (_: React.MouseEvent, node: RFNode<BaseNodeData>) => {
+    (e: React.MouseEvent, node: RFNode<BaseNodeData>) => {
+      // Shift+click is for multi-select, don't open dialog
+      if (e.shiftKey) return;
       if (node.data?.role === 'source') return;
       if (node.data?.type === 'ai-text' && node.data?.output) return;
       if (node.data?.type === 'ai-image' && node.data?.imageUrl) return;
@@ -238,10 +241,60 @@ function CanvasInner() {
   // ── Node change handler ──
   const handleNodesChange = useCallback(
     (changes: any[]) => {
-      const updated = applyNodeChanges(changes, nodes) as RFNode<BaseNodeData>[];
+      // Detect group node removals — convert to ungroup
       const removedIds = changes
         .filter((c) => c.type === 'remove')
         .map((c: any) => c.id!);
+
+      const removedGroupNodes = nodes.filter(
+        (n) => removedIds.includes(n.id) && n.type === 'group',
+      );
+
+      if (removedGroupNodes.length > 0) {
+        useAppStore.getState().commitToHistory();
+        const groupNodeIdSet = new Set(removedGroupNodes.map((n) => n.id));
+        const store = useAppStore.getState();
+        const removedGroupDataIds = removedGroupNodes.map(
+          (n) => (n.data as any).groupId as string,
+        );
+
+        // Reposition children to absolute coordinates
+        const groupPositions = new Map(
+          removedGroupNodes.map((gn) => [gn.id, gn.position]),
+        );
+
+        const repositioned = store.nodes
+          .map((n) => {
+            if (!n.parentId || !groupPositions.has(n.parentId)) return n;
+            const gp = groupPositions.get(n.parentId)!;
+            return {
+              ...n,
+              position: { x: n.position.x + gp.x, y: n.position.y + gp.y },
+              parentId: undefined,
+            };
+          })
+          .filter((n) => !groupNodeIdSet.has(n.id));
+
+        // Apply remaining non-group-removal changes
+        const finalNodes = applyNodeChanges(
+          changes.filter(
+            (c: any) => c.type !== 'remove' || !groupNodeIdSet.has(c.id),
+          ),
+          repositioned,
+        ) as RFNode<BaseNodeData>[];
+
+        useAppStore.setState((s) => ({
+          nodes: finalNodes,
+          edges: s.edges.filter(
+            (e) =>
+              !removedIds.includes(e.source) && !removedIds.includes(e.target),
+          ),
+          groups: s.groups.filter((g) => !removedGroupDataIds.includes(g.id)),
+        }));
+        return;
+      }
+
+      const updated = applyNodeChanges(changes, nodes) as RFNode<BaseNodeData>[];
       if (removedIds.length > 0) {
         useAppStore.getState().commitToHistory();
         useAppStore.setState((s) => ({
@@ -290,6 +343,8 @@ function CanvasInner() {
         onMove={handleMove}
         proOptions={{ hideAttribution: true }}
         panOnDrag={[1, 2]}
+        selectionOnDrag
+        multiSelectionKeyCode="Shift"
         onContextMenu={openCtxMenu}
         onNodeContextMenu={openNodeCtxMenu}
         onDragEnter={onDragEnter}
