@@ -717,6 +717,7 @@
 .react-flow__node-group {
   background-color: transparent !important;
    border-radius: 14px !important;
+
 }
 
 .canvas-group-node-box {
@@ -792,4 +793,22 @@
   font-weight: 400;
   letter-spacing: 0.03em;
   margin-left: auto;
+}
+
+/* Resize hint — bottom-right corner indicator */
+.react-flow__resize-control {
+  opacity: 0;
+}
+.react-flow__resize-control:hover {
+  opacity: .5;
+}
+.canvas-group-resize-hint {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  opacity: 0;
+}
+
+.react-flow__node-group:hover .canvas-group-resize-hint {
+  opacity: .5;
 }

@@ -314,6 +314,138 @@ function CanvasInner() {
   const { snapLines, onNodeDragStart, onNodeDrag, onNodeDragStop } =
     useNodeSnap(nodes, setNodes);
 
+  // ── Auto group/ungroup on drag stop ──
+  const handleNodeDragStop = useCallback(
+    (_event: React.MouseEvent, node: RFNode) => {
+      const store = useAppStore.getState();
+      const allNodes = store.nodes;
+
+      // Skip group nodes themselves
+      if (node.type === 'group') {
+        onNodeDragStop();
+        return;
+      }
+
+      // Compute absolute position (follow parent chain)
+      const absPos = { x: node.position.x, y: node.position.y };
+      let pid = node.parentId;
+      while (pid) {
+        const p = allNodes.find((n) => n.id === pid);
+        if (!p) break;
+        absPos.x += p.position.x;
+        absPos.y += p.position.y;
+        pid = p.parentId;
+      }
+
+      const nodeWidth =
+        (node.data?.nodeWidth as number) || node.measured?.width || 280;
+      const nodeHeight =
+        (node.data?.nodeHeight as number) || node.measured?.height || 160;
+      const nodeCenter = {
+        x: absPos.x + nodeWidth / 2,
+        y: absPos.y + nodeHeight / 2,
+      };
+
+      const groupNodes = allNodes.filter((n) => n.type === 'group');
+      let newNodes = allNodes.map((n) => ({ ...n, position: { ...n.position } }));
+      let newGroups = [...store.groups];
+      let changed = false;
+
+      // 1) Check if node should leave its current parent group
+      if (node.parentId) {
+        const parentNode = groupNodes.find((g) => g.id === node.parentId);
+        if (parentNode) {
+          const pw = (parentNode.style?.width as number) || 400;
+          const ph = (parentNode.style?.height as number) || 300;
+          const inside =
+            nodeCenter.x >= parentNode.position.x &&
+            nodeCenter.x <= parentNode.position.x + pw &&
+            nodeCenter.y >= parentNode.position.y &&
+            nodeCenter.y <= parentNode.position.y + ph;
+          if (!inside) {
+            newNodes = newNodes.map((n) => {
+              if (n.id !== node.id) return n;
+              return { ...n, position: absPos, parentId: undefined };
+            });
+            const gdata = (parentNode.data as any);
+            const gId = gdata?.groupId;
+            newGroups = newGroups.map((g) =>
+              g.id === gId
+                ? { ...g, nodeIds: g.nodeIds.filter((id) => id !== node.id) }
+                : g,
+            );
+            changed = true;
+          }
+        }
+      }
+
+      // 2) Check if free node should enter a group
+      const updatedNode = newNodes.find((n) => n.id === node.id)!;
+      if (!updatedNode.parentId) {
+        for (const gn of groupNodes) {
+          const pw = (gn.style?.width as number) || 400;
+          const ph = (gn.style?.height as number) || 300;
+          if (
+            nodeCenter.x >= gn.position.x &&
+            nodeCenter.x <= gn.position.x + pw &&
+            nodeCenter.y >= gn.position.y &&
+            nodeCenter.y <= gn.position.y + ph
+          ) {
+            newNodes = newNodes.map((n) => {
+              if (n.id !== node.id) return n;
+              return {
+                ...n,
+                position: {
+                  x: absPos.x - gn.position.x,
+                  y: absPos.y - gn.position.y,
+                },
+                parentId: gn.id,
+              };
+            });
+            const gdata = (gn.data as any);
+            const gId = gdata?.groupId;
+            newGroups = newGroups.map((g) =>
+              g.id === gId
+                ? { ...g, nodeIds: [...new Set([...g.nodeIds, node.id])] }
+                : g,
+            );
+            changed = true;
+            break; // join first overlapping group only
+          }
+        }
+      }
+
+      // 3) Auto-delete groups that have become empty
+      if (changed) {
+        const emptyGroupIds = new Set(
+          groupNodes
+            .filter(
+              (gn) =>
+                newNodes.filter((n) => n.parentId === gn.id).length === 0,
+            )
+            .map((gn) => gn.id),
+        );
+        if (emptyGroupIds.size > 0) {
+          newNodes = newNodes.filter((n) => !emptyGroupIds.has(n.id));
+          const emptyDataIds = new Set(
+            groupNodes
+              .filter((gn) => emptyGroupIds.has(gn.id))
+              .map((gn) => (gn.data as any).groupId)
+              .filter(Boolean),
+          );
+          newGroups = newGroups.filter((g) => !emptyDataIds.has(g.id));
+        }
+
+        store.commitToHistory(); // capture pre-change state
+        useAppStore.setState({ nodes: newNodes, groups: newGroups });
+      }
+
+      // Always call snap handler last (it commits final state for undo)
+      onNodeDragStop();
+    },
+    [onNodeDragStop],
+  );
+
   return (
     <div className="absolute inset-0">
       <ReactFlow
@@ -327,7 +459,7 @@ function CanvasInner() {
         onSelectionChange={onSelectionChange}
         onNodeDragStart={onNodeDragStart}
         onNodeDrag={onNodeDrag}
-        onNodeDragStop={onNodeDragStop}
+        onNodeDragStop={handleNodeDragStop}
         onNodesChange={handleNodesChange}
         nodeTypes={nodeTypes}
         connectionMode={ConnectionMode.Loose}
