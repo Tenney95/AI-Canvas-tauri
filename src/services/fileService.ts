@@ -13,7 +13,11 @@ import {
   deleteWorkflowFromDb,
   saveConfigToDb,
   loadConfigFromDb,
+  savePresetToDb,
+  getAllPresets,
+  deletePresetFromDb,
   type WorkflowRecord,
+  type PresetRecord,
 } from './indexedDbService';
 
 /** 检测是否运行在 Tauri 桌面环境中 */
@@ -699,5 +703,38 @@ export async function loadConfig(): Promise<unknown | null> {
   } catch (error) {
     console.error('Load config failed:', error);
     return null;
+  }
+}
+
+// ============================================
+// Presets CRUD
+// ============================================
+
+export async function savePreset(record: PresetRecord): Promise<void> {
+  try {
+    await savePresetToDb(record);
+    console.log('Preset saved to IndexedDB:', record.id);
+  } catch (error) {
+    console.error('Save preset failed:', error);
+    throw error;
+  }
+}
+
+export async function loadPresets(): Promise<PresetRecord[]> {
+  try {
+    return await getAllPresets();
+  } catch (error) {
+    console.error('Load presets failed:', error);
+    return [];
+  }
+}
+
+export async function deletePreset(id: string): Promise<void> {
+  try {
+    await deletePresetFromDb(id);
+    console.log('Preset deleted from IndexedDB:', id);
+  } catch (error) {
+    console.error('Delete preset failed:', error);
+    throw error;
   }
 }

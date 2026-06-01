@@ -1,0 +1,498 @@
+/* ═══════════════════════════════════════════════
+   Preset Manager — 用户预设管理器弹窗样式
+   ═══════════════════════════════════════════════ */
+
+.preset-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10010;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preset-modal {
+  background: #1a1a26;
+  border: 1px solid #2a2a3a;
+  border-radius: 14px;
+  width: 760px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.preset-modal--manager {
+  width: 800px;
+  max-height: 85vh;
+}
+
+/* ── Header ── */
+.preset-manager-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 24px 12px;
+  flex-shrink: 0;
+}
+
+.preset-manager-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preset-modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #e8e8ed;
+}
+
+.preset-modal-desc {
+  font-size: 13px;
+  color: #8888a0;
+}
+
+.preset-manager-close-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #8888a0;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.preset-manager-close-btn:hover {
+  background: #252535;
+  color: #e8e8ed;
+}
+
+/* ── Tabs ── */
+.preset-manager-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 24px;
+  border-bottom: 1px solid #2a2a3a;
+  flex-shrink: 0;
+}
+
+.preset-manager-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: #8888a0;
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  margin-bottom: -1px;
+}
+
+.preset-manager-tab:hover {
+  color: #c0c0d0;
+  background: #252535;
+}
+
+.preset-manager-tab.is-active {
+  color: #e8e8ed;
+  border-bottom-color: #6366f1;
+}
+
+.preset-manager-tab-icon {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.preset-manager-tab.is-active .preset-manager-tab-icon {
+  opacity: 1;
+}
+
+/* ── Shell (sidebar + detail) ── */
+.preset-manager-shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Sidebar ── */
+.preset-manager-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid #2a2a3a;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  gap: 10px;
+}
+
+.preset-manager-new-btn {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px dashed #3a3a4a;
+  background: transparent;
+  color: #a0a0b8;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preset-manager-new-btn:hover {
+  border-color: #6366f1;
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.preset-manager-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preset-manager-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  position: relative;
+}
+
+.preset-manager-list-item:hover {
+  background: #252535;
+}
+
+.preset-manager-list-item.is-active {
+  background: rgba(99, 102, 241, 0.12);
+}
+
+.preset-manager-list-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background: #252535;
+  border: 1px dashed #3a3a4a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  overflow: hidden;
+  position: relative;
+  transition: border-color 0.15s;
+}
+
+.preset-manager-list-thumb:hover {
+  border-color: #6366f1;
+}
+
+.preset-manager-list-thumb-plus {
+  font-size: 16px;
+  color: #555566;
+}
+
+.preset-manager-list-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.preset-manager-thumb-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.preset-manager-list-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.preset-manager-list-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #e8e8ed;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-manager-list-desc {
+  font-size: 11px;
+  color: #666680;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-manager-list-delete {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: #555566;
+  font-size: 14px;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.preset-manager-list-item:hover .preset-manager-list-delete {
+  display: flex;
+}
+
+.preset-manager-list-delete:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.preset-manager-list-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: #555566;
+}
+
+/* ── Detail pane ── */
+.preset-manager-detail-pane {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+
+.preset-manager-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.preset-manager-detail-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  font-size: 13px;
+  color: #555566;
+}
+
+.preset-manager-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preset-manager-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #8888a0;
+}
+
+.preset-manager-input {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #2a2a3a;
+  background: #14141c;
+  color: #e8e8ed;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.preset-manager-input:focus {
+  border-color: #6366f1;
+}
+
+.preset-manager-input::placeholder {
+  color: #555566;
+}
+
+/* ── Template editor ── */
+.preset-manager-template-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.preset-modal-btn-secondary {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid #3a3a4a;
+  background: #252535;
+  color: #a0a0b8;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preset-modal-btn-secondary:hover {
+  border-color: #6366f1;
+  color: #c0c0d0;
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.preset-manager-editor-wrap {
+  position: relative;
+  border: 1px solid #2a2a3a;
+  border-radius: 8px;
+  background: #14141c;
+  min-height: 180px;
+  transition: border-color 0.15s;
+}
+
+.preset-manager-editor-wrap:focus-within {
+  border-color: #6366f1;
+}
+
+.preset-manager-editor {
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #e8e8ed;
+  outline: none;
+  min-height: 180px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.preset-manager-editor-placeholder {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  right: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #555566;
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.preset-placeholder-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 4px;
+  font-size: 12px;
+  color: #a5b4fc;
+  font-weight: 500;
+  user-select: none;
+  cursor: default;
+}
+
+/* ── Footer actions ── */
+.preset-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  border-top: 1px solid #2a2a3a;
+  flex-shrink: 0;
+}
+
+.preset-manager-trigger-modes {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preset-manager-trigger-mode-label {
+  font-size: 12px;
+  color: #8888a0;
+  margin-right: 4px;
+}
+
+.preset-manager-trigger-mode {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid #3a3a4a;
+  background: transparent;
+  color: #8888a0;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preset-manager-trigger-mode:hover {
+  border-color: #6366f1;
+  color: #c0c0d0;
+}
+
+.preset-manager-trigger-mode.is-active {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.12);
+  color: #a5b4fc;
+}
+
+.preset-modal-btn-primary {
+  padding: 8px 24px;
+  border-radius: 8px;
+  border: none;
+  background: #6366f1;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preset-modal-btn-primary:hover {
+  background: #818cf8;
+}
+
+/* ═══════════════════════════════════════════════
+   Slash Command Menu — 用户预设 & 管理入口
+   ═══════════════════════════════════════════════ */
+
+.slash-command-header--user {
+  color: #a5b4fc;
+  font-weight: 500;
+}
+
+.slash-command-user-preset {
+  cursor: pointer;
+}
+
+.slash-command-thumb {
+  border-radius: 4px;
+}
+
+.slash-command-manage {
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.slash-command-manage:hover {
+  opacity: 1;
+  background: #252535;
+}
+
+.slash-command-manage-title {
+  color: #a0a0b8;
+}

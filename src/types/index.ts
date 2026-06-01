@@ -146,3 +146,37 @@ export function getWorkflowCategory(nodeType: NodeType): WorkflowCategory | null
     default: return null;
   }
 }
+
+// ============================================
+// 用户自定义预设 — 可编辑的提示词模板
+// ============================================
+
+export type PresetNodeType = 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio';
+
+export const PRESET_NODE_TYPES: PresetNodeType[] = ['ai-text', 'ai-image', 'ai-video', 'ai-audio'];
+
+export const PRESET_NODE_TYPE_LABELS: Record<PresetNodeType, string> = {
+  'ai-text': '文本预设',
+  'ai-image': '图像预设',
+  'ai-video': '视频预设',
+  'ai-audio': '音频预设',
+};
+
+export const PRESET_NODE_TYPE_ICONS: Record<PresetNodeType, string> = {
+  'ai-text': 'T',
+  'ai-image': 'I',
+  'ai-video': 'V',
+  'ai-audio': 'A',
+};
+
+export type PresetTriggerMode = 'direct' | 'insertPrompt';
+
+export interface UserPreset {
+  id: string;
+  nodeType: PresetNodeType;
+  name: string;
+  description: string;
+  promptTemplate: string;
+  thumbnail?: string;        // base64 data URL
+  triggerMode: PresetTriggerMode;  // direct=替换全文, insertPrompt=追加到提示词
+}

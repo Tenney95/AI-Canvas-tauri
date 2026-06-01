@@ -3,11 +3,13 @@
  */
 import { useState, useRef, useCallback } from 'react';
 import type { NodeType, ModelOption, WorkflowDefinition } from '../../../types';
+import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
 import VideoParamSelector from './VideoParamSelector';
 import MentionEditor from './MentionEditor';
 import SlashCommandMenu from './SlashCommandMenu';
+import PresetManager from './PresetManager';
 
 interface PromptPanelProps {
   nodeType: NodeType;
@@ -67,16 +69,40 @@ export default function PromptPanel({
   const [focused, setFocused] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
   const slashBtnRef = useRef<HTMLButtonElement>(null);
+  const promptInputRef = useRef<HTMLDivElement>(null);
+  const slashTriggerSource = useRef<'button' | 'editor'>('button');
+
+  const userPresets = useAppStore((s) => s.userPresets);
+  const setPresetManagerOpen = useAppStore((s) => s.setPresetManagerOpen);
 
   const handleSlashSelect = useCallback((filledPrompt: string) => {
     onChange(filledPrompt);
     setSlashOpen(false);
   }, [onChange]);
 
+  const handleEditorSlash = useCallback(() => {
+    slashTriggerSource.current = 'editor';
+    setSlashOpen(true);
+  }, []);
+
+  const handleButtonSlash = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    slashTriggerSource.current = 'button';
+    setSlashOpen(!slashOpen);
+  }, [slashOpen]);
+
+  const handleManagePresets = useCallback(() => {
+    setPresetManagerOpen(true);
+  }, [setPresetManagerOpen]);
+
+  const slashAnchor = slashTriggerSource.current === 'editor' && promptInputRef.current
+    ? promptInputRef.current
+    : slashBtnRef.current;
+
   return (
     <>
     <div className={`prompt-panel ${focused ? 'focused' : ''}`}>
-      <div className="prompt-input-wrap">
+      <div className="prompt-input-wrap" ref={promptInputRef}>
         <MentionEditor
           value={prompt}
           onChange={onChange}
@@ -87,6 +113,7 @@ export default function PromptPanel({
           canSubmit={canGenerate}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
+          onSlashTrigger={handleEditorSlash}
         />
       </div>
       <div className="prompt-footer">
@@ -128,10 +155,7 @@ export default function PromptPanel({
               type="button"
               className={`prompt-btn prompt-slash-btn${slashOpen ? ' slash-active' : ''}`}
               data-tooltip="预设提示词"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSlashOpen(!slashOpen);
-              }}
+              onClick={handleButtonSlash}
             >
               /
             </button>
@@ -187,11 +211,14 @@ export default function PromptPanel({
       <SlashCommandMenu
         nodeType={nodeType}
         currentPrompt={prompt}
-        anchorEl={slashBtnRef.current}
+        anchorEl={slashAnchor}
+        userPresets={userPresets}
         onSelect={handleSlashSelect}
         onClose={() => setSlashOpen(false)}
+        onManagePresets={handleManagePresets}
       />
     )}
+    <PresetManager />
     </>
   );
 }

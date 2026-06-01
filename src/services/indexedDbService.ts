@@ -2,10 +2,11 @@
  * indexedDbService IndexedDB 持久化服务 — 浏览器端本地存储，保存项目、工作流、应用配置等数据
  */
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 3;
+const DB_VERSION = 4; // v4: added presets store
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
+const STORE_PRESETS = 'presets';
 
 const CONFIG_KEY = 'app-config';
 
@@ -44,6 +45,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_CONFIG)) {
         db.createObjectStore(STORE_CONFIG, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_PRESETS)) {
+        db.createObjectStore(STORE_PRESETS, { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -170,5 +174,52 @@ export async function loadConfigFromDb(): Promise<unknown | null> {
     const request = store.get(CONFIG_KEY);
     request.onsuccess = () => resolve(request.result?.data ?? null);
     request.onerror = () => reject(request.error);
+  });
+}
+
+// ============================================
+// Presets CRUD
+// ============================================
+
+export interface PresetRecord {
+  id: string;
+  nodeType: string;
+  name: string;
+  description: string;
+  promptTemplate: string;
+  thumbnail?: string;
+  triggerMode: string;
+}
+
+export async function savePresetToDb(record: PresetRecord): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_PRESETS, 'readwrite');
+    const store = tx.objectStore(STORE_PRESETS);
+    store.put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function getAllPresets(): Promise<PresetRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_PRESETS, 'readonly');
+    const store = tx.objectStore(STORE_PRESETS);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function deletePresetFromDb(id: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_PRESETS, 'readwrite');
+    const store = tx.objectStore(STORE_PRESETS);
+    store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }

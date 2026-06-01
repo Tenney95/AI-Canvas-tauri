@@ -3,7 +3,7 @@
  */
 import { create } from 'zustand';
 import type { Node, Edge, Connection } from '@xyflow/react';
-import type { BaseNodeData, CanvasProject, AppConfig, WorkflowDefinition } from '../types';
+import type { BaseNodeData, CanvasProject, AppConfig, WorkflowDefinition, UserPreset, PresetNodeType } from '../types';
 import * as fileService from '../services/fileService';
 
 // 生成唯一 ID（节点等短 ID）
@@ -66,6 +66,8 @@ interface AppState {
   // 工作流
   workflows: WorkflowDefinition[];
   workflowPanelOpen: boolean;
+  userPresets: UserPreset[];
+  presetManagerOpen: boolean;
 
   // UI 状态
   settingsOpen: boolean;
@@ -142,6 +144,13 @@ interface AppState {
   deleteWorkflow: (id: string) => Promise<void>;
   loadWorkflows: () => Promise<void>;
 
+  // Actions - Presets
+  setPresetManagerOpen: (open: boolean) => void;
+  addUserPreset: (preset: UserPreset) => Promise<void>;
+  updateUserPreset: (id: string, data: Partial<UserPreset>) => Promise<void>;
+  deleteUserPreset: (id: string) => Promise<void>;
+  loadPresets: () => Promise<void>;
+
   // Actions - Save/Load
   saveCurrentProject: () => Promise<string | undefined>;
   loadProject: () => Promise<void>;
@@ -196,6 +205,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   clipboard: [],
   workflows: [],
   workflowPanelOpen: false,
+  userPresets: [],
+  presetManagerOpen: false,
   toast: { visible: false, message: '', type: 'success' },
   config: defaultConfig,
 
@@ -520,6 +531,50 @@ export const useAppStore = create<AppState>((set, get) => ({
         createdAt: r.createdAt,
       }));
       set({ workflows: mapped });
+    }
+  },
+
+  // Preset actions
+  setPresetManagerOpen: (open) => set({ presetManagerOpen: open }),
+
+  addUserPreset: async (preset) => {
+    set((state) => ({ userPresets: [...state.userPresets, preset] }));
+    await fileService.savePreset({ ...preset }).catch(() => {});
+  },
+
+  updateUserPreset: async (id, data) => {
+    set((state) => ({
+      userPresets: state.userPresets.map((p) =>
+        p.id === id ? { ...p, ...data } : p,
+      ),
+    }));
+    const updated = get().userPresets.find((p) => p.id === id);
+    if (updated) {
+      await fileService.savePreset({ ...updated }).catch(() => {});
+    }
+  },
+
+  deleteUserPreset: async (id) => {
+    set((state) => ({
+      userPresets: state.userPresets.filter((p) => p.id !== id),
+    }));
+    await fileService.deletePreset(id).catch(() => {});
+  },
+
+  loadPresets: async () => {
+    const records = await fileService.loadPresets();
+    if (records.length > 0) {
+      set({
+        userPresets: records.map((r) => ({
+          id: r.id,
+          nodeType: r.nodeType as PresetNodeType,
+          name: r.name,
+          description: r.description,
+          promptTemplate: r.promptTemplate,
+          thumbnail: r.thumbnail,
+          triggerMode: (r.triggerMode as UserPreset['triggerMode']) || 'direct',
+        })),
+      });
     }
   },
 
@@ -1384,8 +1439,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   initFromDb: async () => {
     try {
-      // Load config and workflows in parallel
-      await Promise.all([get().loadConfig(), get().loadWorkflows()]);
+      // Load config, workflows and presets in parallel
+      await Promise.all([get().loadConfig(), get().loadWorkflows(), get().loadPresets()]);
 
       const allProjects = await fileService.loadProjectsList();
       // Filter out any stale 'default' placeholder that may have leaked

@@ -17,6 +17,7 @@ export interface MentionEditorProps {
   canSubmit?: boolean;
   onFocus?: () => void;
   onBlur?: () => void;
+  onSlashTrigger?: () => void;
   className?: string;
 }
 
@@ -225,6 +226,7 @@ export default function MentionEditor({
   canSubmit = true,
   onFocus,
   onBlur,
+  onSlashTrigger,
   className = '',
 }: MentionEditorProps) {
   // ── @ Mention state ──
@@ -521,7 +523,7 @@ export default function MentionEditor({
     [deleteAtChar, insertWorkflowChipAtCursor],
   );
 
-  // ── Input handler: detect @ ──
+  // ── Input handler: detect @ and / ──
   const handleInput = useCallback(() => {
     const el = editorRef.current;
     if (!el) return;
@@ -542,11 +544,13 @@ export default function MentionEditor({
               savedMentionRangeRef.current = sel2.getRangeAt(0).cloneRange();
             }
           }
+        } else if (cursorPos > 0 && text[cursorPos - 1] === '/') {
+          onSlashTrigger?.();
         }
       }
     }
     emitDOM();
-  }, [emitDOM, hasAnyMentions]);
+  }, [emitDOM, hasAnyMentions, onSlashTrigger]);
 
   // ── KeyDown: mention navigation / submit / chip deletion ──
   const handleKeyDown = useCallback(
