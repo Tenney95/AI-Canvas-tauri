@@ -48,17 +48,22 @@ function AINodeDialog() {
   );
 
   // 调用选中模型生成（文本 or 图片）
+  // NOTE: prompt 通过 useAppStore.getState() 直接读取最新值，避免闭包陈旧问题
+  // （/ 指令菜单自动触发时 onChange 先更新 store，onSubmit 需要读到更新后的值）
   const onSubmit = useCallback(async () => {
-    if (!data?.prompt?.trim() || !data?.model || !data?.provider) return;
+    const latestNode = useAppStore.getState().nodes.find((n) => n.id === activeNodeId);
+    const latestData: BaseNodeData | undefined = latestNode?.data;
+    const latestPrompt = (latestData?.prompt as string) || '';
+    if (!latestPrompt.trim() || !data?.model || !data?.provider) return;
     updateNodeData(activeNodeId!, { status: 'loading', error: undefined });
     try {
       if (nodeType === 'ai-image') {
         const imageSize = (data.imageSize as string) || '2K';
         const aspectRatio = (data.aspectRatio as string) || '1:1';
         const result = await generateImage({
-          prompt: data.prompt,
-          model: data.model,
-          provider: data.provider,
+          prompt: latestPrompt,
+          model: data.model!,
+          provider: data.provider!,
           imageSize,
           aspectRatio,
           workflowId: data.workflowId,
@@ -75,9 +80,9 @@ function AINodeDialog() {
         showToast('图片生成完成');
       } else if (nodeType === 'ai-video') {
         const result = await generateVideo({
-          prompt: data.prompt,
-          model: data.model,
-          provider: data.provider,
+          prompt: latestPrompt,
+          model: data.model!,
+          provider: data.provider!,
           videoResolution: (data.videoResolution as number) || 832,
           videoFps: (data.videoFps as number) || 24,
           videoFrames: (data.videoFrames as number) || 77,
@@ -93,9 +98,9 @@ function AINodeDialog() {
         showToast('视频生成完成');
       } else {
         const result = await generateText({
-          prompt: data.prompt,
-          model: data.model,
-          provider: data.provider,
+          prompt: latestPrompt,
+          model: data.model!,
+          provider: data.provider!,
         });
         updateNodeData(activeNodeId!, { output: result, status: 'success' });
       }
@@ -104,7 +109,7 @@ function AINodeDialog() {
       updateNodeData(activeNodeId!, { status: 'error', error: msg });
       showToast(msg, 'error');
     }
-  }, [activeNodeId, nodeType, data?.prompt, data?.model, data?.provider, data?.imageSize, data?.aspectRatio, data?.videoResolution, data?.videoFps, data?.videoFrames, data?.workflowId, data?.workflowInputs, updateNodeData, showToast]);
+  }, [activeNodeId, nodeType, data?.model, data?.provider, data?.imageSize, data?.aspectRatio, data?.videoResolution, data?.videoFps, data?.videoFrames, data?.workflowId, data?.workflowInputs, updateNodeData, showToast]);
 
   // 直接将输入内容作为节点输出（跳过模型调用）
   const onPassThrough = useCallback(() => {

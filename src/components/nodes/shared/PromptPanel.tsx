@@ -75,10 +75,18 @@ export default function PromptPanel({
   const userPresets = useAppStore((s) => s.userPresets);
   const setPresetManagerOpen = useAppStore((s) => s.setPresetManagerOpen);
 
-  const handleSlashSelect = useCallback((filledPrompt: string) => {
-    onChange(filledPrompt);
+  const handleSlashSelect = useCallback((filledPrompt: string, shouldTrigger: boolean) => {
     setSlashOpen(false);
-  }, [onChange]);
+    if (shouldTrigger) {
+      // Direct trigger: update store prompt → submit → restore input box to original
+      onChange(filledPrompt);
+      onSubmit();
+      onChange(prompt);
+    } else {
+      // Insert mode: update input box with filled template
+      onChange(filledPrompt);
+    }
+  }, [onChange, onSubmit, prompt]);
 
   const handleEditorSlash = useCallback(() => {
     slashTriggerSource.current = 'editor';

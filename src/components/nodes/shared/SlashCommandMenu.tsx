@@ -13,7 +13,7 @@ interface SlashCommandMenuProps {
   currentPrompt: string;
   anchorEl: HTMLElement | null;
   userPresets: UserPreset[];
-  onSelect: (prompt: string) => void;
+  onSelect: (prompt: string, shouldTrigger: boolean) => void;
   onClose: () => void;
   onManagePresets: () => void;
 }
@@ -60,19 +60,21 @@ export default function SlashCommandMenu({
   const handleItemSelect = useCallback((item: SlashCommandItem) => {
     if (item.promptTemplate) {
       const filled = fillTemplate(item.promptTemplate, currentPrompt);
-      onSelect(filled);
+      // Built-in commands always trigger directly: concatenate current input + template → trigger
+      onSelect(filled, true);
       onClose();
     }
   }, [currentPrompt, onSelect, onClose]);
 
   const handlePresetSelect = useCallback((preset: UserPreset) => {
     if (preset.triggerMode === 'direct') {
-      // Direct trigger: replace the entire prompt
-      onSelect(fillTemplate(preset.promptTemplate, currentPrompt));
-    } else {
-      // Insert mode: append template to current prompt
+      // Direct trigger: fill template with current input → trigger immediately
       const filled = fillTemplate(preset.promptTemplate, currentPrompt);
-      onSelect(currentPrompt ? `${currentPrompt}\n${filled}` : filled);
+      onSelect(filled, true);
+    } else {
+      // Insert mode: append template to current prompt, don't trigger
+      const filled = fillTemplate(preset.promptTemplate, currentPrompt);
+      onSelect(currentPrompt ? `${currentPrompt}\n${filled}` : filled, false);
     }
     onClose();
   }, [currentPrompt, onSelect, onClose]);

@@ -32,7 +32,28 @@ function getDefaultNodeSize(nodeType: string | undefined): { width: number; heig
   }
 }
 
-function getNodeBounds(node: Node<BaseNodeData>): {
+/** Follow parentId chain to compute absolute offset from relative position */
+function getParentOffset(
+  node: Node<BaseNodeData>,
+  allNodes: Node<BaseNodeData>[]
+): { x: number; y: number } {
+  let offsetX = 0;
+  let offsetY = 0;
+  let pid: string | undefined = node.parentId;
+  while (pid) {
+    const p = allNodes.find((n) => n.id === pid);
+    if (!p) break;
+    offsetX += p.position.x;
+    offsetY += p.position.y;
+    pid = p.parentId;
+  }
+  return { x: offsetX, y: offsetY };
+}
+
+function getNodeBounds(
+  node: Node<BaseNodeData>,
+  allNodes: Node<BaseNodeData>[]
+): {
   x: number;
   y: number;
   width: number;
@@ -47,8 +68,9 @@ function getNodeBounds(node: Node<BaseNodeData>): {
   const defaultSize = getDefaultNodeSize(node.type);
   const cardWidth = (node.data?.nodeWidth as number | undefined) ?? defaultSize.width;
   const cardHeight = (node.data?.nodeHeight as number | undefined) ?? defaultSize.height;
-  const x = node.position.x;
-  const y = node.position.y;
+  const parentOffset = node.parentId ? getParentOffset(node, allNodes) : { x: 0, y: 0 };
+  const x = node.position.x + parentOffset.x;
+  const y = node.position.y + parentOffset.y;
   return {
     x,
     y,
@@ -107,7 +129,8 @@ export function useNodeSnap(
 
   const onNodeDrag = useCallback(
     (_evt: React.MouseEvent | MouseEvent, node: Node<BaseNodeData>) => {
-      const draggedBounds = getNodeBounds(node);
+      const draggedBounds = getNodeBounds(node, nodes);
+      const parentOffset = node.parentId ? getParentOffset(node, nodes) : { x: 0, y: 0 };
       const otherNodes = nodes.filter((n) => n.id !== node.id && n.selected !== true);
 
       const snapResult: SnapResult = {
@@ -116,11 +139,11 @@ export function useNodeSnap(
         lines: [],
       };
 
-      // Collect all snap points from other nodes
+      // Collect all snap points from other nodes (in absolute coords)
       const otherXPoints: number[] = [];
       const otherYPoints: number[] = [];
       for (const other of otherNodes) {
-        const b = getNodeBounds(other);
+        const b = getNodeBounds(other, nodes);
         otherXPoints.push(b.left, b.centerX, b.right);
         otherYPoints.push(b.top, b.centerY, b.bottom);
       }
@@ -158,7 +181,7 @@ export function useNodeSnap(
 
       setSnapLines(snapResult.lines);
 
-      // Apply snap by updating node position
+      // Apply snap: convert absolute coords back to relative (subtract parent offset)
       if (snapResult.snapX !== null || snapResult.snapY !== null) {
         let newX = node.position.x;
         let newY = node.position.y;
@@ -166,13 +189,13 @@ export function useNodeSnap(
         if (snapResult.snapY !== null) {
           const snappedEdgeY = bestYSnap!.value;
           const edgeOffset = snappedEdgeY - draggedBounds.y;
-          newY = snapResult.snapY - edgeOffset;
+          newY = snapResult.snapY - edgeOffset - parentOffset.y;
         }
 
         if (snapResult.snapX !== null) {
           const snappedEdgeX = bestXSnap!.value;
           const edgeOffset = snappedEdgeX - draggedBounds.x;
-          newX = snapResult.snapX - edgeOffset;
+          newX = snapResult.snapX - edgeOffset - parentOffset.x;
         }
 
         setNodes(

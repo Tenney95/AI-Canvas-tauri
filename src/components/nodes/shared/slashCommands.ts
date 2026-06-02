@@ -438,8 +438,13 @@ export function getSlashCommands(nodeType: NodeType): SlashCommandItem[] {
 
 /**
  * 将当前提示词填入模板的 {{ 文章内容 }} 占位符
+ * 如果模板不含该占位符，则将输入内容拼接到模板最上方
  */
 export function fillTemplate(template: string, currentPrompt: string): string {
   const placeholder = '{{ 文章内容 }}';
-  return template.replace(placeholder, currentPrompt || '');
+  if (template.includes(placeholder)) {
+    return template.replace(placeholder, currentPrompt || '');
+  }
+  // 无占位符时，把用户输入放到最上方
+  return currentPrompt ? `${currentPrompt}\n\n${template}` : template;
 }
