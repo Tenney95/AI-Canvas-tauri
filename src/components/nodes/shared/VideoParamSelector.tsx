@@ -77,7 +77,7 @@ export default function VideoParamSelector({
   );
 
   return (
-    <div className="ui-schema-renderer" data-ui-schema-model="apimart/nano-banana-2" data-ui-schema-placement="videoParams" ref={ref}>
+    <div className="ui-schema-renderer" data-ui-schema-model="apimart/gemini-3.1-flash-image-preview" data-ui-schema-placement="videoParams" ref={ref}>
       <div className="ui-schema-quality-ratio-pill">
         <button
           type="button"

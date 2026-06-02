@@ -63,7 +63,7 @@ export default function QualityRatioSelector({
   ];
 
   return (
-    <div className="ui-schema-renderer" data-ui-schema-model="apimart/nano-banana-2" data-ui-schema-placement="resolution" ref={ref}>
+    <div className="ui-schema-renderer" data-ui-schema-model="apimart/gemini-3.1-flash-image-preview" data-ui-schema-placement="resolution" ref={ref}>
       <div className="ui-schema-quality-ratio-pill" data-ui-schema-composite-field="qualityRatio">
         <button
           type="button"

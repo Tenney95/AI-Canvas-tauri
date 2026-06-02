@@ -326,7 +326,7 @@ async function generateApimartImage(
       code: number;
       data: { status: string; progress?: number; result?: { images?: Array<{ url: string[] }> } };
     };
-    const task = pollResult.data ?? pollResult;
+    const task = pollResult.data;
 
     if (task.status === 'completed') {
       const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
@@ -344,6 +344,87 @@ async function generateApimartImage(
   }
 
   throw new Error('APIMart 生成任务超时，请稍后再试');
+}
+
+/** APIMart 视频生成 — 异步提交 + 轮询，与图片生成相同的任务模式 */
+async function generateApimartVideo(
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  prompt: string,
+): Promise<{ url: string }> {
+  // 步骤 1: 提交视频生成任务
+  const submitResp = await fetch(`${baseUrl}/images/generations`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      prompt,
+      n: 1,
+    }),
+  });
+
+  if (!submitResp.ok) {
+    const errBody = await submitResp.text().catch(() => '');
+    throw new Error(`APIMart 视频提交失败 (${submitResp.status}): ${errBody.slice(0, 200)}`);
+  }
+
+  const submitResult = await submitResp.json() as { code: number; data: Array<{ task_id: string; status: string }> };
+  const taskId = submitResult.data?.[0]?.task_id;
+  if (!taskId) {
+    throw new Error('APIMart 视频提交失败: 未返回 task_id');
+  }
+
+  // 步骤 2: 轮询（视频生成时间更长，延长超时和间隔）
+  const MAX_WAIT_MS = 15 * 60 * 1000; // 15 分钟
+  const POLL_INTERVAL = 3000;         // 3 秒轮询
+  const start = Date.now();
+
+  while (Date.now() - start < MAX_WAIT_MS) {
+    const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!pollResp.ok) {
+      const errBody = await pollResp.text().catch(() => '');
+      throw new Error(`APIMart 视频任务查询失败 (${pollResp.status}): ${errBody.slice(0, 200)}`);
+    }
+
+    const pollResult = await pollResp.json() as {
+      code: number;
+      data: {
+        status: string;
+        progress?: number;
+        result?: {
+          images?: Array<{ url: string[] }>;
+          videos?: Array<{ url: string[] }>;
+        };
+      };
+    };
+    const task = pollResult.data;
+
+    if (task.status === 'completed') {
+      // 优先取 videos，其次 images
+      const videoUrls = task.result?.videos?.flatMap((v) => v.url) ?? [];
+      const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
+      const allUrls = videoUrls.length > 0 ? videoUrls : imageUrls;
+      if (allUrls.length === 0) {
+        throw new Error('APIMart 视频生成完成但未返回结果');
+      }
+      return { url: allUrls[0] };
+    }
+
+    if (task.status === 'failed' || task.status === 'error') {
+      throw new Error(`APIMart 视频生成任务失败: ${task.status}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+  }
+
+  throw new Error('APIMart 视频生成任务超时，请稍后再试');
 }
 
 // ============================================
@@ -800,9 +881,30 @@ async function executeComfyUIVideoGenerate(params: AIVideoGenParams): Promise<{ 
 
 /** 视频生成入口 */
 export async function generateVideo(params: AIVideoGenParams): Promise<{ url: string }> {
+  const { prompt: rawPrompt, model, provider } = params;
+
+  // 解析 @{nodeId:label} 引用为对应节点的实际输出内容
+  const prompt = resolveNodeReferences(rawPrompt);
+
   // ComfyUI 工作流执行路径
   if (params.workflowId) {
-    return executeComfyUIVideoGenerate({ ...params, prompt: resolveNodeReferences(params.prompt) });
+    return executeComfyUIVideoGenerate({ ...params, prompt });
+  }
+
+  // APIMart 视频生成 — 异步提交 + 轮询
+  if (provider === 'apimart') {
+    const config = useAppStore.getState().config;
+    const providerConfig = config.providers.apimart;
+    const apiKey = providerConfig?.apiKey || '';
+    if (!apiKey) {
+      throw new Error('未配置 apimart 的 API Key\n请在「设置 → API Key」中配置');
+    }
+    const baseUrl = (providerConfig?.baseUrl || DEFAULT_BASE_URLS.apimart || '').replace(/\/+$/, '');
+    if (!baseUrl) {
+      throw new Error('未配置 apimart 的服务地址\n请在「设置 → API Key」中添加');
+    }
+    const modelName = extractModelName(model, provider);
+    return generateApimartVideo(apiKey, baseUrl, modelName, prompt);
   }
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置

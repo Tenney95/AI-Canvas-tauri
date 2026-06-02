@@ -354,6 +354,19 @@
   padding: 6px;
   font-family: inherit;
 }
+/* Character count — bottom-right inside text node */
+.text-node-wordcount {
+  position: absolute;
+  right: 5px;
+  bottom: -12px;
+  font-size: 8px;
+  color: #555566;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+  z-index: 2;
+}
+
 /* Resize handle — bottom-right corner */
 .text-node {
   position: relative;

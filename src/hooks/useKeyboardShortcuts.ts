@@ -186,6 +186,10 @@ export function useKeyboardShortcuts() {
             await registerAll();
           } else {
             await unregisterAll();
+            // Clear stale internal clipboard — when the user switches away,
+            // they may have copied external content. If we don't clear, the
+            // next Ctrl+V will still paste the old in-app copied nodes.
+            useAppStore.setState({ clipboard: [] });
           }
         });
 

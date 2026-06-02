@@ -37,9 +37,10 @@ const ANGLE_MODEL_GROUPS: ModelGroup[] = [
     iconType: 'badge',
     badgeText: 'AM',
     models: [
-      { value: 'apimart/nano-banana-2', provider: 'apimart', label: 'Nano banana 2', description: '新一代架构，兼顾细节与平衡', nodeTypes: ['ai-image'], iconType: 'badge', badgeText: 'AM' } as ModelOption,
-      { value: 'apimart/nano-banana-pro', provider: 'apimart', label: 'Nano banana pro', description: '专业级画质，光影渲染深度优化', nodeTypes: ['ai-image'], iconType: 'badge', badgeText: 'AM' } as ModelOption,
-      { value: 'apimart/gpt-image-2', provider: 'apimart', label: 'GPT image 2', description: 'OpenAI 图像生成模型，支持文生图与图生图', nodeTypes: ['ai-image'], iconType: 'badge', badgeText: 'AM' } as ModelOption,
+      { value: 'apimart/gemini-3.1-flash-image-preview', provider: 'apimart', label: 'Nano Banana 3.1', description: '最新 Nano Banana，最高画质', nodeTypes: ['ai-image'], iconType: 'badge', badgeText: 'AM' } as ModelOption,
+      { value: 'apimart/gemini-3-pro-image-preview', provider: 'apimart', label: 'Nano Banana Pro', description: '专业级画质，光影渲染深度优化', nodeTypes: ['ai-image'], iconType: 'badge', badgeText: 'AM' } as ModelOption,
+      { value: 'apimart/gpt-image-2', provider: 'apimart', label: 'GPT Image 2', description: 'OpenAI 图像生成，支持文生图与图生图', nodeTypes: ['ai-image'], iconType: 'badge', badgeText: 'AM' } as ModelOption,
+      { value: 'apimart/imagen-4.0-apimart', provider: 'apimart', label: 'Imagen 4.0', description: 'Google 旗舰图像生成模型', nodeTypes: ['ai-image'], iconType: 'badge', badgeText: 'AM' } as ModelOption,
     ],
   },
   {

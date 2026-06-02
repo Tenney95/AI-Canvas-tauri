@@ -227,6 +227,12 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
             </div>
           )}
         </div>
+        {data.output && (
+          <span className="text-node-wordcount">
+            {data.output.length.toLocaleString()} 字
+          </span>
+        )}
+
         {data.error && <div className="node-error">{data.error}</div>}
 
         <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-text" />

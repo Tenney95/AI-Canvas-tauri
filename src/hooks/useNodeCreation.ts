@@ -1,6 +1,6 @@
 /**
  * useNodeCreation — 节点创建 Hook
- * 封装所有节点创建方法（文本/图片/视频/音频）、文件拖放（浏览器 + Tauri 原生）和双击创建
+ * 封装所有节点创建方法（文本/图片/视频/音频）、文件拖放（浏览器 + Tauri 原生）
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useReactFlow } from '@xyflow/react';
