@@ -13,6 +13,7 @@ import { ReactFlow,
   ReactFlowProvider,
   Panel,
   applyNodeChanges,
+  applyEdgeChanges,
   type OnSelectionChangeParams,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -238,6 +239,16 @@ function CanvasInner() {
     [setSelectedNodeIds],
   );
 
+  // ── Edge change handler — apply selection / removal changes
+  const handleEdgesChange = useCallback(
+    (changes: any[]) => {
+      useAppStore.setState((s) => ({
+        edges: applyEdgeChanges(changes, s.edges) as typeof s.edges,
+      }));
+    },
+    [],
+  );
+
   // ── Node change handler ──
   const handleNodesChange = useCallback(
     (changes: any[]) => {
@@ -461,6 +472,7 @@ function CanvasInner() {
         onNodeDrag={onNodeDrag}
         onNodeDragStop={handleNodeDragStop}
         onNodesChange={handleNodesChange}
+        onEdgesChange={handleEdgesChange}
         nodeTypes={nodeTypes}
         connectionMode={ConnectionMode.Loose}
         fitView

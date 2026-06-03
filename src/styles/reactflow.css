@@ -20,6 +20,16 @@
 
 .react-flow__edge-path {
   stroke-width: 1.5 !important;
+  transition: stroke 0.15s ease, stroke-width 0.15s ease;
+}
+
+/* Selected Edge Highlight */
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #6366f1 !important;
+  stroke-width: 2.5 !important;
+}
+.react-flow__edge.selected .react-flow__edge-marker {
+  fill: #6366f1 !important;
 }
 
 .react-flow__handle {

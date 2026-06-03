@@ -79,20 +79,33 @@ export function useKeyboardShortcuts() {
       // Delete / Backspace
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const state = useAppStore.getState();
-        const ids = state.selectedNodeIds;
-        if (ids.length > 0) {
+        const nodeIds = state.selectedNodeIds;
+        const selectedEdgeIds = state.edges.filter((ed) => ed.selected).map((ed) => ed.id);
+
+        // Delete selected edges first
+        if (selectedEdgeIds.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          useAppStore.getState().commitToHistory();
+          useAppStore.setState((s) => ({
+            edges: s.edges.filter((ed) => !selectedEdgeIds.includes(ed.id)),
+          }));
+        }
+
+        // Delete selected nodes
+        if (nodeIds.length > 0) {
           e.preventDefault();
           e.stopPropagation();
           // Delete associated local files
-          const nodesToDelete = state.nodes.filter((n) => ids.includes(n.id));
+          const nodesToDelete = state.nodes.filter((n) => nodeIds.includes(n.id));
           for (const node of nodesToDelete) {
             fileService.deleteNodeFile(node.data as BaseNodeData).catch(() => {});
           }
           useAppStore.getState().commitToHistory();
           useAppStore.setState((s) => ({
-            nodes: s.nodes.filter((n) => !ids.includes(n.id)),
+            nodes: s.nodes.filter((n) => !nodeIds.includes(n.id)),
             edges: s.edges.filter(
-              (ed) => !ids.includes(ed.source) && !ids.includes(ed.target)
+              (ed) => !nodeIds.includes(ed.source) && !nodeIds.includes(ed.target)
             ),
             selectedNodeIds: [],
           }));
