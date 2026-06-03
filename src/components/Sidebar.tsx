@@ -414,16 +414,44 @@ function LogoMenu() {
       {/* Delete Project Confirm Popover — portal to body, positioned above the delete button */}
       {confirmDelete && createPortal((() => {
         const target = projects.find((p) => p.id === confirmDelete.id);
+        const DIALOG_W = 260;
+        const DIALOG_H = 130;
+        const PAD = 8;
+        const r = confirmDelete.rect;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+
+        // 水平居中于删除按钮，但不超出屏幕
+        let left = r.left + r.width / 2;
+        if (left < PAD) left = PAD;
+        if (left + DIALOG_W / 2 > vw - PAD) left = vw - PAD - DIALOG_W / 2;
+        if (left - DIALOG_W / 2 < PAD) left = DIALOG_W / 2 + PAD;
+
+        // 优先在按钮上方弹出；上方空间不足则改为下方
+        const aboveSpace = r.top - DIALOG_H - 10;
+        let top: number;
+        let arrowClass = '';
+        if (aboveSpace >= PAD) {
+          top = r.top - DIALOG_H - 10;
+          arrowClass = ' delete-confirm-below'; // arrow points down
+        } else {
+          top = r.bottom + 10;
+          arrowClass = ' delete-confirm-above'; // arrow points up
+          if (top + DIALOG_H > vh - PAD) {
+            top = Math.max(PAD, vh - DIALOG_H - PAD);
+          }
+        }
+
         const dialogStyle: React.CSSProperties = {
           position: 'fixed' as const,
-          left: `${confirmDelete.rect.left + confirmDelete.rect.width / 2}px`,
-          bottom: `${window.innerHeight - confirmDelete.rect.top + 10}px`,
+          left: `${left}px`,
+          top: `${top}px`,
           transform: 'translateX(-50%)',
         };
         return (
           <>
             <div className="delete-confirm-overlay" onClick={() => setConfirmDelete(null)} />
-            <div className="delete-confirm-dialog" style={dialogStyle} onClick={(e) => e.stopPropagation()}>
+            <div className={`delete-confirm-dialog${arrowClass}`} style={dialogStyle} onClick={(e) => e.stopPropagation()}>
               <div className="delete-confirm-icon">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="12" cy="12" r="10" />

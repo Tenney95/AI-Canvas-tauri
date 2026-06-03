@@ -1,11 +1,13 @@
 /**
  * NodeMenu 浮动节点菜单 — 半透明悬浮按钮，点击展开节点类型选择列表，快速添加节点到画布
+ * 自动检测屏幕边界，避免溢出
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useMemo } from 'react';
 import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
 import type { NodeType } from '../types';
+import { calcFixedPosition } from '../utils/popupPosition';
 
 const menuItems: { type: NodeType; label: string; icon: JSX.Element; badge?: string; color: string }[] = [
   {
@@ -60,6 +62,9 @@ const menuItems: { type: NodeType; label: string; icon: JSX.Element; badge?: str
   },
 ];
 
+const NODE_MENU_W = 240;
+const NODE_MENU_H = 290; // 4 items + header + footer
+
 export default function NodeMenu() {
   const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, nodes } = useAppStore();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -97,13 +102,18 @@ export default function NodeMenu() {
     hideNodeMenu();
   };
 
+  const safePos = useMemo(
+    () => calcFixedPosition(nodeMenuPosition.x, nodeMenuPosition.y, NODE_MENU_W, NODE_MENU_H),
+    [nodeMenuPosition.x, nodeMenuPosition.y],
+  );
+
   return (
     <AnimatePresence>
       {nodeMenuVisible && (
         <motion.div
           ref={menuRef}
           className="fixed z-50 w-[240px] bg-canvas-card border border-canvas-border rounded-xl shadow-2xl shadow-black/40 overflow-hidden"
-          style={{ left: nodeMenuPosition.x, top: nodeMenuPosition.y }}
+          style={{ left: safePos.left, top: safePos.top }}
           initial={{ opacity: 0, scale: 0.95, y: -6 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: -6 }}

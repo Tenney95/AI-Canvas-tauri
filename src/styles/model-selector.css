@@ -173,6 +173,20 @@
   padding: 4px;
 }
 
+/* 向上空间不足时 → 向下弹出 */
+.model-dropdown.drop-down {
+  bottom: auto;
+  top: 100%;
+  margin-bottom: 0;
+  margin-top: 4px;
+}
+
+/* 右边界溢出时 → 右对齐 */
+.model-dropdown.drop-align-right {
+  left: auto;
+  right: 0;
+}
+
 /* Group */
 .model-group {
   border-bottom: 1px solid rgba(42, 42, 58, 0.5);

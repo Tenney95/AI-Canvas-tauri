@@ -1,7 +1,9 @@
 /**
  * NodeContextMenu 节点右键菜单 — 在节点上右键弹出，支持复制、剪切、创建副本、删除操作
+ * 自动检测屏幕边界，避免溢出
  */
 import { memo } from 'react';
+import { calcFixedPosition } from '../../utils/popupPosition';
 
 const MENU_ITEMS = [
   { label: '复制', shortcut: 'Ctrl C', action: 'copy' as const },
@@ -9,6 +11,9 @@ const MENU_ITEMS = [
   { label: '创建副本', shortcut: 'Ctrl D', action: 'duplicate' as const },
   { label: '删除', shortcut: 'Del', action: 'delete' as const, danger: true },
 ];
+
+const MENU_W = 176;
+const MENU_H = 170; // 4 items + 1 sep
 
 interface NodeContextMenuProps {
   visible: boolean;
@@ -31,6 +36,8 @@ function NodeContextMenu({
 }: NodeContextMenuProps) {
   if (!visible) return null;
 
+  const safePos = calcFixedPosition(position.x, position.y, MENU_W, MENU_H);
+
   const actionMap: Record<string, () => void> = {
     copy: onCopy,
     cut: onCut,
@@ -42,7 +49,7 @@ function NodeContextMenu({
     <div
       ref={menuRef}
       className="node-ctx-menu canvas-ctx-menu"
-      style={{ left: position.x, top: position.y }}
+      style={{ left: safePos.left, top: safePos.top }}
     >
       {MENU_ITEMS.map((item) => (
         <div key={item.action}>

@@ -1,11 +1,13 @@
 /**
  * ConnectionMenu 连线目标选择菜单 — 从节点输出 Handle 拖出连线时弹出，选择要创建的目标节点类型
+ * 自动检测屏幕边界，避免溢出
  */
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { NodeType } from '../../types';
 import type { BaseNodeData } from '../../types';
 import type { Node as RFNode } from '@xyflow/react';
+import { calcFixedPosition } from '../../utils/popupPosition';
 
 interface ConnectionMenuOption {
   label: string;
@@ -30,6 +32,9 @@ const iconColors: Record<string, string> = {
   'ai-audio': 'text-orange-400 bg-orange-500/10',
 };
 
+const MENU_W = 260;
+const MENU_H = 290; // header + ~6 items max
+
 function ConnectionMenu({
   visible,
   position,
@@ -44,13 +49,18 @@ function ConnectionMenu({
   const items = connectionMenuMap[sourceNodeType];
   if (!items?.length) return null;
 
+  const safePos = useMemo(
+    () => calcFixedPosition(position.x, position.y, MENU_W, MENU_H),
+    [position.x, position.y],
+  );
+
   return (
     <AnimatePresence>
       {visible && (
         <motion.div
           ref={menuRef}
           className="fixed z-50 w-[260px] bg-canvas-card border border-canvas-border rounded-xl shadow-2xl shadow-black/50 overflow-hidden"
-          style={{ left: position.x, top: position.y }}
+          style={{ left: safePos.left, top: safePos.top }}
           initial={{ opacity: 0, scale: 0.95, y: -4 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: -4 }}

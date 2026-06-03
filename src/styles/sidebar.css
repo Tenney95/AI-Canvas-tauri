@@ -156,6 +156,7 @@
   left: calc(100% + 16px);
   bottom: 0;
   min-width: 160px;
+  max-width: calc(100vw - 100px);
   background: #1a1a26;
   border: 1px solid #2a2a3a;
   border-radius: 10px;
@@ -201,6 +202,7 @@
   left: calc(100% + 16px);
   top: 0;
   width: 272px;
+  max-width: calc(100vw - 100px);
   background: #1a1a26;
   border: 1px solid #2a2a3a;
   border-radius: 12px;
@@ -374,6 +376,20 @@
   border-left: 8px solid transparent;
   border-right: 8px solid transparent;
   border-top: 8px solid #2a2a3a;
+}
+
+/* Arrow pointing up (when dialog is below the trigger) */
+.delete-confirm-dialog.delete-confirm-above::after {
+  bottom: auto;
+  top: -7px;
+  border-top: none;
+  border-bottom: 7px solid #1a1a26;
+}
+.delete-confirm-dialog.delete-confirm-above::before {
+  bottom: auto;
+  top: -9px;
+  border-top: none;
+  border-bottom: 8px solid #2a2a3a;
 }
 @keyframes confirmSlideIn {
   from { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.94); }

@@ -227,6 +227,8 @@
   transform: translateX(-50%);
   z-index: 100;
   white-space: nowrap;
+  /* 防止水平溢出：如果内容太宽，靠边对齐 */
+  max-width: min(320px, calc(100vw - 32px));
 }
 .settings-hint-tooltip-content {
   background: #252535;
@@ -237,6 +239,7 @@
   line-height: 1.55;
   color: #c0c0d0;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  white-space: normal;
 }
 .settings-hint-tooltip-arrow {
   width: 8px;
@@ -342,7 +345,7 @@
   transform: translateX(-50%);
   z-index: 100;
   white-space: normal;
-  max-width: 260px;
+  max-width: min(260px, calc(100vw - 32px));
   background: #252535;
   border: 1px solid #ef4444;
   border-radius: 8px;

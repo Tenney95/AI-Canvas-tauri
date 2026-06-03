@@ -1,8 +1,9 @@
 /**
  * ModelSelector 模型选择器 — 下拉面板选择 AI 模型或工作流，支持按供应商分组折叠、搜索过滤、当前选中高亮
  * 未配置 API Key 的供应商分组自动禁用（锁图标 + tooltip + 不可展开）
+ * 自动检测上下空间，向上或向下弹出
  */
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import type { NodeType, ModelOption, ModelGroup, WorkflowDefinition } from '../../../types';
 import { getWorkflowCategory } from '../../../types';
 import { defaultModelGroups } from './defaultModels';
@@ -56,6 +57,46 @@ export default function ModelSelector({
     [configProviders],
   );
   const ref = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // 动态计算下拉弹出方向
+  const [dropdownDir, setDropdownDir] = useState<'up' | 'down'>('up');
+  const [dropdownAlignRight, setDropdownAlignRight] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const raf = requestAnimationFrame(() => {
+      const triggerEl = ref.current?.querySelector('.model-selector-trigger');
+      if (!triggerEl) return;
+      const triggerRect = triggerEl.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      const PADDING = 8;
+      const DROPDOWN_H = 360;
+      const DROPDOWN_W = 280;
+
+      // 若上方空间不足 360px → 向下弹出
+      const spaceAbove = triggerRect.top - PADDING;
+      if (spaceAbove < DROPDOWN_H) {
+        const spaceBelow = vh - triggerRect.bottom - PADDING;
+        if (spaceBelow >= DROPDOWN_H || spaceBelow > spaceAbove) {
+          setDropdownDir('down');
+        } else {
+          setDropdownDir('up');
+        }
+      } else {
+        setDropdownDir('up');
+      }
+
+      // 右边界溢出 → 右对齐
+      if (triggerRect.left + DROPDOWN_W > vw - PADDING) {
+        setDropdownAlignRight(true);
+      } else {
+        setDropdownAlignRight(false);
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [open]);
 
   // 点击外部关闭
   useEffect(() => {
@@ -148,7 +189,10 @@ export default function ModelSelector({
       </button>
 
       {open && (
-        <div className="model-dropdown">
+        <div
+          ref={dropdownRef}
+          className={`model-dropdown${dropdownDir === 'down' ? ' drop-down' : ''}${dropdownAlignRight ? ' drop-align-right' : ''}`}
+        >
           {/* 模型供应商分组 */}
           {filteredGroups.map((group) => {
             const isCollapsed = collapsedGroups.has(group.id);
