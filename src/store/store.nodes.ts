@@ -5,7 +5,7 @@ import type { Node, Edge, Connection } from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { BaseNodeData } from '../types';
-import { getNextDisplayId } from './store.utils';
+import { generateId, getNextDisplayId } from './store.utils';
 import * as fileService from '../services/fileService';
 
 export interface NodeSlice {
@@ -75,7 +75,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
 
   onConnect: (connection) => {
     get().commitToHistory();
-    const id = edge-;
+    const id = `edge-${generateId()}`;
     const edge: Edge = {
       id,
       source: connection.source!,

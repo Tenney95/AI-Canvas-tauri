@@ -37,8 +37,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
     const idMap = new Map<string, string>();
 
     clipboard.forEach((node, idx) => {
-      const newId = 
-ode-;
+      const newId = `node-${generateId()}`;
       idMap.set(node.id, newId);
       newIds.push(newId);
       const newNode: Node<BaseNodeData> = {
@@ -59,7 +58,7 @@ ode-;
         .filter((e) => e.source === node.id && idMap.has(e.target))
         .forEach((e) => {
           set((s) => ({
-            edges: [...s.edges, { ...e, id: edge-, source: newSourceId, target: idMap.get(e.target)! }],
+            edges: [...s.edges, { ...e, id: `edge-${generateId()}`, source: newSourceId, target: idMap.get(e.target)! }],
           }));
         });
     });
@@ -101,8 +100,7 @@ ode-;
           const dims = await computeImageNodeDimensions(dataUrl);
 
           const newNode: Node<BaseNodeData> = {
-            id: 
-ode-,
+            id: `node-${generateId()}`,
             type: 'ai-image',
             position: nodePos,
             data: { label: '粘贴图像', type: 'ai-image', role: 'source', imageUrl: dataUrl, status: 'success', ...dims },
@@ -115,8 +113,7 @@ ode-,
           const dataUrl = await blobToDataUrl(blob);
 
           const newNode: Node<BaseNodeData> = {
-            id: 
-ode-,
+            id: `node-${generateId()}`,
             type: 'ai-video',
             position: nodePos,
             data: { label: '粘贴视频', type: 'ai-video', role: 'source', videoUrl: dataUrl, status: 'success' },
@@ -129,8 +126,7 @@ ode-,
           const dataUrl = await blobToDataUrl(blob);
 
           const newNode: Node<BaseNodeData> = {
-            id: 
-ode-,
+            id: `node-${generateId()}`,
             type: 'ai-audio',
             position: nodePos,
             data: { label: '粘贴音频', type: 'ai-audio', role: 'source', audioUrl: dataUrl, status: 'success', nodeWidth: 260, nodeHeight: 140 },
@@ -160,8 +156,7 @@ ode-,
             if (dataUrl) {
               const dims = await computeImageNodeDimensions(dataUrl);
               const newNode: Node<BaseNodeData> = {
-                id: 
-ode-,
+                id: `node-${generateId()}`,
                 type: 'ai-image',
                 position: nodePos,
                 data: { label: '粘贴图像', type: 'ai-image', role: 'source', imageUrl: dataUrl, status: 'success', ...dims },
@@ -198,8 +193,7 @@ ode-,
                 if (mediaType === 'image') {
                   const dims = await computeImageNodeDimensions(dataUrl);
                   const newNode: Node<BaseNodeData> = {
-                    id: 
-ode-,
+                    id: `node-${generateId()}`,
                     type: 'ai-image',
                     position: uriNodePos,
                     data: { label: '粘贴图像', type: 'ai-image', role: 'source', imageUrl: dataUrl, status: 'success', ...dims },
@@ -207,8 +201,7 @@ ode-,
                   get().addNode(newNode);
                 } else if (mediaType === 'video') {
                   const newNode: Node<BaseNodeData> = {
-                    id: 
-ode-,
+                    id: `node-${generateId()}`,
                     type: 'ai-video',
                     position: uriNodePos,
                     data: { label: '粘贴视频', type: 'ai-video', role: 'source', videoUrl: dataUrl, status: 'success' },
@@ -216,8 +209,7 @@ ode-,
                   get().addNode(newNode);
                 } else if (mediaType === 'audio') {
                   const newNode: Node<BaseNodeData> = {
-                    id: 
-ode-,
+                    id: `node-${generateId()}`,
                     type: 'ai-audio',
                     position: uriNodePos,
                     data: { label: '粘贴音频', type: 'ai-audio', role: 'source', audioUrl: dataUrl, status: 'success', nodeWidth: 260, nodeHeight: 140 },
@@ -238,8 +230,7 @@ ode-,
           const estimatedHeight = Math.max(120, Math.min(600, 40 + lineCount * 20));
 
           const newNode: Node<BaseNodeData> = {
-            id: 
-ode-,
+            id: `node-${generateId()}`,
             type: 'ai-text',
             position: nodePos,
             data: { label: '粘贴文本', type: 'ai-text', role: 'source', output: text, status: 'success', nodeWidth: 280, nodeHeight: estimatedHeight },
@@ -250,7 +241,7 @@ ode-,
       }
 
       if (pastedCount > 0) {
-        get().showToast(已粘贴  个源节点);
+        get().showToast(`已粘贴 ${pastedCount} 个源节点`);
       } else {
         get().showToast('剪贴板无可识别内容', 'error');
       }
@@ -282,8 +273,7 @@ ode-,
     const addImageNode = async (dataUrl: string, idx: number) => {
       const dims = await computeImageNodeDimensions(dataUrl);
       const newNode: Node<BaseNodeData> = {
-        id: 
-ode-,
+        id: `node-${generateId()}`,
         type: 'ai-image',
         position: { x: position.x + offsets[idx].x, y: position.y + offsets[idx].y },
         data: { label: '粘贴图像', type: 'ai-image', role: 'source', imageUrl: dataUrl, status: 'success', ...dims },
@@ -293,8 +283,7 @@ ode-,
 
     const addVideoNode = (dataUrl: string, idx: number) => {
       const newNode: Node<BaseNodeData> = {
-        id: 
-ode-,
+        id: `node-${generateId()}`,
         type: 'ai-video',
         position: { x: position.x + offsets[idx].x, y: position.y + offsets[idx].y },
         data: { label: '粘贴视频', type: 'ai-video', role: 'source', videoUrl: dataUrl, status: 'success' },
@@ -304,8 +293,7 @@ ode-,
 
     const addAudioNode = (dataUrl: string, idx: number) => {
       const newNode: Node<BaseNodeData> = {
-        id: 
-ode-,
+        id: `node-${generateId()}`,
         type: 'ai-audio',
         position: { x: position.x + offsets[idx].x, y: position.y + offsets[idx].y },
         data: { label: '粘贴音频', type: 'ai-audio', role: 'source', audioUrl: dataUrl, status: 'success', nodeWidth: 260, nodeHeight: 140 },
@@ -317,8 +305,7 @@ ode-,
       const lineCount = text.split('\n').length;
       const estimatedHeight = Math.max(120, Math.min(600, 40 + lineCount * 20));
       const newNode: Node<BaseNodeData> = {
-        id: 
-ode-,
+        id: `node-${generateId()}`,
         type: 'ai-text',
         position: { x: position.x + offsets[idx].x, y: position.y + offsets[idx].y },
         data: { label: '粘贴文本', type: 'ai-text', role: 'source', output: text, status: 'success', nodeWidth: 280, nodeHeight: estimatedHeight },
@@ -340,8 +327,7 @@ ode-,
         const extLower = fileName.split('.').pop()?.toLowerCase() || '';
 
         if (imageExts.includes(extLower)) {
-          const nodeId = 
-ode-;
+          const nodeId = `node-${generateId()}`;
           const newNode: Node<BaseNodeData> = {
             id: nodeId,
             type: 'ai-image',
@@ -365,8 +351,7 @@ ode-;
             get().updateNodeData(nodeId, { status: 'error', error: err instanceof Error ? err.message : '复制失败' });
           });
         } else if (videoExts.includes(extLower)) {
-          const nodeId = 
-ode-;
+          const nodeId = `node-${generateId()}`;
           const newNode: Node<BaseNodeData> = {
             id: nodeId, type: 'ai-video',
             position: { x: position.x + off.x, y: position.y + off.y },
@@ -386,8 +371,7 @@ ode-;
             get().updateNodeData(nodeId, { status: 'error', error: err instanceof Error ? err.message : '复制失败' });
           });
         } else if (audioExts.includes(extLower)) {
-          const nodeId = 
-ode-;
+          const nodeId = `node-${generateId()}`;
           const newNode: Node<BaseNodeData> = {
             id: nodeId, type: 'ai-audio',
             position: { x: position.x + off.x, y: position.y + off.y },
@@ -426,8 +410,7 @@ ode-;
       } else if (p.kind === 'image') {
         const dims = await computeImageNodeDimensions(p.dataUrl!);
         const newNode: Node<BaseNodeData> = {
-          id: 
-ode-,
+          id: `node-${generateId()}`,
           type: 'ai-image',
           position: { x: position.x + off.x, y: position.y + off.y },
           data: { label: '粘贴图像', type: 'ai-image', role: 'source', imageUrl: p.dataUrl!, status: 'success', ...dims },
@@ -441,7 +424,7 @@ ode-,
     }
 
     if (pastedCount > 0) {
-      get().showToast(${actionName}  个源节点);
+      get().showToast(`${actionName} ${pastedCount} 个源节点`);
     } else {
       get().showToast('无可识别内容', 'error');
     }

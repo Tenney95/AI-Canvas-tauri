@@ -5,6 +5,7 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { NodeGroup } from '../types';
 import { GROUP_COLOR_PALETTE } from '../types';
+import { generateId } from './store.utils';
 
 export interface GroupSlice {
   groups: NodeGroup[];
@@ -80,10 +81,10 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
     const usedColors = new Set(groups.map((g) => g.color));
     const color = GROUP_COLOR_PALETTE.find((c) => !usedColors.has(c)) || GROUP_COLOR_PALETTE[0];
 
-    const groupId = group-;
+    const groupId = `group-${generateId()}`;
     const newGroup: NodeGroup = {
       id: groupId,
-      name: 分组 ,
+      name: '分组',
       nodeIds: candidateIds,
       color,
       createdAt: Date.now(),
@@ -112,7 +113,7 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
       }));
     });
 
-    get().showToast(已创建「」（ 个节点）);
+    get().showToast(`已创建「${newGroup.name}」（${candidateIds.length} 个节点）`);
   },
 
   ungroupSelectedNodes: () => {
@@ -181,7 +182,8 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
         }),
     }));
 
-    get().showToast(已解散分组「」);
+    const dissolvedGroupNames = groups.filter((g) => affectedGroupIds.has(g.id)).map((g) => g.name);
+    get().showToast(`已解散分组「${dissolvedGroupNames.join('、')}」`);
   },
 
   renameGroup: (id, name) =>
