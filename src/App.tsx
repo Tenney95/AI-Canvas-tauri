@@ -2,7 +2,7 @@
  * App 根组件 — 装配 Header / Sidebar / Canvas / NodeMenu / SettingsPanel / Titlebar / Toast / AINodeDialog / WorkflowPanel
  * Tauri 环境下启用自定义窗口装饰和透明圆角窗口
  */
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Inspector } from 'react-dev-inspector';
 import Header from './components/Header';
 import Titlebar from './components/Titlebar';
@@ -13,6 +13,7 @@ import SettingsPanel from './components/SettingsPanel';
 import AINodeDialog from './components/nodes/AINodeDialog';
 import WorkflowPanel from './components/WorkflowPanel';
 import Toast from './components/Toast';
+import SplashScreen from './components/SplashScreen';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAppStore } from './store/useAppStore';
 
@@ -21,6 +22,9 @@ const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 export default function App() {
   useKeyboardShortcuts();
+
+  // 开屏动画状态
+  const [splashDone, setSplashDone] = useState(false);
 
   // Load projects from IndexedDB on mount
   const initFromDb = useAppStore((s) => s.initFromDb);
@@ -64,18 +68,28 @@ export default function App() {
   );
 
   // 仅在开发模式下启用 Inspect 功能
-  if (!isDev) return appContent;
+  if (!isDev) {
+    return (
+      <>
+        {!splashDone && <SplashScreen onComplete={() => setSplashDone(true)} />}
+        {appContent}
+      </>
+    );
+  }
 
   return (
-    <Inspector
-      keys={['control', 'shift', 'c']}
-      onInspectElement={({ codeInfo }) => {
-        if (!codeInfo?.absolutePath) return;
-        const { absolutePath, lineNumber, columnNumber } = codeInfo;
-        window.open(`codebuddycn://file/${absolutePath}:${lineNumber}:${columnNumber}`);
-      }}
-    >
-      {appContent}
-    </Inspector>
+    <>
+      {!splashDone && <SplashScreen onComplete={() => setSplashDone(true)} />}
+      <Inspector
+        keys={['control', 'shift', 'c']}
+        onInspectElement={({ codeInfo }) => {
+          if (!codeInfo?.absolutePath) return;
+          const { absolutePath, lineNumber, columnNumber } = codeInfo;
+          window.open(`codebuddycn://file/${absolutePath}:${lineNumber}:${columnNumber}`);
+        }}
+      >
+        {appContent}
+      </Inspector>
+    </>
   );
 }

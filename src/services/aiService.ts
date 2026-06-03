@@ -324,9 +324,12 @@ async function generateApimartImage(
 
     const pollResult = await pollResp.json() as {
       code: number;
-      data: { status: string; progress?: number; result?: { images?: Array<{ url: string[] }> } };
+      data?: { status: string; progress?: number; result?: { images?: Array<{ url: string[] }> } };
+      status?: string;
+      progress?: number;
+      result?: { images?: Array<{ url: string[] }> };
     };
-    const task = pollResult.data;
+    const task = pollResult.data ?? pollResult;
 
     if (task.status === 'completed') {
       const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
@@ -395,7 +398,7 @@ async function generateApimartVideo(
 
     const pollResult = await pollResp.json() as {
       code: number;
-      data: {
+      data?: {
         status: string;
         progress?: number;
         result?: {
@@ -403,8 +406,14 @@ async function generateApimartVideo(
           videos?: Array<{ url: string[] }>;
         };
       };
+      status?: string;
+      progress?: number;
+      result?: {
+        images?: Array<{ url: string[] }>;
+        videos?: Array<{ url: string[] }>;
+      };
     };
-    const task = pollResult.data;
+    const task = pollResult.data ?? pollResult;
 
     if (task.status === 'completed') {
       // 优先取 videos，其次 images
