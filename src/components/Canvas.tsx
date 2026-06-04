@@ -144,6 +144,15 @@ function CanvasInner() {
     [],
   );
 
+  // Track mouse position on canvas for node creation at cursor (on left-button release)
+  const handleMouseUp = useCallback(
+    (e: React.MouseEvent) => {
+      const flowPos = reactFlowInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      useAppStore.setState({ lastCanvasMousePos: flowPos });
+    },
+    [reactFlowInstance],
+  );
+
   const toggleGrid = useCallback(() => setShowGrid((v) => !v), []);
 
   const handleZoomSlider = useCallback(
@@ -495,6 +504,7 @@ function CanvasInner() {
         multiSelectionKeyCode="Shift"
         onContextMenu={openCtxMenu}
         onNodeContextMenu={openNodeCtxMenu}
+        onMouseUp={handleMouseUp}
         onDragEnter={onDragEnter}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}

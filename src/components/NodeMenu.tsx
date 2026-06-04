@@ -66,7 +66,7 @@ const NODE_MENU_W = 240;
 const NODE_MENU_H = 290; // 4 items + header + footer
 
 export default function NodeMenu() {
-  const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, nodes } = useAppStore();
+  const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, lastCanvasMousePos } = useAppStore();
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -82,12 +82,12 @@ export default function NodeMenu() {
   }, [nodeMenuVisible, hideNodeMenu]);
 
   const handleAddNode = (type: NodeType) => {
-    const offset = nodes.length * 40;
     const isImage = type === 'ai-image';
+    const pos = lastCanvasMousePos ?? { x: 300, y: 200 };
     const newNode: Record<string, unknown> = {
       id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       type,
-      position: { x: 300 + offset, y: 100 + offset },
+      position: pos,
       data: {
         label: menuItems.find((m) => m.type === type)?.label || '节点',
         type,

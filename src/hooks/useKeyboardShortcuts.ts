@@ -147,20 +147,13 @@ export function useKeyboardShortcuts() {
         e.stopPropagation();
         const st = useAppStore.getState();
         const ids = st.selectedNodeIds;
-        if (ids.length < 2) {
-          st.showToast('请至少框选 2 个节点', 'error');
+        if (ids.length === 0) {
+          st.showToast('请先选中节点', 'error');
           return;
         }
-        // Check if all selected nodes belong to the same group
-        const foundGroup = st.groups.find((g) => {
-          const set = new Set(g.nodeIds);
-          return ids.every((id) => set.has(id));
-        });
-        if (foundGroup) {
-          st.ungroupSelectedNodes();
-        } else {
-          st.groupSelectedNodes();
-        }
+        // groupSelectedNodes auto-detects: if any selected node is in a group
+        // or is a group node, it delegates to ungroupSelectedNodes.
+        st.groupSelectedNodes();
         return;
       }
     }

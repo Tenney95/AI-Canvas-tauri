@@ -91,11 +91,10 @@ function NodePicker({
   onEnter: () => void;
   onLeave: () => void;
 }) {
-  const { nodePickerOpen, closeNodePicker, addNode, nodes } = useAppStore();
+  const { nodePickerOpen, closeNodePicker, addNode, lastCanvasMousePos } = useAppStore();
   const pickerRef = useRef<HTMLDivElement>(null);
 
   const handleAddNode = (type: NodeType) => {
-    const offset = nodes.length * 40;
     const isImage = type === 'ai-image';
     const nodeData: Record<string, unknown> = {
       label: generationItems.find((m) => m.type === type)?.label || '节点',
@@ -109,10 +108,11 @@ function NodePicker({
       nodeData.aspectRatio = '16:9';
       nodeData.imageSize = '2K';
     }
+    const pos = lastCanvasMousePos ?? { x: 300, y: 200 };
     addNode({
       id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       type,
-      position: { x: 200 + offset, y: 150 + offset },
+      position: pos,
       data: nodeData,
     } as never);
     closeNodePicker();

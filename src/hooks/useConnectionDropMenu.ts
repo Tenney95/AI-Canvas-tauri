@@ -104,47 +104,46 @@ export function useConnectionDropMenu(smoothLine: boolean) {
 
       const sourceNode = reactFlowInstance.getNode(sourceNodeId) as RFNode<BaseNodeData> | undefined;
       const srcX = sourceNode?.position?.x ?? 0;
-      const srcY = sourceNode?.position?.y ?? 0;
       const srcWidth = (sourceNode?.data?.nodeWidth as number | undefined) ?? 280;
-      const srcHeight = (sourceNode?.data?.nodeHeight as number | undefined) ?? 160;
       const srcRight = srcX + srcWidth;
 
       const newWidth = option.type === 'ai-audio' ? 260 : 280;
       const newHeight = option.type === 'ai-audio' ? 140 : option.type === 'ai-image' ? 158 : 160;
-      const gap = 50;
 
+      // Determine handle direction based on position relative to source
       const releasedRight = flowPos.x >= srcRight + 10;
       const releasedLeft = flowPos.x <= srcX - 10;
 
-      let nodeX: number;
-      let nodeY: number;
       let edgeSourceHandle: string | undefined;
       let edgeTargetHandle: string | undefined;
 
       if (releasedRight) {
-        nodeX = srcRight + gap;
-        nodeY = srcY + (srcHeight - newHeight) / 2;
         edgeSourceHandle = 'right';
         edgeTargetHandle = 'left';
       } else if (releasedLeft) {
-        nodeX = srcX - newWidth - gap;
-        nodeY = srcY + (srcHeight - newHeight) / 2;
         edgeSourceHandle = 'left';
         edgeTargetHandle = 'right';
       } else {
         const handle = sourceHandleId;
         if (handle === 'left') {
-          nodeX = srcX - newWidth - gap;
-          nodeY = srcY + (srcHeight - newHeight) / 2;
           edgeSourceHandle = 'left';
           edgeTargetHandle = 'right';
         } else {
-          nodeX = srcRight + gap;
-          nodeY = srcY + (srcHeight - newHeight) / 2;
           edgeSourceHandle = 'right';
           edgeTargetHandle = 'left';
         }
       }
+
+      // Position at the drop point:
+      // - left side:  right edge of new node aligns with cursor  (nodeX = flowPos.x - newWidth)
+      // - right side: left edge of new node aligns with cursor   (nodeX = flowPos.x)
+      let nodeX: number;
+      if (edgeSourceHandle === 'left') {
+        nodeX = flowPos.x - newWidth;
+      } else {
+        nodeX = flowPos.x;
+      }
+      const nodeY = flowPos.y - newHeight / 2;
 
       const newNodeId = `node-${generateId()}`;
       const newNode: RFNode<BaseNodeData> = {

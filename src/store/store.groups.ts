@@ -19,21 +19,28 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
 
   groupSelectedNodes: () => {
     const { selectedNodeIds, groups, nodes } = get();
+    if (selectedNodeIds.length === 0) {
+      get().showToast('请先选中节点', 'error');
+      return;
+    }
+
+    // Auto-detect ungroup scenario:
+    // - any selected node has parentId (inside a group)
+    // - any selected node is itself a group node
+    const shouldUngroup = nodes.some(
+      (n) => selectedNodeIds.includes(n.id) && (n.parentId != null || n.type === 'group'),
+    );
+    if (shouldUngroup) {
+      get().ungroupSelectedNodes();
+      return;
+    }
+
     if (selectedNodeIds.length < 2) {
       get().showToast('请至少选中 2 个节点', 'error');
       return;
     }
 
-    const alreadyGrouped = nodes.filter((n) => n.parentId != null && selectedNodeIds.includes(n.id));
-    const candidateIds = selectedNodeIds.filter((id) => !alreadyGrouped.some((n) => n.id === id));
-    if (candidateIds.length < 2) {
-      if (alreadyGrouped.length > 0) {
-        get().showToast('部分节点已属于分组，请先解散', 'error');
-      } else {
-        get().showToast('可分组节点不足 2 个', 'error');
-      }
-      return;
-    }
+    const candidateIds = selectedNodeIds;
 
     get().commitToHistory();
 

@@ -12,6 +12,7 @@ export interface UISlice {
   avatarMenuOpen: boolean;
   activeNodeId: string | null;
   dialogPosition: { x: number; y: number } | null;
+  lastCanvasMousePos: { x: number; y: number } | null;
   setSettingsOpen: (open: boolean) => void;
   showNodeMenu: (position: { x: number; y: number }) => void;
   hideNodeMenu: () => void;
@@ -32,6 +33,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   avatarMenuOpen: false,
   activeNodeId: null,
   dialogPosition: null,
+  lastCanvasMousePos: null,
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   showNodeMenu: (position) => set({ nodeMenuVisible: true, nodeMenuPosition: position }),
