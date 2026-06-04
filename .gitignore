@@ -15,6 +15,7 @@ dist-ssr
 
 .agents/*
 .codebuddy/skills/*
+.codegraph/*
 
 # Rust build output
 src-tauri/target/

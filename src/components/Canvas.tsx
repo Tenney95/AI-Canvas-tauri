@@ -171,8 +171,12 @@ function CanvasInner() {
     handleCopy,
     handleCut,
     handleDuplicate,
+    handleUngroup,
     handleDelete,
   } = useNodeContextMenu();
+  const isGroupNode = nodeCtxMenu.nodeId
+    ? nodes.find((n) => n.id === nodeCtxMenu.nodeId && n.type === 'group') != null
+    : false;
 
   // ── Canvas context menu ──
   const {
@@ -195,7 +199,7 @@ function CanvasInner() {
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.contentEditable === 'true') return;
       // Skip if internal clipboard has nodes (handled by keyboard shortcut)
-      if (useAppStore.getState().clipboard.length > 0) return;
+      if (useAppStore.getState().clipboard.nodes.length > 0) return;
 
       e.preventDefault();
       e.stopPropagation();
@@ -595,6 +599,7 @@ function CanvasInner() {
         onCopy={handleCopy}
         onCut={handleCut}
         onDuplicate={handleDuplicate}
+        onUngroup={isGroupNode ? handleUngroup : undefined}
         onDelete={handleDelete}
       />
     </div>

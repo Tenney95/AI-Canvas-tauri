@@ -4,12 +4,12 @@
 import type { Node } from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { BaseNodeData } from '../types';
+import type { BaseNodeData, NodeGroup } from '../types';
 import { generateId, computeImageNodeDimensions, blobToDataUrl, getNextDisplayId } from './store.utils';
 import * as fileService from '../services/fileService';
 
 export interface ClipboardSlice {
-  clipboard: Node<BaseNodeData>[];
+  clipboard: { nodes: Node<BaseNodeData>[]; groups: NodeGroup[] };
   copySelectedNodes: () => void;
   pasteNodes: (position: { x: number; y: number }) => void;
   pasteExternalContent: (position: { x: number; y: number }) => Promise<void>;
@@ -18,40 +18,88 @@ export interface ClipboardSlice {
 }
 
 export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice> = (set, get) => ({
-  clipboard: [],
+  clipboard: { nodes: [], groups: [] },
 
   copySelectedNodes: () => {
-    const { nodes, selectedNodeIds } = get();
+    const { nodes, selectedNodeIds, groups } = get();
     if (selectedNodeIds.length === 0) return;
-    const copied = nodes.filter((n) => selectedNodeIds.includes(n.id));
-    set({ clipboard: copied });
+
+    // Collect all node IDs to copy: selected + descendants of selected group nodes
+    const idsToCopy = new Set(selectedNodeIds);
+    const q = [...selectedNodeIds];
+    while (q.length > 0) {
+      const pid = q.shift()!;
+      const children = nodes.filter((n) => n.parentId === pid);
+      for (const c of children) {
+        if (!idsToCopy.has(c.id)) {
+          idsToCopy.add(c.id);
+          q.push(c.id); // handle nested groups
+        }
+      }
+    }
+
+    const copiedNodes = nodes.filter((n) => idsToCopy.has(n.id));
+    const copiedGroups = groups.filter((g) => idsToCopy.has(g.id));
+    set({ clipboard: { nodes: copiedNodes, groups: copiedGroups } });
   },
 
   pasteNodes: (position) => {
     const { clipboard } = get();
-    if (clipboard.length === 0) return;
+    if (clipboard.nodes.length === 0) return;
     get().commitToHistory();
 
     const offset = { x: 30, y: 30 };
-    const newIds: string[] = [];
     const idMap = new Map<string, string>();
 
-    clipboard.forEach((node, idx) => {
+    // Build IDs for ALL copied nodes first
+    clipboard.nodes.forEach((node) => {
       const newId = `node-${generateId()}`;
       idMap.set(node.id, newId);
-      newIds.push(newId);
+    });
+
+    // Prepare new nodes with remapped parentId and group ID
+    const newNodes: Node<BaseNodeData>[] = clipboard.nodes.map((node, idx) => {
+      const newId = idMap.get(node.id)!;
       const newNode: Node<BaseNodeData> = {
         ...node,
         id: newId,
         position: { x: node.position.x + offset.x * (idx + 1), y: node.position.y + offset.y * (idx + 1) },
         selected: false,
       };
-      get().addNode(newNode);
+      // Remap parentId
+      if (newNode.parentId && idMap.has(newNode.parentId)) {
+        newNode.parentId = idMap.get(newNode.parentId);
+      }
+      // Remap data.groupId for group nodes
+      if (newNode.data?.groupId && idMap.has(newNode.data.groupId as string)) {
+        newNode.data = { ...newNode.data, groupId: idMap.get(newNode.data.groupId as string) };
+      }
+      return newNode;
     });
+
+    // Create new group entries with remapped nodeIds
+    const newGroups: NodeGroup[] = clipboard.groups.map((g) => ({
+      ...g,
+      id: idMap.get(g.id) || g.id,
+      nodeIds: g.nodeIds.map((nid) => idMap.get(nid) || nid),
+      createdAt: Date.now(),
+    }));
+
+    // Add new groups to store
+    set((s) => ({
+      groups: [...s.groups, ...newGroups],
+    }));
+
+    // Add nodes: group nodes first, children after (xyflow requirement)
+    const groupNodes = newNodes.filter((n) => n.type === 'group');
+    const childNodes = newNodes.filter((n) => n.type !== 'group');
+    for (const n of [...groupNodes, ...childNodes]) {
+      get().addNode(n);
+    }
 
     // Re-create edges between pasted nodes
     const { edges } = get();
-    clipboard.forEach((node) => {
+    clipboard.nodes.forEach((node) => {
       const newSourceId = idMap.get(node.id);
       if (!newSourceId) return;
       edges
@@ -62,6 +110,8 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           }));
         });
     });
+
+    get().showToast(`已粘贴 ${clipboard.nodes.length} 个节点`);
   },
 
   pasteExternalContent: async (position) => {

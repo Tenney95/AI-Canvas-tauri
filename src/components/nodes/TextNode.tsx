@@ -12,6 +12,7 @@ import { uploadSourceFile } from '../../services/fileService';
 
 function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const selectedNodeIds = useAppStore((s) => s.selectedNodeIds);
   const isSource = data.role === 'source';
 
   // ── Fullscreen ──
@@ -173,8 +174,8 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   return (
     <>
     <div className="node-wrapper relative" style={{ width: nodeWidth }}>
-      {/* Floating toolbar — when selected */}
-      {selected && (
+      {/* Floating toolbar — when selected (single-select only) */}
+      {selected && selectedNodeIds.length <= 1 && (
         <TextNodeToolbar
           nodeId={id}
           data={data}

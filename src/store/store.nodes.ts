@@ -63,13 +63,31 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
 
   deleteNode: (nodeId) => {
     get().commitToHistory();
-    const node = get().nodes.find((n) => n.id === nodeId);
-    if (node) {
-      fileService.deleteNodeFile(node.data as BaseNodeData).catch(() => {});
+
+    // Collect all node IDs to delete: self + descendants (for group nodes)
+    const idsToDelete = new Set<string>([nodeId]);
+    const { nodes, groups } = get();
+    const q = [nodeId];
+    while (q.length > 0) {
+      const pid = q.shift()!;
+      nodes.filter((n) => n.parentId === pid).forEach((c) => {
+        idsToDelete.add(c.id);
+        q.push(c.id);
+      });
     }
+
+    // Delete local files for all affected nodes
+    for (const id of idsToDelete) {
+      const n = nodes.find((nn) => nn.id === id);
+      if (n) fileService.deleteNodeFile(n.data as BaseNodeData).catch(() => {});
+    }
+
     set((state) => ({
-      nodes: state.nodes.filter((n) => n.id !== nodeId),
-      edges: state.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
+      nodes: state.nodes.filter((n) => !idsToDelete.has(n.id)),
+      edges: state.edges.filter((e) => !idsToDelete.has(e.source) && !idsToDelete.has(e.target)),
+      groups: state.groups
+        .filter((g) => !idsToDelete.has(g.id))
+        .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !idsToDelete.has(nid)) })),
     }));
   },
 

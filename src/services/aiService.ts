@@ -72,15 +72,10 @@ function mapImageDimensions(
 /**
  * 调用 OpenAI 兼容的 /chat/completions 接口生成文本
  * 根据 provider 自动解析 API Key 和 Base URL
+ * 支持多模态：当 prompt 中引用图片节点时，自动构建 image_url 格式的 content 数组
  */
 export async function generateText(params: AIGenerateParams): Promise<string> {
   const { prompt: rawPrompt, model, provider } = params;
-
-  // 解析 @{nodeId:label} 引用为对应节点的实际输出内容
-  const prompt = resolveNodeReferences(rawPrompt);
-  if (!prompt.trim()) {
-    throw new Error('提示词不能为空');
-  }
 
   const config = useAppStore.getState().config;
 
@@ -111,6 +106,15 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
 
   const modelName = extractModelName(model, provider);
 
+  // 解析 @{nodeId:label} 引用：图片节点构建 image_url，其他节点内联文本
+  const { content, textContent } = resolvePromptToChatContent(rawPrompt);
+  if (!textContent.trim()) {
+    throw new Error('提示词不能为空');
+  }
+
+  const messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [];
+  messages.push({ role: 'user', content });
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -126,7 +130,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
     headers,
     body: JSON.stringify({
       model: modelName,
-      messages: [{ role: 'user', content: prompt }],
+      messages,
       stream: false,
     }),
     signal: controller.signal,
@@ -147,11 +151,11 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   }
 
   const json = await response.json();
-  const content = json.choices?.[0]?.message?.content;
-  if (!content) {
+  const replyText = json.choices?.[0]?.message?.content;
+  if (!replyText) {
     throw new Error('模型返回结果为空');
   }
-  return content;
+  return replyText;
 }
 
 /**
@@ -462,6 +466,84 @@ function getComfyUIConfig() {
     throw new Error('未配置 ComfyUI 服务地址\n请在「设置 → 服务地址」中配置');
   }
   return comfyUrl.replace(/\/+$/, '');
+}
+
+/** 解析 prompt 中的 @{nodeId:label} 引用，返回适合 /chat/completions 的 content 字段
+ *  - 仅含文本引用时返回纯字符串
+ *  - 含图片引用时返回多模态数组 [{type:"text",text:...}, {type:"image_url",image_url:{url:...}}]
+ *  同时返回纯文本版本 textContent，用于空值校验和系统提示拼接 */
+function resolvePromptToChatContent(rawPrompt: string): {
+  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+  textContent: string;
+} {
+  const { nodes } = useAppStore.getState();
+  const chipRegex = /@\{([^:]+):([^}]+)\}/g;
+  const imageUrls: string[] = [];
+  const parts: string[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = chipRegex.exec(rawPrompt)) !== null) {
+    // 保留 chip 之前的文本
+    if (match.index > lastIndex) {
+      parts.push(rawPrompt.slice(lastIndex, match.index));
+    }
+
+    const nodeId = match[1];
+    const node = nodes.find((n) => n.id === nodeId);
+    if (!node) {
+      parts.push(match[0]); // 未找到节点则保留原文
+    } else {
+      const nodeType = (node.data.type as string) || '';
+      // 图片类节点：提取 imageUrl 到 image_urls，不保留到文本
+      if (nodeType === 'ai-image' || nodeType === 'source-image') {
+        const imageUrl = node.data.imageUrl as string | undefined;
+        if (typeof imageUrl === 'string' && imageUrl.trim()) {
+          imageUrls.push(imageUrl);
+        }
+      } else {
+        // 文本/视频/音频节点：内联替换 output/url
+        const output = node.data.output as string | undefined;
+        if (typeof output === 'string' && output.trim()) {
+          parts.push(output);
+        } else {
+          const videoUrl = node.data.videoUrl as string | undefined;
+          if (typeof videoUrl === 'string' && videoUrl.trim()) {
+            parts.push(videoUrl);
+          } else {
+            const audioUrl = node.data.audioUrl as string | undefined;
+            if (typeof audioUrl === 'string' && audioUrl.trim()) {
+              parts.push(audioUrl);
+            }
+          }
+        }
+      }
+    }
+    lastIndex = chipRegex.lastIndex;
+  }
+
+  // 保留最后一个 chip 之后的文本
+  if (lastIndex < rawPrompt.length) {
+    parts.push(rawPrompt.slice(lastIndex));
+  }
+
+  const textContent = parts.join('').trim();
+
+  // 无图片时返回纯字符串
+  if (imageUrls.length === 0) {
+    return { content: textContent || rawPrompt.trim(), textContent: textContent || rawPrompt.trim() };
+  }
+
+  // 含图片时构建多模态数组
+  const contentArr: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+  if (textContent) {
+    contentArr.push({ type: 'text', text: textContent });
+  }
+  for (const url of imageUrls) {
+    contentArr.push({ type: 'image_url', image_url: { url } });
+  }
+
+  return { content: contentArr, textContent: textContent || rawPrompt.trim() };
 }
 
 /** 解析 workflowInputs 值中的 @{nodeId:label} 引用，替换为对应节点的实际输出内容 */

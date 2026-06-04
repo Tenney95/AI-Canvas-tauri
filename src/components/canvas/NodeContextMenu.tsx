@@ -1,5 +1,5 @@
 /**
- * NodeContextMenu 节点右键菜单 — 在节点上右键弹出，支持复制、剪切、创建副本、删除操作
+ * NodeContextMenu 节点右键菜单 — 在节点上右键弹出，支持复制、剪切、创建副本、解除分组、删除操作
  * 自动检测屏幕边界，避免溢出
  */
 import { memo } from 'react';
@@ -9,11 +9,12 @@ const MENU_ITEMS = [
   { label: '复制', shortcut: 'Ctrl C', action: 'copy' as const },
   { label: '剪切', shortcut: 'Ctrl X', action: 'cut' as const },
   { label: '创建副本', shortcut: 'Ctrl D', action: 'duplicate' as const },
+  { label: '解除分组', shortcut: '', action: 'ungroup' as const, groupOnly: true },
   { label: '删除', shortcut: 'Del', action: 'delete' as const, danger: true },
 ];
 
 const MENU_W = 176;
-const MENU_H = 170; // 4 items + 1 sep
+const MENU_H = 215; // 5 items + 1 sep
 
 interface NodeContextMenuProps {
   visible: boolean;
@@ -22,6 +23,7 @@ interface NodeContextMenuProps {
   onCopy: () => void;
   onCut: () => void;
   onDuplicate: () => void;
+  onUngroup?: () => void;
   onDelete: () => void;
 }
 
@@ -32,6 +34,7 @@ function NodeContextMenu({
   onCopy,
   onCut,
   onDuplicate,
+  onUngroup,
   onDelete,
 }: NodeContextMenuProps) {
   if (!visible) return null;
@@ -45,18 +48,20 @@ function NodeContextMenu({
     delete: onDelete,
   };
 
+  const items = MENU_ITEMS.filter((item) => !item.groupOnly || onUngroup);
+
   return (
     <div
       ref={menuRef}
       className="node-ctx-menu canvas-ctx-menu"
       style={{ left: safePos.left, top: safePos.top }}
     >
-      {MENU_ITEMS.map((item) => (
+      {items.map((item) => (
         <div key={item.action}>
           {item.danger && <div className="menu-sep" />}
           <div
             className={`menu-row menu-row-split${item.danger ? ' menu-row-danger' : ''}`}
-            onClick={actionMap[item.action]}
+            onClick={item.action === 'ungroup' ? onUngroup : actionMap[item.action]}
           >
             <span>{item.label}</span>
             <span className="menu-kbd">{item.shortcut}</span>

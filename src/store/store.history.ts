@@ -4,11 +4,12 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { BaseNodeData } from '../types';
+import type { BaseNodeData, NodeGroup } from '../types';
 
 export interface HistoryEntry {
   nodes: Node<BaseNodeData>[];
   edges: Edge[];
+  groups: NodeGroup[];
 }
 
 const MAX_HISTORY = 50;
@@ -29,21 +30,22 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     const { historyIndex, history } = get();
     if (historyIndex <= 0) return;
     const entry = history[historyIndex - 1];
-    set({ nodes: entry.nodes, edges: entry.edges, historyIndex: historyIndex - 1 });
+    set({ nodes: entry.nodes, edges: entry.edges, groups: entry.groups, historyIndex: historyIndex - 1 });
   },
 
   redo: () => {
     const { historyIndex, history } = get();
     if (historyIndex >= history.length - 1) return;
     const entry = history[historyIndex + 1];
-    set({ nodes: entry.nodes, edges: entry.edges, historyIndex: historyIndex + 1 });
+    set({ nodes: entry.nodes, edges: entry.edges, groups: entry.groups, historyIndex: historyIndex + 1 });
   },
 
   commitToHistory: () => {
-    const { nodes, edges, history, historyIndex } = get();
+    const { nodes, edges, groups, history, historyIndex } = get();
     const snapshot: HistoryEntry = {
       nodes: nodes.map((n) => ({ ...n, data: { ...n.data } })),
       edges: edges.map((e) => ({ ...e })),
+      groups: groups.map((g) => ({ ...g })),
     };
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(snapshot);

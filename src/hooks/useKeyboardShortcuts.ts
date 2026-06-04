@@ -41,7 +41,7 @@ export function useKeyboardShortcuts() {
       // Ctrl+V: Paste nodes from clipboard
       if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
         const { clipboard } = useAppStore.getState();
-        if (clipboard.length > 0) {
+        if (clipboard.nodes.length > 0) {
           e.preventDefault();
           e.stopPropagation();
           // Paste near center of viewport
@@ -96,17 +96,33 @@ export function useKeyboardShortcuts() {
         if (nodeIds.length > 0) {
           e.preventDefault();
           e.stopPropagation();
+
+          // Expand to include descendants of any selected group nodes
+          const expandedIds = new Set(nodeIds);
+          const q = [...nodeIds];
+          while (q.length > 0) {
+            const pid = q.shift()!;
+            state.nodes.filter((n) => n.parentId === pid).forEach((c) => {
+              expandedIds.add(c.id);
+              q.push(c.id);
+            });
+          }
+
           // Delete associated local files
-          const nodesToDelete = state.nodes.filter((n) => nodeIds.includes(n.id));
+          const allIds = Array.from(expandedIds);
+          const nodesToDelete = state.nodes.filter((n) => allIds.includes(n.id));
           for (const node of nodesToDelete) {
             fileService.deleteNodeFile(node.data as BaseNodeData).catch(() => {});
           }
           useAppStore.getState().commitToHistory();
           useAppStore.setState((s) => ({
-            nodes: s.nodes.filter((n) => !nodeIds.includes(n.id)),
+            nodes: s.nodes.filter((n) => !expandedIds.has(n.id)),
             edges: s.edges.filter(
-              (ed) => !nodeIds.includes(ed.source) && !nodeIds.includes(ed.target)
+              (ed) => !expandedIds.has(ed.source) && !expandedIds.has(ed.target)
             ),
+            groups: s.groups
+              .filter((g) => !expandedIds.has(g.id))
+              .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !expandedIds.has(nid)) })),
             selectedNodeIds: [],
           }));
         }
@@ -202,7 +218,7 @@ export function useKeyboardShortcuts() {
             // Clear stale internal clipboard — when the user switches away,
             // they may have copied external content. If we don't clear, the
             // next Ctrl+V will still paste the old in-app copied nodes.
-            useAppStore.setState({ clipboard: [] });
+            useAppStore.setState({ clipboard: { nodes: [], groups: [] } });
           }
         });
 

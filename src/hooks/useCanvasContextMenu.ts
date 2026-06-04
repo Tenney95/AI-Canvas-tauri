@@ -93,7 +93,7 @@ export function useCanvasContextMenu() {
     const pos = menu.flowPosition;
     const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
     const { clipboard } = useAppStore.getState();
-    if (clipboard.length > 0) {
+    if (clipboard.nodes.length > 0) {
       pasteNodes(flowPos);
     } else {
       useAppStore.getState().pasteExternalContent(flowPos);

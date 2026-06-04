@@ -2,7 +2,7 @@
  * useNodeContextMenu 节点右键菜单 Hook — 管理节点上右键弹出操作菜单的显示/隐藏，处理复制、剪切、创建副本、删除
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useAppStore, generateId } from '../store/useAppStore';
+import { useAppStore } from '../store/useAppStore';
 import type { BaseNodeData } from '../types';
 import type { Node as RFNode } from '@xyflow/react';
 
@@ -15,8 +15,9 @@ export interface NodeContextMenuState {
 export function useNodeContextMenu() {
   const nodes = useAppStore((s) => s.nodes);
   const copySelectedNodes = useAppStore((s) => s.copySelectedNodes);
+  const pasteNodes = useAppStore((s) => s.pasteNodes);
   const deleteNode = useAppStore((s) => s.deleteNode);
-  const addNode = useAppStore((s) => s.addNode);
+  const ungroupSelectedNodes = useAppStore((s) => s.ungroupSelectedNodes);
   const setSelectedNodeIds = useAppStore((s) => s.setSelectedNodeIds);
 
   const [menu, setMenu] = useState<NodeContextMenuState>({
@@ -81,21 +82,24 @@ export function useNodeContextMenu() {
     useAppStore.getState().showToast('节点已剪切');
   }, [menu.nodeId, copySelectedNodes, deleteNode, closeMenu]);
 
-  // ── Duplicate: clone + paste at offset ──
+  // ── Duplicate: copy + paste at offset (group-aware) ──
   const handleDuplicate = useCallback(() => {
     if (!menu.nodeId) return;
     const source = nodes.find((n) => n.id === menu.nodeId);
     if (!source) return;
-    const newNode: RFNode<BaseNodeData> = {
-      ...JSON.parse(JSON.stringify(source)),
-      id: `node-${generateId()}`,
-      position: { x: source.position.x + 30, y: source.position.y + 30 },
-      selected: false,
-    };
-    addNode(newNode);
+    copySelectedNodes();
+    pasteNodes({ x: source.position.x + 30, y: source.position.y + 30 });
     closeMenu();
     useAppStore.getState().showToast('节点已创建副本');
-  }, [menu.nodeId, nodes, addNode, closeMenu]);
+  }, [menu.nodeId, nodes, copySelectedNodes, pasteNodes, closeMenu]);
+
+  // ── Ungroup ──
+  const handleUngroup = useCallback(() => {
+    if (!menu.nodeId) return;
+    ungroupSelectedNodes();
+    closeMenu();
+    useAppStore.getState().showToast('已解除分组');
+  }, [menu.nodeId, ungroupSelectedNodes, closeMenu]);
 
   // ── Delete ──
   const handleDelete = useCallback(() => {
@@ -113,6 +117,7 @@ export function useNodeContextMenu() {
     handleCopy,
     handleCut,
     handleDuplicate,
+    handleUngroup,
     handleDelete,
   };
 }

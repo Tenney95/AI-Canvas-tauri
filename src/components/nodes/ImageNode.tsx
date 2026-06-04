@@ -21,6 +21,7 @@ import { generateAngleImage } from '../../services/apimartService';
 function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const currentProjectId = useAppStore((s) => s.currentProjectId);
+  const selectedNodeIds = useAppStore((s) => s.selectedNodeIds);
   const isSource = data.role === 'source';
   const nodeWidth = (data.nodeWidth as number) || 280;
   const nodeHeight = (data.nodeHeight as number) || 158;
@@ -272,8 +273,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           onResize={handleResize}
         />
 
-        {/* Floating toolbar */}
-        {selected && (data.imageUrl || data.thumbnailUrl) && (
+        {/* Floating toolbar — single-select only */}
+        {selected && selectedNodeIds.length <= 1 && (data.imageUrl || data.thumbnailUrl) && (
           <ImageNodeToolbar
             nodeId={id}
             onMatting={handleOpenMatting}

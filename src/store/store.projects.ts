@@ -49,7 +49,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           return m ? parseInt(m[1], 10) : 0;
         });
       const nextNum = existing.length > 0 ? Math.max(...existing) + 1 : 1;
-      defaultName = 项目 ;
+      defaultName = `项目 ${nextNum}`;
     }
     const project: CanvasProject = {
       id,

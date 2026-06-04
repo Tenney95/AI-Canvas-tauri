@@ -58,7 +58,7 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
     const gY = minTop - padding - titleBarH;
 
     // Calculate relative positions & group dimensions
-    const relNodes: Array<{ id: string; x: number; y: number }> = [];
+    const relMap = new Map<string, { x: number; y: number }>();
     let maxRight = 0;
     let maxBottom = 0;
 
@@ -68,7 +68,7 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
       const absY = n.parentId ? n.position.y + (nodes.find(p => p.id === n.parentId)?.position.y || 0) : n.position.y;
       const rx = absX - gX;
       const ry = absY - gY;
-      relNodes.push({ id: n.id, x: rx, y: ry });
+      relMap.set(n.id, { x: rx, y: ry });
       const right = rx + sizes[i].width;
       const bottom = ry + sizes[i].height;
       if (right > maxRight) maxRight = right;
@@ -90,28 +90,27 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
       createdAt: Date.now(),
     };
 
-    // Create a group node on the canvas
-    import('@xyflow/react').then(({ Node }) => {
-      const groupNode: Node = {
-        id: groupId,
-        type: 'group',
-        position: { x: gX, y: gY },
-        data: { label: newGroup.name, type: 'comment' as const, groupId, color },
-        style: { width: gW, height: gH },
-      };
-      // Update nodes to have parentId
-      set((state) => ({
-        groups: [...state.groups, newGroup],
-        nodes: [
-          ...state.nodes.map((n) =>
-            candidateIds.includes(n.id)
-              ? { ...n, parentId: groupId, position: relNodes.find((rn) => rn.id === n.id)! }
-              : n
-          ),
-          groupNode as any,
-        ],
-      }));
-    });
+    // Build the group node — must appear BEFORE its children in the nodes array
+    const groupNode = {
+      id: groupId,
+      type: 'group' as const,
+      position: { x: gX, y: gY },
+      data: { label: newGroup.name, type: 'comment' as const, groupId, color },
+      style: { width: gW, height: gH },
+    };
+
+    set((state) => ({
+      groups: [...state.groups, newGroup],
+      nodes: [
+        // Place group node BEFORE children (xyflow requirement)
+        groupNode,
+        ...state.nodes.map((n) =>
+          candidateIds.includes(n.id)
+            ? { ...n, parentId: groupId, position: relMap.get(n.id)! }
+            : n
+        ),
+      ],
+    }));
 
     get().showToast(`已创建「${newGroup.name}」（${candidateIds.length} 个节点）`);
   },
