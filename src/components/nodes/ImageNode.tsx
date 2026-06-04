@@ -189,6 +189,15 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   // ── Display label ──
   const displayLabel = data.fileName || data.label || '粘贴图像';
 
+  const handleRename = useCallback(
+    (newName: string) => {
+      const payload: Partial<BaseNodeData> = { label: newName };
+      if (data.fileName) (payload as Record<string, unknown>).fileName = newName;
+      updateNodeData(id, payload);
+    },
+    [id, updateNodeData, data.fileName],
+  );
+
   return (
     <>
       <div className="node-wrapper relative" style={{ width: nodeWidth }}>
@@ -196,6 +205,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           kind="ai-image"
           label={displayLabel}
           displayId={data.displayId as number | undefined}
+          nodeId={id}
+          onRename={handleRename}
         />
         <div
           className={`node image-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''}`}

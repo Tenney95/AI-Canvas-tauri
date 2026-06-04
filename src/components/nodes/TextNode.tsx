@@ -170,6 +170,15 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   // ── Display label ──
   const displayLabel = data.fileName || data.label || '粘贴文本';
 
+  const handleRename = useCallback(
+    (newName: string) => {
+      const payload: Partial<BaseNodeData> = { label: newName };
+      if (data.fileName) (payload as Record<string, unknown>).fileName = newName;
+      updateNodeData(id, payload);
+    },
+    [id, updateNodeData, data.fileName],
+  );
+
   // ── Render ──
   return (
     <>
@@ -188,6 +197,8 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
         kind="ai-text"
         label={displayLabel}
         displayId={data.displayId as number | undefined}
+        nodeId={id}
+        onRename={handleRename}
       />
       <div
         className={`node text-node ${selected ? 'selected' : ''} ${data.status === 'loading' ? 'loading' : ''}`}

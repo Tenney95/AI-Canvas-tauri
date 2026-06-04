@@ -39,12 +39,23 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   // ── Display label ──
   const displayLabel = data.fileName || data.label || '粘贴视频';
 
+  const handleRename = useCallback(
+    (newName: string) => {
+      const payload: Partial<BaseNodeData> = { label: newName };
+      if (data.fileName) (payload as Record<string, unknown>).fileName = newName;
+      updateNodeData(id, payload);
+    },
+    [id, updateNodeData, data.fileName],
+  );
+
   return (
     <div className="node-wrapper" style={{ width: 280 }}>
       <NodeLabel
         kind="ai-video"
         label={displayLabel}
         displayId={data.displayId as number | undefined}
+        nodeId={id}
+        onRename={handleRename}
       />
       <div
         className={`node video-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''}`}

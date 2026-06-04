@@ -165,6 +165,15 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   const displayLabel = data.fileName || data.label || '粘贴音频';
 
+  const handleRename = useCallback(
+    (newName: string) => {
+      const payload: Partial<BaseNodeData> = { label: newName };
+      if (data.fileName) (payload as Record<string, unknown>).fileName = newName;
+      updateNodeData(id, payload);
+    },
+    [id, updateNodeData, data.fileName],
+  );
+
   // ── Decode & draw real waveform when audioUrl is set ──
   useEffect(() => {
     if (!data.audioUrl) return;
@@ -283,6 +292,8 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         label={displayLabel}
         displayId={data.displayId as number | undefined}
         isBeta={!isSource}
+        nodeId={id}
+        onRename={handleRename}
       />
       <div
         className={`node audio-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''}`}
