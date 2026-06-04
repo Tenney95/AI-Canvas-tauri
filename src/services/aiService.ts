@@ -36,6 +36,7 @@ export interface AIGenerateParams {
 export interface AIImageGenParams extends AIGenerateParams {
   imageSize?: string;     // '1K' | '2K' | '4K'
   aspectRatio?: string;   // '1:1' | '16:9' | '9:16' | ...
+  image_urls?: string[];  // 参考图片 URL（从 @图片节点 引用中提取）
   workflowId?: string;    // ComfyUI 工作流 ID（存在时走 ComfyUI 执行）
   workflowInputs?: Record<string, string>; // IO 节点赋值映射
 }
@@ -161,8 +162,11 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
 export async function generateImage(params: AIImageGenParams): Promise<{ url: string; width: number; height: number }> {
   const { prompt: rawPrompt, model, provider, imageSize = '2K', aspectRatio = '1:1' } = params;
 
-  // 解析 @{nodeId:label} 引用为对应节点的实际输出内容
-  const prompt = resolveNodeReferences(rawPrompt);
+  // 解析 @{nodeId:label} 引用：图片 URL 提取到 image_urls，文本内联替换到 prompt
+  const { prompt, imageUrls } = resolvePromptWithImageRefs(rawPrompt);
+
+  // 合并调用方传入的 image_urls 与从 prompt 中解析出的 imageUrls
+  const allImageUrls = [...(params.image_urls || []), ...imageUrls];
 
   // ComfyUI 工作流执行路径
   if (params.workflowId) {
@@ -191,7 +195,7 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
     baseUrl = baseUrl.replace(/\/+$/, '');
     const modelName = extractModelName(model, provider);
     const dimensions = mapImageDimensions(imageSize, aspectRatio);
-    return generateApimartImage(apiKey, baseUrl, modelName, prompt, imageSize, aspectRatio, dimensions);
+    return generateApimartImage(apiKey, baseUrl, modelName, prompt, imageSize, aspectRatio, dimensions, allImageUrls);
   }
 
   const dimensions = mapImageDimensions(imageSize, aspectRatio);
@@ -234,16 +238,21 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
   const controller = new AbortController();
   const timeoutId = provider === 'localllm' ? setTimeout(() => controller.abort(), LOCAL_MODEL_TIMEOUT_MS) : undefined;
 
+  const requestBody: Record<string, unknown> = {
+    model: modelName,
+    prompt,
+    n: 1,
+    size: sizeStr,
+    response_format: 'url',
+  };
+  if (allImageUrls.length > 0) {
+    requestBody.image_urls = allImageUrls;
+  }
+
   const response = await fetch(apiUrl, {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model: modelName,
-      prompt,
-      n: 1,
-      size: sizeStr,
-      response_format: 'url',
-    }),
+    body: JSON.stringify(requestBody),
     signal: controller.signal,
   }).finally(() => {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
@@ -279,21 +288,26 @@ async function generateApimartImage(
   imageSize: string,
   aspectRatio: string,
   dimensions: { width: number; height: number },
+  imageUrls: string[] = [],
 ): Promise<{ url: string; width: number; height: number }> {
   // 步骤 1: 提交生成任务
+  const submitBody: Record<string, unknown> = {
+    model,
+    prompt,
+    n: 1,
+    resolution: imageSize,
+    size: aspectRatio,
+  };
+  if (imageUrls.length > 0) {
+    submitBody.image_urls = imageUrls;
+  }
   const submitResp = await fetch(`${baseUrl}/images/generations`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model,
-      prompt,
-      n: 1,
-      resolution: imageSize,
-      size: aspectRatio,
-    }),
+    body: JSON.stringify(submitBody),
   });
 
   if (!submitResp.ok) {
@@ -471,6 +485,46 @@ function resolveNodeReferences(value: string): string {
     // 无法解析，保留原文
     return _match;
   });
+}
+
+/** 解析 prompt 中的 @{nodeId:label} 引用：图片节点 URL 提取到 image_urls，文本/视频/音频节点内联替换到 prompt */
+function resolvePromptWithImageRefs(rawPrompt: string): { prompt: string; imageUrls: string[] } {
+  const { nodes } = useAppStore.getState();
+  const chipRegex = /@\{([^:]+):([^}]+)\}/g;
+  const imageUrls: string[] = [];
+
+  const prompt = rawPrompt.replace(chipRegex, (_match, nodeId: string) => {
+    const node = nodes.find((n) => n.id === nodeId);
+    if (!node) return '';
+
+    const nodeType = (node.data.type as string) || '';
+
+    // 图片类节点（ai-image / source-image）：提取 imageUrl 到 image_urls，从 prompt 中移除 chip
+    if (nodeType === 'ai-image' || nodeType === 'source-image') {
+      const imageUrl = node.data.imageUrl as string | undefined;
+      if (typeof imageUrl === 'string' && imageUrl.trim()) {
+        imageUrls.push(imageUrl);
+      }
+      return '';
+    }
+
+    // 文本节点：内联替换 output
+    if (nodeType === 'ai-text' || nodeType === 'source-text') {
+      const output = node.data.output as string | undefined;
+      if (typeof output === 'string' && output.trim()) return output;
+      return '';
+    }
+
+    // 视频 / 音频节点：内联替换对应 URL
+    const videoUrl = node.data.videoUrl as string | undefined;
+    if (typeof videoUrl === 'string' && videoUrl.trim()) return videoUrl;
+    const audioUrl = node.data.audioUrl as string | undefined;
+    if (typeof audioUrl === 'string' && audioUrl.trim()) return audioUrl;
+
+    return '';
+  }).trim();
+
+  return { prompt, imageUrls };
 }
 
 /** 将提示词注入到 ComfyUI workflow JSON 的 prompt 类型 IO 节点中 */

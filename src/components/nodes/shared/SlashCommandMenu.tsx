@@ -2,11 +2,12 @@
  * SlashCommandMenu — / 指令弹出菜单
  * 显示预设提示词分类 + 用户自定义预设，支持子菜单，选中后插入模板到提示词
  */
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { NodeType, UserPreset } from '../../../types';
 import { getSlashCommands, fillTemplate } from './slashCommands';
 import type { SlashCommandItem } from './slashCommands';
+import { calcFixedPosition, calcSubmenuPosition } from '../../../utils/popupPosition';
 
 interface SlashCommandMenuProps {
   nodeType: NodeType;
@@ -29,6 +30,8 @@ export default function SlashCommandMenu({
 }: SlashCommandMenuProps) {
   const [activeParentId, setActiveParentId] = useState<string | null>(null);
   const [hoveredItemId, setHoveredItemId] = useState<string | null>(null);
+  const [menuPos, setMenuPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
+  const [submenuPos, setSubmenuPos] = useState<{ left: number; top: number; direction: 'left' | 'right' }>({ left: 0, top: 0, direction: 'right' });
   const menuRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
 
@@ -56,6 +59,35 @@ export default function SlashCommandMenu({
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // 计算菜单位置并做边界检测
+  useLayoutEffect(() => {
+    if (!anchorEl) return;
+    const anchorRect = anchorEl.getBoundingClientRect();
+
+    // 估算主菜单尺寸
+    const itemCount = commands.length + matchingPresets.length + 1 /* manage */ + (commands.length > 0 ? 1 : 0) /* header */ + (matchingPresets.length > 0 ? 2 : 0) /* header+divider */;
+    const estH = Math.min(16 + itemCount * 48 + 8 /* divider */, 400);
+    const estW = 268;
+
+    // 期望位置：锚点上方，水平居中于锚点
+    const desiredX = anchorRect.left + anchorRect.width / 2 - estW / 2;
+    const desiredY = anchorRect.top - estH - 8;
+
+    setMenuPos(calcFixedPosition(desiredX, desiredY, estW, estH));
+  }, [anchorEl, commands.length, matchingPresets.length]);
+
+  const activeParent = commands.find(c => c.id === activeParentId);
+
+  // 子菜单位置计算
+  useLayoutEffect(() => {
+    if (!activeParent || !menuRef.current) return;
+    const parentRect = menuRef.current.getBoundingClientRect();
+    const subW = 268;
+    const subH = (activeParent.children?.length ?? 0) * 48 + 16;
+
+    setSubmenuPos(calcSubmenuPosition(parentRect, subW, subH));
+  }, [activeParent, commands]);
 
   const handleItemSelect = useCallback((item: SlashCommandItem) => {
     if (item.promptTemplate) {
@@ -88,21 +120,8 @@ export default function SlashCommandMenu({
     }
   }, []);
 
-  const activeParent = commands.find(c => c.id === activeParentId);
-
   const hasContent = commands.length > 0 || matchingPresets.length > 0;
   if (!hasContent) return null;
-
-  // Position: above the anchor element, right-aligned
-  const menuPos = anchorEl
-    ? (() => {
-        const rect = anchorEl.getBoundingClientRect();
-        return {
-          left: rect.left + 40,
-          top: rect.top - 50* (commands.length + matchingPresets.length) - 100,
-        };
-      })()
-    : { left: 0, top: 0 };
 
   return createPortal(
     <>
@@ -205,8 +224,8 @@ export default function SlashCommandMenu({
           ref={submenuRef}
           className="slash-command-submenu"
           style={{
-            left: (menuPos.left || 0) + 268,
-            top: (menuPos.top || 0) + commands.indexOf(activeParent) * 48 + 32,
+            left: submenuPos.left,
+            top: submenuPos.top,
           }}
         >
           {activeParent.children?.map((child) => (

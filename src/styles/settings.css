@@ -261,6 +261,9 @@
   color: #8888a0;
   margin-bottom: 4px;
 }
+.dreamina-settings-status--logged-in {
+  color: #34d399;
+}
 .dreamina-settings-desc {
   font-size: 11px;
   color: #555566;

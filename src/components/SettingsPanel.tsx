@@ -15,6 +15,7 @@ const PROVIDER_URLS: Record<string, string> = {
   runninghub: 'https://www.runninghub.cn/?inviteCode=rh-v1312',
   grsai: 'https://grsai.com/zh/dashboard/user-info',
   ppio: 'https://ppio.com/user/register?invited_by=SF4VL3',
+  dreamina: 'https://www.dreamina.com',
 };
 
 type TestState = { status: 'idle' | 'testing' | 'done'; result?: TestResult };
@@ -203,6 +204,126 @@ export default function SettingsPanel() {
   const [testStates, setTestStates] = useState<Record<string, TestState>>({});
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
+
+  // ── 即梦 Dreamina 登录状态 ──
+  const [dreaminaLoading, setDreaminaLoading] = useState(false);
+  const [dreaminaCookieInput, setDreaminaCookieInput] = useState('');
+  const [dreaminaStatusMsg, setDreaminaStatusMsg] = useState('首次登录时会自动准备即梦组件');
+  const dreaminaAuth = config.dreaminaAuth;
+
+  /** 打开外部链接（Tauri 用 shell open，浏览器用 window.open） */
+  const openExternalUrl = async (url: string) => {
+    try {
+      await import('@tauri-apps/plugin-shell').then(({ open }) => open(url));
+    } catch {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  /** 判断是否运行在 Tauri 环境中 */
+  const isTauri = async (): Promise<boolean> => {
+    try {
+      await import('@tauri-apps/api/core');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /** 即梦网页登录（Tauri 模式自动提取 Cookie，浏览器模式回退手动粘贴） */
+  const handleDreaminaWebLogin = async () => {
+    if (await isTauri()) {
+      setDreaminaLoading(true);
+      setDreaminaStatusMsg('正在打开即梦登录窗口…');
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const result = await invoke<{ cookie: string }>('dreamina_login');
+        if (result.cookie) {
+          updateConfig({
+            dreaminaAuth: {
+              loggedIn: true,
+              username: '即梦用户',
+              cookie: result.cookie,
+              loginTs: Date.now(),
+            },
+          });
+          setDreaminaStatusMsg('登录成功！已自动获取凭证');
+          setDreaminaCookieInput('');
+        }
+      } catch (err: unknown) {
+        const msg = typeof err === 'string' ? err : (err as Error)?.message || '未知错误';
+        setDreaminaStatusMsg(`登录失败: ${msg}`);
+      } finally {
+        setDreaminaLoading(false);
+      }
+      return;
+    }
+    // 浏览器模式：回退到打开外部链接
+    setDreaminaLoading(true);
+    setDreaminaStatusMsg('请在浏览器中完成即梦登录…');
+    try {
+      await openExternalUrl('https://jimeng.jianying.com/');
+      setDreaminaStatusMsg('请在浏览器中登录即梦后，将 Cookie 粘贴到下方输入框并保存');
+    } catch {
+      setDreaminaStatusMsg('打开浏览器失败，请手动访问 dreamina.com 登录');
+    } finally {
+      setDreaminaLoading(false);
+    }
+  };
+
+  /** 保存即梦 Cookie/Token */
+  const handleDreaminaCookieSave = async () => {
+    const cookie = dreaminaCookieInput.trim();
+    if (!cookie) {
+      setDreaminaStatusMsg('请输入 Cookie/Token');
+      return;
+    }
+    setDreaminaLoading(true);
+    setDreaminaStatusMsg('正在验证登录状态…');
+    try {
+      // 尝试用 cookie 调即梦 API 验证有效性
+      const resp = await fetch('https://api.dreamina.com/v1/user/info', {
+        headers: { 'Cookie': cookie },
+      });
+      if (resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        updateConfig({
+          dreaminaAuth: {
+            loggedIn: true,
+            username: data.username || data.nickname || '即梦用户',
+            credit: data.credit || data.balance || undefined,
+            cookie,
+            loginTs: Date.now(),
+          },
+        });
+        setDreaminaStatusMsg('已连接到即梦账户');
+        setDreaminaCookieInput('');
+      } else {
+        setDreaminaStatusMsg(`验证失败 (${resp.status})，请检查 Cookie 是否有效`);
+      }
+    } catch (err) {
+      // API 不可达时仍保存配置，标记为已登录（后续可手动验证）
+      updateConfig({
+        dreaminaAuth: {
+          loggedIn: true,
+          username: '即梦用户',
+          cookie,
+          loginTs: Date.now(),
+        },
+      });
+      setDreaminaStatusMsg('已保存登录信息（离线模式），下次调用 API 时将自动验证');
+      setDreaminaCookieInput('');
+    } finally {
+      setDreaminaLoading(false);
+    }
+  };
+
+  /** 即梦退出登录 */
+  const handleDreaminaLogout = () => {
+    updateConfig({ dreaminaAuth: undefined });
+    setDreaminaCookieInput('');
+    setDreaminaStatusMsg('已退出登录');
+  };
 
   // 加载项目文件夹路径
   useEffect(() => {
@@ -491,31 +612,89 @@ export default function SettingsPanel() {
                   </div>
 
                   {/* ── 即梦 Dreamina ── */}
-                  <div className="settings-section settings-card" id="dreaminaSettingsCard">
+                  <div className="settings-section settings-card">
                     <div className="settings-card-head">
                       <div className="settings-card-badge" style={{ background: 'rgba(251, 191, 36, 0.15)', color: '#fbbf24' }}>即</div>
                       <span className="settings-card-title">即梦</span>
+                      {dreaminaAuth?.loggedIn && (
+                        <span className="settings-provider-status settings-provider-status--success">已登录</span>
+                      )}
                       <span className="settings-card-head-spacer" style={{ flex: 1 }} />
-                      <span className="settings-getkey settings-getkey--muted">网页登录 / 扫码登录</span>
+                      <GetKeyButton provider="dreamina" label="即梦" />
                     </div>
+
                     <div className="settings-label">登录状态</div>
-                    <div className="dreamina-settings-status" id="dreaminaStatusText">未登录</div>
-                    <div className="dreamina-settings-desc" id="dreaminaStatusMessage">首次登录时会自动准备即梦组件</div>
+                    <div
+                      className={`dreamina-settings-status${dreaminaAuth?.loggedIn ? ' dreamina-settings-status--logged-in' : ''}`}
+                    >
+                      {dreaminaLoading ? '处理中…' : dreaminaAuth?.loggedIn ? `已登录${dreaminaAuth.username ? ` — ${dreaminaAuth.username}` : ''}` : '未登录'}
+                    </div>
+                    <div className="dreamina-settings-desc">{dreaminaStatusMsg}</div>
+
                     <div className="settings-label">账户额度</div>
-                    <div className="dreamina-settings-inline" id="dreaminaCreditText">登录后显示余额</div>
+                    <div className="dreamina-settings-inline">
+                      {dreaminaAuth?.loggedIn ? (dreaminaAuth.credit || '未获取到余额信息') : '登录后显示余额'}
+                    </div>
+
+                    {/* Cookie/Token 输入 */}
+                    <div className="settings-label">
+                      Cookie / Token
+                      <span className="dreamina-settings-desc" style={{ marginLeft: 6, fontSize: 10 }}>
+                        {dreaminaAuth?.loggedIn ? '（已保存，可留空）' : '（登录后在此粘贴浏览器 Cookie）'}
+                      </span>
+                    </div>
+                    <input
+                      type="password"
+                      className="settings-input settings-input--mb10"
+                      placeholder={dreaminaAuth?.loggedIn ? '留空则保持当前登录…' : '粘贴浏览器中的 Cookie…'}
+                      value={dreaminaCookieInput}
+                      onChange={(e) => setDreaminaCookieInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleDreaminaCookieSave(); }}
+                    />
+
                     <div className="dreamina-settings-actions">
-                      <button type="button" className="settings-save-btn" id="btnDreaminaAuth">
-                        网页登录
-                      </button>
-                      <button type="button" className="settings-save-btn settings-btn-ghost" id="btnDreaminaQrAuth">
-                        扫码登录
-                      </button>
-                      <button type="button" className="settings-save-btn settings-btn-ghost" id="btnDreaminaLogout" disabled>
-                        退出登录
-                      </button>
+                      {!dreaminaAuth?.loggedIn ? (
+                        <>
+                          <button
+                            type="button"
+                            className="settings-save-btn"
+                            disabled={dreaminaLoading}
+                            onClick={handleDreaminaWebLogin}
+                          >
+                            网页登录
+                          </button>
+                          <button
+                            type="button"
+                            className="settings-save-btn"
+                            disabled={!dreaminaCookieInput.trim() || dreaminaLoading}
+                            onClick={handleDreaminaCookieSave}
+                          >
+                            保存登录
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className="settings-save-btn"
+                            disabled={!dreaminaCookieInput.trim() || dreaminaLoading}
+                            onClick={handleDreaminaCookieSave}
+                          >
+                            更新登录
+                          </button>
+                          <button
+                            type="button"
+                            className="settings-save-btn settings-btn-ghost"
+                            disabled={dreaminaLoading}
+                            onClick={handleDreaminaLogout}
+                          >
+                            退出登录
+                          </button>
+                        </>
+                      )}
                     </div>
                     <div className="dreamina-settings-desc" style={{ marginBottom: 0, marginTop: 10 }}>
-                      推荐使用网页登录完成授权；扫码登录保留为备用，二维码可能受浏览器或网络环境影响。
+                      点击网页登录完成授权，支持手机号、扫码等多种方式。登录成功后 Cookie 将自动填充，也可手动粘贴到上方输入框保存。
                     </div>
                   </div>
 

@@ -9,6 +9,10 @@
   position: relative;
 }
 
+.react-flow__nodesselection-rect {
+  border-radius: 12PX;
+}
+
 /* Base Node — frosted glass card */
 .node {
   display: flex;

@@ -1,0 +1,12 @@
+{
+  "identifier": "dreamina-login-capability",
+  "description": "Allow Dreamina login webview (remote URL) to emit dreamina-cookie event",
+  "windows": ["dreamina-login"],
+  "remote": {
+    "urls": ["https://jimeng.jianying.com/**", "https://www.dreamina.com/**"]
+  },
+  "permissions": [
+    "core:event:default",
+    "core:event:allow-emit"
+  ]
+}

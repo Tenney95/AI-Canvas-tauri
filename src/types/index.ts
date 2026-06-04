@@ -59,11 +59,21 @@ export interface ApiProviderConfig {
   baseUrl?: string;
 }
 
+// 即梦/Dreamina 网页登录认证数据
+export interface DreaminaAuthData {
+  loggedIn: boolean;
+  username?: string;          // 账户昵称
+  credit?: string;            // 额度余额文本
+  cookie?: string;            // 持久化的 cookie/token
+  loginTs?: number;           // 登录时间戳
+}
+
 export interface AppConfig {
   providers: Record<string, ApiProviderConfig>;
   theme: 'dark' | 'light';
   localLLMUrl?: string;       // 本地大模型调用地址
   comfyUIUrl?: string;        // ComfyUI 服务地址
+  dreaminaAuth?: DreaminaAuthData; // 即梦登录态
 }
 
 // 引用节点信息
