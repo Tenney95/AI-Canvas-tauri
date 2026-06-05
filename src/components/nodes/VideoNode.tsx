@@ -1,52 +1,34 @@
 /**
  * VideoNode 视频节点 — 在画布上渲染视频内容，支持上传本地视频、播放控制、连接其他节点
  */
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
+import { useNodeRename } from './shared/useNodeRename';
+import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore } from '../../store/useAppStore';
-import { uploadSourceFileToProject } from '../../services/fileService';
 
 function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
-  const currentProjectId = useAppStore((s) => s.currentProjectId);
   const isSource = data.role === 'source';
 
   // ── Upload handler for source nodes ──
-  const [isUploading, setIsUploading] = useState(false);
+  const { isUploading, handleUpload: doUpload } = useSourceFileUpload('.mp4,.webm,.avi,.mov,.mkv');
 
   const handleUpload = useCallback(async () => {
-    setIsUploading(true);
-    try {
-      const result = await uploadSourceFileToProject('.mp4,.webm,.avi,.mov,.mkv', currentProjectId);
-      if (!result) return;
+    const result = await doUpload();
+    if (!result) return;
+    updateNodeData(id, {
+      videoUrl: result.dataUrl,
+      filePath: result.filePath,
+      fileName: result.fileName,
+      label: result.fileName,
+      status: 'success',
+    } as Partial<BaseNodeData>);
+  }, [doUpload, id, updateNodeData]);
 
-      updateNodeData(id, {
-        videoUrl: result.dataUrl,
-        filePath: result.filePath,
-        fileName: result.fileName,
-        label: result.fileName,
-        status: 'success',
-      } as Partial<BaseNodeData>);
-    } catch {
-      // silently ignore
-    } finally {
-      setIsUploading(false);
-    }
-  }, [id, updateNodeData, currentProjectId]);
-
-  // ── Display label ──
-  const displayLabel = data.fileName || data.label || '粘贴视频';
-
-  const handleRename = useCallback(
-    (newName: string) => {
-      const payload: Partial<BaseNodeData> = { label: newName };
-      if (data.fileName) (payload as Record<string, unknown>).fileName = newName;
-      updateNodeData(id, payload);
-    },
-    [id, updateNodeData, data.fileName],
-  );
+  const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴视频');
 
   return (
     <div className="node-wrapper" style={{ width: 280 }}>

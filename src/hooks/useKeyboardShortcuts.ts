@@ -18,13 +18,7 @@ export function useKeyboardShortcuts() {
       const isEditing = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.contentEditable === 'true';
 
       // Ctrl+S / Alt+S — always allow save even in inputs
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-        e.preventDefault();
-        e.stopPropagation();
-        await saveCurrentProject();
-        return;
-      }
-      if (e.altKey && e.key === 's') {
+      if ((e.ctrlKey || e.metaKey || e.altKey) && e.key === 's') {
         e.preventDefault();
         e.stopPropagation();
         await saveCurrentProject();

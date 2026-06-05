@@ -11,8 +11,11 @@ import FreeAnglePanel from './shared/FreeAnglePanel';
 import MattingEditor from './shared/MattingEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import { computeImageNodeDimensions } from './shared/imageUtils';
+import { useNodeRename } from './shared/useNodeRename';
+import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
-import { uploadSourceFileToProject, saveDataUrlToProjectData } from '../../services/fileService';
+import { saveDataUrlToProjectData } from '../../services/fileService';
+import { blobToDataUrl } from '../../store/store.utils';
 import { generateAngleImage } from '../../services/apimartService';
 
 /* ════════════════════════════════════════════
@@ -20,7 +23,6 @@ import { generateAngleImage } from '../../services/apimartService';
    ════════════════════════════════════════════ */
 function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
-  const currentProjectId = useAppStore((s) => s.currentProjectId);
   const selectedNodeIds = useAppStore((s) => s.selectedNodeIds);
   const isSource = data.role === 'source';
   const nodeWidth = (data.nodeWidth as number) || 280;
@@ -35,37 +37,30 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   );
 
   // ── Upload ──
-  const [isUploading, setIsUploading] = useState(false);
+  const { isUploading, handleUpload: doUpload } = useSourceFileUpload('.png,.jpg,.jpeg,.gif,.webp,.svg');
 
   const handleUpload = useCallback(async () => {
-    setIsUploading(true);
-    try {
-      const result = await uploadSourceFileToProject('.png,.jpg,.jpeg,.gif,.webp,.svg', currentProjectId);
-      if (!result) return;
-      const img = new Image();
-      img.onload = () => {
-        const contentWidth = nodeWidth - 4;
-        const naturalRatio = img.naturalWidth / img.naturalHeight;
-        const previewHeight = Math.round(contentWidth / naturalRatio);
-        const newHeight = Math.max(120, previewHeight + 4);
-        updateNodeData(id, {
-          imageUrl: result.dataUrl,
-          filePath: result.filePath,
-          fileName: result.fileName,
-          label: result.fileName,
-          status: 'success',
-          nodeHeight: newHeight,
-          imageWidth: img.naturalWidth,
-          imageHeight: img.naturalHeight,
-        } as Partial<BaseNodeData>);
-      };
-      img.src = result.dataUrl;
-    } catch {
-      /* silently ignore */
-    } finally {
-      setIsUploading(false);
-    }
-  }, [id, nodeWidth, updateNodeData, currentProjectId]);
+    const result = await doUpload();
+    if (!result) return;
+    const img = new Image();
+    img.onload = () => {
+      const contentWidth = nodeWidth - 4;
+      const naturalRatio = img.naturalWidth / img.naturalHeight;
+      const previewHeight = Math.round(contentWidth / naturalRatio);
+      const newHeight = Math.max(120, previewHeight + 4);
+      updateNodeData(id, {
+        imageUrl: result.dataUrl,
+        filePath: result.filePath,
+        fileName: result.fileName,
+        label: result.fileName,
+        status: 'success',
+        nodeHeight: newHeight,
+        imageWidth: img.naturalWidth,
+        imageHeight: img.naturalHeight,
+      } as Partial<BaseNodeData>);
+    };
+    img.src = result.dataUrl;
+  }, [doUpload, id, nodeWidth, updateNodeData]);
 
   /* ════════════════════════════════════════════
      Free Angle State
@@ -118,12 +113,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           const genUrl = result.imageUrls[i];
           const resp = await fetch(genUrl);
           const blob = await resp.blob();
-          let dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-          });
+          let dataUrl = await blobToDataUrl(blob);
 
           let filePath: string | undefined;
           let assetUrl = dataUrl;
@@ -186,17 +176,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     [id, updateNodeData],
   );
 
-  // ── Display label ──
-  const displayLabel = data.fileName || data.label || '粘贴图像';
-
-  const handleRename = useCallback(
-    (newName: string) => {
-      const payload: Partial<BaseNodeData> = { label: newName };
-      if (data.fileName) (payload as Record<string, unknown>).fileName = newName;
-      updateNodeData(id, payload);
-    },
-    [id, updateNodeData, data.fileName],
-  );
+  const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴图像');
 
   return (
     <>

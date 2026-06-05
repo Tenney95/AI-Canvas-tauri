@@ -2,11 +2,11 @@
  * SettingsPanel 设置面板 — 模态弹窗，管理各 AI 厂商 API Key/Base URL 配置、连接测试、主题切换
  */
 import { useState, useEffect } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
 import type { TestResult } from '../services/testConnection';
 import { testProviderConnection, type ProviderTestKey } from '../services/testConnection';
 import { getProjectDataDir, ensureProjectDataDir } from '../services/fileService';
+import ModalOverlay from './shared/ModalOverlay';
 
 /* ── External URLs ── */
 const PROVIDER_URLS: Record<string, string> = {
@@ -136,15 +136,17 @@ function GetKeyButton({ provider, label }: { provider: string; label: string }) 
   );
 }
 
-/* ── Password Input with save-on-blur ── */
-function ApiKeyInput({
+/* ── Config Input with save-on-blur ── */
+function ConfigInput({
   id,
+  type = 'text',
   defaultValue,
   placeholder,
   onSave,
   className = '',
 }: {
   id: string;
+  type?: string;
   defaultValue: string;
   placeholder: string;
   onSave: (value: string) => void;
@@ -154,37 +156,7 @@ function ApiKeyInput({
 
   return (
     <input
-      type="password"
-      id={id}
-      className={`settings-input${className ? ` ${className}` : ''}`}
-      placeholder={placeholder}
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onBlur={() => {
-        if (value !== defaultValue) onSave(value);
-      }}
-    />
-  );
-}
-
-function UrlInput({
-  id,
-  defaultValue,
-  placeholder,
-  onSave,
-  className = '',
-}: {
-  id: string;
-  defaultValue: string;
-  placeholder: string;
-  onSave: (value: string) => void;
-  className?: string;
-}) {
-  const [value, setValue] = useState(defaultValue);
-
-  return (
-    <input
-      type="text"
+      type={type}
       id={id}
       className={`settings-input${className ? ` ${className}` : ''}`}
       placeholder={placeholder}
@@ -357,36 +329,8 @@ export default function SettingsPanel() {
     setTestStates((prev) => ({ ...prev, [provider]: { status: 'done', result } }));
   };
 
-  const modalEase = [0.16, 1, 0.3, 1];
-
   return (
-    <AnimatePresence>
-      {settingsOpen && (
-        <motion.div
-          className="fixed inset-0 z-50 flex items-center justify-center"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
-          onClick={() => setSettingsOpen(false)}
-        >
-          {/* Backdrop */}
-          <motion.div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          />
-
-          {/* Modal */}
-          <motion.div
-            className="relative w-[640px] max-h-[80vh] bg-canvas-surface border border-canvas-border rounded-2xl shadow-2xl overflow-hidden flex flex-col"
-            initial={{ opacity: 0, scale: 0.95, y: 12 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 12 }}
-            transition={{ duration: 0.25, ease: modalEase }}
-            onClick={(e) => e.stopPropagation()}
-          >
+    <ModalOverlay isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} className="w-[640px] max-h-[80vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-canvas-border">
           <h2 className="text-base font-semibold text-canvas-text">设置</h2>
@@ -474,7 +418,7 @@ export default function SettingsPanel() {
                       <GetKeyButton provider="apimart" label="APIMart" />
                     </div>
                     <div className="settings-label">API 密钥</div>
-                    <ApiKeyInput
+                    <ConfigInput type="password"
                       id="providerKey-apimart"
                       defaultValue={config.providers.apimart?.apiKey || ''}
                       placeholder="sk-..."
@@ -499,7 +443,7 @@ export default function SettingsPanel() {
                       <GetKeyButton provider="volcengine" label="火山方舟" />
                     </div>
                     <div className="settings-label">API 密钥</div>
-                    <ApiKeyInput
+                    <ConfigInput type="password"
                       id="providerKey-volcengine"
                       defaultValue={config.providers.volcengine?.apiKey || ''}
                       placeholder="ARK API Key..."
@@ -523,7 +467,7 @@ export default function SettingsPanel() {
                       <GetKeyButton provider="runninghub" label="RunningHUB" />
                     </div>
                     <div className="settings-label">工作流 API 密钥 （消费级-会员）</div>
-                    <ApiKeyInput
+                    <ConfigInput type="password"
                       id="providerKey-runninghub"
                       defaultValue={config.providers.runninghub?.apiKey || ''}
                       placeholder="Bearer Token..."
@@ -531,7 +475,7 @@ export default function SettingsPanel() {
                       className="settings-input--mb10"
                     />
                     <div className="settings-label">模型 API 密钥 （企业级-共享）</div>
-                    <ApiKeyInput
+                    <ConfigInput type="password"
                       id="providerKey-runninghub-model"
                       defaultValue={config.providers['runninghub-model']?.apiKey || ''}
                       placeholder="模型 API Key..."
@@ -555,7 +499,7 @@ export default function SettingsPanel() {
                       <GetKeyButton provider="grsai" label="GRSAI" />
                     </div>
                     <div className="settings-label">API 密钥</div>
-                    <ApiKeyInput
+                    <ConfigInput type="password"
                       id="providerKey-grsai"
                       defaultValue={config.providers.grsai?.apiKey || ''}
                       placeholder="sk-..."
@@ -595,7 +539,7 @@ export default function SettingsPanel() {
                       />
                     </div>
                     <div className="settings-label">接口地址</div>
-                    <UrlInput
+                    <ConfigInput
                       id="providerUrl-openai"
                       defaultValue={config.providers.openai?.baseUrl || ''}
                       placeholder="https://api.openai.com"
@@ -603,7 +547,7 @@ export default function SettingsPanel() {
                       className="settings-input--mb10"
                     />
                     <div className="settings-label">API 密钥</div>
-                    <ApiKeyInput
+                    <ConfigInput type="password"
                       id="providerKey-openai"
                       defaultValue={config.providers.openai?.apiKey || ''}
                       placeholder="sk-..."
@@ -848,9 +792,6 @@ export default function SettingsPanel() {
             )}
           </div>
         </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+    </ModalOverlay>
   );
 }

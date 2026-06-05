@@ -7,6 +7,7 @@ import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import TextNodeToolbar from './shared/TextNodeToolbar';
+import { useNodeRename } from './shared/useNodeRename';
 import { useAppStore } from '../../store/useAppStore';
 import { uploadSourceFile } from '../../services/fileService';
 
@@ -167,17 +168,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     }
   }, [id, updateNodeData]);
 
-  // ── Display label ──
-  const displayLabel = data.fileName || data.label || '粘贴文本';
-
-  const handleRename = useCallback(
-    (newName: string) => {
-      const payload: Partial<BaseNodeData> = { label: newName };
-      if (data.fileName) (payload as Record<string, unknown>).fileName = newName;
-      updateNodeData(id, payload);
-    },
-    [id, updateNodeData, data.fileName],
-  );
+  const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴文本');
 
   // ── Render ──
   return (
