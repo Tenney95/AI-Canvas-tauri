@@ -12,6 +12,7 @@ import NodeMenu from './components/NodeMenu';
 import SettingsPanel from './components/SettingsPanel';
 import AINodeDialog from './components/nodes/AINodeDialog';
 import WorkflowPanel from './components/WorkflowPanel';
+import AssetsPanel from './components/AssetsPanel';
 import Toast from './components/Toast';
 import SplashScreen from './components/SplashScreen';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -60,6 +61,7 @@ export default function App() {
         <SettingsPanel />
         <AINodeDialog />
         <WorkflowPanel />
+        <AssetsPanel />
         <Toast />
       </div>
       {/* Sidebar — outside the overflow-hidden container so it's not clipped */}

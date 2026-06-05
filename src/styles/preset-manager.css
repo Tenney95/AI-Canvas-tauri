@@ -33,6 +33,7 @@
 }
 
 .preset-modal--manager {
+  position: fixed;
   width: 800px;
   max-height: 85vh;
   animation: presetModalSlideIn 0.25s ease-out;

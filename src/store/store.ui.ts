@@ -13,6 +13,7 @@ export interface UISlice {
   activeNodeId: string | null;
   dialogPosition: { x: number; y: number } | null;
   lastCanvasMousePos: { x: number; y: number } | null;
+  assetsPanelOpen: boolean;
   setSettingsOpen: (open: boolean) => void;
   showNodeMenu: (position: { x: number; y: number }) => void;
   hideNodeMenu: () => void;
@@ -23,6 +24,7 @@ export interface UISlice {
   closeAvatarMenu: () => void;
   openNodeDialog: (nodeId: string, position?: { x: number; y: number }) => void;
   closeNodeDialog: () => void;
+  setAssetsPanelOpen: (open: boolean) => void;
 }
 
 export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => ({
@@ -34,6 +36,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   activeNodeId: null,
   dialogPosition: null,
   lastCanvasMousePos: null,
+  assetsPanelOpen: false,
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   showNodeMenu: (position) => set({ nodeMenuVisible: true, nodeMenuPosition: position }),
@@ -45,4 +48,5 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   closeAvatarMenu: () => set({ avatarMenuOpen: false }),
   openNodeDialog: (nodeId, position) => set({ activeNodeId: nodeId, dialogPosition: position ?? null }),
   closeNodeDialog: () => set({ activeNodeId: null, dialogPosition: null }),
+  setAssetsPanelOpen: (open) => set({ assetsPanelOpen: open }),
 });

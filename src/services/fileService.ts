@@ -654,6 +654,299 @@ export async function saveWorkflow(record: WorkflowRecord): Promise<void> {
   }
 }
 
+// ============================================
+// Asset file management — 项目文件 & 永久保存
+// ============================================
+
+export type FileCategory = 'image' | 'video' | 'audio' | 'text' | 'other';
+
+const CATEGORY_EXTENSIONS: Record<FileCategory, string[]> = {
+  image: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico', '.tiff', '.tif'],
+  video: ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v'],
+  audio: ['.mp3', '.wav', '.ogg', '.aac', '.flac', '.wma', '.m4a', '.opus'],
+  text: ['.txt', '.md', '.json', '.csv', '.xml', '.html', '.css', '.js', '.ts', '.jsx', '.tsx', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.log'],
+  other: [],
+};
+
+export function getFileCategory(fileName: string): FileCategory {
+  const ext = `.${fileName.split('.').pop()?.toLowerCase()}`;
+  for (const [cat, exts] of Object.entries(CATEGORY_EXTENSIONS)) {
+    if (exts.includes(ext)) return cat as FileCategory;
+  }
+  return 'other';
+}
+
+export const CATEGORY_LABELS: Record<FileCategory, string> = {
+  image: '图片',
+  video: '视频',
+  audio: '音频',
+  text: '文本',
+  other: '其他',
+};
+
+export interface AssetFileEntry {
+  name: string;
+  path: string;
+  assetUrl?: string;
+  size: number;
+  category: FileCategory;
+}
+
+/** 获取永久文件目录 */
+export async function getPermanentFilesDir(projectId: string): Promise<string | null> {
+  const projectDir = await getProjectDataDir(projectId);
+  if (!projectDir) return null;
+  return joinPath(projectDir, 'AppData', 'file');
+}
+
+/** 确保永久文件目录存在 */
+async function ensurePermanentFilesDir(projectId: string): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+  const dirPath = await getPermanentFilesDir(projectId);
+  if (!dirPath) return null;
+  try {
+    const dirExists = await exists(dirPath);
+    if (!dirExists) await mkdir(dirPath, { recursive: true });
+    return dirPath;
+  } catch (err) {
+    console.error('Failed to create permanent files dir:', dirPath, err);
+    return null;
+  }
+}
+
+/** 列出目录中的所有文件 */
+export async function listDirectoryFiles(dirPath: string): Promise<AssetFileEntry[]> {
+  if (!isTauriEnv()) return [];
+  try {
+    const entries = await readDir(dirPath);
+    const files: AssetFileEntry[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile) continue;
+      try {
+        const filePath = joinPath(dirPath, entry.name);
+        const fileStat = await stat(filePath);
+        const convertFileSrc = await getConvertFileSrc();
+        const fileSize = fileStat.size ?? 0;
+        const ext = `.${entry.name.split('.').pop()?.toLowerCase()}`;
+        const extLower = ext.toLowerCase();
+
+        // Only generate assetUrl for image types
+        let assetUrl: string | undefined;
+        if (CATEGORY_EXTENSIONS.image.includes(extLower) && convertFileSrc) {
+          assetUrl = convertFileSrc(filePath);
+        }
+
+        files.push({
+          name: entry.name,
+          path: filePath,
+          assetUrl,
+          size: fileSize,
+          category: getFileCategory(entry.name),
+        });
+      } catch {
+        // Skip files we can't stat
+      }
+    }
+
+    // Sort by name
+    files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+/** 获取项目文件列表 */
+export async function listProjectFiles(projectId: string): Promise<AssetFileEntry[]> {
+  const projectDir = await getProjectDataDir(projectId);
+  if (!projectDir) return [];
+  const allFiles = await listDirectoryFiles(projectDir);
+  // Filter out files inside AppData subdirectory
+  return allFiles.filter((f) => {
+    const relative = f.path.substring(projectDir.length).replace(/\\/g, '/');
+    return !relative.startsWith('/AppData/') && !relative.startsWith('AppData/');
+  });
+}
+
+/** 获取永久保存的文件列表 */
+export async function listPermanentFiles(projectId: string): Promise<AssetFileEntry[]> {
+  const dir = await getPermanentFilesDir(projectId);
+  if (!dir) return [];
+  return listDirectoryFiles(dir);
+}
+
+/**
+ * 从单个文件路径构建 AssetFileEntry（用于节点 filePath 引用）
+ * 尝试 stat 获取文件大小，失败则返回 null
+ */
+export async function getFileEntryFromPath(filePath: string): Promise<AssetFileEntry | null> {
+  if (!isTauriEnv()) return null;
+  try {
+    const fileStat = await stat(filePath);
+    if (fileStat.size === undefined) return null;
+    const fileName = filePath.split(/[\\/]/).pop() || 'file';
+    const ext = `.${fileName.split('.').pop()?.toLowerCase()}`;
+    const extLower = ext.toLowerCase();
+    const convertFileSrc = await getConvertFileSrc();
+
+    let assetUrl: string | undefined;
+    if (CATEGORY_EXTENSIONS.image.includes(extLower) && convertFileSrc) {
+      assetUrl = convertFileSrc(filePath);
+    }
+
+    return {
+      name: fileName,
+      path: filePath,
+      assetUrl,
+      size: fileStat.size,
+      category: getFileCategory(fileName),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 从节点数据直接提取文件引用（纯同步，不依赖 Tauri stat）
+ * 扫描 imageUrl / videoUrl / audioUrl / fileName / filePath
+ */
+export function extractFilesFromNodeData(
+  nodeData: Record<string, unknown>,
+): AssetFileEntry | null {
+  const fileName = (nodeData.fileName as string) || '';
+  const imgUrl = nodeData.imageUrl as string | undefined;
+  const vidUrl = nodeData.videoUrl as string | undefined;
+  const audUrl = nodeData.audioUrl as string | undefined;
+  const fp = nodeData.filePath as string | undefined;
+
+  const assetUrl = imgUrl || vidUrl || audUrl;
+  if (!assetUrl && !fp) return null;
+
+  // Derive name: fileName > filePath basename > URL basename > fallback
+  let name = fileName;
+  if (!name && fp) {
+    name = fp.split(/[\\/]/).pop() || '';
+  }
+  if (!name && assetUrl) {
+    if (assetUrl.startsWith('data:')) {
+      name = '';
+    } else {
+      try {
+        const u = new URL(assetUrl);
+        const pathname = decodeURIComponent(u.pathname);
+        name = pathname.split(/[\\/]/).pop() || '';
+      } catch {
+        name = '';
+      }
+    }
+  }
+  if (!name) name = 'file';
+
+  const category = getFileCategory(name);
+
+  // Use filePath as identifier if available, otherwise derive from name + node id
+  const entryPath = fp || `node://${name}`;
+
+  return {
+    name,
+    path: entryPath,
+    assetUrl: assetUrl || undefined,
+    size: 0,
+    category,
+  };
+}
+
+/** 将项目文件拷贝到永久保存目录 */
+export async function saveToPermanent(filePath: string, projectId: string): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+  const destDir = await ensurePermanentFilesDir(projectId);
+  if (!destDir) return null;
+
+  try {
+    const fileName = filePath.split(/[\\/]/).pop() || 'file';
+    let destPath = joinPath(destDir, fileName);
+    // Avoid overwrite
+    if (await exists(destPath)) {
+      let counter = 1;
+      const dotIndex = fileName.lastIndexOf('.');
+      const baseName = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
+      const ext = dotIndex > 0 ? fileName.substring(dotIndex) : '';
+      do {
+        destPath = joinPath(destDir, `${baseName}_${counter}${ext}`);
+        counter++;
+      } while (await exists(destPath));
+    }
+
+    // Copy file
+    const data = await tauriReadFile(filePath);
+    await writeFile(destPath, data);
+    return destPath;
+  } catch (err) {
+    console.error('Failed to save file to permanent:', filePath, err);
+    return null;
+  }
+}
+
+/**
+ * 将 asset entry 保存到永久目录 — 支持磁盘文件和 data URL 两种来源
+ * virtual:// 路径会从 entry.assetUrl（data URL）解码写入
+ */
+export async function saveAssetToPermanent(
+  entry: AssetFileEntry,
+  projectId: string,
+): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+
+  // 虚拟路径：从 data URL 解码写入
+  if (entry.path.startsWith('virtual://')) {
+    if (!entry.assetUrl || !entry.assetUrl.startsWith('data:')) return null;
+    const destDir = await ensurePermanentFilesDir(projectId);
+    if (!destDir) return null;
+
+    try {
+      let destPath = joinPath(destDir, entry.name);
+      if (await exists(destPath)) {
+        let counter = 1;
+        const dotIndex = entry.name.lastIndexOf('.');
+        const baseName = dotIndex > 0 ? entry.name.substring(0, dotIndex) : entry.name;
+        const ext = dotIndex > 0 ? entry.name.substring(dotIndex) : '';
+        do {
+          destPath = joinPath(destDir, `${baseName}_${counter}${ext}`);
+          counter++;
+        } while (await exists(destPath));
+      }
+
+      const match = entry.assetUrl.match(/^data:(.+?);base64,(.+)$/);
+      if (match) {
+        const b64 = match[2];
+        const binaryStr = atob(b64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        await writeFile(destPath, bytes);
+      } else {
+        const resp = await fetch(entry.assetUrl);
+        const buffer = await resp.arrayBuffer();
+        await writeFile(destPath, new Uint8Array(buffer));
+      }
+      return destPath;
+    } catch (err) {
+      console.error('Failed to save virtual asset to permanent:', entry.name, err);
+      return null;
+    }
+  }
+
+  // 真实磁盘路径
+  return saveToPermanent(entry.path, projectId);
+}
+
+/** 删除永久保存的文件 */
+export async function deletePermanentFile(filePath: string): Promise<void> {
+  await deleteFile(filePath);
+}
+
 export async function loadWorkflows(): Promise<WorkflowRecord[]> {
   try {
     return await getAllWorkflows();
