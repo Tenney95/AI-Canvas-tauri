@@ -129,6 +129,12 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // M: Toggle MiniMap
+      if (e.key === 'm' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        useAppStore.getState().toggleMinimap();
+        return;
+      }
+
       // Escape
       if (e.key === 'Escape') {
         useAppStore.getState().hideNodeMenu();

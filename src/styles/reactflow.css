@@ -79,9 +79,12 @@
   height: 14px !important;
 }
 
-/* Minimap */
+/* ============================================
+   MiniMap
+   ============================================ */
+
 .react-flow__minimap {
-  border-radius: 10px !important;
+  border-radius: 8px !important;
   overflow: hidden !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3) !important;
 }

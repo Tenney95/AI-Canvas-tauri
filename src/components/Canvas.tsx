@@ -118,6 +118,7 @@ function CanvasInner() {
     setNodes,
     setEdges,
     setSelectedNodeIds,
+    minimapVisible,
   } = useAppStore();
   const reactFlowInstance = useReactFlow();
   const {
@@ -531,17 +532,39 @@ function CanvasInner() {
           />
         )}
 
-        {/* Mini Map */}
-        <MiniMap
-          nodeColor={() => '#1a1a26'}
-          maskColor="rgba(10, 10, 15, 0.7)"
+
+        {/* Mini Map — interactive navigator, toggle with M key */}
+        {minimapVisible && (
+          <MiniMap
+            position="bottom-right"
+            pannable
+            zoomable
+          nodeColor={(node) => {
+            switch (node.type) {
+              case 'ai-text': return '#818cf8';   // indigo
+              case 'ai-image': return '#4ade80';  // green
+              case 'ai-video': return '#60a5fa';  // blue
+              case 'ai-audio': return '#fb923c';  // orange
+              case 'group': return '#4b5563';     // neutral
+              default: return '#6b7280';
+            }
+          }}
+          nodeStrokeColor="#2a2a3a"
+          nodeStrokeWidth={1.5}
+          nodeBorderRadius={6}
+          bgColor="#14141c"
+          maskColor="rgba(10, 10, 15, 0.75)"
+          maskStrokeColor="#6366f1"
+          maskStrokeWidth={1}
           style={{
-            backgroundColor: '#14141c',
+            width: 180,
+            height: 120,
             border: '1px solid #2a2a3a',
             borderRadius: '8px',
           }}
-          className="!bottom-4 !right-4 !w-[180px] !h-[120px]"
+          className="!bottom-12 !right-1"
         />
+        )}
 
         {/* Canvas Controls */}
         <Controls
