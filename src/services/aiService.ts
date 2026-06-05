@@ -3,6 +3,7 @@
  */
 import { useAppStore } from '../store/useAppStore';
 import type { WorkflowIONode } from '../types';
+import { uploadToRemote, isLocalImageUrl } from './uploadService';
 
 /** 本地模型调用超时（30 分钟） */
 const LOCAL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -17,6 +18,45 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
   runninghub: 'https://api.runninghub.cn',
   runninghubwf: 'https://api.runninghub.cn',
 };
+
+/** 上传 content 数组中本地图片 URL 到远端，替换为公网 URL */
+async function resolveContentImageUrls(
+  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>,
+): Promise<string | Array<{ type: string; text?: string; image_url?: { url: string } }>> {
+  if (typeof content === 'string') return content;
+  const resolved = await Promise.all(
+    content.map(async (part) => {
+      if (part.type === 'image_url' && part.image_url?.url && isLocalImageUrl(part.image_url.url)) {
+        try {
+          const publicUrl = await uploadToRemote(part.image_url.url);
+          return { ...part, image_url: { url: publicUrl } };
+        } catch (err) {
+          console.error('[aiService] Failed to upload local image URL:', part.image_url.url, err);
+          return part;
+        }
+      }
+      return part;
+    }),
+  );
+  return resolved;
+}
+
+/** 上传 imageUrls 数组中的本地图片到远端 */
+async function resolveImageUrlArray(urls: string[]): Promise<string[]> {
+  return Promise.all(
+    urls.map(async (url) => {
+      if (isLocalImageUrl(url)) {
+        try {
+          return await uploadToRemote(url);
+        } catch (err) {
+          console.error('[aiService] Failed to upload local image URL:', url, err);
+          return url;
+        }
+      }
+      return url;
+    }),
+  );
+}
 
 /** 去掉 model value 中的 provider/ 前缀，得到实际的模型名 */
 function extractModelName(modelValue: string, provider: string): string {
@@ -112,8 +152,11 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
     throw new Error('提示词不能为空');
   }
 
+  // 将本地图片 URL 上传到远端图床，转为公网 URL
+  const resolvedContent = await resolveContentImageUrls(content);
+
   const messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [];
-  messages.push({ role: 'user', content });
+  messages.push({ role: 'user', content: resolvedContent });
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -170,7 +213,10 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
   const { prompt, imageUrls } = resolvePromptWithImageRefs(rawPrompt);
 
   // 合并调用方传入的 image_urls 与从 prompt 中解析出的 imageUrls
-  const allImageUrls = [...(params.image_urls || []), ...imageUrls];
+  let allImageUrls = [...(params.image_urls || []), ...imageUrls];
+
+  // 将本地图片 URL 上传到远端图床，转为公网 URL
+  allImageUrls = await resolveImageUrlArray(allImageUrls);
 
   // ComfyUI 工作流执行路径
   if (params.workflowId) {

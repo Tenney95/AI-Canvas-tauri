@@ -168,8 +168,8 @@ async function pollTask(
       throw new Error(`任务查询失败 (${resp.status}): ${errBody}`);
     }
 
-    const result: TaskResponse = await resp.json();
-    const task = result.data ?? result;
+    const result: TaskResponse | TaskData = await resp.json();
+    const task: TaskData = 'data' in result ? result.data : result;
 
     onProgress?.(task.progress ?? 0);
 
