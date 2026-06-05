@@ -273,7 +273,7 @@ export default function SettingsPanel() {
       } else {
         setDreaminaStatusMsg(`验证失败 (${resp.status})，请检查 Cookie 是否有效`);
       }
-    } catch (err) {
+    } catch {
       // API 不可达时仍保存配置，标记为已登录（后续可手动验证）
       updateConfig({
         dreaminaAuth: {

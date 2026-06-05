@@ -15,6 +15,9 @@ import { ReactFlow,
   applyNodeChanges,
   applyEdgeChanges,
   type OnSelectionChangeParams,
+  type NodeChange,
+  type EdgeChange,
+  type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import TextNode from './nodes/TextNode';
@@ -44,6 +47,11 @@ const nodeTypes: NodeTypes = {
   'ai-audio': AudioNode,
   group: GroupNode,
 };
+
+/** 分组节点 data 中可访问的字段 */
+interface GroupNodeDataAccess {
+  groupId: string;
+}
 
 // ── Snap lines overlay ──
 function SnapLinesOverlay({ lines }: { lines: SnapLine[] }) {
@@ -138,8 +146,8 @@ function CanvasInner() {
   const [zoomPercent, setZoomPercent] = useState(100);
 
   const handleMove = useCallback(
-    (_evt: any, viewport: { zoom: number }) => {
-      setZoomPercent(Math.round(viewport.zoom * 100));
+    (_event: MouseEvent | TouchEvent, { zoom }: Viewport) => {
+      setZoomPercent(Math.round(zoom * 100));
     },
     [],
   );
@@ -254,7 +262,7 @@ function CanvasInner() {
 
   // ── Edge change handler — apply selection / removal changes
   const handleEdgesChange = useCallback(
-    (changes: any[]) => {
+    (changes: EdgeChange[]) => {
       useAppStore.setState((s) => ({
         edges: applyEdgeChanges(changes, s.edges) as typeof s.edges,
       }));
@@ -264,11 +272,11 @@ function CanvasInner() {
 
   // ── Node change handler ──
   const handleNodesChange = useCallback(
-    (changes: any[]) => {
+    (changes: NodeChange<RFNode<BaseNodeData>>[]) => {
       // Detect group node removals — convert to ungroup
       const removedIds = changes
         .filter((c) => c.type === 'remove')
-        .map((c: any) => c.id!);
+        .map((c) => c.id);
 
       const removedGroupNodes = nodes.filter(
         (n) => removedIds.includes(n.id) && n.type === 'group',
@@ -279,7 +287,7 @@ function CanvasInner() {
         const groupNodeIdSet = new Set(removedGroupNodes.map((n) => n.id));
         const store = useAppStore.getState();
         const removedGroupDataIds = removedGroupNodes.map(
-          (n) => (n.data as any).groupId as string,
+          (n) => (n.data as unknown as GroupNodeDataAccess).groupId,
         );
 
         // Reposition children to absolute coordinates
@@ -302,7 +310,7 @@ function CanvasInner() {
         // Apply remaining non-group-removal changes
         const finalNodes = applyNodeChanges(
           changes.filter(
-            (c: any) => c.type !== 'remove' || !groupNodeIdSet.has(c.id),
+            (c) => c.type !== 'remove' || !groupNodeIdSet.has(c.id),
           ),
           repositioned,
         ) as RFNode<BaseNodeData>[];
@@ -391,7 +399,7 @@ function CanvasInner() {
               if (n.id !== node.id) return n;
               return { ...n, position: absPos, parentId: undefined };
             });
-            const gdata = (parentNode.data as any);
+            const gdata = parentNode.data as unknown as GroupNodeDataAccess;
             const gId = gdata?.groupId;
             newGroups = newGroups.map((g) =>
               g.id === gId
@@ -426,7 +434,7 @@ function CanvasInner() {
                 parentId: gn.id,
               };
             });
-            const gdata = (gn.data as any);
+            const gdata = gn.data as unknown as GroupNodeDataAccess;
             const gId = gdata?.groupId;
             newGroups = newGroups.map((g) =>
               g.id === gId
@@ -454,7 +462,7 @@ function CanvasInner() {
           const emptyDataIds = new Set(
             groupNodes
               .filter((gn) => emptyGroupIds.has(gn.id))
-              .map((gn) => (gn.data as any).groupId)
+              .map((gn) => (gn.data as unknown as GroupNodeDataAccess).groupId)
               .filter(Boolean),
           );
           newGroups = newGroups.filter((g) => !emptyDataIds.has(g.id));

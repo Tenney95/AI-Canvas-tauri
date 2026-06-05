@@ -16,6 +16,7 @@ dist-ssr
 .agents/*
 .codebuddy/skills/*
 .codegraph/*
+doc/测试报告.md
 
 # Rust build output
 src-tauri/target/
