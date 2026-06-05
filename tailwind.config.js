@@ -15,8 +15,14 @@ export default {
         'canvas-text': '#e8e8ed',
         'canvas-text-secondary': '#8888a0',
         'canvas-text-muted': '#555566',
-        'indigo': '#6366f1',
-        'purple': '#a855f7',
+        'indigo': {
+          '400': '#818cf8',
+          '500': '#6366f1',
+        },
+        'purple': {
+          '400': '#c084fc',
+          '500': '#a855f7',
+        },
       },
     },
   },

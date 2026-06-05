@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
+import ModalOverlay from './shared/ModalOverlay';
 import type { NodeType } from '../types';
 
 /**
@@ -176,6 +177,7 @@ function NodePicker({
 function AvatarMenu() {
   const { avatarMenuOpen, closeAvatarMenu, setSettingsOpen } = useAppStore();
   const menuRef = useRef<HTMLDivElement>(null);
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   useEffect(() => {
     if (!avatarMenuOpen) return;
@@ -192,7 +194,8 @@ function AvatarMenu() {
   }, [avatarMenuOpen, closeAvatarMenu]);
 
   return (
-    <AnimatePresence>
+    <>
+      <AnimatePresence>
       {avatarMenuOpen && (
         <motion.div
           ref={menuRef}
@@ -217,20 +220,23 @@ function AvatarMenu() {
             设置
           </button>
           <div className="avatar-menu-sep" />
-          <button
+          {/* <button
             type="button"
             className="avatar-menu-item"
-            onClick={() => window.open('https://github.com/ashuoAI/AI-CanvasPro', '_blank')}
+            onClick={() => window.open('', '_blank')}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.52 2.87 8.35 6.84 9.7.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.73-2.78.62-3.37-1.38-3.37-1.38-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.71 0 0 .84-.28 2.75 1.05A9.3 9.3 0 0 1 12 6.95c.85 0 1.7.12 2.5.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.4.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.8 0 .27.18.59.69.49A10.14 10.14 0 0 0 22 12.26C22 6.58 17.52 2 12 2z" />
             </svg>
             GitHub
-          </button>
+          </button> */}
           <button
             type="button"
             className="avatar-menu-item"
-            onClick={() => alert('AI Canvas v1.0.0')}
+            onClick={() => {
+              setAboutOpen(true);
+              closeAvatarMenu();
+            }}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="10" />
@@ -242,6 +248,88 @@ function AvatarMenu() {
         </motion.div>
       )}
     </AnimatePresence>
+
+      {/* About dialog — portal to body to escape aside containing block */}
+      {createPortal(
+        <ModalOverlay isOpen={aboutOpen} onClose={() => setAboutOpen(false)} className="w-[420px] max-h-[85vh] overflow-y-auto">
+        <div className="p-6 space-y-5">
+          {/* Header */}
+          <div className="flex items-center gap-4">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-500/20">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-indigo-400">
+                <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                <path d="M2 17l10 5 10-5" />
+                <path d="M2 12l10 5 10-5" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-canvas-text">AI Canvas</h2>
+              <p className="text-xs text-canvas-text-secondary">v0.1.0 · 开发预览版</p>
+            </div>
+          </div>
+
+          {/* Description */}
+          <p className="text-sm text-canvas-text-secondary leading-relaxed">
+            AI Canvas 是一个智能多媒体创意画布，通过可视化节点编排的方式，
+            调用多种 AI 模型来生成文本、图像、视频和音频内容。支持多厂商模型接入、
+            ComfyUI 工作流、本地文件管理与实时协作。
+          </p>
+
+          {/* Feature list */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-canvas-text-muted">核心能力</h3>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: 'AI 文本生成', color: 'bg-indigo-500/20 text-indigo-400' },
+                { label: 'AI 图像生成', color: 'bg-green-500/20 text-green-400' },
+                { label: 'AI 视频生成', color: 'bg-blue-500/20 text-blue-400' },
+                { label: 'AI 音频生成', color: 'bg-orange-500/20 text-orange-400' },
+                { label: 'ComfyUI 工作流', color: 'bg-purple-500/20 text-purple-400' },
+                { label: '节点分组管理', color: 'bg-cyan-500/20 text-cyan-400' },
+                { label: '画布无限缩放', color: 'bg-pink-500/20 text-pink-400' },
+                { label: '本地文件读写', color: 'bg-yellow-500/20 text-yellow-400' },
+              ].map(({ label, color }) => (
+                <span
+                  key={label}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium ${color}`}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div className="border-t border-canvas-border" />
+
+          {/* Tech stack */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-canvas-text-muted">技术栈</h3>
+            <div className="flex flex-wrap gap-1.5">
+              {['Tauri 2', 'React 19', 'React Flow 12', 'TypeScript', 'Zustand 5', 'Tailwind CSS 3', 'Vite 8'].map((tech) => (
+                <span key={tech} className="px-2.5 py-1 rounded-md bg-canvas-hover text-xs text-canvas-text-secondary">
+                  {tech}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="pt-2 flex items-center justify-between border-t border-canvas-border">
+            <span className="text-[11px] text-canvas-text-muted">© 2026 AI Canvas Team</span>
+            <button
+              type="button"
+              className="px-4 py-1.5 text-xs font-medium text-canvas-text bg-canvas-hover hover:bg-canvas-border rounded-lg transition-colors"
+              onClick={() => setAboutOpen(false)}
+            >
+              知道了
+            </button>
+          </div>
+        </div>
+      </ModalOverlay>,
+        document.body,
+      )}
+    </>
   );
 }
 
@@ -555,7 +643,7 @@ export default function Sidebar() {
       <div className="sidebar-flex-spacer" />
 
       {/* Task Center */}
-      <button type="button" className="sidebar-btn-v3 task-center-btn">
+      {/* <button type="button" className="sidebar-btn-v3 task-center-btn">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
           <path d="M9 6h11" strokeLinecap="round" />
           <path d="M9 12h11" strokeLinecap="round" />
@@ -568,7 +656,7 @@ export default function Sidebar() {
           <span>任务</span>
           <span className="task-center-tooltip-beta">beta</span>
         </span>
-      </button>
+      </button> */}
 
       {/* Separator */}
       <div className="sidebar-sep-v3" />
