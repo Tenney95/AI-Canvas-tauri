@@ -26,6 +26,12 @@
   from { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.97); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
+/* Connected nodes preview — floats above the AI dialog */
+.ai-dialog-preview-float {
+  position: fixed;
+  z-index: 2000;
+  animation: floatIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
 .ai-dialog-float .prompt-panel {
   border-top: none;
 }

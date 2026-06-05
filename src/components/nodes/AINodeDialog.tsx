@@ -6,6 +6,7 @@ import { useAppStore } from '../../store/useAppStore';
 import type { BaseNodeData, ModelOption } from '../../types';
 import { generateText, generateImage, generateVideo } from '../../services/aiService';
 import PromptPanel from './shared/PromptPanel';
+import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
 
 function AINodeDialog() {
   const { nodes, activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, showToast, workflows } = useAppStore();
@@ -187,10 +188,28 @@ function AINodeDialog() {
   // Early return must come after ALL hooks
   if (!activeNodeId || !node || !data || !nodeType) return null;
 
+  const handleInsertMention = (mentionStr: string) => {
+    const currentPrompt = (data.prompt as string) || '';
+    const newPrompt = currentPrompt ? `${currentPrompt} ${mentionStr}` : mentionStr;
+    updateNodeData(activeNodeId, { prompt: newPrompt });
+  };
+
   return (
     <>
       {/* Transparent overlay — captures clicks outside to close */}
       <div className="ai-dialog-backdrop" onMouseDown={closeNodeDialog} />
+
+      {/* Connected nodes preview — floats above the dialog */}
+      <div
+        className="ai-dialog-preview-float"
+        style={dialogPosition ? {
+          left: `${dialogPosition.x}px`,
+          top: `${dialogPosition.y - 10 - 42}px`,
+          transform: 'translateX(-50%)',
+        } : undefined}
+      >
+        <ConnectedNodesPreview nodeId={activeNodeId} onInsertMention={handleInsertMention} />
+      </div>
 
       <div
         ref={panelRef}

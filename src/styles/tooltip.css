@@ -11,12 +11,11 @@
   bottom: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%) translateY(2px);
-  padding: 5px 10px;
+  padding: 4px 6px;
   background: #1a1a26;
   border: 1px solid #2a2a3a;
   border-radius: 6px;
   font-size: 11px;
-  line-height: 1.4;
   color: #e8e8ed;
   white-space: nowrap;
   pointer-events: none;
@@ -98,7 +97,7 @@ header [data-tooltip]:hover::before {
 }
 .ftb-btn[data-tooltip]::after {
   font-size: 10px;
-  padding: 3px 8px;
+  padding: 4px 6px;
 }
 
 /* ── Node-internal buttons: tooltip below to avoid overflow clipping ── */
