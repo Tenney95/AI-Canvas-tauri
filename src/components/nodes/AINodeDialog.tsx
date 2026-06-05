@@ -199,7 +199,7 @@ function AINodeDialog() {
       {/* Transparent overlay — captures clicks outside to close */}
       <div className="ai-dialog-backdrop" onMouseDown={closeNodeDialog} />
 
-      {/* Connected nodes preview — floats above the dialog */}
+      {/* Connected nodes preview — above backdrop, below dialog (model-dropdown covers it) */}
       <div
         className="ai-dialog-preview-float"
         style={dialogPosition ? {

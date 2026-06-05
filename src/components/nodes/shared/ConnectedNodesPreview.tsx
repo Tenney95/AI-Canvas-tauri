@@ -109,6 +109,7 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
               scale,
               x,
               y: isHovered ? -4 : 0,
+              opacity: isHovered ? 1 : 0.55,
               boxShadow: isHovered
                 ? `0 6px 20px rgba(99, 102, 241, 0.25), 0 0 0 2px rgba(99, 102, 241, 0.35)`
                 : `0 0 0 0px rgba(99, 102, 241, 0)`,
@@ -192,9 +193,6 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           overflow: hidden;
           position: relative;
           padding: 0;
-        }
-        .connected-node-thumb.thumb-idle {
-          opacity: 0.45;
         }
         /* Allow global [data-tooltip] to render outside the clipped area */
         .connected-node-thumb[data-tooltip]:hover {

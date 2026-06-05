@@ -4,7 +4,7 @@
 .ai-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 199;
+  z-index: 1;
 }
 .ai-dialog-float {
   position: fixed;
@@ -26,10 +26,10 @@
   from { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.97); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
-/* Connected nodes preview — floats above the AI dialog */
+/* Connected nodes preview — sits between backdrop and dialog */
 .ai-dialog-preview-float {
   position: fixed;
-  z-index: 2000;
+  z-index: 100;
   animation: floatIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .ai-dialog-float .prompt-panel {
