@@ -237,6 +237,8 @@ function CanvasInner() {
     (e: React.MouseEvent, node: RFNode<BaseNodeData>) => {
       // Shift+click is for multi-select, don't open dialog
       if (e.shiftKey) return;
+      // Group nodes have no AI dialog
+      if (node.type === 'group') return;
       if (node.data?.role === 'source') return;
       if (node.data?.type === 'ai-text' && node.data?.output) return;
       if (node.data?.type === 'ai-image' && node.data?.imageUrl) return;
