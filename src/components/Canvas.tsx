@@ -551,7 +551,7 @@ function CanvasInner() {
           }}
           nodeStrokeColor="#2a2a3a"
           nodeStrokeWidth={1.5}
-          nodeBorderRadius={6}
+          nodeBorderRadius={35}
           bgColor="#14141c"
           maskColor="rgba(10, 10, 15, 0.75)"
           maskStrokeColor="#6366f1"
