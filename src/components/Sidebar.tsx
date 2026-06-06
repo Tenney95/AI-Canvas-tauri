@@ -256,11 +256,7 @@ function AvatarMenu() {
           {/* Header */}
           <div className="flex items-center gap-4">
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-500/20">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-indigo-400">
-                <path d="M12 2L2 7l10 5 10-5-10-5z" />
-                <path d="M2 17l10 5 10-5" />
-                <path d="M2 12l10 5 10-5" />
-              </svg>
+              <img src="/icons.svg" alt="" />
             </div>
             <div>
               <h2 className="text-lg font-semibold text-canvas-text">AI Canvas</h2>

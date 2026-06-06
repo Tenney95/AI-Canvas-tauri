@@ -16,6 +16,7 @@ import AssetsPanel from './components/AssetsPanel';
 import Toast from './components/Toast';
 import SplashScreen from './components/SplashScreen';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useAutoSave } from './hooks/useAutoSave';
 import { useAppStore } from './store/useAppStore';
 
 const isDev = import.meta.env.DEV;
@@ -23,6 +24,7 @@ const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 export default function App() {
   useKeyboardShortcuts();
+  useAutoSave();
 
   // 开屏动画状态
   const [splashDone, setSplashDone] = useState(false);

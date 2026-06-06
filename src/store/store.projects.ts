@@ -17,6 +17,7 @@ export interface ProjectSlice {
   deleteProject: (id: string) => Promise<void>;
   switchProject: (id: string) => void;
   saveCurrentProject: () => Promise<string | undefined>;
+  saveCurrentProjectSilent: () => Promise<string | undefined>;
   loadProject: () => Promise<void>;
   initFromDb: () => Promise<void>;
 }
@@ -174,6 +175,34 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     } catch (error) {
       console.error('Save failed:', error);
       showToast('保存失败', 'error');
+      return undefined;
+    }
+  },
+
+  /** 静默保存（不弹 toast），用于自动保存 */
+  saveCurrentProjectSilent: async () => {
+    const { projects, currentProjectId, projectName, nodes, edges, groups } = get();
+    const project = projects.find((p) => p.id === currentProjectId);
+    if (!project) return undefined;
+    try {
+      const record = {
+        id: currentProjectId!,
+        name: projectName,
+        createdAt: project.createdAt,
+        updatedAt: Date.now(),
+        nodes,
+        edges,
+        groups,
+      };
+      await fileService.saveProject(record);
+      set((state) => ({
+        projects: state.projects.map((p) =>
+          p.id === currentProjectId ? { ...p, updatedAt: Date.now(), name: projectName } : p
+        ),
+      }));
+      return currentProjectId!;
+    } catch (error) {
+      console.error('Auto-save failed:', error);
       return undefined;
     }
   },
