@@ -308,8 +308,29 @@ async function getAppDataDir(): Promise<string | null> {
   }
 }
 
+/** 用户自定义的文件保存根目录，由 store.config 在加载配置时注入 */
+let _baseDataDir: string | null = null;
+
+/** 设置用户自定义的文件保存根目录 */
+export function setBaseDataDir(dir: string | undefined): void {
+  _baseDataDir = dir && dir.trim() ? dir.trim() : null;
+}
+
+/** 获取文件保存根目录（用户自定义或系统默认），不含项目 ID */
+export async function getBaseDir(): Promise<string | null> {
+  if (_baseDataDir) return _baseDataDir;
+  const base = await getAppDataDir();
+  if (!base) return null;
+  return joinPath(base, 'data');
+}
+
 /** 获取项目的本地数据目录路径 */
 export async function getProjectDataDir(projectId: string): Promise<string | null> {
+  // 优先使用用户自定义的根目录，结构为 {baseDataDir}/{projectId}
+  if (_baseDataDir) {
+    return joinPath(_baseDataDir, projectId);
+  }
+  // 回退到系统应用数据目录
   const base = await getAppDataDir();
   if (!base) return null;
   return joinPath(base, 'data', projectId);
@@ -488,6 +509,46 @@ export async function saveBinaryToProjectData(
   const assetUrl = convertFileSrc ? convertFileSrc(destPath) : '';
 
   return { filePath: destPath, assetUrl };
+}
+
+/** 从 URL 中提取文件名 */
+function extractFileNameFromUrl(url: string, fallbackPrefix: string): string {
+  // ComfyUI: /view?filename=xxx.png&...
+  try {
+    const u = new URL(url);
+    const filename = u.searchParams.get('filename');
+    if (filename) return sanitizeFileName(filename.split(/[/\\]/).pop()!);
+    // 普通路径 URL: https://cdn.com/path/to/file.png
+    const pathname = u.pathname;
+    const lastSegment = pathname.split('/').pop() || '';
+    if (lastSegment && lastSegment.includes('.')) return sanitizeFileName(lastSegment);
+  } catch { /* invalid URL, fall through */ }
+  // 兜底：时间戳命名
+  const ts = Date.now();
+  return `${fallbackPrefix}-${ts}`;
+}
+
+/**
+ * 下载远程 URL 文件并保存到项目数据目录
+ * @returns { filePath, assetUrl } 或 null（失败/非 Tauri）
+ */
+export async function downloadUrlAndSave(
+  url: string,
+  projectId: string,
+  fallbackPrefix: string,
+): Promise<{ filePath: string; assetUrl: string } | null> {
+  if (!isTauriEnv()) return null;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const buffer = await response.arrayBuffer();
+    const data = new Uint8Array(buffer);
+    const fileName = extractFileNameFromUrl(url, fallbackPrefix);
+    return await saveBinaryToProjectData(data, projectId, fileName);
+  } catch (err) {
+    console.warn('[fileService] downloadUrlAndSave failed:', url, err);
+    return null;
+  }
 }
 
 /**

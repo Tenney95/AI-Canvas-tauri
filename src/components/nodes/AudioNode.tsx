@@ -303,6 +303,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               <audio
                 ref={audioRef}
                 src={data.audioUrl}
+                data-source-url={data.sourceUrl}
                 onEnded={handleEnded}
                 onTimeUpdate={handleTimeUpdate}
                 preload="auto"

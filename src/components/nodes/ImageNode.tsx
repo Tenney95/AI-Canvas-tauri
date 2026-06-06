@@ -213,6 +213,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                   src={data.imageUrl || data.thumbnailUrl}
                   alt="Generated"
                   className="image-preview-img compact"
+                  data-source-url={data.sourceUrl}
                 />
                 {data.mattingMask && (
                   <img

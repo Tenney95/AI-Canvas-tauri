@@ -5,6 +5,7 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { AppConfig } from '../types';
 import * as fileService from '../services/fileService';
+import { setBaseDataDir } from '../services/fileService';
 
 const defaultConfig: AppConfig = {
   providers: {},
@@ -26,8 +27,12 @@ export interface ConfigSlice {
 export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (set, get) => ({
   config: { ...defaultConfig },
 
-  updateConfig: (config) =>
-    set((state) => ({ config: { ...state.config, ...config } })),
+  updateConfig: (partial) => {
+    set((state) => ({ config: { ...state.config, ...partial } }));
+    if ('baseDataDir' in partial && partial.baseDataDir !== undefined) {
+      setBaseDataDir(partial.baseDataDir);
+    }
+  },
 
   setProviderKey: (providerName, key) =>
     set((state) => ({
@@ -75,6 +80,8 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
     const { config, showToast } = get();
     try {
       await fileService.saveConfig(config);
+      // 同步 baseDataDir 到 fileService
+      setBaseDataDir(config.baseDataDir);
       showToast('设置已保存');
     } catch {
       showToast('设置保存失败', 'error');
@@ -85,7 +92,9 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
     try {
       const saved = await fileService.loadConfig();
       if (saved) {
-        set({ config: { ...defaultConfig, ...(saved as AppConfig) } });
+        const cfg = { ...defaultConfig, ...(saved as AppConfig) };
+        set({ config: cfg });
+        setBaseDataDir(cfg.baseDataDir);
       }
     } catch {
       // Use default config if load fails

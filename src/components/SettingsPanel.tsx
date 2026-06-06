@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import type { TestResult } from '../services/testConnection';
 import { testProviderConnection, type ProviderTestKey } from '../services/testConnection';
-import { getProjectDataDir, ensureProjectDataDir } from '../services/fileService';
+import { getProjectDataDir, getBaseDir } from '../services/fileService';
 import ModalOverlay from './shared/ModalOverlay';
 
 /* ── External URLs ── */
@@ -307,21 +307,39 @@ export default function SettingsPanel() {
       .finally(() => setDirLoading(false));
   }, [settingsOpen, activeTab, currentProjectId]);
 
-  /** 在系统文件管理器中打开项目文件夹 */
+  /** 在系统文件管理器中打开文件保存根目录 */
   const handleOpenProjectDir = async () => {
-    if (!currentProjectId) return;
     try {
-      const dir = await ensureProjectDataDir(currentProjectId);
+      const dir = baseDataDir || await getBaseDir();
       if (!dir) return;
       const { Command } = await import('@tauri-apps/plugin-shell');
-      // 根据平台选择文件管理器命令
-      const platform = navigator.platform || '';
-      const cmd = /^win/i.test(platform) ? 'explorer' : /^mac/i.test(platform) ? 'open' : 'xdg-open';
-      await Command.create(cmd, [dir]).execute();
+      const isWin = navigator.platform.toLowerCase().includes('win');
+      if (isWin) {
+        await Command.create('explorer', ['/root,', dir]).execute();
+      } else {
+        const cmd = navigator.platform.toLowerCase().includes('mac') ? 'open' : 'xdg-open';
+        await Command.create(cmd, [dir]).execute();
+      }
     } catch (err) {
-      console.warn('无法打开项目文件夹:', err);
+      console.warn('无法打开文件夹:', err);
     }
   };
+
+  /** 选择文件保存根目录 */
+  const handleChooseBaseDir = async () => {
+    try {
+      const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
+      const selected = await openDialog({ directory: true, title: '选择文件保存根目录' });
+      if (selected && typeof selected === 'string') {
+        updateConfig({ baseDataDir: selected });
+        await saveConfig();
+      }
+    } catch {
+      // 浏览器环境忽略
+    }
+  };
+
+  const baseDataDir = config.baseDataDir;
 
   const handleTest = async (provider: ProviderTestKey, apiKey: string, baseUrl?: string) => {
     setTestStates((prev) => ({ ...prev, [provider]: { status: 'testing' } }));
@@ -728,42 +746,73 @@ export default function SettingsPanel() {
                   </div>
                 </div>
 
-                {/* 项目文件夹 */}
+                {/* 文件保存位置 */}
                 <div>
-                  <h3 className="text-sm font-medium text-canvas-text mb-3">项目文件夹</h3>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">文件保存位置</h3>
                   <div className="bg-canvas-card border border-canvas-border rounded-lg p-4">
-                    {dirLoading ? (
-                      <div className="text-sm text-canvas-text-muted">加载中…</div>
-                    ) : projectDir ? (
-                      <div className="space-y-3">
-                        <div className="flex items-start gap-2 min-w-0">
-                          {/* Folder icon */}
-                          <svg className="shrink-0 mt-0.5" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                          </svg>
-                          <div className="min-w-0 flex-1">
-                            <div className="text-xs text-canvas-text-muted mb-0.5">当前项目数据目录</div>
-                            <div className="text-[11px] text-canvas-text-secondary break-all font-mono leading-relaxed select-all">
-                              {projectDir}
+                    {/* 保存根目录选择 */}
+                    <div className="mb-3">
+                      <div className="text-xs text-canvas-text-muted mb-1.5">保存根目录</div>
+                      {baseDataDir ? (
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 min-w-0 text-[11px] text-canvas-text-secondary break-all font-mono leading-relaxed bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border select-all">
+                            {baseDataDir}
+                          </div>
+                          <button type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChooseBaseDir}>
+                            更换
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 text-xs text-canvas-text-muted bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border italic">
+                            未设置（使用系统默认目录）
+                          </div>
+                          <button type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChooseBaseDir}>
+                            选择文件夹
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 路径结构提示 */}
+                    <div className="text-[11px] text-canvas-text-muted leading-relaxed mb-3">
+                      文件保存为：<span className="text-canvas-text-secondary font-mono">{baseDataDir || '系统目录'}/{'{项目ID}'}/...</span>
+                    </div>
+
+                    {/* 当前项目目录 + 打开按钮 */}
+                    <div className="pt-2 border-t border-canvas-border">
+                      {dirLoading ? (
+                        <div className="text-xs text-canvas-text-muted">加载中…</div>
+                      ) : projectDir ? (
+                        <div className="space-y-2">
+                          <div className="flex items-start gap-2 min-w-0">
+                            <svg className="shrink-0 mt-0.5" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                            </svg>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-xs text-canvas-text-muted mb-0.5">当前项目目录</div>
+                              <div className="text-[11px] text-canvas-text-secondary break-all font-mono leading-relaxed select-all">
+                                {projectDir}
+                              </div>
                             </div>
                           </div>
+                          <button
+                            type="button"
+                            className="settings-save-btn"
+                            onClick={handleOpenProjectDir}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                              <polyline points="15 3 21 3 21 9" />
+                              <line x1="10" y1="14" x2="21" y2="3" />
+                            </svg>
+                            打开文件夹
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          className="settings-save-btn"
-                          onClick={handleOpenProjectDir}
-                        >
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                            <polyline points="15 3 21 3 21 9" />
-                            <line x1="10" y1="14" x2="21" y2="3" />
-                          </svg>
-                          打开文件夹
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="text-sm text-canvas-text-muted">仅在 Tauri 桌面环境中可用</div>
-                    )}
+                      ) : (
+                        <div className="text-xs text-canvas-text-muted">仅在 Tauri 桌面环境中可用</div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

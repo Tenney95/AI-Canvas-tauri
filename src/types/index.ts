@@ -31,6 +31,7 @@ export interface BaseNodeData {
   imageUrl?: string;          // 生成的图片 URL（Tauri: asset://localhost/..., 浏览器: data:...）
   videoUrl?: string;          // 生成的视频 URL
   audioUrl?: string;          // 生成的音频 URL
+  sourceUrl?: string;         // 原始远程生成 URL（下载到本地前保留）
   filePath?: string;          // 本地文件路径（项目 data 目录下，重建 asset URL 用）
   thumbnailUrl?: string;      // 缩略图
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
@@ -74,6 +75,7 @@ export interface AppConfig {
   localLLMUrl?: string;       // 本地大模型调用地址
   comfyUIUrl?: string;        // ComfyUI 服务地址
   dreaminaAuth?: DreaminaAuthData; // 即梦登录态
+  baseDataDir?: string;       // 用户自定义文件保存根目录，保存结构为 {baseDataDir}/{projectId}/**
 }
 
 // 引用节点信息

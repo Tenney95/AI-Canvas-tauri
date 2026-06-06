@@ -5,11 +5,12 @@ import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import type { BaseNodeData, ModelOption } from '../../types';
 import { generateText, generateImage, generateVideo } from '../../services/aiService';
+import { downloadUrlAndSave } from '../../services/fileService';
 import PromptPanel from './shared/PromptPanel';
 import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
 
 function AINodeDialog() {
-  const { nodes, activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, showToast, workflows } = useAppStore();
+  const { nodes, activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, showToast, workflows, currentProjectId } = useAppStore();
 
   const node = useMemo(() => nodes.find((n) => n.id === activeNodeId), [nodes, activeNodeId]);
   const data: BaseNodeData | undefined = node?.data;
@@ -70,8 +71,14 @@ function AINodeDialog() {
           workflowId: data.workflowId,
           workflowInputs: data.workflowInputs,
         });
+        // 下载远程 URL 到本地项目目录
+        const saved = currentProjectId
+          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image').catch(() => null)
+          : null;
         updateNodeData(activeNodeId!, {
-          imageUrl: result.url,
+          imageUrl: saved?.assetUrl || result.url,
+          sourceUrl: result.url,
+          filePath: saved?.filePath,
           thumbnailUrl: result.url,
           output: result.url,
           status: 'success',
@@ -90,8 +97,14 @@ function AINodeDialog() {
           workflowId: data.workflowId,
           workflowInputs: data.workflowInputs,
         });
+        // 下载远程 URL 到本地项目目录
+        const saved = currentProjectId
+          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video').catch(() => null)
+          : null;
         updateNodeData(activeNodeId!, {
-          videoUrl: result.url,
+          videoUrl: saved?.assetUrl || result.url,
+          sourceUrl: result.url,
+          filePath: saved?.filePath,
           thumbnailUrl: result.url,
           output: result.url,
           status: 'success',

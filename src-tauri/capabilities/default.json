@@ -21,7 +21,12 @@
     "global-shortcut:allow-unregister-all",
     "fs:default",
     "shell:default",
-    "shell:allow-open",
+    {
+      "identifier": "shell:allow-open",
+      "allow": [
+        { "open": "^((mailto:\\w+)|(tel:\\w+)|(https?://\\w+)|(file://.+)).+" }
+      ]
+    },
     {
       "identifier": "shell:allow-execute",
       "allow": [

@@ -64,6 +64,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               className="video-preview-player compact"
               controls
               muted
+              data-source-url={data.sourceUrl}
             />
           ) : data.thumbnailUrl ? (
             <img
