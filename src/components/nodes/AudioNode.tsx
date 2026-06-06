@@ -128,16 +128,6 @@ function PlayIcon() {
   );
 }
 
-/* ── Pause Icon SVG ── */
-function PauseIcon() {
-  return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
-      <rect x="6" y="4" width="4" height="16" rx="1" />
-      <rect x="14" y="4" width="4" height="16" rx="1" />
-    </svg>
-  );
-}
-
 /* ── Format seconds ── */
 function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);

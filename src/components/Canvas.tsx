@@ -147,7 +147,7 @@ function CanvasInner() {
   const [zoomPercent, setZoomPercent] = useState(100);
 
   const handleMove = useCallback(
-    (_event: MouseEvent | TouchEvent, { zoom }: Viewport) => {
+    (_event: MouseEvent | TouchEvent | null, { zoom }: Viewport) => {
       setZoomPercent(Math.round(zoom * 100));
     },
     [],

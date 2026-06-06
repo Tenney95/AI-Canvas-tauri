@@ -50,11 +50,11 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
       width: (n.data?.nodeWidth as number) || (n.measured?.width) || 280,
       height: (n.data?.nodeHeight as number) || (n.measured?.height) || 160,
     }));
-    const minLeft = Math.min(...selectedNodes.map((n, i) => {
+    const minLeft = Math.min(...selectedNodes.map((n) => {
       const absX = n.parentId ? n.position.x + (nodes.find(p => p.id === n.parentId)?.position.x || 0) : n.position.x;
       return absX;
     }));
-    const minTop = Math.min(...selectedNodes.map((n, i) => {
+    const minTop = Math.min(...selectedNodes.map((n) => {
       const absY = n.parentId ? n.position.y + (nodes.find(p => p.id === n.parentId)?.position.y || 0) : n.position.y;
       return absY;
     }));

@@ -99,7 +99,6 @@ function FreeAnglePanel({ isOpen, imageUrl, onClose, onGenerate }: FreeAnglePane
 
   // 滑块值映射：rotation slider 0-360 -> display value
   const sliderRotation = normalizeAngle(360 - rotation + 35);
-  const displayRotation = normalizeAngle(360 - sliderRotation + 35);
 
   const handleRotationSlider = useCallback((val: number) => {
     setRotation(normalizeAngle(360 - val + 35));

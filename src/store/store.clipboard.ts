@@ -5,7 +5,7 @@ import type { Node } from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { BaseNodeData, NodeGroup } from '../types';
-import { generateId, computeImageNodeDimensions, blobToDataUrl, getNextDisplayId } from './store.utils';
+import { generateId, computeImageNodeDimensions, blobToDataUrl } from './store.utils';
 import * as fileService from '../services/fileService';
 
 export interface ClipboardSlice {
@@ -43,7 +43,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
     set({ clipboard: { nodes: copiedNodes, groups: copiedGroups } });
   },
 
-  pasteNodes: (position) => {
+  pasteNodes: (_position) => {
     const { clipboard } = get();
     if (clipboard.nodes.length === 0) return;
     get().commitToHistory();

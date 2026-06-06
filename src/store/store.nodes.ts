@@ -66,7 +66,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
 
     // Collect all node IDs to delete: self + descendants (for group nodes)
     const idsToDelete = new Set<string>([nodeId]);
-    const { nodes, groups } = get();
+    const { nodes } = get();
     const q = [nodeId];
     while (q.length > 0) {
       const pid = q.shift()!;
