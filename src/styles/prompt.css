@@ -46,17 +46,27 @@
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 1px 6px;
+  padding: 2px 4px;
   border-radius: 4px;
   font-size: 12px;
   font-weight: 500;
   vertical-align: middle;
   margin: 0 1px;
-  line-height: 1.4;
 }
 .prompt-chip-icon {
   font-weight: 700;
   font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.prompt-chip-thumb {
+  width: 14px;
+  height: 14px;
+  object-fit: cover;
+  border-radius: 2px;
+  display: block;
+  margin-top: 1.2px;
 }
 .prompt-chip-id {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;

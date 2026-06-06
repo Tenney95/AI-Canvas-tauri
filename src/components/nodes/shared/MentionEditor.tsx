@@ -91,22 +91,40 @@ function serializeDOM(root: HTMLElement): string {
 function buildChipEl(
   nodeId: string,
   label: string,
-  metaMap: Map<string, { type: string; displayId: number | undefined }>,
+  metaMap: Map<string, { type: string; displayId: number | undefined; thumbnailUrl?: string }>,
 ): HTMLSpanElement {
   const meta = metaMap.get(nodeId);
   const nodeType = meta?.type || 'ai-text';
   const displayId = meta?.displayId;
+  const thumbnailUrl = meta?.thumbnailUrl;
   const chipClass = CHIP_STYLE[nodeType] || CHIP_STYLE['ai-text'];
-  const icon = NODE_ICON[nodeType] || '?';
+  const isMedia = nodeType === 'ai-image' || nodeType === 'ai-video';
 
   const span = document.createElement('span');
   span.className = `prompt-chip ${chipClass}`;
   span.contentEditable = 'false';
   span.setAttribute('data-ref-id', nodeId);
   span.setAttribute('data-ref-label', label);
-  span.innerHTML =
-    `<span class="prompt-chip-icon">${icon}</span>` +
-    (displayId != null ? `<span class="prompt-chip-id">#${displayId}</span>` : '');
+
+  const iconSpan = document.createElement('span');
+  iconSpan.className = 'prompt-chip-icon';
+  if (isMedia && thumbnailUrl) {
+    const img = document.createElement('img');
+    img.src = thumbnailUrl;
+    img.className = 'prompt-chip-thumb';
+    img.alt = '';
+    iconSpan.appendChild(img);
+  } else {
+    iconSpan.textContent = NODE_ICON[nodeType] || '?';
+  }
+  span.appendChild(iconSpan);
+
+  if (displayId != null) {
+    const idSpan = document.createElement('span');
+    idSpan.className = 'prompt-chip-id';
+    idSpan.textContent = `#${displayId}`;
+    span.appendChild(idSpan);
+  }
   return span;
 }
 
@@ -148,7 +166,7 @@ function buildWorkflowChipEl(
 /** Render a prompt string → array of DOM nodes. */
 function renderPromptToNodes(
   text: string,
-  metaMap: Map<string, { type: string; displayId: number | undefined }>,
+  metaMap: Map<string, { type: string; displayId: number | undefined; thumbnailUrl?: string }>,
 ): Node[] {
   const regex = /@\{([^:]+):([^}]+)\}|@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}/g;
   const nodes: Node[] = [];
@@ -243,13 +261,14 @@ export default function MentionEditor({
   );
   const workflowIONodes = selectedWorkflow?.ioNodes || [];
 
-  // ── Build nodeId → { type, displayId } map ──
+  // ── Build nodeId → { type, displayId, thumbnailUrl } map ──
   const nodeMetaMap = useMemo(() => {
-    const map = new Map<string, { type: string; displayId: number | undefined }>();
+    const map = new Map<string, { type: string; displayId: number | undefined; thumbnailUrl?: string }>();
     for (const n of nodes) {
       map.set(n.id, {
         type: (n.data.type as string) || '',
         displayId: n.data.displayId as number | undefined,
+        thumbnailUrl: (n.data.thumbnailUrl || n.data.imageUrl || n.data.videoUrl) as string | undefined,
       });
     }
     return map;
@@ -359,6 +378,7 @@ export default function MentionEditor({
         displayId: n.data.displayId as number | undefined,
         hasOutput: !!n.data.output,
         outputType: n.data.imageUrl ? 'image' : n.data.videoUrl ? 'video' : n.data.audioUrl ? 'audio' : 'text',
+        thumbnailUrl: (n.data.thumbnailUrl || n.data.imageUrl || n.data.videoUrl) as string | undefined,
       }));
   }, [nodeId, nodes, edges]);
 
@@ -721,7 +741,7 @@ export default function MentionEditor({
                     className="w-full flex items-center gap-2 px-3 py-2 hover:bg-canvas-hover transition-colors text-left"
                   >
                     <span
-                      className={`w-6 h-6 rounded flex items-center justify-center text-xs ${
+                      className={`w-6 h-6 rounded flex items-center justify-center text-xs shrink-0 overflow-hidden ${
                         node.outputType === 'image'
                           ? 'bg-green-500/15 text-green-400'
                           : node.outputType === 'video'
@@ -731,14 +751,16 @@ export default function MentionEditor({
                           : 'bg-indigo-500/15 text-indigo-400'
                       }`}
                     >
-                      {node.outputType === 'image' ? '🖼' : node.outputType === 'video' ? '🎬' : node.outputType === 'audio' ? '🎵' : 'T'}
+                      {(node.outputType === 'image' || node.outputType === 'video') && node.thumbnailUrl ? (
+                        <img src={node.thumbnailUrl} alt="" className="w-full h-full object-cover rounded" />
+                      ) : node.outputType === 'audio' ? '🎵' : 'T'}
                     </span>
-                    <div>
-                      <span className="text-sm text-canvas-text">{node.label}</span>
-                      <span className='text-[10px] text-canvas-text-muted'> #{node.displayId}</span>
-                      {!node.hasOutput && (
-                        <span className="ml-2 text-[10px] text-canvas-text-muted">等待生成</span>
-                      )}
+                    <div className="min-w-0 flex-1 flex items-center gap-1 overflow-hidden">
+                      <span className="text-sm text-canvas-text truncate">{node.label}</span>
+                      <span className="text-[10px] text-canvas-text-muted shrink-0">#{node.displayId}</span>
+                      {/* {!node.hasOutput && (
+                        <span className="text-[10px] text-canvas-text-muted shrink-0">等待生成</span>
+                      )} */}
                     </div>
                   </button>
                 ))
@@ -783,8 +805,8 @@ export default function MentionEditor({
                     >
                       {(node as typeof node & { _ioType: string })._ioType === 'image' ? '🖼' : (node as typeof node & { _ioType: string })._ioType === 'video' ? '🎬' : (node as typeof node & { _ioType: string })._ioType === 'audio' ? '🎵' : 'T'}
                     </span>
-                    <div>
-                      <span className="text-sm text-canvas-text">{node.label}</span>
+                    <div className="min-w-0 flex-1 overflow-hidden">
+                      <span className="text-sm text-canvas-text truncate">{node.label}</span>
                     </div>
                   </button>
                 ))

@@ -20,3 +20,8 @@
 - 状态管理通过 `useAppStore` 单一 Store，禁止组件内直接修改
 - 样式优先 Tailwind class，颜色使用 `canvas-*` token
 - 新增类型定义统一放在 `src/types/index.ts`
+
+### Asset Protocol Scope（2026-06-06）
+
+- `tauri.conf.json` 的 `assetProtocol.scope` 设为 `["**"]`，支持任意路径的文件通过 `asset://localhost/` 协议加载
+- 原因：用户可通过设置面板自定义 `baseDataDir`（可能在任何驱动器），`$APPDATA/**` 不足以覆盖

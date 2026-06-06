@@ -574,7 +574,7 @@ export default function SettingsPanel() {
                   </div>
 
                   {/* ── 即梦 Dreamina ── */}
-                  <div className="settings-section settings-card">
+                  <div className="settings-section settings-card" style={{ display: 'none' }}>
                     <div className="settings-card-head">
                       <div className="settings-card-badge" style={{ background: 'rgba(251, 191, 36, 0.15)', color: '#fbbf24' }}>即</div>
                       <span className="settings-card-title">即梦</span>
@@ -724,7 +724,7 @@ export default function SettingsPanel() {
 
             {activeTab === 'general' && (
               <div className="space-y-6">
-                <div>
+                <div style={{ display: 'none' }}>
                   <h3 className="text-sm font-medium text-canvas-text mb-3">输入偏好</h3>
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">

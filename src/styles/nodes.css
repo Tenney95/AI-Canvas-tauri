@@ -757,14 +757,14 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 32px;
-  padding: 0 12px;
+  height: 24px;
+  padding: 4px 12px;
   border-radius: 14px 14px 0 0;
   border-bottom: 1px solid;
   cursor: grab;
   font-size: 12px;
   font-weight: 600;
-  line-height: 32px;
+  line-height: 24px;
   letter-spacing: 0.02em;
   user-select: none;
   pointer-events: auto;
@@ -791,7 +791,7 @@
 .canvas-group-label-text {
   outline: none;
   border-radius: 4px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   min-width: 20px;
   transition: background-color 0.15s ease;
   white-space: nowrap;
@@ -799,11 +799,6 @@
 
 .canvas-group-label-text:hover {
   background-color: rgba(255, 255, 255, 0.06);
-}
-
-.canvas-group-label-text:focus {
-  background-color: rgba(255, 255, 255, 0.1);
-  box-shadow: 0 0 0 1.5px currentColor, 0 0 10px currentColor;
 }
 
 .canvas-group-count {

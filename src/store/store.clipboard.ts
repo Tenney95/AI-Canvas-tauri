@@ -388,14 +388,25 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           pastedCount++;
 
           // Copy file to project data dir asynchronously
-          fileService.copyFileToProjectData(filePath, projectId).then((result) => {
+          fileService.copyFileToProjectData(filePath, projectId).then(async (result) => {
             if (result?.assetUrl) {
-              computeImageNodeDimensions(result.assetUrl).then((dims) => {
-                get().updateNodeData(nodeId, {
-                  label: result.fileName, imageUrl: result.assetUrl, filePath: result.filePath,
-                  fileName: result.fileName, status: 'success', ...dims,
-                });
+              const dims = await computeImageNodeDimensions(result.assetUrl);
+              get().updateNodeData(nodeId, {
+                label: result.fileName, imageUrl: result.assetUrl, filePath: result.filePath,
+                fileName: result.fileName, status: 'success', ...dims,
               });
+            } else {
+              // Fallback to in-memory data URL if copy fails
+              const dataUrl = await fileService.readFileToDataUrl(filePath);
+              if (dataUrl) {
+                const dims = await computeImageNodeDimensions(dataUrl);
+                const fileName = filePath.split(/[\\/]/).pop() || 'file';
+                get().updateNodeData(nodeId, {
+                  imageUrl: dataUrl, fileName, label: fileName, status: 'success', ...dims,
+                });
+              } else {
+                get().updateNodeData(nodeId, { status: 'error', error: '无法读取文件' });
+              }
             }
           }).catch((err) => {
             get().updateNodeData(nodeId, { status: 'error', error: err instanceof Error ? err.message : '复制失败' });

@@ -38,7 +38,7 @@
             "assetProtocol": {
                 "enable": true,
                 "scope": [
-                    "$APPDATA/**"
+                    "**"
                 ]
             }
         },
