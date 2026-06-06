@@ -29,6 +29,7 @@ import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
 import NodeContextMenu from './canvas/NodeContextMenu';
 import CanvasToolbar from './canvas/CanvasToolbar';
+import MultiSelectToolbar from './canvas/MultiSelectToolbar';
 import CanvasEmptyState from './canvas/CanvasEmptyState';
 import { useConnectionDropMenu } from '../hooks/useConnectionDropMenu';
 import { useCanvasContextMenu } from '../hooks/useCanvasContextMenu';
@@ -645,6 +646,9 @@ function CanvasInner() {
         onUngroup={isGroupNode ? handleUngroup : undefined}
         onDelete={handleDelete}
       />
+
+      {/* Multi-select toolbar */}
+      <MultiSelectToolbar />
     </div>
   );
 }

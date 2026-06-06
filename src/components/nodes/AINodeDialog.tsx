@@ -4,7 +4,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import type { BaseNodeData, ModelOption } from '../../types';
-import { generateText, generateImage, generateVideo } from '../../services/aiService';
+import { generateText, generateImage, generateVideo, generateAudio } from '../../services/aiService';
 import { downloadUrlAndSave } from '../../services/fileService';
 import PromptPanel from './shared/PromptPanel';
 import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
@@ -110,6 +110,27 @@ function AINodeDialog() {
           status: 'success',
         });
         showToast('视频生成完成');
+      } else if (nodeType === 'ai-audio') {
+        const result = await generateAudio({
+          prompt: latestPrompt,
+          model: data.model!,
+          provider: data.provider!,
+          workflowId: data.workflowId,
+          workflowInputs: data.workflowInputs,
+        });
+        // 下载远程 URL 到本地项目目录
+        const saved = currentProjectId
+          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio').catch(() => null)
+          : null;
+        updateNodeData(activeNodeId!, {
+          audioUrl: saved?.assetUrl || result.url,
+          sourceUrl: result.url,
+          filePath: saved?.filePath,
+          thumbnailUrl: result.url,
+          output: result.url,
+          status: 'success',
+        });
+        showToast('音频生成完成');
       } else {
         const result = await generateText({
           prompt: latestPrompt,
@@ -247,7 +268,7 @@ function AINodeDialog() {
           onSubmit={onSubmit}
           onModelSelect={onModelSelect}
           onWorkflowSelect={onWorkflowSelect}
-          onPassThrough={(nodeType !== 'ai-image' &&  nodeType !== 'ai-video') ? onPassThrough : undefined}
+          onPassThrough={(nodeType !== 'ai-image' && nodeType !== 'ai-video' && nodeType !== 'ai-audio') ? onPassThrough : undefined}
           imageSize={(data.imageSize as string) || '2K'}
           aspectRatio={(data.aspectRatio as string) || '1:1'}
           onChangeImageSize={onChangeImageSize}

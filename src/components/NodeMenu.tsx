@@ -5,9 +5,11 @@
 import { useEffect, useRef, useMemo } from 'react';
 import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, computeImageNodeDimensions } from '../store/useAppStore';
 import type { NodeType } from '../types';
 import { calcFixedPosition } from '../utils/popupPosition';
+import { uploadSourceFileToProject } from '../services/fileService';
+import { classifyFile } from '../hooks/useNodeCreation';
 
 const menuItems: { type: NodeType; label: string; icon: JSX.Element; badge?: string; color: string }[] = [
   {
@@ -66,7 +68,7 @@ const NODE_MENU_W = 240;
 const NODE_MENU_H = 290; // 4 items + header + footer
 
 export default function NodeMenu() {
-  const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, lastCanvasMousePos } = useAppStore();
+  const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, lastCanvasMousePos, currentProjectId, showToast } = useAppStore();
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -100,6 +102,61 @@ export default function NodeMenu() {
     };
     addNode(newNode as never);
     hideNodeMenu();
+  };
+
+  const handleUploadFile = async () => {
+    hideNodeMenu();
+    try {
+      const result = await uploadSourceFileToProject('*/*', currentProjectId);
+      if (!result) return;
+
+      const ext = result.fileName.split('.').pop()?.toLowerCase() || '';
+      const category = classifyFile(ext);
+
+      if (!category) {
+        showToast('不支持的文件类型', 'error');
+        return;
+      }
+
+      const pos = lastCanvasMousePos ?? { x: 300, y: 200 };
+      const typeMap: Record<string, { type: NodeType; label: string; field: string }> = {
+        image: { type: 'ai-image', label: result.fileName, field: 'imageUrl' },
+        video: { type: 'ai-video', label: result.fileName, field: 'videoUrl' },
+        audio: { type: 'ai-audio', label: result.fileName, field: 'audioUrl' },
+        text: { type: 'ai-text', label: result.fileName, field: 'output' },
+      };
+      const info = typeMap[category];
+
+      const nodeData: Record<string, unknown> = {
+        label: info.label,
+        type: info.type,
+        role: 'source',
+        status: 'success',
+        fileName: result.fileName,
+        nodeWidth: info.type === 'ai-audio' ? 260 : 280,
+        nodeHeight: 160,
+        [info.field]: result.dataUrl,
+        ...(result.filePath ? { filePath: result.filePath } : {}),
+        ...(info.field === 'output' ? { prompt: '' } : {}),
+      };
+
+      if (category === 'image' && result.dataUrl) {
+        try {
+          const dims = await computeImageNodeDimensions(result.dataUrl);
+          Object.assign(nodeData, dims);
+        } catch { /* ignore */ }
+      }
+
+      addNode({
+        id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        type: info.type,
+        position: pos,
+        data: nodeData,
+      } as never);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '上传失败';
+      showToast(msg, 'error');
+    }
   };
 
   const safePos = useMemo(
@@ -144,7 +201,10 @@ export default function NodeMenu() {
         </div>
       </div>
       <div className="border-t border-canvas-border p-2">
-        <button className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-canvas-hover transition-colors text-left">
+        <button
+          className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-canvas-hover transition-colors text-left"
+          onClick={handleUploadFile}
+        >
           <div className="w-8 h-8 rounded-md bg-canvas-hover flex items-center justify-center text-canvas-text-secondary shrink-0">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="16 16 12 12 8 16" />

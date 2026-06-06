@@ -637,10 +637,15 @@ export async function uploadSourceFileToProject(
 ): Promise<UploadResult & { filePath?: string } | null> {
   try {
     if (isTauriEnv()) {
+      // '*/*' 是 MIME 通配符，不是有效扩展名；传空 filters 让 Tauri 显示所有文件
+      const isWildcard = !accept || accept === '*/*' || accept.trim() === '*/*';
+      const filters = isWildcard
+        ? []
+        : [{ name: '支持的文件', extensions: accept.split(',').map((e) => e.trim().replace('.', '')) }];
       const filePath = await open({
         multiple: false,
         title: '选择文件',
-        filters: accept ? [{ name: '支持的文件', extensions: accept.split(',').map((e) => e.trim().replace('.', '')) }] : [],
+        filters,
       });
 
       if (!filePath) return null;

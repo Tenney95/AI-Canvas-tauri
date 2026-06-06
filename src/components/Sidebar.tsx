@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, computeImageNodeDimensions } from '../store/useAppStore';
 import ModalOverlay from './shared/ModalOverlay';
 import type { NodeType } from '../types';
+import { uploadSourceFileToProject } from '../services/fileService';
+import { classifyFile } from '../hooks/useNodeCreation';
 
 /**
  * Sidebar 侧边栏面板 — 左侧节点类型列表、上传入口、项目切换、拖拽添加节点
@@ -92,7 +94,7 @@ function NodePicker({
   onEnter: () => void;
   onLeave: () => void;
 }) {
-  const { nodePickerOpen, closeNodePicker, addNode, lastCanvasMousePos } = useAppStore();
+  const { nodePickerOpen, closeNodePicker, addNode, lastCanvasMousePos, currentProjectId, showToast } = useAppStore();
   const pickerRef = useRef<HTMLDivElement>(null);
 
   const handleAddNode = (type: NodeType) => {
@@ -117,6 +119,61 @@ function NodePicker({
       data: nodeData,
     } as never);
     closeNodePicker();
+  };
+
+  const handleUploadFile = async () => {
+    closeNodePicker();
+    try {
+      const result = await uploadSourceFileToProject('*/*', currentProjectId);
+      if (!result) return;
+
+      const ext = result.fileName.split('.').pop()?.toLowerCase() || '';
+      const category = classifyFile(ext);
+
+      if (!category) {
+        showToast('不支持的文件类型', 'error');
+        return;
+      }
+
+      const pos = lastCanvasMousePos ?? { x: 300, y: 200 };
+      const typeMap: Record<string, { type: NodeType; label: string; field: string }> = {
+        image: { type: 'ai-image', label: result.fileName, field: 'imageUrl' },
+        video: { type: 'ai-video', label: result.fileName, field: 'videoUrl' },
+        audio: { type: 'ai-audio', label: result.fileName, field: 'audioUrl' },
+        text: { type: 'ai-text', label: result.fileName, field: 'output' },
+      };
+      const info = typeMap[category];
+
+      const nodeData: Record<string, unknown> = {
+        label: info.label,
+        type: info.type,
+        role: 'source',
+        status: 'success',
+        fileName: result.fileName,
+        nodeWidth: info.type === 'ai-audio' ? 260 : 280,
+        nodeHeight: 160,
+        [info.field]: result.dataUrl,
+        ...(result.filePath ? { filePath: result.filePath } : {}),
+        ...(info.field === 'output' ? { prompt: '' } : {}),
+      };
+
+      if (category === 'image' && result.dataUrl) {
+        try {
+          const dims = await computeImageNodeDimensions(result.dataUrl);
+          Object.assign(nodeData, dims);
+        } catch { /* ignore */ }
+      }
+
+      addNode({
+        id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        type: info.type,
+        position: pos,
+        data: nodeData,
+      } as never);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '上传失败';
+      showToast(msg, 'error');
+    }
   };
 
   return (
@@ -157,7 +214,7 @@ function NodePicker({
         <div className="menu-rule" />
       </div>
       {resourceItems.map(({ key, label, sub, icon }) => (
-        <button key={key} className="menu-row has-desc">
+        <button key={key} className="menu-row has-desc" onClick={handleUploadFile}>
           <div className="menu-ico">{icon}</div>
           <div className="menu-txt-wrap">
             <span className="menu-lbl">{label}</span>
