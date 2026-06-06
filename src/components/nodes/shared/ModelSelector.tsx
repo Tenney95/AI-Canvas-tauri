@@ -9,6 +9,25 @@ import { getWorkflowCategory } from '../../../types';
 import { defaultModelGroups } from './defaultModels';
 import { useAppStore } from '../../../store/useAppStore';
 
+const MODEL_PREF_KEY = 'canvas-model-prefs';
+
+function loadModelPrefs(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(MODEL_PREF_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveModelPref(nodeType: string, modelValue: string) {
+  try {
+    const prefs = loadModelPrefs();
+    prefs[nodeType] = modelValue;
+    localStorage.setItem(MODEL_PREF_KEY, JSON.stringify(prefs));
+  } catch { /* ignore */ }
+}
+
 interface ModelSelectorProps {
   nodeType: NodeType;
   selectedModel?: string;
@@ -130,8 +149,14 @@ export default function ModelSelector({
     }))
     .filter((g) => g.models.length > 0);
 
-  const currentModel = selectedModel
-    ? filteredGroups.flatMap((g) => g.models).find((m) => m.value === selectedModel)
+  // 持久化偏好：优先 props 传入的 selectedModel，其次 localStorage 中的记录
+  const effectiveModel = useMemo(
+    () => selectedModel || loadModelPrefs()[nodeType] || undefined,
+    [selectedModel, nodeType],
+  );
+
+  const currentModel = effectiveModel
+    ? filteredGroups.flatMap((g) => g.models).find((m) => m.value === effectiveModel)
     : undefined;
 
   // 匹配当前节点类型的工作流
@@ -196,7 +221,7 @@ export default function ModelSelector({
           {/* 模型供应商分组 */}
           {filteredGroups.map((group) => {
             const isCollapsed = collapsedGroups.has(group.id);
-            const hasActiveModel = group.models.some((m) => m.value === selectedModel);
+            const hasActiveModel = group.models.some((m) => m.value === effectiveModel);
             const groupAvailable = isGroupAvailable(group.id);
             return (
               <div key={group.id} className={`model-group${hasActiveModel ? ' has-active' : ''}`}>
@@ -242,10 +267,11 @@ export default function ModelSelector({
                     <button
                       key={model.value}
                       type="button"
-                      className={`model-item${selectedModel === model.value ? ' active' : ''}${groupAvailable ? '' : ' disabled'}`}
+                      className={`model-item${effectiveModel === model.value ? ' active' : ''}${groupAvailable ? '' : ' disabled'}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         if (!groupAvailable) return;
+                        saveModelPref(nodeType, model.value);
                         onSelect(model);
                         onWorkflowSelect?.(undefined);
                         setOpen(false);
@@ -262,7 +288,7 @@ export default function ModelSelector({
                           <div className="model-item-desc">{model.description}</div>
                         )}
                       </div>
-                      {selectedModel === model.value && (
+                      {effectiveModel === model.value && (
                         <svg className="model-item-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                           <polyline points="20 6 9 17 4 12" />
                         </svg>
