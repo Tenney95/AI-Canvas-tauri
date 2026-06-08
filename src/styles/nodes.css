@@ -24,10 +24,12 @@
   overflow: hidden;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
+
 .node.selected {
   border-color: #6366f1;
   box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.35), 0 8px 32px rgba(99, 102, 241, 0.16);
 }
+
 .node.loading .node-preview {
   box-shadow: inset 0 0 30px rgba(99, 102, 241, 0.06);
 }
@@ -39,6 +41,7 @@
   top: -24px;
   padding: 0 4px;
 }
+
 .node-label-icon {
   flex-shrink: 0;
 }
@@ -64,6 +67,7 @@
   flex-shrink: 0;
   opacity: 0.7;
 }
+
 .node-upload-btn:hover {
   background: rgba(20, 20, 28, 0.9);
   color: #e8e8ed;
@@ -83,11 +87,13 @@
   border: 1px solid #2a2a3a;
   border-radius: 6px;
 }
+
 .node:hover .node-floating-toolbar,
 .node.selected .node-floating-toolbar {
   transform: translateY(0);
   pointer-events: auto;
 }
+
 .ftb-btn {
   width: 24px;
   height: 24px;
@@ -100,6 +106,7 @@
   transition: color 0.15s, background 0.15s;
   padding: 0;
 }
+
 .ftb-btn:hover {
   color: #e8e8ed;
   background: #252535;
@@ -111,12 +118,14 @@
   min-height: 0;
   overflow: hidden;
 }
+
 .text-preview {
   padding: 12px;
   min-height: 80px;
   max-height: 180px;
   overflow-y: auto;
 }
+
 .image-preview {
   position: relative;
   aspect-ratio: 1;
@@ -125,6 +134,7 @@
   border-radius: 8px;
   overflow: hidden;
 }
+
 .video-preview {
   position: relative;
   aspect-ratio: 16/9;
@@ -133,6 +143,7 @@
   border-radius: 8px;
   overflow: hidden;
 }
+
 .audio-preview {
   display: flex;
   align-items: center;
@@ -151,16 +162,19 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
 .image-preview-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
+
 .image-preview-container {
   position: relative;
   width: 100%;
   height: 100%;
 }
+
 .image-preview-mask {
   position: absolute;
   inset: 0;
@@ -169,11 +183,13 @@
   object-fit: cover;
   pointer-events: none;
 }
+
 .video-preview-player {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
+
 .audio-player {
   max-width: 100%;
 }
@@ -187,11 +203,13 @@
   overflow: hidden;
   background: #14141c;
 }
+
 .audio-waveform-canvas {
   display: block;
   width: 100%;
   height: auto;
 }
+
 .audio-play-overlay {
   position: absolute;
   inset: 0;
@@ -202,6 +220,7 @@
   color: rgba(251, 146, 60, 0.9);
   transition: background 0.2s, color 0.2s;
 }
+
 .audio-waveform-wrapper:hover .audio-play-overlay {
   background: rgba(0, 0, 0, 0.5);
   color: #fb923c;
@@ -216,11 +235,13 @@
   align-items: center;
   gap: 4px;
 }
+
 .audio-time-label {
   font-size: 9px;
   color: #fb923c;
   font-variant-numeric: tabular-nums;
 }
+
 .audio-progress-dot {
   width: 5px;
   height: 5px;
@@ -228,10 +249,19 @@
   background: #fb923c;
   animation: audio-dot-blink 0.8s ease-in-out infinite;
 }
+
 @keyframes audio-dot-blink {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
+
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 1;
+  }
 }
+
 .image-preview-overlay {
   position: absolute;
   inset: 0;
@@ -253,6 +283,7 @@
   color: #555566;
   font-size: 13px;
 }
+
 .node-preview-loading {
   width: 100%;
   height: 100%;
@@ -274,6 +305,7 @@
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
+
 .spinner.large {
   width: 32px;
   height: 32px;
@@ -292,34 +324,6 @@
 }
 
 /* ============================================
-   Node Handles (React Flow)
-   ============================================ */
-.node-handle {
-  width: 12px !important;
-  height: 12px !important;
-  border: 2px solid #2a2a3a !important;
-  background: #1a1a26 !important;
-  transition: transform 0.15s, border-color 0.15s, background 0.15s, left 0.15s, right 0.15s !important;
-}
-.node-handle:hover {
-  transform: scale(1.3);
-}
-/* Hover: nudge outward — left handles shift left, right handles shift right */
-.react-flow__handle-left:hover {
-  left: -5px !important;
-  transform: translate(-50%, -50%) scale(1.4) !important;
-}
-.react-flow__handle-right:hover {
-  right: -5px !important;
-  transform: translate(50%, -50%) scale(1.4) !important;
-}
-/* Per-type handle colors (applied via handle-source class on visible handles) */
-.handle-text  { background: #6366f1 !important; border-color: #818cf8 !important; pointer-events: auto !important; z-index: 10; }
-.handle-image { background: #22c55e !important; border-color: #4ade80 !important; pointer-events: auto !important; z-index: 10; }
-.handle-video { background: #3b82f6 !important; border-color: #60a5fa !important; pointer-events: auto !important; z-index: 10; }
-.handle-audio { background: #f97316 !important; border-color: #fb923c !important; pointer-events: auto !important; z-index: 10; }
-
-/* ============================================
    Compact Node (simplified, no prompt panel)
    ============================================ */
 .node-preview.compact {
@@ -331,6 +335,7 @@
   padding: 4px;
   overflow: hidden;
 }
+
 .text-output-content.compact {
   align-self: stretch;
   display: block;
@@ -342,6 +347,7 @@
   word-break: break-word;
   padding: 4px;
 }
+
 /* Edit mode textarea */
 .text-output-edit {
   align-self: stretch;
@@ -360,6 +366,7 @@
   padding: 6px;
   font-family: inherit;
 }
+
 /* Character count — bottom-right inside text node */
 .text-node-wordcount {
   position: absolute;
@@ -378,18 +385,23 @@
   position: relative;
   overflow: visible !important;
 }
+
 .image-node {
   overflow: visible !important;
 }
+
 .image-node .node-preview.compact {
   padding: 2px;
 }
+
 .video-node {
   overflow: visible !important;
 }
+
 .audio-node {
   overflow: visible !important;
 }
+
 .node-resize-handle {
   position: absolute;
   right: 0;
@@ -399,6 +411,7 @@
   cursor: nwse-resize;
   z-index: 5;
 }
+
 .node-resize-handle::after {
   content: '';
   position: absolute;
@@ -411,9 +424,11 @@
   border-color: transparent transparent #555566 transparent;
   border-radius: 0 2px 8px 0;
 }
+
 .node-resize-handle:hover::after {
   border-color: transparent transparent #a8a8f3 transparent;
 }
+
 .image-preview-img.compact,
 .video-preview-player.compact {
   width: 100%;
@@ -447,21 +462,25 @@
   padding: 4px 6px;
   white-space: nowrap;
 }
+
 .img-toolbar-main {
   display: flex;
   align-items: center;
   gap: 2px;
 }
+
 .img-toolbar-zone {
   display: flex;
   align-items: center;
   gap: 1px;
 }
+
 .img-toolbar .ftb-btn {
   width: 28px;
   height: 28px;
   border-radius: 4px;
 }
+
 .img-toolbar-main-divider {
   width: 1px;
   height: 18px;
@@ -504,6 +523,7 @@
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
   white-space: nowrap;
 }
+
 .matting-btn {
   display: inline-flex;
   align-items: center;
@@ -519,24 +539,29 @@
   padding: 0;
   flex-shrink: 0;
 }
+
 .matting-btn:hover {
   color: #e8e8ed;
   background: rgba(255, 255, 255, 0.08);
 }
+
 .matting-btn.active {
   color: #22c55e;
   background: rgba(34, 197, 94, 0.12);
 }
+
 .matting-btn:disabled {
   opacity: 0.3;
   cursor: default;
   pointer-events: none;
 }
+
 /* Cancel button hover red */
 .matting-btn.act-cancel:hover {
   color: #ef4444;
   background: rgba(239, 68, 68, 0.1);
 }
+
 /* Save button */
 .matting-save {
   gap: 6px;
@@ -549,14 +574,17 @@
   font-weight: 500;
   margin-left: 2px;
 }
+
 .matting-save:hover {
   background: rgba(34, 197, 94, 0.1);
   color: #4ade80;
   border-color: rgba(34, 197, 94, 0.5);
 }
+
 .matting-save span {
   white-space: nowrap;
 }
+
 .matting-divider {
   width: 1px;
   height: 22px;
@@ -564,6 +592,7 @@
   margin: 0 6px;
   flex-shrink: 0;
 }
+
 /* Brush size */
 .matting-size {
   display: flex;
@@ -571,6 +600,7 @@
   gap: 6px;
   padding: 0 2px;
 }
+
 .matting-size-value {
   font-size: 12px;
   color: #e8e8ed;
@@ -578,6 +608,7 @@
   min-width: 24px;
   text-align: center;
 }
+
 .matting-size-range {
   width: 80px;
   height: 4px;
@@ -588,6 +619,7 @@
   outline: none;
   cursor: pointer;
 }
+
 .matting-size-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -598,6 +630,7 @@
   border: none;
   cursor: pointer;
 }
+
 .matting-size-range::-moz-range-thumb {
   width: 14px;
   height: 14px;
@@ -618,6 +651,7 @@
   padding: 80px 40px 40px;
   box-sizing: border-box;
 }
+
 .matting-image {
   max-width: 90%;
   max-height: 100%;
@@ -626,10 +660,12 @@
   user-select: none;
   -webkit-user-drag: none;
 }
+
 .matting-canvas {
   position: absolute;
   pointer-events: auto;
 }
+
 .cursor-crosshair {
   cursor: crosshair;
 }
@@ -675,6 +711,7 @@
   overflow: hidden;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
 }
+
 .text-fullscreen-header {
   display: flex;
   align-items: center;
@@ -683,11 +720,13 @@
   border-bottom: 1px solid #2a2a3a;
   flex-shrink: 0;
 }
+
 .text-fullscreen-title {
   font-size: 14px;
   font-weight: 600;
   color: #e8e8ed;
 }
+
 .text-fullscreen-close {
   display: flex;
   align-items: center;
@@ -701,15 +740,18 @@
   border-radius: 6px;
   transition: color 0.15s, background 0.15s;
 }
+
 .text-fullscreen-close:hover {
   color: #e8e8ed;
   background: rgba(255, 255, 255, 0.06);
 }
+
 .text-fullscreen-editor {
   flex: 1;
   overflow-y: auto;
   padding: 20px 24px;
 }
+
 .text-fullscreen-editor textarea {
   width: 100%;
   height: 70vh;
@@ -733,9 +775,10 @@
   height: 100%;
   pointer-events: none;
 }
+
 .react-flow__node-group {
   background-color: transparent !important;
-   border-radius: 14px !important;
+  border-radius: 14px !important;
 
 }
 
@@ -744,7 +787,7 @@
   inset: 0;
   border-radius: 14px;
   border: 1.5px dashed;
-  background: rgba(26, 26, 38, 0.25); 
+  background: rgba(26, 26, 38, 0.25);
   border-radius: 14px;
   overflow: hidden;
 }
@@ -813,9 +856,11 @@
 .react-flow__resize-control {
   opacity: 0;
 }
+
 .react-flow__resize-control:hover {
   opacity: .5;
 }
+
 .canvas-group-resize-hint {
   position: absolute;
   bottom: 0;

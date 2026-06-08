@@ -7,6 +7,7 @@ import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import TextNodeToolbar from './shared/TextNodeToolbar';
+import GooeyBtn from './shared/GooeyBtn';
 import { useNodeRename } from './shared/useNodeRename';
 import { useAppStore } from '../../store/useAppStore';
 import { uploadSourceFile } from '../../services/fileService';
@@ -238,8 +239,13 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
 
         {data.error && <div className="node-error">{data.error}</div>}
 
-        <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-text" />
-        <Handle type="source" position={Position.Right} id="right" className="node-handle handle-source handle-text" />
+        
+        <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-text" >
+          <GooeyBtn className="gooey-btn-left" hue={234} />
+        </Handle>
+        <Handle type="source" position={Position.Right} id="right" className="node-handle handle-source handle-text" >
+          <GooeyBtn className="gooey-btn-right" hue={234} />
+        </Handle>
       </div>
 
       {/* Resize handle — outside .node to avoid overflow:hidden + border-radius clipping */}

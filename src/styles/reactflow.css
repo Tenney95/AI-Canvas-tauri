@@ -1,5 +1,5 @@
 /* ============================================
-   React Flow Overrides — Dark Theme
+   React Flow Overrides — Dark Theme    连线
    ============================================ */
 
 /* Suppress non-passive touchstart warning in Chromium (Tauri WebView2).
@@ -41,9 +41,10 @@
 }
 
 /* Connection Line */
-.react-flow__connection-line {
+.react-flow__connectionline {
   stroke: #6366f1 !important;
   stroke-width: 2 !important;
+  z-index: 0 !important;
 }
 
 /* Selection Box */
@@ -88,3 +89,93 @@
   overflow: hidden !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3) !important;
 }
+
+
+/* ============================================
+   Node Handles (React Flow)
+   ============================================ */
+.node-handle {
+  width: 30px !important;
+  height: 30px !important;
+  border: none !important;
+  background: transparent !important;
+  transition: transform 0.15s, border-color 0.15s, background 0.15s, left 0.15s, right 0.15s !important;
+}
+
+.node-handle:hover {
+  transform: scale(1.2);
+  cursor: none;
+}
+
+/* Hover: nudge outward — left handles shift left, right handles shift right */
+.react-flow__handle-left:hover {
+  left: 0px !important;
+  transform: translate(-50%, -50%) scale(1.4) !important;
+}
+
+.react-flow__handle-right:hover {
+  right: 0px !important;
+  transform: translate(50%, -50%) scale(1.4) !important;
+}
+
+/* ============================================
+   Gooey Btn — 叠加在 Handle 上的粘液按钮
+   ============================================ */
+.gooey-btn-wrapper {
+  position: absolute;
+  z-index: 14;
+  pointer-events: auto;
+}
+
+/* Per-type handle colors (applied via handle-source class on visible handles) */
+/* .handle-text {
+  background: #6366f1 !important;
+  border-color: #818cf8 !important;
+  pointer-events: auto !important;
+  z-index: 10;
+}
+
+.handle-image {
+  background: #22c55e !important;
+  border-color: #4ade80 !important;
+  pointer-events: auto !important;
+  z-index: 10;
+}
+
+.handle-video {
+  background: #3b82f6 !important;
+  border-color: #60a5fa !important;
+  pointer-events: auto !important;
+  z-index: 10;
+}
+
+.handle-audio {
+  background: #f97316 !important;
+  border-color: #fb923c !important;
+  pointer-events: auto !important;
+  z-index: 10;
+} */
+
+
+/* 与 React Flow Handle 位置对齐 */
+.gooey-btn-left {
+  left: 3px;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.gooey-btn-right {
+  right: 3px;
+  top: 50%;
+  transform: translate(50%, -50%);
+}
+
+.gooey-btn-left .gooey-btn::before {
+  padding: 18px 10px 18px 26px;
+}
+
+.gooey-btn-right .gooey-btn::before {
+  padding: 18px 26px 18px 10px;
+}
+
+

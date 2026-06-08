@@ -6,6 +6,7 @@ import { Handle, Position } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
+import GooeyBtn from './shared/GooeyBtn';
 import ImageNodeToolbar from './shared/ImageNodeToolbar';
 import FreeAnglePanel from './shared/FreeAnglePanel';
 import MattingEditor from './shared/MattingEditor';
@@ -252,8 +253,12 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             )}
           </div>
           {data.error && <div className="node-error">{data.error}</div>}
-          <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-image" />
-          <Handle type="source" position={Position.Right} id="right" className="node-handle handle-source handle-image" />
+          <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-image" >
+            <GooeyBtn className="gooey-btn-left" hue={142} />
+          </Handle>
+          <Handle type="source" position={Position.Right} id="right" className="node-handle handle-source handle-image" >
+            <GooeyBtn className="gooey-btn-right" hue={142} />
+          </Handle>
         </div>
 
         {/* Resize handle */}
