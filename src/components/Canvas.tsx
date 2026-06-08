@@ -89,7 +89,7 @@ function SnapLinesOverlay({ lines }: { lines: SnapLine[] }) {
               y1={line.position}
               x2={99999}
               y2={line.position}
-              stroke="#6366f1"
+              stroke="var(--brand)"
               strokeWidth={1}
               strokeDasharray="4 4"
               opacity={0.7}
@@ -101,7 +101,7 @@ function SnapLinesOverlay({ lines }: { lines: SnapLine[] }) {
               y1={-99999}
               x2={line.position}
               y2={99999}
-              stroke="#6366f1"
+              stroke="var(--brand)"
               strokeWidth={1}
               strokeDasharray="4 4"
               opacity={0.7}
@@ -534,7 +534,7 @@ function CanvasInner() {
             variant={BackgroundVariant.Dots}
             gap={20}
             size={1}
-            color="#252535"
+            color="var(--theme-hover)"
           />
         )}
 
@@ -547,26 +547,26 @@ function CanvasInner() {
             zoomable
           nodeColor={(node) => {
             switch (node.type) {
-              case 'ai-text': return '#818cf8';     // indigo
-              case 'ai-image': return '#4ade80';    // green
-              case 'ai-video': return '#60a5fa';    // blue
-              case 'ai-audio': return '#fb923c';    // orange
-              case 'ai-panorama': return '#06b6d4'; // cyan
+              case 'ai-text': return 'var(--brand-hover)';     // indigo
+              case 'ai-image': return 'var(--node-image-light)';    // green
+              case 'ai-video': return 'var(--node-video-light)';    // blue
+              case 'ai-audio': return 'var(--node-audio-light)';    // orange
+              case 'ai-panorama': return 'var(--node-panorama)'; // cyan
               case 'group': return '#4b5563';       // neutral
               default: return '#6b7280';
             }
           }}
-          nodeStrokeColor="#2a2a3a"
+          nodeStrokeColor="var(--theme-border)"
           nodeStrokeWidth={1.5}
           nodeBorderRadius={35}
-          bgColor="#14141c"
+          bgColor="var(--theme-surface)"
           maskColor="rgba(10, 10, 15, 0.75)"
-          maskStrokeColor="#6366f1"
+          maskStrokeColor="var(--brand)"
           maskStrokeWidth={1}
           style={{
             width: 180,
             height: 120,
-            border: '1px solid #2a2a3a',
+            border: '1px solid var(--theme-border)',
             borderRadius: '8px',
           }}
           className="!bottom-12 !right-1"

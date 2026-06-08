@@ -104,10 +104,10 @@
 }
 
 .menu-row-danger {
-  color: #f87171;
+  color: var(--danger-light);
 }
 
 .menu-row-danger:hover {
-  background: rgba(239, 68, 68, 0.12);
-  color: #fca5a5;
+  background: var(--danger-bg);
+  color: var(--danger-pale);
 }

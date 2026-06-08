@@ -8,7 +8,7 @@
   overflow-y: auto;
   font-size: 10px;
   line-height: 1.6;
-  color: #e8e8ed;
+  color: var(--theme-text);
   white-space: pre-wrap;
   word-break: break-word;
   padding: 4px;
@@ -21,9 +21,9 @@
   min-height: 100%;
   font-size: 10px;
   line-height: 1.6;
-  color: #e8e8ed;
+  color: var(--theme-text);
   background: rgba(10, 10, 15, 0.6);
-  border: 1px solid #6366f1;
+  border: 1px solid var(--node-text);
   border-radius: 4px;
   resize: none;
   outline: none;
@@ -39,7 +39,7 @@
   right: 5px;
   bottom: -12px;
   font-size: 8px;
-  color: #555566;
+  color: var(--theme-text-muted);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
   user-select: none;
@@ -68,7 +68,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--black-alpha-60);
   backdrop-filter: blur(4px);
 }
 
@@ -77,11 +77,11 @@
   max-height: 90vh;
   display: flex;
   flex-direction: column;
-  background: #14141c;
-  border: 1px solid #2a2a3a;
+  background: var(--theme-surface);
+  border: 1px solid var(--theme-border);
   border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 40px var(--black-alpha-50);
 }
 
 .text-fullscreen-header {
@@ -89,14 +89,14 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  border-bottom: 1px solid #2a2a3a;
+  border-bottom: 1px solid var(--theme-border);
   flex-shrink: 0;
 }
 
 .text-fullscreen-title {
   font-size: 14px;
   font-weight: 600;
-  color: #e8e8ed;
+  color: var(--theme-text);
 }
 
 .text-fullscreen-close {
@@ -107,15 +107,15 @@
   height: 32px;
   border: none;
   background: transparent;
-  color: #8888a0;
+  color: var(--theme-text-secondary);
   cursor: pointer;
   border-radius: 6px;
   transition: color 0.15s, background 0.15s;
 }
 
 .text-fullscreen-close:hover {
-  color: #e8e8ed;
-  background: rgba(255, 255, 255, 0.06);
+  color: var(--theme-text);
+  background: var(--white-alpha-06);
 }
 
 .text-fullscreen-editor {

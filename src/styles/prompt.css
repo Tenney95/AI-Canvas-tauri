@@ -2,12 +2,12 @@
    Prompt Panel
    ============================================ */
 .prompt-panel {
-  border-top: 1px solid #2a2a3a;
+  border-top: 1px solid var(--theme-border);
   flex-shrink: 0;
   transition: border-color 0.2s;
 }
 .prompt-panel.focused {
-  border-top-color: #6366f1;
+  border-top-color: var(--brand);
 }
 .prompt-input-wrap {
   position: relative;
@@ -24,21 +24,21 @@
   outline: none;
   font-size: 13px;
   line-height: 1.5;
-  color: #e8e8ed;
-  caret-color: #6366f1;
+  color: var(--theme-text);
+  caret-color: var(--brand);
   font-family: inherit;
   white-space: pre-wrap;
   word-wrap: break-word;
 }
 .prompt-editor.is-empty::before {
   content: attr(data-placeholder);
-  color: #555566;
+  color: var(--theme-text-muted);
   pointer-events: none;
   display: block;
   white-space: pre-wrap;
 }
 .prompt-editor::selection {
-  background: rgba(99, 102, 241, 0.3);
+  background: var(--brand-alpha-30);
 }
 
 /* @mention chip token */
@@ -74,10 +74,10 @@
   font-size: 11px;
 }
 
-.prompt-chip.chip-text    { background: rgba(99, 102, 241, 0.15); color: #818cf8; }
-.prompt-chip.chip-image   { background: rgba(16, 185, 129, 0.15); color: #34d399; }
-.prompt-chip.chip-video   { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
-.prompt-chip.chip-audio   { background: rgba(249, 115, 22, 0.15); color: #fb923c; }
+.prompt-chip.chip-text    { background: var(--node-text-bg); color: var(--node-text-light); }
+.prompt-chip.chip-image   { background: var(--node-image-bg); color: var(--success-text); }
+.prompt-chip.chip-video   { background: var(--node-video-bg); color: var(--node-video-light); }
+.prompt-chip.chip-audio   { background: var(--node-audio-bg); color: var(--node-audio-light); }
 
 /* ── Workflow IO chip — distinct style ── */
 .prompt-chip.prompt-chip-wf {
@@ -90,10 +90,10 @@
   display: inline-flex;
   align-items: center;
 }
-.prompt-chip.prompt-chip-wf.chip-workflow-prompt  { background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.25); color: #818cf8; }
-.prompt-chip.prompt-chip-wf.chip-workflow-image   { background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.25); color: #34d399; }
-.prompt-chip.prompt-chip-wf.chip-workflow-video   { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.25); color: #60a5fa; }
-.prompt-chip.prompt-chip-wf.chip-workflow-audio   { background: rgba(249, 115, 22, 0.1); border-color: rgba(249, 115, 22, 0.25); color: #fb923c; }
+.prompt-chip.prompt-chip-wf.chip-workflow-prompt  { background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.25); color: var(--node-text-light); }
+.prompt-chip.prompt-chip-wf.chip-workflow-image   { background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.25); color: var(--success-text); }
+.prompt-chip.prompt-chip-wf.chip-workflow-video   { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.25); color: var(--node-video-light); }
+.prompt-chip.prompt-chip-wf.chip-workflow-audio   { background: rgba(249, 115, 22, 0.1); border-color: rgba(249, 115, 22, 0.25); color: var(--node-audio-light); }
 
 /* Non-editable label prefix */
 .prompt-chip-wf-prefix {
@@ -157,22 +157,22 @@
   justify-content: center;
   border: none;
   background: transparent;
-  color: #8888a0;
+  color: var(--theme-text-secondary);
   border-radius: 6px;
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
   padding: 0;
 }
 .prompt-btn:hover {
-  color: #e8e8ed;
-  background: #252535;
+  color: var(--theme-text);
+  background: var(--theme-hover);
 }
 .prompt-submit-btn {
-  color: #6366f1;
+  color: var(--brand);
 }
 .prompt-submit-btn:hover {
-  color: #818cf8;
-  background: rgba(99, 102, 241, 0.15);
+  color: var(--brand-light);
+  background: var(--brand-alpha-15);
 }
 .prompt-submit-btn.disabled {
   color: #444455;
@@ -214,10 +214,10 @@
   width: 260px;
   max-height: 440px;
   overflow-y: auto;
-  background: #1a1a26;
-  border: 1px solid #2a2a3a;
+  background: var(--theme-card);
+  border: 1px solid var(--theme-border);
   border-radius: 12px;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 40px var(--black-alpha-50);
   padding: 6px;
   display: flex;
   flex-direction: column;
@@ -228,7 +228,7 @@
   padding: 8px 12px 6px;
   font-size: 11px;
   font-weight: 600;
-  color: #555566;
+  color: var(--theme-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -245,7 +245,7 @@
 
 .slash-command-item:hover,
 .slash-command-item.active {
-  background: #252535;
+  background: var(--theme-hover);
 }
 
 .slash-command-icon {
@@ -270,7 +270,7 @@
 .slash-command-title {
   font-size: 13px;
   font-weight: 500;
-  color: #e8e8ed;
+  color: var(--theme-text);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -282,7 +282,7 @@
 .slash-command-arrow {
   margin-left: auto;
   font-size: 14px;
-  color: #555566;
+  color: var(--theme-text-muted);
   font-weight: 400;
 }
 
@@ -309,7 +309,7 @@
 
 .slash-command-divider {
   height: 1px;
-  background: #2a2a3a;
+  background: var(--theme-border);
   margin: 4px 8px;
 }
 
@@ -318,7 +318,7 @@
 }
 
 .slash-command-custom-title {
-  color: #8888a0;
+  color: var(--theme-text-secondary);
 }
 
 .slash-command-custom-badge {
@@ -337,10 +337,10 @@
   width: 280px;
   max-height: 440px;
   overflow-y: auto;
-  background: #1a1a26;
-  border: 1px solid #2a2a3a;
+  background: var(--theme-card);
+  border: 1px solid var(--theme-border);
   border-radius: 12px;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 40px var(--black-alpha-50);
   padding: 6px;
   display: flex;
   flex-direction: column;

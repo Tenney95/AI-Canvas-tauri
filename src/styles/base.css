@@ -3,6 +3,94 @@
 @tailwind utilities;
 
 /* ============================================
+   AI Canvas - CSS Variables & Tokens
+   ============================================ */
+
+:root {
+  /* ── Theme Layer ── */
+  --theme-bg: #0a0a0f;
+  --theme-surface: #14141c;
+  --theme-card: #1a1a26;
+  --theme-border: #2a2a3a;
+  --theme-hover: #252535;
+  --theme-text: #e8e8ed;
+  --theme-text-secondary: #8888a0;
+  --theme-text-muted: #555566;
+
+  /* ── Brand (Indigo) ── */
+  --brand: #6366f1;
+  --brand-light: #818cf8;
+  --brand-pale: #a5b4fc;
+  --brand-alpha-04: rgba(99, 102, 241, 0.04);
+  --brand-alpha-05: rgba(99, 102, 241, 0.05);
+  --brand-alpha-10: rgba(99, 102, 241, 0.10);
+  --brand-alpha-12: rgba(99, 102, 241, 0.12);
+  --brand-alpha-15: rgba(99, 102, 241, 0.15);
+  --brand-alpha-20: rgba(99, 102, 241, 0.20);
+  --brand-alpha-25: rgba(99, 102, 241, 0.25);
+  --brand-alpha-30: rgba(99, 102, 241, 0.30);
+
+  /* ── Node Type Colors ── */
+  --node-text: #6366f1;
+  --node-text-light: #818cf8;
+  --node-text-bg: rgba(99, 102, 241, 0.15);
+  --node-image: #22c55e;
+  --node-image-light: #4ade80;
+  --node-image-bg: rgba(16, 185, 129, 0.15);
+  --node-image-text: #34d399;
+  --node-video: #3b82f6;
+  --node-video-light: #60a5fa;
+  --node-video-bg: rgba(59, 130, 246, 0.15);
+  --node-audio: #f97316;
+  --node-audio-light: #fb923c;
+  --node-audio-bg: rgba(249, 115, 22, 0.15);
+  --node-panorama: #06b6d4;
+  --node-panorama-light: #22d3ee;
+  --node-panorama-bg: rgba(6, 182, 212, 0.15);
+
+  /* ── Semantic State Colors ── */
+  --success: #22c55e;
+  --success-light: #4ade80;
+  --success-text: #34d399;
+  --success-bg: rgba(16, 185, 129, 0.15);
+  --danger: #ef4444;
+  --danger-light: #f87171;
+  --danger-pale: #fca5a5;
+  --danger-bg: rgba(239, 68, 68, 0.15);
+  --info: #3b82f6;
+  --info-light: #60a5fa;
+  --info-bg: rgba(59, 130, 246, 0.15);
+  --warning: #f97316;
+  --warning-light: #fb923c;
+  --warning-bg: rgba(249, 115, 22, 0.15);
+
+  /* ── White Alpha Series ── */
+  --white-alpha-03: rgba(255, 255, 255, 0.03);
+  --white-alpha-04: rgba(255, 255, 255, 0.04);
+  --white-alpha-06: rgba(255, 255, 255, 0.06);
+  --white-alpha-08: rgba(255, 255, 255, 0.08);
+  --white-alpha-10: rgba(255, 255, 255, 0.10);
+  --white-alpha-12: rgba(255, 255, 255, 0.12);
+  --white-alpha-15: rgba(255, 255, 255, 0.15);
+
+  /* ── Black Alpha (Overlay) Series ── */
+  --black-alpha-30: rgba(0, 0, 0, 0.30);
+  --black-alpha-40: rgba(0, 0, 0, 0.40);
+  --black-alpha-50: rgba(0, 0, 0, 0.50);
+  --black-alpha-60: rgba(0, 0, 0, 0.60);
+
+  /* ── Border Variants ── */
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-secondary: #3a3a4a;
+  --border-focus: rgba(99, 102, 241, 0.40);
+
+  /* ── Scrollbar ── */
+  --scrollbar-thumb: #3a3a50;
+  --scrollbar-thumb-hover: #555570;
+  --scrollbar-thumb-active: #6b6b88;
+}
+
+/* ============================================
    AI Canvas - Base & Reset
    ============================================ */
 
@@ -37,7 +125,7 @@ html, body, #root {
 * {
   /* Firefox */
   scrollbar-width: thin;
-  scrollbar-color: #3a3a50 transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -50,7 +138,7 @@ html, body, #root {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3a3a50;
+  background: var(--scrollbar-thumb);
   border-radius: 9999px;
   border: 1px solid transparent;
   background-clip: padding-box;
@@ -58,11 +146,11 @@ html, body, #root {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555570;
+  background: var(--scrollbar-thumb-hover);
 }
 
 ::-webkit-scrollbar-thumb:active {
-  background: #6b6b88;
+  background: var(--scrollbar-thumb-active);
 }
 
 ::-webkit-scrollbar-corner {
@@ -72,7 +160,7 @@ html, body, #root {
 /* Custom Textarea & Input Styles */
 input::placeholder,
 textarea::placeholder {
-  color: #555566;
+  color: var(--theme-text-muted);
 }
 
 input:focus,
@@ -92,8 +180,8 @@ textarea:focus {
 }
 
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.2); }
-  50% { box-shadow: 0 0 20px 4px rgba(99, 102, 241, 0.1); }
+  0%, 100% { box-shadow: 0 0 0 0 var(--brand-alpha-20); }
+  50% { box-shadow: 0 0 20px 4px var(--brand-alpha-10); }
 }
 
 @keyframes spin {
@@ -125,12 +213,12 @@ textarea:focus {
 /* Content Editable styles */
 [contenteditable]:hover {
   outline: none;
-  background-color: rgba(255, 255, 255, 0.03);
+  background-color: var(--white-alpha-03);
   border-radius: 4px;
 }
 
 [contenteditable]:focus {
   outline: none;
-  background-color: rgba(99, 102, 241, 0.05);
+  background-color: var(--brand-alpha-05);
   border-radius: 4px;
 }

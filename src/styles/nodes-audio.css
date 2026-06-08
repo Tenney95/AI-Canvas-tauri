@@ -9,7 +9,7 @@
   cursor: pointer;
   border-radius: 8px;
   overflow: hidden;
-  background: #14141c;
+  background: var(--theme-surface);
 }
 
 .audio-waveform-canvas {
@@ -30,8 +30,8 @@
 }
 
 .audio-waveform-wrapper:hover .audio-play-overlay {
-  background: rgba(0, 0, 0, 0.5);
-  color: #fb923c;
+  background: var(--black-alpha-50);
+  color: var(--node-audio-light);
 }
 
 /* ── Time label (bottom-left during playback) ── */
@@ -46,7 +46,7 @@
 
 .audio-time-label {
   font-size: 9px;
-  color: #fb923c;
+  color: var(--node-audio-light);
   font-variant-numeric: tabular-nums;
 }
 
@@ -54,7 +54,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #fb923c;
+  background: var(--node-audio-light);
   animation: audio-dot-blink 0.8s ease-in-out infinite;
 }
 

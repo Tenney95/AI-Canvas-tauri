@@ -12,18 +12,18 @@
   left: 50%;
   transform: translateX(-50%) translateY(2px);
   padding: 4px 6px;
-  background: #1a1a26;
-  border: 1px solid #2a2a3a;
+  background: var(--theme-card);
+  border: 1px solid var(--theme-border);
   border-radius: 6px;
   font-size: 11px;
-  color: #e8e8ed;
+  color: var(--theme-text);
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.15s ease, transform 0.15s ease;
   box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.5),
-    0 0 0 1px rgba(255, 255, 255, 0.03);
+    0 4px 16px var(--black-alpha-50),
+    0 0 0 1px var(--white-alpha-03);
   z-index: 9999;
   letter-spacing: 0.01em;
 }
@@ -40,7 +40,7 @@
   transform: translateX(-50%) translateY(2px);
   border-width: 4px;
   border-style: solid;
-  border-color: #2a2a3a transparent transparent transparent;
+  border-color: var(--theme-border) transparent transparent transparent;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.15s ease, transform 0.15s ease;
@@ -66,7 +66,7 @@
   bottom: auto;
   left: calc(100% + 5px);
   transform: translateY(-50%) translateX(2px);
-  border-color: transparent #2a2a3a transparent transparent;
+  border-color: transparent var(--theme-border) transparent transparent;
 }
 .sidebar-btn-v3[data-tooltip]:hover::before {
   transform: translateY(-50%) translateX(0);
@@ -85,7 +85,7 @@ header [data-tooltip]::before {
   top: calc(100% + 1px);
   bottom: auto;
   transform: translateX(-50%) translateY(-2px);
-  border-color: transparent transparent #2a2a3a transparent;
+  border-color: transparent transparent var(--theme-border) transparent;
 }
 header [data-tooltip]:hover::before {
   transform: translateX(-50%) translateY(0);
@@ -116,7 +116,7 @@ header [data-tooltip]:hover::before {
   top: calc(100% + 1px);
   bottom: auto;
   transform: translateX(-50%) translateY(-2px);
-  border-color: transparent transparent #2a2a3a transparent;
+  border-color: transparent transparent var(--theme-border) transparent;
 }
 .node-upload-btn[data-tooltip]:hover::before {
   transform: translateX(-50%) translateY(0);

@@ -167,7 +167,7 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           display: flex;
           gap: 6px;
           scrollbar-width: thin;
-          scrollbar-color: #2a2a3a transparent;
+          scrollbar-color: var(--theme-border) transparent;
         }
         .connected-nodes-strip::-webkit-scrollbar {
           height: 3px;
@@ -176,7 +176,7 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           background: transparent;
         }
         .connected-nodes-strip::-webkit-scrollbar-thumb {
-          background: #2a2a3a;
+          background: var(--theme-border);
           border-radius: 8px;
         }
         .connected-node-thumb {
@@ -185,7 +185,7 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           height: 38px;
           border-radius: 8px;
           border: 2px solid rgba(195, 195, 202, 0.33);
-          background: #14141c;
+          background: var(--theme-surface);
           cursor: pointer;
           display: flex;
           align-items: center;
@@ -223,7 +223,7 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           z-index: 1;
           font-size: 12px;
           color: rgba(255,255,255,0.9);
-          text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+          text-shadow: 0 1px 3px var(--black-alpha-50);
           pointer-events: none;
         }
         .thumb-icon {
@@ -231,14 +231,14 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           font-weight: 600;
           opacity: 0.5;
         }
-        .thumb-icon-image { color: #34d399; }
-        .thumb-icon-video { color: #60a5fa; }
-        .thumb-icon-audio { color: #fb923c; }
-        .thumb-icon-text  { color: #818cf8; }
+        .thumb-icon-image { color: var(--success-text); }
+        .thumb-icon-video { color: var(--node-video-light); }
+        .thumb-icon-audio { color: var(--node-audio-light); }
+        .thumb-icon-text  { color: var(--brand-hover); }
         .thumb-text {
           font-size: 4px;
           line-height: 1.2;
-          color: #8888a0;
+          color: var(--theme-text-secondary);
           padding: 1px;
           display: -webkit-box;
           -webkit-line-clamp: 4;
@@ -249,7 +249,7 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
         .thumb-loading {
           position: absolute;
           inset: 0;
-          background: rgba(0,0,0,0.5);
+          background: var(--black-alpha-50);
           display: flex;
           align-items: center;
           justify-content: center;

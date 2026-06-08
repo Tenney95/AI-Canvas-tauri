@@ -33,11 +33,11 @@ export default function GroupNode({ id, data }: NodeProps) {
           width: 10,
           height: 10,
           borderRadius: 5,
-          backgroundColor: '#6366f1',
-          border: '2px solid #1a1a26',
+          backgroundColor: 'var(--brand)',
+          border: '2px solid var(--theme-card)',
         }}
         lineStyle={{
-          borderColor: '#6366f140',
+          borderColor: 'var(--brand-alpha-25)',
           borderWidth: 1,
         }}
       />

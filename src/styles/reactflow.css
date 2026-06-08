@@ -25,11 +25,11 @@
 
 /* Selected Edge Highlight */
 .react-flow__edge.selected .react-flow__edge-path {
-  stroke: #6366f1 !important;
+  stroke: var(--brand) !important;
   stroke-width: 2.5 !important;
 }
 .react-flow__edge.selected .react-flow__edge-marker {
-  fill: #6366f1 !important;
+  fill: var(--brand) !important;
 }
 
 .react-flow__handle {
@@ -42,15 +42,15 @@
 
 /* Connection Line */
 .react-flow__connectionline {
-  stroke: #6366f1 !important;
+  stroke: var(--brand) !important;
   stroke-width: 2 !important;
   z-index: 0 !important;
 }
 
 /* Selection Box */
 .react-flow__selection {
-  background-color: rgba(99, 102, 241, 0.08) !important;
-  border: 1px solid rgba(99, 102, 241, 0.3) !important;
+  background-color: var(--brand-alpha-08) !important;
+  border: 1px solid var(--brand-alpha-30) !important;
   border-radius: 8px;
 }
 
@@ -58,21 +58,21 @@
 .react-flow__controls {
   border-radius: 12px !important;
   overflow: hidden !important;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+  box-shadow: 0 8px 32px var(--black-alpha-40) !important;
 }
 
 .react-flow__controls-button {
-  background-color: #1a1a26 !important;
-  border-color: #2a2a3a !important;
-  color: #8888a0 !important;
-  fill: #8888a0 !important;
+  background-color: var(--theme-card) !important;
+  border-color: var(--theme-border) !important;
+  color: var(--theme-text-secondary) !important;
+  fill: var(--theme-text-secondary) !important;
   transition: all 0.15s ease !important;
 }
 
 .react-flow__controls-button:hover {
-  background-color: #252535 !important;
-  color: #e8e8ed !important;
-  fill: #e8e8ed !important;
+  background-color: var(--theme-hover) !important;
+  color: var(--theme-text) !important;
+  fill: var(--theme-text) !important;
 }
 
 .react-flow__controls-button svg {

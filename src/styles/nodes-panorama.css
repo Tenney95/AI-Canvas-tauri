@@ -35,10 +35,10 @@
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--white-alpha-12);
   background: rgba(10, 10, 15, 0.5);
   backdrop-filter: blur(6px);
-  color: #06b6d4;
+  color: var(--node-panorama);
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
   flex-shrink: 0;
@@ -51,7 +51,7 @@
 
 .pano-mode-toggle:hover {
   background: rgba(20, 20, 28, 0.9);
-  color: #22d3ee;
+  color: var(--node-panorama-light);
   border-color: rgba(6, 182, 212, 0.4);
   opacity: 1;
 }
@@ -65,7 +65,7 @@
   min-height: 0;
   border-radius: 12px;
   overflow: hidden;
-  background: #0a0a0f;
+  background: var(--theme-bg);
   cursor: grab;
 }
 
@@ -130,7 +130,7 @@
   height: 30px;
   border: none;
   background: transparent;
-  color: #8888a0;
+  color: var(--theme-text-secondary);
   cursor: pointer;
   border-radius: 6px;
   transition: color 0.15s, background 0.15s;
@@ -139,8 +139,8 @@
 }
 
 .panorama-viewer-wrapper .ftb-btn:hover {
-  color: #e8e8ed;
-  background: rgba(255, 255, 255, 0.08);
+  color: var(--theme-text);
+  background: var(--white-alpha-08);
 }
 
 .panorama-viewer-wrapper .ftb-btn.icon-only {
