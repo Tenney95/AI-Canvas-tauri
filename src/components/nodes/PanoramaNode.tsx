@@ -2,20 +2,27 @@
  * PanoramaNode 360全景图节点 — Three.js WebGL 全景查看器
  * 支持图片/360预览双模式切换、上传、全屏、日夜景切换
  */
-import { memo, useCallback, useRef, useEffect } from 'react';
+import { memo, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
 import * as THREE from 'three';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import GooeyBtn from './shared/GooeyBtn';
 import ResizeHandle from './shared/ResizeHandle';
+import PanoramaNodeToolbar from './shared/PanoramaNodeToolbar';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, generateId } from '../../store/useAppStore';
+import { saveDataUrlToProjectData } from '../../services/fileService';
 
 /* ═════════════════════════════════════════════════
    Three.js 360° Panorama Viewer
    ═════════════════════════════════════════════════ */
+
+export interface PanoramaViewerHandle {
+  captureScreenshot: () => string | null;
+}
 
 interface PanoramaViewerProps {
   imageUrl: string;
@@ -24,15 +31,16 @@ interface PanoramaViewerProps {
   onToggleFullscreen: () => void;
 }
 
-function PanoramaViewer({
+const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(function PanoramaViewer({
   imageUrl,
   onClose,
   onUpload,
   onToggleFullscreen,
-}: PanoramaViewerProps) {
+}, ref) {
   const shellRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<{
+    scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     sphere: THREE.Mesh;
     texture: THREE.Texture;
@@ -43,6 +51,17 @@ function PanoramaViewer({
   const rotation = useRef({ lon: 0, lat: 0 });
   const dragRef = useRef({ active: false, lastX: 0, lastY: 0, pointerId: 0 });
   const fovRef = useRef(75);
+
+  /* ── Expose screenshot capture ── */
+  useImperativeHandle(ref, () => ({
+    captureScreenshot() {
+      const state = sceneRef.current;
+      if (!state?.renderer?.domElement) return null;
+      // Force-render to ensure drawing buffer is populated (preserveDrawingBuffer=false by default)
+      state.renderer.render(state.scene, state.camera);
+      return state.renderer.domElement.toDataURL('image/png');
+    },
+  }), []);
 
   /* ── Init / Dispose Three.js ── */
   useEffect(() => {
@@ -68,7 +87,7 @@ function PanoramaViewer({
     scene.add(sphere);
 
     /* ---- Renderer ---- */
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
     renderer.setClearColor(0x000000, 0);
@@ -90,7 +109,7 @@ function PanoramaViewer({
     };
     animate();
 
-    sceneRef.current = { camera, sphere, texture, renderer, animId };
+    sceneRef.current = { scene, camera, sphere, texture, renderer, animId };
 
     /* ---- ResizeObserver ---- */
     const ro = new ResizeObserver(() => {
@@ -169,6 +188,105 @@ function PanoramaViewer({
       </div>
     </div>
   );
+});
+
+/* ═════════════════════════════════════════════════
+   Fullscreen Modal — Portal overlay for immersive viewing
+   ═════════════════════════════════════════════════ */
+
+interface PanoramaFullscreenModalProps {
+  imageUrl: string;
+  onClose: () => void;
+  viewerRef: React.RefObject<PanoramaViewerHandle | null>;
+  onScreenshot: () => void;
+  onDownload: () => void;
+}
+
+function PanoramaFullscreenModal({
+  imageUrl,
+  onClose,
+  viewerRef,
+  onScreenshot,
+  onDownload,
+}: PanoramaFullscreenModalProps) {
+  /* ── Escape key ── */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="panorama-fullscreen-modal"
+      data-ui-stop="1"
+      onPointerDown={(e) => { e.stopPropagation(); }}
+      onDoubleClick={(e) => { e.stopPropagation(); }}
+    >
+      {/* Backdrop */}
+      <div
+        className="panorama-fullscreen-backdrop"
+        onClick={onClose}
+      />
+
+      {/* Viewer container */}
+      <div className="panorama-fullscreen-content">
+        {/* Close button */}
+        <button
+          className="panorama-fullscreen-close"
+          onClick={onClose}
+          data-tooltip="退出全屏"
+          aria-label="退出全屏"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="20" height="20">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+
+        {/* Fullscreen viewer */}
+        <PanoramaViewer
+          ref={viewerRef}
+          imageUrl={imageUrl}
+          onClose={onClose}
+          onUpload={() => {}}
+          onToggleFullscreen={onClose}
+        />
+
+        {/* Bottom toolbar */}
+        <div className="panorama-fullscreen-toolbar">
+          <button
+            className="pano-fs-btn"
+            onClick={onScreenshot}
+            data-tooltip="截图并创建图片节点"
+            aria-label="截图"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+              <circle cx="12" cy="13" r="4" />
+            </svg>
+            <span>截图</span>
+          </button>
+          <button
+            className="pano-fs-btn"
+            onClick={onDownload}
+            data-tooltip="下载原始全景图"
+            aria-label="下载"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span>下载</span>
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
 }
 
 /* ═════════════════════════════════════════════════
@@ -179,6 +297,10 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const nodeWidth = (data.nodeWidth as number) || 280;
   const nodeHeight = (data.nodeHeight as number) || 200;
+
+  /* ── Panorama viewer refs (compact + fullscreen) ── */
+  const compactViewerRef = useRef<PanoramaViewerHandle>(null);
+  const fullscreenViewerRef = useRef<PanoramaViewerHandle>(null);
 
   /* ── Resize handler ── */
   const handleResize = useCallback(
@@ -199,6 +321,83 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
   const toggleFullscreen = useCallback(() => {
     updateNodeData(id, { panoFullscreen: !isFullscreen } as Partial<BaseNodeData>);
   }, [id, isFullscreen, updateNodeData]);
+
+  /* ── Derived: current aspect ratio string for toolbar ── */
+  const currentAspectRatio = (data.panoAspectRatioStr as string) || '2:1';
+
+  /* ── Aspect ratio ── */
+  const handleAspectRatio = useCallback(
+    (ratioStr: string) => {
+      const [w, h] = ratioStr.split(':').map(Number);
+      const ratio = (w && h) ? w / h : 2;
+      const contentWidth = nodeWidth - 4;
+      const newHeight = Math.round(contentWidth / ratio) + 4;
+      updateNodeData(id, {
+        nodeHeight: Math.max(120, newHeight),
+        panoAspectRatioStr: ratioStr,
+      } as Partial<BaseNodeData>);
+    },
+    [id, nodeWidth, updateNodeData],
+  );
+
+  /* ── Screenshot → save to project dir & create image node ── */
+  const handleScreenshot = useCallback(async () => {
+    const activeViewer = isFullscreen ? fullscreenViewerRef.current : compactViewerRef.current;
+    const dataUrl = activeViewer?.captureScreenshot();
+    if (!dataUrl) {
+      useAppStore.getState().showToast('截图失败', 'error');
+      return;
+    }
+    // Get current panorama node position and offset the image node
+    const store = useAppStore.getState();
+    const panoNode = store.nodes.find((n) => n.id === id);
+    const pos = panoNode?.position ?? { x: 0, y: 0 };
+    const imgLabel = `全景截图-${Date.now()}`;
+    const fileName = `panorama-screenshot-${Date.now()}.png`;
+
+    // Save to project data directory (Tauri) or fall back to base64 data URL
+    let imageUrl = dataUrl;
+    let filePath: string | undefined;
+    try {
+      const saved = await saveDataUrlToProjectData(dataUrl, store.currentProjectId, fileName);
+      if (saved) {
+        imageUrl = saved.assetUrl || dataUrl;
+        filePath = saved.filePath;
+      }
+    } catch {
+      // Fall back to base64 data URL
+    }
+
+    // Create image node offset to the right
+    const nodeId = `node-${generateId()}`;
+    store.addNode({
+      id: nodeId,
+      type: 'ai-image',
+      position: { x: pos.x + (nodeWidth as number) + 60, y: pos.y },
+      data: {
+        label: imgLabel,
+        type: 'ai-image' as const,
+        role: 'source' as const,
+        status: 'success' as const,
+        imageUrl,
+        filePath,
+        fileName,
+        nodeWidth: nodeWidth as number,
+        nodeHeight: nodeHeight as number,
+      },
+    } as Parameters<typeof store.addNode>[0]);
+    store.showToast('截图已创建为图片节点', 'success');
+  }, [id, nodeWidth, nodeHeight, isFullscreen]);
+
+  /* ── Download ── */
+  const handleDownload = useCallback(() => {
+    const src = (data.imageUrl || data.thumbnailUrl) as string | undefined;
+    if (!src) return;
+    const link = document.createElement('a');
+    link.download = (data.fileName as string) || `panorama-${Date.now()}.png`;
+    link.href = src;
+    link.click();
+  }, [data.imageUrl, data.thumbnailUrl, data.fileName]);
 
   /* ── Upload ── */
   const { isUploading, handleUpload: doUpload } = useSourceFileUpload('.png,.jpg,.jpeg,.webp');
@@ -241,27 +440,22 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
 
   return (
     <>
-      {/* ── Normal node view ── */}
-      <div
-        className="node-wrapper"
-        style={isFullscreen ? { position: 'fixed', inset: 0, width: '100vw', height: '100vh', zIndex: 9999 } : { width: nodeWidth }}
-      >
-        {!isFullscreen && (
-          <NodeLabel
-            kind="ai-panorama"
-            label={displayLabel}
-            displayId={data.displayId as number | undefined}
-            nodeId={id}
-            onRename={handleRename}
-          />
-        )}
+      {/* ── Compact node view (always on canvas) ── */}
+      <div className="node-wrapper" style={{ width: nodeWidth }}>
+        <NodeLabel
+          kind="ai-panorama"
+          label={displayLabel}
+          displayId={data.displayId as number | undefined}
+          nodeId={id}
+          onRename={handleRename}
+        />
         <div
           className={`node pano-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''}`}
-          style={isFullscreen ? { width: '100%', height: '100%', border: 'none', borderRadius: 0, background: '#000' } : { height: nodeHeight }}
+          style={{ height: nodeHeight }}
         >
-          <div className="node-preview compact" style={isFullscreen ? { padding: 0, height: '100%' } : undefined}>
-            {/* Upload button (compact mode only, when no image yet) */}
-            {!isFullscreen && (
+          <div className="node-preview compact">
+            {/* Upload button (when no image yet) */}
+            {!hasImage && (
               <button
                 className="node-upload-btn"
                 onClick={(e) => { e.stopPropagation(); handleUpload(); }}
@@ -276,8 +470,8 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
               </button>
             )}
 
-            {/* Mode toggle (compact mode only, when has image) */}
-            {!isFullscreen && hasImage && (
+            {/* Mode toggle (when has image) */}
+            {hasImage && (
               <button
                 className="pano-mode-toggle"
                 onClick={(e) => { e.stopPropagation(); toggleMode(); }}
@@ -303,6 +497,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
 
             {show360 ? (
               <PanoramaViewer
+                ref={compactViewerRef}
                 imageUrl={data.imageUrl || data.thumbnailUrl || ''}
                 onClose={toggleMode}
                 onUpload={handleUpload}
@@ -351,24 +546,38 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
           </Handle>
         </div>
 
-        {/* Resize handle — compact mode only */}
-        {!isFullscreen && (
-          <ResizeHandle
-            currentWidth={nodeWidth}
-            currentHeight={nodeHeight}
-            minWidth={160}
-            minHeight={120}
-            onResize={handleResize}
+        {/* Resize handle — always visible in compact mode */}
+        <ResizeHandle
+          currentWidth={nodeWidth}
+          currentHeight={nodeHeight}
+          minWidth={160}
+          minHeight={120}
+          onResize={handleResize}
+        />
+
+        {/* Floating toolbar — selected + has image */}
+        {selected && hasImage && (
+          <PanoramaNodeToolbar
+            onUpload={handleUpload}
+            onToggleMode={toggleMode}
+            previewMode={previewMode}
+            onAspectRatio={handleAspectRatio}
+            currentAspectRatio={currentAspectRatio}
+            onScreenshot={handleScreenshot}
+            onFullscreen={toggleFullscreen}
+            onDownload={handleDownload}
           />
         )}
       </div>
 
-      {/* ── Fullscreen backdrop ── */}
-      {isFullscreen && (
-        <div
-          className="panorama-fullscreen-backdrop"
-          onClick={toggleFullscreen}
-          onKeyDown={(e) => { if (e.key === 'Escape') toggleFullscreen(); }}
+      {/* ── Fullscreen modal (portal overlay) ── */}
+      {isFullscreen && hasImage && (
+        <PanoramaFullscreenModal
+          imageUrl={data.imageUrl || data.thumbnailUrl || ''}
+          onClose={toggleFullscreen}
+          viewerRef={fullscreenViewerRef}
+          onScreenshot={handleScreenshot}
+          onDownload={handleDownload}
         />
       )}
     </>
