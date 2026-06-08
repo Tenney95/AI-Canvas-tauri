@@ -11,6 +11,7 @@ const GEN_NODE_ITEMS: { label: string; type: NodeType }[] = [
   { label: '生成图像', type: 'ai-image' },
   { label: '生成视频', type: 'ai-video' },
   { label: '生成音频', type: 'ai-audio' },
+  { label: '生成360全景', type: 'ai-panorama' },
 ];
 
 const SRC_NODE_ITEMS: { label: string; type: NodeType }[] = [
@@ -29,8 +30,8 @@ const L1_ITEM_COUNT = 5;
 const L1_SEP_COUNT = 1;
 /** Level 2 菜单项数（生成节点 + 源节点 = 2） */
 const L2_ITEM_COUNT = 2;
-/** Level 3 菜单项数（4 个节点类型） */
-const L3_ITEM_COUNT = 4;
+/** Level 3 菜单项数（5 个节点类型） */
+const L3_ITEM_COUNT = 5;
 
 /** 估算菜单高度 */
 function estMenuHeight(items: number, seps: number = 0): number {

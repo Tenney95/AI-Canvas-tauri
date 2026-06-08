@@ -1,0 +1,223 @@
+/* ============================================
+   Image Node — toolbar, matting overlay
+   ============================================ */
+
+/* ============================================
+   Image Toolbar — above selected ImageNode
+   ============================================ */
+.img-toolbar {
+  top: -40px !important;
+  bottom: auto !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  pointer-events: auto !important;
+  gap: 0;
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+
+.img-toolbar-main {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.img-toolbar-zone {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.img-toolbar .ftb-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+}
+
+.img-toolbar-main-divider {
+  width: 1px;
+  height: 18px;
+  background: #2a2a3a;
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+/* ============================================
+   Matting Overlay — fullscreen mask editor
+   ============================================ */
+.matting-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 16pX;
+}
+
+/* Matting toolbar */
+.matting-toolbar {
+  position: fixed;
+  top: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 4px 8px;
+  background: rgba(26, 26, 38, 0.5);
+  border: 1px solid #2a2a3a;
+  border-radius: 10px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+}
+
+.matting-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: #8888a0;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.matting-btn:hover {
+  color: #e8e8ed;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.matting-btn.active {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.matting-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* Cancel button hover red */
+.matting-btn.act-cancel:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Save button */
+.matting-save {
+  gap: 6px;
+  padding: 0 12px;
+  width: auto;
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  margin-left: 2px;
+}
+
+.matting-save:hover {
+  background: rgba(34, 197, 94, 0.1);
+  color: #4ade80;
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+.matting-save span {
+  white-space: nowrap;
+}
+
+.matting-divider {
+  width: 1px;
+  height: 22px;
+  background: #2a2a3a;
+  margin: 0 6px;
+  flex-shrink: 0;
+}
+
+/* Brush size */
+.matting-size {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+}
+
+.matting-size-value {
+  font-size: 12px;
+  color: #e8e8ed;
+  font-variant-numeric: tabular-nums;
+  min-width: 24px;
+  text-align: center;
+}
+
+.matting-size-range {
+  width: 80px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #2a2a3a;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.matting-size-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #22c55e;
+  border: none;
+  cursor: pointer;
+}
+
+.matting-size-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #22c55e;
+  border: none;
+  cursor: pointer;
+}
+
+/* Stage — centers the image */
+.matting-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 80px 40px 40px;
+  box-sizing: border-box;
+}
+
+.matting-image {
+  max-width: 90%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.matting-canvas {
+  position: absolute;
+  pointer-events: auto;
+}
+
+.cursor-crosshair {
+  cursor: crosshair;
+}

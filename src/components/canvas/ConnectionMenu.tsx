@@ -12,7 +12,6 @@ import { calcFixedPosition } from '../../utils/popupPosition';
 interface ConnectionMenuOption {
   label: string;
   type: NodeType;
-  special?: '360-panorama';
 }
 
 interface ConnectionMenuProps {
@@ -30,6 +29,7 @@ const iconColors: Record<string, string> = {
   'ai-image': 'text-green-400 bg-green-500/10',
   'ai-video': 'text-blue-400 bg-blue-500/10',
   'ai-audio': 'text-orange-400 bg-orange-500/10',
+  'ai-panorama': 'text-cyan-400 bg-cyan-500/10',
 };
 
 const MENU_W = 260;
@@ -79,9 +79,7 @@ function ConnectionMenu({
       {/* Menu items */}
       <div className="p-1.5 space-y-0.5">
         {items.map((opt) => {
-          const is360 = opt.special === '360-panorama';
-          const colorKey = is360 ? 'ai-image' : opt.type;
-          const color = iconColors[colorKey] ?? 'text-canvas-text-secondary bg-canvas-hover';
+          const color = iconColors[opt.type] ?? 'text-canvas-text-secondary bg-canvas-hover';
 
           return (
             <button
@@ -90,7 +88,7 @@ function ConnectionMenu({
               className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-canvas-hover transition-colors text-left group"
             >
               <div className={`w-8 h-8 rounded-md ${color} flex items-center justify-center shrink-0`}>
-                {is360 ? (
+                {opt.type === 'ai-panorama' ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <circle cx="12" cy="12" r="10" />
                     <ellipse cx="12" cy="12" rx="6" ry="10" />
@@ -125,8 +123,8 @@ function ConnectionMenu({
               <span className="text-sm text-canvas-text group-hover:text-white transition-colors">
                 {opt.label}
               </span>
-              {is360 && (
-                <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-400">
+              {opt.type === 'ai-panorama' && (
+                <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-400">
                   全景
                 </span>
               )}

@@ -6,6 +6,11 @@
 @import './styles/base.css';
 @import './styles/reactflow.css';
 @import './styles/nodes.css';
+@import './styles/nodes-text.css';
+@import './styles/nodes-image.css';
+@import './styles/nodes-audio.css';
+@import './styles/nodes-panorama.css';
+@import './styles/nodes-group.css';
 @import './styles/prompt.css';
 @import './styles/preset-manager.css';
 @import './styles/model-selector.css';

@@ -8,6 +8,7 @@ export type NodeType =
   | 'ai-image'
   | 'ai-video'
   | 'ai-audio'
+  | 'ai-panorama'
   | 'source-image'
   | 'source-video'
   | 'source-audio'

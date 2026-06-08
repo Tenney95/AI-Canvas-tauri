@@ -62,9 +62,10 @@ export function useCanvasContextMenu() {
       const pos = menu.flowPosition;
       const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
       const isImage = type === 'ai-image';
+      const isPanorama = type === 'ai-panorama';
       const isSource = role === 'source';
-      const newWidth = type === 'ai-audio' ? 260 : 280;
-      const newHeight = type === 'ai-audio' ? 140 : isImage ? 158 : 160;
+      const newWidth = type === 'ai-audio' ? 260 : isPanorama ? 300 : 280;
+      const newHeight = type === 'ai-audio' ? 140 : isImage ? 158 : isPanorama ? 200 : 160;
       const newNode: RFNode<BaseNodeData> = {
         id: `node-${generateId()}`,
         type,

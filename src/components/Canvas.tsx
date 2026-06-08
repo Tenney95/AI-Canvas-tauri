@@ -24,6 +24,7 @@ import TextNode from './nodes/TextNode';
 import ImageNode from './nodes/ImageNode';
 import VideoNode from './nodes/VideoNode';
 import AudioNode from './nodes/AudioNode';
+import PanoramaNode from './nodes/PanoramaNode';
 import GroupNode from './nodes/GroupNode';
 import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
@@ -46,6 +47,7 @@ const nodeTypes: NodeTypes = {
   'ai-image': ImageNode,
   'ai-video': VideoNode,
   'ai-audio': AudioNode,
+  'ai-panorama': PanoramaNode,
   group: GroupNode,
 };
 
@@ -243,6 +245,7 @@ function CanvasInner() {
       if (node.data?.role === 'source') return;
       if (node.data?.type === 'ai-text' && node.data?.output) return;
       if (node.data?.type === 'ai-image' && node.data?.imageUrl) return;
+      if (node.data?.type === 'ai-panorama' && node.data?.imageUrl) return;
       if (node.data?.type === 'ai-video' && node.data?.videoUrl) return;
 
       const el = document.querySelector(`.react-flow__node[data-id="${node.id}"]`);

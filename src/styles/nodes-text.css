@@ -1,0 +1,140 @@
+/* ============================================
+   Text Node — compact output, edit, wordcount, toolbar, fullscreen
+   ============================================ */
+
+.text-output-content.compact {
+  align-self: stretch;
+  display: block;
+  overflow-y: auto;
+  font-size: 10px;
+  line-height: 1.6;
+  color: #e8e8ed;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 4px;
+}
+
+/* Edit mode textarea */
+.text-output-edit {
+  align-self: stretch;
+  width: 100%;
+  min-height: 100%;
+  font-size: 10px;
+  line-height: 1.6;
+  color: #e8e8ed;
+  background: rgba(10, 10, 15, 0.6);
+  border: 1px solid #6366f1;
+  border-radius: 4px;
+  resize: none;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 6px;
+  font-family: inherit;
+}
+
+/* Character count — bottom-right inside text node */
+.text-node-wordcount {
+  position: absolute;
+  right: 5px;
+  bottom: -12px;
+  font-size: 8px;
+  color: #555566;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+  z-index: 2;
+}
+
+/* ============================================
+   Text Toolbar — above selected TextNode
+   ============================================ */
+.text-toolbar {
+  top: -40px !important;
+  left: 50%;
+  margin: 0 auto;
+  transform: none !important;
+  pointer-events: auto !important;
+  gap: 4px;
+}
+
+/* ============================================
+   Fullscreen text overlay
+   ============================================ */
+.text-fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+.text-fullscreen-panel {
+  width: min(90vw, 900px) !important;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  background: #14141c;
+  border: 1px solid #2a2a3a;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+}
+
+.text-fullscreen-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #2a2a3a;
+  flex-shrink: 0;
+}
+
+.text-fullscreen-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e8e8ed;
+}
+
+.text-fullscreen-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: #8888a0;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.text-fullscreen-close:hover {
+  color: #e8e8ed;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.text-fullscreen-editor {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+
+.text-fullscreen-editor textarea {
+  width: 100%;
+  height: 70vh;
+  font-size: 14px;
+  line-height: 1.75;
+  color: #d0d0e0;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -16,7 +16,7 @@ import { classifyFile } from '../hooks/useNodeCreation';
    Node picker menu items
    ============================================ */
 const generationItems: {
-  type: NodeType | '3d-director' | '360-panorama';
+  type: NodeType | '3d-director';
   label: string;
   sub: string;
   icon: JSX.Element;
@@ -67,6 +67,19 @@ const generationItems: {
       </svg>
     ),
   },
+  {
+    type: 'ai-panorama',
+    label: '生成360全景',
+    sub: 'AI 全景图生成',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="12" cy="12" r="10" />
+        <ellipse cx="12" cy="12" rx="6" ry="10" />
+        <line x1="12" y1="2" x2="12" y2="22" />
+        <line x1="2" y1="12" x2="22" y2="12" />
+      </svg>
+    ),
+  },
 ];
 
 const resourceItems = [
@@ -99,17 +112,21 @@ function NodePicker({
 
   const handleAddNode = (type: NodeType) => {
     const isImage = type === 'ai-image';
+    const isPanorama = type === 'ai-panorama';
     const nodeData: Record<string, unknown> = {
       label: generationItems.find((m) => m.type === type)?.label || '节点',
       type,
       prompt: '',
       status: 'idle' as const,
-      nodeWidth: 280,
-      nodeHeight: isImage ? 158 : 160,
+      nodeWidth: isPanorama ? 300 : 280,
+      nodeHeight: isImage ? 158 : isPanorama ? 200 : 160,
     };
     if (isImage) {
       nodeData.aspectRatio = '16:9';
       nodeData.imageSize = '2K';
+    }
+    if (isPanorama) {
+      nodeData.previewMode = 'image';
     }
     const pos = lastCanvasMousePos ?? { x: 300, y: 200 };
     addNode({
@@ -198,7 +215,7 @@ function NodePicker({
           key={type}
           className="menu-row has-desc"
           onClick={() => {
-            if (type === '3d-director' || type === '360-panorama') return; // placeholder
+            if (type === '3d-director') return; // placeholder
             handleAddNode(type as NodeType);
           }}
         >

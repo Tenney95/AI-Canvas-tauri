@@ -1,0 +1,69 @@
+/* ============================================
+   Audio Node — waveform, playback progress
+   ============================================ */
+
+/* ── Audio Waveform ── */
+.audio-waveform-wrapper {
+  position: relative;
+  width: 100%;
+  cursor: pointer;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #14141c;
+}
+
+.audio-waveform-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.audio-play-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(251, 146, 60, 0.9);
+  transition: background 0.2s, color 0.2s;
+}
+
+.audio-waveform-wrapper:hover .audio-play-overlay {
+  background: rgba(0, 0, 0, 0.5);
+  color: #fb923c;
+}
+
+/* ── Time label (bottom-left during playback) ── */
+.audio-progress-bar-container {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.audio-time-label {
+  font-size: 9px;
+  color: #fb923c;
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-progress-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #fb923c;
+  animation: audio-dot-blink 0.8s ease-in-out infinite;
+}
+
+@keyframes audio-dot-blink {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}

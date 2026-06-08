@@ -1,0 +1,206 @@
+/* ============================================
+   Panorama Node — Three.js WebGL Viewer
+   ============================================ */
+
+.pano-node {
+  overflow: visible !important;
+}
+
+.pano-node .node-preview.compact {
+  padding: 4px;
+  position: relative;
+  min-height: 0;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  overflow: hidden;
+}
+
+.pano-node .image-preview-container,
+.pano-node .image-preview-img {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Mode toggle button — top-left corner (compact mode) */
+.pano-mode-toggle {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 10, 15, 0.5);
+  backdrop-filter: blur(6px);
+  color: #06b6d4;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+/* Override global [data-tooltip] position:relative */
+.pano-mode-toggle[data-tooltip] {
+  position: absolute;
+}
+
+.pano-mode-toggle:hover {
+  background: rgba(20, 20, 28, 0.9);
+  color: #22d3ee;
+  border-color: rgba(6, 182, 212, 0.4);
+  opacity: 1;
+}
+
+/* ══ Panorama Scene Shell — Three.js viewer wrapper ══ */
+.panorama-scene-shell {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0a0a0f;
+  cursor: grab;
+}
+
+.panorama-scene-shell:active {
+  cursor: grabbing;
+}
+
+.panorama-scene-viewport {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.panorama-scene-webgl {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+}
+
+/* ══ Floating Toolbar (panorama v2) ══ */
+.panorama-viewer-wrapper .node-floating-toolbar {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: rgba(26, 26, 38, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}
+
+/* Toolbar — positioned above the viewer, outside the node */
+.panorama-viewer-wrapper .v2-panorama-mode-toolbar {
+  top: -38px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Panorama viewer wrapper — provides positioning anchor for floating toolbar */
+.panorama-viewer-wrapper {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ══ Panorama toolbar buttons ══ */
+.panorama-viewer-wrapper .ftb-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  background: transparent;
+  color: #8888a0;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.panorama-viewer-wrapper .ftb-btn:hover {
+  color: #e8e8ed;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.panorama-viewer-wrapper .ftb-btn.icon-only {
+  width: 30px;
+  height: 30px;
+}
+
+.panorama-viewer-wrapper .ftb-divider {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+/* ══ Info Dock (hint & status text) ══ */
+.panorama-scene-fixed-info-dock {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.panorama-scene-fixed-hint {
+  transition: opacity 0.3s;
+}
+
+.panorama-scene-fixed-hint.is-visible {
+  opacity: 1;
+}
+
+.panorama-scene-fixed-hint__content {
+  padding: 3px 10px;
+  background: rgba(10, 10, 15, 0.7);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border-radius: 10px;
+  color: #8888a0;
+  font-size: 10px;
+  user-select: none;
+}
+
+/* ══ Fullscreen backdrop ══ */
+.panorama-fullscreen-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(4px);
+}
+
+/* ══ Handle for panorama nodes ══ */
+/* .handle-panorama {
+  background: #06b6d4 !important;
+  border-color: #22d3ee !important;
+  pointer-events: auto !important;
+  z-index: 4 !important;
+} */
