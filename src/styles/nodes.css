@@ -116,7 +116,6 @@
 .node-preview {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
 }
 
 .text-preview {
@@ -265,7 +264,6 @@
   justify-content: center;
   min-height: 0;
   padding: 4px;
-  overflow: hidden;
 }
 
 /* Node type overrides */

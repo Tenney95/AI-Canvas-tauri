@@ -13,7 +13,6 @@
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
-  overflow: hidden;
 }
 
 .pano-node .image-preview-container,
@@ -155,37 +154,6 @@
   background: rgba(255, 255, 255, 0.1);
   margin: 0 4px;
   flex-shrink: 0;
-}
-
-/* ══ Info Dock (hint & status text) ══ */
-.panorama-scene-fixed-info-dock {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  z-index: 15;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  pointer-events: none;
-}
-
-.panorama-scene-fixed-hint {
-  transition: opacity 0.3s;
-}
-
-.panorama-scene-fixed-hint.is-visible {
-  opacity: 1;
-}
-
-.panorama-scene-fixed-hint__content {
-  padding: 3px 10px;
-  background: rgba(10, 10, 15, 0.7);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  border-radius: 10px;
-  color: #8888a0;
-  font-size: 10px;
-  user-select: none;
 }
 
 /* ══ Fullscreen backdrop ══ */

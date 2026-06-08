@@ -166,13 +166,6 @@ function PanoramaViewer({
       >
         {/* ── Three.js mount point ── */}
         <div ref={mountRef} className="panorama-scene-viewport" style={{ width: '100%', height: '100%' }} />
-
-        {/* ── Fix info dock ── */}
-        <div className="panorama-scene-fixed-info-dock">
-          <div className="panorama-scene-fixed-hint is-visible" data-ui-stop="1">
-            <div className="panorama-scene-fixed-hint__content">拖拽旋转视角，滚轮缩放</div>
-          </div>
-        </div>
       </div>
     </div>
   );

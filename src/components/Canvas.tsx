@@ -547,11 +547,12 @@ function CanvasInner() {
             zoomable
           nodeColor={(node) => {
             switch (node.type) {
-              case 'ai-text': return '#818cf8';   // indigo
-              case 'ai-image': return '#4ade80';  // green
-              case 'ai-video': return '#60a5fa';  // blue
-              case 'ai-audio': return '#fb923c';  // orange
-              case 'group': return '#4b5563';     // neutral
+              case 'ai-text': return '#818cf8';     // indigo
+              case 'ai-image': return '#4ade80';    // green
+              case 'ai-video': return '#60a5fa';    // blue
+              case 'ai-audio': return '#fb923c';    // orange
+              case 'ai-panorama': return '#06b6d4'; // cyan
+              case 'group': return '#4b5563';       // neutral
               default: return '#6b7280';
             }
           }}
