@@ -2,6 +2,7 @@
  * VideoParamSelector 视频参数选择器 — 弹出面板配置视频分辨率、帧率、帧数等生成参数
  */
 import { useState, useRef, useEffect, useCallback } from 'react';
+import AnimatedButton from '../../shared/AnimatedButton';
 
 interface VideoParamSelectorProps {
   videoResolution?: number;
@@ -79,7 +80,7 @@ export default function VideoParamSelector({
   return (
     <div className="ui-schema-renderer" data-ui-schema-model="apimart/gemini-3.1-flash-image-preview" data-ui-schema-placement="videoParams" ref={ref}>
       <div className="ui-schema-quality-ratio-pill">
-        <button
+        <AnimatedButton
           type="button"
           className="img-pill-btn ui-schema-menu-trigger"
           data-ui-schema-menu-trigger="videoParams"
@@ -95,7 +96,7 @@ export default function VideoParamSelector({
           <span className="ui-schema-pill-label ui-schema-quality-ratio-label">
             帧数{videoFrames} · 帧率{videoFps} · 分辨率{videoResolution}
           </span>
-        </button>
+        </AnimatedButton>
 
         {open && (
           <div className="img-ratio-popup ui-schema-popup ui-schema-video-params-popup" style={{ display: 'block' }}>
@@ -112,7 +113,7 @@ export default function VideoParamSelector({
               </div>
               <div className="img-rp-quality-segmented rh-video-resolution-seg">
                 {resolutions.map((res) => (
-                  <button
+                  <AnimatedButton
                     key={res}
                     type="button"
                     className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${videoResolution === res ? 'active' : ''}`}
@@ -121,7 +122,7 @@ export default function VideoParamSelector({
                     onClick={() => onChangeResolution(res)}
                   >
                     {res}
-                  </button>
+                  </AnimatedButton>
                 ))}
               </div>
             </div>
@@ -140,7 +141,7 @@ export default function VideoParamSelector({
                 </div>
                 <div className="img-rp-quality-segmented rh-adv-seg rh-v5-fps-seg">
                   {fpsOptions.map((opt) => (
-                    <button
+                    <AnimatedButton
                       key={opt.value}
                       type="button"
                       className={`img-rp-quality-item rh-v5-fps-btn ui-schema-option ${videoFps === opt.value ? 'active' : ''}`}
@@ -149,7 +150,7 @@ export default function VideoParamSelector({
                       onClick={() => onChangeFps(opt.value)}
                     >
                       {opt.label}
-                    </button>
+                    </AnimatedButton>
                   ))}
                 </div>
               </div>

@@ -7,6 +7,7 @@ import ModalOverlay from './shared/ModalOverlay';
 import type { NodeType } from '../types';
 import { uploadSourceFileToProject } from '../services/fileService';
 import { classifyFile } from '../hooks/useNodeCreation';
+import AnimatedButton from './shared/AnimatedButton';
 
 /**
  * Sidebar 侧边栏面板 — 左侧节点类型列表、上传入口、项目切换、拖拽添加节点
@@ -211,7 +212,7 @@ function NodePicker({
         <div className="menu-rule" />
       </div>
       {generationItems.map(({ type, label, sub, icon }) => (
-        <button
+        <AnimatedButton
           key={type}
           className="menu-row has-desc"
           onClick={() => {
@@ -224,20 +225,20 @@ function NodePicker({
             <span className="menu-lbl">{label}</span>
             <span className="menu-sub">{sub}</span>
           </div>
-        </button>
+        </AnimatedButton>
       ))}
       <div className="menu-section">
         <span className="menu-title">添加资源</span>
         <div className="menu-rule" />
       </div>
       {resourceItems.map(({ key, label, sub, icon }) => (
-        <button key={key} className="menu-row has-desc" onClick={handleUploadFile}>
+        <AnimatedButton key={key} className="menu-row has-desc" onClick={handleUploadFile}>
           <div className="menu-ico">{icon}</div>
           <div className="menu-txt-wrap">
             <span className="menu-lbl">{label}</span>
             <span className="menu-sub">{sub}</span>
           </div>
-        </button>
+        </AnimatedButton>
       ))}
         </motion.div>
       )}
@@ -279,7 +280,7 @@ function AvatarMenu() {
           exit={{ opacity: 0, scale: 0.95, y: -4 }}
           transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
         >
-          <button
+          <AnimatedButton
             type="button"
             className="avatar-menu-item"
             onClick={() => {
@@ -292,7 +293,7 @@ function AvatarMenu() {
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
             设置
-          </button>
+          </AnimatedButton>
           <div className="avatar-menu-sep" />
           {/* <button
             type="button"
@@ -304,7 +305,7 @@ function AvatarMenu() {
             </svg>
             GitHub
           </button> */}
-          <button
+          <AnimatedButton
             type="button"
             className="avatar-menu-item"
             onClick={() => {
@@ -318,7 +319,7 @@ function AvatarMenu() {
               <line x1="12" y1="8" x2="12.01" y2="8" />
             </svg>
             关于
-          </button>
+          </AnimatedButton>
         </motion.div>
       )}
     </AnimatePresence>
@@ -387,13 +388,13 @@ function AvatarMenu() {
           {/* Footer */}
           <div className="pt-2 flex items-center justify-between border-t border-canvas-border">
             <span className="text-[11px] text-canvas-text-muted">© 2026 AI Canvas Team</span>
-            <button
+            <AnimatedButton
               type="button"
               className="px-4 py-1.5 text-xs font-medium text-canvas-text bg-canvas-hover hover:bg-canvas-border rounded-lg transition-colors"
               onClick={() => setAboutOpen(false)}
             >
               知道了
-            </button>
+            </AnimatedButton>
           </div>
         </div>
       </ModalOverlay>,
@@ -487,7 +488,7 @@ function LogoMenu() {
           </div>
           <div className="project-list-scroll">
             {projects.map((p) => (
-              <button
+              <AnimatedButton
                 key={p.id}
                 type="button"
                 className="menu-row"
@@ -540,7 +541,7 @@ function LogoMenu() {
                     </svg>
                   </span>
                 )}
-              </button>
+              </AnimatedButton>
             ))}
           </div>
 
@@ -548,7 +549,7 @@ function LogoMenu() {
             <span className="menu-title">操作</span>
             <div className="menu-rule" />
           </div>
-          <button
+          <AnimatedButton
             type="button"
             className="menu-row"
             onClick={() => {
@@ -565,7 +566,7 @@ function LogoMenu() {
             <div className="menu-txt-wrap">
               <span className="menu-lbl">新建项目</span>
             </div>
-          </button>
+          </AnimatedButton>
           </motion.div>
         )}
       </AnimatePresence>
@@ -623,14 +624,14 @@ function LogoMenu() {
                 <p className="delete-confirm-hint">此操作不可撤销</p>
               </div>
               <div className="delete-confirm-actions">
-                <button
+                <AnimatedButton
                   type="button"
                   className="delete-confirm-btn cancel"
                   onClick={() => setConfirmDelete(null)}
                 >
                   取消
-                </button>
-                <button
+                </AnimatedButton>
+                <AnimatedButton
                   type="button"
                   className="delete-confirm-btn confirm"
                   onClick={() => {
@@ -640,7 +641,7 @@ function LogoMenu() {
                   }}
                 >
                   确认删除
-                </button>
+                </AnimatedButton>
               </div>
             </div>
           </>

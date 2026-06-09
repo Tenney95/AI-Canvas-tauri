@@ -8,6 +8,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { getNodeBounds, getParentOffset } from '../../utils/nodeBounds.js';
 import type { Node as RFNode } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
+import AnimatedButton from '../shared/AnimatedButton';
 
 // ── Align & Distribute config ──
 type AlignKey = 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom';
@@ -268,27 +269,27 @@ function MultiSelectToolbar() {
       }}
     >
       {/* Batch execute */}
-      <button
+      <AnimatedButton
         data-tooltip="批量生成"
         disabled={batchRunning}
         onClick={executeBatch}
         className="w-8 h-8 rounded flex items-center justify-center transition-colors hover:text-green-300 hover:bg-green-500/15 disabled:opacity-30 disabled:cursor-not-allowed"
       >
         <Icon icon="material-symbols:play-arrow-rounded" width={28} height={28} />
-      </button>
+      </AnimatedButton>
 
       <div className="w-px h-5 bg-canvas-border" />
 
       {/* Align buttons */}
       {ALIGN_ACTIONS.map(({ icon, label, key }) => (
-        <button
+        <AnimatedButton
           key={key}
           data-tooltip={label}
           onClick={() => doAlign(key as AlignKey)}
           className="w-8 h-8 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
         >
           <Icon icon={icon} width={18} height={18} />
-        </button>
+        </AnimatedButton>
       ))}
 
       {/* Distribute buttons (need ≥3 nodes) */}
@@ -296,14 +297,14 @@ function MultiSelectToolbar() {
         <>
           <div className="w-px h-5 bg-canvas-border" />
           {DISTRIBUTE_ACTIONS.map(({ icon, label, key }) => (
-            <button
+            <AnimatedButton
               key={key}
               data-tooltip={label}
               onClick={() => doDistribute(key as DistributeKey)}
               className="w-8 h-8 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
             >
               <Icon icon={icon} width={18} height={18} />
-            </button>
+            </AnimatedButton>
           ))}
         </>
       )}

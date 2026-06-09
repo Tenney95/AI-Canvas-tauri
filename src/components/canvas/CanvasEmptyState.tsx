@@ -4,6 +4,7 @@
 import { memo } from 'react';
 import type { NodeType } from '../../types';
 import { useAppStore, generateId } from '../../store/useAppStore';
+import AnimatedButton from '../shared/AnimatedButton';
 
 const EMPTY_STATE_NODE_TYPES = ['ai-text', 'ai-image', 'ai-video'] as NodeType[];
 
@@ -32,7 +33,7 @@ function CanvasEmptyState() {
         </div>
         <div className="flex gap-2 mt-2 pointer-events-auto">
           {EMPTY_STATE_NODE_TYPES.map((type) => (
-            <button
+            <AnimatedButton
               key={type}
               onClick={() => {
                 const offset = Math.random() * 100;
@@ -51,7 +52,7 @@ function CanvasEmptyState() {
               className="px-4 py-2 bg-canvas-card border border-canvas-border rounded-lg text-sm text-canvas-text-secondary hover:border-indigo-500/50 hover:text-canvas-text transition-all"
             >
               {EMPTY_STATE_LABELS[type]}
-            </button>
+            </AnimatedButton>
           ))}
         </div>
       </div>

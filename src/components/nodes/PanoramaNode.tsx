@@ -470,31 +470,6 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
               </button>
             )}
 
-            {/* Mode toggle (when has image) */}
-            {hasImage && (
-              <button
-                className="pano-mode-toggle"
-                onClick={(e) => { e.stopPropagation(); toggleMode(); }}
-                data-tooltip={previewMode === '360' ? '切换到图片视图' : '切换到360全景'}
-                aria-label="切换视图模式"
-              >
-                {previewMode === '360' ? (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="3" y="3" width="18" height="18" rx="2" />
-                    <circle cx="8.5" cy="8.5" r="1.5" />
-                    <polyline points="21 15 16 10 5 21" />
-                  </svg>
-                ) : (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="12" cy="12" r="10" />
-                    <ellipse cx="12" cy="12" rx="6" ry="10" />
-                    <line x1="12" y1="2" x2="12" y2="22" />
-                    <line x1="2" y1="12" x2="22" y2="12" />
-                  </svg>
-                )}
-              </button>
-            )}
-
             {show360 ? (
               <PanoramaViewer
                 ref={compactViewerRef}

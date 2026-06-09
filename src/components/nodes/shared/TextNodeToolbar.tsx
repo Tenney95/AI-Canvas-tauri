@@ -3,6 +3,7 @@
  */
 import { memo, useState, useCallback } from 'react';
 import type { BaseNodeData } from '../../../types';
+import AnimatedButton from '../../shared/AnimatedButton';
 
 interface TextNodeToolbarProps {
   nodeId: string;
@@ -48,7 +49,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onFullscreen }: Text
 
   return (
     <div className="node-floating-toolbar text-toolbar">
-      <button
+      <AnimatedButton
         className="ftb-btn icon-only act-copy"
         data-tooltip={copied ? '已复制' : '复制'}
         aria-label="复制"
@@ -64,8 +65,8 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onFullscreen }: Text
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
           </svg>
         )}
-      </button>
-      <button
+      </AnimatedButton>
+      <AnimatedButton
         className="ftb-btn icon-only act-clear-empty-lines"
         data-tooltip="清除空行"
         aria-label="清除空行"
@@ -78,8 +79,8 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onFullscreen }: Text
           <path d="M18 15l3 3" />
           <path d="M21 15l-3 3" />
         </svg>
-      </button>
-      <button
+      </AnimatedButton>
+      <AnimatedButton
         className="ftb-btn icon-only act-fullscreen"
         data-tooltip="全屏显示"
         aria-label="全屏显示"
@@ -88,7 +89,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onFullscreen }: Text
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
           <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
         </svg>
-      </button>
+      </AnimatedButton>
     </div>
   );
 }

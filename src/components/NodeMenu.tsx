@@ -10,6 +10,7 @@ import type { NodeType } from '../types';
 import { calcFixedPosition } from '../utils/popupPosition';
 import { uploadSourceFileToProject } from '../services/fileService';
 import { classifyFile } from '../hooks/useNodeCreation';
+import AnimatedButton from './shared/AnimatedButton';
 
 const menuItems: { type: NodeType; label: string; icon: JSX.Element; badge?: string; color: string }[] = [
   {
@@ -182,7 +183,7 @@ export default function NodeMenu() {
         </div>
         <div className="space-y-0.5 mt-1">
           {menuItems.map(({ type, label, icon, badge, color }) => (
-            <button
+            <AnimatedButton
               key={type}
               onClick={() => handleAddNode(type)}
               className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-canvas-hover transition-colors text-left"
@@ -196,12 +197,12 @@ export default function NodeMenu() {
                   {badge}
                 </span>
               )}
-            </button>
+            </AnimatedButton>
           ))}
         </div>
       </div>
       <div className="border-t border-canvas-border p-2">
-        <button
+        <AnimatedButton
           className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-canvas-hover transition-colors text-left"
           onClick={handleUploadFile}
         >
@@ -213,7 +214,7 @@ export default function NodeMenu() {
             </svg>
           </div>
           <span className="text-sm text-canvas-text-secondary">上传文件</span>
-        </button>
+        </AnimatedButton>
       </div>
       </motion.div>
       )}

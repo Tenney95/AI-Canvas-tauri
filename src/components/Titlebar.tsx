@@ -2,6 +2,7 @@
  * Titlebar 自定义窗口标题栏 — Tauri 环境下替代系统标题栏，提供最小化/最大化/关闭控制按钮
  */
 import { useState, useEffect } from 'react';
+import AnimatedButton from './shared/AnimatedButton';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -43,7 +44,7 @@ function TitlebarInner({
       className="fixed top-0 right-0 z-[200] flex items-center h-9 select-none"
     >
       {/* Minimize */}
-      <button
+      <AnimatedButton
         onClick={() => appWindow.minimize()}
         className="w-10 h-9 flex items-center justify-center text-canvas-text-muted
                    hover:bg-white/[0.06] hover:text-canvas-text-secondary transition-colors"
@@ -52,10 +53,10 @@ function TitlebarInner({
         <svg width="10" height="10" viewBox="0 0 10 10">
           <rect x="0" y="5" width="10" height="1" fill="currentColor" />
         </svg>
-      </button>
+      </AnimatedButton>
 
       {/* Maximize / Restore */}
-      <button
+      <AnimatedButton
         onClick={() => appWindow.toggleMaximize()}
         className="w-10 h-9 flex items-center justify-center text-canvas-text-muted
                    hover:bg-white/[0.06] hover:text-canvas-text-secondary transition-colors"
@@ -71,10 +72,10 @@ function TitlebarInner({
             <rect x="0" y="0" width="10" height="10" rx="1" fill="none" stroke="currentColor" strokeWidth="1" />
           </svg>
         )}
-      </button>
+      </AnimatedButton>
 
       {/* Close */}
-      <button
+      <AnimatedButton
         onClick={() => appWindow.close()}
         className="w-10 h-9 flex items-center justify-center text-canvas-text-muted
                    hover:bg-red-500/70 hover:text-white transition-colors rounded-tr-[16px]"
@@ -84,7 +85,7 @@ function TitlebarInner({
           <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.2" />
           <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.2" />
         </svg>
-      </button>
+      </AnimatedButton>
     </div>
   );
 }

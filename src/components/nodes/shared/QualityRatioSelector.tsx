@@ -2,6 +2,7 @@
  * QualityRatioSelector 图像质量/比例选择器 — 弹出面板选择图像尺寸(1K/2K/4K)和宽高比
  */
 import { useState, useRef, useEffect } from 'react';
+import AnimatedButton from '../../shared/AnimatedButton';
 
 interface RatioOption {
   value: string;
@@ -81,7 +82,7 @@ export default function QualityRatioSelector({
   return (
     <div className="ui-schema-renderer" data-ui-schema-model="apimart/gemini-3.1-flash-image-preview" data-ui-schema-placement="resolution" ref={ref}>
       <div className="ui-schema-quality-ratio-pill" data-ui-schema-composite-field="qualityRatio">
-        <button
+        <AnimatedButton
           type="button"
           className="img-pill-btn ui-schema-menu-trigger"
           data-ui-schema-menu-trigger="qualityRatio"
@@ -98,7 +99,7 @@ export default function QualityRatioSelector({
           <span className="ui-schema-pill-label ui-schema-quality-ratio-label">
             {showImageSize ? `${aspectRatio} · ${imageSize}` : aspectRatio}
           </span>
-        </button>
+        </AnimatedButton>
 
         {open && (
           <div className="img-ratio-popup ui-schema-popup ui-schema-quality-ratio-popup" style={{ display: 'block' }}>
@@ -107,7 +108,7 @@ export default function QualityRatioSelector({
                 <div className="img-rp-section-label">画质</div>
                 <div className="img-rp-quality-segmented">
                   {['720p', '1K', '2K', '4K'].map((size) => (
-                    <button
+                    <AnimatedButton
                       key={size}
                       type="button"
                       className={`img-rp-quality-item ui-schema-option ${imageSize === size ? 'active' : ''}`}
@@ -116,7 +117,7 @@ export default function QualityRatioSelector({
                       onClick={() => onChangeImageSize?.(size)}
                     >
                       {size}
-                    </button>
+                    </AnimatedButton>
                   ))}
                 </div>
               </div>
@@ -127,7 +128,7 @@ export default function QualityRatioSelector({
               <div className={`img-rp-ratio-split${showAdaptive ? ' has-adaptive' : ''}`}>
                 {showAdaptive && (
                   <div className="img-rp-ratio-left">
-                    <button
+                    <AnimatedButton
                       type="button"
                       className={`img-rp-large-adaptive ui-schema-option ${aspectRatio === '自适应' ? 'active' : ''}`}
                       data-label="自适应"
@@ -140,12 +141,12 @@ export default function QualityRatioSelector({
                         <path d="M9 21V9" />
                       </svg>
                       <span>自适应</span>
-                    </button>
+                    </AnimatedButton>
                   </div>
                 )}
                 <div className="img-rp-ratio-right">
                   {ratios.map((r) => (
-                    <button
+                    <AnimatedButton
                       key={r.value}
                       type="button"
                       className={`img-rp-ratio-item ui-schema-option ${aspectRatio === r.value ? 'active' : ''}`}
@@ -155,7 +156,7 @@ export default function QualityRatioSelector({
                     >
                       <span className={`img-rp-icon ${r.className}`}></span>
                       <span>{r.value}</span>
-                    </button>
+                    </AnimatedButton>
                   ))}
                 </div>
               </div>

@@ -7,6 +7,7 @@ import type { TestResult } from '../services/testConnection';
 import { testProviderConnection, type ProviderTestKey } from '../services/testConnection';
 import { getProjectDataDir, getBaseDir } from '../services/fileService';
 import ModalOverlay from './shared/ModalOverlay';
+import AnimatedButton from './shared/AnimatedButton';
 
 /* ── External URLs ── */
 const PROVIDER_URLS: Record<string, string> = {
@@ -62,7 +63,7 @@ function TestButton({
 }) {
   const testing = state.status === 'testing';
   return (
-    <button
+    <AnimatedButton
       type="button"
       className="settings-provider-test-btn"
       aria-label={`测试 ${label} 连接`}
@@ -72,7 +73,7 @@ function TestButton({
     >
       {testing ? <SpinnerIcon /> : <TestIcon />}
       <span className="settings-btn-label">{testing ? '测试中…' : '测试连接'}</span>
-    </button>
+    </AnimatedButton>
   );
 }
 
@@ -352,7 +353,7 @@ export default function SettingsPanel() {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-canvas-border">
           <h2 className="text-base font-semibold text-canvas-text">设置</h2>
-          <button
+          <AnimatedButton
             onClick={() => setSettingsOpen(false)}
             className="w-8 h-8 rounded-lg hover:bg-canvas-hover flex items-center justify-center text-canvas-text-secondary hover:text-canvas-text transition-colors"
           >
@@ -360,7 +361,7 @@ export default function SettingsPanel() {
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
-          </button>
+          </AnimatedButton>
         </div>
 
         <div className="flex flex-1 min-h-0">
@@ -371,7 +372,7 @@ export default function SettingsPanel() {
               { id: 'general', label: '常规' },
               { id: 'shortcuts', label: '快捷键' },
             ].map(({ id, label }) => (
-              <button
+              <AnimatedButton
                 key={id}
                 onClick={() => setActiveTab(id as typeof activeTab)}
                 className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors ${
@@ -406,7 +407,7 @@ export default function SettingsPanel() {
                   )}
                 </svg>
                 {label}
-              </button>
+              </AnimatedButton>
             ))}
           </nav>
 
@@ -617,41 +618,41 @@ export default function SettingsPanel() {
                     <div className="dreamina-settings-actions">
                       {!dreaminaAuth?.loggedIn ? (
                         <>
-                          <button
+                          <AnimatedButton
                             type="button"
                             className="settings-save-btn"
                             disabled={dreaminaLoading}
                             onClick={handleDreaminaWebLogin}
                           >
                             网页登录
-                          </button>
-                          <button
+                          </AnimatedButton>
+                          <AnimatedButton
                             type="button"
                             className="settings-save-btn"
                             disabled={!dreaminaCookieInput.trim() || dreaminaLoading}
                             onClick={handleDreaminaCookieSave}
                           >
                             保存登录
-                          </button>
+                          </AnimatedButton>
                         </>
                       ) : (
                         <>
-                          <button
+                          <AnimatedButton
                             type="button"
                             className="settings-save-btn"
                             disabled={!dreaminaCookieInput.trim() || dreaminaLoading}
                             onClick={handleDreaminaCookieSave}
                           >
                             更新登录
-                          </button>
-                          <button
+                          </AnimatedButton>
+                          <AnimatedButton
                             type="button"
                             className="settings-save-btn settings-btn-ghost"
                             disabled={dreaminaLoading}
                             onClick={handleDreaminaLogout}
                           >
                             退出登录
-                          </button>
+                          </AnimatedButton>
                         </>
                       )}
                     </div>
@@ -699,15 +700,15 @@ export default function SettingsPanel() {
                 {/* Footer */}
                 <div className="settings-pane-footer">
                   <div className="settings-save-row">
-                    <button
+                    <AnimatedButton
                       type="button"
                       className="settings-save-btn settings-btn-ghost settings-api-test-btn"
                       onClick={() => console.log('Test all connections')}
                     >
                       <TestIcon />
                       <span className="settings-btn-label">测试连接</span>
-                    </button>
-                    <button
+                    </AnimatedButton>
+                    <AnimatedButton
                       type="button"
                       className="settings-save-btn"
                       onClick={async () => {
@@ -716,7 +717,7 @@ export default function SettingsPanel() {
                       }}
                     >
                       保存
-                    </button>
+                    </AnimatedButton>
                   </div>
                 </div>
               </div>
@@ -734,12 +735,12 @@ export default function SettingsPanel() {
                       </div>
                       <div className="flex gap-1">
                         {['小', '中', '大'].map((size, i) => (
-                          <button
+                          <AnimatedButton
                             key={size}
                             className={`px-3 py-1.5 rounded-md text-xs ${i === 1 ? 'bg-indigo-500/20 text-indigo-400' : 'bg-canvas-card text-canvas-text-secondary hover:bg-canvas-hover'}`}
                           >
                             {size}
-                          </button>
+                          </AnimatedButton>
                         ))}
                       </div>
                     </div>
@@ -758,18 +759,18 @@ export default function SettingsPanel() {
                           <div className="flex-1 min-w-0 text-[11px] text-canvas-text-secondary break-all font-mono leading-relaxed bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border select-all">
                             {baseDataDir}
                           </div>
-                          <button type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChooseBaseDir}>
+                          <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChooseBaseDir}>
                             更换
-                          </button>
+                          </AnimatedButton>
                         </div>
                       ) : (
                         <div className="flex items-center gap-2">
                           <div className="flex-1 text-xs text-canvas-text-muted bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border italic">
                             未设置（使用系统默认目录）
                           </div>
-                          <button type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChooseBaseDir}>
+                          <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChooseBaseDir}>
                             选择文件夹
-                          </button>
+                          </AnimatedButton>
                         </div>
                       )}
                     </div>
@@ -796,7 +797,7 @@ export default function SettingsPanel() {
                               </div>
                             </div>
                           </div>
-                          <button
+                          <AnimatedButton
                             type="button"
                             className="settings-save-btn"
                             onClick={handleOpenProjectDir}
@@ -807,7 +808,7 @@ export default function SettingsPanel() {
                               <line x1="10" y1="14" x2="21" y2="3" />
                             </svg>
                             打开文件夹
-                          </button>
+                          </AnimatedButton>
                         </div>
                       ) : (
                         <div className="text-xs text-canvas-text-muted">仅在 Tauri 桌面环境中可用</div>

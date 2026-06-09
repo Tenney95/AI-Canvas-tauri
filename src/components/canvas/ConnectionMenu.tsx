@@ -8,6 +8,7 @@ import type { NodeType } from '../../types';
 import type { BaseNodeData } from '../../types';
 import type { Node as RFNode } from '@xyflow/react';
 import { calcFixedPosition } from '../../utils/popupPosition';
+import AnimatedButton from '../shared/AnimatedButton';
 
 interface ConnectionMenuOption {
   label: string;
@@ -82,7 +83,7 @@ function ConnectionMenu({
           const color = iconColors[opt.type] ?? 'text-canvas-text-secondary bg-canvas-hover';
 
           return (
-            <button
+            <AnimatedButton
               key={`${opt.type}-${opt.label}`}
               onClick={() => onSelect(opt)}
               className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-canvas-hover transition-colors text-left group"
@@ -128,7 +129,7 @@ function ConnectionMenu({
                   全景
                 </span>
               )}
-            </button>
+            </AnimatedButton>
           );
         })}
       </div>

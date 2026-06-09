@@ -3,6 +3,7 @@
  */
 import { memo, useCallback } from 'react';
 import QualityRatioSelector from './QualityRatioSelector';
+import AnimatedButton from '../../shared/AnimatedButton';
 
 interface PanoramaNodeToolbarProps {
   onUpload?: () => void;
@@ -47,7 +48,7 @@ function PanoramaNodeToolbar({
     <div className="node-floating-toolbar pano-toolbar nodrag">
       <div className="pano-toolbar-main nodrag">
         {/* Upload */}
-        <button
+        <AnimatedButton
           className="ftb-btn icon-only act-upload"
           data-tooltip="上传全景图"
           aria-label="上传全景图"
@@ -58,10 +59,10 @@ function PanoramaNodeToolbar({
             <polyline points="17 8 12 3 7 8" />
             <line x1="12" y1="3" x2="12" y2="15" />
           </svg>
-        </button>
+        </AnimatedButton>
 
         {/* Mode toggle */}
-        <button
+        <AnimatedButton
           className="ftb-btn icon-only act-mode"
           data-tooltip={previewMode === '360' ? '切换到图片视图' : '切换到360全景'}
           aria-label="切换视图模式"
@@ -81,7 +82,7 @@ function PanoramaNodeToolbar({
               <line x1="2" y1="12" x2="22" y2="12" />
             </svg>
           )}
-        </button>
+        </AnimatedButton>
 
         {/* Aspect ratio — reuse QualityRatioSelector with all defaults */}
         <QualityRatioSelector
@@ -92,7 +93,7 @@ function PanoramaNodeToolbar({
         />
 
         {/* Screenshot */}
-        <button
+        <AnimatedButton
           className="ftb-btn icon-only act-screenshot"
           data-tooltip="截图当前视角"
           aria-label="截图当前视角"
@@ -102,13 +103,13 @@ function PanoramaNodeToolbar({
             <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
             <circle cx="12" cy="13" r="4" />
           </svg>
-        </button>
+        </AnimatedButton>
 
         {/* Divider */}
         <div className="ftb-divider pano-toolbar-divider" />
 
         {/* Fullscreen */}
-        <button
+        <AnimatedButton
           className="ftb-btn icon-only act-fullscreen"
           data-tooltip="全屏显示"
           aria-label="全屏显示"
@@ -117,10 +118,10 @@ function PanoramaNodeToolbar({
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
             <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
           </svg>
-        </button>
+        </AnimatedButton>
 
         {/* Download */}
-        <button
+        <AnimatedButton
           className="ftb-btn icon-only act-download"
           data-tooltip="下载"
           aria-label="下载"
@@ -131,7 +132,7 @@ function PanoramaNodeToolbar({
             <polyline points="7 10 12 15 17 10" />
             <line x1="12" y1="15" x2="12" y2="3" />
           </svg>
-        </button>
+        </AnimatedButton>
       </div>
     </div>
   );

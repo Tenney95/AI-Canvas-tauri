@@ -9,6 +9,7 @@ import {
   PRESET_NODE_TYPES,
   PRESET_NODE_TYPE_LABELS,
 } from '../../../types';
+import AnimatedButton from '../../shared/AnimatedButton';
 
 const PLACEHOLDER_MARKER = '\u200B'; // zero-width space as placeholder pill
 
@@ -227,20 +228,20 @@ export default function PresetManager() {
               管理 {PRESET_NODE_TYPE_LABELS[activeTab]} 的生成预设
             </div>
           </div>
-          <button
+          <AnimatedButton
             type="button"
             className="preset-manager-close-btn"
             aria-label="关闭"
             onClick={() => setPresetManagerOpen(false)}
           >
             ×
-          </button>
+          </AnimatedButton>
         </div>
 
         {/* Tabs */}
         <div className="preset-manager-tabs" role="tablist">
           {PRESET_NODE_TYPES.map((nt) => (
-            <button
+            <AnimatedButton
               key={nt}
               type="button"
               className={`preset-manager-tab${activeTab === nt ? ' is-active' : ''}`}
@@ -287,16 +288,16 @@ export default function PresetManager() {
                 )}
               </svg>
               <span>{PRESET_NODE_TYPE_LABELS[nt]}</span>
-            </button>
+            </AnimatedButton>
           ))}
         </div>
 
         {/* Body: sidebar + detail */}
         <div className="preset-manager-shell">
           <div className="preset-manager-sidebar">
-            <button type="button" className="preset-manager-new-btn" onClick={handleNew}>
+            <AnimatedButton type="button" className="preset-manager-new-btn" onClick={handleNew}>
               新建
-            </button>
+            </AnimatedButton>
             <div className="preset-manager-list">
               {filteredPresets.map((preset) => (
                 <div
@@ -348,7 +349,7 @@ export default function PresetManager() {
                       {preset.description || '输入说明与提示词模板'}
                     </span>
                   </span>
-                  <button
+                  <AnimatedButton
                     type="button"
                     className="preset-manager-list-delete"
                     aria-label={`删除 ${preset.name}`}
@@ -358,7 +359,7 @@ export default function PresetManager() {
                     }}
                   >
                     ×
-                  </button>
+                  </AnimatedButton>
                 </div>
               ))}
               {filteredPresets.length === 0 && (
@@ -395,13 +396,13 @@ export default function PresetManager() {
                 </label>
                 <div className="preset-manager-template-tools">
                   <span className="preset-manager-label">提示词模板</span>
-                  <button
+                  <AnimatedButton
                     type="button"
                     className="preset-modal-btn-secondary preset-manager-insert-btn"
                     onClick={handleInsertPlaceholder}
                   >
                     点击插入提示词栏内容
-                  </button>
+                  </AnimatedButton>
                 </div>
                 <div className="preset-manager-editor-wrap">
                   <div
@@ -440,7 +441,7 @@ export default function PresetManager() {
         <div className="preset-modal-actions">
           <div className="preset-manager-trigger-modes" role="group" aria-label="预设触发方式">
             <span className="preset-manager-trigger-mode-label">模式：</span>
-            <button
+            <AnimatedButton
               type="button"
               className={`preset-manager-trigger-mode${triggerMode === 'direct' ? ' is-active' : ''}`}
               data-trigger-mode="direct"
@@ -448,8 +449,8 @@ export default function PresetManager() {
               onClick={() => setTriggerMode('direct')}
             >
               直接触发
-            </button>
-            <button
+            </AnimatedButton>
+            <AnimatedButton
               type="button"
               className={`preset-manager-trigger-mode${triggerMode === 'insertPrompt' ? ' is-active' : ''}`}
               data-trigger-mode="insertPrompt"
@@ -457,11 +458,11 @@ export default function PresetManager() {
               onClick={() => setTriggerMode('insertPrompt')}
             >
               加入提示词
-            </button>
+            </AnimatedButton>
           </div>
-          <button type="button" className="preset-modal-btn-primary" onClick={handleSave}>
+          <AnimatedButton type="button" className="preset-modal-btn-primary" onClick={handleSave}>
             保存
-          </button>
+          </AnimatedButton>
         </div>
       </div>
     </div>

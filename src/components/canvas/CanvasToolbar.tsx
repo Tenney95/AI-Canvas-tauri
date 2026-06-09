@@ -2,6 +2,7 @@
  * CanvasToolbar 画布工具栏 — 画布右下角浮动工具条，控制网格显隐、连线样式、缩放比例
  */
 import { memo } from 'react';
+import AnimatedButton from '../shared/AnimatedButton';
 
 interface CanvasToolbarProps {
   showGrid: boolean;
@@ -22,7 +23,7 @@ function CanvasToolbar({
 }: CanvasToolbarProps) {
   return (
     <div className="flex items-center gap-2 bg-canvas-card/70 border border-canvas-border backdrop-blur-xl rounded-lg px-3 py-1.5 shadow-lg">
-      <button
+      <AnimatedButton
         className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${
           showGrid
             ? 'text-indigo-400 hover:text-indigo-300 bg-indigo-500/15'
@@ -36,8 +37,8 @@ function CanvasToolbar({
           <circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" />
           <circle cx="5" cy="19" r="1.5" /><circle cx="12" cy="19" r="1.5" /><circle cx="19" cy="19" r="1.5" />
         </svg>
-      </button>
-      <button
+      </AnimatedButton>
+      <AnimatedButton
         className="w-7 h-7 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
         onClick={onToggleLine}
         data-tooltip={smoothLine ? '连线类型：直角 → 切换为曲线' : '连线类型：曲线 → 切换为直角'}
@@ -51,7 +52,7 @@ function CanvasToolbar({
             <path d="M4 20 Q12 8 20 4" />
           </svg>
         )}
-      </button>
+      </AnimatedButton>
       <div className="w-px h-5 bg-canvas-border mx-0.5" />
       <input
         type="range"

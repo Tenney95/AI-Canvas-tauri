@@ -2,6 +2,7 @@
  * MattingToolbar 遮罩编辑工具栏 — 图像遮罩编辑模式下的工具条，提供画笔(绘制/擦除)、橡皮擦、油漆桶及笔刷大小调整
  */
 import { memo, useCallback, useState, useRef } from 'react';
+import AnimatedButton from '../../shared/AnimatedButton';
 
 type MattingTool = 'brush' | 'eraser' | 'bucket';
 type BrushMode = 'normal' | 'alpha';
@@ -92,7 +93,7 @@ function MattingToolbar({
   return (
     <div className="matting-toolbar" ref={toolbarRef}>
       {/* Cancel */}
-      <button
+      <AnimatedButton
         className="matting-btn icon-only act-cancel"
         data-tooltip="取消 (Esc)"
         aria-label="取消"
@@ -101,12 +102,12 @@ function MattingToolbar({
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
           <path d="M18 6L6 18M6 6l12 12" />
         </svg>
-      </button>
+      </AnimatedButton>
 
       <div className="matting-divider" />
 
       {/* Brush — click again to toggle alpha mode */}
-      <button
+      <AnimatedButton
         className={`matting-btn icon-only tool-btn${activeTool === 'brush' ? ' active' : ''}`}
         data-tool="brush"
         data-tooltip={activeTool === 'brush' ? `画笔 ${brushMode === 'alpha' ? '(擦除模式)' : '(绘制模式)'} B` : '画笔 B'}
@@ -125,10 +126,10 @@ function MattingToolbar({
             <path d="M3 3h6v6H3z" fill="currentColor" fillOpacity="0.3" />
           </svg>
         )}
-      </button>
+      </AnimatedButton>
 
       {/* Eraser */}
-      <button
+      <AnimatedButton
         className={`matting-btn icon-only tool-btn${activeTool === 'eraser' ? ' active' : ''}`}
         data-tool="eraser"
         data-tooltip="橡皮擦 E"
@@ -138,10 +139,10 @@ function MattingToolbar({
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
           <path d="M20 20H7l-5-5a2 2 0 0 1 0-2.83l9.17-9.17a2 2 0 0 1 2.83 0L22 10a2 2 0 0 1 0 2.83L14.83 20" />
         </svg>
-      </button>
+      </AnimatedButton>
 
       {/* Bucket */}
-      <button
+      <AnimatedButton
         className={`matting-btn icon-only tool-btn${activeTool === 'bucket' ? ' active' : ''}`}
         data-tool="bucket"
         data-tooltip="油漆桶 G"
@@ -154,7 +155,7 @@ function MattingToolbar({
           <path d="M12 18l-2 2" />
           <path d="M20 20l-2-2" />
         </svg>
-      </button>
+      </AnimatedButton>
 
       <div className="matting-divider" />
 
@@ -175,7 +176,7 @@ function MattingToolbar({
       <div className="matting-divider" />
 
       {/* Undo */}
-      <button
+      <AnimatedButton
         className="matting-btn icon-only act-undo"
         data-tooltip="撤销 Ctrl+Z"
         aria-label="撤销"
@@ -186,10 +187,10 @@ function MattingToolbar({
           <path d="M9 14l-4-4 4-4" />
           <path d="M5 10h9a6 6 0 1 1 0 12h-3" />
         </svg>
-      </button>
+      </AnimatedButton>
 
       {/* Redo */}
-      <button
+      <AnimatedButton
         className="matting-btn icon-only act-redo"
         data-tooltip="重做 Ctrl+Y"
         aria-label="重做"
@@ -200,10 +201,10 @@ function MattingToolbar({
           <path d="M15 14l4-4-4-4" />
           <path d="M19 10H10a6 6 0 1 0 0 12h3" />
         </svg>
-      </button>
+      </AnimatedButton>
 
       {/* Clear */}
-      <button
+      <AnimatedButton
         className="matting-btn icon-only act-clear"
         data-tooltip="清空 R"
         aria-label="清空"
@@ -214,10 +215,10 @@ function MattingToolbar({
           <path d="M8 6V4h8v2" />
           <path d="M6 6l1 16h10l1-16" />
         </svg>
-      </button>
+      </AnimatedButton>
 
       {/* Save */}
-      <button
+      <AnimatedButton
         className="matting-btn matting-save act-save"
         data-tooltip="保存"
         aria-label="保存"
@@ -229,7 +230,7 @@ function MattingToolbar({
           <path d="M7 3v4h8" />
         </svg>
         <span>保存</span>
-      </button>
+      </AnimatedButton>
     </div>
   );
 }

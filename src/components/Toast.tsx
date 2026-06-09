@@ -3,6 +3,7 @@
  */
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
+import AnimatedButton from './shared/AnimatedButton';
 
 export default function Toast() {
   const { toast, dismissToast } = useAppStore();
@@ -37,7 +38,7 @@ export default function Toast() {
               </svg>
             )}
             <span>{toast.message}</span>
-            <button
+            <AnimatedButton
               onClick={dismissToast}
               className="ml-2 opacity-60 hover:opacity-100 transition-opacity"
             >
@@ -45,7 +46,7 @@ export default function Toast() {
                 <line x1="18" y1="6" x2="6" y2="18" />
                 <line x1="6" y1="6" x2="18" y2="18" />
               </svg>
-            </button>
+            </AnimatedButton>
           </div>
         </motion.div>
       )}
