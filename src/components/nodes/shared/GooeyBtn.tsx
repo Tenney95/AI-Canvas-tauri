@@ -17,8 +17,8 @@ const GooeyBtn = ({ className, hue }: GooeyBtnProps) => {
       const rect = btn.getBoundingClientRect();
       const x = ((e.clientX - rect.x) / rect.width) * 100;
       const y = ((e.clientY - rect.y) / rect.height) * 100;
-      btn.style.setProperty("--x", `${x}%`);
-      btn.style.setProperty("--y", `${y}%`);
+      btn.style.setProperty("--x", String(x));
+      btn.style.setProperty("--y", String(y));
     };
 
     btn.addEventListener("pointermove", moveBg);
