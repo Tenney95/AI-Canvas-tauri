@@ -9,6 +9,8 @@ import { getNodeBounds, getParentOffset } from '../../utils/nodeBounds.js';
 import type { Node as RFNode } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
+import { generateText, generateImage, generateVideo, generateAudio } from '../../services/aiService';
+import { downloadUrlAndSave } from '../../services/fileService';
 
 // ── Align & Distribute config ──
 type AlignKey = 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom';
@@ -182,9 +184,6 @@ function MultiSelectToolbar() {
 
     setBatchRunning(true);
     let ok = 0, fail = 0;
-
-    const { generateText, generateImage, generateVideo, generateAudio } = await import('../../services/aiService');
-    const { downloadUrlAndSave } = await import('../../services/fileService');
 
     for (const node of toRun) {
       const d = node.data!;

@@ -547,13 +547,13 @@ function CanvasInner() {
             zoomable
           nodeColor={(node) => {
             switch (node.type) {
-              case 'ai-text': return 'var(--brand-hover)';     // indigo
-              case 'ai-image': return 'var(--node-image-light)';    // green
-              case 'ai-video': return 'var(--node-video-light)';    // blue
-              case 'ai-audio': return 'var(--node-audio-light)';    // orange
-              case 'ai-panorama': return 'var(--node-panorama)'; // cyan
-              case 'group': return '#4b5563';       // neutral
-              default: return '#6b7280';
+              case 'ai-text': return 'color-mix(in srgb, var(--brand-hover) 50%, transparent)';
+              case 'ai-image': return 'color-mix(in srgb, var(--node-image-light) 50%, transparent)';
+              case 'ai-video': return 'color-mix(in srgb, var(--node-video-light) 50%, transparent)';
+              case 'ai-audio': return 'color-mix(in srgb, var(--node-audio-light) 50%, transparent)';
+              case 'ai-panorama': return 'color-mix(in srgb, var(--node-panorama) 50%, transparent)';
+              case 'group': return '#4b556380';
+              default: return '#6b728080';
             }
           }}
           nodeStrokeColor="var(--theme-border)"

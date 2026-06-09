@@ -7,17 +7,18 @@ interface GooeyBtnProps {
 }
 
 const GooeyBtn = ({ className, hue }: GooeyBtnProps) => {
-  const btnRef = useRef(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const btn = btnRef.current;
+    if (!btn) return;
 
-    const moveBg = (e) => {
+    const moveBg = (e: PointerEvent) => {
       const rect = btn.getBoundingClientRect();
       const x = ((e.clientX - rect.x) / rect.width) * 100;
       const y = ((e.clientY - rect.y) / rect.height) * 100;
-      btn.style.setProperty("--x", x);
-      btn.style.setProperty("--y", y);
+      btn.style.setProperty("--x", `${x}%`);
+      btn.style.setProperty("--y", `${y}%`);
     };
 
     btn.addEventListener("pointermove", moveBg);

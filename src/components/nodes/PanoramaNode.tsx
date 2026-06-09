@@ -32,10 +32,7 @@ interface PanoramaViewerProps {
 }
 
 const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(function PanoramaViewer({
-  imageUrl,
-  onClose,
-  onUpload,
-  onToggleFullscreen,
+  imageUrl
 }, ref) {
   const shellRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
@@ -163,10 +160,16 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
     }
   }, []);
 
-  /* ── Wheel (zoom) ── */
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    fovRef.current = Math.max(20, Math.min(110, fovRef.current + e.deltaY * 0.05));
+  /* ── Wheel (zoom) — must be non‑passive so preventDefault works ── */
+  useEffect(() => {
+    const el = shellRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      fovRef.current = Math.max(20, Math.min(110, fovRef.current + e.deltaY * 0.05));
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
   }, []);
 
   return (
@@ -180,7 +183,6 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onWheel={onWheel}
         style={{ touchAction: 'none' }}
       >
         {/* ── Three.js mount point ── */}
@@ -359,6 +361,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
     let imageUrl = dataUrl;
     let filePath: string | undefined;
     try {
+      if (!store.currentProjectId) return;
       const saved = await saveDataUrlToProjectData(dataUrl, store.currentProjectId, fileName);
       if (saved) {
         imageUrl = saved.assetUrl || dataUrl;

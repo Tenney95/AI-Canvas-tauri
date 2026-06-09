@@ -7,6 +7,7 @@ import { useReactFlow } from '@xyflow/react';
 import type { Node as RFNode } from '@xyflow/react';
 import { useAppStore, generateId, computeImageNodeDimensions } from '../store/useAppStore';
 import { arrayBufferToBase64, copyFileToProjectData } from '../services/fileService';
+import { readFile } from '@tauri-apps/plugin-fs';
 import type { BaseNodeData } from '../types';
 
 // ── File type constants ──
@@ -199,7 +200,6 @@ export function useNodeCreation() {
 
     (async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      const { readFile } = await import('@tauri-apps/plugin-fs');
 
       // Clean up any previous listener before registering a new one
       unlistenRef.current?.();

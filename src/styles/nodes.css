@@ -110,6 +110,7 @@
 .ftb-btn:hover {
   color: var(--theme-text);
   background: var(--theme-hover);
+   cursor: none;
 }
 
 /* Preview Area */

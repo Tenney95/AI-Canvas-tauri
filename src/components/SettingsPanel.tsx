@@ -6,6 +6,8 @@ import { useAppStore } from '../store/useAppStore';
 import type { TestResult } from '../services/testConnection';
 import { testProviderConnection, type ProviderTestKey } from '../services/testConnection';
 import { getProjectDataDir, getBaseDir } from '../services/fileService';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 import ModalOverlay from './shared/ModalOverlay';
 import AnimatedButton from './shared/AnimatedButton';
 
@@ -194,22 +196,16 @@ export default function SettingsPanel() {
   };
 
   /** 判断是否运行在 Tauri 环境中 */
-  const isTauri = async (): Promise<boolean> => {
-    try {
-      await import('@tauri-apps/api/core');
-      return true;
-    } catch {
-      return false;
-    }
+  const isTauri = (): boolean => {
+    return '__TAURI_INTERNALS__' in window;
   };
 
   /** 即梦网页登录（Tauri 模式自动提取 Cookie，浏览器模式回退手动粘贴） */
   const handleDreaminaWebLogin = async () => {
-    if (await isTauri()) {
+    if (isTauri()) {
       setDreaminaLoading(true);
       setDreaminaStatusMsg('正在打开即梦登录窗口…');
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
         const result = await invoke<{ cookie: string }>('dreamina_login');
         if (result.cookie) {
           updateConfig({
@@ -329,7 +325,6 @@ export default function SettingsPanel() {
   /** 选择文件保存根目录 */
   const handleChooseBaseDir = async () => {
     try {
-      const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
       const selected = await openDialog({ directory: true, title: '选择文件保存根目录' });
       if (selected && typeof selected === 'string') {
         updateConfig({ baseDataDir: selected });

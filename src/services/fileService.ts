@@ -3,6 +3,8 @@
  */
 import { writeFile, readFile as tauriReadFile, mkdir, exists, stat, remove, readDir, type DirEntry } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { appDataDir } from '@tauri-apps/api/path';
 import {
   saveProjectToDb,
   getAllProjects,
@@ -283,25 +285,15 @@ export function sanitizeFileName(name: string): string {
 /** 项目媒体文件大小上限：2GB，超过则引用原路径不拷贝到项目目录（仅 Tauri 下生效） */
 export const MAX_MEDIA_FILE_SIZE = 2 * 1024 * 1024 * 1024;
 
-/** 获取 Tauri 的 convertFileSrc 函数（浏览器端返回 null） */
-let _convertFileSrc: ((path: string) => string) | null = null;
-async function getConvertFileSrc(): Promise<((path: string) => string) | null> {
-  if (_convertFileSrc !== null) return _convertFileSrc;
-  if (!isTauriEnv()) return null;
-  try {
-    const core = await import('@tauri-apps/api/core');
-    _convertFileSrc = (core as { convertFileSrc?: (path: string) => string }).convertFileSrc || null;
-  } catch {
-    _convertFileSrc = null;
-  }
-  return _convertFileSrc;
+/** 获取 Tauri 的 convertFileSrc 函数 */
+function getConvertFileSrc(): ((path: string) => string) | null {
+  return (isTauriEnv() ? convertFileSrc : null) as ((path: string) => string) | null;
 }
 
 /** 获取应用数据根目录（Tauri: appDataDir, 浏览器: null） */
 async function getAppDataDir(): Promise<string | null> {
   if (!isTauriEnv()) return null;
   try {
-    const { appDataDir } = await import('@tauri-apps/api/path');
     return await appDataDir();
   } catch {
     return null;

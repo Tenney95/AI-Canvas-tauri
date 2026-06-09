@@ -88,6 +88,8 @@
   border-radius: 8px !important;
   overflow: hidden !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3) !important;
+  background-color: rgba(0, 0, 0, 0.5) !important;
+  backdrop-filter: blur(5px);
 }
 
 

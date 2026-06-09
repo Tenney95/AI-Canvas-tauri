@@ -241,7 +241,7 @@ export default function PresetManager() {
         {/* Tabs */}
         <div className="preset-manager-tabs" role="tablist">
           {PRESET_NODE_TYPES.map((nt) => (
-            <AnimatedButton
+            <button
               key={nt}
               type="button"
               className={`preset-manager-tab${activeTab === nt ? ' is-active' : ''}`}
@@ -288,7 +288,7 @@ export default function PresetManager() {
                 )}
               </svg>
               <span>{PRESET_NODE_TYPE_LABELS[nt]}</span>
-            </AnimatedButton>
+            </button>
           ))}
         </div>
 
