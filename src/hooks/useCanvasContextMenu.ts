@@ -64,8 +64,8 @@ export function useCanvasContextMenu() {
       const isImage = type === 'ai-image';
       const isPanorama = type === 'ai-panorama';
       const isSource = role === 'source';
-      const newWidth = type === 'ai-audio' ? 260 : isPanorama ? 300 : 280;
-      const newHeight = type === 'ai-audio' ? 140 : isImage ? 158 : isPanorama ? 200 : 160;
+      const newWidth = type === 'ai-audio' ? 260 : isPanorama ? 300 : type === 'ai-markdown' ? 280 : 280;
+      const newHeight = type === 'ai-audio' ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
       const newNode: RFNode<BaseNodeData> = {
         id: `node-${generateId()}`,
         type,

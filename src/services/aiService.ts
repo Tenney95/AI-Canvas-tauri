@@ -278,17 +278,13 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   if (provider === 'general') {
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
-    if (!gm.apiKey) throw new Error(`通用模型 "${gm.name}" 未配置 API Key`);
     if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
-    apiKey = gm.apiKey;
+    apiKey = gm.apiKey || '';
     baseUrl = gm.openaiUrl;
     modelName = gm.modelId;
   } else if (provider === 'localllm') {
-    baseUrl = config.localLLMUrl?.trim() || '';
-    apiKey = '';
-    if (!baseUrl) {
-      throw new Error('未配置本地大模型调用地址\n请在「设置 → 服务地址」中配置');
-    }
+    // 已合并到通用模型，此处保留兼容旧数据
+    throw new Error('本地大模型已迁移到「通用模型」，请重新选择模型\n请在「设置 → API Key」中添加通用模型');
   } else {
     const providerConfig = config.providers[provider];
     apiKey = providerConfig?.apiKey || '';
@@ -329,7 +325,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   }
 
   const controller = new AbortController();
-  const timeoutId = provider === 'localllm' ? setTimeout(() => controller.abort(), LOCAL_MODEL_TIMEOUT_MS) : undefined;
+  const timeoutId = provider === 'general' ? setTimeout(() => controller.abort(), LOCAL_MODEL_TIMEOUT_MS) : undefined;
 
   const response = await fetch(apiUrl, {
     method: 'POST',
@@ -418,7 +414,6 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
   if (provider === 'general') {
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
-    if (!gm.apiKey) throw new Error(`通用模型 "${gm.name}" 未配置 API Key`);
     if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
     const dimensions = mapImageDimensions(imageSize, aspectRatio);
     const sizeStr = `${dimensions.width}x${dimensions.height}`;
@@ -439,7 +434,7 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${gm.apiKey}`,
+        'Authorization': `Bearer ${gm.apiKey || ''}`,
       },
       body: JSON.stringify(requestBody),
       signal: controller.signal,
@@ -469,19 +464,16 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
   let apiKey: string;
 
   if (provider === 'localllm') {
-    baseUrl = config.localLLMUrl?.trim() || '';
-    apiKey = '';
-    if (!baseUrl) {
-      throw new Error('未配置本地大模型调用地址\n请在「设置 → 服务地址」中配置');
-    }
-  } else {
-    const providerConfig = config.providers[provider];
-    apiKey = providerConfig?.apiKey || '';
-    if (!apiKey) {
-      throw new Error(`未配置 ${provider} 的 API Key\n请在「设置 → API Key」中配置`);
-    }
-    baseUrl = providerConfig?.baseUrl || DEFAULT_BASE_URLS[provider] || '';
+    // 已合并到通用模型，此处保留兼容旧数据
+    throw new Error('本地大模型已迁移到「通用模型」，请重新选择模型\n请在「设置 → API Key」中添加通用模型');
   }
+
+  const providerConfig = config.providers[provider];
+  apiKey = providerConfig?.apiKey || '';
+  if (!apiKey) {
+    throw new Error(`未配置 ${provider} 的 API Key\n请在「设置 → API Key」中配置`);
+  }
+  baseUrl = providerConfig?.baseUrl || DEFAULT_BASE_URLS[provider] || '';
 
   if (!baseUrl) {
     throw new Error(`未配置 ${provider} 的服务地址\n请在「设置 → API Key」中添加`);
@@ -501,7 +493,6 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
   }
 
   const controller = new AbortController();
-  const timeoutId = provider === 'localllm' ? setTimeout(() => controller.abort(), LOCAL_MODEL_TIMEOUT_MS) : undefined;
 
   const requestBody: Record<string, unknown> = {
     model: modelName,
@@ -519,8 +510,6 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
     headers,
     body: JSON.stringify(requestBody),
     signal: controller.signal,
-  }).finally(() => {
-    if (timeoutId !== undefined) clearTimeout(timeoutId);
   });
 
   if (!response.ok) {
@@ -1317,9 +1306,8 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
   if (provider === 'general') {
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
-    if (!gm.apiKey) throw new Error(`通用模型 "${gm.name}" 未配置 API Key`);
     if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
-    return executeGeneralAsyncTask(gm.apiKey, gm.openaiUrl, gm.modelId, prompt, 'videos');
+    return executeGeneralAsyncTask(gm.apiKey || '', gm.openaiUrl, gm.modelId, prompt, 'videos');
   }
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置
@@ -1521,9 +1509,8 @@ export async function generateAudio(params: AIAudioGenParams): Promise<{ url: st
   if (provider === 'general') {
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
-    if (!gm.apiKey) throw new Error(`通用模型 "${gm.name}" 未配置 API Key`);
     if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
-    return executeGeneralAsyncTask(gm.apiKey, gm.openaiUrl, gm.modelId, prompt, 'audios');
+    return executeGeneralAsyncTask(gm.apiKey || '', gm.openaiUrl, gm.modelId, prompt, 'audios');
   }
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置

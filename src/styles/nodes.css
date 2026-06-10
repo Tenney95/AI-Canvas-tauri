@@ -17,9 +17,10 @@
 .node {
   display: flex;
   flex-direction: column;
-  background: rgba(56, 56, 76, 0.5);
-  backdrop-filter: blur(5px);
-  -webkit-backdrop-filter: blur(5px);
+  background: rgba(56, 56, 76, 0.6);
+  /* 这里加毛玻璃效果会有莫名其妙的投影问题，暂时不加 */
+  /* backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px); */
   border-radius: 12px;
   overflow: hidden;
   transition: border-color 0.2s, box-shadow 0.2s;
@@ -339,4 +340,113 @@
   right: 0;
   border-radius: 16px;
   overflow: hidden;
+}
+
+/* ════════════════════════════════════════════
+   Markdown Node
+   ════════════════════════════════════════════ */
+
+.markdown-node-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--theme-border);
+  background: rgba(26, 26, 38, 0.6);
+  flex-shrink: 0;
+}
+
+.markdown-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.markdown-mode-btn:hover {
+  background: var(--theme-hover);
+  color: var(--theme-text);
+}
+
+.markdown-mode-btn.active {
+  background: rgba(168, 85, 247, 0.15);
+  border-color: rgba(168, 85, 247, 0.4);
+  color: rgb(192, 132, 252);
+}
+
+.markdown-mode-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.markdown-node-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.markdown-edit-area {
+  flex: 1;
+  width: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--theme-text);
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 10px 12px;
+  tab-size: 2;
+}
+
+.markdown-edit-area::placeholder {
+  color: var(--theme-text-muted);
+}
+
+.markdown-preview-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+
+.markdown-preview-text {
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--theme-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  background: transparent;
+  border: none;
+}
+
+.markdown-node-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-top: 1px solid var(--theme-border);
+  font-size: 10px;
+  color: var(--theme-text-muted);
+  background: rgba(26, 26, 38, 0.4);
+  flex-shrink: 0;
+}
+
+.spinner-sm {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--theme-border);
+  border-top-color: var(--theme-text-secondary);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
 }

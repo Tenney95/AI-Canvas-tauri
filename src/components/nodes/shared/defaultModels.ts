@@ -8,24 +8,6 @@ export const defaultModelGroups: ModelGroup[] = [
   // 文本生成模型
   // ========================================
   {
-    id: 'localllm',
-    name: '本地大模型',
-    description: '本地部署（Ollama / vLLM 等）',
-    iconType: 'badge',
-    badgeText: 'L',
-    models: [
-      {
-        value: 'localllm/local',
-        provider: 'localllm',
-        label: '本地模型',
-        description: '调用本地大模型服务地址',
-        iconType: 'badge',
-        badgeText: 'L',
-        nodeTypes: ['ai-text'],
-      },
-    ],
-  },
-  {
     id: 'apimart',
     name: 'APIMart',
     description: '一个 API 搞定一切——节省 30-70%',

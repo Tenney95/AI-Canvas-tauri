@@ -20,6 +20,7 @@ const labelConfig: Record<string, { icon: string; color: string; bg: string }> =
   'ai-video': { icon: 'V', color: 'text-blue-400', bg: 'bg-blue-500/15' },
   'ai-audio': { icon: 'A', color: 'text-orange-400', bg: 'bg-orange-500/15' },
   'ai-panorama': { icon: 'P', color: 'text-cyan-400', bg: 'bg-cyan-500/15' },
+  'ai-markdown': { icon: 'MD', color: 'text-purple-400', bg: 'bg-purple-500/15' },
 };
 
 export default function NodeLabel({ kind, label, displayId, isBeta, nodeId: _nodeId, onRename }: NodeLabelProps) {

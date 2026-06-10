@@ -10,7 +10,6 @@ import { setBaseDataDir } from '../services/fileService';
 const defaultConfig: AppConfig = {
   providers: {},
   theme: 'dark',
-  localLLMUrl: '',
   comfyUIUrl: '',
   generalModels: [],
 };

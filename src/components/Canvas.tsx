@@ -25,6 +25,7 @@ import ImageNode from './nodes/ImageNode';
 import VideoNode from './nodes/VideoNode';
 import AudioNode from './nodes/AudioNode';
 import PanoramaNode from './nodes/PanoramaNode';
+import MarkdownNode from './nodes/MarkdownNode';
 import GroupNode from './nodes/GroupNode';
 import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
@@ -48,6 +49,7 @@ const nodeTypes: NodeTypes = {
   'ai-video': VideoNode,
   'ai-audio': AudioNode,
   'ai-panorama': PanoramaNode,
+  'ai-markdown': MarkdownNode,
   group: GroupNode,
 };
 

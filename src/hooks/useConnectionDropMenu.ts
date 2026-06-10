@@ -27,21 +27,30 @@ const CONNECTION_MENU_MAP: Record<string, ConnectionMenuOption[]> = {
     { label: '生成视频', type: 'ai-video' },
     { label: '生成音频', type: 'ai-audio' },
     { label: '生成360全景图', type: 'ai-panorama' },
+    { label: 'Markdown 文档', type: 'ai-markdown' },
   ],
   'ai-image': [
     { label: '生成文本', type: 'ai-text' },
     { label: '生成图像', type: 'ai-image' },
     { label: '生成视频', type: 'ai-video' },
     { label: '生成360全景图', type: 'ai-panorama' },
+    { label: 'Markdown 文档', type: 'ai-markdown' },
   ],
   'ai-video': [],
   'ai-audio': [
     { label: '生成文本', type: 'ai-text' },
     { label: '生成音频', type: 'ai-audio' },
+    { label: 'Markdown 文档', type: 'ai-markdown' },
   ],
   'ai-panorama': [
     { label: '生成文本', type: 'ai-text' },
     { label: '生成图像', type: 'ai-image' },
+    { label: 'Markdown 文档', type: 'ai-markdown' },
+  ],
+  'ai-markdown': [
+    { label: '生成文本', type: 'ai-text' },
+    { label: '生成图像', type: 'ai-image' },
+    { label: 'Markdown 文档', type: 'ai-markdown' },
   ],
 };
 
@@ -112,7 +121,7 @@ export function useConnectionDropMenu(smoothLine: boolean) {
       const srcRight = srcX + srcWidth;
 
       const newWidth = option.type === 'ai-audio' ? 260 : option.type === 'ai-panorama' ? 300 : 280;
-      const newHeight = option.type === 'ai-audio' ? 140 : option.type === 'ai-image' ? 158 : option.type === 'ai-panorama' ? 200 : 160;
+      const newHeight = option.type === 'ai-audio' ? 140 : option.type === 'ai-image' ? 158 : option.type === 'ai-panorama' ? 200 : option.type === 'ai-markdown' ? 200 : 160;
 
       // Determine handle direction based on position relative to source
       const releasedRight = flowPos.x >= srcRight + 10;

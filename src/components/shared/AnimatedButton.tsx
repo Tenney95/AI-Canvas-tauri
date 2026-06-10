@@ -5,7 +5,7 @@
 import { motion, type MotionProps } from 'framer-motion';
 import type { ReactNode } from 'react';
 
-interface AnimatedButtonProps extends MotionProps {
+interface AnimatedButtonProps extends Omit<MotionProps, 'onClick'> {
   children: ReactNode;
   /** 悬浮时放大比例，默认 1.05 */
   scale?: number;
@@ -13,6 +13,7 @@ interface AnimatedButtonProps extends MotionProps {
   style?: React.CSSProperties;
   type?: React.ButtonHTMLAttributes<HTMLButtonElement>['type'];
   disabled?: boolean;
+  title?: string;
   onClick?: React.MouseEventHandler<HTMLButtonElement>;
 }
 

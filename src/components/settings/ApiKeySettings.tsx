@@ -575,7 +575,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
               type="button"
               className="settings-getkey"
               onClick={async () => {
-                if (!newModelName.trim() || !newModelOpenaiUrl.trim() || !newModelId.trim() || !newModelApiKey.trim()) return;
+                if (!newModelName.trim() || !newModelOpenaiUrl.trim() || !newModelId.trim()) return;
                 addGeneralModel({
                   name: newModelName.trim(),
                   openaiUrl: newModelOpenaiUrl.trim(),
@@ -797,17 +797,6 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
             </svg>
             <span className="settings-card-title">服务地址</span>
           </div>
-          <div className="settings-label">本地大模型调用地址</div>
-          <input
-            type="text"
-            className="settings-input settings-input--mb10"
-            placeholder="http://localhost:11434/v1"
-            defaultValue={config.localLLMUrl || ''}
-            onBlur={(e) => updateConfig({ localLLMUrl: e.target.value })}
-          />
-          <p className="text-[11px] text-canvas-text-muted" style={{ marginTop: -4, marginBottom: 8 }}>
-            Ollama、vLLM 等本地大模型的 API 端点地址
-          </p>
           <div className="settings-label">ComfyUI 服务地址</div>
           <input
             type="text"

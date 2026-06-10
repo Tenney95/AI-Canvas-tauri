@@ -1,6 +1,6 @@
 # AI Canvas - Tauri 2 + React Flow
 
-基于 **React Flow** + **Tauri 2** 重构的 AI 多模态节点画布编辑器，仿照 [AI-CanvasPro](https://github.com/ashuoAI/AI-CanvasPro) 项目。
+基于 **React Flow** + **Tauri 2** 重构的 AI 多模态节点画布编辑器，仿照 [AI-CanvasPro](https://github.com/ashuoAI/AI-CanvasPro) 项目。所有数据完全本地化存储——项目文件（`.aicanvas.json`）、上传的媒体资源、API 配置均保存在用户指定的本地目录中，无需依赖任何云服务。借助 Tauri 2 的原生文件系统能力，通过 `fileService.ts` 抽象层统一管理文件的读写、导入导出和画布截图，回退到纯浏览器模式时则自动切换至 IndexedDB 本地持久化，真正实现"一个项目一个文件夹"的自包含管理。除了支持云端 AI 厂商（OpenAI、DeepSeek、即梦等），还兼容本地部署的大模型和 ComfyUI 工作流：通过「通用模型」功能接入任意 OpenAI 兼容的本地大模型接口（如 Ollama、vLLM），通过工作流面板导入 ComfyUI JSON 即可直接在画布上调用本地 ComfyUI 引擎执行文生图、图生视频等任务，实现云端与本地 AI 能力的无缝切换。
 
 ## 技术栈
 
@@ -33,15 +33,6 @@
 - 设置面板（API Key 配置、快捷键）
 - 底部控制栏（缩放、网格开关、适应画布）
 
-### 快捷键
-| 快捷键 | 功能 |
-|--------|------|
-| `Ctrl+S` | 保存项目 |
-| `Ctrl+Z` | 撤销 |
-| `Ctrl+Shift+Z` | 重做 |
-| `Delete / D` | 删除选中节点 |
-| `双击画布` | 添加文本节点 |
-| `F` | 适应画布 |
 
 ## 项目结构
 

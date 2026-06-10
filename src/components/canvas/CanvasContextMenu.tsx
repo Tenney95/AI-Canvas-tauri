@@ -19,6 +19,7 @@ const SRC_NODE_ITEMS: { label: string; type: NodeType }[] = [
   { label: '图像', type: 'ai-image' },
   { label: '视频', type: 'ai-video' },
   { label: '音频', type: 'ai-audio' },
+  { label: 'Markdown', type: 'ai-markdown' },
 ];
 
 /** 菜单项行高估算（含 padding） */

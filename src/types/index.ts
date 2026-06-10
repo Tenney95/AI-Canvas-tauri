@@ -9,6 +9,7 @@ export type NodeType =
   | 'ai-video'
   | 'ai-audio'
   | 'ai-panorama'
+  | 'ai-markdown'
   | 'source-image'
   | 'source-video'
   | 'source-audio'
@@ -73,7 +74,6 @@ export interface DreaminaAuthData {
 export interface AppConfig {
   providers: Record<string, ApiProviderConfig>;
   theme: 'dark' | 'light';
-  localLLMUrl?: string;       // 本地大模型调用地址
   comfyUIUrl?: string;        // ComfyUI 服务地址
   dreaminaAuth?: DreaminaAuthData; // 即梦登录态
   baseDataDir?: string;       // 用户自定义文件保存根目录，保存结构为 {baseDataDir}/{projectId}/**
