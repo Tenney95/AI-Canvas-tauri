@@ -3,7 +3,7 @@
  */
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { AppConfig } from '../types';
+import type { AppConfig, GeneralModelConfig } from '../types';
 import * as fileService from '../services/fileService';
 import { setBaseDataDir } from '../services/fileService';
 
@@ -12,6 +12,7 @@ const defaultConfig: AppConfig = {
   theme: 'dark',
   localLLMUrl: '',
   comfyUIUrl: '',
+  generalModels: [],
 };
 
 export interface ConfigSlice {
@@ -20,6 +21,9 @@ export interface ConfigSlice {
   setProviderKey: (providerName: string, key: string) => void;
   setProviderUrl: (providerName: string, url: string) => void;
   setProviderConfig: (providerName: string, cfg: Partial<{ apiKey: string; baseUrl: string }>) => void;
+  addGeneralModel: (model: Omit<GeneralModelConfig, 'id'>) => void;
+  updateGeneralModel: (id: string, model: Partial<GeneralModelConfig>) => void;
+  removeGeneralModel: (id: string) => void;
   saveConfig: () => Promise<void>;
   loadConfig: () => Promise<void>;
 }
@@ -73,6 +77,35 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
             ...cfg,
           },
         },
+      },
+    })),
+
+  addGeneralModel: (model) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        generalModels: [
+          ...(state.config.generalModels || []),
+          { ...model, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6) },
+        ],
+      },
+    })),
+
+  updateGeneralModel: (id, model) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        generalModels: (state.config.generalModels || []).map((m) =>
+          m.id === id ? { ...m, ...model } : m,
+        ),
+      },
+    })),
+
+  removeGeneralModel: (id) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        generalModels: (state.config.generalModels || []).filter((m) => m.id !== id),
       },
     })),
 

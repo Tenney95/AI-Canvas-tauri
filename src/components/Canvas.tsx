@@ -194,6 +194,8 @@ function CanvasInner() {
     handleDuplicate,
     handleUngroup,
     handleDelete,
+    handleShowInFolder,
+    showInFolder,
   } = useNodeContextMenu();
   const isGroupNode = nodeCtxMenu.nodeId
     ? nodes.find((n) => n.id === nodeCtxMenu.nodeId && n.type === 'group') != null
@@ -649,6 +651,7 @@ function CanvasInner() {
         onDuplicate={handleDuplicate}
         onUngroup={isGroupNode ? handleUngroup : undefined}
         onDelete={handleDelete}
+        onShowInFolder={showInFolder ? handleShowInFolder : undefined}
       />
 
       {/* Multi-select toolbar */}

@@ -10,6 +10,12 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import ModalOverlay from './shared/ModalOverlay';
 import AnimatedButton from './shared/AnimatedButton';
+import {
+  GENERAL_MODEL_CATEGORY_LABELS,
+  GENERAL_MODEL_CATEGORY_COLORS,
+  type GeneralModelCategory,
+  type GeneralModelConfig,
+} from '../types';
 
 /* ── External URLs ── */
 const PROVIDER_URLS: Record<string, string> = {
@@ -173,12 +179,23 @@ function ConfigInput({
 }
 
 export default function SettingsPanel() {
-  const { settingsOpen, setSettingsOpen, config, setProviderKey, setProviderUrl, updateConfig, saveConfig, currentProjectId } =
+  const { settingsOpen, setSettingsOpen, config, setProviderKey, setProviderUrl, updateConfig, saveConfig, currentProjectId,
+    addGeneralModel, updateGeneralModel, removeGeneralModel } =
     useAppStore();
   const [activeTab, setActiveTab] = useState<'general' | 'api' | 'shortcuts'>('api');
   const [testStates, setTestStates] = useState<Record<string, TestState>>({});
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
+
+  // ── 通用模型表单状态 ──
+  const [newModelName, setNewModelName] = useState('');
+  const [newModelOpenaiUrl, setNewModelOpenaiUrl] = useState('');
+  const [newModelAnthropicUrl, setNewModelAnthropicUrl] = useState('');
+  const [newModelId, setNewModelId] = useState('');
+  const [newModelApiKey, setNewModelApiKey] = useState('');
+  const [newModelCategory, setNewModelCategory] = useState<GeneralModelCategory>('mixed');
+  const [editingModelId, setEditingModelId] = useState<string | null>(null);
+  const generalModels = config.generalModels || [];
 
   // ── 即梦 Dreamina 登录状态 ──
   const [dreaminaLoading, setDreaminaLoading] = useState(false);
@@ -654,6 +671,230 @@ export default function SettingsPanel() {
                     <div className="dreamina-settings-desc" style={{ marginBottom: 0, marginTop: 10 }}>
                       点击网页登录完成授权，支持手机号、扫码等多种方式。登录成功后 Cookie 将自动填充，也可手动粘贴到上方输入框保存。
                     </div>
+                  </div>
+
+                  {/* ── 通用模型 ── */}
+                  <div className="settings-section settings-card">
+                    <div className="settings-card-head">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: '#a78bfa' }}>
+                        <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                        <path d="M2 17l10 5 10-5" />
+                        <path d="M2 12l10 5 10-5" />
+                      </svg>
+                      <span className="settings-card-title">通用模型</span>
+                      <span className="text-[10px] text-canvas-text-muted">自定义兼容接口</span>
+                      <span className="settings-card-head-spacer" style={{ flex: 1 }} />
+                      <AnimatedButton
+                        type="button"
+                        className="settings-getkey"
+                        onClick={() => {
+                          if (!newModelName.trim() || !newModelOpenaiUrl.trim() || !newModelId.trim() || !newModelApiKey.trim()) return;
+                          addGeneralModel({
+                            name: newModelName.trim(),
+                            openaiUrl: newModelOpenaiUrl.trim(),
+                            anthropicUrl: newModelAnthropicUrl.trim(),
+                            modelId: newModelId.trim(),
+                            apiKey: newModelApiKey.trim(),
+                            category: newModelCategory,
+                          });
+                          setNewModelName('');
+                          setNewModelOpenaiUrl('');
+                          setNewModelAnthropicUrl('');
+                          setNewModelId('');
+                          setNewModelApiKey('');
+                          setNewModelCategory('mixed');
+                        }}
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <line x1="12" y1="5" x2="12" y2="19" />
+                          <line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                        添加模型
+                      </AnimatedButton>
+                    </div>
+
+                    {/* ── 新模型输入表单 ── */}
+                    <div className="general-model-form">
+                      <div className="general-model-form-row">
+                        <div className="general-model-form-col general-model-form-col--name">
+                          <div className="settings-label">名称</div>
+                          <input type="text" className="settings-input"
+                            placeholder="如 DeepSeek"
+                            value={newModelName}
+                            onChange={(e) => setNewModelName(e.target.value)}
+                          />
+                        </div>
+                        <div className="general-model-form-col general-model-form-col--model">
+                          <div className="settings-label">模型 ID</div>
+                          <input type="text" className="settings-input"
+                            placeholder="如 deepseek-v4-pro"
+                            value={newModelId}
+                            onChange={(e) => setNewModelId(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="general-model-form-row">
+                        <div className="general-model-form-col">
+                          <div className="settings-label">OpenAI 地址</div>
+                          <input type="text" className="settings-input"
+                            placeholder="https://api.deepseek.com"
+                            value={newModelOpenaiUrl}
+                            onChange={(e) => setNewModelOpenaiUrl(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="general-model-form-row">
+                        <div className="general-model-form-col">
+                          <div className="settings-label">Anthropic 地址</div>
+                          <input type="text" className="settings-input"
+                            placeholder="https://api.deepseek.com/anthropic"
+                            value={newModelAnthropicUrl}
+                            onChange={(e) => setNewModelAnthropicUrl(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="general-model-form-row">
+                        <div className="general-model-form-col">
+                          <div className="settings-label">API 密钥</div>
+                          <input type="password" className="settings-input"
+                            placeholder="sk-..."
+                            value={newModelApiKey}
+                            onChange={(e) => setNewModelApiKey(e.target.value)}
+                          />
+                        </div>
+                        <div className="general-model-form-col general-model-form-col--category">
+                          <div className="settings-label">模型种类</div>
+                          <div className="general-model-category-select">
+                            {(['mixed', 'text', 'image', 'video', 'audio'] as GeneralModelCategory[]).map((cat) => (
+                              <button
+                                key={cat}
+                                type="button"
+                                className={`general-model-category-btn${newModelCategory === cat ? ' active' : ''}`}
+                                style={newModelCategory === cat ? { '--cat-color': GENERAL_MODEL_CATEGORY_COLORS[cat] } as React.CSSProperties : undefined}
+                                onClick={() => setNewModelCategory(cat)}
+                              >
+                                {GENERAL_MODEL_CATEGORY_LABELS[cat]}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ── 已添加的模型列表 ── */}
+                    {generalModels.length > 0 && (
+                      <div className="general-model-list">
+                        <div className="settings-label" style={{ marginTop: 12 }}>已添加的模型</div>
+                        {generalModels.map((m) => (
+                          <div key={m.id} className="general-model-item">
+                            <div className="general-model-item-header">
+                              <span className="general-model-item-name">{m.name}</span>
+                              <span
+                                className="general-model-item-category"
+                                style={{ color: GENERAL_MODEL_CATEGORY_COLORS[m.category], background: `${GENERAL_MODEL_CATEGORY_COLORS[m.category]}1a` }}
+                              >
+                                {GENERAL_MODEL_CATEGORY_LABELS[m.category]}
+                              </span>
+                              <span className="general-model-item-id">{m.modelId}</span>
+                              <span className="general-model-item-head-spacer" style={{ flex: 1 }} />
+                              <AnimatedButton
+                                type="button"
+                                className="general-model-item-remove"
+                                onClick={() => removeGeneralModel(m.id)}
+                              >
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <line x1="18" y1="6" x2="6" y2="18" />
+                                  <line x1="6" y1="6" x2="18" y2="18" />
+                                </svg>
+                              </AnimatedButton>
+                            </div>
+                            {editingModelId === m.id ? (
+                              <div className="general-model-form general-model-edit-form">
+                                <div className="general-model-form-row">
+                                  <div className="general-model-form-col general-model-form-col--name">
+                                    <div className="settings-label">名称</div>
+                                    <input type="text" className="settings-input"
+                                      defaultValue={m.name}
+                                      onBlur={(e) => updateGeneralModel(m.id, { name: e.target.value })}
+                                    />
+                                  </div>
+                                  <div className="general-model-form-col general-model-form-col--model">
+                                    <div className="settings-label">模型 ID</div>
+                                    <input type="text" className="settings-input"
+                                      defaultValue={m.modelId}
+                                      onBlur={(e) => updateGeneralModel(m.id, { modelId: e.target.value })}
+                                    />
+                                  </div>
+                                </div>
+                                <div className="general-model-form-row">
+                                  <div className="general-model-form-col">
+                                    <div className="settings-label">OpenAI 地址</div>
+                                    <input type="text" className="settings-input"
+                                      defaultValue={m.openaiUrl}
+                                      onBlur={(e) => updateGeneralModel(m.id, { openaiUrl: e.target.value })}
+                                    />
+                                  </div>
+                                </div>
+                                <div className="general-model-form-row">
+                                  <div className="general-model-form-col">
+                                    <div className="settings-label">Anthropic 地址</div>
+                                    <input type="text" className="settings-input"
+                                      defaultValue={m.anthropicUrl}
+                                      onBlur={(e) => updateGeneralModel(m.id, { anthropicUrl: e.target.value })}
+                                    />
+                                  </div>
+                                </div>
+                                <div className="general-model-form-row">
+                                  <div className="general-model-form-col">
+                                    <div className="settings-label">API 密钥</div>
+                                    <input type="password" className="settings-input"
+                                      defaultValue={m.apiKey}
+                                      onBlur={(e) => updateGeneralModel(m.id, { apiKey: e.target.value })}
+                                    />
+                                  </div>
+                                  <div className="general-model-form-col general-model-form-col--category">
+                                    <div className="settings-label">模型种类</div>
+                                    <div className="general-model-category-select">
+                                      {(['mixed', 'text', 'image', 'video', 'audio'] as GeneralModelCategory[]).map((cat) => (
+                                        <button
+                                          key={cat}
+                                          type="button"
+                                          className={`general-model-category-btn${m.category === cat ? ' active' : ''}`}
+                                          style={m.category === cat ? { '--cat-color': GENERAL_MODEL_CATEGORY_COLORS[cat] } as React.CSSProperties : undefined}
+                                          onClick={() => updateGeneralModel(m.id, { category: cat })}
+                                        >
+                                          {GENERAL_MODEL_CATEGORY_LABELS[cat]}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                                <AnimatedButton
+                                  type="button"
+                                  className="settings-save-btn"
+                                  style={{ marginTop: 8 }}
+                                  onClick={() => setEditingModelId(null)}
+                                >
+                                  收起
+                                </AnimatedButton>
+                              </div>
+                            ) : (
+                              <AnimatedButton
+                                type="button"
+                                className="settings-provider-test-btn"
+                                onClick={() => setEditingModelId(m.id)}
+                              >
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                                </svg>
+                                编辑
+                              </AnimatedButton>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* ── 服务地址 ── */}

@@ -77,7 +77,37 @@ export interface AppConfig {
   comfyUIUrl?: string;        // ComfyUI 服务地址
   dreaminaAuth?: DreaminaAuthData; // 即梦登录态
   baseDataDir?: string;       // 用户自定义文件保存根目录，保存结构为 {baseDataDir}/{projectId}/**
+  generalModels?: GeneralModelConfig[]; // 用户自建通用模型
 }
+
+// ── 通用模型配置 ──
+export type GeneralModelCategory = 'mixed' | 'text' | 'audio' | 'video' | 'image';
+
+export interface GeneralModelConfig {
+  id: string;
+  name: string;               // 名称
+  openaiUrl: string;          // OpenAI 接口地址
+  anthropicUrl: string;       // Anthropic 接口地址
+  modelId: string;            // 模型 ID
+  apiKey: string;             // API 密钥
+  category: GeneralModelCategory; // 模型种类
+}
+
+export const GENERAL_MODEL_CATEGORY_LABELS: Record<GeneralModelCategory, string> = {
+  mixed: '混合模型',
+  text: '纯文本',
+  audio: '音频',
+  video: '视频',
+  image: '图片',
+};
+
+export const GENERAL_MODEL_CATEGORY_COLORS: Record<GeneralModelCategory, string> = {
+  mixed: '#6366f1',
+  text: '#6366f1',
+  audio: '#f97316',
+  video: '#3b82f6',
+  image: '#22c55e',
+};
 
 // 引用节点信息
 export interface NodeReference {

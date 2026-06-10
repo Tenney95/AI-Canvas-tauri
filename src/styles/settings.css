@@ -365,3 +365,113 @@
 
 /* ── Service address section ── */
 .settings-service-card {}
+
+/* ── General Model ── */
+.general-model-form {
+  margin-bottom: 4px;
+}
+.general-model-form-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.general-model-form-col {
+  flex: 1;
+  min-width: 0;
+}
+.general-model-form-col--name {
+  flex: 1.2;
+}
+.general-model-form-col--model {
+  flex: 1.5;
+}
+.general-model-form-col--category {
+  flex: 0.8;
+  min-width: 180px;
+}
+
+/* Category selector */
+.general-model-category-select {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+.general-model-category-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--theme-border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.general-model-category-btn:hover {
+  color: var(--theme-text-secondary);
+  border-color: var(--border-secondary);
+}
+.general-model-category-btn.active {
+  color: var(--cat-color, #6366f1);
+  border-color: var(--cat-color, #6366f1);
+  background: color-mix(in srgb, var(--cat-color, #6366f1) 12%, transparent);
+}
+
+/* Model list */
+.general-model-list {
+  border-top: 1px solid var(--theme-border);
+  margin-top: 8px;
+  padding-top: 4px;
+}
+.general-model-item {
+  background: var(--white-alpha-03);
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+}
+.general-model-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.general-model-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--theme-text);
+}
+.general-model-item-category {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.general-model-item-id {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+}
+.general-model-item-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.general-model-item-remove:hover {
+  color: var(--danger-light);
+  background: rgba(239, 68, 68, 0.12);
+}
+.general-model-edit-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--theme-border);
+}

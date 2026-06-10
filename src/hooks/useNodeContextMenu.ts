@@ -3,7 +3,7 @@
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
-import type { BaseNodeData } from '../types';
+import type { BaseNodeData, NodeType } from '../types';
 import type { Node as RFNode } from '@xyflow/react';
 
 export interface NodeContextMenuState {
@@ -109,6 +109,39 @@ export function useNodeContextMenu() {
     useAppStore.getState().showToast('节点已删除');
   }, [menu.nodeId, deleteNode, closeMenu]);
 
+  // ── 打开文件所在位置 ──
+  const mediaTypes: NodeType[] = [
+    'ai-image', 'ai-video', 'ai-audio', 'ai-panorama',
+    'source-image', 'source-video', 'source-audio',
+  ];
+  const currentNode = nodes.find((n) => n.id === menu.nodeId);
+  const nodeType = (currentNode?.type) as NodeType | undefined;
+  const nodeData = currentNode?.data as BaseNodeData | undefined;
+  const showInFolder = menu.nodeId != null
+    && nodeType != null
+    && mediaTypes.includes(nodeType)
+    && !!nodeData?.filePath;
+
+  const handleShowInFolder = useCallback(async () => {
+    if (!menu.nodeId) return;
+    const node = nodes.find((n) => n.id === menu.nodeId);
+    const fp = (node?.data as BaseNodeData | undefined)?.filePath;
+    if (!fp) {
+      useAppStore.getState().showToast('无法找到文件路径');
+      closeMenu();
+      return;
+    }
+    try {
+      const { revealFileInFolder } = await import('../services/fileService');
+      await revealFileInFolder(fp);
+      closeMenu();
+      useAppStore.getState().showToast('已打开文件位置');
+    } catch {
+      useAppStore.getState().showToast('无法打开文件位置');
+      closeMenu();
+    }
+  }, [menu.nodeId, nodes, closeMenu]);
+
   return {
     menu,
     menuRef,
@@ -119,5 +152,7 @@ export function useNodeContextMenu() {
     handleDuplicate,
     handleUngroup,
     handleDelete,
+    handleShowInFolder,
+    showInFolder,
   };
 }

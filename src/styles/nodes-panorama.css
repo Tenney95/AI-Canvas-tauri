@@ -226,6 +226,7 @@
   z-index: 9998;
   background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(4px);
+  border-radius: 16px;
 }
 
 /* ══ Pano Node Toolbar — above selected PanoramaNode ══ */

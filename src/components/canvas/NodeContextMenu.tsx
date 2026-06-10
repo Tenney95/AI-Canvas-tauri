@@ -10,11 +10,12 @@ const MENU_ITEMS = [
   { label: '剪切', shortcut: 'Ctrl X', action: 'cut' as const },
   { label: '创建副本', shortcut: 'Ctrl D', action: 'duplicate' as const },
   { label: '解除分组', shortcut: '', action: 'ungroup' as const, groupOnly: true },
+  { label: '打开文件所在位置', shortcut: '', action: 'showInFolder' as const, conditional: true },
   { label: '删除', shortcut: 'Del', action: 'delete' as const, danger: true },
 ];
 
 const MENU_W = 176;
-const MENU_H = 215; // 5 items + 1 sep
+const MENU_H = 250; // 6 items + 2 seps
 
 interface NodeContextMenuProps {
   visible: boolean;
@@ -25,8 +26,8 @@ interface NodeContextMenuProps {
   onDuplicate: () => void;
   onUngroup?: () => void;
   onDelete: () => void;
+  onShowInFolder?: () => void;
 }
-
 function NodeContextMenu({
   visible,
   position,
@@ -36,6 +37,7 @@ function NodeContextMenu({
   onDuplicate,
   onUngroup,
   onDelete,
+  onShowInFolder,
 }: NodeContextMenuProps) {
   if (!visible) return null;
 
@@ -46,9 +48,14 @@ function NodeContextMenu({
     cut: onCut,
     duplicate: onDuplicate,
     delete: onDelete,
+    showInFolder: onShowInFolder || (() => {}),
   };
 
-  const items = MENU_ITEMS.filter((item) => !item.groupOnly || onUngroup);
+  const items = MENU_ITEMS.filter((item) => {
+    if (item.groupOnly && !onUngroup) return false;
+    if (item.conditional && item.action === 'showInFolder' && !onShowInFolder) return false;
+    return true;
+  });
 
   return (
     <div

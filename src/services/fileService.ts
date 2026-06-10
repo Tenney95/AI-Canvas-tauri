@@ -1090,3 +1090,50 @@ export async function deletePreset(id: string): Promise<void> {
     throw error;
   }
 }
+
+// ============================================
+// 系统文件管理器 — 打开文件所在位置
+// ============================================
+
+/**
+ * 在系统文件管理器中显示文件位置
+ * - Windows：资源管理器并高亮选中文件
+ * - macOS：Finder 中显示文件
+ * - Linux：打开文件所在文件夹
+ */
+export async function revealFileInFolder(filePath: string): Promise<void> {
+  if (!isTauriEnv()) {
+    console.warn('[fileService] revealFileInFolder: 仅 Tauri 桌面环境支持');
+    return;
+  }
+
+  try {
+    const { Command } = await import('@tauri-apps/plugin-shell');
+
+    // 检测操作系统
+    const plat = (navigator.platform || '').toLowerCase();
+    const isWin = plat.includes('win');
+    const isMac = plat.includes('mac');
+
+    if (isWin) {
+      // Windows: explorer /select, "path" — 必须用反斜杠
+      const winPath = filePath.replace(/\//g, '\\');
+      const cmd = Command.create('explorer', ['/select,', winPath]);
+      await cmd.execute();
+    } else if (isMac) {
+      // macOS: open -R "path" (Reveal in Finder)
+      // 注意：'mac-open' 是 capabilities 中的 name，会映射到 cmd: 'open'
+      const cmd = Command.create('mac-open', ['-R', filePath]);
+      await cmd.execute();
+    } else {
+      // Linux: xdg-open <dir>
+      const sep = filePath.includes('\\') ? '\\' : '/';
+      const dirPath = filePath.substring(0, filePath.lastIndexOf(sep));
+      const cmd = Command.create('xdg-open', [dirPath]);
+      await cmd.execute();
+    }
+  } catch (err) {
+    console.error('[fileService] revealFileInFolder 失败:', filePath, err);
+    throw err;
+  }
+}
