@@ -3,6 +3,7 @@
  * 支持双击标签文本进行重命名
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { Icon } from '@iconify/react';
 import type { NodeType } from '../../../types';
 
 interface NodeLabelProps {
@@ -15,12 +16,12 @@ interface NodeLabelProps {
 }
 
 const labelConfig: Record<string, { icon: string; color: string; bg: string }> = {
-  'ai-text': { icon: 'T', color: 'text-indigo-400', bg: 'bg-indigo-500/15' },
-  'ai-image': { icon: 'I', color: 'text-green-400', bg: 'bg-green-500/15' },
-  'ai-video': { icon: 'V', color: 'text-blue-400', bg: 'bg-blue-500/15' },
-  'ai-audio': { icon: 'A', color: 'text-orange-400', bg: 'bg-orange-500/15' },
-  'ai-panorama': { icon: 'P', color: 'text-cyan-400', bg: 'bg-cyan-500/15' },
-  'ai-markdown': { icon: 'MD', color: 'text-purple-400', bg: 'bg-purple-500/15' },
+  'ai-text': { icon: 'mdi:text-box-outline', color: 'text-indigo-400', bg: 'bg-indigo-500/15' },
+  'ai-image': { icon: 'mdi:image-outline', color: 'text-green-400', bg: 'bg-green-500/15' },
+  'ai-video': { icon: 'mdi:video-outline', color: 'text-blue-400', bg: 'bg-blue-500/15' },
+  'ai-audio': { icon: 'mdi:volume-high', color: 'text-orange-400', bg: 'bg-orange-500/15' },
+  'ai-panorama': { icon: 'mdi:panorama', color: 'text-cyan-400', bg: 'bg-cyan-500/15' },
+  'ai-markdown': { icon: 'mdi:language-markdown-outline', color: 'text-purple-400', bg: 'bg-purple-500/15' },
 };
 
 export default function NodeLabel({ kind, label, displayId, isBeta, nodeId: _nodeId, onRename }: NodeLabelProps) {
@@ -66,10 +67,10 @@ export default function NodeLabel({ kind, label, displayId, isBeta, nodeId: _nod
   return (
     <div className="node-label flex items-center gap-2 px-3 py-2 select-none" data-label-kind={kind}>
       <span
-        className={`node-label-icon w-5 h-5 rounded flex items-center justify-center text-[11px] font-bold ${config.bg} ${config.color}`}
+        className={`node-label-icon w-5 h-5 rounded flex items-center justify-center ${config.bg} ${config.color}`}
         aria-hidden="true"
       >
-        {config.icon}
+        <Icon icon={config.icon} width="14" height="14" />
       </span>
       {isEditing ? (
         <input

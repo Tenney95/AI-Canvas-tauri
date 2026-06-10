@@ -8,6 +8,8 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import ModalOverlay from './shared/ModalOverlay';
 import AnimatedButton from './shared/AnimatedButton';
 import ApiKeySettings from './settings/ApiKeySettings';
+import { BACKGROUND_OPTIONS } from './backgrounds/CanvasBackground';
+import type { CanvasBackground as CanvasBg } from '../types';
 
 export default function SettingsPanel() {
   const { settingsOpen, setSettingsOpen, config, updateConfig, saveConfig, currentProjectId } =
@@ -130,6 +132,55 @@ export default function SettingsPanel() {
 
             {activeTab === 'general' && (
               <div className="space-y-6">
+                {/* 画布背景主题 */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">画布背景</h3>
+                  <div className="grid grid-cols-3 gap-2">
+                    {BACKGROUND_OPTIONS.map(({ value, label }) => {
+                      const isActive = (config.canvasBackground || 'default') === value;
+                      return (
+                        <AnimatedButton
+                          key={value}
+                          onClick={() => {
+                            updateConfig({ canvasBackground: value as CanvasBg });
+                            saveConfig();
+                          }}
+                          className={`flex flex-col items-center gap-2 p-3 rounded-lg border transition-colors ${
+                            isActive
+                              ? 'border-indigo-500 bg-indigo-500/10 text-indigo-400'
+                              : 'border-canvas-border bg-canvas-card text-canvas-text-secondary hover:border-canvas-hover'
+                          }`}
+                        >
+                          {/* 预览缩略图 */}
+                          <div className={`w-full h-12 rounded overflow-hidden border border-canvas-border ${
+                            value === 'default'
+                              ? 'bg-canvas-bg'
+                              : value === 'solar-system'
+                              ? 'bg-gradient-to-br from-[#0a0a1a] via-[#1a1030] to-[#0a1020]'
+                              : 'bg-black'
+                          }`}>
+                            {value === 'default' && (
+                              <div className="w-full h-full" style={{
+                                backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.08) 1px, transparent 1px)',
+                                backgroundSize: '8px 8px',
+                              }} />
+                            )}
+                            {value === 'solar-system' && (
+                              <div className="w-full h-full flex items-center justify-center relative">
+                                <div className="w-5 h-5 rounded-full bg-gradient-to-br from-purple-400 to-orange-400 opacity-80 shadow-lg shadow-orange-500/30" />
+                                <div className="absolute bottom-1 left-0 right-0 flex justify-center">
+                                  <div className="w-8 h-1 rounded-full bg-white/15" style={{ borderRadius: '50% 50% 0 0', borderTop: '1px solid rgba(255,255,255,0.15)' }} />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          <span className="text-[11px] font-medium">{label}</span>
+                        </AnimatedButton>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div style={{ display: 'none' }}>
                   <h3 className="text-sm font-medium text-canvas-text mb-3">输入偏好</h3>
                   <div className="space-y-3">

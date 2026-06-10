@@ -8,6 +8,7 @@ import { ReactFlow,
   MiniMap,
   BackgroundVariant,
   ConnectionMode,
+  SelectionMode,
   useReactFlow,
   useViewport,
   ReactFlowProvider,
@@ -244,8 +245,9 @@ function CanvasInner() {
     (e: React.MouseEvent, node: RFNode<BaseNodeData>) => {
       // Shift+click is for multi-select, don't open dialog
       if (e.shiftKey) return;
-      // Group nodes have no AI dialog
+      // Group / Markdown / source nodes have no AI dialog
       if (node.type === 'group') return;
+      if (node.data?.type === 'ai-markdown') return;
       if (node.data?.role === 'source') return;
       if (node.data?.type === 'ai-text' && node.data?.output) return;
       if (node.data?.type === 'ai-image' && node.data?.imageUrl) return;
@@ -520,6 +522,7 @@ function CanvasInner() {
         proOptions={{ hideAttribution: true }}
         panOnDrag={[1, 2]}
         selectionOnDrag
+        selectionMode={SelectionMode.Partial}
         multiSelectionKeyCode="Shift"
         onContextMenu={openCtxMenu}
         onNodeContextMenu={openNodeCtxMenu}
@@ -551,11 +554,12 @@ function CanvasInner() {
             zoomable
           nodeColor={(node) => {
             switch (node.type) {
-              case 'ai-text': return 'color-mix(in srgb, var(--brand-hover) 50%, transparent)';
+              case 'ai-text': return 'color-mix(in srgb, var(--node-text-light) 50%, transparent)';
               case 'ai-image': return 'color-mix(in srgb, var(--node-image-light) 50%, transparent)';
               case 'ai-video': return 'color-mix(in srgb, var(--node-video-light) 50%, transparent)';
               case 'ai-audio': return 'color-mix(in srgb, var(--node-audio-light) 50%, transparent)';
               case 'ai-panorama': return 'color-mix(in srgb, var(--node-panorama) 50%, transparent)';
+              case 'ai-markdown': return 'color-mix(in srgb, var(--node-markdown-light) 50%, transparent)';
               case 'group': return '#4b556380';
               default: return '#6b728080';
             }

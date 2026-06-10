@@ -15,6 +15,7 @@ import WorkflowPanel from './components/WorkflowPanel';
 import AssetsPanel from './components/AssetsPanel';
 import Toast from './components/Toast';
 import SplashScreen from './components/SplashScreen';
+import CanvasBackground from './components/backgrounds/CanvasBackground';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useAppStore } from './store/useAppStore';
@@ -54,6 +55,7 @@ export default function App() {
     >
       {/* Content area — clip-path clips ALL descendants including fixed-position backdrops */}
       <div className="app-box absolute inset-0 rounded-[16px] bg-canvas-bg/[0.988] shadow-2xl [clip-path:inset(0_round_16px)]">
+        <CanvasBackground />
         {/* Top drag region */}
         <div data-tauri-drag-region className="fixed top-0 left-0 right-0 h-8 z-10" />
         <Canvas />

@@ -1,0 +1,89 @@
+/* ============================================
+   画布背景主题 — solar-system / minimal
+   ============================================ */
+
+/* ── 极简纯黑背景 ── */
+.canvas-bg-minimal {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: #000;
+  pointer-events: none;
+}
+
+/* ── 太阳系背景 ── */
+.solar-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: #000;
+  opacity: 0;
+  transition: opacity 1.2s ease;
+  pointer-events: none;
+}
+
+.solar-bg--visible {
+  opacity: 1;
+}
+
+/* 星场 */
+.solar-stars {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1px 1px at 10% 15%, rgba(255,255,255,0.6), transparent),
+    radial-gradient(1px 1px at 25% 35%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(1.5px 1.5px at 40% 10%, rgba(255,255,255,0.5), transparent),
+    radial-gradient(1px 1px at 55% 45%, rgba(255,255,255,0.3), transparent),
+    radial-gradient(1px 1px at 70% 20%, rgba(255,255,255,0.5), transparent),
+    radial-gradient(1.5px 1.5px at 85% 55%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(1px 1px at 15% 65%, rgba(255,255,255,0.3), transparent),
+    radial-gradient(1px 1px at 35% 80%, rgba(255,255,255,0.5), transparent),
+    radial-gradient(1.5px 1.5px at 60% 70%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(1px 1px at 80% 85%, rgba(255,255,255,0.3), transparent),
+    radial-gradient(1px 1px at 90% 30%, rgba(255,255,255,0.5), transparent),
+    radial-gradient(1px 1px at 5% 40%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(1px 1px at 45% 90%, rgba(255,255,255,0.3), transparent),
+    radial-gradient(1.5px 1.5px at 75% 5%, rgba(255,255,255,0.5), transparent);
+  animation: stars-shift 60s linear infinite;
+}
+
+@keyframes stars-shift {
+  0% { transform: translate(0, 0); }
+  100% { transform: translate(-20px, -10px); }
+}
+
+/* 行星图片容器 */
+.solar-planet-images {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  bottom: -70%;
+  opacity: .2;
+}
+
+.solar-planet-figure {
+  position: absolute;
+  opacity: 0;
+  transform: scale(1.05);
+  transition: opacity 1.2s ease, transform 1.2s ease;
+  max-width: 80%;
+  margin: 0;
+}
+
+.solar-planet-figure img {
+  width: 100%;
+  object-fit: contain;
+  filter: brightness(0.75);
+  border-radius: 50%;
+}
+
+.solar-planet-figure--active {
+  opacity: 1;
+  transform: scale(1);
+}
+
+

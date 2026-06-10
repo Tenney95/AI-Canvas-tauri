@@ -47,6 +47,9 @@
   --node-panorama: #06b6d4;
   --node-panorama-light: #22d3ee;
   --node-panorama-bg: rgba(6, 182, 212, 0.15);
+  --node-markdown: #a855f7;
+  --node-markdown-light: #c084fc;
+  --node-markdown-bg: rgba(168, 85, 247, 0.15);
 
   /* ── Semantic State Colors ── */
   --success: #22c55e;

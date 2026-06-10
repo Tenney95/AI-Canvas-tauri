@@ -1,5 +1,5 @@
 /**
- * MarkdownNode 源节点 — 支持 .md 文件的编辑、预览与本地保存
+ * MarkdownNode 源节点 — 支持 .md 文件的编辑、预览与自动本地保存
  */
 import { memo, useState, useCallback, useRef } from 'react';
 import { Handle, Position } from '@xyflow/react';
@@ -11,17 +11,41 @@ import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore } from '../../store/useAppStore';
 import { saveBinaryToProjectData } from '../../services/fileService';
 import AnimatedButton from '../shared/AnimatedButton';
+import { renderMarkdown } from '../../utils/renderMarkdown';
 
 function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const currentProjectId = useAppStore((s) => s.currentProjectId);
-  const showToast = useAppStore((s) => s.showToast);
 
   // ── Edit / Preview toggle ──
   const [viewMode, setViewMode] = useState<'edit' | 'preview'>('edit');
 
   // ── Upload ──
   const { isUploading, handleUpload } = useSourceFileUpload('.md');
+
+  // ── 固定文件名（仅首次生成，之后始终覆写到同一文件）──
+  const savedFileNameRef = useRef<string>((data.fileName as string) || `markdown-${id}.md`);
+
+  const doSave = useCallback(async (content: string) => {
+    if (!content) return;
+    const fileName = savedFileNameRef.current;
+
+    try {
+      const bytes = new TextEncoder().encode(content);
+      const result = await saveBinaryToProjectData(bytes, currentProjectId, fileName);
+      if (result) {
+        const resolvedName = result.filePath.split(/[/\\]/).pop() || fileName;
+        savedFileNameRef.current = resolvedName;
+        updateNodeData(id, {
+          fileName: resolvedName,
+          filePath: result.filePath,
+          status: 'success',
+        } as Partial<BaseNodeData>);
+      }
+    } catch {
+      // ignore save errors (non-Tauri environment etc.)
+    }
+  }, [currentProjectId, id, updateNodeData]);
 
   const onUpload = useCallback(async () => {
     const result = await handleUpload();
@@ -43,6 +67,9 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     const lineCount = textContent.split('\n').length;
     const estimatedHeight = Math.max(160, Math.min(600, 40 + lineCount * 20));
 
+    // 使用上传文件的文件名
+    savedFileNameRef.current = result.fileName;
+
     updateNodeData(id, {
       output: textContent,
       fileName: result.fileName,
@@ -50,37 +77,13 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       status: 'success',
       nodeHeight: estimatedHeight,
     } as Partial<BaseNodeData>);
-  }, [id, handleUpload, updateNodeData]);
 
-  // ── Save to local file ──
-  const [isSaving, setIsSaving] = useState(false);
+    // 立即保存到本地
+    doSave(textContent);
+  }, [id, handleUpload, updateNodeData, doSave]);
 
-  const handleSave = useCallback(async () => {
-    if (!data.output) return;
-    const textContent = data.output as string;
-    const fileName = (data.fileName as string) || `markdown-${Date.now()}.md`;
-
-    setIsSaving(true);
-    try {
-      const encoder = new TextEncoder();
-      const bytes = encoder.encode(textContent);
-      const result = await saveBinaryToProjectData(bytes, currentProjectId, fileName);
-      if (result) {
-        updateNodeData(id, {
-          fileName: result.filePath.split(/[/\\]/).pop() || fileName,
-          filePath: result.filePath,
-        } as Partial<BaseNodeData>);
-        showToast('已保存到项目目录', 'success');
-      } else {
-        showToast('保存失败（非 Tauri 环境）', 'error');
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : '保存失败';
-      showToast(msg, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  }, [data.output, data.fileName, currentProjectId, id, updateNodeData, showToast]);
+  // ── Auto-save debounce ──
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Resize ──
   const isResizing = useRef(false);
@@ -121,13 +124,23 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     [id, nodeWidth, nodeHeight, updateNodeData],
   );
 
-  // ── Content change ──
+  // ── Content change (edit mode) with debounced auto-save ──
   const handleContentChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      updateNodeData(id, { output: e.target.value } as Partial<BaseNodeData>);
+      const value = e.target.value;
+      updateNodeData(id, { output: value } as Partial<BaseNodeData>);
+
+      // debounce auto-save: 1.5s after last keystroke
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = setTimeout(() => {
+        doSave(value);
+      }, 1500);
     },
-    [id, updateNodeData],
+    [id, updateNodeData, doSave],
   );
+
+  // ── Markdown preview HTML ──
+  const previewHtml = renderMarkdown((data.output as string) || '');
 
   const { displayLabel, handleRename } = useNodeRename(id, data, 'Markdown 文档');
 
@@ -172,7 +185,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             <AnimatedButton
               type="button"
               className="markdown-mode-btn"
-              disabled={isUploading || isSaving}
+              disabled={isUploading}
               onClick={(e) => { e.stopPropagation(); onUpload(); }}
               title="上传 .md 文件"
             >
@@ -186,23 +199,6 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
                 </svg>
               )}
             </AnimatedButton>
-            <AnimatedButton
-              type="button"
-              className="markdown-mode-btn"
-              disabled={!data.output || isSaving}
-              onClick={(e) => { e.stopPropagation(); handleSave(); }}
-              title="保存到本地文件"
-            >
-              {isSaving ? (
-                <div className="spinner-sm" />
-              ) : (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-                  <polyline points="17 21 17 13 7 13 7 21" />
-                  <polyline points="7 3 7 8 15 8" />
-                </svg>
-              )}
-            </AnimatedButton>
           </div>
         </div>
 
@@ -210,7 +206,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         <div className="markdown-node-content">
           {viewMode === 'edit' ? (
             <textarea
-              className="markdown-edit-area"
+              className="nodrag nowheel markdown-edit-area"
               value={(data.output as string) || ''}
               onChange={handleContentChange}
               placeholder="# Markdown 文档&#10;&#10;点击上方按钮上传 .md 文件，或直接在此编辑…"
@@ -219,7 +215,10 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
           ) : (
             <div className="markdown-preview-area">
               {(data.output as string) ? (
-                <pre className="markdown-preview-text">{data.output as string}</pre>
+                <div
+                  className="markdown-rendered"
+                  dangerouslySetInnerHTML={{ __html: previewHtml }}
+                />
               ) : (
                 <div className="node-preview-placeholder">
                   暂无内容 — 切换到编辑模式开始写作
@@ -230,18 +229,9 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         </div>
 
         {/* Status bar */}
-        {data.fileName && (
-          <div className="markdown-node-statusbar">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
-              <polyline points="13 2 13 9 20 9" />
-            </svg>
-            <span>{data.fileName as string}</span>
-            <span style={{ marginLeft: 'auto', opacity: 0.6 }}>
-              {((data.output as string) || '').length.toLocaleString()} 字
-            </span>
-          </div>
-        )}
+        <span className="text-node-wordcount">
+          {((data.output as string) || '').length.toLocaleString()} 字
+        </span>
 
         <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-text">
           <GooeyBtn className="gooey-btn-left" hue={270} />
