@@ -574,7 +574,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
             <AnimatedButton
               type="button"
               className="settings-getkey"
-              onClick={() => {
+              onClick={async () => {
                 if (!newModelName.trim() || !newModelOpenaiUrl.trim() || !newModelId.trim() || !newModelApiKey.trim()) return;
                 addGeneralModel({
                   name: newModelName.trim(),
@@ -590,6 +590,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                 setNewModelId('');
                 setNewModelApiKey('');
                 setNewModelCategory('mixed');
+                await saveConfig();
               }}
             >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -649,6 +650,8 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                   onChange={(e) => setNewModelApiKey(e.target.value)}
                 />
               </div>
+            </div>
+            <div className="general-model-form-row">
               <div className="general-model-form-col general-model-form-col--category">
                 <div className="settings-label">模型种类</div>
                 <div className="general-model-category-select">
@@ -666,6 +669,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
             </div>
+
           </div>
 
           {/* ── 已添加的模型列表 ── */}

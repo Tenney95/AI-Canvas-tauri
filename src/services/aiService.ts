@@ -67,6 +67,149 @@ function extractModelName(modelValue: string, provider: string): string {
   return modelValue;
 }
 
+/** 从 store 中查找通用模型配置 */
+function resolveGeneralModel(modelValue: string) {
+  const config = useAppStore.getState().config;
+  const gmId = modelValue.replace(/^general\//, '');
+  return config.generalModels?.find((m) => m.id === gmId);
+}
+
+/**
+ * 多路径响应解析 — 兼容不同厂商的返回值格式
+ * @param json 响应 JSON
+ * @param primaryField 优先查找的字段名（如 'videos', 'audios', 'images'）
+ * @param fallbackFields 兜底字段列表
+ */
+function parseMultiPathResponse(
+  json: Record<string, unknown>,
+  primaryField: string,
+  fallbackFields: string[] = ['images'],
+): string | undefined {
+  // 优先取值
+  const primary = (json as Record<string, unknown[]>)[primaryField];
+  if (Array.isArray(primary) && primary.length > 0) {
+    const item = primary[0] as Record<string, unknown>;
+    if (Array.isArray(item.url)) return item.url[0] as string | undefined;
+    if (typeof item.url === 'string') return item.url;
+  }
+  // 兜底
+  for (const field of fallbackFields) {
+    const arr = (json as Record<string, unknown[]>)[field];
+    if (Array.isArray(arr) && arr.length > 0) {
+      const item = arr[0] as Record<string, unknown>;
+      if (Array.isArray(item.url)) return item.url[0] as string | undefined;
+      if (typeof item.url === 'string') return item.url;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 通用异步任务执行器 — 提交 + 轮询，兼容支持 task_id 模式的 OpenAI 兼容接口
+ */
+async function executeGeneralAsyncTask(
+  apiKey: string,
+  baseUrl: string,
+  modelName: string,
+  prompt: string,
+  resultField: 'videos' | 'audios' | 'images',
+  timeoutMs: number = 15 * 60 * 1000,
+): Promise<{ url: string }> {
+  const apiUrl = baseUrl.replace(/\/+$/, '') + '/images/generations';
+  const submitResp = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: modelName, prompt, n: 1 }),
+  });
+
+  if (!submitResp.ok) {
+    const errBody = await submitResp.text().catch(() => '');
+    throw new Error(`提交失败 (${submitResp.status}): ${errBody.slice(0, 200)}`);
+  }
+
+  const submitResult = await submitResp.json() as Record<string, unknown>;
+  const taskId = (submitResult.data as Array<{ task_id: string }>)?.[0]?.task_id
+    || (submitResult.task_id as string);
+
+  // 无 task_id 时尝试直接从响应中解析结果
+  if (!taskId) {
+    const url = parseMultiPathResponse(submitResult, resultField);
+    if (url) return { url };
+    // 尝试标准 OpenAI 图片格式
+    const dataArr = submitResult.data as Array<{ url: string }> | undefined;
+    if (dataArr?.[0]?.url) return { url: dataArr[0].url };
+    throw new Error('响应格式异常：未返回 task_id 或结果 URL');
+  }
+
+  const POLL_INTERVAL = 3000;
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+    const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!pollResp.ok) continue;
+
+    const pollResult = await pollResp.json() as Record<string, unknown>;
+    const task = (pollResult.data ?? pollResult) as Record<string, unknown>;
+
+    if (task.status === 'completed') {
+      const url = parseMultiPathResponse((task.result ?? pollResult) as Record<string, unknown>, resultField);
+      if (url) return { url };
+      throw new Error('任务完成但未返回结果');
+    }
+
+    if (task.status === 'failed' || task.status === 'error') {
+      throw new Error(`任务失败: ${task.status}`);
+    }
+  }
+
+  throw new Error('任务超时，请稍后再试');
+}
+
+/**
+ * 通用模型的文本响应解析 — 兼容多字段名格式
+ */
+function parseGeneralTextResponse(json: Record<string, unknown>): string {
+  // 标准 OpenAI Chat
+  const choices = json.choices as Array<{ message?: { content?: string } }> | undefined;
+  if (choices?.[0]?.message?.content) return choices[0].message.content;
+
+  // DeepSeek 等简化的 chat 格式
+  const data = json.data as { content?: string; text?: string; output?: string; response?: string } | undefined;
+  if (data?.content) return data.content;
+  if (data?.text) return data.text;
+  if (data?.output) return data.output;
+  if (data?.response) return data.response;
+
+  // 顶层 content/text
+  if (typeof json.content === 'string') return json.content;
+  if (typeof json.text === 'string') return json.text;
+
+  throw new Error('无法解析模型返回的文本内容');
+}
+
+/**
+ * 通用模型的图片响应解析 — 兼容多格式
+ */
+function parseGeneralImageResponse(json: Record<string, unknown>): string | undefined {
+  // OpenAI Images
+  const dataArr = json.data as Array<{ url?: string; b64_json?: string }> | undefined;
+  if (dataArr?.[0]?.url) return dataArr[0].url;
+  if (dataArr?.[0]?.b64_json) return dataArr[0].b64_json;
+
+  // result.images 格式（异步任务）
+  const images = (json.result as Record<string, Array<{ url: string[] }>>)?.['images'];
+  if (images?.[0]?.url?.[0]) return images[0].url[0];
+
+  // 顶层 url
+  if (typeof json.url === 'string') return json.url;
+
+  return undefined;
+}
+
 export interface AIGenerateParams {
   prompt: string;
   model: string;      // model value (e.g. 'ppio/qwen/qwen3.5-397b-a17b')
@@ -129,8 +272,18 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
 
   let baseUrl: string;
   let apiKey: string;
+  let modelName: string;
 
-  if (provider === 'localllm') {
+  // ── 通用模型 ──
+  if (provider === 'general') {
+    const gm = resolveGeneralModel(model);
+    if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
+    if (!gm.apiKey) throw new Error(`通用模型 "${gm.name}" 未配置 API Key`);
+    if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+    apiKey = gm.apiKey;
+    baseUrl = gm.openaiUrl;
+    modelName = gm.modelId;
+  } else if (provider === 'localllm') {
     baseUrl = config.localLLMUrl?.trim() || '';
     apiKey = '';
     if (!baseUrl) {
@@ -146,13 +299,15 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   }
 
   if (!baseUrl) {
-    throw new Error(`未配置 ${provider} 的服务地址\n请在「设置 → API Key」中添加`);
+    throw new Error(`未配置 ${provider === 'general' ? resolveGeneralModel(model)?.name || '通用模型' : provider} 的服务地址\n请在「设置 → API Key」中添加`);
   }
 
   // 去掉末尾斜杠，拼接 /chat/completions
   const apiUrl = baseUrl.replace(/\/+$/, '') + '/chat/completions';
 
-  const modelName = extractModelName(model, provider);
+  if (provider !== 'general') {
+    modelName = extractModelName(model, provider);
+  }
 
   // 解析 @{nodeId:label} 引用：图片节点构建 image_url，其他节点内联文本
   const { content, textContent } = resolvePromptToChatContent(rawPrompt);
@@ -202,7 +357,10 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   }
 
   const json = await response.json();
-  const replyText = json.choices?.[0]?.message?.content;
+  // 通用模型使用灵活的响应解析
+  const replyText = provider === 'general'
+    ? parseGeneralTextResponse(json)
+    : (json.choices?.[0]?.message?.content);
   if (!replyText) {
     throw new Error('模型返回结果为空');
   }
@@ -254,6 +412,55 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
     const modelName = extractModelName(model, provider);
     const dimensions = mapImageDimensions(imageSize, aspectRatio);
     return generateApimartImage(apiKey, baseUrl, modelName, prompt, imageSize, aspectRatio, dimensions, allImageUrls);
+  }
+
+  // ── 通用模型图片生成 ──
+  if (provider === 'general') {
+    const gm = resolveGeneralModel(model);
+    if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
+    if (!gm.apiKey) throw new Error(`通用模型 "${gm.name}" 未配置 API Key`);
+    if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+    const dimensions = mapImageDimensions(imageSize, aspectRatio);
+    const sizeStr = `${dimensions.width}x${dimensions.height}`;
+    const apiUrl = gm.openaiUrl.replace(/\/+$/, '') + '/images/generations';
+    const requestBody: Record<string, unknown> = {
+      model: gm.modelId,
+      prompt,
+      n: 1,
+      size: sizeStr,
+      response_format: 'url',
+    };
+    if (allImageUrls.length > 0) {
+      requestBody.image_urls = allImageUrls;
+    }
+
+    const controller = new AbortController();
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${gm.apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => '');
+      let errorMsg = `图片生成失败 (${response.status})`;
+      try {
+        const err = JSON.parse(errorBody);
+        errorMsg = err.error?.message || errorMsg;
+      } catch {
+        if (errorBody) errorMsg += `: ${errorBody.slice(0, 200)}`;
+      }
+      throw new Error(errorMsg);
+    }
+
+    const json = await response.json();
+    const imageUrl = parseGeneralImageResponse(json);
+    if (!imageUrl) throw new Error('图片生成返回结果为空');
+    return { url: imageUrl, width: dimensions.width, height: dimensions.height };
   }
 
   const dimensions = mapImageDimensions(imageSize, aspectRatio);
@@ -1106,6 +1313,15 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
     return generateApimartVideo(apiKey, baseUrl, modelName, prompt);
   }
 
+  // ── 通用模型视频生成 ──
+  if (provider === 'general') {
+    const gm = resolveGeneralModel(model);
+    if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
+    if (!gm.apiKey) throw new Error(`通用模型 "${gm.name}" 未配置 API Key`);
+    if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+    return executeGeneralAsyncTask(gm.apiKey, gm.openaiUrl, gm.modelId, prompt, 'videos');
+  }
+
   // 无 workflowId 时暂不支持直接调用 API，提示配置
   throw new Error('视频生成需要选择 ComfyUI 工作流\n请在模型选择器中导入并选择工作流');
 }
@@ -1299,6 +1515,15 @@ export async function generateAudio(params: AIAudioGenParams): Promise<{ url: st
     }
     const modelName = extractModelName(model, provider);
     return generateApimartAudio(apiKey, baseUrl, modelName, prompt);
+  }
+
+  // ── 通用模型音频生成 ──
+  if (provider === 'general') {
+    const gm = resolveGeneralModel(model);
+    if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
+    if (!gm.apiKey) throw new Error(`通用模型 "${gm.name}" 未配置 API Key`);
+    if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+    return executeGeneralAsyncTask(gm.apiKey, gm.openaiUrl, gm.modelId, prompt, 'audios');
   }
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置

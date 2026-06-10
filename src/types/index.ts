@@ -109,6 +109,15 @@ export const GENERAL_MODEL_CATEGORY_COLORS: Record<GeneralModelCategory, string>
   image: '#22c55e',
 };
 
+/** GeneralModelCategory → 适用的节点类型映射 */
+export const CATEGORY_TO_NODE_TYPES: Record<GeneralModelCategory, NodeType[]> = {
+  mixed: ['ai-text', 'ai-image', 'ai-video', 'ai-audio'],
+  text: ['ai-text'],
+  image: ['ai-image'],
+  video: ['ai-video'],
+  audio: ['ai-audio'],
+};
+
 // 引用节点信息
 export interface NodeReference {
   nodeId: string;

@@ -5,7 +5,7 @@
  */
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import type { NodeType, ModelOption, ModelGroup, WorkflowDefinition } from '../../../types';
-import { getWorkflowCategory } from '../../../types';
+import { getWorkflowCategory, CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS, GENERAL_MODEL_CATEGORY_COLORS } from '../../../types';
 import { defaultModelGroups } from './defaultModels';
 import { useAppStore } from '../../../store/useAppStore';
 
@@ -53,22 +53,56 @@ export default function ModelSelector({
   defaultExpandedGroupIds = [],
 }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
-  // 默认分组收起，except defaultExpandedGroupIds
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
-    const ids = groups
-      .map((g) => ({ ...g, models: g.models.filter((m) => m.nodeTypes.includes(nodeType)) }))
-      .filter((g) => g.models.length > 0)
-      .map((g) => g.id)
-      .filter((id) => !defaultExpandedGroupIds.includes(id));
-    return new Set(ids);
-  });
 
   // 读取配置 — 判断哪些 provider 有 API Key
   const configProviders = useAppStore((s) => s.config.providers);
+  const generalModels = useAppStore((s) => s.config.generalModels || []);
+
+  /** 动态生成「通用模型」分组 */
+  const generalModelGroup: ModelGroup | null = useMemo(() => {
+    if (generalModels.length === 0) return null;
+    const models: ModelOption[] = generalModels.filter((gm) => CATEGORY_TO_NODE_TYPES[gm.category].includes(nodeType)).map((gm) => ({
+      value: `general/${gm.id}`,
+      provider: 'general',
+      label: gm.name,
+      description: `ID: ${gm.modelId}`,
+      iconType: 'badge' as const,
+      badgeText: GENERAL_MODEL_CATEGORY_LABELS[gm.category].slice(0, 2),
+      nodeTypes: CATEGORY_TO_NODE_TYPES[gm.category],
+    }));
+    if (models.length === 0) return null;
+    return {
+      id: 'general-models',
+      name: '通用模型',
+      description: '用户自定义的兼容接口模型',
+      iconType: 'badge',
+      badgeText: 'GM',
+      models,
+    };
+  }, [generalModels, nodeType]);
+
+  /** 合并默认分组与通用模型分组 */
+  const allGroups = useMemo(() => {
+    const merged = [...groups];
+    if (generalModelGroup) merged.push(generalModelGroup);
+    return merged;
+  }, [groups, generalModelGroup]);
+
+  // 默认分组收起，except defaultExpandedGroupIds（含通用模型默认展开）
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    const ids = allGroups
+      .map((g) => ({ ...g, models: g.models.filter((m) => m.nodeTypes.includes(nodeType)) }))
+      .filter((g) => g.models.length > 0)
+      .map((g) => g.id)
+      .filter((id) => !defaultExpandedGroupIds.includes(id) && id !== 'general-models');
+    return new Set(ids);
+  });
 
   /** 判断某个 group 是否可用（该 group 的 provider 已配置 API Key） */
   const isGroupAvailable = useCallback(
     (groupId: string) => {
+      // 通用模型分组：每个模型自带 API Key，始终可用
+      if (groupId === 'general-models') return true;
       const providerKey = groupId === 'runninghubwf' ? 'runninghub' : groupId;
       const provider = configProviders[providerKey];
       return !!provider?.apiKey;
@@ -142,7 +176,7 @@ export default function ModelSelector({
   }, [open]);
 
   // 筛选当前节点类型下可用的模型分组
-  const filteredGroups = groups
+  const filteredGroups = allGroups
     .map((g) => ({
       ...g,
       models: g.models.filter((m) => m.nodeTypes.includes(nodeType)),

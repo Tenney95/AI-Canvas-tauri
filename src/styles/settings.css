@@ -180,7 +180,7 @@
 }
 .settings-input {
   width: 100%;
-  padding: 7px 10px;
+  padding: 2px 8px;
   background: var(--white-alpha-04);
   border: 1px solid var(--theme-border);
   border-radius: 7px;
@@ -295,8 +295,7 @@
 .settings-save-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 18px;
+  padding: 2px 8px;
   font-size: 13px;
   font-weight: 500;
   border: 1px solid var(--brand-alpha-25);
@@ -397,7 +396,7 @@
   flex-wrap: wrap;
 }
 .general-model-category-btn {
-  padding: 4px 8px;
+  padding: 2px 4px;
   font-size: 11px;
   font-weight: 500;
   border: 1px solid var(--theme-border);
