@@ -1,7 +1,9 @@
 /**
  * WorkflowPanel 工作流面板 — 管理 RunningHUB 工作流定义，支持导入 JSON、分类筛选、拖放到画布
+ * 使用 framer-motion 驱动面板进出场动画
  */
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore, generateId } from '../store/useAppStore';
 import type { WorkflowDefinition, WorkflowCategory, WorkflowIONode, WorkflowIONodeType } from '../types';
 
@@ -95,6 +97,40 @@ function extractIONodes(jsonStr: string): WorkflowIONode[] {
 
   return results;
 }
+
+/* ============================================
+   Framer-motion animation variants
+   ============================================ */
+
+const backdropVariants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1 },
+};
+
+const panelVariants = {
+  hidden: { opacity: 0, scale: 0.95, y: 20 },
+  visible: {
+    opacity: 1,
+    scale: 1,
+    y: 0,
+    transition: { type: 'spring' as const, stiffness: 350, damping: 30 },
+  },
+  exit: {
+    opacity: 0,
+    scale: 0.95,
+    y: 20,
+    transition: { duration: 0.15, ease: 'easeIn' as const },
+  },
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 6 },
+  visible: (i: number) => ({
+    opacity: 1,
+    y: 0,
+    transition: { delay: i * 0.04, duration: 0.2, ease: [0.16, 1, 0.3, 1] as const },
+  }),
+};
 
 export default function WorkflowPanel() {
   const {
@@ -206,8 +242,6 @@ export default function WorkflowPanel() {
     [deleteWorkflow]
   );
 
-  if (!workflowPanelOpen) return null;
-
   // Filter workflows by category for the preview list
   const workflowsByCategory = CATEGORIES.map((cat) => ({
     ...cat,
@@ -215,30 +249,47 @@ export default function WorkflowPanel() {
   })).filter((g) => g.items.length > 0);
 
   return (
-    <>
-      {/* Backdrop */}
-      <div className="wf-panel-backdrop" onMouseDown={handleClose} />
+    <AnimatePresence>
+      {workflowPanelOpen && (
+        <>
+          {/* Backdrop */}
+          <motion.div
+            className="wf-panel-backdrop"
+            variants={backdropVariants}
+            initial="hidden"
+            animate="visible"
+            exit="hidden"
+            transition={{ duration: 0.2 }}
+            onClick={handleClose}
+          />
 
-      {/* Modal */}
-      <div
-        ref={panelRef}
-        className="wf-panel"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
+          {/* Centering wrapper */}
+          <div className="wf-panel-wrapper">
+            <motion.div
+              ref={panelRef}
+              className="wf-panel"
+              variants={panelVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              onClick={(e) => e.stopPropagation()}
+            >
         {/* Header */}
         <div className="wf-panel-header">
           <h2 className="wf-panel-title">工作流管理</h2>
-          <button
+          <motion.button
             type="button"
             className="wf-panel-close"
             onClick={handleClose}
-            data-tooltip="关闭"
+            aria-label="关闭"
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.9 }}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
-          </button>
+          </motion.button>
         </div>
 
         {/* Import section */}
@@ -263,14 +314,16 @@ export default function WorkflowPanel() {
             <label className="wf-label">分类</label>
             <div className="wf-category-row">
               {CATEGORIES.map((cat) => (
-                <button
+                <motion.button
                   key={cat.value}
                   type="button"
                   className={`wf-cat-chip ${category === cat.value ? 'active' : ''}`}
                   onClick={() => setCategory(cat.value)}
+                  whileHover={{ scale: 1.04 }}
+                  whileTap={{ scale: 0.96 }}
                 >
                   {cat.label}
-                </button>
+                </motion.button>
               ))}
             </div>
           </div>
@@ -278,7 +331,12 @@ export default function WorkflowPanel() {
           {/* File picker */}
           <div className="wf-field">
             <label className="wf-label">工作流文件</label>
-            <div className="wf-file-area" onClick={handlePickFile}>
+            <motion.div
+              className="wf-file-area"
+              onClick={handlePickFile}
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.99 }}
+            >
               {fileContent ? (
                 <div className="wf-file-selected">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -303,36 +361,65 @@ export default function WorkflowPanel() {
                   <span>点击选择 ComfyUI 导出的 .json 文件</span>
                 </div>
               )}
-            </div>
+            </motion.div>
             {/* IO nodes preview */}
-            {ioNodes.length > 0 && (
-              <div className="wf-ionodes-preview">
-                {ioNodes.map((n, i) => (
-                  <span key={i} className={`wf-ionode-badge wf-ionode-${n.type}`}>
-                    {IONODE_ICONS[n.type]} {n.title}
-                    <code>#{n.nodeId}</code>
-                  </span>
-                ))}
-              </div>
-            )}
+            <AnimatePresence>
+              {ioNodes.length > 0 && (
+                <motion.div
+                  className="wf-ionodes-preview"
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  {ioNodes.map((n, i) => (
+                    <span key={i} className={`wf-ionode-badge wf-ionode-${n.type}`}>
+                      {IONODE_ICONS[n.type]} {n.title}
+                      <code>#{n.nodeId}</code>
+                    </span>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           {/* Actions & messages */}
           <div className="wf-actions-row">
-            <button
+            <motion.button
               type="button"
               className="wf-btn wf-btn-primary"
               onClick={handleSubmit}
               disabled={!fileContent}
+              whileHover={fileContent ? { scale: 1.03 } : {}}
+              whileTap={fileContent ? { scale: 0.97 } : {}}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="12" y1="5" x2="12" y2="19" />
                 <line x1="5" y1="12" x2="19" y2="12" />
               </svg>
               添加工作流
-            </button>
-            {uploadError && <span className="wf-msg wf-msg-error">{uploadError}</span>}
-            {uploadSuccess && <span className="wf-msg wf-msg-success">{uploadSuccess}</span>}
+            </motion.button>
+            <AnimatePresence>
+              {uploadError && (
+                <motion.span
+                  className="wf-msg wf-msg-error"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -8 }}
+                >
+                  {uploadError}
+                </motion.span>
+              )}
+              {uploadSuccess && (
+                <motion.span
+                  className="wf-msg wf-msg-success"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -8 }}
+                >
+                  {uploadSuccess}
+                </motion.span>
+              )}
+            </AnimatePresence>
           </div>
         </div>
 
@@ -344,60 +431,84 @@ export default function WorkflowPanel() {
           </span>
           <div className="wf-section-rule" />
 
-          {workflows.length === 0 ? (
-            <div className="wf-empty">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.4">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                <line x1="3" y1="9" x2="21" y2="9" />
-                <line x1="9" y1="21" x2="9" y2="9" />
-              </svg>
-              <span>暂无工作流，请导入 ComfyUI 工作流文件</span>
-            </div>
-          ) : (
-            <div className="wf-list">
-              {workflowsByCategory.map((group) => (
-                <div key={group.value} className="wf-group">
-                  <div className="wf-group-header">
-                    <span className="wf-cat-dot" data-cat={group.value} />
-                    <span className="wf-group-label">{group.label}</span>
-                  </div>
-                  {group.items.map((wf) => (
-                    <div key={wf.id} className="wf-item">
-                      <div className="wf-item-info">
-                        <span className="wf-item-name">{wf.name}</span>
-                        <span className="wf-item-meta">
-                          {wf.fileName} · {new Date(wf.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
-                        </span>
-                        {wf.ioNodes && wf.ioNodes.length > 0 && (
-                          <div className="wf-item-ionodes">
-                            {wf.ioNodes.map((n, i) => (
-                              <span key={i} className={`wf-ionode-badge wf-ionode-${n.type}`}>
-                                {IONODE_ICONS[n.type]} {n.title}
-                                <code>#{n.nodeId}</code>
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <button
-                        type="button"
-                        className="wf-item-del"
-                        onClick={(e) => handleDelete(wf.id, e)}
-                        data-tooltip="删除工作流"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <polyline points="3 6 5 6 21 6" />
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                        </svg>
-                      </button>
+          <AnimatePresence mode="popLayout">
+            {workflows.length === 0 ? (
+              <motion.div
+                className="wf-empty"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+              >
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.4">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  <line x1="3" y1="9" x2="21" y2="9" />
+                  <line x1="9" y1="21" x2="9" y2="9" />
+                </svg>
+                <span>暂无工作流，请导入 ComfyUI 工作流文件</span>
+              </motion.div>
+            ) : (
+              <motion.div className="wf-list">
+                {workflowsByCategory.map((group, gi) => (
+                  <motion.div
+                    key={group.value}
+                    className="wf-group"
+                    variants={itemVariants}
+                    initial="hidden"
+                    animate="visible"
+                    custom={gi}
+                  >
+                    <div className="wf-group-header">
+                      <span className="wf-cat-dot" data-cat={group.value} />
+                      <span className="wf-group-label">{group.label}</span>
                     </div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          )}
+                    {group.items.map((wf) => (
+                      <motion.div
+                        key={wf.id}
+                        className="wf-item"
+                        layout
+                        variants={itemVariants}
+                      >
+                        <div className="wf-item-info">
+                          <span className="wf-item-name">{wf.name}</span>
+                          <span className="wf-item-meta">
+                            {wf.fileName} · {new Date(wf.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
+                          </span>
+                          {wf.ioNodes && wf.ioNodes.length > 0 && (
+                            <div className="wf-item-ionodes">
+                              {wf.ioNodes.map((n, i) => (
+                                <span key={i} className={`wf-ionode-badge wf-ionode-${n.type}`}>
+                                  {IONODE_ICONS[n.type]} {n.title}
+                                  <code>#{n.nodeId}</code>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <motion.button
+                          type="button"
+                          className="wf-item-del"
+                          onClick={(e) => handleDelete(wf.id, e)}
+                          title="删除工作流"
+                          whileHover={{ scale: 1.1 }}
+                          whileTap={{ scale: 0.9 }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <polyline points="3 6 5 6 21 6" />
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                          </svg>
+                        </motion.button>
+                      </motion.div>
+                    ))}
+                  </motion.div>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
-      </div>
+      </motion.div>
+      </div>{/* /wf-panel-wrapper */}
     </>
+      )}
+    </AnimatePresence>
   );
 }

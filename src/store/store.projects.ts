@@ -120,6 +120,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   switchProject: async (id) => {
     await get().saveCurrentProject();
+    // Clean up undo-trash dirs from the old project before switching
+    await fileService.flushUndoTrashDirs();
 
     const project = get().projects.find((p) => p.id === id);
     if (!project) return;

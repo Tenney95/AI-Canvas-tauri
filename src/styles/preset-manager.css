@@ -1,23 +1,23 @@
 /* ═══════════════════════════════════════════════
    Preset Manager — 用户预设管理器弹窗样式
-   ═══════════════════════════════════════════════ */
+   ============================================ */
 
 .preset-modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 10010;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  z-index: 200;
+  background: var(--black-alpha-50);
+  /* animation handled by framer-motion */
+}
+
+.preset-modal-wrapper {
+  position: fixed;
+  inset: 0;
+  z-index: 201;
   display: flex;
   align-items: center;
   justify-content: center;
-  animation: presetOverlayFadeIn 0.2s ease-out;
-}
-
-@keyframes presetOverlayFadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  pointer-events: none;
 }
 
 .preset-modal {
@@ -33,21 +33,10 @@
 }
 
 .preset-modal--manager {
-  position: fixed;
   width: 800px;
   max-height: 85vh;
-  animation: presetModalSlideIn 0.25s ease-out;
-}
-
-@keyframes presetModalSlideIn {
-  from {
-    opacity: 0;
-    transform: scale(0.95) translateY(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
+  pointer-events: auto;
+  /* animation handled by framer-motion */
 }
 
 /* ── Header ── */
@@ -55,7 +44,7 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  padding: 20px 24px 12px;
+  padding: 10px 14px;
   flex-shrink: 0;
 }
 

@@ -64,7 +64,7 @@ export default function SettingsPanel() {
   return (
     <ModalOverlay isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} className="w-[640px] max-h-[80vh]">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-canvas-border">
+        <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-canvas-border">
           <h2 className="text-base font-semibold text-canvas-text">设置</h2>
           <AnimatedButton
             onClick={() => setSettingsOpen(false)}

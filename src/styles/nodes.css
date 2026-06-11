@@ -374,7 +374,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--theme-border);
   flex-shrink: 0;
 }

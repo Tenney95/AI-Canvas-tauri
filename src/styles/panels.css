@@ -50,14 +50,18 @@
   inset: 0;
   z-index: 200;
   background: var(--black-alpha-50);
-  animation: fadeIn 0.15s ease;
+  /* animation handled by framer-motion */
+}
+.wf-panel-wrapper {
+  position: fixed;
+  inset: 0;
+  z-index: 201;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
 }
 .wf-panel {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 201;
   width: 480px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px);
@@ -68,7 +72,8 @@
   border: 1px solid var(--white-alpha-08);
   border-radius: 16px;
   box-shadow: 0 16px 48px var(--black-alpha-50), 0 0 0 1px var(--white-alpha-03);
-  animation: floatIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: auto;
+  /* animation handled by framer-motion */
 }
 
 /* Workflow panel header */
@@ -76,7 +81,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 20px 12px;
+  padding: 10px 14px;
 }
 .wf-panel-title {
   font-size: 16px;
@@ -509,14 +514,18 @@
   inset: 0;
   z-index: 200;
   background: var(--black-alpha-50);
-  animation: fadeIn 0.15s ease;
+  /* animation handled by framer-motion */
+}
+.assets-panel-wrapper {
+  position: fixed;
+  inset: 0;
+  z-index: 201;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
 }
 .assets-panel {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 201;
   width: 520px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px);
@@ -529,7 +538,8 @@
   border: 1px solid var(--white-alpha-08);
   border-radius: 16px;
   box-shadow: 0 16px 48px var(--black-alpha-50), 0 0 0 1px var(--white-alpha-03);
-  animation: floatIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: auto;
+  /* animation handled by framer-motion */
 }
 
 /* Header */
@@ -537,7 +547,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px 10px;
+  padding: 10px 14px;
   flex-shrink: 0;
 }
 .assets-panel-title {
@@ -672,7 +682,7 @@
   border: 2px solid rgba(255, 255, 255, 0.1);
   border-top-color: var(--brand-light);
   border-radius: 50%;
-  animation: spin 0.6s linear infinite;
+  /* rotation handled by framer-motion */
 }
 
 /* Waterfall card */
@@ -814,7 +824,7 @@
   font-size: 13px;
   border-radius: 8px;
   pointer-events: none;
-  animation: fadeInOut 2s ease;
+  /* animation handled by framer-motion */
 }
 
 @keyframes fadeInOut {

@@ -1,7 +1,11 @@
 /**
  * PresetManager 自定义预设管理器 — 管理用户预设提示词的增删改查
+ * 使用 createPortal 渲染到 body，避免受 React Flow 节点堆叠上下文影响
+ * 使用 framer-motion 驱动面板进出场动画
  */
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '../../../store/useAppStore';
 import { generateId } from '../../../store/useAppStore';
 import type { UserPreset, PresetNodeType, PresetTriggerMode } from '../../../types';
@@ -68,6 +72,31 @@ function deserializeToEditor(root: HTMLElement, text: string) {
     });
   }
 }
+
+/* ============================================
+   Framer-motion animation variants
+   ============================================ */
+
+const backdropVariants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1 },
+};
+
+const panelVariants = {
+  hidden: { opacity: 0, scale: 0.95, y: 20 },
+  visible: {
+    opacity: 1,
+    scale: 1,
+    y: 0,
+    transition: { type: 'spring' as const, stiffness: 350, damping: 30 },
+  },
+  exit: {
+    opacity: 0,
+    scale: 0.95,
+    y: 20,
+    transition: { duration: 0.15, ease: 'easeIn' as const },
+  },
+};
 
 export default function PresetManager() {
   const {
@@ -212,14 +241,31 @@ export default function PresetManager() {
     [handleEditorInput],
   );
 
-  if (!presetManagerOpen) return null;
+  return createPortal(
+    <AnimatePresence>
+      {presetManagerOpen && (
+        <>
+          {/* Backdrop */}
+          <motion.div
+            className="preset-modal-overlay"
+            variants={backdropVariants}
+            initial="hidden"
+            animate="visible"
+            exit="hidden"
+            transition={{ duration: 0.2 }}
+            onClick={() => setPresetManagerOpen(false)}
+          />
 
-  return (
-    <div className="preset-modal-overlay" onMouseDown={() => setPresetManagerOpen(false)}>
-      <div
-        className="preset-modal preset-modal--manager"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
+          {/* Centering wrapper — avoids framer-motion transform clashing with CSS centering */}
+          <div className="preset-modal-wrapper">
+            <motion.div
+              className="preset-modal preset-modal--manager"
+              variants={panelVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              onClick={(e) => e.stopPropagation()}
+            >
         {/* Header */}
         <div className="preset-manager-title-row">
           <div className="preset-manager-title-group">
@@ -241,13 +287,15 @@ export default function PresetManager() {
         {/* Tabs */}
         <div className="preset-manager-tabs" role="tablist">
           {PRESET_NODE_TYPES.map((nt) => (
-            <button
+            <motion.button
               key={nt}
               type="button"
               className={`preset-manager-tab${activeTab === nt ? ' is-active' : ''}`}
               role="tab"
               aria-selected={activeTab === nt}
               onClick={() => setActiveTab(nt)}
+              whileHover={{ scale: 1.04 }}
+              whileTap={{ scale: 0.96 }}
             >
               <svg
                 className="preset-manager-tab-icon"
@@ -288,7 +336,7 @@ export default function PresetManager() {
                 )}
               </svg>
               <span>{PRESET_NODE_TYPE_LABELS[nt]}</span>
-            </button>
+            </motion.button>
           ))}
         </div>
 
@@ -464,7 +512,11 @@ export default function PresetManager() {
             保存
           </AnimatedButton>
         </div>
-      </div>
-    </div>
+      </motion.div>
+      </div>{/* /preset-modal-wrapper */}
+    </>
+      )}
+    </AnimatePresence>,
+    document.body,
   );
 }

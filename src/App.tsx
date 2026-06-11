@@ -19,6 +19,7 @@ import CanvasBackground from './components/backgrounds/CanvasBackground';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useAppStore } from './store/useAppStore';
+import * as fileService from './services/fileService';
 
 const isDev = import.meta.env.DEV;
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
@@ -36,14 +37,21 @@ export default function App() {
     initFromDb();
   }, [initFromDb]);
 
-  // Mark Tauri environment on <html> so portaled overlays can adjust via CSS
+  // Flush undo-trash dirs on app close
   useEffect(() => {
-    if (isTauri) {
-      document.documentElement.setAttribute('data-tauri', '');
-    }
-    return () => {
-      document.documentElement.removeAttribute('data-tauri');
-    };
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        unlisten = await win.onCloseRequested(async () => {
+          await fileService.flushUndoTrashDirs();
+          win.destroy();
+        });
+      } catch { /* non-Tauri env */ }
+    })();
+    return () => { unlisten?.(); };
   }, []);
 
   const appContent = (
