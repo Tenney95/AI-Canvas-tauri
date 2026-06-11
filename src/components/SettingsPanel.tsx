@@ -157,6 +157,8 @@ export default function SettingsPanel() {
                               ? 'bg-canvas-bg'
                               : value === 'solar-system'
                               ? 'bg-gradient-to-br from-[#0a0a1a] via-[#1a1030] to-[#0a1020]'
+                              : value === 'nebula'
+                              ? 'bg-gradient-to-b from-[#0a0514] via-[#14081e] to-[#0a0514]'
                               : 'bg-black'
                           }`}>
                             {value === 'default' && (
@@ -171,6 +173,19 @@ export default function SettingsPanel() {
                                 <div className="absolute bottom-1 left-0 right-0 flex justify-center">
                                   <div className="w-8 h-1 rounded-full bg-white/15" style={{ borderRadius: '50% 50% 0 0', borderTop: '1px solid rgba(255,255,255,0.15)' }} />
                                 </div>
+                              </div>
+                            )}
+                            {value === 'nebula' && (
+                              <div className="w-full h-full flex items-center justify-center gap-1.5 relative">
+                                <div className="flex gap-1.5 opacity-60">
+                                  <div className="w-2 h-3 rounded-sm bg-purple-600/60 blur-[2px]" />
+                                  <div className="w-2 h-3 rounded-sm bg-fuchsia-600/50 blur-[2px]" />
+                                  <div className="w-2 h-3 rounded-sm bg-violet-600/40 blur-[2px]" />
+                                </div>
+                                <div className="absolute inset-0" style={{
+                                  backgroundImage: 'radial-gradient(1px 1px, rgba(180,150,255,0.3) 0%, transparent 100%)',
+                                  backgroundSize: '12px 12px',
+                                }} />
                               </div>
                             )}
                           </div>

@@ -72,7 +72,7 @@ export interface DreaminaAuthData {
 }
 
 /** 画布背景主题 */
-export type CanvasBackground = 'default' | 'solar-system' | 'minimal';
+export type CanvasBackground = 'default' | 'solar-system' | 'minimal' | 'nebula';
 
 export interface AppConfig {
   providers: Record<string, ApiProviderConfig>;

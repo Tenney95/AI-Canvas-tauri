@@ -1,5 +1,5 @@
 /* ============================================
-   画布背景主题 — solar-system / minimal
+   画布背景主题 — solar-system / nebula / minimal
    ============================================ */
 
 /* ── 极简纯黑背景 ── */
@@ -84,6 +84,20 @@
 .solar-planet-figure--active {
   opacity: 1;
   transform: scale(1);
+}
+
+/* ── 星云背景 (Three.js canvas 容器) ── */
+.nebula-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: .5;
+}
+
+.nebula-bg canvas {
+  display: block;
 }
 
 

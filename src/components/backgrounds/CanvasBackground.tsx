@@ -3,13 +3,15 @@
  */
 import { useAppStore } from '../../store/useAppStore';
 import SolarSystemBackground from './SolarSystemBackground';
+import NebulaBackground from './NebulaBackground';
 import type { CanvasBackground as CanvasBg } from '../../types';
 
 /** 背景主题配置 */
 export const BACKGROUND_OPTIONS: { value: CanvasBg; label: string; preview: string }[] = [
   { value: 'default', label: '默认暗色', preview: 'canvas-bg' },
   { value: 'solar-system', label: '太阳系', preview: 'solar-system' },
-  { value: 'minimal', label: '极简纯黑', preview: 'minimal' },
+  { value: 'nebula', label: '星云', preview: 'nebula' },
+  // { value: 'minimal', label: '极简纯黑', preview: 'minimal' },
 ];
 
 export default function CanvasBackground() {
@@ -18,6 +20,8 @@ export default function CanvasBackground() {
   switch (canvasBackground) {
     case 'solar-system':
       return <SolarSystemBackground />;
+    case 'nebula':
+      return <NebulaBackground />;
     case 'minimal':
       return <div className="canvas-bg-minimal" />;
     default:
