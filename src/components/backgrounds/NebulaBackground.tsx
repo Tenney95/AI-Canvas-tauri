@@ -119,7 +119,6 @@ export default function NebulaBackground() {
       const bloomEffect = new BloomEffect({
         blendFunction: BlendFunction.COLOR_DODGE,
         kernelSize: KernelSize.SMALL,
-        useLuminanceFilter: true,
         luminanceThreshold: 0.0005,
         luminanceSmoothing: 10.5,
       });

@@ -50,20 +50,28 @@ function AINodeDialog() {
   );
 
   // 调用选中模型生成（文本 or 图片）
-  // NOTE: prompt 通过 useAppStore.getState() 直接读取最新值，避免闭包陈旧问题
-  // （/ 指令菜单自动触发时 onChange 先更新 store，onSubmit 需要读到更新后的值）
-  const onSubmit = useCallback(async () => {
-    const latestNode = useAppStore.getState().nodes.find((n) => n.id === activeNodeId);
-    const latestData: BaseNodeData | undefined = latestNode?.data;
-    const latestPrompt = (latestData?.prompt as string) || '';
-    if (!latestPrompt.trim() || !data?.model || !data?.provider) return;
+  // overridePrompt: / 指令菜单直接触发时传入的整合后模板，不走 store → 对话框不闪烁
+  const onSubmit = useCallback(async (overridePrompt?: string) => {
+    const effectivePrompt = overridePrompt ?? (() => {
+      const latestNode = useAppStore.getState().nodes.find((n) => n.id === activeNodeId);
+      const latestData: BaseNodeData | undefined = latestNode?.data;
+      return (latestData?.prompt as string) || '';
+    })();
+    if (!effectivePrompt.trim()) {
+      showToast('请输入提示词', 'error');
+      return;
+    }
+    if (!data?.model || !data?.provider) {
+      showToast('请先在底部模型选择器中选择一个模型', 'error');
+      return;
+    }
     updateNodeData(activeNodeId!, { status: 'loading', error: undefined });
     try {
       if (nodeType === 'ai-image') {
         const imageSize = (data.imageSize as string) || '2K';
         const aspectRatio = (data.aspectRatio as string) || '1:1';
         const result = await generateImage({
-          prompt: latestPrompt,
+          prompt: effectivePrompt,
           model: data.model!,
           provider: data.provider!,
           imageSize,
@@ -88,7 +96,7 @@ function AINodeDialog() {
         showToast('图片生成完成');
       } else if (nodeType === 'ai-video') {
         const result = await generateVideo({
-          prompt: latestPrompt,
+          prompt: effectivePrompt,
           model: data.model!,
           provider: data.provider!,
           videoResolution: (data.videoResolution as number) || 832,
@@ -112,7 +120,7 @@ function AINodeDialog() {
         showToast('视频生成完成');
       } else if (nodeType === 'ai-audio') {
         const result = await generateAudio({
-          prompt: latestPrompt,
+          prompt: effectivePrompt,
           model: data.model!,
           provider: data.provider!,
           workflowId: data.workflowId,
@@ -133,7 +141,7 @@ function AINodeDialog() {
         showToast('音频生成完成');
       } else {
         const result = await generateText({
-          prompt: latestPrompt,
+          prompt: effectivePrompt,
           model: data.model!,
           provider: data.provider!,
         });

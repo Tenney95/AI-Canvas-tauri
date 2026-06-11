@@ -21,7 +21,7 @@ interface PromptPanelProps {
   selectedWorkflowId?: string;
   canGenerate?: boolean;
   onChange: (value: string) => void;
-  onSubmit: () => void;
+  onSubmit: (overridePrompt?: string) => void;
   onModelSelect: (model: ModelOption) => void;
   onWorkflowSelect?: (workflowId: string | undefined) => void;
   onDebug?: () => void;
@@ -78,15 +78,14 @@ export default function PromptPanel({
   const handleSlashSelect = useCallback((filledPrompt: string, shouldTrigger: boolean) => {
     setSlashOpen(false);
     if (shouldTrigger) {
-      // Direct trigger: update store prompt → submit → restore input box to original
-      onChange(filledPrompt);
-      onSubmit();
-      onChange(prompt);
+      // Direct trigger: combine preset template + input box content, call model directly
+      // Don't update the input box — the preset prompt is only used for this generation
+      onSubmit(filledPrompt);
     } else {
-      // Insert mode: update input box with filled template
+      // Insert mode: update input box with filled template, user can edit before generating
       onChange(filledPrompt);
     }
-  }, [onChange, onSubmit, prompt]);
+  }, [onChange, onSubmit]);
 
   const handleEditorSlash = useCallback(() => {
     slashTriggerSource.current = 'editor';

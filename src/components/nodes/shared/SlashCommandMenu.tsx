@@ -231,10 +231,10 @@ export default function SlashCommandMenu({
           {activeParent.children?.map((child) => (
             <div
               key={child.id}
-              className={`slash-command-item has-trigger${hoveredItemId === activeParent.id && activeParent.children?.[0]?.id === child.id ? ' active' : ''}`}
+              className={`slash-command-item has-trigger${hoveredItemId === child.id ? ' active' : ''}`}
               data-subitem-id={child.id}
               onClick={() => handleItemSelect(child)}
-              onMouseEnter={() => setHoveredItemId(activeParent.id)}
+              onMouseEnter={() => setHoveredItemId(child.id)}
             >
               <span className="slash-command-icon">{child.icon}</span>
               <div className="slash-command-text">

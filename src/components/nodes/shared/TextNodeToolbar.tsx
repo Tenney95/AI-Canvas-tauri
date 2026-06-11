@@ -50,7 +50,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onFullscreen }: Text
   return (
     <div className="node-floating-toolbar text-toolbar">
       <AnimatedButton
-        className="ftb-btn icon-only act-copy"
+        className="ftb-btn icon-only act-copy rounded-[6px]"
         data-tooltip={copied ? '已复制' : '复制'}
         aria-label="复制"
         onClick={handleCopy}
@@ -67,7 +67,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onFullscreen }: Text
         )}
       </AnimatedButton>
       <AnimatedButton
-        className="ftb-btn icon-only act-clear-empty-lines"
+        className="ftb-btn icon-only act-clear-empty-lines rounded-[6px]"
         data-tooltip="清除空行"
         aria-label="清除空行"
         onClick={handleClearEmptyLines}
@@ -81,7 +81,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onFullscreen }: Text
         </svg>
       </AnimatedButton>
       <AnimatedButton
-        className="ftb-btn icon-only act-fullscreen"
+        className="ftb-btn icon-only act-fullscreen rounded-[6px]"
         data-tooltip="全屏显示"
         aria-label="全屏显示"
         onClick={handleFullscreen}
