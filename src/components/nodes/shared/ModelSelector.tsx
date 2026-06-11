@@ -5,7 +5,7 @@
  */
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import type { NodeType, ModelOption, ModelGroup, WorkflowDefinition } from '../../../types';
-import { getWorkflowCategory, CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS, GENERAL_MODEL_CATEGORY_COLORS } from '../../../types';
+import { getWorkflowCategory, CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS } from '../../../types';
 import { defaultModelGroups } from './defaultModels';
 import { useAppStore } from '../../../store/useAppStore';
 

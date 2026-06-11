@@ -272,7 +272,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
 
   let baseUrl: string;
   let apiKey: string;
-  let modelName: string;
+  let modelName = '';
 
   // ── 通用模型 ──
   if (provider === 'general') {

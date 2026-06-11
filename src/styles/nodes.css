@@ -367,6 +367,7 @@
   border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 12px 60px rgba(0, 0, 0, 0.5);
+  position: relative;
 }
 
 .fullscreen-header {
@@ -460,13 +461,18 @@
   font-size: 12px;
 }
 
-/* Fullscreen toolbar (edit/preview toggle inside overlay) */
+/* Fullscreen toolbar (edit/preview toggle inside header) */
 .fullscreen-toolbar {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 0 12px;
   flex-shrink: 0;
+}
+
+/* Wrapper for headerContent in fullscreen-header, keeps header layout intact */
+.fullscreen-header-extra {
+  display: flex;
+  align-items: center;
 }
 
 /* ============ Fullscreen close — absolute (hideHeader mode) ============ */
@@ -490,13 +496,14 @@
 .fullscreen-body--pano {
   padding: 0;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 80vh;
 }
 
 .fullscreen-body--pano .panorama-viewer-wrapper {
-  flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .fullscreen-body--pano .panorama-scene-shell {

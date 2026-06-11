@@ -45,6 +45,13 @@ const DREAMINA_LOGIN_WATCHER: &str = r#"
 })();
 "#;
 
+/// 将文件或目录移动到系统回收站/废纸篓
+#[tauri::command]
+async fn move_to_trash(path: String) -> Result<(), String> {
+    trash::delete(std::path::Path::new(&path))
+        .map_err(|e| format!("移动文件到回收站失败: {}", e))
+}
+
 #[tauri::command]
 async fn dreamina_login(app: tauri::AppHandle) -> Result<DreaminaLoginPayload, String> {
     let login_url = "https://jimeng.jianying.com/";
@@ -110,7 +117,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![dreamina_login])
+        .invoke_handler(tauri::generate_handler![move_to_trash, dreamina_login])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

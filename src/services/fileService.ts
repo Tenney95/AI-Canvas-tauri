@@ -1,9 +1,9 @@
 /**
  * fileService 文件操作服务 — 封装 Tauri 原生文件对话框和读写能力，管理项目/工作流/配置的保存、加载、导出、导入（IndexedDB 降级）
  */
-import { writeFile, readFile as tauriReadFile, mkdir, exists, stat, remove, readDir, type DirEntry } from '@tauri-apps/plugin-fs';
+import { writeFile, readFile as tauriReadFile, mkdir, exists, stat, remove, readDir } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import {
   saveProjectToDb,
@@ -555,6 +555,95 @@ export async function getAssetUrlFromPath(filePath: string): Promise<string> {
 // File & directory deletion
 // ============================================
 
+/** 将文件或目录移动到系统回收站（Tauri 端），浏览器环境无操作 */
+export async function moveToTrash(filePath: string): Promise<void> {
+  if (!isTauriEnv()) return;
+  try {
+    await invoke('move_to_trash', { path: filePath });
+    console.log('[fileService] Moved to trash:', filePath);
+  } catch (err) {
+    console.warn('[fileService] Failed to move to trash:', filePath, err);
+  }
+}
+
+// ============================================
+// Undo-trash staging (project-level .trash/ dir — restored on undo, flushed to system trash on project delete)
+// ============================================
+
+/** Map: originalFilePath → trashFilePath */
+const undoTrashMap = new Map<string, string>();
+
+/** Compute the .trash directory for a given file path (same parent dir) */
+function getUndoTrashDir(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/');
+  const lastSep = normalized.lastIndexOf('/');
+  return lastSep >= 0 ? joinPath(normalized.substring(0, lastSep), '.trash') : '.trash';
+}
+
+/** Move a file to the project-level .trash staging directory (for undo support) */
+export async function moveToUndoTrash(filePath: string): Promise<void> {
+  if (!isTauriEnv()) return;
+  try {
+    const existsFile = await exists(filePath);
+    if (!existsFile) return;
+    const trashDir = getUndoTrashDir(filePath);
+    await mkdir(trashDir, { recursive: true });
+    const fileName = filePath.split(/[/\\]/).pop() || 'file';
+    const trashPath = joinPath(trashDir, `${Date.now()}-${fileName}`);
+    // copy + delete (rename may fail across filesystems)
+    const content = await tauriReadFile(filePath);
+    await writeFile(trashPath, new Uint8Array(content));
+    await remove(filePath);
+    undoTrashMap.set(filePath, trashPath);
+    console.log('[fileService] Staged in undo-trash:', filePath, '→', trashPath);
+  } catch (err) {
+    console.warn('[fileService] Failed to stage in undo-trash:', filePath, err);
+    // Fallback: use system trash
+    await moveToTrash(filePath).catch(() => {});
+  }
+}
+
+/** Restore a file from undo-trash staging. Returns true on success. */
+export async function restoreFromUndoTrash(filePath: string): Promise<boolean> {
+  if (!isTauriEnv()) return false;
+  const trashPath = undoTrashMap.get(filePath);
+  if (!trashPath) return false;
+  try {
+    const trashExists = await exists(trashPath);
+    if (!trashExists) { undoTrashMap.delete(filePath); return false; }
+    const content = await tauriReadFile(trashPath);
+    await writeFile(filePath, new Uint8Array(content));
+    await remove(trashPath);
+    undoTrashMap.delete(filePath);
+    console.log('[fileService] Restored from undo-trash:', filePath);
+    return true;
+  } catch (err) {
+    console.warn('[fileService] Failed to restore from undo-trash:', filePath, err);
+    return false;
+  }
+}
+
+/** Flush all undo-trash files to system recycle bin (called on project delete) */
+export async function flushUndoTrashDirs(): Promise<void> {
+  if (!isTauriEnv()) return;
+  // Collect unique .trash directories
+  const trashDirs = new Set<string>();
+  for (const [origPath] of undoTrashMap) {
+    trashDirs.add(getUndoTrashDir(origPath));
+  }
+  for (const dir of trashDirs) {
+    try {
+      if (await exists(dir)) {
+        await invoke('move_to_trash', { path: dir });
+        console.log('[fileService] Flushed undo-trash dir to system trash:', dir);
+      }
+    } catch (err) {
+      console.warn('[fileService] Failed to flush undo-trash dir:', dir, err);
+    }
+  }
+  undoTrashMap.clear();
+}
+
 /** 删除单个文件（Tauri 端），浏览器环境无操作 */
 export async function deleteFile(filePath: string): Promise<void> {
   if (!isTauriEnv()) return;
@@ -566,26 +655,15 @@ export async function deleteFile(filePath: string): Promise<void> {
   }
 }
 
-/** 递归删除目录及其所有内容 */
+/** 将目录移至回收站（Tauri 端），trash crate 本身支持直接移动整个目录 */
 async function removeDirRecursive(dirPath: string): Promise<void> {
-  let entries: DirEntry[];
+  if (!isTauriEnv()) return;
   try {
-    entries = await readDir(dirPath);
-  } catch {
-    // Directory doesn't exist or can't be read
-    return;
+    await invoke('move_to_trash', { path: dirPath });
+    console.log('[fileService] Moved dir to trash:', dirPath);
+  } catch (err) {
+    console.warn('[fileService] Failed to move dir to trash:', dirPath, err);
   }
-  for (const entry of entries) {
-    const fullPath = joinPath(dirPath, entry.name);
-    if (entry.isDirectory) {
-      await removeDirRecursive(fullPath);
-    } else {
-      try { await remove(fullPath); } catch { /* 忽略单个文件删除失败 */ }
-    }
-  }
-  try {
-    await remove(dirPath);
-  } catch { /* 忽略目录删除失败 */ }
 }
 
 /** 删除项目的本地数据目录（Tauri 端），包括所有媒体文件 */
@@ -601,11 +679,11 @@ export async function deleteProjectDataDir(projectId: string): Promise<void> {
   }
 }
 
-/** 尝试删除节点关联的本地文件（如果存在 filePath） */
+/** 尝试删除节点关联的本地文件（如果有 filePath，移入 undo-trash 暂存，撤销时可还原） */
 export async function deleteNodeFile(nodeData: { filePath?: string }): Promise<void> {
   const fp = nodeData.filePath;
   if (fp && typeof fp === 'string') {
-    await deleteFile(fp);
+    await moveToUndoTrash(fp);
   }
 }
 
@@ -1000,9 +1078,9 @@ export async function saveAssetToPermanent(
   return saveToPermanent(entry.path, projectId);
 }
 
-/** 删除永久保存的文件 */
+/** 删除永久保存的文件（移入回收站） */
 export async function deletePermanentFile(filePath: string): Promise<void> {
-  await deleteFile(filePath);
+  await moveToTrash(filePath);
 }
 
 export async function loadWorkflows(): Promise<WorkflowRecord[]> {

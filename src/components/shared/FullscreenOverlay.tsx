@@ -20,6 +20,8 @@ export interface FullscreenOverlayProps {
   hideHeader?: boolean;
   /** body 区域自定义 class */
   bodyClassName?: string;
+  /** 注入到标题栏中（标题与关闭按钮之间） */
+  headerContent?: ReactNode;
 }
 
 const backdropVariants = {
@@ -33,13 +35,13 @@ const panelVariants = {
     opacity: 1,
     scale: 1,
     y: 0,
-    transition: { type: 'spring', stiffness: 350, damping: 30 },
+    transition: { type: 'spring' as const, stiffness: 350, damping: 30 },
   },
   exit: {
     opacity: 0,
     scale: 0.95,
     y: 20,
-    transition: { duration: 0.15, ease: 'easeIn' },
+    transition: { duration: 0.15, ease: 'easeIn' as const },
   },
 };
 
@@ -52,6 +54,7 @@ export default function FullscreenOverlay({
   className = '',
   hideHeader = false,
   bodyClassName = '',
+  headerContent,
 }: FullscreenOverlayProps) {
   // Close on Escape
   const handleKeyDown = useCallback(
@@ -92,6 +95,9 @@ export default function FullscreenOverlay({
             {!hideHeader && (
               <div className="fullscreen-header">
                 <span className="fullscreen-title">{title}</span>
+                {headerContent && (
+                  <div className="fullscreen-header-extra">{headerContent}</div>
+                )}
                 <motion.button
                   className="fullscreen-close"
                   onClick={onClose}

@@ -70,56 +70,45 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Delete / Backspace
+      // Delete / Backspace — batch edge+node deletion in a single commit
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const state = useAppStore.getState();
         const nodeIds = state.selectedNodeIds;
         const selectedEdgeIds = state.edges.filter((ed) => ed.selected).map((ed) => ed.id);
 
-        // Delete selected edges first
-        if (selectedEdgeIds.length > 0) {
-          e.preventDefault();
-          e.stopPropagation();
-          useAppStore.getState().commitToHistory();
-          useAppStore.setState((s) => ({
-            edges: s.edges.filter((ed) => !selectedEdgeIds.includes(ed.id)),
-          }));
+        if (selectedEdgeIds.length === 0 && nodeIds.length === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Expand to include descendants of any selected group nodes
+        const expandedIds = new Set(nodeIds);
+        const q = [...nodeIds];
+        while (q.length > 0) {
+          const pid = q.shift()!;
+          state.nodes.filter((n) => n.parentId === pid).forEach((c) => {
+            expandedIds.add(c.id);
+            q.push(c.id);
+          });
+        }
+        const allIds = Array.from(expandedIds);
+
+        // Delete associated local files
+        for (const node of state.nodes.filter((n) => allIds.includes(n.id))) {
+          fileService.deleteNodeFile(node.data as BaseNodeData).catch(() => {});
         }
 
-        // Delete selected nodes
-        if (nodeIds.length > 0) {
-          e.preventDefault();
-          e.stopPropagation();
-
-          // Expand to include descendants of any selected group nodes
-          const expandedIds = new Set(nodeIds);
-          const q = [...nodeIds];
-          while (q.length > 0) {
-            const pid = q.shift()!;
-            state.nodes.filter((n) => n.parentId === pid).forEach((c) => {
-              expandedIds.add(c.id);
-              q.push(c.id);
-            });
-          }
-
-          // Delete associated local files
-          const allIds = Array.from(expandedIds);
-          const nodesToDelete = state.nodes.filter((n) => allIds.includes(n.id));
-          for (const node of nodesToDelete) {
-            fileService.deleteNodeFile(node.data as BaseNodeData).catch(() => {});
-          }
-          useAppStore.getState().commitToHistory();
-          useAppStore.setState((s) => ({
-            nodes: s.nodes.filter((n) => !expandedIds.has(n.id)),
-            edges: s.edges.filter(
-              (ed) => !expandedIds.has(ed.source) && !expandedIds.has(ed.target)
-            ),
-            groups: s.groups
-              .filter((g) => !expandedIds.has(g.id))
-              .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !expandedIds.has(nid)) })),
-            selectedNodeIds: [],
-          }));
-        }
+        // Single commit — undo always goes back to the real pre-delete state
+        useAppStore.getState().commitToHistory();
+        useAppStore.setState((s) => ({
+          nodes: s.nodes.filter((n) => !expandedIds.has(n.id)),
+          edges: s.edges.filter(
+            (ed) => !expandedIds.has(ed.source) && !expandedIds.has(ed.target) && !selectedEdgeIds.includes(ed.id)
+          ),
+          groups: s.groups
+            .filter((g) => !expandedIds.has(g.id))
+            .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !expandedIds.has(nid)) })),
+          selectedNodeIds: [],
+        }));
         return;
       }
 
@@ -165,9 +154,8 @@ export function useKeyboardShortcuts() {
     const GLB_SHORTCUTS = [
       { key: 'CommandOrControl+S', action: () => useAppStore.getState().saveCurrentProject() },
       { key: 'Alt+S', action: () => useAppStore.getState().saveCurrentProject() },
-      { key: 'CommandOrControl+Z', action: () => useAppStore.getState().undo() },
-      { key: 'CommandOrControl+Shift+Z', action: () => useAppStore.getState().redo() },
-      { key: 'CommandOrControl+Y', action: () => useAppStore.getState().redo() },
+      // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are handled by the JS keydown handler above;
+      // registering them as native shortcuts would double-fire undo/redo.
     ];
 
     let unlistenFocus: (() => void) | undefined;
