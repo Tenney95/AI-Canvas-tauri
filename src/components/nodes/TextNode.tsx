@@ -2,12 +2,12 @@
  * TextNode 文本节点 — 在画布上渲染文本内容，支持编辑、复制、清除空行、全屏、拖拽调整大小
  */
 import { memo, useState, useCallback, useRef, useEffect } from 'react';
-import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import TextNodeToolbar from './shared/TextNodeToolbar';
 import GooeyBtn from './shared/GooeyBtn';
+import FullscreenOverlay from '../shared/FullscreenOverlay';
 import { useNodeRename } from './shared/useNodeRename';
 import { useAppStore } from '../../store/useAppStore';
 import { uploadSourceFile } from '../../services/fileService';
@@ -108,16 +108,6 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
         }
       });
     }
-  }, [isFullscreen]);
-
-  // Close fullscreen on Escape
-  useEffect(() => {
-    if (!isFullscreen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setIsFullscreen(false);
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
   }, [isFullscreen]);
 
   const handleFullscreenChange = useCallback(
@@ -252,33 +242,20 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
       <div className="node-resize-handle" onPointerDownCapture={handleResizeStart} />
     </div>
 
-    {/* Fullscreen overlay — portal to body to escape node CSS constraints */}
-    {isFullscreen &&
-      createPortal(
-        <div className="text-fullscreen-overlay" onClick={handleCloseFullscreen}>
-          <div className="text-fullscreen-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="text-fullscreen-header">
-              <span className="text-fullscreen-title">{data.label || '文本内容'}</span>
-              <button className="text-fullscreen-close" onClick={handleCloseFullscreen} aria-label="关闭">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="20" height="20">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
-            <div className="text-fullscreen-editor">
-              <textarea
-                ref={fullscreenTextareaRef}
-                value={data.output || ''}
-                onChange={handleFullscreenChange}
-                spellCheck={false}
-              />
-            </div>
-            
-          </div>
-        </div>,
-        document.body,
-      )}
+    {/* Fullscreen overlay */}
+    <FullscreenOverlay
+      isOpen={isFullscreen}
+      onClose={handleCloseFullscreen}
+      title={(data.label as string) || '文本内容'}
+    >
+      <textarea
+        ref={fullscreenTextareaRef}
+        className="fullscreen-textarea"
+        value={(data.output as string) || ''}
+        onChange={handleFullscreenChange}
+        spellCheck={false}
+      />
+    </FullscreenOverlay>
     </>
   );
 }

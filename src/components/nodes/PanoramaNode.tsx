@@ -3,7 +3,6 @@
  * 支持图片/360预览双模式切换、上传、全屏、日夜景切换
  */
 import { memo, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
-import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
 import * as THREE from 'three';
 import type { BaseNodeData } from '../../types';
@@ -11,6 +10,8 @@ import NodeLabel from './shared/NodeLabel';
 import GooeyBtn from './shared/GooeyBtn';
 import ResizeHandle from './shared/ResizeHandle';
 import PanoramaNodeToolbar from './shared/PanoramaNodeToolbar';
+import FullscreenOverlay from '../shared/FullscreenOverlay';
+import AnimatedButton from '../shared/AnimatedButton';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
@@ -191,105 +192,6 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
     </div>
   );
 });
-
-/* ═════════════════════════════════════════════════
-   Fullscreen Modal — Portal overlay for immersive viewing
-   ═════════════════════════════════════════════════ */
-
-interface PanoramaFullscreenModalProps {
-  imageUrl: string;
-  onClose: () => void;
-  viewerRef: React.RefObject<PanoramaViewerHandle | null>;
-  onScreenshot: () => void;
-  onDownload: () => void;
-}
-
-function PanoramaFullscreenModal({
-  imageUrl,
-  onClose,
-  viewerRef,
-  onScreenshot,
-  onDownload,
-}: PanoramaFullscreenModalProps) {
-  /* ── Escape key ── */
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  return createPortal(
-    <div
-      className="panorama-fullscreen-modal"
-      data-ui-stop="1"
-      onPointerDown={(e) => { e.stopPropagation(); }}
-      onDoubleClick={(e) => { e.stopPropagation(); }}
-    >
-      {/* Backdrop */}
-      <div
-        className="panorama-fullscreen-backdrop"
-        onClick={onClose}
-      />
-
-      {/* Viewer container */}
-      <div className="panorama-fullscreen-content">
-        {/* Close button */}
-        <button
-          className="panorama-fullscreen-close"
-          onClick={onClose}
-          data-tooltip="退出全屏"
-          aria-label="退出全屏"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="20" height="20">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-
-        {/* Fullscreen viewer */}
-        <PanoramaViewer
-          ref={viewerRef}
-          imageUrl={imageUrl}
-          onClose={onClose}
-          onUpload={() => {}}
-          onToggleFullscreen={onClose}
-        />
-
-        {/* Bottom toolbar */}
-        <div className="panorama-fullscreen-toolbar">
-          <button
-            className="pano-fs-btn"
-            onClick={onScreenshot}
-            data-tooltip="截图并创建图片节点"
-            aria-label="截图"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-              <circle cx="12" cy="13" r="4" />
-            </svg>
-            <span>截图</span>
-          </button>
-          <button
-            className="pano-fs-btn"
-            onClick={onDownload}
-            data-tooltip="下载原始全景图"
-            aria-label="下载"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            <span>下载</span>
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
 
 /* ═════════════════════════════════════════════════
    Main Panorama Node Component
@@ -548,16 +450,48 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
         )}
       </div>
 
-      {/* ── Fullscreen modal (portal overlay) ── */}
-      {isFullscreen && hasImage && (
-        <PanoramaFullscreenModal
+      {/* ── Fullscreen overlay ── */}
+      <FullscreenOverlay
+        isOpen={isFullscreen && hasImage}
+        onClose={toggleFullscreen}
+        title={(data.label as string) || '360全景图'}
+        panelWidth="min(92vw, 1400px)"
+        hideHeader
+        bodyClassName="fullscreen-body--pano"
+      >
+        <PanoramaViewer
+          ref={fullscreenViewerRef}
           imageUrl={data.imageUrl || data.thumbnailUrl || ''}
           onClose={toggleFullscreen}
-          viewerRef={fullscreenViewerRef}
-          onScreenshot={handleScreenshot}
-          onDownload={handleDownload}
+          onUpload={() => {}}
+          onToggleFullscreen={toggleFullscreen}
         />
-      )}
+        <div className="fullscreen-pano-toolbar">
+          <AnimatedButton
+            className="pano-fs-btn"
+            onClick={handleScreenshot}
+            title="截图并创建图片节点"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+              <circle cx="12" cy="13" r="4" />
+            </svg>
+            <span>截图</span>
+          </AnimatedButton>
+          <AnimatedButton
+            className="pano-fs-btn"
+            onClick={handleDownload}
+            title="下载原始全景图"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span>下载</span>
+          </AnimatedButton>
+        </div>
+      </FullscreenOverlay>
     </>
   );
 }

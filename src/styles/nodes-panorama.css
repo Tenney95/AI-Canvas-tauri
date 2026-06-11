@@ -123,84 +123,10 @@
   flex-shrink: 0;
 }
 
-/* ══ Fullscreen Modal (portal overlay) ══ */
-.panorama-fullscreen-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 10000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
+/* ══ Fullscreen toolbar buttons ══ */
 
-.panorama-fullscreen-modal .panorama-fullscreen-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.92);
-  backdrop-filter: blur(8px);
-  z-index: 1;
-}
-
-.panorama-fullscreen-modal .panorama-fullscreen-content {
-  position: relative;
-  z-index: 2;
-  width: 90vw;
-  height: 85vh;
-  max-width: 1400px;
-  display: flex;
-  flex-direction: column;
-  border-radius: 16px;
-  background: #000;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
-}
-
-.panorama-fullscreen-modal .panorama-fullscreen-content .panorama-viewer-wrapper {
-  border-radius: 16px !important;
-  overflow: hidden;
-}
-
-
-.panorama-fullscreen-modal .panorama-scene-shell {
-  flex: 1;
-  border-radius: 0;
-}
-
-.panorama-fullscreen-modal .panorama-scene-webgl {
-  border-radius: 0;
-}
-
-/* Close button — top-right corner */
-.panorama-fullscreen-close {
-  position: absolute !important;
-  top: 12px;
-  right: 12px;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: none;
-  color: var(--theme-text-secondary);
-  cursor: pointer;
-}
-
-.panorama-fullscreen-close:hover {
-  background: rgba(40, 40, 52, 0.9);
-  color: var(--theme-text);
-}
-
-/* Bottom toolbar in fullscreen */
-.panorama-fullscreen-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 10px 16px;
-}
-
-.pano-fs-btn {
-  display: flex;
+.fullscreen-pano-toolbar .pano-fs-btn {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 6px 14px;
@@ -213,13 +139,13 @@
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.pano-fs-btn:hover {
+.fullscreen-pano-toolbar .pano-fs-btn:hover {
   background: var(--white-alpha-08);
   color: var(--theme-text);
   border-color: var(--white-alpha-20);
 }
 
-/* ══ Fullscreen backdrop (used by old inline approach, now inside modal) ══ */
+/* ══ Panorama fullscreen backdrop (legacy — kept for compatibility) ══ */
 .panorama-fullscreen-backdrop {
   position: fixed;
   inset: 0;

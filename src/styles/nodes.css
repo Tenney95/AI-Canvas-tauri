@@ -335,12 +335,210 @@
    ════════════════════════════════════════════ */
 [data-tauri] .matting-overlay,
 [data-tauri] .text-fullscreen-overlay,
+[data-tauri] .fullscreen-overlay,
 [data-tauri] .free-angle-overlay {
   left: 30px;
   right: 0;
   border-radius: 16px;
   overflow: hidden;
 }
+
+/* ════════════════════════════════════════════
+   Shared Fullscreen Overlay (framer-motion)
+   ════════════════════════════════════════════ */
+
+.fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(6px);
+}
+
+.fullscreen-panel {
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--theme-surface);
+  border: 1px solid var(--theme-border);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 12px 60px rgba(0, 0, 0, 0.5);
+}
+
+.fullscreen-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--theme-border);
+  flex-shrink: 0;
+}
+
+.fullscreen-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--theme-text);
+}
+
+.fullscreen-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.fullscreen-close:hover {
+  color: var(--theme-text);
+  background: var(--white-alpha-06);
+}
+
+.fullscreen-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+
+/* ============ Fullscreen editor (textarea-based) ============ */
+
+.fullscreen-body textarea.fullscreen-textarea {
+  width: 100%;
+  height: 72vh;
+  font-size: 14px;
+  line-height: 1.75;
+  color: #d0d0e0;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fullscreen-body textarea.fullscreen-textarea::placeholder {
+  color: var(--theme-text-muted);
+}
+
+/* ============ Fullscreen markdown preview ============ */
+
+.fullscreen-md-view {
+  min-height: 72vh;
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--theme-text);
+}
+
+/* Inherit .markdown-rendered styles but scale up for fullscreen */
+.fullscreen-md-view .markdown-rendered {
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+.fullscreen-md-view .markdown-rendered h1 { font-size: 24px; }
+.fullscreen-md-view .markdown-rendered h2 { font-size: 20px; }
+.fullscreen-md-view .markdown-rendered h3 { font-size: 16px; }
+.fullscreen-md-view .markdown-rendered h4,
+.fullscreen-md-view .markdown-rendered h5,
+.fullscreen-md-view .markdown-rendered h6 { font-size: 14px; }
+
+.fullscreen-md-view .markdown-rendered code {
+  font-size: 13px;
+}
+
+.fullscreen-md-view .markdown-rendered pre code {
+  font-size: 12px;
+}
+
+/* Fullscreen toolbar (edit/preview toggle inside overlay) */
+.fullscreen-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0 12px;
+  flex-shrink: 0;
+}
+
+/* ============ Fullscreen close — absolute (hideHeader mode) ============ */
+
+.fullscreen-close--absolute {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  background: rgba(26, 26, 38, 0.75);
+  backdrop-filter: blur(6px);
+  border-radius: 8px;
+}
+
+.fullscreen-close--absolute:hover {
+  background: rgba(40, 40, 52, 0.9);
+}
+
+/* ============ Fullscreen panorama viewer ============ */
+
+.fullscreen-body--pano {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.fullscreen-body--pano .panorama-viewer-wrapper {
+  flex: 1;
+  min-height: 0;
+}
+
+.fullscreen-body--pano .panorama-scene-shell {
+  border-radius: 0;
+}
+
+.fullscreen-body--pano .panorama-scene-webgl {
+  border-radius: 0;
+}
+
+/* Bottom toolbar inside panorama fullscreen */
+.fullscreen-pano-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 16px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--theme-border);
+  background: var(--theme-surface);
+}
+
+/* ============ Fullscreen image preview ============ */
+
+.fullscreen-body--image {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.fullscreen-img-view {
+  max-width: 100%;
+  max-height: 82vh;
+  object-fit: contain;
+  border-radius: 4px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
 
 /* ════════════════════════════════════════════
    Markdown Node

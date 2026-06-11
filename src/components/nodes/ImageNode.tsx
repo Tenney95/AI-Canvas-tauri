@@ -11,6 +11,7 @@ import ImageNodeToolbar from './shared/ImageNodeToolbar';
 import FreeAnglePanel from './shared/FreeAnglePanel';
 import MattingEditor from './shared/MattingEditor';
 import ResizeHandle from './shared/ResizeHandle';
+import FullscreenOverlay from '../shared/FullscreenOverlay';
 import { computeImageNodeDimensions } from './shared/imageUtils';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
@@ -177,6 +178,25 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     [id, updateNodeData],
   );
 
+  /* ════════════════════════════════════════════
+     Fullscreen State
+     ════════════════════════════════════════════ */
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const handleOpenFullscreen = useCallback(() => setIsFullscreen(true), []);
+  const handleCloseFullscreen = useCallback(() => setIsFullscreen(false), []);
+
+  /* ════════════════════════════════════════════
+     Download
+     ════════════════════════════════════════════ */
+  const handleDownload = useCallback(() => {
+    const src = (data.imageUrl || data.thumbnailUrl) as string | undefined;
+    if (!src) return;
+    const link = document.createElement('a');
+    link.download = (data.fileName as string) || `image-${Date.now()}.png`;
+    link.href = src;
+    link.click();
+  }, [data.imageUrl, data.thumbnailUrl, data.fileName]);
+
   const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴图像');
 
   return (
@@ -276,6 +296,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             nodeId={id}
             onMatting={handleOpenMatting}
             onMultiAngle={handleOpenFreeAngle}
+            onFullscreen={handleOpenFullscreen}
+            onDownload={handleDownload}
           />
         )}
       </div>
@@ -296,6 +318,21 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         onClose={handleCloseFreeAngle}
         onGenerate={handleFreeAngleGenerate}
       />
+
+      {/* Fullscreen preview */}
+      <FullscreenOverlay
+        isOpen={isFullscreen}
+        onClose={handleCloseFullscreen}
+        title={(data.label as string) || '图片预览'}
+        panelWidth="min(92vw, 1400px)"
+        bodyClassName="fullscreen-body--image"
+      >
+        <img
+          src={(data.imageUrl || data.thumbnailUrl) as string}
+          alt={(data.label as string) || '预览'}
+          className="fullscreen-img-view"
+        />
+      </FullscreenOverlay>
     </>
   );
 }

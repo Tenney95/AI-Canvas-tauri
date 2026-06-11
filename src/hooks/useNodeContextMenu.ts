@@ -113,6 +113,7 @@ export function useNodeContextMenu() {
   const mediaTypes: NodeType[] = [
     'ai-image', 'ai-video', 'ai-audio', 'ai-panorama',
     'source-image', 'source-video', 'source-audio',
+    'ai-markdown',
   ];
   const currentNode = nodes.find((n) => n.id === menu.nodeId);
   const nodeType = (currentNode?.type) as NodeType | undefined;
