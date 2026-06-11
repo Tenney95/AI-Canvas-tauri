@@ -89,38 +89,13 @@ async function testGRSAI(apiKey: string, baseUrl?: string): Promise<TestResult> 
   return { success: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
 }
 
-/** OpenAI 兼容 — 通用 ping 测试，无余额 */
-async function testOpenAICompatible(apiKey: string, baseUrl?: string): Promise<TestResult> {
-  if (!baseUrl) return { success: false, error: '请先填写接口地址' };
-  const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: 'gpt-3.5-turbo',
-      messages: [{ role: 'user', content: 'ping' }],
-      max_tokens: 1,
-      stream: false,
-    }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (data.error) {
-    return { success: false, error: data.error.message || JSON.stringify(data.error) };
-  }
-  if (data.choices) {
-    return { success: true };
-  }
-  return { success: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
-}
-
-export type ProviderTestKey = 'apimart' | 'volcengine' | 'runninghub-model' | 'grsai' | 'openai';
+export type ProviderTestKey = 'apimart' | 'volcengine' | 'runninghub-model' | 'grsai';
 
 const testFns: Record<ProviderTestKey, (apiKey: string, baseUrl?: string) => Promise<TestResult>> = {
   apimart: testAPIMart,
   volcengine: testVolcengine,
   'runninghub-model': testRunninghubModel,
   grsai: testGRSAI,
-  openai: testOpenAICompatible,
 };
 
 export async function testProviderConnection(

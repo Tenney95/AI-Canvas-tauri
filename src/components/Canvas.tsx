@@ -239,6 +239,18 @@ function CanvasInner() {
     return () => window.removeEventListener('paste', handler, true);
   }, [reactFlowInstance]);
 
+  // ── Fit view event (project switch / F key) ──
+  useEffect(() => {
+    const handler = () => {
+      // Wait one frame for React to finish rendering new nodes/edges
+      requestAnimationFrame(() => {
+        reactFlowInstance.fitView({ padding: 0.2 });
+      });
+    };
+    window.addEventListener('canvas-fit-view', handler);
+    return () => window.removeEventListener('canvas-fit-view', handler);
+  }, [reactFlowInstance]);
+
   // ── Node click → AI dialog ──
   const openNodeDialog = useAppStore((s) => s.openNodeDialog);
   const onNodeClick = useCallback(

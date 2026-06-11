@@ -7,6 +7,26 @@ import type { Node as RFNode } from '@xyflow/react';
 import { useAppStore, generateId } from '../store/useAppStore';
 import type { BaseNodeData, NodeType } from '../types';
 
+// ── Model preference helper ──
+const MODEL_PREF_KEY = 'canvas-model-prefs';
+
+function loadDefaultModel(nodeType: string): { model: string; provider: string } | null {
+  try {
+    const raw = localStorage.getItem(MODEL_PREF_KEY);
+    if (!raw) return null;
+    const prefs: Record<string, string> = JSON.parse(raw);
+    const modelValue = prefs[nodeType];
+    if (!modelValue) return null;
+    const slashIdx = modelValue.indexOf('/');
+    if (slashIdx === -1) return null;
+    const provider = modelValue.slice(0, slashIdx);
+    if (!provider) return null;
+    return { model: modelValue, provider };
+  } catch {
+    return null;
+  }
+}
+
 interface ContextMenuState {
   visible: boolean;
   position: { x: number; y: number };
@@ -66,6 +86,7 @@ export function useCanvasContextMenu() {
       const isSource = role === 'source';
       const newWidth = type === 'ai-audio' ? 260 : isPanorama ? 300 : type === 'ai-markdown' ? 280 : 280;
       const newHeight = type === 'ai-audio' ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
+      const defaultModel = !isSource ? loadDefaultModel(type) : null;
       const newNode: RFNode<BaseNodeData> = {
         id: `node-${generateId()}`,
         type,
@@ -79,6 +100,7 @@ export function useCanvasContextMenu() {
           nodeWidth: newWidth,
           nodeHeight: newHeight,
           ...(isImage && !isSource ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
+          ...(defaultModel ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
         },
       };
       addNode(newNode);

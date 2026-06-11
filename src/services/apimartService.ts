@@ -154,8 +154,8 @@ async function pollTask(
   taskId: string,
   onProgress?: (progress: number) => void,
 ): Promise<TaskData> {
-  const MAX_WAIT_MS = 5 * 60 * 1000; // 最长等待 5 分钟
-  const POLL_INTERVAL = 2000;         // 每 2 秒轮询
+  const MAX_WAIT_MS = 30 * 60 * 1000; // 最长等待 30 分钟
+  const POLL_INTERVAL = 5000;         // 每 5 秒轮询
   const start = Date.now();
 
   while (Date.now() - start < MAX_WAIT_MS) {

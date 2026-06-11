@@ -68,6 +68,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     }));
     fileService.saveProject({ ...project, nodes: [], edges: [], groups: [] }).catch(() => {});
     fileService.ensureProjectDataDir(id).catch(() => {});
+    setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
   },
 
   deleteProject: async (id) => {
@@ -89,6 +90,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       });
       fileService.saveProject({ id: newId, name: '默认画布', createdAt: now, updatedAt: now, nodes: [], edges: [] }).catch(() => {});
       fileService.ensureProjectDataDir(newId).catch(() => {});
+      setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
     } else {
       const nextId = isCurrent ? filtered[0]?.id ?? null : state.currentProjectId;
       const nextName = isCurrent ? filtered[0]?.name ?? '' : state.projectName;
@@ -110,6 +112,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
               edges: (data.edges as Edge[]) || [],
             });
           }
+          setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
         } catch { /* Keep empty canvas */ }
       }
     }
@@ -150,6 +153,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         historyIndex: -1,
       });
     }
+    setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
   },
 
   saveCurrentProject: async () => {

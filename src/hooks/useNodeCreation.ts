@@ -31,6 +31,27 @@ const MIME_MAP: Record<string, string> = {
 
 export { FILE_EXT_IMAGE, FILE_EXT_VIDEO, FILE_EXT_AUDIO, FILE_EXT_TEXT };
 
+// ── Model preference helper ──
+const MODEL_PREF_KEY = 'canvas-model-prefs';
+
+function loadDefaultModel(nodeType: string): { model: string; provider: string } | null {
+  try {
+    const raw = localStorage.getItem(MODEL_PREF_KEY);
+    if (!raw) return null;
+    const prefs: Record<string, string> = JSON.parse(raw);
+    const modelValue = prefs[nodeType];
+    if (!modelValue) return null;
+    // modelValue format: "provider/modelId" → data.model stores the full value, data.provider stores the prefix
+    const slashIdx = modelValue.indexOf('/');
+    if (slashIdx === -1) return null;
+    const provider = modelValue.slice(0, slashIdx);
+    if (!provider) return null;
+    return { model: modelValue, provider };
+  } catch {
+    return null;
+  }
+}
+
 export type FileCategory = 'image' | 'video' | 'audio' | 'text';
 
 export function classifyFile(ext: string): FileCategory | null {
@@ -62,6 +83,7 @@ export function useNodeCreation() {
 
   const addTextNode = useCallback(
     (position: { x: number; y: number }, opts?: { label?: string; prompt?: string; width?: number; height?: number }) => {
+      const defaultModel = loadDefaultModel('ai-text');
       addNode({
         id: `node-${generateId()}`,
         type: 'ai-text',
@@ -73,6 +95,7 @@ export function useNodeCreation() {
           status: 'idle' as const,
           nodeWidth: opts?.width ?? 280,
           nodeHeight: opts?.height ?? 160,
+          ...(defaultModel ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
         },
       } as RFNode<BaseNodeData>);
     },
@@ -82,6 +105,8 @@ export function useNodeCreation() {
   const addImageNode = useCallback(
     async (position: { x: number; y: number }, opts?: { label?: string; dataUrl?: string }) => {
       const dataUrl = opts?.dataUrl;
+      const isGenerator = !dataUrl;
+      const defaultModel = isGenerator ? loadDefaultModel('ai-image') : null;
       const dims = dataUrl
         ? await computeImageNodeDimensions(dataUrl)
         : { nodeWidth: 280, nodeHeight: 158 };
@@ -98,6 +123,7 @@ export function useNodeCreation() {
             ? { imageUrl: dataUrl }
             : { prompt: '', aspectRatio: '16:9' as const, imageSize: '2K' as const }),
           ...dims,
+          ...(defaultModel ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
         },
       } as RFNode<BaseNodeData>);
     },
@@ -107,6 +133,8 @@ export function useNodeCreation() {
   const addVideoNode = useCallback(
     (position: { x: number; y: number }, opts?: { label?: string; dataUrl?: string }) => {
       const dataUrl = opts?.dataUrl;
+      const isGenerator = !dataUrl;
+      const defaultModel = isGenerator ? loadDefaultModel('ai-video') : null;
       addNode({
         id: `node-${generateId()}`,
         type: 'ai-video',
@@ -119,6 +147,7 @@ export function useNodeCreation() {
           ...(dataUrl ? { videoUrl: dataUrl } : { prompt: '' }),
           nodeWidth: 280,
           nodeHeight: 160,
+          ...(defaultModel ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
         },
       } as RFNode<BaseNodeData>);
     },
@@ -128,6 +157,8 @@ export function useNodeCreation() {
   const addAudioNode = useCallback(
     (position: { x: number; y: number }, opts?: { label?: string; dataUrl?: string }) => {
       const dataUrl = opts?.dataUrl;
+      const isGenerator = !dataUrl;
+      const defaultModel = isGenerator ? loadDefaultModel('ai-audio') : null;
       addNode({
         id: `node-${generateId()}`,
         type: 'ai-audio',
@@ -140,6 +171,7 @@ export function useNodeCreation() {
           ...(dataUrl ? { audioUrl: dataUrl } : { prompt: '' }),
           nodeWidth: 260,
           nodeHeight: 140,
+          ...(defaultModel ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
         },
       } as RFNode<BaseNodeData>);
     },

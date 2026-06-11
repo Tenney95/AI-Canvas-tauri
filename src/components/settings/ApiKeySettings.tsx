@@ -176,7 +176,6 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const {
     config,
     setProviderKey,
-    setProviderUrl,
     updateConfig,
     saveConfig,
     addGeneralModel,
@@ -423,54 +422,6 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
             defaultValue={config.providers.grsai?.apiKey || ''}
             placeholder="sk-..."
             onSave={(v) => setProviderKey('grsai', v)}
-          />
-        </div>
-
-        {/* ── OpenAI兼容的API格式 ── */}
-        <div className="settings-section settings-card">
-          <div className="settings-card-head">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary, #8888a0)" strokeWidth="1.5">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 8v4l3 3" />
-            </svg>
-            <span className="settings-card-title">OpenAI兼容的API格式</span>
-            <ProviderStatusBadge result={testStates.openai?.result} />
-            <ProviderBalanceBadge balance={testStates.openai?.result?.balance} />
-            <span className="settings-hint-icon settings-hint-icon--inline" id="openai-format-hint">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <circle cx="12" cy="12" r="10" />
-                <line x1="12" y1="8" x2="12" y2="13" />
-                <circle cx="12" cy="16" r="0.8" fill="currentColor" stroke="none" />
-              </svg>
-              <div className="settings-hint-tooltip">
-                <div className="settings-hint-tooltip-content">
-                  正确的 OpenAI 通用接口格式 是在 <span className="curl-highlight">curl</span> 后面 例如：<br /><br />
-                  <span className="curl-highlight">curl</span> <code>http://api.deepseek.com/chat/completions</code>
-                </div>
-                <div className="settings-hint-tooltip-arrow" />
-              </div>
-            </span>
-            <span className="settings-card-head-spacer" style={{ flex: 1 }} />
-            <TestButton
-              label="OpenAI 兼容"
-              state={testStates.openai || { status: 'idle' }}
-              onTest={() => handleTest('openai', config.providers.openai?.apiKey || '', config.providers.openai?.baseUrl)}
-            />
-          </div>
-          <div className="settings-label">接口地址</div>
-          <ConfigInput
-            id="providerUrl-openai"
-            defaultValue={config.providers.openai?.baseUrl || ''}
-            placeholder="https://api.openai.com"
-            onSave={(v) => setProviderUrl('openai', v)}
-            className="settings-input--mb10"
-          />
-          <div className="settings-label">API 密钥</div>
-          <ConfigInput type="password"
-            id="providerKey-openai"
-            defaultValue={config.providers.openai?.apiKey || ''}
-            placeholder="sk-..."
-            onSave={(v) => setProviderKey('openai', v)}
           />
         </div>
 
