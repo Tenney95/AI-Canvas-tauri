@@ -93,7 +93,7 @@
   z-index: 0;
   overflow: hidden;
   pointer-events: none;
-  opacity: .5;
+  opacity: .6;
 }
 
 .nebula-bg canvas {

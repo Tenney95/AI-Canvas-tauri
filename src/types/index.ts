@@ -45,7 +45,26 @@ export interface BaseNodeData {
   videoFps?: number;          // 视频帧率：16 | 24 | 30
   videoFrames?: number;       // 视频生成帧数（时长）
   error?: string;             // 错误信息
+  outputHistory?: OutputHistoryEntry[]; // AI 输出历史记录
   [key: string]: unknown;
+}
+
+// ── AI 输出历史记录 ──
+export interface OutputHistoryEntry {
+  id: string;                    // 唯一 ID
+  nodeId: string;                // 来源节点 ID
+  nodeLabel: string;             // 来源节点名称
+  timestamp: number;             // 生成时间戳
+  prompt: string;                // 原始提示词
+  output: string;                // 输出内容（文本 or URL）
+  nodeType: NodeType;            // 节点类型
+  model: string;                 // 模型 ID
+  provider: string;              // 供应商 ID
+  status: 'success' | 'error';   // 生成结果
+  error?: string;                // 错误信息
+  mediaUrl?: string;             // 媒体资源 URL（imageUrl/videoUrl/audioUrl）
+  filePath?: string;             // 本地文件路径
+  params?: Record<string, unknown>; // 生成参数快照
 }
 
 export interface CanvasProject {

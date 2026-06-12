@@ -14,7 +14,7 @@ import {
 
 /* ── External URLs ── */
 const PROVIDER_URLS: Record<string, string> = {
-  apimart: 'https://apimart.ai/zh/register?aff=ashuoai',
+  apimart: 'https://apib.ai/zh/register?aff=ashuoai',
   volcengine: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
   runninghub: 'https://www.runninghub.cn/?inviteCode=rh-v1312',
   grsai: 'https://grsai.com/zh/dashboard/user-info',

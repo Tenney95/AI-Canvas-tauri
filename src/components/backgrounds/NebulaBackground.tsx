@@ -114,7 +114,9 @@ export default function NebulaBackground() {
         blendFunction: BlendFunction.COLOR_DODGE,
         texture,
       });
-      textureEffect.blendMode.opacity.value = 0.2;
+
+      // 底图透明度
+      textureEffect.blendMode.opacity.value = 0.8;
 
       const bloomEffect = new BloomEffect({
         blendFunction: BlendFunction.COLOR_DODGE,

@@ -3,7 +3,7 @@
  * 上传图片 → 提交图像生成 → 轮询任务结果 → 返回生成图片 URL
  */
 
-const APIMART_BASE = 'https://api.apimart.ai/v1';
+const APIMART_BASE = 'https://api.apib.ai/v1';
 
 interface TaskResult {
   images: Array<{ url: string[]; expires_at?: number }>;

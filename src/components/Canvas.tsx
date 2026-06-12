@@ -251,6 +251,21 @@ function CanvasInner() {
     return () => window.removeEventListener('canvas-fit-view', handler);
   }, [reactFlowInstance]);
 
+  // ── Focus node event (history panel "查看节点") ──
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ nodeId: string }>).detail;
+      if (!detail?.nodeId || !reactFlowInstance) return;
+      const node = useAppStore.getState().nodes.find((n) => n.id === detail.nodeId);
+      if (!node) return;
+      requestAnimationFrame(() => {
+        reactFlowInstance.setCenter(node.position.x, node.position.y, { zoom: 1, duration: 400 });
+      });
+    };
+    window.addEventListener('canvas-focus-node', handler);
+    return () => window.removeEventListener('canvas-focus-node', handler);
+  }, [reactFlowInstance]);
+
   // ── Node click → AI dialog ──
   const openNodeDialog = useAppStore((s) => s.openNodeDialog);
   const onNodeClick = useCallback(

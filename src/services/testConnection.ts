@@ -12,7 +12,7 @@ export interface TestResult {
 
 /** APIMart — OpenAI 兼容接口，ping 测试，无余额 */
 async function testAPIMart(apiKey: string, baseUrl?: string): Promise<TestResult> {
-  const url = `${baseUrl || 'https://api.apimart.ai/v1'}/chat/completions`;
+  const url = `${baseUrl || 'https://api.apib.ai/v1'}/chat/completions`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },

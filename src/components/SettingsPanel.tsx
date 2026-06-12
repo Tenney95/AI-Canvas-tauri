@@ -145,7 +145,7 @@ export default function SettingsPanel() {
                             updateConfig({ canvasBackground: value as CanvasBg });
                             saveConfig();
                           }}
-                          className={`flex flex-col items-center gap-2 p-3 rounded-lg border transition-colors ${
+                          className={`flex flex-col items-center gap-2 p-1 rounded-lg border transition-colors ${
                             isActive
                               ? 'border-indigo-500 bg-indigo-500/10 text-indigo-400'
                               : 'border-canvas-border bg-canvas-card text-canvas-text-secondary hover:border-canvas-hover'

@@ -13,6 +13,7 @@ import SettingsPanel from './components/SettingsPanel';
 import AINodeDialog from './components/nodes/AINodeDialog';
 import WorkflowPanel from './components/WorkflowPanel';
 import AssetsPanel from './components/AssetsPanel';
+import OutputHistoryPanel from './components/OutputHistoryPanel';
 import Toast from './components/Toast';
 import SplashScreen from './components/SplashScreen';
 import CanvasBackground from './components/backgrounds/CanvasBackground';
@@ -74,6 +75,7 @@ export default function App() {
         <AINodeDialog />
         <WorkflowPanel />
         <AssetsPanel />
+        <OutputHistoryPanel />
         <Toast />
       </div>
       {/* Sidebar — outside the overflow-hidden container so it's not clipped */}

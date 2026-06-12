@@ -20,6 +20,7 @@ import type { NodeSlice } from './store.nodes';
 import type { UISlice } from './store.ui';
 import type { ToastSlice } from './store.toast';
 import type { HistorySlice } from './store.history';
+import type { HistoryRecordSlice } from './store.historyRecord';
 import type { ConfigSlice } from './store.config';
 import type { WorkflowSlice } from './store.workflows';
 import type { PresetSlice } from './store.presets';
@@ -31,6 +32,7 @@ import { createNodeSlice } from './store.nodes';
 import { createUISlice } from './store.ui';
 import { createToastSlice } from './store.toast';
 import { createHistorySlice } from './store.history';
+import { createHistoryRecordSlice } from './store.historyRecord';
 import { createConfigSlice } from './store.config';
 import { createWorkflowSlice } from './store.workflows';
 import { createPresetSlice } from './store.presets';
@@ -46,6 +48,7 @@ export type AppState = NodeSlice
   & UISlice
   & ToastSlice
   & HistorySlice
+  & HistoryRecordSlice
   & ConfigSlice
   & WorkflowSlice
   & PresetSlice
@@ -59,6 +62,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createUISlice(...a),
   ...createToastSlice(...a),
   ...createHistorySlice(...a),
+  ...createHistoryRecordSlice(...a),
   ...createConfigSlice(...a),
   ...createWorkflowSlice(...a),
   ...createPresetSlice(...a),

@@ -38,7 +38,7 @@ const DISTRIBUTE_ACTIONS: ToolbarAction[] = [
 ];
 
 function MultiSelectToolbar() {
-  const { nodes, selectedNodeIds, setNodes } = useAppStore();
+  const { nodes, selectedNodeIds, setNodes, recordOutputHistory } = useAppStore();
   const { flowToScreenPosition } = useReactFlow();
   const [batchRunning, setBatchRunning] = useState(false);
 
@@ -195,6 +195,17 @@ function MultiSelectToolbar() {
         if (nt === 'ai-text') {
           const result = await generateText({ prompt, model: d.model!, provider: d.provider! });
           updateNodeData(node.id, { output: result, status: 'success' });
+          recordOutputHistory(node.id, {
+            nodeId: node.id,
+            nodeLabel: d.label,
+            timestamp: Date.now(),
+            prompt,
+            output: result,
+            nodeType: 'ai-text',
+            model: d.model!,
+            provider: d.provider!,
+            status: 'success',
+          });
         } else if (nt === 'ai-image') {
           const result = await generateImage({
             prompt, model: d.model!, provider: d.provider!,
@@ -205,11 +216,19 @@ function MultiSelectToolbar() {
           const saved = currentProjectId
             ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image').catch(() => null)
             : null;
+          const mediaUrl = saved?.assetUrl || result.url;
           updateNodeData(node.id, {
-            imageUrl: saved?.assetUrl || result.url, sourceUrl: result.url,
+            imageUrl: mediaUrl, sourceUrl: result.url,
             filePath: saved?.filePath, thumbnailUrl: result.url,
             output: result.url, status: 'success',
             imageWidth: result.width, imageHeight: result.height,
+          });
+          recordOutputHistory(node.id, {
+            nodeId: node.id, nodeLabel: d.label, timestamp: Date.now(),
+            prompt, output: result.url, nodeType: 'ai-image',
+            model: d.model!, provider: d.provider!, status: 'success',
+            mediaUrl: result.url, filePath: saved?.filePath,
+            params: { imageSize: d.imageSize, aspectRatio: d.aspectRatio },
           });
         } else if (nt === 'ai-video') {
           const result = await generateVideo({
@@ -222,10 +241,18 @@ function MultiSelectToolbar() {
           const saved = currentProjectId
             ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video').catch(() => null)
             : null;
+          const mediaUrl = saved?.assetUrl || result.url;
           updateNodeData(node.id, {
-            videoUrl: saved?.assetUrl || result.url, sourceUrl: result.url,
+            videoUrl: mediaUrl, sourceUrl: result.url,
             filePath: saved?.filePath, thumbnailUrl: result.url,
             output: result.url, status: 'success',
+          });
+          recordOutputHistory(node.id, {
+            nodeId: node.id, nodeLabel: d.label, timestamp: Date.now(),
+            prompt, output: result.url, nodeType: 'ai-video',
+            model: d.model!, provider: d.provider!, status: 'success',
+            mediaUrl: result.url, filePath: saved?.filePath,
+            params: { videoResolution: d.videoResolution, videoFps: d.videoFps, videoFrames: d.videoFrames },
           });
         } else {
           const result = await generateAudio({
@@ -235,16 +262,28 @@ function MultiSelectToolbar() {
           const saved = currentProjectId
             ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio').catch(() => null)
             : null;
+          const mediaUrl = saved?.assetUrl || result.url;
           updateNodeData(node.id, {
-            audioUrl: saved?.assetUrl || result.url, sourceUrl: result.url,
+            audioUrl: mediaUrl, sourceUrl: result.url,
             filePath: saved?.filePath, thumbnailUrl: result.url,
             output: result.url, status: 'success',
+          });
+          recordOutputHistory(node.id, {
+            nodeId: node.id, nodeLabel: d.label, timestamp: Date.now(),
+            prompt, output: result.url, nodeType: 'ai-audio',
+            model: d.model!, provider: d.provider!, status: 'success',
+            mediaUrl: result.url, filePath: saved?.filePath,
           });
         }
         ok++;
       } catch (err) {
         const msg = err instanceof Error ? err.message : '生成失败';
         updateNodeData(node.id, { status: 'error', error: msg });
+        recordOutputHistory(node.id, {
+          nodeId: node.id, nodeLabel: d.label, timestamp: Date.now(),
+          prompt, output: '', nodeType: nt,
+          model: d.model!, provider: d.provider!, status: 'error', error: msg,
+        });
         fail++;
       }
     }

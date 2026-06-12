@@ -5,7 +5,7 @@
 import { useAppStore } from '../store/useAppStore';
 
 /** 默认上传端点（APIMart） */
-const DEFAULT_UPLOAD_BASE = 'https://api.apimart.ai/v1';
+const DEFAULT_UPLOAD_BASE = 'https://api.apib.ai/v1';
 
 /** 内存缓存：本地 URL → 公网 URL，避免同一张图重复上传 */
 const urlCache = new Map<string, string>();

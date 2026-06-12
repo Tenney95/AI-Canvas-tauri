@@ -7,6 +7,26 @@ import type { Node as RFNode, Edge, FinalConnectionState } from '@xyflow/react';
 import { useAppStore, generateId } from '../store/useAppStore';
 import type { BaseNodeData, NodeType } from '../types';
 
+// ── Model preference helper ──
+const MODEL_PREF_KEY = 'canvas-model-prefs';
+
+function loadDefaultModel(nodeType: string): { model: string; provider: string } | null {
+  try {
+    const raw = localStorage.getItem(MODEL_PREF_KEY);
+    if (!raw) return null;
+    const prefs: Record<string, string> = JSON.parse(raw);
+    const modelValue = prefs[nodeType];
+    if (!modelValue) return null;
+    const slashIdx = modelValue.indexOf('/');
+    if (slashIdx === -1) return null;
+    const provider = modelValue.slice(0, slashIdx);
+    if (!provider) return null;
+    return { model: modelValue, provider };
+  } catch {
+    return null;
+  }
+}
+
 interface ConnectionMenuOption {
   label: string;
   type: NodeType;
@@ -151,6 +171,7 @@ export function useConnectionDropMenu(smoothLine: boolean) {
       const nodeY = flowPos.y - newHeight / 2;
 
       const newNodeId = `node-${generateId()}`;
+      const defaultModel = loadDefaultModel(option.type);
       const newNode: RFNode<BaseNodeData> = {
         id: newNodeId,
         type: option.type,
@@ -164,6 +185,7 @@ export function useConnectionDropMenu(smoothLine: boolean) {
           nodeHeight: newHeight,
           ...(option.type === 'ai-image' ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
           ...(option.type === 'ai-panorama' ? { previewMode: 'image' } : {}),
+          ...(defaultModel ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
         },
       };
       const edge: Edge = {

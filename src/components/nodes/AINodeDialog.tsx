@@ -10,7 +10,7 @@ import PromptPanel from './shared/PromptPanel';
 import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
 
 function AINodeDialog() {
-  const { nodes, activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, showToast, workflows, currentProjectId } = useAppStore();
+  const { nodes, activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, recordOutputHistory, showToast, workflows, currentProjectId } = useAppStore();
 
   const node = useMemo(() => nodes.find((n) => n.id === activeNodeId), [nodes, activeNodeId]);
   const data: BaseNodeData | undefined = node?.data;
@@ -83,8 +83,9 @@ function AINodeDialog() {
         const saved = currentProjectId
           ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image').catch(() => null)
           : null;
+        const mediaUrl = saved?.assetUrl || result.url;
         updateNodeData(activeNodeId!, {
-          imageUrl: saved?.assetUrl || result.url,
+          imageUrl: mediaUrl,
           sourceUrl: result.url,
           filePath: saved?.filePath,
           thumbnailUrl: result.url,
@@ -93,15 +94,32 @@ function AINodeDialog() {
           imageWidth: result.width,
           imageHeight: result.height,
         });
+        recordOutputHistory(activeNodeId!, {
+          nodeId: activeNodeId!,
+          nodeLabel: data.label,
+          timestamp: Date.now(),
+          prompt: effectivePrompt,
+          output: result.url,
+          nodeType: 'ai-image',
+          model: data.model!,
+          provider: data.provider!,
+          status: 'success',
+          mediaUrl: result.url,
+          filePath: saved?.filePath,
+          params: { imageSize, aspectRatio },
+        });
         showToast('图片生成完成');
       } else if (nodeType === 'ai-video') {
+        const videoResolution = (data.videoResolution as number) || 832;
+        const videoFps = (data.videoFps as number) || 24;
+        const videoFrames = (data.videoFrames as number) || 77;
         const result = await generateVideo({
           prompt: effectivePrompt,
           model: data.model!,
           provider: data.provider!,
-          videoResolution: (data.videoResolution as number) || 832,
-          videoFps: (data.videoFps as number) || 24,
-          videoFrames: (data.videoFrames as number) || 77,
+          videoResolution,
+          videoFps,
+          videoFrames,
           workflowId: data.workflowId,
           workflowInputs: data.workflowInputs,
         });
@@ -109,13 +127,28 @@ function AINodeDialog() {
         const saved = currentProjectId
           ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video').catch(() => null)
           : null;
+        const mediaUrl = saved?.assetUrl || result.url;
         updateNodeData(activeNodeId!, {
-          videoUrl: saved?.assetUrl || result.url,
+          videoUrl: mediaUrl,
           sourceUrl: result.url,
           filePath: saved?.filePath,
           thumbnailUrl: result.url,
           output: result.url,
           status: 'success',
+        });
+        recordOutputHistory(activeNodeId!, {
+          nodeId: activeNodeId!,
+          nodeLabel: data.label,
+          timestamp: Date.now(),
+          prompt: effectivePrompt,
+          output: result.url,
+          nodeType: 'ai-video',
+          model: data.model!,
+          provider: data.provider!,
+          status: 'success',
+          mediaUrl: result.url,
+          filePath: saved?.filePath,
+          params: { videoResolution, videoFps, videoFrames },
         });
         showToast('视频生成完成');
       } else if (nodeType === 'ai-audio') {
@@ -130,13 +163,27 @@ function AINodeDialog() {
         const saved = currentProjectId
           ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio').catch(() => null)
           : null;
+        const mediaUrl = saved?.assetUrl || result.url;
         updateNodeData(activeNodeId!, {
-          audioUrl: saved?.assetUrl || result.url,
+          audioUrl: mediaUrl,
           sourceUrl: result.url,
           filePath: saved?.filePath,
           thumbnailUrl: result.url,
           output: result.url,
           status: 'success',
+        });
+        recordOutputHistory(activeNodeId!, {
+          nodeId: activeNodeId!,
+          nodeLabel: data.label,
+          timestamp: Date.now(),
+          prompt: effectivePrompt,
+          output: result.url,
+          nodeType: 'ai-audio',
+          model: data.model!,
+          provider: data.provider!,
+          status: 'success',
+          mediaUrl: result.url,
+          filePath: saved?.filePath,
         });
         showToast('音频生成完成');
       } else {
@@ -146,19 +193,53 @@ function AINodeDialog() {
           provider: data.provider!,
         });
         updateNodeData(activeNodeId!, { output: result, status: 'success' });
+        recordOutputHistory(activeNodeId!, {
+          nodeId: activeNodeId!,
+          nodeLabel: data.label,
+          timestamp: Date.now(),
+          prompt: effectivePrompt,
+          output: result,
+          nodeType: 'ai-text',
+          model: data.model!,
+          provider: data.provider!,
+          status: 'success',
+        });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '生成失败';
       updateNodeData(activeNodeId!, { status: 'error', error: msg });
+      recordOutputHistory(activeNodeId!, {
+        nodeId: activeNodeId!,
+        nodeLabel: data.label,
+        timestamp: Date.now(),
+        prompt: effectivePrompt,
+        output: '',
+        nodeType: nodeType as 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio',
+        model: data.model!,
+        provider: data.provider!,
+        status: 'error',
+        error: msg,
+      });
       showToast(msg, 'error');
     }
-  }, [activeNodeId, nodeType, data?.model, data?.provider, data?.imageSize, data?.aspectRatio, data?.videoResolution, data?.videoFps, data?.videoFrames, data?.workflowId, data?.workflowInputs, updateNodeData, showToast]);
+  }, [activeNodeId, nodeType, data?.model, data?.provider, data?.label, data?.imageSize, data?.aspectRatio, data?.videoResolution, data?.videoFps, data?.videoFrames, data?.workflowId, data?.workflowInputs, currentProjectId, updateNodeData, recordOutputHistory, showToast]);
 
   // 直接将输入内容作为节点输出（跳过模型调用）
   const onPassThrough = useCallback(() => {
-    if (!data?.prompt?.trim()) return;
+    if (!data?.prompt?.trim() || !data?.type) return;
     updateNodeData(activeNodeId!, { output: data.prompt, status: 'success' });
-  }, [activeNodeId, data?.prompt, updateNodeData]);
+    recordOutputHistory(activeNodeId!, {
+      nodeId: activeNodeId!,
+      nodeLabel: data.label,
+      timestamp: Date.now(),
+      prompt: data.prompt,
+      output: data.prompt,
+      nodeType: data.type,
+      model: data.model || 'passthrough',
+      provider: data.provider || 'passthrough',
+      status: 'success',
+    });
+  }, [activeNodeId, data?.prompt, data?.label, data?.type, data?.model, data?.provider, updateNodeData, recordOutputHistory]);
 
   const onModelSelect = useCallback(
     (model: ModelOption) => {

@@ -129,6 +129,24 @@ function NodePicker({
     if (isPanorama) {
       nodeData.previewMode = 'image';
     }
+    // Auto-fill default model from localStorage preference
+    try {
+      const raw = localStorage.getItem('canvas-model-prefs');
+      if (raw) {
+        const prefs: Record<string, string> = JSON.parse(raw);
+        const modelValue = prefs[type];
+        if (modelValue) {
+          const slashIdx = modelValue.indexOf('/');
+          if (slashIdx !== -1) {
+            const provider = modelValue.slice(0, slashIdx);
+            if (provider) {
+              nodeData.model = modelValue;
+              nodeData.provider = provider;
+            }
+          }
+        }
+      }
+    } catch { /* ignore */ }
     const pos = lastCanvasMousePos ?? { x: 300, y: 200 };
     addNode({
       id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -650,7 +668,7 @@ function LogoMenu() {
    Main Sidebar
    ============================================ */
 export default function Sidebar() {
-  const { openNodePicker, closeNodePicker, toggleAvatarMenu, nodePickerOpen, setWorkflowPanelOpen, setAssetsPanelOpen } =
+  const { openNodePicker, closeNodePicker, toggleAvatarMenu, nodePickerOpen, setWorkflowPanelOpen, setAssetsPanelOpen, setHistoryPanelOpen } =
     useAppStore();
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -703,6 +721,14 @@ export default function Sidebar() {
       {/* Workflows */}
       <button type="button" className="sidebar-btn-v3" data-tooltip="工作流" onClick={() => setWorkflowPanelOpen(true)}>
         <svg width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M1 3a2 2 0 0 1 2-2h6.5a2 2 0 0 1 2 2v6.5a2 2 0 0 1-2 2H7v4.063C7 16.355 7.644 17 8.438 17H12.5v-2.5a2 2 0 0 1 2-2H21a2 2 0 0 1 2 2V21a2 2 0 0 1-2 2h-6.5a2 2 0 0 1-2-2v-2.5H8.437A2.94 2.94 0 0 1 5.5 15.562V11.5H3a2 2 0 0 1-2-2Zm2-.5a.5.5 0 0 0-.5.5v6.5a.5.5 0 0 0 .5.5h6.5a.5.5 0 0 0 .5-.5V3a.5.5 0 0 0-.5-.5ZM14.5 14a.5.5 0 0 0-.5.5V21a.5.5 0 0 0 .5.5H21a.5.5 0 0 0 .5-.5v-6.5a.5.5 0 0 0-.5-.5Z"/></svg>
+      </button>
+
+      {/* History */}
+      <button type="button" className="sidebar-btn-v3" data-tooltip="输出历史" onClick={() => setHistoryPanelOpen(true)}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <circle cx="12" cy="12" r="10" />
+          <polyline points="12 6 12 12 16 14" />
+        </svg>
       </button>
 
       {/* Spacer */}
