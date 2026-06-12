@@ -45,7 +45,6 @@ export interface BaseNodeData {
   videoFps?: number;          // 视频帧率：16 | 24 | 30
   videoFrames?: number;       // 视频生成帧数（时长）
   error?: string;             // 错误信息
-  outputHistory?: OutputHistoryEntry[]; // AI 输出历史记录
   [key: string]: unknown;
 }
 

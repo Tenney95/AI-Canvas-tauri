@@ -7,6 +7,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
 import type { OutputHistoryEntry } from '../types';
 import AnimatedButton from './shared/AnimatedButton';
+import { convertFileSrc } from '@tauri-apps/api/core';
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 
@@ -54,9 +55,43 @@ function truncate(str: string, max: number): string {
   return str.slice(0, max) + '…';
 }
 
+/** Thumbnail with local-first fallback: tries convertFileSrc(filePath), falls back to online mediaUrl */
+function HistoryThumbnail({ mediaUrl, filePath }: { mediaUrl?: string; filePath?: string }) {
+  const [src, setSrc] = useState<string>(() => {
+    if (filePath) {
+      try { return convertFileSrc(filePath); } catch { /* fall through */ }
+    }
+    return mediaUrl || '';
+  });
+  const [errored, setErrored] = useState(false);
+
+  const handleError = useCallback(() => {
+    if (!errored && mediaUrl && src !== mediaUrl) {
+      setSrc(mediaUrl);
+      setErrored(true);
+    } else {
+      // Both sources failed — hide element via parent
+      setErrored(true);
+    }
+  }, [errored, mediaUrl, src]);
+
+  if (!src) return null;
+
+  return (
+    <img
+      src={src}
+      alt=""
+      className="w-12 h-12 rounded object-cover shrink-0"
+      onError={handleError}
+      style={errored && src === mediaUrl ? { display: 'none' } : undefined}
+    />
+  );
+}
+
 export default function OutputHistoryPanel() {
   const {
     nodes,
+    outputHistoryRecords,
     historyPanelOpen,
     setHistoryPanelOpen,
     deleteHistoryEntry,
@@ -89,18 +124,10 @@ export default function OutputHistoryPanel() {
     }
   }, [historyPanelOpen]);
 
-  // Collect all history entries from all nodes, sorted by time descending
+  // History entries stored independently from nodes — deleting a node won't lose records
   const allEntries = useMemo(() => {
-    const entries: OutputHistoryEntry[] = [];
-    for (const node of nodes) {
-      const history = node.data?.outputHistory;
-      if (history && history.length > 0) {
-        entries.push(...history);
-      }
-    }
-    entries.sort((a, b) => b.timestamp - a.timestamp);
-    return entries;
-  }, [nodes]);
+    return [...outputHistoryRecords].sort((a, b) => b.timestamp - a.timestamp);
+  }, [outputHistoryRecords]);
 
   // Filter + search
   const filteredEntries = useMemo(() => {
@@ -405,15 +432,11 @@ export default function OutputHistoryPanel() {
                               </div>
                             ) : (
                               <div className={`rounded-lg bg-canvas-bg/60 p-2 ${isImage && entry.mediaUrl ? 'flex items-start gap-2.5' : 'space-y-1.5'}`}>
-                                {/* Image thumbnail */}
-                                {isImage && entry.mediaUrl && (
-                                  <img
-                                    src={entry.mediaUrl}
-                                    alt=""
-                                    className="w-12 h-12 rounded object-cover shrink-0"
-                                    onError={(e) => {
-                                      (e.target as HTMLImageElement).style.display = 'none';
-                                    }}
+                                {/* Image thumbnail — local file first, online URL fallback */}
+                                {isImage && (entry.mediaUrl || entry.filePath) && (
+                                  <HistoryThumbnail
+                                    mediaUrl={entry.mediaUrl}
+                                    filePath={entry.filePath}
                                   />
                                 )}
                                 <div className="min-w-0 space-y-1">

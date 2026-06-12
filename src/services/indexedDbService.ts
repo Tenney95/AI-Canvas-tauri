@@ -2,11 +2,12 @@
  * indexedDbService IndexedDB 持久化服务 — 浏览器端本地存储，保存项目、工作流、应用配置等数据
  */
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 4; // v4: added presets store
+const DB_VERSION = 5; // v5: added history store
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
 const STORE_PRESETS = 'presets';
+const STORE_HISTORY = 'history';
 
 const CONFIG_KEY = 'app-config';
 
@@ -48,6 +49,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_PRESETS)) {
         db.createObjectStore(STORE_PRESETS, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_HISTORY)) {
+        db.createObjectStore(STORE_HISTORY, { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -219,6 +223,91 @@ export async function deletePresetFromDb(id: string): Promise<void> {
     const tx = db.transaction(STORE_PRESETS, 'readwrite');
     const store = tx.objectStore(STORE_PRESETS);
     store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ============================================
+// History CRUD — AI 输出历史记录
+// ============================================
+
+export interface HistoryRecord {
+  id: string;
+  nodeId: string;
+  nodeLabel: string;
+  timestamp: number;
+  prompt: string;
+  output: string;
+  nodeType: string;
+  model: string;
+  provider: string;
+  status: string;
+  error?: string;
+  mediaUrl?: string;
+  filePath?: string;
+  params?: Record<string, unknown>;
+}
+
+/** 保存单条历史记录 */
+export async function putHistoryEntry(record: HistoryRecord): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_HISTORY, 'readwrite');
+    const store = tx.objectStore(STORE_HISTORY);
+    store.put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** 删除单条历史记录 */
+export async function deleteHistoryEntryFromDb(id: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_HISTORY, 'readwrite');
+    const store = tx.objectStore(STORE_HISTORY);
+    store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** 获取全部历史记录 */
+export async function getAllHistoryEntries(): Promise<HistoryRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_HISTORY, 'readonly');
+    const store = tx.objectStore(STORE_HISTORY);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/** 清空所有历史记录 */
+export async function clearAllHistoryEntries(): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_HISTORY, 'readwrite');
+    const store = tx.objectStore(STORE_HISTORY);
+    store.clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** 批量删除指定节点的历史记录（先全取，过滤后全量覆写） */
+export async function deleteNodeHistoryEntries(nodeId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_HISTORY, 'readwrite');
+    const store = tx.objectStore(STORE_HISTORY);
+    const getAll = store.getAll();
+    getAll.onsuccess = () => {
+      const toDelete = getAll.result.filter((r: HistoryRecord) => r.nodeId === nodeId);
+      for (const r of toDelete) store.delete(r.id);
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

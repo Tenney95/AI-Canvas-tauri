@@ -526,8 +526,7 @@
   pointer-events: none;
 }
 .assets-panel {
-  width: 520px;
-  max-width: calc(100vw - 32px);
+  width: calc(100vw - 140px);
   max-height: calc(100vh - 64px);
   overflow: hidden;
   display: flex;
@@ -540,6 +539,9 @@
   box-shadow: 0 16px 48px var(--black-alpha-50), 0 0 0 1px var(--white-alpha-03);
   pointer-events: auto;
   /* animation handled by framer-motion */
+}
+[data-tauri-window] .assets-panel {
+  margin-left: 30px;
 }
 
 /* Header */
@@ -662,7 +664,7 @@
   flex: 1;
   overflow-y: auto;
   padding: 8px 20px 16px;
-  columns: 2;
+  columns: 3;
   column-gap: 12px;
 }
 .assets-empty {

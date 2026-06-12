@@ -111,6 +111,8 @@
 .ReactCrop__child-wrapper>img, .ReactCrop__child-wrapper>video {
   width: 100%;
   height: 100%  !important;
+  max-height: auto !important;
+  max-width: auto !important;
 }
 
 /* 缩放容器 — transform 居中缩放 */

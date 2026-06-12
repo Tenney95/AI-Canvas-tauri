@@ -34,9 +34,10 @@ export default function App() {
 
   // Load projects from IndexedDB on mount
   const initFromDb = useAppStore((s) => s.initFromDb);
+  const migrateHistoryAndLoad = useAppStore((s) => s.migrateHistoryAndLoad);
   useEffect(() => {
-    initFromDb();
-  }, [initFromDb]);
+    initFromDb().then(() => migrateHistoryAndLoad());
+  }, [initFromDb, migrateHistoryAndLoad]);
 
   // Flush undo-trash dirs on app close
   useEffect(() => {
