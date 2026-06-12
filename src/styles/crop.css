@@ -1,0 +1,188 @@
+/* ============================================
+   Crop Editor — 基于 react-image-crop
+   ============================================ */
+
+/* Body：无 padding，全区域交互 */
+.crop-body {
+  padding: 0 !important;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 宽高比快捷按钮栏 — 放在 headerContent */
+.crop-aspect-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.crop-aspect-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.crop-aspect-btn:hover {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+
+.crop-aspect-btn.active {
+  color: var(--brand);
+  background: var(--brand-alpha-10);
+  border-color: var(--brand-alpha-30);
+}
+
+.crop-aspect-spacer {
+  flex: 1;
+  min-width: 8px;
+}
+
+/* Confirm / Cancel 按钮 */
+.crop-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  background: transparent;
+  color: var(--theme-text-secondary);
+}
+
+.crop-action-btn:hover {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+
+.crop-action-btn.confirm {
+  color: var(--success);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.crop-action-btn.confirm:hover {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--success-light);
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+.crop-action-btn.cancel:hover {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+/* 裁切主舞台 — 居中图片，支持缩放滚动 */
+.crop-stage {
+  flex: 1;
+  display: flex;
+  align-items: safe center;
+  justify-content: safe center;
+  background: #0a0a0f;
+  min-height: 0;
+  overflow: hidden;
+  height: 100%;
+}
+
+/* ReactCrop 外层容器 */
+.crop-react-wrapper {
+  width: 100%;
+  height: 100%;
+}
+.ReactCrop__child-wrapper {
+    width: 100%;
+    height: 100%  !important;
+}
+
+.ReactCrop__child-wrapper>img, .ReactCrop__child-wrapper>video {
+  width: 100%;
+  height: 100%  !important;
+}
+
+/* 缩放容器 — transform 居中缩放 */
+.crop-zoom-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center center;
+  flex-shrink: 0;
+  height: 100%;
+}
+
+/* 缩放指示器 */
+.crop-zoom-indicator {
+  position: absolute;
+  bottom: 12px;
+  right: 16px;
+  padding: 3px 10px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 6px;
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* 裁切图片 */
+.crop-image {
+  max-width: 100%;
+  max-height: calc(92vh - 48px);
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* ============================================
+   react-image-crop 暗色主题覆盖
+   ============================================ */
+
+/* 裁切框外暗色蒙版 */
+.ReactCrop {
+  background: #0a0a0f;
+}
+
+/* 裁切选中区域边框 — 白色强调 */
+.ReactCrop .ReactCrop__crop-selection {
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+}
+
+/* 拖拽手柄 — 白色圆点 */
+.ReactCrop .ReactCrop__drag-handle {
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+
+.ReactCrop .ReactCrop__drag-handle:hover {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+/* 拖拽边条 — 半透明 */
+.ReactCrop .ReactCrop__drag-bar {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ReactCrop .ReactCrop__drag-bar:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* 九宫格辅助线 */
+.ReactCrop .ReactCrop__line {
+  border-color: rgba(255, 255, 255, 0.2);
+}

@@ -2,7 +2,7 @@
  * ImageNodeToolbar 图像节点浮动工具栏 — 鼠标悬停图像节点时显示，提供遮罩、扩图、360全景、裁切、重绘、高清、下载等操作
  */
 import { memo, useCallback } from 'react';
-import AnimatedButton from '../../shared/AnimatedButton';
+import AnimatedButton from '../../../shared/AnimatedButton';
 
 interface ImageNodeToolbarProps {
   nodeId: string;
@@ -11,9 +11,10 @@ interface ImageNodeToolbarProps {
   onFullscreen?: () => void;
   onDownload?: () => void;
   onResetSize?: () => void;
+  onCrop?: () => void;
 }
 
-function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onDownload, onResetSize }: ImageNodeToolbarProps) {
+function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onDownload, onResetSize, onCrop }: ImageNodeToolbarProps) {
   const noop = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
   }, []);
@@ -48,16 +49,6 @@ function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onDownload, o
           <AnimatedButton className="ftb-btn icon-only act-expand" data-tooltip="扩图" aria-label="扩图" onClick={noop}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-            </svg>
-          </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-panorama-360" data-tooltip="一键360全景图" aria-label="一键360全景图" onClick={noop}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <circle cx="12" cy="12" r="8" />
-              <path d="M4 12h16" />
-              <path d="M12 4a12 12 0 0 0 0 16" />
-              <path d="M12 4a12 12 0 0 1 0 16" />
-              <path d="M3 8c3-2 6-3 9-3s6 1 9 3" />
-              <path d="M3 16c3 2 6 3 9 3s6-1 9-3" />
             </svg>
           </AnimatedButton>
           <AnimatedButton className="ftb-btn icon-only act-multigrid" data-tooltip="宫格裁切" aria-label="宫格裁切" onClick={noop}>
@@ -113,7 +104,7 @@ function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onDownload, o
               <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-crop" data-tooltip="裁切" aria-label="裁切" onClick={noop}>
+          <AnimatedButton className="ftb-btn icon-only act-crop" data-tooltip="裁切" aria-label="裁切" onClick={handleAction(onCrop)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2" />
             </svg>

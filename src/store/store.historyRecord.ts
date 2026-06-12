@@ -18,7 +18,7 @@ export interface HistoryRecordSlice {
   clearAllHistory: () => void;
 }
 
-export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRecordSlice> = (set, get) => ({
+export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRecordSlice> = (set, _get) => ({
   recordOutputHistory: (nodeId, entry) => {
     const id = `hist-${generateId()}`;
     const record: OutputHistoryEntry = { ...entry, id };

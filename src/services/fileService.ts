@@ -179,6 +179,30 @@ export async function uploadFile(): Promise<string | null> {
 }
 
 /** 读取本地文件路径，返回 data URL（供剪贴板粘贴等场景使用） */
+export async function fetchImageForCrop(imageUrl: string): Promise<string> {
+  // data:/blob: 是同源 URL，asset:// / asset.localhost 是 Tauri 本地资源，不需要绕过 CORS
+  if (
+    imageUrl.startsWith('data:') ||
+    imageUrl.startsWith('blob:') ||
+    imageUrl.startsWith('asset://') ||
+    imageUrl.includes('asset.localhost')
+  ) {
+    return imageUrl;
+  }
+  // 远程 URL：通过 Rust 端 reqwest 原生 HTTP 下载（WebView CORS 不适用）
+  if (isTauriEnv() && /^https?:\/\//i.test(imageUrl)) {
+    try {
+      const dataUrl: string = await invoke('fetch_image_data_url', { url: imageUrl });
+      return dataUrl;
+    } catch (err) {
+      console.warn('[fileService] fetchImageForCrop via Rust failed, fallback to original URL:', err);
+      return imageUrl;
+    }
+  }
+  return imageUrl;
+}
+
+/** 读取本地文件路径，返回 data URL（供剪贴板粘贴等场景使用） */
 export async function readFileToDataUrl(filePath: string): Promise<string | null> {
   try {
     // Normalize Windows backslash paths
@@ -531,10 +555,19 @@ export async function downloadUrlAndSave(
 ): Promise<{ filePath: string; assetUrl: string } | null> {
   if (!isTauriEnv()) return null;
   try {
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    const buffer = await response.arrayBuffer();
-    const data = new Uint8Array(buffer);
+    // 通过 Rust 原生 HTTP 下载（绕过 WebView CORS 限制），返回 base64 data URL
+    const dataUrl: string = await invoke('fetch_image_data_url', { url });
+
+    // 解析 data URL 还原为二进制
+    const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
+    if (!match) return null;
+    const b64 = match[2];
+    const binaryStr = atob(b64);
+    const data = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      data[i] = binaryStr.charCodeAt(i);
+    }
+
     const fileName = extractFileNameFromUrl(url, fallbackPrefix);
     return await saveBinaryToProjectData(data, projectId, fileName);
   } catch (err) {

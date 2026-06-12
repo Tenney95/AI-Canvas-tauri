@@ -12,12 +12,13 @@
 .prompt-input-wrap {
   position: relative;
   padding: 8px 8px 2px;
+  min-width: 0;
 }
 /* ── Contenteditable editor (replaces textarea + backdrop) ── */
 .prompt-editor {
   width: 100%;
   min-height: 80px;
-  max-height: 200px;
+  max-height: min(50vh, 600px);
   overflow-y: auto;
   background: transparent;
   border: none;
@@ -29,6 +30,7 @@
   font-family: inherit;
   white-space: pre-wrap;
   word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 .prompt-editor.is-empty::before {
   content: attr(data-placeholder);

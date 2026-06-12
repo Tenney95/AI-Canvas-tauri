@@ -2,11 +2,11 @@
  * FreeAnglePanel — 自由角度控制面板
  * 点击 ImageNodeToolbar 的"控制角度"按钮后弹出，通过拖拽/滑块控制 3D 正方体角度
  */
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import '../../../styles/freeangle.css';
-import type { ModelGroup, ModelOption } from '../../../types';
-import ModelSelector from './ModelSelector';
+import { memo, useCallback, useRef, useState } from 'react';
+import FullscreenOverlay from '../../../shared/FullscreenOverlay';
+import '../../../../styles/freeangle.css';
+import type { ModelGroup, ModelOption } from '../../../../types';
+import ModelSelector from '../ModelSelector';
 
 /* ── Props ── */
 export interface FreeAnglePanelProps {
@@ -87,16 +87,6 @@ function FreeAnglePanel({ isOpen, imageUrl, onClose, onGenerate }: FreeAnglePane
   const [selectedModel, setSelectedModel] = useState('runninghub/2053902968243671041');
   const [selectedProvider, setSelectedProvider] = useState('runninghubwf');
 
-  // ESC 关闭面板
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [isOpen, onClose]);
-
   // 滑块值映射：rotation slider 0-360 -> display value
   const sliderRotation = normalizeAngle(360 - rotation + 35);
 
@@ -158,137 +148,128 @@ function FreeAnglePanel({ isOpen, imageUrl, onClose, onGenerate }: FreeAnglePane
     onGenerate?.({ rotation: normalizeAngle(rotation), pitch, scale: cubeScale, model: selectedModel, provider: selectedProvider });
   }, [rotation, pitch, cubeScale, selectedModel, selectedProvider, onGenerate]);
 
-  if (!isOpen) return null;
-
-  const panel = (
-    <div className="free-angle-overlay" onClick={onClose}>
-      <div className="free-angle-panel" onClick={(e) => e.stopPropagation()}>
-        {/* ── Header ── */}
-        <div className="fa-header">
-          <span className="fa-title">拖拽正方体改变角度</span>
-          <button className="fa-close-btn" onClick={onClose}>×</button>
-        </div>
-
-        {/* ── Content ── */}
-        <div className="fa-content">
-          {/* 🔳 3D 正方体预览 */}
-          <div className="fa-preview-area">
-            <button className="fa-reset-btn" onClick={handleReset}>重置</button>
-            <div className="fa-cube-container" style={{ transform: `scale(${1 + (cubeScale - 0.9) * 2.5})` }}>
-              <div
-                className="fa-cube"
-                style={{ transform: `rotateX(${pitch}deg) rotateY(${-rotation}deg)` }}
-                onPointerDown={handleCubePointerDown}
-                onPointerMove={handleCubePointerMove}
-                onPointerUp={handleCubePointerUp}
-              >
-                <div className="fa-cube-face face-front">
-                  {imageUrl ? (
-                    <img src={imageUrl} className="fa-face-img" alt="preview" draggable={false} />
-                  ) : (
-                    <span>前</span>
-                  )}
-                </div>
-                <div className="fa-cube-face face-back"><span>后</span></div>
-                <div className="fa-cube-face face-right"><span>右</span></div>
-                <div className="fa-cube-face face-left"><span>左</span></div>
-                <div className="fa-cube-face face-top"><span>上</span></div>
-                <div className="fa-cube-face face-bottom"><span>下</span></div>
-              </div>
+  return (
+    <FullscreenOverlay
+      isOpen={isOpen}
+      onClose={onClose}
+      title="拖拽正方体改变角度"
+      panelWidth="520px"
+      bodyClassName="fa-body"
+    >
+      {/* 🔳 3D 正方体预览 */}
+      <div className="fa-preview-area">
+        <button className="fa-reset-btn" onClick={handleReset}>重置</button>
+        <div className="fa-cube-container" style={{ transform: `scale(${1 + (cubeScale - 0.9) * 2.5})` }}>
+          <div
+            className="fa-cube"
+            style={{ transform: `rotateX(${pitch}deg) rotateY(${-rotation}deg)` }}
+            onPointerDown={handleCubePointerDown}
+            onPointerMove={handleCubePointerMove}
+            onPointerUp={handleCubePointerUp}
+          >
+            <div className="fa-cube-face face-front">
+              {imageUrl ? (
+                <img src={imageUrl} className="fa-face-img" alt="preview" draggable={false} />
+              ) : (
+                <span>前</span>
+              )}
             </div>
-          </div>
-
-          {/* 🎚️ 滑块控制 */}
-          <div className="fa-controls">
-            <div className="fa-control-item">
-              <div className="fa-control-label-row">
-                <span className="fa-label">水平角度</span>
-                <span className="fa-value">{normalizeAngle(rotation).toFixed(1)}°</span>
-              </div>
-              <input
-                type="range"
-                className="fa-slider"
-                min={0}
-                max={360}
-                step={0.5}
-                value={sliderRotation}
-                onChange={(e) => handleRotationSlider(Number(e.target.value))}
-              />
-            </div>
-            <div className="fa-control-item">
-              <div className="fa-control-label-row">
-                <span className="fa-label">垂直角度</span>
-                <span className="fa-value">{pitch.toFixed(1)}°</span>
-              </div>
-              <input
-                type="range"
-                className="fa-slider"
-                min={-30}
-                max={60}
-                step={0.5}
-                value={pitch}
-                onChange={(e) => handlePitchChange(Number(e.target.value))}
-              />
-            </div>
-            <div className="fa-control-item">
-              <div className="fa-control-label-row">
-                <span className="fa-label">距离</span>
-                <span className="fa-value">{cubeScale.toFixed(2)}</span>
-              </div>
-              <input
-                type="range"
-                className="fa-slider"
-                min={0.1}
-                max={2}
-                step={0.05}
-                value={cubeScale}
-                onChange={(e) => handleScaleChange(Number(e.target.value))}
-              />
-            </div>
-          </div>
-
-          {/* 📦 Footer: 模型选择 + 操作按钮 */}
-          <div className="fa-footer">
-            <ModelSelector
-              nodeType="ai-image"
-              selectedModel={selectedModel}
-              selectedProvider={selectedProvider}
-              onSelect={handleSelectModel}
-              groups={ANGLE_MODEL_GROUPS}
-              defaultExpandedGroupIds={['runninghubwf']}
-            />
-
-            <div className="fa-footer-actions">
-              <button
-                type="button"
-                className="fa-debug-btn"
-                title="调试 API 参数"
-                aria-label="调试 API 参数"
-                onClick={() => { /* TODO: 调试 */ }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-                </svg>
-              </button>
-              <button
-                className="fa-gen-btn"
-                title="生成"
-                aria-label="生成"
-                onClick={handleGenerate}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="12" y1="19" x2="12" y2="5" />
-                  <polyline points="5 12 12 5 19 12" />
-                </svg>
-              </button>
-            </div>
+            <div className="fa-cube-face face-back"><span>后</span></div>
+            <div className="fa-cube-face face-right"><span>右</span></div>
+            <div className="fa-cube-face face-left"><span>左</span></div>
+            <div className="fa-cube-face face-top"><span>上</span></div>
+            <div className="fa-cube-face face-bottom"><span>下</span></div>
           </div>
         </div>
       </div>
-    </div>
-  );
 
-  return createPortal(panel, document.body);
+      {/* 🎚️ 滑块控制 */}
+      <div className="fa-controls px-2">
+        <div className="fa-control-item">
+          <div className="fa-control-label-row">
+            <span className="fa-label">水平角度</span>
+            <span className="fa-value">{normalizeAngle(rotation).toFixed(1)}°</span>
+          </div>
+          <input
+            type="range"
+            className="fa-slider"
+            min={0}
+            max={360}
+            step={0.5}
+            value={sliderRotation}
+            onChange={(e) => handleRotationSlider(Number(e.target.value))}
+          />
+        </div>
+        <div className="fa-control-item">
+          <div className="fa-control-label-row">
+            <span className="fa-label">垂直角度</span>
+            <span className="fa-value">{pitch.toFixed(1)}°</span>
+          </div>
+          <input
+            type="range"
+            className="fa-slider"
+            min={-30}
+            max={60}
+            step={0.5}
+            value={pitch}
+            onChange={(e) => handlePitchChange(Number(e.target.value))}
+          />
+        </div>
+        <div className="fa-control-item">
+          <div className="fa-control-label-row">
+            <span className="fa-label">距离</span>
+            <span className="fa-value">{cubeScale.toFixed(2)}</span>
+          </div>
+          <input
+            type="range"
+            className="fa-slider"
+            min={0.1}
+            max={2}
+            step={0.05}
+            value={cubeScale}
+            onChange={(e) => handleScaleChange(Number(e.target.value))}
+          />
+        </div>
+      </div>
+
+      {/* 📦 Footer: 模型选择 + 操作按钮 */}
+      <div className="fa-footer p-2">
+        <ModelSelector
+          nodeType="ai-image"
+          selectedModel={selectedModel}
+          selectedProvider={selectedProvider}
+          onSelect={handleSelectModel}
+          groups={ANGLE_MODEL_GROUPS}
+          defaultExpandedGroupIds={['runninghubwf']}
+        />
+
+        <div className="fa-footer-actions">
+          <button
+            type="button"
+            className="fa-debug-btn"
+            title="调试 API 参数"
+            aria-label="调试 API 参数"
+            onClick={() => { /* TODO: 调试 */ }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+            </svg>
+          </button>
+          <button
+            className="fa-gen-btn"
+            title="生成"
+            aria-label="生成"
+            onClick={handleGenerate}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="12" y1="19" x2="12" y2="5" />
+              <polyline points="5 12 12 5 19 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </FullscreenOverlay>
+  );
 }
 
 export default memo(FreeAnglePanel);

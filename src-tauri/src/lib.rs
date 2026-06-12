@@ -1,3 +1,4 @@
+use base64::Engine;
 use std::sync::Mutex;
 use tauri::{Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
@@ -44,6 +45,65 @@ const DREAMINA_LOGIN_WATCHER: &str = r#"
   }, 120000);
 })();
 "#;
+
+/// 使用原生 HTTP 客户端下载远程图片并返回 base64 data URL（绕过 WebView CORS 限制）
+#[tauri::command]
+async fn fetch_image_data_url(url: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("AI-Canvas/0.1")
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+
+    // 从 Content-Type 头推导 MIME（提前提取为 String，避免借用冲突）
+    let mime = {
+        let ct = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(';').next())
+            .unwrap_or("image/png")
+            .trim();
+        if ct.starts_with("image/") {
+            ct.to_string()
+        } else {
+            // 从 URL 后缀推导
+            let lower = url.to_lowercase();
+            let guess = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+                "image/jpeg"
+            } else if lower.ends_with(".gif") {
+                "image/gif"
+            } else if lower.ends_with(".webp") {
+                "image/webp"
+            } else if lower.ends_with(".bmp") {
+                "image/bmp"
+            } else if lower.ends_with(".svg") {
+                "image/svg+xml"
+            } else {
+                "image/png"
+            };
+            guess.to_string()
+        }
+    };
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("读取响应失败: {e}"))?;
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{mime};base64,{b64}"))
+}
 
 /// 将文件或目录移动到系统回收站/废纸篓
 #[tauri::command]
@@ -117,7 +177,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![move_to_trash, dreamina_login])
+        .invoke_handler(tauri::generate_handler![fetch_image_data_url, move_to_trash, dreamina_login])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

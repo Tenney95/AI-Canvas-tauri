@@ -5,7 +5,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../store/useAppStore';
-import type { OutputHistoryEntry, NodeType } from '../types';
+import type { OutputHistoryEntry } from '../types';
 import AnimatedButton from './shared/AnimatedButton';
 
 const EASE = [0.16, 1, 0.3, 1] as const;
@@ -470,7 +470,7 @@ export default function OutputHistoryPanel() {
                                   {/* Params */}
                                   {entry.params && (
                                     <span className="text-[10px] text-canvas-text-muted">
-                                      {entry.params.imageSize || ''} {entry.params.aspectRatio || ''}
+                                      {String(entry.params.imageSize || '')} {String(entry.params.aspectRatio || '')}
                                     </span>
                                   )}
                                 </div>

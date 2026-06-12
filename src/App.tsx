@@ -55,6 +55,14 @@ export default function App() {
     return () => { unlisten?.(); };
   }, []);
 
+  // Tauri 模式下给 body 加属性，Portal 渲染的弹窗元素也在 body 下，CSS 选择器才能匹配
+  useEffect(() => {
+    if (isTauri) {
+      document.body.setAttribute('data-tauri-window', '');
+      return () => document.body.removeAttribute('data-tauri-window');
+    }
+  }, []);
+
   const appContent = (
     <div
       data-tauri-window={isTauri ? '' : undefined}

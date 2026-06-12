@@ -1,18 +1,19 @@
 /**
  * ImageNode 图像节点 — 在画布上渲染图像内容，支持上传/粘贴图片、遮罩编辑、工具栏、全屏预览
  */
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import GooeyBtn from './shared/GooeyBtn';
-import ImageNodeToolbar from './shared/ImageNodeToolbar';
-import FreeAnglePanel from './shared/FreeAnglePanel';
-import MattingEditor from './shared/MattingEditor';
+import ImageNodeToolbar from './shared/image/ImageNodeToolbar';
+import FreeAnglePanel from './shared/image/FreeAnglePanel';
+import MattingEditor from './shared/image/MattingEditor';
+import CropEditor from './shared/image/CropEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
-import { computeImageNodeDimensions } from './shared/imageUtils';
+import { computeImageNodeDimensions } from './shared/image/imageUtils';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
@@ -163,6 +164,86 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   );
 
   /* ════════════════════════════════════════════
+     Crop State
+     ════════════════════════════════════════════ */
+  const [isCrop, setIsCrop] = useState(false);
+  const pendingCropNodeId = useRef<string | null>(null);
+
+  const handleOpenCrop = useCallback(() => setIsCrop(true), []);
+  const handleCloseCrop = useCallback(() => {
+    setIsCrop(false);
+    pendingCropNodeId.current = null;
+  }, []);
+
+  /** 确认裁切时立即调用：创建 loading 状态的新节点并关闭弹窗 */
+  const handleCropStart = useCallback(() => {
+    const store = useAppStore.getState();
+    const currentNodes = store.nodes;
+    const currentPos = currentNodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
+
+    const newNodeId = `node-${generateId()}`;
+    pendingCropNodeId.current = newNodeId;
+
+    const newNode: Node<BaseNodeData> = {
+      id: newNodeId,
+      type: 'ai-image',
+      position: { x: currentPos.x + nodeWidth + 40, y: currentPos.y },
+      data: {
+        label: `${(data.label as string) || '图像'} 裁切`,
+        type: 'ai-image',
+        role: 'source',
+        status: 'loading',
+        nodeWidth,
+        nodeHeight: 158,
+      } as BaseNodeData,
+    };
+    store.addNode(newNode);
+    setIsCrop(false);
+  }, [id, data.label, nodeWidth]);
+
+  /** 后台裁切完成后调用：更新节点数据 */
+  const handleCropSave = useCallback(
+    async (croppedDataUrl: string, metadata?: { width: number; height: number }) => {
+      const store = useAppStore.getState();
+      const nodeId = pendingCropNodeId.current;
+      pendingCropNodeId.current = null;
+
+      if (!croppedDataUrl || !nodeId) {
+        if (nodeId) store.deleteNode(nodeId);
+        store.showToast('裁切失败，请重试', 'error');
+        return;
+      }
+
+      // Save to project data if applicable
+      let assetUrl = croppedDataUrl;
+      let filePath: string | undefined;
+      const projectId = store.currentProjectId;
+      if (projectId && projectId !== 'default') {
+        const savedName = `cropped_${Date.now()}.png`;
+        const saved = await saveDataUrlToProjectData(croppedDataUrl, projectId, savedName);
+        if (saved && saved.assetUrl) {
+          assetUrl = saved.assetUrl;
+          filePath = saved.filePath;
+        }
+      }
+
+      const dims = await computeImageNodeDimensions(assetUrl);
+      store.updateNodeData(nodeId, {
+        imageUrl: assetUrl,
+        filePath,
+        status: 'success',
+        imageWidth: metadata?.width || dims.nodeWidth,
+        imageHeight: metadata?.height || dims.nodeHeight,
+        nodeWidth: dims.nodeWidth,
+        nodeHeight: dims.nodeHeight,
+      } as Partial<BaseNodeData>);
+
+      store.showToast('裁切完成，已创建新节点');
+    },
+    [updateNodeData],
+  );
+
+  /* ════════════════════════════════════════════
      Matting State
      ════════════════════════════════════════════ */
   const [isMatting, setIsMatting] = useState(false);
@@ -296,6 +377,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             nodeId={id}
             onMatting={handleOpenMatting}
             onMultiAngle={handleOpenFreeAngle}
+            onCrop={handleOpenCrop}
             onFullscreen={handleOpenFullscreen}
             onDownload={handleDownload}
           />
@@ -317,6 +399,15 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         imageUrl={(data.imageUrl || data.thumbnailUrl) as string | undefined}
         onClose={handleCloseFreeAngle}
         onGenerate={handleFreeAngleGenerate}
+      />
+
+      {/* Crop Editor */}
+      <CropEditor
+        isOpen={isCrop}
+        imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+        onClose={handleCloseCrop}
+        onStart={handleCropStart}
+        onSave={handleCropSave}
       />
 
       {/* Fullscreen preview */}
