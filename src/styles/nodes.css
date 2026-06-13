@@ -334,6 +334,7 @@
    past the rounded corners.
    ════════════════════════════════════════════ */
 [data-tauri-window] .matting-overlay,
+[data-tauri-window] .annotate-overlay,
 [data-tauri-window] .text-fullscreen-overlay,
 [data-tauri-window] .fullscreen-overlay {
   left: 30px;
@@ -357,12 +358,21 @@
   backdrop-filter: blur(6px);
 }
 
+/* 半透明模式：无面板框，仅遮罩背景（裁切/抠图等工具用） */
+.fullscreen-overlay--transparent {
+  background: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  flex-direction: column;
+  padding: 0;
+}
+
 .fullscreen-panel {
   max-height: 92vh;
   display: flex;
   flex-direction: column;
   background: var(--theme-surface);
-  border: 1px solid var(--theme-border);
+  backdrop-filter: blur(24px);
   border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 12px 60px rgba(0, 0, 0, 0.5);
@@ -525,20 +535,11 @@
   background: var(--theme-surface);
 }
 
-/* ============ Fullscreen image preview ============ */
-
-.fullscreen-body--image {
-  padding: 0;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.3);
-}
+/* ============ Fullscreen image preview (hidePanel 模式) ============ */
 
 .fullscreen-img-view {
-  max-width: 100%;
-  max-height: calc(92vh - 60px);
+  max-width: 92vw;
+  max-height: 92vh;
   object-fit: contain;
   border-radius: 4px;
   user-select: none;

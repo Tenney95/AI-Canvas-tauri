@@ -3,6 +3,7 @@
  * 基于 react-image-crop，提供自由裁切 + 预设宽高比
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
 import ReactCrop, {
   type Crop,
   type PixelCrop,
@@ -217,43 +218,57 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
   // handled in handleAspectChange for explicit button clicks
   // onImageLoad handles the initial load case
 
-  /* ── Header 内联：宽高比按钮 + 操作按钮 ── */
-  const headerContent = (
-    <div className="crop-aspect-bar">
-      {ASPECT_OPTIONS.map((opt) => (
-        <button
-          key={opt.key}
-          type="button"
-          className={`crop-aspect-btn${aspect === opt.key ? ' active' : ''}`}
-          onClick={() => handleAspectChange(opt.key)}
-        >
-          {opt.label}
-        </button>
-      ))}
-      <div className="crop-aspect-spacer" />
-      <AnimatedButton
-        className="crop-action-btn confirm"
-        data-tooltip="确认裁切"
-        aria-label="确认裁切"
-        onClick={handleConfirm}
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-          <path d="M3 17l5-5 3 3 8-8" />
-        </svg>
-        <span>确认</span>
-      </AnimatedButton>
-    </div>
-  );
-
   return (
     <FullscreenOverlay
       isOpen={isOpen}
       onClose={handleClose}
       title="裁切"
-      panelWidth="min(96vw, 1400px)"
-      bodyClassName="crop-body"
-      headerContent={headerContent}
+      hidePanel
+      className="crop-overlay"
     >
+      <motion.div
+        className="crop-content"
+        initial={{ opacity: 0, scale: 0.97 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+      {/* ── 裁切工具栏（宽高比 + 确认按钮）── */}
+      <div className="crop-aspect-bar">
+        <button
+          type="button"
+          className="crop-aspect-btn crop-aspect-close"
+          aria-label="关闭"
+          onClick={handleClose}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+        {ASPECT_OPTIONS.map((opt) => (
+          <button
+            key={opt.key}
+            type="button"
+            className={`crop-aspect-btn${aspect === opt.key ? ' active' : ''}`}
+            onClick={() => handleAspectChange(opt.key)}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <div className="crop-aspect-spacer" />
+        <AnimatedButton
+          className="crop-action-btn confirm"
+          data-tooltip="确认裁切"
+          aria-label="确认裁切"
+          onClick={handleConfirm}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+            <path d="M3 17l5-5 3 3 8-8" />
+          </svg>
+          <span>确认</span>
+        </AnimatedButton>
+      </div>
       <div
         className="crop-stage"
         ref={stageRef}
@@ -286,6 +301,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
           <span className="crop-zoom-indicator">{Math.round(scale * 100)}%</span>
         )}
       </div>
+      </motion.div>
     </FullscreenOverlay>
   );
 }

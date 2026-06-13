@@ -10,6 +10,7 @@ import GooeyBtn from './shared/GooeyBtn';
 import ImageNodeToolbar from './shared/image/ImageNodeToolbar';
 import FreeAnglePanel from './shared/image/FreeAnglePanel';
 import MattingEditor from './shared/image/MattingEditor';
+import AnnotateEditor from './shared/image/AnnotateEditor';
 import CropEditor from './shared/image/CropEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
@@ -71,6 +72,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const [isFreeAngle, setIsFreeAngle] = useState(false);
   const [imgLoadError, setImgLoadError] = useState(false);
   const [mattingError, setMattingError] = useState(false);
+  const [annotateError, setAnnotateError] = useState(false);
   const [fullscreenError, setFullscreenError] = useState(false);
 
   // 当 imageUrl 变化时重置加载错误状态
@@ -82,6 +84,9 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   useEffect(() => {
     setMattingError(false);
   }, [data.mattingMask]);
+  useEffect(() => {
+    setAnnotateError(false);
+  }, [data.annotation]);
 
   const handleOpenFreeAngle = useCallback(() => setIsFreeAngle(true), []);
   const handleCloseFreeAngle = useCallback(() => setIsFreeAngle(false), []);
@@ -273,23 +278,27 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   );
 
   /* ════════════════════════════════════════════
+     Annotate State
+     ════════════════════════════════════════════ */
+  const [isAnnotate, setIsAnnotate] = useState(false);
+
+  const handleOpenAnnotate = useCallback(() => setIsAnnotate(true), []);
+  const handleCloseAnnotate = useCallback(() => setIsAnnotate(false), []);
+
+  const handleAnnotateSave = useCallback(
+    (annotationUrl: string) => {
+      updateNodeData(id, { annotation: annotationUrl } as Partial<BaseNodeData>);
+      setIsAnnotate(false);
+    },
+    [id, updateNodeData],
+  );
+
+  /* ════════════════════════════════════════════
      Fullscreen State
      ════════════════════════════════════════════ */
   const [isFullscreen, setIsFullscreen] = useState(false);
   const handleOpenFullscreen = useCallback(() => setIsFullscreen(true), []);
   const handleCloseFullscreen = useCallback(() => setIsFullscreen(false), []);
-
-  /* ════════════════════════════════════════════
-     Download
-     ════════════════════════════════════════════ */
-  const handleDownload = useCallback(() => {
-    const src = (data.imageUrl || data.thumbnailUrl) as string | undefined;
-    if (!src) return;
-    const link = document.createElement('a');
-    link.download = (data.fileName as string) || `image-${Date.now()}.png`;
-    link.href = src;
-    link.click();
-  }, [data.imageUrl, data.thumbnailUrl, data.fileName]);
 
   const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴图像');
 
@@ -356,6 +365,14 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                     onError={() => setMattingError(true)}
                   />
                 )}
+                {data.annotation && !annotateError && (
+                  <img
+                    src={data.annotation as string}
+                    alt="Annotation"
+                    className="image-preview-mask"
+                    onError={() => setAnnotateError(true)}
+                  />
+                )}
               </div>
             ) : isUploading ? (
               <div className="node-preview-loading">
@@ -411,7 +428,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             onMultiAngle={handleOpenFreeAngle}
             onCrop={handleOpenCrop}
             onFullscreen={handleOpenFullscreen}
-            onDownload={handleDownload}
+            onAnnotate={handleOpenAnnotate}
           />
         )}
       </div>
@@ -423,6 +440,15 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         initialMask={data.mattingMask as string | undefined}
         onClose={handleCloseMatting}
         onSave={handleMattingSave}
+      />
+
+      {/* Annotate Editor Overlay */}
+      <AnnotateEditor
+        isOpen={isAnnotate}
+        imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+        initialAnnotation={data.annotation as string | undefined}
+        onClose={handleCloseAnnotate}
+        onSave={handleAnnotateSave}
       />
 
       {/* Free Angle Panel */}
@@ -447,11 +473,10 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         isOpen={isFullscreen}
         onClose={handleCloseFullscreen}
         title={(data.label as string) || '图片预览'}
-        panelWidth="min(92vw, 1400px)"
-        bodyClassName="fullscreen-body--image"
+        hidePanel
       >
         {fullscreenError ? (
-          <div className="flex flex-col items-center justify-center gap-3 h-full text-canvas-text-muted">
+          <div className="flex flex-col items-center justify-center gap-3 text-canvas-text-muted" style={{ height: '100vh' }}>
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.5">
               <rect x="3" y="3" width="18" height="18" rx="2" />
               <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />

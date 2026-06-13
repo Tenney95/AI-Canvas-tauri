@@ -37,6 +37,7 @@ export interface BaseNodeData {
   filePath?: string;          // 本地文件路径（项目 data 目录下，重建 asset URL 用）
   thumbnailUrl?: string;      // 缩略图
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
+  annotation?: string;        // 标注编辑器涂写数据（data URL，透明 PNG）
   imageWidth?: number;        // 生成图片实际宽度
   imageHeight?: number;       // 生成图片实际高度
   imageSize?: string;         // 画质选择：'1K' | '2K' | '4K'

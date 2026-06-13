@@ -18,6 +18,66 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
   runninghubwf: 'https://api.runninghub.cn',
 };
 
+/** 加载图片（自动处理远程 URL 的 CORS） */
+async function loadImage(src: string): Promise<HTMLImageElement> {
+  // 远程 URL 通过 fetch 下载为 blob 再加载，避免 canvas 被污染
+  if (src.startsWith('http://') || src.startsWith('https://')) {
+    const response = await fetch(src);
+    if (!response.ok) throw new Error(`Failed to fetch image: ${response.status}`);
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    return new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error('Failed to load image'));
+      };
+      img.src = objectUrl;
+    });
+  }
+  // 本地 URL（data: / blob: / file: / asset:）
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = src;
+  });
+}
+
+/** 将蒙版/标注叠加层与原图合并，返回合成后的 data URL */
+async function mergeImageWithOverlays(
+  imageUrl: string,
+  mattingMask?: string,
+  annotation?: string,
+): Promise<string> {
+  const img = await loadImage(imageUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d')!;
+
+  // 绘制原图
+  ctx.drawImage(img, 0, 0);
+
+  // 叠加蒙版（如果有）
+  if (mattingMask) {
+    const maskImg = await loadImage(mattingMask);
+    ctx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+  }
+
+  // 叠加标注（如果有，绘制在最上层）
+  if (annotation) {
+    const annotateImg = await loadImage(annotation);
+    ctx.drawImage(annotateImg, 0, 0, canvas.width, canvas.height);
+  }
+
+  return canvas.toDataURL('image/png');
+}
+
 /** 上传 content 数组中本地图片 URL 到远端，替换为公网 URL */
 async function resolveContentImageUrls(
   content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>,
@@ -305,7 +365,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   }
 
   // 解析 @{nodeId:label} 引用：图片节点构建 image_url，其他节点内联文本
-  const { content, textContent } = resolvePromptToChatContent(rawPrompt);
+  const { content, textContent } = await resolvePromptToChatContent(rawPrompt);
   if (!textContent.trim()) {
     throw new Error('提示词不能为空');
   }
@@ -371,7 +431,7 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
   const { prompt: rawPrompt, model, provider, imageSize = '2K', aspectRatio = '1:1' } = params;
 
   // 解析 @{nodeId:label} 引用：图片 URL 提取到 image_urls，文本内联替换到 prompt
-  const { prompt, imageUrls } = resolvePromptWithImageRefs(rawPrompt);
+  const { prompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
 
   // 合并调用方传入的 image_urls 与从 prompt 中解析出的 imageUrls
   let allImageUrls = [...(params.image_urls || []), ...imageUrls];
@@ -720,14 +780,15 @@ function getComfyUIConfig() {
 /** 解析 prompt 中的 @{nodeId:label} 引用，返回适合 /chat/completions 的 content 字段
  *  - 仅含文本引用时返回纯字符串
  *  - 含图片引用时返回多模态数组 [{type:"text",text:...}, {type:"image_url",image_url:{url:...}}]
- *  同时返回纯文本版本 textContent，用于空值校验和系统提示拼接 */
-function resolvePromptToChatContent(rawPrompt: string): {
+ *  同时返回纯文本版本 textContent，用于空值校验和系统提示拼接
+ *  图片节点有蒙版/标注时自动合并到原图 */
+async function resolvePromptToChatContent(rawPrompt: string): Promise<{
   content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
   textContent: string;
-} {
+}> {
   const { nodes } = useAppStore.getState();
   const chipRegex = /@\{([^:]+):([^}]+)\}/g;
-  const imageUrls: string[] = [];
+  const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string }> = [];
   const parts: string[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -748,7 +809,11 @@ function resolvePromptToChatContent(rawPrompt: string): {
       if (nodeType === 'ai-image' || nodeType === 'source-image') {
         const imageUrl = node.data.imageUrl as string | undefined;
         if (typeof imageUrl === 'string' && imageUrl.trim()) {
-          imageUrls.push(imageUrl);
+          imageEntries.push({
+            url: imageUrl,
+            mattingMask: (node.data.mattingMask as string | undefined) || undefined,
+            annotation: (node.data.annotation as string | undefined) || undefined,
+          });
         }
       } else {
         // 文本/视频/音频节点：内联替换 output/url
@@ -779,9 +844,22 @@ function resolvePromptToChatContent(rawPrompt: string): {
   const textContent = parts.join('').trim();
 
   // 无图片时返回纯字符串
-  if (imageUrls.length === 0) {
+  if (imageEntries.length === 0) {
     return { content: textContent || rawPrompt.trim(), textContent: textContent || rawPrompt.trim() };
   }
+
+  // 合并蒙版/标注到原图（异步）
+  const imageUrls = await Promise.all(
+    imageEntries.map(async (entry) => {
+      if (!entry.mattingMask && !entry.annotation) return entry.url;
+      try {
+        return await mergeImageWithOverlays(entry.url, entry.mattingMask, entry.annotation);
+      } catch (err) {
+        console.error('[aiService] Failed to merge overlays:', err);
+        return entry.url;
+      }
+    }),
+  );
 
   // 含图片时构建多模态数组
   const contentArr: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
@@ -818,11 +896,12 @@ function resolveNodeReferences(value: string): string {
   });
 }
 
-/** 解析 prompt 中的 @{nodeId:label} 引用：图片节点 URL 提取到 image_urls，文本/视频/音频节点内联替换到 prompt */
-function resolvePromptWithImageRefs(rawPrompt: string): { prompt: string; imageUrls: string[] } {
+/** 解析 prompt 中的 @{nodeId:label} 引用：图片节点 URL 提取到 image_urls，文本/视频/音频节点内联替换到 prompt
+ *  图片节点有蒙版/标注时自动合并到原图 */
+async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ prompt: string; imageUrls: string[] }> {
   const { nodes } = useAppStore.getState();
   const chipRegex = /@\{([^:]+):([^}]+)\}/g;
-  const imageUrls: string[] = [];
+  const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string }> = [];
 
   const prompt = rawPrompt.replace(chipRegex, (_match, nodeId: string) => {
     const node = nodes.find((n) => n.id === nodeId);
@@ -834,7 +913,11 @@ function resolvePromptWithImageRefs(rawPrompt: string): { prompt: string; imageU
     if (nodeType === 'ai-image' || nodeType === 'source-image') {
       const imageUrl = node.data.imageUrl as string | undefined;
       if (typeof imageUrl === 'string' && imageUrl.trim()) {
-        imageUrls.push(imageUrl);
+        imageEntries.push({
+          url: imageUrl,
+          mattingMask: (node.data.mattingMask as string | undefined) || undefined,
+          annotation: (node.data.annotation as string | undefined) || undefined,
+        });
       }
       return '';
     }
@@ -854,6 +937,19 @@ function resolvePromptWithImageRefs(rawPrompt: string): { prompt: string; imageU
 
     return '';
   }).trim();
+
+  // 合并蒙版/标注到原图（异步）
+  const imageUrls = await Promise.all(
+    imageEntries.map(async (entry) => {
+      if (!entry.mattingMask && !entry.annotation) return entry.url;
+      try {
+        return await mergeImageWithOverlays(entry.url, entry.mattingMask, entry.annotation);
+      } catch (err) {
+        console.error('[aiService] Failed to merge overlays:', err);
+        return entry.url; // 合并失败时回退到原图
+      }
+    }),
+  );
 
   return { prompt, imageUrls };
 }

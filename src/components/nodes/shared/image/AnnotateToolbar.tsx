@@ -1,0 +1,233 @@
+/**
+ * AnnotateToolbar 标注工具栏 — 自由涂写模式下的工具条，提供画笔/橡皮擦、颜色选择、笔刷大小调整、撤销/重做
+ */
+import { memo, useCallback, useState, useRef } from 'react';
+import AnimatedButton from '../../../shared/AnimatedButton';
+
+export type AnnotateTool = 'brush' | 'eraser';
+export type AnnotateColor = string;
+
+export const ANNOTATE_COLORS: AnnotateColor[] = [
+  '#ef4444', // red
+  '#f97316', // orange
+  '#eab308', // yellow
+  '#22c55e', // green
+  '#3b82f6', // blue
+  '#8b5cf6', // purple
+  '#ffffff', // white
+  '#000000', // black
+];
+
+export interface AnnotateToolbarProps {
+  onCancel: () => void;
+  onSave: () => void;
+  onToolChange: (tool: AnnotateTool) => void;
+  onColorChange: (color: AnnotateColor) => void;
+  onBrushSizeChange: (size: number) => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onClear: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+}
+
+function AnnotateToolbar({
+  onCancel,
+  onSave,
+  onToolChange,
+  onColorChange,
+  onBrushSizeChange,
+  onUndo,
+  onRedo,
+  onClear,
+  canUndo,
+  canRedo,
+}: AnnotateToolbarProps) {
+  const [activeTool, setActiveTool] = useState<AnnotateTool>('brush');
+  const [activeColor, setActiveColor] = useState<AnnotateColor>(ANNOTATE_COLORS[0]);
+  const [brushSize, setBrushSize] = useState(5);
+
+  const handleToolSelect = useCallback(
+    (tool: AnnotateTool) => {
+      setActiveTool(tool);
+      onToolChange(tool);
+    },
+    [onToolChange],
+  );
+
+  const handleColorSelect = useCallback(
+    (color: AnnotateColor) => {
+      setActiveColor(color);
+      onColorChange(color);
+    },
+    [onColorChange],
+  );
+
+  const handleSizeChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const size = Number(e.target.value);
+      setBrushSize(size);
+      onBrushSizeChange(size);
+    },
+    [onBrushSizeChange],
+  );
+
+  const handleCancel = useCallback(
+    (e: React.MouseEvent) => { e.stopPropagation(); onCancel(); },
+    [onCancel],
+  );
+  const handleSave = useCallback(
+    (e: React.MouseEvent) => { e.stopPropagation(); onSave(); },
+    [onSave],
+  );
+  const handleUndo = useCallback(
+    (e: React.MouseEvent) => { e.stopPropagation(); onUndo(); },
+    [onUndo],
+  );
+  const handleRedo = useCallback(
+    (e: React.MouseEvent) => { e.stopPropagation(); onRedo(); },
+    [onRedo],
+  );
+  const handleClear = useCallback(
+    (e: React.MouseEvent) => { e.stopPropagation(); onClear(); },
+    [onClear],
+  );
+
+  return (
+    <div className="annotate-toolbar">
+      {/* Cancel */}
+      <AnimatedButton
+        className="annotate-btn icon-only act-cancel"
+        data-tooltip="取消 (Esc)"
+        aria-label="取消"
+        onClick={handleCancel}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+          <path d="M18 6L6 18M6 6l12 12" />
+        </svg>
+      </AnimatedButton>
+
+      <div className="annotate-divider" />
+
+      {/* Brush */}
+      <AnimatedButton
+        className={`annotate-btn icon-only tool-btn${activeTool === 'brush' ? ' active' : ''}`}
+        data-tool="brush"
+        data-tooltip="画笔 B"
+        aria-label="画笔"
+        onClick={() => handleToolSelect('brush')}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+        </svg>
+      </AnimatedButton>
+
+      {/* Eraser */}
+      <AnimatedButton
+        className={`annotate-btn icon-only tool-btn${activeTool === 'eraser' ? ' active' : ''}`}
+        data-tool="eraser"
+        data-tooltip="橡皮擦 E"
+        aria-label="橡皮擦"
+        onClick={() => handleToolSelect('eraser')}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+          <path d="M20 20H7l-5-5a2 2 0 0 1 0-2.83l9.17-9.17a2 2 0 0 1 2.83 0L22 10a2 2 0 0 1 0 2.83L14.83 20" />
+        </svg>
+      </AnimatedButton>
+
+      <div className="annotate-divider" />
+
+      {/* Color palette */}
+      <div className="annotate-colors">
+        {ANNOTATE_COLORS.map((color) => (
+          <button
+            key={color}
+            type="button"
+            className={`annotate-color-swatch${activeColor === color ? ' active' : ''}`}
+            style={{ backgroundColor: color }}
+            aria-label={color}
+            onClick={() => handleColorSelect(color)}
+          />
+        ))}
+      </div>
+
+      <div className="annotate-divider" />
+
+      {/* Brush size slider */}
+      <div className="annotate-size">
+        <span className="annotate-size-value">{brushSize}</span>
+        <input
+          className="annotate-size-range"
+          type="range"
+          min="1"
+          max="60"
+          step="1"
+          value={brushSize}
+          onChange={handleSizeChange}
+        />
+      </div>
+
+      <div className="annotate-divider" />
+
+      {/* Undo */}
+      <AnimatedButton
+        className="annotate-btn icon-only act-undo"
+        data-tooltip="撤销 Ctrl+Z"
+        aria-label="撤销"
+        onClick={handleUndo}
+        disabled={!canUndo}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+          <path d="M9 14l-4-4 4-4" />
+          <path d="M5 10h9a6 6 0 1 1 0 12h-3" />
+        </svg>
+      </AnimatedButton>
+
+      {/* Redo */}
+      <AnimatedButton
+        className="annotate-btn icon-only act-redo"
+        data-tooltip="重做 Ctrl+Y"
+        aria-label="重做"
+        onClick={handleRedo}
+        disabled={!canRedo}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+          <path d="M15 14l4-4-4-4" />
+          <path d="M19 10H10a6 6 0 1 0 0 12h3" />
+        </svg>
+      </AnimatedButton>
+
+      {/* Clear */}
+      <AnimatedButton
+        className="annotate-btn icon-only act-clear"
+        data-tooltip="清空 R"
+        aria-label="清空"
+        onClick={handleClear}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+          <path d="M3 6h18" />
+          <path d="M8 6V4h8v2" />
+          <path d="M6 6l1 16h10l1-16" />
+        </svg>
+      </AnimatedButton>
+
+      {/* Save */}
+      <AnimatedButton
+        className="annotate-btn annotate-save act-save"
+        data-tooltip="保存"
+        aria-label="保存"
+        onClick={handleSave}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+          <path d="M19 21H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h11l5 5v9a2 2 0 0 1-2 2Z" />
+          <path d="M17 21v-8H7v8" />
+          <path d="M7 3v4h8" />
+        </svg>
+        <span>保存</span>
+      </AnimatedButton>
+    </div>
+  );
+}
+
+export default memo(AnnotateToolbar);

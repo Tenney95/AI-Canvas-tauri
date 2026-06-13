@@ -1,16 +1,24 @@
 /* ============================================
    Free Angle Panel — 3D Cube Angle Control
-   控制角度面板：拖拽正方体改变角度
-   Shell 已由 FullscreenOverlay 统一管理（overlay / header / close / ESC / Portal）
-   本文件仅保留角度控制专用样式
+   hidePanel 模式：仅遮罩背景，无框
    ============================================ */
 
-/* ── Body 布局（FullscreenOverlay bodyClassName="fa-body"）── */
-.fa-body {
+/* Overlay：flex column 居中布局 */
+.fa-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+/* Content wrapper：固定宽度，内容居中 */
+.fa-content {
+  width: 520px;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  padding: 0;
 }
 
 /* ── Preview Area ── */

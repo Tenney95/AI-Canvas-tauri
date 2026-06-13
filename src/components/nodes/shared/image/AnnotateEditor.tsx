@@ -1,86 +1,27 @@
 /**
- * MattingEditor — 图像遮罩编辑全屏覆盖层（portal 到 body）
- * 封装抠图画布、笔画追踪、历史管理、键盘快捷键
+ * AnnotateEditor — 图像标注编辑全屏覆盖层（portal 到 body）
+ * 封装自由涂写画布、笔画追踪、历史管理、键盘快捷键
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import MattingToolbar from './MattingToolbar';
+import AnnotateToolbar, { type AnnotateTool, ANNOTATE_COLORS } from './AnnotateToolbar';
 
-/* ── Types ── */
-type MattingTool = 'brush' | 'eraser' | 'bucket';
-type BrushMode = 'normal' | 'alpha';
-
-interface MattingEditorProps {
+/* ── Props ── */
+interface AnnotateEditorProps {
   isOpen: boolean;
   imageUrl: string;
-  initialMask?: string;
+  initialAnnotation?: string;
   onClose: () => void;
-  onSave: (maskUrl: string) => void;
+  onSave: (annotationUrl: string) => void;
 }
 
-const MASK_COLOR = 'rgba(255, 200, 0, 0.45)';
-
-/* ── Flood fill helper ── */
-function floodFill(
-  imageData: ImageData,
-  startX: number,
-  startY: number,
-  fillColor: [number, number, number, number],
-): void {
-  const { data, width, height } = imageData;
-  const targetIdx = (startY * width + startX) * 4;
-  const targetR = data[targetIdx];
-  const targetG = data[targetIdx + 1];
-  const targetB = data[targetIdx + 2];
-  const targetA = data[targetIdx + 3];
-
-  if (
-    targetR === fillColor[0] &&
-    targetG === fillColor[1] &&
-    targetB === fillColor[2] &&
-    targetA === fillColor[3]
-  )
-    return;
-
-  const stack = [[startX, startY]];
-  const visited = new Uint8Array(width * height);
-  visited[startY * width + startX] = 1;
-
-  while (stack.length > 0) {
-    const [x, y] = stack.pop()!;
-    const pi = (y * width + x) * 4;
-    data[pi] = fillColor[0];
-    data[pi + 1] = fillColor[1];
-    data[pi + 2] = fillColor[2];
-    data[pi + 3] = fillColor[3];
-
-    const neighbors = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
-    for (const [nx, ny] of neighbors) {
-      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-      const ni = ny * width + nx;
-      if (visited[ni]) continue;
-      const np = ni * 4;
-      const tolerance = 20;
-      if (
-        Math.abs(data[np] - targetR) <= tolerance &&
-        Math.abs(data[np + 1] - targetG) <= tolerance &&
-        Math.abs(data[np + 2] - targetB) <= tolerance &&
-        Math.abs(data[np + 3] - targetA) <= tolerance
-      ) {
-        visited[ni] = 1;
-        stack.push([nx, ny]);
-      }
-    }
-  }
-}
-
-export default function MattingEditor({
+export default function AnnotateEditor({
   isOpen,
   imageUrl,
-  initialMask,
+  initialAnnotation,
   onClose,
   onSave,
-}: MattingEditorProps) {
+}: AnnotateEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const strokeBaseline = useRef<ImageData | null>(null);
@@ -88,9 +29,9 @@ export default function MattingEditor({
   const isDrawing = useRef(false);
   const historyRef = useRef<ImageData[]>([]);
 
-  const [tool, setTool] = useState<MattingTool>('brush');
-  const [brushMode, setBrushMode] = useState<BrushMode>('normal');
-  const [brushSize, setBrushSize] = useState(40);
+  const [tool, setTool] = useState<AnnotateTool>('brush');
+  const [color, setColor] = useState(ANNOTATE_COLORS[0]);
+  const [brushSize, setBrushSize] = useState(5);
   const [historyIdx, setHistoryIdx] = useState(-1);
 
   // ── Initialize canvas ──
@@ -109,23 +50,23 @@ export default function MattingEditor({
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    if (initialMask) {
-      const maskImg = new Image();
-      maskImg.onload = () => {
+    if (initialAnnotation) {
+      const annotImg = new Image();
+      annotImg.onload = () => {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(annotImg, 0, 0, canvas.width, canvas.height);
         const initial = ctx.getImageData(0, 0, canvas.width, canvas.height);
         historyRef.current = [initial];
         setHistoryIdx(0);
       };
-      maskImg.src = initialMask;
+      annotImg.src = initialAnnotation;
       return;
     }
 
     const initial = ctx.getImageData(0, 0, canvas.width, canvas.height);
     historyRef.current = [initial];
     setHistoryIdx(0);
-  }, [initialMask]);
+  }, [initialAnnotation]);
 
   // ── History management ──
   const pushHistory = useCallback(() => {
@@ -135,7 +76,6 @@ export default function MattingEditor({
     if (!ctx) return;
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-    // Use functional update to get current historyIdx
     setHistoryIdx((currentIdx) => {
       const newHistory = historyRef.current.slice(0, currentIdx + 1);
       newHistory.push(imageData);
@@ -159,8 +99,8 @@ export default function MattingEditor({
   useEffect(() => {
     if (isOpen) {
       setTool('brush');
-      setBrushMode('normal');
-      setBrushSize(40);
+      setColor(ANNOTATE_COLORS[0]);
+      setBrushSize(5);
       historyRef.current = [];
       setHistoryIdx(-1);
     }
@@ -191,28 +131,16 @@ export default function MattingEditor({
       isDrawing.current = true;
       canvas.setPointerCapture(e.pointerId);
 
-      const [x, y] = getCanvasCoords(e);
-
-      if (tool === 'bucket') {
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const fillR = brushMode === 'normal' ? 255 : 0;
-        const fillG = brushMode === 'normal' ? 200 : 0;
-        const fillB = 0;
-        const fillA = brushMode === 'normal' ? 115 : 0;
-        floodFill(imageData, Math.round(x), Math.round(y), [fillR, fillG, fillB, fillA]);
-        ctx.putImageData(imageData, 0, 0);
-        return;
-      }
-
       strokeBaseline.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const [x, y] = getCanvasCoords(e);
       strokePoints.current = [{ x, y }];
     },
-    [tool, brushMode, getCanvasCoords],
+    [getCanvasCoords],
   );
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
-      if (!isDrawing.current || tool === 'bucket') return;
+      if (!isDrawing.current) return;
       e.preventDefault();
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -228,15 +156,9 @@ export default function MattingEditor({
       const points = strokePoints.current;
       if (points.length < 1) return;
 
-      const op =
-        tool === 'brush'
-          ? (brushMode === 'normal' ? 'source-over' : ('destination-out' as const))
-          : ('destination-out' as const);
-      const color = tool === 'brush' ? MASK_COLOR : '#000';
-
       ctx.save();
-      ctx.globalCompositeOperation = op;
-      ctx.strokeStyle = color;
+      ctx.globalCompositeOperation = tool === 'brush' ? 'source-over' : 'destination-out';
+      ctx.strokeStyle = tool === 'brush' ? color : '#000';
       ctx.lineWidth = brushSize;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
@@ -248,7 +170,7 @@ export default function MattingEditor({
       ctx.stroke();
       ctx.restore();
     },
-    [tool, brushMode, brushSize, getCanvasCoords],
+    [tool, color, brushSize, getCanvasCoords],
   );
 
   const handlePointerUp = useCallback(
@@ -296,8 +218,8 @@ export default function MattingEditor({
   const handleSave = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const maskUrl = canvas.toDataURL('image/png');
-    onSave(maskUrl);
+    const annotationUrl = canvas.toDataURL('image/png');
+    onSave(annotationUrl);
   }, [onSave]);
 
   // ── Keyboard shortcuts ──
@@ -314,13 +236,9 @@ export default function MattingEditor({
           break;
         case 'b':
           setTool('brush');
-          setBrushMode((prev) => (prev === 'normal' ? 'alpha' : 'normal'));
           break;
         case 'e':
           setTool('eraser');
-          break;
-        case 'g':
-          setTool('bucket');
           break;
         case 'r':
           handleClear();
@@ -347,13 +265,13 @@ export default function MattingEditor({
   if (!isOpen) return null;
 
   return createPortal(
-    <div className="matting-overlay">
-      <MattingToolbar
+    <div className="annotate-overlay">
+      <AnnotateToolbar
         onCancel={onClose}
         onSave={handleSave}
         onToolChange={setTool}
+        onColorChange={setColor}
         onBrushSizeChange={setBrushSize}
-        onBrushModeChange={setBrushMode}
         onUndo={handleUndo}
         onRedo={handleRedo}
         onClear={handleClear}
@@ -361,26 +279,22 @@ export default function MattingEditor({
         canRedo={historyIdx < historyRef.current.length - 1}
       />
 
-      <div className="matting-stage">
-        <div className="matting-viewport">
+      <div className="annotate-stage">
+        <div className="annotate-viewport">
           <img
             ref={imageRef}
             src={imageUrl}
-            alt="Editing"
-            className="matting-image"
+            alt="Annotating"
+            className="annotate-image"
             draggable={false}
             onLoad={initCanvas}
           />
           <canvas
             ref={canvasRef}
-            className={`matting-canvas${tool === 'bucket' ? ' cursor-crosshair' : ''}`}
-            style={
-              tool !== 'bucket'
-                ? {
-                    cursor: `url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="${brushSize}" height="${brushSize}" viewBox="0 0 ${brushSize} ${brushSize}"><circle cx="${brushSize / 2}" cy="${brushSize / 2}" r="${brushSize / 2 - 1}" fill="none" stroke="white" stroke-width="1" opacity="0.8"/></svg>') ${brushSize / 2} ${brushSize / 2}, auto`,
-                  }
-                : undefined
-            }
+            className="annotate-canvas"
+            style={{
+              cursor: `url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="${brushSize}" height="${brushSize}" viewBox="0 0 ${brushSize} ${brushSize}"><circle cx="${brushSize / 2}" cy="${brushSize / 2}" r="${brushSize / 2 - 1}" fill="none" stroke="white" stroke-width="1" opacity="0.8"/></svg>') ${brushSize / 2} ${brushSize / 2}, auto`,
+            }}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}

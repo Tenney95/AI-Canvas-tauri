@@ -194,7 +194,6 @@
 
 /* Stage — centers the image */
 .matting-stage {
-  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -204,9 +203,17 @@
   box-sizing: border-box;
 }
 
+/* Viewport — relative wrapper so canvas overlays image exactly */
+.matting-viewport {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+
 .matting-image {
-  max-width: 90%;
-  max-height: 100%;
+  display: block;
+  max-width: 85vw;
+  max-height: 80vh;
   object-fit: contain;
   border-radius: 4px;
   user-select: none;
@@ -215,9 +222,227 @@
 
 .matting-canvas {
   position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: auto;
 }
 
 .cursor-crosshair {
   cursor: crosshair;
+}
+
+/* ============================================
+   Annotate Overlay — fullscreen draw editor
+   ============================================ */
+.annotate-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Annotate toolbar */
+.annotate-toolbar {
+  position: fixed;
+  top: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 4px 8px;
+  background: rgba(26, 26, 38, 0.5);
+  border: 1px solid var(--theme-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 24px var(--black-alpha-40);
+  white-space: nowrap;
+}
+
+.annotate-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.annotate-btn:hover {
+  color: var(--theme-text);
+  background: var(--white-alpha-08);
+}
+
+.annotate-btn.active {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.annotate-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+  pointer-events: none;
+}
+
+.annotate-btn.act-cancel:hover {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.annotate-save {
+  gap: 6px;
+  padding: 0 12px;
+  width: auto;
+  color: var(--success);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  margin-left: 2px;
+}
+
+.annotate-save:hover {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--success-light);
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+.annotate-save span {
+  white-space: nowrap;
+}
+
+.annotate-save span {
+  white-space: nowrap;
+}
+
+.annotate-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--theme-border);
+  margin: 0 6px;
+  flex-shrink: 0;
+}
+
+/* Color swatches */
+.annotate-colors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 2px;
+}
+
+.annotate-color-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  transition: transform 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.annotate-color-swatch:hover {
+  transform: scale(1.2);
+}
+
+.annotate-color-swatch.active {
+  border-color: var(--theme-text);
+  transform: scale(1.15);
+}
+
+/* Brush size */
+.annotate-size {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+}
+
+.annotate-size-value {
+  font-size: 12px;
+  color: var(--theme-text);
+  font-variant-numeric: tabular-nums;
+  min-width: 20px;
+  text-align: center;
+}
+
+.annotate-size-range {
+  width: 80px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--theme-border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.annotate-size-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--theme-text);
+  border: none;
+  cursor: pointer;
+}
+
+.annotate-size-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--theme-text);
+  border: none;
+  cursor: pointer;
+}
+
+/* Stage — centers the image */
+.annotate-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 80px 40px 40px;
+  box-sizing: border-box;
+}
+
+/* Viewport — relative wrapper so canvas overlays image exactly */
+.annotate-viewport {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+
+.annotate-image {
+  display: block;
+  max-width: 85vw;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 4px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.annotate-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
 }
