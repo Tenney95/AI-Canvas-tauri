@@ -379,6 +379,12 @@
   text-align: center;
 }
 
+.annotate-size-label {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  white-space: nowrap;
+}
+
 .annotate-size-range {
   width: 80px;
   height: 4px;
@@ -445,4 +451,86 @@
   width: 100%;
   height: 100%;
   pointer-events: auto;
+}
+
+/* Text input overlay */
+.annotate-text-input {
+  position: absolute;
+  z-index: 10;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px dashed var(--theme-border);
+  border-radius: 4px;
+  color: inherit;
+  outline: none;
+  padding: 2px 6px;
+  min-width: 80px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-weight: bold;
+  line-height: 1.4;
+  caret-color: var(--theme-text);
+}
+
+.annotate-text-input::placeholder {
+  color: var(--theme-text-muted);
+  font-weight: 400;
+}
+
+/* Draggable text annotation labels */
+.annotate-text-label {
+  position: absolute;
+  z-index: 5;
+  pointer-events: auto;
+  cursor: move;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-weight: bold;
+  line-height: 1.2;
+  white-space: pre-wrap;
+  user-select: none;
+  -webkit-user-drag: none;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 1px 3px;
+  transition: border-color 0.15s;
+}
+
+.annotate-text-label:hover {
+  border-color: var(--theme-border);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.annotate-text-label.selected {
+  border-color: var(--theme-text);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.annotate-text-label:hover .annotate-text-delete,
+.annotate-text-label.selected .annotate-text-delete {
+  opacity: 1;
+}
+
+.annotate-text-delete {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.8);
+  border: 1px solid var(--theme-border);
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+}
+
+.annotate-text-delete:hover {
+  color: var(--danger);
+  background: rgba(0, 0, 0, 0.9);
 }

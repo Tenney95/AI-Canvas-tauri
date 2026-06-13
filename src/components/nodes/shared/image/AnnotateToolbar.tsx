@@ -1,10 +1,10 @@
 /**
  * AnnotateToolbar 标注工具栏 — 自由涂写模式下的工具条，提供画笔/橡皮擦、颜色选择、笔刷大小调整、撤销/重做
  */
-import { memo, useCallback, useState, useRef } from 'react';
+import { memo, useCallback, useState } from 'react';
 import AnimatedButton from '../../../shared/AnimatedButton';
 
-export type AnnotateTool = 'brush' | 'eraser';
+export type AnnotateTool = 'brush' | 'eraser' | 'text' | 'rect' | 'circle';
 export type AnnotateColor = string;
 
 export const ANNOTATE_COLORS: AnnotateColor[] = [
@@ -29,6 +29,10 @@ export interface AnnotateToolbarProps {
   onClear: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  /** Font size of currently selected text annotation (px). When set, slider controls this text. */
+  selectedFontSize?: number;
+  /** Called when slider changes while a text annotation is selected. */
+  onFontSizeChange?: (size: number) => void;
 }
 
 function AnnotateToolbar({
@@ -42,6 +46,8 @@ function AnnotateToolbar({
   onClear,
   canUndo,
   canRedo,
+  selectedFontSize,
+  onFontSizeChange,
 }: AnnotateToolbarProps) {
   const [activeTool, setActiveTool] = useState<AnnotateTool>('brush');
   const [activeColor, setActiveColor] = useState<AnnotateColor>(ANNOTATE_COLORS[0]);
@@ -136,6 +142,47 @@ function AnnotateToolbar({
         </svg>
       </AnimatedButton>
 
+      {/* Text */}
+      <AnimatedButton
+        className={`annotate-btn icon-only tool-btn${activeTool === 'text' ? ' active' : ''}`}
+        data-tool="text"
+        data-tooltip="文字 T"
+        aria-label="文字"
+        onClick={() => handleToolSelect('text')}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+          <path d="M4 7V4h16v3" />
+          <path d="M9 20h6" />
+          <path d="M12 4v16" />
+        </svg>
+      </AnimatedButton>
+
+      {/* Rect */}
+      <AnimatedButton
+        className={`annotate-btn icon-only tool-btn${activeTool === 'rect' ? ' active' : ''}`}
+        data-tool="rect"
+        data-tooltip="矩形框"
+        aria-label="矩形框"
+        onClick={() => handleToolSelect('rect')}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+        </svg>
+      </AnimatedButton>
+
+      {/* Circle */}
+      <AnimatedButton
+        className={`annotate-btn icon-only tool-btn${activeTool === 'circle' ? ' active' : ''}`}
+        data-tool="circle"
+        data-tooltip="圆形框"
+        aria-label="圆形框"
+        onClick={() => handleToolSelect('circle')}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+          <ellipse cx="12" cy="12" rx="9" ry="9" />
+        </svg>
+      </AnimatedButton>
+
       <div className="annotate-divider" />
 
       {/* Color palette */}
@@ -154,17 +201,29 @@ function AnnotateToolbar({
 
       <div className="annotate-divider" />
 
-      {/* Brush size slider */}
+      {/* Brush size / Font size slider */}
       <div className="annotate-size">
-        <span className="annotate-size-value">{brushSize}</span>
+        <span className="annotate-size-label">
+          {selectedFontSize !== undefined || activeTool === 'text' ? '字号' : activeTool === 'rect' || activeTool === 'circle' ? '线宽' : '笔刷'}
+        </span>
+        <span className="annotate-size-value">
+          {selectedFontSize !== undefined ? selectedFontSize : brushSize}
+        </span>
         <input
           className="annotate-size-range"
           type="range"
-          min="1"
-          max="60"
+          min={selectedFontSize !== undefined ? 6 : 1}
+          max={selectedFontSize !== undefined ? 120 : 60}
           step="1"
-          value={brushSize}
-          onChange={handleSizeChange}
+          value={selectedFontSize !== undefined ? selectedFontSize : brushSize}
+          onChange={(e) => {
+            const size = Number(e.target.value);
+            if (selectedFontSize !== undefined && onFontSizeChange) {
+              onFontSizeChange(size);
+            } else {
+              handleSizeChange(e);
+            }
+          }}
         />
       </div>
 
