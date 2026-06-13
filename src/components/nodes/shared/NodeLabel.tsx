@@ -5,6 +5,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Icon } from '@iconify/react';
 import type { NodeType } from '../../../types';
+import { getNodeTypeConfig } from '../../../types';
 
 interface NodeLabelProps {
   kind: NodeType;
@@ -15,17 +16,8 @@ interface NodeLabelProps {
   onRename: (newName: string) => void;
 }
 
-const labelConfig: Record<string, { icon: string; color: string; bg: string }> = {
-  'ai-text': { icon: 'mdi:text-box-outline', color: 'text-indigo-400', bg: 'bg-indigo-500/15' },
-  'ai-image': { icon: 'mdi:image-outline', color: 'text-green-400', bg: 'bg-green-500/15' },
-  'ai-video': { icon: 'mdi:video-outline', color: 'text-blue-400', bg: 'bg-blue-500/15' },
-  'ai-audio': { icon: 'mdi:volume-high', color: 'text-orange-400', bg: 'bg-orange-500/15' },
-  'ai-panorama': { icon: 'mdi:panorama', color: 'text-cyan-400', bg: 'bg-cyan-500/15' },
-  'ai-markdown': { icon: 'mdi:language-markdown-outline', color: 'text-purple-400', bg: 'bg-purple-500/15' },
-};
-
 export default function NodeLabel({ kind, label, displayId, isBeta, nodeId: _nodeId, onRename }: NodeLabelProps) {
-  const config = labelConfig[kind] ?? { icon: '?', color: 'text-gray-400', bg: 'bg-gray-500/15' };
+  const config = getNodeTypeConfig(kind);
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(label);
   const inputRef = useRef<HTMLInputElement>(null);

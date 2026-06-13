@@ -112,6 +112,17 @@ async fn move_to_trash(path: String) -> Result<(), String> {
         .map_err(|e| format!("移动文件到回收站失败: {}", e))
 }
 
+/// 切换当前 WebView 的开发者工具（先关闭再打开实现 toggle 效果）
+#[tauri::command]
+async fn toggle_devtools(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("未找到主窗口".to_string())?;
+    window.close_devtools();
+    window.open_devtools();
+    Ok(())
+}
+
 #[tauri::command]
 async fn dreamina_login(app: tauri::AppHandle) -> Result<DreaminaLoginPayload, String> {
     let login_url = "https://jimeng.jianying.com/";
@@ -177,7 +188,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![fetch_image_data_url, move_to_trash, dreamina_login])
+        .invoke_handler(tauri::generate_handler![fetch_image_data_url, move_to_trash, dreamina_login, toggle_devtools])
+        .setup(|_app| {
+            // 调试构建自动打开 DevTools（方便排查打包后白屏等问题）
+            #[cfg(debug_assertions)]
+            {
+                if let Some(window) = _app.get_webview_window("main") {
+                    window.open_devtools();
+                }
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

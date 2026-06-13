@@ -236,12 +236,30 @@ export const PRESET_NODE_TYPE_LABELS: Record<PresetNodeType, string> = {
   'ai-audio': '音频预设',
 };
 
-export const PRESET_NODE_TYPE_ICONS: Record<PresetNodeType, string> = {
-  'ai-text': 'T',
-  'ai-image': 'I',
-  'ai-video': 'V',
-  'ai-audio': 'A',
+// ============================================
+// 节点类型统一视觉配置 — 图标、颜色、标签
+// 所有组件引用此处，避免分散定义
+// ============================================
+export interface NodeTypeVisualConfig {
+  icon: string;      // MDI 图标名（用于 @iconify/react <Icon>）
+  color: string;     // Tailwind 文字颜色类，如 'text-indigo-400'
+  bg: string;        // Tailwind 背景色类，如 'bg-indigo-500/15'
+  label: string;     // 中文名称
+}
+
+export const NODE_TYPE_CONFIG: Record<string, NodeTypeVisualConfig> = {
+  'ai-text':     { icon: 'mdi:text-box-outline',         color: 'text-indigo-400',  bg: 'bg-indigo-500/15',  label: '生成文本' },
+  'ai-image':    { icon: 'mdi:image-outline',             color: 'text-green-400',   bg: 'bg-green-500/15',   label: '生成图像' },
+  'ai-video':    { icon: 'mdi:video-outline',             color: 'text-blue-400',    bg: 'bg-blue-500/15',    label: '生成视频' },
+  'ai-audio':    { icon: 'mdi:volume-high',               color: 'text-orange-400',  bg: 'bg-orange-500/15',  label: '生成音频' },
+  'ai-panorama': { icon: 'mdi:panorama',                  color: 'text-cyan-400',    bg: 'bg-cyan-500/15',    label: '生成360全景' },
+  'ai-markdown': { icon: 'mdi:language-markdown-outline', color: 'text-purple-400',  bg: 'bg-purple-500/15',  label: 'Markdown' },
 };
+
+/** 获取节点类型视觉配置，未匹配时返回灰色兜底 */
+export function getNodeTypeConfig(kind: string): NodeTypeVisualConfig {
+  return NODE_TYPE_CONFIG[kind] ?? { icon: 'mdi:help-circle-outline', color: 'text-gray-400', bg: 'bg-gray-500/15', label: kind };
+}
 
 export type PresetTriggerMode = 'direct' | 'insertPrompt';
 

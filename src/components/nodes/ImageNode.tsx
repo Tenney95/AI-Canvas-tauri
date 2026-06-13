@@ -1,7 +1,7 @@
 /**
  * ImageNode 图像节点 — 在画布上渲染图像内容，支持上传/粘贴图片、遮罩编辑、工具栏、全屏预览
  */
-import { memo, useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
@@ -69,6 +69,19 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
      Free Angle State
      ════════════════════════════════════════════ */
   const [isFreeAngle, setIsFreeAngle] = useState(false);
+  const [imgLoadError, setImgLoadError] = useState(false);
+  const [mattingError, setMattingError] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState(false);
+
+  // 当 imageUrl 变化时重置加载错误状态
+  const displaySrc = (data.imageUrl || data.thumbnailUrl) as string | undefined;
+  useEffect(() => {
+    setImgLoadError(false);
+    setFullscreenError(false);
+  }, [displaySrc]);
+  useEffect(() => {
+    setMattingError(false);
+  }, [data.mattingMask]);
 
   const handleOpenFreeAngle = useCallback(() => setIsFreeAngle(true), []);
   const handleCloseFreeAngle = useCallback(() => setIsFreeAngle(false), []);
@@ -309,19 +322,38 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                 </svg>
               </button>
             )}
-            {data.imageUrl || data.thumbnailUrl ? (
+            {displaySrc ? (
               <div className="image-preview-container">
-                <img
-                  src={data.imageUrl || data.thumbnailUrl}
-                  alt="Generated"
-                  className="image-preview-img compact"
-                  data-source-url={data.sourceUrl}
-                />
-                {data.mattingMask && (
+                {imgLoadError ? (
+                  <div className="flex flex-col items-center justify-center gap-2 h-full min-h-[80px] text-canvas-text-muted">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.5">
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
+                      <polyline points="21 15 16 10 5 21" />
+                    </svg>
+                    <span className="text-xs">图片加载失败</span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setImgLoadError(false); }}
+                      className="text-[10px] px-2 py-0.5 rounded bg-canvas-hover hover:bg-canvas-border transition-colors"
+                    >
+                      重新加载
+                    </button>
+                  </div>
+                ) : (
+                  <img
+                    src={displaySrc}
+                    alt="Generated"
+                    className="image-preview-img compact"
+                    data-source-url={data.sourceUrl}
+                    onError={() => setImgLoadError(true)}
+                  />
+                )}
+                {data.mattingMask && !mattingError && (
                   <img
                     src={data.mattingMask as string}
                     alt="Mask"
                     className="image-preview-mask"
+                    onError={() => setMattingError(true)}
                   />
                 )}
               </div>
@@ -418,11 +450,29 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         panelWidth="min(92vw, 1400px)"
         bodyClassName="fullscreen-body--image"
       >
-        <img
-          src={(data.imageUrl || data.thumbnailUrl) as string}
-          alt={(data.label as string) || '预览'}
-          className="fullscreen-img-view"
-        />
+        {fullscreenError ? (
+          <div className="flex flex-col items-center justify-center gap-3 h-full text-canvas-text-muted">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.5">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+            <span className="text-sm">图片加载失败</span>
+            <button
+              onClick={() => setFullscreenError(false)}
+              className="text-xs px-3 py-1 rounded bg-canvas-hover hover:bg-canvas-border transition-colors"
+            >
+              重新加载
+            </button>
+          </div>
+        ) : (
+          <img
+            src={(data.imageUrl || data.thumbnailUrl) as string}
+            alt={(data.label as string) || '预览'}
+            className="fullscreen-img-view"
+            onError={() => setFullscreenError(true)}
+          />
+        )}
       </FullscreenOverlay>
     </>
   );

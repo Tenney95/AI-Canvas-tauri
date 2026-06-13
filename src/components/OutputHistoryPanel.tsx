@@ -4,8 +4,10 @@
  */
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { Icon } from '@iconify/react';
 import { useAppStore } from '../store/useAppStore';
 import type { OutputHistoryEntry } from '../types';
+import { NODE_TYPE_CONFIG } from '../types';
 import AnimatedButton from './shared/AnimatedButton';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
@@ -21,19 +23,7 @@ const FILTER_OPTIONS: { key: FilterType; label: string }[] = [
   { key: 'ai-audio', label: '音频' },
 ];
 
-const NODE_TYPE_COLORS: Record<string, string> = {
-  'ai-text': 'text-indigo-400 bg-indigo-500/12',
-  'ai-image': 'text-green-400 bg-green-500/12',
-  'ai-video': 'text-blue-400 bg-blue-500/12',
-  'ai-audio': 'text-orange-400 bg-orange-500/12',
-};
 
-const NODE_TYPE_ICONS: Record<string, string> = {
-  'ai-text': 'T',
-  'ai-image': '🖼',
-  'ai-video': '🎬',
-  'ai-audio': '🎵',
-};
 
 function formatRelativeTime(ts: number): string {
   const now = Date.now();
@@ -351,6 +341,7 @@ export default function OutputHistoryPanel() {
                     const isText = entry.nodeType === 'ai-text';
                     const isImage = entry.nodeType === 'ai-image';
                     const isError = entry.status === 'error';
+                    const typeCfg = NODE_TYPE_CONFIG[entry.nodeType];
 
                     return (
                       <motion.div
@@ -369,10 +360,10 @@ export default function OutputHistoryPanel() {
                           {/* Type badge */}
                           <span
                             className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                              NODE_TYPE_COLORS[entry.nodeType] || 'text-canvas-text-muted bg-canvas-hover'
+                              typeCfg ? `${typeCfg.color} ${typeCfg.bg}` : 'text-canvas-text-muted bg-canvas-hover'
                             }`}
                           >
-                            {NODE_TYPE_ICONS[entry.nodeType] || '?'}
+                            <Icon icon={typeCfg?.icon || 'mdi:help-circle-outline'} width="12" height="12" />
                           </span>
 
                           {/* Model */}

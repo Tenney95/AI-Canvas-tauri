@@ -24,6 +24,18 @@ export function useKeyboardShortcuts() {
         await saveCurrentProject();
         return;
       }
+
+      // F12: 开关开发者工具（通过 Rust 命令实现 toggle）
+      if (e.key === 'F12') {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('toggle_devtools');
+        } catch { /* 非 Tauri 环境 */ }
+        return;
+      }
+
       if (isEditing) return;
 
       // Ctrl+C: Copy selected nodes to clipboard

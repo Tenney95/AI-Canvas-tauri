@@ -2,7 +2,7 @@
  * CropEditor — 图像裁切全屏编辑器
  * 基于 react-image-crop，提供自由裁切 + 预设宽高比
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactCrop, {
   type Crop,
   type PixelCrop,
@@ -50,12 +50,19 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
 
   const aspectRatio = ASPECT_OPTIONS.find((o) => o.key === aspect)?.ratio;
 
-  /* ── 滚轮缩放 ── */
-  const handleWheel = useCallback((e: React.WheelEvent) => {
+  /* ── 滚轮缩放（非 passive 绑定，允许 preventDefault） ── */
+  const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
     const delta = e.deltaY > 0 ? -0.05 : 0.05;
     setScale((prev) => Math.max(0.1, Math.min(5, Math.round((prev + delta) * 100) / 100)));
   }, []);
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [handleWheel, isOpen]);
 
   /* ── 双击重置缩放 ── */
   const handleDoubleClick = useCallback(() => {
@@ -250,7 +257,6 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
       <div
         className="crop-stage"
         ref={stageRef}
-        onWheel={handleWheel}
         onDoubleClick={handleDoubleClick}
       >
         <div

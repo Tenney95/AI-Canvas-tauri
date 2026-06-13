@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { Icon } from '@iconify/react';
 import { useAppStore, computeImageNodeDimensions } from '../store/useAppStore';
 import ModalOverlay from './shared/ModalOverlay';
 import type { NodeType } from '../types';
+import { NODE_TYPE_CONFIG } from '../types';
 import { uploadSourceFileToProject } from '../services/fileService';
 import { classifyFile } from '../hooks/useNodeCreation';
 import AnimatedButton from './shared/AnimatedButton';
@@ -26,60 +28,31 @@ const generationItems: {
     type: 'ai-text',
     label: '生成文本',
     sub: 'AI 文本生成',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M12 20h9" />
-        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-      </svg>
-    ),
+    icon: <Icon icon={NODE_TYPE_CONFIG['ai-text'].icon} width="18" height="18" />,
   },
   {
     type: 'ai-image',
     label: '生成图像',
     sub: 'AI 图像生成',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="3" y="3" width="18" height="18" rx="3" />
-        <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
-        <polyline points="21 15 16 10 5 21" />
-      </svg>
-    ),
+    icon: <Icon icon={NODE_TYPE_CONFIG['ai-image'].icon} width="18" height="18" />,
   },
   {
     type: 'ai-video',
     label: '生成视频',
     sub: 'AI 视频生成',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="2" y="6" width="15" height="12" rx="2" />
-        <path d="M17 9l5-3v12l-5-3V9z" />
-      </svg>
-    ),
+    icon: <Icon icon={NODE_TYPE_CONFIG['ai-video'].icon} width="18" height="18" />,
   },
   {
     type: 'ai-audio',
     label: '生成音频',
     sub: 'AI 音频生成',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M9 18V5l12-2v13" />
-        <circle cx="6" cy="18" r="3" />
-        <circle cx="18" cy="16" r="3" />
-      </svg>
-    ),
+    icon: <Icon icon={NODE_TYPE_CONFIG['ai-audio'].icon} width="18" height="18" />,
   },
   {
     type: 'ai-panorama',
     label: '生成360全景',
     sub: 'AI 全景图生成',
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="12" cy="12" r="10" />
-        <ellipse cx="12" cy="12" rx="6" ry="10" />
-        <line x1="12" y1="2" x2="12" y2="22" />
-        <line x1="2" y1="12" x2="22" y2="12" />
-      </svg>
-    ),
+    icon: <Icon icon={NODE_TYPE_CONFIG['ai-panorama'].icon} width="18" height="18" />,
   },
 ];
 
@@ -115,7 +88,7 @@ function NodePicker({
     const isImage = type === 'ai-image';
     const isPanorama = type === 'ai-panorama';
     const nodeData: Record<string, unknown> = {
-      label: generationItems.find((m) => m.type === type)?.label || '节点',
+      label: NODE_TYPE_CONFIG[type]?.label || generationItems.find((m) => m.type === type)?.label || '节点',
       type,
       prompt: '',
       status: 'idle' as const,
