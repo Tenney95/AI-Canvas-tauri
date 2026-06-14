@@ -20,7 +20,7 @@
 
 .react-flow__edge-path {
   stroke-width: 1.5 !important;
-  transition: stroke 0.15s ease, stroke-width 0.15s ease;
+  transition: stroke var(--transition-base), stroke-width var(--transition-base);
 }
 
 /* Selected Edge Highlight */
@@ -33,7 +33,7 @@
 }
 
 .react-flow__handle {
-  transition: all 0.15s ease;
+  transition: all var(--transition-base);
 }
 
 .react-flow__handle:hover {
@@ -56,17 +56,21 @@
 
 /* Controls */
 .react-flow__controls {
-  border-radius: 12px !important;
+  border-radius: 10px !important;
   overflow: hidden !important;
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--glass-blur-md)) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur-md)) !important;
+  border: 1px solid var(--glass-ring) !important;
   box-shadow: 0 8px 32px var(--black-alpha-40) !important;
 }
 
 .react-flow__controls-button {
-  background-color: var(--theme-card) !important;
-  border-color: var(--theme-border) !important;
+  background-color: transparent !important;
+  border-color: var(--border-subtle) !important;
   color: var(--theme-text-secondary) !important;
   fill: var(--theme-text-secondary) !important;
-  transition: all 0.15s ease !important;
+  transition: all var(--transition-base) !important;
 }
 
 .react-flow__controls-button:hover {
@@ -89,7 +93,7 @@
   overflow: hidden !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3) !important;
   background-color: rgba(0, 0, 0, 0.5) !important;
-  backdrop-filter: blur(5px);
+  backdrop-filter: blur(var(--glass-blur-sm));
 }
 
 
@@ -101,7 +105,7 @@
   height: 30px !important;
   border: none !important;
   background: transparent !important;
-  transition: transform 0.15s, border-color 0.15s, background 0.15s, left 0.15s, right 0.15s !important;
+  transition: transform var(--transition-base), border-color var(--transition-base), background var(--transition-base), left var(--transition-base), right var(--transition-base) !important;
 }
 
 .node-handle:hover {
@@ -173,11 +177,11 @@
 }
 
 .gooey-btn-left .gooey-btn::before {
-  padding: 18px 10px 18px 26px;
+  padding: 19px 10px 19px 26px;
 }
 
 .gooey-btn-right .gooey-btn::before {
-  padding: 18px 26px 18px 10px;
+  padding: 19px 26px 19px 10px;
 }
 
 

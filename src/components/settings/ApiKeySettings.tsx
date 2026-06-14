@@ -348,7 +348,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         {/* ── 火山方舟 ── */}
         <div className="settings-section settings-card">
           <div className="settings-card-head">
-            <div className="settings-card-badge" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa' }}>火</div>
+            <div className="settings-card-badge settings-card-badge--volcengine">火</div>
             <span className="settings-card-title">火山方舟</span>
             <ProviderStatusBadge result={testStates.volcengine?.result} />
             <ProviderBalanceBadge balance={testStates.volcengine?.result?.balance} />
@@ -372,7 +372,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         {/* ── RunningHUB ── */}
         <div className="settings-section settings-card">
           <div className="settings-card-head">
-            <div className="settings-card-badge" style={{ background: 'rgba(139, 92, 246, 0.15)', color: '#8b5cf6' }}>RH</div>
+            <div className="settings-card-badge settings-card-badge--runninghub">RH</div>
             <span className="settings-card-title">RunningHUB</span>
             <ProviderStatusBadge result={testStates['runninghub-model']?.result} />
             <ProviderBalanceBadge balance={testStates['runninghub-model']?.result?.balance} />
@@ -404,7 +404,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         {/* ── GRSAI ── */}
         <div className="settings-section settings-card">
           <div className="settings-card-head">
-            <div className="settings-card-badge" style={{ background: 'rgba(244, 114, 182, 0.15)', color: '#f472b6' }}>GR</div>
+            <div className="settings-card-badge settings-card-badge--grsai">GR</div>
             <span className="settings-card-title">GRSAI</span>
             <ProviderStatusBadge result={testStates.grsai?.result} />
             <ProviderBalanceBadge balance={testStates.grsai?.result?.balance} />
@@ -428,7 +428,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         {/* ── 即梦 Dreamina ── */}
         <div className="settings-section settings-card" style={{ display: 'none' }}>
           <div className="settings-card-head">
-            <div className="settings-card-badge" style={{ background: 'rgba(251, 191, 36, 0.15)', color: '#fbbf24' }}>即</div>
+            <div className="settings-card-badge settings-card-badge--dreamina">即</div>
             <span className="settings-card-title">即梦</span>
             {dreaminaAuth?.loggedIn && (
               <span className="settings-provider-status settings-provider-status--success">已登录</span>
@@ -514,7 +514,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         {/* ── 通用模型 ── */}
         <div className="settings-section settings-card">
           <div className="settings-card-head">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: '#a78bfa' }}>
+            <svg className="settings-icon--comfyui" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
               <path d="M12 2L2 7l10 5 10-5-10-5z" />
               <path d="M2 17l10 5 10-5" />
               <path d="M2 12l10 5 10-5" />

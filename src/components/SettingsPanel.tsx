@@ -117,9 +117,9 @@ export default function SettingsPanel() {
           {/* Sidebar Nav */}
           <nav className="w-44 border-r border-canvas-border p-3 space-y-0.5 shrink-0">
             {[
+              { id: 'general', label: '常规' },
               { id: 'api', label: 'API Key' },
               { id: 'comfyui', label: 'ComfyUI' },
-              { id: 'general', label: '常规' },
               { id: 'shortcuts', label: '快捷键' },
             ].map(({ id, label }) => (
               <AnimatedButton
@@ -297,7 +297,7 @@ export default function SettingsPanel() {
                               <div className="w-full h-full flex items-center justify-center relative">
                                 <div className="w-5 h-5 rounded-full bg-gradient-to-br from-purple-400 to-orange-400 opacity-80 shadow-lg shadow-orange-500/30" />
                                 <div className="absolute bottom-1 left-0 right-0 flex justify-center">
-                                  <div className="w-8 h-1 rounded-full bg-white/15" style={{ borderRadius: '50% 50% 0 0', borderTop: '1px solid rgba(255,255,255,0.15)' }} />
+                                  <div className="w-8 h-1 rounded-full" style={{ borderRadius: '50% 50% 0 0', borderTop: '1px solid var(--white-alpha-15)' }} />
                                 </div>
                               </div>
                             )}

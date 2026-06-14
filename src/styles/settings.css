@@ -33,14 +33,14 @@
   background: var(--theme-card);
   border: 1px solid var(--theme-border);
   border-radius: 10px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   margin-bottom: 8px;
 }
 .settings-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 /* Card badge (AM, 即, etc.) */
@@ -56,6 +56,27 @@
   flex-shrink: 0;
   background: var(--node-image-bg);
   color: var(--success-light);
+}
+/* Provider badge color variants */
+.settings-card-badge--volcengine {
+  background: var(--info-bg);
+  color: var(--info-light);
+}
+.settings-card-badge--runninghub {
+  background: rgba(139, 92, 246, 0.15);
+  color: #8b5cf6;
+}
+.settings-card-badge--grsai {
+  background: rgba(244, 114, 182, 0.15);
+  color: #f472b6;
+}
+.settings-card-badge--dreamina {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+}
+/* ComfyUI icon — just color, no badge box */
+.settings-icon--comfyui {
+  color: #a78bfa;
 }
 
 /* Card icon (images) */
@@ -126,7 +147,7 @@
   border: 1px solid var(--theme-border);
   border-radius: 5px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  transition: color var(--transition-base), border-color var(--transition-base), background var(--transition-base);
   font-family: inherit;
   margin-left: auto;
   flex-shrink: 0;
@@ -154,7 +175,7 @@
   border: 1px solid var(--brand-alpha-25);
   border-radius: 5px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  transition: color var(--transition-base), border-color var(--transition-base), background var(--transition-base);
   font-family: inherit;
   flex-shrink: 0;
   text-decoration: none;
@@ -184,11 +205,11 @@
   padding: 2px 8px;
   background: var(--white-alpha-04);
   border: 1px solid var(--theme-border);
-  border-radius: 7px;
+  border-radius: 6px;
   color: var(--theme-text);
   font-size: 13px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--transition-base);
   font-family: inherit;
 }
 .settings-input:focus {
@@ -300,10 +321,10 @@
   font-size: 13px;
   font-weight: 500;
   border: 1px solid var(--brand-alpha-25);
-  border-radius: 8px;
+  border-radius: 7px;
   cursor: pointer;
   font-family: inherit;
-  transition: all 0.15s;
+  transition: all var(--transition-base);
   background: var(--brand-alpha-12);
   color: var(--brand-light);
 }
@@ -405,7 +426,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--transition-base);
   font-family: inherit;
 }
 .general-model-category-btn:hover {
@@ -464,7 +485,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--transition-base);
 }
 .general-model-item-remove:hover {
   color: var(--danger-light);

@@ -16,6 +16,8 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  width: 100%;
+  height: 100%;
 }
 
 /* 宽高比快捷按钮栏 — 固定顶部浮动，类似 MattingToolbar */
@@ -29,10 +31,10 @@
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
-  background: rgba(26, 26, 38, 0.5);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur-md));
+  -webkit-backdrop-filter: blur(var(--glass-blur-md));
+  border: 1px solid var(--glass-ring);
   border-radius: 10px;
   flex-shrink: 0;
 }
@@ -46,7 +48,7 @@
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base);
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
@@ -59,9 +61,10 @@
   margin-right: 4px;
 }
 
+.crop-aspect-btn.crop-aspect-close.act-cancel:hover,
 .crop-aspect-btn.crop-aspect-close:hover {
-  color: var(--theme-text);
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--danger);
+  background: var(--danger-bg);
 }
 
 .crop-aspect-btn:hover {
@@ -91,7 +94,7 @@
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background var(--transition-base), color var(--transition-base), border-color var(--transition-base);
   white-space: nowrap;
   background: transparent;
   color: var(--theme-text-secondary);

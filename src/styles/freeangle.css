@@ -9,7 +9,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: 16px;
 }
 
 /* Content wrapper：固定宽度，内容居中 */
@@ -28,9 +28,9 @@
   align-items: center;
   justify-content: center;
   height: 240px;
-  background: #0a0a0f;
+  background: var(--theme-bg);
   border-radius: 10px;
-  border: 1px solid #2a2a3a;
+  border: 1px solid var(--theme-border);
   perspective: 800px;
   overflow: hidden;
 }

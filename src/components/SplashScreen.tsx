@@ -321,7 +321,6 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
       data-tauri-drag-region
       ref={containerRef}
       className="fixed inset-0 z-[9999] select-none overflow-hidden flex items-center justify-center bg-black rounded-[16px]"
-      style={{ background: '#000000', opacity: 1 }}
     >
       {/* 宇宙微尘 */}
       <CosmicParticles />

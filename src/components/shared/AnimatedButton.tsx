@@ -29,7 +29,7 @@ export default function AnimatedButton({
       className={className}
       style={style}
       whileHover={{ scale }}
-      transition={{ type: 'spring', stiffness: 400, damping: 17 }}
+      transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
       {...rest}
     >
       {children}

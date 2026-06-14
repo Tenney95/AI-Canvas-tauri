@@ -4,7 +4,7 @@
 .prompt-panel {
   border-top: 1px solid var(--theme-border);
   flex-shrink: 0;
-  transition: border-color 0.2s;
+  transition: border-color var(--transition-smooth);
 }
 .prompt-panel.focused {
   border-top-color: var(--brand);
@@ -162,7 +162,7 @@
   color: var(--theme-text-secondary);
   border-radius: 6px;
   cursor: pointer;
-  transition: color 0.15s, background 0.15s;
+  transition: color var(--transition-base), background var(--transition-base);
   padding: 0;
 }
 .prompt-btn:hover {
@@ -216,11 +216,13 @@
   width: 260px;
   max-height: 440px;
   overflow-y: auto;
-  background: var(--theme-card);
-  border: 1px solid var(--theme-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
   border-radius: 12px;
   box-shadow: 0 8px 40px var(--black-alpha-50);
-  padding: 6px;
+  padding: 5px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -239,10 +241,10 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: 7px 10px;
+  border-radius: 7px;
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background var(--transition-base);
 }
 
 .slash-command-item:hover,
@@ -339,11 +341,13 @@
   width: 280px;
   max-height: 440px;
   overflow-y: auto;
-  background: var(--theme-card);
-  border: 1px solid var(--theme-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
   border-radius: 12px;
   box-shadow: 0 8px 40px var(--black-alpha-50);
-  padding: 6px;
+  padding: 5px;
   display: flex;
   flex-direction: column;
   gap: 2px;

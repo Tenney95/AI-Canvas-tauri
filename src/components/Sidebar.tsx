@@ -279,6 +279,7 @@ function AvatarMenu() {
           <AnimatedButton
             type="button"
             className="avatar-menu-item"
+            scale={1.02}
             onClick={() => {
               setSettingsOpen(true);
               closeAvatarMenu();
@@ -456,7 +457,7 @@ function LogoMenu() {
               <div className="menu-rule" />
             </div>
           <div className="menu-row menu-row-current">
-            <div className="menu-ico" style={{ color: 'rgba(129,140,248,0.85)' }}>
+            <div className="menu-ico menu-ico--brand">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                 <rect x="3" y="6" width="14" height="11" rx="2" />
                 <rect x="7" y="3" width="14" height="11" rx="2" />
@@ -477,16 +478,14 @@ function LogoMenu() {
               <AnimatedButton
                 key={p.id}
                 type="button"
-                className="menu-row"
-                style={{
-                  backgroundColor: p.id === currentProjectId ? 'rgba(99,102,241,0.12)' : 'transparent',
-                }}
+                scale={1.01}
+                className={`menu-row${p.id === currentProjectId ? ' menu-row--active' : ''}`}
                 onClick={() => {
                   switchProject(p.id);
                   setOpen(false);
                 }}
               >
-                <div className="menu-ico" style={p.id === currentProjectId ? { color: 'var(--brand-hover)' } : {}}>
+                <div className="menu-ico">
                   {p.id === currentProjectId ? (
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <circle cx="12" cy="12" r="5" />
@@ -502,7 +501,7 @@ function LogoMenu() {
                   )}
                 </div>
                 <div className="menu-txt-wrap">
-                  <span className="menu-lbl" style={p.id === currentProjectId ? { color: 'var(--brand-hover)' } : {}}>
+                  <span className="menu-lbl">
                     {p.name}
                   </span>
                   <span className="menu-sub">
@@ -538,6 +537,7 @@ function LogoMenu() {
           <AnimatedButton
             type="button"
             className="menu-row"
+            scale={1.02}
             onClick={() => {
               createProject();
               setOpen(false);

@@ -9,13 +9,13 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 6px;
-  background: rgba(20, 20, 28, 0.866);
-  backdrop-filter: blur(26px);
-  -webkit-backdrop-filter: blur(26px);
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px;
+  gap: 2px;
+  padding: 5px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
+  border-radius: 14px;
   box-shadow: 8px 0 32px var(--black-alpha-40);
 }
 
@@ -26,23 +26,24 @@
 
 /* Sidebar button base */
 .sidebar-btn-v3 {
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
   background: transparent;
   color: rgba(136, 136, 160, 0.7);
-  border-radius: 10px;
+  border-radius: 9px;
   cursor: pointer;
-  transition: color 0.15s, background 0.15s;
+  transition: color var(--transition-base), background var(--transition-base), transform var(--transition-base);
   padding: 0;
   position: relative;
 }
 .sidebar-btn-v3:hover {
   color: var(--theme-text);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--white-alpha-06);
+  transform: scale(1.04);
 }
 .sidebar-btn-v3 .ico-normal {
   display: block;
@@ -132,38 +133,41 @@
   position: relative;
 }
 .user-gear-plain {
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
   background: transparent;
   color: rgba(136, 136, 160, 0.6);
-  border-radius: 10px;
+  border-radius: 9px;
   cursor: pointer;
   font-size: 18px;
-  transition: color 0.15s, background 0.15s;
+  transition: color var(--transition-base), background var(--transition-base), transform var(--transition-base);
 }
 .user-gear-plain:hover {
   color: var(--theme-text);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--white-alpha-06);
+  transform: scale(1.04);
 }
 
 /* Avatar dropdown menu */
 .avatar-menu {
   position: absolute;
-  left: calc(100% + 16px);
+  left: calc(100% + 14px);
   bottom: 0;
   min-width: 160px;
   max-width: calc(100vw - 100px);
-  background: var(--theme-card);
-  border: 1px solid var(--theme-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
   border-radius: 10px;
   padding: 4px;
   box-shadow: 0 12px 40px var(--black-alpha-50);
   z-index: 100;
-  animation: menuSlideIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: menuSlideIn var(--dur-normal) var(--ease-out-expo);
   transform-origin: right bottom;
 }
 @keyframes menuSlideIn {
@@ -175,14 +179,14 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 7px 10px;
+  padding: 6px 10px;
   border: none;
   background: transparent;
   color: var(--theme-text);
   font-size: 13px;
   cursor: pointer;
   border-radius: 6px;
-  transition: background 0.1s;
+  transition: background var(--transition-base);
   text-align: left;
 }
 .avatar-menu-item:hover {
@@ -199,17 +203,19 @@
    ============================================ */
 .node-picker {
   position: absolute;
-  left: calc(100% + 16px);
+  left: calc(100% + 14px);
   top: 0;
-  width: 272px;
+  width: 260px;
   max-width: calc(100vw - 100px);
-  background: var(--theme-card);
-  border: 1px solid var(--theme-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
   border-radius: 12px;
-  padding: 6px;
+  padding: 5px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
   z-index: 100;
-  animation: pickerSlideIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: pickerSlideIn var(--dur-normal) var(--ease-out-expo);
   pointer-events: auto;
   transform-origin: left top;
 }
@@ -241,18 +247,28 @@
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 8px;
+  padding: 7px 8px;
   border: none;
   background: transparent;
   color: var(--theme-text);
   font-size: 13px;
   cursor: pointer;
-  border-radius: 8px;
-  transition: background 0.1s;
+  border-radius: 7px;
+  transition: background var(--transition-base);
   text-align: left;
 }
 .menu-row:hover {
   background: var(--theme-hover);
+}
+/* Active project row (replaces inline style) */
+.menu-row--active {
+  background: var(--brand-alpha-12);
+}
+.menu-row--active .menu-ico {
+  color: var(--brand-hover);
+}
+.menu-row--active .menu-lbl {
+  color: var(--brand-hover);
 }
 .menu-ico {
   width: 34px;
@@ -262,11 +278,15 @@
   justify-content: center;
   background: var(--white-alpha-04);
   border-radius: 8px;
-  color: rgba(232, 232, 237, 0.5);
+  color: var(--theme-text-muted);
   flex-shrink: 0;
+  transition: color var(--transition-base), background var(--transition-base);
+}
+.menu-ico--brand {
+  color: var(--brand-light);
 }
 .menu-row:hover .menu-ico {
-  color: rgba(232, 232, 237, 0.85);
+  color: var(--theme-text);
   background: rgba(255, 255, 255, 0.07);
 }
 .menu-txt-wrap {
@@ -314,7 +334,7 @@
   color: var(--theme-text-muted);
   border-radius: 5px;
   cursor: pointer;
-  transition: color 0.15s, background 0.15s;
+  transition: color var(--transition-base), background var(--transition-base);
   padding: 0;
 }
 .project-delete-btn:hover {
@@ -344,12 +364,14 @@
 .delete-confirm-dialog {
   width: 260px;
   max-width: 90vw;
-  background: var(--theme-card);
-  border: 1px solid var(--theme-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
   border-radius: 10px;
-  padding: 14px;
+  padding: 12px;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65);
-  animation: confirmSlideIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: confirmSlideIn var(--dur-normal) var(--ease-out-expo);
   z-index: 201;
 }
 /* Arrow pointing down to the delete button */
@@ -440,13 +462,13 @@
   justify-content: flex-end;
 }
 .delete-confirm-btn {
-  padding: 5px 14px;
+  padding: 5px 12px;
   border: none;
   border-radius: 6px;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--transition-base), color var(--transition-base);
 }
 .delete-confirm-btn.cancel {
   background: var(--white-alpha-06);

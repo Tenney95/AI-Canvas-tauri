@@ -20,6 +20,7 @@
   /* ── Brand (Indigo) ── */
   --brand: #6366f1;
   --brand-light: #818cf8;
+  --brand-hover: #818cf8;
   --brand-pale: #a5b4fc;
   --brand-alpha-04: rgba(99, 102, 241, 0.04);
   --brand-alpha-05: rgba(99, 102, 241, 0.05);
@@ -91,6 +92,54 @@
   --scrollbar-thumb: #3a3a50;
   --scrollbar-thumb-hover: #555570;
   --scrollbar-thumb-active: #6b6b88;
+
+  /* ════════════════════════════════════════════
+     Motion Design Tokens
+     Based on 100/300/500 rule + expo-out curves
+     ════════════════════════════════════════════ */
+
+  /* Easing curves */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* Duration scale */
+  --dur-instant: 100ms;
+  --dur-fast: 150ms;
+  --dur-normal: 200ms;
+  --dur-slow: 300ms;
+
+  /* Composite transitions (most common patterns) */
+  --transition-base: var(--dur-fast) var(--ease-out-expo);
+  --transition-smooth: var(--dur-normal) var(--ease-out-expo);
+
+  /* ════════════════════════════════════════════
+     Glass / Frosted Surface Tokens
+     ════════════════════════════════════════════ */
+  --glass-bg: rgba(20, 20, 28, 0.92);
+  --glass-bg-light: rgba(56, 56, 76, 0.3);
+  --glass-bg-node: rgba(34, 34, 50, 0.72);
+  --glass-ring: rgba(255, 255, 255, 0.16);
+  --glass-ring-strong: rgba(255, 255, 255, 0.10);
+  --glass-blur-sm: 6px;
+  --glass-blur-md: 16px;
+  --glass-blur-lg: 24px;
+}
+
+/* ════════════════════════════════════════════
+   Unified Glass Utility
+   ════════════════════════════════════════════ */
+.glass-surface {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
+}
+.glass-surface--light {
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur-md));
+  -webkit-backdrop-filter: blur(var(--glass-blur-md));
+  border: 1px solid var(--glass-ring);
 }
 
 /* ============================================
@@ -126,7 +175,6 @@ html, body, #root {
 
 /* ── Global Scrollbar ── */
 * {
-  /* Firefox */
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
 }
@@ -145,7 +193,7 @@ html, body, #root {
   border-radius: 9999px;
   border: 1px solid transparent;
   background-clip: padding-box;
-  transition: background 0.2s ease;
+  transition: background var(--transition-base);
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -171,14 +219,17 @@ textarea:focus {
   outline: none;
 }
 
-/* Animations */
+/* ════════════════════════════════════════════
+   Animation Keyframes (unified expo-out curves)
+   ════════════════════════════════════════════ */
+
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
 @keyframes slideInLeft {
-  from { transform: translateX(-20px); opacity: 0; }
+  from { transform: translateX(-12px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
 }
 
@@ -196,21 +247,23 @@ textarea:focus {
   to { opacity: 1; transform: scale(1); }
 }
 
+@keyframes floatUpIn {
+  from { opacity: 0; transform: translateY(4px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 .animate-in {
-  animation-duration: 200ms;
-  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-duration: var(--dur-normal);
+  animation-timing-function: var(--ease-out-expo);
   animation-fill-mode: both;
 }
 
 .fade-in { animation-name: fadeIn; }
+.zoom-in-95 { animation-name: zoomIn95; }
 
-.zoom-in-95 {
-  animation-name: zoomIn95;
-}
-
-/* Node specific animations */
+/* Node loading glow */
 .node-loading .react-flow__node {
-  animation: pulse-glow 2s ease-in-out infinite;
+  animation: pulse-glow 2s var(--ease-in-out) infinite;
 }
 
 /* Content Editable styles */
@@ -224,4 +277,17 @@ textarea:focus {
   outline: none;
   background-color: var(--brand-alpha-05);
   border-radius: 4px;
+}
+
+/* ════════════════════════════════════════════
+   Reduced Motion — accessibility
+   ════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

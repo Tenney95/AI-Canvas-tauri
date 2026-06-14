@@ -20,7 +20,7 @@
   color: var(--theme-text-secondary);
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all var(--transition-base);
   font-family: inherit;
 }
 .img-pill-btn:hover {

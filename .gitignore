@@ -15,6 +15,7 @@ dist-ssr
 
 .agents/*
 .codebuddy/skills/*
+.codebuddy/commands/*
 .codegraph/*
 doc/测试报告.md
 

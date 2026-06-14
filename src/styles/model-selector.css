@@ -18,7 +18,7 @@
   color: var(--theme-text-secondary);
   font-size: 12px;
   cursor: pointer;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base);
 }
 .model-selector-trigger:hover {
   color: var(--theme-text);
@@ -45,7 +45,7 @@
 .model-selector .caret {
   flex-shrink: 0;
   opacity: 0.5;
-  transition: transform 0.2s;
+  transition: transform var(--transition-smooth);
 }
 
 /* Workflow trigger state */

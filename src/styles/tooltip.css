@@ -12,15 +12,17 @@
   left: 50%;
   transform: translateX(-50%) translateY(2px);
   padding: 4px 6px;
-  background: var(--theme-card);
-  border: 1px solid var(--theme-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-md));
+  -webkit-backdrop-filter: blur(var(--glass-blur-md));
+  border: 1px solid var(--glass-ring);
   border-radius: 6px;
   font-size: 11px;
   color: var(--theme-text);
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity var(--transition-base), transform var(--transition-base);
   box-shadow:
     0 4px 16px var(--black-alpha-50),
     0 0 0 1px var(--white-alpha-03);
@@ -43,7 +45,7 @@
   border-color: var(--theme-border) transparent transparent transparent;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity var(--transition-base), transform var(--transition-base);
   z-index: 9999;
 }
 [data-tooltip]:hover::before {

@@ -69,7 +69,8 @@
   align-items: center;
   gap: 0;
   padding: 4px 8px;
-  background: rgba(26, 26, 38, 0.5);
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur-md));
   border: 1px solid var(--theme-border);
   border-radius: 10px;
   box-shadow: 0 4px 24px var(--black-alpha-40);
