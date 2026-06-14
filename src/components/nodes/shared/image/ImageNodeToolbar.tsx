@@ -84,12 +84,6 @@ function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onCrop, onAnn
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-erase" data-tooltip="擦除" aria-label="擦除" onClick={noop}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <path d="M20 20H7l-4.5-4.5a2.1 2.1 0 0 1 0-3L11 4a2.1 2.1 0 0 1 3 0l7.5 7.5a2.1 2.1 0 0 1 0 3L16 20" />
-              <path d="m6.5 9.5 8 8" />
-            </svg>
-          </AnimatedButton>
         </div>
 
         {/* Divider */}

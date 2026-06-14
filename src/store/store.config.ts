@@ -12,6 +12,7 @@ const defaultConfig: AppConfig = {
   theme: 'dark',
   canvasBackground: 'default',
   comfyUIUrl: '',
+  comfyUIPath: '',
   generalModels: [],
 };
 

@@ -98,6 +98,7 @@ export interface AppConfig {
   theme: 'dark' | 'light';
   canvasBackground?: CanvasBackground; // 画布背景主题
   comfyUIUrl?: string;        // ComfyUI 服务地址
+  comfyUIPath?: string;       // ComfyUI 安装目录路径
   dreaminaAuth?: DreaminaAuthData; // 即梦登录态
   baseDataDir?: string;       // 用户自定义文件保存根目录，保存结构为 {baseDataDir}/{projectId}/**
   generalModels?: GeneralModelConfig[]; // 用户自建通用模型

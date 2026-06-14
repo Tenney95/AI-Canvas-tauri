@@ -1,5 +1,5 @@
 /**
- * SettingsPanel 设置面板 — 模态弹窗，管理常规设置、API Key 配置、快捷键
+ * SettingsPanel 设置面板 — 模态弹窗，管理常规设置、API Key 配置、快捷键、ComfyUI
  */
 import { useState, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
@@ -11,12 +11,15 @@ import ApiKeySettings from './settings/ApiKeySettings';
 import { BACKGROUND_OPTIONS } from './backgrounds/CanvasBackground';
 import type { CanvasBackground as CanvasBg } from '../types';
 
+type SettingsTab = 'general' | 'api' | 'shortcuts' | 'comfyui';
+
 export default function SettingsPanel() {
-  const { settingsOpen, setSettingsOpen, config, updateConfig, saveConfig, currentProjectId } =
+  const { settingsOpen, setSettingsOpen, config, updateConfig, saveConfig, currentProjectId, showToast } =
     useAppStore();
-  const [activeTab, setActiveTab] = useState<'general' | 'api' | 'shortcuts'>('api');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('api');
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
+  const [comfyUiLaunching, setComfyUiLaunching] = useState(false);
 
   // 加载项目文件夹路径
   useEffect(() => {
@@ -59,7 +62,40 @@ export default function SettingsPanel() {
     }
   };
 
+  /** 选择 ComfyUI 安装目录 */
+  const handleChooseComfyUIPath = async () => {
+    try {
+      const selected = await openDialog({ directory: true, title: '选择 ComfyUI 安装目录' });
+      if (selected && typeof selected === 'string') {
+        updateConfig({ comfyUIPath: selected });
+        await saveConfig();
+      }
+    } catch {
+      // 浏览器环境忽略
+    }
+  };
+
+  /** 启动 ComfyUI */
+  const handleLaunchComfyUI = async () => {
+    const comfyPath = config.comfyUIPath?.trim();
+    if (!comfyPath) {
+      showToast('请先设置 ComfyUI 安装目录', 'error');
+      return;
+    }
+    setComfyUiLaunching(true);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke<string>('launch_comfyui', { comfyPath });
+      showToast(result, 'success');
+    } catch (err) {
+      showToast(typeof err === 'string' ? err : '启动 ComfyUI 失败', 'error');
+    } finally {
+      setComfyUiLaunching(false);
+    }
+  };
+
   const baseDataDir = config.baseDataDir;
+  const comfyUIPath = config.comfyUIPath;
 
   return (
     <ModalOverlay isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} className="w-[640px] max-h-[80vh]">
@@ -82,12 +118,13 @@ export default function SettingsPanel() {
           <nav className="w-44 border-r border-canvas-border p-3 space-y-0.5 shrink-0">
             {[
               { id: 'api', label: 'API Key' },
+              { id: 'comfyui', label: 'ComfyUI' },
               { id: 'general', label: '常规' },
               { id: 'shortcuts', label: '快捷键' },
             ].map(({ id, label }) => (
               <AnimatedButton
                 key={id}
-                onClick={() => setActiveTab(id as typeof activeTab)}
+                onClick={() => setActiveTab(id as SettingsTab)}
                 className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors ${
                   activeTab === id ? 'bg-indigo-500/15 text-indigo-400' : 'text-canvas-text-secondary hover:bg-canvas-hover'
                 }`}
@@ -99,6 +136,11 @@ export default function SettingsPanel() {
                       <polyline points="14 2 14 8 20 8" />
                       <line x1="16" y1="13" x2="8" y2="13" />
                       <line x1="16" y1="17" x2="8" y2="17" />
+                    </>
+                  )}
+                  {id === 'comfyui' && (
+                    <>
+                      <path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18" />
                     </>
                   )}
                   {id === 'general' && (
@@ -128,6 +170,90 @@ export default function SettingsPanel() {
           <div className="settings-content flex-1 overflow-y-auto overflow-x-hidden p-5">
             {activeTab === 'api' && (
               <ApiKeySettings onClose={() => setSettingsOpen(false)} />
+            )}
+
+            {activeTab === 'comfyui' && (
+              <div className="space-y-6">
+                {/* ComfyUI 安装目录 */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">ComfyUI 安装目录</h3>
+                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-4">
+                    <div className="text-xs text-canvas-text-muted mb-1.5">ComfyUI 根目录路径</div>
+                    {comfyUIPath ? (
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="flex-1 min-w-0 text-[11px] text-canvas-text-secondary break-all font-mono leading-relaxed bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border select-all">
+                          {comfyUIPath}
+                        </div>
+                        <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChooseComfyUIPath}>
+                          更换
+                        </AnimatedButton>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="flex-1 text-xs text-canvas-text-muted bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border italic">
+                          未设置
+                        </div>
+                        <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChooseComfyUIPath}>
+                          选择文件夹
+                        </AnimatedButton>
+                      </div>
+                    )}
+                    <p className="text-[11px] text-canvas-text-muted leading-relaxed mb-3">
+                      选择 ComfyUI 的安装根目录（包含 run_nvidia_gpu.bat 或 main.py 的文件夹）
+                    </p>
+
+                    {/* 启动按钮 */}
+                    <div className="pt-2 border-t border-canvas-border">
+                      <AnimatedButton
+                        type="button"
+                        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors text-sm font-medium"
+                        onClick={handleLaunchComfyUI}
+                        disabled={comfyUiLaunching}
+                      >
+                        {comfyUiLaunching ? (
+                          <>
+                            <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="8" />
+                            </svg>
+                            启动中…
+                          </>
+                        ) : (
+                          <>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <polygon points="5 3 19 12 5 21 5 3" />
+                            </svg>
+                            启动 ComfyUI
+                          </>
+                        )}
+                      </AnimatedButton>
+                      <p className="text-[11px] text-canvas-text-muted mt-2">
+                        启动后 ComfyUI 会在新窗口中运行，服务启动后即可在下方配置地址
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ComfyUI 服务地址 */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">ComfyUI 服务地址</h3>
+                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-4">
+                    <div className="text-xs text-canvas-text-muted mb-1.5">后端地址</div>
+                    <input
+                      type="text"
+                      className="w-full text-sm bg-canvas-surface border border-canvas-border rounded-md px-3 py-2 text-canvas-text placeholder-canvas-text-muted focus:outline-none focus:border-indigo-500 transition-colors"
+                      placeholder="http://127.0.0.1:8188"
+                      defaultValue={config.comfyUIUrl || ''}
+                      onBlur={async (e) => {
+                        updateConfig({ comfyUIUrl: e.target.value });
+                        await saveConfig();
+                      }}
+                    />
+                    <p className="text-[11px] text-canvas-text-muted mt-2">
+                      ComfyUI 后端服务的地址，用于执行导入的工作流。默认端口为 8188
+                    </p>
+                  </div>
+                </div>
+              </div>
             )}
 
             {activeTab === 'general' && (

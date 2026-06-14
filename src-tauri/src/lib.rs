@@ -3,6 +3,8 @@ use std::sync::Mutex;
 use tauri::{Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
+mod comfyui;
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct DreaminaLoginPayload {
     cookie: String,
@@ -188,7 +190,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![fetch_image_data_url, move_to_trash, dreamina_login, toggle_devtools])
+        .invoke_handler(tauri::generate_handler![fetch_image_data_url, move_to_trash, dreamina_login, toggle_devtools, comfyui::launch_comfyui])
         .setup(|_app| {
             // 调试构建自动打开 DevTools（方便排查打包后白屏等问题）
             #[cfg(debug_assertions)]
