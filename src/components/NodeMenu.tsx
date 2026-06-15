@@ -6,6 +6,7 @@ import { useEffect, useRef, useMemo } from 'react';
 import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from '@iconify/react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, computeImageNodeDimensions } from '../store/useAppStore';
 import type { NodeType } from '../types';
 import { NODE_TYPE_CONFIG } from '../types';
@@ -44,7 +45,17 @@ const NODE_MENU_W = 240;
 const NODE_MENU_H = 290; // 4 items + header + footer
 
 export default function NodeMenu() {
-  const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, lastCanvasMousePos, currentProjectId, showToast } = useAppStore();
+  const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, lastCanvasMousePos, currentProjectId, showToast } = useAppStore(
+    useShallow((s) => ({
+      nodeMenuVisible: s.nodeMenuVisible,
+      nodeMenuPosition: s.nodeMenuPosition,
+      hideNodeMenu: s.hideNodeMenu,
+      addNode: s.addNode,
+      lastCanvasMousePos: s.lastCanvasMousePos,
+      currentProjectId: s.currentProjectId,
+      showToast: s.showToast,
+    })),
+  );
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from '@iconify/react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, computeImageNodeDimensions } from '../store/useAppStore';
 import ModalOverlay from './shared/ModalOverlay';
 import type { NodeType } from '../types';
@@ -81,7 +82,16 @@ function NodePicker({
   onEnter: () => void;
   onLeave: () => void;
 }) {
-  const { nodePickerOpen, closeNodePicker, addNode, lastCanvasMousePos, currentProjectId, showToast } = useAppStore();
+  const { nodePickerOpen, closeNodePicker, addNode, lastCanvasMousePos, currentProjectId, showToast } = useAppStore(
+    useShallow((s) => ({
+      nodePickerOpen: s.nodePickerOpen,
+      closeNodePicker: s.closeNodePicker,
+      addNode: s.addNode,
+      lastCanvasMousePos: s.lastCanvasMousePos,
+      currentProjectId: s.currentProjectId,
+      showToast: s.showToast,
+    })),
+  );
   const pickerRef = useRef<HTMLDivElement>(null);
 
   const handleAddNode = (type: NodeType) => {
@@ -246,7 +256,13 @@ function NodePicker({
    Avatar / Settings dropdown menu
    ============================================ */
 function AvatarMenu() {
-  const { avatarMenuOpen, closeAvatarMenu, setSettingsOpen } = useAppStore();
+  const { avatarMenuOpen, closeAvatarMenu, setSettingsOpen } = useAppStore(
+    useShallow((s) => ({
+      avatarMenuOpen: s.avatarMenuOpen,
+      closeAvatarMenu: s.closeAvatarMenu,
+      setSettingsOpen: s.setSettingsOpen,
+    })),
+  );
   const menuRef = useRef<HTMLDivElement>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
 
@@ -402,7 +418,16 @@ function LogoMenu() {
     switchProject,
     createProject,
     deleteProject,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      projects: s.projects,
+      currentProjectId: s.currentProjectId,
+      projectName: s.projectName,
+      switchProject: s.switchProject,
+      createProject: s.createProject,
+      deleteProject: s.deleteProject,
+    })),
+  );
   const [open, setOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; rect: DOMRect } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -642,7 +667,17 @@ function LogoMenu() {
    ============================================ */
 export default function Sidebar() {
   const { openNodePicker, closeNodePicker, toggleAvatarMenu, nodePickerOpen, setWorkflowPanelOpen, setAssetsPanelOpen, setHistoryPanelOpen } =
-    useAppStore();
+    useAppStore(
+      useShallow((s) => ({
+        openNodePicker: s.openNodePicker,
+        closeNodePicker: s.closeNodePicker,
+        toggleAvatarMenu: s.toggleAvatarMenu,
+        nodePickerOpen: s.nodePickerOpen,
+        setWorkflowPanelOpen: s.setWorkflowPanelOpen,
+        setAssetsPanelOpen: s.setAssetsPanelOpen,
+        setHistoryPanelOpen: s.setHistoryPanelOpen,
+      })),
+    );
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleAddEnter = () => {

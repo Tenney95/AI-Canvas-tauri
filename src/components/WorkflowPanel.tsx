@@ -4,6 +4,7 @@
  */
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, generateId } from '../store/useAppStore';
 import type { WorkflowDefinition, WorkflowCategory, WorkflowIONode, WorkflowIONodeType } from '../types';
 
@@ -139,7 +140,15 @@ export default function WorkflowPanel() {
     setWorkflowPanelOpen,
     addWorkflow,
     deleteWorkflow,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      workflows: s.workflows,
+      workflowPanelOpen: s.workflowPanelOpen,
+      setWorkflowPanelOpen: s.setWorkflowPanelOpen,
+      addWorkflow: s.addWorkflow,
+      deleteWorkflow: s.deleteWorkflow,
+    })),
+  );
 
   const [name, setName] = useState('');
   const [category, setCategory] = useState<WorkflowCategory>('ai-text');

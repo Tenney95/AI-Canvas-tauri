@@ -5,6 +5,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from '@iconify/react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import type { OutputHistoryEntry } from '../types';
 import { NODE_TYPE_CONFIG } from '../types';
@@ -80,14 +81,22 @@ function HistoryThumbnail({ mediaUrl, filePath }: { mediaUrl?: string; filePath?
 
 export default function OutputHistoryPanel() {
   const {
-    nodes,
     outputHistoryRecords,
     historyPanelOpen,
     setHistoryPanelOpen,
     deleteHistoryEntry,
     clearAllHistory,
     showToast,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      outputHistoryRecords: s.outputHistoryRecords,
+      historyPanelOpen: s.historyPanelOpen,
+      setHistoryPanelOpen: s.setHistoryPanelOpen,
+      deleteHistoryEntry: s.deleteHistoryEntry,
+      clearAllHistory: s.clearAllHistory,
+      showToast: s.showToast,
+    })),
+  );
 
   const [filter, setFilter] = useState<FilterType>('all');
   const [search, setSearch] = useState('');
@@ -162,7 +171,7 @@ export default function OutputHistoryPanel() {
 
   const handleLocateNode = useCallback(
     (entry: OutputHistoryEntry) => {
-      const node = nodes.find((n) => n.id === entry.nodeId);
+      const node = useAppStore.getState().nodes.find((n) => n.id === entry.nodeId);
       if (!node) {
         showToast('节点已不存在', 'error');
         return;
@@ -177,7 +186,7 @@ export default function OutputHistoryPanel() {
         );
       }, 300);
     },
-    [nodes, setHistoryPanelOpen, showToast],
+    [setHistoryPanelOpen, showToast],
   );
 
   const handleCopy = useCallback(
@@ -216,8 +225,8 @@ export default function OutputHistoryPanel() {
 
   // Check if node still exists
   const nodeExists = useCallback(
-    (nodeId: string) => nodes.some((n) => n.id === nodeId),
-    [nodes],
+    (nodeId: string) => useAppStore.getState().nodes.some((n) => n.id === nodeId),
+    [],
   );
 
   return (

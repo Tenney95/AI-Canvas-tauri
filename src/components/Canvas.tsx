@@ -1,7 +1,7 @@
 /**
  * Canvas 画布主组件 — React Flow 画布核心，管理节点/边渲染、拖放、连线、右键菜单、空状态
  */
-import { useCallback, useState, useEffect } from 'react';
+import { useCallback, useState, useEffect, useMemo } from 'react';
 import { ReactFlow,
   Background,
   Controls,
@@ -40,7 +40,7 @@ import { useNodeContextMenu } from '../hooks/useNodeContextMenu';
 import { useAppStore } from '../store/useAppStore';
 import { useNodeCreation } from '../hooks/useNodeCreation';
 import type { BaseNodeData } from '../types';
-import type { Node as RFNode, NodeTypes } from '@xyflow/react';
+import type { Node as RFNode, NodeTypes, Connection, Edge } from '@xyflow/react';
 import { useNodeSnap, type SnapLine } from '../hooks/useNodeSnap';
 
 // ── Node types mapping ──
@@ -52,6 +52,32 @@ const nodeTypes: NodeTypes = {
   'ai-panorama': PanoramaNode,
   'ai-markdown': MarkdownNode,
   group: GroupNode,
+};
+
+// ── Stable ReactFlow props (hoisted to avoid new identities every render,
+//    which makes React Flow re-run internal effects and drop frames on drag) ──
+const FIT_VIEW_OPTIONS = { padding: 0.2 };
+const PRO_OPTIONS = { hideAttribution: true };
+const PAN_ON_DRAG = [1, 2];
+const DEFAULT_EDGE_STYLE = { stroke: '#33334a', strokeWidth: 1.5 };
+const MINIMAP_STYLE = {
+  width: 180,
+  height: 120,
+  border: '1px solid var(--theme-border)',
+  borderRadius: '8px',
+};
+const isValidConnection = (conn: Connection | Edge) => conn.source !== conn.target;
+const minimapNodeColor = (node: RFNode) => {
+  switch (node.type) {
+    case 'ai-text': return 'color-mix(in srgb, var(--node-text-light) 50%, transparent)';
+    case 'ai-image': return 'color-mix(in srgb, var(--node-image-light) 50%, transparent)';
+    case 'ai-video': return 'color-mix(in srgb, var(--node-video-light) 50%, transparent)';
+    case 'ai-audio': return 'color-mix(in srgb, var(--node-audio-light) 50%, transparent)';
+    case 'ai-panorama': return 'color-mix(in srgb, var(--node-panorama) 50%, transparent)';
+    case 'ai-markdown': return 'color-mix(in srgb, var(--node-markdown-light) 50%, transparent)';
+    case 'group': return '#4b556380';
+    default: return '#6b728080';
+  }
 };
 
 /** 分组节点 data 中可访问的字段 */
@@ -117,15 +143,12 @@ function SnapLinesOverlay({ lines }: { lines: SnapLine[] }) {
 }
 
 function CanvasInner() {
-  const {
-    nodes,
-    edges,
-    onConnect,
-    setNodes,
-    setEdges,
-    setSelectedNodeIds,
-    minimapVisible,
-  } = useAppStore();
+  const nodes = useAppStore((s) => s.nodes);
+  const edges = useAppStore((s) => s.edges);
+  const onConnect = useAppStore((s) => s.onConnect);
+  const setEdges = useAppStore((s) => s.setEdges);
+  const setSelectedNodeIds = useAppStore((s) => s.setSelectedNodeIds);
+  const minimapVisible = useAppStore((s) => s.minimapVisible);
   const reactFlowInstance = useReactFlow();
   const {
     isDragOver,
@@ -310,15 +333,55 @@ function CanvasInner() {
     [],
   );
 
+  // ── Node snap ──
+  const { snapLines, onNodeDragStart, applySnap, onNodeDragStop } =
+    useNodeSnap(nodes);
+
+  // 仅在线型切换时重建，避免每帧新对象触发 React Flow 内部更新
+  const defaultEdgeOptions = useMemo(
+    () => ({
+      type: smoothLine ? 'smoothstep' : 'default',
+      style: DEFAULT_EDGE_STYLE,
+      animated: false,
+    }),
+    [smoothLine],
+  );
+
   // ── Node change handler ──
   const handleNodesChange = useCallback(
     (changes: NodeChange<RFNode<BaseNodeData>>[]) => {
+      // 单节点拖拽时，把吸附后的位置直接注入 React Flow 的变更管线
+      // （成为唯一真相源，避免二次 setNodes 覆盖导致的漂移/橡皮筋）。
+      // 注意：松手那一帧 dragging=false 也要吸附，否则会弹回原始落点（位移）。
+      // applySnap 在非拖拽期（dragCtx 为空）是无副作用直通，故无需判断 dragging。
+      // 多选拖拽不吸附，以保持选中节点之间的相对位置。
+      const draggingPosChanges = changes.filter(
+        (c) => c.type === 'position' && c.position,
+      );
+      let snapped = changes;
+      if (draggingPosChanges.length === 1) {
+        const dc = draggingPosChanges[0];
+        if (dc.type === 'position' && dc.position) {
+          const snappedPos = applySnap(dc.id, dc.position);
+          snapped = changes.map((c) => (c === dc ? { ...c, position: snappedPos } : c));
+        }
+      }
+
       // Detect group node removals — convert to ungroup
-      const removedIds = changes
+      const removedIds = snapped
         .filter((c) => c.type === 'remove')
         .map((c) => c.id);
 
-      const removedGroupNodes = nodes.filter(
+      // 快速路径：纯拖拽/选择变更（无删除）—— 用函数式更新，始终基于最新
+      // store.nodes，避免快速拖动时闭包 nodes 过期导致的抖动卡顿。
+      if (removedIds.length === 0) {
+        useAppStore.setState((s) => ({
+          nodes: applyNodeChanges(snapped, s.nodes) as RFNode<BaseNodeData>[],
+        }));
+        return;
+      }
+
+      const removedGroupNodes = useAppStore.getState().nodes.filter(
         (n) => removedIds.includes(n.id) && n.type === 'group',
       );
 
@@ -349,7 +412,7 @@ function CanvasInner() {
 
         // Apply remaining non-group-removal changes
         const finalNodes = applyNodeChanges(
-          changes.filter(
+          snapped.filter(
             (c) => c.type !== 'remove' || !groupNodeIdSet.has(c.id),
           ),
           repositioned,
@@ -366,25 +429,17 @@ function CanvasInner() {
         return;
       }
 
-      const updated = applyNodeChanges(changes, nodes) as RFNode<BaseNodeData>[];
-      if (removedIds.length > 0) {
-        useAppStore.getState().commitToHistory();
-        useAppStore.setState((s) => ({
-          nodes: updated,
-          edges: s.edges.filter(
-            (e) => !removedIds.includes(e.source) && !removedIds.includes(e.target),
-          ),
-        }));
-      } else {
-        setNodes(updated);
-      }
+      // 含删除：提交历史并基于最新状态应用
+      useAppStore.getState().commitToHistory();
+      useAppStore.setState((s) => ({
+        nodes: applyNodeChanges(snapped, s.nodes) as RFNode<BaseNodeData>[],
+        edges: s.edges.filter(
+          (e) => !removedIds.includes(e.source) && !removedIds.includes(e.target),
+        ),
+      }));
     },
-    [nodes, setNodes],
+    [applySnap],
   );
-
-  // ── Node snap ──
-  const { snapLines, onNodeDragStart, onNodeDrag, onNodeDragStop } =
-    useNodeSnap(nodes, setNodes);
 
   // ── Auto group/ungroup on drag stop ──
   const handleNodeDragStop = useCallback(
@@ -525,29 +580,24 @@ function CanvasInner() {
         edges={edges}
         onConnect={onConnect}
         onConnectEnd={handleConnectEnd}
-        isValidConnection={(conn) => conn.source !== conn.target}
+        isValidConnection={isValidConnection}
         onNodeClick={onNodeClick}
         onDoubleClick={onDoubleClick}
         onSelectionChange={onSelectionChange}
         onNodeDragStart={onNodeDragStart}
-        onNodeDrag={onNodeDrag}
         onNodeDragStop={handleNodeDragStop}
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
         nodeTypes={nodeTypes}
         connectionMode={ConnectionMode.Loose}
         fitView
-        fitViewOptions={{ padding: 0.2 }}
+        fitViewOptions={FIT_VIEW_OPTIONS}
         minZoom={0.1}
         maxZoom={5}
-        defaultEdgeOptions={{
-          type: smoothLine ? 'smoothstep' : 'default',
-          style: { stroke: '#33334a', strokeWidth: 1.5 },
-          animated: false,
-        }}
+        defaultEdgeOptions={defaultEdgeOptions}
         onMove={handleMove}
-        proOptions={{ hideAttribution: true }}
-        panOnDrag={[1, 2]}
+        proOptions={PRO_OPTIONS}
+        panOnDrag={PAN_ON_DRAG}
         selectionOnDrag
         selectionMode={SelectionMode.Partial}
         multiSelectionKeyCode="Shift"
@@ -579,18 +629,7 @@ function CanvasInner() {
             position="bottom-right"
             pannable
             zoomable
-          nodeColor={(node) => {
-            switch (node.type) {
-              case 'ai-text': return 'color-mix(in srgb, var(--node-text-light) 50%, transparent)';
-              case 'ai-image': return 'color-mix(in srgb, var(--node-image-light) 50%, transparent)';
-              case 'ai-video': return 'color-mix(in srgb, var(--node-video-light) 50%, transparent)';
-              case 'ai-audio': return 'color-mix(in srgb, var(--node-audio-light) 50%, transparent)';
-              case 'ai-panorama': return 'color-mix(in srgb, var(--node-panorama) 50%, transparent)';
-              case 'ai-markdown': return 'color-mix(in srgb, var(--node-markdown-light) 50%, transparent)';
-              case 'group': return '#4b556380';
-              default: return '#6b728080';
-            }
-          }}
+          nodeColor={minimapNodeColor}
           nodeStrokeColor="var(--theme-border)"
           nodeStrokeWidth={1.5}
           nodeBorderRadius={35}
@@ -598,12 +637,7 @@ function CanvasInner() {
           maskColor="rgba(10, 10, 15, 0.75)"
           maskStrokeColor="var(--brand)"
           maskStrokeWidth={1}
-          style={{
-            width: 180,
-            height: 120,
-            border: '1px solid var(--theme-border)',
-            borderRadius: '8px',
-          }}
+          style={MINIMAP_STYLE}
           className="!bottom-12 !right-1"
         />
         )}

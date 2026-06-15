@@ -49,6 +49,8 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
   const rotation = useRef({ lon: 0, lat: 0 });
   const dragRef = useRef({ active: false, lastX: 0, lastY: 0, pointerId: 0 });
   const fovRef = useRef(75);
+  /** 请求一次按需渲染（仅在交互/resize 时调用，空闲不渲染） */
+  const requestRenderRef = useRef<() => void>(() => {});
 
   /* ── Expose screenshot capture ── */
   useImperativeHandle(ref, () => ({
@@ -78,7 +80,10 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
     // Flip normals so we see the inside
     geo.scale(-1, 1, 1);
 
-    const texture = new THREE.TextureLoader().load(imageUrl);
+    const texture = new THREE.TextureLoader().load(imageUrl, () => {
+      // 纹理加载完成后渲染一次
+      requestRenderRef.current();
+    });
     texture.colorSpace = THREE.SRGBColorSpace;
     const mat = new THREE.MeshBasicMaterial({ map: texture });
     const sphere = new THREE.Mesh(geo, mat);
@@ -94,10 +99,10 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
     renderer.domElement.setAttribute('data-panorama-empty', '0');
     renderer.domElement.style.display = 'block';
 
-    /* ---- Animation ---- */
+    /* ---- On-demand render (空闲不渲染，仅交互/resize 时合并到一帧) ---- */
     let animId = 0;
-    const animate = () => {
-      animId = requestAnimationFrame(animate);
+    const renderFrame = () => {
+      animId = 0;
       // Apply rotation
       sphere.rotation.y = rotation.current.lon;
       camera.rotation.x = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, rotation.current.lat));
@@ -105,7 +110,12 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
       camera.updateProjectionMatrix();
       renderer.render(scene, camera);
     };
-    animate();
+    const requestRender = () => {
+      if (animId) return; // 已排程，合并本帧多次请求
+      animId = requestAnimationFrame(renderFrame);
+    };
+    requestRenderRef.current = requestRender;
+    requestRender(); // 初始渲染一次
 
     sceneRef.current = { scene, camera, sphere, texture, renderer, animId };
 
@@ -117,11 +127,13 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
       renderer.setSize(nw, nh);
       camera.aspect = nw / nh;
       camera.updateProjectionMatrix();
+      requestRender();
     });
     ro.observe(el);
 
     return () => {
       cancelAnimationFrame(animId);
+      requestRenderRef.current = () => {};
       ro.disconnect();
       renderer.dispose();
       texture.dispose();
@@ -149,6 +161,7 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
     rotation.current.lon += dx * 0.005;
     rotation.current.lat += dy * 0.005;
     rotation.current.lat = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, rotation.current.lat));
+    requestRenderRef.current();
   }, []);
 
   const onPointerUp = useCallback(() => {
@@ -168,6 +181,7 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
     const handler = (e: WheelEvent) => {
       e.preventDefault();
       fovRef.current = Math.max(20, Math.min(110, fovRef.current + e.deltaY * 0.05));
+      requestRenderRef.current();
     };
     el.addEventListener('wheel', handler, { passive: false });
     return () => el.removeEventListener('wheel', handler);

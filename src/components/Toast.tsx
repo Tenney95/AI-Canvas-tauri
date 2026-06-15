@@ -2,11 +2,14 @@
  * Toast 全局消息提示 — 顶部居中弹出式通知，支持成功/错误两种状态，自动消失
  */
 import { AnimatePresence, motion } from 'framer-motion';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import AnimatedButton from './shared/AnimatedButton';
 
 export default function Toast() {
-  const { toast, dismissToast } = useAppStore();
+  const { toast, dismissToast } = useAppStore(
+    useShallow((s) => ({ toast: s.toast, dismissToast: s.dismissToast })),
+  );
 
   return (
     <AnimatePresence>

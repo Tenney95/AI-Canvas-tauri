@@ -2,6 +2,7 @@
  * SettingsPanel 设置面板 — 模态弹窗，管理常规设置、API Key 配置、快捷键、ComfyUI
  */
 import { useState, useEffect } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { getProjectDataDir, getBaseDir } from '../services/fileService';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -15,7 +16,17 @@ type SettingsTab = 'general' | 'api' | 'shortcuts' | 'comfyui';
 
 export default function SettingsPanel() {
   const { settingsOpen, setSettingsOpen, config, updateConfig, saveConfig, currentProjectId, showToast } =
-    useAppStore();
+    useAppStore(
+      useShallow((s) => ({
+        settingsOpen: s.settingsOpen,
+        setSettingsOpen: s.setSettingsOpen,
+        config: s.config,
+        updateConfig: s.updateConfig,
+        saveConfig: s.saveConfig,
+        currentProjectId: s.currentProjectId,
+        showToast: s.showToast,
+      })),
+    );
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);

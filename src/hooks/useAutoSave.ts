@@ -22,10 +22,19 @@ export function useAutoSave() {
   const fingerprintRef = useRef<string>('');
   // 跳过初始加载阶段
   const readyRef = useRef(false);
+  // 缓存上一次 nodes/edges/groups 引用，无关 state 变更（toast/config/拖拽以外）直接短路
+  const prevRefs = useRef<{ nodes: unknown; edges: unknown; groups: unknown }>({
+    nodes: null,
+    edges: null,
+    groups: null,
+  });
 
   useEffect(() => {
-    const unsub = useAppStore.subscribe((state) => {
-      // 等 store 初始化完成后才开始监听
+    // 真正的结构指纹计算 + 保存判断，仅在防抖稳定后执行一次，
+    // 拖拽期间每帧只做一次极廉价的引用比较（见下方 subscribe 回调），
+    // 不再每帧 map/sort/join 分配数组（消除 GC 抖动）。
+    const checkAndSave = () => {
+      const state = useAppStore.getState();
       if (!state.currentProjectId) return;
 
       const nodeIds = state.nodes.map((n) => n.id).sort();
@@ -46,12 +55,26 @@ export function useAutoSave() {
       }
 
       fingerprintRef.current = fp;
+      useAppStore.getState().saveCurrentProjectSilent();
+    };
 
-      // 防抖 2 秒
+    const unsub = useAppStore.subscribe((state) => {
+      if (!state.currentProjectId) return;
+
+      // 极廉价的引用比较：nodes/edges/groups 引用都没变 → 直接忽略
+      const p = prevRefs.current;
+      if (
+        state.nodes === p.nodes &&
+        state.edges === p.edges &&
+        state.groups === p.groups
+      ) {
+        return;
+      }
+      prevRefs.current = { nodes: state.nodes, edges: state.edges, groups: state.groups };
+
+      // 仅重置防抖计时器（不做任何重活）；指纹计算延后到 2 秒静默后
       if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
-        useAppStore.getState().saveCurrentProjectSilent();
-      }, 2000);
+      timerRef.current = setTimeout(checkAndSave, 2000);
     });
 
     return () => {

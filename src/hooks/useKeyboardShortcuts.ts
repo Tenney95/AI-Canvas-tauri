@@ -7,8 +7,6 @@ import { useAppStore } from '../store/useAppStore';
 import * as fileService from '../services/fileService';
 import type { BaseNodeData } from '../types';
 export function useKeyboardShortcuts() {
-  const { undo, redo, saveCurrentProject, copySelectedNodes, pasteNodes } = useAppStore();
-
   useEffect(() => {
     let active = true; // guard against callbacks firing after unmount / HMR reload
 
@@ -21,7 +19,7 @@ export function useKeyboardShortcuts() {
       if ((e.ctrlKey || e.metaKey || e.altKey) && e.key === 's') {
         e.preventDefault();
         e.stopPropagation();
-        await saveCurrentProject();
+        await useAppStore.getState().saveCurrentProject();
         return;
       }
 
@@ -40,7 +38,7 @@ export function useKeyboardShortcuts() {
 
       // Ctrl+C: Copy selected nodes to clipboard
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        copySelectedNodes();
+        useAppStore.getState().copySelectedNodes();
         return;
       }
 
@@ -51,7 +49,7 @@ export function useKeyboardShortcuts() {
           e.preventDefault();
           e.stopPropagation();
           // Paste near center of viewport
-          pasteNodes({ x: 300, y: 300 });
+          useAppStore.getState().pasteNodes({ x: 300, y: 300 });
         }
         // When internal clipboard is empty, let the native paste event fire —
         // the paste listener in Canvas.tsx handles external clipboard content.
@@ -62,7 +60,7 @@ export function useKeyboardShortcuts() {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        undo();
+        useAppStore.getState().undo();
         return;
       }
 
@@ -70,7 +68,7 @@ export function useKeyboardShortcuts() {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Z' && e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        redo();
+        useAppStore.getState().redo();
         return;
       }
 
@@ -78,7 +76,7 @@ export function useKeyboardShortcuts() {
       if ((e.ctrlKey || e.metaKey) && e.key === 'y' && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        redo();
+        useAppStore.getState().redo();
         return;
       }
 
@@ -235,5 +233,5 @@ export function useKeyboardShortcuts() {
         .then(({ unregisterAll }) => unregisterAll())
         .catch(() => {});
     };
-  }, [undo, redo, saveCurrentProject, copySelectedNodes, pasteNodes]);
+  }, []);
 }

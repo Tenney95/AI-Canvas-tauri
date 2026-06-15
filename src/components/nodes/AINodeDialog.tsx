@@ -1,7 +1,8 @@
 /**
  * AINodeDialog AI 生成弹窗 — 点击节点后弹出的浮动面板，包含 Prompt 输入、模型选择、参数配置、生成按钮
  */
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useRef } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import type { BaseNodeData, ModelOption } from '../../types';
 import { generateText, generateImage, generateVideo, generateAudio } from '../../services/aiService';
@@ -10,9 +11,21 @@ import PromptPanel from './shared/PromptPanel';
 import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
 
 function AINodeDialog() {
-  const { nodes, activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, recordOutputHistory, showToast, workflows, currentProjectId } = useAppStore();
+  const { activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, recordOutputHistory, showToast, workflows, currentProjectId } = useAppStore(
+    useShallow((s) => ({
+      activeNodeId: s.activeNodeId,
+      dialogPosition: s.dialogPosition,
+      closeNodeDialog: s.closeNodeDialog,
+      updateNodeData: s.updateNodeData,
+      recordOutputHistory: s.recordOutputHistory,
+      showToast: s.showToast,
+      workflows: s.workflows,
+      currentProjectId: s.currentProjectId,
+    })),
+  );
 
-  const node = useMemo(() => nodes.find((n) => n.id === activeNodeId), [nodes, activeNodeId]);
+  // 仅订阅当前激活的节点（而非整个 nodes 数组），拖拽其他节点时不会触发本弹窗重渲染
+  const node = useAppStore((s) => (s.activeNodeId ? s.nodes.find((n) => n.id === s.activeNodeId) : undefined));
   const data: BaseNodeData | undefined = node?.data;
   const nodeType = data?.type;
 

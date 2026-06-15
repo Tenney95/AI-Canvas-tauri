@@ -2,10 +2,13 @@
  * Header 顶部栏 — Logo、项目名编辑、侧边栏切换、设置入口、窗口拖拽区域
  */
 import { motion } from 'framer-motion';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 
 export default function Header() {
-  const { projectName, setProjectName } = useAppStore();
+  const { projectName, setProjectName } = useAppStore(
+    useShallow((s) => ({ projectName: s.projectName, setProjectName: s.setProjectName })),
+  );
 
   return (
     <header
