@@ -91,7 +91,7 @@ export interface DreaminaAuthData {
 }
 
 /** 画布背景主题 */
-export type CanvasBackground = 'default' | 'solar-system' | 'minimal' | 'nebula';
+export type CanvasBackground = 'default' | 'solar-system' | 'minimal' | 'nebula' | 'off-white';
 
 export interface AppConfig {
   providers: Record<string, ApiProviderConfig>;

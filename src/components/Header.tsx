@@ -10,13 +10,13 @@ export default function Header() {
   return (
     <header
       data-tauri-drag-region
-      className="absolute top-3 left-3 z-40 flex items-center gap-1 px-2.5 py-2
-                 bg-canvas-surface/60 backdrop-blur-xl border border-white/[0.06] rounded-2xl
+      className="app-header absolute top-3 left-3 z-40 flex items-center gap-1 px-2.5 py-2
+                 bg-canvas-surface/60 backdrop-blur-xl border border-canvas-border rounded-2xl
                  shadow-lg shadow-black/30 select-none"
     >
       {/* Logo */}
-      <div className="flex items-center gap-2 pr-2 mr-0.5 border-r border-white/[0.08]">
-        <div className="w-6 h-6 rounded-md bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0">
+      <div className="flex items-center gap-2 pr-2 mr-0.5 border-r border-canvas-border">
+        <div className="w-6 h-6 rounded-md bg-gradient-to-br to-purple-600 flex items-center justify-center shrink-0">
           <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <linearGradient id="iconGradient" x1="200" y1="200" x2="824" y2="824" gradientUnits="userSpaceOnUse">
@@ -69,19 +69,19 @@ export default function Header() {
           }
         }}
         className="text-[11px] text-canvas-text-secondary/80 px-2 py-0.5 rounded-md
-                   hover:bg-white/[0.05] outline-none cursor-text min-w-[50px] max-w-[140px] truncate
+                   hover:bg-canvas-hover outline-none cursor-text min-w-[50px] max-w-[140px] truncate
                    focus:text-canvas-text/90 transition-colors"
       >
         {projectName}
       </div>
 
       {/* Divider */}
-      <div className="w-px h-4 bg-white/[0.08] mx-0.5" />
+      <div className="w-px h-4 bg-canvas-hover mx-0.5" />
 
       {/* Actions */}
       <motion.button
         onClick={() => useAppStore.getState().createProject()}
-        className="w-7 h-7 rounded-lg hover:bg-white/[0.08] flex items-center justify-center
+        className="w-7 h-7 rounded-lg hover:bg-canvas-hover flex items-center justify-center
                    text-canvas-text-secondary hover:text-canvas-text"
         data-tooltip="新建画布"
         whileHover={{ scale: 1.1 }}

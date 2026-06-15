@@ -16,7 +16,7 @@ type SettingsTab = 'general' | 'api' | 'shortcuts' | 'comfyui';
 export default function SettingsPanel() {
   const { settingsOpen, setSettingsOpen, config, updateConfig, saveConfig, currentProjectId, showToast } =
     useAppStore();
-  const [activeTab, setActiveTab] = useState<SettingsTab>('api');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
   const [comfyUiLaunching, setComfyUiLaunching] = useState(false);
@@ -280,11 +280,13 @@ export default function SettingsPanel() {
                           {/* 预览缩略图 */}
                           <div className={`w-full h-12 rounded overflow-hidden border border-canvas-border ${
                             value === 'default'
-                              ? 'bg-canvas-bg'
+                              ? 'bg-[#0a0a1a]'
                               : value === 'solar-system'
                               ? 'bg-gradient-to-br from-[#0a0a1a] via-[#1a1030] to-[#0a1020]'
                               : value === 'nebula'
                               ? 'bg-gradient-to-b from-[#0a0514] via-[#14081e] to-[#0a0514]'
+                              : value === 'off-white'
+                              ? 'bg-[#F5F0EB]'
                               : 'bg-black'
                           }`}>
                             {value === 'default' && (
@@ -313,6 +315,12 @@ export default function SettingsPanel() {
                                   backgroundSize: '12px 12px',
                                 }} />
                               </div>
+                            )}
+                            {value === 'off-white' && (
+                              <div className="w-full h-full" style={{
+                                backgroundImage: 'radial-gradient(circle, rgba(0,0,0,0.06) 1px, transparent 1px)',
+                                backgroundSize: '8px 8px',
+                              }} />
                             )}
                           </div>
                           <span className="text-[11px] font-medium">{label}</span>

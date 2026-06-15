@@ -563,7 +563,7 @@
   justify-content: space-between;
   padding: 4px 8px;
   border-bottom: 1px solid var(--theme-border);
-  background: rgba(26, 26, 38, 0.6);
+  background: color-mix(in srgb, var(--theme-card) 60%, transparent);
   flex-shrink: 0;
 }
 

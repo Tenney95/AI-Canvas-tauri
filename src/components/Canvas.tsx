@@ -610,7 +610,7 @@ function CanvasInner() {
 
         {/* Canvas Controls */}
         <Controls
-          className="!bg-canvas-card !border-canvas-border !shadow-lg !rounded-xl overflow-hidden"
+          className="canvas-controls !bg-canvas-card !border-canvas-border !shadow-lg !rounded-xl overflow-hidden"
           showInteractive={false}
         />
 

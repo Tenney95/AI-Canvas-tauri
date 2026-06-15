@@ -2,12 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ============================================
-   AI Canvas - CSS Variables & Tokens
-   ============================================ */
+/* ==========================================================================
+   AI Canvas - CSS Variables & Tokens / CSS 变量与设计令牌
+   ========================================================================== */
 
+/* ════════════════════════════════════════════════════════════════════════
+   Dark Theme (default) / 暗色主题（默认）
+   ════════════════════════════════════════════════════════════════════════ */
 :root {
-  /* ── Theme Layer ── */
+  /* Theme Layer / 主题层 ── */
   --theme-bg: #0a0a0f;
   --theme-surface: #14141c;
   --theme-card: #1a1a26;
@@ -17,7 +20,7 @@
   --theme-text-secondary: #8888a0;
   --theme-text-muted: #555566;
 
-  /* ── Brand (Indigo) ── */
+  /* Brand (Indigo) / 品牌色（靛蓝）── */
   --brand: #6366f1;
   --brand-light: #818cf8;
   --brand-hover: #818cf8;
@@ -31,7 +34,7 @@
   --brand-alpha-25: rgba(99, 102, 241, 0.25);
   --brand-alpha-30: rgba(99, 102, 241, 0.30);
 
-  /* ── Node Type Colors ── */
+  /* Node Type Colors / 节点类型颜色 ── */
   --node-text: #6366f1;
   --node-text-light: #818cf8;
   --node-text-bg: rgba(99, 102, 241, 0.15);
@@ -52,7 +55,7 @@
   --node-markdown-light: #c084fc;
   --node-markdown-bg: rgba(168, 85, 247, 0.15);
 
-  /* ── Semantic State Colors ── */
+  /* Semantic State Colors / 语义状态色 ── */
   --success: #22c55e;
   --success-light: #4ade80;
   --success-text: #34d399;
@@ -68,7 +71,7 @@
   --warning-light: #fb923c;
   --warning-bg: rgba(249, 115, 22, 0.15);
 
-  /* ── White Alpha Series ── */
+  /* White Alpha Series / 白色透明度系列 ── */
   --white-alpha-03: rgba(255, 255, 255, 0.03);
   --white-alpha-04: rgba(255, 255, 255, 0.04);
   --white-alpha-06: rgba(255, 255, 255, 0.06);
@@ -77,45 +80,45 @@
   --white-alpha-12: rgba(255, 255, 255, 0.12);
   --white-alpha-15: rgba(255, 255, 255, 0.15);
 
-  /* ── Black Alpha (Overlay) Series ── */
+  /* Black Alpha (Overlay) Series / 黑色透明度（遮罩）系列 ── */
   --black-alpha-30: rgba(0, 0, 0, 0.30);
   --black-alpha-40: rgba(0, 0, 0, 0.40);
   --black-alpha-50: rgba(0, 0, 0, 0.50);
   --black-alpha-60: rgba(0, 0, 0, 0.60);
 
-  /* ── Border Variants ── */
+  /* Border Variants / 边框变体 ── */
   --border-subtle: rgba(255, 255, 255, 0.06);
   --border-secondary: #3a3a4a;
   --border-focus: rgba(99, 102, 241, 0.40);
 
-  /* ── Scrollbar ── */
+  /* Scrollbar / 滚动条 ── */
   --scrollbar-thumb: #3a3a50;
   --scrollbar-thumb-hover: #555570;
   --scrollbar-thumb-active: #6b6b88;
 
-  /* ════════════════════════════════════════════
-     Motion Design Tokens
-     Based on 100/300/500 rule + expo-out curves
-     ════════════════════════════════════════════ */
+  /* ════════════════════════════════════════════════════════════════════════
+     Motion Design Tokens / 动效设计令牌
+     Based on 100/300/500 rule + expo-out curves / 基于 100/300/500 规则 + expo-out 缓动曲线
+     ════════════════════════════════════════════════════════════════════════ */
 
-  /* Easing curves */
+  /* Easing curves / 缓动曲线 */
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 
-  /* Duration scale */
+  /* Duration scale / 时长阶梯 */
   --dur-instant: 100ms;
   --dur-fast: 150ms;
   --dur-normal: 200ms;
   --dur-slow: 300ms;
 
-  /* Composite transitions (most common patterns) */
+  /* Composite transitions (most common patterns) / 组合过渡（最常用模式） */
   --transition-base: var(--dur-fast) var(--ease-out-expo);
   --transition-smooth: var(--dur-normal) var(--ease-out-expo);
 
-  /* ════════════════════════════════════════════
-     Glass / Frosted Surface Tokens
-     ════════════════════════════════════════════ */
+  /* ════════════════════════════════════════════════════════════════════════
+     Glass / Frosted Surface Tokens / 毛玻璃表面令牌
+     ════════════════════════════════════════════════════════════════════════ */
   --glass-bg: rgba(20, 20, 28, 0.92);
   --glass-bg-light: rgba(56, 56, 76, 0.3);
   --glass-bg-node: rgba(34, 34, 50, 0.72);
@@ -126,9 +129,101 @@
   --glass-blur-lg: 24px;
 }
 
-/* ════════════════════════════════════════════
-   Unified Glass Utility
-   ════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════════
+   Light Theme / 浅色主题
+   Switches theme layer, alpha series, borders, glass & scrollbar to light values.
+   切换主题层、透明度系列、边框、毛玻璃和滚动条为浅色值。
+   ════════════════════════════════════════════════════════════════════════ */
+[data-theme='light'] {
+  /* Theme Layer / 主题层 ── */
+  --theme-bg: #F5F0EB;
+  --theme-surface: #FFFFFF;
+  --theme-card: #F8F6F3;
+  --theme-border: #E5E0D8;
+  --theme-hover: #EDE8E0;
+  --theme-text: #1a1a2e;
+  --theme-text-secondary: #6b6b7b;
+  --theme-text-muted: #9a9aaa;
+
+  /* Semantics remain the same but adjust backgrounds for readability / 语义色保持一致，仅调整背景 */
+  --success-bg: rgba(16, 185, 129, 0.10);
+  --danger-bg: rgba(239, 68, 68, 0.10);
+  --info-bg: rgba(59, 130, 246, 0.10);
+  --warning-bg: rgba(249, 115, 22, 0.10);
+
+  /* Node type backgrounds — lighter for light theme / 节点类型背景 — 浅色主题下调浅 */
+  --node-text-bg: rgba(99, 102, 241, 0.10);
+  --node-image-bg: rgba(16, 185, 129, 0.10);
+  --node-video-bg: rgba(59, 130, 246, 0.10);
+  --node-audio-bg: rgba(249, 115, 22, 0.10);
+  --node-panorama-bg: rgba(6, 182, 212, 0.10);
+  --node-markdown-bg: rgba(168, 85, 247, 0.10);
+
+  /* Brand alphas — lighter for light theme / 品牌透明度 — 浅色主题下调浅 */
+  --brand-alpha-04: rgba(99, 102, 241, 0.04);
+  --brand-alpha-05: rgba(99, 102, 241, 0.06);
+  --brand-alpha-10: rgba(99, 102, 241, 0.08);
+  --brand-alpha-12: rgba(99, 102, 241, 0.10);
+  --brand-alpha-15: rgba(99, 102, 241, 0.12);
+  --brand-alpha-20: rgba(99, 102, 241, 0.15);
+  --brand-alpha-25: rgba(99, 102, 241, 0.18);
+  --brand-alpha-30: rgba(99, 102, 241, 0.22);
+
+  /* White Alpha → Black Alpha for overlays & subtle layers / 遮罩和微妙层切换为黑色透明度 */
+  --white-alpha-03: rgba(0, 0, 0, 0.03);
+  --white-alpha-04: rgba(0, 0, 0, 0.04);
+  --white-alpha-06: rgba(0, 0, 0, 0.06);
+  --white-alpha-08: rgba(0, 0, 0, 0.08);
+  --white-alpha-10: rgba(0, 0, 0, 0.10);
+  --white-alpha-12: rgba(0, 0, 0, 0.12);
+  --white-alpha-15: rgba(0, 0, 0, 0.15);
+
+  /* Border Variants / 边框变体 ── */
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --border-secondary: #d4d0c8;
+  --border-focus: rgba(99, 102, 241, 0.45);
+
+  /* Scrollbar / 滚动条 ── */
+  --scrollbar-thumb: #c0bdb5;
+  --scrollbar-thumb-hover: #a5a29a;
+  --scrollbar-thumb-active: #8a8780;
+
+  /* Glass / Frosted Surface / 毛玻璃表面 ── */
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-bg-light: rgba(255, 255, 255, 0.55);
+  --glass-bg-node: rgba(255, 255, 255, 0.72);
+  --glass-ring: rgba(0, 0, 0, 0.10);
+  --glass-ring-strong: rgba(0, 0, 0, 0.06);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Light Theme — Tailwind Class Overrides / 浅色主题 — Tailwind 类覆盖
+   Tailwind resolves colors at build time; override generated utility classes here.
+   Tailwind 在构建时解析颜色，此处覆盖生成的工具类。
+   ════════════════════════════════════════════════════════════════════════ */
+[data-theme='light'] .text-canvas-text { color: #1a1a2e; }
+[data-theme='light'] .text-canvas-text\/90 { color: rgb(26 26 46 / 0.9); }
+[data-theme='light'] .focus\:text-canvas-text\/90:focus { color: rgb(26 26 46 / 0.9); }
+[data-theme='light'] .text-canvas-text-secondary { color: #6b6b7b; }
+[data-theme='light'] .text-canvas-text-secondary\/80 { color: rgb(107 107 123 / 0.8); }
+[data-theme='light'] .text-canvas-text-muted { color: #9a9aaa; }
+
+[data-theme='light'] .bg-canvas-bg { background-color: #F5F0EB; }
+[data-theme='light'] .bg-canvas-surface { background-color: #FFFFFF; }
+[data-theme='light'] .bg-canvas-card { background-color: #F8F6F3; }
+[data-theme='light'] .bg-canvas-hover { background-color: #EDE8E0; }
+
+[data-theme='light'] .border-canvas-border { border-color: #E5E0D8; }
+[data-theme='light'] .border-border-subtle { border-color: rgba(0, 0, 0, 0.06); }
+[data-theme='light'] .border-border-secondary { border-color: #d4d0c8; }
+
+[data-theme='light'] .shadow-canvas-border { --tw-shadow-color: #E5E0D8; }
+[data-theme='light'] .ring-canvas-border { --tw-ring-color: #E5E0D8; }
+[data-theme='light'] .divide-canvas-border { --tw-divide-opacity: 1; border-color: rgb(229 224 216 / var(--tw-divide-opacity, 1)); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Unified Glass Utility / 统一毛玻璃工具类
+   ════════════════════════════════════════════════════════════════════════ */
 .glass-surface {
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
@@ -142,11 +237,11 @@
   border: 1px solid var(--glass-ring);
 }
 
-/* ============================================
-   AI Canvas - Base & Reset
-   ============================================ */
+/* ==========================================================================
+   AI Canvas - Base & Reset / 基础重置
+   ========================================================================== */
 
-/* CSS Reset */
+/* CSS Reset / CSS 重置 */
 *,
 *::before,
 *::after {
@@ -173,7 +268,7 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ── Global Scrollbar ── */
+/* Global Scrollbar / 全局滚动条 ── */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
@@ -208,7 +303,7 @@ html, body, #root {
   background: transparent;
 }
 
-/* Custom Textarea & Input Styles */
+/* Custom Textarea & Input Styles / 自定义输入框样式 */
 input::placeholder,
 textarea::placeholder {
   color: var(--theme-text-muted);
@@ -219,9 +314,9 @@ textarea:focus {
   outline: none;
 }
 
-/* ════════════════════════════════════════════
-   Animation Keyframes (unified expo-out curves)
-   ════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════════
+   Animation Keyframes (unified expo-out curves) / 动画关键帧（统一 expo-out 缓动曲线）
+   ════════════════════════════════════════════════════════════════════════ */
 
 @keyframes fadeIn {
   from { opacity: 0; }
@@ -261,12 +356,12 @@ textarea:focus {
 .fade-in { animation-name: fadeIn; }
 .zoom-in-95 { animation-name: zoomIn95; }
 
-/* Node loading glow */
+/* Node loading glow / 节点加载辉光 */
 .node-loading .react-flow__node {
   animation: pulse-glow 2s var(--ease-in-out) infinite;
 }
 
-/* Content Editable styles */
+/* Content Editable styles / 可编辑内容样式 */
 [contenteditable]:hover {
   outline: none;
   background-color: var(--white-alpha-03);
@@ -279,9 +374,9 @@ textarea:focus {
   border-radius: 4px;
 }
 
-/* ════════════════════════════════════════════
-   Reduced Motion — accessibility
-   ════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════════
+   Reduced Motion — accessibility / 减少动效 — 无障碍
+   ════════════════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -290,4 +385,11 @@ textarea:focus {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+.app-header {
+  background-color: var(--glass-bg);
+}
+.footer-toolbar {
+  background-color: var(--glass-bg);
 }

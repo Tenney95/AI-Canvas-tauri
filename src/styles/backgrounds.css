@@ -11,6 +11,25 @@
   pointer-events: none;
 }
 
+/* ── 米白浅色背景 ── */
+.canvas-bg-off-white {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: #F5F0EB;
+  pointer-events: none;
+}
+/* 细网格纹理 */
+.canvas-bg-off-white::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle, rgba(0, 0, 0, 0.06) 1px, transparent 1px);
+  background-size: 8px 8px;
+  pointer-events: none;
+}
+
 /* ── 太阳系背景 ── */
 .solar-bg {
   position: absolute;

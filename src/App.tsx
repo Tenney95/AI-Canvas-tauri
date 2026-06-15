@@ -56,6 +56,16 @@ export default function App() {
     return () => { unlisten?.(); };
   }, []);
 
+  // 同步主题到 document.documentElement，供 CSS [data-theme] 选择器生效
+  // 米白色背景时自动切换为 light，其余背景使用用户手动设置的主题
+  const configTheme = useAppStore((s) => s.config.theme);
+  const canvasBackground = useAppStore((s) => s.config.canvasBackground);
+  const effectiveTheme = canvasBackground === 'off-white' ? 'light' : configTheme;
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', effectiveTheme);
+    return () => document.documentElement.removeAttribute('data-theme');
+  }, [effectiveTheme]);
+
   // Tauri 模式下给 body 加属性，Portal 渲染的弹窗元素也在 body 下，CSS 选择器才能匹配
   useEffect(() => {
     if (isTauri) {

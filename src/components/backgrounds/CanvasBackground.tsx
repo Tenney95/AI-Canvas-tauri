@@ -11,6 +11,7 @@ export const BACKGROUND_OPTIONS: { value: CanvasBg; label: string; preview: stri
   { value: 'default', label: '默认暗色', preview: 'canvas-bg' },
   { value: 'solar-system', label: '太阳系', preview: 'solar-system' },
   { value: 'nebula', label: '星云', preview: 'nebula' },
+  { value: 'off-white', label: '米白浅色', preview: 'off-white' },
   // { value: 'minimal', label: '极简纯黑', preview: 'minimal' },
 ];
 
@@ -22,6 +23,8 @@ export default function CanvasBackground() {
       return <SolarSystemBackground />;
     case 'nebula':
       return <NebulaBackground />;
+    case 'off-white':
+      return <div className="canvas-bg-off-white" />;
     case 'minimal':
       return <div className="canvas-bg-minimal" />;
     default:
