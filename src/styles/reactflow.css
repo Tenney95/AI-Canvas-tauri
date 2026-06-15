@@ -10,6 +10,11 @@
   touch-action: none;
 }
 
+/* GPU composite layer — critical for smooth drag/zoom in Tauri WebView2 */
+.react-flow__viewport {
+  will-change: transform;
+}
+
 .react-flow__panel {
   margin: 10px !important;
 }

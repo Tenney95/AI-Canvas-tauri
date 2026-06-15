@@ -18,8 +18,8 @@
   display: flex;
   flex-direction: column;
   background: var(--glass-bg-node);
-  backdrop-filter: blur(var(--glass-blur-sm));
-  -webkit-backdrop-filter: blur(var(--glass-blur-sm));
+  /* backdrop-filter: blur(var(--glass-blur-sm));
+  -webkit-backdrop-filter: blur(var(--glass-blur-sm)); */
   border: 1px solid var(--glass-ring);
   border-radius: 12px;
   overflow: hidden;

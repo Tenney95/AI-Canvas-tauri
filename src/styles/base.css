@@ -16,7 +16,7 @@
   --theme-card: #1a1a26;
   --theme-border: #2a2a3a;
   --theme-hover: #252535;
-  --theme-text: #e8e8ed;
+  --theme-text: #dddde4;
   --theme-text-secondary: #8888a0;
   --theme-text-muted: #555566;
 
@@ -121,7 +121,7 @@
      ════════════════════════════════════════════════════════════════════════ */
   --glass-bg: rgba(20, 20, 28, 0.92);
   --glass-bg-light: rgba(56, 56, 76, 0.3);
-  --glass-bg-node: rgba(34, 34, 50, 0.72);
+  --glass-bg-node: rgba(34, 34, 50, 0.88);
   --glass-ring: rgba(255, 255, 255, 0.16);
   --glass-ring-strong: rgba(255, 255, 255, 0.10);
   --glass-blur-sm: 6px;
@@ -191,7 +191,7 @@
   /* Glass / Frosted Surface / 毛玻璃表面 ── */
   --glass-bg: rgba(255, 255, 255, 0.85);
   --glass-bg-light: rgba(255, 255, 255, 0.55);
-  --glass-bg-node: rgba(255, 255, 255, 0.72);
+  --glass-bg-node: rgba(255, 255, 255, 0.88);
   --glass-ring: rgba(0, 0, 0, 0.10);
   --glass-ring-strong: rgba(0, 0, 0, 0.06);
 }
@@ -209,8 +209,12 @@
 [data-theme='light'] .text-canvas-text-muted { color: #9a9aaa; }
 
 [data-theme='light'] .bg-canvas-bg { background-color: #F5F0EB; }
+[data-theme='light'] .bg-canvas-bg\/60 { background-color: rgb(245 240 235 / 0.6); }
 [data-theme='light'] .bg-canvas-surface { background-color: #FFFFFF; }
+[data-theme='light'] .bg-canvas-surface\/60 { background-color: rgb(255 255 255 / 0.6); }
+[data-theme='light'] .bg-canvas-surface\/80 { background-color: rgb(255 255 255 / 0.8); }
 [data-theme='light'] .bg-canvas-card { background-color: #F8F6F3; }
+[data-theme='light'] .bg-canvas-card\/95 { background-color: rgb(248 246 243 / 0.95); }
 [data-theme='light'] .bg-canvas-hover { background-color: #EDE8E0; }
 
 [data-theme='light'] .border-canvas-border { border-color: #E5E0D8; }
