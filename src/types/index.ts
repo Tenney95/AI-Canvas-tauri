@@ -105,7 +105,7 @@ export interface AppConfig {
 }
 
 // ── 通用模型配置 ──
-export type GeneralModelCategory = 'mixed' | 'text' | 'audio' | 'video' | 'image';
+export type GeneralModelCategory = 'text' | 'image' | 'audio' | 'video';
 
 export interface GeneralModelConfig {
   id: string;
@@ -118,24 +118,21 @@ export interface GeneralModelConfig {
 }
 
 export const GENERAL_MODEL_CATEGORY_LABELS: Record<GeneralModelCategory, string> = {
-  mixed: '混合模型',
-  text: '纯文本',
+  text: '文本',
+  image: '图片',
   audio: '音频',
   video: '视频',
-  image: '图片',
 };
 
 export const GENERAL_MODEL_CATEGORY_COLORS: Record<GeneralModelCategory, string> = {
-  mixed: '#6366f1',
   text: '#6366f1',
+  image: '#22c55e',
   audio: '#f97316',
   video: '#3b82f6',
-  image: '#22c55e',
 };
 
 /** GeneralModelCategory → 适用的节点类型映射 */
 export const CATEGORY_TO_NODE_TYPES: Record<GeneralModelCategory, NodeType[]> = {
-  mixed: ['ai-text', 'ai-image', 'ai-video', 'ai-audio'],
   text: ['ai-text'],
   image: ['ai-image'],
   video: ['ai-video'],

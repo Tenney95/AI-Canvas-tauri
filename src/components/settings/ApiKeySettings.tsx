@@ -14,11 +14,10 @@ import {
 
 /* ── External URLs ── */
 const PROVIDER_URLS: Record<string, string> = {
-  apimart: 'https://apib.ai/zh/register?aff=ashuoai',
+  apimart: 'https://apib.ai/zh/register',
   volcengine: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
-  runninghub: 'https://www.runninghub.cn/?inviteCode=rh-v1312',
+  runninghub: 'https://www.runninghub.cn/',
   grsai: 'https://grsai.com/zh/dashboard/user-info',
-  ppio: 'https://ppio.com/user/register?invited_by=SF4VL3',
   dreamina: 'https://www.dreamina.com',
 };
 
@@ -191,7 +190,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const [newModelAnthropicUrl, setNewModelAnthropicUrl] = useState('');
   const [newModelId, setNewModelId] = useState('');
   const [newModelApiKey, setNewModelApiKey] = useState('');
-  const [newModelCategory, setNewModelCategory] = useState<GeneralModelCategory>('mixed');
+  const [newModelCategory, setNewModelCategory] = useState<GeneralModelCategory>('text');
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
   const generalModels = config.generalModels || [];
 
@@ -540,7 +539,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                 setNewModelAnthropicUrl('');
                 setNewModelId('');
                 setNewModelApiKey('');
-                setNewModelCategory('mixed');
+                setNewModelCategory('text');
                 await saveConfig();
               }}
             >
@@ -606,7 +605,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
               <div className="general-model-form-col general-model-form-col--category">
                 <div className="settings-label">模型种类</div>
                 <div className="general-model-category-select">
-                  {(['mixed', 'text', 'image', 'video', 'audio'] as GeneralModelCategory[]).map((cat) => (
+                  {(['text', 'image', 'video', 'audio'] as GeneralModelCategory[]).map((cat) => (
                     <button
                       key={cat}
                       type="button"
@@ -707,7 +706,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                         <div className="general-model-form-col general-model-form-col--category">
                           <div className="settings-label">模型种类</div>
                           <div className="general-model-category-select">
-                            {(['mixed', 'text', 'image', 'video', 'audio'] as GeneralModelCategory[]).map((cat) => (
+                            {(['text', 'image', 'video', 'audio'] as GeneralModelCategory[]).map((cat) => (
                               <button
                                 key={cat}
                                 type="button"

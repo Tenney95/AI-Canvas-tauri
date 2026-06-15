@@ -9,7 +9,6 @@ import { uploadToRemote, isLocalImageUrl } from './uploadService';
 const LOCAL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
-  ppio: 'https://api.ppio.ai',
   apimart: 'https://api.apib.ai/v1',
   volcengine: 'https://ark.cn-beijing.volces.com/api/v3',
   grsai: 'https://api.grsai.com',
