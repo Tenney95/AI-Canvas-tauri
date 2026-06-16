@@ -18,10 +18,18 @@ export interface DownloadResult {
   cached: boolean;
 }
 
-/** 模型注册表：模型名 → 下载 URL（优先 HuggingFace 镜像，更稳定） */
+/** 主体识别结果 */
+export interface MattingResult {
+  subject_path: string;
+  input_size: string;
+}
+
+/** 模型注册表：模型名 → 下载 URL */
 const MODEL_REGISTRY: Record<string, string> = {
   'realesrgan-x4.onnx':
     'https://huggingface.co/AXERA-TECH/Real-ESRGAN/resolve/main/onnx/realesrgan-x4.onnx',
+  'rmbg-1.4.onnx':
+    'https://huggingface.co/briaai/RMBG-1.4/resolve/main/onnx/model.onnx',
 };
 
 /** 判断是否运行在 Tauri 桌面环境中 */
@@ -122,4 +130,47 @@ export interface UpscaleProgress {
   done: number;
   total: number;
   percent: number;
+}
+
+/**
+ * 调用 ONNX 主体识别（背景移除 / Matting）
+ * @param inputPath 输入图像文件路径（绝对路径）
+ * @param outputPath 输出 mask PNG 文件路径（绝对路径）
+ * @param modelName 模型文件名（如 "rmbg-1.4.onnx"）
+ * @returns 结果，包含 mask_path / input_size
+ */
+export async function subjectMatting(
+  inputPath: string,
+  outputPath: string,
+  modelName: string,
+  taskId: string,
+): Promise<MattingResult> {
+  const json: string = await invoke('subject_matting', {
+    inputPath,
+    outputPath,
+    modelName,
+    taskId,
+  });
+  return JSON.parse(json) as MattingResult;
+}
+
+/** GPU 加速状态 */
+export interface GpuStatus {
+  ep: string;
+  device_name: string | null;
+  probed_at: string | null;
+}
+
+/**
+ * 查询当前 ONNX GPU 加速状态（从缓存读取）
+ * @returns GPU 状态信息，或 null（非 Tauri 环境）
+ */
+export async function getOnnxGpuStatus(): Promise<GpuStatus | null> {
+  if (!isTauriEnv()) return null;
+  try {
+    const json: string = await invoke('get_onnx_gpu_status');
+    return JSON.parse(json) as GpuStatus;
+  } catch {
+    return null;
+  }
 }

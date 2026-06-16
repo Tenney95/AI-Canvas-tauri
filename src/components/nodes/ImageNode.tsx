@@ -14,6 +14,7 @@ import AnnotateEditor from './shared/image/AnnotateEditor';
 import CropEditor from './shared/image/CropEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
+import ModelDownloadDialog from '../shared/ModelDownloadDialog';
 import { computeImageNodeDimensions } from './shared/image/imageUtils';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
@@ -21,7 +22,7 @@ import { useAppStore, generateId } from '../../store/useAppStore';
 import { saveDataUrlToProjectData } from '../../services/fileService';
 import { blobToDataUrl } from '../../store/store.utils';
 import { generateAngleImage } from '../../services/apimartService';
-import { imageUpscale, checkModelExists, downloadModel } from '../../services/onnxService';
+import { imageUpscale, subjectMatting, checkModelExists, downloadModel } from '../../services/onnxService';
 
 /* ════════════════════════════════════════════
    AIImageNode
@@ -428,6 +429,112 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     }
   }, [id, data.label, nodeWidth, modelName, updateNodeData]);
 
+  /* ════════════════════════════════════════════
+     Subject Matting — ONNX RMBG-1.4 主体识别
+     ════════════════════════════════════════════ */
+  const mattingModelName = 'rmbg-1.4.onnx';
+  const [isMattingRunning, setIsMattingRunning] = useState(false);
+  const [mattingDownloadPrompt, setMattingDownloadPrompt] = useState(false);
+  const [isDownloadingMattingModel, setIsDownloadingMattingModel] = useState(false);
+
+  const handleSubjectMatting = useCallback(async () => {
+    const filePath = data.filePath as string | undefined;
+    if (!filePath) {
+      useAppStore.getState().showToast('该图片没有本地文件，无法识别主体', 'error');
+      return;
+    }
+
+    const modelExists = await checkModelExists(mattingModelName);
+    if (!modelExists) {
+      setMattingDownloadPrompt(true);
+      return;
+    }
+
+    await doSubjectMatting(filePath);
+  }, [data.filePath, mattingModelName]);
+
+  const handleMattingDownloadConfirm = useCallback(async () => {
+    setMattingDownloadPrompt(false);
+    setIsDownloadingMattingModel(true);
+    try {
+      await downloadModel(mattingModelName);
+      useAppStore.getState().showToast('模型下载完成，开始识别主体...', 'success');
+    } catch (err: unknown) {
+      const message =
+        typeof err === 'string' ? err
+        : err instanceof Error ? err.message
+        : (err && typeof err === 'object' && 'message' in err) ? String((err as Record<string, unknown>).message)
+        : '模型下载失败';
+      useAppStore.getState().showToast(message, 'error');
+      setIsDownloadingMattingModel(false);
+      return;
+    }
+    setIsDownloadingMattingModel(false);
+
+    const filePath = data.filePath as string;
+    await doSubjectMatting(filePath);
+  }, [data.filePath, mattingModelName]);
+
+  const handleMattingDownloadCancel = useCallback(() => {
+    setMattingDownloadPrompt(false);
+  }, []);
+
+  const doSubjectMatting = useCallback(async (filePath: string) => {
+    setIsMattingRunning(true);
+    updateNodeData(id, { status: 'loading', output: 'AI 识别主体中...' });
+
+    const taskId = `matting-${id}-${Date.now()}`;
+
+    try {
+      const ext = filePath.split('.').pop() || 'png';
+      const baseName = filePath.replace(/\.[^.]+$/, '');
+      const outputPath = `${baseName}_subject.${ext}`;
+
+      const result = await subjectMatting(filePath, outputPath, mattingModelName, taskId);
+
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      const assetUrl = convertFileSrc(result.subject_path);
+
+      const store = useAppStore.getState();
+      const currentNodes = store.nodes;
+      const currentPos = currentNodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
+
+      const dims = await computeImageNodeDimensions(assetUrl);
+      const newNode: Node<BaseNodeData> = {
+        id: `node-${generateId()}`,
+        type: 'ai-image',
+        position: { x: currentPos.x + nodeWidth + 40, y: currentPos.y },
+        data: {
+          label: `${(data.label as string) || '图像'} 主体`,
+          type: 'ai-image',
+          role: 'source',
+          imageUrl: assetUrl,
+          filePath: result.subject_path,
+          status: 'success',
+          imageWidth: dims.nodeWidth,
+          imageHeight: dims.nodeHeight,
+          nodeWidth: dims.nodeWidth,
+          nodeHeight: dims.nodeHeight,
+        } as BaseNodeData,
+      };
+      store.addNode(newNode);
+      store.commitToHistory();
+
+      updateNodeData(id, { status: 'success' });
+      store.showToast(`主体识别完成，已创建新节点 (${result.input_size})`);
+    } catch (err: unknown) {
+      const message =
+        typeof err === 'string' ? err
+        : err instanceof Error ? err.message
+        : (err && typeof err === 'object' && 'message' in err) ? String((err as Record<string, unknown>).message)
+        : '主体识别失败';
+      updateNodeData(id, { status: 'error', error: message });
+      useAppStore.getState().showToast(message, 'error');
+    } finally {
+      setIsMattingRunning(false);
+    }
+  }, [id, data.label, nodeWidth, mattingModelName, updateNodeData]);
+
   const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴图像');
 
   return (
@@ -564,6 +671,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           <ImageNodeToolbar
             nodeId={id}
             onMatting={handleOpenMatting}
+            onSubjectMatting={handleSubjectMatting}
             onMultiAngle={handleOpenFreeAngle}
             onCrop={handleOpenCrop}
             onFullscreen={handleOpenFullscreen}
@@ -640,57 +748,23 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         )}
       </FullscreenOverlay>
 
-      {/* ── 模型下载确认弹窗 ── */}
-      {downloadPrompt && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60" onClick={handleDownloadCancel}>
-          <div
-            className="bg-canvas-card border border-canvas-border rounded-xl p-6 max-w-sm mx-4 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start gap-3 mb-4">
-              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center mt-0.5">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-amber-400">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="8" x2="12" y2="12" />
-                  <line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-sm font-semibold text-canvas-text mb-1">超分模型未安装</h3>
-                <p className="text-xs text-canvas-text-secondary leading-relaxed">
-                  首次使用超分功能需要下载 Real-ESRGAN 模型文件（约 67MB）。
-                  下载后模型会保存在本地，后续使用无需再次下载。
-                </p>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                className="px-4 py-2 text-xs rounded-lg bg-canvas-hover text-canvas-text-secondary hover:bg-canvas-border transition-colors"
-                onClick={handleDownloadCancel}
-              >
-                取消
-              </button>
-              <button
-                className="px-4 py-2 text-xs rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors font-medium"
-                onClick={handleDownloadConfirm}
-              >
-                下载模型
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* ── 超分模型下载弹窗（Portal → body）── */}
+      <ModelDownloadDialog
+        type="upscale"
+        showPrompt={downloadPrompt}
+        showDownloading={isDownloadingModel}
+        onConfirm={handleDownloadConfirm}
+        onCancel={handleDownloadCancel}
+      />
 
-      {/* ── 模型下载中遮罩 ── */}
-      {isDownloadingModel && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60">
-          <div className="bg-canvas-card border border-canvas-border rounded-xl p-8 max-w-xs mx-4 shadow-2xl text-center">
-            <div className="spinner large mx-auto mb-4" />
-            <p className="text-sm text-canvas-text font-medium mb-1">正在下载模型...</p>
-            <p className="text-xs text-canvas-text-muted">首次下载约 67MB，请耐心等待</p>
-          </div>
-        </div>
-      )}
+      {/* ── 主体识别模型下载弹窗（Portal → body）── */}
+      <ModelDownloadDialog
+        type="matting"
+        showPrompt={mattingDownloadPrompt}
+        showDownloading={isDownloadingMattingModel}
+        onConfirm={handleMattingDownloadConfirm}
+        onCancel={handleMattingDownloadCancel}
+      />
     </>
   );
 }

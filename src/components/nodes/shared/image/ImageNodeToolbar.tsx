@@ -7,6 +7,7 @@ import AnimatedButton from '../../../shared/AnimatedButton';
 interface ImageNodeToolbarProps {
   nodeId: string;
   onMatting?: () => void;
+  onSubjectMatting?: () => void;
   onMultiAngle?: () => void;
   onFullscreen?: () => void;
   onCrop?: () => void;
@@ -14,7 +15,7 @@ interface ImageNodeToolbarProps {
   onUpscale?: () => void;
 }
 
-function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onCrop, onAnnotate, onUpscale }: ImageNodeToolbarProps) {
+function ImageNodeToolbar({ onMatting, onSubjectMatting, onMultiAngle, onFullscreen, onCrop, onAnnotate, onUpscale }: ImageNodeToolbarProps) {
   const noop = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
   }, []);
@@ -80,7 +81,7 @@ function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onCrop, onAnn
               <path d="M12 3v18m9-9H3m14.48-6.36L6.52 17.64m10.96 0L6.52 6.36" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-auto-subject" data-tooltip="自动识别主体" aria-label="自动识别主体" onClick={noop}>
+          <AnimatedButton className="ftb-btn icon-only act-auto-subject" data-tooltip="自动识别主体" aria-label="自动识别主体" onClick={handleAction(onSubjectMatting)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
             </svg>
