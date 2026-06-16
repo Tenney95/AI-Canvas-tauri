@@ -23,11 +23,13 @@ import { saveDataUrlToProjectData } from '../../services/fileService';
 import { blobToDataUrl } from '../../store/store.utils';
 import { generateAngleImage } from '../../services/apimartService';
 import { imageUpscale, subjectMatting, checkModelExists, downloadModel } from '../../services/onnxService';
+import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 
 /* ════════════════════════════════════════════
    AIImageNode
    ════════════════════════════════════════════ */
 function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
+  const justCompleted = useCompletionFlash(data.status);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
   const isSource = data.role === 'source';
@@ -550,7 +552,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           onRename={handleRename}
         />
         <div
-          className={`node image-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''}`}
+          className={`node image-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}
           style={{ height: nodeHeight }}
         >
           <div className="node-preview compact">

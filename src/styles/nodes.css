@@ -22,7 +22,30 @@
   border: 1px solid var(--glass-ring);
   border-radius: 12px;
   overflow: hidden;
-  transition: border-color var(--transition-smooth), box-shadow var(--transition-smooth);
+  transition: border-color var(--transition-smooth), box-shadow var(--transition-smooth),
+    transform var(--dur-fast) var(--ease-out-quart);
+  /* 进场：弹簧式弹入（backwards 填充，避免动画结束后锁住 transform 影响拖拽缩放）*/
+  animation: nodeIn 0.34s var(--ease-spring) backwards;
+}
+
+/* ── 节点进场 ── */
+@keyframes nodeIn {
+  from { opacity: 0; transform: scale(0.82); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* ── 节点退场（由 playNodeExit 添加 .node-exiting）── */
+.node.node-exiting {
+  opacity: 0;
+  transform: scale(0.86);
+  pointer-events: none;
+  transition: opacity 0.19s var(--ease-out-quart), transform 0.19s var(--ease-out-quart);
+}
+
+/* ── #5 拖拽「抬起」反馈：被拿起时轻微放大 + 阴影绽放 ── */
+.react-flow__node.dragging .node {
+  transform: scale(1.02);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--brand-alpha-20);
 }
 
 .node.selected {
@@ -30,8 +53,69 @@
   box-shadow: 0 0 0 1px var(--brand-alpha-20), 0 8px 32px rgba(99, 102, 241, 0.12);
 }
 
+/* ════════════════════════════════════════════
+   生成中 → 完成 状态过渡 / Generating → Done
+   ════════════════════════════════════════════ */
+
+/* 生成中：预览区呼吸辉光 + 流光扫过（传达「正在工作」）*/
 .node.loading .node-preview {
-  box-shadow: inset 0 0 30px var(--brand-alpha-06);
+  position: relative;
+  overflow: hidden;
+  animation: previewThinking 1.9s var(--ease-in-out) infinite;
+}
+
+@keyframes previewThinking {
+  0%, 100% { box-shadow: inset 0 0 22px var(--brand-alpha-06); }
+  50% { box-shadow: inset 0 0 40px 4px var(--brand-alpha-15); }
+}
+
+/* 流光扫过 */
+.node.loading .node-preview::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    var(--brand-alpha-12) 48%,
+    var(--brand-alpha-12) 52%,
+    transparent 70%
+  );
+  transform: translateX(-120%);
+  animation: shimmerSweep 1.9s var(--ease-in-out) infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+@keyframes shimmerSweep {
+  0% { transform: translateX(-120%); }
+  60%, 100% { transform: translateX(120%); }
+}
+
+/* 生成中整卡边框微微呼吸（用过渡，不占用 .node 的 animation，避免与进场冲突）*/
+.node.loading {
+  border-color: var(--brand-alpha-25);
+}
+
+/* 完成瞬间：边框/外发光柔和闪现成功色，再随 .just-completed 移除平滑回落
+   （走 .node 已有的 border-color/box-shadow 过渡，不会重放进场动画）*/
+.node.just-completed {
+  border-color: var(--success-light);
+  box-shadow: 0 0 0 1px var(--success-bg), 0 8px 28px -4px var(--success);
+}
+
+/* 预览区一次性成功内闪 */
+.node.just-completed .node-preview {
+  animation: completeFlash 0.7s var(--ease-out-quart);
+}
+
+@keyframes completeFlash {
+  0% {
+    box-shadow: inset 0 0 0 2px var(--success-light), inset 0 0 26px var(--success-bg);
+  }
+  100% {
+    box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent;
+  }
 }
 
 /* Node Label Header — floats above the glass card */

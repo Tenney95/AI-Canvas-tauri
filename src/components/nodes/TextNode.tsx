@@ -11,8 +11,10 @@ import FullscreenOverlay from '../shared/FullscreenOverlay';
 import { useNodeRename } from './shared/useNodeRename';
 import { useAppStore } from '../../store/useAppStore';
 import { uploadSourceFile } from '../../services/fileService';
+import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 
 function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
+  const justCompleted = useCompletionFlash(data.status);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
   const isSource = data.role === 'source';
@@ -183,7 +185,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
         onRename={handleRename}
       />
       <div
-        className={`node text-node ${selected ? 'selected' : ''} ${data.status === 'loading' ? 'loading' : ''}`}
+        className={`node text-node ${selected ? 'selected' : ''} ${data.status === 'loading' ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}
         style={{ height: nodeHeight }}
       >
         <div className="node-preview compact">

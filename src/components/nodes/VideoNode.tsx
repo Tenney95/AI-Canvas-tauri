@@ -9,8 +9,10 @@ import GooeyBtn from './shared/GooeyBtn';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore } from '../../store/useAppStore';
+import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 
 function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
+  const justCompleted = useCompletionFlash(data.status);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const isSource = data.role === 'source';
 
@@ -41,7 +43,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         onRename={handleRename}
       />
       <div
-        className={`node video-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''}`}
+        className={`node video-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}
         style={{ minHeight: 160 }}
       >
         <div className="node-preview compact">

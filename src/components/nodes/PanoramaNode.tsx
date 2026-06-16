@@ -16,6 +16,7 @@ import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
 import { saveDataUrlToProjectData } from '../../services/fileService';
+import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 
 /* ═════════════════════════════════════════════════
    Three.js 360° Panorama Viewer
@@ -212,6 +213,7 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
    ═════════════════════════════════════════════════ */
 
 function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
+  const justCompleted = useCompletionFlash(data.status);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const nodeWidth = (data.nodeWidth as number) || 280;
   const nodeHeight = (data.nodeHeight as number) || 200;
@@ -369,7 +371,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
           onRename={handleRename}
         />
         <div
-          className={`node pano-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''}`}
+          className={`node pano-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}
           style={{ height: nodeHeight }}
         >
           <div className="node-preview compact">

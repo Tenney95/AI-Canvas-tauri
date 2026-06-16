@@ -5,6 +5,7 @@
 import { useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import * as fileService from '../services/fileService';
+import { playNodeExit } from '../utils/nodeAnimations';
 import type { BaseNodeData } from '../types';
 export function useKeyboardShortcuts() {
   useEffect(() => {
@@ -109,16 +110,19 @@ export function useKeyboardShortcuts() {
 
         // Single commit — undo always goes back to the real pre-delete state
         useAppStore.getState().commitToHistory();
-        useAppStore.setState((s) => ({
-          nodes: s.nodes.filter((n) => !expandedIds.has(n.id)),
-          edges: s.edges.filter(
-            (ed) => !expandedIds.has(ed.source) && !expandedIds.has(ed.target) && !selectedEdgeIds.includes(ed.id)
-          ),
-          groups: s.groups
-            .filter((g) => !expandedIds.has(g.id))
-            .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !expandedIds.has(nid)) })),
-          selectedNodeIds: [],
-        }));
+        // 先播放退场动画，结束后再真正移除节点
+        playNodeExit(allIds).then(() => {
+          useAppStore.setState((s) => ({
+            nodes: s.nodes.filter((n) => !expandedIds.has(n.id)),
+            edges: s.edges.filter(
+              (ed) => !expandedIds.has(ed.source) && !expandedIds.has(ed.target) && !selectedEdgeIds.includes(ed.id)
+            ),
+            groups: s.groups
+              .filter((g) => !expandedIds.has(g.id))
+              .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !expandedIds.has(nid)) })),
+            selectedNodeIds: [],
+          }));
+        });
         return;
       }
 

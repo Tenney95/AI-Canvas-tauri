@@ -7,6 +7,7 @@ import type { AppState } from './useAppStore';
 import type { BaseNodeData } from '../types';
 import { generateId, getNextDisplayId } from './store.utils';
 import * as fileService from '../services/fileService';
+import { playNodeExit } from '../utils/nodeAnimations';
 
 export interface NodeSlice {
   nodes: Node<BaseNodeData>[];
@@ -82,13 +83,16 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       if (n) fileService.deleteNodeFile(n.data as BaseNodeData).catch(() => {});
     }
 
-    set((state) => ({
-      nodes: state.nodes.filter((n) => !idsToDelete.has(n.id)),
-      edges: state.edges.filter((e) => !idsToDelete.has(e.source) && !idsToDelete.has(e.target)),
-      groups: state.groups
-        .filter((g) => !idsToDelete.has(g.id))
-        .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !idsToDelete.has(nid)) })),
-    }));
+    // 先播放退场动画，结束后再真正从状态中移除（动画期间历史已提交，撤销仍指向删除前状态）
+    playNodeExit([...idsToDelete]).then(() => {
+      set((state) => ({
+        nodes: state.nodes.filter((n) => !idsToDelete.has(n.id)),
+        edges: state.edges.filter((e) => !idsToDelete.has(e.source) && !idsToDelete.has(e.target)),
+        groups: state.groups
+          .filter((g) => !idsToDelete.has(g.id))
+          .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !idsToDelete.has(nid)) })),
+      }));
+    });
   },
 
   onConnect: (connection) => {
