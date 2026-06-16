@@ -11,9 +11,10 @@ interface ImageNodeToolbarProps {
   onFullscreen?: () => void;
   onCrop?: () => void;
   onAnnotate?: () => void;
+  onUpscale?: () => void;
 }
 
-function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onCrop, onAnnotate }: ImageNodeToolbarProps) {
+function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onCrop, onAnnotate, onUpscale }: ImageNodeToolbarProps) {
   const noop = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
   }, []);
@@ -74,7 +75,7 @@ function ImageNodeToolbar({ onMatting, onMultiAngle, onFullscreen, onCrop, onAnn
               <path d="m14 18 5-5 2 2-5 5-3 1 1-3Z" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-hd" data-tooltip="高清" aria-label="高清" onClick={noop}>
+          <AnimatedButton className="ftb-btn icon-only act-hd" data-tooltip="高清超分" aria-label="高清超分" onClick={handleAction(onUpscale)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M12 3v18m9-9H3m14.48-6.36L6.52 17.64m10.96 0L6.52 6.36" />
             </svg>

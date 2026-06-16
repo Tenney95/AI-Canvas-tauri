@@ -23,3 +23,7 @@ tokio = { version = "1", features = ["sync", "time"] }
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 base64 = "0.22"
+# 默认 features = download-binaries（CPU 版 onnxruntime，构建时自动下载并静态链接）。
+# 不启用 directml：DirectML 版仅环境初始化就触发 DX12，部分 GPU/驱动上驱动级死锁。
+ort = "2.0.0-rc.12"
+image = "0.25"

@@ -187,6 +187,96 @@
   pointer-events: none;
 }
 
+/* ── 超分加载动画：光晕流动 ── */
+.upscale-glow {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border-radius: inherit;
+  /* 整体轻微变暗，突出光效 */
+  background: rgba(8, 10, 20, 0.28);
+  border-radius: 12px;
+  overflow: hidden;
+  z-index: 5;
+}
+
+/* 斜向扫描光带，循环掠过图像 */
+.upscale-glow-scan {
+  position: absolute;
+  inset: -40%;
+  background: linear-gradient(
+    115deg,
+    transparent 38%,
+    rgba(99, 102, 241, 0.0) 44%,
+    rgba(129, 140, 248, 0.55) 50%,
+    rgba(56, 189, 248, 0.35) 54%,
+    transparent 62%
+  );
+  filter: blur(2px);
+  transform: translateX(-60%);
+  animation: upscale-scan 1.6s ease-in-out infinite;
+}
+
+/* 内描边光晕，呼吸式明暗流动 */
+.upscale-glow-ring {
+  position: absolute;
+  inset: 0;
+  box-shadow:
+    inset 0 0 0 1.5px rgba(129, 140, 248, 0.7),
+    inset 0 0 18px rgba(99, 102, 241, 0.45);
+  animation: upscale-pulse 1.6s ease-in-out infinite;
+  border-radius: 14px;
+}
+
+/* 角标文字 */
+.upscale-glow-label {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #e0e7ff;
+  background: rgba(30, 27, 75, 0.55);
+  border: 1px solid rgba(129, 140, 248, 0.35);
+  border-radius: 999px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  white-space: nowrap;
+}
+
+.upscale-glow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #818cf8;
+  box-shadow: 0 0 8px 2px rgba(129, 140, 248, 0.9);
+  animation: upscale-pulse 1s ease-in-out infinite;
+}
+
+@keyframes upscale-scan {
+  0% { transform: translateX(-60%); }
+  100% { transform: translateX(60%); }
+}
+
+@keyframes upscale-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upscale-glow-scan,
+  .upscale-glow-ring,
+  .upscale-glow-dot {
+    animation: none;
+  }
+}
+
 .video-preview-player {
   width: 100%;
   height: 100%;
@@ -249,6 +339,8 @@
 
 /* Node Error */
 .node-error {
+  position: absolute;
+  bottom: 4px;
   margin: 0px 12px 8px;
   padding: 4px 8px;
   background: var(--danger-bg);

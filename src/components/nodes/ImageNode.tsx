@@ -21,6 +21,7 @@ import { useAppStore, generateId } from '../../store/useAppStore';
 import { saveDataUrlToProjectData } from '../../services/fileService';
 import { blobToDataUrl } from '../../store/store.utils';
 import { generateAngleImage } from '../../services/apimartService';
+import { imageUpscale, checkModelExists, downloadModel } from '../../services/onnxService';
 
 /* ════════════════════════════════════════════
    AIImageNode
@@ -300,6 +301,133 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const handleOpenFullscreen = useCallback(() => setIsFullscreen(true), []);
   const handleCloseFullscreen = useCallback(() => setIsFullscreen(false), []);
 
+  /* ════════════════════════════════════════════
+     Upscale — ONNX + DirectML 超分
+     ════════════════════════════════════════════ */
+  const [isUpscaling, setIsUpscaling] = useState(false);
+  const [upscaleProgress, setUpscaleProgress] = useState(0);
+  const [downloadPrompt, setDownloadPrompt] = useState(false);
+  const [isDownloadingModel, setIsDownloadingModel] = useState(false);
+  const modelName = 'realesrgan-x4.onnx';
+
+  /** 检查模型可用性 → 若缺失则弹出下载确认 */
+  const handleUpscale = useCallback(async () => {
+    const filePath = data.filePath as string | undefined;
+    if (!filePath) {
+      useAppStore.getState().showToast('该图片没有本地文件，无法超分', 'error');
+      return;
+    }
+
+    // 检查模型是否存在
+    const modelExists = await checkModelExists(modelName);
+    if (!modelExists) {
+      setDownloadPrompt(true);
+      return;
+    }
+
+    // 模型已就绪 → 直接执行超分
+    await doUpscale(filePath);
+  }, [data.filePath, modelName]);
+
+  /** 确认下载模型 */
+  const handleDownloadConfirm = useCallback(async () => {
+    setDownloadPrompt(false);
+    setIsDownloadingModel(true);
+    try {
+      await downloadModel(modelName);
+      useAppStore.getState().showToast('模型下载完成，开始超分...', 'success');
+    } catch (err: unknown) {
+      // Tauri 2 invoke reject 抛出的是字符串或 { message } 对象，非标准 Error
+      const message =
+        typeof err === 'string' ? err
+        : err instanceof Error ? err.message
+        : (err && typeof err === 'object' && 'message' in err) ? String((err as Record<string, unknown>).message)
+        : '模型下载失败';
+      useAppStore.getState().showToast(message, 'error');
+      setIsDownloadingModel(false);
+      return;
+    }
+    setIsDownloadingModel(false);
+
+    // 下载完成 → 继续执行超分
+    const filePath = data.filePath as string;
+    await doUpscale(filePath);
+  }, [data.filePath, modelName]);
+
+  /** 取消下载 */
+  const handleDownloadCancel = useCallback(() => {
+    setDownloadPrompt(false);
+  }, []);
+
+  /** 执行实际的超分推理 */
+  const doUpscale = useCallback(async (filePath: string) => {
+    setIsUpscaling(true);
+    setUpscaleProgress(0);
+    updateNodeData(id, { status: 'loading', output: 'ONNX 超分处理中...' });
+
+    // 监听后端分块进度，仅响应本次任务（taskId 隔离多节点并发超分）
+    const taskId = `upscale-${id}-${Date.now()}`;
+    const { listen } = await import('@tauri-apps/api/event');
+    const unlisten = await listen<{ taskId: string; percent: number }>(
+      'image-upscale-progress',
+      (e) => {
+        if (e.payload.taskId === taskId) setUpscaleProgress(e.payload.percent);
+      },
+    );
+
+    try {
+      const ext = filePath.split('.').pop() || 'png';
+      const baseName = filePath.replace(/\.[^.]+$/, '');
+      const outputPath = `${baseName}_upscaled.${ext}`;
+
+      const result = await imageUpscale(filePath, outputPath, modelName, taskId);
+
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      const assetUrl = convertFileSrc(result.output_path);
+
+      const store = useAppStore.getState();
+      const currentNodes = store.nodes;
+      const currentPos = currentNodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
+
+      const dims = await computeImageNodeDimensions(assetUrl);
+      const newNode: Node<BaseNodeData> = {
+        id: `node-${generateId()}`,
+        type: 'ai-image',
+        position: { x: currentPos.x + nodeWidth + 40, y: currentPos.y },
+        data: {
+          label: `${(data.label as string) || '图像'} 高清`,
+          type: 'ai-image',
+          role: 'source',
+          imageUrl: assetUrl,
+          filePath: result.output_path,
+          status: 'success',
+          imageWidth: dims.nodeWidth,
+          imageHeight: dims.nodeHeight,
+          nodeWidth: dims.nodeWidth,
+          nodeHeight: dims.nodeHeight,
+        } as BaseNodeData,
+      };
+      store.addNode(newNode);
+      store.commitToHistory();
+
+      updateNodeData(id, { status: 'success' });
+      store.showToast(`超分完成 ${result.input_size} → ${result.output_size}`);
+    } catch (err: unknown) {
+      // Tauri 2 invoke reject 抛出的是字符串或 { message } 对象，非标准 Error
+      const message =
+        typeof err === 'string' ? err
+        : err instanceof Error ? err.message
+        : (err && typeof err === 'object' && 'message' in err) ? String((err as Record<string, unknown>).message)
+        : 'ONNX 超分失败';
+      updateNodeData(id, { status: 'error', error: message });
+      useAppStore.getState().showToast(message, 'error');
+    } finally {
+      unlisten();
+      setIsUpscaling(false);
+      setUpscaleProgress(0);
+    }
+  }, [id, data.label, nodeWidth, modelName, updateNodeData]);
+
   const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴图像');
 
   return (
@@ -373,6 +501,17 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                     onError={() => setAnnotateError(true)}
                   />
                 )}
+                {/* 超分加载动画：光晕流动 + 扫描光带 */}
+                {isUpscaling && (
+                  <div className="upscale-glow" aria-hidden="true">
+                    <div className="upscale-glow-scan" />
+                    <div className="upscale-glow-ring" />
+                    <span className="upscale-glow-label">
+                      <span className="upscale-glow-dot" />
+                      {upscaleProgress > 0 ? `超分中 ${upscaleProgress}%` : '超分中'}
+                    </span>
+                  </div>
+                )}
               </div>
             ) : isUploading ? (
               <div className="node-preview-loading">
@@ -429,6 +568,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             onCrop={handleOpenCrop}
             onFullscreen={handleOpenFullscreen}
             onAnnotate={handleOpenAnnotate}
+            onUpscale={handleUpscale}
           />
         )}
       </div>
@@ -499,6 +639,58 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           />
         )}
       </FullscreenOverlay>
+
+      {/* ── 模型下载确认弹窗 ── */}
+      {downloadPrompt && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60" onClick={handleDownloadCancel}>
+          <div
+            className="bg-canvas-card border border-canvas-border rounded-xl p-6 max-w-sm mx-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3 mb-4">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center mt-0.5">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-amber-400">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-sm font-semibold text-canvas-text mb-1">超分模型未安装</h3>
+                <p className="text-xs text-canvas-text-secondary leading-relaxed">
+                  首次使用超分功能需要下载 Real-ESRGAN 模型文件（约 67MB）。
+                  下载后模型会保存在本地，后续使用无需再次下载。
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                className="px-4 py-2 text-xs rounded-lg bg-canvas-hover text-canvas-text-secondary hover:bg-canvas-border transition-colors"
+                onClick={handleDownloadCancel}
+              >
+                取消
+              </button>
+              <button
+                className="px-4 py-2 text-xs rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors font-medium"
+                onClick={handleDownloadConfirm}
+              >
+                下载模型
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 模型下载中遮罩 ── */}
+      {isDownloadingModel && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60">
+          <div className="bg-canvas-card border border-canvas-border rounded-xl p-8 max-w-xs mx-4 shadow-2xl text-center">
+            <div className="spinner large mx-auto mb-4" />
+            <p className="text-sm text-canvas-text font-medium mb-1">正在下载模型...</p>
+            <p className="text-xs text-canvas-text-muted">首次下载约 67MB，请耐心等待</p>
+          </div>
+        </div>
+      )}
     </>
   );
 }

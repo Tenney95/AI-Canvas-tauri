@@ -4,6 +4,7 @@ use tauri::{Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
 mod comfyui;
+mod onnxrt;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct DreaminaLoginPayload {
@@ -199,7 +200,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![fetch_image_data_url, move_to_trash, dreamina_login, toggle_devtools, comfyui::launch_comfyui])
+        .invoke_handler(tauri::generate_handler![
+            fetch_image_data_url,
+            move_to_trash,
+            dreamina_login,
+            toggle_devtools,
+            comfyui::launch_comfyui,
+            onnxrt::get_models_dir,
+            onnxrt::check_model_exists,
+            onnxrt::image_upscale,
+            onnxrt::download_onnx_model,
+        ])
         .setup(|_app| {
             // 调试构建自动打开 DevTools（方便排查打包后白屏等问题）
             #[cfg(debug_assertions)]
