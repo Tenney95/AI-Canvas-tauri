@@ -143,6 +143,47 @@ export function useNodeContextMenu() {
     }
   }, [menu.nodeId, nodes, closeMenu]);
 
+  // ── 文件另存为 ──
+  const saveAsTypes: NodeType[] = [
+    'ai-text', 'ai-image', 'ai-video', 'ai-audio',
+    'ai-markdown', 'ai-panorama',
+    'source-image', 'source-video', 'source-audio',
+  ];
+  const showSaveAs = menu.nodeId != null
+    && nodeType != null
+    && saveAsTypes.includes(nodeType)
+    && (!!nodeData?.filePath || !!nodeData?.imageUrl || !!nodeData?.videoUrl || !!nodeData?.audioUrl || !!nodeData?.output);
+
+  const handleSaveAs = useCallback(async () => {
+    if (!menu.nodeId) return;
+    const node = nodes.find((n) => n.id === menu.nodeId);
+    const data = node?.data as BaseNodeData | undefined;
+    if (!data) {
+      useAppStore.getState().showToast('无法读取节点数据');
+      closeMenu();
+      return;
+    }
+
+    const mediaUrl = data.imageUrl || data.videoUrl || data.audioUrl || undefined;
+    try {
+      const { saveNodeOutputToFile } = await import('../services/fileService');
+      const result = await saveNodeOutputToFile({
+        filePath: data.filePath,
+        mediaUrl,
+        textOutput: data.output,
+        nodeType: nodeType!,
+        fileName: data.fileName || data.label,
+      });
+      closeMenu();
+      if (result) {
+        useAppStore.getState().showToast('文件已保存');
+      }
+    } catch {
+      useAppStore.getState().showToast('文件保存失败');
+      closeMenu();
+    }
+  }, [menu.nodeId, nodeType, nodes, closeMenu]);
+
   return {
     menu,
     menuRef,
@@ -155,5 +196,7 @@ export function useNodeContextMenu() {
     handleDelete,
     handleShowInFolder,
     showInFolder,
+    handleSaveAs,
+    showSaveAs,
   };
 }

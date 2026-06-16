@@ -1,6 +1,14 @@
-# AI Canvas - Tauri 2 + React Flow
+# AI Canvas — Tauri 2 + React Flow
 
-基于 **React Flow** + **Tauri 2** 重构的 AI 多模态节点画布编辑器，参考 [AI-CanvasPro](https://github.com/ashuoAI/AI-CanvasPro) 项目。所有数据完全本地化存储——项目文件（`.aicanvas.json`）、上传的媒体资源、API 配置均保存在用户指定的本地目录中，无需依赖任何云服务。借助 Tauri 2 的原生文件系统能力，通过 `fileService.ts` 抽象层统一管理文件的读写、导入导出和画布截图，回退到纯浏览器模式时则自动切换至 IndexedDB 本地持久化，真正实现"一个项目一个文件夹"的自包含管理。除了支持云端 AI 厂商（OpenAI、DeepSeek、即梦等），还兼容本地部署的大模型和 ComfyUI 工作流：通过「通用模型」功能接入任意 OpenAI 兼容的本地大模型接口（如 Ollama、vLLM），通过工作流面板导入 ComfyUI JSON 即可直接在画布上调用本地 ComfyUI 引擎执行文生图、图生视频等任务，实现云端与本地 AI 能力的无缝切换。
+> 基于 **React Flow** + **Tauri 2** 的 AI 多模态节点画布编辑器，参考 [AI-CanvasPro](https://github.com/ashuoAI/AI-CanvasPro) 重构。
+
+在一块无限画布上，把文本、图像、视频、音频、360° 全景等 AI 能力以「节点 + 连线」的方式自由编排，云端厂商与本地模型无缝切换。
+
+### 设计亮点
+- **完全本地化** — 项目文件（`.aicanvas.json`）、媒体资源、API 配置全部存储在用户指定的本地目录，一个项目一个文件夹，自包含、可迁移，无需任何云服务。
+- **双存储通道** — 桌面端经 Tauri 原生文件系统读写（由 `fileService.ts` 统一抽象），纯浏览器环境自动回退到 IndexedDB 持久化。
+- **云端 + 本地 AI** — 内置 OpenAI、DeepSeek、即梦等云端厂商；「通用模型」可接入任意 OpenAI 兼容接口（Ollama、vLLM 等）；工作流面板导入 ComfyUI JSON 即可在画布上直接调用本地 ComfyUI 执行文生图、图生视频等任务。
+- **极致轻量** — 借助 Tauri 2，安装包仅约 3MB。
 
 ## 技术栈
 
@@ -11,27 +19,36 @@
 | [React Flow](https://reactflow.dev/) | 节点画布引擎 |
 | [Zustand](https://zustand.docs.pmnd.rs/) | 状态管理 |
 | [Tailwind CSS](https://tailwindcss.com/) | 样式系统 |
+| [Three.js](https://threejs.org/) | 360° 全景节点渲染 |
 | [@iconify/react](https://iconify.design/) ([Icônes.js](https://icones.js.org/)) | 图标库 |
 | [TypeScript](https://www.typescriptlang.org/) | 类型安全 |
-| framer-motion | 动画库 |
+| [framer-motion](https://www.framer.com/motion/) | 动画库 |
+
 ## 功能特性
 
-### 核心功能
-- **无限画布**: 自由缩放、平移，支持小地图导航和网格吸附
-- **多种 AI 节点**:
-  - **文本生成** - 多轮对话、流式输出
-  - **图像生成** - 文生图/图生图
-  - **视频生成** - 文生视频/图生视频
-  - **音频生成** - TTS 文本转语音
-- **节点连接**: 可视化连线组合 AI 能力
-- **@ 引用语法**: 在提示词中引用其他节点的输出结果
+### 画布与交互
+- **无限画布** — 自由缩放/平移、小地图导航、网格背景、节点对齐吸附
+- **节点分组** — 拖入/拖出自动归组，框选批量操作
+- **撤销 / 重做** — 完整历史栈
+- **复制粘贴** — 应用内复制，以及系统剪贴板图片/文件直接粘贴
+- **多项目管理** — 多画布切换，结构变化防抖自动保存
 
-### UI 特性
-- 淗色主题设计（匹配原版风格）
-- 左侧可折叠侧边栏 + 节点添加菜单
+### AI 节点
+- **文本生成** — 多轮对话、流式输出
+- **图像生成** — 文生图/图生图，内置抠图、标注、裁剪、自由视角等编辑
+- **视频生成** — 文生视频/图生视频
+- **音频生成** — TTS 文本转语音
+- **360° 全景** — Three.js 实时渲染、拖拽浏览、一键截图成图片节点
+- **Markdown** — 富文本编辑 / 预览
+- **@ 引用语法** — 在提示词中引用其他节点的输出结果
+- **ComfyUI 工作流** — 导入 JSON 调用本地引擎，支持一键启动本地 ComfyUI
+
+### 界面
+- 深色 / 浅色主题，多种画布背景（太阳系、星云、米白等）
+- 可折叠悬浮侧边栏 + 浮动节点菜单
 - 顶部项目名称编辑 + 多画布切换
-- 设置面板（API Key 配置、快捷键）
-- 底部控制栏（缩放、网格开关、适应画布）
+- 设置面板（API Key、ComfyUI、快捷键）
+- 底部控制栏（缩放、网格开关、适应画布）、输出历史面板
 
 
 ## 项目结构
@@ -192,4 +209,4 @@ npm run tauri build    # 构建桌面应用
 | API 集成 | Python Flask 服务端 | 可直接调用 API 或通过 Tauri Command |
 
 ## 联系方式
-QQ群： 873354155
+开发沟通QQ群： 873354155

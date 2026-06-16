@@ -1248,3 +1248,131 @@ export async function revealFileInFolder(filePath: string): Promise<void> {
     throw err;
   }
 }
+
+// ============================================
+// 节点输出文件另存为 — 将节点的媒体输出或文本输出保存到用户指定位置
+// ============================================
+
+/** 根据节点类型推断默认文件扩展名 */
+function getDefaultExtension(nodeType: string): string {
+  switch (nodeType) {
+    case 'ai-text':      return '.txt';
+    case 'ai-markdown':  return '.md';
+    case 'ai-image':
+    case 'source-image': return '.png';
+    case 'ai-video':
+    case 'source-video': return '.mp4';
+    case 'ai-audio':
+    case 'source-audio': return '.mp3';
+    case 'ai-panorama':  return '.png';
+    default:             return '.txt';
+  }
+}
+
+/** 根据节点类型和默认扩展名生成文件过滤器 */
+function getSaveFilter(nodeType: string, defExt: string): { name: string; extensions: string[] }[] {
+  switch (nodeType) {
+    case 'ai-text':      return [{ name: '文本文件', extensions: ['txt'] }, { name: '所有文件', extensions: ['*'] }];
+    case 'ai-markdown':  return [{ name: 'Markdown 文件', extensions: ['md'] }, { name: '所有文件', extensions: ['*'] }];
+    case 'ai-image':
+    case 'source-image':
+    case 'ai-panorama':  return [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'webp'] }, { name: '所有文件', extensions: ['*'] }];
+    case 'ai-video':
+    case 'source-video': return [{ name: '视频文件', extensions: ['mp4', 'webm', 'mov'] }, { name: '所有文件', extensions: ['*'] }];
+    case 'ai-audio':
+    case 'source-audio': return [{ name: '音频文件', extensions: ['mp3', 'wav', 'ogg'] }, { name: '所有文件', extensions: ['*'] }];
+    default:             return [{ name: '所有文件', extensions: ['*'] }];
+  }
+}
+
+/**
+ * 将节点的输出内容另存为用户指定路径的文件
+ * - 媒体节点（image/video/audio）：优先从 filePath 读取再写入目标
+ * - data: URL：解码 base64 后写入
+ * - 文本节点（text/markdown）：直接写入 output 文本
+ *
+ * @returns 成功返回保存路径，失败或取消返回 null
+ */
+export async function saveNodeOutputToFile(opts: {
+  filePath?: string;
+  mediaUrl?: string;
+  textOutput?: string;
+  nodeType: string;
+  fileName?: string;
+}): Promise<string | null> {
+  const { filePath, mediaUrl, textOutput, nodeType, fileName } = opts;
+  const defExt = getDefaultExtension(nodeType);
+
+  if (!isTauriEnv()) {
+    console.warn('[fileService] saveNodeOutputToFile: 仅 Tauri 桌面环境支持');
+    return null;
+  }
+
+  // Determine default filename
+  let defaultName = fileName || 'output';
+  // Remove existing extension if present
+  const lastDot = defaultName.lastIndexOf('.');
+  if (lastDot > 0) defaultName = defaultName.substring(0, lastDot);
+  defaultName += defExt;
+
+  // Open save dialog
+  const filters = getSaveFilter(nodeType, defExt);
+  const destPath = await save({
+    defaultPath: defaultName,
+    filters,
+  });
+
+  if (!destPath) return null; // User cancelled
+
+  try {
+    // 1. Media: try real file path first
+    if (filePath) {
+      const data = await tauriReadFile(filePath);
+      await writeFile(destPath, data);
+      return destPath;
+    }
+
+    // 2. data: URL
+    if (mediaUrl && mediaUrl.startsWith('data:')) {
+      const commaIdx = mediaUrl.indexOf(',');
+      const b64 = commaIdx > 0 ? mediaUrl.substring(commaIdx + 1) : '';
+      const binaryStr = atob(b64);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+      }
+      await writeFile(destPath, bytes);
+      return destPath;
+    }
+
+    // 3. asset:// URL — try fetch via convertFileSrc
+    if (mediaUrl && mediaUrl.startsWith('asset://')) {
+      const src = convertFileSrc(mediaUrl);
+      const resp = await fetch(src);
+      const buffer = await resp.arrayBuffer();
+      await writeFile(destPath, new Uint8Array(buffer));
+      return destPath;
+    }
+
+    // 4. HTTP media URL — fetch and save
+    if (mediaUrl && (mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://'))) {
+      const resp = await fetch(mediaUrl);
+      const buffer = await resp.arrayBuffer();
+      await writeFile(destPath, new Uint8Array(buffer));
+      return destPath;
+    }
+
+    // 5. Text output (ai-text / ai-markdown)
+    if (textOutput) {
+      const encoder = new TextEncoder();
+      await writeFile(destPath, encoder.encode(textOutput));
+      return destPath;
+    }
+
+    console.warn('[fileService] saveNodeOutputToFile: 无可保存的内容');
+    return null;
+  } catch (err) {
+    console.error('[fileService] saveNodeOutputToFile 失败:', err);
+    throw err;
+  }
+}

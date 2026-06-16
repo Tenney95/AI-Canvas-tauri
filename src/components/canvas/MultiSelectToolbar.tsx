@@ -4,6 +4,7 @@
 import { memo, useMemo, useCallback, useState } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { Icon } from '@iconify/react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import { getNodeBounds, getParentOffset } from '../../utils/nodeBounds.js';
 import type { Node as RFNode } from '@xyflow/react';
@@ -37,8 +38,16 @@ const DISTRIBUTE_ACTIONS: ToolbarAction[] = [
   { icon: 'material-symbols:vertical-distribute-rounded', label: '纵向平均分布', key: 'vertical' },
 ];
 
+/** 稳定空数组引用 —— 非多选时返回它，避免拖拽期间无谓重渲染 */
+const EMPTY_NODES: RFNode<BaseNodeData>[] = [];
+
 function MultiSelectToolbar() {
-  const { nodes, selectedNodeIds, setNodes, recordOutputHistory } = useAppStore();
+  const selectedNodeIds = useAppStore(useShallow((s) => s.selectedNodeIds));
+  // 仅当选中 ≥2 个节点时才订阅 nodes；否则返回稳定空引用，
+  // 这样单节点拖拽（每帧改 nodes）完全不会触发本工具栏重渲染。
+  const nodes = useAppStore((s) => (s.selectedNodeIds.length >= 2 ? s.nodes : EMPTY_NODES));
+  const setNodes = useAppStore((s) => s.setNodes);
+  const recordOutputHistory = useAppStore((s) => s.recordOutputHistory);
   const { flowToScreenPosition } = useReactFlow();
   const [batchRunning, setBatchRunning] = useState(false);
 
