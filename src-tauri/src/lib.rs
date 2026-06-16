@@ -186,13 +186,14 @@ async fn dreamina_login(app: tauri::AppHandle) -> Result<DreaminaLoginPayload, S
 }
 
 pub fn run() {
-    // 透明窗口在 Windows WebView2 下会退出硬件呈现路径，导致拖拽卡顿。
-    // 通过附加浏览器参数尽量强制开启 GPU 光栅化 / 忽略 GPU 黑名单，缓解掉帧。
-    // 注意：透明窗口的最终呈现仍受限，此举只能缓解、无法完全根治。
+    // Windows WebView2/Chromium 渲染优化：
+    // - CalculateNativeWinOcclusion：原生窗口遮挡检测。在虚拟显示适配器 / 远程桌面
+    //   工具（MuMu、向日葵、Virtual Display 等）环境下常误判窗口被遮挡，从而节流甚至
+    // - 其余 flag 强制 GPU 光栅化 / 忽略黑名单 / 解除帧率上限。
     #[cfg(target_os = "windows")]
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--enable-gpu-rasterization --ignore-gpu-blocklist --enable-zero-copy --disable-frame-rate-limit",
+        "--disable-features=CalculateNativeWinOcclusion --enable-gpu-rasterization --ignore-gpu-blocklist --enable-zero-copy --disable-frame-rate-limit",
     );
 
     tauri::Builder::default()

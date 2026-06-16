@@ -171,6 +171,8 @@
   box-shadow: 0 12px 40px var(--black-alpha-50);
   z-index: 100;
   padding: 4px;
+  transform-origin: bottom left;
+  animation: popoverIn var(--dur-normal) var(--ease-spring);
 }
 
 /* 向上空间不足时 → 向下弹出 */
@@ -179,12 +181,17 @@
   top: 100%;
   margin-bottom: 0;
   margin-top: 4px;
+  transform-origin: top left;
 }
 
 /* 右边界溢出时 → 右对齐 */
 .model-dropdown.drop-align-right {
   left: auto;
   right: 0;
+  transform-origin: bottom right;
+}
+.model-dropdown.drop-down.drop-align-right {
+  transform-origin: top right;
 }
 
 /* Group */
@@ -279,6 +286,10 @@
 .model-item:hover {
   background: var(--theme-hover);
   color: var(--theme-text);
+}
+.model-item:active {
+  transform: scale(0.985);
+  transition: transform 60ms var(--ease-out-quart);
 }
 .model-item.active {
   background: var(--brand-alpha-10);

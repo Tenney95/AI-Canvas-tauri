@@ -45,7 +45,8 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  animation: fadeIn 0.15s ease;
+  transform-origin: bottom right;
+  animation: popoverIn var(--dur-normal) var(--ease-spring);
 }
 .img-rp-section-label {
   font-size: 11px;
@@ -79,6 +80,9 @@
 .img-rp-quality-item:hover {
   color: var(--theme-text);
   background: rgba(255, 255, 255, 0.02);
+}
+.img-rp-quality-item:active {
+  transform: scale(0.95);
 }
 .img-rp-quality-item.active {
   color: #ffffff;
@@ -156,6 +160,10 @@
   color: var(--theme-text);
   border-color: var(--theme-border);
   background: rgba(255, 255, 255, 0.02);
+}
+.img-rp-ratio-item:active,
+.img-rp-large-adaptive:active {
+  transform: scale(0.95);
 }
 .img-rp-ratio-item.active {
   color: #ffffff;

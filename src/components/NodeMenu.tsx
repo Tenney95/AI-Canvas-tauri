@@ -6,6 +6,7 @@ import { useEffect, useRef, useMemo } from 'react';
 import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from '@iconify/react';
+import { springSmooth, fadeFast } from '../utils/motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, computeImageNodeDimensions } from '../store/useAppStore';
 import type { NodeType } from '../types';
@@ -157,11 +158,11 @@ export default function NodeMenu() {
         <motion.div
           ref={menuRef}
           className="fixed z-50 w-[240px] bg-canvas-card border border-canvas-border rounded-xl shadow-2xl shadow-black/40 overflow-hidden"
-          style={{ left: safePos.left, top: safePos.top }}
-          initial={{ opacity: 0, scale: 0.95, y: -6 }}
+          style={{ left: safePos.left, top: safePos.top, transformOrigin: 'top center' }}
+          initial={{ opacity: 0, scale: 0.92, y: -8 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.95, y: -6 }}
-          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+          exit={{ opacity: 0, scale: 0.95, y: -6, transition: fadeFast }}
+          transition={springSmooth}
         >
       <div className="p-2">
         <div className="text-[11px] font-medium text-canvas-text-muted uppercase tracking-wider px-2 py-1.5">

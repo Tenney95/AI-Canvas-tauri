@@ -73,6 +73,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
      ════════════════════════════════════════════ */
   const [isFreeAngle, setIsFreeAngle] = useState(false);
   const [imgLoadError, setImgLoadError] = useState(false);
+  const [imgLoaded, setImgLoaded] = useState(false);
   const [mattingError, setMattingError] = useState(false);
   const [annotateError, setAnnotateError] = useState(false);
   const [fullscreenError, setFullscreenError] = useState(false);
@@ -82,6 +83,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   useEffect(() => {
     setImgLoadError(false);
     setFullscreenError(false);
+    setImgLoaded(false);
   }, [displaySrc]);
   useEffect(() => {
     setMattingError(false);
@@ -587,8 +589,9 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                   <img
                     src={displaySrc}
                     alt="Generated"
-                    className="image-preview-img compact"
+                    className={`image-preview-img compact img-reveal${imgLoaded ? ' is-loaded' : ''}`}
                     data-source-url={data.sourceUrl}
+                    onLoad={() => setImgLoaded(true)}
                     onError={() => setImgLoadError(true)}
                   />
                 )}

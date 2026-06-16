@@ -1,10 +1,9 @@
 /**
- * ModalOverlay — 可复用的模态框外层容器（AnimatePresence + backdrop + 缩放动画）
+ * ModalOverlay — 可复用的模态框外层容器（AnimatePresence + backdrop + 弹簧落位）
  */
 import type { ReactNode } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
-
-const MODAL_EASE = [0.16, 1, 0.3, 1] as const;
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { fadeNormal, springSmooth } from '../../utils/motion';
 
 export default function ModalOverlay({
   isOpen,
@@ -17,6 +16,7 @@ export default function ModalOverlay({
   children: ReactNode;
   className?: string;
 }) {
+  const reduceMotion = useReducedMotion();
   return (
     <AnimatePresence>
       {isOpen && (
@@ -25,7 +25,7 @@ export default function ModalOverlay({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
+          transition={fadeNormal}
           onClick={onClose}
         >
           <motion.div
@@ -36,10 +36,10 @@ export default function ModalOverlay({
           />
           <motion.div
             className={`relative bg-canvas-surface border border-canvas-border rounded-2xl shadow-2xl overflow-hidden flex flex-col ${className}`}
-            initial={{ opacity: 0, scale: 0.95, y: 12 }}
+            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.94, y: 14 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 12 }}
-            transition={{ duration: 0.25, ease: MODAL_EASE }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: 10 }}
+            transition={reduceMotion ? fadeNormal : springSmooth}
             onClick={(e) => e.stopPropagation()}
           >
             {children}

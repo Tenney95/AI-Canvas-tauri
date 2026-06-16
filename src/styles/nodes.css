@@ -170,6 +170,24 @@
   object-fit: cover;
 }
 
+/* ── 图片揭示动画：iOS 风格「模糊浮现」── */
+/* 加载完成前柔和模糊 + 微放大，落位时淡入清晰，弹簧缓动 */
+.img-reveal {
+  opacity: 0;
+  filter: blur(12px) saturate(1.15);
+  transform: scale(1.04);
+  transition:
+    opacity var(--dur-slow) var(--ease-out-expo),
+    filter var(--dur-slow) var(--ease-out-expo),
+    transform 0.45s var(--ease-spring);
+  will-change: opacity, filter, transform;
+}
+.img-reveal.is-loaded {
+  opacity: 1;
+  filter: blur(0) saturate(1);
+  transform: scale(1);
+}
+
 .image-preview-container {
   position: relative;
   width: 100%;
@@ -636,6 +654,14 @@
   border-radius: 4px;
   user-select: none;
   -webkit-user-drag: none;
+  /* Apple Photos 式放大浮现：从略缩 + 柔焦优雅展开（放慢，不突兀）*/
+  transform-origin: center;
+  animation: imgZoomIn 0.55s var(--ease-out-expo) both;
+}
+
+@keyframes imgZoomIn {
+  from { opacity: 0; transform: scale(0.9); filter: blur(10px); }
+  to { opacity: 1; transform: scale(1); filter: blur(0); }
 }
 
 

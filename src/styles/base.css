@@ -105,6 +105,8 @@
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  /* Spring-like overshoot / 弹簧式轻微过冲（菜单、弹层弹出，贴近 Apple 落位手感）*/
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
 
   /* Duration scale / 时长阶梯 */
   --dur-instant: 100ms;
@@ -347,6 +349,18 @@ textarea:focus {
 @keyframes floatUpIn {
   from { opacity: 0; transform: translateY(4px) scale(0.97); }
   to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* 工具栏 / 锚定弹层统一入场：从锚点弹簧式生长（Apple popover 手感）
+   配合 transform-origin 控制生长方向。*/
+@keyframes popoverIn {
+  from { opacity: 0; transform: scale(0.92) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* 统一弹层入场工具类 / unified popover entrance */
+.anim-popover {
+  animation: popoverIn var(--dur-normal) var(--ease-spring);
 }
 
 .animate-in {

@@ -55,6 +55,7 @@
   background: rgba(0, 0, 0, 0.2);
   backdrop-filter: blur(8px);
   border-radius: 16pX;
+  animation: fadeIn var(--dur-normal) var(--ease-out-expo);
 }
 
 /* Matting toolbar */
@@ -208,6 +209,14 @@
   position: relative;
   display: inline-block;
   line-height: 0;
+  transform-origin: center;
+  animation: stageZoomIn 0.5s var(--ease-out-expo) both;
+}
+
+/* 图像编辑器舞台优雅放大浮现（抠图/标注共用，画布表面不残留滤镜）*/
+@keyframes stageZoomIn {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 .matting-image {
@@ -244,6 +253,7 @@
   flex-direction: column;
   background: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(8px);
+  animation: fadeIn var(--dur-normal) var(--ease-out-expo);
 }
 
 /* Annotate toolbar */
@@ -431,6 +441,8 @@
   position: relative;
   display: inline-block;
   line-height: 0;
+  transform-origin: center;
+  animation: stageZoomIn 0.5s var(--ease-out-expo) both;
 }
 
 .annotate-image {

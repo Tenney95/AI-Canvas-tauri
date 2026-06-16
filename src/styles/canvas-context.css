@@ -14,12 +14,13 @@
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.03),
     0 8px 32px rgba(0, 0, 0, 0.5);
-  animation: ctxFadeIn var(--dur-fast) var(--ease-out-expo);
+  transform-origin: top left;
+  animation: ctxFadeIn var(--dur-normal) var(--ease-spring);
 }
 
 @keyframes ctxFadeIn {
-  from { opacity: 0; transform: scale(0.96); }
-  to { opacity: 1; transform: scale(1); }
+  from { opacity: 0; transform: scale(0.9) translateY(-4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 /* Scoped under canvas-ctx-menu to avoid collision with sidebar.css .menu-row */
@@ -44,6 +45,12 @@
 .canvas-ctx-menu .menu-row:hover {
   background: var(--theme-hover);
   color: var(--theme-text);
+}
+
+.canvas-ctx-menu .menu-row:active {
+  background: var(--brand-alpha-15);
+  transform: scale(0.98);
+  transition: transform 60ms var(--ease-out-quart);
 }
 
 .canvas-ctx-menu .menu-row.disabled {

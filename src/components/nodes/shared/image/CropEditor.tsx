@@ -13,6 +13,7 @@ import ReactCrop, {
 import 'react-image-crop/dist/ReactCrop.css';
 import FullscreenOverlay from '../../../shared/FullscreenOverlay';
 import AnimatedButton from '../../../shared/AnimatedButton';
+import { springGentle } from '../../../../utils/motion';
 import { fetchImageForCrop } from '../../../../services/fileService';
 
 /* ── 类型 ── */
@@ -228,9 +229,9 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     >
       <motion.div
         className="crop-content"
-        initial={{ opacity: 0, scale: 0.97 }}
+        initial={{ opacity: 0, scale: 0.94 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+        transition={springGentle}
         onClick={(e) => e.stopPropagation()}
       >
       {/* ── 裁切工具栏（宽高比 + 确认按钮）── */}
