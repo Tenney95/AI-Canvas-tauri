@@ -24,6 +24,10 @@ url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 base64 = "0.22"
 # 默认 features = download-binaries（CPU 版 onnxruntime，构建时自动下载并静态链接）。
-# 不启用 directml：DirectML 版仅环境初始化就触发 DX12，部分 GPU/驱动上驱动级死锁。
-ort = "2.0.0-rc.12"
+# directml feature 启用 DirectML EP（仅 Worker 子进程使用，主进程永不初始化 DirectML）。
+ort = { version = "2.0.0-rc.12", features = ["download-binaries", "directml"] }
 image = "0.25"
+
+# Windows: DXGI 适配器枚举（GPU 探测用）
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Graphics_Dxgi"] }
