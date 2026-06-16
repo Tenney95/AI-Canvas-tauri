@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    Prompt Panel
    ============================================ */
 .prompt-panel {
@@ -218,7 +218,6 @@
   overflow-y: auto;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
-  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 12px;
   box-shadow: 0 8px 40px var(--black-alpha-50);
@@ -343,7 +342,6 @@
   overflow-y: auto;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
-  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 12px;
   box-shadow: 0 8px 40px var(--black-alpha-50);

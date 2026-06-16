@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    Node Components — Frosted Glass Design System (base)
    ============================================ */
 
@@ -18,8 +18,7 @@
   display: flex;
   flex-direction: column;
   background: var(--glass-bg-node);
-  /* backdrop-filter: blur(var(--glass-blur-sm));
-  -webkit-backdrop-filter: blur(var(--glass-blur-sm)); */
+  /* backdrop-filter: blur(var(--glass-blur-sm)); */
   border: 1px solid var(--glass-ring);
   border-radius: 12px;
   overflow: hidden;
@@ -86,7 +85,6 @@
   pointer-events: none;
   background: var(--glass-bg-light);
   backdrop-filter: blur(var(--glass-blur-md));
-  -webkit-backdrop-filter: blur(var(--glass-blur-md));
   border: 1px solid var(--glass-ring);
   border-radius: 7px;
 }
@@ -246,7 +244,6 @@
   border: 1px solid rgba(129, 140, 248, 0.35);
   border-radius: 999px;
   backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   white-space: nowrap;
 }
 
@@ -456,7 +453,6 @@
 .fullscreen-overlay--transparent {
   background: rgba(0, 0, 0, 0.15);
   backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   flex-direction: column;
   padding: 0;
 }
@@ -467,7 +463,6 @@
   flex-direction: column;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
-  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 14px;
   overflow: hidden;
@@ -589,7 +584,6 @@
   z-index: 10;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-sm));
-  -webkit-backdrop-filter: blur(var(--glass-blur-sm));
   border: 1px solid var(--glass-ring);
   border-radius: 8px;
 }

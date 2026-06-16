@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    React Flow Overrides — Dark Theme    连线
    ============================================ */
 
@@ -65,7 +65,6 @@
   overflow: hidden !important;
   background: var(--glass-bg) !important;
   backdrop-filter: blur(var(--glass-blur-md)) !important;
-  -webkit-backdrop-filter: blur(var(--glass-blur-md)) !important;
   border: 1px solid var(--glass-ring) !important;
   box-shadow: 0 8px 32px var(--black-alpha-40) !important;
 }
@@ -188,5 +187,4 @@
 .gooey-btn-right .gooey-btn::before {
   padding: 19px 26px 19px 10px;
 }
-
 

@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    Panorama Node — Three.js WebGL Viewer
    ============================================ */
 
@@ -63,7 +63,6 @@
   padding: 4px 6px;
   background: rgba(26, 26, 38, 0.6);
   backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);

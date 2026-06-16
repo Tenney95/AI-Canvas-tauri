@@ -1,4 +1,4 @@
-@tailwind base;
+﻿@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
@@ -231,13 +231,11 @@
 .glass-surface {
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
-  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
 }
 .glass-surface--light {
   background: var(--glass-bg-light);
   backdrop-filter: blur(var(--glass-blur-md));
-  -webkit-backdrop-filter: blur(var(--glass-blur-md));
   border: 1px solid var(--glass-ring);
 }
 

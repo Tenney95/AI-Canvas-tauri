@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    Image Node — toolbar, matting overlay
    ============================================ */
 
@@ -54,7 +54,6 @@
   align-items: center;
   background: rgba(0, 0, 0, 0.2);
   backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border-radius: 16pX;
 }
 
@@ -245,7 +244,6 @@
   flex-direction: column;
   background: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 /* Annotate toolbar */

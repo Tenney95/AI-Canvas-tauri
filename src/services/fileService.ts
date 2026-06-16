@@ -1270,7 +1270,7 @@ function getDefaultExtension(nodeType: string): string {
 }
 
 /** 根据节点类型和默认扩展名生成文件过滤器 */
-function getSaveFilter(nodeType: string, defExt: string): { name: string; extensions: string[] }[] {
+function getSaveFilter(nodeType: string): { name: string; extensions: string[] }[] {
   switch (nodeType) {
     case 'ai-text':      return [{ name: '文本文件', extensions: ['txt'] }, { name: '所有文件', extensions: ['*'] }];
     case 'ai-markdown':  return [{ name: 'Markdown 文件', extensions: ['md'] }, { name: '所有文件', extensions: ['*'] }];
@@ -1316,7 +1316,7 @@ export async function saveNodeOutputToFile(opts: {
   defaultName += defExt;
 
   // Open save dialog
-  const filters = getSaveFilter(nodeType, defExt);
+  const filters = getSaveFilter(nodeType);
   const destPath = await save({
     defaultPath: defaultName,
     filters,

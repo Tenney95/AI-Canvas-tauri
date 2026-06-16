@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    Crop Editor — 基于 react-image-crop
    hidePanel 模式：仅遮罩背景，无框
    ============================================ */
@@ -33,7 +33,6 @@
   padding: 4px 8px;
   background: var(--glass-bg-light);
   backdrop-filter: blur(var(--glass-blur-md));
-  -webkit-backdrop-filter: blur(var(--glass-blur-md));
   border: 1px solid var(--glass-ring);
   border-radius: 10px;
   flex-shrink: 0;

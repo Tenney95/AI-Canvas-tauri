@@ -6,6 +6,7 @@ import AnimatedButton from '../../../shared/AnimatedButton';
 
 interface ImageNodeToolbarProps {
   nodeId: string;
+  onUpload?: () => void;
   onMatting?: () => void;
   onSubjectMatting?: () => void;
   onMultiAngle?: () => void;
@@ -15,7 +16,7 @@ interface ImageNodeToolbarProps {
   onUpscale?: () => void;
 }
 
-function ImageNodeToolbar({ onMatting, onSubjectMatting, onMultiAngle, onFullscreen, onCrop, onAnnotate, onUpscale }: ImageNodeToolbarProps) {
+function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onFullscreen, onCrop, onAnnotate, onUpscale }: ImageNodeToolbarProps) {
   const noop = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
   }, []);
@@ -88,9 +89,6 @@ function ImageNodeToolbar({ onMatting, onSubjectMatting, onMultiAngle, onFullscr
           </AnimatedButton>
         </div>
 
-        {/* Divider */}
-        <div className="ftb-divider img-toolbar-main-divider" />
-
         {/* Secondary zone */}
         <div className="img-toolbar-zone img-toolbar-zone-secondary">
           <AnimatedButton className="ftb-btn icon-only act-annotate" data-tooltip="标注" aria-label="标注" onClick={handleAction(onAnnotate)}>
@@ -102,6 +100,17 @@ function ImageNodeToolbar({ onMatting, onSubjectMatting, onMultiAngle, onFullscr
           <AnimatedButton className="ftb-btn icon-only act-crop" data-tooltip="裁切" aria-label="裁切" onClick={handleAction(onCrop)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2" />
+            </svg>
+          </AnimatedButton>
+          
+          {/* Divider */}
+          <div className="ftb-divider img-toolbar-main-divider" />
+
+          <AnimatedButton className="ftb-btn icon-only act-upload" data-tooltip="上传图片" aria-label="上传图片" onClick={handleAction(onUpload)}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
             </svg>
           </AnimatedButton>
           <AnimatedButton

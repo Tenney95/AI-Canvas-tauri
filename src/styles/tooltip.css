@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    Global Custom Tooltip
    Replaces native title tooltip with a dark-themed, animated version
    ============================================ */
@@ -14,7 +14,6 @@
   padding: 4px 6px;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-md));
-  -webkit-backdrop-filter: blur(var(--glass-blur-md));
   border: 1px solid var(--glass-ring);
   border-radius: 6px;
   font-size: 11px;

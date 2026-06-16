@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    AI Node Dialog — floating frosted-glass prompt
    ============================================ */
 .ai-dialog-backdrop {
@@ -13,7 +13,6 @@
   max-width: calc(100vw - 32px);
   background: var(--glass-bg-light);
   backdrop-filter: blur(var(--glass-blur-md));
-  -webkit-backdrop-filter: blur(var(--glass-blur-md));
   border: 1px solid var(--glass-ring);
   border-radius: 14px;
   box-shadow:
@@ -68,7 +67,6 @@
   overflow-y: auto;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
-  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 14px;
   box-shadow: 0 16px 48px var(--black-alpha-50), 0 0 0 1px var(--white-alpha-03);
@@ -461,7 +459,6 @@
   overflow-y: auto;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
-  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 10px;
   box-shadow: 0 12px 40px var(--black-alpha-50);
@@ -535,7 +532,6 @@
   flex-direction: column;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
-  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 14px;
   box-shadow: 0 16px 48px var(--black-alpha-50), 0 0 0 1px var(--white-alpha-03);
@@ -745,7 +741,6 @@
   color: rgba(255, 255, 255, 0.85);
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(var(--glass-blur-sm));
-  -webkit-backdrop-filter: blur(var(--glass-blur-sm));
   border-radius: 4px;
   pointer-events: none;
   line-height: 1.5;
@@ -773,7 +768,6 @@
   border: none;
   background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(var(--glass-blur-sm));
-  -webkit-backdrop-filter: blur(var(--glass-blur-sm));
   color: rgba(255, 255, 255, 0.8);
   border-radius: 6px;
   cursor: pointer;

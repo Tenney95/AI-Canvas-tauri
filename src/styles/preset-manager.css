@@ -1,4 +1,4 @@
-/* ═══════════════════════════════════════════════
+﻿/* ═══════════════════════════════════════════════
    Preset Manager — 用户预设管理器弹窗样式
    ============================================ */
 
@@ -23,7 +23,6 @@
 .preset-modal {
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
-  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 14px;
   width: 760px;

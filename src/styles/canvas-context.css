@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    Canvas Right-click Context Menu
    ============================================ */
 
@@ -9,7 +9,6 @@
   padding: 4px;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-md));
-  -webkit-backdrop-filter: blur(var(--glass-blur-md));
   border: 1px solid var(--glass-ring);
   border-radius: 10px;
   box-shadow:

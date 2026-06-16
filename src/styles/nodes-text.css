@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    Text Node — compact output, edit, wordcount, toolbar, fullscreen
    ============================================ */
 
@@ -79,7 +79,6 @@
   flex-direction: column;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
-  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 14px;
   overflow: hidden;

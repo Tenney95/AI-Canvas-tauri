@@ -486,9 +486,9 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     const taskId = `matting-${id}-${Date.now()}`;
 
     try {
-      const ext = filePath.split('.').pop() || 'png';
+      // 主体图含透明通道(RGBA)，JPEG 不支持，强制 PNG
       const baseName = filePath.replace(/\.[^.]+$/, '');
-      const outputPath = `${baseName}_subject.${ext}`;
+      const outputPath = `${baseName}_subject.png`;
 
       const result = await subjectMatting(filePath, outputPath, mattingModelName, taskId);
 
@@ -552,7 +552,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           style={{ height: nodeHeight }}
         >
           <div className="node-preview compact">
-            {isSource && (
+            {isSource && !data.imageUrl && !data.thumbnailUrl && (
               <button
                 className="node-upload-btn"
                 onClick={(e) => { e.stopPropagation(); handleUpload(); }}
@@ -619,6 +619,17 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                     </span>
                   </div>
                 )}
+                {/* 主体识别加载动画：复用超分光晕效果 */}
+                {isMattingRunning && (
+                  <div className="upscale-glow" aria-hidden="true">
+                    <div className="upscale-glow-scan" />
+                    <div className="upscale-glow-ring" />
+                    <span className="upscale-glow-label">
+                      <span className="upscale-glow-dot" />
+                      主体识别中...
+                    </span>
+                  </div>
+                )}
               </div>
             ) : isUploading ? (
               <div className="node-preview-loading">
@@ -670,6 +681,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         {selected && isSingleSelection && (data.imageUrl || data.thumbnailUrl) && (
           <ImageNodeToolbar
             nodeId={id}
+            onUpload={handleUpload}
             onMatting={handleOpenMatting}
             onSubjectMatting={handleSubjectMatting}
             onMultiAngle={handleOpenFreeAngle}
