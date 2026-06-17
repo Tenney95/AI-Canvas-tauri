@@ -90,6 +90,8 @@ export function useKeyboardShortcuts() {
         if (selectedEdgeIds.length === 0 && nodeIds.length === 0) return;
         e.preventDefault();
         e.stopPropagation();
+        // 立即清空选择 → 即时反馈，并避免退场动画期间再次按 Delete 重复触发删除
+        useAppStore.setState({ selectedNodeIds: [] });
 
         // Expand to include descendants of any selected group nodes
         const expandedIds = new Set(nodeIds);

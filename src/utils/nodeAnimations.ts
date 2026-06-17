@@ -6,8 +6,8 @@
  * 否则节点会跳回原点。
  */
 
-/** 节点退场动画时长（ms），需与 CSS .node-exiting 过渡一致 */
-const NODE_EXIT_MS = 190;
+/** 节点退场动画时长（ms），需与 CSS .node-exiting 过渡一致。偏短以保持删除手感跟手 */
+const NODE_EXIT_MS = 130;
 
 function prefersReducedMotion(): boolean {
   return (

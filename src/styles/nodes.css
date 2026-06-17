@@ -22,30 +22,30 @@
   border: 1px solid var(--glass-ring);
   border-radius: 12px;
   overflow: hidden;
-  transition: border-color var(--transition-smooth), box-shadow var(--transition-smooth),
-    transform var(--dur-fast) var(--ease-out-quart);
-  /* 进场：弹簧式弹入（backwards 填充，避免动画结束后锁住 transform 影响拖拽缩放）*/
+  transition: border-color var(--transition-smooth), box-shadow var(--transition-smooth);
+  /* 进场：弹簧式浮入。只用 translate（不用 scale）——scale 会改变 handle 相对父节点的
+     偏移，破坏 React Flow 对连线锚点的测量并被缓存，导致连线起止点错位。*/
   animation: nodeIn 0.34s var(--ease-spring) backwards;
 }
 
 /* ── 节点进场 ── */
 @keyframes nodeIn {
-  from { opacity: 0; transform: scale(0.82); }
-  to { opacity: 1; transform: scale(1); }
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-/* ── 节点退场（由 playNodeExit 添加 .node-exiting）── */
+/* ── 节点退场（由 playNodeExit 添加 .node-exiting）——向下淡出（与进场向上呼应）。
+   节点随即被移除，位移不会造成持久的连线问题。 ── */
 .node.node-exiting {
   opacity: 0;
-  transform: scale(0.86);
+  transform: translateY(12px);
   pointer-events: none;
-  transition: opacity 0.19s var(--ease-out-quart), transform 0.19s var(--ease-out-quart);
+  transition: opacity 0.13s var(--ease-out-quart), transform 0.13s var(--ease-out-quart);
 }
 
-/* ── #5 拖拽「抬起」反馈：被拿起时轻微放大 + 阴影绽放 ── */
+/* ── #5 拖拽「抬起」反馈：仅用阴影绽放（不做 transform，避免连线锚点偏移）── */
 .react-flow__node.dragging .node {
-  transform: scale(1.02);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--brand-alpha-20);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--brand-alpha-30);
 }
 
 .node.selected {
