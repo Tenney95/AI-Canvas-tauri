@@ -392,8 +392,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--theme-border);
+  flex-shrink: 0;
 }
 .asset-picker-title {
   font-size: 14px;
@@ -419,12 +420,12 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 10px 16px 4px;
   padding: 7px 10px;
   background: var(--theme-card);
   border: 1px solid var(--theme-border);
   border-radius: 9px;
   color: var(--theme-text-muted);
+  flex-shrink: 0;
 }
 .asset-picker-search:focus-within { border-color: var(--border-focus); }
 .asset-picker-search input {
@@ -441,10 +442,13 @@
 .asset-picker-grid {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 10px;
-  padding: 12px 16px 16px;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 12px;
+  padding: 12px 14px 16px;
+  align-content: start;
+  scroll-behavior: smooth;
 }
 .asset-picker-empty {
   grid-column: 1 / -1;
@@ -454,6 +458,7 @@
   font-size: 13px;
 }
 .asset-picker-card {
+  height: 112px;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--theme-border);
@@ -461,9 +466,12 @@
   overflow: hidden;
   background: var(--theme-card);
   cursor: pointer;
-  transition: border-color var(--transition-base), transform var(--dur-fast) var(--ease-out-quart);
+  transition: border-color var(--transition-base), box-shadow var(--transition-base), transform var(--dur-fast) var(--ease-out-quart);
 }
-.asset-picker-card:hover { border-color: var(--brand-alpha-30); }
+.asset-picker-card:hover {
+  border-color: var(--brand-alpha-40);
+  box-shadow: 0 4px 16px var(--black-alpha-30);
+}
 .asset-picker-card:active { transform: scale(0.97); }
 .asset-picker-card img {
   width: 100%;
@@ -478,12 +486,13 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 30px;
+  font-size: 32px;
   background: var(--black-alpha-30);
 }
 .asset-picker-card-name {
-  padding: 5px 7px;
+  padding: 6px 8px;
   font-size: 11px;
+  line-height: 1.3;
   color: var(--theme-text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -494,10 +503,12 @@
 .asset-picker-tags {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 6px;
-  padding: 8px 16px 2px;
-  max-height: 76px;
+  padding: 10px 16px 6px;
+  max-height: 84px;
   overflow-y: auto;
+  flex-shrink: 0;
 }
 .asset-picker-tag {
   display: inline-flex;
@@ -526,3 +537,12 @@
   font-size: 12px;
   color: var(--theme-text-muted);
 }
+
+/* 资产网格定制滚动条 */
+.asset-picker-grid::-webkit-scrollbar { width: 6px; }
+.asset-picker-grid::-webkit-scrollbar-track { background: transparent; }
+.asset-picker-grid::-webkit-scrollbar-thumb {
+  background: var(--theme-border);
+  border-radius: 3px;
+}
+.asset-picker-grid::-webkit-scrollbar-thumb:hover { background: var(--theme-hover); }

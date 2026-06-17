@@ -706,11 +706,12 @@ export default function MentionEditor({
   useEffect(() => {
     const el = assetSentinelRef.current;
     if (!el) return;
+    const root = el.closest('.asset-picker-grid') as HTMLElement | null;
     const io = new IntersectionObserver((entries) => {
       if (entries[0]?.isIntersecting) {
         setAssetVisible((c) => (c < filteredAssets.length ? c + 40 : c));
       }
-    }, { rootMargin: '200px' });
+    }, { root, rootMargin: '200px' });
     io.observe(el);
     return () => io.disconnect();
   }, [filteredAssets.length, visibleAssets.length]);
@@ -912,15 +913,14 @@ export default function MentionEditor({
                     className="w-full flex items-center gap-2 px-3 py-2 hover:bg-canvas-hover transition-colors text-left"
                   >
                     <span
-                      className={`w-6 h-6 rounded flex items-center justify-center text-xs shrink-0 overflow-hidden ${
-                        node.outputType === 'image'
+                      className={`w-6 h-6 rounded flex items-center justify-center text-xs shrink-0 overflow-hidden ${node.outputType === 'image'
                           ? 'bg-green-500/15 text-green-400'
                           : node.outputType === 'video'
-                          ? 'bg-blue-500/15 text-blue-400'
-                          : node.outputType === 'audio'
-                          ? 'bg-orange-500/15 text-orange-400'
-                          : 'bg-indigo-500/15 text-indigo-400'
-                      }`}
+                            ? 'bg-blue-500/15 text-blue-400'
+                            : node.outputType === 'audio'
+                              ? 'bg-orange-500/15 text-orange-400'
+                              : 'bg-indigo-500/15 text-indigo-400'
+                        }`}
                     >
                       {(node.outputType === 'image' || node.outputType === 'video') && node.thumbnailUrl ? (
                         <img src={node.thumbnailUrl} alt="" className="w-full h-full object-cover rounded" />
@@ -964,15 +964,14 @@ export default function MentionEditor({
                     className="w-full flex items-center gap-2 px-3 py-2 hover:bg-canvas-hover transition-colors text-left"
                   >
                     <span
-                      className={`w-6 h-6 rounded flex items-center justify-center text-xs ${
-                        (node as typeof node & { _ioType: string })._ioType === 'image'
+                      className={`w-6 h-6 rounded flex items-center justify-center text-xs ${(node as typeof node & { _ioType: string })._ioType === 'image'
                           ? 'bg-green-500/15 text-green-400'
                           : (node as typeof node & { _ioType: string })._ioType === 'video'
-                          ? 'bg-blue-500/15 text-blue-400'
-                          : (node as typeof node & { _ioType: string })._ioType === 'audio'
-                          ? 'bg-orange-500/15 text-orange-400'
-                          : 'bg-indigo-500/15 text-indigo-400'
-                      }`}
+                            ? 'bg-blue-500/15 text-blue-400'
+                            : (node as typeof node & { _ioType: string })._ioType === 'audio'
+                              ? 'bg-orange-500/15 text-orange-400'
+                              : 'bg-indigo-500/15 text-indigo-400'
+                        }`}
                     >
                       {(node as typeof node & { _ioType: string })._ioType === 'image' ? '🖼' : (node as typeof node & { _ioType: string })._ioType === 'video' ? '🎬' : (node as typeof node & { _ioType: string })._ioType === 'audio' ? '🎵' : 'T'}
                     </span>
@@ -1028,22 +1027,22 @@ export default function MentionEditor({
                 onMouseDown={(e) => e.stopPropagation()}
               >
                 <div className="asset-picker-header">
-                  <span className="asset-picker-title">引用资产</span>
+                  <div className="asset-picker-search">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <input
+                      type="text" placeholder="搜索名称或标签…" autoFocus
+                      value={assetSearch} onChange={(e) => setAssetSearch(e.target.value)}
+                    />
+                  </div>
                   <button type="button" className="asset-picker-close" onClick={() => setShowAssetPicker(false)} aria-label="关闭">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                     </svg>
                   </button>
                 </div>
-                <div className="asset-picker-search">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                  </svg>
-                  <input
-                    type="text" placeholder="搜索名称或标签…" autoFocus
-                    value={assetSearch} onChange={(e) => setAssetSearch(e.target.value)}
-                  />
-                </div>
+
 
                 {/* 标签筛选 */}
                 {assetTagList.length > 0 && (
