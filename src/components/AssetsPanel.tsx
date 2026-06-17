@@ -1,13 +1,21 @@
 /**
- * AssetsPanel 资产管理面板 — 浏览项目文件 + 永久保存的文件，支持分类筛选与文件操作
- * 使用 framer-motion 驱动面板、卡片、Toast 的进出场动画
+ * AssetsPanel 资产管理面板 — 浏览项目文件 + 全局资产库（永久），支持：
+ *  · 添加本地文件（拷贝到全局 {baseDataDir}/file）/ 文件夹（递归引用，不拷贝）
+ *  · 搜索（名称 + 标签）、分类与标签筛选
+ *  · 手动为文件打标签（持久化到 IndexedDB assetMeta）
+ * 性能：useDeferredValue 搜索 + useMemo 过滤 + 增量渲染（IntersectionObserver）+ 图片懒加载，
+ *       并移除了大列表下昂贵的逐项 layout 动画。
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, useDeferredValue } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import {
   listProjectFiles,
-  listPermanentFiles,
+  listGlobalFiles,
+  listExternalFolderFiles,
+  addAssetFilesToGlobal,
+  pickAssetFolder,
   saveAssetToPermanent,
   deletePermanentFile,
   extractFilesFromNodeData,
@@ -15,18 +23,20 @@ import {
   type AssetFileEntry,
   type FileCategory,
 } from '../services/fileService';
+import { getAllAssetMeta, putAssetMeta, deleteAssetMeta } from '../services/indexedDbService';
+import { springSmooth, fadeFast } from '../utils/motion';
 
 type TabKey = 'project' | 'permanent';
 
 const ALL_CATEGORIES: FileCategory[] = ['image', 'video', 'audio', 'text', 'other'];
-
 const CATEGORY_ICONS: Record<FileCategory, string> = {
-  image: '🖼',
-  video: '🎬',
-  audio: '🎵',
-  text: '📄',
-  other: '📁',
+  image: '🖼', video: '🎬', audio: '🎵', text: '📄', other: '📁',
 };
+
+/** 单页渲染数量（增量加载步长）— 限制 DOM 规模 */
+const PAGE_SIZE = 48;
+/** 标签筛选行最多展示的标签数 */
+const MAX_TAG_CHIPS = 24;
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -35,393 +45,545 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-/* ============================================
-   Framer-motion animation variants
-   ============================================ */
+function shortFolderName(p: string): string {
+  return p.split(/[\\/]/).filter(Boolean).pop() || p;
+}
 
-const backdropVariants = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1 },
-};
-
+const backdropVariants = { hidden: { opacity: 0 }, visible: { opacity: 1 } };
 const panelVariants = {
   hidden: { opacity: 0, scale: 0.95, y: 20 },
-  visible: {
-    opacity: 1,
-    scale: 1,
-    y: 0,
-    transition: { type: 'spring' as const, stiffness: 350, damping: 30 },
-  },
-  exit: {
-    opacity: 0,
-    scale: 0.95,
-    y: 20,
-    transition: { duration: 0.15, ease: 'easeIn' as const },
-  },
-};
-
-const cardVariants = {
-  hidden: { opacity: 0, y: 12, scale: 0.97 },
-  visible: (i: number) => ({
-    opacity: 1,
-    y: 0,
-    scale: 1,
-    transition: {
-      delay: i * 0.03,
-      duration: 0.25,
-      ease: [0.16, 1, 0.3, 1] as const,
-    },
-  }),
-  exit: {
-    opacity: 0,
-    scale: 0.95,
-    transition: { duration: 0.12, ease: 'easeIn' as const },
-  },
-};
-
-const toastVariants = {
-  hidden: { opacity: 0, y: 12, scale: 0.92 },
-  visible: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring' as const, stiffness: 400, damping: 25 } },
-  exit: { opacity: 0, y: -8, scale: 0.92, transition: { duration: 0.15, ease: 'easeIn' as const } },
+  visible: { opacity: 1, scale: 1, y: 0, transition: springSmooth },
+  exit: { opacity: 0, scale: 0.95, y: 20, transition: fadeFast },
 };
 
 export default function AssetsPanel() {
-  const assetsPanelOpen = useAppStore((s) => s.assetsPanelOpen);
-  const setAssetsPanelOpen = useAppStore((s) => s.setAssetsPanelOpen);
-  const currentProjectId = useAppStore((s) => s.currentProjectId);
-  const nodes = useAppStore((s) => s.nodes);
+  const { assetsPanelOpen, setAssetsPanelOpen, currentProjectId, assetFolders, updateConfig, saveConfig } =
+    useAppStore(
+      useShallow((s) => ({
+        assetsPanelOpen: s.assetsPanelOpen,
+        setAssetsPanelOpen: s.setAssetsPanelOpen,
+        currentProjectId: s.currentProjectId,
+        assetFolders: s.config.assetFolders,
+        updateConfig: s.updateConfig,
+        saveConfig: s.saveConfig,
+      })),
+    );
 
   const [activeTab, setActiveTab] = useState<TabKey>('project');
   const [activeCategory, setActiveCategory] = useState<FileCategory | null>(null);
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
+
   const [projectFiles, setProjectFiles] = useState<AssetFileEntry[]>([]);
   const [permanentFiles, setPermanentFiles] = useState<AssetFileEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  // 标签 Map（path -> tags），作为标签的唯一真相源，编辑时只更新它，避免重新读盘
+  const [tagMap, setTagMap] = useState<Record<string, string[]>>({});
 
-  // Load files
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [editingPath, setEditingPath] = useState<string | null>(null);
+  const [tagDraft, setTagDraft] = useState('');
+
+  const folders = useMemo(() => assetFolders ?? [], [assetFolders]);
+
+  const toast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 2000);
+  }, []);
+
+  // 载入标签元数据 → Map
+  const loadTags = useCallback(async () => {
+    try {
+      const metas = await getAllAssetMeta();
+      const map: Record<string, string[]> = {};
+      for (const m of metas) if (m.tags?.length) map[m.path] = m.tags;
+      setTagMap(map);
+    } catch { /* ignore */ }
+  }, []);
+
+  // 载入文件列表（按 Tab 聚合）
   const loadFiles = useCallback(async () => {
-    if (!currentProjectId) return;
     setLoading(true);
     try {
       if (activeTab === 'project') {
-        // 1. Get files from disk listing
+        if (!currentProjectId) { setProjectFiles([]); return; }
         const diskFiles = await listProjectFiles(currentProjectId);
-        const knownPaths = new Set(diskFiles.map((f) => f.path));
-
-        // 2. Scan every node for file references directly from node data (sync, no stat)
+        const known = new Set(diskFiles.map((f) => f.path));
         const nodeEntries: AssetFileEntry[] = [];
-        for (const node of nodes) {
-          const entry = extractFilesFromNodeData(
-            node.data as Record<string, unknown>,
-          );
-          if (entry && !knownPaths.has(entry.path)) {
-            nodeEntries.push(entry);
-            knownPaths.add(entry.path);
-          }
+        // 直接从 store 读取节点，避免把 nodes 放进依赖导致每次节点变化都重扫外部文件夹
+        for (const node of useAppStore.getState().nodes) {
+          const entry = extractFilesFromNodeData(node.data as Record<string, unknown>);
+          if (entry && !known.has(entry.path)) { nodeEntries.push(entry); known.add(entry.path); }
         }
-
-        // 3. Merge
         setProjectFiles([...diskFiles, ...nodeEntries]);
       } else {
-        const files = await listPermanentFiles(currentProjectId);
-        setPermanentFiles(files);
+        // 永久 = 全局 file 目录 + 登记的外部文件夹（递归）
+        const [globalFiles, folderFiles] = await Promise.all([
+          listGlobalFiles(),
+          listExternalFolderFiles(folders),
+        ]);
+        const seen = new Set<string>();
+        const merged: AssetFileEntry[] = [];
+        for (const f of [...globalFiles, ...folderFiles]) {
+          if (seen.has(f.path)) continue;
+          seen.add(f.path);
+          merged.push(f);
+        }
+        setPermanentFiles(merged);
       }
-    } catch {
-      // silently ignore
-    } finally {
+    } catch { /* ignore */ } finally {
       setLoading(false);
     }
-  }, [currentProjectId, activeTab, nodes]);
+  }, [activeTab, currentProjectId, folders]);
 
   useEffect(() => {
-    if (assetsPanelOpen) {
-      loadFiles();
-    }
-  }, [assetsPanelOpen, loadFiles]);
+    if (assetsPanelOpen) { loadFiles(); loadTags(); }
+  }, [assetsPanelOpen, loadFiles, loadTags]);
 
-  // Close on Escape
+  // Esc 关闭
   useEffect(() => {
     if (!assetsPanelOpen) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setAssetsPanelOpen(false);
-    };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setAssetsPanelOpen(false); };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [assetsPanelOpen, setAssetsPanelOpen]);
 
-  const handleClose = useCallback(() => {
-    setAssetsPanelOpen(false);
-  }, [setAssetsPanelOpen]);
+  // 点击外部关闭「添加」菜单
+  const addWrapRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (addWrapRef.current && !addWrapRef.current.contains(e.target as Node)) setAddMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [addMenuOpen]);
 
-  // Save to permanent
-  const handleSavePermanent = useCallback(
-    async (file: AssetFileEntry) => {
-      if (!currentProjectId) return;
-      const destPath = await saveAssetToPermanent(file, currentProjectId);
-      if (destPath) {
-        setToastMsg(`已保存: ${file.name}`);
-        if (activeTab === 'permanent') {
-          const files = await listPermanentFiles(currentProjectId);
-          setPermanentFiles(files);
-        }
-      } else {
-        setToastMsg('保存失败');
+  const handleClose = useCallback(() => setAssetsPanelOpen(false), [setAssetsPanelOpen]);
+
+  // 原始文件（按 Tab）
+  const rawFiles = activeTab === 'project' ? projectFiles : permanentFiles;
+
+  // 合并标签（useMemo，标签变化时不动文件数组）
+  const files = useMemo(
+    () => rawFiles.map((f) => (tagMap[f.path] ? { ...f, tags: tagMap[f.path] } : f)),
+    [rawFiles, tagMap],
+  );
+
+  // 分类计数
+  const categoryCounts = useMemo(() => {
+    const c: Record<FileCategory, number> = { image: 0, video: 0, audio: 0, text: 0, other: 0 };
+    for (const f of files) c[f.category]++;
+    return c;
+  }, [files]);
+
+  // 标签计数（用于筛选 chip）
+  const tagList = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const f of files) for (const t of f.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_TAG_CHIPS);
+  }, [files]);
+
+  // 过滤（分类 + 标签 + 搜索）
+  const filteredFiles = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
+    return files.filter((f) => {
+      if (activeCategory && f.category !== activeCategory) return false;
+      if (activeTag && !(f.tags ?? []).includes(activeTag)) return false;
+      if (q) {
+        const inName = f.name.toLowerCase().includes(q);
+        const inTags = (f.tags ?? []).some((t) => t.toLowerCase().includes(q));
+        if (!inName && !inTags) return false;
       }
-      setTimeout(() => setToastMsg(null), 2000);
-    },
-    [currentProjectId, activeTab],
-  );
+      return true;
+    });
+  }, [files, activeCategory, activeTag, deferredSearch]);
 
-  // Delete permanent file
-  const handleDeletePermanent = useCallback(
-    async (file: AssetFileEntry) => {
-      await deletePermanentFile(file.path);
-      setPermanentFiles((prev) => prev.filter((f) => f.path !== file.path));
-      setToastMsg(`已删除: ${file.name}`);
-      setTimeout(() => setToastMsg(null), 2000);
-    },
-    [],
-  );
+  // 过滤条件变化时重置增量计数
+  useEffect(() => { setVisibleCount(PAGE_SIZE); }, [activeTab, activeCategory, activeTag, deferredSearch]);
 
-  // Switch tab
-  const switchTab = useCallback(
-    (tab: TabKey) => {
-      setActiveTab(tab);
-      setActiveCategory(null);
-    },
-    [],
-  );
+  const visibleFiles = useMemo(() => filteredFiles.slice(0, visibleCount), [filteredFiles, visibleCount]);
+
+  // 无限滚动哨兵
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting) {
+        setVisibleCount((c) => (c < filteredFiles.length ? c + PAGE_SIZE : c));
+      }
+    }, { rootMargin: '300px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [filteredFiles.length, visibleFiles.length]);
+
+  // ── 添加文件 / 文件夹 ──
+  const handleAddFiles = useCallback(async () => {
+    setAddMenuOpen(false);
+    setBusy(true);
+    try {
+      const n = await addAssetFilesToGlobal();
+      if (n > 0) { toast(`已添加 ${n} 个文件`); if (activeTab === 'permanent') await loadFiles(); }
+    } catch { toast('添加失败'); } finally { setBusy(false); }
+  }, [activeTab, loadFiles, toast]);
+
+  const handleAddFolder = useCallback(async () => {
+    setAddMenuOpen(false);
+    setBusy(true);
+    try {
+      const path = await pickAssetFolder();
+      if (path && !folders.includes(path)) {
+        updateConfig({ assetFolders: [...folders, path] });
+        await saveConfig();
+        toast(`已添加文件夹: ${shortFolderName(path)}`);
+        if (activeTab === 'permanent') await loadFiles();
+      }
+    } catch { toast('添加失败'); } finally { setBusy(false); }
+  }, [folders, updateConfig, saveConfig, activeTab, loadFiles, toast]);
+
+  const handleRemoveFolder = useCallback(async (path: string) => {
+    updateConfig({ assetFolders: folders.filter((f) => f !== path) });
+    await saveConfig();
+    if (activeTab === 'permanent') await loadFiles();
+  }, [folders, updateConfig, saveConfig, activeTab, loadFiles]);
+
+  // ── 永久保存 / 删除 ──
+  const handleSavePermanent = useCallback(async (file: AssetFileEntry) => {
+    const dest = await saveAssetToPermanent(file);
+    toast(dest ? `已保存: ${file.name}` : '保存失败');
+    if (dest && activeTab === 'permanent') await loadFiles();
+  }, [activeTab, loadFiles, toast]);
+
+  const handleDeletePermanent = useCallback(async (file: AssetFileEntry) => {
+    await deletePermanentFile(file.path);
+    setPermanentFiles((prev) => prev.filter((f) => f.path !== file.path));
+    toast(`已删除: ${file.name}`);
+  }, [toast]);
+
+  // ── 标签编辑（手动）──
+  const persistTags = useCallback(async (path: string, tags: string[]) => {
+    setTagMap((prev) => {
+      const next = { ...prev };
+      if (tags.length) next[path] = tags; else delete next[path];
+      return next;
+    });
+    try {
+      if (tags.length) await putAssetMeta({ path, tags, taggedBy: 'manual', updatedAt: Date.now() });
+      else await deleteAssetMeta(path);
+    } catch { /* ignore */ }
+  }, []);
+
+  const addTag = useCallback((path: string, raw: string) => {
+    const tag = raw.trim();
+    if (!tag) return;
+    const cur = tagMap[path] ?? [];
+    if (cur.includes(tag)) return;
+    persistTags(path, [...cur, tag]);
+  }, [tagMap, persistTags]);
+
+  const removeTag = useCallback((path: string, tag: string) => {
+    persistTags(path, (tagMap[path] ?? []).filter((t) => t !== tag));
+  }, [tagMap, persistTags]);
+
+  const switchTab = useCallback((tab: TabKey) => {
+    setActiveTab(tab);
+    setActiveCategory(null);
+    setActiveTag(null);
+    setEditingPath(null);
+  }, []);
 
   if (!assetsPanelOpen) return null;
-
-  const files = activeTab === 'project' ? projectFiles : permanentFiles;
-  const filteredFiles = activeCategory
-    ? files.filter((f) => f.category === activeCategory)
-    : files;
-
-  // Count by category
-  const categoryCounts: Record<FileCategory, number> = {
-    image: 0, video: 0, audio: 0, text: 0, other: 0,
-  };
-  files.forEach((f) => { categoryCounts[f.category]++; });
 
   return (
     <AnimatePresence>
       {assetsPanelOpen && (
         <>
-          {/* Backdrop */}
           <motion.div
             className="assets-panel-backdrop"
             variants={backdropVariants}
-            initial="hidden"
-            animate="visible"
-            exit="hidden"
+            initial="hidden" animate="visible" exit="hidden"
             transition={{ duration: 0.2 }}
             onClick={handleClose}
           />
-
-          {/* Centering wrapper — avoids framer-motion transform clashing with CSS translate(-50%,-50%) */}
           <div className="assets-panel-wrapper">
             <motion.div
               className="assets-panel"
               variants={panelVariants}
-              initial="hidden"
-              animate="visible"
-              exit="exit"
+              initial="hidden" animate="visible" exit="exit"
               onClick={(e) => e.stopPropagation()}
             >
-            {/* Header */}
-            <div className="assets-panel-header">
-              <h2 className="assets-panel-title">资产管理</h2>
-              <motion.button
-                type="button"
-                className="assets-panel-close"
-                onClick={handleClose}
-                aria-label="关闭"
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.9 }}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </motion.button>
-            </div>
-
-            {/* Tabs */}
-            <div className="assets-tabs">
-              {(['project', 'permanent'] as TabKey[]).map((tab) => (
+              {/* Header */}
+              <div className="assets-panel-header">
+                <h2 className="assets-panel-title">资产管理</h2>
                 <motion.button
-                  key={tab}
-                  type="button"
-                  className={`assets-tab ${activeTab === tab ? 'active' : ''}`}
-                  onClick={() => switchTab(tab)}
-                  whileHover={{ scale: activeTab === tab ? 1 : 1.03 }}
-                  whileTap={{ scale: 0.97 }}
+                  type="button" className="assets-panel-close" onClick={handleClose} aria-label="关闭"
+                  whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
                 >
-                  {tab === 'project' ? '项目文件' : '永久保存'}
-                  <span className="assets-tab-count">
-                    {tab === 'project' ? projectFiles.length : permanentFiles.length}
-                  </span>
-                </motion.button>
-              ))}
-            </div>
-
-            {/* Category filters */}
-            <div className="assets-category-row">
-              <motion.button
-                type="button"
-                className={`assets-cat-chip ${activeCategory === null ? 'active' : ''}`}
-                onClick={() => setActiveCategory(null)}
-                whileHover={{ scale: 1.04 }}
-                whileTap={{ scale: 0.96 }}
-              >
-                全部
-                <span className="assets-cat-count">{files.length}</span>
-              </motion.button>
-              {ALL_CATEGORIES.filter((cat) => categoryCounts[cat] > 0).map((cat) => (
-                <motion.button
-                  key={cat}
-                  type="button"
-                  className={`assets-cat-chip ${activeCategory === cat ? 'active' : ''}`}
-                  onClick={() => setActiveCategory(cat)}
-                  whileHover={{ scale: 1.04 }}
-                  whileTap={{ scale: 0.96 }}
-                >
-                  {CATEGORY_ICONS[cat]} {CATEGORY_LABELS[cat]}
-                  <span className="assets-cat-count">{categoryCounts[cat]}</span>
-                </motion.button>
-              ))}
-            </div>
-
-            {/* File waterfall */}
-            <div className="assets-file-waterfall">
-              {loading ? (
-                <div className="assets-empty">
-                  <motion.div
-                    className="assets-spinner"
-                    animate={{ rotate: 360 }}
-                    transition={{ repeat: Infinity, duration: 0.6, ease: 'linear' }}
-                  />
-                  <span>加载中...</span>
-                </div>
-              ) : filteredFiles.length === 0 ? (
-                <motion.div
-                  className="assets-empty"
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.3">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                    <polyline points="14 2 14 8 20 8" />
-                    <line x1="9" y1="15" x2="15" y2="15" />
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                   </svg>
-                  <span>
-                    {activeTab === 'project' ? '暂无项目文件' : '暂无永久保存的文件'}
-                  </span>
-                </motion.div>
-              ) : (
-                <AnimatePresence mode="popLayout">
-                  {filteredFiles.map((file, i) => (
-                    <motion.div
-                      key={file.path}
-                      className="assets-waterfall-card"
-                      variants={cardVariants}
-                      initial="hidden"
-                      animate="visible"
-                      exit="exit"
-                      custom={i % 12}
-                      layout
-                    >
-                      {/* Thumbnail area */}
-                      {file.assetUrl ? (
-                        <div className="assets-card-img-wrap">
-                          <img src={file.assetUrl} alt={file.name} className="assets-card-img" />
-                          <span className="assets-card-size">{formatSize(file.size)}</span>
-                          <div className="assets-card-actions">
-                            {activeTab === 'project' ? (
-                              <button
-                                type="button"
-                                className="assets-card-action-btn"
-                                title="永久保存"
-                                onClick={() => handleSavePermanent(file)}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-                                </svg>
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                className="assets-card-action-btn assets-card-delete"
-                                title="删除"
-                                onClick={() => handleDeletePermanent(file)}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <polyline points="3 6 5 6 21 6" />
-                                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                                </svg>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="assets-card-icon-wrap">
-                          <span className="assets-card-icon">{CATEGORY_ICONS[file.category]}</span>
-                          <span className="assets-card-size">{formatSize(file.size)}</span>
-                          <div className="assets-card-actions">
-                            {activeTab === 'project' ? (
-                              <button
-                                type="button"
-                                className="assets-card-action-btn"
-                                title="永久保存"
-                                onClick={() => handleSavePermanent(file)}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-                                </svg>
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                className="assets-card-action-btn assets-card-delete"
-                                title="删除"
-                                onClick={() => handleDeletePermanent(file)}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <polyline points="3 6 5 6 21 6" />
-                                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                                </svg>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-              )}
-            </div>
+                </motion.button>
+              </div>
 
-            {/* Toast */}
-            <AnimatePresence>
-              {toastMsg && (
-                <motion.div
-                  className="assets-toast"
-                  variants={toastVariants}
-                  initial="hidden"
-                  animate="visible"
-                  exit="exit"
-                >
-                  {toastMsg}
-                </motion.div>
+              {/* Tabs */}
+              <div className="assets-tabs">
+                {(['project', 'permanent'] as TabKey[]).map((tab) => (
+                  <motion.button
+                    key={tab} type="button"
+                    className={`assets-tab ${activeTab === tab ? 'active' : ''}`}
+                    onClick={() => switchTab(tab)}
+                    whileHover={{ scale: activeTab === tab ? 1 : 1.03 }} whileTap={{ scale: 0.97 }}
+                  >
+                    {tab === 'project' ? '项目文件' : '永久保存'}
+                    <span className="assets-tab-count">{tab === 'project' ? projectFiles.length : permanentFiles.length}</span>
+                  </motion.button>
+                ))}
+              </div>
+
+              {/* Toolbar: 搜索 + 添加 */}
+              <div className="assets-toolbar">
+                <div className="assets-search">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                  <input
+                    type="text" placeholder="搜索名称或标签…"
+                    value={search} onChange={(e) => setSearch(e.target.value)}
+                  />
+                  {search && (
+                    <button type="button" className="assets-search-clear" onClick={() => setSearch('')} aria-label="清空">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+                {activeTab === 'permanent' && (
+                  <div className="assets-add-wrap" ref={addWrapRef}>
+                    <motion.button
+                      type="button" className="assets-add-btn" disabled={busy}
+                      onClick={() => setAddMenuOpen((v) => !v)}
+                      whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                      添加
+                    </motion.button>
+                    <AnimatePresence>
+                      {addMenuOpen && (
+                        <motion.div
+                          className="assets-add-menu"
+                          initial={{ opacity: 0, y: -6, scale: 0.96 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -6, scale: 0.96, transition: fadeFast }}
+                          transition={springSmooth}
+                        >
+                          <button type="button" onClick={handleAddFiles}>📄 添加文件</button>
+                          <button type="button" onClick={handleAddFolder}>📁 添加文件夹</button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
+              </div>
+
+              {/* 已添加的外部文件夹 */}
+              {activeTab === 'permanent' && folders.length > 0 && (
+                <div className="assets-folder-row">
+                  {folders.map((f) => (
+                    <span key={f} className="assets-folder-chip" title={f}>
+                      📁 {shortFolderName(f)}
+                      <button type="button" onClick={() => handleRemoveFolder(f)} aria-label="移除">×</button>
+                    </span>
+                  ))}
+                </div>
               )}
-            </AnimatePresence>
-          </motion.div>
-          </div>{/* /assets-panel-wrapper */}
+
+              {/* 分类 + 标签筛选 */}
+              <div className="assets-category-row">
+                <button
+                  type="button" className={`assets-cat-chip ${activeCategory === null ? 'active' : ''}`}
+                  onClick={() => setActiveCategory(null)}
+                >
+                  全部<span className="assets-cat-count">{files.length}</span>
+                </button>
+                {ALL_CATEGORIES.filter((cat) => categoryCounts[cat] > 0).map((cat) => (
+                  <button
+                    key={cat} type="button"
+                    className={`assets-cat-chip ${activeCategory === cat ? 'active' : ''}`}
+                    onClick={() => setActiveCategory(cat)}
+                  >
+                    {CATEGORY_ICONS[cat]} {CATEGORY_LABELS[cat]}
+                    <span className="assets-cat-count">{categoryCounts[cat]}</span>
+                  </button>
+                ))}
+                {tagList.length > 0 && <span className="assets-chip-sep" />}
+                {tagList.map(([tag, count]) => (
+                  <button
+                    key={tag} type="button"
+                    className={`assets-cat-chip assets-tag-chip ${activeTag === tag ? 'active' : ''}`}
+                    onClick={() => setActiveTag((t) => (t === tag ? null : tag))}
+                  >
+                    #{tag}<span className="assets-cat-count">{count}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* 文件瀑布流 */}
+              <div className="assets-file-waterfall">
+                {loading ? (
+                  <div className="assets-empty">
+                    <motion.div className="assets-spinner" animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.6, ease: 'linear' }} />
+                    <span>加载中...</span>
+                  </div>
+                ) : filteredFiles.length === 0 ? (
+                  <div className="assets-empty">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.3">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" /><line x1="9" y1="15" x2="15" y2="15" />
+                    </svg>
+                    <span>{search || activeCategory || activeTag ? '没有匹配的文件' : activeTab === 'project' ? '暂无项目文件' : '暂无文件，点击「添加」导入'}</span>
+                  </div>
+                ) : (
+                  <>
+                    {visibleFiles.map((file) => (
+                      <AssetCard
+                        key={file.path}
+                        file={file}
+                        isProject={activeTab === 'project'}
+                        editing={editingPath === file.path}
+                        tagDraft={editingPath === file.path ? tagDraft : ''}
+                        onToggleEdit={() => { setEditingPath((p) => (p === file.path ? null : file.path)); setTagDraft(''); }}
+                        onTagDraftChange={setTagDraft}
+                        onAddTag={(t) => { addTag(file.path, t); setTagDraft(''); }}
+                        onRemoveTag={(t) => removeTag(file.path, t)}
+                        onSave={() => handleSavePermanent(file)}
+                        onDelete={() => handleDeletePermanent(file)}
+                      />
+                    ))}
+                    {visibleCount < filteredFiles.length && (
+                      <div ref={sentinelRef} className="assets-load-sentinel">加载更多…</div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Toast */}
+              <AnimatePresence>
+                {toastMsg && (
+                  <motion.div
+                    className="assets-toast"
+                    initial={{ opacity: 0, y: 12, scale: 0.92 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -8, scale: 0.92, transition: fadeFast }}
+                    transition={springSmooth}
+                  >
+                    {toastMsg}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          </div>
         </>
       )}
     </AnimatePresence>
+  );
+}
+
+/* ============================================
+   单个资产卡片（轻量，无 layout 动画）
+   ============================================ */
+interface AssetCardProps {
+  file: AssetFileEntry;
+  isProject: boolean;
+  editing: boolean;
+  tagDraft: string;
+  onToggleEdit: () => void;
+  onTagDraftChange: (v: string) => void;
+  onAddTag: (tag: string) => void;
+  onRemoveTag: (tag: string) => void;
+  onSave: () => void;
+  onDelete: () => void;
+}
+
+function AssetCard({
+  file, isProject, editing, tagDraft,
+  onToggleEdit, onTagDraftChange, onAddTag, onRemoveTag, onSave, onDelete,
+}: AssetCardProps) {
+  const tags = file.tags ?? [];
+  return (
+    <div className="assets-waterfall-card anim-card-in">
+      {file.assetUrl ? (
+        <div className="assets-card-img-wrap">
+          <img src={file.assetUrl} alt={file.name} className="assets-card-img" loading="lazy" decoding="async" />
+          <span className="assets-card-size">{formatSize(file.size)}</span>
+          {file.source === 'folder' && <span className="assets-card-badge">外部</span>}
+          <CardActions isProject={isProject} onSave={onSave} onDelete={onDelete} onToggleEdit={onToggleEdit} />
+        </div>
+      ) : (
+        <div className="assets-card-icon-wrap">
+          <span className="assets-card-icon">{CATEGORY_ICONS[file.category]}</span>
+          <span className="assets-card-size">{formatSize(file.size)}</span>
+          {file.source === 'folder' && <span className="assets-card-badge">外部</span>}
+          <CardActions isProject={isProject} onSave={onSave} onDelete={onDelete} onToggleEdit={onToggleEdit} />
+        </div>
+      )}
+
+      {(tags.length > 0 || editing) && (
+        <div className="assets-card-tags">
+          {tags.map((t) => (
+            <span key={t} className="assets-card-tag">
+              {t}
+              {editing && <button type="button" onClick={() => onRemoveTag(t)} aria-label="移除标签">×</button>}
+            </span>
+          ))}
+          {editing && (
+            <input
+              className="assets-tag-input" autoFocus value={tagDraft}
+              placeholder="加标签…"
+              onChange={(e) => onTagDraftChange(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onAddTag(tagDraft); } }}
+              onBlur={() => { if (tagDraft.trim()) onAddTag(tagDraft); }}
+            />
+          )}
+        </div>
+      )}
+      {!isProject && <div className="assets-card-name" title={file.name}>{file.name}</div>}
+    </div>
+  );
+}
+
+function CardActions({ isProject, onSave, onDelete, onToggleEdit }: {
+  isProject: boolean; onSave: () => void; onDelete: () => void; onToggleEdit: () => void;
+}) {
+  return (
+    <div className="assets-card-actions">
+      <button type="button" className="assets-card-action-btn" title="标签" onClick={onToggleEdit}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+          <line x1="7" y1="7" x2="7.01" y2="7" />
+        </svg>
+      </button>
+      {isProject ? (
+        <button type="button" className="assets-card-action-btn" title="永久保存" onClick={onSave}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+          </svg>
+        </button>
+      ) : (
+        <button type="button" className="assets-card-action-btn assets-card-delete" title="删除" onClick={onDelete}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          </svg>
+        </button>
+      )}
+    </div>
   );
 }

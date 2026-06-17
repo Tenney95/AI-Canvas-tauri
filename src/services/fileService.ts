@@ -859,28 +859,9 @@ export interface AssetFileEntry {
   assetUrl?: string;
   size: number;
   category: FileCategory;
-}
-
-/** 获取永久文件目录 */
-export async function getPermanentFilesDir(projectId: string): Promise<string | null> {
-  const projectDir = await getProjectDataDir(projectId);
-  if (!projectDir) return null;
-  return joinPath(projectDir, 'AppData', 'file');
-}
-
-/** 确保永久文件目录存在 */
-async function ensurePermanentFilesDir(projectId: string): Promise<string | null> {
-  if (!isTauriEnv()) return null;
-  const dirPath = await getPermanentFilesDir(projectId);
-  if (!dirPath) return null;
-  try {
-    const dirExists = await exists(dirPath);
-    if (!dirExists) await mkdir(dirPath, { recursive: true });
-    return dirPath;
-  } catch (err) {
-    console.error('Failed to create permanent files dir:', dirPath, err);
-    return null;
-  }
+  tags?: string[];                                  // 合并自 assetMeta
+  source?: 'project' | 'global' | 'folder';         // 来源：项目永久 / 全局 file / 外部文件夹
+  folderRoot?: string;                              // source=folder 时所属的登记文件夹
 }
 
 /** 列出目录中的所有文件 */
@@ -938,11 +919,159 @@ export async function listProjectFiles(projectId: string): Promise<AssetFileEntr
   });
 }
 
-/** 获取永久保存的文件列表 */
-export async function listPermanentFiles(projectId: string): Promise<AssetFileEntry[]> {
-  const dir = await getPermanentFilesDir(projectId);
+
+/* ============================================
+   全局资产库（项目无关）+ 外部文件夹
+   ============================================ */
+
+/** 全局文件目录：{baseDataDir}/file（手动添加的单文件落此处）*/
+export async function getGlobalFilesDir(): Promise<string | null> {
+  const base = await getBaseDir();
+  if (!base) return null;
+  return joinPath(base, 'file');
+}
+
+async function ensureGlobalFilesDir(): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+  const dir = await getGlobalFilesDir();
+  if (!dir) return null;
+  try {
+    if (!(await exists(dir))) await mkdir(dir, { recursive: true });
+    return dir;
+  } catch (err) {
+    console.error('Failed to create global files dir:', dir, err);
+    return null;
+  }
+}
+
+/** 列出全局 file 目录（顶层）*/
+export async function listGlobalFiles(): Promise<AssetFileEntry[]> {
+  const dir = await getGlobalFilesDir();
   if (!dir) return [];
-  return listDirectoryFiles(dir);
+  if (!(await exists(dir).catch(() => false))) return [];
+  const files = await listDirectoryFiles(dir);
+  return files.map((f) => ({ ...f, source: 'global' as const }));
+}
+
+/**
+ * 递归遍历目录收集文件（带数量/深度上限，避免超大目录卡死）。
+ * 每个目录内的 stat 并行，整体用栈迭代而非深递归。
+ */
+export async function walkDirectoryFiles(
+  rootDir: string,
+  opts: { maxFiles?: number; maxDepth?: number } = {},
+): Promise<AssetFileEntry[]> {
+  if (!isTauriEnv()) return [];
+  const maxFiles = opts.maxFiles ?? 3000;
+  const maxDepth = opts.maxDepth ?? 8;
+  const convertFileSrc = await getConvertFileSrc();
+  const out: AssetFileEntry[] = [];
+  const stack: { dir: string; depth: number }[] = [{ dir: rootDir, depth: 0 }];
+
+  while (stack.length > 0 && out.length < maxFiles) {
+    const { dir, depth } = stack.pop()!;
+    let entries: Awaited<ReturnType<typeof readDir>>;
+    try {
+      entries = await readDir(dir);
+    } catch {
+      continue;
+    }
+    const fileEntries = entries.filter((e) => e.isFile);
+    const subDirs = entries.filter((e) => e.isDirectory);
+
+    const statResults = await Promise.all(
+      fileEntries.map(async (e) => {
+        const filePath = joinPath(dir, e.name);
+        try {
+          const s = await stat(filePath);
+          return { name: e.name, filePath, size: s.size ?? 0 };
+        } catch {
+          return null;
+        }
+      }),
+    );
+
+    for (const r of statResults) {
+      if (!r) continue;
+      if (out.length >= maxFiles) break;
+      const ext = `.${r.name.split('.').pop()?.toLowerCase()}`;
+      let assetUrl: string | undefined;
+      if (CATEGORY_EXTENSIONS.image.includes(ext) && convertFileSrc) {
+        assetUrl = convertFileSrc(r.filePath);
+      }
+      out.push({
+        name: r.name,
+        path: r.filePath,
+        assetUrl,
+        size: r.size,
+        category: getFileCategory(r.name),
+      });
+    }
+
+    if (depth < maxDepth) {
+      for (const d of subDirs) stack.push({ dir: joinPath(dir, d.name), depth: depth + 1 });
+    }
+  }
+  return out;
+}
+
+/** 列出登记的外部文件夹中的全部文件（递归，整体上限） */
+export async function listExternalFolderFiles(
+  folders: string[],
+  opts: { maxFilesPerFolder?: number } = {},
+): Promise<AssetFileEntry[]> {
+  if (!isTauriEnv() || folders.length === 0) return [];
+  const perFolder = opts.maxFilesPerFolder ?? 3000;
+  const results = await Promise.all(
+    folders.map(async (folder) => {
+      if (!(await exists(folder).catch(() => false))) return [];
+      const files = await walkDirectoryFiles(folder, { maxFiles: perFolder });
+      return files.map((f) => ({ ...f, source: 'folder' as const, folderRoot: folder }));
+    }),
+  );
+  return results.flat();
+}
+
+/** 选择本地文件（可多选）拷贝到全局 file 目录，返回拷贝数量 */
+export async function addAssetFilesToGlobal(): Promise<number> {
+  if (!isTauriEnv()) return 0;
+  const selected = await open({ multiple: true, title: '添加文件到资产库' });
+  if (!selected) return 0;
+  const paths = Array.isArray(selected) ? selected : [selected];
+  const destDir = await ensureGlobalFilesDir();
+  if (!destDir) return 0;
+
+  let count = 0;
+  for (const src of paths) {
+    try {
+      const fileName = src.split(/[\\/]/).pop() || 'file';
+      let destPath = joinPath(destDir, fileName);
+      if (await exists(destPath)) {
+        let counter = 1;
+        const dotIndex = fileName.lastIndexOf('.');
+        const baseName = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
+        const ext = dotIndex > 0 ? fileName.substring(dotIndex) : '';
+        do {
+          destPath = joinPath(destDir, `${baseName}_${counter}${ext}`);
+          counter++;
+        } while (await exists(destPath));
+      }
+      const data = await tauriReadFile(src);
+      await writeFile(destPath, data);
+      count++;
+    } catch (err) {
+      console.error('Failed to add file to global:', src, err);
+    }
+  }
+  return count;
+}
+
+/** 选择一个本地文件夹，返回其路径（仅登记引用，不拷贝） */
+export async function pickAssetFolder(): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+  const selected = await open({ directory: true, title: '添加本地文件夹' });
+  if (!selected || Array.isArray(selected)) return typeof selected === 'string' ? selected : null;
+  return selected;
 }
 
 /**
@@ -1026,10 +1155,10 @@ export function extractFilesFromNodeData(
   };
 }
 
-/** 将项目文件拷贝到永久保存目录 */
-export async function saveToPermanent(filePath: string, projectId: string): Promise<string | null> {
+/** 将文件拷贝到全局永久目录 {baseDataDir}/file */
+export async function saveToPermanent(filePath: string): Promise<string | null> {
   if (!isTauriEnv()) return null;
-  const destDir = await ensurePermanentFilesDir(projectId);
+  const destDir = await ensureGlobalFilesDir();
   if (!destDir) return null;
 
   try {
@@ -1063,14 +1192,13 @@ export async function saveToPermanent(filePath: string, projectId: string): Prom
  */
 export async function saveAssetToPermanent(
   entry: AssetFileEntry,
-  projectId: string,
 ): Promise<string | null> {
   if (!isTauriEnv()) return null;
 
   // 虚拟路径：从 data URL 解码写入
   if (entry.path.startsWith('virtual://')) {
     if (!entry.assetUrl || !entry.assetUrl.startsWith('data:')) return null;
-    const destDir = await ensurePermanentFilesDir(projectId);
+    const destDir = await ensureGlobalFilesDir();
     if (!destDir) return null;
 
     try {
@@ -1108,7 +1236,7 @@ export async function saveAssetToPermanent(
   }
 
   // 真实磁盘路径
-  return saveToPermanent(entry.path, projectId);
+  return saveToPermanent(entry.path);
 }
 
 /** 删除永久保存的文件（移入回收站） */

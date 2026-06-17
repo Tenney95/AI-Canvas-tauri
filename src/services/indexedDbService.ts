@@ -2,12 +2,13 @@
  * indexedDbService IndexedDB 持久化服务 — 浏览器端本地存储，保存项目、工作流、应用配置等数据
  */
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 5; // v5: added history store
+const DB_VERSION = 6; // v6: added assetMeta store (file tags)
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
 const STORE_PRESETS = 'presets';
 const STORE_HISTORY = 'history';
+const STORE_ASSET_META = 'assetMeta';
 
 const CONFIG_KEY = 'app-config';
 
@@ -52,6 +53,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_HISTORY)) {
         db.createObjectStore(STORE_HISTORY, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_ASSET_META)) {
+        db.createObjectStore(STORE_ASSET_META, { keyPath: 'path' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -308,6 +312,51 @@ export async function deleteNodeHistoryEntries(nodeId: string): Promise<void> {
       const toDelete = getAll.result.filter((r: HistoryRecord) => r.nodeId === nodeId);
       for (const r of toDelete) store.delete(r.id);
     };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ============================================
+// Asset Meta CRUD — 资产文件标签元数据（键为文件路径）
+// ============================================
+
+export interface AssetMetaRecord {
+  path: string;          // 文件绝对路径（主键）
+  tags: string[];        // 标签
+  taggedBy?: 'manual' | 'comfyui' | 'vision'; // 标签来源
+  updatedAt: number;
+}
+
+/** 获取全部资产元数据（一次性读入，组件侧建 Map 合并） */
+export async function getAllAssetMeta(): Promise<AssetMetaRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_ASSET_META, 'readonly');
+    const store = tx.objectStore(STORE_ASSET_META);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result as AssetMetaRecord[]);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/** 写入/更新单个文件的标签元数据 */
+export async function putAssetMeta(record: AssetMetaRecord): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_ASSET_META, 'readwrite');
+    tx.objectStore(STORE_ASSET_META).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** 删除单个文件的标签元数据 */
+export async function deleteAssetMeta(path: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_ASSET_META, 'readwrite');
+    tx.objectStore(STORE_ASSET_META).delete(path);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

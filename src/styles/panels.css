@@ -832,3 +832,220 @@
   85% { opacity: 1; transform: translateX(-50%) translateY(0); }
   100% { opacity: 0; transform: translateX(-50%) translateY(-8px); }
 }
+/* ============================================
+   资产管理 一期：工具栏 / 搜索 / 添加 / 标签
+   ============================================ */
+.assets-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px 0;
+}
+.assets-search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  background: var(--theme-card);
+  border: 1px solid var(--theme-border);
+  border-radius: 9px;
+  color: var(--theme-text-muted);
+  transition: border-color var(--transition-base), background var(--transition-base);
+}
+.assets-search:focus-within {
+  border-color: var(--border-focus);
+  background: var(--theme-surface);
+}
+.assets-search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--theme-text);
+  font-size: 13px;
+  font-family: inherit;
+}
+.assets-search svg { flex-shrink: 0; }
+.assets-search-clear {
+  display: flex;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  transition: color var(--transition-base), background var(--transition-base);
+}
+.assets-search-clear:hover { color: var(--theme-text); background: var(--white-alpha-08); }
+
+/* 添加按钮 + 菜单 */
+.assets-add-wrap { position: relative; flex-shrink: 0; }
+.assets-add-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 12px;
+  background: var(--brand);
+  border: none;
+  border-radius: 9px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+}
+.assets-add-btn:disabled { opacity: 0.6; cursor: default; }
+.assets-add-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 148px;
+  padding: 5px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px var(--black-alpha-50);
+  transform-origin: top right;
+}
+.assets-add-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: var(--theme-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--transition-base), color var(--transition-base);
+}
+.assets-add-menu button:hover { background: var(--theme-hover); color: var(--theme-text); }
+
+/* 外部文件夹行 */
+.assets-folder-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+}
+.assets-folder-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 9px;
+  font-size: 11px;
+  color: var(--theme-text-secondary);
+  background: var(--theme-card);
+  border: 1px solid var(--theme-border);
+  border-radius: 999px;
+  max-width: 180px;
+}
+.assets-folder-chip button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--white-alpha-08);
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  transition: background var(--transition-base), color var(--transition-base);
+}
+.assets-folder-chip button:hover { background: var(--danger-bg); color: var(--danger-light); }
+
+/* 分类/标签分隔符 + 标签 chip */
+.assets-chip-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 2px;
+  background: var(--theme-border);
+}
+.assets-tag-chip.active { background: var(--brand); color: #fff; }
+
+/* 卡片：外部角标 */
+.assets-card-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #fff;
+  background: rgba(99, 102, 241, 0.85);
+  border-radius: 4px;
+  pointer-events: none;
+  line-height: 1.5;
+}
+
+/* 卡片：标签区 */
+.assets-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 7px;
+}
+.assets-card-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: var(--brand-pale);
+  background: var(--brand-alpha-12);
+  border-radius: 4px;
+}
+.assets-card-tag button {
+  border: none;
+  background: transparent;
+  color: var(--brand-pale);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.7;
+}
+.assets-card-tag button:hover { opacity: 1; }
+.assets-tag-input {
+  flex: 1;
+  min-width: 60px;
+  padding: 2px 4px;
+  background: var(--theme-surface);
+  border: 1px solid var(--border-focus);
+  border-radius: 4px;
+  color: var(--theme-text);
+  font-size: 10px;
+  outline: none;
+  font-family: inherit;
+}
+.assets-card-name {
+  padding: 0 8px 7px;
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 增量加载哨兵 */
+.assets-load-sentinel {
+  column-span: all;
+  text-align: center;
+  padding: 14px;
+  font-size: 12px;
+  color: var(--theme-text-muted);
+}
+
+/* 卡片轻量入场（无 layout reflow 动画，性能友好） */
+.anim-card-in {
+  animation: floatUpIn var(--dur-normal) var(--ease-out-expo) both;
+}

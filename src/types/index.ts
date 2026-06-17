@@ -106,6 +106,7 @@ export interface AppConfig {
   baseDataDir?: string;       // 用户自定义文件保存根目录，保存结构为 {baseDataDir}/{projectId}/**
   generalModels?: GeneralModelConfig[]; // 用户自建通用模型
   sidebarFloating?: boolean;  // 侧边栏是否悬浮显示（半隐于窗口边缘），默认 true
+  assetFolders?: string[];    // 资产管理中登记的外部本地文件夹路径（引用不拷贝）
 }
 
 // ── 通用模型配置 ──
