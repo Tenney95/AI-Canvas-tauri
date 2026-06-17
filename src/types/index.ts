@@ -91,12 +91,15 @@ export interface DreaminaAuthData {
 }
 
 /** 画布背景主题 */
-export type CanvasBackground = 'default' | 'solar-system' | 'minimal' | 'nebula' | 'off-white';
+export type CanvasBackground = 'default' | 'solar-system' | 'minimal' | 'nebula' | 'off-white' | 'custom';
 
 export interface AppConfig {
   providers: Record<string, ApiProviderConfig>;
   theme: 'dark' | 'light';
   canvasBackground?: CanvasBackground; // 画布背景主题
+  customBackgroundUrl?: string;  // 自定义背景图片 data URL
+  customBackgroundIsDark?: boolean; // 自定义背景是否为深色（自动识别）
+  customBackgroundOpacity?: number; // 自定义背景透明度 0-1，默认 0.3
   comfyUIUrl?: string;        // ComfyUI 服务地址
   comfyUIPath?: string;       // ComfyUI 安装目录路径
   dreaminaAuth?: DreaminaAuthData; // 即梦登录态

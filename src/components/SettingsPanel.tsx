@@ -1,7 +1,7 @@
 /**
  * SettingsPanel 设置面板 — 模态弹窗，管理常规设置、API Key 配置、快捷键、ComfyUI
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { getProjectDataDir, getBaseDir } from '../services/fileService';
@@ -10,9 +10,18 @@ import ModalOverlay from './shared/ModalOverlay';
 import AnimatedButton from './shared/AnimatedButton';
 import ApiKeySettings from './settings/ApiKeySettings';
 import { BACKGROUND_OPTIONS } from './backgrounds/CanvasBackground';
+import { detectBackgroundBrightness, compressImageLossless } from '../services/backgroundService';
 import type { CanvasBackground as CanvasBg } from '../types';
+import type { BackgroundDetection } from '../services/backgroundService';
 
 type SettingsTab = 'general' | 'api' | 'shortcuts' | 'comfyui';
+
+/** 格式化字节为可读大小 */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 export default function SettingsPanel() {
   const { settingsOpen, setSettingsOpen, config, updateConfig, saveConfig, currentProjectId, showToast } =
@@ -31,6 +40,9 @@ export default function SettingsPanel() {
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
   const [comfyUiLaunching, setComfyUiLaunching] = useState(false);
+  const [bgUploading, setBgUploading] = useState(false);
+  const [bgDetection, setBgDetection] = useState<BackgroundDetection | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 加载项目文件夹路径
   useEffect(() => {
@@ -103,6 +115,71 @@ export default function SettingsPanel() {
     } finally {
       setComfyUiLaunching(false);
     }
+  };
+
+  /** 处理背景图片文件选择：无损压缩 → 自动识别深色/浅色 */
+  const handleBgFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // 只允许图片格式
+    if (!file.type.startsWith('image/')) {
+      showToast('请选择图片文件', 'error');
+      return;
+    }
+
+    setBgUploading(true);
+    setBgDetection(null);
+    try {
+      // 1. 无损压缩
+      const compression = await compressImageLossless(file);
+      console.log(
+        `[背景压缩] 原始: ${formatBytes(compression.originalSize)} → 最终: ${formatBytes(compression.compressedSize)}` +
+        (compression.keptOriginal
+          ? ` (保留原图, 重编码会增大)`
+          : compression.compressionRatio > 0
+            ? ` (缩减 ${compression.compressionRatio}%, 格式: ${compression.format.toUpperCase()})`
+            : ` (已最优, 格式: ${compression.format.toUpperCase()})`),
+      );
+
+      // 2. 自动识别深色/浅色
+      const detection = await detectBackgroundBrightness(compression.dataUrl);
+      setBgDetection(detection);
+
+      updateConfig({
+        canvasBackground: 'custom',
+        customBackgroundUrl: compression.dataUrl,
+        customBackgroundIsDark: detection.isDark,
+        theme: detection.isDark ? config.theme : 'light',
+      });
+      await saveConfig();
+
+      const sizeLabel = formatBytes(compression.compressedSize);
+      const ratioLabel = compression.keptOriginal
+        ? `（保留原图，重编码会增大）`
+        : compression.compressionRatio > 0
+          ? `（缩减 ${compression.compressionRatio}%，${compression.format.toUpperCase()}）`
+          : `（已最优，${compression.format.toUpperCase()}）`;
+      showToast(`${detection.isDark ? '深色' : '浅色'}背景 · ${sizeLabel} ${ratioLabel}`, 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '背景图片处理失败', 'error');
+    } finally {
+      setBgUploading(false);
+      // 重置 input 以允许重复选择同一文件
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  /** 移除自定义背景 */
+  const handleRemoveCustomBg = async () => {
+    updateConfig({
+      canvasBackground: 'default',
+      customBackgroundUrl: undefined,
+      customBackgroundIsDark: undefined,
+    });
+    setBgDetection(null);
+    await saveConfig();
+    showToast('已恢复默认背景');
   };
 
   const baseDataDir = config.baseDataDir;
@@ -273,14 +350,27 @@ export default function SettingsPanel() {
                 <div>
                   <h3 className="text-sm font-medium text-canvas-text mb-3">画布背景</h3>
                   <div className="grid grid-cols-3 gap-2">
-                    {BACKGROUND_OPTIONS.map(({ value, label }) => {
+                    {BACKGROUND_OPTIONS.map(({ value, label, theme }) => {
                       const isActive = (config.canvasBackground || 'default') === value;
                       return (
                         <AnimatedButton
                           key={value}
-                          onClick={() => {
-                            updateConfig({ canvasBackground: value as CanvasBg });
-                            saveConfig();
+                          onClick={async () => {
+                            if (value === 'custom') {
+                              if (config.customBackgroundUrl) {
+                                updateConfig({
+                                  canvasBackground: 'custom',
+                                  theme: config.customBackgroundIsDark ? config.theme : 'light',
+                                });
+                                await saveConfig();
+                              } else {
+                                fileInputRef.current?.click();
+                              }
+                              return;
+                            }
+                            updateConfig({ canvasBackground: value as CanvasBg, theme });
+                            setBgDetection(null);
+                            await saveConfig();
                           }}
                           className={`flex flex-col items-center gap-2 p-1 rounded-lg border transition-colors ${
                             isActive
@@ -289,7 +379,7 @@ export default function SettingsPanel() {
                           }`}
                         >
                           {/* 预览缩略图 */}
-                          <div className={`w-full h-12 rounded overflow-hidden border border-canvas-border ${
+                          <div className={`w-full h-12 rounded overflow-hidden border border-canvas-border flex items-center justify-center ${
                             value === 'default'
                               ? 'bg-[#0a0a1a]'
                               : value === 'solar-system'
@@ -298,8 +388,17 @@ export default function SettingsPanel() {
                               ? 'bg-gradient-to-b from-[#0a0514] via-[#14081e] to-[#0a0514]'
                               : value === 'off-white'
                               ? 'bg-[#F5F0EB]'
+                              : value === 'custom'
+                              ? (config.customBackgroundUrl
+                                ? ''
+                                : 'bg-canvas-surface')
                               : 'bg-black'
-                          }`}>
+                          }`}
+                          style={
+                            value === 'custom' && config.customBackgroundUrl
+                              ? { backgroundImage: `url(${config.customBackgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+                              : undefined
+                          }>
                             {value === 'default' && (
                               <div className="w-full h-full" style={{
                                 backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.08) 1px, transparent 1px)',
@@ -333,12 +432,99 @@ export default function SettingsPanel() {
                                 backgroundSize: '8px 8px',
                               }} />
                             )}
+                            {value === 'custom' && !config.customBackgroundUrl && (
+                              <>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-canvas-text-muted">
+                                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                                  <polyline points="17 8 12 3 7 8" />
+                                  <line x1="12" y1="3" x2="12" y2="15" />
+                                </svg>
+                              </>
+                            )}
                           </div>
                           <span className="text-[11px] font-medium">{label}</span>
                         </AnimatedButton>
                       );
                     })}
                   </div>
+
+                  {/* 自定义背景上传 & 检测结果 */}
+                  {config.canvasBackground === 'custom' && config.customBackgroundUrl && (
+                    <div className="mt-3 bg-canvas-card border border-canvas-border rounded-lg p-4 space-y-3">
+                      {/* 预览图 + 移除按钮 */}
+                      <div className="flex items-center gap-3">
+                        <div
+                          className="w-20 h-14 rounded border border-canvas-border shrink-0"
+                          style={{
+                            backgroundImage: `url(${config.customBackgroundUrl})`,
+                            backgroundSize: 'cover',
+                            backgroundPosition: 'center',
+                          }}
+                        />
+                        <div className="flex-1 min-w-0 space-y-1.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <AnimatedButton
+                              type="button"
+                              className="settings-save-btn text-xs"
+                              onClick={() => fileInputRef.current?.click()}
+                              disabled={bgUploading}
+                            >
+                              {bgUploading ? '识别中…' : '更换图片'}
+                            </AnimatedButton>
+                            <AnimatedButton
+                              type="button"
+                              className="text-xs px-3 py-1 rounded-md text-red-400 hover:bg-red-500/10 transition-colors"
+                              onClick={handleRemoveCustomBg}
+                            >
+                              移除背景
+                            </AnimatedButton>
+                          </div>
+                          {/* 深色/浅色检测结果 */}
+                          <div className="flex items-center gap-2">
+                            <div
+                              className={`w-2 h-2 rounded-full shrink-0 ${
+                                bgDetection ? (bgDetection.isDark ? 'bg-indigo-400' : 'bg-amber-400') : 'bg-canvas-border'
+                              }`}
+                            />
+                            <span className="text-[11px] text-canvas-text-secondary">
+                              {bgDetection
+                                ? `已识别为${bgDetection.isDark ? '深色' : '浅色'}背景（亮度: ${bgDetection.brightness}/255）`
+                                : config.customBackgroundIsDark !== undefined
+                                  ? `已识别为${config.customBackgroundIsDark ? '深色' : '浅色'}背景`
+                                  : '未检测'}
+                            </span>
+                          </div>
+                          {/* 透明度滑块 */}
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] text-canvas-text-muted shrink-0">透明度</span>
+                            <input
+                              type="range"
+                              min="5"
+                              max="100"
+                              value={Math.round((config.customBackgroundOpacity ?? 0.3) * 100)}
+                              onChange={(e) => {
+                                updateConfig({ customBackgroundOpacity: Number(e.target.value) / 100 });
+                                saveConfig();
+                              }}
+                              className="flex-1 h-1 accent-indigo-500 cursor-pointer"
+                            />
+                            <span className="text-[11px] text-canvas-text-secondary w-8 text-right tabular-nums">
+                              {Math.round((config.customBackgroundOpacity ?? 0.3) * 100)}%
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 隐藏的文件选择器 */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleBgFileChange}
+                  />
                 </div>
 
                 <div style={{ display: 'none' }}>
@@ -362,6 +548,8 @@ export default function SettingsPanel() {
                     </div>
                   </div>
                 </div>
+
+                {/* 侧边栏是否悬浮显示 */}
 
                 {/* 文件保存位置 */}
                 <div>
@@ -443,6 +631,7 @@ export default function SettingsPanel() {
                   { action: '撤销', key: 'Ctrl + Z' },
                   { action: '重做', key: 'Ctrl + Y' },
                   { action: '删除节点', key: 'Delete / Backspace' },
+                  { action: '画布复位', key: 'F' },
                   { action: '小地图', key: 'M' },
                 ].map(({ action, key }) => (
                   <div key={action} className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-canvas-hover">
