@@ -539,7 +539,7 @@
   padding-bottom: 10px;
   /* animation handled by framer-motion */
 }
-[data-tauri-window] .assets-panel {
+[data-tauri-window][data-sidebar-floating] .assets-panel {
   margin-left: 30px;
 }
 

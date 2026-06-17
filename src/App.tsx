@@ -74,12 +74,44 @@ export default function App() {
     }
   }, []);
 
+  // 窗口最大化状态（Tauri）：最大化时取消悬浮效果（无透明边条可悬浮）
+  const [isMaximized, setIsMaximized] = useState(false);
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        const check = () => win.isMaximized().then(setIsMaximized).catch(() => {});
+        await check();
+        unlisten = await win.onResized(check);
+      } catch { /* non-Tauri env */ }
+    })();
+    return () => { unlisten?.(); };
+  }, []);
+
+  // 侧边栏悬浮显示开关（默认开启）；最大化时强制非悬浮。
+  // 同步到 body 属性，供 CSS 切换侧边栏停靠/悬浮位置 + 弹窗蒙层的左偏移
+  const sidebarFloatingCfg = useAppStore((s) => s.config.sidebarFloating);
+  const effectiveFloating = sidebarFloatingCfg !== false && !isMaximized;
+  useEffect(() => {
+    if (effectiveFloating) {
+      document.body.setAttribute('data-sidebar-floating', '');
+    } else {
+      document.body.removeAttribute('data-sidebar-floating');
+    }
+  }, [effectiveFloating]);
+
   const appContent = (
     <div
-      data-tauri-window={isTauri ? '' : undefined}
       className={`h-screen relative text-canvas-text font-sans ${
-        isTauri ? 'ml-[30px] w-[calc(100vw-30px)]' : 'w-screen'
+        isTauri && effectiveFloating ? 'ml-[30px] w-[calc(100vw-30px)]' : 'w-screen'
       }`}
+      style={{
+        transition:
+          'margin-left 0.42s var(--ease-out-expo), width 0.42s var(--ease-out-expo)',
+      }}
     >
       {/* Content area — clip-path clips ALL descendants including fixed-position backdrops */}
       <div className="app-box absolute inset-0 rounded-[16px] bg-canvas-bg/[0.988] shadow-2xl [clip-path:inset(0_round_16px)]">

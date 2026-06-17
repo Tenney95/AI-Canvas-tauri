@@ -51,6 +51,7 @@ const GooeyBtn = ({ className, hue }: GooeyBtnProps) => {
     --x: 50; --y: 50; --a: 0%;
     --button: hsl(var(--hue), 66%, 66%);
 
+    display: block; /* 避免 inline-block 基线空隙撑高 wrapper，导致按钮整体偏上 */
     width: 40px;
     height: 40px;
     border-radius: 50%;

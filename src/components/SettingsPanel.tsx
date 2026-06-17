@@ -36,6 +36,7 @@ export default function SettingsPanel() {
         showToast: s.showToast,
       })),
     );
+  const sidebarFloating = config.sidebarFloating !== false; // 默认开启
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
@@ -550,6 +551,39 @@ export default function SettingsPanel() {
                 </div>
 
                 {/* 侧边栏是否悬浮显示 */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">侧边栏</h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateConfig({ sidebarFloating: !sidebarFloating });
+                      saveConfig();
+                    }}
+                    aria-pressed={sidebarFloating}
+                    className={`sidebar-pref-card${sidebarFloating ? ' is-floating' : ''}`}
+                  >
+                    {/* 迷你界面预览：外框=界面，竖条=侧边栏 */}
+                    <div className="sidebar-pref-window" aria-hidden="true">
+                      <div className="sidebar-pref-content">
+                        <span /><span /><span />
+                      </div>
+                      <div className="sidebar-pref-bar" />
+                    </div>
+
+                    <div className="sidebar-pref-text">
+                      <div className="sidebar-pref-title">悬浮显示</div>
+                      <div className="sidebar-pref-desc">
+                        {sidebarFloating
+                          ? '侧边栏半隐于窗口边缘，悬浮在画布之上'
+                          : '侧边栏停靠在窗口内侧'}
+                      </div>
+                    </div>
+
+                    <div className="sidebar-pref-switch" aria-hidden="true">
+                      <span />
+                    </div>
+                  </button>
+                </div>
 
                 {/* 文件保存位置 */}
                 <div>

@@ -105,6 +105,7 @@ export interface AppConfig {
   dreaminaAuth?: DreaminaAuthData; // 即梦登录态
   baseDataDir?: string;       // 用户自定义文件保存根目录，保存结构为 {baseDataDir}/{projectId}/**
   generalModels?: GeneralModelConfig[]; // 用户自建通用模型
+  sidebarFloating?: boolean;  // 侧边栏是否悬浮显示（半隐于窗口边缘），默认 true
 }
 
 // ── 通用模型配置 ──

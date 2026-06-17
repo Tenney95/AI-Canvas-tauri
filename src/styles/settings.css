@@ -496,3 +496,125 @@
   padding-top: 10px;
   border-top: 1px solid var(--theme-border);
 }
+
+/* ============================================
+   侧边栏悬浮显示 开关（迷你界面预览）
+   ============================================ */
+.sidebar-pref-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px;
+  background: var(--theme-card);
+  border: 1px solid var(--theme-border);
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition-base), border-color var(--transition-base),
+    transform var(--dur-fast) var(--ease-out-quart);
+}
+.sidebar-pref-card:hover {
+  background: var(--theme-hover);
+}
+.sidebar-pref-card:active {
+  transform: scale(0.99);
+}
+.sidebar-pref-card.is-floating {
+  border-color: var(--brand-alpha-30);
+}
+
+/* 迷你窗口（代表界面） */
+.sidebar-pref-window {
+  position: relative;
+  flex-shrink: 0;
+  width: 104px;
+  height: 64px;
+  border-radius: 9px;
+  border: 1px solid var(--theme-border);
+  background: var(--theme-surface);
+  box-shadow: inset 0 0 0 1px var(--white-alpha-03);
+  overflow: visible;
+  transition: box-shadow var(--transition-smooth);
+}
+.sidebar-pref-card.is-floating .sidebar-pref-window {
+  box-shadow: inset 0 0 0 1px var(--brand-alpha-10), 0 0 0 3px var(--brand-alpha-10);
+}
+
+/* 画布内容（几条占位线，靠右） */
+.sidebar-pref-content {
+  position: absolute;
+  left: 28px;
+  right: 12px;
+  top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.sidebar-pref-content span {
+  height: 4px;
+  border-radius: 3px;
+  background: var(--white-alpha-10);
+}
+.sidebar-pref-content span:nth-child(1) { width: 100%; }
+.sidebar-pref-content span:nth-child(2) { width: 75%; }
+.sidebar-pref-content span:nth-child(3) { width: 55%; }
+
+/* 侧边栏竖条 —— 位置随悬浮状态在「停靠 / 半隐边缘」之间滑动 */
+.sidebar-pref-bar {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 62%;
+  border-radius: 5px;
+  background: linear-gradient(180deg, var(--brand-light), var(--brand));
+  transition: left 0.42s var(--ease-spring), box-shadow var(--transition-smooth);
+}
+.sidebar-pref-card.is-floating .sidebar-pref-bar {
+  left: -6px; /* 半露出窗口左缘，呼应真实的悬浮态 */
+  box-shadow: 0 3px 12px var(--brand-alpha-30);
+}
+
+/* 文案 */
+.sidebar-pref-text {
+  flex: 1;
+  min-width: 0;
+}
+.sidebar-pref-title {
+  font-size: 13px;
+  color: var(--theme-text);
+}
+.sidebar-pref-desc {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+/* iOS 风格开关 */
+.sidebar-pref-switch {
+  flex-shrink: 0;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--white-alpha-12);
+  padding: 2px;
+  transition: background var(--transition-smooth);
+}
+.sidebar-pref-switch span {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px var(--black-alpha-40);
+  transition: transform 0.42s var(--ease-spring);
+}
+.sidebar-pref-card.is-floating .sidebar-pref-switch {
+  background: var(--brand);
+}
+.sidebar-pref-card.is-floating .sidebar-pref-switch span {
+  transform: translateX(16px);
+}

@@ -16,10 +16,13 @@
   border: 1px solid var(--glass-ring);
   border-radius: 14px;
   box-shadow: 8px 0 32px var(--black-alpha-40);
+  /* 切换悬浮/停靠时平滑滑动 */
+  transition: left 0.42s var(--ease-spring);
 }
 
-/* Tauri: sidebar half outside the content area (transparent left strip) */
-[data-tauri-window] .sidebar-floating {
+/* Tauri + 悬浮开启：侧边栏半露在透明边条外（悬浮态）。
+   关闭悬浮（无 data-sidebar-floating）时回落到 left:12px 停靠态。 */
+[data-tauri-window][data-sidebar-floating] .sidebar-floating {
   left: -26px;
 }
 
