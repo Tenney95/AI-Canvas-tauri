@@ -2,9 +2,14 @@
  * MentionEditor @提及编辑器 — 支持 @引用其他节点输出的富文本输入框，实时渲染为彩色标签芯片
  */
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import type { WorkflowIONodeType } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { Icon } from '@iconify/react';
+import { listGlobalFiles, listExternalFolderFiles, getFileCategory, type AssetFileEntry } from '../../../services/fileService';
+import { getAllAssetMeta } from '../../../services/indexedDbService';
+import { springSmooth, fadeFast } from '../../../utils/motion';
+import { AnimatePresence, motion } from 'framer-motion';
 
 // ── Props ──
 export interface MentionEditorProps {
@@ -66,6 +71,8 @@ function serializeDOM(root: HTMLElement): string {
         const id = el.getAttribute('data-ref-id') || '';
         const label = el.getAttribute('data-ref-label') || '';
         result += `@{${id}:${label}}`;
+      } else if (el.hasAttribute('data-asset-path')) {
+        result += `@asset{${encodeURIComponent(el.getAttribute('data-asset-path') || '')}}`;
       } else if (el.hasAttribute('data-wf-id')) {
         const id = el.getAttribute('data-wf-id') || '';
         const title = el.getAttribute('data-wf-title') || '';
@@ -128,6 +135,36 @@ function buildChipEl(
   return span;
 }
 
+/** Build a chip for a referenced permanent asset file (@asset{encodedPath}). */
+function buildAssetChipEl(path: string, assetUrl?: string): HTMLSpanElement {
+  const name = path.split(/[\\/]/).pop() || 'asset';
+  const isImage = getFileCategory(name) === 'image';
+
+  const span = document.createElement('span');
+  span.className = 'prompt-chip chip-asset';
+  span.contentEditable = 'false';
+  span.setAttribute('data-asset-path', path);
+
+  const iconSpan = document.createElement('span');
+  iconSpan.className = 'prompt-chip-icon';
+  if (isImage && assetUrl) {
+    const img = document.createElement('img');
+    img.src = assetUrl;
+    img.className = 'prompt-chip-thumb';
+    img.alt = '';
+    iconSpan.appendChild(img);
+  } else {
+    iconSpan.textContent = isImage ? '🖼' : '📄';
+  }
+  span.appendChild(iconSpan);
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'prompt-chip-id';
+  nameSpan.textContent = name.length > 18 ? `${name.slice(0, 16)}…` : name;
+  span.appendChild(nameSpan);
+  return span;
+}
+
 /** Build a workflow IO chip — label prefix (⚡ T#id :) + editable value area. */
 function buildWorkflowChipEl(
   ioNodeId: string,
@@ -168,7 +205,7 @@ function renderPromptToNodes(
   text: string,
   metaMap: Map<string, { type: string; displayId: number | undefined; thumbnailUrl?: string }>,
 ): Node[] {
-  const regex = /@\{([^:]+):([^}]+)\}|@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}/g;
+  const regex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}|@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}/g;
   const nodes: Node[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -176,12 +213,18 @@ function renderPromptToNodes(
   while ((match = regex.exec(text)) !== null) {
     pushTextWithBreaks(nodes, text.slice(lastIndex, match.index));
     if (match[1] !== undefined) {
-      nodes.push(buildChipEl(match[1], match[2], metaMap));
+      // Asset reference
+      let path = match[1];
+      try { path = decodeURIComponent(match[1]); } catch { /* keep raw */ }
+      nodes.push(buildAssetChipEl(path));
+      lastIndex = regex.lastIndex;
+    } else if (match[2] !== undefined) {
+      nodes.push(buildChipEl(match[2], match[3], metaMap));
       lastIndex = regex.lastIndex;
     } else {
-      const id = match[3];
-      const title = match[4];
-      const type = match[5] as WorkflowIONodeType;
+      const id = match[4];
+      const title = match[5];
+      const type = match[6] as WorkflowIONodeType;
       const matchEnd = regex.lastIndex;
 
       // Value area is wrapped in (...) — find matching closing paren with depth tracking.
@@ -253,6 +296,17 @@ export default function MentionEditor({
   const editorRef = useRef<HTMLDivElement>(null);
   const savedMentionRangeRef = useRef<Range | null>(null);
   const { nodes, edges, workflows } = useAppStore();
+
+  // ── 资产引用弹窗 ──
+  const assetFolders = useAppStore((s) => s.config.assetFolders);
+  const [showAssetPicker, setShowAssetPicker] = useState(false);
+  const [assetList, setAssetList] = useState<AssetFileEntry[]>([]);
+  const [assetTagMap, setAssetTagMap] = useState<Record<string, string[]>>({});
+  const [assetLoading, setAssetLoading] = useState(false);
+  const [assetSearch, setAssetSearch] = useState('');
+  const [activeAssetTag, setActiveAssetTag] = useState<string | null>(null);
+  const [assetVisible, setAssetVisible] = useState(40);
+  const assetSentinelRef = useRef<HTMLDivElement | null>(null);
 
   // ── Selected workflow and its IO nodes ──
   const selectedWorkflow = useMemo(
@@ -402,17 +456,11 @@ export default function MentionEditor({
     ? workflowMentionNodes.filter((n) => n.label.toLowerCase().includes(mentionQuery.toLowerCase()))
     : workflowMentionNodes;
 
-  const hasAnyMentions = canvasMentionNodes.length > 0 || workflowMentionNodes.length > 0;
-
-  // ── Auto-close menu when no mentionables left ──
+  // ── Clear saved range when both mention menu and asset picker are closed ──
+  // （@ 菜单切到资产弹窗时需保留光标范围，供选中资产后插入芯片）
   useEffect(() => {
-    if (showMention && !hasAnyMentions) setShowMention(false);
-  }, [showMention, hasAnyMentions]);
-
-  // ── Clear saved range when mention closes ──
-  useEffect(() => {
-    if (!showMention) savedMentionRangeRef.current = null;
-  }, [showMention]);
+    if (!showMention && !showAssetPicker) savedMentionRangeRef.current = null;
+  }, [showMention, showAssetPicker]);
 
   // ── Click outside closes mention ──
   useEffect(() => {
@@ -543,6 +591,130 @@ export default function MentionEditor({
     [deleteAtChar, insertWorkflowChipAtCursor],
   );
 
+  // ── Insert an asset reference chip ──
+  const insertAssetChipAtCursor = useCallback(
+    (path: string, assetUrl?: string) => {
+      const el = editorRef.current;
+      if (!el) return;
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return;
+      const range = sel.getRangeAt(0);
+      if (!el.contains(range.startContainer)) {
+        range.selectNodeContents(el);
+        range.collapse(false);
+      }
+      const chip = buildAssetChipEl(path, assetUrl);
+      range.insertNode(chip);
+      range.setStartAfter(chip);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      emitDOM();
+    },
+    [emitDOM],
+  );
+
+  // ── 打开资产弹窗（保持 @ 处的光标范围，关闭 @ 菜单）──
+  const openAssetPicker = useCallback(() => {
+    setShowMention(false);
+    setShowAssetPicker(true);
+    setAssetSearch('');
+  }, []);
+
+  // Esc 关闭资产弹窗
+  useEffect(() => {
+    if (!showAssetPicker) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setShowAssetPicker(false); } };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [showAssetPicker]);
+
+  // 弹窗打开时加载：全局永久资产 + 登记的外部文件夹（去重）+ 标签元数据
+  useEffect(() => {
+    if (!showAssetPicker) return;
+    let alive = true;
+    setAssetLoading(true);
+    Promise.all([
+      listGlobalFiles(),
+      listExternalFolderFiles(assetFolders ?? []),
+      getAllAssetMeta().catch(() => []),
+    ])
+      .then(([globalFiles, folderFiles, metas]) => {
+        if (!alive) return;
+        const seen = new Set<string>();
+        const merged: AssetFileEntry[] = [];
+        for (const f of [...globalFiles, ...folderFiles]) {
+          if (seen.has(f.path)) continue;
+          seen.add(f.path);
+          merged.push(f);
+        }
+        const tagMap: Record<string, string[]> = {};
+        for (const m of metas) if (m.tags?.length) tagMap[m.path] = m.tags;
+        setAssetList(merged);
+        setAssetTagMap(tagMap);
+      })
+      .catch(() => { if (alive) { setAssetList([]); setAssetTagMap({}); } })
+      .finally(() => { if (alive) setAssetLoading(false); });
+    return () => { alive = false; };
+  }, [showAssetPicker, assetFolders]);
+
+  const handleSelectAsset = useCallback(
+    (file: AssetFileEntry) => {
+      const el = editorRef.current;
+      if (el) el.focus();
+      const saved = savedMentionRangeRef.current;
+      savedMentionRangeRef.current = null;
+      if (saved) {
+        const sel = window.getSelection();
+        if (sel) { sel.removeAllRanges(); sel.addRange(saved); }
+      }
+      deleteAtChar();
+      insertAssetChipAtCursor(file.path, file.assetUrl);
+      setShowAssetPicker(false);
+      setMentionQuery('');
+    },
+    [deleteAtChar, insertAssetChipAtCursor],
+  );
+
+  // 标签合并 + 派生标签 chip
+  const taggedAssets = useMemo(
+    () => assetList.map((f) => (assetTagMap[f.path] ? { ...f, tags: assetTagMap[f.path] } : f)),
+    [assetList, assetTagMap],
+  );
+  const assetTagList = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const f of taggedAssets) for (const t of f.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20);
+  }, [taggedAssets]);
+
+  const filteredAssets = useMemo(() => {
+    const q = assetSearch.trim().toLowerCase();
+    return taggedAssets.filter((f) => {
+      if (activeAssetTag && !(f.tags ?? []).includes(activeAssetTag)) return false;
+      if (q) {
+        const inName = f.name.toLowerCase().includes(q);
+        const inTags = (f.tags ?? []).some((t) => t.toLowerCase().includes(q));
+        if (!inName && !inTags) return false;
+      }
+      return true;
+    });
+  }, [taggedAssets, assetSearch, activeAssetTag]);
+
+  // 增量渲染：过滤变化时重置
+  useEffect(() => { setAssetVisible(40); }, [assetSearch, activeAssetTag, showAssetPicker]);
+  const visibleAssets = useMemo(() => filteredAssets.slice(0, assetVisible), [filteredAssets, assetVisible]);
+  useEffect(() => {
+    const el = assetSentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting) {
+        setAssetVisible((c) => (c < filteredAssets.length ? c + 40 : c));
+      }
+    }, { rootMargin: '200px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [filteredAssets.length, visibleAssets.length]);
+
   // ── Input handler: detect @ and / ──
   const handleInput = useCallback(() => {
     const el = editorRef.current;
@@ -555,14 +727,13 @@ export default function MentionEditor({
         const text = node.textContent || '';
         const cursorPos = range.startOffset;
         if (cursorPos > 0 && text[cursorPos - 1] === '@') {
-          if (hasAnyMentions) {
-            setMentionQuery('');
-            setShowMention(true);
-            // Save cursor range before the menu steals focus
-            const sel2 = window.getSelection();
-            if (sel2 && sel2.rangeCount) {
-              savedMentionRangeRef.current = sel2.getRangeAt(0).cloneRange();
-            }
+          // 资产引用始终可用，故 @ 总是打开菜单
+          setMentionQuery('');
+          setShowMention(true);
+          // Save cursor range before the menu steals focus
+          const sel2 = window.getSelection();
+          if (sel2 && sel2.rangeCount) {
+            savedMentionRangeRef.current = sel2.getRangeAt(0).cloneRange();
           }
         } else if (cursorPos > 0 && text[cursorPos - 1] === '/') {
           onSlashTrigger?.();
@@ -570,7 +741,7 @@ export default function MentionEditor({
       }
     }
     emitDOM();
-  }, [emitDOM, hasAnyMentions, onSlashTrigger]);
+  }, [emitDOM, onSlashTrigger]);
 
   // ── KeyDown: mention navigation / submit / chip deletion ──
   const handleKeyDown = useCallback(
@@ -721,7 +892,7 @@ export default function MentionEditor({
       />
 
       {/* @ Mention Dropdown */}
-      {showMention && (canvasMentionNodes.length > 0 || workflowMentionNodes.length > 0) && (
+      {showMention && (
         <div className="absolute left-3 bottom-full mb-1 w-64 bg-canvas-card border border-canvas-border rounded-lg shadow-xl shadow-black/40 overflow-hidden z-50">
           {/* Canvas nodes section */}
           {canvasMentionNodes.length > 0 && (
@@ -818,11 +989,117 @@ export default function MentionEditor({
             </>
           )}
 
-          {/* No results for query */}
+          {/* No node results for query */}
           {mentionQuery && filteredCanvasMentions.length === 0 && filteredWorkflowMentions.length === 0 && (
-            <div className="px-3 py-4 text-center text-xs text-canvas-text-muted">无匹配节点</div>
+            <div className="px-3 py-3 text-center text-xs text-canvas-text-muted">无匹配节点</div>
           )}
+
+          {/* 引用资产 — 常驻入口 */}
+          <button
+            type="button"
+            onMouseDown={(e) => { e.preventDefault(); openAssetPicker(); }}
+            className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-canvas-hover transition-colors text-left border-t border-canvas-border"
+          >
+            <span className="w-6 h-6 rounded flex items-center justify-center shrink-0 bg-indigo-500/15 text-indigo-300">
+              <Icon icon="solar:gallery-bold" width="14" height="14" />
+            </span>
+            <span className="text-sm text-canvas-text">引用资产</span>
+            <span className="ml-auto text-[10px] text-canvas-text-muted">永久保存</span>
+          </button>
         </div>
+      )}
+
+      {/* 资产引用弹窗（Portal） */}
+      {createPortal(
+        <AnimatePresence>
+          {showAssetPicker && (
+            <motion.div
+              className="asset-picker-backdrop"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.18 }}
+              onMouseDown={() => setShowAssetPicker(false)}
+            >
+              <motion.div
+                className="asset-picker"
+                initial={{ opacity: 0, scale: 0.96, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.96, y: 12, transition: fadeFast }}
+                transition={springSmooth}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="asset-picker-header">
+                  <span className="asset-picker-title">引用资产</span>
+                  <button type="button" className="asset-picker-close" onClick={() => setShowAssetPicker(false)} aria-label="关闭">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="asset-picker-search">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                  <input
+                    type="text" placeholder="搜索名称或标签…" autoFocus
+                    value={assetSearch} onChange={(e) => setAssetSearch(e.target.value)}
+                  />
+                </div>
+
+                {/* 标签筛选 */}
+                {assetTagList.length > 0 && (
+                  <div className="asset-picker-tags">
+                    <button
+                      type="button"
+                      className={`asset-picker-tag ${activeAssetTag === null ? 'active' : ''}`}
+                      onClick={() => setActiveAssetTag(null)}
+                    >全部</button>
+                    {assetTagList.map(([tag, count]) => (
+                      <button
+                        key={tag}
+                        type="button"
+                        className={`asset-picker-tag ${activeAssetTag === tag ? 'active' : ''}`}
+                        onClick={() => setActiveAssetTag((t) => (t === tag ? null : tag))}
+                      >#{tag}<span className="asset-picker-tag-count">{count}</span></button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="asset-picker-grid">
+                  {assetLoading ? (
+                    <div className="asset-picker-empty">加载中…</div>
+                  ) : filteredAssets.length === 0 ? (
+                    <div className="asset-picker-empty">{assetSearch || activeAssetTag ? '没有匹配的文件' : '暂无文件'}</div>
+                  ) : (
+                    <>
+                      {visibleAssets.map((file) => (
+                        <button
+                          key={file.path}
+                          type="button"
+                          className="asset-picker-card"
+                          title={file.name}
+                          onClick={() => handleSelectAsset(file)}
+                        >
+                          {file.assetUrl ? (
+                            <img src={file.assetUrl} alt={file.name} loading="lazy" decoding="async" />
+                          ) : (
+                            <span className="asset-picker-card-icon">
+                              {file.category === 'video' ? '🎬' : file.category === 'audio' ? '🎵' : file.category === 'text' ? '📄' : '📁'}
+                            </span>
+                          )}
+                          <span className="asset-picker-card-name">{file.name}</span>
+                        </button>
+                      ))}
+                      {assetVisible < filteredAssets.length && (
+                        <div ref={assetSentinelRef} className="asset-picker-sentinel">加载更多…</div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body,
       )}
     </div>
   );

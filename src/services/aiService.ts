@@ -4,6 +4,7 @@
 import { useAppStore } from '../store/useAppStore';
 import type { WorkflowIONode } from '../types';
 import { uploadToRemote, isLocalImageUrl } from './uploadService';
+import { readFileToDataUrl, getFileCategory } from './fileService';
 
 /** 本地模型调用超时（30 分钟） */
 const LOCAL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -786,7 +787,7 @@ async function resolvePromptToChatContent(rawPrompt: string): Promise<{
   textContent: string;
 }> {
   const { nodes } = useAppStore.getState();
-  const chipRegex = /@\{([^:]+):([^}]+)\}/g;
+  const chipRegex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
   const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string }> = [];
   const parts: string[] = [];
   let lastIndex = 0;
@@ -798,7 +799,20 @@ async function resolvePromptToChatContent(rawPrompt: string): Promise<{
       parts.push(rawPrompt.slice(lastIndex, match.index));
     }
 
-    const nodeId = match[1];
+    // 资产引用：图片资产读为 data URL 作为多模态输入；其余忽略
+    if (match[1] !== undefined) {
+      let assetPath = match[1];
+      try { assetPath = decodeURIComponent(match[1]); } catch { /* keep raw */ }
+      const assetName = assetPath.split(/[\\/]/).pop() || '';
+      if (getFileCategory(assetName) === 'image') {
+        const dataUrl = await readFileToDataUrl(assetPath);
+        if (dataUrl) imageEntries.push({ url: dataUrl });
+      }
+      lastIndex = chipRegex.lastIndex;
+      continue;
+    }
+
+    const nodeId = match[2];
     const node = nodes.find((n) => n.id === nodeId);
     if (!node) {
       parts.push(match[0]); // 未找到节点则保留原文
@@ -875,8 +889,10 @@ async function resolvePromptToChatContent(rawPrompt: string): Promise<{
 /** 解析 workflowInputs 值中的 @{nodeId:label} 引用，替换为对应节点的实际输出内容 */
 function resolveNodeReferences(value: string): string {
   const { nodes } = useAppStore.getState();
+  // 资产引用在工作流文本输入中不适用，直接移除标记
+  const cleaned = value.replace(/@asset\{[^}]+\}/g, '');
   const chipRegex = /@\{([^:]+):([^}]+)\}/g;
-  return value.replace(chipRegex, (_match, nodeId: string) => {
+  return cleaned.replace(chipRegex, (_match, nodeId: string) => {
     const node = nodes.find((n) => n.id === nodeId);
     if (!node) return _match;
     // 文本节点的输出在 data.output 中
@@ -899,10 +915,28 @@ function resolveNodeReferences(value: string): string {
  *  图片节点有蒙版/标注时自动合并到原图 */
 async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ prompt: string; imageUrls: string[] }> {
   const { nodes } = useAppStore.getState();
-  const chipRegex = /@\{([^:]+):([^}]+)\}/g;
   const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string }> = [];
 
-  const prompt = rawPrompt.replace(chipRegex, (_match, nodeId: string) => {
+  // 预读图片资产为 data URL（replace 回调是同步的，需提前异步读取）
+  const assetImageMap = new Map<string, string>();
+  for (const m of rawPrompt.matchAll(/@asset\{([^}]+)\}/g)) {
+    let p = m[1];
+    try { p = decodeURIComponent(m[1]); } catch { /* keep raw */ }
+    const name = p.split(/[\\/]/).pop() || '';
+    if (getFileCategory(name) === 'image' && !assetImageMap.has(m[1])) {
+      const dataUrl = await readFileToDataUrl(p);
+      if (dataUrl) assetImageMap.set(m[1], dataUrl);
+    }
+  }
+
+  const chipRegex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
+  const prompt = rawPrompt.replace(chipRegex, (_match, assetEnc: string | undefined, nodeId: string) => {
+    // 资产引用：图片入 image_urls，从 prompt 移除；非图片忽略
+    if (assetEnc !== undefined) {
+      const dataUrl = assetImageMap.get(assetEnc);
+      if (dataUrl) imageEntries.push({ url: dataUrl });
+      return '';
+    }
     const node = nodes.find((n) => n.id === nodeId);
     if (!node) return '';
 
