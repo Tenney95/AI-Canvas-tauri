@@ -18,7 +18,12 @@ interface MattingEditorProps {
   onSave: (maskUrl: string) => void;
 }
 
-const MASK_COLOR = 'rgba(255, 200, 0, 0.45)';
+/* 蒙版以"满 alpha"绘制到画布（满色叠满色仍是满色，任意重叠都不会变深），
+   显示时由画布 CSS opacity 统一降到 MASK_DISPLAY_ALPHA，保存时再把该透明度烤进输出，
+   使最终蒙版处处一致、且与下游消费格式（半透明黄）保持不变。 */
+const MASK_RGB: [number, number, number] = [255, 200, 0];
+const MASK_DISPLAY_ALPHA = 0.45;
+const MASK_COLOR = `rgba(${MASK_RGB[0]}, ${MASK_RGB[1]}, ${MASK_RGB[2]}, 1)`;
 
 /* ── Flood fill helper ── */
 function floodFill(
@@ -93,17 +98,57 @@ export default function MattingEditor({
   const [brushSize, setBrushSize] = useState(40);
   const [historyIdx, setHistoryIdx] = useState(-1);
 
+  // ── 缩放 / 平移 ──
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const offsetRef = useRef({ x: 0, y: 0 });
+  const [panReady, setPanReady] = useState(false); // 空格按下 → 进入平移就绪态（手型光标）
+  const spaceDown = useRef(false);
+  const isPanning = useRef(false);
+  const panStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
+
+  // 每个画布单位对应的屏幕像素（含缩放）——用于让画笔光标圆圈与实际笔触直径一致
+  const [dispScale, setDispScale] = useState(1);
+  const recomputeDispScale = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !canvas.width) return;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width > 0) setDispScale(rect.width / canvas.width);
+  }, []);
+
+  useEffect(() => { offsetRef.current = offset; }, [offset]);
+
+  const resetView = useCallback(() => {
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
+  }, []);
+
   // ── Initialize canvas ──
   const initCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     const image = imageRef.current;
     if (!canvas || !image) return;
 
-    const rect = image.getBoundingClientRect();
-    canvas.width = rect.width;
-    canvas.height = rect.height;
-    canvas.style.width = `${rect.width}px`;
-    canvas.style.height = `${rect.height}px`;
+    // 后备尺寸用图片自然分辨率（封顶防爆内存），与图片严格等比；
+    // 显示尺寸交给 .matting-canvas 的 100%/100% 拉伸贴合，从而全图可涂、且不受缩放变换影响。
+    const MAX_DIM = 2048;
+    let w = image.naturalWidth;
+    let h = image.naturalHeight;
+    if (!w || !h) {
+      const rect = image.getBoundingClientRect();
+      w = Math.round(rect.width);
+      h = Math.round(rect.height);
+    }
+    const longest = Math.max(w, h);
+    if (longest > MAX_DIM) {
+      const k = MAX_DIM / longest;
+      w = Math.round(w * k);
+      h = Math.round(h * k);
+    }
+    canvas.width = w;
+    canvas.height = h;
+    requestAnimationFrame(recomputeDispScale);
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -114,7 +159,20 @@ export default function MattingEditor({
       maskImg.onload = () => {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+        // 归一化：已保存的蒙版是半透明的，统一拉回满 alpha，保证后续涂抹不累加、显示不二次衰减
         const initial = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const d = initial.data;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] > 10) {
+            d[i] = MASK_RGB[0];
+            d[i + 1] = MASK_RGB[1];
+            d[i + 2] = MASK_RGB[2];
+            d[i + 3] = 255;
+          } else {
+            d[i + 3] = 0;
+          }
+        }
+        ctx.putImageData(initial, 0, 0);
         historyRef.current = [initial];
         setHistoryIdx(0);
       };
@@ -125,7 +183,7 @@ export default function MattingEditor({
     const initial = ctx.getImageData(0, 0, canvas.width, canvas.height);
     historyRef.current = [initial];
     setHistoryIdx(0);
-  }, [initialMask]);
+  }, [initialMask, recomputeDispScale]);
 
   // ── History management ──
   const pushHistory = useCallback(() => {
@@ -163,6 +221,8 @@ export default function MattingEditor({
       setBrushSize(40);
       historyRef.current = [];
       setHistoryIdx(-1);
+      setScale(1);
+      setOffset({ x: 0, y: 0 });
     }
   }, [isOpen]);
 
@@ -188,6 +248,14 @@ export default function MattingEditor({
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
+      // 中键 或 空格+左键 → 平移视图（不绘制）
+      if (e.button === 1 || spaceDown.current) {
+        isPanning.current = true;
+        panStart.current = { x: e.clientX, y: e.clientY, ox: offsetRef.current.x, oy: offsetRef.current.y };
+        canvas.setPointerCapture(e.pointerId);
+        return;
+      }
+
       isDrawing.current = true;
       canvas.setPointerCapture(e.pointerId);
 
@@ -195,10 +263,10 @@ export default function MattingEditor({
 
       if (tool === 'bucket') {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const fillR = brushMode === 'normal' ? 255 : 0;
-        const fillG = brushMode === 'normal' ? 200 : 0;
-        const fillB = 0;
-        const fillA = brushMode === 'normal' ? 115 : 0;
+        const fillR = brushMode === 'normal' ? MASK_RGB[0] : 0;
+        const fillG = brushMode === 'normal' ? MASK_RGB[1] : 0;
+        const fillB = brushMode === 'normal' ? MASK_RGB[2] : 0;
+        const fillA = brushMode === 'normal' ? 255 : 0;
         floodFill(imageData, Math.round(x), Math.round(y), [fillR, fillG, fillB, fillA]);
         ctx.putImageData(imageData, 0, 0);
         return;
@@ -212,6 +280,13 @@ export default function MattingEditor({
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      // 平移视图
+      if (isPanning.current) {
+        const dx = e.clientX - panStart.current.x;
+        const dy = e.clientY - panStart.current.y;
+        setOffset({ x: panStart.current.ox + dx, y: panStart.current.oy + dy });
+        return;
+      }
       if (!isDrawing.current || tool === 'bucket') return;
       e.preventDefault();
       const canvas = canvasRef.current;
@@ -253,6 +328,11 @@ export default function MattingEditor({
 
   const handlePointerUp = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (isPanning.current) {
+        isPanning.current = false;
+        canvasRef.current?.releasePointerCapture(e.pointerId);
+        return;
+      }
       if (!isDrawing.current) return;
       isDrawing.current = false;
       strokeBaseline.current = null;
@@ -296,7 +376,15 @@ export default function MattingEditor({
   const handleSave = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const maskUrl = canvas.toDataURL('image/png');
+    // 画布内部是满 alpha；导出时统一乘以显示透明度，得到处处一致的半透明蒙版
+    const out = document.createElement('canvas');
+    out.width = canvas.width;
+    out.height = canvas.height;
+    const octx = out.getContext('2d');
+    if (!octx) return;
+    octx.globalAlpha = MASK_DISPLAY_ALPHA;
+    octx.drawImage(canvas, 0, 0);
+    const maskUrl = out.toDataURL('image/png');
     onSave(maskUrl);
   }, [onSave]);
 
@@ -344,7 +432,61 @@ export default function MattingEditor({
     return () => window.removeEventListener('keydown', handleKey);
   }, [isOpen, onClose, handleClear, handleUndo, handleRedo]);
 
+  // ── 滚轮缩放（非 passive，允许 preventDefault）──
+  useEffect(() => {
+    if (!isOpen) return;
+    const el = stageRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.12 : 0.12;
+      setScale((prev) => Math.max(0.5, Math.min(6, Math.round((prev + prev * delta) * 100) / 100)));
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [isOpen]);
+
+  // ── 缩放级别 / 窗口变化后，重算光标换算比例 ──
+  useEffect(() => {
+    if (!isOpen) return;
+    const id = requestAnimationFrame(recomputeDispScale);
+    window.addEventListener('resize', recomputeDispScale);
+    return () => {
+      cancelAnimationFrame(id);
+      window.removeEventListener('resize', recomputeDispScale);
+    };
+  }, [isOpen, scale, recomputeDispScale]);
+
+  // ── 空格键：进入/退出平移就绪态 ──
+  useEffect(() => {
+    if (!isOpen) return;
+    const down = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        spaceDown.current = true;
+        setPanReady(true);
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        spaceDown.current = false;
+        setPanReady(false);
+      }
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
+  }, [isOpen]);
+
   if (!isOpen) return null;
+
+  // 画笔光标圆圈的屏幕直径 = 笔刷画布尺寸 × 显示换算比例（含缩放），保证与实际笔触一致
+  const cursorD = Math.max(6, Math.round(brushSize * dispScale));
 
   return createPortal(
     <div className="matting-overlay">
@@ -361,31 +503,51 @@ export default function MattingEditor({
         canRedo={historyIdx < historyRef.current.length - 1}
       />
 
-      <div className="matting-stage">
-        <div className="matting-viewport">
-          <img
-            ref={imageRef}
-            src={imageUrl}
-            alt="Editing"
-            className="matting-image"
-            draggable={false}
-            onLoad={initCanvas}
-          />
-          <canvas
-            ref={canvasRef}
-            className={`matting-canvas${tool === 'bucket' ? ' cursor-crosshair' : ''}`}
-            style={
-              tool !== 'bucket'
-                ? {
-                    cursor: `url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="${brushSize}" height="${brushSize}" viewBox="0 0 ${brushSize} ${brushSize}"><circle cx="${brushSize / 2}" cy="${brushSize / 2}" r="${brushSize / 2 - 1}" fill="none" stroke="white" stroke-width="1" opacity="0.8"/></svg>') ${brushSize / 2} ${brushSize / 2}, auto`,
-                  }
-                : undefined
-            }
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-          />
+      <div className="matting-stage" ref={stageRef}>
+        <div
+          className="matting-zoom"
+          style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})` }}
+        >
+          <div className="matting-viewport">
+            <img
+              ref={imageRef}
+              src={imageUrl}
+              alt="Editing"
+              className="matting-image"
+              draggable={false}
+              onLoad={initCanvas}
+            />
+            <canvas
+              ref={canvasRef}
+              className={`matting-canvas${tool === 'bucket' ? ' cursor-crosshair' : ''}`}
+              style={{
+                opacity: MASK_DISPLAY_ALPHA,
+                ...(panReady
+                  ? { cursor: isPanning.current ? 'grabbing' : 'grab' }
+                  : tool !== 'bucket'
+                    ? {
+                        cursor: `url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="${cursorD}" height="${cursorD}" viewBox="0 0 ${cursorD} ${cursorD}"><circle cx="${cursorD / 2}" cy="${cursorD / 2}" r="${cursorD / 2 - 1}" fill="none" stroke="white" stroke-width="1" opacity="0.8"/></svg>') ${cursorD / 2} ${cursorD / 2}, auto`,
+                      }
+                    : {}),
+              }}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+            />
+          </div>
         </div>
+
+        {/* 缩放指示器 + 重置（仅缩放或平移后显示）*/}
+        {(scale !== 1 || offset.x !== 0 || offset.y !== 0) && (
+          <button
+            type="button"
+            className="matting-zoom-indicator"
+            onClick={resetView}
+            title="重置视图"
+          >
+            {Math.round(scale * 100)}% · 重置
+          </button>
+        )}
       </div>
     </div>,
     document.body,

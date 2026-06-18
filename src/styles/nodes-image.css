@@ -202,6 +202,38 @@
   height: 100%;
   padding: 80px 40px 40px;
   box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
+}
+
+/* 缩放 / 平移变换层（内含入场动画的 viewport）*/
+.matting-zoom {
+  display: inline-flex;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+/* 缩放指示器 / 重置按钮 */
+.matting-zoom-indicator {
+  position: absolute;
+  bottom: 18px;
+  right: 24px;
+  z-index: 10001;
+  padding: 5px 12px;
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur-md));
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.matting-zoom-indicator:hover {
+  color: var(--theme-text);
+  background: var(--white-alpha-08);
 }
 
 /* Viewport — relative wrapper so canvas overlays image exactly */
