@@ -22,7 +22,8 @@
   border: 1px solid var(--glass-ring);
   border-radius: 12px;
   overflow: hidden;
-  transition: border-color var(--transition-smooth), box-shadow var(--transition-smooth);
+  transition: border-color var(--transition-smooth), box-shadow var(--transition-smooth),
+    transform var(--dur-fast) var(--ease-out-quart);
   /* 进场：弹簧式浮入。只用 translate（不用 scale）——scale 会改变 handle 相对父节点的
      偏移，破坏 React Flow 对连线锚点的测量并被缓存，导致连线起止点错位。*/
   animation: nodeIn 0.34s var(--ease-spring) backwards;
@@ -43,9 +44,12 @@
   transition: opacity 0.13s var(--ease-out-quart), transform 0.13s var(--ease-out-quart);
 }
 
-/* ── #5 拖拽「抬起」反馈：仅用阴影绽放（不做 transform，避免连线锚点偏移）── */
+/* ── #5 拖拽「抬起」反馈：放大 + 分层强投影（经典「拿起」手感）── */
 .react-flow__node.dragging .node {
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--brand-alpha-30);
+  transform: scale(1.03);
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.35),
+    0 28px 60px -10px rgba(0, 0, 0, 0.65);
 }
 
 .node.selected {
