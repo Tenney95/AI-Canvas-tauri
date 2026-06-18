@@ -538,7 +538,8 @@
 [data-tauri-window][data-sidebar-floating] .matting-overlay,
 [data-tauri-window][data-sidebar-floating] .annotate-overlay,
 [data-tauri-window][data-sidebar-floating] .text-fullscreen-overlay,
-[data-tauri-window][data-sidebar-floating] .fullscreen-overlay {
+[data-tauri-window][data-sidebar-floating] .fullscreen-overlay,
+[data-tauri-window][data-sidebar-floating] .asset-picker-backdrop {
   left: 30px;
 }
 

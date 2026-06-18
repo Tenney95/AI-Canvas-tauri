@@ -10,13 +10,15 @@ interface ImageNodeToolbarProps {
   onMatting?: () => void;
   onSubjectMatting?: () => void;
   onMultiAngle?: () => void;
+  onExpand?: () => void;
   onFullscreen?: () => void;
   onCrop?: () => void;
   onAnnotate?: () => void;
   onUpscale?: () => void;
+  onRepaint?: () => void;
 }
 
-function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onFullscreen, onCrop, onAnnotate, onUpscale }: ImageNodeToolbarProps) {
+function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand, onFullscreen, onCrop, onAnnotate, onUpscale, onRepaint }: ImageNodeToolbarProps) {
   const noop = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
   }, []);
@@ -48,7 +50,7 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
               <path d="M8.5 18.5l-1-1" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-expand" data-tooltip="扩图" aria-label="扩图" onClick={noop}>
+          <AnimatedButton className="ftb-btn icon-only act-expand" data-tooltip="扩图" aria-label="扩图" onClick={handleAction(onExpand)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
             </svg>
@@ -69,7 +71,7 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
               <path d="M12 12l8.73-4.27" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-repaint" data-tooltip="重绘" aria-label="重绘" onClick={noop}>
+          <AnimatedButton className="ftb-btn icon-only act-repaint" data-tooltip="重绘" aria-label="重绘" onClick={handleAction(onRepaint)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <rect x="3.5" y="4.5" width="13" height="13" rx="2" />
               <path d="m3.5 14 3-3a2 2 0 0 1 2.8 0L12 13.7" />

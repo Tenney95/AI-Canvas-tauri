@@ -6,7 +6,7 @@
    Image Toolbar — above selected ImageNode
    ============================================ */
 .img-toolbar {
-  top: -40px !important;
+  top: -54px !important;
   bottom: auto !important;
   left: 50% !important;
   transform: translateX(-50%) !important;

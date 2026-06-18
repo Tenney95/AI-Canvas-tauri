@@ -190,6 +190,128 @@
 }
 
 /* ============================================
+   Expand Editor — 扩图（outpainting）
+   复用 crop-overlay / crop-aspect-bar / crop-stage
+   ============================================ */
+
+/* 预览舞台：底部留出控制区空间 */
+.expand-stage {
+  padding-bottom: 132px;
+}
+
+/* 目标画布外框 — 棋盘格表示待 AI 补全的留白区 */
+.expand-frame {
+  position: relative;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35), 0 8px 40px rgba(0, 0, 0, 0.5);
+  background-color: #15151c;
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.06) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.06) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 10px 10px;
+}
+
+/* 原图 — 绝对定位在目标框内，可拖拽重定位 */
+.expand-src-img {
+  position: absolute;
+  user-select: none;
+  -webkit-user-drag: none;
+  cursor: grab;
+  touch-action: none;
+  box-shadow: 0 0 0 1px var(--brand-alpha-30, rgba(99, 102, 241, 0.3));
+}
+
+.expand-src-img:active {
+  cursor: grabbing;
+}
+
+/* 底部控制区 — 固定浮动 */
+.expand-controls {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10001;
+  width: min(92vw, 440px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur-md));
+  border: 1px solid var(--glass-ring);
+  border-radius: 12px;
+}
+
+.expand-control-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.expand-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--theme-text-secondary);
+  white-space: nowrap;
+}
+
+.expand-value {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-secondary);
+  min-width: 36px;
+  text-align: right;
+}
+
+.expand-slider {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 滑块基础样式（不依赖 freeangle.css） */
+.expand-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--theme-border);
+  outline: none;
+  cursor: pointer;
+}
+.expand-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--brand);
+  cursor: pointer;
+  border: 2px solid var(--theme-surface, #15151c);
+}
+
+.expand-prompt-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--theme-surface, rgba(0, 0, 0, 0.25));
+  color: var(--theme-text);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--transition-base);
+}
+
+.expand-prompt-input:focus {
+  border-color: var(--brand-alpha-30, rgba(99, 102, 241, 0.4));
+}
+
+.expand-prompt-input::placeholder {
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.35));
+}
+
+/* ============================================
    react-image-crop 暗色主题覆盖
    ============================================ */
 

@@ -118,6 +118,7 @@ async function submitGeneration(
   model: string,
   prompt: string,
   imageUrl: string,
+  size: string = '4:3',
 ): Promise<string> {
   const resp = await fetch(`${APIMART_BASE}/images/generations`, {
     method: 'POST',
@@ -130,7 +131,7 @@ async function submitGeneration(
       prompt,
       n: 1,
       resolution: '2k',
-      size: '4:3',
+      size,
       image_urls: [imageUrl],
     }),
   });
@@ -243,6 +244,77 @@ export async function generateAngleImage(
   const imageUrls = taskData.result?.images?.flatMap((img) => img.url) ?? [];
   if (imageUrls.length === 0) {
     throw new Error('生成完成但未返回图片');
+  }
+
+  onProgress?.(100);
+  return { imageUrls };
+}
+
+/* ════════════════════════════════════════════
+   导出：扩图（outpainting）生成流程
+   原图已在客户端合成到目标画幅的大画布上（四周透明留白），
+   模型负责把透明区域补全为与原图无缝衔接的内容。
+   ════════════════════════════════════════════ */
+
+export interface OutpaintGenerateParams {
+  apiKey: string;
+  model: string;          // 如 'gemini-3.1-flash-image-preview'（不含 apimart/ 前缀）
+  imageUrl: string;       // 客户端合成好的"垫图"（data URL，原图 + 透明留白）
+  size: string;           // 目标画幅，如 '1:1' / '16:9' / '9:16'
+  prompt?: string;        // 可选的补充描述，追加到默认扩图提示词后
+}
+
+export interface OutpaintGenerateResult {
+  imageUrls: string[];
+}
+
+/** 默认扩图提示词：强调无缝延展、保持原内容不变 */
+function buildOutpaintPrompt(extra?: string): string {
+  const base =
+    'Outpaint and naturally extend this image to fill the entire frame. ' +
+    'Seamlessly continue the existing scene, lighting, perspective, colors and art style into the transparent/empty areas. ' +
+    'Keep the original content completely unchanged and ensure smooth transitions at the edges.';
+  const trimmed = extra?.trim();
+  return trimmed ? `${base} ${trimmed}` : base;
+}
+
+/**
+ * 执行扩图生成：上传合成图 → 提交 → 轮询 → 返回结果
+ */
+export async function generateOutpaintImage(
+  params: OutpaintGenerateParams,
+  onProgress?: (progress: number) => void,
+): Promise<OutpaintGenerateResult> {
+  const { apiKey, model, imageUrl, size, prompt } = params;
+
+  // 步骤 1: 合成图通常是 data URL，先上传到 APIMart
+  let publicUrl: string;
+  if (imageUrl.startsWith('data:')) {
+    onProgress?.(5);
+    publicUrl = await uploadToApimart(imageUrl, apiKey);
+    onProgress?.(15);
+  } else {
+    publicUrl = imageUrl;
+    onProgress?.(10);
+  }
+
+  // 步骤 2: 构建提示词并提交生成任务
+  const fullPrompt = buildOutpaintPrompt(prompt);
+  onProgress?.(20);
+  const taskId = await submitGeneration(apiKey, model, fullPrompt, publicUrl, size);
+  onProgress?.(25);
+
+  // 步骤 3: 轮询任务结果
+  const taskData = await pollTask(apiKey, taskId, (p) => {
+    onProgress?.(25 + Math.round(p * 0.7));
+  });
+
+  onProgress?.(95);
+
+  // 步骤 4: 提取图片 URL
+  const imageUrls = taskData.result?.images?.flatMap((img) => img.url) ?? [];
+  if (imageUrls.length === 0) {
+    throw new Error('扩图完成但未返回图片');
   }
 
   onProgress?.(100);

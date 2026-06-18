@@ -12,6 +12,7 @@ import FreeAnglePanel from './shared/image/FreeAnglePanel';
 import MattingEditor from './shared/image/MattingEditor';
 import AnnotateEditor from './shared/image/AnnotateEditor';
 import CropEditor from './shared/image/CropEditor';
+import ExpandEditor from './shared/image/ExpandEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import ModelDownloadDialog from '../shared/ModelDownloadDialog';
@@ -21,7 +22,7 @@ import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
 import { saveDataUrlToProjectData } from '../../services/fileService';
 import { blobToDataUrl } from '../../store/store.utils';
-import { generateAngleImage } from '../../services/apimartService';
+import { generateAngleImage, generateOutpaintImage } from '../../services/apimartService';
 import { imageUpscale, subjectMatting, checkModelExists, downloadModel } from '../../services/onnxService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 
@@ -268,6 +269,103 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   );
 
   /* ════════════════════════════════════════════
+     Expand (扩图 / outpainting) State
+     ════════════════════════════════════════════ */
+  const [isExpand, setIsExpand] = useState(false);
+
+  const handleOpenExpand = useCallback(() => setIsExpand(true), []);
+  const handleCloseExpand = useCallback(() => setIsExpand(false), []);
+
+  /** 确认扩图：立即创建 loading 新节点 → 后台云端生成 → 回填结果 */
+  const handleExpandGenerate = useCallback(
+    async (
+      compositeDataUrl: string,
+      meta: { size: string; width: number; height: number; model: string; provider: string; prompt: string },
+    ) => {
+      const store = useAppStore.getState();
+      setIsExpand(false);
+
+      if (meta.provider !== 'apimart') {
+        store.showToast(`${meta.provider} 扩图暂未实现`, 'error');
+        return;
+      }
+
+      const apiKey = store.config.providers.apimart?.apiKey;
+      if (!apiKey) {
+        store.showToast('请先在设置中配置 APIMart API Key', 'error');
+        return;
+      }
+
+      const model = meta.model.startsWith('apimart/') ? meta.model.slice('apimart/'.length) : meta.model;
+
+      // 1. 立即创建 loading 节点（与裁切/超分一致的即时反馈）
+      const currentPos = store.nodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
+      const newNodeId = `node-${generateId()}`;
+      const newNode: Node<BaseNodeData> = {
+        id: newNodeId,
+        type: 'ai-image',
+        position: { x: currentPos.x + nodeWidth + 40, y: currentPos.y },
+        data: {
+          label: `${(data.label as string) || '图像'} 扩图`,
+          type: 'ai-image',
+          role: 'source',
+          status: 'loading',
+          nodeWidth,
+          nodeHeight: 158,
+        } as BaseNodeData,
+      };
+      store.addNode(newNode);
+
+      // 2. 后台生成
+      try {
+        const result = await generateOutpaintImage(
+          { apiKey, model, imageUrl: compositeDataUrl, size: meta.size, prompt: meta.prompt },
+          (progress) => {
+            store.updateNodeData(newNodeId, { output: `扩图中 ${progress}%...` });
+          },
+        );
+
+        const genUrl = result.imageUrls[0];
+        const resp = await fetch(genUrl);
+        const blob = await resp.blob();
+        const dataUrl = await blobToDataUrl(blob);
+
+        let assetUrl = dataUrl;
+        let filePath: string | undefined;
+        const projectId = store.currentProjectId;
+        if (projectId && projectId !== 'default') {
+          const ext = blob.type.split('/').pop() || 'png';
+          const savedName = `expand_${Date.now()}.${ext}`;
+          const saved = await saveDataUrlToProjectData(dataUrl, projectId, savedName);
+          if (saved && saved.assetUrl) {
+            assetUrl = saved.assetUrl;
+            filePath = saved.filePath;
+          }
+        }
+
+        const dims = await computeImageNodeDimensions(assetUrl);
+        store.updateNodeData(newNodeId, {
+          imageUrl: assetUrl,
+          filePath,
+          status: 'success',
+          output: undefined,
+          imageWidth: dims.nodeWidth,
+          imageHeight: dims.nodeHeight,
+          nodeWidth: dims.nodeWidth,
+          nodeHeight: dims.nodeHeight,
+        } as Partial<BaseNodeData>);
+        store.commitToHistory();
+        store.showToast('扩图完成，已创建新节点');
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : '扩图失败';
+        store.deleteNode(newNodeId);
+        store.showToast(message, 'error');
+      }
+    },
+    [id, data.label, nodeWidth],
+  );
+
+  /* ════════════════════════════════════════════
      Matting State
      ════════════════════════════════════════════ */
   const [isMatting, setIsMatting] = useState(false);
@@ -333,6 +431,17 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     // 模型已就绪 → 直接执行超分
     await doUpscale(filePath);
   }, [data.filePath, modelName]);
+
+  /** 重绘 — 打开 PromptPanel 对话框 */
+  const handleRepaint = useCallback(() => {
+    const el = document.querySelector(`.react-flow__node[data-id="${id}"]`);
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      useAppStore.getState().openNodeDialog(id, { x: rect.left + rect.width / 2, y: rect.bottom });
+    } else {
+      useAppStore.getState().openNodeDialog(id);
+    }
+  }, [id]);
 
   /** 确认下载模型 */
   const handleDownloadConfirm = useCallback(async () => {
@@ -690,10 +799,12 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             onMatting={handleOpenMatting}
             onSubjectMatting={handleSubjectMatting}
             onMultiAngle={handleOpenFreeAngle}
+            onExpand={handleOpenExpand}
             onCrop={handleOpenCrop}
             onFullscreen={handleOpenFullscreen}
             onAnnotate={handleOpenAnnotate}
             onUpscale={handleUpscale}
+            onRepaint={handleRepaint}
           />
         )}
       </div>
@@ -722,6 +833,14 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         imageUrl={(data.imageUrl || data.thumbnailUrl) as string | undefined}
         onClose={handleCloseFreeAngle}
         onGenerate={handleFreeAngleGenerate}
+      />
+
+      {/* Expand Editor — 扩图 */}
+      <ExpandEditor
+        isOpen={isExpand}
+        imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+        onClose={handleCloseExpand}
+        onGenerate={handleExpandGenerate}
       />
 
       {/* Crop Editor */}

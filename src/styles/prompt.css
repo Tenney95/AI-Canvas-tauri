@@ -376,6 +376,7 @@
   justify-content: center;
   background: var(--black-alpha-50);
   backdrop-filter: blur(6px);
+  border-radius: 16px;
 }
 .asset-picker {
   width: min(560px, 88vw);

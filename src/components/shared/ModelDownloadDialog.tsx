@@ -87,7 +87,7 @@ export default function ModelDownloadDialog({
 
       {/* ── 下载中遮罩 ── */}
       {showDownloading && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 rounded-xl">
           <div className="bg-canvas-card border border-canvas-border rounded-xl p-8 max-w-xs mx-4 shadow-2xl text-center">
             <div className="spinner large mx-auto mb-4" />
             <p className="text-sm text-canvas-text font-medium mb-1">{info.loadingText}</p>
