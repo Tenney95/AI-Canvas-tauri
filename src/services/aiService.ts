@@ -126,6 +126,27 @@ function extractModelName(modelValue: string, provider: string): string {
   return modelValue;
 }
 
+function isOpenAIGptImageModel(modelName: string): boolean {
+  return /^gpt-image-\d/.test(modelName);
+}
+
+function toImageDataUrl(base64: string, format = 'png'): string {
+  if (/^(data:|https?:|blob:)/.test(base64)) return base64;
+  return `data:image/${format};base64,${base64}`;
+}
+
+function formatImageSizeForModel(
+  modelName: string,
+  dimensions: { width: number; height: number },
+): string {
+  if (!isOpenAIGptImageModel(modelName)) {
+    return `${dimensions.width}x${dimensions.height}`;
+  }
+
+  const toMultipleOf16 = (value: number) => Math.max(16, Math.round(value / 16) * 16);
+  return `${toMultipleOf16(dimensions.width)}x${toMultipleOf16(dimensions.height)}`;
+}
+
 /** 从 store 中查找通用模型配置 */
 function resolveGeneralModel(modelValue: string) {
   const config = useAppStore.getState().config;
@@ -257,7 +278,7 @@ function parseGeneralImageResponse(json: Record<string, unknown>): string | unde
   // OpenAI Images
   const dataArr = json.data as Array<{ url?: string; b64_json?: string }> | undefined;
   if (dataArr?.[0]?.url) return dataArr[0].url;
-  if (dataArr?.[0]?.b64_json) return dataArr[0].b64_json;
+  if (dataArr?.[0]?.b64_json) return toImageDataUrl(dataArr[0].b64_json);
 
   // result.images 格式（异步任务）
   const images = (json.result as Record<string, Array<{ url: string[] }>>)?.['images'];
@@ -475,15 +496,17 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
     if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
     const dimensions = mapImageDimensions(imageSize, aspectRatio);
-    const sizeStr = `${dimensions.width}x${dimensions.height}`;
+    const sizeStr = formatImageSizeForModel(gm.modelId, dimensions);
     const apiUrl = gm.openaiUrl.replace(/\/+$/, '') + '/images/generations';
     const requestBody: Record<string, unknown> = {
       model: gm.modelId,
       prompt,
       n: 1,
       size: sizeStr,
-      response_format: 'url',
     };
+    if (!isOpenAIGptImageModel(gm.modelId)) {
+      requestBody.response_format = 'url';
+    }
     if (allImageUrls.length > 0) {
       requestBody.image_urls = allImageUrls;
     }
@@ -542,7 +565,7 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
   const apiUrl = baseUrl.replace(/\/+$/, '') + '/images/generations';
 
   const modelName = extractModelName(model, provider);
-  const sizeStr = `${dimensions.width}x${dimensions.height}`;
+  const sizeStr = formatImageSizeForModel(modelName, dimensions);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -558,8 +581,10 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
     prompt,
     n: 1,
     size: sizeStr,
-    response_format: 'url',
   };
+  if (!isOpenAIGptImageModel(modelName)) {
+    requestBody.response_format = 'url';
+  }
   if (allImageUrls.length > 0) {
     requestBody.image_urls = allImageUrls;
   }
@@ -584,7 +609,7 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
   }
 
   const json = await response.json();
-  const imageUrl = json.data?.[0]?.url || json.data?.[0]?.b64_json;
+  const imageUrl = json.data?.[0]?.url || (json.data?.[0]?.b64_json ? toImageDataUrl(json.data[0].b64_json) : undefined);
   if (!imageUrl) {
     throw new Error('图片生成返回结果为空');
   }
