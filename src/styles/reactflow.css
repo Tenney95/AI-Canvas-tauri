@@ -135,6 +135,16 @@
   position: absolute;
   z-index: 14;
   pointer-events: auto;
+  /* 默认隐藏，仅在节点 hover / 选中 / 手柄 hover 时淡入 */
+  opacity: 0;
+  transition: opacity var(--transition-base);
+}
+
+/* 节点 hover、选中，或手柄自身 hover 时显示两侧手柄 */
+.react-flow__node:hover .gooey-btn-wrapper,
+.react-flow__node.selected .gooey-btn-wrapper,
+.node-handle:hover .gooey-btn-wrapper {
+  opacity: 1;
 }
 
 /* Per-type handle colors (applied via handle-source class on visible handles) */
