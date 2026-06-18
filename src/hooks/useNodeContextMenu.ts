@@ -3,6 +3,7 @@
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
+import { hasActiveTextSelection } from '../utils/textSelection';
 import type { BaseNodeData, NodeType } from '../types';
 import type { Node as RFNode } from '@xyflow/react';
 
@@ -55,6 +56,16 @@ export function useNodeContextMenu() {
     (e: React.MouseEvent, node: RFNode<BaseNodeData>) => {
       e.preventDefault();
       e.stopPropagation();
+      // 文本节点选中模式内有选区：右键直接复制选中文本，不弹节点菜单（避免与节点复制冲突）
+      if (hasActiveTextSelection()) {
+        const text = window.getSelection()?.toString() ?? '';
+        navigator.clipboard?.writeText(text).catch(() => {});
+        window.getSelection()?.removeAllRanges(); // 复制后清空选区
+        // 清空节点剪贴板，避免之后 Ctrl+V 误粘节点
+        useAppStore.setState({ clipboard: { nodes: [], groups: [] } });
+        useAppStore.getState().showToast('已复制选中文本');
+        return;
+      }
       // Select only this node so copy/cut works on it
       setSelectedNodeIds([node.id]);
       setMenu({

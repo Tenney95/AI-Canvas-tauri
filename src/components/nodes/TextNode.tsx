@@ -32,6 +32,39 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     }
   }, []);
 
+  // ── 文本选中模式：双击输出区进入（启用 user-select + nodrag，不影响默认拖拽）──
+  const outputRef = useRef<HTMLDivElement>(null);
+  const [selectingText, setSelectingText] = useState(false);
+
+  const enterTextSelect = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation(); // 阻止冒泡到画布的双击处理
+    setSelectingText(true);
+    // 进入即选中全文，便于直接复制（也可随后拖拽调整选区）
+    requestAnimationFrame(() => {
+      const el = outputRef.current;
+      if (!el) return;
+      const sel = window.getSelection();
+      if (!sel) return;
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+  }, []);
+
+  // 点击/拖拽到输出区之外时退出选中模式，恢复节点可拖拽
+  useEffect(() => {
+    if (!selectingText) return;
+    const onDown = (ev: MouseEvent) => {
+      if (outputRef.current && !outputRef.current.contains(ev.target as Node)) {
+        setSelectingText(false);
+        window.getSelection()?.removeAllRanges();
+      }
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [selectingText]);
+
   // ── Resize ──
   const isResizing = useRef(false);
   const resizeStart = useRef({ x: 0, y: 0, width: 280, height: 160 });
@@ -204,7 +237,13 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
             </button>
           )}
           {data.output ? (
-            <div className="text-output-content compact nowheel">
+            <div
+              ref={outputRef}
+              className={`text-output-content compact nowheel${selectingText ? ' is-selecting nodrag' : ''}`}
+              onDoubleClick={enterTextSelect}
+              onCopy={() => { requestAnimationFrame(() => setSelectingText(false)); }}
+              title={selectingText ? undefined : '双击可选中复制'}
+            >
               {data.output}
             </div>
           ) : isUploading ? (

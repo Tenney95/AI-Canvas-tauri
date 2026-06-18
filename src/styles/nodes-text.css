@@ -12,6 +12,20 @@
   white-space: pre-wrap;
   word-break: break-word;
   padding: 4px;
+  cursor: default;
+}
+
+/* 双击进入选中模式：可选中复制（覆盖 React Flow 节点的 user-select:none）*/
+.text-output-content.compact.is-selecting {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+  background: var(--brand-alpha-05);
+  border-radius: 4px;
+}
+.text-output-content.compact.is-selecting::selection,
+.text-output-content.compact.is-selecting *::selection {
+  background: var(--brand-alpha-30);
 }
 
 /* Edit mode textarea */

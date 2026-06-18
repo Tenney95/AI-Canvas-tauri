@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import * as fileService from '../services/fileService';
 import { playNodeExit } from '../utils/nodeAnimations';
+import { hasActiveTextSelection } from '../utils/textSelection';
 import type { BaseNodeData } from '../types';
 export function useKeyboardShortcuts() {
   useEffect(() => {
@@ -37,9 +38,18 @@ export function useKeyboardShortcuts() {
 
       if (isEditing) return;
 
-      // Ctrl+C: Copy selected nodes to clipboard
+      // Ctrl+C: 仅当「文本节点选中模式」内有有效选区时走原生文本复制，否则复制选中节点
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-        useAppStore.getState().copySelectedNodes();
+        if (hasActiveTextSelection()) {
+          // 交给浏览器原生复制选中文本；清空节点剪贴板，避免之后 Ctrl+V 误粘节点
+          useAppStore.setState({ clipboard: { nodes: [], groups: [] } });
+          return;
+        }
+        if (useAppStore.getState().selectedNodeIds.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          useAppStore.getState().copySelectedNodes();
+        }
         return;
       }
 
