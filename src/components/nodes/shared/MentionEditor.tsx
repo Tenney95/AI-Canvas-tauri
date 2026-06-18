@@ -421,10 +421,28 @@ export default function MentionEditor({
   // ── Mention data sources ──
   const getCanvasMentionNodes = useCallback(() => {
     if (!nodeId) return [];
-    const incomingEdges = edges.filter((e) => e.target === nodeId);
-    const sourceNodeIds = new Set(incomingEdges.map((e) => e.source));
+    const me = nodes.find((n) => n.id === nodeId);
+
+    // 直接入边的源
+    const rawSourceIds = new Set(edges.filter((e) => e.target === nodeId).map((e) => e.source));
+    // 共享输入：本节点若在某分组内，加入该分组的入边源（组内节点共享组的输入）
+    if (me?.parentId) {
+      edges.filter((e) => e.target === me.parentId).forEach((e) => rawSourceIds.add(e.source));
+    }
+
+    // 全部输出：作为源的分组节点展开为其全部子节点；分组节点本身不作为候选
+    const sourceNodeIds = new Set<string>();
+    for (const sid of rawSourceIds) {
+      const sn = nodes.find((n) => n.id === sid);
+      if (sn?.type === 'group') {
+        nodes.filter((n) => n.parentId === sid).forEach((c) => sourceNodeIds.add(c.id));
+      } else {
+        sourceNodeIds.add(sid);
+      }
+    }
+
     return nodes
-      .filter((n) => n.id !== nodeId && sourceNodeIds.has(n.id))
+      .filter((n) => n.id !== nodeId && n.type !== 'group' && sourceNodeIds.has(n.id))
       .map((n) => ({
         id: n.id,
         label: (n.data.label as string) || '节点',

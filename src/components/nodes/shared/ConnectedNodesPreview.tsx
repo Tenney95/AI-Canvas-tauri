@@ -25,10 +25,24 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
 
   const connectedNodes = useMemo(() => {
     if (!nodeId) return [];
-    const incomingEdges = edges.filter((e) => e.target === nodeId);
-    const sourceIds = new Set(incomingEdges.map((e) => e.source));
+    const me = nodes.find((n) => n.id === nodeId);
+    // 直接入边源 + 共享输入（本节点在分组内时加入分组的入边源）
+    const rawSourceIds = new Set(edges.filter((e) => e.target === nodeId).map((e) => e.source));
+    if (me?.parentId) {
+      edges.filter((e) => e.target === me.parentId).forEach((e) => rawSourceIds.add(e.source));
+    }
+    // 全部输出：作为源的分组节点展开为其全部子节点；分组节点本身不显示
+    const sourceIds = new Set<string>();
+    for (const sid of rawSourceIds) {
+      const sn = nodes.find((n) => n.id === sid);
+      if (sn?.type === 'group') {
+        nodes.filter((n) => n.parentId === sid).forEach((c) => sourceIds.add(c.id));
+      } else {
+        sourceIds.add(sid);
+      }
+    }
     return nodes
-      .filter((n) => n.id !== nodeId && sourceIds.has(n.id))
+      .filter((n) => n.id !== nodeId && n.type !== 'group' && sourceIds.has(n.id))
       .map((n) => {
         const data = n.data as BaseNodeData;
         const outputType = data.imageUrl

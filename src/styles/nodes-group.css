@@ -101,3 +101,22 @@
 .react-flow__node-group:hover .canvas-group-resize-hint {
   opacity: .5;
 }
+
+/* 分组节点两侧连线手柄 */
+.group-conn-handle {
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 50% !important;
+  border: 2px solid var(--theme-card) !important;
+  opacity: 0;
+  transition: opacity var(--transition-base), transform var(--transition-base);
+  z-index: 5;
+}
+.react-flow__node:hover .group-conn-handle,
+.group-conn-handle.connectionindicator,
+.react-flow__node.selected .group-conn-handle {
+  opacity: 1;
+}
+.group-conn-handle:hover {
+  transform: scale(1.3);
+}

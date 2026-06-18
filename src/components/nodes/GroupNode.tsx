@@ -6,7 +6,7 @@
  * 支持拖拽右下角调整大小。
  */
 import { useRef } from 'react';
-import { NodeResizer } from '@xyflow/react';
+import { NodeResizer, Handle, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import { useAppStore } from '../../store/useAppStore';
 
@@ -94,6 +94,22 @@ export default function GroupNode({ id, data }: NodeProps) {
           <div className="canvas-group-resize-hint" />
         </div>
       </div>
+
+      {/* 两侧连线手柄：左=输入（共享给组内全部节点），右=输出（汇总组内全部节点） */}
+      <Handle
+        type="source"
+        position={Position.Left}
+        id="left"
+        className="group-conn-handle"
+        style={{ background: color, borderColor: `${color}` }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="right"
+        className="group-conn-handle"
+        style={{ background: color, borderColor: `${color}` }}
+      />
     </>
   );
 }

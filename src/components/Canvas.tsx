@@ -336,10 +336,28 @@ function CanvasInner() {
   // ── Selection sync ──
   const onSelectionChange = useCallback(
     (changes: OnSelectionChangeParams) => {
-      setSelectedNodeIds(changes.nodes.map((n) => n.id));
+      const sel = changes.nodes;
+      const nonGroup = sel.filter((n) => n.type !== 'group');
+      // 框选忽略分组节点：与其它节点一同被选中时，store 选区剔除分组（删除/分组不波及容器）；
+      // 单独点击分组仍保留（便于删除/解散）。RF 视觉去选在 onSelectionEnd 处理。
+      const next = nonGroup.length > 0 ? nonGroup : sel;
+      setSelectedNodeIds(next.map((n) => n.id));
     },
     [setSelectedNodeIds],
   );
+
+  // 框选结束后：若分组节点与其它节点一同被框中，取消分组节点的选中，避免随后被一起拖动
+  const onSelectionEnd = useCallback(() => {
+    useAppStore.setState((s) => {
+      if (!s.nodes.some((n) => n.selected && n.type !== 'group')) return {};
+      let changed = false;
+      const nodes = s.nodes.map((n) => {
+        if (n.type === 'group' && n.selected) { changed = true; return { ...n, selected: false }; }
+        return n;
+      });
+      return changed ? { nodes } : {};
+    });
+  }, []);
 
   // ── Edge change handler — apply selection / removal changes
   const handleEdgesChange = useCallback(
@@ -602,6 +620,7 @@ function CanvasInner() {
         onNodeClick={onNodeClick}
         onDoubleClick={onDoubleClick}
         onSelectionChange={onSelectionChange}
+        onSelectionEnd={onSelectionEnd}
         onNodeDragStart={onNodeDragStart}
         onNodeDragStop={handleNodeDragStop}
         onNodesChange={handleNodesChange}
