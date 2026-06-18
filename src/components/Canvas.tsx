@@ -149,6 +149,7 @@ function CanvasInner() {
   const onConnect = useAppStore((s) => s.onConnect);
   const setEdges = useAppStore((s) => s.setEdges);
   const setSelectedNodeIds = useAppStore((s) => s.setSelectedNodeIds);
+  const duplicateNode = useAppStore((s) => s.duplicateNode);
   const minimapVisible = useAppStore((s) => s.minimapVisible);
   const reactFlowInstance = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
@@ -372,6 +373,17 @@ function CanvasInner() {
   // ── Node snap ──
   const { snapLines, onNodeDragStart, applySnap, onNodeDragStop } =
     useNodeSnap(nodes);
+
+  // 按住 Ctrl/⌘ 开始拖拽 → 在原位复制一个节点（拖动的仍是原节点，等于"拖出一个副本"）
+  const handleNodeDragStart = useCallback(
+    (evt: React.MouseEvent, node: RFNode<BaseNodeData>) => {
+      if ((evt.ctrlKey || evt.metaKey) && node.type !== 'group') {
+        duplicateNode(node.id);
+      }
+      onNodeDragStart(evt, node);
+    },
+    [duplicateNode, onNodeDragStart],
+  );
 
   // 仅在线型切换时重建，避免每帧新对象触发 React Flow 内部更新
   const defaultEdgeOptions = useMemo(
@@ -621,7 +633,7 @@ function CanvasInner() {
         onDoubleClick={onDoubleClick}
         onSelectionChange={onSelectionChange}
         onSelectionEnd={onSelectionEnd}
-        onNodeDragStart={onNodeDragStart}
+        onNodeDragStart={handleNodeDragStart}
         onNodeDragStop={handleNodeDragStop}
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}

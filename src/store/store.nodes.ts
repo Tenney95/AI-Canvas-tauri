@@ -18,6 +18,8 @@ export interface NodeSlice {
   setSelectedNodeIds: (ids: string[]) => void;
   addNode: (node: Node<BaseNodeData>) => void;
   addNodeWithEdge: (node: Node<BaseNodeData>, edge: Edge) => void;
+  /** 在原位复制一个节点（新 id / displayId，不带边）—— 用于 Ctrl 拖拽复制 */
+  duplicateNode: (nodeId: string) => void;
   updateNodeData: (nodeId: string, data: Partial<BaseNodeData>) => void;
   deleteNode: (nodeId: string) => void;
   onConnect: (connection: Connection) => void;
@@ -61,6 +63,42 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         n.id === nodeId ? { ...n, data: { ...n.data, ...data } as BaseNodeData } : n
       ),
     })),
+
+  duplicateNode: (nodeId) => {
+    const state = get();
+    const src = state.nodes.find((n) => n.id === nodeId);
+    // 分组节点暂不支持拖拽复制（涉及子节点/边重映射）
+    if (!src || src.type === 'group') return;
+    state.commitToHistory();
+
+    // 身份对调：克隆留在原位，承接原节点的边与编号（= 不动的「原始」）；
+    // 被拖动的那个节点改成新编号、断开所有边（= 拖出去的干净副本）。
+    const cloneId = `node-${generateId()}`;
+    const newDisplayId = getNextDisplayId(state.nodes);
+
+    set((s) => {
+      const clone = {
+        ...src,
+        id: cloneId,
+        position: { ...src.position },
+        selected: false,
+        dragging: false,
+      } as Node<BaseNodeData>;
+      const nodes = s.nodes.map((n) =>
+        n.id === nodeId
+          ? ({ ...n, data: { ...n.data, displayId: newDisplayId } } as Node<BaseNodeData>)
+          : n,
+      );
+      nodes.push(clone);
+      // 原本指向被拖节点的边改指向克隆（边留在原位）
+      const edges = s.edges.map((e) =>
+        e.source === nodeId || e.target === nodeId
+          ? { ...e, source: e.source === nodeId ? cloneId : e.source, target: e.target === nodeId ? cloneId : e.target }
+          : e,
+      );
+      return { nodes, edges };
+    });
+  },
 
   deleteNode: (nodeId) => {
     get().commitToHistory();
