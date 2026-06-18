@@ -266,7 +266,7 @@ export default function SettingsPanel() {
                 {/* ComfyUI 安装目录 */}
                 <div>
                   <h3 className="text-sm font-medium text-canvas-text mb-3">ComfyUI 安装目录</h3>
-                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-4">
+                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-2">
                     <div className="text-xs text-canvas-text-muted mb-1.5">ComfyUI 根目录路径</div>
                     {comfyUIPath ? (
                       <div className="flex items-center gap-2 mb-3">
@@ -325,7 +325,7 @@ export default function SettingsPanel() {
                 {/* ComfyUI 服务地址 */}
                 <div>
                   <h3 className="text-sm font-medium text-canvas-text mb-3">ComfyUI 服务地址</h3>
-                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-4">
+                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-2">
                     <div className="text-xs text-canvas-text-muted mb-1.5">后端地址</div>
                     <input
                       type="text"
@@ -451,7 +451,7 @@ export default function SettingsPanel() {
 
                   {/* 自定义背景上传 & 检测结果 */}
                   {config.canvasBackground === 'custom' && config.customBackgroundUrl && (
-                    <div className="mt-3 bg-canvas-card border border-canvas-border rounded-lg p-4 space-y-3">
+                    <div className="mt-3 bg-canvas-card border border-canvas-border rounded-lg p-2 space-y-3">
                       {/* 预览图 + 移除按钮 */}
                       <div className="flex items-center gap-3">
                         <div
@@ -588,7 +588,7 @@ export default function SettingsPanel() {
                 {/* 文件保存位置 */}
                 <div>
                   <h3 className="text-sm font-medium text-canvas-text mb-3">文件保存位置</h3>
-                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-4">
+                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-2">
                     {/* 保存根目录选择 */}
                     <div className="mb-3">
                       <div className="text-xs text-canvas-text-muted mb-1.5">保存根目录</div>
