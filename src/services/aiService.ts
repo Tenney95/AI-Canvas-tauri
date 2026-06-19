@@ -3,7 +3,7 @@
  */
 import { useAppStore } from '../store/useAppStore';
 import { uploadToRemote, isLocalImageUrl } from './uploadService';
-import { readFileToDataUrl, getFileCategory } from './fileService';
+import { readFileToDataUrl, getFileCategory, getAssetUrlFromPath } from './fileService';
 import { mapImageDimensions } from './aiDimensions';
 import { resolveNodeReferences } from './nodeReferenceService';
 import type { AIAudioGenParams, AIGenerateParams, AIImageGenParams, AIVideoGenParams } from './aiTypes';
@@ -55,6 +55,39 @@ async function loadImage(src: string): Promise<HTMLImageElement> {
     img.onerror = () => reject(new Error('Failed to load image'));
     img.src = src;
   });
+}
+
+/** 用 <img> 加载探测线上图片 URL 是否仍可达（避免 CORS：图片加载不受 CORS 限制）*/
+function imageUrlReachable(url: string, timeoutMs = 6000): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (typeof Image === 'undefined') { resolve(true); return; }
+    const img = new Image();
+    let settled = false;
+    const finish = (v: boolean) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    img.onload = () => finish(true);
+    img.onerror = () => finish(false);
+    img.src = url;
+  });
+}
+
+/**
+ * 解析图片节点的可用 URL：
+ *  - 本地/内联 URL（asset://、data:、blob:）直接用；
+ *  - 线上 http(s) URL 先验证是否可达，失效且有本地 filePath 时改用本地 asset URL
+ *    （随后由 resolveImageUrlArray/resolveContentImageUrls 的本地→远端上传流程接管）。
+ */
+async function resolveNodeImageUrl(url: string, filePath?: string): Promise<string> {
+  // 本地/内联 URL（asset://、data:、blob:、http://asset.localhost）无需校验
+  if (!url || !/^https?:/i.test(url) || url.includes('asset.localhost')) return url;
+  if (await imageUrlReachable(url)) return url;
+  if (filePath) {
+    try {
+      const local = await getAssetUrlFromPath(filePath);
+      if (local) return local;
+    } catch { /* ignore, fall through */ }
+  }
+  return url; // 无本地兜底则维持原样
 }
 
 /** 将蒙版/标注叠加层与原图合并，返回合成后的 data URL */
@@ -753,7 +786,7 @@ async function resolvePromptToChatContent(rawPrompt: string): Promise<{
 }> {
   const { nodes } = useAppStore.getState();
   const chipRegex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
-  const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string }> = [];
+  const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string; filePath?: string }> = [];
   const parts: string[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -791,6 +824,7 @@ async function resolvePromptToChatContent(rawPrompt: string): Promise<{
             url: imageUrl,
             mattingMask: (node.data.mattingMask as string | undefined) || undefined,
             annotation: (node.data.annotation as string | undefined) || undefined,
+            filePath: (node.data.filePath as string | undefined) || undefined,
           });
         }
       } else {
@@ -826,15 +860,16 @@ async function resolvePromptToChatContent(rawPrompt: string): Promise<{
     return { content: textContent || rawPrompt.trim(), textContent: textContent || rawPrompt.trim() };
   }
 
-  // 合并蒙版/标注到原图（异步）
+  // 线上图片先验证可达性（失效改用本地），再合并蒙版/标注（异步）
   const imageUrls = await Promise.all(
     imageEntries.map(async (entry) => {
-      if (!entry.mattingMask && !entry.annotation) return entry.url;
+      const url = await resolveNodeImageUrl(entry.url, entry.filePath);
+      if (!entry.mattingMask && !entry.annotation) return url;
       try {
-        return await mergeImageWithOverlays(entry.url, entry.mattingMask, entry.annotation);
+        return await mergeImageWithOverlays(url, entry.mattingMask, entry.annotation);
       } catch (err) {
         console.error('[aiService] Failed to merge overlays:', err);
-        return entry.url;
+        return url;
       }
     }),
   );
@@ -855,7 +890,7 @@ async function resolvePromptToChatContent(rawPrompt: string): Promise<{
  *  图片节点有蒙版/标注时自动合并到原图 */
 async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ prompt: string; imageUrls: string[] }> {
   const { nodes } = useAppStore.getState();
-  const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string }> = [];
+  const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string; filePath?: string }> = [];
 
   // 预读图片资产为 data URL（replace 回调是同步的，需提前异步读取）
   const assetImageMap = new Map<string, string>();
@@ -890,6 +925,7 @@ async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ prompt: 
           url: imageUrl,
           mattingMask: (node.data.mattingMask as string | undefined) || undefined,
           annotation: (node.data.annotation as string | undefined) || undefined,
+          filePath: (node.data.filePath as string | undefined) || undefined,
         });
       }
       return '';
@@ -911,15 +947,16 @@ async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ prompt: 
     return '';
   }).trim();
 
-  // 合并蒙版/标注到原图（异步）
+  // 线上图片先验证可达性（失效改用本地），再合并蒙版/标注（异步）
   const imageUrls = await Promise.all(
     imageEntries.map(async (entry) => {
-      if (!entry.mattingMask && !entry.annotation) return entry.url;
+      const url = await resolveNodeImageUrl(entry.url, entry.filePath);
+      if (!entry.mattingMask && !entry.annotation) return url;
       try {
-        return await mergeImageWithOverlays(entry.url, entry.mattingMask, entry.annotation);
+        return await mergeImageWithOverlays(url, entry.mattingMask, entry.annotation);
       } catch (err) {
         console.error('[aiService] Failed to merge overlays:', err);
-        return entry.url; // 合并失败时回退到原图
+        return url; // 合并失败时回退到原图
       }
     }),
   );

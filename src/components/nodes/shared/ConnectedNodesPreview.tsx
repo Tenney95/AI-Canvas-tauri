@@ -5,8 +5,16 @@
  */
 import { useMemo, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { useAppStore } from '../../../store/useAppStore';
 import type { BaseNodeData } from '../../../types';
+
+const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+/** 本地文件路径 → asset URL（Tauri 端，不会失效），非 Tauri 返回 undefined */
+function localAssetUrl(filePath?: string): string | undefined {
+  if (!filePath || !IS_TAURI) return undefined;
+  try { return convertFileSrc(filePath); } catch { return undefined; }
+}
 
 interface ConnectedNodesPreviewProps {
   nodeId?: string;
@@ -52,7 +60,10 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           : data.audioUrl
           ? 'audio'
           : 'text';
-        const thumbnailUrl = (data.thumbnailUrl as string) || data.imageUrl || data.videoUrl || undefined;
+        // 图片节点优先本地文件（线上地址可能失效）；视频用 thumbnailUrl 作海报帧
+        const thumbnailUrl = outputType === 'image'
+          ? (localAssetUrl(data.filePath as string | undefined) || (data.thumbnailUrl as string) || data.imageUrl || undefined)
+          : ((data.thumbnailUrl as string) || data.videoUrl || undefined);
         const textSnippet = outputType === 'text' && data.output
           ? String(data.output).slice(0, 50)
           : undefined;
