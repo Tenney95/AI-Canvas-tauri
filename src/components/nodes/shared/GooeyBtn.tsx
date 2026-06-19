@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useId, useRef } from "react";
 
 interface GooeyBtnProps {
   className?: string;
@@ -8,6 +8,7 @@ interface GooeyBtnProps {
 
 const GooeyBtn = ({ className, hue }: GooeyBtnProps) => {
   const btnRef = useRef<HTMLButtonElement>(null);
+  const filterId = `goo-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
   useEffect(() => {
     const btn = btnRef.current;
@@ -15,8 +16,8 @@ const GooeyBtn = ({ className, hue }: GooeyBtnProps) => {
 
     const moveBg = (e: PointerEvent) => {
       const rect = btn.getBoundingClientRect();
-      const x = ((e.clientX - rect.x) / rect.width) * 100;
-      const y = ((e.clientY - rect.y) / rect.height) * 100;
+      const x = Math.min(Math.max(((e.clientX - rect.left) / rect.width) * 100, 0), 100);
+      const y = Math.min(Math.max(((e.clientY - rect.top) / rect.height) * 100, 0), 100);
       btn.style.setProperty("--x", String(x));
       btn.style.setProperty("--y", String(y));
     };
@@ -28,7 +29,14 @@ const GooeyBtn = ({ className, hue }: GooeyBtnProps) => {
   return (
     <div className={`gooey-btn-wrapper ${className ?? ''}`}>
       <svg width="0" height="0" style={{ position: "absolute" }}>
-        <filter id="goo">
+        <filter
+          id={filterId}
+          x="-120%"
+          y="-120%"
+          width="340%"
+          height="340%"
+          colorInterpolationFilters="sRGB"
+        >
           <feComponentTransfer>
             <feFuncA type="discrete" tableValues="0 1" />
           </feComponentTransfer>
@@ -73,7 +81,7 @@ const GooeyBtn = ({ className, hue }: GooeyBtnProps) => {
     position: absolute;
     inset: -10px; 
     border-radius: 50%;
-    filter: blur(8px) url(#goo) drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+    filter: blur(8px) url(#${filterId}) drop-shadow(0 2px 4px rgba(0,0,0,0.2));
     
     background-image:
       linear-gradient(0deg, var(--button), var(--button)),

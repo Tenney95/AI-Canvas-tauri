@@ -134,8 +134,9 @@ export default function App() {
     </div>
   );
 
-  // 仅在开发模式下启用 Inspect 功能
-  if (!isDev) {
+  // 仅在浏览器开发模式下启用 Inspect；Tauri 透明窗口中 Inspector 外层会破坏圆角透明背景
+  const enableInspector = isDev && !isTauri;
+  if (!enableInspector) {
     return (
       <>
         {!splashDone && <SplashScreen onComplete={() => setSplashDone(true)} />}

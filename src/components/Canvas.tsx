@@ -61,6 +61,10 @@ const FIT_VIEW_OPTIONS = { padding: 0.2 };
 const PRO_OPTIONS = { hideAttribution: true };
 const PAN_ON_DRAG = [1, 2];
 const DEFAULT_EDGE_STYLE = { stroke: '#33334a', strokeWidth: 1.5 };
+const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+const isMacOS = typeof navigator !== 'undefined'
+  && /Macintosh|Mac OS X/.test(navigator.userAgent);
+const shouldUseMacTrackpadPan = isTauri && isMacOS;
 const MINIMAP_STYLE = {
   width: 180,
   height: 120,
@@ -646,6 +650,9 @@ function CanvasInner() {
         defaultEdgeOptions={defaultEdgeOptions}
         onMove={handleMove}
         proOptions={PRO_OPTIONS}
+        panOnScroll={shouldUseMacTrackpadPan}
+        zoomOnScroll={!shouldUseMacTrackpadPan}
+        zoomOnPinch
         panOnDrag={PAN_ON_DRAG}
         selectionOnDrag
         selectionMode={SelectionMode.Partial}

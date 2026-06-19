@@ -5,17 +5,24 @@ import { motion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 
+const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+const isMacOS = typeof navigator !== 'undefined'
+  && /Macintosh|Mac OS X/.test(navigator.userAgent);
+
 export default function Header() {
   const { projectName, setProjectName } = useAppStore(
     useShallow((s) => ({ projectName: s.projectName, setProjectName: s.setProjectName })),
   );
+  const macTauriPlacement = isTauri && isMacOS;
 
   return (
     <header
       data-tauri-drag-region
-      className="app-header absolute top-3 left-3 z-40 flex items-center gap-1 px-2.5 py-2
-                 bg-canvas-surface/60 backdrop-blur-xl border border-canvas-border rounded-2xl
-                 shadow-lg shadow-black/30 select-none"
+      className={`app-header absolute top-3 z-40 flex items-center gap-1 px-2 py-2
+                  bg-canvas-surface/60 backdrop-blur-xl border border-canvas-border rounded-2xl
+                  shadow-lg shadow-black/30 select-none ${
+                    macTauriPlacement ? 'right-3' : 'left-3'
+                  }`}
     >
       {/* Logo */}
       <div className="flex items-center gap-2 pr-2 mr-0.5 border-r border-canvas-border">

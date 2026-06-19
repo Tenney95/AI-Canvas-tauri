@@ -109,6 +109,7 @@
   height: 30px !important;
   border: none !important;
   background: transparent !important;
+  overflow: visible !important;
   transition: transform var(--transition-base), border-color var(--transition-base), background var(--transition-base), left var(--transition-base), right var(--transition-base) !important;
 }
 
@@ -117,14 +118,21 @@
   cursor: none;
 }
 
+.react-flow__handle-left {
+  left: -10px !important;
+}
+.react-flow__handle-right {
+  right: -10px !important;
+}
+
 /* Hover: nudge outward — left handles shift left, right handles shift right */
 .react-flow__handle-left:hover {
-  left: 0px !important;
+  left: -15px !important;
   transform: translate(-50%, -50%) scale(1.4) !important;
 }
 
 .react-flow__handle-right:hover {
-  right: 0px !important;
+  right: -15px !important;
   transform: translate(50%, -50%) scale(1.4) !important;
 }
 
@@ -135,6 +143,7 @@
   position: absolute;
   z-index: 14;
   pointer-events: auto;
+  overflow: visible;
   /* 默认隐藏，仅在节点 hover / 选中 / 手柄 hover 时淡入 */
   opacity: 0;
   transition: opacity var(--transition-base);
@@ -179,13 +188,13 @@
 
 /* 与 React Flow Handle 位置对齐 */
 .gooey-btn-left {
-  left: 3px;
+  left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
 }
 
 .gooey-btn-right {
-  right: 3px;
+  right: 50%;
   top: 50%;
   transform: translate(50%, -50%);
 }
@@ -197,4 +206,3 @@
 .gooey-btn-right .gooey-btn::before {
   padding: 19px 26px 19px 10px;
 }
-
