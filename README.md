@@ -1,5 +1,15 @@
 # AI Canvas — Tauri 2 + React Flow
 
+## License
+
+本项目采用 AI Canvas Tauri Source-Available License。
+
+允许学习、研究、内部使用、修改和集成使用。
+禁止未经授权的套壳销售、白标分发、源码转售、商业再分发及将本项目作为同类产品进行商业化。
+
+本项目并非 OSI 定义下的开源项目。
+如需商业授权，请联系版权方。
+
 > 基于 **React Flow** + **Tauri 2** 的 AI 多模态节点画布编辑器，参考 [AI-CanvasPro](https://github.com/ashuoAI/AI-CanvasPro) 重构。
 
 在一块无限画布上，把文本、图像、视频、音频、360° 全景等 AI 能力以「节点 + 连线」的方式自由编排，云端厂商与本地模型无缝切换。
