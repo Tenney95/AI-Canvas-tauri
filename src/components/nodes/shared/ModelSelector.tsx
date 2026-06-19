@@ -151,7 +151,7 @@ export default function ModelSelector({
     return () => cancelAnimationFrame(raf);
   }, [open]);
 
-  // 点击外部关闭
+  // 点击外部关闭（捕获阶段避免 React Flow 拦截）
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
@@ -159,9 +159,9 @@ export default function ModelSelector({
       }
     };
     if (open) {
-      document.addEventListener('mousedown', handler);
+      document.addEventListener('mousedown', handler, true);
     }
-    return () => document.removeEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler, true);
   }, [open]);
 
   // Escape 键关闭

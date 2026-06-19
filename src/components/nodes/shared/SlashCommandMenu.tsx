@@ -49,8 +49,8 @@ export default function SlashCommandMenu({
   }, [onClose]);
 
   useEffect(() => {
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('mousedown', handleClickOutside, true);
+    return () => document.removeEventListener('mousedown', handleClickOutside, true);
   }, [handleClickOutside]);
 
   // Auto-close on Escape

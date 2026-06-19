@@ -26,7 +26,7 @@ export default function VideoParamSelector({
   const ref = useRef<HTMLDivElement>(null);
   const framesInputRef = useRef<HTMLInputElement>(null);
 
-  // Close popup on outside click
+  // Close popup on outside click (capture phase to beat React Flow event interception)
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
@@ -34,9 +34,9 @@ export default function VideoParamSelector({
       }
     };
     if (open) {
-      document.addEventListener('mousedown', handler);
+      document.addEventListener('mousedown', handler, true);
     }
-    return () => document.removeEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler, true);
   }, [open]);
 
   // Close popup on Escape key

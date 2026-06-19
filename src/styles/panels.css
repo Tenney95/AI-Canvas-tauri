@@ -36,7 +36,7 @@
 }
 .ai-dialog-float .prompt-editor {
   min-height: 80px;
-  max-height: min(50vh, 400px);
+  max-height: 140px;
   font-size: 14px;
   padding: 4px;
 }
