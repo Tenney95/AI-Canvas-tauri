@@ -5,6 +5,9 @@
     "type": "module",
     "scripts": {
         "dev": "vite",
+        "lint": "eslint .",
+        "typecheck": "tsc -b",
+        "check": "npm run typecheck && npm run lint",
         "build": "tsc -b && vite build",
         "preview": "vite preview",
         "tauri": "tauri"
