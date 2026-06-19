@@ -1,13 +1,25 @@
 ﻿/**
  * Node slice — canvas nodes / edges core state and CRUD
  */
-import type { Node, Edge, Connection } from '@xyflow/react';
+import {
+  applyEdgeChanges,
+  applyNodeChanges,
+  type Node,
+  type Edge,
+  type Connection,
+  type NodeChange,
+  type EdgeChange,
+} from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { BaseNodeData } from '../types';
 import { generateId, getNextDisplayId } from './store.utils';
 import * as fileService from '../services/fileService';
 import { playNodeExit } from '../utils/nodeAnimations';
+
+interface GroupNodeDataAccess {
+  groupId: string;
+}
 
 export interface NodeSlice {
   nodes: Node<BaseNodeData>[];
@@ -23,8 +35,10 @@ export interface NodeSlice {
   updateNodeData: (nodeId: string, data: Partial<BaseNodeData>) => void;
   deleteNode: (nodeId: string) => void;
   onConnect: (connection: Connection) => void;
-  onNodesChange: (changes: unknown[]) => void;
-  onEdgesChange: (changes: unknown[]) => void;
+  onNodesChange: (changes: NodeChange<Node<BaseNodeData>>[]) => void;
+  onEdgesChange: (changes: EdgeChange[]) => void;
+  clearGroupedSelection: () => void;
+  settleNodeGroupingOnDragStop: (node: Node<BaseNodeData>) => void;
 }
 
 export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, get) => ({
@@ -146,11 +160,198 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     set((state) => ({ edges: [...state.edges, edge] }));
   },
 
-  onNodesChange: (_changes) => {
-    // React Flow handles most node changes internally via onNodesChange callback
+  onNodesChange: (changes) => {
+    const removedIds = changes
+      .filter((c) => c.type === 'remove')
+      .map((c) => c.id);
+
+    if (removedIds.length === 0) {
+      set((s) => ({
+        nodes: applyNodeChanges(changes, s.nodes) as Node<BaseNodeData>[],
+      }));
+      return;
+    }
+
+    const state = get();
+    const removedGroupNodes = state.nodes.filter(
+      (n) => removedIds.includes(n.id) && n.type === 'group',
+    );
+
+    if (removedGroupNodes.length > 0) {
+      state.commitToHistory();
+      const groupNodeIdSet = new Set(removedGroupNodes.map((n) => n.id));
+      const removedGroupDataIds = removedGroupNodes.map(
+        (n) => (n.data as unknown as GroupNodeDataAccess).groupId,
+      );
+
+      const groupPositions = new Map(
+        removedGroupNodes.map((gn) => [gn.id, gn.position]),
+      );
+
+      const repositioned = state.nodes
+        .map((n) => {
+          if (!n.parentId || !groupPositions.has(n.parentId)) return n;
+          const gp = groupPositions.get(n.parentId)!;
+          return {
+            ...n,
+            position: { x: n.position.x + gp.x, y: n.position.y + gp.y },
+            parentId: undefined,
+          };
+        })
+        .filter((n) => !groupNodeIdSet.has(n.id));
+
+      const finalNodes = applyNodeChanges(
+        changes.filter((c) => c.type !== 'remove' || !groupNodeIdSet.has(c.id)),
+        repositioned,
+      ) as Node<BaseNodeData>[];
+
+      set((s) => ({
+        nodes: finalNodes,
+        edges: s.edges.filter(
+          (e) => !removedIds.includes(e.source) && !removedIds.includes(e.target),
+        ),
+        groups: s.groups.filter((g) => !removedGroupDataIds.includes(g.id)),
+      }));
+      return;
+    }
+
+    state.commitToHistory();
+    set((s) => ({
+      nodes: applyNodeChanges(changes, s.nodes) as Node<BaseNodeData>[],
+      edges: s.edges.filter(
+        (e) => !removedIds.includes(e.source) && !removedIds.includes(e.target),
+      ),
+    }));
   },
 
-  onEdgesChange: (_changes) => {
-    // React Flow handles most edge changes internally via onEdgesChange callback
+  onEdgesChange: (changes) => {
+    set((s) => ({
+      edges: applyEdgeChanges(changes, s.edges) as Edge[],
+    }));
+  },
+
+  clearGroupedSelection: () => {
+    set((s) => {
+      if (!s.nodes.some((n) => n.selected && n.type !== 'group')) return {};
+      let changed = false;
+      const nodes = s.nodes.map((n) => {
+        if (n.type === 'group' && n.selected) {
+          changed = true;
+          return { ...n, selected: false };
+        }
+        return n;
+      });
+      return changed ? { nodes } : {};
+    });
+  },
+
+  settleNodeGroupingOnDragStop: (node) => {
+    const state = get();
+    const allNodes = state.nodes;
+
+    if (node.type === 'group') return;
+
+    const absPos = { x: node.position.x, y: node.position.y };
+    let pid = node.parentId;
+    while (pid) {
+      const p = allNodes.find((n) => n.id === pid);
+      if (!p) break;
+      absPos.x += p.position.x;
+      absPos.y += p.position.y;
+      pid = p.parentId;
+    }
+
+    const nodeWidth = (node.data?.nodeWidth as number) || node.measured?.width || 280;
+    const nodeHeight = (node.data?.nodeHeight as number) || node.measured?.height || 160;
+    const nodeCenter = {
+      x: absPos.x + nodeWidth / 2,
+      y: absPos.y + nodeHeight / 2,
+    };
+
+    const groupNodes = allNodes.filter((n) => n.type === 'group');
+    let newNodes = allNodes.map((n) => ({ ...n, position: { ...n.position } }));
+    let newGroups = [...state.groups];
+    let changed = false;
+
+    if (node.parentId) {
+      const parentNode = groupNodes.find((g) => g.id === node.parentId);
+      if (parentNode) {
+        const pw = (parentNode.style?.width as number) || 400;
+        const ph = (parentNode.style?.height as number) || 300;
+        const inside =
+          nodeCenter.x >= parentNode.position.x &&
+          nodeCenter.x <= parentNode.position.x + pw &&
+          nodeCenter.y >= parentNode.position.y &&
+          nodeCenter.y <= parentNode.position.y + ph;
+        if (!inside) {
+          newNodes = newNodes.map((n) => {
+            if (n.id !== node.id) return n;
+            return { ...n, position: absPos, parentId: undefined };
+          });
+          const gId = (parentNode.data as unknown as GroupNodeDataAccess).groupId;
+          newGroups = newGroups.map((g) =>
+            g.id === gId
+              ? { ...g, nodeIds: g.nodeIds.filter((id) => id !== node.id) }
+              : g,
+          );
+          changed = true;
+        }
+      }
+    }
+
+    const updatedNode = newNodes.find((n) => n.id === node.id);
+    if (updatedNode && !updatedNode.parentId) {
+      for (const gn of groupNodes) {
+        const pw = (gn.style?.width as number) || 400;
+        const ph = (gn.style?.height as number) || 300;
+        if (
+          nodeCenter.x >= gn.position.x &&
+          nodeCenter.x <= gn.position.x + pw &&
+          nodeCenter.y >= gn.position.y &&
+          nodeCenter.y <= gn.position.y + ph
+        ) {
+          newNodes = newNodes.map((n) => {
+            if (n.id !== node.id) return n;
+            return {
+              ...n,
+              position: {
+                x: absPos.x - gn.position.x,
+                y: absPos.y - gn.position.y,
+              },
+              parentId: gn.id,
+            };
+          });
+          const gId = (gn.data as unknown as GroupNodeDataAccess).groupId;
+          newGroups = newGroups.map((g) =>
+            g.id === gId
+              ? { ...g, nodeIds: [...new Set([...g.nodeIds, node.id])] }
+              : g,
+          );
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (!changed) return;
+
+    const emptyGroupIds = new Set(
+      groupNodes
+        .filter((gn) => newNodes.filter((n) => n.parentId === gn.id).length === 0)
+        .map((gn) => gn.id),
+    );
+    if (emptyGroupIds.size > 0) {
+      newNodes = newNodes.filter((n) => !emptyGroupIds.has(n.id));
+      const emptyDataIds = new Set(
+        groupNodes
+          .filter((gn) => emptyGroupIds.has(gn.id))
+          .map((gn) => (gn.data as unknown as GroupNodeDataAccess).groupId)
+          .filter(Boolean),
+      );
+      newGroups = newGroups.filter((g) => !emptyDataIds.has(g.id));
+    }
+
+    state.commitToHistory();
+    set({ nodes: newNodes, groups: newGroups });
   },
 });

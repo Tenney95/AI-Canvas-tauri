@@ -15,10 +15,8 @@ import { ReactFlow,
   ReactFlowProvider,
   Panel,
   applyNodeChanges,
-  applyEdgeChanges,
   type OnSelectionChangeParams,
   type NodeChange,
-  type EdgeChange,
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -85,11 +83,6 @@ const minimapNodeColor = (node: RFNode) => {
   }
 };
 
-/** 分组节点 data 中可访问的字段 */
-interface GroupNodeDataAccess {
-  groupId: string;
-}
-
 // ── Snap lines overlay ──
 function SnapLinesOverlay({ lines }: { lines: SnapLine[] }) {
   const { x, y, zoom } = useViewport();
@@ -153,6 +146,11 @@ function CanvasInner() {
   const onConnect = useAppStore((s) => s.onConnect);
   const setEdges = useAppStore((s) => s.setEdges);
   const setSelectedNodeIds = useAppStore((s) => s.setSelectedNodeIds);
+  const setLastCanvasMousePos = useAppStore((s) => s.setLastCanvasMousePos);
+  const applyStableNodeChanges = useAppStore((s) => s.onNodesChange);
+  const handleEdgesChange = useAppStore((s) => s.onEdgesChange);
+  const clearGroupedSelection = useAppStore((s) => s.clearGroupedSelection);
+  const settleNodeGroupingOnDragStop = useAppStore((s) => s.settleNodeGroupingOnDragStop);
   const duplicateNode = useAppStore((s) => s.duplicateNode);
   const minimapVisible = useAppStore((s) => s.minimapVisible);
   const reactFlowInstance = useReactFlow();
@@ -207,9 +205,9 @@ function CanvasInner() {
   const handleMouseUp = useCallback(
     (e: React.MouseEvent) => {
       const flowPos = reactFlowInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      useAppStore.setState({ lastCanvasMousePos: flowPos });
+      setLastCanvasMousePos(flowPos);
     },
-    [reactFlowInstance],
+    [reactFlowInstance, setLastCanvasMousePos],
   );
 
   const toggleGrid = useCallback(() => setShowGrid((v) => !v), []);
@@ -353,26 +351,8 @@ function CanvasInner() {
 
   // 框选结束后：若分组节点与其它节点一同被框中，取消分组节点的选中，避免随后被一起拖动
   const onSelectionEnd = useCallback(() => {
-    useAppStore.setState((s) => {
-      if (!s.nodes.some((n) => n.selected && n.type !== 'group')) return {};
-      let changed = false;
-      const nodes = s.nodes.map((n) => {
-        if (n.type === 'group' && n.selected) { changed = true; return { ...n, selected: false }; }
-        return n;
-      });
-      return changed ? { nodes } : {};
-    });
-  }, []);
-
-  // ── Edge change handler — apply selection / removal changes
-  const handleEdgesChange = useCallback(
-    (changes: EdgeChange[]) => {
-      useAppStore.setState((s) => ({
-        edges: applyEdgeChanges(changes, s.edges) as typeof s.edges,
-      }));
-    },
-    [],
-  );
+    clearGroupedSelection();
+  }, [clearGroupedSelection]);
 
   // ── Node snap ──
   const { snapLines, onNodeDragStart, applySnap, onNodeDragStop } =
@@ -433,196 +413,18 @@ function CanvasInner() {
         return;
       }
 
-      const removedGroupNodes = useAppStore.getState().nodes.filter(
-        (n) => removedIds.includes(n.id) && n.type === 'group',
-      );
-
-      if (removedGroupNodes.length > 0) {
-        useAppStore.getState().commitToHistory();
-        const groupNodeIdSet = new Set(removedGroupNodes.map((n) => n.id));
-        const store = useAppStore.getState();
-        const removedGroupDataIds = removedGroupNodes.map(
-          (n) => (n.data as unknown as GroupNodeDataAccess).groupId,
-        );
-
-        // Reposition children to absolute coordinates
-        const groupPositions = new Map(
-          removedGroupNodes.map((gn) => [gn.id, gn.position]),
-        );
-
-        const repositioned = store.nodes
-          .map((n) => {
-            if (!n.parentId || !groupPositions.has(n.parentId)) return n;
-            const gp = groupPositions.get(n.parentId)!;
-            return {
-              ...n,
-              position: { x: n.position.x + gp.x, y: n.position.y + gp.y },
-              parentId: undefined,
-            };
-          })
-          .filter((n) => !groupNodeIdSet.has(n.id));
-
-        // Apply remaining non-group-removal changes
-        const finalNodes = applyNodeChanges(
-          snapped.filter(
-            (c) => c.type !== 'remove' || !groupNodeIdSet.has(c.id),
-          ),
-          repositioned,
-        ) as RFNode<BaseNodeData>[];
-
-        useAppStore.setState((s) => ({
-          nodes: finalNodes,
-          edges: s.edges.filter(
-            (e) =>
-              !removedIds.includes(e.source) && !removedIds.includes(e.target),
-          ),
-          groups: s.groups.filter((g) => !removedGroupDataIds.includes(g.id)),
-        }));
-        return;
-      }
-
-      // 含删除：提交历史并基于最新状态应用
-      useAppStore.getState().commitToHistory();
-      useAppStore.setState((s) => ({
-        nodes: applyNodeChanges(snapped, s.nodes) as RFNode<BaseNodeData>[],
-        edges: s.edges.filter(
-          (e) => !removedIds.includes(e.source) && !removedIds.includes(e.target),
-        ),
-      }));
+      applyStableNodeChanges(snapped);
     },
-    [applySnap],
+    [applySnap, applyStableNodeChanges],
   );
 
   // ── Auto group/ungroup on drag stop ──
   const handleNodeDragStop = useCallback(
     (_event: React.MouseEvent, node: RFNode) => {
-      const store = useAppStore.getState();
-      const allNodes = store.nodes;
-
-      // Skip group nodes themselves
-      if (node.type === 'group') {
-        onNodeDragStop();
-        return;
-      }
-
-      // Compute absolute position (follow parent chain)
-      const absPos = { x: node.position.x, y: node.position.y };
-      let pid = node.parentId;
-      while (pid) {
-        const p = allNodes.find((n) => n.id === pid);
-        if (!p) break;
-        absPos.x += p.position.x;
-        absPos.y += p.position.y;
-        pid = p.parentId;
-      }
-
-      const nodeWidth =
-        (node.data?.nodeWidth as number) || node.measured?.width || 280;
-      const nodeHeight =
-        (node.data?.nodeHeight as number) || node.measured?.height || 160;
-      const nodeCenter = {
-        x: absPos.x + nodeWidth / 2,
-        y: absPos.y + nodeHeight / 2,
-      };
-
-      const groupNodes = allNodes.filter((n) => n.type === 'group');
-      let newNodes = allNodes.map((n) => ({ ...n, position: { ...n.position } }));
-      let newGroups = [...store.groups];
-      let changed = false;
-
-      // 1) Check if node should leave its current parent group
-      if (node.parentId) {
-        const parentNode = groupNodes.find((g) => g.id === node.parentId);
-        if (parentNode) {
-          const pw = (parentNode.style?.width as number) || 400;
-          const ph = (parentNode.style?.height as number) || 300;
-          const inside =
-            nodeCenter.x >= parentNode.position.x &&
-            nodeCenter.x <= parentNode.position.x + pw &&
-            nodeCenter.y >= parentNode.position.y &&
-            nodeCenter.y <= parentNode.position.y + ph;
-          if (!inside) {
-            newNodes = newNodes.map((n) => {
-              if (n.id !== node.id) return n;
-              return { ...n, position: absPos, parentId: undefined };
-            });
-            const gdata = parentNode.data as unknown as GroupNodeDataAccess;
-            const gId = gdata?.groupId;
-            newGroups = newGroups.map((g) =>
-              g.id === gId
-                ? { ...g, nodeIds: g.nodeIds.filter((id) => id !== node.id) }
-                : g,
-            );
-            changed = true;
-          }
-        }
-      }
-
-      // 2) Check if free node should enter a group
-      const updatedNode = newNodes.find((n) => n.id === node.id)!;
-      if (!updatedNode.parentId) {
-        for (const gn of groupNodes) {
-          const pw = (gn.style?.width as number) || 400;
-          const ph = (gn.style?.height as number) || 300;
-          if (
-            nodeCenter.x >= gn.position.x &&
-            nodeCenter.x <= gn.position.x + pw &&
-            nodeCenter.y >= gn.position.y &&
-            nodeCenter.y <= gn.position.y + ph
-          ) {
-            newNodes = newNodes.map((n) => {
-              if (n.id !== node.id) return n;
-              return {
-                ...n,
-                position: {
-                  x: absPos.x - gn.position.x,
-                  y: absPos.y - gn.position.y,
-                },
-                parentId: gn.id,
-              };
-            });
-            const gdata = gn.data as unknown as GroupNodeDataAccess;
-            const gId = gdata?.groupId;
-            newGroups = newGroups.map((g) =>
-              g.id === gId
-                ? { ...g, nodeIds: [...new Set([...g.nodeIds, node.id])] }
-                : g,
-            );
-            changed = true;
-            break; // join first overlapping group only
-          }
-        }
-      }
-
-      // 3) Auto-delete groups that have become empty
-      if (changed) {
-        const emptyGroupIds = new Set(
-          groupNodes
-            .filter(
-              (gn) =>
-                newNodes.filter((n) => n.parentId === gn.id).length === 0,
-            )
-            .map((gn) => gn.id),
-        );
-        if (emptyGroupIds.size > 0) {
-          newNodes = newNodes.filter((n) => !emptyGroupIds.has(n.id));
-          const emptyDataIds = new Set(
-            groupNodes
-              .filter((gn) => emptyGroupIds.has(gn.id))
-              .map((gn) => (gn.data as unknown as GroupNodeDataAccess).groupId)
-              .filter(Boolean),
-          );
-          newGroups = newGroups.filter((g) => !emptyDataIds.has(g.id));
-        }
-
-        store.commitToHistory(); // capture pre-change state
-        useAppStore.setState({ nodes: newNodes, groups: newGroups });
-      }
-
-      // Always call snap handler last (it commits final state for undo)
+      settleNodeGroupingOnDragStop(node as RFNode<BaseNodeData>);
       onNodeDragStop();
     },
-    [onNodeDragStop],
+    [onNodeDragStop, settleNodeGroupingOnDragStop],
   );
 
   return (

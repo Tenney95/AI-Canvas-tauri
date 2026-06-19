@@ -26,6 +26,7 @@ export interface UISlice {
   closeAvatarMenu: () => void;
   openNodeDialog: (nodeId: string, position?: { x: number; y: number }) => void;
   closeNodeDialog: () => void;
+  setLastCanvasMousePos: (position: { x: number; y: number }) => void;
   setAssetsPanelOpen: (open: boolean) => void;
   setHistoryPanelOpen: (open: boolean) => void;
   toggleMinimap: () => void;
@@ -54,6 +55,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   closeAvatarMenu: () => set({ avatarMenuOpen: false }),
   openNodeDialog: (nodeId, position) => set({ activeNodeId: nodeId, dialogPosition: position ?? null }),
   closeNodeDialog: () => set({ activeNodeId: null, dialogPosition: null }),
+  setLastCanvasMousePos: (position) => set({ lastCanvasMousePos: position }),
   setAssetsPanelOpen: (open) => set({ assetsPanelOpen: open }),
   setHistoryPanelOpen: (open) => set({ historyPanelOpen: open }),
   toggleMinimap: () => set((s) => ({ minimapVisible: !s.minimapVisible })),

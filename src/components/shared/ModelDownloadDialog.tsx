@@ -49,7 +49,7 @@ export default function ModelDownloadDialog({
     <>
       {/* ── 下载确认弹窗 ── */}
       {showPrompt && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60" onClick={onCancel}>
+        <div className="fullscreen-overlay fixed inset-0 z-[100] flex items-center justify-center bg-black/60" onClick={onCancel}>
           <div
             className="bg-canvas-card border border-canvas-border rounded-xl p-6 max-w-sm mx-4 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
@@ -87,7 +87,7 @@ export default function ModelDownloadDialog({
 
       {/* ── 下载中遮罩 ── */}
       {showDownloading && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 rounded-xl">
+        <div className="fullscreen-overlay fixed inset-0 z-[100] flex items-center justify-center bg-black/60 rounded-xl">
           <div className="bg-canvas-card border border-canvas-border rounded-xl p-8 max-w-xs mx-4 shadow-2xl text-center">
             <div className="spinner large mx-auto mb-4" />
             <p className="text-sm text-canvas-text font-medium mb-1">{info.loadingText}</p>
