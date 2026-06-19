@@ -1,218 +1,154 @@
-# AI Canvas — Tauri 2 + React Flow
+# AI Canvas Tauri
+
+> 基于 **Tauri 2 + React 19 + React Flow** 的 AI 多模态节点画布编辑器。
+
+AI Canvas Tauri 将文本、图像、视频、音频、Markdown、360° 全景和 ComfyUI 工作流组织成可视化节点。你可以在一块无限画布上自由编排生成链路，把云端模型、本地模型和本地文件管理放在同一个桌面应用里。
+
+![Version](https://img.shields.io/badge/version-0.1.4-6366f1)
+![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
+![React](https://img.shields.io/badge/React-19-61dafb)
+![TypeScript](https://img.shields.io/badge/TypeScript-6-3178c6)
+![License](https://img.shields.io/badge/license-source--available-f59e0b)
 
 ## License
 
-本项目采用 AI Canvas Tauri Source-Available License。
+本项目采用 **AI Canvas Tauri Source-Available License**。
 
-允许学习、研究、内部使用、修改和集成使用。
-禁止未经授权的套壳销售、白标分发、源码转售、商业再分发及将本项目作为同类产品进行商业化。
+允许学习、研究、内部使用、修改和集成使用。禁止未经授权的套壳销售、白标分发、源码转售、商业再分发及将本项目作为同类产品进行商业化。
 
-本项目并非 OSI 定义下的开源项目。
-如需商业授权，请联系版权方。
+本项目并非 OSI 定义下的开源项目。如需商业授权，请联系版权方。
 
-> 基于 **React Flow** + **Tauri 2** 的 AI 多模态节点画布编辑器，参考 [AI-CanvasPro](https://github.com/ashuoAI/AI-CanvasPro) 重构。
+## Highlights
 
-在一块无限画布上，把文本、图像、视频、音频、360° 全景等 AI 能力以「节点 + 连线」的方式自由编排，云端厂商与本地模型无缝切换。
+| 能力 | 说明 |
+| --- | --- |
+| 本地优先 | 项目文件、媒体资源、API 配置保存在用户本地目录，一个项目一个文件夹，便于迁移和归档。 |
+| 双存储通道 | 桌面端通过 Tauri 原生文件系统读写；浏览器环境自动回退到 IndexedDB。 |
+| 多模态节点 | 文本、图像、视频、音频、Markdown、360° 全景、源文件节点统一在画布中连接。 |
+| 云端 + 本地 AI | 支持云端厂商、OpenAI 兼容接口、本地 ComfyUI 工作流。 |
+| 画布生产力 | React Flow 无限画布、小地图、网格、吸附对齐、分组、撤销重做、复制粘贴。 |
+| 轻量桌面端 | 基于 Tauri 2，使用系统 WebView 与 Rust 后端能力，体积更克制。 |
 
-### 设计亮点
-- **完全本地化** — 项目文件（`.aicanvas.json`）、媒体资源、API 配置全部存储在用户指定的本地目录，一个项目一个文件夹，自包含、可迁移，无需任何云服务。
-- **双存储通道** — 桌面端经 Tauri 原生文件系统读写（由 `fileService.ts` 统一抽象），纯浏览器环境自动回退到 IndexedDB 持久化。
-- **云端 + 本地 AI** — 内置 OpenAI、DeepSeek、即梦等云端厂商；「通用模型」可接入任意 OpenAI 兼容接口（Ollama、vLLM 等）；工作流面板导入 ComfyUI JSON 即可在画布上直接调用本地 ComfyUI 执行文生图、图生视频等任务。
-- **极致轻量** — 借助 Tauri 2，安装包仅约 3MB。
+## Features
 
-## 技术栈
+### 画布交互
 
-| 技术 | 用途 |
-|------|------|
-| [Tauri 2](https://tauri.app/) | 桌面应用框架 (Rust 后端) |
-| [React 19](https://react.dev/) | UI 框架 |
-| [React Flow](https://reactflow.dev/) | 节点画布引擎 |
-| [Zustand](https://zustand.docs.pmnd.rs/) | 状态管理 |
-| [Tailwind CSS](https://tailwindcss.com/) | 样式系统 |
-| [Three.js](https://threejs.org/) | 360° 全景节点渲染 |
-| [@iconify/react](https://iconify.design/) ([Icônes.js](https://icones.js.org/)) | 图标库 |
-| [TypeScript](https://www.typescriptlang.org/) | 类型安全 |
-| [framer-motion](https://www.framer.com/motion/) | 动画库 |
-
-## 功能特性
-
-### 画布与交互
-- **无限画布** — 自由缩放/平移、小地图导航、网格背景、节点对齐吸附
-- **节点分组** — 拖入/拖出自动归组，框选批量操作
-- **撤销 / 重做** — 完整历史栈
-- **复制粘贴** — 应用内复制，以及系统剪贴板图片/文件直接粘贴
-- **多项目管理** — 多画布切换，结构变化防抖自动保存
+- 无限画布：缩放、平移、小地图、网格背景和适应画布。
+- 节点操作：拖拽、框选、多选、分组、复制、剪切、粘贴、删除。
+- 智能对齐：拖拽节点时显示吸附辅助线。
+- 历史记录：节点和连线操作支持撤销 / 重做。
+- 系统剪贴板：支持图片、文件和文本内容直接粘贴到画布。
 
 ### AI 节点
-- **文本生成** — 多轮对话、流式输出
-- **图像生成** — 文生图/图生图，内置抠图、标注、裁剪、自由视角等编辑
-- **视频生成** — 文生视频/图生视频
-- **音频生成** — TTS 文本转语音
-- **360° 全景** — Three.js 实时渲染、拖拽浏览、一键截图成图片节点
-- **Markdown** — 富文本编辑 / 预览
-- **@ 引用语法** — 在提示词中引用其他节点的输出结果
-- **ComfyUI 工作流** — 导入 JSON 调用本地引擎，支持一键启动本地 ComfyUI
 
-### 界面
-- 深色 / 浅色主题，多种画布背景（太阳系、星云、米白等）
-- 设置面板（API Key、ComfyUI、快捷键）
-- 底部控制栏（缩放、网格开关、适应画布）、输出历史面板
+- 文本生成：多轮对话、流式输出、提示词预设。
+- 图像生成：文生图 / 图生图，支持抠图、标注、裁剪、自由视角等编辑能力。
+- 视频生成：文生视频 / 图生视频。
+- 音频生成：TTS 文本转语音与音频预览。
+- Markdown：编辑 / 预览 / 全屏查看。
+- 360° 全景：基于 Three.js 渲染，支持拖拽浏览和截图生成图片节点。
+- `@` 引用：在提示词中引用其他节点的输出结果。
+- ComfyUI 工作流：导入 JSON 后在画布中调用本地 ComfyUI 执行任务。
 
-## 项目结构
-```
-src/
-├── components/
-│   ├── backgrounds/            # 画布背景风格
-│   ├── canvas/                 # 画布交互子组件
-│   │   ├── CanvasContextMenu.tsx   # 画布右键菜单（添加节点/撤销/重做）
-│   │   ├── CanvasEmptyState.tsx    # 画布空状态引导界面
-│   │   ├── CanvasToolbar.tsx       # 右下角浮动工具条（网格/连线/缩放）
-│   │   ├── ConnectionMenu.tsx      # 连线拖放目标选择菜单
-│   │   ├── MultiSelectToolbar.tsx  # 多选节点浮动工具栏
-│   │   └── NodeContextMenu.tsx     # 节点右键菜单（复制/剪切/副本/删除）
-│   ├── nodes/                  # 画布节点组件
-│   │   ├── shared/                 # 节点共享子组件
-│   │   │   ├── ConnectedNodesPreview.tsx # 连线节点预览
-│   │   │   ├── defaultModels.ts        # 预置模型配置（文本/图像/视频/音频）
-│   │   │   ├── FreeAnglePanel.tsx      # 自由角度控制面板
-│   │   │   ├── GooeyBtn.tsx            # 吸边按钮（SVG 滤镜效果）
-│   │   │   ├── ImageNodeToolbar.tsx    # 图像节点浮动工具栏
-│   │   │   ├── imageUtils.ts           # 图像工具函数
-│   │   │   ├── MattingEditor.tsx       # 遮罩编辑器主组件
-│   │   │   ├── MattingToolbar.tsx      # 遮罩编辑工具栏
-│   │   │   ├── MentionEditor.tsx       # @提及编辑器（引用其他节点）
-│   │   │   ├── ModelSelector.tsx       # 模型/工作流下拉选择器
-│   │   │   ├── NodeLabel.tsx           # 节点标题栏（图标/颜色/重命名）
-│   │   │   ├── PanoramaNodeToolbar.tsx # 全景图节点浮动工具栏
-│   │   │   ├── PresetManager.tsx       # 预设提示词管理
-│   │   │   ├── PromptPanel.tsx         # 提示词输入面板（斜杠菜单/模型/生成）
-│   │   │   ├── QualityRatioSelector.tsx# 图像质量/比例选择器
-│   │   │   ├── ResizeHandle.tsx        # 节点拖拽调整大小手柄
-│   │   │   ├── SlashCommandMenu.tsx    # / 指令菜单（预设提示词模板）
-│   │   │   ├── slashCommands.ts        # 斜杠指令定义
-│   │   │   ├── TextNodeToolbar.tsx     # 文本节点浮动工具栏
-│   │   │   ├── useNodeRename.ts        # 节点重命名 Hook
-│   │   │   ├── useSourceFileUpload.ts  # 源文件上传 Hook
-│   │   │   └── VideoParamSelector.tsx  # 视频参数选择器
-│   │   ├── AINodeDialog.tsx        # AI 生成弹窗（Prompt + 模型 + 生成按钮）
-│   │   ├── AudioNode.tsx           # 音频节点（上传/播放器）
-│   │   ├── GroupNode.tsx           # 分组节点（组织画布节点）
-│   │   ├── ImageNode.tsx           # 图像节点（遮罩/工具栏/全屏）
-│   │   ├── MarkdownNode.tsx        # Markdown 节点（编辑/预览/全屏）
-│   │   ├── PanoramaNode.tsx        # 360° 全景图节点（Three.js 渲染）
-│   │   ├── TextNode.tsx            # 文本节点（编辑/拖拽调整大小/全屏）
-│   │   └── VideoNode.tsx           # 视频节点（上传/播放/全屏）
-│   ├── settings/               # 设置面板子组件
-│   ├── shared/                 # 通用共享组件
-│   │   ├── AnimatedButton.tsx      # 动画按钮（framer-motion 弹簧效果）
-│   │   ├── FullscreenOverlay.tsx   # 全屏遮罩层
-│   │   └── ModalOverlay.tsx        # 模态遮罩层
-│   ├── AssetsPanel.tsx         # 资源管理面板
-│   ├── Canvas.tsx              # React Flow 画布主区域
-│   ├── Header.tsx              # 顶部栏（Logo、项目名、侧边栏/设置入口）
-│   ├── NodeMenu.tsx            # 浮动节点添加菜单
-│   ├── SettingsPanel.tsx       # 设置弹窗（API Key 配置、连接测试）
-│   ├── Sidebar.tsx             # 左侧面板（节点列表、上传、项目切换）
-│   ├── SplashScreen.tsx        # 启动闪屏
-│   ├── Titlebar.tsx            # 自定义窗口标题栏（最小化/最大化/关闭）
-│   ├── Toast.tsx               # 全局消息提示（成功/错误/信息）
-│   └── WorkflowPanel.tsx       # 工作流管理面板（导入 JSON/分类筛选）
-├── hooks/                      # 自定义 React Hooks
-│   ├── useAutoSave.ts              # 自动保存（防抖写入 IndexedDB）
-│   ├── useCanvasContextMenu.ts     # 画布右键菜单逻辑
-│   ├── useConnectionDropMenu.ts    # 连线拖放创建节点逻辑
-│   ├── useKeyboardShortcuts.ts     # 全局键盘快捷键
-│   ├── useNodeContextMenu.ts       # 节点右键菜单逻辑
-│   ├── useNodeCreation.ts          # 节点创建逻辑
-│   └── useNodeSnap.ts              # 节点拖拽吸附对齐
-├── services/                   # 服务层
-│   ├── aiService.ts            # AI 生成 API 封装（多厂商/工作流）
-│   ├── apimartService.ts       # API Mart 协议适配
-│   ├── fileService.ts          # 文件操作（Tauri + IndexedDB 双通道）
-│   ├── indexedDbService.ts     # IndexedDB 本地持久化
-│   ├── testConnection.ts       # API 密钥连接测试服务
-│   └── uploadService.ts        # 文件上传服务
-├── store/                      # Zustand 状态管理（模块化拆分）
-│   ├── useAppStore.ts          # 主 Store（组合所有 slice）
-│   ├── store.clipboard.ts      # 剪贴板状态
-│   ├── store.config.ts         # API 配置状态
-│   ├── store.groups.ts         # 分组节点状态
-│   ├── store.history.ts        # 撤销/重做历史栈
-│   ├── store.nodes.ts          # 节点/边状态
-│   ├── store.presets.ts        # 预设提示词状态
-│   ├── store.projects.ts       # 多项目管理状态
-│   ├── store.toast.ts          # Toast 通知状态
-│   ├── store.ui.ts             # UI 面板/侧边栏状态
-│   ├── store.utils.ts          # Store 工具方法
-│   └── store.workflows.ts      # 工作流状态
-├── styles/                     # 样式文件（按模块拆分）
-│   ├── base.css                # 基础重置样式
-│   ├── nodes.css               # 节点通用样式
-│   ├── nodes-text.css          # 文本节点样式
-│   ├── nodes-image.css         # 图像节点样式
-│   ├── nodes-audio.css         # 音频节点样式
-│   ├── nodes-panorama.css      # 全景图节点样式
-│   ├── nodes-group.css         # 分组节点样式
-│   ├── reactflow.css           # React Flow 组件覆盖
-│   ├── model-selector.css      # 模型选择器样式
-│   ├── prompt.css              # 提示词输入样式
-│   ├── preset-manager.css      # 预设管理器样式
-│   ├── freeangle.css           # 自由角度面板样式
-│   ├── quality-ratio.css       # 质量比例选择器样式
-│   ├── canvas-context.css      # 右键菜单样式
-│   ├── backgrounds.css         # 背景风格样式
-│   ├── panels.css              # 面板通用样式
-│   ├── settings.css            # 设置面板样式
-│   ├── sidebar.css             # 侧边栏样式
-│   └── tooltip.css             # 工具提示样式
-├── types/
-│   └── index.ts                # 核心类型定义
-├── utils/                      # 工具函数
-├── assets/                     # 静态资源（图片/图标）
-├── App.tsx                     # 根组件装配
-├── main.tsx                    # 应用入口
-└── index.css                   # Tailwind 入口 + CSS 变量
-```
+### 桌面体验
 
-## 开发指南
+- macOS / Windows 自定义标题栏与窗口控制。
+- 深色 / 浅色主题，多种画布背景。
+- API Key、模型、ComfyUI、快捷键集中配置。
+- 输出历史、资源面板和工作流面板辅助管理生成资产。
 
-### 前置要求
+## Tech Stack
+
+| 技术 | 用途 |
+| --- | --- |
+| [Tauri 2](https://tauri.app/) | 桌面应用壳、窗口管理、原生文件系统能力 |
+| [React 19](https://react.dev/) | UI 渲染 |
+| [React Flow](https://reactflow.dev/) | 节点画布 |
+| [Zustand](https://zustand.docs.pmnd.rs/) | 全局状态管理 |
+| [Tailwind CSS](https://tailwindcss.com/) | 样式系统 |
+| [Three.js](https://threejs.org/) | 360° 全景渲染 |
+| [@iconify/react](https://iconify.design/) | 图标体系 |
+| [TypeScript](https://www.typescriptlang.org/) | 类型约束 |
+| [framer-motion](https://www.framer.com/motion/) | 动效 |
+
+## Quick Start
+
+### 环境要求
+
 - Node.js >= 18
-- Rust (用于 Tauri 编译)
-- npm 或 pnpm
+- Rust stable toolchain
+- npm
 
 ### 安装依赖
+
 ```bash
 npm install
 ```
 
-### 启动开发模式
+### 启动开发环境
+
 ```bash
-# 仅前端开发（不需要 Rust）
+# 仅启动 Web 前端
 npm run dev
 
-# 完整 Tauri 应用（需要 Rust 工具链）
+# 启动完整 Tauri 桌面应用
 npm run tauri dev
 ```
 
-### 构建生产版本
+### 构建
+
 ```bash
-npm run build          # 构建 Web 前端
-npm run tauri build    # 构建桌面应用
+# 构建 Web 前端
+npm run build
+
+# 构建桌面应用
+npm run tauri build
 ```
 
-## 与原版的差异
+## Project Structure
 
-本项目是对 [AI-CanvasPro](https://github.com/ashuoAI/AI-CanvasPro) 的重新实现：
+```text
+AI-Canvas-tauri/
+├── src/
+│   ├── components/       # React 组件：画布、节点、面板、标题栏、设置等
+│   ├── hooks/            # 画布交互、快捷键、节点创建、右键菜单等 Hooks
+│   ├── services/         # AI、文件系统、IndexedDB、上传与连接测试服务
+│   ├── store/            # Zustand store 与各业务 slice
+│   ├── styles/           # 按模块拆分的 CSS 与 React Flow 覆盖
+│   ├── types/            # 全局类型定义
+│   ├── utils/            # 通用工具函数
+│   ├── App.tsx           # 根组件装配
+│   └── main.tsx          # React 入口
+├── src-tauri/
+│   ├── src/              # Rust 后端入口、Tauri command、平台能力
+│   ├── Cargo.toml        # Rust 依赖
+│   └── tauri.conf.json   # Tauri 应用配置
+├── doc/                  # 参考文档
+├── package.json          # 前端依赖与 npm scripts
+├── vite.config.ts        # Vite 配置
+└── tailwind.config.js    # Tailwind token 与主题配置
+```
 
-| 方面 | 原版 | 本实现 |
-|------|------|--------|
-| 框架 | 原生 JS + Python 后端 | React + Tauri (Rust) |
-| 画布引擎 | 自定义 Canvas 实现 | React Flow |
-| 状态管理 | 手动 store | Zustand |
-| 类型安全 | 无 | TypeScript 全面覆盖 |
-| 包体积 | 较大 | Tauri 极致轻量 (~3MB) |
-| API 集成 | Python Flask 服务端 | 可直接调用 API 或通过 Tauri Command |
+## Core Modules
 
-## 联系方式
-开发沟通QQ群： 873354155
+| 模块 | 说明 |
+| --- | --- |
+| `src/components/Canvas.tsx` | React Flow 画布主入口，装配节点、连线、右键菜单、小地图和工具栏。 |
+| `src/components/nodes/` | 各类 AI 节点与源文件节点。 |
+| `src/components/nodes/shared/` | 节点共享能力：提示词面板、模型选择、工具栏、上传、重命名等。 |
+| `src/store/useAppStore.ts` | Zustand 主 store，组合节点、项目、配置、历史、UI、工作流等 slice。 |
+| `src/services/fileService.ts` | Tauri 文件系统与浏览器 IndexedDB 的统一文件服务入口。 |
+| `src/services/aiService.ts` | 多厂商 AI 生成与工作流调用的服务封装。 |
+| `src-tauri/src/` | Tauri 2 后端能力、插件注册和平台相关逻辑。 |
+
+## Development Notes
+
+- 文件读写优先走 `fileService.ts`，避免在组件中直接分散调用 Tauri 文件 API。
+- 画布状态统一通过 Zustand actions 修改，不在组件中直接改节点数组。
+- 样式优先复用 Tailwind 与 `canvas-*` token，React Flow 覆盖集中在 `src/styles/reactflow.css`。
+- 新增节点类型时，同时补充类型定义、节点组件、样式和 store 行为。
+- 接入真实模型或工作流时，优先扩展 provider / workflow adapter，避免在节点组件中堆硬编码分支。
+
+## Contact
+
+开发沟通 QQ 群：873354155
