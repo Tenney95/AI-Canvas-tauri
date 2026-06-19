@@ -13,6 +13,7 @@ const CREATE_NEW_CONSOLE: u32 = 0x00000010;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// 在 Windows 新终端窗口中启动 ComfyUI
+#[cfg(windows)]
 fn launch_windows(comfy_path: &str) -> Result<String, String> {
     let root = Path::new(comfy_path);
 
@@ -135,16 +136,6 @@ fn spawn_new_console(program: &str, args: &[&str], working_dir: &Path) -> Result
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn run_bat_script(_script_path: &Path) -> Result<String, String> {
-    Err("bat 脚本仅支持 Windows".into())
-}
-
-#[cfg(not(windows))]
-fn spawn_new_console(_program: &str, _args: &[&str], _working_dir: &Path) -> Result<(), String> {
-    Err("新控制台仅支持 Windows".into())
-}
-
 /// 非 Windows 系统
 fn launch_unix(comfy_path: &str) -> Result<String, String> {
     let root = Path::new(comfy_path);
@@ -214,9 +205,13 @@ pub async fn launch_comfyui(comfy_path: String) -> Result<String, String> {
         return Err(format!("ComfyUI 目录不存在: {}", comfy_path));
     }
 
-    if cfg!(windows) {
+    #[cfg(windows)]
+    {
         launch_windows(&comfy_path)
-    } else {
+    }
+
+    #[cfg(not(windows))]
+    {
         launch_unix(&comfy_path)
     }
 }
