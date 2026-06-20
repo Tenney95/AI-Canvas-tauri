@@ -792,21 +792,23 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           onResize={handleResize}
         />
 
-        {/* Floating toolbar — single-select only */}
-        {selected && isSingleSelection && (data.imageUrl || data.thumbnailUrl) && (
-          <ImageNodeToolbar
-            nodeId={id}
-            onUpload={handleUpload}
-            onMatting={handleOpenMatting}
-            onSubjectMatting={handleSubjectMatting}
-            onMultiAngle={handleOpenFreeAngle}
-            onExpand={handleOpenExpand}
-            onCrop={handleOpenCrop}
-            onFullscreen={handleOpenFullscreen}
-            onAnnotate={handleOpenAnnotate}
-            onUpscale={handleUpscale}
-            onRepaint={handleRepaint}
-          />
+        {/* Keep the toolbar mounted to animate selection changes. */}
+        {(data.imageUrl || data.thumbnailUrl) && (
+          <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
+            <ImageNodeToolbar
+              nodeId={id}
+              onUpload={handleUpload}
+              onMatting={handleOpenMatting}
+              onSubjectMatting={handleSubjectMatting}
+              onMultiAngle={handleOpenFreeAngle}
+              onExpand={handleOpenExpand}
+              onCrop={handleOpenCrop}
+              onFullscreen={handleOpenFullscreen}
+              onAnnotate={handleOpenAnnotate}
+              onUpscale={handleUpscale}
+              onRepaint={handleRepaint}
+            />
+          </div>
         )}
       </div>
 

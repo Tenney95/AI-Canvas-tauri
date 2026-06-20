@@ -451,18 +451,20 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
           onResize={handleResize}
         />
 
-        {/* Floating toolbar — selected + has image */}
-        {selected && hasImage && (
-          <PanoramaNodeToolbar
-            onUpload={handleUpload}
-            onToggleMode={toggleMode}
-            previewMode={previewMode}
-            onAspectRatio={handleAspectRatio}
-            currentAspectRatio={currentAspectRatio}
-            onScreenshot={handleScreenshot}
-            onFullscreen={toggleFullscreen}
-            onDownload={handleDownload}
-          />
+        {/* Keep the toolbar mounted to animate selection changes. */}
+        {hasImage && (
+          <div className={`node-toolbar-shell ${selected ? 'is-visible' : ''}`}>
+            <PanoramaNodeToolbar
+              onUpload={handleUpload}
+              onToggleMode={toggleMode}
+              previewMode={previewMode}
+              onAspectRatio={handleAspectRatio}
+              currentAspectRatio={currentAspectRatio}
+              onScreenshot={handleScreenshot}
+              onFullscreen={toggleFullscreen}
+              onDownload={handleDownload}
+            />
+          </div>
         )}
       </div>
 

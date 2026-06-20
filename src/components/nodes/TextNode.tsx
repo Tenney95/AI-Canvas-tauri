@@ -200,8 +200,8 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   return (
     <>
     <div className="node-wrapper relative" style={{ width: nodeWidth }}>
-      {/* Floating toolbar — when selected (single-select only) */}
-      {selected && isSingleSelection && (
+      {/* Floating toolbar stays mounted so selection changes can animate. */}
+      <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
         <TextNodeToolbar
           nodeId={id}
           data={data}
@@ -209,7 +209,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
           onClearEmptyLines={handleClearEmptyLines}
           onFullscreen={handleOpenFullscreen}
         />
-      )}
+      </div>
       <NodeLabel
         kind="ai-text"
         label={displayLabel}

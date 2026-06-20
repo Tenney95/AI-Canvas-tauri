@@ -156,11 +156,10 @@
 
 /* ══ Pano Node Toolbar — above selected PanoramaNode ══ */
 .pano-toolbar {
+  --toolbar-offset-x: -50%;
   top: -40px !important;
   bottom: auto !important;
   left: 50% !important;
-  transform: translateX(-50%) !important;
-  pointer-events: auto !important;
   gap: 0;
   padding: 4px 6px;
   white-space: nowrap;

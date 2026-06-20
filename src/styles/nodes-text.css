@@ -67,8 +67,6 @@
   top: -40px !important;
   left: 50%;
   margin: 0 auto;
-  transform: none !important;
-  pointer-events: auto !important;
   gap: 4px;
 }
 
