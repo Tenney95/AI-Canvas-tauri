@@ -17,6 +17,7 @@ import { renderMarkdown } from '../../utils/renderMarkdown';
 function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const currentProjectId = useAppStore((s) => s.currentProjectId);
+  const showToast = useAppStore((s) => s.showToast);
 
   // ── Edit / Preview toggle ──
   const [viewMode, setViewMode] = useState<'edit' | 'preview'>('edit');
@@ -34,6 +35,29 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const handleCloseFullscreen = useCallback(() => {
     setIsFullscreen(false);
   }, []);
+
+  // ── Copy content ──
+  const [copied, setCopied] = useState(false);
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleCopy = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const content = (data.output as string) || '';
+    if (!content) {
+      showToast('暂无文本可复制', 'error');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      showToast('文本已复制');
+      if (copyResetTimer.current) clearTimeout(copyResetTimer.current);
+      copyResetTimer.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      showToast('复制失败，请手动复制', 'error');
+    }
+  }, [data.output, showToast]);
 
   // Auto-focus textarea when fullscreen opens in edit mode
   useEffect(() => {
@@ -226,6 +250,24 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                   <polyline points="17 8 12 3 7 8" />
                   <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+              )}
+            </AnimatedButton>
+            <AnimatedButton
+              type="button"
+              className="markdown-mode-btn"
+              onClick={handleCopy}
+              title={copied ? '已复制' : '复制文本'}
+              aria-label={copied ? '已复制' : '复制文本'}
+            >
+              {copied ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                 </svg>
               )}
             </AnimatedButton>

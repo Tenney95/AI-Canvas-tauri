@@ -16,6 +16,7 @@ import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const justCompleted = useCompletionFlash(data.status);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const openNodeDialog = useAppStore((s) => s.openNodeDialog);
   const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
   const isSource = data.role === 'source';
 
@@ -128,6 +129,16 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     setIsFullscreen(true);
   }, []);
 
+  const handleShowPrompt = useCallback(() => {
+    const nodeElement = document.querySelector(`.react-flow__node[data-id="${id}"]`);
+    if (nodeElement) {
+      const rect = nodeElement.getBoundingClientRect();
+      openNodeDialog(id, { x: rect.left + rect.width / 2, y: rect.bottom });
+      return;
+    }
+    openNodeDialog(id);
+  }, [id, openNodeDialog]);
+
   const handleCloseFullscreen = useCallback(() => {
     setIsFullscreen(false);
   }, []);
@@ -207,6 +218,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
           data={data}
           onCopy={handleCopyToClipboardFn}
           onClearEmptyLines={handleClearEmptyLines}
+          onShowPrompt={handleShowPrompt}
           onFullscreen={handleOpenFullscreen}
         />
       </div>
@@ -284,11 +296,11 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     </div>
 
     {/* Fullscreen overlay */}
-    <FullscreenOverlay
-      isOpen={isFullscreen}
+      <FullscreenOverlay
+        isOpen={isFullscreen}
       onClose={handleCloseFullscreen}
       title={(data.label as string) || '文本内容'}
-    >
+      >
       <textarea
         ref={fullscreenTextareaRef}
         className="fullscreen-textarea"
@@ -296,7 +308,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
         onChange={handleFullscreenChange}
         spellCheck={false}
       />
-    </FullscreenOverlay>
+      </FullscreenOverlay>
     </>
   );
 }

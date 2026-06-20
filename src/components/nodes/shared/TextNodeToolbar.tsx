@@ -10,10 +10,11 @@ interface TextNodeToolbarProps {
   data: BaseNodeData;
   onCopy: (text: string) => void;
   onClearEmptyLines: () => void;
+  onShowPrompt: () => void;
   onFullscreen: () => void;
 }
 
-function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onFullscreen }: TextNodeToolbarProps) {
+function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFullscreen }: TextNodeToolbarProps) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(
@@ -47,6 +48,14 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onFullscreen }: Text
     [onFullscreen],
   );
 
+  const handleShowPrompt = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onShowPrompt();
+    },
+    [onShowPrompt],
+  );
+
   return (
     <div className="node-floating-toolbar text-toolbar">
       <AnimatedButton
@@ -78,6 +87,17 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onFullscreen }: Text
           <path d="M4 18h8" />
           <path d="M18 15l3 3" />
           <path d="M21 15l-3 3" />
+        </svg>
+      </AnimatedButton>
+      <AnimatedButton
+        className="ftb-btn icon-only act-show-prompt rounded-[6px]"
+        data-tooltip="查看提示词"
+        aria-label="查看提示词"
+        onClick={handleShowPrompt}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
+          <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
+          <path d="M8 9h8M8 13h5" />
         </svg>
       </AnimatedButton>
       <AnimatedButton
