@@ -15,6 +15,7 @@ import CropEditor from './shared/image/CropEditor';
 import ExpandEditor from './shared/image/ExpandEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
+import ZoomableImage from '../shared/ZoomableImage';
 import ModelDownloadDialog from '../shared/ModelDownloadDialog';
 import { computeImageNodeDimensions } from './shared/image/imageUtils';
 import { useNodeRename } from './shared/useNodeRename';
@@ -875,7 +876,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             </button>
           </div>
         ) : (
-          <img
+          <ZoomableImage
             src={(data.imageUrl || data.thumbnailUrl) as string}
             alt={(data.label as string) || '预览'}
             className="fullscreen-img-view"

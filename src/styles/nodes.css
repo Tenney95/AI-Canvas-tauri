@@ -759,6 +759,87 @@
   to { opacity: 1; transform: scale(1); filter: blur(0); }
 }
 
+/* ============ Zoomable fullscreen image（缩放/平移查看器）============ */
+
+.zoomable-image-container {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  /* 入场动画放到容器上，避免覆盖 img 的内联 transform（缩放/平移）*/
+  animation: imgZoomIn 0.5s var(--ease-out-expo) both;
+}
+
+/* 容器内的图片不再单独执行入场动画，transform 完全由 JS 控制 */
+.zoomable-image-container .fullscreen-img-view {
+  animation: none;
+  cursor: inherit;
+}
+
+.zoom-controls {
+  position: absolute;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background: rgba(20, 20, 22, 0.62);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  user-select: none;
+}
+
+.zoom-controls .zoom-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.12s ease, opacity 0.15s ease;
+}
+
+.zoom-controls .zoom-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.zoom-controls .zoom-btn:active:not(:disabled) {
+  transform: scale(0.9);
+}
+
+.zoom-controls .zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.zoom-controls .zoom-percent {
+  min-width: 52px;
+  height: 30px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.zoom-controls .zoom-percent:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
 
 /* ════════════════════════════════════════════
    Markdown Node
