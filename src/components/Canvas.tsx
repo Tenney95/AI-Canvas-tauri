@@ -264,6 +264,67 @@ function CanvasInner() {
     hideSubmenu,
   } = useCanvasContextMenu();
 
+  // ── 右键菜单：统一在「指针抬起且未拖拽」时弹出 ──
+  // Windows：右键拖拽平移后松开才触发 contextmenu；macOS：双指（次级点击）按下瞬间即触发。
+  // 两端时机不一致，故不依赖原生 contextmenu 开菜单，改为自行追踪右键 pointer：
+  // 按下记录起点 → 抬起时若位移超阈值视为平移（不弹），否则按落点判定节点/画布空白再弹。
+  useEffect(() => {
+    const drag = { x: 0, y: 0, moved: false, down: false };
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 2) return;
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      drag.moved = false;
+      drag.down = true;
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!drag.down) return;
+      const dx = e.clientX - drag.x;
+      const dy = e.clientY - drag.y;
+      if (dx * dx + dy * dy > 25) drag.moved = true; // 位移 > 5px 视为拖拽平移
+    };
+    const onCancel = () => { drag.down = false; };
+    const onUp = (e: PointerEvent) => {
+      if (e.button !== 2 || !drag.down) return;
+      drag.down = false;
+      if (drag.moved) return; // 发生了拖拽平移 → 不弹菜单
+
+      const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+      if (!el) return;
+
+      const nodeEl = el.closest('.react-flow__node');
+      if (nodeEl) {
+        const id = nodeEl.getAttribute('data-id');
+        if (!id) return;
+        const syn = {
+          preventDefault() {}, stopPropagation() {},
+          clientX: e.clientX, clientY: e.clientY, target: el,
+        } as unknown as React.MouseEvent;
+        openNodeCtxMenu(syn, { id } as RFNode<BaseNodeData>);
+        return;
+      }
+
+      const paneEl = el.closest('.react-flow__pane');
+      if (paneEl) {
+        const syn = {
+          preventDefault() {},
+          clientX: e.clientX, clientY: e.clientY, target: paneEl,
+        } as unknown as React.MouseEvent;
+        openCtxMenu(syn);
+      }
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('pointermove', onMove, true);
+    document.addEventListener('pointerup', onUp, true);
+    document.addEventListener('pointercancel', onCancel, true);
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointerup', onUp, true);
+      document.removeEventListener('pointercancel', onCancel, true);
+    };
+  }, [openCtxMenu, openNodeCtxMenu]);
+
   // ── External clipboard paste (native paste event → DataTransfer) ──
   useEffect(() => {
     const handler = (e: ClipboardEvent) => {
@@ -462,8 +523,7 @@ function CanvasInner() {
         selectionMode={SelectionMode.Partial}
         multiSelectionKeyCode="Shift"
         deleteKeyCode={null}
-        onContextMenu={openCtxMenu}
-        onNodeContextMenu={openNodeCtxMenu}
+        onContextMenu={(e) => e.preventDefault()}
         onMouseUp={handleMouseUp}
         onDragEnter={onDragEnter}
         onDragOver={onDragOver}
