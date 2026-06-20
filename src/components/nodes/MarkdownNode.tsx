@@ -246,7 +246,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         <div className="markdown-node-content">
           {viewMode === 'edit' ? (
             <textarea
-              className="nodrag nowheel markdown-edit-area"
+              className="nodrag nowheel markdown-edit-area text-selection-source"
               value={(data.output as string) || ''}
               onChange={handleContentChange}
               placeholder="# Markdown 文档&#10;&#10;点击上方按钮上传 .md 文件，或直接在此编辑…"

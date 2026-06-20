@@ -1,8 +1,7 @@
 /**
  * textSelection — 判断当前是否存在「文本节点选中模式」内的有效文本选区
  *
- * 仅当选区非空、且其锚点位于一个正处于选中模式（.text-output-content.is-selecting）
- * 的元素内时才返回 true。这样：
+ * 仅当选区非空、且位于节点允许的文本选区内时才返回 true。这样：
  *  - 用户在选中模式里选了文本 → 复制/右键走「文本复制」；
  *  - 用户已退出选中模式（.is-selecting 已移除）→ 即便 DOM 里残留旧选区，也走「节点复制」。
  */
@@ -23,8 +22,30 @@ function getTextOffset(container: Element, targetNode: Node, targetOffset: numbe
   }
 }
 
+function getActiveTextareaSelection(): ActiveTextSelection | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLTextAreaElement)) return null;
+  if (!active.closest('.text-selection-source')) return null;
+
+  const start = active.selectionStart;
+  const end = active.selectionEnd;
+  if (start === end) return null;
+
+  const text = active.value.slice(Math.min(start, end), Math.max(start, end));
+  if (!text.trim()) return null;
+
+  return {
+    text,
+    start: Math.min(start, end),
+    end: Math.max(start, end),
+  };
+}
+
 export function getActiveTextSelection(): ActiveTextSelection | null {
   if (typeof window === 'undefined') return null;
+  const textareaSelection = getActiveTextareaSelection();
+  if (textareaSelection) return textareaSelection;
+
   const sel = window.getSelection();
   const text = sel?.toString() ?? '';
   if (!sel || sel.isCollapsed || !text.trim() || sel.rangeCount === 0) return null;
