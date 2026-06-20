@@ -863,6 +863,11 @@
    Markdown Node
    ════════════════════════════════════════════ */
 
+.markdown-node {
+  position: relative;
+  overflow: visible !important;
+}
+
 .markdown-node-toolbar {
   display: flex;
   align-items: center;
