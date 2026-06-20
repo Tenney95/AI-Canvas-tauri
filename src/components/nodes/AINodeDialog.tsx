@@ -8,6 +8,7 @@ import type { BaseNodeData, ModelOption } from '../../types';
 import { generateText, generateImage, generateVideo, generateAudio } from '../../services/aiService';
 import { downloadUrlAndSave } from '../../services/fileService';
 import PromptPanel from './shared/PromptPanel';
+import type { MentionEditorHandle } from './shared/MentionEditor';
 import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
 
 function AINodeDialog() {
@@ -30,6 +31,7 @@ function AINodeDialog() {
   const nodeType = data?.type;
 
   const panelRef = useRef<HTMLDivElement>(null);
+  const editorApiRef = useRef<MentionEditorHandle>(null);
 
   // Close on Escape
   useEffect(() => {
@@ -325,7 +327,15 @@ function AINodeDialog() {
   if (!activeNodeId || !node || !data || !nodeType) return null;
 
   const handleInsertMention = (mentionStr: string) => {
-    const currentPrompt = (data.prompt as string) || '';
+    // 优先在编辑器的「当前光标位置」插入引用芯片（点击 float 时编辑器焦点仍在）
+    const m = mentionStr.match(/^@\{([^:]+):([^}]+)\}$/);
+    if (m && editorApiRef.current) {
+      editorApiRef.current.insertMentionAtCursor(m[1], m[2]);
+      return;
+    }
+    // 兜底：编辑器未就绪或非节点引用 → 追加到末尾（读 store 实时 prompt，避免覆盖刚输入内容）
+    const liveData = useAppStore.getState().nodes.find((n) => n.id === activeNodeId)?.data;
+    const currentPrompt = ((liveData?.prompt ?? data.prompt) as string) || '';
     const newPrompt = currentPrompt ? `${currentPrompt} ${mentionStr}` : mentionStr;
     updateNodeData(activeNodeId, { prompt: newPrompt });
   };
@@ -358,6 +368,7 @@ function AINodeDialog() {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <PromptPanel
+          editorRef={editorApiRef}
           nodeType={nodeType}
           nodeId={activeNodeId}
           prompt={data.prompt || ''}

@@ -395,13 +395,11 @@ textarea:focus {
 [contenteditable]:hover {
   outline: none;
   background-color: var(--white-alpha-03);
-  border-radius: 4px;
 }
 
 [contenteditable]:focus {
   outline: none;
   background-color: var(--brand-alpha-05);
-  border-radius: 4px;
 }
 
 /* ════════════════════════════════════════════════════════════════════════

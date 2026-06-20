@@ -7,7 +7,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
 import VideoParamSelector from './VideoParamSelector';
-import MentionEditor from './MentionEditor';
+import MentionEditor, { type MentionEditorHandle } from './MentionEditor';
 import SlashCommandMenu from './SlashCommandMenu';
 import PresetManager from './PresetManager';
 
@@ -37,6 +37,7 @@ interface PromptPanelProps {
   onChangeVideoFps?: (value: number) => void;
   onChangeVideoFrames?: (value: number) => void;
   workflows?: WorkflowDefinition[];
+  editorRef?: React.Ref<MentionEditorHandle>;
 }
 
 export default function PromptPanel({
@@ -65,6 +66,7 @@ export default function PromptPanel({
   onChangeVideoFps,
   onChangeVideoFrames,
   workflows = [],
+  editorRef,
 }: PromptPanelProps) {
   const [focused, setFocused] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -111,6 +113,7 @@ export default function PromptPanel({
     <div className={`prompt-panel ${focused ? 'focused' : ''}`}>
       <div className="prompt-input-wrap" ref={promptInputRef}>
         <MentionEditor
+          ref={editorRef}
           value={prompt}
           onChange={onChange}
           onSubmit={onSubmit}

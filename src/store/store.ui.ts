@@ -16,6 +16,8 @@ export interface UISlice {
   assetsPanelOpen: boolean;
   historyPanelOpen: boolean;
   minimapVisible: boolean;
+  /** 当前在 prompt 里被 hover 的 @引用节点 id — 用于联动 connected-nodes-float 高亮 */
+  hoveredMentionNodeId: string | null;
   setSettingsOpen: (open: boolean) => void;
   showNodeMenu: (position: { x: number; y: number }) => void;
   hideNodeMenu: () => void;
@@ -30,6 +32,7 @@ export interface UISlice {
   setAssetsPanelOpen: (open: boolean) => void;
   setHistoryPanelOpen: (open: boolean) => void;
   toggleMinimap: () => void;
+  setHoveredMentionNodeId: (id: string | null) => void;
 }
 
 export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => ({
@@ -44,6 +47,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   assetsPanelOpen: false,
   historyPanelOpen: false,
   minimapVisible: true,
+  hoveredMentionNodeId: null,
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   showNodeMenu: (position) => set({ nodeMenuVisible: true, nodeMenuPosition: position }),
@@ -59,4 +63,5 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   setAssetsPanelOpen: (open) => set({ assetsPanelOpen: open }),
   setHistoryPanelOpen: (open) => set({ historyPanelOpen: open }),
   toggleMinimap: () => set((s) => ({ minimapVisible: !s.minimapVisible })),
+  setHoveredMentionNodeId: (id) => set({ hoveredMentionNodeId: id }),
 });

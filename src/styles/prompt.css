@@ -47,39 +47,51 @@
 .prompt-chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 2px 4px;
-  border-radius: 4px;
+  gap: 4px;
+  padding: 1px 7px 1px 5px;
+  border-radius: 7px;
   font-size: 12px;
   font-weight: 500;
+  line-height: 1.55;
   vertical-align: middle;
-  margin: 0 1px;
+  margin: 0 2px;
+  border: 1px solid transparent;
+  transition: filter 0.15s var(--ease-out-quart), box-shadow 0.15s var(--ease-out-quart);
+  cursor: default;
+}
+.prompt-chip:hover {
+  filter: brightness(1.14) saturate(1.05);
+  box-shadow: 0 2px 9px var(--black-alpha-30);
 }
 .prompt-chip-icon {
   font-weight: 700;
-  font-size: 11px;
+  font-size: 10px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+  opacity: 0.9;
 }
 .prompt-chip-thumb {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   object-fit: cover;
-  border-radius: 2px;
+  border-radius: 4px;
   display: block;
-  margin-top: 1.2px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
 .prompt-chip-id {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
+  font-size: 10.5px;
+  opacity: 0.82;
 }
 
-.prompt-chip.chip-text    { background: var(--node-text-bg); color: var(--node-text-light); }
-.prompt-chip.chip-image   { background: var(--node-image-bg); color: var(--success-text); }
-.prompt-chip.chip-video   { background: var(--node-video-bg); color: var(--node-video-light); }
-.prompt-chip.chip-audio   { background: var(--node-audio-bg); color: var(--node-audio-light); }
+.prompt-chip.chip-text  { background: var(--node-text-bg);  color: var(--node-text-light);  border-color: color-mix(in srgb, var(--node-text) 35%, transparent); }
+.prompt-chip.chip-image { background: var(--node-image-bg); color: var(--success-text);     border-color: color-mix(in srgb, var(--node-image) 35%, transparent); border-left: none; padding: 0 7px 0 0;}
+.prompt-chip.chip-video { background: var(--node-video-bg); color: var(--node-video-light); border-color: color-mix(in srgb, var(--node-video) 35%, transparent); }
+.prompt-chip.chip-audio { background: var(--node-audio-bg); color: var(--node-audio-light); border-color: color-mix(in srgb, var(--node-audio) 35%, transparent); }
+.prompt-chip.chip-markdown { background: var(--node-markdown-bg); color: var(--node-markdown-light); border-color: color-mix(in srgb, var(--node-markdown) 35%, transparent); }
 
 /* ── Workflow IO chip — distinct style ── */
 .prompt-chip.prompt-chip-wf {
@@ -547,3 +559,23 @@
   border-radius: 3px;
 }
 .asset-picker-grid::-webkit-scrollbar-thumb:hover { background: var(--theme-hover); }
+
+/* @ 芯片 hover 名字浮层（Portal 到 body，固定定位在芯片上方）*/
+.chip-name-tip {
+  position: fixed;
+  z-index: 10050;
+  transform: translate(-50%, calc(-100% - 8px));
+  max-width: 260px;
+  padding: 4px 9px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-md));
+  border: 1px solid var(--glass-ring);
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--theme-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  box-shadow: 0 6px 20px var(--black-alpha-50), 0 0 0 1px var(--white-alpha-03);
+}

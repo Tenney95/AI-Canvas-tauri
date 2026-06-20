@@ -30,6 +30,7 @@ const OUTPUT_TYPE_ICON: Record<string, string> = {
 
 export default function ConnectedNodesPreview({ nodeId, onInsertMention }: ConnectedNodesPreviewProps) {
   const { nodes, edges } = useAppStore();
+  const hoveredMentionNodeId = useAppStore((s) => s.hoveredMentionNodeId);
 
   const connectedNodes = useMemo(() => {
     if (!nodeId) return [];
@@ -60,10 +61,13 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           : data.audioUrl
           ? 'audio'
           : 'text';
-        // 图片节点优先本地文件（线上地址可能失效）；视频用 thumbnailUrl 作海报帧
+        // 图片节点优先本地文件（线上地址可能失效）；视频只用真实海报帧 thumbnailUrl
+        // （不要 videoUrl —— 视频文件无法作 <img> 源会裂图；无海报则回退到图标）
         const thumbnailUrl = outputType === 'image'
           ? (localAssetUrl(data.filePath as string | undefined) || (data.thumbnailUrl as string) || data.imageUrl || undefined)
-          : ((data.thumbnailUrl as string) || data.videoUrl || undefined);
+          : outputType === 'video'
+          ? ((data.thumbnailUrl as string) || undefined)
+          : undefined;
         const textSnippet = outputType === 'text' && data.output
           ? String(data.output).slice(0, 50)
           : undefined;
@@ -92,9 +96,16 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
   const onHoverStart = useCallback((idx: number) => setHoverIndex(idx), []);
   const onHoverEnd = useCallback(() => setHoverIndex(null), []);
 
+  // 联动：prompt 里 hover 某个 @引用芯片时，高亮对应缩略图（本地 hover 优先）
+  const externalIndex = hoveredMentionNodeId
+    ? connectedNodes.findIndex((n) => n.id === hoveredMentionNodeId)
+    : -1;
+  const effectiveHover = hoverIndex !== null ? hoverIndex : (externalIndex >= 0 ? externalIndex : null);
+
   const MAX_SCALE = 1.22;
   const NEAR_SCALE = 1.10;
 
+  // 缩放/横向撑开仅响应「本地鼠标 hover」——避免芯片联动 hover 改变布局导致缩略图移动、难以点击。
   const getDockScale = (index: number): number => {
     if (hoverIndex === null) return 1;
     const distance = Math.abs(index - hoverIndex);
@@ -120,7 +131,7 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
         {connectedNodes.map((node, idx) => {
           const scale = getDockScale(idx);
           const x = getDockX(idx);
-          const isHovered = hoverIndex === idx;
+          const isHovered = effectiveHover === idx;
           return (
           <motion.button
             key={node.id}

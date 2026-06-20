@@ -1,7 +1,7 @@
 /**
  * MentionEditor @提及编辑器 — 支持 @引用其他节点输出的富文本输入框，实时渲染为彩色标签芯片
  */
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import type { WorkflowIONodeType } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
@@ -10,6 +10,23 @@ import { listGlobalFiles, listExternalFolderFiles, getFileCategory, type AssetFi
 import { getAllAssetMeta } from '../../../services/indexedDbService';
 import { springSmooth, fadeFast } from '../../../utils/motion';
 import { AnimatePresence, motion } from 'framer-motion';
+import { convertFileSrc } from '@tauri-apps/api/core';
+
+const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+/** 本地文件路径 → asset URL（Tauri 端，不会失效）；非 Tauri 返回 undefined */
+function localAssetUrl(filePath?: string): string | undefined {
+  if (!filePath || !IS_TAURI) return undefined;
+  try { return convertFileSrc(filePath); } catch { return undefined; }
+}
+/** 节点缩略图来源：图片节点优先本地文件（线上地址可能失效），其余用海报帧 thumbnailUrl */
+function bestNodeThumb(data: { imageUrl?: unknown; thumbnailUrl?: unknown; filePath?: unknown }): string | undefined {
+  if (data.imageUrl) {
+    return localAssetUrl(data.filePath as string | undefined)
+      || (data.thumbnailUrl as string | undefined)
+      || (data.imageUrl as string | undefined);
+  }
+  return data.thumbnailUrl as string | undefined;
+}
 
 // ── Props ──
 export interface MentionEditorProps {
@@ -26,12 +43,18 @@ export interface MentionEditorProps {
   className?: string;
 }
 
+// ── 暴露给上层的命令式接口（在当前光标处插入节点引用芯片）──
+export interface MentionEditorHandle {
+  insertMentionAtCursor: (id: string, label: string) => void;
+}
+
 // ── Chip color config per node type ──
 const CHIP_STYLE: Record<string, string> = {
   'ai-text': 'chip-text',
   'ai-image': 'chip-image',
   'ai-video': 'chip-video',
   'ai-audio': 'chip-audio',
+  'ai-markdown': 'chip-markdown',
 };
 
 const NODE_ICON: Record<string, string> = {
@@ -39,6 +62,7 @@ const NODE_ICON: Record<string, string> = {
   'ai-image': 'I',
   'ai-video': 'V',
   'ai-audio': 'A',
+  'ai-markdown': 'M',
 };
 
 // ── Workflow IO node chip color/icon per IONodeType ──
@@ -277,7 +301,7 @@ function pushTextWithBreaks(nodes: Node[], text: string) {
 // Component
 // ═══════════════════════════════════════════════
 
-export default function MentionEditor({
+const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(function MentionEditor({
   value: prompt = '',
   onChange,
   onSubmit,
@@ -289,7 +313,7 @@ export default function MentionEditor({
   onBlur,
   onSlashTrigger,
   className = '',
-}: MentionEditorProps) {
+}: MentionEditorProps, ref) {
   // ── @ Mention state ──
   const [showMention, setShowMention] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
@@ -322,7 +346,8 @@ export default function MentionEditor({
       map.set(n.id, {
         type: (n.data.type as string) || '',
         displayId: n.data.displayId as number | undefined,
-        thumbnailUrl: (n.data.thumbnailUrl || n.data.imageUrl || n.data.videoUrl) as string | undefined,
+        // 图片节点优先本地文件（线上地址可能失效）；视频用海报帧；不用 videoUrl（会裂图）
+        thumbnailUrl: bestNodeThumb(n.data),
       });
     }
     return map;
@@ -450,7 +475,8 @@ export default function MentionEditor({
         displayId: n.data.displayId as number | undefined,
         hasOutput: !!n.data.output,
         outputType: n.data.imageUrl ? 'image' : n.data.videoUrl ? 'video' : n.data.audioUrl ? 'audio' : 'text',
-        thumbnailUrl: (n.data.thumbnailUrl || n.data.imageUrl || n.data.videoUrl) as string | undefined,
+        // 图片节点优先本地文件（线上地址可能失效）；视频用海报帧；不用 videoUrl
+        thumbnailUrl: bestNodeThumb(n.data),
       }));
   }, [nodeId, nodes, edges]);
 
@@ -532,6 +558,25 @@ export default function MentionEditor({
     },
     [nodeMetaMap, emitDOM],
   );
+
+  // 暴露命令式插入：在当前光标处插入引用芯片；若编辑器内无有效光标则落到末尾
+  useImperativeHandle(ref, () => ({
+    insertMentionAtCursor: (id: string, label: string) => {
+      const el = editorRef.current;
+      if (!el) return;
+      el.focus();
+      const sel = window.getSelection();
+      const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+      if (!range || !el.contains(range.startContainer)) {
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        r.collapse(false); // 末尾
+        sel?.removeAllRanges();
+        sel?.addRange(r);
+      }
+      insertChipAtCursor(id, label);
+    },
+  }), [insertChipAtCursor]);
 
   // ── Insert a workflow IO chip ──
   const insertWorkflowChipAtCursor = useCallback(
@@ -891,6 +936,31 @@ export default function MentionEditor({
     [emitDOM],
   );
 
+  // ── 芯片 hover：① 发布节点 id 联动 connected-nodes-float 高亮；② 显示节点名字浮层 ──
+  const lastHoverIdRef = useRef<string | null>(null);
+  const [chipTip, setChipTip] = useState<{ label: string; x: number; y: number } | null>(null);
+  const handleEditorMouseOver = useCallback((e: React.MouseEvent) => {
+    const el = (e.target as HTMLElement).closest?.('[data-ref-id]') as HTMLElement | null;
+    const id = el?.getAttribute('data-ref-id') ?? null;
+    if (id === lastHoverIdRef.current) return; // 同一芯片，跳过避免抖动
+    lastHoverIdRef.current = id;
+    useAppStore.getState().setHoveredMentionNodeId(id);
+    if (el && id) {
+      const label = el.getAttribute('data-ref-label') || '节点';
+      const r = el.getBoundingClientRect();
+      setChipTip({ label, x: r.left + r.width / 2, y: r.top });
+    } else {
+      setChipTip(null);
+    }
+  }, []);
+  const handleEditorMouseLeave = useCallback(() => {
+    lastHoverIdRef.current = null;
+    useAppStore.getState().setHoveredMentionNodeId(null);
+    setChipTip(null);
+  }, []);
+  // 卸载时清除，避免残留 hover 高亮
+  useEffect(() => () => { useAppStore.getState().setHoveredMentionNodeId(null); }, []);
+
   return (
     <div className={`mention-editor-wrap relative ${className}`}>
       <div
@@ -902,6 +972,8 @@ export default function MentionEditor({
         onInput={handleInput}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
+        onMouseOver={handleEditorMouseOver}
+        onMouseLeave={handleEditorMouseLeave}
         onFocus={onFocus}
         onBlur={() => {
           onBlur?.();
@@ -910,9 +982,28 @@ export default function MentionEditor({
         spellCheck={false}
       />
 
+      {/* 芯片 hover 名字浮层（Portal，避免被编辑器 overflow 裁剪）*/}
+      {createPortal(
+        <AnimatePresence>
+          {chipTip && (
+            <motion.div
+              className="chip-name-tip"
+              style={{ left: chipTip.x, top: chipTip.y }}
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4, transition: fadeFast }}
+              transition={fadeFast}
+            >
+              {chipTip.label}
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
+
       {/* @ Mention Dropdown */}
       {showMention && (
-        <div className="absolute left-3 bottom-full mb-1 w-64 bg-canvas-card border border-canvas-border rounded-lg shadow-xl shadow-black/40 overflow-hidden z-50">
+        <div className="mention-dropdown absolute left-3 bottom-full mb-1 w-64 bg-canvas-card border border-canvas-border rounded-lg shadow-xl shadow-black/40 overflow-hidden z-50">
           {/* Canvas nodes section */}
           {canvasMentionNodes.length > 0 && (
             <>
@@ -942,7 +1033,7 @@ export default function MentionEditor({
                     >
                       {(node.outputType === 'image' || node.outputType === 'video') && node.thumbnailUrl ? (
                         <img src={node.thumbnailUrl} alt="" className="w-full h-full object-cover rounded" />
-                      ) : node.outputType === 'audio' ? '🎵' : 'T'}
+                      ) : node.outputType === 'video' ? '🎬' : node.outputType === 'image' ? '🖼' : node.outputType === 'audio' ? '🎵' : 'T'}
                     </span>
                     <div className="min-w-0 flex-1 flex items-center gap-1 overflow-hidden">
                       <span className="text-sm text-canvas-text truncate">{node.label}</span>
@@ -1120,4 +1211,6 @@ export default function MentionEditor({
       )}
     </div>
   );
-}
+});
+
+export default MentionEditor;
