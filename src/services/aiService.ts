@@ -15,8 +15,6 @@ import {
 
 export type { AIAudioGenParams, AIGenerateParams, AIImageGenParams, AIVideoGenParams } from './aiTypes';
 
-/** 本地模型调用超时（30 分钟） */
-const LOCAL_MODEL_TIMEOUT_MS = 30 * 60 * 1000;
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
   apimart: 'https://api.apib.ai/v1',
@@ -235,7 +233,6 @@ async function executeGeneralAsyncTask(
   modelName: string,
   prompt: string,
   resultField: 'videos' | 'audios' | 'images',
-  timeoutMs: number = 15 * 60 * 1000,
 ): Promise<{ url: string }> {
   const apiUrl = baseUrl.replace(/\/+$/, '') + '/images/generations';
   const submitResp = await fetch(apiUrl, {
@@ -264,9 +261,9 @@ async function executeGeneralAsyncTask(
   }
 
   const POLL_INTERVAL = 3000;
-  const start = Date.now();
 
-  while (Date.now() - start < timeoutMs) {
+  // 不设超时：轮询直到任务完成/失败（仅 ComfyUI 才设超时）
+  while (true) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL));
     const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -287,8 +284,6 @@ async function executeGeneralAsyncTask(
       throw new Error(`任务失败: ${task.status}`);
     }
   }
-
-  throw new Error('任务超时，请稍后再试');
 }
 
 /**
@@ -396,9 +391,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
-  const controller = new AbortController();
-  const timeoutId = provider === 'general' ? setTimeout(() => controller.abort(), LOCAL_MODEL_TIMEOUT_MS) : undefined;
-
+  // 不设超时（仅 ComfyUI 才设超时）
   const response = await fetch(apiUrl, {
     method: 'POST',
     headers,
@@ -407,9 +400,6 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
       messages,
       stream: false,
     }),
-    signal: controller.signal,
-  }).finally(() => {
-    if (timeoutId !== undefined) clearTimeout(timeoutId);
   });
 
   if (!response.ok) {
@@ -646,12 +636,10 @@ async function generateApimartImage(
     throw new Error('APIMart 生成提交失败: 未返回 task_id');
   }
 
-  // 步骤 2: 轮询任务直到完成
-  const MAX_WAIT_MS = 5 * 60 * 1000;
+  // 步骤 2: 轮询任务直到完成/失败（不设超时，仅 ComfyUI 才设超时）
   const POLL_INTERVAL = 2000;
-  const start = Date.now();
 
-  while (Date.now() - start < MAX_WAIT_MS) {
+  while (true) {
     const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
@@ -684,8 +672,6 @@ async function generateApimartImage(
 
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
   }
-
-  throw new Error('APIMart 生成任务超时，请稍后再试');
 }
 
 /** APIMart 视频生成 — 异步提交 + 轮询，与图片生成相同的任务模式 */
@@ -720,12 +706,10 @@ async function generateApimartVideo(
     throw new Error('APIMart 视频提交失败: 未返回 task_id');
   }
 
-  // 步骤 2: 轮询（视频生成时间更长，延长超时和间隔）
-  const MAX_WAIT_MS = 15 * 60 * 1000; // 15 分钟
+  // 步骤 2: 轮询（不设超时，仅 ComfyUI 才设超时）
   const POLL_INTERVAL = 3000;         // 3 秒轮询
-  const start = Date.now();
 
-  while (Date.now() - start < MAX_WAIT_MS) {
+  while (true) {
     const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
@@ -771,8 +755,6 @@ async function generateApimartVideo(
 
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
   }
-
-  throw new Error('APIMart 视频生成任务超时，请稍后再试');
 }
 
 /** 解析 prompt 中的 @{nodeId:label} 引用，返回适合 /chat/completions 的 content 字段
@@ -787,6 +769,9 @@ async function resolvePromptToChatContent(rawPrompt: string): Promise<{
   const { nodes } = useAppStore.getState();
   const chipRegex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
   const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string; filePath?: string }> = [];
+  // 多参考图：按 prompt 中首次出现顺序为每张图编号（去重），芯片原位替换成「图片N」，
+  // 让模型能把 image_urls[N-1] 与文本里的「图片N」角色对应起来。
+  const imageKeyToIndex = new Map<string, number>();
   const parts: string[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -797,14 +782,23 @@ async function resolvePromptToChatContent(rawPrompt: string): Promise<{
       parts.push(rawPrompt.slice(lastIndex, match.index));
     }
 
-    // 资产引用：图片资产读为 data URL 作为多模态输入；其余忽略
+    // 资产引用：图片资产读为 data URL 作为参考图，原位替换成「图片N」；其余忽略
     if (match[1] !== undefined) {
       let assetPath = match[1];
       try { assetPath = decodeURIComponent(match[1]); } catch { /* keep raw */ }
       const assetName = assetPath.split(/[\\/]/).pop() || '';
       if (getFileCategory(assetName) === 'image') {
-        const dataUrl = await readFileToDataUrl(assetPath);
-        if (dataUrl) imageEntries.push({ url: dataUrl });
+        const key = `asset:${match[1]}`;
+        let idx = imageKeyToIndex.get(key);
+        if (idx === undefined) {
+          const dataUrl = await readFileToDataUrl(assetPath);
+          if (dataUrl) {
+            idx = imageEntries.length + 1;
+            imageKeyToIndex.set(key, idx);
+            imageEntries.push({ url: dataUrl });
+          }
+        }
+        if (idx !== undefined) parts.push(`图片${idx}`);
       }
       lastIndex = chipRegex.lastIndex;
       continue;
@@ -816,16 +810,23 @@ async function resolvePromptToChatContent(rawPrompt: string): Promise<{
       parts.push(match[0]); // 未找到节点则保留原文
     } else {
       const nodeType = (node.data.type as string) || '';
-      // 图片类节点：提取 imageUrl 到 image_urls，不保留到文本
+      // 图片类节点：提取 imageUrl 到 image_urls，原位替换成「图片N」
       if (nodeType === 'ai-image' || nodeType === 'source-image') {
         const imageUrl = node.data.imageUrl as string | undefined;
         if (typeof imageUrl === 'string' && imageUrl.trim()) {
-          imageEntries.push({
-            url: imageUrl,
-            mattingMask: (node.data.mattingMask as string | undefined) || undefined,
-            annotation: (node.data.annotation as string | undefined) || undefined,
-            filePath: (node.data.filePath as string | undefined) || undefined,
-          });
+          const key = `node:${nodeId}`;
+          let idx = imageKeyToIndex.get(key);
+          if (idx === undefined) {
+            idx = imageEntries.length + 1;
+            imageKeyToIndex.set(key, idx);
+            imageEntries.push({
+              url: imageUrl,
+              mattingMask: (node.data.mattingMask as string | undefined) || undefined,
+              annotation: (node.data.annotation as string | undefined) || undefined,
+              filePath: (node.data.filePath as string | undefined) || undefined,
+            });
+          }
+          parts.push(`图片${idx}`);
         }
       } else {
         // 文本/视频/音频节点：内联替换 output/url
@@ -904,23 +905,38 @@ async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ prompt: 
     }
   }
 
+  // 多参考图：按首次出现顺序编号、去重；芯片原位替换成「图片N」，与 image_urls 同序对应
+  const imageKeyToIndex = new Map<string, number>();
+
   const chipRegex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
   const prompt = rawPrompt.replace(chipRegex, (_match, assetEnc: string | undefined, nodeId: string) => {
-    // 资产引用：图片入 image_urls，从 prompt 移除；非图片忽略
+    // 资产引用：图片入 image_urls，原位替换成「图片N」；非图片忽略
     if (assetEnc !== undefined) {
       const dataUrl = assetImageMap.get(assetEnc);
-      if (dataUrl) imageEntries.push({ url: dataUrl });
-      return '';
+      if (!dataUrl) return '';
+      const key = `asset:${assetEnc}`;
+      let idx = imageKeyToIndex.get(key);
+      if (idx === undefined) {
+        idx = imageEntries.length + 1;
+        imageKeyToIndex.set(key, idx);
+        imageEntries.push({ url: dataUrl });
+      }
+      return `图片${idx}`;
     }
     const node = nodes.find((n) => n.id === nodeId);
     if (!node) return '';
 
     const nodeType = (node.data.type as string) || '';
 
-    // 图片类节点（ai-image / source-image）：提取 imageUrl 到 image_urls，从 prompt 中移除 chip
+    // 图片类节点（ai-image / source-image）：提取 imageUrl 到 image_urls，原位替换成「图片N」
     if (nodeType === 'ai-image' || nodeType === 'source-image') {
       const imageUrl = node.data.imageUrl as string | undefined;
-      if (typeof imageUrl === 'string' && imageUrl.trim()) {
+      if (typeof imageUrl !== 'string' || !imageUrl.trim()) return '';
+      const key = `node:${nodeId}`;
+      let idx = imageKeyToIndex.get(key);
+      if (idx === undefined) {
+        idx = imageEntries.length + 1;
+        imageKeyToIndex.set(key, idx);
         imageEntries.push({
           url: imageUrl,
           mattingMask: (node.data.mattingMask as string | undefined) || undefined,
@@ -928,7 +944,7 @@ async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ prompt: 
           filePath: (node.data.filePath as string | undefined) || undefined,
         });
       }
-      return '';
+      return `图片${idx}`;
     }
 
     // 文本节点：内联替换 output
@@ -1040,12 +1056,10 @@ async function generateApimartAudio(
     throw new Error('APIMart 音频提交失败: 未返回 task_id');
   }
 
-  // 步骤 2: 轮询（音频生成时间较长，延长超时）
-  const MAX_WAIT_MS = 15 * 60 * 1000; // 15 分钟
+  // 步骤 2: 轮询（不设超时，仅 ComfyUI 才设超时）
   const POLL_INTERVAL = 3000;         // 3 秒轮询
-  const start = Date.now();
 
-  while (Date.now() - start < MAX_WAIT_MS) {
+  while (true) {
     const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
@@ -1092,8 +1106,6 @@ async function generateApimartAudio(
 
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
   }
-
-  throw new Error('APIMart 音频生成任务超时，请稍后再试');
 }
 
 /** 音频生成入口 */

@@ -301,8 +301,8 @@ async function pollComfyUIHistory(
   promptId: string,
   dimensions: { width: number; height: number },
 ): Promise<{ url: string; width: number; height: number }> {
-  // 最多轮询 900 次，每次间隔 2 秒 = 2700 秒（45 分钟）超时
-  for (let attempt = 0; attempt < 900; attempt++) {
+  // 最多轮询 1200 次，每次间隔 3 秒 = 3600 秒（1 小时）超时
+  for (let attempt = 0; attempt < 1200; attempt++) {
     await new Promise((r) => setTimeout(r, 3000));
 
     try {
@@ -331,7 +331,7 @@ async function pollComfyUIHistory(
     }
   }
 
-  throw new Error('ComfyUI 图片生成超时（30 分钟）');
+  throw new Error('ComfyUI 图片生成超时（1 小时）');
 }
 
 /** 通过 ComfyUI 工作流执行图片生成 */
@@ -363,7 +363,7 @@ async function pollComfyUIHistoryForVideo(
   baseUrl: string,
   promptId: string,
 ): Promise<{ url: string }> {
-  for (let attempt = 0; attempt < 900; attempt++) {
+  for (let attempt = 0; attempt < 1200; attempt++) {
     await new Promise((r) => setTimeout(r, 3000));
 
     try {
@@ -409,7 +409,7 @@ async function pollComfyUIHistoryForVideo(
     }
   }
 
-  throw new Error('ComfyUI 视频生成超时（45 分钟）');
+  throw new Error('ComfyUI 视频生成超时（1 小时）');
 }
 
 /** 通过 ComfyUI 工作流执行视频生成 */
@@ -439,7 +439,7 @@ async function pollComfyUIHistoryForAudio(
   baseUrl: string,
   promptId: string,
 ): Promise<{ url: string }> {
-  for (let attempt = 0; attempt < 900; attempt++) {
+  for (let attempt = 0; attempt < 1200; attempt++) {
     await new Promise((r) => setTimeout(r, 3000));
 
     try {
@@ -489,7 +489,7 @@ async function pollComfyUIHistoryForAudio(
     }
   }
 
-  throw new Error('ComfyUI 音频生成超时（45 分钟）');
+  throw new Error('ComfyUI 音频生成超时（1 小时）');
 }
 
 /** 通过 ComfyUI 工作流执行音频生成 */

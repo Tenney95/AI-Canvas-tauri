@@ -155,11 +155,10 @@ async function pollTask(
   taskId: string,
   onProgress?: (progress: number) => void,
 ): Promise<TaskData> {
-  const MAX_WAIT_MS = 30 * 60 * 1000; // 最长等待 30 分钟
   const POLL_INTERVAL = 5000;         // 每 5 秒轮询
-  const start = Date.now();
 
-  while (Date.now() - start < MAX_WAIT_MS) {
+  // 不设超时：轮询直到任务完成/失败（仅 ComfyUI 才设超时）
+  while (true) {
     const resp = await fetch(`${APIMART_BASE}/tasks/${taskId}?language=zh`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
@@ -185,8 +184,6 @@ async function pollTask(
     // 等待后继续轮询
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
   }
-
-  throw new Error('生成任务超时，请稍后再试');
 }
 
 /* ════════════════════════════════════════════
