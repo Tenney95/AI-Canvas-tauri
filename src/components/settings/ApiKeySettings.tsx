@@ -425,7 +425,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* ── 即梦 Dreamina ── */}
-        <div className="settings-section settings-card" style={{ display: 'none' }}>
+        <div className="settings-section settings-card">
           <div className="settings-card-head">
             <div className="settings-card-badge settings-card-badge--dreamina">即</div>
             <span className="settings-card-title">即梦</span>
