@@ -6,13 +6,47 @@
  *  - 用户在选中模式里选了文本 → 复制/右键走「文本复制」；
  *  - 用户已退出选中模式（.is-selecting 已移除）→ 即便 DOM 里残留旧选区，也走「节点复制」。
  */
-export function hasActiveTextSelection(): boolean {
-  if (typeof window === 'undefined') return false;
+export interface ActiveTextSelection {
+  text: string;
+  start: number;
+  end: number;
+}
+
+function getTextOffset(container: Element, targetNode: Node, targetOffset: number): number | null {
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    range.setEnd(targetNode, targetOffset);
+    return range.toString().length;
+  } catch {
+    return null;
+  }
+}
+
+export function getActiveTextSelection(): ActiveTextSelection | null {
+  if (typeof window === 'undefined') return null;
   const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.toString().trim()) return false;
+  const text = sel?.toString() ?? '';
+  if (!sel || sel.isCollapsed || !text.trim() || sel.rangeCount === 0) return null;
   const anchor = sel.anchorNode;
   const el = anchor
     ? (anchor.nodeType === Node.ELEMENT_NODE ? (anchor as Element) : anchor.parentElement)
     : null;
-  return !!el?.closest('.text-output-content.is-selecting');
+  const container = el?.closest('.text-output-content.is-selecting');
+  if (!container) return null;
+
+  const range = sel.getRangeAt(0);
+  const start = getTextOffset(container, range.startContainer, range.startOffset);
+  const end = getTextOffset(container, range.endContainer, range.endOffset);
+  if (start == null || end == null || start === end) return null;
+
+  return {
+    text,
+    start: Math.min(start, end),
+    end: Math.max(start, end),
+  };
+}
+
+export function hasActiveTextSelection(): boolean {
+  return getActiveTextSelection() != null;
 }

@@ -236,6 +236,8 @@ function CanvasInner() {
     openMenu: openNodeCtxMenu,
     handleCopy,
     handleCut,
+    handleCopyText,
+    handleCutText,
     handleDuplicate,
     handleUngroup,
     handleDelete,
@@ -574,6 +576,9 @@ function CanvasInner() {
         menuRef={nodeCtxMenuRef}
         onCopy={handleCopy}
         onCut={handleCut}
+        hasTextSelection={nodeCtxMenu.textSelection != null}
+        onCopyText={handleCopyText}
+        onCutText={handleCutText}
         onDuplicate={handleDuplicate}
         onUngroup={isGroupNode ? handleUngroup : undefined}
         onDelete={handleDelete}

@@ -17,6 +17,7 @@ const MENU_ITEMS = [
 
 const MENU_W = 176;
 const MENU_H = 286; // 7 items + 2 seps
+const TEXT_SELECTION_MENU_EXTRA_H = 78; // 2 text-selection items + separator
 
 interface NodeContextMenuProps {
   visible: boolean;
@@ -24,6 +25,9 @@ interface NodeContextMenuProps {
   menuRef: React.RefObject<HTMLDivElement | null>;
   onCopy: () => void;
   onCut: () => void;
+  hasTextSelection?: boolean;
+  onCopyText?: () => void;
+  onCutText?: () => void;
   onDuplicate: () => void;
   onUngroup?: () => void;
   onDelete: () => void;
@@ -36,6 +40,9 @@ function NodeContextMenu({
   menuRef,
   onCopy,
   onCut,
+  hasTextSelection,
+  onCopyText,
+  onCutText,
   onDuplicate,
   onUngroup,
   onDelete,
@@ -44,7 +51,12 @@ function NodeContextMenu({
 }: NodeContextMenuProps) {
   if (!visible) return null;
 
-  const safePos = calcFixedPosition(position.x, position.y, MENU_W, MENU_H);
+  const safePos = calcFixedPosition(
+    position.x,
+    position.y,
+    MENU_W,
+    MENU_H + (hasTextSelection ? TEXT_SELECTION_MENU_EXTRA_H : 0),
+  );
 
   const actionMap: Record<string, () => void> = {
     copy: onCopy,
@@ -68,6 +80,19 @@ function NodeContextMenu({
       className="node-ctx-menu canvas-ctx-menu"
       style={{ left: safePos.left, top: safePos.top }}
     >
+      {hasTextSelection && (
+        <>
+          <div className="menu-row menu-row-split" onClick={onCopyText}>
+            <span>复制文字</span>
+            <span className="menu-kbd">Ctrl C</span>
+          </div>
+          <div className="menu-row menu-row-split" onClick={onCutText}>
+            <span>剪切文字</span>
+            <span className="menu-kbd">Ctrl X</span>
+          </div>
+          <div className="menu-sep" />
+        </>
+      )}
       {items.map((item) => (
         <div key={item.action}>
           {item.danger && <div className="menu-sep" />}

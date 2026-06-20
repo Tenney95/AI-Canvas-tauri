@@ -3,7 +3,7 @@
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
-import { hasActiveTextSelection } from '../utils/textSelection';
+import { getActiveTextSelection, type ActiveTextSelection } from '../utils/textSelection';
 import type { BaseNodeData, NodeType } from '../types';
 import type { Node as RFNode } from '@xyflow/react';
 
@@ -11,6 +11,7 @@ export interface NodeContextMenuState {
   visible: boolean;
   position: { x: number; y: number };
   nodeId: string | null;
+  textSelection: ActiveTextSelection | null;
 }
 
 export function useNodeContextMenu() {
@@ -20,16 +21,18 @@ export function useNodeContextMenu() {
   const deleteNode = useAppStore((s) => s.deleteNode);
   const ungroupSelectedNodes = useAppStore((s) => s.ungroupSelectedNodes);
   const setSelectedNodeIds = useAppStore((s) => s.setSelectedNodeIds);
+  const updateNodeData = useAppStore((s) => s.updateNodeData);
 
   const [menu, setMenu] = useState<NodeContextMenuState>({
     visible: false,
     position: { x: 0, y: 0 },
     nodeId: null,
+    textSelection: null,
   });
   const menuRef = useRef<HTMLDivElement>(null);
 
   const closeMenu = useCallback(() => {
-    setMenu({ visible: false, position: { x: 0, y: 0 }, nodeId: null });
+    setMenu({ visible: false, position: { x: 0, y: 0 }, nodeId: null, textSelection: null });
   }, []);
 
   // Close on click outside or Escape
@@ -56,22 +59,14 @@ export function useNodeContextMenu() {
     (e: React.MouseEvent, node: RFNode<BaseNodeData>) => {
       e.preventDefault();
       e.stopPropagation();
-      // 文本节点选中模式内有选区：右键直接复制选中文本，不弹节点菜单（避免与节点复制冲突）
-      if (hasActiveTextSelection()) {
-        const text = window.getSelection()?.toString() ?? '';
-        navigator.clipboard?.writeText(text).catch(() => {});
-        window.getSelection()?.removeAllRanges(); // 复制后清空选区
-        // 清空节点剪贴板，避免之后 Ctrl+V 误粘节点
-        useAppStore.setState({ clipboard: { nodes: [], groups: [] } });
-        useAppStore.getState().showToast('已复制选中文本');
-        return;
-      }
+      const textSelection = getActiveTextSelection();
       // Select only this node so copy/cut works on it
       setSelectedNodeIds([node.id]);
       setMenu({
         visible: true,
         position: { x: e.clientX, y: e.clientY },
         nodeId: node.id,
+        textSelection,
       });
     },
     [setSelectedNodeIds],
@@ -92,6 +87,30 @@ export function useNodeContextMenu() {
     closeMenu();
     useAppStore.getState().showToast('节点已剪切');
   }, [menu.nodeId, copySelectedNodes, deleteNode, closeMenu]);
+
+  // ── Text selection copy/cut ──
+  const handleCopyText = useCallback(async () => {
+    if (!menu.textSelection) return;
+    await navigator.clipboard?.writeText(menu.textSelection.text).catch(() => {});
+    useAppStore.setState({ clipboard: { nodes: [], groups: [] } });
+    window.getSelection()?.removeAllRanges();
+    closeMenu();
+    useAppStore.getState().showToast('已复制选中文字');
+  }, [menu.textSelection, closeMenu]);
+
+  const handleCutText = useCallback(async () => {
+    if (!menu.nodeId || !menu.textSelection) return;
+    const node = nodes.find((n) => n.id === menu.nodeId);
+    const output = (node?.data as BaseNodeData | undefined)?.output ?? '';
+    const { start, end, text } = menu.textSelection;
+
+    await navigator.clipboard?.writeText(text).catch(() => {});
+    updateNodeData(menu.nodeId, { output: output.slice(0, start) + output.slice(end) });
+    useAppStore.setState({ clipboard: { nodes: [], groups: [] } });
+    window.getSelection()?.removeAllRanges();
+    closeMenu();
+    useAppStore.getState().showToast('已剪切选中文字');
+  }, [menu.nodeId, menu.textSelection, nodes, updateNodeData, closeMenu]);
 
   // ── Duplicate: copy + paste at offset (group-aware) ──
   const handleDuplicate = useCallback(() => {
@@ -202,6 +221,8 @@ export function useNodeContextMenu() {
     closeMenu,
     handleCopy,
     handleCut,
+    handleCopyText,
+    handleCutText,
     handleDuplicate,
     handleUngroup,
     handleDelete,
