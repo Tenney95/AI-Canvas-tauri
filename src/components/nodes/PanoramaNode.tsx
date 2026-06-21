@@ -7,6 +7,7 @@ import { Handle, Position } from '@xyflow/react';
 import * as THREE from 'three';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
+import NodeError from './shared/NodeError';
 import GooeyBtn from './shared/GooeyBtn';
 import ResizeHandle from './shared/ResizeHandle';
 import PanoramaNodeToolbar from './shared/PanoramaNodeToolbar';
@@ -431,7 +432,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
               </div>
             )}
           </div>
-          {data.error && <div className="node-error">{data.error}</div>}
+          {data.error && <NodeError nodeId={id} message={data.error} />}
 
           {/* Panorama handles — 青色 hue=180 */}
           <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-panorama" >

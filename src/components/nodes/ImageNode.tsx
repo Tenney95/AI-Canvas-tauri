@@ -16,6 +16,7 @@ import ExpandEditor from './shared/image/ExpandEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import ZoomableImage from '../shared/ZoomableImage';
+import NodeError from './shared/NodeError';
 import ModelDownloadDialog from '../shared/ModelDownloadDialog';
 import { computeImageNodeDimensions } from './shared/image/imageUtils';
 import { useNodeRename } from './shared/useNodeRename';
@@ -774,7 +775,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               </div>
             )}
           </div>
-          {data.error && <div className="node-error">{data.error}</div>}
+          {data.error && <NodeError nodeId={id} message={data.error} />}
           <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-image" >
             <GooeyBtn className="gooey-btn-left" hue={142} />
           </Handle>

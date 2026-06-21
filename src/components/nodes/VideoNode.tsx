@@ -5,6 +5,7 @@ import { memo, useCallback } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
+import NodeError from './shared/NodeError';
 import GooeyBtn from './shared/GooeyBtn';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
@@ -102,7 +103,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             </div>
           )}
         </div>
-        {data.error && <div className="node-error">{data.error}</div>}
+        {data.error && <NodeError nodeId={id} message={data.error} />}
         <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-video" >
           <GooeyBtn className="gooey-btn-left" hue={217} />
         </Handle>

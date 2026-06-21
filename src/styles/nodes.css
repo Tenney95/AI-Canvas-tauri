@@ -469,6 +469,15 @@
   border-radius: 6px;
   font-size: 10px;
   color: var(--danger-light);
+  opacity: 1;
+  transition: opacity 1.1s ease, transform 1.1s ease;
+}
+
+/* 20 秒后缓慢淡出 */
+.node-error--fading {
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
 }
 
 /* ============================================
