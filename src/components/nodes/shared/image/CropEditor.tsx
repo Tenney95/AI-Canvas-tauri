@@ -2,7 +2,7 @@
  * CropEditor — 图像裁切全屏编辑器
  * 基于 react-image-crop，提供自由裁切 + 预设宽高比
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import ReactCrop, {
   type Crop,
@@ -15,6 +15,7 @@ import FullscreenOverlay from '../../../shared/FullscreenOverlay';
 import AnimatedButton from '../../../shared/AnimatedButton';
 import { springGentle } from '../../../../utils/motion';
 import { fetchImageForCrop } from '../../../../services/fileService';
+import { useImageViewportGesture } from '../../../../hooks/useImageViewportGesture';
 
 /* ── 类型 ── */
 type AspectPreset = 'free' | '1:1' | '4:3' | '16:9' | '3:4' | '9:16';
@@ -43,42 +44,36 @@ const ASPECT_OPTIONS: { key: AspectPreset; label: string; ratio?: number }[] = [
    ════════════════════════════════════════════ */
 export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave }: CropEditorProps) {
   const imgRef = useRef<HTMLImageElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
 
   const [aspect, setAspect] = useState<AspectPreset>('free');
   const [crop, setCrop] = useState<Crop>();
   const [completedCrop, setCompletedCrop] = useState<PixelCrop>();
-  const [scale, setScale] = useState(1);
+  const {
+    containerRef: stageRef,
+    scale,
+    gesturing,
+    reset: resetViewport,
+  } = useImageViewportGesture({
+    initialScale: 1,
+    minScale: 0.1,
+    maxScale: 5,
+    enablePointerPan: false,
+    enableWheelPan: false,
+  });
 
   const aspectRatio = ASPECT_OPTIONS.find((o) => o.key === aspect)?.ratio;
 
-  /* ── 滚轮缩放（非 passive 绑定，允许 preventDefault） ── */
-  const handleWheel = useCallback((e: WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? -0.05 : 0.05;
-    setScale((prev) => Math.max(0.1, Math.min(5, Math.round((prev + delta) * 100) / 100)));
-  }, []);
-
-  useEffect(() => {
-    const el = stageRef.current;
-    if (!el) return;
-    el.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheel);
-  }, [handleWheel, isOpen]);
-
   /* ── 双击重置缩放 ── */
-  const handleDoubleClick = useCallback(() => {
-    setScale(1);
-  }, []);
+  const handleDoubleClick = useCallback(() => resetViewport(), [resetViewport]);
 
   /* ── 关闭：重置所有状态 ── */
   const handleClose = useCallback(() => {
     setCrop(undefined);
     setCompletedCrop(undefined);
     setAspect('free');
-    setScale(1);
+    resetViewport();
     onClose();
-  }, [onClose]);
+  }, [onClose, resetViewport]);
 
   /* ── 图片加载：初始化居中裁切框 ── */
   const onImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -132,7 +127,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     setCrop(undefined);
     setCompletedCrop(undefined);
     setAspect('free');
-    setScale(1);
+    resetViewport();
 
     // 3. 后台裁切（异步，不阻塞 UI）
     try {
@@ -192,7 +187,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
       console.error('[CropEditor] crop failed:', err);
       onSave('', { width: 0, height: 0 });
     }
-  }, [completedCrop, imageUrl, onSave, onStart]);
+  }, [completedCrop, imageUrl, onSave, onStart, resetViewport, scale]);
 
   /* ── 宽高比切换 ── */
   const handleAspectChange = useCallback(
@@ -277,7 +272,10 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
       >
         <div
           className="crop-zoom-stage"
-          style={{ transform: `scale(${scale})` }}
+          style={{
+            transform: `scale(${scale})`,
+            transition: gesturing ? 'none' : 'transform 0.18s var(--ease-out-expo, ease-out)',
+          }}
         >
           <ReactCrop
             crop={crop}
