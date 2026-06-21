@@ -1,0 +1,4 @@
+#!/bin/sh
+# 提交前自动将 package.json 的版本号同步到 README.md badge
+node scripts/sync-version.js
+git add README.md

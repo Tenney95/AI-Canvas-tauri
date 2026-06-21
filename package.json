@@ -4,13 +4,15 @@
     "version": "0.1.5",
     "type": "module",
     "scripts": {
+        "postinstall": "node scripts/setup-hooks.js",
         "dev": "vite",
         "lint": "eslint .",
         "typecheck": "tsc -b",
         "check": "npm run typecheck && npm run lint",
         "build": "tsc -b && vite build",
         "preview": "vite preview",
-        "tauri": "tauri"
+        "tauri": "tauri",
+        "sync-version": "node scripts/sync-version.js"
     },
     "dependencies": {
         "@iconify/react": "^6.0.2",
