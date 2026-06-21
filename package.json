@@ -30,9 +30,7 @@
         "zustand": "^5.0.5"
     },
     "devDependencies": {
-        "@babel/plugin-transform-react-jsx-source": "^7.27.1",
         "@eslint/js": "^10.0.1",
-        "@rolldown/plugin-babel": "^0.2.3",
         "@tauri-apps/cli": "^2",
         "@types/node": "^24.12.3",
         "@types/react": "^19.2.14",
@@ -45,7 +43,6 @@
         "eslint-plugin-react-refresh": "^0.5.2",
         "globals": "^17.6.0",
         "postcss": "^8.4.49",
-        "react-dev-inspector": "^2.0.1",
         "tailwindcss": "^3.4.17",
         "typescript": "~6.0.2",
         "typescript-eslint": "^8.59.2",

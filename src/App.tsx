@@ -3,7 +3,6 @@
  * Tauri 环境下启用自定义窗口装饰和透明圆角窗口
  */
 import { useEffect, useState } from 'react';
-import { Inspector } from 'react-dev-inspector';
 import Header from './components/Header';
 import Titlebar from './components/Titlebar';
 import Sidebar from './components/Sidebar';
@@ -22,7 +21,6 @@ import { useAutoSave } from './hooks/useAutoSave';
 import { useAppStore } from './store/useAppStore';
 import * as fileService from './services/fileService';
 
-const isDev = import.meta.env.DEV;
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 export default function App() {
@@ -134,30 +132,10 @@ export default function App() {
     </div>
   );
 
-  // 仅在浏览器开发模式下启用 Inspect；Tauri 透明窗口中 Inspector 外层会破坏圆角透明背景
-  const enableInspector = isDev && !isTauri;
-  if (!enableInspector) {
-    return (
-      <>
-        {!splashDone && <SplashScreen onComplete={() => setSplashDone(true)} />}
-        {appContent}
-      </>
-    );
-  }
-
   return (
     <>
       {!splashDone && <SplashScreen onComplete={() => setSplashDone(true)} />}
-      <Inspector
-        keys={['control', 'shift', 'c']}
-        onInspectElement={({ codeInfo }) => {
-          if (!codeInfo?.absolutePath) return;
-          const { absolutePath, lineNumber, columnNumber } = codeInfo;
-          window.open(`codebuddycn://file/${absolutePath}:${lineNumber}:${columnNumber}`);
-        }}
-      >
-        {appContent}
-      </Inspector>
+      {appContent}
     </>
   );
 }
