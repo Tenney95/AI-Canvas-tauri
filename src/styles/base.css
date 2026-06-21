@@ -218,6 +218,7 @@
 [data-theme='light'] .bg-canvas-card { background-color: #F8F6F3; }
 [data-theme='light'] .bg-canvas-card\/95 { background-color: rgb(248 246 243 / 0.95); }
 [data-theme='light'] .bg-canvas-hover { background-color: #EDE8E0; }
+[data-theme='light'] .hover\:bg-canvas-hover:hover { background-color: #EDE8E0; }
 
 [data-theme='light'] .border-canvas-border { border-color: #E5E0D8; }
 [data-theme='light'] .border-border-subtle { border-color: rgba(0, 0, 0, 0.06); }

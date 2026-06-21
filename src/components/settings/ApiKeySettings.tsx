@@ -735,30 +735,6 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
             </div>
           )}
         </div>
-
-        {/* ── 服务地址 ── */}
-        <div className="settings-section settings-card settings-service-card">
-          <div className="settings-card-head">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary, #8888a0)" strokeWidth="1.5">
-              <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
-              <rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
-              <circle cx="6" cy="6" r="1" fill="currentColor" />
-              <circle cx="10" cy="6" r="1" fill="currentColor" />
-            </svg>
-            <span className="settings-card-title">服务地址</span>
-          </div>
-          <div className="settings-label">ComfyUI 服务地址</div>
-          <input
-            type="text"
-            className="settings-input"
-            placeholder="http://127.0.0.1:8188"
-            defaultValue={config.comfyUIUrl || ''}
-            onBlur={(e) => updateConfig({ comfyUIUrl: e.target.value })}
-          />
-          <p className="text-[11px] text-canvas-text-muted" style={{ marginTop: 4 }}>
-            ComfyUI 后端服务的地址，用于执行导入的工作流
-          </p>
-        </div>
       </div>
 
       {/* Footer */}
