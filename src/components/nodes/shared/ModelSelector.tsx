@@ -57,6 +57,7 @@ export default function ModelSelector({
   // 读取配置 — 判断哪些 provider 有 API Key
   const configProviders = useAppStore((s) => s.config.providers);
   const generalModels = useAppStore((s) => s.config.generalModels || []);
+  const dreaminaLoggedIn = useAppStore((s) => !!s.config.dreaminaAuth?.loggedIn);
 
   /** 动态生成「通用模型」分组 */
   const generalModelGroup: ModelGroup | null = useMemo(() => {
@@ -103,11 +104,13 @@ export default function ModelSelector({
     (groupId: string) => {
       // 通用模型分组：每个模型自带 API Key，始终可用
       if (groupId === 'general-models') return true;
+      // 即梦：走 OAuth 登录，无 API Key，按登录态判定
+      if (groupId === 'dreamina') return dreaminaLoggedIn;
       const providerKey = groupId === 'runninghubwf' ? 'runninghub' : groupId;
       const provider = configProviders[providerKey];
       return !!provider?.apiKey;
     },
-    [configProviders],
+    [configProviders, dreaminaLoggedIn],
   );
   const ref = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
