@@ -6,6 +6,7 @@ import { uploadToRemote, isLocalImageUrl } from './uploadService';
 import { readFileToDataUrl, getFileCategory, getAssetUrlFromPath } from './fileService';
 import { mapImageDimensions } from './aiDimensions';
 import { resolveNodeReferences } from './nodeReferenceService';
+import { generateDreaminaImage, generateDreaminaVideo } from './dreaminaService';
 import type { AIAudioGenParams, AIGenerateParams, AIImageGenParams, AIVideoGenParams } from './aiTypes';
 import {
   executeComfyUIAudioGenerate,
@@ -438,6 +439,12 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
 
   // 合并调用方传入的 image_urls 与从 prompt 中解析出的 imageUrls
   let allImageUrls = [...(params.image_urls || []), ...imageUrls];
+
+  // 即梦：直接把本地/原始图片 URL 交给 CLI（CLI 端本地化），不走图床上传
+  if (provider === 'dreamina') {
+    if (!prompt.trim()) throw new Error('提示词不能为空');
+    return generateDreaminaImage({ prompt, model, imageSize, aspectRatio, imageUrls: allImageUrls });
+  }
 
   // 将本地图片 URL 上传到远端图床，转为公网 URL
   allImageUrls = await resolveImageUrlArray(allImageUrls);
@@ -990,6 +997,13 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
   // ComfyUI 工作流执行路径
   if (params.workflowId) {
     return executeComfyUIVideoGenerate({ ...params, prompt });
+  }
+
+  // 即梦视频：无参考图 → text2video；有参考图 → image2video
+  if (provider === 'dreamina') {
+    const { prompt: dreaminaPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
+    if (!dreaminaPrompt.trim()) throw new Error('提示词不能为空');
+    return generateDreaminaVideo({ prompt: dreaminaPrompt, model, imageUrls });
   }
 
   // APIMart 视频生成 — 异步提交 + 轮询

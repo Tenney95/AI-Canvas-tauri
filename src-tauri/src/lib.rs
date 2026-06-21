@@ -4,6 +4,7 @@ use tauri::{Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
 mod comfyui;
+mod dreamina;
 pub mod onnx;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -205,6 +206,12 @@ pub fn run() {
             fetch_image_data_url,
             move_to_trash,
             dreamina_login,
+            dreamina::dreamina_login_start,
+            dreamina::dreamina_login_runtime,
+            dreamina::dreamina_logout,
+            dreamina::dreamina_status,
+            dreamina::dreamina_generate,
+            dreamina::dreamina_query_result,
             toggle_devtools,
             comfyui::launch_comfyui,
             onnx::get_models_dir,

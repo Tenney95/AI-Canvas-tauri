@@ -303,6 +303,145 @@
   flex-wrap: wrap;
 }
 
+/* ── 即梦 OAuth 登录弹窗 ── */
+.dreamina-login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(var(--glass-blur-sm, 6px));
+}
+.dreamina-login-modal {
+  position: relative;
+  width: min(92vw, 460px);
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 22px 22px 18px;
+  border-radius: 16px;
+  background: var(--glass-bg, rgba(28, 28, 36, 0.92));
+  backdrop-filter: blur(var(--glass-blur-lg, 18px));
+  border: 1px solid var(--glass-ring, rgba(255, 255, 255, 0.12));
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+  color: var(--theme-text, #e8e8ed);
+}
+.dreamina-login-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.dreamina-login-modal-close:hover {
+  background: var(--white-alpha-06, rgba(255, 255, 255, 0.08));
+  color: var(--theme-text);
+}
+.dreamina-login-modal-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #7c5cff, #b06cff);
+  margin-bottom: 12px;
+}
+.dreamina-login-modal-message {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--theme-text-secondary);
+  margin-bottom: 14px;
+}
+.dreamina-login-modal-wait {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+}
+.dreamina-login-modal-wait--inline {
+  margin-top: 12px;
+  padding: 10px 0 2px;
+}
+.dreamina-login-modal-spinner {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: 2px solid var(--white-alpha-12, rgba(255, 255, 255, 0.16));
+  border-top-color: var(--brand, #7c5cff);
+  border-radius: 50%;
+  animation: dreaminaSpin 0.8s linear infinite;
+}
+@keyframes dreaminaSpin {
+  to { transform: rotate(360deg); }
+}
+.dreamina-login-modal-wait-text {
+  font-size: 12px;
+  color: var(--theme-text-muted);
+  line-height: 1.5;
+}
+.dreamina-manual-guide {
+  margin-top: 6px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--white-alpha-04, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.08));
+}
+.dreamina-manual-guide-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--theme-text);
+  margin-bottom: 10px;
+}
+.dreamina-manual-step {
+  font-size: 12px;
+  color: var(--theme-text-secondary);
+  margin: 10px 0 6px;
+}
+.dreamina-manual-link-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dreamina-manual-link-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 8px;
+  background: var(--theme-input-bg, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.1));
+  color: var(--theme-text);
+  outline: none;
+}
+.dreamina-manual-code-input {
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-align: center;
+}
+.dreamina-login-modal-error {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--error-text, #ff7a7a);
+  background: var(--error-bg, rgba(255, 80, 80, 0.1));
+}
+.dreamina-login-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
 /* ── Save / footer row ── */
 .settings-pane-footer {
   padding: 12px 0 0;

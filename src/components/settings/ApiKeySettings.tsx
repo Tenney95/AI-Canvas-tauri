@@ -1,15 +1,17 @@
 /**
  * ApiKeySettings — API Key 配置面板，管理各 AI 厂商密钥、连接测试、通用模型、服务地址
  */
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '../../store/useAppStore';
 import type { TestResult } from '../../services/testConnection';
 import { testProviderConnection, type ProviderTestKey } from '../../services/testConnection';
 import AnimatedButton from '../shared/AnimatedButton';
+import DreaminaLoginModal from './DreaminaLoginModal';
 import {
   GENERAL_MODEL_CATEGORY_LABELS,
   GENERAL_MODEL_CATEGORY_COLORS,
   type GeneralModelCategory,
+  type DreaminaRuntime,
 } from '../../types';
 
 /* ── External URLs ── */
@@ -194,10 +196,12 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
   const generalModels = config.generalModels || [];
 
-  // ── 即梦 Dreamina 登录状态 ──
+  // ── 即梦 Dreamina OAuth 登录 ──
   const [dreaminaLoading, setDreaminaLoading] = useState(false);
-  const [dreaminaCookieInput, setDreaminaCookieInput] = useState('');
   const [dreaminaStatusMsg, setDreaminaStatusMsg] = useState('首次登录时会自动准备即梦组件');
+  const [dreaminaModalOpen, setDreaminaModalOpen] = useState(false);
+  const [dreaminaRuntime, setDreaminaRuntime] = useState<DreaminaRuntime | null>(null);
+  const dreaminaDoneRef = useRef(false);
   const dreaminaAuth = config.dreaminaAuth;
 
   /** 打开外部链接 */
@@ -210,101 +214,133 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   };
 
   /** 判断是否运行在 Tauri 环境中 */
-  const isTauri = (): boolean => {
-    return '__TAURI_INTERNALS__' in window;
-  };
+  const isTauri = (): boolean => '__TAURI_INTERNALS__' in window;
 
-  /** 即梦网页登录 */
-  const handleDreaminaWebLogin = async () => {
-    if (isTauri()) {
-      setDreaminaLoading(true);
-      setDreaminaStatusMsg('正在打开即梦登录窗口…');
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const result = await invoke<{ cookie: string }>('dreamina_login');
-        if (result.cookie) {
-          updateConfig({
-            dreaminaAuth: {
-              loggedIn: true,
-              username: '即梦用户',
-              cookie: result.cookie,
-              loginTs: Date.now(),
-            },
-          });
-          setDreaminaStatusMsg('登录成功！已自动获取凭证');
-          setDreaminaCookieInput('');
-        }
-      } catch (err: unknown) {
-        const msg = typeof err === 'string' ? err : (err as Error)?.message || '未知错误';
-        setDreaminaStatusMsg(`登录失败: ${msg}`);
-      } finally {
-        setDreaminaLoading(false);
-      }
-      return;
-    }
-    setDreaminaLoading(true);
-    setDreaminaStatusMsg('请在浏览器中完成即梦登录…');
-    try {
-      await openExternalUrl('https://jimeng.jianying.com/');
-      setDreaminaStatusMsg('请在浏览器中登录即梦后，将 Cookie 粘贴到下方输入框并保存');
-    } catch {
-      setDreaminaStatusMsg('打开浏览器失败，请手动访问 dreamina.com 登录');
-    } finally {
-      setDreaminaLoading(false);
-    }
-  };
+  const tauriInvoke = useCallback(
+    async <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return invoke<T>(cmd, args);
+    },
+    [],
+  );
 
-  /** 保存即梦 Cookie/Token */
-  const handleDreaminaCookieSave = async () => {
-    const cookie = dreaminaCookieInput.trim();
-    if (!cookie) {
-      setDreaminaStatusMsg('请输入 Cookie/Token');
-      return;
-    }
-    setDreaminaLoading(true);
-    setDreaminaStatusMsg('正在验证登录状态…');
-    try {
-      const resp = await fetch('https://api.dreamina.com/v1/user/info', {
-        headers: { 'Cookie': cookie },
-      });
-      if (resp.ok) {
-        const data = await resp.json().catch(() => ({}));
+  /** 应用 Rust 推送的登录运行态；成功时镜像到配置 */
+  const applyDreaminaRuntime = useCallback(
+    (rt: DreaminaRuntime) => {
+      setDreaminaRuntime(rt);
+      if (rt.message) setDreaminaStatusMsg(rt.message);
+      if (rt.phase === 'success' || rt.loggedIn) {
         updateConfig({
           dreaminaAuth: {
             loggedIn: true,
-            username: data.username || data.nickname || '即梦用户',
-            credit: data.credit || data.balance || undefined,
-            cookie,
+            username: rt.username || '即梦用户',
+            credit: rt.credit || undefined,
             loginTs: Date.now(),
           },
         });
-        setDreaminaStatusMsg('已连接到即梦账户');
-        setDreaminaCookieInput('');
-      } else {
-        setDreaminaStatusMsg(`验证失败 (${resp.status})，请检查 Cookie 是否有效`);
+        if (!dreaminaDoneRef.current) {
+          dreaminaDoneRef.current = true;
+          useAppStore.getState().showToast('即梦登录成功');
+          setTimeout(() => setDreaminaModalOpen(false), 800);
+        }
       }
-    } catch {
-      updateConfig({
-        dreaminaAuth: {
-          loggedIn: true,
-          username: '即梦用户',
-          cookie,
-          loginTs: Date.now(),
-        },
-      });
-      setDreaminaStatusMsg('已保存登录信息（离线模式），下次调用 API 时将自动验证');
-      setDreaminaCookieInput('');
-    } finally {
-      setDreaminaLoading(false);
-    }
-  };
+    },
+    [updateConfig],
+  );
+
+  /** 启动即梦 OAuth 登录（force=true 为重新登录） */
+  const handleDreaminaLogin = useCallback(
+    async (force = false) => {
+      if (!isTauri()) {
+        setDreaminaStatusMsg('OAuth 登录仅在桌面应用中可用');
+        return;
+      }
+      dreaminaDoneRef.current = false;
+      setDreaminaLoading(true);
+      setDreaminaRuntime(null);
+      setDreaminaModalOpen(true);
+      try {
+        const rt = await tauriInvoke<DreaminaRuntime>('dreamina_login_start', { force });
+        setDreaminaRuntime(rt);
+      } catch (err: unknown) {
+        const msg = typeof err === 'string' ? err : (err as Error)?.message || '启动登录失败';
+        setDreaminaStatusMsg(msg);
+      } finally {
+        setDreaminaLoading(false);
+      }
+    },
+    [tauriInvoke],
+  );
 
   /** 即梦退出登录 */
-  const handleDreaminaLogout = () => {
+  const handleDreaminaLogout = useCallback(async () => {
+    setDreaminaLoading(true);
+    try {
+      if (isTauri()) await tauriInvoke('dreamina_logout');
+    } catch {
+      /* 忽略，本地仍清除登录态 */
+    }
     updateConfig({ dreaminaAuth: undefined });
-    setDreaminaCookieInput('');
+    setDreaminaRuntime(null);
     setDreaminaStatusMsg('已退出登录');
-  };
+    setDreaminaLoading(false);
+  }, [tauriInvoke, updateConfig]);
+
+  const handleDreaminaCopy = useCallback((text: string, label: string) => {
+    navigator.clipboard?.writeText(text).catch(() => {});
+    useAppStore.getState().showToast(`已复制${label}`);
+  }, []);
+
+  // 登录弹窗打开时：监听 Rust 事件 + 轮询兜底
+  useEffect(() => {
+    if (!dreaminaModalOpen || !isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const un = await listen<DreaminaRuntime>('dreamina-login-runtime', (e) => applyDreaminaRuntime(e.payload));
+        if (cancelled) un();
+        else unlisten = un;
+      } catch {
+        /* 事件不可用时仅靠轮询 */
+      }
+    })();
+    const timer = setInterval(async () => {
+      try {
+        applyDreaminaRuntime(await tauriInvoke<DreaminaRuntime>('dreamina_login_runtime'));
+      } catch {
+        /* ignore */
+      }
+    }, 1500);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      clearInterval(timer);
+    };
+  }, [dreaminaModalOpen, applyDreaminaRuntime, tauriInvoke]);
+
+  // 打开设置时刷新一次即梦登录态（仅在已登录时校验/刷新额度，避免空跑 CLI）
+  useEffect(() => {
+    if (!isTauri() || !dreaminaAuth?.loggedIn) return;
+    tauriInvoke<DreaminaRuntime>('dreamina_status')
+      .then((rt) => {
+        if (!rt.loggedIn) return;
+        setDreaminaRuntime(rt);
+        setDreaminaStatusMsg('即梦已登录');
+        updateConfig({
+          dreaminaAuth: {
+            loggedIn: true,
+            username: rt.username || '即梦用户',
+            credit: rt.credit || undefined,
+            loginTs: dreaminaAuth?.loginTs || Date.now(),
+          },
+        });
+      })
+      .catch(() => {});
+    // 仅在挂载时执行一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleTest = async (provider: ProviderTestKey, apiKey: string, baseUrl?: string) => {
     setTestStates((prev) => ({ ...prev, [provider]: { status: 'testing' } }));
@@ -449,50 +485,25 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
             {dreaminaAuth?.loggedIn ? (dreaminaAuth.credit || '未获取到余额信息') : '登录后显示余额'}
           </div>
 
-          <div className="settings-label">
-            Cookie / Token
-            <span className="dreamina-settings-desc" style={{ marginLeft: 6, fontSize: 10 }}>
-              {dreaminaAuth?.loggedIn ? '（已保存，可留空）' : '（登录后在此粘贴浏览器 Cookie）'}
-            </span>
-          </div>
-          <input
-            type="password"
-            className="settings-input settings-input--mb10"
-            placeholder={dreaminaAuth?.loggedIn ? '留空则保持当前登录…' : '粘贴浏览器中的 Cookie…'}
-            value={dreaminaCookieInput}
-            onChange={(e) => setDreaminaCookieInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleDreaminaCookieSave(); }}
-          />
-
           <div className="dreamina-settings-actions">
             {!dreaminaAuth?.loggedIn ? (
-              <>
-                <AnimatedButton
-                  type="button"
-                  className="settings-save-btn"
-                  disabled={dreaminaLoading}
-                  onClick={handleDreaminaWebLogin}
-                >
-                  网页登录
-                </AnimatedButton>
-                <AnimatedButton
-                  type="button"
-                  className="settings-save-btn"
-                  disabled={!dreaminaCookieInput.trim() || dreaminaLoading}
-                  onClick={handleDreaminaCookieSave}
-                >
-                  保存登录
-                </AnimatedButton>
-              </>
+              <AnimatedButton
+                type="button"
+                className="settings-save-btn"
+                disabled={dreaminaLoading}
+                onClick={() => handleDreaminaLogin(false)}
+              >
+                OAuth 登录
+              </AnimatedButton>
             ) : (
               <>
                 <AnimatedButton
                   type="button"
                   className="settings-save-btn"
-                  disabled={!dreaminaCookieInput.trim() || dreaminaLoading}
-                  onClick={handleDreaminaCookieSave}
+                  disabled={dreaminaLoading}
+                  onClick={() => handleDreaminaLogin(true)}
                 >
-                  更新登录
+                  重新登录
                 </AnimatedButton>
                 <AnimatedButton
                   type="button"
@@ -506,9 +517,17 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
             )}
           </div>
           <div className="dreamina-settings-desc" style={{ marginBottom: 0, marginTop: 10 }}>
-            点击网页登录完成授权，支持手机号、扫码等多种方式。登录成功后 Cookie 将自动填充，也可手动粘贴到上方输入框保存。
+            使用即梦官方 OAuth 授权链接登录；打开链接后输入验证码，系统会自动同步登录状态。
           </div>
         </div>
+
+        <DreaminaLoginModal
+          isOpen={dreaminaModalOpen}
+          runtime={dreaminaRuntime}
+          onClose={() => setDreaminaModalOpen(false)}
+          onOpenUrl={openExternalUrl}
+          onCopy={handleDreaminaCopy}
+        />
 
         {/* ── 通用模型 ── */}
         <div className="settings-section settings-card">

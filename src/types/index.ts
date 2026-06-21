@@ -81,13 +81,26 @@ export interface ApiProviderConfig {
   baseUrl?: string;
 }
 
-// 即梦/Dreamina 网页登录认证数据
+// 即梦/Dreamina OAuth 登录态（登录态由官方 dreamina_cli 持久化，此处仅镜像用于 UI）
 export interface DreaminaAuthData {
   loggedIn: boolean;
   username?: string;          // 账户昵称
   credit?: string;            // 额度余额文本
-  cookie?: string;            // 持久化的 cookie/token
   loginTs?: number;           // 登录时间戳
+  cookie?: string;            // 遗留字段（旧 cookie 方案），已弃用
+}
+
+// 即梦 OAuth 登录运行态（对应 Rust LoginRuntime 快照）
+export interface DreaminaRuntime {
+  active: boolean;
+  phase: string;              // idle/preparing/starting/oauth_ready/polling/success/failed
+  message: string;
+  error: string;
+  verificationUrl: string;    // 授权链接
+  userCode: string;           // 验证码
+  loggedIn: boolean;
+  username: string;
+  credit: string;
 }
 
 /** 画布背景主题 */
