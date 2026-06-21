@@ -25,13 +25,14 @@ interface ZoomableImageProps {
 export default function ZoomableImage({ src, alt = '', className = '', onError }: ZoomableImageProps) {
   const {
     containerRef,
+    containerEl,
     scale,
     tx,
     ty,
     dragging,
     gesturing,
     cursor,
-    onMouseDown,
+    onPointerDown,
     reset,
     zoomTo,
   } = useImageViewportGesture({ minScale: MIN_SCALE, maxScale: MAX_SCALE });
@@ -44,13 +45,13 @@ export default function ZoomableImage({ src, alt = '', className = '', onError }
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const el = containerRef.current;
+    const el = containerEl.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const cx = e.clientX - rect.left - rect.width / 2;
     const cy = e.clientY - rect.top - rect.height / 2;
     zoomTo(scale > MIN_SCALE ? MIN_SCALE : 2, cx, cy);
-  }, [containerRef, scale, zoomTo]);
+  }, [containerEl, scale, zoomTo]);
 
   const stepZoom = useCallback((dir: 1 | -1) => {
     zoomTo(scale * (dir > 0 ? 1.4 : 1 / 1.4), 0, 0);
@@ -61,7 +62,7 @@ export default function ZoomableImage({ src, alt = '', className = '', onError }
       ref={containerRef}
       className="zoomable-image-container"
       style={{ cursor }}
-      onMouseDown={onMouseDown}
+      onPointerDown={onPointerDown}
       onDoubleClick={handleDoubleClick}
     >
       <img
@@ -77,7 +78,7 @@ export default function ZoomableImage({ src, alt = '', className = '', onError }
         }}
       />
 
-      <div className="zoom-controls" onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+      <div className="zoom-controls" onPointerDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
         <button className="zoom-btn" onClick={() => stepZoom(-1)} aria-label="缩小" disabled={scale <= MIN_SCALE}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
             <line x1="5" y1="12" x2="19" y2="12" />

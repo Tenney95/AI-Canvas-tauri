@@ -51,20 +51,38 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
   const {
     containerRef: stageRef,
     scale,
+    tx,
+    ty,
+    dragging,
     gesturing,
+    onPointerDown: onStagePan,
     reset: resetViewport,
   } = useImageViewportGesture({
     initialScale: 1,
     minScale: 0.1,
     maxScale: 5,
-    enablePointerPan: false,
+    enablePointerPan: true,
     enableWheelPan: false,
+    panButtons: [1, 2], // 滚轮键 / 右键拖拽平移（左键留给 ReactCrop 框选）
   });
 
   const aspectRatio = ASPECT_OPTIONS.find((o) => o.key === aspect)?.ratio;
 
   /* ── 双击重置缩放 ── */
   const handleDoubleClick = useCallback(() => resetViewport(), [resetViewport]);
+
+  /* ── 中键/右键：拦截 ReactCrop 框选并交给手势平移（左键仍归框选）── */
+  const handleStagePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button === 1 || e.button === 2) {
+        // 捕获阶段始终拦截，阻止 ReactCrop 在中键/右键时创建裁剪框
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      onStagePan(e); // 放大后才会真正平移（hook 内部判定）
+    },
+    [onStagePan],
+  );
 
   /* ── 关闭：重置所有状态 ── */
   const handleClose = useCallback(() => {
@@ -269,12 +287,15 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
         className="crop-stage"
         ref={stageRef}
         onDoubleClick={handleDoubleClick}
+        onPointerDownCapture={handleStagePointerDown}
+        onContextMenu={(e) => e.preventDefault()}
+        style={dragging ? { cursor: 'grabbing' } : undefined}
       >
         <div
           className="crop-zoom-stage"
           style={{
-            transform: `scale(${scale})`,
-            transition: gesturing ? 'none' : 'transform 0.18s var(--ease-out-expo, ease-out)',
+            transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
+            transition: gesturing || dragging ? 'none' : 'transform 0.18s var(--ease-out-expo, ease-out)',
           }}
         >
           <ReactCrop
