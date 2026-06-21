@@ -42,7 +42,13 @@ interface DreaminaQuery {
 
 async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<T>(cmd, args);
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (e) {
+    // Tauri 命令拒绝时抛出的是字符串，转成 Error 以便上层正确展示信息
+    if (e instanceof Error) throw e;
+    throw new Error(typeof e === 'string' ? e : JSON.stringify(e));
+  }
 }
 
 async function resolveOutputUrl(o: DreaminaOutput): Promise<string> {

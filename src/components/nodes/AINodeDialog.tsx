@@ -221,7 +221,7 @@ function AINodeDialog() {
         });
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '生成失败';
+      const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');
       updateNodeData(activeNodeId!, { status: 'error', error: msg });
       recordOutputHistory(activeNodeId!, {
         nodeId: activeNodeId!,

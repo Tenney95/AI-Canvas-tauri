@@ -336,6 +336,52 @@ fn extract_material(text: &str) -> Option<OAuthMaterial> {
 // 账号额度
 // ──────────────────────────────────────────────
 
+/// 即梦 CLI 全局日志目录（~/.dreamina_cli/logs）
+fn cli_log_dir() -> Option<PathBuf> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()?;
+    let dir = PathBuf::from(home).join(".dreamina_cli").join("logs");
+    if dir.is_dir() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// 读取最新日志里最后一次 has_cli_permission（是否开通 CLI 生成权限）
+/// 返回 None 表示无法判定（不应据此拦截）。
+fn read_latest_cli_permission() -> Option<bool> {
+    let dir = cli_log_dir()?;
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+            if newest.as_ref().map_or(true, |(t, _)| modified > *t) {
+                newest = Some((modified, p));
+            }
+        }
+    }
+    let (_, path) = newest?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let marker = "has_cli_permission=";
+    let mut result = None;
+    for line in content.lines() {
+        if let Some(idx) = line.rfind(marker) {
+            let rest = &line[idx + marker.len()..];
+            let token: String = rest
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != ',')
+                .collect();
+            result = Some(token.eq_ignore_ascii_case("true"));
+        }
+    }
+    result
+}
+
 /// 运行 `user_credit`，返回 (loggedIn, username, credit 文本)
 fn fetch_credit(path: &PathBuf, cwd: &PathBuf) -> (bool, String, String) {
     let mut cmd = Command::new(path);
@@ -981,6 +1027,14 @@ fn dreamina_generate_blocking(
     let work = workdir(&app);
     let inputs_dir = work.join("inputs");
 
+    // 会员/权限预检：跑一次 user_credit 触发日志，读取 has_cli_permission。
+    // 仅在明确为 false 时拦截，给出清晰的「非会员」提示，避免无谓提交。
+    let _ = fetch_credit(&path, &work);
+    if read_latest_cli_permission() == Some(false) {
+        return Err("当前即梦账号还不是会员（未开通 CLI 生成权限），无法调用此模型。\
+请使用已开通会员 / CLI 生成权限的账号后重试。".into());
+    }
+
     let mut args: Vec<String> = Vec::new();
     match params.kind.as_str() {
         "text2image" => {
@@ -1092,7 +1146,11 @@ fn dreamina_generate_blocking(
         } else if !ok && !output.trim().is_empty() {
             tail_summary(&output.lines().map(|s| s.to_string()).collect::<Vec<_>>())
         } else {
-            "即梦提交失败，未返回任务 ID".into()
+            // CLI 无任何输出且退出非 0：通常是账号未开通即梦 CLI 生成权限
+            // （has_cli_permission=false）。登录/查额度可用但无法生成。
+            "即梦提交失败，未返回任务 ID。\n常见原因：该账号未开通即梦 CLI 生成权限（生成被服务端拒绝）。\
+请确认账号已开通 CLI/API 生成权限后重试；日志见 ~/.dreamina_cli/logs/。"
+                .into()
         };
         return Err(msg);
     }
