@@ -14,6 +14,8 @@ dist-ssr
 
 
 .agents/*
+.codebuddy/
+.codegraph/
 .codebuddy/skills/*
 .codebuddy/commands/*
 .codegraph/*
