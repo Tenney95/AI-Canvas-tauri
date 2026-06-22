@@ -880,6 +880,24 @@
 }
 .assets-search-clear:hover { color: var(--theme-text); background: var(--white-alpha-08); }
 
+/* 项目选择下拉（仅项目文件 Tab） */
+.assets-project-select {
+  flex-shrink: 0;
+  max-width: 200px;
+  padding: 7px 10px;
+  background: var(--theme-card);
+  border: 1px solid var(--theme-border);
+  border-radius: 9px;
+  color: var(--theme-text);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: border-color var(--transition-base), background var(--transition-base);
+}
+.assets-project-select:hover { background: var(--theme-surface); }
+.assets-project-select:focus { border-color: var(--border-focus); }
+
 /* 添加按钮 + 菜单 */
 .assets-add-wrap { position: relative; flex-shrink: 0; }
 .assets-add-btn {
@@ -1049,3 +1067,92 @@
 .anim-card-in {
   animation: floatUpIn var(--dur-normal) var(--ease-out-expo) both;
 }
+
+/* ============================================
+   资源搜索窗口（独立 WebviewWindow，全屏布局）
+   ============================================ */
+.asset-search-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--theme-bg);
+  color: var(--theme-text);
+  font-family: inherit;
+  overflow: hidden;
+}
+.asset-search-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px 8px;
+  flex-shrink: 0;
+}
+.asset-search-title {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+}
+.asset-search-total {
+  font-size: 12px;
+  color: var(--theme-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.asset-search-refresh {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--theme-card);
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition: color var(--transition-base), background var(--transition-base);
+}
+.asset-search-refresh:hover:not(:disabled) { color: var(--theme-text); background: var(--theme-surface); }
+.asset-search-refresh:disabled { opacity: 0.5; cursor: default; }
+.asset-search-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 20px 0;
+  flex-shrink: 0;
+}
+.asset-search-input { flex: 1; }
+.asset-search-cats {
+  padding: 8px 20px;
+  flex-shrink: 0;
+}
+/* 滚动容器（固定高度、纵向滚动）与多列容器分离，避免多列限高后横向分页 */
+.asset-search-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 20px 20px;
+}
+/* 多列瀑布流：高度自适应（不限高/不溢出），内容向下增长由外层滚动 */
+.asset-search-masonry {
+  columns: 3;
+  column-gap: 12px;
+}
+.asset-search-masonry .assets-waterfall-card {
+  break-inside: avoid;
+  margin-bottom: 12px;
+}
+.asset-search-scroll .assets-load-sentinel {
+  padding-top: 8px;
+  text-align: center;
+}
+.asset-search-spinner {
+  width: 26px;
+  height: 26px;
+  border: 3px solid var(--theme-border);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

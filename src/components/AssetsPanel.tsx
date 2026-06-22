@@ -6,7 +6,7 @@
  * 性能：useDeferredValue 搜索 + useMemo 过滤 + 增量渲染（IntersectionObserver）+ 图片懒加载，
  *       并移除了大列表下昂贵的逐项 layout 动画。
  */
-import { useState, useEffect, useCallback, useMemo, useRef, useDeferredValue } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, useDeferredValue, type DragEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
@@ -24,7 +24,13 @@ import {
   type FileCategory,
 } from '../services/fileService';
 import { getAllAssetMeta, putAssetMeta, deleteAssetMeta } from '../services/indexedDbService';
+import { startAssetDrag, prepareDragIcon } from '../utils/assetDrag';
 import { springSmooth, fadeFast } from '../utils/motion';
+
+/** 仅磁盘真实文件可拖拽（排除节点引用的 node:// / virtual:// 虚拟路径）*/
+function isDraggableEntry(file: AssetFileEntry): boolean {
+  return !!file.path && !file.path.startsWith('node://') && !file.path.startsWith('virtual://');
+}
 
 type TabKey = 'project' | 'permanent';
 
@@ -57,12 +63,13 @@ const panelVariants = {
 };
 
 export default function AssetsPanel() {
-  const { assetsPanelOpen, setAssetsPanelOpen, currentProjectId, assetFolders, updateConfig, saveConfig } =
+  const { assetsPanelOpen, setAssetsPanelOpen, currentProjectId, projects, assetFolders, updateConfig, saveConfig } =
     useAppStore(
       useShallow((s) => ({
         assetsPanelOpen: s.assetsPanelOpen,
         setAssetsPanelOpen: s.setAssetsPanelOpen,
         currentProjectId: s.currentProjectId,
+        projects: s.projects,
         assetFolders: s.config.assetFolders,
         updateConfig: s.updateConfig,
         saveConfig: s.saveConfig,
@@ -70,6 +77,8 @@ export default function AssetsPanel() {
     );
 
   const [activeTab, setActiveTab] = useState<TabKey>('project');
+  // 项目文件 Tab 查看的项目；null 表示「跟随当前项目」（关闭时复位，故每次打开默认当前项目）
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<FileCategory | null>(null);
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -110,14 +119,18 @@ export default function AssetsPanel() {
     setLoading(true);
     try {
       if (activeTab === 'project') {
-        if (!currentProjectId) { setProjectFiles([]); return; }
-        const diskFiles = await listProjectFiles(currentProjectId);
+        const viewProjectId = selectedProjectId ?? currentProjectId;
+        if (!viewProjectId) { setProjectFiles([]); return; }
+        const diskFiles = await listProjectFiles(viewProjectId);
         const known = new Set(diskFiles.map((f) => f.path));
         const nodeEntries: AssetFileEntry[] = [];
-        // 直接从 store 读取节点，避免把 nodes 放进依赖导致每次节点变化都重扫外部文件夹
-        for (const node of useAppStore.getState().nodes) {
-          const entry = extractFilesFromNodeData(node.data as Record<string, unknown>);
-          if (entry && !known.has(entry.path)) { nodeEntries.push(entry); known.add(entry.path); }
+        // 仅当查看的是「当前项目」时，才并入画布上尚未落盘的节点文件
+        // （store.nodes 始终是当前项目的画布，其他项目无法从内存取节点）
+        if (viewProjectId === currentProjectId) {
+          for (const node of useAppStore.getState().nodes) {
+            const entry = extractFilesFromNodeData(node.data as Record<string, unknown>);
+            if (entry && !known.has(entry.path)) { nodeEntries.push(entry); known.add(entry.path); }
+          }
         }
         setProjectFiles([...diskFiles, ...nodeEntries]);
       } else {
@@ -138,19 +151,32 @@ export default function AssetsPanel() {
     } catch { /* ignore */ } finally {
       setLoading(false);
     }
-  }, [activeTab, currentProjectId, folders]);
+  }, [activeTab, currentProjectId, selectedProjectId, folders]);
 
   useEffect(() => {
-    if (assetsPanelOpen) { loadFiles(); loadTags(); }
+    if (assetsPanelOpen) { loadFiles(); loadTags(); void prepareDragIcon(); }
   }, [assetsPanelOpen, loadFiles, loadTags]);
+
+  const handleClose = useCallback(() => {
+    setSelectedProjectId(null); // 复位项目选择，下次打开默认当前项目
+    setAssetsPanelOpen(false);
+  }, [setAssetsPanelOpen]);
+
+  // 拖拽文件到画布：dragstart 内同步发起原生拖拽，并立即隐藏弹窗露出画布
+  const handleCardDragStart = useCallback((file: AssetFileEntry, e: DragEvent) => {
+    if (!isDraggableEntry(file)) return;
+    e.preventDefault();
+    startAssetDrag(file);
+    setAssetsPanelOpen(false);
+  }, [setAssetsPanelOpen]);
 
   // Esc 关闭
   useEffect(() => {
     if (!assetsPanelOpen) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setAssetsPanelOpen(false); };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [assetsPanelOpen, setAssetsPanelOpen]);
+  }, [assetsPanelOpen, handleClose]);
 
   // 点击外部关闭「添加」菜单
   const addWrapRef = useRef<HTMLDivElement | null>(null);
@@ -162,8 +188,6 @@ export default function AssetsPanel() {
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [addMenuOpen]);
-
-  const handleClose = useCallback(() => setAssetsPanelOpen(false), [setAssetsPanelOpen]);
 
   // 原始文件（按 Tab）
   const rawFiles = activeTab === 'project' ? projectFiles : permanentFiles;
@@ -343,10 +367,23 @@ export default function AssetsPanel() {
                     <span className="assets-tab-count">{tab === 'project' ? projectFiles.length : permanentFiles.length}</span>
                   </motion.button>
                 ))}
-              </div>
 
-              {/* Toolbar: 搜索 + 添加 */}
-              <div className="assets-toolbar">
+                {/* Toolbar: 搜索 + 添加 */}
+              <div className="assets-toolbar ml-auto">
+                {activeTab === 'project' && (
+                  <select
+                    className="assets-project-select"
+                    value={selectedProjectId ?? currentProjectId ?? ''}
+                    onChange={(e) => setSelectedProjectId(e.target.value || null)}
+                    title="选择项目"
+                  >
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.id === currentProjectId ? `${p.name}（当前）` : p.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <div className="assets-search">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -391,6 +428,7 @@ export default function AssetsPanel() {
                     </AnimatePresence>
                   </div>
                 )}
+              </div>
               </div>
 
               {/* 已添加的外部文件夹 */}
@@ -457,6 +495,8 @@ export default function AssetsPanel() {
                         key={file.path}
                         file={file}
                         isProject={activeTab === 'project'}
+                        draggable={isDraggableEntry(file)}
+                        onDragStart={(e) => handleCardDragStart(file, e)}
                         editing={editingPath === file.path}
                         tagDraft={editingPath === file.path ? tagDraft : ''}
                         onToggleEdit={() => { setEditingPath((p) => (p === file.path ? null : file.path)); setTagDraft(''); }}
@@ -502,6 +542,8 @@ export default function AssetsPanel() {
 interface AssetCardProps {
   file: AssetFileEntry;
   isProject: boolean;
+  draggable?: boolean;
+  onDragStart?: (e: DragEvent) => void;
   editing: boolean;
   tagDraft: string;
   onToggleEdit: () => void;
@@ -513,15 +555,20 @@ interface AssetCardProps {
 }
 
 function AssetCard({
-  file, isProject, editing, tagDraft,
+  file, isProject, draggable, onDragStart, editing, tagDraft,
   onToggleEdit, onTagDraftChange, onAddTag, onRemoveTag, onSave, onDelete,
 }: AssetCardProps) {
   const tags = file.tags ?? [];
   return (
-    <div className="assets-waterfall-card anim-card-in">
+    <div
+      className="assets-waterfall-card anim-card-in"
+      draggable={draggable}
+      onDragStart={onDragStart}
+      title={draggable ? '拖拽到画布以添加节点' : undefined}
+    >
       {file.assetUrl ? (
         <div className="assets-card-img-wrap">
-          <img src={file.assetUrl} alt={file.name} className="assets-card-img" loading="lazy" decoding="async" />
+          <img src={file.assetUrl} alt={file.name} className="assets-card-img" loading="lazy" decoding="async" draggable={false} />
           <span className="assets-card-size">{formatSize(file.size)}</span>
           {file.source === 'folder' && <span className="assets-card-badge">外部</span>}
           <CardActions isProject={isProject} onSave={onSave} onDelete={onDelete} onToggleEdit={onToggleEdit} />

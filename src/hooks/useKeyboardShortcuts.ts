@@ -5,6 +5,7 @@
 import { useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import * as fileService from '../services/fileService';
+import { openAssetSearchWindow } from '../utils/assetSearchWindow';
 import { playNodeExit } from '../utils/nodeAnimations';
 import { hasActiveTextSelection } from '../utils/textSelection';
 import type { BaseNodeData } from '../types';
@@ -33,6 +34,14 @@ export function useKeyboardShortcuts() {
           const { invoke } = await import('@tauri-apps/api/core');
           await invoke('toggle_devtools');
         } catch { /* 非 Tauri 环境 */ }
+        return;
+      }
+
+      // Ctrl+Shift+Space: 打开资源搜索窗口（Win+Space 被系统占用时的可靠备选；不与输入法冲突）
+      if (e.ctrlKey && e.shiftKey && e.code === 'Space') {
+        e.preventDefault();
+        e.stopPropagation();
+        openAssetSearchWindow();
         return;
       }
 
@@ -180,6 +189,9 @@ export function useKeyboardShortcuts() {
     const GLB_SHORTCUTS = [
       { key: 'CommandOrControl+S', action: () => useAppStore.getState().saveCurrentProject() },
       { key: 'Alt+S', action: () => useAppStore.getState().saveCurrentProject() },
+      // Win/Super+Space：打开资源搜索窗口。Win+Space 是 Windows 系统的输入法切换键，
+      // 由 OS 占用，普通 JS keydown 拦不到，只能尝试用全局快捷键插件抢注（可能失败）。
+      { key: 'Super+Space', action: () => openAssetSearchWindow() },
       // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are handled by the JS keydown handler above;
       // registering them as native shortcuts would double-fire undo/redo.
     ];
@@ -201,7 +213,16 @@ export function useKeyboardShortcuts() {
         const registerAll = async () => {
           if (!active || !shortcutModule) return;
           for (const s of GLB_SHORTCUTS) {
-            try { await shortcutModule.register(s.key, s.action); } catch { /* dup may throw */ }
+            try {
+              // 仅在按下时触发（插件会同时回调 Pressed / Released，避免重复执行）
+              await shortcutModule.register(s.key, (event) => {
+                if (event?.state && event.state !== 'Pressed') return;
+                s.action();
+              });
+            } catch (err) {
+              // 重复注册会抛错；Win+Space 等被系统保留的组合也可能注册失败
+              console.warn(`[shortcut] 注册失败: ${s.key}`, err);
+            }
           }
         };
 

@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for AI Canvas",
-  "windows": ["main"],
+  "windows": ["main", "asset-search"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
@@ -9,6 +9,8 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "core:window:allow-destroy",
+    "core:window:allow-set-focus",
+    "core:webview:allow-create-webview-window",
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
@@ -20,6 +22,7 @@
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered",
     "global-shortcut:allow-unregister-all",
+    "drag:default",
     "fs:default",
     "shell:default",
     {
