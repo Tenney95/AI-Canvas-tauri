@@ -16,6 +16,7 @@ import OutputHistoryPanel from './components/OutputHistoryPanel';
 import Toast from './components/Toast';
 import SplashScreen from './components/SplashScreen';
 import CanvasBackground from './components/backgrounds/CanvasBackground';
+import Mascot from './components/shared/Mascot';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useAppStore } from './store/useAppStore';
@@ -58,6 +59,7 @@ export default function App() {
   // 米白色背景时自动切换为 light，其余背景使用用户手动设置的主题
   const configTheme = useAppStore((s) => s.config.theme);
   const canvasBackground = useAppStore((s) => s.config.canvasBackground);
+  const mascotVisible = useAppStore((s) => s.config.mascotVisible);
   const effectiveTheme = canvasBackground === 'off-white' ? 'light' : configTheme;
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', effectiveTheme);
@@ -129,6 +131,13 @@ export default function App() {
       </div>
       {/* Sidebar — outside the overflow-hidden container so it's not clipped */}
       <Sidebar />
+
+      {/* 吉祥物 — 右下角浮动预览，默认隐藏，Ctrl+Shift+M 切换 */}
+      {mascotVisible && (
+        <div className="fixed bottom-40 right-5 z-20 h-[120px] w-[120px] pointer-events-auto">
+          <Mascot />
+        </div>
+      )}
     </div>
   );
 

@@ -137,6 +137,7 @@ fn spawn_new_console(program: &str, args: &[&str], working_dir: &Path) -> Result
 }
 
 /// 非 Windows 系统
+#[cfg(not(windows))]
 fn launch_unix(comfy_path: &str) -> Result<String, String> {
     let root = Path::new(comfy_path);
 

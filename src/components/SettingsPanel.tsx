@@ -34,6 +34,7 @@ function getShortcutList(): { action: string; key: string }[] {
     { action: '画布复位', key: 'F' },
     { action: '小地图', key: 'M' },
     { action: '资源搜索窗口', key: `${alt} + Space  /  ${ctrl} + ${shift} + Space` },
+    { action: '显示/隐藏吉祥物', key: `${mod} + ${shift} + M` },
   ];
 }
 

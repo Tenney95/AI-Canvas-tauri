@@ -19,6 +19,7 @@ dist-ssr
 .codebuddy/skills/*
 .codebuddy/commands/*
 .codegraph/*
+.claude/*
 doc/测试报告.md
 
 # Rust build output

@@ -14,6 +14,7 @@ const defaultConfig: AppConfig = {
   comfyUIUrl: '',
   comfyUIPath: '',
   generalModels: [],
+  mascotVisible: false,
 };
 
 export interface ConfigSlice {

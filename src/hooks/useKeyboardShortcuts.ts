@@ -165,6 +165,17 @@ export function useKeyboardShortcuts() {
         useAppStore.getState().setSettingsOpen(false);
       }
 
+      // Ctrl+Shift+M: 切换吉祥物显示（避开 Alt 键，避免被系统菜单栏拦截）
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.code === 'KeyM' || e.key === 'm' || e.key === 'M')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const store = useAppStore.getState();
+        store.updateConfig({ mascotVisible: !store.config.mascotVisible });
+        const next = useAppStore.getState().config.mascotVisible;
+        useAppStore.getState().showToast(next ? '吉祥物已显示' : '吉祥物已隐藏');
+        return;
+      }
+
       // Ctrl+G / Alt+G: Group / Ungroup
       if ((e.ctrlKey || e.metaKey || e.altKey) && (e.key === 'g' || e.key === 'G')) {
         e.preventDefault();
