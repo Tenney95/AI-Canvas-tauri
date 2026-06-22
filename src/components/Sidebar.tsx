@@ -113,11 +113,12 @@ function NodePicker({
       nodeData.previewMode = 'image';
     }
     // Auto-fill default model from localStorage preference
+    // 全景图节点回退到生图节点偏好
     try {
       const raw = localStorage.getItem('canvas-model-prefs');
       if (raw) {
         const prefs: Record<string, string> = JSON.parse(raw);
-        const modelValue = prefs[type];
+        const modelValue = prefs[type] || (type === 'ai-panorama' ? prefs['ai-image'] : undefined);
         if (modelValue) {
           const slashIdx = modelValue.indexOf('/');
           if (slashIdx !== -1) {

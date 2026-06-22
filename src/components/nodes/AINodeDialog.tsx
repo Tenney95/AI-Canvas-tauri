@@ -5,7 +5,7 @@ import { memo, useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import type { BaseNodeData, ModelOption } from '../../types';
-import { generateText, generateImage, generateVideo, generateAudio } from '../../services/aiService';
+import { generateText, generateImage, generateVideo, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
 import { downloadUrlAndSave } from '../../services/fileService';
 import PromptPanel from './shared/PromptPanel';
 import type { MentionEditorHandle } from './shared/MentionEditor';
@@ -124,6 +124,48 @@ function AINodeDialog() {
           params: { imageSize, aspectRatio },
         });
         showToast('图片生成完成');
+      } else if (nodeType === 'ai-panorama') {
+        const imageSize = (data.imageSize as string) || '2K';
+        const aspectRatio = (data.aspectRatio as string) || '2:1';
+        const fullPrompt = buildPanoramaPrompt(effectivePrompt);
+        const result = await generateImage({
+          prompt: fullPrompt,
+          model: data.model!,
+          provider: data.provider!,
+          imageSize,
+          aspectRatio,
+          workflowId: data.workflowId,
+          workflowInputs: data.workflowInputs,
+        });
+        const saved = currentProjectId
+          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-panorama', data.label).catch(() => null)
+          : null;
+        const mediaUrl = saved?.assetUrl || result.url;
+        updateNodeData(activeNodeId!, {
+          imageUrl: mediaUrl,
+          sourceUrl: result.url,
+          filePath: saved?.filePath,
+          thumbnailUrl: result.url,
+          output: result.url,
+          status: 'success',
+          imageWidth: result.width,
+          imageHeight: result.height,
+        });
+        recordOutputHistory(activeNodeId!, {
+          nodeId: activeNodeId!,
+          nodeLabel: data.label,
+          timestamp: Date.now(),
+          prompt: effectivePrompt,
+          output: result.url,
+          nodeType: 'ai-panorama',
+          model: data.model!,
+          provider: data.provider!,
+          status: 'success',
+          mediaUrl: result.url,
+          filePath: saved?.filePath,
+          params: { imageSize, aspectRatio },
+        });
+        showToast('全景图生成完成');
       } else if (nodeType === 'ai-video') {
         const videoResolution = (data.videoResolution as number) || 832;
         const videoFps = (data.videoFps as number) || 24;
@@ -229,7 +271,7 @@ function AINodeDialog() {
         timestamp: Date.now(),
         prompt: effectivePrompt,
         output: '',
-        nodeType: nodeType as 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio',
+        nodeType: nodeType as 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio' | 'ai-panorama',
         model: data.model!,
         provider: data.provider!,
         status: 'error',
@@ -383,7 +425,7 @@ function AINodeDialog() {
           onWorkflowSelect={onWorkflowSelect}
           onPassThrough={(nodeType !== 'ai-image' && nodeType !== 'ai-video' && nodeType !== 'ai-audio') ? onPassThrough : undefined}
           imageSize={(data.imageSize as string) || '2K'}
-          aspectRatio={(data.aspectRatio as string) || '1:1'}
+          aspectRatio={(data.aspectRatio as string) || (nodeType === 'ai-panorama' ? '2:1' : '1:1')}
           onChangeImageSize={onChangeImageSize}
           onChangeAspectRatio={onChangeAspectRatio}
           videoResolution={(data.videoResolution as number) || 832}

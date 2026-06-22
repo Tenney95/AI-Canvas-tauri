@@ -146,6 +146,20 @@ export default function PromptPanel({
           />
         )}
 
+        {nodeType === 'ai-panorama' && (
+          <QualityRatioSelector
+            imageSize={imageSize}
+            aspectRatio={aspectRatio}
+            onChangeImageSize={onChangeImageSize || (() => {})}
+            onChangeAspectRatio={onChangeAspectRatio || (() => {})}
+            showAdaptive={false}
+            ratios={[
+              { value: '2:1', className: 'img-rp-pano' },
+              { value: '21:9', className: 'img-rp-ultra' },
+            ]}
+          />
+        )}
+
         {nodeType === 'ai-video' && (
           <VideoParamSelector
             videoResolution={videoResolution}

@@ -243,24 +243,6 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
     updateNodeData(id, { panoFullscreen: !isFullscreen } as Partial<BaseNodeData>);
   }, [id, isFullscreen, updateNodeData]);
 
-  /* ── Derived: current aspect ratio string for toolbar ── */
-  const currentAspectRatio = (data.panoAspectRatioStr as string) || '2:1';
-
-  /* ── Aspect ratio ── */
-  const handleAspectRatio = useCallback(
-    (ratioStr: string) => {
-      const [w, h] = ratioStr.split(':').map(Number);
-      const ratio = (w && h) ? w / h : 2;
-      const contentWidth = nodeWidth - 4;
-      const newHeight = Math.round(contentWidth / ratio) + 4;
-      updateNodeData(id, {
-        nodeHeight: Math.max(120, newHeight),
-        panoAspectRatioStr: ratioStr,
-      } as Partial<BaseNodeData>);
-    },
-    [id, nodeWidth, updateNodeData],
-  );
-
   /* ── Screenshot → save to project dir & create image node ── */
   const handleScreenshot = useCallback(async () => {
     const activeViewer = isFullscreen ? fullscreenViewerRef.current : compactViewerRef.current;
@@ -459,8 +441,6 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
               onUpload={handleUpload}
               onToggleMode={toggleMode}
               previewMode={previewMode}
-              onAspectRatio={handleAspectRatio}
-              currentAspectRatio={currentAspectRatio}
               onScreenshot={handleScreenshot}
               onFullscreen={toggleFullscreen}
               onDownload={handleDownload}

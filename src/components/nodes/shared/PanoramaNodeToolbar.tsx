@@ -2,17 +2,12 @@
  * PanoramaNodeToolbar 全景图节点浮动工具栏 — 上传、模式切换、比例设置、截图、全屏、下载
  */
 import { memo, useCallback } from 'react';
-import QualityRatioSelector from './QualityRatioSelector';
 import AnimatedButton from '../../shared/AnimatedButton';
 
 interface PanoramaNodeToolbarProps {
   onUpload?: () => void;
   onToggleMode?: () => void;
   previewMode?: 'image' | '360';
-  /** 比例变更回调，传入如 "2:1"、"16:9" 等字符串 */
-  onAspectRatio?: (ratioStr: string) => void;
-  /** 当前比例字符串，如 "2:1"，用于高亮 */
-  currentAspectRatio?: string;
   onScreenshot?: () => void;
   onFullscreen?: () => void;
   onDownload?: () => void;
@@ -22,8 +17,6 @@ function PanoramaNodeToolbar({
   onUpload,
   onToggleMode,
   previewMode,
-  onAspectRatio,
-  currentAspectRatio = '2:1',
   onScreenshot,
   onFullscreen,
   onDownload,
@@ -34,14 +27,6 @@ function PanoramaNodeToolbar({
       handler?.();
     },
     [],
-  );
-
-  /* ── Ratio callback, passes string directly ── */
-  const handleRatioChange = useCallback(
-    (ratioStr: string) => {
-      onAspectRatio?.(ratioStr);
-    },
-    [onAspectRatio],
   );
 
   return (
@@ -83,14 +68,6 @@ function PanoramaNodeToolbar({
             </svg>
           )}
         </AnimatedButton>
-
-        {/* Aspect ratio — reuse QualityRatioSelector with all defaults */}
-        <QualityRatioSelector
-          aspectRatio={currentAspectRatio}
-          onChangeAspectRatio={handleRatioChange}
-          showImageSize={false}
-          showAdaptive={false}
-        />
 
         {/* Screenshot */}
         <AnimatedButton

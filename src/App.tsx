@@ -134,7 +134,7 @@ export default function App() {
 
       {/* 吉祥物 — 右下角浮动预览，默认隐藏，Ctrl+Shift+M 切换 */}
       {mascotVisible && (
-        <div className="fixed bottom-40 right-5 z-20 h-[120px] w-[120px] pointer-events-auto">
+        <div className="fixed bottom-40 right-5 z-20 h-[100px] w-[100px] pointer-events-auto">
           <Mascot />
         </div>
       )}

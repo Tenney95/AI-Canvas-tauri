@@ -15,7 +15,8 @@ function loadDefaultModel(nodeType: string): { model: string; provider: string }
     const raw = localStorage.getItem(MODEL_PREF_KEY);
     if (!raw) return null;
     const prefs: Record<string, string> = JSON.parse(raw);
-    const modelValue = prefs[nodeType];
+    // 全景图回退到生图偏好
+    const modelValue = prefs[nodeType] || (nodeType === 'ai-panorama' ? prefs['ai-image'] : undefined);
     if (!modelValue) return null;
     const slashIdx = modelValue.indexOf('/');
     if (slashIdx === -1) return null;

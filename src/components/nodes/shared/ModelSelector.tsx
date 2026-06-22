@@ -24,6 +24,10 @@ function saveModelPref(nodeType: string, modelValue: string) {
   try {
     const prefs = loadModelPrefs();
     prefs[nodeType] = modelValue;
+    // 生图模型选择时同步到全景图节点
+    if (nodeType === 'ai-image') {
+      prefs['ai-panorama'] = modelValue;
+    }
     localStorage.setItem(MODEL_PREF_KEY, JSON.stringify(prefs));
   } catch { /* ignore */ }
 }
@@ -179,16 +183,25 @@ export default function ModelSelector({
   }, [open]);
 
   // 筛选当前节点类型下可用的模型分组
+  // 全景图节点复用生图节点的模型列表
+  const nodeTypeForFilter = nodeType === 'ai-panorama' ? 'ai-image' : nodeType;
   const filteredGroups = allGroups
     .map((g) => ({
       ...g,
-      models: g.models.filter((m) => m.nodeTypes.includes(nodeType)),
+      models: g.models.filter((m) => m.nodeTypes.includes(nodeTypeForFilter)),
     }))
     .filter((g) => g.models.length > 0);
 
   // 持久化偏好：优先 props 传入的 selectedModel，其次 localStorage 中的记录
+  // 全景图节点回退到生图节点偏好
   const effectiveModel = useMemo(
-    () => selectedModel || loadModelPrefs()[nodeType] || undefined,
+    () => {
+      const prefs = loadModelPrefs();
+      return selectedModel
+        || prefs[nodeType]
+        || (nodeType === 'ai-panorama' ? prefs['ai-image'] : undefined)
+        || undefined;
+    },
     [selectedModel, nodeType],
   );
 
