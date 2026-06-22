@@ -275,6 +275,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       <div
         className={`node audio-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}
         style={{ minHeight: 88 }}
+        onContextMenu={(e) => e.preventDefault()}
       >
         <div className="node-preview compact">
           {isSource && (
@@ -292,7 +293,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             </button>
           )}
           {data.audioUrl ? (
-            <div className="audio-waveform-wrapper" onClick={togglePlay}>
+            <div className="audio-waveform-wrapper" onClick={togglePlay} onContextMenu={(e) => e.preventDefault()}>
               <canvas ref={canvasRef} className="audio-waveform-canvas" width={220} height={80} />
               <audio
                 ref={audioRef}
