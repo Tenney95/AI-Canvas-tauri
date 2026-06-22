@@ -6,6 +6,7 @@
  * 避免线上地址过期。
  */
 import { mapImageDimensions } from './aiDimensions';
+import { pollTask } from './pollTask';
 
 const DREAMINA_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'];
 
@@ -63,14 +64,15 @@ const POLL_INTERVAL_MS = 3000;
 const MAX_POLL_MS = 60 * 60 * 1000; // 1 小时上限（视频可能较久）
 
 async function pollResult(submitId: string): Promise<DreaminaOutput> {
-  const start = Date.now();
-  while (Date.now() - start < MAX_POLL_MS) {
-    const r = await invokeTauri<DreaminaQuery>('dreamina_query_result', { submitId });
-    if (r.status === 'success' && r.outputs.length > 0) return r.outputs[0];
-    if (r.status === 'failed') throw new Error(r.failReason || '即梦生成失败');
-    await new Promise((res) => setTimeout(res, POLL_INTERVAL_MS));
-  }
-  throw new Error('即梦生成超时');
+  return pollTask<DreaminaQuery, DreaminaOutput>({
+    fetchState: () => invokeTauri<DreaminaQuery>('dreamina_query_result', { submitId }),
+    isComplete: (r) => r.status === 'success' && r.outputs.length > 0 ? r.outputs[0] : null,
+    isFailed: (r) => r.status === 'failed' ? (r.failReason || '即梦生成失败') : null,
+    interval: POLL_INTERVAL_MS,
+    maxDuration: MAX_POLL_MS,
+    timeoutMsg: '即梦生成超时',
+    onFetchError: 'throw',
+  });
 }
 
 /** 即梦图片生成（无参考图 → text2image；有参考图 → image2image） */

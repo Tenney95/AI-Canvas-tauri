@@ -3,7 +3,9 @@
  * 上传图片 → 提交图像生成 → 轮询任务结果 → 返回生成图片 URL
  */
 
-const APIMART_BASE = 'https://api.apib.ai/v1';
+import { APIMART_BASE_URL } from '../constants/api';
+import { pollTask } from './pollTask';
+const APIMART_BASE = APIMART_BASE_URL;
 
 interface TaskResult {
   images: Array<{ url: string[]; expires_at?: number }>;
@@ -150,40 +152,36 @@ async function submitGeneration(
 }
 
 /* ── 步骤 3: 轮询任务直到完成 ── */
-async function pollTask(
+async function pollApimartTask(
   apiKey: string,
   taskId: string,
   onProgress?: (progress: number) => void,
 ): Promise<TaskData> {
-  const POLL_INTERVAL = 5000;         // 每 5 秒轮询
-
-  // 不设超时：轮询直到任务完成/失败（仅 ComfyUI 才设超时）
-  while (true) {
-    const resp = await fetch(`${APIMART_BASE}/tasks/${taskId}?language=zh`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-
-    if (!resp.ok) {
-      const errBody = await resp.text();
-      throw new Error(`任务查询失败 (${resp.status}): ${errBody}`);
-    }
-
-    const result: TaskResponse | TaskData = await resp.json();
-    const task: TaskData = 'data' in result ? result.data : result;
-
-    onProgress?.(task.progress ?? 0);
-
-    if (task.status === 'completed') {
-      return task;
-    }
-
-    if (task.status === 'failed' || task.status === 'error') {
-      throw new Error(`生成任务失败: ${task.status}`);
-    }
-
-    // 等待后继续轮询
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
-  }
+  return pollTask<TaskResponse | TaskData, TaskData>({
+    fetchState: async () => {
+      const resp = await fetch(`${APIMART_BASE}/tasks/${taskId}?language=zh`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!resp.ok) {
+        const errBody = await resp.text();
+        throw new Error(`任务查询失败 (${resp.status}): ${errBody}`);
+      }
+      return (await resp.json()) as TaskResponse | TaskData;
+    },
+    isComplete: (raw) => {
+      const task: TaskData = 'data' in (raw as TaskResponse) ? (raw as TaskResponse).data : (raw as TaskData);
+      if (task.status === 'completed') return task;
+      return null;
+    },
+    isFailed: (raw) => {
+      const task: TaskData = 'data' in (raw as TaskResponse) ? (raw as TaskResponse).data : (raw as TaskData);
+      return task.status === 'failed' || task.status === 'error'
+        ? `生成任务失败: ${task.status}` : null;
+    },
+    interval: 5000,
+    onProgress,
+    onFetchError: 'throw',
+  });
 }
 
 /* ════════════════════════════════════════════
@@ -230,7 +228,7 @@ export async function generateAngleImage(
   onProgress?.(25);
 
   // 步骤 3: 轮询任务结果
-  const taskData = await pollTask(apiKey, taskId, (p) => {
+  const taskData = await pollApimartTask(apiKey, taskId, (p) => {
     // 映射轮询进度到 25-95 区间
     onProgress?.(25 + Math.round(p * 0.7));
   });
@@ -302,7 +300,7 @@ export async function generateOutpaintImage(
   onProgress?.(25);
 
   // 步骤 3: 轮询任务结果
-  const taskData = await pollTask(apiKey, taskId, (p) => {
+  const taskData = await pollApimartTask(apiKey, taskId, (p) => {
     onProgress?.(25 + Math.round(p * 0.7));
   });
 

@@ -156,14 +156,16 @@ export default function SettingsPanel() {
     try {
       // 1. 无损压缩
       const compression = await compressImageLossless(file);
-      console.log(
-        `[背景压缩] 原始: ${formatBytes(compression.originalSize)} → 最终: ${formatBytes(compression.compressedSize)}` +
-        (compression.keptOriginal
-          ? ` (保留原图, 重编码会增大)`
-          : compression.compressionRatio > 0
-            ? ` (缩减 ${compression.compressionRatio}%, 格式: ${compression.format.toUpperCase()})`
-            : ` (已最优, 格式: ${compression.format.toUpperCase()})`),
-      );
+      if (import.meta.env.DEV) {
+        console.log(
+          `[背景压缩] 原始: ${formatBytes(compression.originalSize)} → 最终: ${formatBytes(compression.compressedSize)}` +
+          (compression.keptOriginal
+            ? ` (保留原图, 重编码会增大)`
+            : compression.compressionRatio > 0
+              ? ` (缩减 ${compression.compressionRatio}%, 格式: ${compression.format.toUpperCase()})`
+              : ` (已最优, 格式: ${compression.format.toUpperCase()})`),
+        );
+      }
 
       // 2. 自动识别深色/浅色
       const detection = await detectBackgroundBrightness(compression.dataUrl);

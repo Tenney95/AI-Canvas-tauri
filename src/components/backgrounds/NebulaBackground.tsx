@@ -4,7 +4,19 @@
  * 效果：深邃宇宙底色 + 雾效 + 浮动星云粒子 + Bloom 后处理 + 星空纹理叠加
  */
 import { useEffect, useRef, useCallback } from 'react';
-import * as THREE from 'three';
+import {
+  Scene,
+  FogExp2,
+  PerspectiveCamera,
+  WebGLRenderer,
+  AmbientLight,
+  DirectionalLight,
+  PointLight,
+  Mesh,
+  TextureLoader,
+  PlaneGeometry,
+  MeshLambertMaterial,
+} from 'three';
 import {
   EffectComposer,
   RenderPass,
@@ -37,11 +49,11 @@ export default function NebulaBackground() {
     if (!container) return;
 
     /* ── 场景 ── */
-    const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_DENSITY);
+    const scene = new Scene();
+    scene.fog = new FogExp2(FOG_COLOR, FOG_DENSITY);
 
     /* ── 相机 ── */
-    const camera = new THREE.PerspectiveCamera(
+    const camera = new PerspectiveCamera(
       40,
       container.clientWidth / container.clientHeight,
       1,
@@ -53,7 +65,7 @@ export default function NebulaBackground() {
     camera.rotation.z = 0.27;
 
     /* ── 渲染器 ── */
-    const renderer = new THREE.WebGLRenderer();
+    const renderer = new WebGLRenderer();
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setClearColor(scene.fog.color);
     container.appendChild(renderer.domElement);
@@ -63,38 +75,38 @@ export default function NebulaBackground() {
     composer.addPass(new RenderPass(scene, camera));
 
     /* ── 灯光 ── */
-    scene.add(new THREE.AmbientLight(0x000000));
+    scene.add(new AmbientLight(0x000000));
 
-    const directionalLight = new THREE.DirectionalLight(FOG_COLOR);
+    const directionalLight = new DirectionalLight(FOG_COLOR);
     directionalLight.position.set(0, 1, 1);
     scene.add(directionalLight);
 
-    const orangeLight = new THREE.PointLight(FOG_COLOR, 150, 50, 0.2);
+    const orangeLight = new PointLight(FOG_COLOR, 150, 50, 0.2);
     orangeLight.position.set(50, 400, 50);
     scene.add(orangeLight);
 
-    const redLight = new THREE.PointLight(0x1e0c30, 150, 50, 0.7);
+    const redLight = new PointLight(0x1e0c30, 150, 50, 0.7);
     redLight.position.set(100, 400, 100);
     scene.add(redLight);
 
-    const blueLight = new THREE.PointLight(FOG_COLOR, 150, 350, 0.7);
+    const blueLight = new PointLight(FOG_COLOR, 150, 350, 0.7);
     blueLight.position.set(400, 400, 200);
     scene.add(blueLight);
 
     /* ── 星云粒子 ── */
-    const cloudParticles: THREE.Mesh[] = [];
+    const cloudParticles: Mesh[] = [];
 
-    const loader = new THREE.TextureLoader();
+    const loader = new TextureLoader();
 
     loader.load(NEBULA_TEX_URL, (texture) => {
-      const cloudGeo = new THREE.PlaneGeometry(700, 700);
-      const cloudMaterial = new THREE.MeshLambertMaterial({
+      const cloudGeo = new PlaneGeometry(700, 700);
+      const cloudMaterial = new MeshLambertMaterial({
         map: texture,
         transparent: true,
       });
 
       for (let p = 0; p < CLOUD_COUNT; p++) {
-        const cloud = new THREE.Mesh(cloudGeo, cloudMaterial);
+        const cloud = new Mesh(cloudGeo, cloudMaterial);
         cloud.position.set(
           Math.random() * 800 - 400,
           500,
@@ -158,7 +170,7 @@ export default function NebulaBackground() {
       window.removeEventListener('resize', handleResize);
       renderer.dispose();
       scene.traverse((obj) => {
-        if (obj instanceof THREE.Mesh) {
+        if (obj instanceof Mesh) {
           obj.geometry.dispose();
           if (Array.isArray(obj.material)) {
             obj.material.forEach((m) => m.dispose());

@@ -762,7 +762,19 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
           <AnimatedButton
             type="button"
             className="settings-save-btn settings-btn-ghost settings-api-test-btn"
-            onClick={() => console.log('Test all connections')}
+            onClick={async () => {
+                const providers = [
+                  { key: 'apimart' as const, apiKey: config.providers.apimart?.apiKey, baseUrl: config.providers.apimart?.baseUrl },
+                  { key: 'volcengine' as const, apiKey: config.providers.volcengine?.apiKey },
+                  { key: 'runninghub-model' as const, apiKey: config.providers['runninghub-model']?.apiKey },
+                  { key: 'grsai' as const, apiKey: config.providers.grsai?.apiKey, baseUrl: config.providers.grsai?.baseUrl },
+                ];
+                for (const p of providers) {
+                  if (!p.apiKey) continue;
+                  setTestStates((prev) => ({ ...prev, [p.key]: { status: 'testing' } }));
+                  handleTest(p.key, p.apiKey, p.baseUrl);
+                }
+              }}
           >
             <TestIcon />
             <span className="settings-btn-label">测试连接</span>

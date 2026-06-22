@@ -8,6 +8,7 @@ import type { WorkflowIONode } from '../types';
 import type { AIAudioGenParams, AIImageGenParams, AIVideoGenParams } from './aiTypes';
 import { mapImageDimensions } from './aiDimensions';
 import { resolveNodeReferences } from './nodeReferenceService';
+import { pollTask } from './pollTask';
 
 /** 从 Store 获取 ComfyUI 配置并校验 */
 function getComfyUIConfig() {
@@ -295,43 +296,70 @@ async function promptComfyUIWorkflow(
   return promptResult.prompt_id;
 }
 
+/* ── ComfyUI 输出文件类型 ── */
+interface ComfyOutputFile {
+  filename: string;
+  subfolder?: string;
+  type?: string;
+}
+
+interface ComfyOutputNode {
+  images?: ComfyOutputFile[];
+  videos?: ComfyOutputFile[];
+  gifs?: ComfyOutputFile[];
+  audios?: ComfyOutputFile[];
+}
+
+type ComfyOutputs = Record<string, ComfyOutputNode>;
+
+/** 构造 ComfyUI 文件访问 URL */
+function buildComfyFileUrl(baseUrl: string, file: ComfyOutputFile): string {
+  const subfolder = file.subfolder ? `&subfolder=${encodeURIComponent(file.subfolder)}` : '';
+  const type = file.type ? `&type=${encodeURIComponent(file.type)}` : '&type=output';
+  return `${baseUrl}/view?filename=${encodeURIComponent(file.filename)}${subfolder}${type}`;
+}
+
+/**
+ * ComfyUI 共享轮询：拉取 /history/{promptId}，每 3 秒一次，最多 1200 次（1 小时）
+ * @param extract 从 outputs 中提取结果，返回 null 表示仍需等待
+ */
+async function pollComfyHistory<T>(
+  baseUrl: string,
+  promptId: string,
+  timeoutMsg: string,
+  extract: (outputs: ComfyOutputs) => T | null,
+): Promise<T> {
+  return pollTask<ComfyOutputs | undefined, T>({
+    fetchState: async () => {
+      const res = await fetch(`${baseUrl}/history/${promptId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const history = (await res.json()) as Record<string, unknown>;
+      const entry = history[promptId] as Record<string, unknown> | undefined;
+      return entry?.outputs as ComfyOutputs | undefined;
+    },
+    isComplete: (outputs) => (outputs ? extract(outputs) : null),
+    isFailed: undefined,
+    interval: 3000,
+    maxAttempts: 1200,
+    onFetchError: 'continue',
+    timeoutMsg,
+  });
+}
+
 /** 轮询 ComfyUI 执行历史，等待图片生成完成 */
 async function pollComfyUIHistory(
   baseUrl: string,
   promptId: string,
   dimensions: { width: number; height: number },
 ): Promise<{ url: string; width: number; height: number }> {
-  // 最多轮询 1200 次，每次间隔 3 秒 = 3600 秒（1 小时）超时
-  for (let attempt = 0; attempt < 1200; attempt++) {
-    await new Promise((r) => setTimeout(r, 3000));
-
-    try {
-      const res = await fetch(`${baseUrl}/history/${promptId}`);
-      if (!res.ok) continue;
-
-      const history: Record<string, unknown> = await res.json();
-      const entry = history[promptId] as Record<string, unknown> | undefined;
-      if (!entry) continue;
-
-      const outputs = entry.outputs as Record<string, { images?: Array<{ filename: string; subfolder?: string; type?: string }> }> | undefined;
-      if (!outputs) continue;
-
-      // 遍历所有节点的输出，找第一个包含图片的
-      for (const nodeOutput of Object.values(outputs)) {
-        if (nodeOutput.images && nodeOutput.images.length > 0) {
-          const img = nodeOutput.images[0];
-          const subfolder = img.subfolder ? `&subfolder=${encodeURIComponent(img.subfolder)}` : '';
-          const type = img.type ? `&type=${encodeURIComponent(img.type)}` : '&type=output';
-          const url = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}${subfolder}${type}`;
-          return { url, width: dimensions.width, height: dimensions.height };
-        }
+  return pollComfyHistory(baseUrl, promptId, 'ComfyUI 图片生成超时（1 小时）', (outputs) => {
+    for (const nodeOutput of Object.values(outputs)) {
+      if (nodeOutput.images?.length) {
+        return { url: buildComfyFileUrl(baseUrl, nodeOutput.images[0]), width: dimensions.width, height: dimensions.height };
       }
-    } catch {
-      // 网络错误时继续轮询
     }
-  }
-
-  throw new Error('ComfyUI 图片生成超时（1 小时）');
+    return null;
+  });
 }
 
 /** 通过 ComfyUI 工作流执行图片生成 */
@@ -363,53 +391,14 @@ async function pollComfyUIHistoryForVideo(
   baseUrl: string,
   promptId: string,
 ): Promise<{ url: string }> {
-  for (let attempt = 0; attempt < 1200; attempt++) {
-    await new Promise((r) => setTimeout(r, 3000));
-
-    try {
-      const res = await fetch(`${baseUrl}/history/${promptId}`);
-      if (!res.ok) continue;
-
-      const history: Record<string, unknown> = await res.json();
-      const entry = history[promptId] as Record<string, unknown> | undefined;
-      if (!entry) continue;
-
-      const outputs = entry.outputs as Record<string, { gifs?: Array<{ filename: string; subfolder?: string; type?: string }>; videos?: Array<{ filename: string; subfolder?: string; type?: string }>; images?: Array<{ filename: string; subfolder?: string; type?: string }> }> | undefined;
-      if (!outputs) continue;
-
-      // 遍历所有节点输出，先找视频/gif，再 fallback 到图片
-      for (const nodeOutput of Object.values(outputs)) {
-        // 视频输出
-        if (nodeOutput.videos && nodeOutput.videos.length > 0) {
-          const vid = nodeOutput.videos[0];
-          const subfolder = vid.subfolder ? `&subfolder=${encodeURIComponent(vid.subfolder)}` : '';
-          const type = vid.type ? `&type=${encodeURIComponent(vid.type)}` : '&type=output';
-          const url = `${baseUrl}/view?filename=${encodeURIComponent(vid.filename)}${subfolder}${type}`;
-          return { url };
-        }
-        // GIF 输出
-        if (nodeOutput.gifs && nodeOutput.gifs.length > 0) {
-          const gif = nodeOutput.gifs[0];
-          const subfolder = gif.subfolder ? `&subfolder=${encodeURIComponent(gif.subfolder)}` : '';
-          const type = gif.type ? `&type=${encodeURIComponent(gif.type)}` : '&type=output';
-          const url = `${baseUrl}/view?filename=${encodeURIComponent(gif.filename)}${subfolder}${type}`;
-          return { url };
-        }
-        // 图片 fallback
-        if (nodeOutput.images && nodeOutput.images.length > 0) {
-          const img = nodeOutput.images[0];
-          const subfolder = img.subfolder ? `&subfolder=${encodeURIComponent(img.subfolder)}` : '';
-          const type = img.type ? `&type=${encodeURIComponent(img.type)}` : '&type=output';
-          const url = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}${subfolder}${type}`;
-          return { url };
-        }
-      }
-    } catch {
-      // 网络错误时继续轮询
+  return pollComfyHistory(baseUrl, promptId, 'ComfyUI 视频生成超时（1 小时）', (outputs) => {
+    for (const nodeOutput of Object.values(outputs)) {
+      if (nodeOutput.videos?.length) return { url: buildComfyFileUrl(baseUrl, nodeOutput.videos[0]) };
+      if (nodeOutput.gifs?.length) return { url: buildComfyFileUrl(baseUrl, nodeOutput.gifs[0]) };
+      if (nodeOutput.images?.length) return { url: buildComfyFileUrl(baseUrl, nodeOutput.images[0]) };
     }
-  }
-
-  throw new Error('ComfyUI 视频生成超时（1 小时）');
+    return null;
+  });
 }
 
 /** 通过 ComfyUI 工作流执行视频生成 */
@@ -439,57 +428,14 @@ async function pollComfyUIHistoryForAudio(
   baseUrl: string,
   promptId: string,
 ): Promise<{ url: string }> {
-  for (let attempt = 0; attempt < 1200; attempt++) {
-    await new Promise((r) => setTimeout(r, 3000));
-
-    try {
-      const res = await fetch(`${baseUrl}/history/${promptId}`);
-      if (!res.ok) continue;
-
-      const history: Record<string, unknown> = await res.json();
-      const entry = history[promptId] as Record<string, unknown> | undefined;
-      if (!entry) continue;
-
-      const outputs = entry.outputs as Record<string, {
-        audios?: Array<{ filename: string; subfolder?: string; type?: string }>;
-        videos?: Array<{ filename: string; subfolder?: string; type?: string }>;
-        gifs?: Array<{ filename: string; subfolder?: string; type?: string }>;
-        images?: Array<{ filename: string; subfolder?: string; type?: string }>;
-      }> | undefined;
-      if (!outputs) continue;
-
-      // 遍历所有节点输出，优先找音频
-      for (const nodeOutput of Object.values(outputs)) {
-        if (nodeOutput.audios && nodeOutput.audios.length > 0) {
-          const aud = nodeOutput.audios[0];
-          const subfolder = aud.subfolder ? `&subfolder=${encodeURIComponent(aud.subfolder)}` : '';
-          const type = aud.type ? `&type=${encodeURIComponent(aud.type)}` : '&type=output';
-          const url = `${baseUrl}/view?filename=${encodeURIComponent(aud.filename)}${subfolder}${type}`;
-          return { url };
-        }
-        // 视频 Fallback
-        if (nodeOutput.videos && nodeOutput.videos.length > 0) {
-          const vid = nodeOutput.videos[0];
-          const subfolder = vid.subfolder ? `&subfolder=${encodeURIComponent(vid.subfolder)}` : '';
-          const type = vid.type ? `&type=${encodeURIComponent(vid.type)}` : '&type=output';
-          const url = `${baseUrl}/view?filename=${encodeURIComponent(vid.filename)}${subfolder}${type}`;
-          return { url };
-        }
-        // 图片 Fallback
-        if (nodeOutput.images && nodeOutput.images.length > 0) {
-          const img = nodeOutput.images[0];
-          const subfolder = img.subfolder ? `&subfolder=${encodeURIComponent(img.subfolder)}` : '';
-          const type = img.type ? `&type=${encodeURIComponent(img.type)}` : '&type=output';
-          const url = `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}${subfolder}${type}`;
-          return { url };
-        }
-      }
-    } catch {
-      // 网络错误时继续轮询
+  return pollComfyHistory(baseUrl, promptId, 'ComfyUI 音频生成超时（1 小时）', (outputs) => {
+    for (const nodeOutput of Object.values(outputs)) {
+      if (nodeOutput.audios?.length) return { url: buildComfyFileUrl(baseUrl, nodeOutput.audios[0]) };
+      if (nodeOutput.videos?.length) return { url: buildComfyFileUrl(baseUrl, nodeOutput.videos[0]) };
+      if (nodeOutput.images?.length) return { url: buildComfyFileUrl(baseUrl, nodeOutput.images[0]) };
     }
-  }
-
-  throw new Error('ComfyUI 音频生成超时（1 小时）');
+    return null;
+  });
 }
 
 /** 通过 ComfyUI 工作流执行音频生成 */

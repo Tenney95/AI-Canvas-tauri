@@ -4,7 +4,17 @@
  */
 import { memo, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import * as THREE from 'three';
+import {
+  Scene,
+  PerspectiveCamera,
+  SphereGeometry,
+  MeshBasicMaterial,
+  Mesh,
+  TextureLoader,
+  Texture,
+  WebGLRenderer,
+  SRGBColorSpace,
+} from 'three';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
@@ -40,11 +50,11 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
   const shellRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<{
-    scene: THREE.Scene;
-    camera: THREE.PerspectiveCamera;
-    sphere: THREE.Mesh;
-    texture: THREE.Texture;
-    renderer: THREE.WebGLRenderer;
+    scene: Scene;
+    camera: PerspectiveCamera;
+    sphere: Mesh;
+    texture: Texture;
+    renderer: WebGLRenderer;
     animId: number;
   } | null>(null);
   /** 当前拖拽旋转角度（弧度） */
@@ -74,25 +84,25 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
     const h = el.clientHeight;
 
     /* ---- Scene & Camera ---- */
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(75, w / h, 0.1, 1000);
+    const scene = new Scene();
+    const camera = new PerspectiveCamera(75, w / h, 0.1, 1000);
 
     /* ---- Sphere (equirectangular skybox) ---- */
-    const geo = new THREE.SphereGeometry(500, 64, 32);
+    const geo = new SphereGeometry(500, 64, 32);
     // Flip normals so we see the inside
     geo.scale(-1, 1, 1);
 
-    const texture = new THREE.TextureLoader().load(imageUrl, () => {
+    const texture = new TextureLoader().load(imageUrl, () => {
       // 纹理加载完成后渲染一次
       requestRenderRef.current();
     });
-    texture.colorSpace = THREE.SRGBColorSpace;
-    const mat = new THREE.MeshBasicMaterial({ map: texture });
-    const sphere = new THREE.Mesh(geo, mat);
+    texture.colorSpace = SRGBColorSpace;
+    const mat = new MeshBasicMaterial({ map: texture });
+    const sphere = new Mesh(geo, mat);
     scene.add(sphere);
 
     /* ---- Renderer ---- */
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    const renderer = new WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
     renderer.setClearColor(0x000000, 0);

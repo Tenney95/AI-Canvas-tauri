@@ -7,6 +7,7 @@ import { readFileToDataUrl, getFileCategory, getAssetUrlFromPath } from './fileS
 import { mapImageDimensions } from './aiDimensions';
 import { resolveNodeReferences } from './nodeReferenceService';
 import { generateDreaminaImage, generateDreaminaVideo } from './dreaminaService';
+import { pollTask } from './pollTask';
 import type { AIAudioGenParams, AIGenerateParams, AIImageGenParams, AIVideoGenParams } from './aiTypes';
 import {
   executeComfyUIAudioGenerate,
@@ -16,15 +17,10 @@ import {
 
 export type { AIAudioGenParams, AIGenerateParams, AIImageGenParams, AIVideoGenParams } from './aiTypes';
 
+import { DEFAULT_BASE_URLS } from '../constants/api';
 
-const DEFAULT_BASE_URLS: Record<string, string> = {
-  apimart: 'https://api.apib.ai/v1',
-  volcengine: 'https://ark.cn-beijing.volces.com/api/v3',
-  grsai: 'https://api.grsai.com',
-  dreamina: 'https://api.dreamina.com',
-  runninghub: 'https://api.runninghub.cn',
-  runninghubwf: 'https://api.runninghub.cn',
-};
+// aiService 内部仍保留 runninghubwf 的默认 URL（constants 中未定义）
+(DEFAULT_BASE_URLS as Record<string, string>).runninghubwf = 'https://api.runninghub.cn';
 
 /** 加载图片（自动处理远程 URL 的 CORS） */
 async function loadImage(src: string): Promise<HTMLImageElement> {
@@ -261,30 +257,32 @@ async function executeGeneralAsyncTask(
     throw new Error('响应格式异常：未返回 task_id 或结果 URL');
   }
 
-  const POLL_INTERVAL = 3000;
-
-  // 不设超时：轮询直到任务完成/失败（仅 ComfyUI 才设超时）
-  while (true) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
-    const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-
-    if (!pollResp.ok) continue;
-
-    const pollResult = await pollResp.json() as Record<string, unknown>;
-    const task = (pollResult.data ?? pollResult) as Record<string, unknown>;
-
-    if (task.status === 'completed') {
-      const url = parseMultiPathResponse((task.result ?? pollResult) as Record<string, unknown>, resultField);
-      if (url) return { url };
-      throw new Error('任务完成但未返回结果');
-    }
-
-    if (task.status === 'failed' || task.status === 'error') {
-      throw new Error(`任务失败: ${task.status}`);
-    }
-  }
+  // 轮询直到任务完成/失败（不设超时，仅 ComfyUI 才设超时）
+  return pollTask<Record<string, unknown>, { url: string }>({
+    fetchState: async () => {
+      const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
+      return (await pollResp.json()) as Record<string, unknown>;
+    },
+    isComplete: (raw) => {
+      const task = (raw.data ?? raw) as Record<string, unknown>;
+      if (task.status === 'completed') {
+        const url = parseMultiPathResponse((task.result ?? raw) as Record<string, unknown>, resultField);
+        if (url) return { url };
+        throw new Error('任务完成但未返回结果');
+      }
+      return null;
+    },
+    isFailed: (raw) => {
+      const task = (raw.data ?? raw) as Record<string, unknown>;
+      return task.status === 'failed' || task.status === 'error'
+        ? `任务失败: ${task.status}` : null;
+    },
+    interval: 3000,
+    onFetchError: 'continue',
+  });
 }
 
 /**
@@ -644,41 +642,43 @@ async function generateApimartImage(
   }
 
   // 步骤 2: 轮询任务直到完成/失败（不设超时，仅 ComfyUI 才设超时）
-  const POLL_INTERVAL = 2000;
-
-  while (true) {
-    const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-
-    if (!pollResp.ok) {
-      const errBody = await pollResp.text().catch(() => '');
-      throw new Error(`APIMart 任务查询失败 (${pollResp.status}): ${errBody.slice(0, 200)}`);
-    }
-
-    const pollResult = await pollResp.json() as {
-      code: number;
-      data?: { status: string; progress?: number; result?: { images?: Array<{ url: string[] }> } };
-      status?: string;
-      progress?: number;
-      result?: { images?: Array<{ url: string[] }> };
-    };
-    const task = pollResult.data ?? pollResult;
-
-    if (task.status === 'completed') {
-      const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
-      if (imageUrls.length === 0) {
-        throw new Error('APIMart 生成完成但未返回图片');
+  return pollTask<ApimartTaskResult<{ images?: Array<{ url: string[] }> }>, { url: string; width: number; height: number }>({
+    fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
+    isComplete: (task) => {
+      if (task.status === 'completed') {
+        const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
+        if (imageUrls.length === 0) throw new Error('APIMart 生成完成但未返回图片');
+        return { url: imageUrls[0], width: dimensions.width, height: dimensions.height };
       }
-      return { url: imageUrls[0], width: dimensions.width, height: dimensions.height };
-    }
+      return null;
+    },
+    interval: 2000,
+  });
+}
 
-    if (task.status === 'failed' || task.status === 'error') {
-      throw new Error(`APIMart 生成任务失败: ${task.status}`);
-    }
+/* ── APIMart 任务轮询共享类型 ── */
+interface ApimartTaskResult<TResult = Record<string, unknown>> {
+  code: number;
+  data?: { status: string; progress?: number; result?: TResult };
+  status?: string;
+  progress?: number;
+  result?: TResult;
+}
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+/** 获取单次 APIMart 轮询数据并标准化为 task 对象 */
+async function fetchApimartTask<TResult = Record<string, unknown>>(
+  apiKey: string,
+  baseUrl: string,
+  taskId: string,
+): Promise<ApimartTaskResult<TResult>> {
+  const resp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!resp.ok) {
+    const errBody = await resp.text().catch(() => '');
+    throw new Error(`APIMart 任务查询失败 (${resp.status}): ${errBody.slice(0, 200)}`);
   }
+  return (await resp.json()) as ApimartTaskResult<TResult>;
 }
 
 /** APIMart 视频生成 — 异步提交 + 轮询，与图片生成相同的任务模式 */
@@ -714,54 +714,24 @@ async function generateApimartVideo(
   }
 
   // 步骤 2: 轮询（不设超时，仅 ComfyUI 才设超时）
-  const POLL_INTERVAL = 3000;         // 3 秒轮询
-
-  while (true) {
-    const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-
-    if (!pollResp.ok) {
-      const errBody = await pollResp.text().catch(() => '');
-      throw new Error(`APIMart 视频任务查询失败 (${pollResp.status}): ${errBody.slice(0, 200)}`);
-    }
-
-    const pollResult = await pollResp.json() as {
-      code: number;
-      data?: {
-        status: string;
-        progress?: number;
-        result?: {
-          images?: Array<{ url: string[] }>;
-          videos?: Array<{ url: string[] }>;
-        };
-      };
-      status?: string;
-      progress?: number;
-      result?: {
-        images?: Array<{ url: string[] }>;
-        videos?: Array<{ url: string[] }>;
-      };
-    };
-    const task = pollResult.data ?? pollResult;
-
-    if (task.status === 'completed') {
-      // 优先取 videos，其次 images
-      const videoUrls = task.result?.videos?.flatMap((v) => v.url) ?? [];
-      const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
-      const allUrls = videoUrls.length > 0 ? videoUrls : imageUrls;
-      if (allUrls.length === 0) {
-        throw new Error('APIMart 视频生成完成但未返回结果');
+  return pollTask<
+    ApimartTaskResult<{ images?: Array<{ url: string[] }>; videos?: Array<{ url: string[] }> }>,
+    { url: string }
+  >({
+    fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
+    isComplete: (task) => {
+      if (task.status === 'completed') {
+        // 优先取 videos，其次 images
+        const videoUrls = task.result?.videos?.flatMap((v) => v.url) ?? [];
+        const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
+        const allUrls = videoUrls.length > 0 ? videoUrls : imageUrls;
+        if (allUrls.length === 0) throw new Error('APIMart 视频生成完成但未返回结果');
+        return { url: allUrls[0] };
       }
-      return { url: allUrls[0] };
-    }
-
-    if (task.status === 'failed' || task.status === 'error') {
-      throw new Error(`APIMart 视频生成任务失败: ${task.status}`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
-  }
+      return null;
+    },
+    interval: 3000,
+  });
 }
 
 /** 解析 prompt 中的 @{nodeId:label} 引用，返回适合 /chat/completions 的 content 字段
@@ -1088,55 +1058,21 @@ async function generateApimartAudio(
   }
 
   // 步骤 2: 轮询（不设超时，仅 ComfyUI 才设超时）
-  const POLL_INTERVAL = 3000;         // 3 秒轮询
-
-  while (true) {
-    const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-
-    if (!pollResp.ok) {
-      const errBody = await pollResp.text().catch(() => '');
-      throw new Error(`APIMart 音频任务查询失败 (${pollResp.status}): ${errBody.slice(0, 200)}`);
-    }
-
-    const pollResult = await pollResp.json() as {
-      code: number;
-      data?: {
-        status: string;
-        progress?: number;
-        result?: {
-          audios?: Array<{ url: string[] }>;
-          images?: Array<{ url: string[] }>;
-          videos?: Array<{ url: string[] }>;
-        };
-      };
-      status?: string;
-      progress?: number;
-      result?: {
-        audios?: Array<{ url: string[] }>;
-        images?: Array<{ url: string[] }>;
-        videos?: Array<{ url: string[] }>;
-      };
-    };
-    const task = pollResult.data ?? pollResult;
-
-    if (task.status === 'completed') {
-      // 优先取 audios，其次 fallback
-      const audioUrls = task.result?.audios?.flatMap((a) => a.url) ?? [];
-      const allUrls = audioUrls.length > 0 ? audioUrls : [];
-      if (allUrls.length === 0) {
-        throw new Error('APIMart 音频生成完成但未返回结果');
+  return pollTask<
+    ApimartTaskResult<{ audios?: Array<{ url: string[] }>; images?: Array<{ url: string[] }>; videos?: Array<{ url: string[] }> }>,
+    { url: string }
+  >({
+    fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
+    isComplete: (task) => {
+      if (task.status === 'completed') {
+        const audioUrls = task.result?.audios?.flatMap((a) => a.url) ?? [];
+        if (audioUrls.length === 0) throw new Error('APIMart 音频生成完成但未返回结果');
+        return { url: audioUrls[0] };
       }
-      return { url: allUrls[0] };
-    }
-
-    if (task.status === 'failed' || task.status === 'error') {
-      throw new Error(`APIMart 音频生成任务失败: ${task.status}`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
-  }
+      return null;
+    },
+    interval: 3000,
+  });
 }
 
 /** 音频生成入口 */

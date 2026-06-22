@@ -1,6 +1,7 @@
 /**
  * testConnection 连接测试服务 — 按厂商调用对应 API 端点验证密钥有效性和余额（APIMart/GRSAI/OpenAI/火山方舟/RunningHUB
  */
+import { APIMART_BASE_URL } from '../constants/api';
 
 export interface TestResult {
   success: boolean;
@@ -12,7 +13,7 @@ export interface TestResult {
 
 /** APIMart — OpenAI 兼容接口，ping 测试，无余额 */
 async function testAPIMart(apiKey: string, baseUrl?: string): Promise<TestResult> {
-  const url = `${baseUrl || 'https://api.apib.ai/v1'}/chat/completions`;
+  const url = `${baseUrl || APIMART_BASE_URL}/chat/completions`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
