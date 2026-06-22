@@ -96,7 +96,7 @@ function AINodeDialog() {
         });
         // 下载远程 URL 到本地项目目录
         const saved = currentProjectId
-          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image').catch(() => null)
+          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image', data.label).catch(() => null)
           : null;
         const mediaUrl = saved?.assetUrl || result.url;
         updateNodeData(activeNodeId!, {
@@ -140,7 +140,7 @@ function AINodeDialog() {
         });
         // 下载远程 URL 到本地项目目录
         const saved = currentProjectId
-          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video').catch(() => null)
+          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video', data.label).catch(() => null)
           : null;
         const mediaUrl = saved?.assetUrl || result.url;
         updateNodeData(activeNodeId!, {
@@ -176,7 +176,7 @@ function AINodeDialog() {
         });
         // 下载远程 URL 到本地项目目录
         const saved = currentProjectId
-          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio').catch(() => null)
+          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio', data.label).catch(() => null)
           : null;
         const mediaUrl = saved?.assetUrl || result.url;
         updateNodeData(activeNodeId!, {

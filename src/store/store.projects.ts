@@ -52,12 +52,15 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const nextNum = existing.length > 0 ? Math.max(...existing) + 1 : 1;
       defaultName = `项目 ${nextNum}`;
     }
+    const dataFolder = fileService.buildProjectFolderName(defaultName, id);
     const project: CanvasProject = {
       id,
       name: defaultName,
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      dataFolder,
     };
+    fileService.registerProjectFolder(id, dataFolder);
     set((state) => ({
       projects: [...state.projects, project],
       currentProjectId: project.id,
@@ -79,8 +82,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     if (isCurrent && filtered.length === 1 && filtered[0]?.id === 'default') {
       const newId = generateProjectId();
       const now = Date.now();
+      const newFolder = fileService.buildProjectFolderName('默认画布', newId);
+      fileService.registerProjectFolder(newId, newFolder);
       set({
-        projects: [{ id: newId, name: '默认画布', createdAt: now, updatedAt: now }],
+        projects: [{ id: newId, name: '默认画布', createdAt: now, updatedAt: now, dataFolder: newFolder }],
         currentProjectId: newId,
         projectName: '默认画布',
         nodes: [],
@@ -88,7 +93,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         history: [],
         historyIndex: -1,
       });
-      fileService.saveProject({ id: newId, name: '默认画布', createdAt: now, updatedAt: now, nodes: [], edges: [] }).catch(() => {});
+      fileService.saveProject({ id: newId, name: '默认画布', createdAt: now, updatedAt: now, dataFolder: newFolder, nodes: [], edges: [] }).catch(() => {});
       fileService.ensureProjectDataDir(newId).catch(() => {});
       setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
     } else {
@@ -166,6 +171,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         name: projectName,
         createdAt: project.createdAt,
         updatedAt: Date.now(),
+        dataFolder: project.dataFolder,
         nodes,
         edges,
         groups,
@@ -196,6 +202,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         name: projectName,
         createdAt: project.createdAt,
         updatedAt: Date.now(),
+        dataFolder: project.dataFolder,
         nodes,
         edges,
         groups,
@@ -218,8 +225,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const allProjects = await fileService.loadProjectsList();
       if (allProjects.length > 0) {
         const mapped: CanvasProject[] = allProjects.map((p) => ({
-          id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
+          id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt, dataFolder: p.dataFolder,
         }));
+        fileService.registerProjectFolders(mapped);
         const current = get().currentProjectId;
         const exists = mapped.find((p) => p.id === current);
         const targetId = exists ? current : mapped[0].id;
@@ -253,8 +261,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
       if (valid.length > 0) {
         const mapped: CanvasProject[] = valid.map((p) => ({
-          id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
+          id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt, dataFolder: p.dataFolder,
         }));
+        fileService.registerProjectFolders(mapped);
         mapped.sort((a, b) => b.updatedAt - a.updatedAt);
         const lastId = mapped[0].id;
 
@@ -275,9 +284,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       } else {
         const id = generateProjectId();
         const now = Date.now();
-        const defaultProject = { id, name: '默认画布', createdAt: now, updatedAt: now, nodes: [], edges: [] };
+        const dataFolder = fileService.buildProjectFolderName('默认画布', id);
+        fileService.registerProjectFolder(id, dataFolder);
+        const defaultProject = { id, name: '默认画布', createdAt: now, updatedAt: now, dataFolder, nodes: [], edges: [] };
         set({
-          projects: [{ id, name: '默认画布', createdAt: now, updatedAt: now }],
+          projects: [{ id, name: '默认画布', createdAt: now, updatedAt: now, dataFolder }],
           currentProjectId: id,
           projectName: '默认画布',
         });

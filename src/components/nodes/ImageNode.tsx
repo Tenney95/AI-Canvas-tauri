@@ -22,7 +22,7 @@ import { computeImageNodeDimensions } from './shared/image/imageUtils';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
-import { saveDataUrlToProjectData } from '../../services/fileService';
+import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { blobToDataUrl } from '../../store/store.utils';
 import { generateAngleImage, generateOutpaintImage } from '../../services/apimartService';
 import { imageUpscale, subjectMatting, checkModelExists, downloadModel } from '../../services/onnxService';
@@ -150,7 +150,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           const projectId = store.currentProjectId;
           if (projectId && projectId !== 'default') {
             const ext = blob.type.split('/').pop() || 'png';
-            const savedName = `angle_${params.rotation.toFixed(0)}_${i}.${ext}`;
+            const savedName = buildNodeFileName(`角度视图 ${params.rotation.toFixed(0)}°`, ext, `angle_${params.rotation.toFixed(0)}`);
             const saved = await saveDataUrlToProjectData(dataUrl, projectId, savedName);
             if (saved && saved.assetUrl) {
               assetUrl = saved.assetUrl;
@@ -246,7 +246,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       let filePath: string | undefined;
       const projectId = store.currentProjectId;
       if (projectId && projectId !== 'default') {
-        const savedName = `cropped_${Date.now()}.png`;
+        const savedName = buildNodeFileName(`${(data.label as string) || '图像'} 裁切`, 'png', 'cropped');
         const saved = await saveDataUrlToProjectData(croppedDataUrl, projectId, savedName);
         if (saved && saved.assetUrl) {
           assetUrl = saved.assetUrl;
@@ -337,7 +337,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         const projectId = store.currentProjectId;
         if (projectId && projectId !== 'default') {
           const ext = blob.type.split('/').pop() || 'png';
-          const savedName = `expand_${Date.now()}.${ext}`;
+          const savedName = buildNodeFileName(`${(data.label as string) || '图像'} 扩图`, ext, 'expand');
           const saved = await saveDataUrlToProjectData(dataUrl, projectId, savedName);
           if (saved && saved.assetUrl) {
             assetUrl = saved.assetUrl;

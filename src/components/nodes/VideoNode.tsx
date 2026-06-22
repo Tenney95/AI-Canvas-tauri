@@ -11,7 +11,7 @@ import VideoNodeToolbar from './shared/VideoNodeToolbar';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { computeImageNodeDimensions, generateId, useAppStore } from '../../store/useAppStore';
-import { downloadUrlAndSave, saveDataUrlToProjectData } from '../../services/fileService';
+import { downloadUrlAndSave, saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 
 function captureVideoFrame(video: HTMLVideoElement): { dataUrl: string; width: number; height: number } {
@@ -145,7 +145,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       const currentNode = store.nodes.find((node) => node.id === id);
       const currentPosition = currentNode?.position ?? { x: 0, y: 0 };
       const nodeWidth = (data.nodeWidth as number | undefined) ?? 280;
-      const frameFileName = `video-frame-${Date.now()}-${generateId()}.png`;
+      const frameFileName = buildNodeFileName(`${displayLabel} 当前帧`, 'png', `video-frame-${Date.now()}`);
       const projectId = store.currentProjectId;
       const savedFrame = projectId && projectId !== 'default'
         ? await saveDataUrlToProjectData(frame.dataUrl, projectId, frameFileName)

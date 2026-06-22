@@ -72,6 +72,8 @@ export interface CanvasProject {
   name: string;
   createdAt: number;
   updatedAt: number;
+  /** 本地媒体文件夹名（形如「项目名-短ID」）。创建时确定后保持稳定，旧项目可能缺失（回退到 id）。 */
+  dataFolder?: string;
 }
 
 // API 配置

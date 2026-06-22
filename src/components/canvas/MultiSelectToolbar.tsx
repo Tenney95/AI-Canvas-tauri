@@ -223,7 +223,7 @@ function MultiSelectToolbar() {
             workflowId: d.workflowId, workflowInputs: d.workflowInputs,
           });
           const saved = currentProjectId
-            ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image').catch(() => null)
+            ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image', d.label).catch(() => null)
             : null;
           const mediaUrl = saved?.assetUrl || result.url;
           updateNodeData(node.id, {
@@ -248,7 +248,7 @@ function MultiSelectToolbar() {
             workflowId: d.workflowId, workflowInputs: d.workflowInputs,
           });
           const saved = currentProjectId
-            ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video').catch(() => null)
+            ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video', d.label).catch(() => null)
             : null;
           const mediaUrl = saved?.assetUrl || result.url;
           updateNodeData(node.id, {
@@ -269,7 +269,7 @@ function MultiSelectToolbar() {
             workflowId: d.workflowId, workflowInputs: d.workflowInputs,
           });
           const saved = currentProjectId
-            ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio').catch(() => null)
+            ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio', d.label).catch(() => null)
             : null;
           const mediaUrl = saved?.assetUrl || result.url;
           updateNodeData(node.id, {

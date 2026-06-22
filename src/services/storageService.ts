@@ -27,6 +27,8 @@ export interface ProjectSaveData {
   nodes: unknown;
   edges: unknown;
   groups?: unknown;
+  /** 本地媒体文件夹名（形如「项目名-短ID」），创建时确定后保持稳定 */
+  dataFolder?: string;
 }
 
 /** 保存项目到 IndexedDB */

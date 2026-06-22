@@ -16,7 +16,7 @@ import AnimatedButton from '../shared/AnimatedButton';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
-import { saveDataUrlToProjectData } from '../../services/fileService';
+import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 
 /* ═════════════════════════════════════════════════
@@ -274,7 +274,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
     const panoNode = store.nodes.find((n) => n.id === id);
     const pos = panoNode?.position ?? { x: 0, y: 0 };
     const imgLabel = `全景截图-${Date.now()}`;
-    const fileName = `panorama-screenshot-${Date.now()}.png`;
+    const fileName = buildNodeFileName(imgLabel, 'png', 'panorama-screenshot');
 
     // Save to project data directory (Tauri) or fall back to base64 data URL
     let imageUrl = dataUrl;

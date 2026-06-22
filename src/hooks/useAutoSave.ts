@@ -1,12 +1,15 @@
 /**
- * useAutoSave — 文件层级变化时自动静默保存（无 Toast 提示）
+ * useAutoSave — 结构变化或磁盘内容变化时自动静默保存（无 Toast 提示）
  *
- * 监听 nodes / edges / groups 的结构变化（增删、拖入分组等），
- * 2 秒防抖后自动调用 saveCurrentProjectSilent。
+ * 1) 监听 nodes / edges / groups 的结构变化（增删、拖入分组等）；
+ * 2) 监听 project-disk-changed 事件 —— 项目目录文件的增删改（生成、上传、
+ *    重命名、删除等），即使节点结构指纹未变也会触发保存。
+ * 均在 2 秒防抖后调用 saveCurrentProjectSilent。
  * 不响应选中、拖拽位置等非结构性变化。
  */
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../store/useAppStore';
+import { PROJECT_DISK_CHANGED_EVENT } from '../services/fileService';
 
 /** 计算结构指纹：节点 ID + 边 ID + 分组 ID/成员 */
 function structureFingerprint(
@@ -20,6 +23,8 @@ function structureFingerprint(
 export function useAutoSave() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fingerprintRef = useRef<string>('');
+  // 磁盘内容变更（增删改文件）触发的强制保存标记 —— 结构指纹不变也要保存
+  const forceSaveRef = useRef(false);
   // 跳过初始加载阶段
   const readyRef = useRef(false);
   // 缓存上一次 nodes/edges/groups 引用，无关 state 变更（toast/config/拖拽以外）直接短路
@@ -45,6 +50,16 @@ export function useAutoSave() {
         .join(',');
 
       const fp = structureFingerprint(nodeIds, edgeIds, groupHash);
+
+      // 磁盘内容发生增删改：即使结构指纹未变也要保存
+      if (forceSaveRef.current) {
+        forceSaveRef.current = false;
+        fingerprintRef.current = fp;
+        readyRef.current = true;
+        state.saveCurrentProjectSilent();
+        return;
+      }
+
       if (fp === fingerprintRef.current) return;
 
       // 首次计算出指纹后标记就绪
@@ -57,6 +72,15 @@ export function useAutoSave() {
       fingerprintRef.current = fp;
       useAppStore.getState().saveCurrentProjectSilent();
     };
+
+    // 磁盘增删改事件：标记强制保存并重置防抖计时器
+    const onDiskChanged = () => {
+      if (!useAppStore.getState().currentProjectId) return;
+      forceSaveRef.current = true;
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(checkAndSave, 2000);
+    };
+    window.addEventListener(PROJECT_DISK_CHANGED_EVENT, onDiskChanged);
 
     const unsub = useAppStore.subscribe((state) => {
       if (!state.currentProjectId) return;
@@ -79,6 +103,7 @@ export function useAutoSave() {
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
+      window.removeEventListener(PROJECT_DISK_CHANGED_EVENT, onDiskChanged);
       unsub();
     };
   }, []);

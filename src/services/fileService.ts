@@ -1,7 +1,7 @@
 /**
  * fileService 文件操作服务 — 封装 Tauri 原生文件对话框和读写能力，管理项目/工作流/配置的保存、加载、导出、导入（IndexedDB 降级）
  */
-import { writeFile, readFile as tauriReadFile, mkdir, exists, stat, remove, readDir } from '@tauri-apps/plugin-fs';
+import { writeFile, readFile as tauriReadFile, mkdir, exists, stat, remove, readDir, rename } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
@@ -26,6 +26,15 @@ export {
 /** 检测是否运行在 Tauri 桌面环境中 */
 function isTauriEnv(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/** 项目目录磁盘内容发生增删改时派发的事件名（由 useAutoSave 监听，触发静默保存） */
+export const PROJECT_DISK_CHANGED_EVENT = 'project-disk-changed';
+
+/** 通知监听方：当前项目的磁盘内容发生了增删改 */
+function notifyProjectDiskChanged(): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(PROJECT_DISK_CHANGED_EVENT));
 }
 
 /** 浏览器降级：通过 file input 读取文件 */
@@ -287,16 +296,55 @@ export async function getBaseDir(): Promise<string | null> {
   return joinPath(base, 'data');
 }
 
+/**
+ * projectId → 数据文件夹名（形如「项目名-短ID」）。由 store 在创建/加载项目时注入。
+ * 缺失时回退到 projectId 本身，从而兼容历史上以 projectId 命名的旧项目目录。
+ */
+const _projectFolders = new Map<string, string>();
+
+/** 注册/更新单个项目的数据文件夹名 */
+export function registerProjectFolder(projectId: string, folderName: string | undefined): void {
+  if (folderName && folderName.trim()) _projectFolders.set(projectId, folderName.trim());
+}
+
+/** 批量注册项目数据文件夹名（启动时从项目列表同步） */
+export function registerProjectFolders(list: { id: string; dataFolder?: string }[]): void {
+  for (const p of list) registerProjectFolder(p.id, p.dataFolder);
+}
+
+/** 将项目名清洗为安全的文件夹名片段：去非法字符/控制字符，去首尾点和空白，限长 */
+export function sanitizeFolderName(name: string): string {
+  const cleaned = Array.from(name || '')
+    .filter((ch) => ch.charCodeAt(0) > 31)  // 去除控制字符
+    .join('')
+    .replace(/[<>:"|?*/\\]/g, '_')          // 跨平台非法字符
+    .replace(/^[.\s]+|[.\s]+$/g, '')        // 去掉首尾的点和空白
+    .trim();
+  return cleaned.slice(0, 80) || 'project';
+}
+
+/** 生成稳定且可读的项目数据文件夹名：{清洗后的项目名}-{短ID} */
+export function buildProjectFolderName(name: string, projectId: string): string {
+  const shortId = projectId.replace(/-/g, '').slice(0, 8) || projectId;
+  return `${sanitizeFolderName(name)}-${shortId}`;
+}
+
+/** 解析项目实际使用的数据文件夹名（已注册的「项目名-短ID」，或回退到 projectId） */
+function resolveProjectFolder(projectId: string): string {
+  return _projectFolders.get(projectId) ?? projectId;
+}
+
 /** 获取项目的本地数据目录路径 */
 export async function getProjectDataDir(projectId: string): Promise<string | null> {
-  // 优先使用用户自定义的根目录，结构为 {baseDataDir}/{projectId}
+  const folder = resolveProjectFolder(projectId);
+  // 优先使用用户自定义的根目录，结构为 {baseDataDir}/{文件夹名}
   if (_baseDataDir) {
-    return joinPath(_baseDataDir, projectId);
+    return joinPath(_baseDataDir, folder);
   }
   // 回退到系统应用数据目录
   const base = await getAppDataDir();
   if (!base) return null;
-  return joinPath(base, 'data', projectId);
+  return joinPath(base, 'data', folder);
 }
 
 /** 确保项目数据目录存在（Tauri 端） */
@@ -315,6 +363,39 @@ export async function ensureProjectDataDir(projectId: string): Promise<string | 
 }
 
 /**
+ * 在目标目录中为文件名找到不冲突的完整路径，冲突时在主名后追加 _1、_2 …
+ * （exists 可能抛错，捕获后沿用当前路径）
+ */
+async function resolveUniqueDestPath(dataDir: string, fileName: string): Promise<string> {
+  const sanitized = sanitizeFileName(fileName);
+  const dotIndex = sanitized.lastIndexOf('.');
+  const baseName = dotIndex > 0 ? sanitized.slice(0, dotIndex) : sanitized;
+  const ext = dotIndex > 0 ? sanitized.slice(dotIndex) : '';
+  let destPath = joinPath(dataDir, sanitized);
+  try {
+    let counter = 1;
+    while (await exists(destPath)) {
+      destPath = joinPath(dataDir, `${baseName}_${counter}${ext}`);
+      counter++;
+    }
+  } catch {
+    // exists 抛错时沿用当前 destPath
+  }
+  return destPath;
+}
+
+/**
+ * 由节点名 + 扩展名构造文件名；节点名为空时回退到 fallback。
+ * 扩展名带点（如 ".png"），节点名会被 sanitize 并去掉首尾点/空白。
+ */
+export function buildNodeFileName(label: string | undefined, ext: string, fallback: string): string {
+  const hasLabel = !!(label && label.trim());
+  const base = hasLabel ? sanitizeFolderName(label) : sanitizeFolderName(fallback);
+  const dottedExt = ext ? (ext.startsWith('.') ? ext : `.${ext}`) : '';
+  return `${base}${dottedExt}`;
+}
+
+/**
  * 将文件拷贝到项目数据目录，返回本地路径和 asset URL
  * 如文件已存在于目标目录则跳过拷贝
  */
@@ -328,24 +409,7 @@ export async function copyFileToProjectData(
   if (!dataDir) return null;
 
   const fileName = sourcePath.split(/[/\\]/).pop() || 'file';
-  const sanitized = sanitizeFileName(fileName);
-
-  // Base destination path
-  let destPath = joinPath(dataDir, sanitized);
-
-  // Handle name conflicts: append _1, _2 ...
-  try {
-    let counter = 1;
-    const parts = sanitized.split('.');
-    const ext = parts.length > 1 ? parts.pop()! : '';
-    const baseName = parts.join('.');
-    while (await exists(destPath)) {
-      destPath = ext ? joinPath(dataDir, `${baseName}_${counter}.${ext}`) : joinPath(dataDir, `${sanitized}_${counter}`);
-      counter++;
-    }
-  } catch {
-    // exists may throw; proceed with current destPath
-  }
+  const destPath = await resolveUniqueDestPath(dataDir, fileName);
 
   try {
     // Try to check source file size (may fail for paths outside fs scope, e.g., external drives)
@@ -369,6 +433,7 @@ export async function copyFileToProjectData(
     // readFile on drag-dropped paths bypasses fs scope permission check
     const content = await tauriReadFile(sourcePath);
     await writeFile(destPath, new Uint8Array(content));
+    notifyProjectDiskChanged();
   } catch (err) {
     console.error('Failed to copy file to project data:', sourcePath, err);
     // Don't fallback to convertFileSrc on external paths — asset protocol won't serve them
@@ -417,8 +482,9 @@ export async function saveDataUrlToProjectData(
       bytes = new Uint8Array(buffer);
     }
 
-    const destPath = joinPath(dataDir, fileName);
+    const destPath = await resolveUniqueDestPath(dataDir, fileName);
     await writeFile(destPath, bytes);
+    notifyProjectDiskChanged();
 
     const convertFileSrc = await getConvertFileSrc();
     const assetUrl = convertFileSrc ? convertFileSrc(destPath) : '';
@@ -444,25 +510,11 @@ export async function saveBinaryToProjectData(
   const dataDir = await ensureProjectDataDir(projectId);
   if (!dataDir) return null;
 
-  const sanitized = sanitizeFileName(fileName);
-
-  // Handle name conflicts
-  let destPath = joinPath(dataDir, sanitized);
-  try {
-    let counter = 1;
-    const parts = sanitized.split('.');
-    const ext = parts.length > 1 ? parts.pop()! : '';
-    const baseName = parts.join('.');
-    while (await exists(destPath)) {
-      destPath = ext ? joinPath(dataDir, `${baseName}_${counter}.${ext}`) : joinPath(dataDir, `${sanitized}_${counter}`);
-      counter++;
-    }
-  } catch {
-    // exists may throw; proceed with current destPath
-  }
+  const destPath = await resolveUniqueDestPath(dataDir, fileName);
 
   try {
     await writeFile(destPath, data);
+    notifyProjectDiskChanged();
   } catch (err) {
     console.error('Failed to save binary to project data:', destPath, err);
     return null;
@@ -491,14 +543,37 @@ function extractFileNameFromUrl(url: string, fallbackPrefix: string): string {
   return `${fallbackPrefix}-${ts}`;
 }
 
+/** MIME → 扩展名（带点），用于无法从 URL 推断扩展名时兜底 */
+const MIME_TO_EXT: Record<string, string> = {
+  'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif',
+  'video/mp4': '.mp4', 'video/webm': '.webm', 'video/quicktime': '.mov',
+  'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/ogg': '.ogg', 'audio/aac': '.aac',
+};
+
+/** 从 URL 路径或 MIME 推断文件扩展名（带点），都失败时按 fallbackPrefix 给默认值 */
+function guessExtension(url: string, mime: string | undefined, fallbackPrefix: string): string {
+  try {
+    const u = new URL(url);
+    const fn = u.searchParams.get('filename') || u.pathname.split('/').pop() || '';
+    const dot = fn.lastIndexOf('.');
+    if (dot > 0 && dot < fn.length - 1) return fn.slice(dot).toLowerCase();
+  } catch { /* invalid URL, fall through */ }
+  if (mime && MIME_TO_EXT[mime]) return MIME_TO_EXT[mime];
+  if (fallbackPrefix.includes('video')) return '.mp4';
+  if (fallbackPrefix.includes('audio')) return '.mp3';
+  return '.png';
+}
+
 /**
  * 下载远程 URL 文件并保存到项目数据目录
+ * @param baseName 可选，优先用作文件名主体（通常为节点名）；为空时从 URL 提取或用 fallbackPrefix
  * @returns { filePath, assetUrl } 或 null（失败/非 Tauri）
  */
 export async function downloadUrlAndSave(
   url: string,
   projectId: string,
   fallbackPrefix: string,
+  baseName?: string,
 ): Promise<{ filePath: string; assetUrl: string } | null> {
   if (!isTauriEnv()) return null;
   try {
@@ -508,6 +583,7 @@ export async function downloadUrlAndSave(
     // 解析 data URL 还原为二进制
     const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
     if (!match) return null;
+    const mime = match[1];
     const b64 = match[2];
     const binaryStr = atob(b64);
     const data = new Uint8Array(binaryStr.length);
@@ -515,7 +591,10 @@ export async function downloadUrlAndSave(
       data[i] = binaryStr.charCodeAt(i);
     }
 
-    const fileName = extractFileNameFromUrl(url, fallbackPrefix);
+    // 优先用节点名命名；否则沿用从 URL 提取文件名的旧逻辑
+    const fileName = baseName && baseName.trim()
+      ? buildNodeFileName(baseName, guessExtension(url, mime, fallbackPrefix), fallbackPrefix)
+      : extractFileNameFromUrl(url, fallbackPrefix);
     return await saveBinaryToProjectData(data, projectId, fileName);
   } catch (err) {
     console.warn('[fileService] downloadUrlAndSave failed:', url, err);
@@ -529,6 +608,50 @@ export async function downloadUrlAndSave(
 export async function getAssetUrlFromPath(filePath: string): Promise<string> {
   const convertFileSrc = await getConvertFileSrc();
   return convertFileSrc ? convertFileSrc(filePath) : filePath;
+}
+
+/**
+ * 将项目数据目录内的文件重命名为与节点名一致（保留扩展名，冲突时加序号）。
+ * 仅处理位于当前项目目录内的文件；外部引用文件、非 Tauri 环境、无变化时返回 null。
+ * @returns 新的 { filePath, assetUrl, fileName }，或 null
+ */
+export async function renameProjectFileToLabel(
+  filePath: string,
+  newLabel: string,
+  projectId: string,
+): Promise<{ filePath: string; assetUrl: string; fileName: string } | null> {
+  if (!isTauriEnv() || !filePath) return null;
+  const projectDir = await getProjectDataDir(projectId);
+  if (!projectDir) return null;
+
+  const normPath = filePath.replace(/\\/g, '/');
+  const normDir = projectDir.replace(/\\/g, '/').replace(/\/+$/, '');
+  // 只重命名项目目录内的文件，外部引用文件保持不动
+  if (!normPath.startsWith(`${normDir}/`)) return null;
+
+  const oldName = normPath.split('/').pop() || '';
+  const dotIndex = oldName.lastIndexOf('.');
+  const ext = dotIndex > 0 ? oldName.slice(dotIndex) : '';
+  // 若用户输入已带相同扩展名（显示名常含扩展名），先去掉避免重复后缀
+  let baseLabel = newLabel;
+  if (ext && baseLabel.toLowerCase().endsWith(ext.toLowerCase())) {
+    baseLabel = baseLabel.slice(0, -ext.length);
+  }
+  const newName = buildNodeFileName(baseLabel, ext, 'file');
+  if (newName === oldName) return null; // 名称未变化
+
+  try {
+    const destPath = await resolveUniqueDestPath(projectDir, newName);
+    await rename(filePath, destPath);
+    notifyProjectDiskChanged();
+    const convertFileSrc = await getConvertFileSrc();
+    const assetUrl = convertFileSrc ? convertFileSrc(destPath) : '';
+    const fileName = destPath.replace(/\\/g, '/').split('/').pop() || newName;
+    return { filePath: destPath, assetUrl, fileName };
+  } catch (err) {
+    console.warn('[fileService] renameProjectFileToLabel failed:', filePath, err);
+    return null;
+  }
 }
 
 // ============================================
@@ -575,6 +698,7 @@ export async function moveToUndoTrash(filePath: string): Promise<void> {
     await writeFile(trashPath, new Uint8Array(content));
     await remove(filePath);
     undoTrashMap.set(filePath, trashPath);
+    notifyProjectDiskChanged();
     console.log('[fileService] Staged in undo-trash:', filePath, '→', trashPath);
   } catch (err) {
     console.warn('[fileService] Failed to stage in undo-trash:', filePath, err);
@@ -595,6 +719,7 @@ export async function restoreFromUndoTrash(filePath: string): Promise<boolean> {
     await writeFile(filePath, new Uint8Array(content));
     await remove(trashPath);
     undoTrashMap.delete(filePath);
+    notifyProjectDiskChanged();
     console.log('[fileService] Restored from undo-trash:', filePath);
     return true;
   } catch (err) {
