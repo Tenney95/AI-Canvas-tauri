@@ -12,6 +12,7 @@ export interface ProjectSlice {
   projects: CanvasProject[];
   currentProjectId: string | null;
   projectName: string;
+  _autoSaveFailedNotified?: boolean;
   setProjectName: (name: string) => void;
   createProject: (name?: string) => void;
   deleteProject: (id: string) => Promise<void>;
@@ -69,8 +70,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       edges: [],
       groups: [],
     }));
-    fileService.saveProject({ ...project, nodes: [], edges: [], groups: [] }).catch(() => {});
-    fileService.ensureProjectDataDir(id).catch(() => {});
+    fileService.saveProject({ ...project, nodes: [], edges: [], groups: [] }).catch((e) => console.warn('[创建项目] 保存失败:', e));
+    fileService.ensureProjectDataDir(id).catch((e) => console.warn('[创建项目] 数据目录初始化失败:', e));
     setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
   },
 
@@ -93,8 +94,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         history: [],
         historyIndex: -1,
       });
-      fileService.saveProject({ id: newId, name: '默认画布', createdAt: now, updatedAt: now, dataFolder: newFolder, nodes: [], edges: [] }).catch(() => {});
-      fileService.ensureProjectDataDir(newId).catch(() => {});
+      fileService.saveProject({ id: newId, name: '默认画布', createdAt: now, updatedAt: now, dataFolder: newFolder, nodes: [], edges: [] }).catch((e) => console.warn('[重建默认项目] 保存失败:', e));
+      fileService.ensureProjectDataDir(newId).catch((e) => console.warn('[重建默认项目] 数据目录初始化失败:', e));
       setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
     } else {
       const nextId = isCurrent ? filtered[0]?.id ?? null : state.currentProjectId;
@@ -122,8 +123,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
     }
 
-    fileService.deleteProjectData(id).catch(() => {});
-    fileService.deleteProjectDataDir(id).catch(() => {});
+    fileService.deleteProjectData(id).catch((e) => console.warn('[删除项目] 清理数据失败:', e));
+    fileService.deleteProjectDataDir(id).catch((e) => console.warn('[删除项目] 清理目录失败:', e));
   },
 
   switchProject: async (id) => {
@@ -134,7 +135,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     const project = get().projects.find((p) => p.id === id);
     if (!project) return;
 
-    fileService.ensureProjectDataDir(id).catch(() => {});
+    fileService.ensureProjectDataDir(id).catch((e) => console.warn('[切换项目] 数据目录初始化失败:', e));
 
     const data = await fileService.loadProjectData(id);
     if (data?.nodes) {
@@ -213,9 +214,16 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           p.id === currentProjectId ? { ...p, updatedAt: Date.now(), name: projectName } : p
         ),
       }));
+      // 成功后重置失败通知标志
+      set({ _autoSaveFailedNotified: false });
       return currentProjectId!;
     } catch (error) {
-      console.error('Auto-save failed:', error);
+      console.warn('[自动保存] 保存失败:', error);
+      // 首次失败才弹 toast，避免每 2 秒刷屏
+      if (!get()._autoSaveFailedNotified) {
+        get().showToast('自动保存失败，请手动保存 (Ctrl+S)', 'error');
+        set({ _autoSaveFailedNotified: true });
+      }
       return undefined;
     }
   },
@@ -257,7 +265,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const allProjects = await fileService.loadProjectsList();
       const valid = allProjects.filter((p) => p.id !== 'default');
       if (valid.length < allProjects.length) {
-        fileService.deleteProjectData('default').catch(() => {});
+        fileService.deleteProjectData('default').catch((e) => console.warn('[初始化] 清理默认项目数据失败:', e));
       }
       if (valid.length > 0) {
         const mapped: CanvasProject[] = valid.map((p) => ({
@@ -280,7 +288,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         } else {
           set({ projects: mapped, currentProjectId: lastId, groups: [] });
         }
-        fileService.ensureProjectDataDir(lastId).catch(() => {});
+        fileService.ensureProjectDataDir(lastId).catch((e) => console.warn('[初始化] 数据目录初始化失败:', e));
       } else {
         const id = generateProjectId();
         const now = Date.now();
@@ -292,8 +300,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           currentProjectId: id,
           projectName: '默认画布',
         });
-        await fileService.saveProject(defaultProject).catch(() => {});
-        fileService.ensureProjectDataDir(id).catch(() => {});
+        await fileService.saveProject(defaultProject).catch((e) => console.warn('[初始化] 创建默认项目失败:', e));
+        fileService.ensureProjectDataDir(id).catch((e) => console.warn('[初始化] 数据目录初始化失败:', e));
       }
     } catch (error) {
       console.error('Init from IndexedDB failed:', error);

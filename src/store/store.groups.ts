@@ -192,8 +192,10 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
     get().showToast(`已解散分组「${dissolvedGroupNames.join('、')}」`);
   },
 
-  renameGroup: (id, name) =>
+  renameGroup: (id, name) => {
+    get().commitToHistory();
     set((s) => ({
       groups: s.groups.map((g) => (g.id === id ? { ...g, name } : g)),
-    })),
+    }));
+  },
 });

@@ -31,14 +31,14 @@ export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> 
       fileContent: wf.fileContent,
       ioNodes: wf.ioNodes,
       createdAt: wf.createdAt,
-    }).catch(() => {});
+    }).catch((e) => console.warn('[保存工作流] 持久化失败:', e));
   },
 
   deleteWorkflow: async (id) => {
     set((state) => ({
       workflows: state.workflows.filter((w) => w.id !== id),
     }));
-    await fileService.deleteWorkflow(id).catch(() => {});
+    await fileService.deleteWorkflow(id).catch((e) => console.warn('[删除工作流] 清理失败:', e));
   },
 
   loadWorkflows: async () => {

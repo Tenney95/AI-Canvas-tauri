@@ -24,7 +24,7 @@ export const createPresetSlice: StateCreator<AppState, [], [], PresetSlice> = (s
 
   addUserPreset: async (preset) => {
     set((state) => ({ userPresets: [...state.userPresets, preset] }));
-    await fileService.savePreset({ ...preset }).catch(() => {});
+    await fileService.savePreset({ ...preset }).catch((e) => console.warn('[保存预设] 持久化失败:', e));
   },
 
   updateUserPreset: async (id, data) => {
@@ -35,7 +35,7 @@ export const createPresetSlice: StateCreator<AppState, [], [], PresetSlice> = (s
     }));
     const updated = get().userPresets.find((p) => p.id === id);
     if (updated) {
-      await fileService.savePreset({ ...updated }).catch(() => {});
+      await fileService.savePreset({ ...updated }).catch((e) => console.warn('[更新预设] 持久化失败:', e));
     }
   },
 
@@ -43,7 +43,7 @@ export const createPresetSlice: StateCreator<AppState, [], [], PresetSlice> = (s
     set((state) => ({
       userPresets: state.userPresets.filter((p) => p.id !== id),
     }));
-    await fileService.deletePreset(id).catch(() => {});
+    await fileService.deletePreset(id).catch((e) => console.warn('[删除预设] 清理失败:', e));
   },
 
   loadPresets: async () => {

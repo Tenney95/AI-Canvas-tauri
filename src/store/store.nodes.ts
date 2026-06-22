@@ -71,12 +71,14 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     });
   },
 
-  updateNodeData: (nodeId, data) =>
+  updateNodeData: (nodeId, data) => {
+    get().commitToHistory();
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === nodeId ? { ...n, data: { ...n.data, ...data } as BaseNodeData } : n
       ),
-    })),
+    }));
+  },
 
   duplicateNode: (nodeId) => {
     const state = get();
@@ -132,7 +134,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     // Delete local files for all affected nodes
     for (const id of idsToDelete) {
       const n = nodes.find((nn) => nn.id === id);
-      if (n) fileService.deleteNodeFile(n.data as BaseNodeData).catch(() => {});
+      if (n) fileService.deleteNodeFile(n.data as BaseNodeData).catch((e) => console.warn('[删除节点] 文件清理失败:', e));
     }
 
     // 先播放退场动画，结束后再真正从状态中移除（动画期间历史已提交，撤销仍指向删除前状态）
@@ -225,6 +227,8 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
   },
 
   onEdgesChange: (changes) => {
+    const hasRemoval = changes.some((c) => c.type === 'remove');
+    if (hasRemoval) get().commitToHistory();
     set((s) => ({
       edges: applyEdgeChanges(changes, s.edges) as Edge[],
     }));

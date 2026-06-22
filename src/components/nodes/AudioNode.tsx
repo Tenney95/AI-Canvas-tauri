@@ -263,7 +263,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   // ── Render ──
   return (
-    <div className="node-wrapper" style={{ width: 260 }}>
+    <div className="node-wrapper" style={{ width: 260 }} onContextMenu={(e) => e.preventDefault()}>
       <NodeLabel
         kind="ai-audio"
         label={displayLabel}
