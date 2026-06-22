@@ -1,10 +1,30 @@
 /**
- * fileService 文件操作服务 — 封装 Tauri 原生文件对话框和读写能力，管理项目/工作流/配置的保存、加载、导出、导入（IndexedDB 降级）
+ * fileService 文件操作服务 — 项目媒体文件的拷贝/保存/下载/重命名、源文件上传、
+ * 节点输出另存为、系统文件管理器定位。基础设施见 ./fs/core，删除域见 ./fs/trash，
+ * 全局资产库见 ./fs/assetLibrary（均通过本模块统一对外导出）。
  */
-import { writeFile, readFile as tauriReadFile, mkdir, exists, stat, remove, readDir, rename } from '@tauri-apps/plugin-fs';
+import { writeFile, readFile as tauriReadFile, stat, rename } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-import { appDataDir } from '@tauri-apps/api/path';
+import {
+  isTauriEnv,
+  getMimeType,
+  arrayBufferToBase64,
+  sanitizeFileName,
+  getConvertFileSrc,
+  ensureProjectDataDir,
+  getProjectDataDir,
+  resolveUniqueDestPath,
+  buildNodeFileName,
+  notifyProjectDiskChanged,
+  listDirectoryFiles,
+  getFileCategory,
+  CATEGORY_EXTENSIONS,
+  MAX_MEDIA_FILE_SIZE,
+  type AssetFileEntry,
+} from './fs/core';
+
+// ── 统一对外导出：存储、基础设施、删除域、资产库域 ──
 export {
   saveProject,
   loadProjectsList,
@@ -22,20 +42,9 @@ export {
   type WorkflowRecord,
   type PresetRecord,
 } from './storageService';
-
-/** 检测是否运行在 Tauri 桌面环境中 */
-function isTauriEnv(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
-
-/** 项目目录磁盘内容发生增删改时派发的事件名（由 useAutoSave 监听，触发静默保存） */
-export const PROJECT_DISK_CHANGED_EVENT = 'project-disk-changed';
-
-/** 通知监听方：当前项目的磁盘内容发生了增删改 */
-function notifyProjectDiskChanged(): void {
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent(PROJECT_DISK_CHANGED_EVENT));
-}
+export * from './fs/core';
+export * from './fs/trash';
+export * from './fs/assetLibrary';
 
 /** 浏览器降级：通过 file input 读取文件 */
 function browserOpenFile(accept: string): Promise<File | null> {
@@ -187,213 +196,9 @@ export async function readFileToDataUrl(filePath: string): Promise<string | null
   }
 }
 
-function getMimeType(ext: string): string {
-  const mimeMap: Record<string, string> = {
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    gif: 'image/gif',
-    webp: 'image/webp',
-    bmp: 'image/bmp',
-    svg: 'image/svg+xml',
-    mp4: 'video/mp4',
-    webm: 'video/webm',
-    avi: 'video/x-msvideo',
-    mov: 'video/quicktime',
-    mkv: 'video/x-matroska',
-    mp3: 'audio/mpeg',
-    wav: 'audio/wav',
-    ogg: 'audio/ogg',
-    flac: 'audio/flac',
-    aac: 'audio/aac',
-  };
-  return mimeMap[ext] || 'application/octet-stream';
-}
-
-export { getMimeType, arrayBufferToBase64 };
-
 // ============================================
-// Cross-platform utilities
+// Project data files — 项目媒体文件读写
 // ============================================
-
-/** Cross-platform path join using forward slashes (Tauri FS accepts both / and \ on all platforms) */
-export function joinPath(...segments: string[]): string {
-  return segments
-    .map((s) => s.replace(/\\/g, '/').replace(/\/+$/, ''))
-    .join('/')
-    .replace(/\/+/g, '/');
-}
-
-/**
- * Convert a file:// URI to a native file-system path.
- * Works correctly on Windows (file:///C:/...) and Unix (file:///home/...).
- */
-export function fileUriToPath(uri: string): string {
-  try {
-    const url = new URL(uri);
-    const pathname = decodeURIComponent(url.pathname);
-    // Windows: /C:/Users/... → C:/Users/...
-    if (/^\/[A-Za-z]:[/\\]/.test(pathname)) {
-      return pathname.slice(1);
-    }
-    return pathname;
-  } catch {
-    // Fallback: strip the file:// prefix
-    const stripped = decodeURIComponent(uri.replace(/^file:\/\/+/, ''));
-    // If it looks like a Windows absolute path (e.g. C:/foo), return as-is
-    if (/^[A-Za-z]:[/\\]/.test(stripped)) {
-      return stripped;
-    }
-    // Unix absolute path
-    return '/' + stripped;
-  }
-}
-
-/** Characters illegal in filenames. Windows is stricter; Unix only forbids / and \0. */
-const IS_WINDOWS = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || '');
-const FILENAME_ILLEGAL_CHARS = IS_WINDOWS ? /[<>:"|?*]/g : /[/]/g;
-
-/** Sanitize a filename for the current platform */
-export function sanitizeFileName(name: string): string {
-  return name.replace(FILENAME_ILLEGAL_CHARS, '_');
-}
-
-// ============================================
-// Project data directory — local file storage for media assets
-// ============================================
-
-/** 项目媒体文件大小上限：2GB，超过则引用原路径不拷贝到项目目录（仅 Tauri 下生效） */
-export const MAX_MEDIA_FILE_SIZE = 2 * 1024 * 1024 * 1024;
-
-/** 获取 Tauri 的 convertFileSrc 函数 */
-function getConvertFileSrc(): ((path: string) => string) | null {
-  return (isTauriEnv() ? convertFileSrc : null) as ((path: string) => string) | null;
-}
-
-/** 获取应用数据根目录（Tauri: appDataDir, 浏览器: null） */
-async function getAppDataDir(): Promise<string | null> {
-  if (!isTauriEnv()) return null;
-  try {
-    return await appDataDir();
-  } catch {
-    return null;
-  }
-}
-
-/** 用户自定义的文件保存根目录，由 store.config 在加载配置时注入 */
-let _baseDataDir: string | null = null;
-
-/** 设置用户自定义的文件保存根目录 */
-export function setBaseDataDir(dir: string | undefined): void {
-  _baseDataDir = dir && dir.trim() ? dir.trim() : null;
-}
-
-/** 获取文件保存根目录（用户自定义或系统默认），不含项目 ID */
-export async function getBaseDir(): Promise<string | null> {
-  if (_baseDataDir) return _baseDataDir;
-  const base = await getAppDataDir();
-  if (!base) return null;
-  return joinPath(base, 'data');
-}
-
-/**
- * projectId → 数据文件夹名（形如「项目名-短ID」）。由 store 在创建/加载项目时注入。
- * 缺失时回退到 projectId 本身，从而兼容历史上以 projectId 命名的旧项目目录。
- */
-const _projectFolders = new Map<string, string>();
-
-/** 注册/更新单个项目的数据文件夹名 */
-export function registerProjectFolder(projectId: string, folderName: string | undefined): void {
-  if (folderName && folderName.trim()) _projectFolders.set(projectId, folderName.trim());
-}
-
-/** 批量注册项目数据文件夹名（启动时从项目列表同步） */
-export function registerProjectFolders(list: { id: string; dataFolder?: string }[]): void {
-  for (const p of list) registerProjectFolder(p.id, p.dataFolder);
-}
-
-/** 将项目名清洗为安全的文件夹名片段：去非法字符/控制字符，去首尾点和空白，限长 */
-export function sanitizeFolderName(name: string): string {
-  const cleaned = Array.from(name || '')
-    .filter((ch) => ch.charCodeAt(0) > 31)  // 去除控制字符
-    .join('')
-    .replace(/[<>:"|?*/\\]/g, '_')          // 跨平台非法字符
-    .replace(/^[.\s]+|[.\s]+$/g, '')        // 去掉首尾的点和空白
-    .trim();
-  return cleaned.slice(0, 80) || 'project';
-}
-
-/** 生成稳定且可读的项目数据文件夹名：{清洗后的项目名}-{短ID} */
-export function buildProjectFolderName(name: string, projectId: string): string {
-  const shortId = projectId.replace(/-/g, '').slice(0, 8) || projectId;
-  return `${sanitizeFolderName(name)}-${shortId}`;
-}
-
-/** 解析项目实际使用的数据文件夹名（已注册的「项目名-短ID」，或回退到 projectId） */
-function resolveProjectFolder(projectId: string): string {
-  return _projectFolders.get(projectId) ?? projectId;
-}
-
-/** 获取项目的本地数据目录路径 */
-export async function getProjectDataDir(projectId: string): Promise<string | null> {
-  const folder = resolveProjectFolder(projectId);
-  // 优先使用用户自定义的根目录，结构为 {baseDataDir}/{文件夹名}
-  if (_baseDataDir) {
-    return joinPath(_baseDataDir, folder);
-  }
-  // 回退到系统应用数据目录
-  const base = await getAppDataDir();
-  if (!base) return null;
-  return joinPath(base, 'data', folder);
-}
-
-/** 确保项目数据目录存在（Tauri 端） */
-export async function ensureProjectDataDir(projectId: string): Promise<string | null> {
-  if (!isTauriEnv()) return null;
-  const dirPath = await getProjectDataDir(projectId);
-  if (!dirPath) return null;
-  try {
-    const dirExists = await exists(dirPath);
-    if (!dirExists) await mkdir(dirPath, { recursive: true });
-    return dirPath;
-  } catch (err) {
-    console.error('Failed to create project data dir:', dirPath, err);
-    return null;
-  }
-}
-
-/**
- * 在目标目录中为文件名找到不冲突的完整路径，冲突时在主名后追加 _1、_2 …
- * （exists 可能抛错，捕获后沿用当前路径）
- */
-async function resolveUniqueDestPath(dataDir: string, fileName: string): Promise<string> {
-  const sanitized = sanitizeFileName(fileName);
-  const dotIndex = sanitized.lastIndexOf('.');
-  const baseName = dotIndex > 0 ? sanitized.slice(0, dotIndex) : sanitized;
-  const ext = dotIndex > 0 ? sanitized.slice(dotIndex) : '';
-  let destPath = joinPath(dataDir, sanitized);
-  try {
-    let counter = 1;
-    while (await exists(destPath)) {
-      destPath = joinPath(dataDir, `${baseName}_${counter}${ext}`);
-      counter++;
-    }
-  } catch {
-    // exists 抛错时沿用当前 destPath
-  }
-  return destPath;
-}
-
-/**
- * 由节点名 + 扩展名构造文件名；节点名为空时回退到 fallback。
- * 扩展名带点（如 ".png"），节点名会被 sanitize 并去掉首尾点/空白。
- */
-export function buildNodeFileName(label: string | undefined, ext: string, fallback: string): string {
-  const hasLabel = !!(label && label.trim());
-  const base = hasLabel ? sanitizeFolderName(label) : sanitizeFolderName(fallback);
-  const dottedExt = ext ? (ext.startsWith('.') ? ext : `.${ext}`) : '';
-  return `${base}${dottedExt}`;
-}
 
 /**
  * 将文件拷贝到项目数据目录，返回本地路径和 asset URL
@@ -603,14 +408,6 @@ export async function downloadUrlAndSave(
 }
 
 /**
- * 通过文件路径获取 asset URL（Tauri 端）
- */
-export async function getAssetUrlFromPath(filePath: string): Promise<string> {
-  const convertFileSrc = await getConvertFileSrc();
-  return convertFileSrc ? convertFileSrc(filePath) : filePath;
-}
-
-/**
  * 将项目数据目录内的文件重命名为与节点名一致（保留扩展名，冲突时加序号）。
  * 仅处理位于当前项目目录内的文件；外部引用文件、非 Tauri 环境、无变化时返回 null。
  * @returns 新的 { filePath, assetUrl, fileName }，或 null
@@ -654,142 +451,16 @@ export async function renameProjectFileToLabel(
   }
 }
 
-// ============================================
-// File & directory deletion
-// ============================================
-
-/** 将文件或目录移动到系统回收站（Tauri 端），浏览器环境无操作 */
-export async function moveToTrash(filePath: string): Promise<void> {
-  if (!isTauriEnv()) return;
-  try {
-    await invoke('move_to_trash', { path: filePath });
-    console.log('[fileService] Moved to trash:', filePath);
-  } catch (err) {
-    console.warn('[fileService] Failed to move to trash:', filePath, err);
-  }
-}
-
-// ============================================
-// Undo-trash staging (project-level .trash/ dir — restored on undo, flushed to system trash on project delete)
-// ============================================
-
-/** Map: originalFilePath → trashFilePath */
-const undoTrashMap = new Map<string, string>();
-
-/** Compute the .trash directory for a given file path (same parent dir) */
-function getUndoTrashDir(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
-  const lastSep = normalized.lastIndexOf('/');
-  return lastSep >= 0 ? joinPath(normalized.substring(0, lastSep), '.trash') : '.trash';
-}
-
-/** Move a file to the project-level .trash staging directory (for undo support) */
-export async function moveToUndoTrash(filePath: string): Promise<void> {
-  if (!isTauriEnv()) return;
-  try {
-    const existsFile = await exists(filePath);
-    if (!existsFile) return;
-    const trashDir = getUndoTrashDir(filePath);
-    await mkdir(trashDir, { recursive: true });
-    const fileName = filePath.split(/[/\\]/).pop() || 'file';
-    const trashPath = joinPath(trashDir, `${Date.now()}-${fileName}`);
-    // copy + delete (rename may fail across filesystems)
-    const content = await tauriReadFile(filePath);
-    await writeFile(trashPath, new Uint8Array(content));
-    await remove(filePath);
-    undoTrashMap.set(filePath, trashPath);
-    notifyProjectDiskChanged();
-    console.log('[fileService] Staged in undo-trash:', filePath, '→', trashPath);
-  } catch (err) {
-    console.warn('[fileService] Failed to stage in undo-trash:', filePath, err);
-    // Fallback: use system trash
-    await moveToTrash(filePath).catch(() => {});
-  }
-}
-
-/** Restore a file from undo-trash staging. Returns true on success. */
-export async function restoreFromUndoTrash(filePath: string): Promise<boolean> {
-  if (!isTauriEnv()) return false;
-  const trashPath = undoTrashMap.get(filePath);
-  if (!trashPath) return false;
-  try {
-    const trashExists = await exists(trashPath);
-    if (!trashExists) { undoTrashMap.delete(filePath); return false; }
-    const content = await tauriReadFile(trashPath);
-    await writeFile(filePath, new Uint8Array(content));
-    await remove(trashPath);
-    undoTrashMap.delete(filePath);
-    notifyProjectDiskChanged();
-    console.log('[fileService] Restored from undo-trash:', filePath);
-    return true;
-  } catch (err) {
-    console.warn('[fileService] Failed to restore from undo-trash:', filePath, err);
-    return false;
-  }
-}
-
-/** Flush all undo-trash files to system recycle bin (called on project delete) */
-export async function flushUndoTrashDirs(): Promise<void> {
-  if (!isTauriEnv()) return;
-  // Collect unique .trash directories
-  const trashDirs = new Set<string>();
-  for (const [origPath] of undoTrashMap) {
-    trashDirs.add(getUndoTrashDir(origPath));
-  }
-  for (const dir of trashDirs) {
-    try {
-      if (await exists(dir)) {
-        await invoke('move_to_trash', { path: dir });
-        console.log('[fileService] Flushed undo-trash dir to system trash:', dir);
-      }
-    } catch (err) {
-      console.warn('[fileService] Failed to flush undo-trash dir:', dir, err);
-    }
-  }
-  undoTrashMap.clear();
-}
-
-/** 删除单个文件（Tauri 端），浏览器环境无操作 */
-export async function deleteFile(filePath: string): Promise<void> {
-  if (!isTauriEnv()) return;
-  try {
-    await remove(filePath);
-    console.log('[fileService] Deleted file:', filePath);
-  } catch (err) {
-    console.warn('[fileService] Failed to delete file:', filePath, err);
-  }
-}
-
-/** 将目录移至回收站（Tauri 端），trash crate 本身支持直接移动整个目录 */
-async function removeDirRecursive(dirPath: string): Promise<void> {
-  if (!isTauriEnv()) return;
-  try {
-    await invoke('move_to_trash', { path: dirPath });
-    console.log('[fileService] Moved dir to trash:', dirPath);
-  } catch (err) {
-    console.warn('[fileService] Failed to move dir to trash:', dirPath, err);
-  }
-}
-
-/** 删除项目的本地数据目录（Tauri 端），包括所有媒体文件 */
-export async function deleteProjectDataDir(projectId: string): Promise<void> {
-  if (!isTauriEnv()) return;
-  const dirPath = await getProjectDataDir(projectId);
-  if (!dirPath) return;
-  try {
-    await removeDirRecursive(dirPath);
-    console.log('[fileService] Deleted project data dir:', dirPath);
-  } catch (err) {
-    console.warn('[fileService] Failed to delete project data dir:', dirPath, err);
-  }
-}
-
-/** 尝试删除节点关联的本地文件（如果有 filePath，移入 undo-trash 暂存，撤销时可还原） */
-export async function deleteNodeFile(nodeData: { filePath?: string }): Promise<void> {
-  const fp = nodeData.filePath;
-  if (fp && typeof fp === 'string') {
-    await moveToUndoTrash(fp);
-  }
+/** 获取项目文件列表 */
+export async function listProjectFiles(projectId: string): Promise<AssetFileEntry[]> {
+  const projectDir = await getProjectDataDir(projectId);
+  if (!projectDir) return [];
+  const allFiles = await listDirectoryFiles(projectDir);
+  // Filter out files inside AppData subdirectory
+  return allFiles.filter((f) => {
+    const relative = f.path.substring(projectDir.length).replace(/\\/g, '/');
+    return !relative.startsWith('/AppData/') && !relative.startsWith('AppData/');
+  });
 }
 
 // ============================================
@@ -802,8 +473,8 @@ export interface UploadResult {
   fileSize: number;
 }
 
-/** 
- * 上传文件并保存到项目数据目录（Tauri 端拷贝，浏览器端 base64） 
+/**
+ * 上传文件并保存到项目数据目录（Tauri 端拷贝，浏览器端 base64）
  * @param projectId 项目 ID，为空时退回 base64 模式
  */
 export async function uploadSourceFileToProject(
@@ -879,257 +550,6 @@ export async function uploadSourceFileToProject(
 /** 为源节点上传文件 — 返回 data URL + 文件名 + 大小（向后兼容，不保存到项目目录） */
 export async function uploadSourceFile(accept?: string): Promise<UploadResult | null> {
   return uploadSourceFileToProject(accept);
-}
-
-// ============================================
-// Asset file management — 项目文件 & 永久保存
-// ============================================
-
-export type FileCategory = 'image' | 'video' | 'audio' | 'text' | 'other';
-
-const CATEGORY_EXTENSIONS: Record<FileCategory, string[]> = {
-  image: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico', '.tiff', '.tif'],
-  video: ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v'],
-  audio: ['.mp3', '.wav', '.ogg', '.aac', '.flac', '.wma', '.m4a', '.opus'],
-  text: ['.txt', '.md', '.json', '.csv', '.xml', '.html', '.css', '.js', '.ts', '.jsx', '.tsx', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.log'],
-  other: [],
-};
-
-export function getFileCategory(fileName: string): FileCategory {
-  const ext = `.${fileName.split('.').pop()?.toLowerCase()}`;
-  for (const [cat, exts] of Object.entries(CATEGORY_EXTENSIONS)) {
-    if (exts.includes(ext)) return cat as FileCategory;
-  }
-  return 'other';
-}
-
-export const CATEGORY_LABELS: Record<FileCategory, string> = {
-  image: '图片',
-  video: '视频',
-  audio: '音频',
-  text: '文本',
-  other: '其他',
-};
-
-export interface AssetFileEntry {
-  name: string;
-  path: string;
-  assetUrl?: string;
-  size: number;
-  category: FileCategory;
-  tags?: string[];                                  // 合并自 assetMeta
-  source?: 'project' | 'global' | 'folder';         // 来源：项目永久 / 全局 file / 外部文件夹
-  folderRoot?: string;                              // source=folder 时所属的登记文件夹
-}
-
-/** 列出目录中的所有文件 */
-export async function listDirectoryFiles(dirPath: string): Promise<AssetFileEntry[]> {
-  if (!isTauriEnv()) return [];
-  try {
-    const entries = await readDir(dirPath);
-    const files: AssetFileEntry[] = [];
-
-    for (const entry of entries) {
-      if (!entry.isFile) continue;
-      try {
-        const filePath = joinPath(dirPath, entry.name);
-        const fileStat = await stat(filePath);
-        const convertFileSrc = await getConvertFileSrc();
-        const fileSize = fileStat.size ?? 0;
-        const ext = `.${entry.name.split('.').pop()?.toLowerCase()}`;
-        const extLower = ext.toLowerCase();
-
-        // Only generate assetUrl for image types
-        let assetUrl: string | undefined;
-        if (CATEGORY_EXTENSIONS.image.includes(extLower) && convertFileSrc) {
-          assetUrl = convertFileSrc(filePath);
-        }
-
-        files.push({
-          name: entry.name,
-          path: filePath,
-          assetUrl,
-          size: fileSize,
-          category: getFileCategory(entry.name),
-        });
-      } catch {
-        // Skip files we can't stat
-      }
-    }
-
-    // Sort by name
-    files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-    return files;
-  } catch {
-    return [];
-  }
-}
-
-/** 获取项目文件列表 */
-export async function listProjectFiles(projectId: string): Promise<AssetFileEntry[]> {
-  const projectDir = await getProjectDataDir(projectId);
-  if (!projectDir) return [];
-  const allFiles = await listDirectoryFiles(projectDir);
-  // Filter out files inside AppData subdirectory
-  return allFiles.filter((f) => {
-    const relative = f.path.substring(projectDir.length).replace(/\\/g, '/');
-    return !relative.startsWith('/AppData/') && !relative.startsWith('AppData/');
-  });
-}
-
-
-/* ============================================
-   全局资产库（项目无关）+ 外部文件夹
-   ============================================ */
-
-/** 全局文件目录：{baseDataDir}/file（手动添加的单文件落此处）*/
-export async function getGlobalFilesDir(): Promise<string | null> {
-  const base = await getBaseDir();
-  if (!base) return null;
-  return joinPath(base, 'file');
-}
-
-async function ensureGlobalFilesDir(): Promise<string | null> {
-  if (!isTauriEnv()) return null;
-  const dir = await getGlobalFilesDir();
-  if (!dir) return null;
-  try {
-    if (!(await exists(dir))) await mkdir(dir, { recursive: true });
-    return dir;
-  } catch (err) {
-    console.error('Failed to create global files dir:', dir, err);
-    return null;
-  }
-}
-
-/** 列出全局 file 目录（顶层）*/
-export async function listGlobalFiles(): Promise<AssetFileEntry[]> {
-  const dir = await getGlobalFilesDir();
-  if (!dir) return [];
-  if (!(await exists(dir).catch(() => false))) return [];
-  const files = await listDirectoryFiles(dir);
-  return files.map((f) => ({ ...f, source: 'global' as const }));
-}
-
-/**
- * 递归遍历目录收集文件（带数量/深度上限，避免超大目录卡死）。
- * 每个目录内的 stat 并行，整体用栈迭代而非深递归。
- */
-export async function walkDirectoryFiles(
-  rootDir: string,
-  opts: { maxFiles?: number; maxDepth?: number } = {},
-): Promise<AssetFileEntry[]> {
-  if (!isTauriEnv()) return [];
-  const maxFiles = opts.maxFiles ?? 3000;
-  const maxDepth = opts.maxDepth ?? 8;
-  const convertFileSrc = await getConvertFileSrc();
-  const out: AssetFileEntry[] = [];
-  const stack: { dir: string; depth: number }[] = [{ dir: rootDir, depth: 0 }];
-
-  while (stack.length > 0 && out.length < maxFiles) {
-    const { dir, depth } = stack.pop()!;
-    let entries: Awaited<ReturnType<typeof readDir>>;
-    try {
-      entries = await readDir(dir);
-    } catch {
-      continue;
-    }
-    const fileEntries = entries.filter((e) => e.isFile);
-    const subDirs = entries.filter((e) => e.isDirectory);
-
-    const statResults = await Promise.all(
-      fileEntries.map(async (e) => {
-        const filePath = joinPath(dir, e.name);
-        try {
-          const s = await stat(filePath);
-          return { name: e.name, filePath, size: s.size ?? 0 };
-        } catch {
-          return null;
-        }
-      }),
-    );
-
-    for (const r of statResults) {
-      if (!r) continue;
-      if (out.length >= maxFiles) break;
-      const ext = `.${r.name.split('.').pop()?.toLowerCase()}`;
-      let assetUrl: string | undefined;
-      if (CATEGORY_EXTENSIONS.image.includes(ext) && convertFileSrc) {
-        assetUrl = convertFileSrc(r.filePath);
-      }
-      out.push({
-        name: r.name,
-        path: r.filePath,
-        assetUrl,
-        size: r.size,
-        category: getFileCategory(r.name),
-      });
-    }
-
-    if (depth < maxDepth) {
-      for (const d of subDirs) stack.push({ dir: joinPath(dir, d.name), depth: depth + 1 });
-    }
-  }
-  return out;
-}
-
-/** 列出登记的外部文件夹中的全部文件（递归，整体上限） */
-export async function listExternalFolderFiles(
-  folders: string[],
-  opts: { maxFilesPerFolder?: number } = {},
-): Promise<AssetFileEntry[]> {
-  if (!isTauriEnv() || folders.length === 0) return [];
-  const perFolder = opts.maxFilesPerFolder ?? 3000;
-  const results = await Promise.all(
-    folders.map(async (folder) => {
-      if (!(await exists(folder).catch(() => false))) return [];
-      const files = await walkDirectoryFiles(folder, { maxFiles: perFolder });
-      return files.map((f) => ({ ...f, source: 'folder' as const, folderRoot: folder }));
-    }),
-  );
-  return results.flat();
-}
-
-/** 选择本地文件（可多选）拷贝到全局 file 目录，返回拷贝数量 */
-export async function addAssetFilesToGlobal(): Promise<number> {
-  if (!isTauriEnv()) return 0;
-  const selected = await open({ multiple: true, title: '添加文件到资产库' });
-  if (!selected) return 0;
-  const paths = Array.isArray(selected) ? selected : [selected];
-  const destDir = await ensureGlobalFilesDir();
-  if (!destDir) return 0;
-
-  let count = 0;
-  for (const src of paths) {
-    try {
-      const fileName = src.split(/[\\/]/).pop() || 'file';
-      let destPath = joinPath(destDir, fileName);
-      if (await exists(destPath)) {
-        let counter = 1;
-        const dotIndex = fileName.lastIndexOf('.');
-        const baseName = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
-        const ext = dotIndex > 0 ? fileName.substring(dotIndex) : '';
-        do {
-          destPath = joinPath(destDir, `${baseName}_${counter}${ext}`);
-          counter++;
-        } while (await exists(destPath));
-      }
-      const data = await tauriReadFile(src);
-      await writeFile(destPath, data);
-      count++;
-    } catch (err) {
-      console.error('Failed to add file to global:', src, err);
-    }
-  }
-  return count;
-}
-
-/** 选择一个本地文件夹，返回其路径（仅登记引用，不拷贝） */
-export async function pickAssetFolder(): Promise<string | null> {
-  if (!isTauriEnv()) return null;
-  const selected = await open({ directory: true, title: '添加本地文件夹' });
-  if (!selected || Array.isArray(selected)) return typeof selected === 'string' ? selected : null;
-  return selected;
 }
 
 /**
@@ -1211,104 +631,6 @@ export function extractFilesFromNodeData(
     size: 0,
     category,
   };
-}
-
-/** 将文件拷贝到全局永久目录 {baseDataDir}/file */
-export async function saveToPermanent(filePath: string): Promise<string | null> {
-  if (!isTauriEnv()) return null;
-  const destDir = await ensureGlobalFilesDir();
-  if (!destDir) return null;
-
-  try {
-    const fileName = filePath.split(/[\\/]/).pop() || 'file';
-    let destPath = joinPath(destDir, fileName);
-    // Avoid overwrite
-    if (await exists(destPath)) {
-      let counter = 1;
-      const dotIndex = fileName.lastIndexOf('.');
-      const baseName = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName;
-      const ext = dotIndex > 0 ? fileName.substring(dotIndex) : '';
-      do {
-        destPath = joinPath(destDir, `${baseName}_${counter}${ext}`);
-        counter++;
-      } while (await exists(destPath));
-    }
-
-    // Copy file
-    const data = await tauriReadFile(filePath);
-    await writeFile(destPath, data);
-    return destPath;
-  } catch (err) {
-    console.error('Failed to save file to permanent:', filePath, err);
-    return null;
-  }
-}
-
-/**
- * 将 asset entry 保存到永久目录 — 支持磁盘文件和 data URL 两种来源
- * virtual:// 路径会从 entry.assetUrl（data URL）解码写入
- */
-export async function saveAssetToPermanent(
-  entry: AssetFileEntry,
-): Promise<string | null> {
-  if (!isTauriEnv()) return null;
-
-  // 虚拟路径：从 data URL 解码写入
-  if (entry.path.startsWith('virtual://')) {
-    if (!entry.assetUrl || !entry.assetUrl.startsWith('data:')) return null;
-    const destDir = await ensureGlobalFilesDir();
-    if (!destDir) return null;
-
-    try {
-      let destPath = joinPath(destDir, entry.name);
-      if (await exists(destPath)) {
-        let counter = 1;
-        const dotIndex = entry.name.lastIndexOf('.');
-        const baseName = dotIndex > 0 ? entry.name.substring(0, dotIndex) : entry.name;
-        const ext = dotIndex > 0 ? entry.name.substring(dotIndex) : '';
-        do {
-          destPath = joinPath(destDir, `${baseName}_${counter}${ext}`);
-          counter++;
-        } while (await exists(destPath));
-      }
-
-      const match = entry.assetUrl.match(/^data:(.+?);base64,(.+)$/);
-      if (match) {
-        const b64 = match[2];
-        const binaryStr = atob(b64);
-        const bytes = new Uint8Array(binaryStr.length);
-        for (let i = 0; i < binaryStr.length; i++) {
-          bytes[i] = binaryStr.charCodeAt(i);
-        }
-        await writeFile(destPath, bytes);
-      } else {
-        const resp = await fetch(entry.assetUrl);
-        const buffer = await resp.arrayBuffer();
-        await writeFile(destPath, new Uint8Array(buffer));
-      }
-      return destPath;
-    } catch (err) {
-      console.error('Failed to save virtual asset to permanent:', entry.name, err);
-      return null;
-    }
-  }
-
-  // 真实磁盘路径
-  return saveToPermanent(entry.path);
-}
-
-/** 删除永久保存的文件（移入回收站） */
-export async function deletePermanentFile(filePath: string): Promise<void> {
-  await moveToTrash(filePath);
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
 }
 
 // ============================================

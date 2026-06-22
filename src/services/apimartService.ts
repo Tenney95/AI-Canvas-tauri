@@ -317,15 +317,3 @@ export async function generateOutpaintImage(
   onProgress?.(100);
   return { imageUrls };
 }
-
-/* ── 简单 API Key 可用性检测 ── */
-export async function testApimartConnection(apiKey: string): Promise<boolean> {
-  try {
-    const resp = await fetch(`${APIMART_BASE}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}

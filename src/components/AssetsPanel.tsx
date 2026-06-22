@@ -25,6 +25,8 @@ import {
 } from '../services/fileService';
 import { getAllAssetMeta, putAssetMeta, deleteAssetMeta } from '../services/indexedDbService';
 import { startAssetDrag, prepareDragIcon } from '../utils/assetDrag';
+import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetFormat';
+import AssetThumb from './shared/AssetThumb';
 import { springSmooth, fadeFast } from '../utils/motion';
 
 /** 仅磁盘真实文件可拖拽（排除节点引用的 node:// / virtual:// 虚拟路径）*/
@@ -34,26 +36,10 @@ function isDraggableEntry(file: AssetFileEntry): boolean {
 
 type TabKey = 'project' | 'permanent';
 
-const ALL_CATEGORIES: FileCategory[] = ['image', 'video', 'audio', 'text', 'other'];
-const CATEGORY_ICONS: Record<FileCategory, string> = {
-  image: '🖼', video: '🎬', audio: '🎵', text: '📄', other: '📁',
-};
-
 /** 单页渲染数量（增量加载步长）— 限制 DOM 规模 */
 const PAGE_SIZE = 48;
 /** 标签筛选行最多展示的标签数 */
 const MAX_TAG_CHIPS = 24;
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-function shortFolderName(p: string): string {
-  return p.split(/[\\/]/).filter(Boolean).pop() || p;
-}
 
 const backdropVariants = { hidden: { opacity: 0 }, visible: { opacity: 1 } };
 const panelVariants = {
@@ -566,21 +552,15 @@ function AssetCard({
       onDragStart={onDragStart}
       title={draggable ? '拖拽到画布以添加节点' : undefined}
     >
-      {file.assetUrl ? (
-        <div className="assets-card-img-wrap">
-          <img src={file.assetUrl} alt={file.name} className="assets-card-img" loading="lazy" decoding="async" draggable={false} />
-          <span className="assets-card-size">{formatSize(file.size)}</span>
-          {file.source === 'folder' && <span className="assets-card-badge">外部</span>}
-          <CardActions isProject={isProject} onSave={onSave} onDelete={onDelete} onToggleEdit={onToggleEdit} />
-        </div>
-      ) : (
-        <div className="assets-card-icon-wrap">
-          <span className="assets-card-icon">{CATEGORY_ICONS[file.category]}</span>
-          <span className="assets-card-size">{formatSize(file.size)}</span>
-          {file.source === 'folder' && <span className="assets-card-badge">外部</span>}
-          <CardActions isProject={isProject} onSave={onSave} onDelete={onDelete} onToggleEdit={onToggleEdit} />
-        </div>
-      )}
+      <AssetThumb
+        assetUrl={file.assetUrl}
+        name={file.name}
+        category={file.category}
+        size={file.size}
+        badge={file.source === 'folder' ? '外部' : undefined}
+      >
+        <CardActions isProject={isProject} onSave={onSave} onDelete={onDelete} onToggleEdit={onToggleEdit} />
+      </AssetThumb>
 
       {(tags.length > 0 || editing) && (
         <div className="assets-card-tags">

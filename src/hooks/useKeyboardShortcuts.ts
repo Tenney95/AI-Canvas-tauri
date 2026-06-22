@@ -189,9 +189,9 @@ export function useKeyboardShortcuts() {
     const GLB_SHORTCUTS = [
       { key: 'CommandOrControl+S', action: () => useAppStore.getState().saveCurrentProject() },
       { key: 'Alt+S', action: () => useAppStore.getState().saveCurrentProject() },
-      // Win/Super+Space：打开资源搜索窗口。Win+Space 是 Windows 系统的输入法切换键，
-      // 由 OS 占用，普通 JS keydown 拦不到，只能尝试用全局快捷键插件抢注（可能失败）。
-      { key: 'Super+Space', action: () => openAssetSearchWindow() },
+      // Alt+Space：打开资源搜索窗口（全局快捷键）。Win+Space 是 Windows 输入法切换键、
+      // 被系统保留无法抢注，故改用 Alt+Space；JS 侧另有 Ctrl+Shift+Space 备选。
+      { key: 'Alt+Space', action: () => openAssetSearchWindow() },
       // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are handled by the JS keydown handler above;
       // registering them as native shortcuts would double-fire undo/redo.
     ];

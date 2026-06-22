@@ -29,7 +29,10 @@ export async function openAssetSearchWindow(): Promise<void> {
       minHeight: 480,
       center: true,
       resizable: true,
-      decorations: true,
+      // 无系统边框 + 透明背景，配合 CSS 16px 圆角，风格同主窗口（自绘标题栏）
+      decorations: false,
+      transparent: true,
+      shadow: false,
     });
     win.once('tauri://error', (e) => console.error('[assetSearchWindow] 创建窗口失败:', e));
   } catch (err) {

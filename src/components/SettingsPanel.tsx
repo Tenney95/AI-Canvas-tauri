@@ -16,6 +16,27 @@ import type { BackgroundDetection } from '../services/backgroundService';
 
 type SettingsTab = 'general' | 'api' | 'shortcuts' | 'comfyui';
 
+/** 是否运行在 macOS（用于快捷键修饰键显示） */
+const IS_MAC = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '');
+
+/** 按当前系统生成键盘快捷键列表（修饰键 Win/Mac 自适应） */
+function getShortcutList(): { action: string; key: string }[] {
+  const mod = IS_MAC ? '⌘' : 'Ctrl';        // 应用绑定 ctrlKey||metaKey，Mac 上为 ⌘
+  const ctrl = IS_MAC ? '⌃' : 'Ctrl';       // 字面 Control 键
+  const alt = IS_MAC ? '⌥' : 'Alt';
+  const shift = IS_MAC ? '⇧' : 'Shift';
+  const del = IS_MAC ? '⌫ Delete' : 'Delete / Backspace';
+  return [
+    { action: '保存画布', key: `${mod} + S` },
+    { action: '撤销', key: `${mod} + Z` },
+    { action: '重做', key: `${mod} + Y` },
+    { action: '删除节点', key: del },
+    { action: '画布复位', key: 'F' },
+    { action: '小地图', key: 'M' },
+    { action: '资源搜索窗口', key: `${alt} + Space  /  ${ctrl} + ${shift} + Space` },
+  ];
+}
+
 /** 格式化字节为可读大小 */
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -660,14 +681,7 @@ export default function SettingsPanel() {
             {activeTab === 'shortcuts' && (
               <div className="space-y-2">
                 <p className="text-sm text-canvas-text-muted mb-4">键盘快捷键配置</p>
-                {[
-                  { action: '保存画布', key: 'Ctrl + S' },
-                  { action: '撤销', key: 'Ctrl + Z' },
-                  { action: '重做', key: 'Ctrl + Y' },
-                  { action: '删除节点', key: 'Delete / Backspace' },
-                  { action: '画布复位', key: 'F' },
-                  { action: '小地图', key: 'M' },
-                ].map(({ action, key }) => (
+                {getShortcutList().map(({ action, key }) => (
                   <div key={action} className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-canvas-hover">
                     <span className="text-sm text-canvas-text">{action}</span>
                     <kbd className="px-2 py-0.5 bg-canvas-card border border-canvas-border rounded text-[11px] text-canvas-text-secondary font-mono">

@@ -1080,14 +1080,41 @@
   color: var(--theme-text);
   font-family: inherit;
   overflow: hidden;
+  /* 无系统边框 + 透明窗口，圆角裁剪同主窗口（#root 已为 16px） */
+  border-radius: 16px;
+  border: 1px solid var(--theme-border);
 }
 .asset-search-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 20px 8px;
+  padding: 14px 14px 8px 20px;
   flex-shrink: 0;
+  -webkit-user-select: none;
+  user-select: none;
 }
+/* 右侧控制区：刷新 + 窗口按钮 */
+.asset-search-winctrls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.asset-search-winbtn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-muted);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color var(--transition-base), background var(--transition-base);
+}
+.asset-search-winbtn:hover { color: var(--theme-text); background: var(--white-alpha-08); }
+.asset-search-winbtn.close:hover { color: #fff; background: rgba(239, 68, 68, 0.75); }
 .asset-search-title {
   font-size: 17px;
   font-weight: 600;
@@ -1099,7 +1126,6 @@
   font-variant-numeric: tabular-nums;
 }
 .asset-search-refresh {
-  margin-left: auto;
   display: flex;
   align-items: center;
   justify-content: center;

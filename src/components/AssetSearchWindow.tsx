@@ -21,12 +21,9 @@ import {
 } from '../services/fileService';
 import { getAllAssetMeta } from '../services/indexedDbService';
 import { startAssetDrag, prepareDragIcon } from '../utils/assetDrag';
+import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetFormat';
+import AssetThumb from './shared/AssetThumb';
 import type { AppConfig } from '../types';
-
-const ALL_CATEGORIES: FileCategory[] = ['image', 'video', 'audio', 'text', 'other'];
-const CATEGORY_ICONS: Record<FileCategory, string> = {
-  image: '🖼', video: '🎬', audio: '🎵', text: '📄', other: '📁',
-};
 
 /** 单页渲染数量（增量加载步长）*/
 const PAGE_SIZE = 60;
@@ -41,17 +38,6 @@ interface SourceOption {
   key: string;        // 'all' | `project:<id>` | 'global' | `folder:<root>`
   label: string;
   group?: string;     // optgroup 分组标题
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-function shortFolderName(p: string): string {
-  return p.split(/[\\/]/).filter(Boolean).pop() || p;
 }
 
 export default function AssetSearchWindow() {
@@ -199,6 +185,14 @@ export default function AssetSearchWindow() {
     revealFileInFolder(path).catch(() => {});
   }, []);
 
+  // 自绘标题栏：窗口控制（无系统边框）
+  const minimizeWin = useCallback(() => {
+    import('@tauri-apps/api/window').then((m) => m.getCurrentWindow().minimize()).catch(() => {});
+  }, []);
+  const closeWin = useCallback(() => {
+    import('@tauri-apps/api/window').then((m) => m.getCurrentWindow().close()).catch(() => {});
+  }, []);
+
   // 分组后的来源下拉
   const groupedSources = useMemo(() => {
     const flat = sources.filter((s) => !s.group);
@@ -214,15 +208,26 @@ export default function AssetSearchWindow() {
 
   return (
     <div className="asset-search-root">
-      <div className="asset-search-header">
+      <div className="asset-search-header" data-tauri-drag-region>
         <h1 className="asset-search-title">资源搜索</h1>
         <span className="asset-search-total">{filtered.length} / {files.length}</span>
-        <button type="button" className="asset-search-refresh" onClick={loadAll} disabled={loading} title="刷新">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
-            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-          </svg>
-        </button>
+        <div className="asset-search-winctrls">
+          <button type="button" className="asset-search-refresh" onClick={loadAll} disabled={loading} title="刷新">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+            </svg>
+          </button>
+          <button type="button" className="asset-search-winbtn" onClick={minimizeWin} aria-label="最小化" title="最小化">
+            <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0" y="5" width="10" height="1" fill="currentColor" /></svg>
+          </button>
+          <button type="button" className="asset-search-winbtn close" onClick={closeWin} aria-label="关闭" title="关闭">
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.2" />
+              <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.2" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div className="asset-search-toolbar">
@@ -328,33 +333,15 @@ function SearchCard({ file, onReveal, onDragStart }: {
       : '全局';
   return (
     <div className="assets-waterfall-card anim-card-in" draggable onDragStart={onDragStart} title="拖拽到主窗口画布以添加节点">
-      {file.assetUrl ? (
-        <div className="assets-card-img-wrap">
-          <img src={file.assetUrl} alt={file.name} className="assets-card-img" loading="lazy" decoding="async" draggable={false} />
-          <span className="assets-card-size">{formatSize(file.size)}</span>
-          <span className="assets-card-badge">{sourceLabel}</span>
-          <div className="assets-card-actions">
-            <button type="button" className="assets-card-action-btn" title="在文件夹中显示" onClick={onReveal}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-              </svg>
-            </button>
-          </div>
+      <AssetThumb assetUrl={file.assetUrl} name={file.name} category={file.category} size={file.size} badge={sourceLabel}>
+        <div className="assets-card-actions">
+          <button type="button" className="assets-card-action-btn" title="在文件夹中显示" onClick={onReveal}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+          </button>
         </div>
-      ) : (
-        <div className="assets-card-icon-wrap">
-          <span className="assets-card-icon">{CATEGORY_ICONS[file.category]}</span>
-          <span className="assets-card-size">{formatSize(file.size)}</span>
-          <span className="assets-card-badge">{sourceLabel}</span>
-          <div className="assets-card-actions">
-            <button type="button" className="assets-card-action-btn" title="在文件夹中显示" onClick={onReveal}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      )}
+      </AssetThumb>
       {tags.length > 0 && (
         <div className="assets-card-tags">
           {tags.map((t) => <span key={t} className="assets-card-tag">{t}</span>)}

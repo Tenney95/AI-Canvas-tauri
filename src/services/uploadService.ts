@@ -114,11 +114,3 @@ export async function uploadToRemote(url: string): Promise<string> {
     throw err;
   }
 }
-
-/**
- * 批量上传本地图片到远端
- * 已是远程 URL 的条目原样返回
- */
-export async function uploadAllToRemote(urls: string[]): Promise<string[]> {
-  return Promise.all(urls.map((u) => uploadToRemote(u)));
-}

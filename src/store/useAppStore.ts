@@ -41,7 +41,7 @@ import { createClipboardSlice } from './store.clipboard';
 import { createProjectSlice } from './store.projects';
 
 // ---- Re-export utilities for backward compatibility ----
-export { generateId, generateProjectId, computeImageNodeDimensions } from './store.utils';
+export { generateId, computeImageNodeDimensions } from './store.utils';
 
 // ---- Composed AppState type ----
 export type AppState = NodeSlice

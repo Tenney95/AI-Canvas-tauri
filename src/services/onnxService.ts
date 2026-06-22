@@ -89,20 +89,6 @@ export async function downloadModel(modelName: string): Promise<DownloadResult> 
 }
 
 /**
- * 获取模型的下载 URL（供 UI 展示）
- */
-export function getModelDownloadUrl(modelName: string): string | null {
-  return MODEL_REGISTRY[modelName] || null;
-}
-
-/**
- * 获取所有已注册模型名称
- */
-export function getRegisteredModels(): string[] {
-  return Object.keys(MODEL_REGISTRY);
-}
-
-/**
  * 调用 ONNX 图像超分推理
  * @param inputPath 输入图像文件路径（绝对路径）
  * @param outputPath 输出图像文件路径（绝对路径，父目录自动创建）
@@ -122,14 +108,6 @@ export async function imageUpscale(
     taskId,
   });
   return JSON.parse(json) as UpscaleResult;
-}
-
-/** 超分进度事件负载 */
-export interface UpscaleProgress {
-  taskId: string;
-  done: number;
-  total: number;
-  percent: number;
 }
 
 /**
@@ -152,25 +130,4 @@ export async function subjectMatting(
     taskId,
   });
   return JSON.parse(json) as MattingResult;
-}
-
-/** GPU 加速状态 */
-export interface GpuStatus {
-  ep: string;
-  device_name: string | null;
-  probed_at: string | null;
-}
-
-/**
- * 查询当前 ONNX GPU 加速状态（从缓存读取）
- * @returns GPU 状态信息，或 null（非 Tauri 环境）
- */
-export async function getOnnxGpuStatus(): Promise<GpuStatus | null> {
-  if (!isTauriEnv()) return null;
-  try {
-    const json: string = await invoke('get_onnx_gpu_status');
-    return JSON.parse(json) as GpuStatus;
-  } catch {
-    return null;
-  }
 }
