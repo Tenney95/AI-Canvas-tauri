@@ -190,6 +190,96 @@
 }
 
 /* ============================================
+   钢笔工具（贝塞尔不规则裁剪）
+   ============================================ */
+
+/* 模式切换组 */
+.crop-mode-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--theme-hover, rgba(255, 255, 255, 0.05));
+}
+
+/* 工具栏分隔线 */
+.crop-bar-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--theme-border);
+}
+
+/* 钢笔操作提示 */
+.crop-pen-hint {
+  font-size: 11px;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.4));
+  white-space: nowrap;
+  padding: 0 4px;
+}
+
+/* 确认按钮禁用态 */
+.crop-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* 钢笔 SVG 覆盖层 — 精确铺在图像上 */
+.crop-pen-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  touch-action: none;
+}
+
+/* 钢笔模式下禁用 ReactCrop 交互并隐藏矩形选区 */
+.crop-stage.pen-mode .crop-react-wrapper {
+  pointer-events: none;
+}
+.crop-stage.pen-mode .ReactCrop__crop-selection {
+  display: none;
+}
+.crop-stage.pen-mode .crop-pen-svg {
+  cursor: crosshair;
+}
+
+/* 路径填充与描边 */
+.crop-pen-fill {
+  fill: var(--brand-alpha-10, rgba(99, 102, 241, 0.18));
+}
+.crop-pen-stroke {
+  stroke: var(--brand, #6366f1);
+}
+
+/* 控制柄 */
+.crop-pen-handles line {
+  stroke: var(--brand, #6366f1);
+  opacity: 0.7;
+}
+.crop-pen-handles circle {
+  fill: #fff;
+  stroke: var(--brand, #6366f1);
+}
+
+/* 锚点 */
+.crop-pen-anchor {
+  fill: #fff;
+  stroke: #111;
+  cursor: pointer;
+}
+.crop-pen-anchor.selected {
+  fill: var(--brand, #6366f1);
+  stroke: #fff;
+}
+.crop-pen-anchor.first {
+  fill: var(--success, #22c55e);
+  stroke: #fff;
+}
+
+/* ============================================
    Expand Editor — 扩图（outpainting）
    复用 crop-overlay / crop-aspect-bar / crop-stage
    ============================================ */
