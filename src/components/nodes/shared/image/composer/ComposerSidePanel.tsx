@@ -11,9 +11,13 @@ import type { ComposerApi } from './useComposer';
 interface Props {
   composer: ComposerApi;
   nodeId: string;
+  /** 对选中图片图层识别主体 */
+  onMatteSubject: () => void;
+  /** 正在识别主体的图层 id（用于按钮 loading 态） */
+  mattingLayerId: string | null;
 }
 
-export default function ComposerSidePanel({ composer, nodeId }: Props) {
+export default function ComposerSidePanel({ composer, nodeId, onMatteSubject, mattingLayerId }: Props) {
   const { layers, selectedId, setSelectedId, selectedLayer, updateLayer, removeLayer, duplicateLayer, reorderLayer, addImageLayer, addText } = composer;
 
   /* ── 连线节点内容 ── */
@@ -77,6 +81,16 @@ export default function ComposerSidePanel({ composer, nodeId }: Props) {
             <span>透明度</span>
             <input type="range" min={0} max={1} step={0.01} value={selectedLayer.opacity} onChange={(e) => patch({ opacity: +e.target.value })} />
           </label>
+
+          {selectedLayer.type === 'image' && (
+            <AnimatedButton
+              className="crop-aspect-btn composer-matte-btn"
+              disabled={mattingLayerId === selectedLayer.id}
+              onClick={onMatteSubject}
+            >
+              {mattingLayerId === selectedLayer.id ? '识别主体中…' : '识别主体（抠图）'}
+            </AnimatedButton>
+          )}
 
           {selectedLayer.type === 'text' && (
             <>

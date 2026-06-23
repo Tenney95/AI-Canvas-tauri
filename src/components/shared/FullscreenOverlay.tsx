@@ -6,6 +6,7 @@ import { useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { ReactNode } from 'react';
+import { EASE_OUT_EXPO } from '../../utils/motion';
 
 export interface FullscreenOverlayProps {
   isOpen: boolean;
@@ -28,22 +29,33 @@ export interface FullscreenOverlayProps {
 
 const backdropVariants = {
   hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: { duration: 1, ease: EASE_OUT_EXPO },
+  },
+};
+
+/** hidePanel 模式下蒙层不做淡入（避免遮盖图片飞入动画的视觉效果） */
+const backdropVariantsInstant = {
+  hidden: { opacity: 1 },
   visible: { opacity: 1 },
 };
 
 const panelVariants = {
-  hidden: { opacity: 0, scale: 0.95, y: 20 },
+  hidden: { opacity: 0, scale: 0.96, y: 18, filter: 'blur(8px)' },
   visible: {
     opacity: 1,
     scale: 1,
     y: 0,
-    transition: { type: 'spring' as const, stiffness: 350, damping: 30 },
+    filter: 'blur(0px)',
+    transition: { duration: 1, ease: EASE_OUT_EXPO },
   },
   exit: {
     opacity: 0,
-    scale: 0.95,
-    y: 20,
-    transition: { duration: 0.15, ease: 'easeIn' as const },
+    scale: 0.985,
+    y: 10,
+    filter: 'blur(4px)',
+    transition: { duration: 1, ease: EASE_OUT_EXPO },
   },
 };
 
@@ -79,11 +91,11 @@ export default function FullscreenOverlay({
       {isOpen && (
         <motion.div
           className={`fullscreen-overlay${hidePanel ? ' fullscreen-overlay--transparent' : ''} ${className}`}
-          variants={backdropVariants}
+          variants={hidePanel ? backdropVariantsInstant : backdropVariants}
           initial="hidden"
           animate="visible"
           exit="hidden"
-          transition={{ duration: 0.2 }}
+          transition={{ duration: 1, ease: EASE_OUT_EXPO }}
           onClick={hidePanel ? undefined : onClose}
         >
           {hidePanel ? (

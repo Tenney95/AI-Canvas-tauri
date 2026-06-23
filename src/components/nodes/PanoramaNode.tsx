@@ -303,16 +303,6 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
     store.showToast('截图已创建为图片节点', 'success');
   }, [id, nodeWidth, nodeHeight, isFullscreen]);
 
-  /* ── Download ── */
-  const handleDownload = useCallback(() => {
-    const src = (data.imageUrl || data.thumbnailUrl) as string | undefined;
-    if (!src) return;
-    const link = document.createElement('a');
-    link.download = (data.fileName as string) || `panorama-${Date.now()}.png`;
-    link.href = src;
-    link.click();
-  }, [data.imageUrl, data.thumbnailUrl, data.fileName]);
-
   /* ── Upload ── */
   const { isUploading, handleUpload: doUpload } = useSourceFileUpload('.png,.jpg,.jpeg,.webp');
   const handleUpload = useCallback(async () => {
@@ -453,7 +443,6 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
               previewMode={previewMode}
               onScreenshot={handleScreenshot}
               onFullscreen={toggleFullscreen}
-              onDownload={handleDownload}
             />
           </div>
         )}
@@ -486,18 +475,6 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
               <circle cx="12" cy="13" r="4" />
             </svg>
             <span>截图</span>
-          </AnimatedButton>
-          <AnimatedButton
-            className="pano-fs-btn"
-            onClick={handleDownload}
-            title="下载原始全景图"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            <span>下载</span>
           </AnimatedButton>
         </div>
       </FullscreenOverlay>

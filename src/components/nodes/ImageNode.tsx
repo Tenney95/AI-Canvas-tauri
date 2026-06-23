@@ -83,6 +83,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const [mattingError, setMattingError] = useState(false);
   const [annotateError, setAnnotateError] = useState(false);
   const [fullscreenError, setFullscreenError] = useState(false);
+  const imagePreviewRef = useRef<HTMLImageElement>(null);
+  const [fullscreenOrigin, setFullscreenOrigin] = useState<{ left: number; top: number; width: number; height: number } | undefined>();
 
   // 当 imageUrl 变化时重置加载错误状态
   const displaySrc = (data.imageUrl || data.thumbnailUrl) as string | undefined;
@@ -482,8 +484,15 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
      Fullscreen State
      ════════════════════════════════════════════ */
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const handleOpenFullscreen = useCallback(() => setIsFullscreen(true), []);
-  const handleCloseFullscreen = useCallback(() => setIsFullscreen(false), []);
+  const handleOpenFullscreen = useCallback(() => {
+    const rect = imagePreviewRef.current?.getBoundingClientRect();
+    setFullscreenOrigin(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined);
+    setIsFullscreen(true);
+  }, []);
+  const handleCloseFullscreen = useCallback(() => {
+    setIsFullscreen(false);
+    setFullscreenOrigin(undefined);
+  }, []);
 
   /* ════════════════════════════════════════════
      Upscale — ONNX + DirectML 超分
@@ -779,6 +788,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                   </div>
                 ) : (
                   <img
+                    ref={imagePreviewRef}
                     src={displaySrc}
                     alt="Generated"
                     className={`image-preview-img compact img-reveal${imgLoaded ? ' is-loaded' : ''}`}
@@ -973,6 +983,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             src={(data.imageUrl || data.thumbnailUrl) as string}
             alt={(data.label as string) || '预览'}
             className="fullscreen-img-view"
+            originRect={fullscreenOrigin}
             onError={() => setFullscreenError(true)}
           />
         )}

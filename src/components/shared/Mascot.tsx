@@ -29,7 +29,7 @@ import {
   Vector2,
   Raycaster,
   MathUtils,
-  Clock,
+  Timer,
 } from 'three';
 
 /* ── 可调参数 ── */
@@ -171,13 +171,13 @@ export default function Mascot() {
     };
 
     /* ── 渲染循环 ── */
-    const clock = new Clock();
+    const clock = new Timer();
     let raf = 0;
 
     const render = () => {
       raf = requestAnimationFrame(render);
       const dt = clock.getDelta();
-      const t = clock.elapsedTime;
+      const t = clock.getElapsed();
 
       // 目标偏转：始终看向光标（look 已归一化并夹紧）
       const px = look.x;

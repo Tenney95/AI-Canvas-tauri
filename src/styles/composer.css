@@ -14,20 +14,57 @@
   width: 100%;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
+  transform-origin: center center;
+  animation: composerRootBloom 1000ms var(--ease-out-expo) both;
 }
 
 /* ── 顶栏 ── */
 .composer-toolbar {
-  display: flex;
+  position: relative;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
   align-items: center;
   gap: 4px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
+  padding: 8px;
   z-index: 10;
   background: var(--glass-bg-light);
   backdrop-filter: blur(var(--glass-blur-md));
   border-bottom: 1px solid var(--glass-ring);
+  animation: composerToolsReveal 1000ms var(--ease-out-expo) 320ms both;
 }
+
+.composer-toolbar-main {
+  grid-column: 2;
+  justify-self: center;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.composer-toolbar-close {
+  grid-column: 3;
+  justify-self: end;
+  margin-right: 0;
+}
+
+.composer-overlay > .fullscreen-close--absolute {
+  display: none;
+}
+
+/* 按钮文字默认用主文本色（暗色主题下 secondary 偏暗、可读性差） */
+.composer-toolbar .crop-aspect-btn,
+.composer-side .crop-aspect-btn {
+  color: var(--theme-text);
+}
+
+/* 图标按钮：方形内边距；带文字的（如尺寸）图标与文字留间距 */
+.composer-toolbar .crop-aspect-btn { gap: 5px; }
+.composer-toolbar .crop-aspect-btn.icon-only { padding: 5px; }
+.composer-toolbar .crop-aspect-btn svg { display: block; }
 
 .composer-zoom-text {
   font-size: 12px;
@@ -49,6 +86,8 @@
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  transform-origin: center center;
+  animation: composerStageBloom 1000ms var(--ease-out-expo) 120ms both;
   /* 棋盘格表示透明区 */
   background-color: #15151c;
   background-image:
@@ -80,6 +119,7 @@
   position: absolute;
   pointer-events: none;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4), 0 10px 40px rgba(0, 0, 0, 0.5);
+  animation: composerPageFocus 1000ms var(--ease-out-expo) 260ms both;
 }
 
 .composer-zoom-indicator {
@@ -133,7 +173,7 @@
 .composer-menu-empty {
   padding: 10px;
   font-size: 12px;
-  color: var(--theme-text-muted, rgba(255, 255, 255, 0.4));
+  color: var(--theme-text-secondary);
   text-align: center;
 }
 
@@ -195,6 +235,78 @@
   background: var(--glass-bg-light);
   backdrop-filter: blur(var(--glass-blur-md));
   border-left: 1px solid var(--glass-ring);
+  animation: composerSideReveal 1000ms var(--ease-out-expo) 380ms both;
+}
+
+@keyframes composerRootBloom {
+  from {
+    opacity: 0;
+    transform: scale(0.965);
+    filter: blur(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes composerStageBloom {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  58% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes composerPageFocus {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes composerToolsReveal {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes composerSideReveal {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-root,
+  .composer-toolbar,
+  .composer-stage-wrap,
+  .composer-page-frame,
+  .composer-side {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
 }
 
 .composer-side-section { margin-bottom: 12px; }
@@ -203,7 +315,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--theme-text-muted, rgba(255, 255, 255, 0.4));
+  color: var(--theme-text-secondary);
   margin-bottom: 8px;
 }
 
@@ -217,7 +329,7 @@
   border: 1px solid transparent;
   cursor: pointer;
   font-size: 12px;
-  color: var(--theme-text-secondary);
+  color: var(--theme-text);
 }
 .composer-layer-item:hover { background: var(--theme-hover); }
 .composer-layer-item.active {
@@ -245,7 +357,7 @@
   gap: 8px;
   margin-bottom: 8px;
   font-size: 12px;
-  color: var(--theme-text-secondary);
+  color: var(--theme-text);
 }
 .composer-field > span { flex-shrink: 0; }
 .composer-field input[type='range'] { flex: 1; }
@@ -274,7 +386,7 @@
   padding: 4px 6px;
   border: 1px solid var(--theme-border);
   background: transparent;
-  color: var(--theme-text-secondary);
+  color: var(--theme-text);
   font-size: 12px;
   border-radius: 6px;
   cursor: pointer;
@@ -319,10 +431,16 @@
 }
 .composer-file-label {
   font-size: 11px;
-  color: var(--theme-text-secondary);
+  color: var(--theme-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.composer-matte-btn {
+  width: 100%;
+  justify-content: center;
+  margin-bottom: 10px;
 }
 
 .composer-side-actions { display: flex; gap: 6px; margin-top: 10px; }

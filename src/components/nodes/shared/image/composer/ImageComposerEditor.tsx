@@ -11,6 +11,9 @@ import Konva from 'konva';
 import { Stage, Layer as KLayer, Rect, Ellipse, Image as KImage, Text as KText, Line, Arrow, Transformer } from 'react-konva';
 import FullscreenOverlay from '../../../../shared/FullscreenOverlay';
 import { setExternalDropCaptured } from '../../../../../utils/dropCapture';
+import { useAppStore } from '../../../../../store/useAppStore';
+import { saveDataUrlToProjectData } from '../../../../../services/fileService';
+import { subjectMatting, checkModelExists, downloadModel } from '../../../../../services/onnxService';
 import { loadSafeImage } from '../imageUtils';
 import { useComposer } from './useComposer';
 import ComposerToolbar from './ComposerToolbar';
@@ -29,7 +32,14 @@ interface ImageComposerEditorProps {
 
 const MAX_SEED = 2048;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
+const MATTING_MODEL = 'rmbg-1.4.onnx';
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+
+const errMessage = (err: unknown, fallback: string): string =>
+  typeof err === 'string' ? err
+  : err instanceof Error ? err.message
+  : err && typeof err === 'object' && 'message' in err ? String((err as Record<string, unknown>).message)
+  : fallback;
 
 export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose, onStart, onSave }: ImageComposerEditorProps) {
   const cmp = useComposer();
@@ -244,6 +254,47 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
     };
   }, [isOpen, addImageLayer]);
 
+  /* ── 识别主体：对选中图片图层抠出主体（透明背景）并原位替换 ──
+   * 复用节点端的 ONNX RMBG-1.4。需桌面端 + 已保存项目（要落地本地文件）。 */
+  const [mattingLayerId, setMattingLayerId] = useState<string | null>(null);
+  const handleMatteSubject = useCallback(async () => {
+    const layer = selectedLayer;
+    if (!layer || layer.type !== 'image') return;
+    const store = useAppStore.getState();
+    if (!('__TAURI_INTERNALS__' in window)) {
+      store.showToast('主体识别仅桌面端可用', 'error');
+      return;
+    }
+    const projectId = store.currentProjectId;
+    if (!projectId || projectId === 'default') {
+      store.showToast('请先在项目中使用主体识别', 'error');
+      return;
+    }
+
+    setMattingLayerId(layer.id);
+    try {
+      if (!(await checkModelExists(MATTING_MODEL))) {
+        store.showToast('正在下载主体识别模型…');
+        await downloadModel(MATTING_MODEL);
+      }
+      // 1. 落地图层图片为输入文件
+      const saved = await saveDataUrlToProjectData(layer.src, projectId, `composer_subject_${Date.now()}.png`);
+      if (!saved) throw new Error('无法写入临时文件');
+      // 2. 抠主体
+      const outputPath = `${saved.filePath.replace(/\.[^.]+$/, '')}_subject.png`;
+      const result = await subjectMatting(saved.filePath, outputPath, MATTING_MODEL, `composer-matting-${Date.now()}`);
+      // 3. 载回并原位替换图层图片
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      const img = await loadSafeImage(convertFileSrc(result.subject_path));
+      updateLayer(layer.id, { image: img, src: img.src, width: img.naturalWidth, height: img.naturalHeight } as Partial<Layer>);
+      store.showToast(`主体识别完成 (${result.input_size})`);
+    } catch (err) {
+      store.showToast(errMessage(err, '主体识别失败'), 'error');
+    } finally {
+      setMattingLayerId(null);
+    }
+  }, [selectedLayer, updateLayer]);
+
   /* ── 导出：临时复位相机 + 舞台尺寸=画布，导出原生分辨率透明 PNG ── */
   const handleExport = useCallback(() => {
     const stage = stageRef.current;
@@ -456,7 +507,12 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
             <span className="composer-zoom-indicator">{Math.round(camScale * 100)}%</span>
           </div>
 
-          <ComposerSidePanel composer={cmp} nodeId={nodeId} />
+          <ComposerSidePanel
+            composer={cmp}
+            nodeId={nodeId}
+            onMatteSubject={handleMatteSubject}
+            mattingLayerId={mattingLayerId}
+          />
         </div>
       </div>
     </FullscreenOverlay>

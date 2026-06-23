@@ -223,6 +223,8 @@ export function useKeyboardShortcuts() {
         // Register all shortcuts
         const registerAll = async () => {
           if (!active || !shortcutModule) return;
+          // 先清理旧注册，避免重复注册（HMR / 窗口重新聚焦时可能残留）
+          try { await shortcutModule.unregisterAll(); } catch { /* ignore */ }
           for (const s of GLB_SHORTCUTS) {
             try {
               // 仅在按下时触发（插件会同时回调 Pressed / Released，避免重复执行）
