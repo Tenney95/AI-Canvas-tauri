@@ -16,7 +16,7 @@ import OutputHistoryPanel from './components/OutputHistoryPanel';
 import Toast from './components/Toast';
 import SplashScreen from './components/SplashScreen';
 import CanvasBackground from './components/backgrounds/CanvasBackground';
-import Mascot from './components/shared/Mascot';
+import Mascot from './components/shared/mascot/Mascot';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useAppStore } from './store/useAppStore';
@@ -60,6 +60,10 @@ export default function App() {
   const configTheme = useAppStore((s) => s.config.theme);
   const canvasBackground = useAppStore((s) => s.config.canvasBackground);
   const mascotVisible = useAppStore((s) => s.config.mascotVisible);
+  // 任意节点处于生成中 → 吉祥物切换为 LOADING 形态
+  const mascotLoading = useAppStore((s) =>
+    s.nodes.some((n) => (n.data as { status?: string })?.status === 'loading'),
+  );
   const effectiveTheme = canvasBackground === 'off-white' ? 'light' : configTheme;
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', effectiveTheme);
@@ -135,7 +139,7 @@ export default function App() {
       {/* 吉祥物 — 右下角浮动预览，默认隐藏，Ctrl+Shift+M 切换 */}
       {mascotVisible && (
         <div className="fixed bottom-40 right-5 z-20 h-[100px] w-[100px] pointer-events-auto">
-          <Mascot />
+          <Mascot loading={mascotLoading} />
         </div>
       )}
     </div>

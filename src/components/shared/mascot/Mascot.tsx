@@ -4,12 +4,17 @@
  * 一个柔和明暗过渡的圆球，会自然眨眼，眼睛跟随鼠标方向，
  * 鼠标悬浮在球体上时整体高亮。
  *
+ * 请求模型时（loading=true）整体淡出、缩小，自然过渡为「LOADING」文字碎裂动画；
+ * 完成后再平滑还原为圆球。
+ *
  * 用法：放进任意有尺寸的容器即可（组件会铺满父级）。
  *   <div style={{ width: 480, height: 480 }}>
- *     <Mascot />
+ *     <Mascot loading={isLoading} />
  *   </div>
  */
 import { useEffect, useRef } from 'react';
+import { gsap } from 'gsap';
+import { createLoadingText, type LoadingText } from './loadingText';
 import {
   Scene,
   PerspectiveCamera,
@@ -59,8 +64,18 @@ function makeEyeShape(width: number, height: number): Shape {
   return shape;
 }
 
-export default function Mascot() {
+interface MascotProps {
+  /** 请求模型中 → 切换为 LOADING 碎裂动画 */
+  loading?: boolean;
+}
+
+export default function Mascot({ loading = false }: MascotProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // 把最新 loading 放进 ref，供常驻渲染循环读取（避免重建场景）
+  const loadingRef = useRef(loading);
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -102,6 +117,7 @@ export default function Mascot() {
       metalness: 0.0,
       emissive: new Color(0x8a93ff),
       emissiveIntensity: 0, // 悬浮时提升
+      transparent: true, // 切换 LOADING 时淡出
     });
     const sphere = new Mesh(
       new SphereGeometry(SPHERE_RADIUS, 96, 96),
@@ -116,6 +132,7 @@ export default function Mascot() {
     const eyeMat = new MeshBasicMaterial({
       color: 0x1a1a1f,
       side: DoubleSide,
+      transparent: true,
     });
     const eyeGeo = new ShapeGeometry(makeEyeShape(0.16, 0.34));
 
@@ -170,13 +187,22 @@ export default function Mascot() {
       nextBlinkAt = now + BLINK_MIN + Math.random() * (BLINK_MAX - BLINK_MIN);
     };
 
+    /* ── LOADING 形态状态 ── */
+    let loadText: LoadingText | null = null;
+    let creatingLoad = false;
+    let loadAmount = 0; // 0 = 圆球, 1 = LOADING 碎裂
+    let hoverScale = 1;
+    // gsap 时间线（与参考一致：4s easeInOut yoyo，progress 0→0.6，rotation 0→2π）
+    let tl: gsap.core.Timeline | null = null;
+    const anim = { progress: 0, ry: 0 };
+
     /* ── 渲染循环 ── */
     const clock = new Timer();
     let raf = 0;
 
     const render = () => {
       raf = requestAnimationFrame(render);
-      const dt = clock.getDelta();
+      clock.update(); // Timer 必须每帧 update，否则 getElapsed 恒为 0
       const t = clock.getElapsed();
 
       // 目标偏转：始终看向光标（look 已归一化并夹紧）
@@ -232,12 +258,49 @@ export default function Mascot() {
         hovering ? 1.9 : 1.4,
         0.1,
       );
-      const targetScale = hovering ? 1.04 : 1;
-      const s = MathUtils.lerp(head.scale.x, targetScale, 0.1);
-      head.scale.setScalar(s);
+      hoverScale = MathUtils.lerp(hoverScale, hovering ? 1.04 : 1, 0.1);
 
-      // dt 当前仅用于触发时钟前进，避免 lint 未使用告警
-      void dt;
+      /* ── LOADING 形态：圆球 ⇄ 文字碎裂 平滑过渡 ── */
+      const wantLoad = loadingRef.current;
+      if (wantLoad && !loadText && !creatingLoad) {
+        creatingLoad = true;
+        createLoadingText()
+          .then((lt) => {
+            loadText = lt;
+            lt.mesh.visible = false;
+            scene.add(lt.mesh);
+            // 参考时间线：progress 0→0.6 与 rotation 0→2π，4s easeInOut，yoyo 无限循环
+            tl = gsap.timeline({ repeat: -1, repeatDelay: 0.5, yoyo: true });
+            tl.fromTo(anim, { progress: 0 }, { progress: 0.6, duration: 4, ease: 'power1.inOut' }, 0);
+            tl.fromTo(anim, { ry: 0 }, { ry: Math.PI * 2, duration: 4, ease: 'power1.inOut' }, 0);
+            creatingLoad = false;
+          })
+          .catch(() => { creatingLoad = false; });
+      }
+      const loadTarget = wantLoad && loadText ? 1 : 0;
+      loadAmount = MathUtils.lerp(loadAmount, loadTarget, 0.07);
+      if (loadTarget === 0 && loadAmount < 0.002) loadAmount = 0;
+
+      // 头部随 loadAmount 淡出 + 缩小
+      sphereMat.opacity = 1 - loadAmount;
+      eyeMat.opacity = 1 - loadAmount;
+      head.visible = loadAmount < 0.995;
+      head.scale.setScalar(hoverScale * (1 - loadAmount * 0.5));
+
+      // LOADING 网格：由 gsap 时间线驱动 uTime + 自转
+      if (loadText) {
+        const lt = loadText;
+        const show = loadAmount > 0.002;
+        lt.mesh.visible = show;
+        lt.material.opacity = loadAmount;
+        if (show) {
+          tl?.play();
+          lt.setUTime(lt.animationDuration * anim.progress);
+          lt.mesh.rotation.y = anim.ry;
+        } else {
+          tl?.pause();
+        }
+      }
 
       renderer.render(scene, camera);
     };
@@ -264,6 +327,11 @@ export default function Mascot() {
       sphereMat.dispose();
       eyeGeo.dispose();
       eyeMat.dispose();
+      tl?.kill();
+      if (loadText) {
+        scene.remove(loadText.mesh);
+        loadText.dispose();
+      }
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
