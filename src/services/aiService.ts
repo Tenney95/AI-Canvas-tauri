@@ -678,7 +678,18 @@ async function fetchApimartTask<TResult = Record<string, unknown>>(
     const errBody = await resp.text().catch(() => '');
     throw new Error(`APIMart 任务查询失败 (${resp.status}): ${errBody.slice(0, 200)}`);
   }
-  return (await resp.json()) as ApimartTaskResult<TResult>;
+  const raw = (await resp.json()) as Record<string, unknown>;
+  // 归一化：API 返回 { code, data: { status, progress, result } }，将 data 字段提升到顶层
+  if (raw.data && typeof raw.data === 'object' && !Array.isArray(raw.data)) {
+    const d = raw.data as Record<string, unknown>;
+    return {
+      code: raw.code as number,
+      status: (d.status ?? raw.status) as string | undefined,
+      progress: (d.progress ?? raw.progress) as number | undefined,
+      result: d.result as TResult | undefined,
+    };
+  }
+  return raw as unknown as ApimartTaskResult<TResult>;
 }
 
 /** APIMart 视频生成 — 异步提交 + 轮询，与图片生成相同的任务模式 */
