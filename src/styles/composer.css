@@ -1,0 +1,330 @@
+/* ============================================
+   多图自由编辑器（react-konva 合成器）
+   ============================================ */
+
+.composer-overlay {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.composer-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ── 顶栏 ── */
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  z-index: 10;
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur-md));
+  border-bottom: 1px solid var(--glass-ring);
+}
+
+.composer-zoom-text {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-secondary);
+  min-width: 44px;
+  text-align: center;
+}
+
+/* ── 主体：舞台 + 右侧面板 ── */
+.composer-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.composer-stage-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  /* 棋盘格表示透明区 */
+  background-color: #15151c;
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.05) 75%);
+  background-size: 22px 22px;
+  background-position: 0 0, 11px 11px;
+}
+
+/* 拖入图片高亮 */
+.composer-stage-wrap.drag-over::after {
+  content: '松手加入图层';
+  position: absolute;
+  inset: 10px;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--brand, #6366f1);
+  background: rgba(99, 102, 241, 0.12);
+  border: 2px dashed var(--brand, #6366f1);
+  border-radius: 12px;
+  pointer-events: none;
+}
+
+.composer-page-frame {
+  position: absolute;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4), 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.composer-zoom-indicator {
+  position: absolute;
+  bottom: 12px;
+  right: 16px;
+  padding: 3px 10px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 6px;
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.composer-text-edit {
+  position: absolute;
+  z-index: 20;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--brand, #6366f1);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  line-height: 1.1;
+  resize: none;
+  overflow: hidden;
+  outline: none;
+  font-weight: bold;
+}
+
+/* ── 下拉菜单 ── */
+.composer-dd {
+  position: relative;
+}
+
+.composer-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 180px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--theme-surface, #15151c);
+  border: 1px solid var(--glass-ring);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.composer-menu-empty {
+  padding: 10px;
+  font-size: 12px;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.4));
+  text-align: center;
+}
+
+.composer-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--theme-text);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.composer-menu-item.row { justify-content: flex-start; }
+.composer-menu-item:hover { background: var(--theme-hover); }
+.composer-menu-item.active { color: var(--brand); background: var(--brand-alpha-10); }
+.composer-menu-item img {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.composer-menu-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.composer-menu-custom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--theme-border);
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--theme-text-secondary);
+}
+.composer-menu-custom input[type='number'] {
+  width: 64px;
+  padding: 4px 6px;
+  background: var(--theme-surface, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  color: var(--theme-text);
+  font-size: 12px;
+}
+
+/* ── 右侧面板 ── */
+.composer-side {
+  width: 244px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  overflow-y: auto;
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur-md));
+  border-left: 1px solid var(--glass-ring);
+}
+
+.composer-side-section { margin-bottom: 12px; }
+.composer-side-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.4));
+  margin-bottom: 8px;
+}
+
+.composer-layer-list { display: flex; flex-direction: column; gap: 3px; }
+.composer-layer-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--theme-text-secondary);
+}
+.composer-layer-item:hover { background: var(--theme-hover); }
+.composer-layer-item.active {
+  color: var(--theme-text);
+  background: var(--brand-alpha-10);
+  border-color: var(--brand-alpha-30);
+}
+.composer-layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.composer-icon-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px;
+  color: var(--theme-text-secondary);
+}
+.composer-icon-btn.danger:hover { color: var(--danger); }
+
+.composer-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--theme-text-secondary);
+}
+.composer-field > span { flex-shrink: 0; }
+.composer-field input[type='range'] { flex: 1; }
+.composer-field input[type='number'] {
+  width: 72px;
+  padding: 4px 6px;
+  background: var(--theme-surface, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  color: var(--theme-text);
+  font-size: 12px;
+}
+.composer-field input[type='color'] {
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.composer-seg { display: inline-flex; gap: 2px; }
+.composer-seg button {
+  min-width: 26px;
+  padding: 4px 6px;
+  border: 1px solid var(--theme-border);
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.composer-seg button.active { color: var(--brand); border-color: var(--brand-alpha-30); background: var(--brand-alpha-10); }
+
+/* ── 连线文件展示框 ── */
+.composer-files { margin-top: auto; padding-top: 10px; border-top: 1px solid var(--theme-border); }
+.composer-file-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+.composer-file-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--theme-surface, rgba(0, 0, 0, 0.25));
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color var(--transition-base), background var(--transition-base);
+}
+.composer-file-card:hover { border-color: var(--brand-alpha-30); background: var(--brand-alpha-10); }
+.composer-file-card img {
+  width: 100%;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+}
+.composer-file-text {
+  height: 64px;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--theme-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.composer-file-label {
+  font-size: 11px;
+  color: var(--theme-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-side-actions { display: flex; gap: 6px; margin-top: 10px; }
+.composer-side-actions .crop-aspect-btn { flex: 1; }
+.crop-aspect-btn.danger:hover { color: var(--danger); background: var(--danger-bg); }

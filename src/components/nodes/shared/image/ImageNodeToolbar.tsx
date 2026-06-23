@@ -11,6 +11,7 @@ interface ImageNodeToolbarProps {
   onSubjectMatting?: () => void;
   onMultiAngle?: () => void;
   onExpand?: () => void;
+  onCompose?: () => void;
   onFullscreen?: () => void;
   onCrop?: () => void;
   onAnnotate?: () => void;
@@ -18,7 +19,7 @@ interface ImageNodeToolbarProps {
   onRepaint?: () => void;
 }
 
-function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand, onFullscreen, onCrop, onAnnotate, onUpscale, onRepaint }: ImageNodeToolbarProps) {
+function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand, onCompose, onFullscreen, onCrop, onAnnotate, onUpscale, onRepaint }: ImageNodeToolbarProps) {
   const noop = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
   }, []);
@@ -102,6 +103,13 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
           <AnimatedButton className="ftb-btn icon-only act-crop" data-tooltip="裁切" aria-label="裁切" onClick={handleAction(onCrop)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2" />
+            </svg>
+          </AnimatedButton>
+          <AnimatedButton className="ftb-btn icon-only act-compose" data-tooltip="多图编辑" aria-label="多图编辑" onClick={handleAction(onCompose)}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+              <rect x="3" y="3" width="13" height="13" rx="2" />
+              <path d="M8 8h13v13H8z" fill="currentColor" fillOpacity="0.18" />
+              <rect x="8" y="8" width="13" height="13" rx="2" />
             </svg>
           </AnimatedButton>
           

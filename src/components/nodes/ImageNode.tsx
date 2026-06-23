@@ -13,6 +13,7 @@ import MattingEditor from './shared/image/MattingEditor';
 import AnnotateEditor from './shared/image/AnnotateEditor';
 import CropEditor from './shared/image/CropEditor';
 import ExpandEditor from './shared/image/ExpandEditor';
+import ImageComposerEditor from './shared/image/composer/ImageComposerEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import ZoomableImage from '../shared/ZoomableImage';
@@ -268,6 +269,84 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       store.showToast('裁切完成，已创建新节点');
     },
     [updateNodeData],
+  );
+
+  /* ════════════════════════════════════════════
+     Compose (多图自由编辑) State
+     ════════════════════════════════════════════ */
+  const [isCompose, setIsCompose] = useState(false);
+  const pendingComposeNodeId = useRef<string | null>(null);
+
+  const handleOpenCompose = useCallback(() => setIsCompose(true), []);
+  const handleCloseCompose = useCallback(() => {
+    setIsCompose(false);
+    pendingComposeNodeId.current = null;
+  }, []);
+
+  /** 确认合成：立即创建 loading 新节点并关闭弹窗 */
+  const handleComposeStart = useCallback(() => {
+    const store = useAppStore.getState();
+    const currentPos = store.nodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
+
+    const newNodeId = `node-${generateId()}`;
+    pendingComposeNodeId.current = newNodeId;
+
+    const newNode: Node<BaseNodeData> = {
+      id: newNodeId,
+      type: 'ai-image',
+      position: { x: currentPos.x + nodeWidth + 40, y: currentPos.y },
+      data: {
+        label: `${(data.label as string) || '图像'} 合成`,
+        type: 'ai-image',
+        role: 'source',
+        status: 'loading',
+        nodeWidth,
+        nodeHeight: 158,
+      } as BaseNodeData,
+    };
+    store.addNode(newNode);
+    setIsCompose(false);
+  }, [id, data.label, nodeWidth]);
+
+  /** 合成完成后回填节点数据 */
+  const handleComposeSave = useCallback(
+    async (composedDataUrl: string, metadata?: { width: number; height: number }) => {
+      const store = useAppStore.getState();
+      const nodeId = pendingComposeNodeId.current;
+      pendingComposeNodeId.current = null;
+
+      if (!composedDataUrl || !nodeId) {
+        if (nodeId) store.deleteNode(nodeId);
+        store.showToast('合成失败，请重试', 'error');
+        return;
+      }
+
+      let assetUrl = composedDataUrl;
+      let filePath: string | undefined;
+      const projectId = store.currentProjectId;
+      if (projectId && projectId !== 'default') {
+        const savedName = buildNodeFileName(`${(data.label as string) || '图像'} 合成`, 'png', 'composed');
+        const saved = await saveDataUrlToProjectData(composedDataUrl, projectId, savedName);
+        if (saved && saved.assetUrl) {
+          assetUrl = saved.assetUrl;
+          filePath = saved.filePath;
+        }
+      }
+
+      const dims = await computeImageNodeDimensions(assetUrl);
+      store.updateNodeData(nodeId, {
+        imageUrl: assetUrl,
+        filePath,
+        status: 'success',
+        imageWidth: metadata?.width || dims.nodeWidth,
+        imageHeight: metadata?.height || dims.nodeHeight,
+        nodeWidth: dims.nodeWidth,
+        nodeHeight: dims.nodeHeight,
+      } as Partial<BaseNodeData>);
+
+      store.showToast('合成完成，已创建新节点');
+    },
+    [data.label],
   );
 
   /* ════════════════════════════════════════════
@@ -803,6 +882,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               onSubjectMatting={handleSubjectMatting}
               onMultiAngle={handleOpenFreeAngle}
               onExpand={handleOpenExpand}
+              onCompose={handleOpenCompose}
               onCrop={handleOpenCrop}
               onFullscreen={handleOpenFullscreen}
               onAnnotate={handleOpenAnnotate}
@@ -854,6 +934,16 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         onClose={handleCloseCrop}
         onStart={handleCropStart}
         onSave={handleCropSave}
+      />
+
+      {/* 多图自由编辑 / 合成 */}
+      <ImageComposerEditor
+        isOpen={isCompose}
+        nodeId={id}
+        imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+        onClose={handleCloseCompose}
+        onStart={handleComposeStart}
+        onSave={handleComposeSave}
       />
 
       {/* Fullscreen preview */}

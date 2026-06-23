@@ -9,6 +9,7 @@ import { useAppStore, generateId, computeImageNodeDimensions } from '../store/us
 import { arrayBufferToBase64, copyFileToProjectData } from '../services/fileService';
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { BaseNodeData } from '../types';
+import { isExternalDropCaptured } from '../utils/dropCapture';
 
 // ── File type constants ──
 
@@ -247,6 +248,8 @@ export function useNodeCreation() {
 
       const ul = await listen<DragPayload>('tauri://drag-drop', async (event) => {
         if (cancelled) return;
+        // 全屏编辑器（如合成器）独占外部拖放时，画布跳过建节点
+        if (isExternalDropCaptured()) { setIsDragOver(false); return; }
         const { type, paths, position } = event.payload;
 
         if (type === 'enter' || type === 'over') { setIsDragOver(true); return; }
