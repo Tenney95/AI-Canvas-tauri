@@ -9,6 +9,7 @@ import type { AIAudioGenParams, AIImageGenParams, AIVideoGenParams } from './aiT
 import { mapImageDimensions } from './aiDimensions';
 import { resolveNodeReferences } from './nodeReferenceService';
 import { pollTask } from './pollTask';
+import { savePendingTask, updatePendingTask, removePendingTask } from './pollManager';
 
 /** 从 Store 获取 ComfyUI 配置并校验 */
 function getComfyUIConfig() {
@@ -365,6 +366,24 @@ async function pollComfyUIHistory(
 /** 通过 ComfyUI 工作流执行图片生成 */
 export async function executeComfyUIGenerate(params: AIImageGenParams): Promise<{ url: string; width: number; height: number }> {
   const { workflowId, workflowInputs, prompt, imageSize = '2K', aspectRatio = '1:1' } = params;
+  const comfyUrl = useAppStore.getState().config.comfyUIUrl?.trim() || '';
+
+  // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
+  if (params.nodeId) {
+    const projectId = useAppStore.getState().currentProjectId;
+    if (projectId) {
+      savePendingTask({
+        nodeId: params.nodeId,
+        projectId,
+        nodeType: 'ai-image',
+        provider: 'comfyui',
+        taskId: '',
+        taskType: 'comfyui',
+        baseUrl: comfyUrl,
+        submitted: false,
+      });
+    }
+  }
 
   const { baseUrl, workflowObj } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt);
 
@@ -379,11 +398,20 @@ export async function executeComfyUIGenerate(params: AIImageGenParams): Promise<
   // 提交工作流
   const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj);
 
+  // 回填 promptId，标记为已提交
+  if (params.nodeId) {
+    updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
+  }
+
   // 计算最终输出尺寸（用于节点显示）
   const dims = mapImageDimensions(imageSize, aspectRatio);
 
   // 轮询等待结果
-  return pollComfyUIHistory(baseUrl, promptId, dims);
+  try {
+    return await pollComfyUIHistory(baseUrl, promptId, dims);
+  } finally {
+    if (params.nodeId) removePendingTask(params.nodeId);
+  }
 }
 
 /** 轮询 ComfyUI 执行历史，等待视频生成完成 */
@@ -404,6 +432,24 @@ async function pollComfyUIHistoryForVideo(
 /** 通过 ComfyUI 工作流执行视频生成 */
 export async function executeComfyUIVideoGenerate(params: AIVideoGenParams): Promise<{ url: string }> {
   const { workflowId, workflowInputs, prompt, videoResolution = 832, videoFps = 24, videoFrames = 77 } = params;
+  const comfyUrl = useAppStore.getState().config.comfyUIUrl?.trim() || '';
+
+  // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
+  if (params.nodeId) {
+    const projectId = useAppStore.getState().currentProjectId;
+    if (projectId) {
+      savePendingTask({
+        nodeId: params.nodeId,
+        projectId,
+        nodeType: 'ai-video',
+        provider: 'comfyui',
+        taskId: '',
+        taskType: 'comfyui',
+        baseUrl: comfyUrl,
+        submitted: false,
+      });
+    }
+  }
 
   const { baseUrl, workflowObj } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt);
 
@@ -419,8 +465,17 @@ export async function executeComfyUIVideoGenerate(params: AIVideoGenParams): Pro
   // 提交工作流
   const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj);
 
+  // 回填 promptId，标记为已提交
+  if (params.nodeId) {
+    updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
+  }
+
   // 轮询等待结果
-  return pollComfyUIHistoryForVideo(baseUrl, promptId);
+  try {
+    return await pollComfyUIHistoryForVideo(baseUrl, promptId);
+  } finally {
+    if (params.nodeId) removePendingTask(params.nodeId);
+  }
 }
 
 /** 轮询 ComfyUI 执行历史，等待音频生成完成 */
@@ -441,12 +496,39 @@ async function pollComfyUIHistoryForAudio(
 /** 通过 ComfyUI 工作流执行音频生成 */
 export async function executeComfyUIAudioGenerate(params: AIAudioGenParams): Promise<{ url: string }> {
   const { workflowId, workflowInputs, prompt } = params;
+  const comfyUrl = useAppStore.getState().config.comfyUIUrl?.trim() || '';
+
+  // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
+  if (params.nodeId) {
+    const projectId = useAppStore.getState().currentProjectId;
+    if (projectId) {
+      savePendingTask({
+        nodeId: params.nodeId,
+        projectId,
+        nodeType: 'ai-audio',
+        provider: 'comfyui',
+        taskId: '',
+        taskType: 'comfyui',
+        baseUrl: comfyUrl,
+        submitted: false,
+      });
+    }
+  }
 
   const { baseUrl, workflowObj } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt);
 
   // 提交工作流
   const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj);
 
+  // 回填 promptId，标记为已提交
+  if (params.nodeId) {
+    updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
+  }
+
   // 轮询等待结果
-  return pollComfyUIHistoryForAudio(baseUrl, promptId);
+  try {
+    return await pollComfyUIHistoryForAudio(baseUrl, promptId);
+  } finally {
+    if (params.nodeId) removePendingTask(params.nodeId);
+  }
 }

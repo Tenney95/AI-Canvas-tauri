@@ -2,6 +2,8 @@ export interface AIGenerateParams {
   prompt: string;
   model: string;      // model value (e.g. 'ppio/qwen/qwen3.5-397b-a17b')
   provider: string;   // provider id (e.g. 'ppio')
+  /** 关联的节点 ID（用于中断恢复） */
+  nodeId?: string;
 }
 
 export interface AIImageGenParams extends AIGenerateParams {
@@ -21,6 +23,8 @@ export interface AIVideoGenParams {
   videoFrames?: number;      // 帧数 (e.g. 77)
   workflowId?: string;       // ComfyUI 工作流 ID
   workflowInputs?: Record<string, string>; // IO 节点赋值映射
+  /** 关联的节点 ID（用于中断恢复） */
+  nodeId?: string;
 }
 
 export interface AIAudioGenParams {
@@ -29,4 +33,6 @@ export interface AIAudioGenParams {
   provider: string;
   workflowId?: string;       // ComfyUI 工作流 ID
   workflowInputs?: Record<string, string>; // IO 节点赋值映射
+  /** 关联的节点 ID（用于中断恢复） */
+  nodeId?: string;
 }

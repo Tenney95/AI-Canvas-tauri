@@ -8,6 +8,7 @@ import { mapImageDimensions } from './aiDimensions';
 import { resolveNodeReferences } from './nodeReferenceService';
 import { generateDreaminaImage, generateDreaminaVideo } from './dreaminaService';
 import { pollTask } from './pollTask';
+import { savePendingTask, updatePendingTask, removePendingTask } from './pollManager';
 import type { AIAudioGenParams, AIGenerateParams, AIImageGenParams, AIVideoGenParams } from './aiTypes';
 import {
   executeComfyUIAudioGenerate,
@@ -230,7 +231,26 @@ async function executeGeneralAsyncTask(
   modelName: string,
   prompt: string,
   resultField: 'videos' | 'audios' | 'images',
+  nodeId?: string,
 ): Promise<{ url: string }> {
+  // 预存待续任务（在 fetch 之前），确保关窗重启后能恢复
+  if (nodeId) {
+    const projectId = useAppStore.getState().currentProjectId;
+    if (projectId) {
+      savePendingTask({
+        nodeId,
+        projectId,
+        nodeType: resultField === 'videos' ? 'ai-video' : resultField === 'audios' ? 'ai-audio' : 'ai-image',
+        provider: 'general',
+        taskId: '',
+        taskType: 'general',
+        apiKey,
+        baseUrl,
+        submitted: false,
+      });
+    }
+  }
+
   const apiUrl = baseUrl.replace(/\/+$/, '') + '/images/generations';
   const submitResp = await fetch(apiUrl, {
     method: 'POST',
@@ -240,6 +260,7 @@ async function executeGeneralAsyncTask(
 
   if (!submitResp.ok) {
     const errBody = await submitResp.text().catch(() => '');
+    if (nodeId) removePendingTask(nodeId);
     throw new Error(`提交失败 (${submitResp.status}): ${errBody.slice(0, 200)}`);
   }
 
@@ -247,8 +268,9 @@ async function executeGeneralAsyncTask(
   const taskId = (submitResult.data as Array<{ task_id: string }>)?.[0]?.task_id
     || (submitResult.task_id as string);
 
-  // 无 task_id 时尝试直接从响应中解析结果
+  // 无 task_id 时尝试直接从响应中解析结果（同步完成，无需轮询）
   if (!taskId) {
+    if (nodeId) removePendingTask(nodeId);
     const url = parseMultiPathResponse(submitResult, resultField);
     if (url) return { url };
     // 尝试标准 OpenAI 图片格式
@@ -257,8 +279,13 @@ async function executeGeneralAsyncTask(
     throw new Error('响应格式异常：未返回 task_id 或结果 URL');
   }
 
+  // 回填 taskId，标记为已提交
+  if (nodeId) {
+    updatePendingTask(nodeId, { taskId, submitted: true });
+  }
+
   // 轮询直到任务完成/失败（不设超时，仅 ComfyUI 才设超时）
-  return pollTask<Record<string, unknown>, { url: string }>({
+  const pollPromise = pollTask<Record<string, unknown>, { url: string }>({
     fetchState: async () => {
       const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -283,6 +310,12 @@ async function executeGeneralAsyncTask(
     interval: 3000,
     onFetchError: 'continue',
   });
+
+  // 无论成功还是失败，完成后都清理待续记录
+  pollPromise.finally(() => {
+    if (nodeId) removePendingTask(nodeId);
+  });
+  return pollPromise;
 }
 
 /**
@@ -441,7 +474,7 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
   // 即梦：直接把本地/原始图片 URL 交给 CLI（CLI 端本地化），不走图床上传
   if (provider === 'dreamina') {
     if (!prompt.trim()) throw new Error('提示词不能为空');
-    return generateDreaminaImage({ prompt, model, imageSize, aspectRatio, imageUrls: allImageUrls });
+    return generateDreaminaImage({ prompt, model, imageSize, aspectRatio, imageUrls: allImageUrls, nodeId: params.nodeId });
   }
 
   // 将本地图片 URL 上传到远端图床，转为公网 URL
@@ -472,7 +505,7 @@ export async function generateImage(params: AIImageGenParams): Promise<{ url: st
     baseUrl = baseUrl.replace(/\/+$/, '');
     const modelName = extractModelName(model, provider);
     const dimensions = mapImageDimensions(imageSize, aspectRatio);
-    return generateApimartImage(apiKey, baseUrl, modelName, prompt, imageSize, aspectRatio, dimensions, allImageUrls);
+    return generateApimartImage(apiKey, baseUrl, modelName, prompt, imageSize, aspectRatio, dimensions, allImageUrls, params.nodeId);
   }
 
   // ── 通用模型图片生成 ──
@@ -609,7 +642,26 @@ async function generateApimartImage(
   aspectRatio: string,
   dimensions: { width: number; height: number },
   imageUrls: string[] = [],
+  nodeId?: string,
 ): Promise<{ url: string; width: number; height: number }> {
+  // 预存待续任务（在 fetch 之前），确保关窗重启后能恢复
+  if (nodeId) {
+    const projectId = useAppStore.getState().currentProjectId;
+    if (projectId) {
+      savePendingTask({
+        nodeId,
+        projectId,
+        nodeType: 'ai-image',
+        provider: 'apimart',
+        taskId: '',
+        taskType: 'apimart',
+        apiKey,
+        baseUrl,
+        submitted: false,
+      });
+    }
+  }
+
   // 步骤 1: 提交生成任务
   const submitBody: Record<string, unknown> = {
     model,
@@ -632,17 +684,24 @@ async function generateApimartImage(
 
   if (!submitResp.ok) {
     const errBody = await submitResp.text().catch(() => '');
+    if (nodeId) removePendingTask(nodeId);
     throw new Error(`APIMart 生成提交失败 (${submitResp.status}): ${errBody.slice(0, 200)}`);
   }
 
   const submitResult = await submitResp.json() as { code: number; data: Array<{ task_id: string; status: string }> };
   const taskId = submitResult.data?.[0]?.task_id;
   if (!taskId) {
+    if (nodeId) removePendingTask(nodeId);
     throw new Error('APIMart 生成提交失败: 未返回 task_id');
   }
 
+  // 回填 taskId，标记为已提交
+  if (nodeId) {
+    updatePendingTask(nodeId, { taskId, submitted: true });
+  }
+
   // 步骤 2: 轮询任务直到完成/失败（不设超时，仅 ComfyUI 才设超时）
-  return pollTask<ApimartTaskResult<{ images?: Array<{ url: string[] }> }>, { url: string; width: number; height: number }>({
+  const pollPromise = pollTask<ApimartTaskResult<{ images?: Array<{ url: string[] }> }>, { url: string; width: number; height: number }>({
     fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
     isComplete: (task) => {
       if (task.status === 'completed') {
@@ -654,6 +713,10 @@ async function generateApimartImage(
     },
     interval: 2000,
   });
+  pollPromise.finally(() => {
+    if (nodeId) removePendingTask(nodeId);
+  });
+  return pollPromise;
 }
 
 /* ── APIMart 任务轮询共享类型 ── */
@@ -698,7 +761,26 @@ async function generateApimartVideo(
   baseUrl: string,
   model: string,
   prompt: string,
+  nodeId?: string,
 ): Promise<{ url: string }> {
+  // 预存待续任务（在 fetch 之前），确保关窗重启后能恢复
+  if (nodeId) {
+    const projectId = useAppStore.getState().currentProjectId;
+    if (projectId) {
+      savePendingTask({
+        nodeId,
+        projectId,
+        nodeType: 'ai-video',
+        provider: 'apimart',
+        taskId: '',
+        taskType: 'apimart',
+        apiKey,
+        baseUrl,
+        submitted: false,
+      });
+    }
+  }
+
   // 步骤 1: 提交视频生成任务
   const submitResp = await fetch(`${baseUrl}/images/generations`, {
     method: 'POST',
@@ -715,17 +797,24 @@ async function generateApimartVideo(
 
   if (!submitResp.ok) {
     const errBody = await submitResp.text().catch(() => '');
+    if (nodeId) removePendingTask(nodeId);
     throw new Error(`APIMart 视频提交失败 (${submitResp.status}): ${errBody.slice(0, 200)}`);
   }
 
   const submitResult = await submitResp.json() as { code: number; data: Array<{ task_id: string; status: string }> };
   const taskId = submitResult.data?.[0]?.task_id;
   if (!taskId) {
+    if (nodeId) removePendingTask(nodeId);
     throw new Error('APIMart 视频提交失败: 未返回 task_id');
   }
 
+  // 回填 taskId，标记为已提交
+  if (nodeId) {
+    updatePendingTask(nodeId, { taskId, submitted: true });
+  }
+
   // 步骤 2: 轮询（不设超时，仅 ComfyUI 才设超时）
-  return pollTask<
+  const pollPromise = pollTask<
     ApimartTaskResult<{ images?: Array<{ url: string[] }>; videos?: Array<{ url: string[] }> }>,
     { url: string }
   >({
@@ -743,6 +832,10 @@ async function generateApimartVideo(
     },
     interval: 3000,
   });
+  pollPromise.finally(() => {
+    if (nodeId) removePendingTask(nodeId);
+  });
+  return pollPromise;
 }
 
 /** 解析 prompt 中的 @{nodeId:label} 引用，返回适合 /chat/completions 的 content 字段
@@ -984,7 +1077,7 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
   if (provider === 'dreamina') {
     const { prompt: dreaminaPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
     if (!dreaminaPrompt.trim()) throw new Error('提示词不能为空');
-    return generateDreaminaVideo({ prompt: dreaminaPrompt, model, imageUrls });
+    return generateDreaminaVideo({ prompt: dreaminaPrompt, model, imageUrls, nodeId: params.nodeId });
   }
 
   // APIMart 视频生成 — 异步提交 + 轮询
@@ -1000,7 +1093,7 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
       throw new Error('未配置 apimart 的服务地址\n请在「设置 → API Key」中添加');
     }
     const modelName = extractModelName(model, provider);
-    return generateApimartVideo(apiKey, baseUrl, modelName, prompt);
+    return generateApimartVideo(apiKey, baseUrl, modelName, prompt, params.nodeId);
   }
 
   // ── 通用模型视频生成 ──
@@ -1008,7 +1101,7 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
     if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
-    return executeGeneralAsyncTask(gm.apiKey || '', gm.openaiUrl, gm.modelId, prompt, 'videos');
+    return executeGeneralAsyncTask(gm.apiKey || '', gm.openaiUrl, gm.modelId, prompt, 'videos', params.nodeId);
   }
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置
@@ -1042,7 +1135,26 @@ async function generateApimartAudio(
   baseUrl: string,
   model: string,
   prompt: string,
+  nodeId?: string,
 ): Promise<{ url: string }> {
+  // 预存待续任务（在 fetch 之前），确保关窗重启后能恢复
+  if (nodeId) {
+    const projectId = useAppStore.getState().currentProjectId;
+    if (projectId) {
+      savePendingTask({
+        nodeId,
+        projectId,
+        nodeType: 'ai-audio',
+        provider: 'apimart',
+        taskId: '',
+        taskType: 'apimart',
+        apiKey,
+        baseUrl,
+        submitted: false,
+      });
+    }
+  }
+
   // 步骤 1: 提交音频生成任务
   const submitResp = await fetch(`${baseUrl}/images/generations`, {
     method: 'POST',
@@ -1059,17 +1171,24 @@ async function generateApimartAudio(
 
   if (!submitResp.ok) {
     const errBody = await submitResp.text().catch(() => '');
+    if (nodeId) removePendingTask(nodeId);
     throw new Error(`APIMart 音频提交失败 (${submitResp.status}): ${errBody.slice(0, 200)}`);
   }
 
   const submitResult = await submitResp.json() as { code: number; data: Array<{ task_id: string; status: string }> };
   const taskId = submitResult.data?.[0]?.task_id;
   if (!taskId) {
+    if (nodeId) removePendingTask(nodeId);
     throw new Error('APIMart 音频提交失败: 未返回 task_id');
   }
 
+  // 回填 taskId，标记为已提交
+  if (nodeId) {
+    updatePendingTask(nodeId, { taskId, submitted: true });
+  }
+
   // 步骤 2: 轮询（不设超时，仅 ComfyUI 才设超时）
-  return pollTask<
+  const pollPromise = pollTask<
     ApimartTaskResult<{ audios?: Array<{ url: string[] }>; images?: Array<{ url: string[] }>; videos?: Array<{ url: string[] }> }>,
     { url: string }
   >({
@@ -1084,6 +1203,10 @@ async function generateApimartAudio(
     },
     interval: 3000,
   });
+  pollPromise.finally(() => {
+    if (nodeId) removePendingTask(nodeId);
+  });
+  return pollPromise;
 }
 
 /** 音频生成入口 */
@@ -1111,7 +1234,7 @@ export async function generateAudio(params: AIAudioGenParams): Promise<{ url: st
       throw new Error('未配置 apimart 的服务地址\n请在「设置 → API Key」中添加');
     }
     const modelName = extractModelName(model, provider);
-    return generateApimartAudio(apiKey, baseUrl, modelName, prompt);
+    return generateApimartAudio(apiKey, baseUrl, modelName, prompt, params.nodeId);
   }
 
   // ── 通用模型音频生成 ──
@@ -1119,7 +1242,7 @@ export async function generateAudio(params: AIAudioGenParams): Promise<{ url: st
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
     if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
-    return executeGeneralAsyncTask(gm.apiKey || '', gm.openaiUrl, gm.modelId, prompt, 'audios');
+    return executeGeneralAsyncTask(gm.apiKey || '', gm.openaiUrl, gm.modelId, prompt, 'audios', params.nodeId);
   }
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置

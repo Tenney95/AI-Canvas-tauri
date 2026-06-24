@@ -221,6 +221,7 @@ function MultiSelectToolbar() {
             imageSize: (d.imageSize as string) || '2K',
             aspectRatio: (d.aspectRatio as string) || '1:1',
             workflowId: d.workflowId, workflowInputs: d.workflowInputs,
+            nodeId: node.id,
           });
           const saved = currentProjectId
             ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image', d.label).catch(() => null)
@@ -246,6 +247,7 @@ function MultiSelectToolbar() {
             videoFps: (d.videoFps as number) || 24,
             videoFrames: (d.videoFrames as number) || 77,
             workflowId: d.workflowId, workflowInputs: d.workflowInputs,
+            nodeId: node.id,
           });
           const saved = currentProjectId
             ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video', d.label).catch(() => null)
@@ -267,6 +269,7 @@ function MultiSelectToolbar() {
           const result = await generateAudio({
             prompt, model: d.model!, provider: d.provider!,
             workflowId: d.workflowId, workflowInputs: d.workflowInputs,
+            nodeId: node.id,
           });
           const saved = currentProjectId
             ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio', d.label).catch(() => null)

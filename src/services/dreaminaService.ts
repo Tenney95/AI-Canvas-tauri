@@ -7,6 +7,8 @@
  */
 import { mapImageDimensions } from './aiDimensions';
 import { pollTask } from './pollTask';
+import { savePendingTask, updatePendingTask, removePendingTask } from './pollManager';
+import { useAppStore } from '../store/useAppStore';
 
 const DREAMINA_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'];
 
@@ -82,6 +84,7 @@ export async function generateDreaminaImage(opts: {
   imageSize?: string;
   aspectRatio?: string;
   imageUrls: string[];
+  nodeId?: string;
 }): Promise<{ url: string; width: number; height: number }> {
   const dims = mapImageDimensions(opts.imageSize || '2K', opts.aspectRatio || '1:1');
   const modelVersion = modelVersionOf(opts.model);
@@ -96,11 +99,37 @@ export async function generateDreaminaImage(opts: {
   if (modelVersion && /^\d/.test(modelVersion)) params.modelVersion = modelVersion;
   if (kind === 'image2image') params.images = opts.imageUrls;
 
+  // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
+  if (opts.nodeId) {
+    const projectId = useAppStore.getState().currentProjectId;
+    if (projectId) {
+      savePendingTask({
+        nodeId: opts.nodeId,
+        projectId,
+        nodeType: 'ai-image',
+        provider: 'dreamina',
+        taskId: '',
+        taskType: 'dreamina',
+        submitted: false,
+      });
+    }
+  }
+
   const { submitId } = await invokeTauri<{ submitId: string }>('dreamina_generate', { params });
-  const out = await pollResult(submitId);
-  const url = await resolveOutputUrl(out);
-  if (!url) throw new Error('即梦未返回生成结果');
-  return { url, width: dims.width, height: dims.height };
+
+  // 回填 submitId，标记为已提交
+  if (opts.nodeId) {
+    updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
+  }
+
+  try {
+    const out = await pollResult(submitId);
+    const url = await resolveOutputUrl(out);
+    if (!url) throw new Error('即梦未返回生成结果');
+    return { url, width: dims.width, height: dims.height };
+  } finally {
+    if (opts.nodeId) removePendingTask(opts.nodeId);
+  }
 }
 
 /** 即梦视频生成（无参考图 → text2video；有参考图 → image2video） */
@@ -108,6 +137,7 @@ export async function generateDreaminaVideo(opts: {
   prompt: string;
   model: string;
   imageUrls: string[];
+  nodeId?: string;
 }): Promise<{ url: string }> {
   const modelVersion = modelVersionOf(opts.model);
   const hasImage = opts.imageUrls.length > 0;
@@ -119,9 +149,35 @@ export async function generateDreaminaVideo(opts: {
   if (modelVersion.startsWith('seedance')) params.modelVersion = modelVersion;
   if (hasImage) params.image = opts.imageUrls[0];
 
+  // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
+  if (opts.nodeId) {
+    const projectId = useAppStore.getState().currentProjectId;
+    if (projectId) {
+      savePendingTask({
+        nodeId: opts.nodeId,
+        projectId,
+        nodeType: 'ai-video',
+        provider: 'dreamina',
+        taskId: '',
+        taskType: 'dreamina',
+        submitted: false,
+      });
+    }
+  }
+
   const { submitId } = await invokeTauri<{ submitId: string }>('dreamina_generate', { params });
-  const out = await pollResult(submitId);
-  const url = await resolveOutputUrl(out);
-  if (!url) throw new Error('即梦未返回生成结果');
-  return { url };
+
+  // 回填 submitId，标记为已提交
+  if (opts.nodeId) {
+    updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
+  }
+
+  try {
+    const out = await pollResult(submitId);
+    const url = await resolveOutputUrl(out);
+    if (!url) throw new Error('即梦未返回生成结果');
+    return { url };
+  } finally {
+    if (opts.nodeId) removePendingTask(opts.nodeId);
+  }
 }

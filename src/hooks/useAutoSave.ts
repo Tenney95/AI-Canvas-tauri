@@ -20,9 +20,17 @@ function structureFingerprint(
   return `${nodeIds.join(',')}|${edgeIds.join(',')}|${groupHash}`;
 }
 
+/** 计算数据指纹：节点 ID:status — 追踪 status 变更以支持待续任务恢复 */
+function dataFingerprint(
+  nodes: Array<{ id: string; data: { status?: string } }>,
+): string {
+  return nodes.map((n) => `${n.id}:${n.data?.status || ''}`).join(',');
+}
+
 export function useAutoSave() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fingerprintRef = useRef<string>('');
+  const dataFpRef = useRef<string>('');
   // 磁盘内容变更（增删改文件）触发的强制保存标记 —— 结构指纹不变也要保存
   const forceSaveRef = useRef(false);
   // 跳过初始加载阶段
@@ -49,27 +57,34 @@ export function useAutoSave() {
         .sort()
         .join(',');
 
-      const fp = structureFingerprint(nodeIds, edgeIds, groupHash);
+      const structFp = structureFingerprint(nodeIds, edgeIds, groupHash);
+      const dataFp = dataFingerprint(state.nodes as Array<{ id: string; data: { status?: string } }>);
+      const structChanged = structFp !== fingerprintRef.current;
+      const dataChanged = dataFp !== dataFpRef.current;
 
       // 磁盘内容发生增删改：即使结构指纹未变也要保存
       if (forceSaveRef.current) {
         forceSaveRef.current = false;
-        fingerprintRef.current = fp;
+        fingerprintRef.current = structFp;
+        dataFpRef.current = dataFp;
         readyRef.current = true;
         state.saveCurrentProjectSilent();
         return;
       }
 
-      if (fp === fingerprintRef.current) return;
+      // 结构和数据都没变 → 无需保存
+      if (!structChanged && !dataChanged) return;
 
       // 首次计算出指纹后标记就绪
       if (!readyRef.current) {
         readyRef.current = true;
-        fingerprintRef.current = fp;
+        fingerprintRef.current = structFp;
+        dataFpRef.current = dataFp;
         return;
       }
 
-      fingerprintRef.current = fp;
+      fingerprintRef.current = structFp;
+      dataFpRef.current = dataFp;
       useAppStore.getState().saveCurrentProjectSilent();
     };
 

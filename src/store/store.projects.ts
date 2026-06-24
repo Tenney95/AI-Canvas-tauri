@@ -7,6 +7,7 @@ import type { AppState } from './useAppStore';
 import type { BaseNodeData, CanvasProject } from '../types';
 import { generateProjectId } from './store.utils';
 import * as fileService from '../services/fileService';
+import { resumePendingTasks, clearProjectTasks } from '../services/pollManager';
 
 export interface ProjectSlice {
   projects: CanvasProject[];
@@ -123,6 +124,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
     }
 
+    clearProjectTasks(id);
     fileService.deleteProjectData(id).catch((e) => console.warn('[删除项目] 清理数据失败:', e));
     fileService.deleteProjectDataDir(id).catch((e) => console.warn('[删除项目] 清理目录失败:', e));
   },
@@ -159,6 +161,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         historyIndex: -1,
       });
     }
+    // 恢复当前项目的待续轮询任务
+    resumePendingTasks(id).catch((e) => console.warn('[切换项目] 恢复待续任务失败:', e));
+
     setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
   },
 
@@ -252,6 +257,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             historyIndex: -1,
           });
         }
+        // 恢复待续轮询任务
+        resumePendingTasks(targetId!).catch((e) => console.warn('[加载项目] 恢复待续任务失败:', e));
       }
     } catch (error) {
       console.error('Load failed:', error);
@@ -267,6 +274,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (valid.length < allProjects.length) {
         fileService.deleteProjectData('default').catch((e) => console.warn('[初始化] 清理默认项目数据失败:', e));
       }
+      let activeProjectId: string | null = null;
       if (valid.length > 0) {
         const mapped: CanvasProject[] = valid.map((p) => ({
           id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt, dataFolder: p.dataFolder,
@@ -274,6 +282,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         fileService.registerProjectFolders(mapped);
         mapped.sort((a, b) => b.updatedAt - a.updatedAt);
         const lastId = mapped[0].id;
+        activeProjectId = lastId;
 
         const data = await fileService.loadProjectData(lastId);
         if (data) {
@@ -291,6 +300,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         fileService.ensureProjectDataDir(lastId).catch((e) => console.warn('[初始化] 数据目录初始化失败:', e));
       } else {
         const id = generateProjectId();
+        activeProjectId = id;
         const now = Date.now();
         const dataFolder = fileService.buildProjectFolderName('默认画布', id);
         fileService.registerProjectFolder(id, dataFolder);
@@ -302,6 +312,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         });
         await fileService.saveProject(defaultProject).catch((e) => console.warn('[初始化] 创建默认项目失败:', e));
         fileService.ensureProjectDataDir(id).catch((e) => console.warn('[初始化] 数据目录初始化失败:', e));
+      }
+      // 恢复当前项目的待续轮询任务
+      if (activeProjectId) {
+        resumePendingTasks(activeProjectId).catch((e) => console.warn('[初始化] 恢复待续任务失败:', e));
       }
     } catch (error) {
       console.error('Init from IndexedDB failed:', error);

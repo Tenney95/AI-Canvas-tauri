@@ -190,7 +190,9 @@ export default function Mascot({ loading = false }: MascotProps) {
     /* ── LOADING 形态状态 ── */
     let loadText: LoadingText | null = null;
     let creatingLoad = false;
-    let loadAmount = 0; // 0 = 圆球, 1 = LOADING 碎裂
+    const loadObj = { val: 0 }; // 0 = 圆球, 1 = LOADING 碎裂，gsap 驱动缓动过渡
+    let loadTween: gsap.core.Tween | null = null;
+    let prevLoadTarget = 0;
     let hoverScale = 1;
     // gsap 时间线（与参考一致：4s easeInOut yoyo，progress 0→0.6，rotation 0→2π）
     let tl: gsap.core.Timeline | null = null;
@@ -277,9 +279,18 @@ export default function Mascot({ loading = false }: MascotProps) {
           })
           .catch(() => { creatingLoad = false; });
       }
+      // gsap 驱动 loadAmount 缓动过渡：进入 0.5s，退出 0.9s，节奏自然
       const loadTarget = wantLoad && loadText ? 1 : 0;
-      loadAmount = MathUtils.lerp(loadAmount, loadTarget, 0.07);
-      if (loadTarget === 0 && loadAmount < 0.002) loadAmount = 0;
+      if (loadTarget !== prevLoadTarget) {
+        prevLoadTarget = loadTarget;
+        loadTween?.kill();
+        loadTween = gsap.to(loadObj, {
+          val: loadTarget,
+          duration: loadTarget === 1 ? 0.5 : 0.9,
+          ease: loadTarget === 1 ? 'power3.inOut' : 'power2.out',
+        });
+      }
+      const loadAmount = loadObj.val;
 
       // 头部随 loadAmount 淡出 + 缩小
       sphereMat.opacity = 1 - loadAmount;
@@ -328,6 +339,7 @@ export default function Mascot({ loading = false }: MascotProps) {
       eyeGeo.dispose();
       eyeMat.dispose();
       tl?.kill();
+      loadTween?.kill();
       if (loadText) {
         scene.remove(loadText.mesh);
         loadText.dispose();
