@@ -1,7 +1,7 @@
 /**
  * useNodeSnap 节点对齐吸附 Hook — 拖拽节点时自动吸附对齐到其他节点的边缘/中心，绘制辅助线
  */
-import { useCallback, useRef, useState } from 'react';
+import { createContext, useCallback, useRef, useState } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../types';
@@ -120,6 +120,19 @@ function pickCloser(a: SnapPoint | null, b: SnapPoint | null): SnapPoint | null 
   return b.diff < a.diff ? b : a;
 }
 
+/** 缩放吸附桥接：节点内的 ResizeHandle 通过此 Context 调用 Canvas 持有的吸附逻辑 */
+export interface ResizeSnapApi {
+  onResizeStart: (nodeId: string) => void;
+  applyResizeSnap: (
+    nodeId: string,
+    width: number,
+    height: number
+  ) => { width: number; height: number };
+  onResizeStop: () => void;
+}
+
+export const ResizeSnapContext = createContext<ResizeSnapApi | null>(null);
+
 export function useNodeSnap(
   nodes: Node<BaseNodeData>[],
 ) {
@@ -135,16 +148,22 @@ export function useNodeSnap(
     otherYEdges: number[];
     otherYCenters: number[];
   } | null>(null);
+  // 缩放期间不变的数据：被缩放节点固定的左/上边，以及其他节点的 X/Y 候选线
+  const resizeCtx = useRef<{
+    left: number;
+    top: number;
+    otherX: number[];
+    otherY: number[];
+  } | null>(null);
 
   const clearSnapLines = useCallback(() => {
     setSnapLines([]);
   }, []);
 
-  const onNodeDragStart = useCallback(
-    (_evt: React.MouseEvent | MouseEvent, node: Node<BaseNodeData>) => {
-      dragStartPositions.current.set(node.id, { ...node.position });
-
-      // 预计算：节点 Map + 静止节点的吸附点（拖拽过程中这些节点不移动）
+  // 预计算静止节点（排除 excludeId 与多选节点）的吸附候选点，做视口裁剪。
+  // 拖拽与缩放共用 —— 候选节点在交互过程中均不移动。
+  const buildCandidates = useCallback(
+    (excludeId: string) => {
       const nodeMap = new Map(nodes.map((n) => [n.id, n] as const));
 
       // 视口裁剪：只把当前可见区域（含 margin）内的节点作为吸附候选，
@@ -168,7 +187,7 @@ export function useNodeSnap(
       const otherYEdges: number[] = [];
       const otherYCenters: number[] = [];
       for (const other of nodes) {
-        if (other.id === node.id || other.selected === true) continue;
+        if (other.id === excludeId || other.selected === true) continue;
         const b = getNodeBounds(other, nodeMap);
         // 与可见区域不相交的节点直接跳过
         if (cull && (b.right < cull.minX || b.left > cull.maxX || b.bottom < cull.minY || b.top > cull.maxY)) {
@@ -179,9 +198,17 @@ export function useNodeSnap(
         otherYEdges.push(b.top, b.bottom);
         otherYCenters.push(b.centerY);
       }
-      dragCtx.current = { nodeMap, otherXEdges, otherXCenters, otherYEdges, otherYCenters };
+      return { nodeMap, otherXEdges, otherXCenters, otherYEdges, otherYCenters };
     },
     [nodes, screenToFlowPosition]
+  );
+
+  const onNodeDragStart = useCallback(
+    (_evt: React.MouseEvent | MouseEvent, node: Node<BaseNodeData>) => {
+      dragStartPositions.current.set(node.id, { ...node.position });
+      dragCtx.current = buildCandidates(node.id);
+    },
+    [buildCandidates]
   );
 
   /**
@@ -256,6 +283,61 @@ export function useNodeSnap(
     []
   );
 
+  // ── 缩放吸附 ──
+  // 右下角把手缩放：节点左/上边固定，仅右/下边随尺寸移动。
+  // 故只对「移动的右边/下边」与其他节点的边/中线做吸附，命中即对齐并画引导线。
+  const onResizeStart = useCallback(
+    (nodeId: string) => {
+      const { nodeMap, otherXEdges, otherXCenters, otherYEdges, otherYCenters } =
+        buildCandidates(nodeId);
+      const self = nodeMap.get(nodeId);
+      if (!self) {
+        resizeCtx.current = null;
+        return;
+      }
+      const b = getNodeBounds(self, nodeMap);
+      resizeCtx.current = {
+        left: b.left,
+        top: b.top,
+        otherX: [...otherXEdges, ...otherXCenters],
+        otherY: [...otherYEdges, ...otherYCenters],
+      };
+    },
+    [buildCandidates]
+  );
+
+  const applyResizeSnap = useCallback(
+    (_nodeId: string, width: number, height: number): { width: number; height: number } => {
+      const ctx = resizeCtx.current;
+      if (!ctx) return { width, height };
+      const { left, top, otherX, otherY } = ctx;
+
+      const lines: SnapLine[] = [];
+      let snappedWidth = width;
+      let snappedHeight = height;
+
+      const bestX = findBestSnap([left + width], otherX);
+      if (bestX) {
+        snappedWidth = bestX.targetValue - left;
+        lines.push({ type: 'vertical', position: bestX.targetValue });
+      }
+      const bestY = findBestSnap([top + height], otherY);
+      if (bestY) {
+        snappedHeight = bestY.targetValue - top;
+        lines.push({ type: 'horizontal', position: bestY.targetValue });
+      }
+
+      setSnapLines(lines);
+      return { width: snappedWidth, height: snappedHeight };
+    },
+    []
+  );
+
+  const onResizeStop = useCallback(() => {
+    setSnapLines([]);
+    resizeCtx.current = null;
+  }, []);
+
   const onNodeDragStop = useCallback(() => {
     dragStartPositions.current.clear();
     setSnapLines([]);
@@ -273,5 +355,8 @@ export function useNodeSnap(
     applySnap,
     onNodeDragStop,
     clearSnapLines,
+    onResizeStart,
+    applyResizeSnap,
+    onResizeStop,
   };
 }

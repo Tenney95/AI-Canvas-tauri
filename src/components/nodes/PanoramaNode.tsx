@@ -427,6 +427,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
 
         {/* Resize handle — always visible in compact mode */}
         <ResizeHandle
+          nodeId={id}
           currentWidth={nodeWidth}
           currentHeight={nodeHeight}
           minWidth={160}

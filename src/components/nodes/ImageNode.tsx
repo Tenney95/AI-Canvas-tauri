@@ -875,6 +875,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
         {/* Resize handle */}
         <ResizeHandle
+          nodeId={id}
           currentWidth={nodeWidth}
           currentHeight={nodeHeight}
           minWidth={160}

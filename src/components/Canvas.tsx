@@ -40,7 +40,7 @@ import { useAppStore } from '../store/useAppStore';
 import { useNodeCreation } from '../hooks/useNodeCreation';
 import type { BaseNodeData } from '../types';
 import type { Node as RFNode, NodeTypes, Connection, Edge } from '@xyflow/react';
-import { useNodeSnap, type SnapLine } from '../hooks/useNodeSnap';
+import { useNodeSnap, ResizeSnapContext, type SnapLine } from '../hooks/useNodeSnap';
 
 // ── Node types mapping ──
 const nodeTypes: NodeTypes = {
@@ -418,8 +418,21 @@ function CanvasInner() {
   }, [clearGroupedSelection]);
 
   // ── Node snap ──
-  const { snapLines, onNodeDragStart, applySnap, onNodeDragStop } =
-    useNodeSnap(nodes);
+  const {
+    snapLines,
+    onNodeDragStart,
+    applySnap,
+    onNodeDragStop,
+    onResizeStart,
+    applyResizeSnap,
+    onResizeStop,
+  } = useNodeSnap(nodes);
+
+  // 缩放吸附桥接：稳定引用透传给节点内的 ResizeHandle（经 Context）
+  const resizeSnapApi = useMemo(
+    () => ({ onResizeStart, applyResizeSnap, onResizeStop }),
+    [onResizeStart, applyResizeSnap, onResizeStop],
+  );
 
   // 按住 Ctrl/⌘ 开始拖拽 → 在原位复制一个节点（拖动的仍是原节点，等于"拖出一个副本"）
   const handleNodeDragStart = useCallback(
@@ -491,6 +504,7 @@ function CanvasInner() {
   );
 
   return (
+    <ResizeSnapContext.Provider value={resizeSnapApi}>
     <div className="absolute inset-0">
       <ReactFlow
         nodes={nodes}
@@ -649,6 +663,7 @@ function CanvasInner() {
       {/* Multi-select toolbar */}
       <MultiSelectToolbar />
     </div>
+    </ResizeSnapContext.Provider>
   );
 }
 

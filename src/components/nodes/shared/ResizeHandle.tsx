@@ -2,9 +2,12 @@
  * ResizeHandle — 通用右下角拖拽缩放把手
  * 使用 PointerEvent 捕获阶段拦截，防止 React Flow 抢占事件
  */
-import { useCallback, useRef } from 'react';
+import { useCallback, useContext, useRef } from 'react';
+import { ResizeSnapContext } from '../../../hooks/useNodeSnap';
 
 interface ResizeHandleProps {
+  /** 节点 id —— 用于缩放吸附对齐（不传则禁用吸附） */
+  nodeId?: string;
   currentWidth: number;
   currentHeight: number;
   minWidth?: number;
@@ -13,6 +16,7 @@ interface ResizeHandleProps {
 }
 
 export default function ResizeHandle({
+  nodeId,
   currentWidth,
   currentHeight,
   minWidth = 160,
@@ -21,6 +25,7 @@ export default function ResizeHandle({
 }: ResizeHandleProps) {
   const isResizing = useRef(false);
   const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const snap = useContext(ResizeSnapContext);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -33,18 +38,26 @@ export default function ResizeHandle({
         w: currentWidth,
         h: currentHeight,
       };
+      if (nodeId) snap?.onResizeStart(nodeId);
 
       const handlePointerMove = (ev: PointerEvent) => {
         if (!isResizing.current) return;
         const dx = ev.clientX - resizeStart.current.x;
         const dy = ev.clientY - resizeStart.current.y;
-        const newWidth = Math.max(minWidth, resizeStart.current.w + dx);
-        const newHeight = Math.max(minHeight, resizeStart.current.h + dy);
+        let newWidth = Math.max(minWidth, resizeStart.current.w + dx);
+        let newHeight = Math.max(minHeight, resizeStart.current.h + dy);
+        // 缩放吸附：若右/下边对齐了其他节点的边/中线则对齐并画引导线
+        if (nodeId && snap) {
+          const snapped = snap.applyResizeSnap(nodeId, newWidth, newHeight);
+          newWidth = Math.max(minWidth, snapped.width);
+          newHeight = Math.max(minHeight, snapped.height);
+        }
         onResize(newWidth, newHeight);
       };
 
       const handlePointerUp = () => {
         isResizing.current = false;
+        if (nodeId) snap?.onResizeStop();
         document.removeEventListener('pointermove', handlePointerMove);
         document.removeEventListener('pointerup', handlePointerUp);
         document.body.style.cursor = '';
@@ -56,7 +69,7 @@ export default function ResizeHandle({
       document.addEventListener('pointermove', handlePointerMove);
       document.addEventListener('pointerup', handlePointerUp);
     },
-    [currentWidth, currentHeight, minWidth, minHeight, onResize],
+    [nodeId, snap, currentWidth, currentHeight, minWidth, minHeight, onResize],
   );
 
   return (
