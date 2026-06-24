@@ -2,13 +2,14 @@
  * indexedDbService IndexedDB 持久化服务 — 浏览器端本地存储，保存项目、工作流、应用配置等数据
  */
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 6; // v6: added assetMeta store (file tags)
+const DB_VERSION = 7; // v7: added styles store (custom styles)
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
 const STORE_PRESETS = 'presets';
 const STORE_HISTORY = 'history';
 const STORE_ASSET_META = 'assetMeta';
+const STORE_STYLES = 'styles';
 
 const CONFIG_KEY = 'app-config';
 
@@ -56,6 +57,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_ASSET_META)) {
         db.createObjectStore(STORE_ASSET_META, { keyPath: 'path' });
+      }
+      if (!db.objectStoreNames.contains(STORE_STYLES)) {
+        db.createObjectStore(STORE_STYLES, { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -226,6 +230,52 @@ export async function deletePresetFromDb(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_PRESETS, 'readwrite');
     const store = tx.objectStore(STORE_PRESETS);
+    store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ============================================
+// Custom Styles CRUD
+// ============================================
+
+export interface CustomStyleRecord {
+  id: string;
+  nodeType: string;
+  name: string;
+  prompt: string;
+  thumbnail?: string;
+  createdAt: number;
+}
+
+export async function saveStyleToDb(record: CustomStyleRecord): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_STYLES, 'readwrite');
+    const store = tx.objectStore(STORE_STYLES);
+    store.put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function getAllStyles(): Promise<CustomStyleRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_STYLES, 'readonly');
+    const store = tx.objectStore(STORE_STYLES);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function deleteStyleFromDb(id: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_STYLES, 'readwrite');
+    const store = tx.objectStore(STORE_STYLES);
     store.delete(id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);

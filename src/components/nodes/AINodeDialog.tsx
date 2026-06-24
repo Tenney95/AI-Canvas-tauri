@@ -369,6 +369,11 @@ function AINodeDialog() {
     [activeNodeId, updateNodeData]
   );
 
+  const onStyleChange = useCallback(
+    (styleId: string) => updateNodeData(activeNodeId!, { style: styleId }),
+    [activeNodeId, updateNodeData]
+  );
+
   // Early return must come after ALL hooks
   if (!activeNodeId || !node || !data || !nodeType) return null;
 
@@ -439,6 +444,8 @@ function AINodeDialog() {
           onChangeVideoFps={onChangeVideoFps}
           onChangeVideoFrames={onChangeVideoFrames}
           workflows={workflows}
+          selectedStyle={data.style as string | undefined}
+          onStyleChange={onStyleChange}
         />
       </div>
     </>

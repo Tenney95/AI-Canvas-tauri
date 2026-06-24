@@ -45,6 +45,7 @@ export interface BaseNodeData {
   videoResolution?: number;   // 视频分辨率：832 | 1024 | 1280 | 1440
   videoFps?: number;          // 视频帧率：16 | 24 | 30
   videoFrames?: number;       // 视频生成帧数（时长）
+  style?: string;               // 画风 ID（如 'realistic'、'anime'）
   error?: string;             // 错误信息
   [key: string]: unknown;
 }
@@ -282,6 +283,16 @@ export function getNodeTypeConfig(kind: string): NodeTypeVisualConfig {
 }
 
 export type PresetTriggerMode = 'direct' | 'insertPrompt';
+
+// ── 用户自定义画风 ──
+export interface CustomStyle {
+  id: string;
+  nodeType: string;       // 'ai-image' | 'ai-panorama' | 'ai-video'
+  name: string;           // 画风名称
+  prompt: string;         // 画风提示词
+  thumbnail?: string;     // base64 缩略图
+  createdAt: number;
+}
 
 export interface UserPreset {
   id: string;

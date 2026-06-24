@@ -15,8 +15,12 @@ import {
   savePresetToDb,
   getAllPresets,
   deletePresetFromDb,
+  saveStyleToDb,
+  getAllStyles,
+  deleteStyleFromDb,
   type WorkflowRecord,
   type PresetRecord,
+  type CustomStyleRecord,
 } from './indexedDbService';
 
 export interface ProjectSaveData {
@@ -154,4 +158,33 @@ export async function deletePreset(id: string): Promise<void> {
   }
 }
 
-export type { WorkflowRecord, PresetRecord };
+// ── Custom Styles ──
+
+export async function saveStyle(record: CustomStyleRecord): Promise<void> {
+  try {
+    await saveStyleToDb(record);
+  } catch (error) {
+    console.error('Save style failed:', error);
+    throw error;
+  }
+}
+
+export async function loadStyles(): Promise<CustomStyleRecord[]> {
+  try {
+    return await getAllStyles();
+  } catch (error) {
+    console.error('Load styles failed:', error);
+    return [];
+  }
+}
+
+export async function deleteStyle(id: string): Promise<void> {
+  try {
+    await deleteStyleFromDb(id);
+  } catch (error) {
+    console.error('Delete style failed:', error);
+    throw error;
+  }
+}
+
+export type { WorkflowRecord, PresetRecord, CustomStyleRecord };

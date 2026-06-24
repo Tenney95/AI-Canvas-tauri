@@ -27,6 +27,7 @@ import type { PresetSlice } from './store.presets';
 import type { GroupSlice } from './store.groups';
 import type { ClipboardSlice } from './store.clipboard';
 import type { ProjectSlice } from './store.projects';
+import type { StyleSlice } from './store.styles';
 
 import { createNodeSlice } from './store.nodes';
 import { createUISlice } from './store.ui';
@@ -39,6 +40,7 @@ import { createPresetSlice } from './store.presets';
 import { createGroupSlice } from './store.groups';
 import { createClipboardSlice } from './store.clipboard';
 import { createProjectSlice } from './store.projects';
+import { createStyleSlice } from './store.styles';
 
 // ---- Re-export utilities for backward compatibility ----
 export { generateId, computeImageNodeDimensions } from './store.utils';
@@ -52,6 +54,7 @@ export type AppState = NodeSlice
   & ConfigSlice
   & WorkflowSlice
   & PresetSlice
+  & StyleSlice
   & GroupSlice
   & ClipboardSlice
   & ProjectSlice;
@@ -66,6 +69,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createConfigSlice(...a),
   ...createWorkflowSlice(...a),
   ...createPresetSlice(...a),
+  ...createStyleSlice(...a),
   ...createGroupSlice(...a),
   ...createClipboardSlice(...a),
   ...createProjectSlice(...a),

@@ -38,9 +38,13 @@ export {
   savePreset,
   loadPresets,
   deletePreset,
+  saveStyle,
+  loadStyles,
+  deleteStyle,
   type ProjectSaveData,
   type WorkflowRecord,
   type PresetRecord,
+  type CustomStyleRecord,
 } from './storageService';
 export * from './fs/core';
 export * from './fs/trash';

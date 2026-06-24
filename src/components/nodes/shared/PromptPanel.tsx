@@ -7,6 +7,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
 import VideoParamSelector from './VideoParamSelector';
+import StyleSelector from './StyleSelector';
 import MentionEditor, { type MentionEditorHandle } from './MentionEditor';
 import SlashCommandMenu from './SlashCommandMenu';
 import PresetManager from './PresetManager';
@@ -38,6 +39,8 @@ interface PromptPanelProps {
   onChangeVideoFrames?: (value: number) => void;
   workflows?: WorkflowDefinition[];
   editorRef?: React.Ref<MentionEditorHandle>;
+  selectedStyle?: string;
+  onStyleChange?: (styleId: string) => void;
 }
 
 export default function PromptPanel({
@@ -67,6 +70,8 @@ export default function PromptPanel({
   onChangeVideoFrames,
   workflows = [],
   editorRef,
+  selectedStyle,
+  onStyleChange,
 }: PromptPanelProps) {
   const [focused, setFocused] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -136,6 +141,14 @@ export default function PromptPanel({
           onWorkflowSelect={onWorkflowSelect}
           workflows={workflows}
         />
+
+        {(nodeType === 'ai-image' || nodeType === 'ai-panorama' || nodeType === 'ai-video') && (
+          <StyleSelector
+            nodeType={nodeType}
+            selectedStyle={selectedStyle}
+            onChange={onStyleChange}
+          />
+        )}
 
         {nodeType === 'ai-image' && (
           <QualityRatioSelector
