@@ -93,7 +93,7 @@ function AINodeDialog() {
           aspectRatio,
           workflowId: data.workflowId,
           workflowInputs: data.workflowInputs,
-          nodeId: activeNodeId,
+          nodeId: activeNodeId ?? undefined,
         });
         // 下载远程 URL 到本地项目目录
         const saved = currentProjectId
@@ -137,7 +137,7 @@ function AINodeDialog() {
           aspectRatio,
           workflowId: data.workflowId,
           workflowInputs: data.workflowInputs,
-          nodeId: activeNodeId,
+          nodeId: activeNodeId ?? undefined,
         });
         const saved = currentProjectId
           ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-panorama', data.label).catch(() => null)
@@ -181,7 +181,7 @@ function AINodeDialog() {
           videoFrames,
           workflowId: data.workflowId,
           workflowInputs: data.workflowInputs,
-          nodeId: activeNodeId,
+          nodeId: activeNodeId ?? undefined,
         });
         // 下载远程 URL 到本地项目目录
         const saved = currentProjectId
@@ -218,7 +218,7 @@ function AINodeDialog() {
           provider: data.provider!,
           workflowId: data.workflowId,
           workflowInputs: data.workflowInputs,
-          nodeId: activeNodeId,
+          nodeId: activeNodeId ?? undefined,
         });
         // 下载远程 URL 到本地项目目录
         const saved = currentProjectId
