@@ -48,6 +48,14 @@
   transform-origin: bottom right;
   animation: popoverIn var(--dur-normal) var(--ease-spring);
 }
+/* 向下弹出（适合顶部工具栏，如合成器），避免向上溢出屏幕 */
+.img-ratio-popup.img-ratio-popup--down {
+  bottom: auto;
+  top: 100%;
+  margin-bottom: 0;
+  margin-top: 6px;
+  transform-origin: top right;
+}
 .img-rp-section-label {
   font-size: 11px;
   font-weight: 600;

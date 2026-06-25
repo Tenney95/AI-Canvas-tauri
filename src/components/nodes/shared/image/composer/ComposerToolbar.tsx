@@ -3,6 +3,7 @@
  */
 import { useRef, useState } from 'react';
 import AnimatedButton from '../../../../shared/AnimatedButton';
+import QualityRatioSelector from '../../QualityRatioSelector';
 import { useAppStore } from '../../../../../store/useAppStore';
 import type { BaseNodeData } from '../../../../../types';
 import type { CanvasBg } from './types';
@@ -17,13 +18,37 @@ interface Props {
   onClose: () => void;
 }
 
-const SIZE_PRESETS: { label: string; w: number; h: number }[] = [
-  { label: '1:1', w: 1024, h: 1024 },
-  { label: '16:9', w: 1280, h: 720 },
-  { label: '9:16', w: 720, h: 1280 },
-  { label: '4:3', w: 1024, h: 768 },
-  { label: '3:4', w: 768, h: 1024 },
-];
+/** 画质档位 → 长边像素 */
+const QUALITY_LONG_EDGE: Record<string, number> = {
+  '720p': 720,
+  '1K': 1024,
+  '2K': 2048,
+  '4K': 4096,
+};
+
+/** 由「比例 + 画质」算出画布像素尺寸（长边对齐画质档位）*/
+function dimsFromRatioQuality(ratio: string, quality: string): { w: number; h: number } {
+  const long = QUALITY_LONG_EDGE[quality] ?? 1024;
+  const [a, b] = ratio.split(':').map(Number);
+  if (!a || !b) return { w: long, h: long };
+  return a >= b
+    ? { w: long, h: Math.round((long * b) / a) }
+    : { w: Math.round((long * a) / b), h: long };
+}
+
+/** 由画布像素尺寸反推最接近的比例（用于回显选中态）*/
+const RATIO_CHOICES = ['1:1', '9:16', '16:9', '3:4', '4:3', '3:2', '2:3', '5:4', '4:5', '21:9', '1:4', '4:1', '1:8', '8:1'];
+function detectRatio(w: number, h: number): string {
+  const r = w / h;
+  let best = RATIO_CHOICES[0];
+  let bestDiff = Infinity;
+  for (const k of RATIO_CHOICES) {
+    const [a, b] = k.split(':').map(Number);
+    const diff = Math.abs(r - a / b);
+    if (diff < bestDiff) { bestDiff = diff; best = k; }
+  }
+  return best;
+}
 
 const BG_PRESETS: { label: string; value: CanvasBg }[] = [
   { label: '透明', value: 'transparent' },
@@ -34,7 +59,20 @@ const BG_PRESETS: { label: string; value: CanvasBg }[] = [
 export default function ComposerToolbar({ composer, camScale, canExport, onFit, onExport, onClose }: Props) {
   const { canvas, setCanvas, addImageLayer, addText, addShape } = composer;
   const fileRef = useRef<HTMLInputElement>(null);
-  const [menu, setMenu] = useState<'canvas' | 'size' | 'bg' | null>(null);
+  const [menu, setMenu] = useState<'canvas' | 'bg' | null>(null);
+
+  // 画布尺寸：比例由实时画布反推（随打开的图片/缩放同步回显），画质档位本地维护
+  const [sizeQuality, setSizeQuality] = useState('1K');
+  const sizeRatio = detectRatio(canvas.width, canvas.height);
+  const handleRatioChange = (ratio: string) => {
+    const { w, h } = dimsFromRatioQuality(ratio, sizeQuality);
+    setCanvas((cv) => ({ ...cv, width: w, height: h }));
+  };
+  const handleQualityChange = (quality: string) => {
+    setSizeQuality(quality);
+    const { w, h } = dimsFromRatioQuality(sizeRatio, quality);
+    setCanvas((cv) => ({ ...cv, width: w, height: h }));
+  };
 
   const imageNodes = useAppStore((s) => s.nodes).filter(
     (n) => n.type === 'ai-image' && (n.data as BaseNodeData)?.imageUrl,
@@ -119,30 +157,15 @@ export default function ComposerToolbar({ composer, camScale, canExport, onFit, 
       </AnimatedButton>
 
       <div className="crop-bar-divider" />
-      {/* 画布尺寸 */}
-      <div className="composer-dd">
-        <AnimatedButton className="crop-aspect-btn" data-tooltip="画布尺寸" aria-label="画布尺寸" onClick={() => setMenu(menu === 'size' ? null : 'size')}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-            <rect x="3" y="5" width="18" height="14" rx="2" />
-            <path d="M3 10h4M17 10h4" />
-          </svg>
-          <span>{canvas.width}×{canvas.height}</span>
-        </AnimatedButton>
-        {menu === 'size' && (
-          <div className="composer-menu" onMouseLeave={() => setMenu(null)}>
-            {SIZE_PRESETS.map((p) => (
-              <button key={p.label} type="button" className="composer-menu-item row" onClick={() => { setCanvas((cv) => ({ ...cv, width: p.w, height: p.h })); setMenu(null); }}>
-                {p.label} · {p.w}×{p.h}
-              </button>
-            ))}
-            <div className="composer-menu-custom">
-              <input type="number" min={16} max={4096} value={canvas.width} onChange={(e) => setCanvas((cv) => ({ ...cv, width: +e.target.value || cv.width }))} />
-              <span>×</span>
-              <input type="number" min={16} max={4096} value={canvas.height} onChange={(e) => setCanvas((cv) => ({ ...cv, height: +e.target.value || cv.height }))} />
-            </div>
-          </div>
-        )}
-      </div>
+      {/* 画布尺寸 — 比例 + 画质 */}
+      <QualityRatioSelector
+        imageSize={sizeQuality}
+        aspectRatio={sizeRatio}
+        onChangeImageSize={handleQualityChange}
+        onChangeAspectRatio={handleRatioChange}
+        showAdaptive={false}
+        placement="bottom"
+      />
 
       {/* 背景 */}
       <div className="composer-dd">

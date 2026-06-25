@@ -20,6 +20,8 @@ interface QualityRatioSelectorProps {
   showAdaptive?: boolean;
   /** 自定义比例选项列表，不传则使用默认 */
   ratios?: RatioOption[];
+  /** 弹出方向：'top'(默认，向上，适合底部工具栏) | 'bottom'(向下，适合顶部工具栏) */
+  placement?: 'top' | 'bottom';
 }
 
 export default function QualityRatioSelector({
@@ -30,6 +32,7 @@ export default function QualityRatioSelector({
   showImageSize = true,
   showAdaptive = true,
   ratios: customRatios,
+  placement = 'top',
 }: QualityRatioSelectorProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -102,7 +105,7 @@ export default function QualityRatioSelector({
         </AnimatedButton>
 
         {open && (
-          <div className="img-ratio-popup ui-schema-popup ui-schema-quality-ratio-popup" style={{ display: 'block' }}>
+          <div className={`img-ratio-popup ui-schema-popup ui-schema-quality-ratio-popup${placement === 'bottom' ? ' img-ratio-popup--down' : ''}`} style={{ display: 'block' }}>
             {showImageSize && (
               <div className="img-rp-quality-area" data-ui-schema-field="imageSize" data-ui-schema-type="segmented" data-ui-schema-default="2K">
                 <div className="img-rp-section-label">画质</div>

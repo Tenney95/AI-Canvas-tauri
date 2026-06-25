@@ -2,6 +2,7 @@
  * ApiKeySettings — API Key 配置面板，管理各 AI 厂商密钥、连接测试、通用模型、服务地址
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import type { TestResult } from '../../services/testConnection';
 import { testProviderConnection, type ProviderTestKey } from '../../services/testConnection';
@@ -174,6 +175,7 @@ function ConfigInput({
 }
 
 export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
+  // 用选择器订阅，避免无选择器的 useAppStore() 在任意 store 变更时整树重渲染（含大量按钮）
   const {
     config,
     setProviderKey,
@@ -182,7 +184,17 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     addGeneralModel,
     updateGeneralModel,
     removeGeneralModel,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      config: s.config,
+      setProviderKey: s.setProviderKey,
+      updateConfig: s.updateConfig,
+      saveConfig: s.saveConfig,
+      addGeneralModel: s.addGeneralModel,
+      updateGeneralModel: s.updateGeneralModel,
+      removeGeneralModel: s.removeGeneralModel,
+    })),
+  );
 
   const [testStates, setTestStates] = useState<Record<string, TestState>>({});
 

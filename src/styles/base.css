@@ -403,6 +403,18 @@ textarea:focus {
   background-color: var(--brand-alpha-05);
 }
 
+/* ── AnimatedButton — 纯 CSS 触感缩放（替代 framer-motion 弹簧，无逐帧 JS）──
+   合成器处理 transform 过渡，按钮再多也几乎零成本；减少动效由下方全局规则禁用。 */
+.anim-btn {
+  transition: transform var(--dur-fast, 0.15s) var(--ease-out-quart, ease-out);
+}
+.anim-btn:hover:not(:disabled) {
+  transform: scale(var(--anim-hover-scale, 1.04));
+}
+.anim-btn:active:not(:disabled) {
+  transform: scale(var(--anim-tap-scale, 0.96));
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    Reduced Motion — accessibility / 减少动效 — 无障碍
    ════════════════════════════════════════════════════════════════════════ */
