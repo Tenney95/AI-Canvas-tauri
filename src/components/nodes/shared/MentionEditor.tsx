@@ -83,6 +83,24 @@ const WF_IO_ICON: Record<string, string> = {
 // DOM ↔ String helpers
 // ═══════════════════════════════════════════════
 
+/** 零宽空格 —— 作为不可编辑芯片（contenteditable=false）前的光标落点占位符。 */
+const ZWSP = '​';
+
+/** 是否为不可编辑的引用芯片（节点 / 资产 / 工作流 IO）。 */
+function isChipEl(node: Node | null | undefined): node is HTMLElement {
+  if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+  const el = node as HTMLElement;
+  return (
+    el.hasAttribute('data-ref-id') ||
+    el.hasAttribute('data-asset-path') ||
+    el.hasAttribute('data-wf-id')
+  );
+}
+
+function isBrEl(node: Node | null | undefined): boolean {
+  return !!node && node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName === 'BR';
+}
+
 /** Serialize contenteditable DOM back to @{id:label} / @wf{id|title|type} marker string (pipe-separated to avoid ambiguity with `:` in node IDs). */
 function serializeDOM(root: HTMLElement): string {
   let result = '';
@@ -115,7 +133,8 @@ function serializeDOM(root: HTMLElement): string {
     }
   };
   for (const child of Array.from(root.childNodes)) walk(child);
-  return result.replace(/\n+$/, '');
+  // 去掉芯片前的零宽空格占位符，再剥掉尾部换行
+  return result.replace(/​/g, '').replace(/\n+$/, '');
 }
 
 /** Build a chip <span contenteditable="false"> for a canvas node reference. */
@@ -234,16 +253,26 @@ function renderPromptToNodes(
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
+  // 行首芯片（前面是 <br>、另一个芯片，或位于最开头）需要一个零宽空格文本节点，
+  // 否则光标无法落到芯片前面（contenteditable=false 元素旁缺少可定位的文本节点）。
+  const pushChip = (chip: Node) => {
+    const last = nodes[nodes.length - 1];
+    if (!last || isBrEl(last) || isChipEl(last)) {
+      nodes.push(document.createTextNode(ZWSP));
+    }
+    nodes.push(chip);
+  };
+
   while ((match = regex.exec(text)) !== null) {
     pushTextWithBreaks(nodes, text.slice(lastIndex, match.index));
     if (match[1] !== undefined) {
       // Asset reference
       let path = match[1];
       try { path = decodeURIComponent(match[1]); } catch { /* keep raw */ }
-      nodes.push(buildAssetChipEl(path));
+      pushChip(buildAssetChipEl(path));
       lastIndex = regex.lastIndex;
     } else if (match[2] !== undefined) {
-      nodes.push(buildChipEl(match[2], match[3], metaMap));
+      pushChip(buildChipEl(match[2], match[3], metaMap));
       lastIndex = regex.lastIndex;
     } else {
       const id = match[4];
@@ -274,11 +303,11 @@ function renderPromptToNodes(
             }
           }
         }
-        nodes.push(chip);
+        pushChip(chip);
         lastIndex = i;
         regex.lastIndex = i;
       } else {
-        nodes.push(chip);
+        pushChip(chip);
         lastIndex = matchEnd;
         regex.lastIndex = matchEnd;
       }
@@ -357,7 +386,24 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   useEffect(() => {
     const el = editorRef.current;
     if (!el) return;
-    if (serializeDOM(el) === prompt) return;
+    if (serializeDOM(el) === prompt) {
+      // 删空后浏览器常残留 <br>，而 serializeDOM 会剥掉尾部换行使其「看起来为空」，
+      // 于是 DOM 不会被清理、光标停在残留空行（第 2/3 行）。这里把真正的空状态归一化。
+      // 仅在 prompt 由非空变空时触发（此 effect 才会重跑），不影响用户主动按 Shift+Enter 换行。
+      if (prompt === '' && el.innerHTML !== '') {
+        const hadFocus = document.activeElement === el;
+        el.innerHTML = '';
+        if (hadFocus) {
+          const sel = window.getSelection();
+          const r = document.createRange();
+          r.selectNodeContents(el);
+          r.collapse(true);
+          sel?.removeAllRanges();
+          sel?.addRange(r);
+        }
+      }
+      return;
+    }
     const sel = window.getSelection();
     const cursorOffset = sel && sel.rangeCount ? saveCursor(el) : null;
     el.innerHTML = '';
@@ -835,6 +881,35 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         e.preventDefault();
         const text = editorRef.current ? serializeDOM(editorRef.current) : '';
         if (canSubmit && text.trim() && onSubmit) onSubmit();
+        return;
+      }
+      // Newline on Shift+Enter —— 手动插入单个 <br>，避免浏览器在芯片旁默认插入两个 <br>（换两行）
+      if (e.key === 'Enter' && e.shiftKey) {
+        e.preventDefault();
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount) return;
+        const range = sel.getRangeAt(0);
+        range.deleteContents();
+        const br = document.createElement('br');
+        range.insertNode(br);
+        const next = br.nextSibling;
+        if (!next) {
+          // 位于末尾：补一个占位 <br>，让新空行可见，光标落在新行
+          const filler = document.createElement('br');
+          br.parentNode?.insertBefore(filler, null);
+          range.setStartBefore(filler);
+        } else if (isChipEl(next)) {
+          // 新行以芯片开头：插入零宽空格，让光标能落到芯片前面
+          const zwsp = document.createTextNode(ZWSP);
+          br.parentNode?.insertBefore(zwsp, next);
+          range.setStart(zwsp, 1);
+        } else {
+          range.setStartAfter(br);
+        }
+        range.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        emitDOM();
         return;
       }
       // Delete chip on Backspace

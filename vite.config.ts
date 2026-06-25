@@ -13,6 +13,14 @@ export default defineConfig({
     watch: {
       ignored: ["**/src-tauri/**", "**/doc/**"],
     },
+    // 代理 ComfyUI 本体请求到本地服务，开发模式下绕过 CORS
+    proxy: {
+      '/api/comfyui': {
+        target: 'http://127.0.0.1:8188',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/comfyui/, ''),
+      },
+    },
   },
   build: {
     rollupOptions: {

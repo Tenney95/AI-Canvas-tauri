@@ -1,7 +1,7 @@
 /**
  * Canvas 画布主组件 — React Flow 画布核心，管理节点/边渲染、拖放、连线、右键菜单、空状态
  */
-import { useCallback, useState, useEffect, useMemo } from 'react';
+import { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import { ReactFlow,
   Background,
   Controls,
@@ -268,6 +268,9 @@ function CanvasInner() {
   // Windows：右键拖拽平移后松开才触发 contextmenu；macOS：双指（次级点击）按下瞬间即触发。
   // 两端时机不一致，故不依赖原生 contextmenu 开菜单，改为自行追踪右键 pointer：
   // 按下记录起点 → 抬起时若位移超阈值视为平移（不弹），否则按落点判定节点/画布空白再弹。
+  // 同时通过 shouldPreventNativeMenu 标志，在全局 contextmenu 事件中阻止浏览器原生右键菜单，
+  // 解决窗口底部等 ReactFlow 覆盖不到的区域两个菜单同时出现的问题。
+  const shouldPreventNativeMenu = useRef(false);
   useEffect(() => {
     const drag = { x: 0, y: 0, moved: false, down: false };
     const onDown = (e: PointerEvent) => {
@@ -296,6 +299,7 @@ function CanvasInner() {
       if (nodeEl) {
         const id = nodeEl.getAttribute('data-id');
         if (!id) return;
+        shouldPreventNativeMenu.current = true; // 弹出自定义菜单 → 阻止原生菜单
         const syn = {
           preventDefault() {}, stopPropagation() {},
           clientX: e.clientX, clientY: e.clientY, target: el,
@@ -306,6 +310,7 @@ function CanvasInner() {
 
       const paneEl = el.closest('.react-flow__pane');
       if (paneEl) {
+        shouldPreventNativeMenu.current = true; // 弹出自定义菜单 → 阻止原生菜单
         const syn = {
           preventDefault() {},
           clientX: e.clientX, clientY: e.clientY, target: paneEl,
@@ -313,15 +318,24 @@ function CanvasInner() {
         openCtxMenu(syn);
       }
     };
+    // 全局 contextmenu 监听：若自定义菜单将要弹出，则阻止浏览器原生右键菜单
+    const onContextMenu = (e: MouseEvent) => {
+      if (shouldPreventNativeMenu.current) {
+        e.preventDefault();
+        shouldPreventNativeMenu.current = false;
+      }
+    };
     document.addEventListener('pointerdown', onDown, true);
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('pointerup', onUp, true);
     document.addEventListener('pointercancel', onCancel, true);
+    document.addEventListener('contextmenu', onContextMenu, true);
     return () => {
       document.removeEventListener('pointerdown', onDown, true);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onCancel, true);
+      document.removeEventListener('contextmenu', onContextMenu, true);
     };
   }, [openCtxMenu, openNodeCtxMenu]);
 

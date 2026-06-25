@@ -134,11 +134,16 @@
 
 /* Editable value area inside workflow chip */
 .prompt-chip-wf-value {
-  display: inline;
+  display: inline-block;
+  max-width: 300px;
   outline: none;
   min-width: 2em;
   cursor: text;
   caret-color: currentColor;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
 }
 .prompt-chip-wf-value br {
   display: inline;

@@ -50,6 +50,69 @@ const DREAMINA_LOGIN_WATCHER: &str = r#"
 })();
 "#;
 
+/// 通用 HTTP 代理：前端通过 invoke 调用，由 Rust 端发起 HTTP 请求，彻底绕过浏览器 CORS 限制。
+/// 请求体和响应体均使用 base64 编码传输，支持 GET/POST 等任意方法。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ProxyFetchRequest {
+    url: String,
+    method: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>, // base64 编码的请求体
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ProxyFetchResponse {
+    status: u16,
+    body: String, // base64 编码的响应体
+    headers: Vec<(String, String)>,
+}
+
+#[tauri::command]
+async fn proxy_fetch(req: ProxyFetchRequest) -> Result<ProxyFetchResponse, String> {
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+    let method = reqwest::Method::from_bytes(req.method.as_bytes())
+        .map_err(|e| format!("无效的 HTTP 方法: {e}"))?;
+
+    let mut request = client.request(method, &req.url);
+
+    for (key, value) in &req.headers {
+        request = request.header(key.as_str(), value.as_str());
+    }
+
+    if let Some(body) = &req.body {
+        if !body.is_empty() {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(body)
+                .map_err(|e| format!("请求体 base64 解码失败: {e}"))?;
+            request = request.body(bytes);
+        }
+    }
+
+    let response = request.send().await.map_err(|e| format!("请求失败: {e}"))?;
+
+    let status = response.status().as_u16();
+    let res_headers: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
+    let res_bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("读取响应失败: {e}"))?;
+    let body_b64 = base64::engine::general_purpose::STANDARD.encode(&res_bytes);
+
+    Ok(ProxyFetchResponse {
+        status,
+        body: body_b64,
+        headers: res_headers,
+    })
+}
+
 /// 使用原生 HTTP 客户端下载远程图片并返回 base64 data URL（绕过 WebView CORS 限制）
 #[tauri::command]
 async fn fetch_image_data_url(url: String) -> Result<String, String> {
@@ -205,6 +268,7 @@ pub fn run() {
         .plugin(tauri_plugin_drag::init())
         .invoke_handler(tauri::generate_handler![
             fetch_image_data_url,
+            proxy_fetch,
             move_to_trash,
             dreamina_login,
             dreamina::dreamina_login_start,

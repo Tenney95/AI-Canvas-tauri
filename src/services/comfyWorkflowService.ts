@@ -11,6 +11,124 @@ import { resolveNodeReferences } from './nodeReferenceService';
 import { pollTask } from './pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask } from './pollManager';
 
+// ── 跨域安全的 fetch 包装 ──
+
+const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
+/**
+ * 将 ComfyUI 直连地址替换为当前环境可访问的地址：
+ * - Tauri 模式：保留原地址（走 Rust proxy_fetch）
+ * - 浏览器开发模式：替换为 Vite 代理路径 /api/comfyui
+ */
+function normalizeComfyUrl(url: string): string {
+  if (isTauri) return url;
+  // Vite dev proxy: http://127.0.0.1:8188/xxx → /api/comfyui/xxx
+  return url.replace(/^https?:\/\/127\.0\.0\.1:\d+/, '/api/comfyui');
+}
+
+/** 将 FormData 序列化为 base64 编码的 multipart 字节流 */
+async function formDataToBase64(formData: FormData): Promise<{ body: string; contentType: string }> {
+  const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
+  const encoder = new TextEncoder();
+  const parts: Uint8Array[] = [];
+
+  for (const [name, value] of formData.entries()) {
+    let header = `--${boundary}\r\n`;
+    if (value instanceof Blob) {
+      const filename = (value as File).name || 'blob';
+      header += `Content-Disposition: form-data; name="${name}"; filename="${filename}"\r\n`;
+      header += `Content-Type: ${value.type || 'application/octet-stream'}\r\n\r\n`;
+      parts.push(encoder.encode(header));
+      parts.push(new Uint8Array(await value.arrayBuffer()));
+      parts.push(encoder.encode('\r\n'));
+    } else {
+      header += `Content-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+      parts.push(encoder.encode(header));
+    }
+  }
+  parts.push(encoder.encode(`--${boundary}--\r\n`));
+
+  const totalLen = parts.reduce((acc, p) => acc + p.length, 0);
+  const merged = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const p of parts) {
+    merged.set(p, offset);
+    offset += p.length;
+  }
+
+  let binary = '';
+  for (let i = 0; i < merged.length; i++) binary += String.fromCharCode(merged[i]);
+  return { body: btoa(binary), contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
+/**
+ * 跨域安全的 fetch — Tauri 模式走 Rust proxy_fetch，浏览器模式走 Vite 代理。
+ * 用法与原生 fetch 一致，自动处理 ComfyUI URL 重写和 FormData 序列化。
+ */
+async function comfyFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const resolvedUrl = normalizeComfyUrl(url);
+
+  if (!isTauri) {
+    return fetch(resolvedUrl, options);
+  }
+
+  // Tauri 模式：通过 invoke proxy_fetch 发起请求
+  const { invoke } = await import('@tauri-apps/api/core');
+
+  const headers: [string, string][] = [];
+  let bodyBase64: string | null = null;
+
+  if (options.headers) {
+    for (const [k, v] of Object.entries(options.headers as Record<string, string>)) {
+      if (k.toLowerCase() === 'content-type') continue; // 后面统一设置
+      headers.push([k, v]);
+    }
+  }
+
+  if (options.body) {
+    if (options.body instanceof FormData) {
+      const { body, contentType } = await formDataToBase64(options.body);
+      bodyBase64 = body;
+      headers.push(['Content-Type', contentType]);
+    } else if (typeof options.body === 'string') {
+      bodyBase64 = btoa(unescape(encodeURIComponent(options.body)));
+    } else {
+      // ArrayBuffer / Blob / Uint8Array
+      let buf: ArrayBuffer;
+      if (options.body instanceof ArrayBuffer) {
+        buf = options.body;
+      } else if (options.body instanceof Uint8Array) {
+        buf = options.body.buffer.slice(options.body.byteOffset, options.body.byteOffset + options.body.byteLength);
+      } else {
+        buf = await (options.body as Blob).arrayBuffer();
+      }
+      const bytes = new Uint8Array(buf);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      bodyBase64 = btoa(binary);
+    }
+  }
+
+  const result = await invoke<{ status: number; body: string; headers: [string, string][] }>('proxy_fetch', {
+    req: {
+      url: resolvedUrl,
+      method: options.method || 'GET',
+      headers,
+      body: bodyBase64,
+    },
+  });
+
+  // 解码 base64 响应体
+  const binaryStr = atob(result.body);
+  const resBytes = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) resBytes[i] = binaryStr.charCodeAt(i);
+
+  return new Response(resBytes, {
+    status: result.status,
+    headers: new Headers(result.headers),
+  });
+}
+
 /** 从 Store 获取 ComfyUI 配置并校验 */
 function getComfyUIConfig() {
   const config = useAppStore.getState().config;
@@ -107,7 +225,7 @@ async function uploadImageToComfyUI(
   // 覆盖同名文件，避免重复堆积
   formData.append('overwrite', 'true');
 
-  const uploadRes = await fetch(`${baseUrl}/upload/image`, {
+  const uploadRes = await comfyFetch(`${baseUrl}/upload/image`, {
     method: 'POST',
     body: formData,
   });
@@ -275,7 +393,7 @@ async function promptComfyUIWorkflow(
   baseUrl: string,
   workflowObj: Record<string, Record<string, unknown>>,
 ): Promise<string> {
-  const promptRes = await fetch(`${baseUrl}/prompt`, {
+  const promptRes = await comfyFetch(`${baseUrl}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt: workflowObj }),
@@ -332,7 +450,7 @@ async function pollComfyHistory<T>(
 ): Promise<T> {
   return pollTask<ComfyOutputs | undefined, T>({
     fetchState: async () => {
-      const res = await fetch(`${baseUrl}/history/${promptId}`);
+      const res = await comfyFetch(`${baseUrl}/history/${promptId}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const history = (await res.json()) as Record<string, unknown>;
       const entry = history[promptId] as Record<string, unknown> | undefined;

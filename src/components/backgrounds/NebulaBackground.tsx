@@ -33,11 +33,11 @@ import NeaBackgroundLanding from '../../assets/images/bg/NeaBackgroundLanding.jp
 const NEBULA_TEX_URL = Nebula;
 const STARS_BG_URL = NeaBackgroundLanding;
 
-const CLOUD_COUNT = 50;
-const CLOUD_ROTATION_SPEED = 0.001;
-const FOG_COLOR = 0x0a0514;
-const FOG_DENSITY = 0.0000091;
-const RENDER_DELTA = 20.1;
+const CLOUD_COUNT = 50;                // 星云粒子数量
+const CLOUD_ROTATION_SPEED = 0.0002;    // 星云自转速度
+const FOG_COLOR = 0x0a0514;            // 雾颜色（深紫黑）
+const FOG_DENSITY = 0.0000091;         // 雾密度
+const RENDER_DELTA = 20.1;             // 渲染帧间隔 (ms)
 
 export default function NebulaBackground() {
   const containerRef = useRef<HTMLDivElement>(null);
