@@ -98,7 +98,7 @@ async function comfyFetch(url: string, options: RequestInit = {}): Promise<Respo
       if (options.body instanceof ArrayBuffer) {
         buf = options.body;
       } else if (options.body instanceof Uint8Array) {
-        buf = options.body.buffer.slice(options.body.byteOffset, options.body.byteOffset + options.body.byteLength);
+        buf = options.body.buffer.slice(options.body.byteOffset, options.body.byteOffset + options.body.byteLength) as ArrayBuffer;
       } else {
         buf = await (options.body as Blob).arrayBuffer();
       }
