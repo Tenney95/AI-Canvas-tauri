@@ -208,6 +208,11 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
 
   const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴文本');
 
+  // 文本选中编辑时隐藏连接手柄：保留布局/位置（不脱锚），仅去掉显示与交互
+  const handleHideStyle: React.CSSProperties | undefined = selectingText
+    ? { opacity: 0, pointerEvents: 'none' }
+    : undefined;
+
   // ── Render ──
   return (
     <>
@@ -283,17 +288,20 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
 
         {data.error && <NodeError nodeId={id} message={data.error} />}
 
-        
-        <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-text" >
+
+        {/* 文本选中编辑时隐藏手柄，避免遮挡/干扰选区（用 opacity 而非卸载，保留 handle 位置不让连线脱锚）*/}
+        <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-text" style={handleHideStyle} >
           <GooeyBtn className="gooey-btn-left" hue={234} />
         </Handle>
-        <Handle type="source" position={Position.Right} id="right" className="node-handle handle-source handle-text" >
+        <Handle type="source" position={Position.Right} id="right" className="node-handle handle-source handle-text" style={handleHideStyle} >
           <GooeyBtn className="gooey-btn-right" hue={234} />
         </Handle>
       </div>
 
       {/* Resize handle — outside .node to avoid overflow:hidden + border-radius clipping */}
-      <div className="node-resize-handle" onPointerDownCapture={handleResizeStart} />
+      {!selectingText && (
+        <div className="node-resize-handle" onPointerDownCapture={handleResizeStart} />
+      )}
     </div>
 
     {/* Fullscreen overlay */}

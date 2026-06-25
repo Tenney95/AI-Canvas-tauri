@@ -1,19 +1,18 @@
 /**
- * loadingText — "LOADING" 文字碎裂动画（现代 Three.js 复刻，GPU 顶点着色器驱动）
+ * loadingText — 吉祥物「炸裂成粒子」加载动画（GPU 顶点着色器驱动）
  *
- * 忠实保留参考代码的全部参数（size 40 / curveSegments 24 / bevel 2,2 /
- * tessellateRepeat(1.0, 2) / 球面半径 200 / lengthFactor 0.001 / stretch 0.05 /
- * duration 1.0 / angle = π·rand(0.5,2) / axis (x,-y,-z) / 配色 0x444444,0xcccccc,4）。
- * 由于密度高，逐面动画放到顶点着色器（等价原 THREE.BAS 做法），仅在最后对整个
- * Mesh 做一次「显示缩放」以适配吉祥物的小视口（这不是动画参数）。
+ * 加载态时，由吉祥物本体（球体）逐面炸裂、旋转、飞散到一个更大的球壳上形成粒子云，
+ * 而不再由「LOADING」文字转换 —— 这样「圆球 → 粒子」的过渡能自然衔接。
+ * 逐面动画（delay/duration/lengthFactor/stretch/axis-angle/配色）沿用参考做法，
+ * 放到顶点着色器（等价原 THREE.BAS）；源几何体改为与吉祥物同尺寸的 SphereGeometry。
+ * 最后对整个 Mesh 做一次「显示缩放」以适配吉祥物的小视口（这不是动画参数）。
  */
 import * as THREE from 'three';
-import type { FontData } from 'three/examples/jsm/loaders/FontLoader.js';
 
 export interface LoadingText {
   mesh: THREE.Mesh;
   material: THREE.MeshPhongMaterial;
-  /** 动画总时长（参考：maxDuration + maxDelay + stretch + lengthFactor*maxLength）*/
+  /** 动画总时长（maxDuration + maxDelay + stretch + lengthFactor*maxLength）*/
   animationDuration: number;
   /** 设置着色器时间（uTime = animationDuration * animationProgress）*/
   setUTime: (uTime: number) => void;
@@ -24,9 +23,14 @@ export interface LoadingText {
 const LENGTH_FACTOR = 0.001;
 const STRETCH = 0.05;
 const DURATION = 1.0;
-// 球面半径：参考为 200（全屏视口）。吉祥物仅 100px，需缩小到粒子≥1px 才看得见。
-// 取值略大于文字半宽 → 文字向外炸开成略大的粒子球。
-const SPHERE_RADIUS = 36;
+// 源球体半径：经 displayScale(0.028) 缩放后 ≈ 1，与吉祥物球体世界半径一致，
+// 使粒子炸裂的「起点」正好覆盖原本的圆球，过渡无缝。
+const SRC_RADIUS = 36;
+// 炸裂目标球壳半径：大于源半径 → 粒子整体向外爆开成略大的粒子球。
+const SPHERE_RADIUS = 52;
+// 源球体细分：决定粒子（=三角面）数量与密度
+const SRC_WIDTH_SEG = 56;
+const SRC_HEIGHT_SEG = 36;
 
 const G = Math.PI * (3 - Math.sqrt(5));
 function fibSpherePoint(i: number, n: number, radius: number, out: THREE.Vector3) {
@@ -40,38 +44,15 @@ function fibSpherePoint(i: number, n: number, radius: number, out: THREE.Vector3
 }
 
 export async function createLoadingText(displayScale = 0.028): Promise<LoadingText> {
-  const [{ FontLoader }, { TextGeometry }, { TessellateModifier }, fontMod] = await Promise.all([
-    import('three/examples/jsm/loaders/FontLoader.js'),
-    import('three/examples/jsm/geometries/TextGeometry.js'),
-    import('three/examples/jsm/modifiers/TessellateModifier.js'),
-    import('three/examples/fonts/helvetiker_bold.typeface.json'),
-  ]);
+  // 源几何体：吉祥物球体本身（而非 LOADING 文字）。球体已是均匀三角网格，
+  // 直接以每个三角面作为一颗粒子，无需再做 tessellate。
+  let geo: THREE.BufferGeometry = new THREE.SphereGeometry(
+    SRC_RADIUS,
+    SRC_WIDTH_SEG,
+    SRC_HEIGHT_SEG,
+  );
 
-  const font = new FontLoader().parse((fontMod as { default: FontData }).default);
-
-  // 形状参数沿用参考比例（curveSegments 24 / bevel）；绝对尺寸缩小以适配 100px 视口，
-  // 使文字与粒子球都能放进小窗口（size:radius 与参考一致量级）。
-  let geo: THREE.BufferGeometry = new TextGeometry('LOADING', {
-    font,
-    size: 16,
-    depth: 5,
-    curveSegments: 24,
-    bevelEnabled: true,
-    bevelThickness: 0.8,
-    bevelSize: 0.8,
-    bevelSegments: 3,
-  });
-
-  // 居中（anchor 0.5,0.5,0）
-  geo.computeBoundingBox();
-  {
-    const bb = geo.boundingBox!;
-    geo.translate(-(bb.min.x + bb.max.x) / 2, -(bb.min.y + bb.max.y) / 2, -bb.min.z);
-  }
-
-  // tessellateRepeat(geo, 1.0, 2) 等价
-  geo = new TessellateModifier(1.0, 2).modify(geo);
-  // separateFaces 等价：每个三角面独立顶点
+  // separateFaces 等价：每个三角面独立顶点（球体本就以原点为中心，无需再居中）
   geo = geo.toNonIndexed();
   geo.computeBoundingBox();
   geo.computeVertexNormals();

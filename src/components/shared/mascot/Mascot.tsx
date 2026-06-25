@@ -4,7 +4,7 @@
  * 一个柔和明暗过渡的圆球，会自然眨眼，眼睛跟随鼠标方向，
  * 鼠标悬浮在球体上时整体高亮。
  *
- * 请求模型时（loading=true）整体淡出、缩小，自然过渡为「LOADING」文字碎裂动画；
+ * 请求模型时（loading=true）球体本体逐面炸裂、飞散成粒子云；
  * 完成后再平滑还原为圆球。
  *
  * 用法：放进任意有尺寸的容器即可（组件会铺满父级）。
@@ -45,6 +45,10 @@ const FOLLOW_LERP = 0.12; // 跟随平滑系数
 const BLINK_MIN = 2.2; // 两次眨眼最小间隔（秒）
 const BLINK_MAX = 5.5; // 两次眨眼最大间隔（秒）
 const BLINK_DURATION = 0.13; // 单次眨眼时长（秒）
+// 过渡自转（靠眼睛扫过体现可见旋转 → 必须转头部，而非均匀粒子球）
+const SPIN_TURNS = Math.PI * 2; // 过渡时绕 Y 轴转过的总角度（一整圈，结束时眼睛回到正面）
+const SPIN_END = 1;   // 自转在过渡进度的前半段完成（此时球体仍完全可见 → 看得到旋转）
+const FADE_START = 0.45; // 自转接近完成后才开始淡出/炸裂（回程则先聚拢、球体重现后再转回正面）
 
 /** 生成竖直胶囊（圆角矩形）形状，用作眼睛 */
 function makeEyeShape(width: number, height: number): Shape {
@@ -65,7 +69,7 @@ function makeEyeShape(width: number, height: number): Shape {
 }
 
 interface MascotProps {
-  /** 请求模型中 → 切换为 LOADING 碎裂动画 */
+  /** 请求模型中 → 球体炸裂成粒子云 */
   loading?: boolean;
 }
 
@@ -196,7 +200,9 @@ export default function Mascot({ loading = false }: MascotProps) {
     let hoverScale = 1;
     // gsap 时间线（与参考一致：4s easeInOut yoyo，progress 0→0.6，rotation 0→2π）
     let tl: gsap.core.Timeline | null = null;
-    const anim = { progress: 0, ry: 0 };
+    const anim = { progress: 0 };
+    // 头部偏航的「跟随鼠标」分量：过渡自转在 loadAmount 算出后再叠加，避免被自身 lerp 吃掉
+    let headYaw = 0;
 
     /* ── 渲染循环 ── */
     const clock = new Timer();
@@ -221,11 +227,8 @@ export default function Mascot({ loading = false }: MascotProps) {
         -py * EYE_MAX_ANGLE,
         FOLLOW_LERP,
       );
-      head.rotation.y = MathUtils.lerp(
-        head.rotation.y,
-        px * HEAD_MAX_ANGLE,
-        FOLLOW_LERP,
-      );
+      // 偏航只更新「跟随分量」，过渡自转在 loadAmount 算出后再叠加到 head.rotation.y
+      headYaw = MathUtils.lerp(headYaw, px * HEAD_MAX_ANGLE, FOLLOW_LERP);
       head.rotation.x = MathUtils.lerp(
         head.rotation.x,
         -py * HEAD_MAX_ANGLE,
@@ -271,43 +274,51 @@ export default function Mascot({ loading = false }: MascotProps) {
             loadText = lt;
             lt.mesh.visible = false;
             scene.add(lt.mesh);
-            // 参考时间线：progress 0→0.6 与 rotation 0→2π，4s easeInOut，yoyo 无限循环
+            // 炸裂进度时间线：progress 0→0.6，4s easeInOut，yoyo 无限循环（旋转由头部的过渡自转体现）
             tl = gsap.timeline({ repeat: -1, repeatDelay: 0.5, yoyo: true });
             tl.fromTo(anim, { progress: 0 }, { progress: 0.6, duration: 4, ease: 'power1.inOut' }, 0);
-            tl.fromTo(anim, { ry: 0 }, { ry: Math.PI * 2, duration: 4, ease: 'power1.inOut' }, 0);
             creatingLoad = false;
           })
           .catch(() => { creatingLoad = false; });
       }
-      // gsap 驱动 loadAmount 缓动过渡：进入 0.5s，退出 0.9s，节奏自然
+      // gsap 驱动过渡进度 p（0=圆球, 1=粒子）：1.4s 缓动，给前半段自转留出可见时间
       const loadTarget = wantLoad && loadText ? 1 : 0;
       if (loadTarget !== prevLoadTarget) {
         prevLoadTarget = loadTarget;
         loadTween?.kill();
         loadTween = gsap.to(loadObj, {
           val: loadTarget,
-          duration: loadTarget === 1 ? 0.5 : 0.9,
-          ease: loadTarget === 1 ? 'power3.inOut' : 'power2.out',
+          // 放慢整个过渡：前半段自转需要足够时间才看得清，之后才淡出/炸裂
+          duration: 1.4,
+          ease: 'power2.inOut',
         });
       }
-      const loadAmount = loadObj.val;
+      const p = loadObj.val;
 
-      // 头部随 loadAmount 淡出 + 缩小
-      sphereMat.opacity = 1 - loadAmount;
-      eyeMat.opacity = 1 - loadAmount;
-      head.visible = loadAmount < 0.995;
-      head.scale.setScalar(hoverScale * (1 - loadAmount * 0.5));
+      // 过渡分两段：① 前半段（到 SPIN_END）先把球体「转」起来——眼睛随头部扫过 = 肉眼可见的旋转，
+      // 此时还没淡出；② 自转接近完成后（FADE_START 之后）再淡出 + 炸裂成粒子。
+      // 回程 p:1→0 自动反过来：粒子先聚拢淡回球体，球体重现后再转回正面。
+      const spinAngle = MathUtils.smoothstep(p, 0, SPIN_END) * SPIN_TURNS;
+      const fade = MathUtils.smoothstep(p, FADE_START, 1);
 
-      // LOADING 网格：由 gsap 时间线驱动 uTime + 自转
+      // 头部：跟随偏航 + 过渡自转（自转靠眼睛体现，故转的是头部而非粒子球）
+      head.rotation.y = headYaw + spinAngle;
+      sphereMat.opacity = 1 - fade;
+      eyeMat.opacity = 1 - fade;
+      head.visible = fade < 0.995;
+      head.scale.setScalar(hoverScale * (1 - fade * 0.5));
+
+      // 粒子网格：随 fade（自转完成后才登场）淡入，由时间线驱动炸裂进度
       if (loadText) {
         const lt = loadText;
-        const show = loadAmount > 0.002;
+        const show = fade > 0.002;
         lt.mesh.visible = show;
-        lt.material.opacity = loadAmount;
+        lt.material.opacity = fade;
         if (show) {
           tl?.play();
           lt.setUTime(lt.animationDuration * anim.progress);
-          lt.mesh.rotation.y = anim.ry;
+          // 与头部保持同一旋转角，交叉淡入淡出时衔接自然
+          lt.mesh.rotation.y = spinAngle;
         } else {
           tl?.pause();
         }

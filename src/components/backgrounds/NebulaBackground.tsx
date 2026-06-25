@@ -16,6 +16,7 @@ import {
   TextureLoader,
   PlaneGeometry,
   MeshLambertMaterial,
+  type Texture,
 } from 'three';
 import {
   EffectComposer,
@@ -34,10 +35,11 @@ const NEBULA_TEX_URL = Nebula;
 const STARS_BG_URL = NeaBackgroundLanding;
 
 const CLOUD_COUNT = 50;                // 星云粒子数量
-const CLOUD_ROTATION_SPEED = 0.0002;    // 星云自转速度
+const CLOUD_ROTATION_SPEED = 0.001;    // 星云自转速度（按 60fps 基准，下面按真实帧间隔归一化）
 const FOG_COLOR = 0x0a0514;            // 雾颜色（深紫黑）
 const FOG_DENSITY = 0.0000091;         // 雾密度
-const RENDER_DELTA = 20.1;             // 渲染帧间隔 (ms)
+const TARGET_FPS = 30;                 // 限帧：Bloom 后处理很重，满帧渲染会让 GPU/风扇狂转
+const FRAME_INTERVAL = 1000 / TARGET_FPS;
 
 export default function NebulaBackground() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -97,8 +99,13 @@ export default function NebulaBackground() {
     const cloudParticles: Mesh[] = [];
 
     const loader = new TextureLoader();
+    // 卸载后异步贴图回调若仍触发，直接丢弃并释放贴图，避免往已销毁的场景里塞资源（内存泄漏源）
+    let disposed = false;
+    const textures: Texture[] = [];
 
     loader.load(NEBULA_TEX_URL, (texture) => {
+      if (disposed) { texture.dispose(); return; }
+      textures.push(texture);
       const cloudGeo = new PlaneGeometry(700, 700);
       const cloudMaterial = new MeshLambertMaterial({
         map: texture,
@@ -122,6 +129,8 @@ export default function NebulaBackground() {
     });
 
     loader.load(STARS_BG_URL, (texture) => {
+      if (disposed) { texture.dispose(); return; }
+      textures.push(texture);
       const textureEffect = new TextureEffect({
         blendFunction: BlendFunction.COLOR_DODGE,
         texture,
@@ -143,17 +152,26 @@ export default function NebulaBackground() {
       composer.addPass(effectPass);
     });
 
-    /* ── 渲染循环 ── */
-    const render = () => {
+    /* ── 渲染循环（限帧 + 后台暂停，避免风扇狂转）── */
+    let lastTime = 0;
+    const render = (now: number) => {
       animFrameRef.current = requestAnimationFrame(render);
-      composer.render(RENDER_DELTA);
+      // 标签页/窗口不可见时不渲染
+      if (document.hidden) return;
+      const elapsed = now - lastTime;
+      if (elapsed < FRAME_INTERVAL) return; // 限到 TARGET_FPS
+      lastTime = now - (elapsed % FRAME_INTERVAL);
 
+      composer.render(elapsed / 1000);
+
+      // 自转按真实帧间隔归一化，限帧后转速不变
+      const k = elapsed / (1000 / 60);
       for (let i = 0; i < cloudParticles.length; i++) {
-        cloudParticles[i].rotation.z -= CLOUD_ROTATION_SPEED;
+        cloudParticles[i].rotation.z -= CLOUD_ROTATION_SPEED * k;
       }
     };
 
-    render();
+    animFrameRef.current = requestAnimationFrame(render);
 
     /* ── 窗口大小响应 ── */
     const handleResize = () => {
@@ -166,9 +184,9 @@ export default function NebulaBackground() {
 
     /* ── 清理函数 ── */
     cleanupRef.current = () => {
+      disposed = true;
       cancelAnimationFrame(animFrameRef.current);
       window.removeEventListener('resize', handleResize);
-      renderer.dispose();
       scene.traverse((obj) => {
         if (obj instanceof Mesh) {
           obj.geometry.dispose();
@@ -179,9 +197,16 @@ export default function NebulaBackground() {
           }
         }
       });
+      // 贴图不会随 material.dispose() 释放，需显式释放
+      for (const tex of textures) tex.dispose();
+      // EffectComposer 持有 GPU 渲染目标与各 Pass/Effect，必须显式释放，否则每次切主题都泄漏
+      composer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
+      // 主动释放 WebGL 上下文，避免反复切换主题耗尽上下文配额
+      renderer.dispose();
+      renderer.forceContextLoss();
     };
   }, []);
 
