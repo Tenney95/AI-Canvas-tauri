@@ -3,14 +3,17 @@
  * 节点输出另存为、系统文件管理器定位。基础设施见 ./fs/core，删除域见 ./fs/trash，
  * 全局资产库见 ./fs/assetLibrary（均通过本模块统一对外导出）。
  */
-import { writeFile, readFile as tauriReadFile, stat, rename } from '@tauri-apps/plugin-fs';
+import { writeFile, readFile as tauriReadFile, stat, rename, readDir, exists, mkdir } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { appDataDir } from '@tauri-apps/api/path';
 import {
   isTauriEnv,
   getMimeType,
   arrayBufferToBase64,
   sanitizeFileName,
+  sanitizeFolderName,
+  joinPath,
   getConvertFileSrc,
   ensureProjectDataDir,
   getProjectDataDir,
@@ -38,12 +41,16 @@ export {
   savePreset,
   loadPresets,
   deletePreset,
+  saveSkill,
+  loadSkills,
+  deleteSkill,
   saveStyle,
   loadStyles,
   deleteStyle,
   type ProjectSaveData,
   type WorkflowRecord,
   type PresetRecord,
+  type SkillRecord,
   type CustomStyleRecord,
 } from './storageService';
 export * from './fs/core';
@@ -554,6 +561,160 @@ export async function uploadSourceFileToProject(
 /** 为源节点上传文件 — 返回 data URL + 文件名 + 大小（向后兼容，不保存到项目目录） */
 export async function uploadSourceFile(accept?: string): Promise<UploadResult | null> {
   return uploadSourceFileToProject(accept);
+}
+
+export interface UploadedSkillFile {
+  fileName: string;
+  content: string;
+  sourceType: 'file' | 'folder';
+  storagePath?: string;
+  entryFileName?: string;
+}
+
+export type SkillUploadSource = 'file' | 'folder';
+
+function decodeUtf8Text(bytes: Uint8Array): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error('Skill 文件必须是 UTF-8 文本');
+  }
+}
+
+const SKILL_TEXT_EXTENSIONS = new Set(['md', 'txt', 'json']);
+
+function isSkillTextFile(fileName: string): boolean {
+  const ext = fileName.split('.').pop()?.toLowerCase() || '';
+  return SKILL_TEXT_EXTENSIONS.has(ext);
+}
+
+async function ensureSkillRootDir(): Promise<string> {
+  const dir = joinPath(await appDataDir(), 'skill');
+  if (!(await exists(dir))) await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+async function collectSkillFiles(dirPath: string, baseDir = dirPath): Promise<{ path: string; relativePath: string; name: string }[]> {
+  const entries = await readDir(dirPath);
+  const files: { path: string; relativePath: string; name: string }[] = [];
+
+  for (const entry of entries) {
+    const entryPath = joinPath(dirPath, entry.name);
+    if (entry.isDirectory) {
+      files.push(...await collectSkillFiles(entryPath, baseDir));
+      continue;
+    }
+    if (!entry.isFile || !isSkillTextFile(entry.name)) continue;
+    const normalizedBase = baseDir.replace(/\\/g, '/').replace(/\/+$/, '');
+    const normalizedPath = entryPath.replace(/\\/g, '/');
+    files.push({
+      path: entryPath,
+      relativePath: normalizedPath.startsWith(`${normalizedBase}/`)
+        ? normalizedPath.slice(normalizedBase.length + 1)
+        : entry.name,
+      name: entry.name,
+    });
+  }
+
+  return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath, undefined, { numeric: true }));
+}
+
+function pickSkillEntry(files: { relativePath: string; name: string }[]): { relativePath: string; name: string } | null {
+  return files.find((f) => f.name.toLowerCase() === 'skill.md')
+    ?? files.find((f) => f.relativePath.toLowerCase().endsWith('/skill.md'))
+    ?? files.find((f) => f.name.toLowerCase().endsWith('.md'))
+    ?? files[0]
+    ?? null;
+}
+
+async function uploadSkillFolder(): Promise<UploadedSkillFile | null> {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: '上传 Skill 文件夹',
+  });
+  if (!selected || Array.isArray(selected)) return null;
+
+  const folderName = selected.split(/[\\/]/).filter(Boolean).pop() || 'skill';
+  const files = await collectSkillFiles(selected);
+  if (files.length === 0) {
+    throw new Error('Skill 文件夹中没有可用的 .md / .txt / .json 文件');
+  }
+
+  const entry = pickSkillEntry(files);
+  if (!entry) throw new Error('Skill 文件夹中没有可调用入口文件');
+
+  const rootDir = await ensureSkillRootDir();
+  const destDir = await resolveUniqueDestPath(rootDir, sanitizeFolderName(folderName));
+  await mkdir(destDir, { recursive: true });
+
+  let entryContent = '';
+  for (const file of files) {
+    const bytes = await tauriReadFile(file.path);
+    const text = decodeUtf8Text(bytes);
+    if (file.relativePath === entry.relativePath) entryContent = text;
+
+    const relativeParts = file.relativePath.split(/[\\/]/).map((part) => sanitizeFileName(part));
+    const destPath = joinPath(destDir, ...relativeParts);
+    const parentDir = destPath.slice(0, destPath.lastIndexOf('/'));
+    if (parentDir && !(await exists(parentDir))) await mkdir(parentDir, { recursive: true });
+    await writeFile(destPath, bytes);
+  }
+
+  return {
+    fileName: folderName,
+    content: entryContent,
+    sourceType: 'folder',
+    storagePath: destDir,
+    entryFileName: entry.relativePath,
+  };
+}
+
+async function uploadSingleSkillFile(): Promise<UploadedSkillFile | null> {
+  const filePath = await open({
+    multiple: false,
+    title: '上传 Skill 文件',
+    filters: [{ name: 'Skill 文本文件', extensions: ['md', 'txt', 'json'] }],
+  });
+  if (!filePath || Array.isArray(filePath)) return null;
+
+  const fileName = filePath.split(/[\\/]/).pop() || 'skill.txt';
+  if (!isSkillTextFile(fileName)) {
+    throw new Error('Skill 文件只支持 .md / .txt / .json');
+  }
+
+  const bytes = await tauriReadFile(filePath);
+  const content = decodeUtf8Text(bytes);
+  const rootDir = await ensureSkillRootDir();
+  const destPath = await resolveUniqueDestPath(rootDir, fileName);
+  await writeFile(destPath, bytes);
+
+  return {
+    fileName,
+    content,
+    sourceType: 'file',
+    storagePath: destPath,
+    entryFileName: fileName,
+  };
+}
+
+/** 上传只读 Skill 文件或文件夹，读取为 UTF-8 文本内容 */
+export async function uploadSkillFile(source: SkillUploadSource = 'folder'): Promise<UploadedSkillFile | null> {
+  const accept = '.md,.txt,.json';
+  try {
+    if (isTauriEnv()) {
+      return source === 'file'
+        ? await uploadSingleSkillFile()
+        : await uploadSkillFolder();
+    }
+
+    const file = await browserOpenFile(accept);
+    if (!file) return null;
+    return { fileName: file.name, content: await file.text(), sourceType: 'file', entryFileName: file.name };
+  } catch (error) {
+    console.error('Upload skill failed:', error);
+    throw error;
+  }
 }
 
 /**

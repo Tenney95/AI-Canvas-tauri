@@ -2,7 +2,7 @@
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
 import { useState, useRef, useCallback } from 'react';
-import type { NodeType, ModelOption, WorkflowDefinition } from '../../../types';
+import type { NodeType, ModelOption, WorkflowDefinition, UserSkill } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
@@ -11,6 +11,8 @@ import StyleSelector from './StyleSelector';
 import MentionEditor, { type MentionEditorHandle } from './MentionEditor';
 import SlashCommandMenu from './SlashCommandMenu';
 import PresetManager from './PresetManager';
+import SkillManager from './SkillManager';
+import { fillTemplate } from './slashCommands';
 
 interface PromptPanelProps {
   nodeType: NodeType;
@@ -41,6 +43,36 @@ interface PromptPanelProps {
   editorRef?: React.Ref<MentionEditorHandle>;
   selectedStyle?: string;
   onStyleChange?: (styleId: string) => void;
+}
+
+const SKILL_REF_REGEX = /@skill\{([^|}]+)\|([^}]+)\}/g;
+const TEMPLATE_PLACEHOLDER = '{{ 文章内容 }}';
+
+function expandSkillReferences(prompt: string, userSkills: UserSkill[]): string {
+  const refs = Array.from(prompt.matchAll(SKILL_REF_REGEX));
+  if (refs.length === 0) return prompt;
+
+  const skillMap = new Map(userSkills.map((skill) => [skill.id, skill]));
+  const promptWithoutSkills = prompt.replace(SKILL_REF_REGEX, '').trim();
+  const expandedParts: string[] = [];
+
+  for (const ref of refs) {
+    const skill = skillMap.get(ref[1]);
+    if (!skill) continue;
+    if (skill.content.includes(TEMPLATE_PLACEHOLDER)) {
+      expandedParts.push(fillTemplate(skill.content, promptWithoutSkills));
+    } else {
+      expandedParts.push(skill.content);
+    }
+  }
+
+  if (expandedParts.length === 0) return promptWithoutSkills;
+  const shouldPrefixPrompt = promptWithoutSkills && expandedParts.every((part) => !part.includes(promptWithoutSkills));
+  return [shouldPrefixPrompt ? promptWithoutSkills : '', ...expandedParts]
+    .filter(Boolean)
+    .join('\n\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 export default function PromptPanel({
@@ -75,43 +107,69 @@ export default function PromptPanel({
 }: PromptPanelProps) {
   const [focused, setFocused] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
+  const [skillManagerOpen, setSkillManagerOpen] = useState(false);
+  const [slashAnchor, setSlashAnchor] = useState<HTMLElement | null>(null);
   const slashBtnRef = useRef<HTMLButtonElement>(null);
   const promptInputRef = useRef<HTMLDivElement>(null);
-  const slashTriggerSource = useRef<'button' | 'editor'>('button');
 
   const userPresets = useAppStore((s) => s.userPresets);
+  const userSkills = useAppStore((s) => s.userSkills);
+  const uploadSkill = useAppStore((s) => s.uploadSkill);
   const setPresetManagerOpen = useAppStore((s) => s.setPresetManagerOpen);
+  const showToast = useAppStore((s) => s.showToast);
+
+  const handleSubmit = useCallback((overridePrompt?: string) => {
+    const sourcePrompt = overridePrompt ?? prompt;
+    onSubmit(expandSkillReferences(sourcePrompt, userSkills));
+  }, [onSubmit, prompt, userSkills]);
 
   const handleSlashSelect = useCallback((filledPrompt: string, shouldTrigger: boolean) => {
     setSlashOpen(false);
     if (shouldTrigger) {
       // Direct trigger: combine preset template + input box content, call model directly
       // Don't update the input box — the preset prompt is only used for this generation
-      onSubmit(filledPrompt);
+      handleSubmit(filledPrompt);
     } else {
       // Insert mode: update input box with filled template, user can edit before generating
       onChange(filledPrompt);
     }
-  }, [onChange, onSubmit]);
+  }, [handleSubmit, onChange]);
 
   const handleEditorSlash = useCallback(() => {
-    slashTriggerSource.current = 'editor';
+    setSlashAnchor(promptInputRef.current);
     setSlashOpen(true);
   }, []);
 
   const handleButtonSlash = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    slashTriggerSource.current = 'button';
-    setSlashOpen(!slashOpen);
-  }, [slashOpen]);
+    setSlashAnchor(slashBtnRef.current);
+    setSlashOpen((open) => !open);
+  }, []);
 
   const handleManagePresets = useCallback(() => {
     setPresetManagerOpen(true);
   }, [setPresetManagerOpen]);
 
-  const slashAnchor = slashTriggerSource.current === 'editor' && promptInputRef.current
-    ? promptInputRef.current
-    : slashBtnRef.current;
+  const handleManageSkills = useCallback(() => {
+    setSkillManagerOpen(true);
+  }, []);
+
+  const handleSkillSelect = useCallback((skill: UserSkill) => {
+    setSlashOpen(false);
+    const token = `@skill{${skill.id}|${encodeURIComponent(skill.name)}}`;
+    const spacer = prompt && !/\s$/.test(prompt) ? ' ' : '';
+    onChange(`${prompt}${spacer}${token}`);
+  }, [onChange, prompt]);
+
+  const handleUploadSkill = useCallback(async (source: 'file' | 'folder') => {
+    setSlashOpen(false);
+    try {
+      await uploadSkill(source);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '上传 Skill 失败';
+      showToast(msg, 'error');
+    }
+  }, [showToast, uploadSkill]);
 
   return (
     <>
@@ -121,7 +179,7 @@ export default function PromptPanel({
           ref={editorRef}
           value={prompt}
           onChange={onChange}
-          onSubmit={onSubmit}
+          onSubmit={handleSubmit}
           placeholder={placeholder}
           nodeId={nodeId}
           selectedWorkflowId={selectedWorkflowId}
@@ -233,7 +291,7 @@ export default function PromptPanel({
             data-tooltip="调用模型生成"
             onClick={(e) => {
               e.stopPropagation();
-              if (canGenerate && prompt.trim()) onSubmit();
+              if (canGenerate && prompt.trim()) handleSubmit();
             }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -250,12 +308,17 @@ export default function PromptPanel({
         currentPrompt={prompt}
         anchorEl={slashAnchor}
         userPresets={userPresets}
+        userSkills={userSkills}
         onSelect={handleSlashSelect}
+        onSelectSkill={handleSkillSelect}
+        onUploadSkill={handleUploadSkill}
+        onManageSkills={handleManageSkills}
         onClose={() => setSlashOpen(false)}
         onManagePresets={handleManagePresets}
       />
     )}
     <PresetManager />
+    <SkillManager open={skillManagerOpen} onClose={() => setSkillManagerOpen(false)} />
     </>
   );
 }

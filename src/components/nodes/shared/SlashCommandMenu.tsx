@@ -1,20 +1,26 @@
 /**
  * SlashCommandMenu — / 指令弹出菜单
- * 显示预设提示词分类 + 用户自定义预设，支持子菜单，选中后插入模板到提示词
+ * 显示内置快捷指令 + 用户自定义快捷指令，支持子菜单，选中后插入模板到提示词
  */
-import { useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import type { NodeType, UserPreset } from '../../../types';
+import type { NodeType, UserPreset, UserSkill } from '../../../types';
 import { getSlashCommands, fillTemplate } from './slashCommands';
 import type { SlashCommandItem } from './slashCommands';
 import { calcFixedPosition, calcSubmenuPosition } from '../../../utils/popupPosition';
+
+const SKILL_PARENT_ID = '__skills__';
 
 interface SlashCommandMenuProps {
   nodeType: NodeType;
   currentPrompt: string;
   anchorEl: HTMLElement | null;
   userPresets: UserPreset[];
+  userSkills: UserSkill[];
   onSelect: (prompt: string, shouldTrigger: boolean) => void;
+  onSelectSkill: (skill: UserSkill) => void;
+  onUploadSkill: (source: 'file' | 'folder') => void | Promise<void>;
+  onManageSkills: () => void;
   onClose: () => void;
   onManagePresets: () => void;
 }
@@ -24,13 +30,16 @@ export default function SlashCommandMenu({
   currentPrompt,
   anchorEl,
   userPresets,
+  userSkills,
   onSelect,
+  onSelectSkill,
+  onUploadSkill,
+  onManageSkills,
   onClose,
   onManagePresets,
 }: SlashCommandMenuProps) {
   const [activeParentId, setActiveParentId] = useState<string | null>(null);
   const [hoveredItemId, setHoveredItemId] = useState<string | null>(null);
-  const [menuPos, setMenuPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
   const [submenuPos, setSubmenuPos] = useState<{ left: number; top: number; direction: 'left' | 'right' }>({ left: 0, top: 0, direction: 'right' });
   const menuRef = useRef<HTMLDivElement>(null);
   const submenuRef = useRef<HTMLDivElement>(null);
@@ -60,13 +69,19 @@ export default function SlashCommandMenu({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // 计算菜单位置并做边界检测
-  useLayoutEffect(() => {
-    if (!anchorEl) return;
+  const itemCount = commands.length
+    + matchingPresets.length
+    + 1 /* skill submenu */
+    + 1 /* manage */
+    + (commands.length > 0 ? 1 : 0) /* header */
+    + (matchingPresets.length > 0 ? 2 : 0) /* header+divider */
+    + 2 /* skill divider + action divider */;
+
+  const menuPos = useMemo(() => {
+    if (!anchorEl) return { left: 0, top: 0 };
     const anchorRect = anchorEl.getBoundingClientRect();
 
     // 估算主菜单尺寸
-    const itemCount = commands.length + matchingPresets.length + 1 /* manage */ + (commands.length > 0 ? 1 : 0) /* header */ + (matchingPresets.length > 0 ? 2 : 0) /* header+divider */;
     const estH = Math.min(16 + itemCount * 48 + 8 /* divider */, 400);
     const estW = 268;
 
@@ -74,20 +89,25 @@ export default function SlashCommandMenu({
     const desiredX = anchorRect.left + anchorRect.width / 2 - estW / 2;
     const desiredY = anchorRect.top - estH - 8;
 
-    setMenuPos(calcFixedPosition(desiredX, desiredY, estW, estH));
-  }, [anchorEl, commands.length, matchingPresets.length]);
+    return calcFixedPosition(desiredX, desiredY, estW, estH);
+  }, [anchorEl, itemCount]);
 
   const activeParent = commands.find(c => c.id === activeParentId);
+  const skillMenuActive = activeParentId === SKILL_PARENT_ID;
 
-  // 子菜单位置计算
-  useLayoutEffect(() => {
-    if (!activeParent || !menuRef.current) return;
+  const updateSubmenuPositionByCount = useCallback((itemCountForSubmenu: number) => {
+    if (!menuRef.current) return;
     const parentRect = menuRef.current.getBoundingClientRect();
     const subW = 268;
-    const subH = (activeParent.children?.length ?? 0) * 48 + 16;
+    const subH = itemCountForSubmenu * 48 + 16;
 
     setSubmenuPos(calcSubmenuPosition(parentRect, subW, subH));
-  }, [activeParent, commands]);
+  }, []);
+
+  const updateSubmenuPosition = useCallback((item: SlashCommandItem) => {
+    if (!item.children) return;
+    updateSubmenuPositionByCount(item.children.length);
+  }, [updateSubmenuPositionByCount]);
 
   const handleItemSelect = useCallback((item: SlashCommandItem) => {
     if (item.promptTemplate) {
@@ -111,17 +131,26 @@ export default function SlashCommandMenu({
     onClose();
   }, [currentPrompt, onSelect, onClose]);
 
+  const handleSkillSelect = useCallback((skill: UserSkill) => {
+    onSelectSkill(skill);
+    onClose();
+  }, [onSelectSkill, onClose]);
+
   const handleItemHover = useCallback((item: SlashCommandItem) => {
     if (item.children) {
       setActiveParentId(item.id);
       setHoveredItemId(item.id);
+      updateSubmenuPosition(item);
     } else {
       setActiveParentId(null);
     }
-  }, []);
+  }, [updateSubmenuPosition]);
 
-  const hasContent = commands.length > 0 || matchingPresets.length > 0;
-  if (!hasContent) return null;
+  const handleSkillHover = useCallback(() => {
+    setActiveParentId(SKILL_PARENT_ID);
+    setHoveredItemId(SKILL_PARENT_ID);
+    updateSubmenuPositionByCount(userSkills.length + 3);
+  }, [updateSubmenuPositionByCount, userSkills.length]);
 
   return createPortal(
     <>
@@ -134,7 +163,7 @@ export default function SlashCommandMenu({
         {/* Built-in commands */}
         {commands.length > 0 && (
           <>
-            <div className="slash-command-header">选择预设生成</div>
+            <div className="slash-command-header">内置快捷指令</div>
             {commands.map((item) => (
               <div
                 key={item.id}
@@ -143,6 +172,7 @@ export default function SlashCommandMenu({
                 onMouseEnter={() => handleItemHover(item)}
                 onClick={() => {
                   if (item.children) {
+                    updateSubmenuPosition(item);
                     setActiveParentId(activeParentId === item.id ? null : item.id);
                   } else {
                     handleItemSelect(item);
@@ -167,7 +197,7 @@ export default function SlashCommandMenu({
         {matchingPresets.length > 0 && (
           <>
             {commands.length > 0 && <div className="slash-command-divider" />}
-            <div className="slash-command-header slash-command-header--user">我的预设</div>
+            <div className="slash-command-header slash-command-header--user">快捷指令</div>
             {matchingPresets.map((preset) => (
               <div
                 key={preset.id}
@@ -190,7 +220,7 @@ export default function SlashCommandMenu({
                 </span>
                 <div className="slash-command-text">
                   <span className="slash-command-title">{preset.name}</span>
-                  <span className="slash-command-desc">{preset.description}</span>
+                  <span className="slash-command-desc">{preset.description || '点击调用这个快捷指令'}</span>
                 </div>
                 <span className="slash-command-badge">
                   {preset.triggerMode === 'direct' ? '直接触发' : '加入提示词'}
@@ -200,6 +230,25 @@ export default function SlashCommandMenu({
           </>
         )}
 
+        {(commands.length > 0 || matchingPresets.length > 0) && <div className="slash-command-divider" />}
+        <div
+          className={`slash-command-item has-submenu${skillMenuActive ? ' active' : ''}`}
+          data-item-id={SKILL_PARENT_ID}
+          onMouseEnter={handleSkillHover}
+          onClick={() => {
+            handleSkillHover();
+            setActiveParentId(skillMenuActive ? null : SKILL_PARENT_ID);
+          }}
+        >
+          <span className="slash-command-icon">⚡</span>
+          <div className="slash-command-text">
+            <span className="slash-command-title">
+              Skill
+              <span className="slash-command-arrow">›</span>
+            </span>
+            <span className="slash-command-desc">调用或上传只读 Skill</span>
+          </div>
+        </div>
         <div className="slash-command-divider" />
         <div
           className="slash-command-item slash-command-manage"
@@ -211,9 +260,9 @@ export default function SlashCommandMenu({
           <span className="slash-command-icon">⚙️</span>
           <div className="slash-command-text">
             <span className="slash-command-title slash-command-manage-title">
-              管理预设
+              管理快捷指令
             </span>
-            <span className="slash-command-desc">创建和管理自定义提示词预设</span>
+            <span className="slash-command-desc">创建和管理自定义提示词模板</span>
           </div>
         </div>
       </div>
@@ -244,6 +293,77 @@ export default function SlashCommandMenu({
               <span className="slash-command-badge">直接触发</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {skillMenuActive && (
+        <div
+          ref={submenuRef}
+          className="slash-command-submenu"
+          style={{
+            left: submenuPos.left,
+            top: submenuPos.top,
+          }}
+        >
+          {userSkills.map((skill) => (
+            <div
+              key={skill.id}
+              className={`slash-command-item has-trigger${hoveredItemId === skill.id ? ' active' : ''}`}
+              onClick={() => handleSkillSelect(skill)}
+              onMouseEnter={() => setHoveredItemId(skill.id)}
+            >
+              <span className="slash-command-icon">⚡</span>
+              <div className="slash-command-text">
+                <span className="slash-command-title">{skill.name}</span>
+                <span className="slash-command-desc">{skill.description || skill.fileName}</span>
+              </div>
+              <span className="slash-command-badge">调用</span>
+            </div>
+          ))}
+          {userSkills.length > 0 && <div className="slash-command-divider" />}
+          <div
+            className="slash-command-item has-trigger"
+            onClick={() => {
+              onManageSkills();
+              onClose();
+            }}
+            onMouseEnter={() => setHoveredItemId('manage-skills')}
+          >
+            <span className="slash-command-icon">⚙️</span>
+            <div className="slash-command-text">
+              <span className="slash-command-title">管理 Skill</span>
+              <span className="slash-command-desc">查看内容和删除已上传 Skill</span>
+            </div>
+          </div>
+          <div className="slash-command-divider" />
+          <div
+            className="slash-command-item has-trigger"
+            onClick={async () => {
+              onClose();
+              await onUploadSkill('folder');
+            }}
+            onMouseEnter={() => setHoveredItemId('upload-folder')}
+          >
+            <span className="slash-command-icon">⬆️</span>
+            <div className="slash-command-text">
+              <span className="slash-command-title">上传 Skill 文件夹</span>
+              <span className="slash-command-desc">保存到应用 skill 目录后调用</span>
+            </div>
+          </div>
+          <div
+            className="slash-command-item has-trigger"
+            onClick={async () => {
+              onClose();
+              await onUploadSkill('file');
+            }}
+            onMouseEnter={() => setHoveredItemId('upload-file')}
+          >
+            <span className="slash-command-icon">📄</span>
+            <div className="slash-command-text">
+              <span className="slash-command-title">上传 Skill 文件</span>
+              <span className="slash-command-desc">选择 .md / .txt / .json 文件</span>
+            </div>
+          </div>
         </div>
       )}
     </>,

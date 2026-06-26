@@ -1,9 +1,9 @@
 /**
- * PresetManager 自定义预设管理器 — 管理用户预设提示词的增删改查
+ * PresetManager 快捷指令管理器 — 管理用户快捷提示词的增删改查
  * 使用 createPortal 渲染到 body，避免受 React Flow 节点堆叠上下文影响
  * 使用 framer-motion 驱动面板进出场动画
  */
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '../../../store/useAppStore';
@@ -119,46 +119,50 @@ export default function PresetManager() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
 
-  const filteredPresets = userPresets.filter((p) => p.nodeType === activeTab);
+  const filteredPresets = useMemo(
+    () => userPresets.filter((p) => p.nodeType === activeTab),
+    [activeTab, userPresets],
+  );
 
   // Load selected preset
   useEffect(() => {
-    if (!selectedId) {
-      setName('');
-      setDescription('');
-      setTemplate('');
-      setTriggerMode('direct');
-      setThumbnail(undefined);
-      if (editorRef.current) editorRef.current.innerHTML = '';
-      return;
-    }
-    const preset = userPresets.find((p) => p.id === selectedId);
-    if (preset) {
-      setName(preset.name);
-      setDescription(preset.description);
-      setTemplate(preset.promptTemplate);
-      setTriggerMode(preset.triggerMode);
-      setThumbnail(preset.thumbnail);
-      // Rebuild editor content
-      if (editorRef.current) {
-        deserializeToEditor(editorRef.current, preset.promptTemplate);
+    queueMicrotask(() => {
+      if (!selectedId) {
+        setName('');
+        setDescription('');
+        setTemplate('');
+        setTriggerMode('direct');
+        setThumbnail(undefined);
+        if (editorRef.current) editorRef.current.innerHTML = '';
+        return;
       }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      const preset = userPresets.find((p) => p.id === selectedId);
+      if (preset) {
+        setName(preset.name);
+        setDescription(preset.description);
+        setTemplate(preset.promptTemplate);
+        setTriggerMode(preset.triggerMode);
+        setThumbnail(preset.thumbnail);
+        // Rebuild editor content
+        if (editorRef.current) {
+          deserializeToEditor(editorRef.current, preset.promptTemplate);
+        }
+      }
+    });
   }, [selectedId, userPresets]);
 
   // When switching tabs, select first preset
   useEffect(() => {
     const first = filteredPresets[0];
-    setSelectedId(first?.id ?? null);
-  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+    queueMicrotask(() => setSelectedId(first?.id ?? null));
+  }, [activeTab, filteredPresets]);
 
   const handleNew = useCallback(() => {
     const newId = generateId();
     const newPreset: UserPreset = {
       id: newId,
       nodeType: activeTab,
-      name: '自定义预设',
+      name: '自定义快捷指令',
       description: '输入说明与提示词模板',
       promptTemplate: '',
       triggerMode: 'direct',
@@ -176,7 +180,7 @@ export default function PresetManager() {
         );
         setSelectedId(remaining[0]?.id ?? null);
       }
-      showToast('预设已删除');
+      showToast('快捷指令已删除');
     },
     [deleteUserPreset, selectedId, userPresets, activeTab, showToast],
   );
@@ -193,7 +197,7 @@ export default function PresetManager() {
       triggerMode,
       thumbnail,
     });
-    showToast('预设已保存');
+    showToast('快捷指令已保存');
   }, [selectedId, name, description, template, triggerMode, thumbnail, updateUserPreset, showToast]);
 
   const handleThumbnailUpload = useCallback(
@@ -269,9 +273,9 @@ export default function PresetManager() {
         {/* Header */}
         <div className="preset-manager-title-row">
           <div className="preset-manager-title-group">
-            <div className="preset-modal-title">用户预设</div>
+            <div className="preset-modal-title">快捷指令</div>
             <div className="preset-modal-desc">
-              管理 {PRESET_NODE_TYPE_LABELS[activeTab]} 的生成预设
+              管理 {PRESET_NODE_TYPE_LABELS[activeTab].replace('预设', '快捷指令')} 的提示词模板
             </div>
           </div>
           <AnimatedButton
@@ -412,7 +416,7 @@ export default function PresetManager() {
               ))}
               {filteredPresets.length === 0 && (
                 <div className="preset-manager-list-empty">
-                  暂无预设，点击「新建」创建
+                  暂无快捷指令，点击「新建」创建
                 </div>
               )}
             </div>
@@ -427,7 +431,7 @@ export default function PresetManager() {
                   <input
                     className="preset-manager-input"
                     type="text"
-                    placeholder="预设名称"
+                    placeholder="快捷指令名称"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                   />
@@ -437,7 +441,7 @@ export default function PresetManager() {
                   <input
                     className="preset-manager-input"
                     type="text"
-                    placeholder="说明这个预设适合什么场景"
+                    placeholder="说明这个快捷指令适合什么场景"
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                   />
@@ -479,7 +483,7 @@ export default function PresetManager() {
               </div>
             ) : (
               <div className="preset-manager-detail-empty">
-                选择一个预设或新建一个
+                选择一个快捷指令或新建一个
               </div>
             )}
           </div>
@@ -487,7 +491,7 @@ export default function PresetManager() {
 
         {/* Footer */}
         <div className="preset-modal-actions">
-          <div className="preset-manager-trigger-modes" role="group" aria-label="预设触发方式">
+          <div className="preset-manager-trigger-modes" role="group" aria-label="快捷指令触发方式">
             <span className="preset-manager-trigger-mode-label">模式：</span>
             <AnimatedButton
               type="button"

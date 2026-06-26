@@ -84,7 +84,7 @@ const WF_IO_ICON: Record<string, string> = {
 // ═══════════════════════════════════════════════
 
 /** 零宽空格 —— 作为不可编辑芯片（contenteditable=false）前的光标落点占位符。 */
-const ZWSP = '​';
+const ZWSP = '\u200B';
 
 /** 是否为不可编辑的引用芯片（节点 / 资产 / 工作流 IO）。 */
 function isChipEl(node: Node | null | undefined): node is HTMLElement {
@@ -93,7 +93,8 @@ function isChipEl(node: Node | null | undefined): node is HTMLElement {
   return (
     el.hasAttribute('data-ref-id') ||
     el.hasAttribute('data-asset-path') ||
-    el.hasAttribute('data-wf-id')
+    el.hasAttribute('data-wf-id') ||
+    el.hasAttribute('data-skill-id')
   );
 }
 
@@ -115,6 +116,10 @@ function serializeDOM(root: HTMLElement): string {
         result += `@{${id}:${label}}`;
       } else if (el.hasAttribute('data-asset-path')) {
         result += `@asset{${encodeURIComponent(el.getAttribute('data-asset-path') || '')}}`;
+      } else if (el.hasAttribute('data-skill-id')) {
+        const id = el.getAttribute('data-skill-id') || '';
+        const name = el.getAttribute('data-skill-name') || '';
+        result += `@skill{${id}|${encodeURIComponent(name)}}`;
       } else if (el.hasAttribute('data-wf-id')) {
         const id = el.getAttribute('data-wf-id') || '';
         const title = el.getAttribute('data-wf-title') || '';
@@ -134,7 +139,7 @@ function serializeDOM(root: HTMLElement): string {
   };
   for (const child of Array.from(root.childNodes)) walk(child);
   // 去掉芯片前的零宽空格占位符，再剥掉尾部换行
-  return result.replace(/​/g, '').replace(/\n+$/, '');
+  return result.split(ZWSP).join('').replace(/\n+$/, '');
 }
 
 /** Build a chip <span contenteditable="false"> for a canvas node reference. */
@@ -208,6 +213,26 @@ function buildAssetChipEl(path: string, assetUrl?: string): HTMLSpanElement {
   return span;
 }
 
+/** Build a chip for a Skill reference (@skill{id|encodedName}). */
+function buildSkillChipEl(skillId: string, skillName: string): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = 'prompt-chip chip-skill';
+  span.contentEditable = 'false';
+  span.setAttribute('data-skill-id', skillId);
+  span.setAttribute('data-skill-name', skillName);
+
+  const iconSpan = document.createElement('span');
+  iconSpan.className = 'prompt-chip-icon';
+  iconSpan.textContent = 'S';
+  span.appendChild(iconSpan);
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'prompt-chip-id';
+  nameSpan.textContent = skillName.length > 20 ? `${skillName.slice(0, 18)}...` : skillName;
+  span.appendChild(nameSpan);
+  return span;
+}
+
 /** Build a workflow IO chip — label prefix (⚡ T#id :) + editable value area. */
 function buildWorkflowChipEl(
   ioNodeId: string,
@@ -248,7 +273,7 @@ function renderPromptToNodes(
   text: string,
   metaMap: Map<string, { type: string; displayId: number | undefined; thumbnailUrl?: string }>,
 ): Node[] {
-  const regex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}|@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}/g;
+  const regex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}|@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}|@skill\{([^|}]+)\|([^}]+)\}/g;
   const nodes: Node[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -274,7 +299,7 @@ function renderPromptToNodes(
     } else if (match[2] !== undefined) {
       pushChip(buildChipEl(match[2], match[3], metaMap));
       lastIndex = regex.lastIndex;
-    } else {
+    } else if (match[4] !== undefined) {
       const id = match[4];
       const title = match[5];
       const type = match[6] as WorkflowIONodeType;
@@ -311,6 +336,12 @@ function renderPromptToNodes(
         lastIndex = matchEnd;
         regex.lastIndex = matchEnd;
       }
+    } else {
+      const id = match[7];
+      let name = match[8];
+      try { name = decodeURIComponent(match[8]); } catch { /* keep raw */ }
+      pushChip(buildSkillChipEl(id, name));
+      lastIndex = regex.lastIndex;
     }
   }
   pushTextWithBreaks(nodes, text.slice(lastIndex));
@@ -366,7 +397,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     () => workflows.find((w) => w.id === selectedWorkflowId),
     [workflows, selectedWorkflowId],
   );
-  const workflowIONodes = selectedWorkflow?.ioNodes || [];
+  const workflowIONodes = useMemo(
+    () => selectedWorkflow?.ioNodes || [],
+    [selectedWorkflow],
+  );
 
   // ── Build nodeId → { type, displayId, thumbnailUrl } map ──
   const nodeMetaMap = useMemo(() => {
@@ -411,7 +445,6 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       el.appendChild(node);
     }
     if (cursorOffset !== null) restoreCursor(el, cursorOffset);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prompt, nodeMetaMap]);
 
   // ── Cursor save/restore ──
@@ -428,11 +461,13 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       if (node.nodeType === Node.TEXT_NODE) {
         const parent = node.parentElement;
         if (parent && parent.closest('[data-ref-id]')) continue;
+        if (parent && parent.closest('[data-skill-id]')) continue;
         if (parent && parent.closest('[data-wf-id]') && !parent.closest('.prompt-chip-wf-value')) continue;
         offset += (node.textContent || '').length;
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const el = node as HTMLElement;
         if (el.hasAttribute('data-ref-id')) offset += 1;
+        else if (el.hasAttribute('data-skill-id')) offset += 1;
         else if (el.hasAttribute('data-wf-id')) offset += 1;
       }
     }
@@ -451,11 +486,12 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       if (node.nodeType === Node.TEXT_NODE) {
         const parent = node.parentElement;
         if (parent && parent.closest('[data-ref-id]')) continue;
+        if (parent && parent.closest('[data-skill-id]')) continue;
         if (parent && parent.closest('[data-wf-id]') && !parent.closest('.prompt-chip-wf-value')) continue;
         nodeLen = (node.textContent || '').length;
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const el = node as HTMLElement;
-        if (el.hasAttribute('data-ref-id') || el.hasAttribute('data-wf-id')) nodeLen = 1;
+        if (el.hasAttribute('data-ref-id') || el.hasAttribute('data-wf-id') || el.hasAttribute('data-skill-id')) nodeLen = 1;
         if (el.classList.contains('prompt-chip-wf-value') && count + nodeLen >= offset) {
           const firstChild = el.firstChild;
           if (firstChild) {
@@ -936,7 +972,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           const prev = node.previousSibling;
           if (prev && prev.nodeType === Node.ELEMENT_NODE) {
             const prevEl = prev as HTMLElement;
-            if (prevEl.hasAttribute('data-ref-id')) {
+            if (prevEl.hasAttribute('data-ref-id') || prevEl.hasAttribute('data-skill-id')) {
               e.preventDefault();
               prev.remove();
               emitDOM();
@@ -948,7 +984,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           const prev = (node as HTMLElement).previousSibling;
           if (prev && prev.nodeType === Node.ELEMENT_NODE) {
             const prevEl = prev as HTMLElement;
-            if (prevEl.hasAttribute('data-ref-id') || prevEl.hasAttribute('data-wf-id')) {
+            if (prevEl.hasAttribute('data-ref-id') || prevEl.hasAttribute('data-wf-id') || prevEl.hasAttribute('data-skill-id')) {
               e.preventDefault();
               prev.remove();
               emitDOM();
@@ -970,7 +1006,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
             const next = node.nextSibling;
             if (next && next.nodeType === Node.ELEMENT_NODE) {
               const nextEl = next as HTMLElement;
-              if (nextEl.hasAttribute('data-ref-id') || nextEl.hasAttribute('data-wf-id')) {
+              if (nextEl.hasAttribute('data-ref-id') || nextEl.hasAttribute('data-wf-id') || nextEl.hasAttribute('data-skill-id')) {
                 e.preventDefault();
                 next.remove();
                 emitDOM();
