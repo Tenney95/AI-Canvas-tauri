@@ -305,6 +305,22 @@ export interface UserPreset {
 }
 
 // ============================================
+// 用户 Skill — 只读上传与调用，不提供内置编辑
+// ============================================
+
+export interface UserSkill {
+  id: string;
+  name: string;
+  description: string;
+  fileName: string;
+  content: string;
+  sourceType: 'file' | 'folder';
+  storagePath?: string;
+  entryFileName?: string;
+  createdAt: number;
+}
+
+// ============================================
 // 节点分组
 // ============================================
 

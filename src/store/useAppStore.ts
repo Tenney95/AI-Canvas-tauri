@@ -10,6 +10,7 @@
  *   store.config.ts    — API 配置
  *   store.workflows.ts — ComfyUI 工作流
  *   store.presets.ts   — 用户预设
+ *   store.skills.ts    — 用户上传 Skill
  *   store.groups.ts    — 节点分组
  *   store.clipboard.ts — 复制 / 粘贴
  *   store.projects.ts  — 项目管理 / 保存加载
@@ -24,6 +25,7 @@ import type { HistoryRecordSlice } from './store.historyRecord';
 import type { ConfigSlice } from './store.config';
 import type { WorkflowSlice } from './store.workflows';
 import type { PresetSlice } from './store.presets';
+import type { SkillSlice } from './store.skills';
 import type { GroupSlice } from './store.groups';
 import type { ClipboardSlice } from './store.clipboard';
 import type { ProjectSlice } from './store.projects';
@@ -37,6 +39,7 @@ import { createHistoryRecordSlice } from './store.historyRecord';
 import { createConfigSlice } from './store.config';
 import { createWorkflowSlice } from './store.workflows';
 import { createPresetSlice } from './store.presets';
+import { createSkillSlice } from './store.skills';
 import { createGroupSlice } from './store.groups';
 import { createClipboardSlice } from './store.clipboard';
 import { createProjectSlice } from './store.projects';
@@ -54,6 +57,7 @@ export type AppState = NodeSlice
   & ConfigSlice
   & WorkflowSlice
   & PresetSlice
+  & SkillSlice
   & StyleSlice
   & GroupSlice
   & ClipboardSlice
@@ -69,6 +73,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createConfigSlice(...a),
   ...createWorkflowSlice(...a),
   ...createPresetSlice(...a),
+  ...createSkillSlice(...a),
   ...createStyleSlice(...a),
   ...createGroupSlice(...a),
   ...createClipboardSlice(...a),

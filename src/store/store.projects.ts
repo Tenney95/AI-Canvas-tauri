@@ -4,10 +4,14 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { BaseNodeData, CanvasProject } from '../types';
+import type { BaseNodeData, CanvasProject, NodeGroup } from '../types';
 import { generateProjectId } from './store.utils';
 import * as fileService from '../services/fileService';
 import { resumePendingTasks, clearProjectTasks } from '../services/pollManager';
+
+function getProjectGroups(data: { groups?: unknown } | null | undefined): NodeGroup[] {
+  return Array.isArray(data?.groups) ? (data.groups as NodeGroup[]) : [];
+}
 
 export interface ProjectSlice {
   projects: CanvasProject[];
@@ -146,7 +150,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         projectName: project.name,
         nodes: data.nodes as Node<BaseNodeData>[],
         edges: (data.edges as Edge[]) || [],
-        groups: (data as any).groups || [],
+        groups: getProjectGroups(data),
         history: [],
         historyIndex: -1,
       });
@@ -252,7 +256,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             projectName: data.name || '已加载项目',
             nodes: data.nodes as Node<BaseNodeData>[],
             edges: (data.edges as Edge[]) || [],
-            groups: (data as any).groups || [],
+            groups: getProjectGroups(data),
             history: [],
             historyIndex: -1,
           });
@@ -267,7 +271,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   initFromDb: async () => {
     try {
-      await Promise.all([get().loadConfig(), get().loadWorkflows(), get().loadPresets(), get().loadCustomStyles()]);
+      await Promise.all([get().loadConfig(), get().loadWorkflows(), get().loadPresets(), get().loadSkills(), get().loadCustomStyles()]);
 
       const allProjects = await fileService.loadProjectsList();
       const valid = allProjects.filter((p) => p.id !== 'default');
@@ -292,7 +296,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             projectName: data.name || '新项目',
             nodes: (data.nodes as Node<BaseNodeData>[]) || [],
             edges: (data.edges as Edge[]) || [],
-            groups: (data as any).groups || [],
+            groups: getProjectGroups(data),
           });
         } else {
           set({ projects: mapped, currentProjectId: lastId, groups: [] });

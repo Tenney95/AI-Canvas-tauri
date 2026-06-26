@@ -1,6 +1,6 @@
 /**
  * storageService — IndexedDB-backed persistence wrappers for projects,
- * workflows, app config, and user presets.
+ * workflows, app config, user presets, and uploaded skills.
  */
 import {
   saveProjectToDb,
@@ -15,11 +15,15 @@ import {
   savePresetToDb,
   getAllPresets,
   deletePresetFromDb,
+  saveSkillToDb,
+  getAllSkills,
+  deleteSkillFromDb,
   saveStyleToDb,
   getAllStyles,
   deleteStyleFromDb,
   type WorkflowRecord,
   type PresetRecord,
+  type SkillRecord,
   type CustomStyleRecord,
 } from './indexedDbService';
 
@@ -158,6 +162,37 @@ export async function deletePreset(id: string): Promise<void> {
   }
 }
 
+// ── Uploaded Skills ──
+
+export async function saveSkill(record: SkillRecord): Promise<void> {
+  try {
+    await saveSkillToDb(record);
+    console.log('Skill saved to IndexedDB:', record.id);
+  } catch (error) {
+    console.error('Save skill failed:', error);
+    throw error;
+  }
+}
+
+export async function loadSkills(): Promise<SkillRecord[]> {
+  try {
+    return await getAllSkills();
+  } catch (error) {
+    console.error('Load skills failed:', error);
+    return [];
+  }
+}
+
+export async function deleteSkill(id: string): Promise<void> {
+  try {
+    await deleteSkillFromDb(id);
+    console.log('Skill deleted from IndexedDB:', id);
+  } catch (error) {
+    console.error('Delete skill failed:', error);
+    throw error;
+  }
+}
+
 // ── Custom Styles ──
 
 export async function saveStyle(record: CustomStyleRecord): Promise<void> {
@@ -187,4 +222,4 @@ export async function deleteStyle(id: string): Promise<void> {
   }
 }
 
-export type { WorkflowRecord, PresetRecord, CustomStyleRecord };
+export type { WorkflowRecord, PresetRecord, SkillRecord, CustomStyleRecord };

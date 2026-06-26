@@ -2,7 +2,7 @@
  * indexedDbService IndexedDB 持久化服务 — 浏览器端本地存储，保存项目、工作流、应用配置等数据
  */
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 7; // v7: added styles store (custom styles)
+const DB_VERSION = 8; // v8: added skills store (read-only uploaded prompt skills)
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
@@ -10,6 +10,7 @@ const STORE_PRESETS = 'presets';
 const STORE_HISTORY = 'history';
 const STORE_ASSET_META = 'assetMeta';
 const STORE_STYLES = 'styles';
+const STORE_SKILLS = 'skills';
 
 const CONFIG_KEY = 'app-config';
 
@@ -60,6 +61,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_STYLES)) {
         db.createObjectStore(STORE_STYLES, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_SKILLS)) {
+        db.createObjectStore(STORE_SKILLS, { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -230,6 +234,55 @@ export async function deletePresetFromDb(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_PRESETS, 'readwrite');
     const store = tx.objectStore(STORE_PRESETS);
+    store.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ============================================
+// Skills CRUD
+// ============================================
+
+export interface SkillRecord {
+  id: string;
+  name: string;
+  description: string;
+  fileName: string;
+  content: string;
+  sourceType: string;
+  storagePath?: string;
+  entryFileName?: string;
+  createdAt: number;
+}
+
+export async function saveSkillToDb(record: SkillRecord): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SKILLS, 'readwrite');
+    const store = tx.objectStore(STORE_SKILLS);
+    store.put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function getAllSkills(): Promise<SkillRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SKILLS, 'readonly');
+    const store = tx.objectStore(STORE_SKILLS);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function deleteSkillFromDb(id: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SKILLS, 'readwrite');
+    const store = tx.objectStore(STORE_SKILLS);
     store.delete(id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);

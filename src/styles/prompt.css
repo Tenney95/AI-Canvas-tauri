@@ -92,6 +92,7 @@
 .prompt-chip.chip-video { background: var(--node-video-bg); color: var(--node-video-light); border-color: color-mix(in srgb, var(--node-video) 35%, transparent); }
 .prompt-chip.chip-audio { background: var(--node-audio-bg); color: var(--node-audio-light); border-color: color-mix(in srgb, var(--node-audio) 35%, transparent); }
 .prompt-chip.chip-markdown { background: var(--node-markdown-bg); color: var(--node-markdown-light); border-color: color-mix(in srgb, var(--node-markdown) 35%, transparent); }
+.prompt-chip.chip-skill { background: rgba(245, 158, 11, 0.12); color: #fbbf24; border-color: rgba(245, 158, 11, 0.28); }
 
 /* ── Workflow IO chip — distinct style ── */
 .prompt-chip.prompt-chip-wf {
