@@ -8,6 +8,7 @@ import * as fileService from '../services/fileService';
 import { openAssetSearchWindow } from '../utils/assetSearchWindow';
 import { playNodeExit } from '../utils/nodeAnimations';
 import { hasActiveTextSelection } from '../utils/textSelection';
+import { cancelNodePolling } from '../services/pollManager';
 import type { BaseNodeData } from '../types';
 export function useKeyboardShortcuts() {
   useEffect(() => {
@@ -123,6 +124,11 @@ export function useKeyboardShortcuts() {
           });
         }
         const allIds = Array.from(expandedIds);
+
+        // Cancel any active polling for all deleted nodes
+        for (const id of allIds) {
+          cancelNodePolling(id);
+        }
 
         // Delete associated local files
         for (const node of state.nodes.filter((n) => allIds.includes(n.id))) {

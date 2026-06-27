@@ -13,6 +13,36 @@ import { downloadUrlAndSave } from './fileService';
 import type { BaseNodeData, NodeType } from '../types';
 
 // ═══════════════════════════════════════════
+// AbortController 注册表 — 节点删除时取消轮询
+// ═══════════════════════════════════════════
+
+const abortControllers = new Map<string, AbortController>();
+
+/** 为节点注册轮询控制器，返回 AbortSignal 传给 pollTask */
+export function registerNodePolling(nodeId: string): AbortSignal {
+  cancelNodePolling(nodeId); // 先取消旧轮询
+  const controller = new AbortController();
+  abortControllers.set(nodeId, controller);
+  return controller.signal;
+}
+
+/** 取消节点的轮询（节点被删除时调用，同时清理 pending task） */
+export function cancelNodePolling(nodeId: string): void {
+  const controller = abortControllers.get(nodeId);
+  if (controller) {
+    controller.abort();
+    abortControllers.delete(nodeId);
+  }
+  // 同时清理 localStorage 中的待续任务记录
+  removePendingTask(nodeId);
+}
+
+/** 轮询正常结束/失败后清理注册表（不调用 abort） */
+export function cleanupNodePolling(nodeId: string): void {
+  abortControllers.delete(nodeId);
+}
+
+// ═══════════════════════════════════════════
 // 类型定义
 // ═══════════════════════════════════════════
 
@@ -144,6 +174,7 @@ async function handleResumeError(
 ): Promise<void> {
   const msg = err instanceof Error ? err.message : String(err || '任务恢复失败');
   useAppStore.getState().updateNodeData(nodeId, { status: 'error', error: msg });
+  cleanupNodePolling(nodeId);
   removePendingTask(nodeId);
 }
 
@@ -210,6 +241,8 @@ async function resumeApimart(task: PendingTask): Promise<void> {
   const node = useAppStore.getState().nodes.find((n) => n.id === nodeId);
   const label = (node?.data as BaseNodeData | undefined)?.label || '';
 
+  const signal = registerNodePolling(nodeId);
+
   try {
     const { url } = await pollTask<ApimartTaskResult, { url: string }>({
       fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
@@ -225,11 +258,14 @@ async function resumeApimart(task: PendingTask): Promise<void> {
         t.status === 'failed' || t.status === 'error' ? `任务失败: ${t.status}` : null,
       interval: 3000,
       onFetchError: 'continue',
+      signal,
     });
     await applyNodeResult(nodeId, url, label);
     removePendingTask(nodeId);
   } catch (err) {
     await handleResumeError(nodeId, err);
+  } finally {
+    cleanupNodePolling(nodeId);
   }
 }
 
@@ -246,9 +282,11 @@ interface DreaminaQuery {
 }
 
 async function resumeDreamina(task: PendingTask): Promise<void> {
-  const { nodeId, taskId, nodeType } = task;
+  const { nodeId, taskId } = task;
   const node = useAppStore.getState().nodes.find((n) => n.id === nodeId);
   const label = (node?.data as BaseNodeData | undefined)?.label || '';
+
+  const signal = registerNodePolling(nodeId);
 
   try {
     const { invoke, convertFileSrc } = await import('@tauri-apps/api/core');
@@ -262,14 +300,16 @@ async function resumeDreamina(task: PendingTask): Promise<void> {
       maxDuration: 60 * 60 * 1000,
       timeoutMsg: '即梦生成超时',
       onFetchError: 'throw',
+      signal,
     });
 
     const url = out.localPath ? convertFileSrc(out.localPath) : out.url;
-    void nodeType; // used for result type inference
     await applyNodeResult(nodeId, url, label);
     removePendingTask(nodeId);
   } catch (err) {
     await handleResumeError(nodeId, err);
+  } finally {
+    cleanupNodePolling(nodeId);
   }
 }
 
@@ -311,6 +351,8 @@ async function resumeComfyUI(task: PendingTask): Promise<void> {
   const node = useAppStore.getState().nodes.find((n) => n.id === nodeId);
   const label = (node?.data as BaseNodeData | undefined)?.label || '';
 
+  const signal = registerNodePolling(nodeId);
+
   const extract = (
     nodeType === 'ai-video'
       ? (outputs: ComfyOutputs) => {
@@ -351,11 +393,14 @@ async function resumeComfyUI(task: PendingTask): Promise<void> {
       maxAttempts: 1200,
       onFetchError: 'continue',
       timeoutMsg: 'ComfyUI 任务恢复超时（1 小时）',
+      signal,
     });
     await applyNodeResult(nodeId, url, label);
     removePendingTask(nodeId);
   } catch (err) {
     await handleResumeError(nodeId, err);
+  } finally {
+    cleanupNodePolling(nodeId);
   }
 }
 
@@ -396,6 +441,8 @@ async function resumeGeneral(task: PendingTask): Promise<void> {
   const resultField =
     nodeType === 'ai-video' ? 'videos' : nodeType === 'ai-audio' ? 'audios' : 'images';
 
+  const signal = registerNodePolling(nodeId);
+
   try {
     const { url } = await pollTask<Record<string, unknown>, { url: string }>({
       fetchState: async () => {
@@ -425,11 +472,14 @@ async function resumeGeneral(task: PendingTask): Promise<void> {
       },
       interval: 3000,
       onFetchError: 'continue',
+      signal,
     });
     await applyNodeResult(nodeId, url, label);
     removePendingTask(nodeId);
   } catch (err) {
     await handleResumeError(nodeId, err);
+  } finally {
+    cleanupNodePolling(nodeId);
   }
 }
 

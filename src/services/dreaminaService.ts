@@ -7,7 +7,7 @@
  */
 import { mapImageDimensions } from './aiDimensions';
 import { pollTask } from './pollTask';
-import { savePendingTask, updatePendingTask, removePendingTask } from './pollManager';
+import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from './pollManager';
 import { useAppStore } from '../store/useAppStore';
 
 const DREAMINA_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'];
@@ -65,7 +65,7 @@ async function resolveOutputUrl(o: DreaminaOutput): Promise<string> {
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLL_MS = 60 * 60 * 1000; // 1 小时上限（视频可能较久）
 
-async function pollResult(submitId: string): Promise<DreaminaOutput> {
+async function pollResult(submitId: string, signal?: AbortSignal): Promise<DreaminaOutput> {
   return pollTask<DreaminaQuery, DreaminaOutput>({
     fetchState: () => invokeTauri<DreaminaQuery>('dreamina_query_result', { submitId }),
     isComplete: (r) => r.status === 'success' && r.outputs.length > 0 ? r.outputs[0] : null,
@@ -74,6 +74,7 @@ async function pollResult(submitId: string): Promise<DreaminaOutput> {
     maxDuration: MAX_POLL_MS,
     timeoutMsg: '即梦生成超时',
     onFetchError: 'throw',
+    signal,
   });
 }
 
@@ -122,13 +123,17 @@ export async function generateDreaminaImage(opts: {
     updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
   }
 
+  const signal = opts.nodeId ? registerNodePolling(opts.nodeId) : undefined;
   try {
-    const out = await pollResult(submitId);
+    const out = await pollResult(submitId, signal);
     const url = await resolveOutputUrl(out);
     if (!url) throw new Error('即梦未返回生成结果');
     return { url, width: dims.width, height: dims.height };
   } finally {
-    if (opts.nodeId) removePendingTask(opts.nodeId);
+    if (opts.nodeId) {
+      cleanupNodePolling(opts.nodeId);
+      removePendingTask(opts.nodeId);
+    }
   }
 }
 
@@ -172,12 +177,16 @@ export async function generateDreaminaVideo(opts: {
     updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
   }
 
+  const signal = opts.nodeId ? registerNodePolling(opts.nodeId) : undefined;
   try {
-    const out = await pollResult(submitId);
+    const out = await pollResult(submitId, signal);
     const url = await resolveOutputUrl(out);
     if (!url) throw new Error('即梦未返回生成结果');
     return { url };
   } finally {
-    if (opts.nodeId) removePendingTask(opts.nodeId);
+    if (opts.nodeId) {
+      cleanupNodePolling(opts.nodeId);
+      removePendingTask(opts.nodeId);
+    }
   }
 }

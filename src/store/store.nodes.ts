@@ -16,6 +16,7 @@ import type { BaseNodeData } from '../types';
 import { generateId, getNextDisplayId } from './store.utils';
 import * as fileService from '../services/fileService';
 import { playNodeExit } from '../utils/nodeAnimations';
+import { cancelNodePolling } from '../services/pollManager';
 
 interface GroupNodeDataAccess {
   groupId: string;
@@ -131,6 +132,11 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       });
     }
 
+    // Cancel any active polling for all deleted nodes
+    for (const id of idsToDelete) {
+      cancelNodePolling(id);
+    }
+
     // Delete local files for all affected nodes
     for (const id of idsToDelete) {
       const n = nodes.find((nn) => nn.id === id);
@@ -166,6 +172,11 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     const removedIds = changes
       .filter((c) => c.type === 'remove')
       .map((c) => c.id);
+
+    // Cancel any active polling for removed nodes
+    for (const id of removedIds) {
+      cancelNodePolling(id);
+    }
 
     if (removedIds.length === 0) {
       set((s) => ({

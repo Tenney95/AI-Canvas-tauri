@@ -9,7 +9,7 @@ import type { AIAudioGenParams, AIImageGenParams, AIVideoGenParams } from './aiT
 import { mapImageDimensions } from './aiDimensions';
 import { resolveNodeReferences } from './nodeReferenceService';
 import { pollTask } from './pollTask';
-import { savePendingTask, updatePendingTask, removePendingTask } from './pollManager';
+import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from './pollManager';
 
 // ── 跨域安全的 fetch 包装 ──
 
@@ -447,6 +447,7 @@ async function pollComfyHistory<T>(
   promptId: string,
   timeoutMsg: string,
   extract: (outputs: ComfyOutputs) => T | null,
+  signal?: AbortSignal,
 ): Promise<T> {
   return pollTask<ComfyOutputs | undefined, T>({
     fetchState: async () => {
@@ -462,6 +463,7 @@ async function pollComfyHistory<T>(
     maxAttempts: 1200,
     onFetchError: 'continue',
     timeoutMsg,
+    signal,
   });
 }
 
@@ -470,6 +472,7 @@ async function pollComfyUIHistory(
   baseUrl: string,
   promptId: string,
   dimensions: { width: number; height: number },
+  signal?: AbortSignal,
 ): Promise<{ url: string; width: number; height: number }> {
   return pollComfyHistory(baseUrl, promptId, 'ComfyUI 图片生成超时（1 小时）', (outputs) => {
     for (const nodeOutput of Object.values(outputs)) {
@@ -478,7 +481,7 @@ async function pollComfyUIHistory(
       }
     }
     return null;
-  });
+  }, signal);
 }
 
 /** 通过 ComfyUI 工作流执行图片生成 */
@@ -525,10 +528,14 @@ export async function executeComfyUIGenerate(params: AIImageGenParams): Promise<
   const dims = mapImageDimensions(imageSize, aspectRatio);
 
   // 轮询等待结果
+  const signal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   try {
-    return await pollComfyUIHistory(baseUrl, promptId, dims);
+    return await pollComfyUIHistory(baseUrl, promptId, dims, signal);
   } finally {
-    if (params.nodeId) removePendingTask(params.nodeId);
+    if (params.nodeId) {
+      cleanupNodePolling(params.nodeId);
+      removePendingTask(params.nodeId);
+    }
   }
 }
 
@@ -536,6 +543,7 @@ export async function executeComfyUIGenerate(params: AIImageGenParams): Promise<
 async function pollComfyUIHistoryForVideo(
   baseUrl: string,
   promptId: string,
+  signal?: AbortSignal,
 ): Promise<{ url: string }> {
   return pollComfyHistory(baseUrl, promptId, 'ComfyUI 视频生成超时（1 小时）', (outputs) => {
     for (const nodeOutput of Object.values(outputs)) {
@@ -544,7 +552,7 @@ async function pollComfyUIHistoryForVideo(
       if (nodeOutput.images?.length) return { url: buildComfyFileUrl(baseUrl, nodeOutput.images[0]) };
     }
     return null;
-  });
+  }, signal);
 }
 
 /** 通过 ComfyUI 工作流执行视频生成 */
@@ -589,10 +597,14 @@ export async function executeComfyUIVideoGenerate(params: AIVideoGenParams): Pro
   }
 
   // 轮询等待结果
+  const signal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   try {
-    return await pollComfyUIHistoryForVideo(baseUrl, promptId);
+    return await pollComfyUIHistoryForVideo(baseUrl, promptId, signal);
   } finally {
-    if (params.nodeId) removePendingTask(params.nodeId);
+    if (params.nodeId) {
+      cleanupNodePolling(params.nodeId);
+      removePendingTask(params.nodeId);
+    }
   }
 }
 
@@ -600,6 +612,7 @@ export async function executeComfyUIVideoGenerate(params: AIVideoGenParams): Pro
 async function pollComfyUIHistoryForAudio(
   baseUrl: string,
   promptId: string,
+  signal?: AbortSignal,
 ): Promise<{ url: string }> {
   return pollComfyHistory(baseUrl, promptId, 'ComfyUI 音频生成超时（1 小时）', (outputs) => {
     for (const nodeOutput of Object.values(outputs)) {
@@ -608,7 +621,7 @@ async function pollComfyUIHistoryForAudio(
       if (nodeOutput.images?.length) return { url: buildComfyFileUrl(baseUrl, nodeOutput.images[0]) };
     }
     return null;
-  });
+  }, signal);
 }
 
 /** 通过 ComfyUI 工作流执行音频生成 */
@@ -644,9 +657,13 @@ export async function executeComfyUIAudioGenerate(params: AIAudioGenParams): Pro
   }
 
   // 轮询等待结果
+  const signal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   try {
-    return await pollComfyUIHistoryForAudio(baseUrl, promptId);
+    return await pollComfyUIHistoryForAudio(baseUrl, promptId, signal);
   } finally {
-    if (params.nodeId) removePendingTask(params.nodeId);
+    if (params.nodeId) {
+      cleanupNodePolling(params.nodeId);
+      removePendingTask(params.nodeId);
+    }
   }
 }

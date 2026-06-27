@@ -8,7 +8,7 @@ import { mapImageDimensions } from './aiDimensions';
 import { resolveNodeReferences } from './nodeReferenceService';
 import { generateDreaminaImage, generateDreaminaVideo } from './dreaminaService';
 import { pollTask } from './pollTask';
-import { savePendingTask, updatePendingTask, removePendingTask } from './pollManager';
+import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from './pollManager';
 import type { AIAudioGenParams, AIGenerateParams, AIImageGenParams, AIVideoGenParams } from './aiTypes';
 import {
   executeComfyUIAudioGenerate,
@@ -285,6 +285,7 @@ async function executeGeneralAsyncTask(
   }
 
   // 轮询直到任务完成/失败（不设超时，仅 ComfyUI 才设超时）
+  const signal = nodeId ? registerNodePolling(nodeId) : undefined;
   const pollPromise = pollTask<Record<string, unknown>, { url: string }>({
     fetchState: async () => {
       const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
@@ -309,11 +310,15 @@ async function executeGeneralAsyncTask(
     },
     interval: 3000,
     onFetchError: 'continue',
+    signal,
   });
 
-  // 无论成功还是失败，完成后都清理待续记录
+  // 无论成功还是失败，完成后都清理待续记录和 AbortController
   pollPromise.finally(() => {
-    if (nodeId) removePendingTask(nodeId);
+    if (nodeId) {
+      cleanupNodePolling(nodeId);
+      removePendingTask(nodeId);
+    }
   });
   return pollPromise;
 }
@@ -701,6 +706,7 @@ async function generateApimartImage(
   }
 
   // 步骤 2: 轮询任务直到完成/失败（不设超时，仅 ComfyUI 才设超时）
+  const signal = nodeId ? registerNodePolling(nodeId) : undefined;
   const pollPromise = pollTask<ApimartTaskResult<{ images?: Array<{ url: string[] }> }>, { url: string; width: number; height: number }>({
     fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
     isComplete: (task) => {
@@ -712,9 +718,13 @@ async function generateApimartImage(
       return null;
     },
     interval: 2000,
+    signal,
   });
   pollPromise.finally(() => {
-    if (nodeId) removePendingTask(nodeId);
+    if (nodeId) {
+      cleanupNodePolling(nodeId);
+      removePendingTask(nodeId);
+    }
   });
   return pollPromise;
 }
@@ -814,6 +824,7 @@ async function generateApimartVideo(
   }
 
   // 步骤 2: 轮询（不设超时，仅 ComfyUI 才设超时）
+  const signal = nodeId ? registerNodePolling(nodeId) : undefined;
   const pollPromise = pollTask<
     ApimartTaskResult<{ images?: Array<{ url: string[] }>; videos?: Array<{ url: string[] }> }>,
     { url: string }
@@ -831,9 +842,13 @@ async function generateApimartVideo(
       return null;
     },
     interval: 3000,
+    signal,
   });
   pollPromise.finally(() => {
-    if (nodeId) removePendingTask(nodeId);
+    if (nodeId) {
+      cleanupNodePolling(nodeId);
+      removePendingTask(nodeId);
+    }
   });
   return pollPromise;
 }
@@ -1188,6 +1203,7 @@ async function generateApimartAudio(
   }
 
   // 步骤 2: 轮询（不设超时，仅 ComfyUI 才设超时）
+  const signal = nodeId ? registerNodePolling(nodeId) : undefined;
   const pollPromise = pollTask<
     ApimartTaskResult<{ audios?: Array<{ url: string[] }>; images?: Array<{ url: string[] }>; videos?: Array<{ url: string[] }> }>,
     { url: string }
@@ -1202,9 +1218,13 @@ async function generateApimartAudio(
       return null;
     },
     interval: 3000,
+    signal,
   });
   pollPromise.finally(() => {
-    if (nodeId) removePendingTask(nodeId);
+    if (nodeId) {
+      cleanupNodePolling(nodeId);
+      removePendingTask(nodeId);
+    }
   });
   return pollPromise;
 }
