@@ -2,7 +2,7 @@
  * PanoramaNode 360全景图节点 — Three.js WebGL 全景查看器
  * 支持图片/360预览双模式切换、上传、全屏、日夜景切换
  */
-import { memo, useCallback, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { memo, useCallback, useRef, useEffect, useState, forwardRef, useImperativeHandle } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import {
   Scene,
@@ -23,6 +23,7 @@ import ResizeHandle from './shared/ResizeHandle';
 import PanoramaNodeToolbar from './shared/PanoramaNodeToolbar';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import AnimatedButton from '../shared/AnimatedButton';
+import QualityRatioSelector from './shared/QualityRatioSelector';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
@@ -34,7 +35,16 @@ import { useCompletionFlash } from '../../hooks/useCompletionFlash';
    ═════════════════════════════════════════════════ */
 
 export interface PanoramaViewerHandle {
-  captureScreenshot: () => string | null;
+  /** 截图；传入宽高比则居中裁剪到该比例，不传/为空则整帧 */
+  captureScreenshot: (aspect?: number | null) => string | null;
+}
+
+/** '16:9' → 1.777…；'自适应' / 非法 → null（不裁剪） */
+function ratioToNumber(ratio: string): number | null {
+  if (!ratio || ratio === '自适应') return null;
+  const [a, b] = ratio.split(':').map(Number);
+  if (!a || !b) return null;
+  return a / b;
 }
 
 interface PanoramaViewerProps {
@@ -66,12 +76,29 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
 
   /* ── Expose screenshot capture ── */
   useImperativeHandle(ref, () => ({
-    captureScreenshot() {
+    captureScreenshot(aspect?: number | null) {
       const state = sceneRef.current;
       if (!state?.renderer?.domElement) return null;
       // Force-render to ensure drawing buffer is populated (preserveDrawingBuffer=false by default)
       state.renderer.render(state.scene, state.camera);
-      return state.renderer.domElement.toDataURL('image/png');
+      const src = state.renderer.domElement;
+      if (!aspect || aspect <= 0) return src.toDataURL('image/png');
+      // 居中裁剪到目标比例（取能放进画布的最大居中矩形，与蒙版框一致）
+      const cw = src.width;
+      const ch = src.height;
+      let cropW: number;
+      let cropH: number;
+      if (cw / ch > aspect) { cropH = ch; cropW = Math.round(ch * aspect); }
+      else { cropW = cw; cropH = Math.round(cw / aspect); }
+      const sx = Math.round((cw - cropW) / 2);
+      const sy = Math.round((ch - cropH) / 2);
+      const off = document.createElement('canvas');
+      off.width = cropW;
+      off.height = cropH;
+      const ctx = off.getContext('2d');
+      if (!ctx) return src.toDataURL('image/png');
+      ctx.drawImage(src, sx, sy, cropW, cropH, 0, 0, cropW, cropH);
+      return off.toDataURL('image/png');
     },
   }), []);
 
@@ -233,6 +260,11 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
   const compactViewerRef = useRef<PanoramaViewerHandle>(null);
   const fullscreenViewerRef = useRef<PanoramaViewerHandle>(null);
 
+  /* ── 全屏截图比例（蒙版裁剪框）── */
+  const [captureRatio, setCaptureRatio] = useState('自适应');
+  const fsStageRef = useRef<HTMLDivElement>(null);
+  const [stageBox, setStageBox] = useState({ w: 0, h: 0 });
+
   /* ── Resize handler ── */
   const handleResize = useCallback(
     (newWidth: number, newHeight: number) => {
@@ -245,6 +277,27 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
   const previewMode = (data.previewMode as 'image' | '360') || 'image';
   const isFullscreen = (data.panoFullscreen as boolean) || false;
 
+  /* ── 全屏舞台尺寸跟踪 → 计算居中裁剪框 ── */
+  const captureAspect = ratioToNumber(captureRatio);
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const el = fsStageRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setStageBox({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    setStageBox({ w: el.clientWidth, h: el.clientHeight });
+    return () => ro.disconnect();
+  }, [isFullscreen]);
+
+  const captureFrame = (() => {
+    if (!captureAspect || !stageBox.w || !stageBox.h) return null;
+    let w: number;
+    let h: number;
+    if (stageBox.w / stageBox.h > captureAspect) { h = stageBox.h; w = h * captureAspect; }
+    else { w = stageBox.w; h = w / captureAspect; }
+    return { x: (stageBox.w - w) / 2, y: (stageBox.h - h) / 2, w, h };
+  })();
+
   const toggleMode = useCallback(() => {
     updateNodeData(id, { previewMode: previewMode === '360' ? 'image' : '360' } as Partial<BaseNodeData>);
   }, [id, previewMode, updateNodeData]);
@@ -255,8 +308,10 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
 
   /* ── Screenshot → save to project dir & create image node ── */
   const handleScreenshot = useCallback(async () => {
+    // 仅全屏支持比例蒙版裁剪；紧凑模式整帧
+    const aspect = isFullscreen ? ratioToNumber(captureRatio) : null;
     const activeViewer = isFullscreen ? fullscreenViewerRef.current : compactViewerRef.current;
-    const dataUrl = activeViewer?.captureScreenshot();
+    const dataUrl = activeViewer?.captureScreenshot(aspect);
     if (!dataUrl) {
       useAppStore.getState().showToast('截图失败', 'error');
       return;
@@ -282,12 +337,14 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
       // Fall back to base64 data URL
     }
 
-    // Create image node offset to the right
+    // Create image node offset to the right —— 有裁剪比例时按比例定高
+    const imgNodeW = nodeWidth as number;
+    const imgNodeH = aspect ? Math.round(imgNodeW / aspect) : (nodeHeight as number);
     const nodeId = `node-${generateId()}`;
     store.addNode({
       id: nodeId,
       type: 'ai-image',
-      position: { x: pos.x + (nodeWidth as number) + 60, y: pos.y },
+      position: { x: pos.x + imgNodeW + 60, y: pos.y },
       data: {
         label: imgLabel,
         type: 'ai-image' as const,
@@ -296,12 +353,12 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
         imageUrl,
         filePath,
         fileName,
-        nodeWidth: nodeWidth as number,
-        nodeHeight: nodeHeight as number,
+        nodeWidth: imgNodeW,
+        nodeHeight: imgNodeH,
       },
     } as Parameters<typeof store.addNode>[0]);
     store.showToast('截图已创建为图片节点', 'success');
-  }, [id, nodeWidth, nodeHeight, isFullscreen]);
+  }, [id, nodeWidth, nodeHeight, isFullscreen, captureRatio]);
 
   /* ── Upload ── */
   const { isUploading, handleUpload: doUpload } = useSourceFileUpload('.png,.jpg,.jpeg,.webp');
@@ -458,14 +515,28 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
         hideHeader
         bodyClassName="fullscreen-body--pano"
       >
-        <PanoramaViewer
-          ref={fullscreenViewerRef}
-          imageUrl={data.imageUrl || data.thumbnailUrl || ''}
-          onClose={toggleFullscreen}
-          onUpload={() => {}}
-          onToggleFullscreen={toggleFullscreen}
-        />
+        <div className="pano-fs-stage" ref={fsStageRef}>
+          <PanoramaViewer
+            ref={fullscreenViewerRef}
+            imageUrl={data.imageUrl || data.thumbnailUrl || ''}
+            onClose={toggleFullscreen}
+            onUpload={() => {}}
+            onToggleFullscreen={toggleFullscreen}
+          />
+          {/* 比例蒙版：暗化裁剪框外区域 */}
+          {captureFrame && (
+            <div
+              className="pano-capture-frame"
+              style={{ left: captureFrame.x, top: captureFrame.y, width: captureFrame.w, height: captureFrame.h }}
+            />
+          )}
+        </div>
         <div className="fullscreen-pano-toolbar">
+          <QualityRatioSelector
+            aspectRatio={captureRatio}
+            onChangeAspectRatio={setCaptureRatio}
+            showImageSize={false}
+          />
           <AnimatedButton
             className="pano-fs-btn"
             onClick={handleScreenshot}

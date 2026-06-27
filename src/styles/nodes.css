@@ -797,6 +797,25 @@
   border-radius: 0;
 }
 
+/* 全屏全景舞台（容纳查看器 + 截图比例蒙版），占满网格第一行 */
+.pano-fs-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+/* 截图比例蒙版框：用超大 box-shadow 暗化框外区域 + 白色描边 */
+.pano-capture-frame {
+  position: absolute;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  outline: 1.5px solid rgba(255, 255, 255, 0.85);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 6;
+}
+
 /* Bottom toolbar inside panorama fullscreen */
 .fullscreen-pano-toolbar {
   display: flex;
