@@ -7,6 +7,7 @@
  * 以兼容容器延后挂载的场景（如 CropEditor：组件常驻、但容器在弹层打开后才进 DOM）。
  */
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { clamp } from '../utils/num';
 
 const DEFAULT_PINCH_SENSITIVITY = 0.01;
 /** 鼠标滚轮缩放灵敏度（鼠标单格 deltaY≈±100，远大于 trackpad 捏合，需更温和）*/
@@ -16,8 +17,6 @@ const WHEEL_ZOOM_SENSITIVITY = 0.001;
 const IS_MAC =
   typeof navigator !== 'undefined' &&
   /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent || '');
-
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 interface UseImageViewportGestureOptions {
   initialScale?: number;

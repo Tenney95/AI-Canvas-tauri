@@ -10,6 +10,7 @@ import { arrayBufferToBase64, copyFileToProjectData } from '../services/fileServ
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { BaseNodeData } from '../types';
 import { isExternalDropCaptured } from '../utils/dropCapture';
+import { textNodeHeight } from '../utils/num';
 
 // ── File type constants ──
 
@@ -399,7 +400,7 @@ export function useNodeCreation() {
               const text = new TextDecoder('utf-8').decode(content);
               if (!text.trim()) continue;
               const lines = text.split('\n').length;
-              const h = Math.max(120, Math.min(600, 40 + lines * 20));
+              const h = textNodeHeight(lines);
               store.addNode({
                 id: `node-${generateId()}`,
                 type: 'ai-text',

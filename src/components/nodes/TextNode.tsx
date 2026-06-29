@@ -13,6 +13,7 @@ import { useNodeRename } from './shared/useNodeRename';
 import { useAppStore } from '../../store/useAppStore';
 import { uploadSourceFile } from '../../services/fileService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
+import { textNodeHeight } from '../../utils/num';
 
 function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const justCompleted = useCompletionFlash(data.status);
@@ -190,7 +191,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
 
       // Calculate approximate line count for height
       const lineCount = textContent.split('\n').length;
-      const estimatedHeight = Math.max(120, Math.min(600, 40 + lineCount * 20));
+      const estimatedHeight = textNodeHeight(lineCount);
 
       updateNodeData(id, {
         output: textContent,

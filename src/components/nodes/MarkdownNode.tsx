@@ -13,6 +13,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { saveBinaryToProjectData } from '../../services/fileService';
 import AnimatedButton from '../shared/AnimatedButton';
 import { renderMarkdown } from '../../utils/renderMarkdown';
+import { textNodeHeight } from '../../utils/num';
 
 function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
@@ -118,7 +119,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     }
 
     const lineCount = textContent.split('\n').length;
-    const estimatedHeight = Math.max(160, Math.min(600, 40 + lineCount * 20));
+    const estimatedHeight = textNodeHeight(lineCount, 160);
 
     // 使用上传文件的文件名
     savedFileNameRef.current = result.fileName;

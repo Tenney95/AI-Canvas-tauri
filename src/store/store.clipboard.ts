@@ -6,6 +6,7 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { BaseNodeData, NodeGroup } from '../types';
 import { generateId, computeImageNodeDimensions, blobToDataUrl } from './store.utils';
+import { textNodeHeight } from '../utils/num';
 import * as fileService from '../services/fileService';
 
 export interface ClipboardSlice {
@@ -277,7 +278,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
           if (!text.trim()) continue;
 
           const lineCount = text.split('\n').length;
-          const estimatedHeight = Math.max(120, Math.min(600, 40 + lineCount * 20));
+          const estimatedHeight = textNodeHeight(lineCount);
 
           const newNode: Node<BaseNodeData> = {
             id: `node-${generateId()}`,
@@ -353,7 +354,7 @@ export const createClipboardSlice: StateCreator<AppState, [], [], ClipboardSlice
 
     const addTextNode = (text: string, idx: number) => {
       const lineCount = text.split('\n').length;
-      const estimatedHeight = Math.max(120, Math.min(600, 40 + lineCount * 20));
+      const estimatedHeight = textNodeHeight(lineCount);
       const newNode: Node<BaseNodeData> = {
         id: `node-${generateId()}`,
         type: 'ai-text',

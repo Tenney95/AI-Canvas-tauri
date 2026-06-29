@@ -552,28 +552,6 @@ export default function SettingsPanel() {
                   />
                 </div>
 
-                <div style={{ display: 'none' }}>
-                  <h3 className="text-sm font-medium text-canvas-text mb-3">输入偏好</h3>
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-sm text-canvas-text">鼠标大小</div>
-                        <div className="text-xs text-canvas-text-muted mt-0.5">选择光标显示大小</div>
-                      </div>
-                      <div className="flex gap-1">
-                        {['小', '中', '大'].map((size, i) => (
-                          <AnimatedButton
-                            key={size}
-                            className={`px-3 py-1.5 rounded-md text-xs ${i === 1 ? 'bg-indigo-500/20 text-indigo-400' : 'bg-canvas-card text-canvas-text-secondary hover:bg-canvas-hover'}`}
-                          >
-                            {size}
-                          </AnimatedButton>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
                 {/* 侧边栏是否悬浮显示 */}
                 <div>
                   <h3 className="text-sm font-medium text-canvas-text mb-3">侧边栏</h3>

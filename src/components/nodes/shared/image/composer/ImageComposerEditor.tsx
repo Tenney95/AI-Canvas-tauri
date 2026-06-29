@@ -15,6 +15,7 @@ import { useAppStore } from '../../../../../store/useAppStore';
 import { saveDataUrlToProjectData } from '../../../../../services/fileService';
 import { subjectMatting, checkModelExists, downloadModel } from '../../../../../services/onnxService';
 import { loadSafeImage } from '../imageUtils';
+import { clamp } from '../../../../../utils/num';
 import { useComposer } from './useComposer';
 import ComposerToolbar from './ComposerToolbar';
 import ComposerSidePanel from './ComposerSidePanel';
@@ -33,7 +34,6 @@ interface ImageComposerEditorProps {
 const MAX_SEED = 2048;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i;
 const MATTING_MODEL = 'rmbg-1.4.onnx';
-const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
 const errMessage = (err: unknown, fallback: string): string =>
   typeof err === 'string' ? err
