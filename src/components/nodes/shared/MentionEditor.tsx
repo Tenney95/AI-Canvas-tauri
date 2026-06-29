@@ -102,6 +102,13 @@ function isBrEl(node: Node | null | undefined): boolean {
   return !!node && node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName === 'BR';
 }
 
+/** 行首芯片（前面是 <br> 或位于最开头）前补零宽空格，让光标能落到芯片前面（命令式插入用）。 */
+function ensureCaretSlotBeforeChip(chip: Node): void {
+  if (!chip.previousSibling || isBrEl(chip.previousSibling)) {
+    chip.parentNode?.insertBefore(document.createTextNode(ZWSP), chip);
+  }
+}
+
 /** Serialize contenteditable DOM back to @{id:label} / @wf{id|title|type} marker string (pipe-separated to avoid ambiguity with `:` in node IDs). */
 function serializeDOM(root: HTMLElement): string {
   let result = '';
@@ -632,6 +639,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       }
       const chip = buildChipEl(refNodeId, refLabel, nodeMetaMap);
       range.insertNode(chip);
+      ensureCaretSlotBeforeChip(chip);
       range.setStartAfter(chip);
       range.collapse(true);
       sel.removeAllRanges();
@@ -674,6 +682,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       }
       const chip = buildWorkflowChipEl(ioNodeId, ioNodeTitle, ioNodeType);
       range.insertNode(chip);
+      ensureCaretSlotBeforeChip(chip);
       const valueArea = chip.querySelector('.prompt-chip-wf-value');
       if (valueArea) {
         const textNode = valueArea.firstChild;
@@ -750,6 +759,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       }
       const chip = buildAssetChipEl(path, assetUrl);
       range.insertNode(chip);
+      ensureCaretSlotBeforeChip(chip);
       range.setStartAfter(chip);
       range.collapse(true);
       sel.removeAllRanges();
@@ -968,29 +978,20 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
             }
           }
         }
-        if (node && node.nodeType === Node.TEXT_NODE && range.startOffset === 0) {
-          const prev = node.previousSibling;
-          if (prev && prev.nodeType === Node.ELEMENT_NODE) {
-            const prevEl = prev as HTMLElement;
-            if (prevEl.hasAttribute('data-ref-id') || prevEl.hasAttribute('data-skill-id')) {
-              e.preventDefault();
-              prev.remove();
-              emitDOM();
-              return;
-            }
-          }
+        // 光标在文本节点开头：删除其前一个兄弟若为芯片
+        if (node && node.nodeType === Node.TEXT_NODE && offset === 0 && isChipEl(node.previousSibling)) {
+          e.preventDefault();
+          (node.previousSibling as HTMLElement).remove();
+          emitDOM();
+          return;
         }
-        if (node && node.nodeType === Node.ELEMENT_NODE) {
-          const prev = (node as HTMLElement).previousSibling;
-          if (prev && prev.nodeType === Node.ELEMENT_NODE) {
-            const prevEl = prev as HTMLElement;
-            if (prevEl.hasAttribute('data-ref-id') || prevEl.hasAttribute('data-wf-id') || prevEl.hasAttribute('data-skill-id')) {
-              e.preventDefault();
-              prev.remove();
-              emitDOM();
-              return;
-            }
-          }
+        // 光标在元素层级（编辑器根 / 行尾，container 为元素）：删除光标前一个子节点若为芯片。
+        // 末尾芯片时 container 是编辑器、offset=子节点数，前一个节点是 childNodes[offset-1]（而非 previousSibling）。
+        if (node && node.nodeType === Node.ELEMENT_NODE && offset > 0 && isChipEl(node.childNodes[offset - 1])) {
+          e.preventDefault();
+          (node.childNodes[offset - 1] as HTMLElement).remove();
+          emitDOM();
+          return;
         }
       }
       // Delete chip on Delete
