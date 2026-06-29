@@ -104,9 +104,20 @@ function isBrEl(node: Node | null | undefined): boolean {
 
 /** 行首芯片（前面是 <br> 或位于最开头）前补零宽空格，让光标能落到芯片前面（命令式插入用）。 */
 function ensureCaretSlotBeforeChip(chip: Node): void {
-  if (!chip.previousSibling || isBrEl(chip.previousSibling)) {
+  const prev = chip.previousSibling;
+  if (!prev || isBrEl(prev)) {
     chip.parentNode?.insertBefore(document.createTextNode(ZWSP), chip);
+  } else if (prev.nodeType === Node.TEXT_NODE && !prev.textContent) {
+    // 空文本节点（如换行 insertNode 分裂的残留）不是有效落点 → 填成 ZWSP
+    prev.textContent = ZWSP;
   }
+}
+
+/** 扫描所有芯片，给「行首芯片」补零宽空格落点。幂等（已有文本/ZWSP 前缀则跳过）。
+ *  用于编辑/导航/聚焦时修复任何来源（粘贴、删字后行首化等）的无落点芯片。ZWSP 在序列化时被剥除。 */
+function normalizeChipSlots(root: HTMLElement): void {
+  const chips = root.querySelectorAll('[data-ref-id],[data-asset-path],[data-wf-id],[data-skill-id]');
+  for (const chip of Array.from(chips)) ensureCaretSlotBeforeChip(chip);
 }
 
 /** Serialize contenteditable DOM back to @{id:label} / @wf{id|title|type} marker string (pipe-separated to avoid ambiguity with `:` in node IDs). */
@@ -875,6 +886,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const handleInput = useCallback(() => {
     const el = editorRef.current;
     if (!el) return;
+    normalizeChipSlots(el); // 删字后行首化的芯片补回光标落点
     const sel = window.getSelection();
     if (sel && sel.rangeCount) {
       const range = sel.getRangeAt(0);
@@ -902,6 +914,8 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   // ── KeyDown: mention navigation / submit / chip deletion ──
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
+      // 方向键导航前先补好行首芯片的光标落点（ZWSP），否则光标跳不到芯片前
+      if (e.key.startsWith('Arrow') && editorRef.current) normalizeChipSlots(editorRef.current);
       // @ mention: Enter → select first match
       if (showMention && e.key === 'Enter' && !e.shiftKey) {
         if (filteredCanvasMentions.length > 0) {
@@ -936,6 +950,36 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         if (!sel || !sel.rangeCount) return;
         const range = sel.getRangeAt(0);
         range.deleteContents();
+
+        // 特例：光标正贴在某芯片前面 —— 把 <br> 插到「芯片(及其单个 ZWSP 落点)」之前，
+        // 不分裂落点、不产生双停顿，光标停在芯片前。
+        const sc = range.startContainer;
+        const so = range.startOffset;
+        let chipAfter: HTMLElement | null = null;
+        if (sc.nodeType === Node.TEXT_NODE && so === (sc.textContent?.length ?? 0) && isChipEl(sc.nextSibling)) {
+          chipAfter = sc.nextSibling as HTMLElement;
+        } else if (sc.nodeType === Node.ELEMENT_NODE && isChipEl(sc.childNodes[so])) {
+          chipAfter = sc.childNodes[so] as HTMLElement;
+        }
+        if (chipAfter) {
+          const parent = chipAfter.parentNode!;
+          let slot = chipAfter.previousSibling as Text | null;
+          const zwspOnly = !!slot && slot.nodeType === Node.TEXT_NODE && (slot.textContent === '' || slot.textContent === ZWSP);
+          if (!zwspOnly) {
+            slot = document.createTextNode(ZWSP);
+            parent.insertBefore(slot, chipAfter);
+          } else if (!slot!.textContent) {
+            slot!.textContent = ZWSP;
+          }
+          parent.insertBefore(document.createElement('br'), slot!); // <br> 在落点之前
+          range.setStart(slot!, (slot!.textContent || '').length);   // 光标落到芯片前
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          emitDOM();
+          return;
+        }
+
         const br = document.createElement('br');
         range.insertNode(br);
         const next = br.nextSibling;
@@ -944,11 +988,6 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           const filler = document.createElement('br');
           br.parentNode?.insertBefore(filler, null);
           range.setStartBefore(filler);
-        } else if (isChipEl(next)) {
-          // 新行以芯片开头：插入零宽空格，让光标能落到芯片前面
-          const zwsp = document.createTextNode(ZWSP);
-          br.parentNode?.insertBefore(zwsp, next);
-          range.setStart(zwsp, 1);
         } else {
           range.setStartAfter(br);
         }
@@ -966,6 +1005,13 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         if (!range.collapsed) return;
         const node = range.startContainer;
         const offset = range.startOffset;
+        // 行首芯片前（光标在其 ZWSP 落点里）退格 → 删掉上面的换行 <br> 合并到上一行，而不是卡在 ZWSP
+        if (node && node.nodeType === Node.TEXT_NODE && isChipEl(node.nextSibling) && isBrEl(node.previousSibling)) {
+          e.preventDefault();
+          (node.previousSibling as ChildNode).remove();
+          emitDOM();
+          return;
+        }
         if (node && node.nodeType === Node.TEXT_NODE && offset === 0) {
           const valueArea = node.parentElement;
           if (valueArea?.classList.contains('prompt-chip-wf-value')) {
@@ -1086,7 +1132,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         onPaste={handlePaste}
         onMouseOver={handleEditorMouseOver}
         onMouseLeave={handleEditorMouseLeave}
-        onFocus={onFocus}
+        onFocus={() => {
+          if (editorRef.current) normalizeChipSlots(editorRef.current); // 聚焦即修复历史无落点芯片
+          onFocus?.();
+        }}
         onBlur={() => {
           onBlur?.();
           emitDOM();
