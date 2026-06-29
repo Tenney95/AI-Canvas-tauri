@@ -137,7 +137,7 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
             key={node.id}
             type="button"
             className={`connected-node-thumb ${!node.hasOutput ? 'thumb-idle' : ''} thumb-${node.outputType}`}
-            data-tooltip={`${node.label}${node.displayId != null ? ` #${node.displayId}` : ''} — 点击引用`}
+            title={`${node.label}${node.displayId != null ? ` #${node.displayId}` : ''} — 点击引用`}
             onClick={() => handleClick(node.id, node.label)}
             onHoverStart={() => onHoverStart(idx)}
             onHoverEnd={onHoverEnd}

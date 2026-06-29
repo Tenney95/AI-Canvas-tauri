@@ -91,7 +91,7 @@ export default function ComposerToolbar({ composer, camScale, canExport, onFit, 
     <div data-tauri-drag-region className="composer-toolbar">
       <div className="composer-toolbar-main">
         {/* 添加图层 */}
-        <AnimatedButton className="crop-aspect-btn icon-only" data-tooltip="上传图片" aria-label="上传图片" onClick={() => fileRef.current?.click()}>
+        <AnimatedButton className="crop-aspect-btn icon-only" title="上传图片" aria-label="上传图片" onClick={() => fileRef.current?.click()}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="17 8 12 3 7 8" />
@@ -101,7 +101,7 @@ export default function ComposerToolbar({ composer, camScale, canExport, onFit, 
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={handleUpload} />
 
       <div className="composer-dd">
-        <AnimatedButton className="crop-aspect-btn icon-only" data-tooltip="从画布添加图片" aria-label="从画布添加图片" onClick={() => setMenu(menu === 'canvas' ? null : 'canvas')}>
+        <AnimatedButton className="crop-aspect-btn icon-only" title="从画布添加图片" aria-label="从画布添加图片" onClick={() => setMenu(menu === 'canvas' ? null : 'canvas')}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
             <rect x="3" y="3" width="18" height="18" rx="2" />
             <circle cx="8.5" cy="9" r="1.5" />
@@ -130,27 +130,27 @@ export default function ComposerToolbar({ composer, camScale, canExport, onFit, 
       </div>
 
       <div className="crop-bar-divider" />
-      <AnimatedButton className="crop-aspect-btn icon-only" data-tooltip="文字" aria-label="文字" onClick={() => addText()}>
+      <AnimatedButton className="crop-aspect-btn icon-only" title="文字" aria-label="文字" onClick={() => addText()}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
           <path d="M5 6V4h14v2M9 20h6M12 4v16" />
         </svg>
       </AnimatedButton>
-      <AnimatedButton className="crop-aspect-btn icon-only" data-tooltip="矩形" aria-label="矩形" onClick={() => addShape('rect')}>
+      <AnimatedButton className="crop-aspect-btn icon-only" title="矩形" aria-label="矩形" onClick={() => addShape('rect')}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
           <rect x="4" y="6" width="16" height="12" rx="1" />
         </svg>
       </AnimatedButton>
-      <AnimatedButton className="crop-aspect-btn icon-only" data-tooltip="椭圆" aria-label="椭圆" onClick={() => addShape('ellipse')}>
+      <AnimatedButton className="crop-aspect-btn icon-only" title="椭圆" aria-label="椭圆" onClick={() => addShape('ellipse')}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
           <ellipse cx="12" cy="12" rx="8" ry="6" />
         </svg>
       </AnimatedButton>
-      <AnimatedButton className="crop-aspect-btn icon-only" data-tooltip="直线" aria-label="直线" onClick={() => addShape('line')}>
+      <AnimatedButton className="crop-aspect-btn icon-only" title="直线" aria-label="直线" onClick={() => addShape('line')}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
           <line x1="5" y1="19" x2="19" y2="5" />
         </svg>
       </AnimatedButton>
-      <AnimatedButton className="crop-aspect-btn icon-only" data-tooltip="箭头" aria-label="箭头" onClick={() => addShape('arrow')}>
+      <AnimatedButton className="crop-aspect-btn icon-only" title="箭头" aria-label="箭头" onClick={() => addShape('arrow')}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
           <path d="M5 12h12M13 6l6 6-6 6" />
         </svg>
@@ -169,7 +169,7 @@ export default function ComposerToolbar({ composer, camScale, canExport, onFit, 
 
       {/* 背景 */}
       <div className="composer-dd">
-        <AnimatedButton className="crop-aspect-btn icon-only" data-tooltip="背景" aria-label="背景" onClick={() => setMenu(menu === 'bg' ? null : 'bg')}>
+        <AnimatedButton className="crop-aspect-btn icon-only" title="背景" aria-label="背景" onClick={() => setMenu(menu === 'bg' ? null : 'bg')}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
             <rect x="3" y="3" width="18" height="18" rx="2" />
             <path d="M3 12h18M12 3v18" />
@@ -190,13 +190,13 @@ export default function ComposerToolbar({ composer, camScale, canExport, onFit, 
         )}
       </div>
 
-      <AnimatedButton className="crop-aspect-btn icon-only" data-tooltip="适配画布" aria-label="适配画布" onClick={onFit}>
+      <AnimatedButton className="crop-aspect-btn icon-only" title="适配画布" aria-label="适配画布" onClick={onFit}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
           <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
         </svg>
       </AnimatedButton>
       <span className="composer-zoom-text">{Math.round(camScale * 100)}%</span>
-      <AnimatedButton className="crop-action-btn confirm" data-tooltip="合成为新节点" aria-label="导出" disabled={!canExport} onClick={onExport}>
+      <AnimatedButton className="crop-action-btn confirm" title="合成为新节点" aria-label="导出" disabled={!canExport} onClick={onExport}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
           <path d="M3 17l5-5 3 3 8-8" />
         </svg>
@@ -204,7 +204,7 @@ export default function ComposerToolbar({ composer, camScale, canExport, onFit, 
       </AnimatedButton>
       </div>
 
-      <AnimatedButton className="composer-toolbar-close crop-aspect-btn crop-aspect-close act-cancel" data-tooltip="关闭 (Esc)" aria-label="关闭" onClick={onClose}>
+      <AnimatedButton className="composer-toolbar-close crop-aspect-btn crop-aspect-close act-cancel" title="关闭 (Esc)" aria-label="关闭" onClick={onClose}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
           <path d="M18 6L6 18M6 6l12 12" />
         </svg>

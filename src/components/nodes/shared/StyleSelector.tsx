@@ -182,7 +182,7 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
       <button
         type="button"
         className={`prompt-btn style-selector-btn${open ? ' style-active' : ''}${selectedStyle ? ' has-style' : ''}`}
-        data-tooltip={selectedName ? `画风: ${selectedName}` : '选择画风'}
+        title={selectedName ? `画风: ${selectedName}` : '选择画风'}
         onClick={handleToggle}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

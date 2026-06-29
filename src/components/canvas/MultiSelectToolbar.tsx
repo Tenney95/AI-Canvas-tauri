@@ -320,7 +320,7 @@ function MultiSelectToolbar() {
     >
       {/* Batch execute */}
       <AnimatedButton
-        data-tooltip="批量生成"
+        title="批量生成"
         disabled={batchRunning}
         onClick={executeBatch}
         className="w-8 h-8 rounded flex items-center justify-center transition-colors hover:text-green-300 hover:bg-green-500/15 disabled:opacity-30 disabled:cursor-not-allowed"
@@ -334,7 +334,7 @@ function MultiSelectToolbar() {
       {ALIGN_ACTIONS.map(({ icon, label, key }) => (
         <AnimatedButton
           key={key}
-          data-tooltip={label}
+          title={label}
           onClick={() => doAlign(key as AlignKey)}
           className="w-8 h-8 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
         >
@@ -349,7 +349,7 @@ function MultiSelectToolbar() {
           {DISTRIBUTE_ACTIONS.map(({ icon, label, key }) => (
             <AnimatedButton
               key={key}
-              data-tooltip={label}
+              title={label}
               onClick={() => doDistribute(key as DistributeKey)}
               className="w-8 h-8 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
             >

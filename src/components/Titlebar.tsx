@@ -147,7 +147,7 @@ function MacTrafficLight({
     <AnimatedButton
       onClick={onClick}
       aria-label={label}
-      data-tooltip={label}
+      title={label}
       scale={1.08}
       tapScale={0.92}
       className={`group flex h-3 w-3 items-center justify-center rounded-full

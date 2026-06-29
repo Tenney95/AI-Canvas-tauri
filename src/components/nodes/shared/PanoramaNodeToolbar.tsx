@@ -33,7 +33,7 @@ function PanoramaNodeToolbar({
         {/* Upload */}
         <AnimatedButton
           className="ftb-btn icon-only act-upload"
-          data-tooltip="上传全景图"
+          title="上传全景图"
           aria-label="上传全景图"
           onClick={handleAction(onUpload)}
         >
@@ -47,7 +47,7 @@ function PanoramaNodeToolbar({
         {/* Mode toggle */}
         <AnimatedButton
           className="ftb-btn icon-only act-mode"
-          data-tooltip={previewMode === '360' ? '切换到图片视图' : '切换到360全景'}
+          title={previewMode === '360' ? '切换到图片视图' : '切换到360全景'}
           aria-label="切换视图模式"
           onClick={handleAction(onToggleMode)}
         >
@@ -70,7 +70,7 @@ function PanoramaNodeToolbar({
         {/* Screenshot */}
         <AnimatedButton
           className="ftb-btn icon-only act-screenshot"
-          data-tooltip="截图当前视角"
+          title="截图当前视角"
           aria-label="截图当前视角"
           onClick={handleAction(onScreenshot)}
         >
@@ -86,7 +86,7 @@ function PanoramaNodeToolbar({
         {/* Fullscreen */}
         <AnimatedButton
           className="ftb-btn icon-only act-fullscreen"
-          data-tooltip="全屏显示"
+          title="全屏显示"
           aria-label="全屏显示"
           onClick={handleAction(onFullscreen)}
         >

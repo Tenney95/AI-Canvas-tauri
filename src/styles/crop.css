@@ -40,7 +40,6 @@
 
 .crop-aspect-btn {
   padding: 3px 10px;
-  border: 1px solid var(--theme-border);
   border-radius: 6px;
   background: transparent;
   color: var(--theme-text-secondary);
@@ -75,6 +74,12 @@
   color: var(--brand);
   background: var(--brand-alpha-10);
   border-color: var(--brand-alpha-30);
+}
+
+/* 浅色主题：玻璃栏背景偏亮，次级灰字对比不足。仅在栏内重定义次级色为主文本色，
+   不动 active(品牌)/hover/关闭(危险) 等状态色 */
+[data-theme='light'] .crop-aspect-bar {
+  --theme-text-secondary: var(--theme-text);
 }
 
 .crop-aspect-spacer {

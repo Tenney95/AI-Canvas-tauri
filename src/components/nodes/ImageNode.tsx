@@ -759,7 +759,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               <button
                 className="node-upload-btn"
                 onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-                data-tooltip="上传图片"
+                title="上传图片"
                 aria-label="上传图片"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">

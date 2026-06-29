@@ -294,7 +294,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
           <AnimatedButton
             type="button"
             className="crop-aspect-btn crop-aspect-close act-cancel"
-            data-tooltip="关闭 (Esc)"
+            title="关闭 (Esc)"
             aria-label="关闭"
             onClick={handleClose}
           >
@@ -315,7 +315,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
           <div className="crop-aspect-spacer" />
           <AnimatedButton
             className="crop-action-btn confirm"
-            data-tooltip="开始扩图"
+            title="开始扩图"
             aria-label="开始扩图"
             onClick={handleConfirm}
           >

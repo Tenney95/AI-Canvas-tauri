@@ -329,7 +329,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
         <AnimatedButton
           type="button"
           className="crop-aspect-btn crop-aspect-close act-cancel"
-          data-tooltip="关闭 (Esc)"
+          title="关闭 (Esc)"
           aria-label="关闭"
           onClick={handleClose}
         >
@@ -384,7 +384,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
         <div className="crop-aspect-spacer" />
         <AnimatedButton
           className="crop-action-btn confirm"
-          data-tooltip="确认裁切"
+          title="确认裁切"
           aria-label="确认裁切"
           disabled={mode === 'pen' ? !penReady : !completedCrop}
           onClick={handleConfirm}

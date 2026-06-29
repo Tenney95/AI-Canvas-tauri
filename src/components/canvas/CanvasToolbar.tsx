@@ -30,7 +30,7 @@ function CanvasToolbar({
             : 'text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover'
         }`}
         onClick={onToggleGrid}
-        data-tooltip={showGrid ? '隐藏背景网格' : '显示背景网格'}
+        title={showGrid ? '隐藏背景网格' : '显示背景网格'}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <circle cx="5" cy="5" r="1.5" /><circle cx="12" cy="5" r="1.5" /><circle cx="19" cy="5" r="1.5" />
@@ -41,7 +41,7 @@ function CanvasToolbar({
       <AnimatedButton
         className="w-7 h-7 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
         onClick={onToggleLine}
-        data-tooltip={smoothLine ? '连线类型：直角 → 切换为曲线' : '连线类型：曲线 → 切换为直角'}
+        title={smoothLine ? '连线类型：直角 → 切换为曲线' : '连线类型：曲线 → 切换为直角'}
       >
         {smoothLine ? (
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

@@ -60,7 +60,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
     <div className="node-floating-toolbar text-toolbar">
       <AnimatedButton
         className="ftb-btn icon-only act-copy rounded-[6px]"
-        data-tooltip={copied ? '已复制' : '复制'}
+        title={copied ? '已复制' : '复制'}
         aria-label="复制"
         onClick={handleCopy}
       >
@@ -77,7 +77,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
       </AnimatedButton>
       <AnimatedButton
         className="ftb-btn icon-only act-clear-empty-lines rounded-[6px]"
-        data-tooltip="清除空行"
+        title="清除空行"
         aria-label="清除空行"
         onClick={handleClearEmptyLines}
       >
@@ -91,7 +91,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
       </AnimatedButton>
       <AnimatedButton
         className="ftb-btn icon-only act-show-prompt rounded-[6px]"
-        data-tooltip="查看提示词"
+        title="查看提示词"
         aria-label="查看提示词"
         onClick={handleShowPrompt}
       >
@@ -102,7 +102,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
       </AnimatedButton>
       <AnimatedButton
         className="ftb-btn icon-only act-fullscreen rounded-[6px]"
-        data-tooltip="全屏显示"
+        title="全屏显示"
         aria-label="全屏显示"
         onClick={handleFullscreen}
       >

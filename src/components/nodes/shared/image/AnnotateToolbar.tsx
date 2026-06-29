@@ -104,7 +104,7 @@ function AnnotateToolbar({
       {/* Cancel */}
       <AnimatedButton
         className="annotate-btn icon-only act-cancel"
-        data-tooltip="取消 (Esc)"
+        title="取消 (Esc)"
         aria-label="取消"
         onClick={handleCancel}
       >
@@ -119,7 +119,7 @@ function AnnotateToolbar({
       <AnimatedButton
         className={`annotate-btn icon-only tool-btn${activeTool === 'brush' ? ' active' : ''}`}
         data-tool="brush"
-        data-tooltip="画笔 B"
+        title="画笔 B"
         aria-label="画笔"
         onClick={() => handleToolSelect('brush')}
       >
@@ -133,7 +133,7 @@ function AnnotateToolbar({
       <AnimatedButton
         className={`annotate-btn icon-only tool-btn${activeTool === 'eraser' ? ' active' : ''}`}
         data-tool="eraser"
-        data-tooltip="橡皮擦 E"
+        title="橡皮擦 E"
         aria-label="橡皮擦"
         onClick={() => handleToolSelect('eraser')}
       >
@@ -146,7 +146,7 @@ function AnnotateToolbar({
       <AnimatedButton
         className={`annotate-btn icon-only tool-btn${activeTool === 'text' ? ' active' : ''}`}
         data-tool="text"
-        data-tooltip="文字 T"
+        title="文字 T"
         aria-label="文字"
         onClick={() => handleToolSelect('text')}
       >
@@ -161,7 +161,7 @@ function AnnotateToolbar({
       <AnimatedButton
         className={`annotate-btn icon-only tool-btn${activeTool === 'rect' ? ' active' : ''}`}
         data-tool="rect"
-        data-tooltip="矩形框"
+        title="矩形框"
         aria-label="矩形框"
         onClick={() => handleToolSelect('rect')}
       >
@@ -174,7 +174,7 @@ function AnnotateToolbar({
       <AnimatedButton
         className={`annotate-btn icon-only tool-btn${activeTool === 'circle' ? ' active' : ''}`}
         data-tool="circle"
-        data-tooltip="圆形框"
+        title="圆形框"
         aria-label="圆形框"
         onClick={() => handleToolSelect('circle')}
       >
@@ -232,7 +232,7 @@ function AnnotateToolbar({
       {/* Undo */}
       <AnimatedButton
         className="annotate-btn icon-only act-undo"
-        data-tooltip="撤销 Ctrl+Z"
+        title="撤销 Ctrl+Z"
         aria-label="撤销"
         onClick={handleUndo}
         disabled={!canUndo}
@@ -246,7 +246,7 @@ function AnnotateToolbar({
       {/* Redo */}
       <AnimatedButton
         className="annotate-btn icon-only act-redo"
-        data-tooltip="重做 Ctrl+Y"
+        title="重做 Ctrl+Y"
         aria-label="重做"
         onClick={handleRedo}
         disabled={!canRedo}
@@ -260,7 +260,7 @@ function AnnotateToolbar({
       {/* Clear */}
       <AnimatedButton
         className="annotate-btn icon-only act-clear"
-        data-tooltip="清空 R"
+        title="清空 R"
         aria-label="清空"
         onClick={handleClear}
       >
@@ -274,7 +274,7 @@ function AnnotateToolbar({
       {/* Save */}
       <AnimatedButton
         className="annotate-btn annotate-save act-save"
-        data-tooltip="保存"
+        title="保存"
         aria-label="保存"
         onClick={handleSave}
       >

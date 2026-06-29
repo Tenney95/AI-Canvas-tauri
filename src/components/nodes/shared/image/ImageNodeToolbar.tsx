@@ -39,7 +39,7 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
         <div className="img-toolbar-zone img-toolbar-zone-primary nodrag">
           <AnimatedButton
             className="ftb-btn icon-only act-matting"
-            data-tooltip="遮罩编辑器"
+            title="遮罩编辑器"
             aria-label="遮罩编辑器"
             onClick={handleAction(onMatting)}
           >
@@ -51,12 +51,12 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
               <path d="M8.5 18.5l-1-1" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-expand" data-tooltip="扩图" aria-label="扩图" onClick={handleAction(onExpand)}>
+          <AnimatedButton className="ftb-btn icon-only act-expand" title="扩图" aria-label="扩图" onClick={handleAction(onExpand)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-multigrid" data-tooltip="宫格裁切" aria-label="宫格裁切" onClick={noop}>
+          <AnimatedButton className="ftb-btn icon-only act-multigrid" title="宫格裁切" aria-label="宫格裁切" onClick={noop}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <rect x="3" y="3" width="7" height="7" />
               <rect x="14" y="3" width="7" height="7" />
@@ -64,7 +64,7 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
               <rect x="3" y="14" width="7" height="7" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-multiangle" data-tooltip="控制角度" aria-label="控制角度" onClick={handleAction(onMultiAngle)}>
+          <AnimatedButton className="ftb-btn icon-only act-multiangle" title="控制角度" aria-label="控制角度" onClick={handleAction(onMultiAngle)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
               <path d="M12 22V12" />
@@ -72,7 +72,7 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
               <path d="M12 12l8.73-4.27" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-repaint" data-tooltip="重绘" aria-label="重绘" onClick={handleAction(onRepaint)}>
+          <AnimatedButton className="ftb-btn icon-only act-repaint" title="重绘" aria-label="重绘" onClick={handleAction(onRepaint)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <rect x="3.5" y="4.5" width="13" height="13" rx="2" />
               <path d="m3.5 14 3-3a2 2 0 0 1 2.8 0L12 13.7" />
@@ -80,12 +80,12 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
               <path d="m14 18 5-5 2 2-5 5-3 1 1-3Z" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-hd" data-tooltip="高清超分" aria-label="高清超分" onClick={handleAction(onUpscale)}>
+          <AnimatedButton className="ftb-btn icon-only act-hd" title="高清超分" aria-label="高清超分" onClick={handleAction(onUpscale)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M12 3v18m9-9H3m14.48-6.36L6.52 17.64m10.96 0L6.52 6.36" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-auto-subject" data-tooltip="自动识别主体" aria-label="自动识别主体" onClick={handleAction(onSubjectMatting)}>
+          <AnimatedButton className="ftb-btn icon-only act-auto-subject" title="自动识别主体" aria-label="自动识别主体" onClick={handleAction(onSubjectMatting)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
             </svg>
@@ -94,18 +94,18 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
 
         {/* Secondary zone */}
         <div className="img-toolbar-zone img-toolbar-zone-secondary">
-          <AnimatedButton className="ftb-btn icon-only act-annotate" data-tooltip="标注" aria-label="标注" onClick={handleAction(onAnnotate)}>
+          <AnimatedButton className="ftb-btn icon-only act-annotate" title="标注" aria-label="标注" onClick={handleAction(onAnnotate)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M12 20h9" />
               <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-crop" data-tooltip="裁切" aria-label="裁切" onClick={handleAction(onCrop)}>
+          <AnimatedButton className="ftb-btn icon-only act-crop" title="裁切" aria-label="裁切" onClick={handleAction(onCrop)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-compose" data-tooltip="多图编辑" aria-label="多图编辑" onClick={handleAction(onCompose)}>
+          <AnimatedButton className="ftb-btn icon-only act-compose" title="多图编辑" aria-label="多图编辑" onClick={handleAction(onCompose)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <rect x="3" y="3" width="13" height="13" rx="2" />
               <path d="M8 8h13v13H8z" fill="currentColor" fillOpacity="0.18" />
@@ -116,7 +116,7 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
           {/* Divider */}
           <div className="ftb-divider img-toolbar-main-divider" />
 
-          <AnimatedButton className="ftb-btn icon-only act-upload" data-tooltip="上传图片" aria-label="上传图片" onClick={handleAction(onUpload)}>
+          <AnimatedButton className="ftb-btn icon-only act-upload" title="上传图片" aria-label="上传图片" onClick={handleAction(onUpload)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
               <polyline points="17 8 12 3 7 8" />
@@ -125,7 +125,7 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
           </AnimatedButton>
           <AnimatedButton
             className="ftb-btn icon-only act-fullscreen"
-            data-tooltip="全屏显示"
+            title="全屏显示"
             aria-label="全屏显示"
             onClick={handleAction(onFullscreen)}
           >

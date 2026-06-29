@@ -121,13 +121,13 @@
 
 .fa-label {
   font-size: 12px;
-  color: #8888a0;
+  color: var(--theme-text-secondary);
   font-weight: 500;
 }
 
 .fa-value {
   font-size: 12px;
-  color: #e8e8ed;
+  color: var(--theme-text);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
   min-width: 48px;

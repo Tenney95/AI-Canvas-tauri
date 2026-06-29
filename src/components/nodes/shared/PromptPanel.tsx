@@ -249,7 +249,7 @@ export default function PromptPanel({
               ref={slashBtnRef}
               type="button"
               className={`prompt-btn prompt-slash-btn${slashOpen ? ' slash-active' : ''}`}
-              data-tooltip="预设提示词"
+              title="预设提示词"
               onClick={handleButtonSlash}
             >
               /
@@ -259,7 +259,7 @@ export default function PromptPanel({
             <button
               type="button"
               className="prompt-btn prompt-debug-btn"
-              data-tooltip="调试 API 参数"
+              title="调试 API 参数"
               onClick={(e) => { e.stopPropagation(); onDebug(); }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -272,7 +272,7 @@ export default function PromptPanel({
               type="button"
               className={`prompt-btn prompt-pass-through-btn ${!prompt.trim() ? 'disabled' : ''}`}
               disabled={!canGenerate || !prompt.trim()}
-              data-tooltip="直接输出（跳过模型调用）"
+              title="直接输出（跳过模型调用）"
               onClick={(e) => {
                 e.stopPropagation();
                 if (prompt.trim()) onPassThrough();
@@ -288,7 +288,7 @@ export default function PromptPanel({
             type="button"
             className={`prompt-btn prompt-submit-btn ${!canGenerate || !prompt.trim() ? 'disabled' : ''}`}
             disabled={!canGenerate || !prompt.trim()}
-            data-tooltip="调用模型生成"
+            title="调用模型生成"
             onClick={(e) => {
               e.stopPropagation();
               if (canGenerate && prompt.trim()) handleSubmit();

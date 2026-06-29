@@ -21,7 +21,7 @@ function VideoNodeToolbar({ onCaptureFrame }: VideoNodeToolbarProps) {
     <div className="node-floating-toolbar text-toolbar nodrag">
       <AnimatedButton
         className="ftb-btn icon-only act-capture-frame rounded-[6px]"
-        data-tooltip="截取当前帧"
+        title="截取当前帧"
         aria-label="截取当前帧"
         onClick={handleCaptureFrame}
       >

@@ -76,6 +76,12 @@
   white-space: nowrap;
 }
 
+/* 浅色主题：玻璃栏背景偏亮，次级灰字对比不足。仅在栏内重定义次级色为主文本色，
+   不动 active/保存(绿)/取消(红) 等状态色 */
+[data-theme='light'] .matting-toolbar {
+  --theme-text-secondary: var(--theme-text);
+}
+
 .matting-btn {
   display: inline-flex;
   align-items: center;

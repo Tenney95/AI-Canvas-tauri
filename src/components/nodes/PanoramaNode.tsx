@@ -420,7 +420,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
               <button
                 className="node-upload-btn"
                 onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-                data-tooltip="上传全景图"
+                title="上传全景图"
                 aria-label="上传全景图"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">

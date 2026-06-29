@@ -364,7 +364,7 @@ export default function PresetManager() {
                 >
                   <label
                     className="preset-manager-list-thumb"
-                    data-tooltip="上传缩略图"
+                    title="上传缩略图"
                     data-tooltip-source="native-title"
                     data-native-title="上传缩略图"
                     onClick={(e) => e.stopPropagation()}
