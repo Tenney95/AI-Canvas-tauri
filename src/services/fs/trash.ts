@@ -132,10 +132,14 @@ export async function deleteProjectDataDir(projectId: string): Promise<void> {
   }
 }
 
-/** 尝试删除节点关联的本地文件（如果有 filePath，移入 undo-trash 暂存，撤销时可还原） */
-export async function deleteNodeFile(nodeData: { filePath?: string }): Promise<void> {
+/** 尝试删除节点关联的本地文件（如果有 filePath，移入 undo-trash 暂存，撤销时可还原）。
+ *  keepPaths：仍被存活节点引用的 filePath 集合 —— 命中则跳过，避免复制节点删除时连累原节点文件。 */
+export async function deleteNodeFile(
+  nodeData: { filePath?: string },
+  keepPaths?: Set<string>,
+): Promise<void> {
   const fp = nodeData.filePath;
-  if (fp && typeof fp === 'string') {
+  if (fp && typeof fp === 'string' && !keepPaths?.has(fp)) {
     await moveToUndoTrash(fp);
   }
 }

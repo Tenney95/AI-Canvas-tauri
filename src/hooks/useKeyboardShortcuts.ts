@@ -130,9 +130,14 @@ export function useKeyboardShortcuts() {
           cancelNodePolling(id);
         }
 
-        // Delete associated local files
+        // Delete associated local files —— 跳过仍被存活节点引用的共享文件（复制节点场景）
+        const keepPaths = new Set(
+          state.nodes.filter((n) => !allIds.includes(n.id))
+            .map((n) => (n.data as BaseNodeData).filePath)
+            .filter((p): p is string => !!p),
+        );
         for (const node of state.nodes.filter((n) => allIds.includes(n.id))) {
-          fileService.deleteNodeFile(node.data as BaseNodeData).catch(() => {});
+          fileService.deleteNodeFile(node.data as BaseNodeData, keepPaths).catch(() => {});
         }
 
         // Single commit — undo always goes back to the real pre-delete state

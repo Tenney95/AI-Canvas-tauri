@@ -137,10 +137,15 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       cancelNodePolling(id);
     }
 
-    // Delete local files for all affected nodes
+    // Delete local files for all affected nodes —— 跳过仍被存活节点引用的共享文件（复制节点场景）
+    const keepPaths = new Set(
+      nodes.filter((n) => !idsToDelete.has(n.id))
+        .map((n) => (n.data as BaseNodeData).filePath)
+        .filter((p): p is string => !!p),
+    );
     for (const id of idsToDelete) {
       const n = nodes.find((nn) => nn.id === id);
-      if (n) fileService.deleteNodeFile(n.data as BaseNodeData).catch((e) => console.warn('[删除节点] 文件清理失败:', e));
+      if (n) fileService.deleteNodeFile(n.data as BaseNodeData, keepPaths).catch((e) => console.warn('[删除节点] 文件清理失败:', e));
     }
 
     // 先播放退场动画，结束后再真正从状态中移除（动画期间历史已提交，撤销仍指向删除前状态）
