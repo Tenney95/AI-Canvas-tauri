@@ -25,8 +25,7 @@ doc/测试报告.md
 # Rust build output
 src-tauri/target/
 
-remotion-promo
-promo
+promo-video
 
 # Editor directories and files
 .vscode/*

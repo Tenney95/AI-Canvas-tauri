@@ -46,8 +46,6 @@ export async function prepareDragIcon(): Promise<void> {
 export function startAssetDrag(file: AssetFileEntry): void {
   if (!file.path) return;
   const icon = file.category === 'image' ? file.path : (_fallbackIconPath || file.path);
-  // 不 await：startDrag 内部会立即发起 OS 拖拽，等待落点放下
-  void startDrag({ item: [file.path], icon, mode: 'copy' }).catch((err) => {
-    console.warn('[assetDrag] startDrag 失败:', err);
-  });
+  void startDrag({ item: [file.path], icon, mode: 'copy' })
+    .catch((err) => console.warn('[assetDrag] startDrag 失败:', err));
 }

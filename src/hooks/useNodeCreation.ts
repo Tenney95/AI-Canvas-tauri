@@ -70,6 +70,7 @@ function getFileName(path: string): string {
   return path.split(/[/\\]/).pop() || path;
 }
 
+
 // ── Hook ──
 
 export function useNodeCreation() {
@@ -234,6 +235,9 @@ export function useNodeCreation() {
     let cancelled = false;
 
     (async () => {
+      // Tauri v2 把拖拽拆成 drag-enter/over/drop/leave 四个事件。
+      // 用【全局 listen】而非 webview 级 onDragDropEvent：后者收不到同进程 tauri-plugin-drag
+      // （资源搜索窗拖拽）投递到本窗口的 drop。全局通道两种来源都能收到。
       const { listen } = await import('@tauri-apps/api/event');
 
       // Clean up any previous listener before registering a new one
@@ -241,22 +245,35 @@ export function useNodeCreation() {
       unlistenRef.current = null;
       if (cancelled) return;
 
-      type DragPayload = {
-        type: 'enter' | 'over' | 'leave' | 'drop' | 'cancelled';
-        paths: string[];
-        position: { x: number; y: number };
-      };
+      type DragPayload =
+        | { type: 'enter'; paths: string[]; position: { x: number; y: number } }
+        | { type: 'over'; position: { x: number; y: number } }
+        | { type: 'drop'; paths: string[]; position: { x: number; y: number } }
+        | { type: 'leave' };
 
-      const ul = await listen<DragPayload>('tauri://drag-drop', async (event) => {
+      // drop 会同时从 webview 与全局两路到达（外部拖拽），去重
+      let lastDropTs = 0;
+
+      const handleDrag = async (payload: DragPayload) => {
         if (cancelled) return;
+        if (payload.type === 'drop') {
+          if (Date.now() - lastDropTs < 400) return;
+          lastDropTs = Date.now();
+        }
         // 全屏编辑器（如合成器）独占外部拖放时，画布跳过建节点
         if (isExternalDropCaptured()) { setIsDragOver(false); return; }
-        const { type, paths, position } = event.payload;
 
-        if (type === 'enter' || type === 'over') { setIsDragOver(true); return; }
-        if (type === 'leave' || type === 'cancelled') { setIsDragOver(false); return; }
+        if (payload.type === 'enter' || payload.type === 'over') {
+          setIsDragOver(true);
+          return;
+        }
+        if (payload.type === 'leave') {
+          setIsDragOver(false);
+          return;
+        }
 
-        // type === 'drop'
+        // payload.type === 'drop'
+        const { paths, position } = payload;
         setIsDragOver(false);
         if (!paths?.length) return;
 
@@ -415,9 +432,24 @@ export function useNodeCreation() {
         }
 
         if (count > 0) store.showToast(`已拖入 ${count} 个源节点`);
-      });
+      };
 
-      unlistenRef.current = ul;
+      type RawPaths = { paths: string[]; position: { x: number; y: number } };
+      // webview 级：外部拖拽的 enter/over/leave/drop 只发到目标 webview
+      const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+      const unWebview = await getCurrentWebview().onDragDropEvent((e) => {
+        if (e.payload.type !== 'over') console.log('[drag webview]', e.payload.type);
+        handleDrag(e.payload as DragPayload);
+      });
+      const un = [
+        unWebview,
+        // 全局 drop：补上 tauri-plugin-drag（资源搜索窗）投递、webview 收不到的 drop（外部 drop 也会来一份 → 去重）
+        await listen<RawPaths>('tauri://drag-drop', (e) => {
+          console.log('[drag global drop]', e.payload.paths);
+          handleDrag({ type: 'drop', paths: e.payload.paths, position: e.payload.position });
+        }),
+      ];
+      unlistenRef.current = () => un.forEach((u) => u());
     })();
 
     return () => {

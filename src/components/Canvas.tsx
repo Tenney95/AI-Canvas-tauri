@@ -616,19 +616,10 @@ function CanvasInner() {
         {isDragOver && (
           <Panel position="top-left" className="!m-0 !inset-0 pointer-events-none z-50">
             <div className="absolute inset-0 border-2 border-dashed border-indigo-400/60 rounded-2xl m-3 flex items-center justify-center">
-              <div className="rounded-2xl px-8 py-5 text-center pointer-events-none"
-                style={{
-                  backgroundColor: 'rgba(99, 102, 241, 0.08)',
-                  backdropFilter: 'blur(8px)',
-                  WebkitBackdropFilter: 'blur(8px)',
-                }}>
-                <div className="text-4xl mb-2">📂</div>
-                <div className="text-base font-medium text-indigo-300">拖放文件到此处</div>
-                <div className="text-xs text-indigo-400/60 mt-1">支持文本 · 图片 · 视频 · 音频</div>
-              </div>
             </div>
           </Panel>
         )}
+
       </ReactFlow>
 
       {/* Connection drop menu */}

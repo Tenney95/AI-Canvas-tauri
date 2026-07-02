@@ -211,12 +211,11 @@ export function useKeyboardShortcuts() {
     const GLB_SHORTCUTS = [
       { key: 'CommandOrControl+S', action: () => useAppStore.getState().saveCurrentProject() },
       { key: 'Alt+S', action: () => useAppStore.getState().saveCurrentProject() },
-      // Alt+Space：打开资源搜索窗口（全局快捷键）。Win+Space 是 Windows 输入法切换键、
-      // 被系统保留无法抢注，故改用 Alt+Space；JS 侧另有 Ctrl+Shift+Space 备选。
-      { key: 'Alt+Space', action: () => openAssetSearchWindow() },
       // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are handled by the JS keydown handler above;
       // registering them as native shortcuts would double-fire undo/redo.
     ];
+
+    // Alt+Space：打开资源搜索窗口 — 真全局监听，不随窗口失焦而注销（Win+Space 被系统保留无法抢注）。
 
     let unlistenFocus: (() => void) | undefined;
     let unlistenBlur: (() => void) | undefined;
@@ -231,11 +230,24 @@ export function useKeyboardShortcuts() {
         // Clean up leftover registrations from HMR
         try { await shortcutModule.unregisterAll(); } catch { /* ignore */ }
 
+        // Alt+Space：注册一次，常驻到组件卸载，不受聚焦状态影响
+        try {
+          await shortcutModule.register('Alt+Space', (event) => {
+            if (event?.state && event.state !== 'Pressed') return;
+            openAssetSearchWindow();
+          });
+        } catch (err) {
+          console.warn('[shortcut] 注册失败: Alt+Space', err);
+        }
+
         // Register all shortcuts
         const registerAll = async () => {
           if (!active || !shortcutModule) return;
           // 先清理旧注册，避免重复注册（HMR / 窗口重新聚焦时可能残留）
-          try { await shortcutModule.unregisterAll(); } catch { /* ignore */ }
+          // 只清 GLB_SHORTCUTS 自己的 key，不用 unregisterAll —— 那会连 Alt+Space 常驻注册一起清掉
+          for (const s of GLB_SHORTCUTS) {
+            try { await shortcutModule.unregister(s.key); } catch { /* ignore */ }
+          }
           for (const s of GLB_SHORTCUTS) {
             try {
               // 仅在按下时触发（插件会同时回调 Pressed / Released，避免重复执行）
@@ -250,10 +262,12 @@ export function useKeyboardShortcuts() {
           }
         };
 
-        // Unregister all shortcuts
+        // Unregister the focus-scoped shortcuts (Alt+Space stays armed)
         const unregisterAll = async () => {
           if (!shortcutModule) return;
-          try { await shortcutModule.unregisterAll(); } catch { /* ignore */ }
+          for (const s of GLB_SHORTCUTS) {
+            try { await shortcutModule.unregister(s.key); } catch { /* ignore */ }
+          }
         };
 
         // Register on initial focus state

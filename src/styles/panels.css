@@ -1083,12 +1083,13 @@
   /* 无系统边框 + 透明窗口，圆角裁剪同主窗口（#root 已为 16px） */
   border-radius: 16px;
   border: 1px solid var(--theme-border);
+  padding-bottom: 10px;
 }
 .asset-search-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 14px 8px 20px;
+  padding: 6px 10px;
   flex-shrink: 0;
   -webkit-user-select: none;
   user-select: none;
@@ -1131,9 +1132,7 @@
   justify-content: center;
   width: 30px;
   height: 30px;
-  border: 1px solid var(--theme-border);
   border-radius: 8px;
-  background: var(--theme-card);
   color: var(--theme-text-muted);
   cursor: pointer;
   transition: color var(--transition-base), background var(--transition-base);
@@ -1144,12 +1143,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 20px 0;
+  padding: 4px 10px 0;
   flex-shrink: 0;
 }
 .asset-search-input { flex: 1; }
 .asset-search-cats {
-  padding: 8px 20px;
+  padding: 6px 10px;
   flex-shrink: 0;
 }
 /* 滚动容器（固定高度、纵向滚动）与多列容器分离，避免多列限高后横向分页 */
@@ -1158,7 +1157,7 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 8px 20px 20px;
+  padding: 10px 2px 10px 10px;
 }
 /* 多列瀑布流：高度自适应（不限高/不溢出），内容向下增长由外层滚动 */
 .asset-search-masonry {

@@ -6,8 +6,10 @@
  * 不依赖主窗口的 zustand store，直接复用 fileService / IndexedDB（同源共享）。
  */
 import { useState, useEffect, useCallback, useMemo, useRef, useDeferredValue, type DragEvent } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   loadConfig,
+  saveConfig,
   loadProjectsList,
   listProjectFiles,
   listGlobalFiles,
@@ -15,6 +17,8 @@ import {
   registerProjectFolders,
   setBaseDataDir,
   revealFileInFolder,
+  addAssetFilesToGlobal,
+  pickAssetFolder,
   CATEGORY_LABELS,
   type AssetFileEntry,
   type FileCategory,
@@ -22,6 +26,7 @@ import {
 import { getAllAssetMeta } from '../services/indexedDbService';
 import { startAssetDrag, prepareDragIcon } from '../utils/assetDrag';
 import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetFormat';
+import { springSmooth, fadeFast } from '../utils/motion';
 import AssetThumb from './shared/AssetThumb';
 import type { AppConfig } from '../types';
 
@@ -117,6 +122,48 @@ export default function AssetSearchWindow() {
     // 挂载时拉取数据（异步内部 setState，属合理的副作用数据获取）
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadAll();
+  }, [loadAll]);
+
+  // ── 添加文件 / 文件夹 ──
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const addWrapRef = useRef<HTMLDivElement | null>(null);
+
+  // 点击外部关闭「添加」菜单
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (addWrapRef.current && !addWrapRef.current.contains(e.target as Node)) setAddMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [addMenuOpen]);
+
+  const handleAddFiles = useCallback(async () => {
+    setAddMenuOpen(false);
+    setBusy(true);
+    try {
+      const n = await addAssetFilesToGlobal();
+      if (n > 0) await loadAll();
+    } catch (err) { console.error('[AssetSearchWindow] 添加文件失败:', err); }
+    finally { setBusy(false); }
+  }, [loadAll]);
+
+  const handleAddFolder = useCallback(async () => {
+    setAddMenuOpen(false);
+    setBusy(true);
+    try {
+      const path = await pickAssetFolder();
+      if (path) {
+        const cfg = (await loadConfig()) as AppConfig | null;
+        const folders = cfg?.assetFolders ?? [];
+        if (!folders.includes(path)) {
+          await saveConfig({ ...cfg, assetFolders: [...folders, path] });
+          await loadAll();
+        }
+      }
+    } catch (err) { console.error('[AssetSearchWindow] 添加文件夹失败:', err); }
+    finally { setBusy(false); }
   }, [loadAll]);
 
   // 合并标签
@@ -263,6 +310,33 @@ export default function AssetSearchWindow() {
             </optgroup>
           ))}
         </select>
+
+        <div className="assets-add-wrap" ref={addWrapRef}>
+          <motion.button
+            type="button" className="assets-add-btn" disabled={busy}
+            onClick={() => setAddMenuOpen((v) => !v)}
+            whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            添加
+          </motion.button>
+          <AnimatePresence>
+            {addMenuOpen && (
+              <motion.div
+                className="assets-add-menu"
+                initial={{ opacity: 0, y: -6, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -6, scale: 0.96, transition: fadeFast }}
+                transition={springSmooth}
+              >
+                <button type="button" onClick={handleAddFiles}>📄 添加文件</button>
+                <button type="button" onClick={handleAddFolder}>📁 添加文件夹</button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
 
       <div className="assets-category-row asset-search-cats">
