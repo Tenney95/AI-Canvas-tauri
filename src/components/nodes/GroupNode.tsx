@@ -41,8 +41,40 @@ export default function GroupNode({ id, data }: NodeProps) {
           borderWidth: 1,
         }}
       />
-      <div className="canvas-group-node-wrapper">
-        {/* Group visual box — fills the entire node area */}
+      <div className="canvas-group-node-wrapper" style={{ color }}>
+        <div className="canvas-group-title">
+          <span
+            contentEditable
+            suppressContentEditableWarning
+            className="canvas-group-label-text nodrag"
+            spellCheck={false}
+            onFocus={() => { editingRef.current = true; }}
+            onBlur={(e) => {
+              editingRef.current = false;
+              const text = e.currentTarget.textContent ?? '';
+              if (text.trim() && text.trim() !== label) {
+                renameGroup(groupId, text.trim());
+              } else {
+                e.currentTarget.textContent = label;
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                (e.target as HTMLElement).blur();
+              }
+              if (e.key === 'Escape') {
+                (e.target as HTMLElement).textContent = label;
+                (e.target as HTMLElement).blur();
+              }
+            }}
+          >
+            {label}
+          </span>
+          <span className="canvas-group-count">{childCount} 节点</span>
+        </div>
+
+        {/* Group visual box — fills the group body area */}
         <div
           className="canvas-group-node-box"
           style={{
@@ -50,45 +82,7 @@ export default function GroupNode({ id, data }: NodeProps) {
             borderColor: `${color}20`,
           }}
         >
-          {/* Drag handle bar with title */}
-          <div
-            className="canvas-group-handle"
-            style={{
-              backgroundColor: `${color}15`,
-              borderBottomColor: `${color}20`,
-              color,
-            }}
-          >
-            <span
-              contentEditable
-              suppressContentEditableWarning
-              className="canvas-group-label-text"
-              spellCheck={false}
-              onFocus={() => { editingRef.current = true; }}
-              onBlur={(e) => {
-                editingRef.current = false;
-                const text = e.currentTarget.textContent ?? '';
-                if (text.trim() && text.trim() !== label) {
-                  renameGroup(groupId, text.trim());
-                } else {
-                  e.currentTarget.textContent = label;
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  (e.target as HTMLElement).blur();
-                }
-                if (e.key === 'Escape') {
-                  (e.target as HTMLElement).textContent = label;
-                  (e.target as HTMLElement).blur();
-                }
-              }}
-            >
-              {label}
-            </span>
-            <span className="canvas-group-count">{childCount} 节点</span>
-          </div>
+          <div className="canvas-group-handle" />
 
           {/* Resize handle hint — bottom-right corner */}
           <div className="canvas-group-resize-hint" />
