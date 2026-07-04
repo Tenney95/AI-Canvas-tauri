@@ -1,10 +1,13 @@
 /**
  * CanvasBackground — 根据 config.canvasBackground 渲染对应的画布背景主题
  */
+import { lazy, Suspense } from 'react';
 import { useAppStore } from '../../store/useAppStore';
-import SolarSystemBackground from './SolarSystemBackground';
-import NebulaBackground from './NebulaBackground';
 import type { CanvasBackground as CanvasBg } from '../../types';
+
+// 懒加载：两个主题背景引入 three / postprocessing（体积大户），仅在选中对应主题时才加载
+const SolarSystemBackground = lazy(() => import('./SolarSystemBackground'));
+const NebulaBackground = lazy(() => import('./NebulaBackground'));
 
 /** 背景主题配置 */
 export const BACKGROUND_OPTIONS: { value: CanvasBg; label: string; preview: string; theme: 'dark' | 'light' }[] = [
@@ -23,9 +26,9 @@ export default function CanvasBackground() {
 
   switch (canvasBackground) {
     case 'solar-system':
-      return <SolarSystemBackground />;
+      return <Suspense fallback={null}><SolarSystemBackground /></Suspense>;
     case 'nebula':
-      return <NebulaBackground />;
+      return <Suspense fallback={null}><NebulaBackground /></Suspense>;
     case 'off-white':
       return <div className="canvas-bg-off-white" />;
     case 'minimal':

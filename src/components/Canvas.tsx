@@ -1,7 +1,7 @@
 /**
  * Canvas 画布主组件 — React Flow 画布核心，管理节点/边渲染、拖放、连线、右键菜单、空状态
  */
-import { useCallback, useState, useEffect, useMemo, useRef } from 'react';
+import { lazy, Suspense, useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import { ReactFlow,
   Background,
   Controls,
@@ -24,7 +24,6 @@ import TextNode from './nodes/TextNode';
 import ImageNode from './nodes/ImageNode';
 import VideoNode from './nodes/VideoNode';
 import AudioNode from './nodes/AudioNode';
-import PanoramaNode from './nodes/PanoramaNode';
 import MarkdownNode from './nodes/MarkdownNode';
 import GroupNode from './nodes/GroupNode';
 import ConnectionMenu from './canvas/ConnectionMenu';
@@ -41,6 +40,12 @@ import { useNodeCreation } from '../hooks/useNodeCreation';
 import type { BaseNodeData } from '../types';
 import type { Node as RFNode, NodeTypes, Connection, Edge } from '@xyflow/react';
 import { useNodeSnap, ResizeSnapContext, type SnapLine } from '../hooks/useNodeSnap';
+
+// 懒加载：全景节点引入 three（体积大户），画布上出现全景节点时才加载
+const PanoramaNodeLazy = lazy(() => import('./nodes/PanoramaNode'));
+function PanoramaNode(props: { id: string; data: BaseNodeData; selected?: boolean }) {
+  return <Suspense fallback={null}><PanoramaNodeLazy {...props} /></Suspense>;
+}
 
 // ── Node types mapping ──
 const nodeTypes: NodeTypes = {
@@ -440,7 +445,7 @@ function CanvasInner() {
     onResizeStart,
     applyResizeSnap,
     onResizeStop,
-  } = useNodeSnap(nodes);
+  } = useNodeSnap();
 
   // 缩放吸附桥接：稳定引用透传给节点内的 ResizeHandle（经 Context）
   const resizeSnapApi = useMemo(

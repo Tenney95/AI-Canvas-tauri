@@ -133,9 +133,7 @@ export interface ResizeSnapApi {
 
 export const ResizeSnapContext = createContext<ResizeSnapApi | null>(null);
 
-export function useNodeSnap(
-  nodes: Node<BaseNodeData>[],
-) {
+export function useNodeSnap() {
   const { screenToFlowPosition } = useReactFlow();
   const [snapLines, setSnapLines] = useState<SnapLine[]>([]);
   const dragStartPositions = useRef<Map<string, { x: number; y: number }>>(new Map());
@@ -164,6 +162,10 @@ export function useNodeSnap(
   // 拖拽与缩放共用 —— 候选节点在交互过程中均不移动。
   const buildCandidates = useCallback(
     (excludeId: string) => {
+      // 从 store 直读而非闭包捕获 nodes：拖拽期间 nodes 每帧变化，闭包依赖会让
+      // 本 hook 的回调每帧换新引用 → Canvas 的 resizeSnapApi Context 每帧刷新 →
+      // 所有节点的 ResizeHandle 每帧重渲染。直读后回调恒定，Context 不再抖动。
+      const nodes = useAppStore.getState().nodes;
       const nodeMap = new Map(nodes.map((n) => [n.id, n] as const));
 
       // 视口裁剪：只把当前可见区域（含 margin）内的节点作为吸附候选，
@@ -200,7 +202,7 @@ export function useNodeSnap(
       }
       return { nodeMap, otherXEdges, otherXCenters, otherYEdges, otherYCenters };
     },
-    [nodes, screenToFlowPosition]
+    [screenToFlowPosition]
   );
 
   const onNodeDragStart = useCallback(

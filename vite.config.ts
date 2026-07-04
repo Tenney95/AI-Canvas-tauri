@@ -47,6 +47,10 @@ export default defineConfig({
           if (id.includes("node_modules/postprocessing")) {
             return "vendor-postprocessing";
           }
+          // Konva 画布引擎 —— 仅 ImageComposerEditor（懒加载）使用，单独成 chunk 避免混入启动必载的 vendor
+          if (id.includes("node_modules/konva") || id.includes("node_modules/react-konva")) {
+            return "vendor-konva";
+          }
           // Tauri 全家桶
           if (id.includes("node_modules/@tauri-apps") || id.includes("node_modules/@crabnebula")) {
             return "vendor-tauri";

@@ -1,7 +1,7 @@
 /**
  * ImageNode 图像节点 — 在画布上渲染图像内容，支持上传/粘贴图片、遮罩编辑、工具栏、全屏预览
  */
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
@@ -13,7 +13,6 @@ import MattingEditor from './shared/image/MattingEditor';
 import AnnotateEditor from './shared/image/AnnotateEditor';
 import CropEditor from './shared/image/CropEditor';
 import ExpandEditor from './shared/image/ExpandEditor';
-import ImageComposerEditor from './shared/image/composer/ImageComposerEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import ZoomableImage from '../shared/ZoomableImage';
@@ -28,6 +27,9 @@ import { blobToDataUrl } from '../../store/store.utils';
 import { generateAngleImage, generateOutpaintImage } from '../../services/apimartService';
 import { imageUpscale, subjectMatting, checkModelExists, downloadModel } from '../../services/onnxService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
+
+// 懒加载：ImageComposerEditor 引入 konva + react-konva（体积大户），仅在打开合成编辑时才加载
+const ImageComposerEditor = lazy(() => import('./shared/image/composer/ImageComposerEditor'));
 
 /* ════════════════════════════════════════════
    AIImageNode
@@ -904,58 +906,74 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         )}
       </div>
 
+      {/* 编辑器覆盖层：条件挂载 —— 关闭时不实例化组件（每个 ImageNode 少跑 6 套 hooks） */}
+
       {/* Matting Editor Overlay */}
-      <MattingEditor
-        isOpen={isMatting}
-        imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-        initialMask={data.mattingMask as string | undefined}
-        onClose={handleCloseMatting}
-        onSave={handleMattingSave}
-      />
+      {isMatting && (
+        <MattingEditor
+          isOpen={isMatting}
+          imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+          initialMask={data.mattingMask as string | undefined}
+          onClose={handleCloseMatting}
+          onSave={handleMattingSave}
+        />
+      )}
 
       {/* Annotate Editor Overlay */}
-      <AnnotateEditor
-        isOpen={isAnnotate}
-        imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-        initialAnnotation={data.annotation as string | undefined}
-        onClose={handleCloseAnnotate}
-        onSave={handleAnnotateSave}
-      />
+      {isAnnotate && (
+        <AnnotateEditor
+          isOpen={isAnnotate}
+          imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+          initialAnnotation={data.annotation as string | undefined}
+          onClose={handleCloseAnnotate}
+          onSave={handleAnnotateSave}
+        />
+      )}
 
       {/* Free Angle Panel */}
-      <FreeAnglePanel
-        isOpen={isFreeAngle}
-        imageUrl={(data.imageUrl || data.thumbnailUrl) as string | undefined}
-        onClose={handleCloseFreeAngle}
-        onGenerate={handleFreeAngleGenerate}
-      />
+      {isFreeAngle && (
+        <FreeAnglePanel
+          isOpen={isFreeAngle}
+          imageUrl={(data.imageUrl || data.thumbnailUrl) as string | undefined}
+          onClose={handleCloseFreeAngle}
+          onGenerate={handleFreeAngleGenerate}
+        />
+      )}
 
       {/* Expand Editor — 扩图 */}
-      <ExpandEditor
-        isOpen={isExpand}
-        imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-        onClose={handleCloseExpand}
-        onGenerate={handleExpandGenerate}
-      />
+      {isExpand && (
+        <ExpandEditor
+          isOpen={isExpand}
+          imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+          onClose={handleCloseExpand}
+          onGenerate={handleExpandGenerate}
+        />
+      )}
 
       {/* Crop Editor */}
-      <CropEditor
-        isOpen={isCrop}
-        imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-        onClose={handleCloseCrop}
-        onStart={handleCropStart}
-        onSave={handleCropSave}
-      />
+      {isCrop && (
+        <CropEditor
+          isOpen={isCrop}
+          imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+          onClose={handleCloseCrop}
+          onStart={handleCropStart}
+          onSave={handleCropSave}
+        />
+      )}
 
-      {/* 多图自由编辑 / 合成 */}
-      <ImageComposerEditor
-        isOpen={isCompose}
-        nodeId={id}
-        imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-        onClose={handleCloseCompose}
-        onStart={handleComposeStart}
-        onSave={handleComposeSave}
-      />
+      {/* 多图自由编辑 / 合成（konva 懒加载，首次打开时才拉取 chunk） */}
+      {isCompose && (
+        <Suspense fallback={null}>
+          <ImageComposerEditor
+            isOpen={isCompose}
+            nodeId={id}
+            imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+            onClose={handleCloseCompose}
+            onStart={handleComposeStart}
+            onSave={handleComposeSave}
+          />
+        </Suspense>
+      )}
 
       {/* Fullscreen preview */}
       <FullscreenOverlay

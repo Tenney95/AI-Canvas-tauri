@@ -1,7 +1,7 @@
 /**
  * MarkdownNode 源节点 — 支持 .md 文件的编辑、预览与自动本地保存
  */
-import { memo, useState, useCallback, useRef, useEffect } from 'react';
+import { memo, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
@@ -193,8 +193,8 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     [id, updateNodeData, doSave],
   );
 
-  // ── Markdown preview HTML ──
-  const previewHtml = renderMarkdown((data.output as string) || '');
+  // ── Markdown preview HTML ──（memo：编辑时每次按键都会重渲染，避免全文重复解析）
+  const previewHtml = useMemo(() => renderMarkdown((data.output as string) || ''), [data.output]);
 
   const { displayLabel, handleRename } = useNodeRename(id, data, 'Markdown 文档');
 

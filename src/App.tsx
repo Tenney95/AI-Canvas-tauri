@@ -2,7 +2,7 @@
  * App 根组件 — 装配 Header / Sidebar / Canvas / NodeMenu / SettingsPanel / Titlebar / Toast / AINodeDialog / WorkflowPanel
  * Tauri 环境下启用自定义窗口装饰和透明圆角窗口
  */
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import Header from './components/Header';
 import Titlebar from './components/Titlebar';
 import Sidebar from './components/Sidebar';
@@ -16,13 +16,15 @@ import OutputHistoryPanel from './components/OutputHistoryPanel';
 import Toast from './components/Toast';
 import SplashScreen from './components/SplashScreen';
 import CanvasBackground from './components/backgrounds/CanvasBackground';
-import Mascot from './components/shared/mascot/Mascot';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useAppStore } from './store/useAppStore';
 import * as fileService from './services/fileService';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
+// 懒加载：吉祥物引入 three + gsap（体积大户），默认隐藏，首次 Ctrl+Shift+M 显示时才加载
+const Mascot = lazy(() => import('./components/shared/mascot/Mascot'));
 
 export default function App() {
   useKeyboardShortcuts();
@@ -140,7 +142,7 @@ export default function App() {
       {/* 吉祥物 — 右下角浮动预览，默认隐藏，Ctrl+Shift+M 切换 */}
       {mascotVisible && (
         <div className="fixed bottom-40 right-5 z-20 h-[100px] w-[100px] pointer-events-auto">
-          <Mascot loading={mascotLoading} />
+          <Suspense fallback={null}><Mascot loading={mascotLoading} /></Suspense>
         </div>
       )}
 
