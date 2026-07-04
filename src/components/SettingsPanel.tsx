@@ -63,6 +63,8 @@ export default function SettingsPanel() {
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
   const [comfyUiLaunching, setComfyUiLaunching] = useState(false);
+  // ComfyUI 服务状态：启动按钮下方的即时反馈（starting → ready / failed）
+  const [comfyStatus, setComfyStatus] = useState<'idle' | 'starting' | 'ready' | 'failed'>('idle');
   const [bgUploading, setBgUploading] = useState(false);
   const [bgDetection, setBgDetection] = useState<BackgroundDetection | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -121,7 +123,7 @@ export default function SettingsPanel() {
     }
   };
 
-  /** 启动 ComfyUI */
+  /** 启动 ComfyUI：拉起进程后轮询服务端口，直到 API 真正就绪才算启动成功 */
   const handleLaunchComfyUI = async () => {
     const comfyPath = config.comfyUIPath?.trim();
     if (!comfyPath) {
@@ -129,11 +131,34 @@ export default function SettingsPanel() {
       return;
     }
     setComfyUiLaunching(true);
+    setComfyStatus('starting');
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      const result = await invoke<string>('launch_comfyui', { comfyPath });
-      showToast(result, 'success');
+      await invoke<string>('launch_comfyui', { comfyPath });
+
+      // 进程已拉起，但 ComfyUI 导入依赖需要数十秒 —— 轮询 API 直到就绪
+      // no-cors 探测：能连通即视为就绪，不依赖服务端 CORS 配置
+      const base = (config.comfyUIUrl?.trim() || 'http://127.0.0.1:8188').replace(/\/+$/, '');
+      const deadline = Date.now() + 120_000;
+      let ready = false;
+      while (Date.now() < deadline) {
+        try {
+          await fetch(`${base}/system_stats`, { mode: 'no-cors' });
+          ready = true;
+          break;
+        } catch {
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+      if (ready) {
+        setComfyStatus('ready');
+        showToast('ComfyUI 服务已就绪', 'success');
+      } else {
+        setComfyStatus('failed');
+        showToast('ComfyUI 进程已启动，但等待服务就绪超时，请查看终端窗口日志', 'error');
+      }
     } catch (err) {
+      setComfyStatus('failed');
       showToast(typeof err === 'string' ? err : '启动 ComfyUI 失败', 'error');
     } finally {
       setComfyUiLaunching(false);
@@ -312,7 +337,7 @@ export default function SettingsPanel() {
                       </div>
                     )}
                     <p className="text-[11px] text-canvas-text-muted leading-relaxed mb-3">
-                      选择 ComfyUI 的安装根目录（包含 run_nvidia_gpu.bat 或 main.py 的文件夹）
+                      选择 ComfyUI 的安装根目录，支持 GitHub 源码版 / 秋叶整合包 / 官方便携版 / Comfy Desktop（选安装基目录，如 F:\ComfyUI）。将以 API 模式直接启动，跳过启动器检测
                     </p>
 
                     {/* 启动按钮 */}
@@ -328,7 +353,7 @@ export default function SettingsPanel() {
                             <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                               <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="8" />
                             </svg>
-                            启动中…
+                            正在启动，等待服务就绪…
                           </>
                         ) : (
                           <>
@@ -339,9 +364,30 @@ export default function SettingsPanel() {
                           </>
                         )}
                       </AnimatedButton>
-                      <p className="text-[11px] text-canvas-text-muted mt-2">
-                        启动后 ComfyUI 会在新窗口中运行，服务启动后即可在下方配置地址
-                      </p>
+                      {/* 启动状态反馈 */}
+                      {comfyStatus === 'starting' && (
+                        <p className="text-[11px] text-canvas-text-secondary mt-2 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
+                          正在等待 ComfyUI 服务就绪，首次启动可能需要一两分钟…
+                        </p>
+                      )}
+                      {comfyStatus === 'ready' && (
+                        <p className="text-[11px] text-emerald-400 mt-2 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                          ComfyUI 服务已就绪（{(config.comfyUIUrl?.trim() || 'http://127.0.0.1:8188')}），可以开始使用
+                        </p>
+                      )}
+                      {comfyStatus === 'failed' && (
+                        <p className="text-[11px] text-red-400 mt-2 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+                          服务未就绪，请查看弹出的终端窗口中的日志
+                        </p>
+                      )}
+                      {comfyStatus === 'idle' && (
+                        <p className="text-[11px] text-canvas-text-muted mt-2">
+                          启动后 ComfyUI 会在新窗口中运行，服务启动后即可在下方配置地址
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
