@@ -18,9 +18,17 @@ import type { BaseNodeData, NodeType } from '../types';
 
 const abortControllers = new Map<string, AbortController>();
 
+function abortNodePolling(nodeId: string): void {
+  const controller = abortControllers.get(nodeId);
+  if (controller) {
+    controller.abort();
+    abortControllers.delete(nodeId);
+  }
+}
+
 /** 为节点注册轮询控制器，返回 AbortSignal 传给 pollTask */
 export function registerNodePolling(nodeId: string): AbortSignal {
-  cancelNodePolling(nodeId); // 先取消旧轮询
+  abortNodePolling(nodeId); // 先取消旧轮询，但保留 pending task 以支持恢复
   const controller = new AbortController();
   abortControllers.set(nodeId, controller);
   return controller.signal;
@@ -28,11 +36,7 @@ export function registerNodePolling(nodeId: string): AbortSignal {
 
 /** 取消节点的轮询（节点被删除时调用，同时清理 pending task） */
 export function cancelNodePolling(nodeId: string): void {
-  const controller = abortControllers.get(nodeId);
-  if (controller) {
-    controller.abort();
-    abortControllers.delete(nodeId);
-  }
+  abortNodePolling(nodeId);
   // 同时清理 localStorage 中的待续任务记录
   removePendingTask(nodeId);
 }
@@ -98,8 +102,17 @@ export function updatePendingTask(nodeId: string, patch: Partial<PendingTask>): 
 
 /** 移除一条待续任务（轮询完成/失败/取消时调用） */
 export function removePendingTask(nodeId: string): void {
-  const tasks = loadAll().filter((t) => t.nodeId !== nodeId);
-  saveAll(tasks);
+  const tasks = loadAll();
+  const task = tasks.find((t) => t.nodeId === nodeId);
+  const currentProjectId = useAppStore.getState().currentProjectId;
+
+  // 后台请求可能在用户切换到其他项目后才结束。此时不能删除原项目的
+  // pending 记录，否则切回去时 loading 节点会被当作孤立任务。
+  if (task && currentProjectId && task.projectId !== currentProjectId) {
+    return;
+  }
+
+  saveAll(tasks.filter((t) => t.nodeId !== nodeId));
 }
 
 /** 清理指定项目的所有待续任务 */
@@ -494,6 +507,10 @@ const RESUME_MAP: Record<PendingTask['taskType'], (task: PendingTask) => Promise
   general: resumeGeneral,
 };
 
+function isCancellationErrorMessage(message?: string): boolean {
+  return message === '任务已被取消';
+}
+
 /**
  * 恢复指定项目下所有待续任务。
  * 仅对 status === 'loading' 的节点重新发起轮询。
@@ -529,10 +546,26 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
 
   for (const task of tasks) {
     const node = store.nodes.find((n) => n.id === task.nodeId);
-    if (!node || (node.data as BaseNodeData).status !== 'loading') {
+    const nodeData = node?.data as BaseNodeData | undefined;
+    if (!node) {
       // 节点不存在或状态不为 loading，清理过期记录
       removePendingTask(task.nodeId);
       continue;
+    }
+
+    if (nodeData?.status !== 'loading') {
+      if (
+        task.submitted
+        && task.taskId
+        && nodeData?.status === 'error'
+        && isCancellationErrorMessage(nodeData.error)
+      ) {
+        store.updateNodeData(task.nodeId, { status: 'loading', error: undefined });
+      } else {
+        // 节点已成功、失败或被用户改为其他状态，清理过期记录
+        removePendingTask(task.nodeId);
+        continue;
+      }
     }
 
     // 任务记录存在但未提交到远端（关闭窗口时还没来得及拿到 taskId）
@@ -543,6 +576,10 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
         error: '任务未完成提交，请重新点击生成',
       });
       removePendingTask(task.nodeId);
+      continue;
+    }
+
+    if (abortControllers.has(task.nodeId)) {
       continue;
     }
 

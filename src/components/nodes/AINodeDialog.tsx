@@ -80,6 +80,15 @@ function AINodeDialog() {
       showToast('请先在底部模型选择器中选择一个模型', 'error');
       return;
     }
+    const submittingNodeId = activeNodeId!;
+    const submittingProjectId = currentProjectId;
+    const isStillCurrentSubmission = () => {
+      const state = useAppStore.getState();
+      return (
+        state.currentProjectId === submittingProjectId
+        && state.nodes.some((n) => n.id === submittingNodeId)
+      );
+    };
     updateNodeData(activeNodeId!, { status: 'loading', error: undefined });
     try {
       if (nodeType === 'ai-image') {
@@ -95,6 +104,7 @@ function AINodeDialog() {
           workflowInputs: data.workflowInputs,
           nodeId: activeNodeId ?? undefined,
         });
+        if (!isStillCurrentSubmission()) return;
         // 下载远程 URL 到本地项目目录
         const saved = currentProjectId
           ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image', data.label).catch(() => null)
@@ -139,6 +149,7 @@ function AINodeDialog() {
           workflowInputs: data.workflowInputs,
           nodeId: activeNodeId ?? undefined,
         });
+        if (!isStillCurrentSubmission()) return;
         const saved = currentProjectId
           ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-panorama', data.label).catch(() => null)
           : null;
@@ -183,6 +194,7 @@ function AINodeDialog() {
           workflowInputs: data.workflowInputs,
           nodeId: activeNodeId ?? undefined,
         });
+        if (!isStillCurrentSubmission()) return;
         // 下载远程 URL 到本地项目目录
         const saved = currentProjectId
           ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video', data.label).catch(() => null)
@@ -220,6 +232,7 @@ function AINodeDialog() {
           workflowInputs: data.workflowInputs,
           nodeId: activeNodeId ?? undefined,
         });
+        if (!isStillCurrentSubmission()) return;
         // 下载远程 URL 到本地项目目录
         const saved = currentProjectId
           ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio', data.label).catch(() => null)
@@ -268,6 +281,10 @@ function AINodeDialog() {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');
+      if (msg === '任务已被取消') {
+        return;
+      }
+      if (!isStillCurrentSubmission()) return;
       updateNodeData(activeNodeId!, { status: 'error', error: msg });
       recordOutputHistory(activeNodeId!, {
         nodeId: activeNodeId!,
