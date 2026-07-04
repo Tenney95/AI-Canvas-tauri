@@ -49,6 +49,10 @@ const BLINK_DURATION = 0.13; // 单次眨眼时长（秒）
 const SPIN_TURNS = Math.PI * 2; // 过渡时绕 Y 轴转过的总角度（一整圈，结束时眼睛回到正面）
 const SPIN_END = 1;   // 自转在过渡进度的前半段完成（此时球体仍完全可见 → 看得到旋转）
 const FADE_START = 0.45; // 自转接近完成后才开始淡出/炸裂（回程则先聚拢、球体重现后再转回正面）
+// 限帧：Tauri 透明窗口下 rAF 不受垂直同步限制（实测 ~1700Hz），必须自行限频，
+// 否则渲染循环以每秒上千次全速跑满主线程
+const TARGET_FPS = 60;
+const FRAME_INTERVAL = 1000 / TARGET_FPS;
 
 /** 生成竖直胶囊（圆角矩形）形状，用作眼睛 */
 function makeEyeShape(width: number, height: number): Shape {
@@ -137,6 +141,10 @@ export default function Mascot({ loading = false }: MascotProps) {
       color: 0x1a1a1f,
       side: DoubleSide,
       transparent: true,
+      // transparent + DoubleSide 默认走双 pass 渲染，每 pass 强制 material.needsUpdate，
+      // 导致每帧重算着色器程序参数（getParameters/getProgramCacheKey 常驻热点）。
+      // 眼睛是无自交叠的平面，单 pass 双面渲染视觉无差异。
+      forceSinglePass: true,
     });
     const eyeGeo = new ShapeGeometry(makeEyeShape(0.16, 0.34));
 
@@ -204,12 +212,17 @@ export default function Mascot({ loading = false }: MascotProps) {
     // 头部偏航的「跟随鼠标」分量：过渡自转在 loadAmount 算出后再叠加，避免被自身 lerp 吃掉
     let headYaw = 0;
 
-    /* ── 渲染循环 ── */
+    /* ── 渲染循环（限帧 + 后台暂停，同 NebulaBackground）── */
     const clock = new Timer();
     let raf = 0;
+    let lastTime = 0;
 
-    const render = () => {
+    const render = (now: number) => {
       raf = requestAnimationFrame(render);
+      if (document.hidden) return; // 窗口不可见时不渲染
+      const elapsed = now - lastTime;
+      if (elapsed < FRAME_INTERVAL) return; // 限到 TARGET_FPS
+      lastTime = now - (elapsed % FRAME_INTERVAL);
       clock.update(); // Timer 必须每帧 update，否则 getElapsed 恒为 0
       const t = clock.getElapsed();
 
@@ -326,7 +339,7 @@ export default function Mascot({ loading = false }: MascotProps) {
 
       renderer.render(scene, camera);
     };
-    render();
+    raf = requestAnimationFrame(render);
 
     /* ── 尺寸响应 ── */
     const resizeObserver = new ResizeObserver(() => {

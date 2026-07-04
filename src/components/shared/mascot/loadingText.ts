@@ -118,6 +118,9 @@ export async function createLoadingText(displayScale = 0.028): Promise<LoadingTe
     flatShading: true,
     transparent: true,
     side: THREE.DoubleSide,
+    // transparent + DoubleSide 默认双 pass 渲染，每 pass 强制 needsUpdate → 每帧重算着色器参数。
+    // 粒子翻转需要双面，但无需背/正面分开渲染，单 pass 即可。
+    forceSinglePass: true,
   });
 
   const uTime = { value: 0 };
