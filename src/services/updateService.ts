@@ -8,10 +8,9 @@
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
-/** 开发模式下跳过更新检查：dev 下前端跑在 localhost，不是正式包 */
+/** 开发模式下跳过更新检查：Vite 编译时常量，打包后恒为 false */
 function isDevMode(): boolean {
-  // Tauri prod 用自定义协议（tauri:// 等），dev 用 http://localhost
-  return typeof window !== 'undefined' && window.location.protocol === 'http:';
+  return import.meta.env.DEV;
 }
 
 export type UpdateResult = { updated: false } | { updated: true; version: string };
