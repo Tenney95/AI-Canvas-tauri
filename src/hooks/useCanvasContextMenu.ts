@@ -6,6 +6,9 @@ import { useReactFlow } from '@xyflow/react';
 import type { Node as RFNode } from '@xyflow/react';
 import { useAppStore, generateId } from '../store/useAppStore';
 import type { BaseNodeData, NodeType } from '../types';
+import * as fileService from '../services/fileService';
+import { cancelNodePolling } from '../services/pollManager';
+import { playNodeExit } from '../utils/nodeAnimations';
 
 // ── Model preference helper ──
 const MODEL_PREF_KEY = 'canvas-model-prefs';
@@ -41,6 +44,7 @@ export function useCanvasContextMenu() {
   const undo = useAppStore((s) => s.undo);
   const redo = useAppStore((s) => s.redo);
   const pasteNodes = useAppStore((s) => s.pasteNodes);
+  const selectedNodeIds = useAppStore((s) => s.selectedNodeIds);
 
   const [menu, setMenu] = useState<ContextMenuState>({
     visible: false,
@@ -137,6 +141,60 @@ export function useCanvasContextMenu() {
     }, 250);
   }, []);
 
+  const handleDelete = useCallback(() => {
+    const state = useAppStore.getState();
+    const nodeIds = state.selectedNodeIds;
+    const selectedEdgeIds = state.edges.filter((ed) => ed.selected).map((ed) => ed.id);
+
+    if (selectedEdgeIds.length === 0 && nodeIds.length === 0) return;
+
+    // 立即清空选择 → 即时反馈
+    useAppStore.setState({ selectedNodeIds: [] });
+
+    // Expand to include descendants of any selected group nodes
+    const expandedIds = new Set(nodeIds);
+    const q = [...nodeIds];
+    while (q.length > 0) {
+      const pid = q.shift()!;
+      state.nodes.filter((n) => n.parentId === pid).forEach((c) => {
+        expandedIds.add(c.id);
+        q.push(c.id);
+      });
+    }
+    const allIds = Array.from(expandedIds);
+
+    // Cancel any active polling for all deleted nodes
+    for (const id of allIds) {
+      cancelNodePolling(id);
+    }
+
+    // Delete associated local files
+    const keepPaths = new Set(
+      state.nodes.filter((n) => !allIds.includes(n.id))
+        .map((n) => (n.data as BaseNodeData).filePath)
+        .filter((p): p is string => !!p),
+    );
+    for (const node of state.nodes.filter((n) => allIds.includes(n.id))) {
+      fileService.deleteNodeFile(node.data as BaseNodeData, keepPaths).catch(() => {});
+    }
+
+    useAppStore.getState().commitToHistory();
+    playNodeExit(allIds).then(() => {
+      useAppStore.setState((s) => ({
+        nodes: s.nodes.filter((n) => !expandedIds.has(n.id)),
+        edges: s.edges.filter(
+          (ed) => !expandedIds.has(ed.source) && !expandedIds.has(ed.target) && !selectedEdgeIds.includes(ed.id)
+        ),
+        groups: s.groups
+          .filter((g) => !expandedIds.has(g.id))
+          .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !expandedIds.has(nid)) })),
+        selectedNodeIds: [],
+      }));
+    });
+
+    closeMenu();
+  }, [closeMenu]);
+
   const openMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const target = e.target as HTMLElement;
@@ -159,6 +217,8 @@ export function useCanvasContextMenu() {
     handleUndo,
     handleRedo,
     handlePaste,
+    handleDelete,
+    hasSelection: selectedNodeIds.length > 0,
     showSubmenu,
     hideSubmenu,
   };

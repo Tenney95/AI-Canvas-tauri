@@ -390,8 +390,9 @@
   align-items: center;
   gap: 0;
   padding: 4px 8px;
-  background: rgba(26, 26, 38, 0.5);
-  border: 1px solid var(--theme-border);
+  background: var(--glass-panel-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
   border-radius: 10px;
   box-shadow: 0 4px 24px var(--black-alpha-40);
   white-space: nowrap;

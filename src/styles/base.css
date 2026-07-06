@@ -192,7 +192,7 @@
   --scrollbar-thumb-active: #8a8780;
 
   /* Glass / Frosted Surface / 毛玻璃表面 ── */
-  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-bg: rgba(255, 255, 255, 0.95);
   --glass-bg-light: rgba(255, 255, 255, 0.55);
   --glass-bg-node: rgba(255, 255, 255, 0.88);
   --glass-panel-bg: rgba(255, 255, 255, 0.67);

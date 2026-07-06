@@ -25,7 +25,7 @@
   background: var(--white-alpha-03);
 }
 .model-selector-trigger.has-model {
-  color: #c0c0d0;
+  color: var(--theme-text-secondary);
 }
 .model-selector-icon {
   display: flex;
@@ -165,8 +165,8 @@
   width: 280px;
   max-height: 360px;
   overflow-y: auto;
-  background: rgba(26, 26, 38, 0.998);
-  border: 1px solid var(--theme-border);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-ring);
   border-radius: 10px;
   box-shadow: 0 12px 40px var(--black-alpha-50);
   z-index: 100;
@@ -196,7 +196,7 @@
 
 /* Group */
 .model-group {
-  border-bottom: 1px solid rgba(42, 42, 58, 0.5);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .model-group:last-child {
   border-bottom: none;
@@ -277,7 +277,7 @@
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: #c0c0d0;
+  color: var(--theme-text-secondary);
   cursor: pointer;
   text-align: left;
   transition: background 0.1s, color 0.1s;
@@ -339,7 +339,7 @@
 }
 .model-item.disabled:hover {
   background: transparent;
-  color: #c0c0d0;
+  color: var(--theme-text-secondary);
 }
 .model-item.disabled.active {
   background: rgba(99, 102, 241, 0.06);

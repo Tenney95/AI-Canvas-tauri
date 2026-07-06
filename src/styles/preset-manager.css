@@ -21,7 +21,7 @@
 }
 
 .preset-modal {
-  background: var(--glass-bg);
+  background: var(--glass-panel-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 14px;
@@ -326,7 +326,7 @@
   padding: 7px 10px;
   border-radius: 7px;
   border: 1px solid var(--theme-border);
-  background: var(--theme-surface);
+  background: var(--theme-card);
   color: var(--theme-text);
   font-size: 13px;
   outline: none;
@@ -369,7 +369,7 @@
   position: relative;
   border: 1px solid var(--theme-border);
   border-radius: 8px;
-  background: var(--theme-surface);
+  background: var(--theme-card);
   min-height: 180px;
   transition: border-color var(--transition-base);
 }

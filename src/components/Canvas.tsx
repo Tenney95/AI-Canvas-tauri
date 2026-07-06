@@ -268,6 +268,8 @@ function CanvasInner() {
     handleUndo: handleCtxUndo,
     handleRedo: handleCtxRedo,
     handlePaste: handleCtxPaste,
+    handleDelete: handleCtxDelete,
+    hasSelection: ctxHasSelection,
     showSubmenu,
     hideSubmenu,
   } = useCanvasContextMenu();
@@ -725,6 +727,8 @@ function CanvasInner() {
         onUndo={handleCtxUndo}
         onRedo={handleCtxRedo}
         onPaste={handleCtxPaste}
+        onDelete={handleCtxDelete}
+        hasSelection={ctxHasSelection}
         onShowSubmenu={showSubmenu}
         onHideSubmenu={hideSubmenu}
       />
