@@ -29,13 +29,13 @@ export default function ModalOverlay({
           onClick={onClose}
         >
           <motion.div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm rounded-2xl"
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm rounded-2xl"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           />
           <motion.div
-            className={`relative bg-canvas-surface border border-canvas-border rounded-2xl shadow-2xl overflow-hidden flex flex-col ${className}`}
+            className={`relative glass-panel border rounded-2xl shadow-2xl overflow-hidden flex flex-col ${className}`}
             initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.94, y: 14 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: 10 }}

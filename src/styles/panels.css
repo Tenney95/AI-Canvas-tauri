@@ -42,6 +42,15 @@
 }
 
 /* ============================================
+   Shared glass-panel — 弹出面板统一玻璃态背景
+   ============================================ */
+.glass-panel {
+  background: var(--glass-panel-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border-color: var(--glass-ring);
+}
+
+/* ============================================
    Workflow Panel — center modal
    ============================================ */
 .wf-panel-backdrop {
@@ -49,6 +58,7 @@
   inset: 0;
   z-index: 200;
   background: var(--black-alpha-50);
+  backdrop-filter: blur(var(--glass-blur-sm)); /* 6px — 与输出历史遮罩统一样式 */
   /* animation handled by framer-motion */
 }
 .wf-panel-wrapper {
@@ -65,7 +75,7 @@
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px);
   overflow-y: auto;
-  background: var(--glass-bg);
+  background: var(--glass-panel-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 14px;
@@ -457,7 +467,7 @@
   width: 220px;
   max-height: 200px;
   overflow-y: auto;
-  background: var(--glass-bg);
+  background: var(--glass-panel-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 10px;

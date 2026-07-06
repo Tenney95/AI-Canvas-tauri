@@ -124,6 +124,7 @@
   --glass-bg: rgba(20, 20, 28, 0.92);
   --glass-bg-light: rgba(56, 56, 76, 0.3);
   --glass-bg-node: rgba(34, 34, 50, 0.88);
+  --glass-panel-bg: rgba(20, 20, 28, 0.77);
   --glass-ring: rgba(255, 255, 255, 0.16);
   --glass-ring-strong: rgba(255, 255, 255, 0.10);
   --glass-blur-sm: 6px;
@@ -194,6 +195,7 @@
   --glass-bg: rgba(255, 255, 255, 0.85);
   --glass-bg-light: rgba(255, 255, 255, 0.55);
   --glass-bg-node: rgba(255, 255, 255, 0.88);
+  --glass-panel-bg: rgba(255, 255, 255, 0.67);
   --glass-ring: rgba(0, 0, 0, 0.10);
   --glass-ring-strong: rgba(0, 0, 0, 0.06);
 }

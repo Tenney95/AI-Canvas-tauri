@@ -209,7 +209,6 @@
   width: 260px;
   max-width: calc(100vw - 100px);
   background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
   border-radius: 12px;
   padding: 5px;

@@ -246,7 +246,7 @@ export default function OutputHistoryPanel() {
           {/* Bottom Sheet */}
           <motion.div
             className="fixed inset-x-0 bottom-0 z-[250] mx-auto w-full max-w-[720px] max-h-[75vh] flex flex-col
-                       bg-canvas-card border border-canvas-border border-b-0 rounded-t-2xl shadow-2xl overflow-hidden"
+                       glass-panel border border-b-0 rounded-t-2xl shadow-2xl overflow-hidden"
             initial={{ y: '100%' }}
             animate={{ y: 0 }}
             exit={{ y: '100%' }}
