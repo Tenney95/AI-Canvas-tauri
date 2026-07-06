@@ -1,7 +1,7 @@
 {
     "name": "ai-canvas-tauri",
     "private": true,
-    "version": "0.2.5",
+    "version": "0.2.6",
     "type": "module",
     "scripts": {
         "postinstall": "node scripts/setup-hooks.js",
@@ -21,7 +21,9 @@
         "@tauri-apps/plugin-dialog": "^2",
         "@tauri-apps/plugin-fs": "^2",
         "@tauri-apps/plugin-global-shortcut": "^2",
+        "@tauri-apps/plugin-process": "^2.3.1",
         "@tauri-apps/plugin-shell": "^2",
+        "@tauri-apps/plugin-updater": "^2.10.1",
         "@xyflow/react": "^12.6.0",
         "framer-motion": "^12.40.0",
         "gsap": "^3.15.0",

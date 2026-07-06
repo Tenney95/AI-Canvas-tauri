@@ -6,11 +6,21 @@
         "frontendDist": "../dist"
     },
     "productName": "AI Canvas",
-    "version": "0.2.5",
+    "version": "0.2.6",
     "identifier": "com.aicanvas.app",
     "plugins": {
         "shell": {
             "open": true
+        },
+        "updater": {
+            "createUpdaterArtifacts": true,
+            "pubkey": "uH4kwgXV+Ofi6AFcc2cFj/HK34BW33QMNXjvmSRzyOY=",
+            "endpoints": [
+                "https://github.com/Tenney95/AI-Canvas-tauri/releases/latest/download/latest.json"
+            ],
+            "windows": {
+                "installMode": "passive"
+            }
         }
     },
     "bundle": {

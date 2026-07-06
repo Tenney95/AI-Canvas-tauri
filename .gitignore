@@ -25,6 +25,9 @@ doc/测试报告.md
 # Rust build output
 src-tauri/target/
 
+# Tauri update signing private key (DO NOT COMMIT)
+src-tauri/update-key.key
+
 promo-video
 
 # Editor directories and files

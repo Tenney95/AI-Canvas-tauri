@@ -20,6 +20,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useAppStore } from './store/useAppStore';
 import * as fileService from './services/fileService';
+import { checkForUpdate } from './services/updateService';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -32,6 +33,12 @@ export default function App() {
 
   // 开屏动画状态
   const [splashDone, setSplashDone] = useState(false);
+
+  // 开屏动画结束后后台静默检查更新
+  useEffect(() => {
+    if (!splashDone || !isTauri) return;
+    checkForUpdate();
+  }, [splashDone]);
 
   // Load projects from IndexedDB on mount
   const initFromDb = useAppStore((s) => s.initFromDb);
