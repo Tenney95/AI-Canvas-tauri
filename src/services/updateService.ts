@@ -8,6 +8,12 @@
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
+/** 开发模式下跳过更新检查：dev 下前端跑在 localhost，不是正式包 */
+function isDevMode(): boolean {
+  // Tauri prod 用自定义协议（tauri:// 等），dev 用 http://localhost
+  return typeof window !== 'undefined' && window.location.protocol === 'http:';
+}
+
 export type UpdateResult = { updated: false } | { updated: true; version: string };
 
 /**
@@ -18,6 +24,12 @@ export async function checkForUpdate(): Promise<UpdateResult> {
   if (!isTauri) return { updated: false };
 
   try {
+    // 开发模式下跳过（暂无 Release 可拉取，必然 404）
+    if (isDevMode()) {
+      console.log('[Updater] 开发模式，跳过更新检查');
+      return { updated: false };
+    }
+
     const { check } = await import('@tauri-apps/plugin-updater');
     const { relaunch } = await import('@tauri-apps/plugin-process');
 
@@ -45,7 +57,14 @@ export async function checkForUpdate(): Promise<UpdateResult> {
     return { updated: true, version: update.version };
   } catch (err) {
     // 更新失败不阻塞应用正常运行
-    console.warn('[Updater] 更新检查失败:', err);
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('404') || msg.includes('Not Found')) {
+      console.log('[Updater] 暂无 Release（没有发布过版本）');
+    } else if (msg.includes('NetworkError') || msg.includes('Failed to fetch') || msg.includes('ENOTFOUND')) {
+      console.log('[Updater] 网络不可用，跳过更新检查');
+    } else {
+      console.warn('[Updater] 更新检查失败:', err);
+    }
     return { updated: false };
   }
 }
