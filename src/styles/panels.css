@@ -48,6 +48,7 @@
   background: var(--glass-panel-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
   border-color: var(--glass-ring);
+  will-change: transform;
 }
 
 /* ============================================
