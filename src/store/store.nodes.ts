@@ -12,7 +12,7 @@ import {
 } from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { BaseNodeData } from '../types';
+import type { BaseNodeData, StoryboardCellOverride } from '../types';
 import { generateId, getNextDisplayId } from './store.utils';
 import * as fileService from '../services/fileService';
 import { playNodeExit } from '../utils/nodeAnimations';
@@ -40,6 +40,8 @@ export interface NodeSlice {
   onEdgesChange: (changes: EdgeChange[]) => void;
   clearGroupedSelection: () => void;
   settleNodeGroupingOnDragStop: (node: Node<BaseNodeData>) => void;
+  /** 把一个图像节点拖入宫格分镜的某格：该格显示此图，源节点被消耗移除 */
+  fillStoryboardCell: (storyboardId: string, cellIdx: number, sourceNodeId: string) => void;
 }
 
 export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, get) => ({
@@ -158,6 +160,43 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
           .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !idsToDelete.has(nid)) })),
       }));
     });
+  },
+
+  fillStoryboardCell: (storyboardId, cellIdx, sourceNodeId) => {
+    const { nodes } = get();
+    const sb = nodes.find((n) => n.id === storyboardId && n.type === 'ai-storyboard');
+    const src = nodes.find((n) => n.id === sourceNodeId);
+    if (!sb || !src || src.type !== 'ai-image') return;
+    const url = (src.data.imageUrl || src.data.thumbnailUrl) as string | undefined;
+    if (!url) return;
+
+    get().commitToHistory();
+
+    const cols = (sb.data.storyboardCols as number) || 3;
+    const rows = (sb.data.storyboardRows as number) || 3;
+    const total = cols * rows;
+    const overrides: (StoryboardCellOverride | null)[] = Array.isArray(sb.data.storyboardOverrides)
+      ? [...(sb.data.storyboardOverrides as (StoryboardCellOverride | null)[])]
+      : new Array(total).fill(null);
+    const extracted = Array.isArray(sb.data.storyboardExtracted)
+      ? [...(sb.data.storyboardExtracted as boolean[])]
+      : new Array(total).fill(false);
+    while (overrides.length < total) overrides.push(null);
+    while (extracted.length < total) extracted.push(false);
+    overrides[cellIdx] = { url, filePath: (src.data.filePath as string) || undefined };
+    extracted[cellIdx] = false;
+    get().updateNodeData(storyboardId, {
+      storyboardOverrides: overrides,
+      storyboardExtracted: extracted,
+    } as Partial<BaseNodeData>);
+
+    // 直接移除源节点，不走 deleteNode —— 避免回收正被该格复用的图片文件
+    cancelNodePolling(sourceNodeId);
+    set((state) => ({
+      nodes: state.nodes.filter((n) => n.id !== sourceNodeId),
+      edges: state.edges.filter((e) => e.source !== sourceNodeId && e.target !== sourceNodeId),
+    }));
+    get().showToast('已放入宫格');
   },
 
   onConnect: (connection) => {

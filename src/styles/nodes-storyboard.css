@@ -1,0 +1,173 @@
+/* ============================================
+   Storyboard Node — 宫格分镜（单节点多图拼接；双击编辑，拖格提取）
+   ============================================ */
+
+.storyboard-node {
+  position: relative;
+  padding: 0;
+}
+
+/* 网格容器：填满节点卡片；各格绝对定位于其中 */
+.storyboard-grid {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  overflow: hidden;
+  background: var(--theme-surface, #14141c);
+   border-radius: 12px;
+}
+
+/* 单格：裁剪窗口，内部放超尺寸源图 */
+.sb-cell {
+  position: absolute;
+  overflow: hidden;
+  /* 固定分隔线：格与格之间的浅色描边（拼接感，不可拖拽）*/
+  box-shadow: inset 0 0 0 0.5px var(--theme-border, rgba(255, 255, 255, 0.12));
+}
+
+.sb-cell-img {
+  position: absolute;
+  object-fit: fill;
+  pointer-events: none;
+  display: block;
+  user-select: none;
+  /* 覆盖 Tailwind preflight 的 img{max-width:100%}，否则 width:300% 会被截断成 100% */
+  max-width: none;
+  max-height: none;
+}
+
+/* 被拖入格子的填充图 */
+.sb-cell-fill {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  max-width: none;
+  max-height: none;
+  pointer-events: none;
+  user-select: none;
+  display: block;
+}
+
+/* 拖入命中：格子高亮为可放置目标 */
+.sb-cell--drop-target {
+  outline: 2px solid var(--brand, #8a93ff);
+  outline-offset: -2px;
+  z-index: 4;
+}
+.sb-cell--drop-target::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--brand, #8a93ff) 22%, transparent);
+  pointer-events: none;
+}
+
+/* 悬停高亮描边（仅编辑态）*/
+.sb-cell-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid transparent;
+  transition: border-color 0.15s var(--ease-out-quart, ease-out);
+}
+
+/* ── 编辑态：格可拖出 ── */
+.storyboard-node.editing .storyboard-grid {
+  cursor: default;
+}
+.sb-cell--draggable {
+  cursor: grab;
+}
+.storyboard-node.editing .sb-cell--draggable:hover .sb-cell-overlay {
+  border-color: var(--brand, #8a93ff);
+}
+/* 四角 overlay 圆角：对齐父容器 .storyboard-grid 的 border-radius: 12px */
+[data-sb-corner="tl"] > .sb-cell-overlay { border-top-left-radius: 12px; }
+[data-sb-corner="tr"] > .sb-cell-overlay { border-top-right-radius: 12px; }
+[data-sb-corner="bl"] > .sb-cell-overlay { border-bottom-left-radius: 12px; }
+[data-sb-corner="br"] > .sb-cell-overlay { border-bottom-right-radius: 12px; }
+.sb-cell--dragging {
+  opacity: 0.35;
+}
+
+/* ── 已提取的空格占位 ── */
+.sb-cell--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--theme-surface, #14141c);
+}
+.sb-cell-plus {
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.28));
+  font-size: 24px;
+  font-weight: 300;
+  line-height: 1;
+  user-select: none;
+}
+
+/* ── 计数角标 ── */
+.storyboard-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
+
+.storyboard-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.4));
+  font-size: 12px;
+}
+
+/* 拖入命中格子时，隐藏真实被拖节点（改由 .sb-drag-ghost 幽灵呈现）；
+   用 opacity 而非 visibility/pointer-events —— 保持 elementsFromPoint 命中检测有效 */
+.react-flow__node.sb-drop-hidden {
+  opacity: 0;
+}
+
+/* ── 拖出幽灵预览 ── */
+.sb-drag-ghost {
+  position: fixed;
+  z-index: 99999;
+  width: 120px;
+  height: 120px;
+  margin-left: -60px;
+  margin-top: -60px;
+  pointer-events: none;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  border: 2px solid var(--brand, #8a93ff);
+  transform: rotate(-3deg);
+}
+.sb-drag-ghost-clip {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.sb-drag-ghost-clip img {
+  position: absolute;
+  object-fit: fill;
+  max-width: none;
+  max-height: none;
+  display: block;
+}

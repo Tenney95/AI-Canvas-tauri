@@ -276,6 +276,46 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   );
 
   /* ════════════════════════════════════════════
+     宫格裁切：源图生成一个「宫格分镜」节点（单节点内按 side×side 网格拼接展示）
+     ════════════════════════════════════════════ */
+  const handleMultiGrid = useCallback(
+    async (side: number) => {
+      const store = useAppStore.getState();
+      const imageUrl = (data.imageUrl || data.thumbnailUrl) as string | undefined;
+      if (!imageUrl) {
+        store.showToast('无可裁切的图像', 'error');
+        return;
+      }
+
+      store.commitToHistory();
+      const srcPos = store.nodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
+      // 分镜节点按源图纵横比展示 → 复用图像节点的尺寸计算
+      const dims = await computeImageNodeDimensions(imageUrl);
+
+      store.addNode({
+        id: `node-${generateId()}`,
+        type: 'ai-storyboard',
+        position: { x: srcPos.x + nodeWidth + 60, y: srcPos.y },
+        data: {
+          label: `${(data.label as string) || '图像'} 宫格${side}×${side}`,
+          type: 'ai-storyboard',
+          role: 'source',
+          status: 'success',
+          imageUrl,
+          filePath: data.filePath as string | undefined,
+          storyboardRows: side,
+          storyboardCols: side,
+          nodeWidth: dims.nodeWidth,
+          nodeHeight: dims.nodeHeight,
+        } as BaseNodeData,
+      });
+      store.commitToHistory();
+      store.showToast(`已生成 ${side}×${side} 宫格分镜节点`);
+    },
+    [id, data.imageUrl, data.thumbnailUrl, data.label, data.filePath, nodeWidth],
+  );
+
+  /* ════════════════════════════════════════════
      Compose (多图自由编辑) State
      ════════════════════════════════════════════ */
   const [isCompose, setIsCompose] = useState(false);
@@ -895,6 +935,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               onSubjectMatting={handleSubjectMatting}
               onMultiAngle={handleOpenFreeAngle}
               onExpand={handleOpenExpand}
+              onMultiGrid={handleMultiGrid}
               onCompose={handleOpenCompose}
               onCrop={handleOpenCrop}
               onFullscreen={handleOpenFullscreen}

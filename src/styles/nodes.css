@@ -21,7 +21,6 @@
   backdrop-filter: blur(var(--glass-blur-sm));
   /* border: 1px solid var(--glass-ring); */
   border-radius: 12px;
-  overflow: hidden;
   transition: border-color var(--transition-smooth), box-shadow var(--transition-smooth),
     transform var(--dur-fast) var(--ease-out-quart);
   /* 进场：弹簧式浮入。只用 translate（不用 scale）——scale 会改变 handle 相对父节点的

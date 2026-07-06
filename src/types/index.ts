@@ -10,11 +10,18 @@ export type NodeType =
   | 'ai-audio'
   | 'ai-panorama'
   | 'ai-markdown'
+  | 'ai-storyboard'
   | 'source-image'
   | 'source-video'
   | 'source-audio'
   | 'source-text'
   | 'comment';
+
+// 宫格分镜：被拖入某格的图片覆盖
+export interface StoryboardCellOverride {
+  url: string;         // 展示用 asset/data URL
+  filePath?: string;   // 本地文件路径（复用被拖入节点的落盘文件）
+}
 
 // 节点数据接口
 export interface BaseNodeData {
@@ -47,6 +54,11 @@ export interface BaseNodeData {
   videoFrames?: number;       // 视频生成帧数（时长）
   style?: string;               // 画风 ID（如 'realistic'、'anime'）
   error?: string;             // 错误信息
+  // ── 宫格分镜（ai-storyboard）──
+  storyboardCols?: number;              // 列数（均分）
+  storyboardRows?: number;              // 行数（均分）
+  storyboardExtracted?: boolean[];      // 各格是否已被拖出提取（行优先），已提取的格显示空占位
+  storyboardOverrides?: (StoryboardCellOverride | null)[]; // 各格被拖入的图片（覆盖源图裁片显示）
   [key: string]: unknown;
 }
 
@@ -275,6 +287,7 @@ export const NODE_TYPE_CONFIG: Record<string, NodeTypeVisualConfig> = {
   'ai-audio':    { icon: 'mdi:volume-high',               color: 'text-orange-400',  bg: 'bg-orange-500/15',  label: '生成音频' },
   'ai-panorama': { icon: 'mdi:panorama',                  color: 'text-cyan-400',    bg: 'bg-cyan-500/15',    label: '生成360全景' },
   'ai-markdown': { icon: 'mdi:language-markdown-outline', color: 'text-purple-400',  bg: 'bg-purple-500/15',  label: 'Markdown' },
+  'ai-storyboard': { icon: 'mdi:grid',                    color: 'text-pink-400',    bg: 'bg-pink-500/15',    label: '宫格分镜' },
 };
 
 /** 获取节点类型视觉配置，未匹配时返回灰色兜底 */

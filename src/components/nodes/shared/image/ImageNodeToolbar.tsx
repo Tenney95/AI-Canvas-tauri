@@ -1,7 +1,7 @@
 /**
  * ImageNodeToolbar 图像节点浮动工具栏 — 鼠标悬停图像节点时显示，提供遮罩、扩图、360全景、裁切、重绘、高清、下载等操作
  */
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import AnimatedButton from '../../../shared/AnimatedButton';
 
 interface ImageNodeToolbarProps {
@@ -11,6 +11,7 @@ interface ImageNodeToolbarProps {
   onSubjectMatting?: () => void;
   onMultiAngle?: () => void;
   onExpand?: () => void;
+  onMultiGrid?: (side: number) => void;
   onCompose?: () => void;
   onFullscreen?: () => void;
   onCrop?: () => void;
@@ -19,11 +20,30 @@ interface ImageNodeToolbarProps {
   onRepaint?: () => void;
 }
 
-function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand, onCompose, onFullscreen, onCrop, onAnnotate, onUpscale, onRepaint }: ImageNodeToolbarProps) {
-  const noop = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-  }, []);
+/** 宫格预设：side×side（4/9/16/25 宫格） */
+const GRID_PRESETS = [2, 3, 4, 5];
 
+/** n×n 网格图标 */
+function GridIcon({ n }: { n: number }) {
+  const cells = [];
+  const box = 18;
+  const pad = 3;
+  const step = box / n;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      cells.push(
+        <rect key={`${i}-${j}`} x={pad + j * step + 0.4} y={pad + i * step + 0.4} width={step - 0.8} height={step - 0.8} rx={0.5} />,
+      );
+    }
+  }
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" fillOpacity="0.85">
+      {cells}
+    </svg>
+  );
+}
+
+function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand, onMultiGrid, onCompose, onFullscreen, onCrop, onAnnotate, onUpscale, onRepaint }: ImageNodeToolbarProps) {
   const handleAction = useCallback(
     (handler?: () => void) => (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -31,6 +51,36 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
     },
     [],
   );
+
+  // ── 宫格选择菜单 ──
+  const [gridMenuOpen, setGridMenuOpen] = useState(false);
+  const gridWrapRef = useRef<HTMLDivElement>(null);
+
+  const toggleGridMenu = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setGridMenuOpen((v) => !v);
+  }, []);
+
+  const pickGrid = useCallback(
+    (side: number) => (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setGridMenuOpen(false);
+      onMultiGrid?.(side);
+    },
+    [onMultiGrid],
+  );
+
+  // 点击外部关闭
+  useEffect(() => {
+    if (!gridMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (gridWrapRef.current && !gridWrapRef.current.contains(e.target as Node)) {
+        setGridMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [gridMenuOpen]);
 
   return (
     <div className="node-floating-toolbar img-toolbar nodrag">
@@ -56,14 +106,27 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
               <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-multigrid" title="宫格裁切" aria-label="宫格裁切" onClick={noop}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <rect x="3" y="3" width="7" height="7" />
-              <rect x="14" y="3" width="7" height="7" />
-              <rect x="14" y="14" width="7" height="7" />
-              <rect x="3" y="14" width="7" height="7" />
-            </svg>
-          </AnimatedButton>
+          <div className="multigrid-wrap" ref={gridWrapRef}>
+            <AnimatedButton className="ftb-btn icon-only act-multigrid" title="宫格裁切" aria-label="宫格裁切" onClick={toggleGridMenu}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                <rect x="3" y="3" width="7" height="7" />
+                <rect x="14" y="3" width="7" height="7" />
+                <rect x="14" y="14" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" />
+              </svg>
+            </AnimatedButton>
+            {gridMenuOpen && (
+              <div className="multigrid-menu nodrag" onClick={(e) => e.stopPropagation()}>
+                <div className="multigrid-menu-title">选择宫格</div>
+                {GRID_PRESETS.map((side) => (
+                  <button key={side} type="button" className="multigrid-menu-item" onClick={pickGrid(side)}>
+                    <GridIcon n={side} />
+                    <span>{side * side}宫格</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <AnimatedButton className="ftb-btn icon-only act-multiangle" title="控制角度" aria-label="控制角度" onClick={handleAction(onMultiAngle)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />

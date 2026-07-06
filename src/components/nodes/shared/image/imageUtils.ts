@@ -30,6 +30,36 @@ export async function loadSafeImage(url: string): Promise<HTMLImageElement> {
   return img;
 }
 
+/**
+ * 从源图裁出第 (row,col) 格（rows×cols 均分），返回真实裁片 PNG 与其像素尺寸。
+ * 用于宫格分镜「提取」：拖出的格是实打实裁好的图，而非偏移显示。
+ */
+export async function cropImageCell(
+  imageUrl: string,
+  col: number,
+  row: number,
+  cols: number,
+  rows: number,
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const img = await loadSafeImage(imageUrl);
+  const natW = img.naturalWidth;
+  const natH = img.naturalHeight;
+  const x0 = Math.round((col * natW) / cols);
+  const x1 = Math.round(((col + 1) * natW) / cols);
+  const y0 = Math.round((row * natH) / rows);
+  const y1 = Math.round(((row + 1) * natH) / rows);
+  const w = Math.max(1, x1 - x0);
+  const h = Math.max(1, y1 - y0);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('canvas 2d context unavailable');
+  ctx.drawImage(img, x0, y0, w, h, 0, 0, w, h);
+  return { dataUrl: canvas.toDataURL('image/png'), width: w, height: h };
+}
+
 /** 根据 data URL 计算图像节点的建议尺寸 */
 export function computeImageNodeDimensions(
   dataUrl: string,

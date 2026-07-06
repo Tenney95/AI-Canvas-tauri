@@ -2,6 +2,7 @@
  * Canvas 画布主组件 — React Flow 画布核心，管理节点/边渲染、拖放、连线、右键菜单、空状态
  */
 import { lazy, Suspense, useCallback, useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { ReactFlow,
   Background,
   Controls,
@@ -25,6 +26,7 @@ import ImageNode from './nodes/ImageNode';
 import VideoNode from './nodes/VideoNode';
 import AudioNode from './nodes/AudioNode';
 import MarkdownNode from './nodes/MarkdownNode';
+import StoryboardNode from './nodes/StoryboardNode';
 import GroupNode from './nodes/GroupNode';
 import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
@@ -55,6 +57,7 @@ const nodeTypes: NodeTypes = {
   'ai-audio': AudioNode,
   'ai-panorama': PanoramaNode,
   'ai-markdown': MarkdownNode,
+  'ai-storyboard': StoryboardNode,
   group: GroupNode,
 };
 
@@ -513,13 +516,85 @@ function CanvasInner() {
     [applySnap, applyStableNodeChanges],
   );
 
+  // ── 拖入宫格分镜：把图像节点拖到分镜的某格 → 填充该格（不要求编辑态）──
+  const sbDropTarget = useRef<HTMLElement | null>(null);
+  // 命中格子时：隐藏真实被拖节点，改为跟随光标的小斜方块幽灵（同拖出样式）
+  const [dropGhost, setDropGhost] = useState<{ url: string; x: number; y: number } | null>(null);
+  const ghostNodeId = useRef<string | null>(null);
+
+  const clearGhostNodeHidden = useCallback(() => {
+    if (ghostNodeId.current) {
+      document.querySelector(`.react-flow__node[data-id="${ghostNodeId.current}"]`)?.classList.remove('sb-drop-hidden');
+      ghostNodeId.current = null;
+    }
+  }, []);
+
+  const clearSbDropTarget = useCallback(() => {
+    sbDropTarget.current?.classList.remove('sb-cell--drop-target');
+    sbDropTarget.current = null;
+  }, []);
+
+  // 命中：被拖图像节点中心下方、处于编辑态分镜的格子元素
+  const findSbCellUnderNode = useCallback((node: RFNode): HTMLElement | null => {
+    if (node.type !== 'ai-image') return null;
+    const nodeEl = document.querySelector(`.react-flow__node[data-id="${node.id}"]`);
+    if (!nodeEl) return null;
+    const r = nodeEl.getBoundingClientRect();
+    const stack = document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    for (const el of stack) {
+      if (el instanceof HTMLElement && el.dataset.sbCellIdx != null) {
+        // 排除被拖节点自身；接受所有分镜的格（不要求编辑态）
+        if (el.closest(`.react-flow__node[data-id="${node.id}"]`)) continue;
+        if (el.closest('.storyboard-node')) return el;
+      }
+    }
+    return null;
+  }, []);
+
+  const handleNodeDrag = useCallback(
+    (e: React.MouseEvent, node: RFNode) => {
+      const cell = findSbCellUnderNode(node);
+      if (cell !== sbDropTarget.current) {
+        clearSbDropTarget();
+        if (cell) { cell.classList.add('sb-cell--drop-target'); sbDropTarget.current = cell; }
+      }
+      // 命中格子 → 隐藏真实节点，显示跟随光标的小斜方块幽灵；离开 → 复原
+      const url = (node.data?.imageUrl || node.data?.thumbnailUrl) as string | undefined;
+      if (cell && url) {
+        setDropGhost({ url, x: e.clientX, y: e.clientY });
+        if (ghostNodeId.current !== node.id) {
+          clearGhostNodeHidden();
+          document.querySelector(`.react-flow__node[data-id="${node.id}"]`)?.classList.add('sb-drop-hidden');
+          ghostNodeId.current = node.id;
+        }
+      } else {
+        setDropGhost(null);
+        clearGhostNodeHidden();
+      }
+    },
+    [findSbCellUnderNode, clearSbDropTarget, clearGhostNodeHidden],
+  );
+
   // ── Auto group/ungroup on drag stop ──
   const handleNodeDragStop = useCallback(
     (_event: React.MouseEvent, node: RFNode) => {
+      const cell = findSbCellUnderNode(node);
+      clearSbDropTarget();
+      setDropGhost(null);
+      clearGhostNodeHidden();
+      if (cell) {
+        const sbId = cell.closest('.react-flow__node')?.getAttribute('data-id');
+        const idx = Number(cell.dataset.sbCellIdx);
+        if (sbId && sbId !== node.id && !Number.isNaN(idx)) {
+          useAppStore.getState().fillStoryboardCell(sbId, idx, node.id);
+          onNodeDragStop();
+          return;
+        }
+      }
       settleNodeGroupingOnDragStop(node as RFNode<BaseNodeData>);
       onNodeDragStop();
     },
-    [onNodeDragStop, settleNodeGroupingOnDragStop],
+    [onNodeDragStop, settleNodeGroupingOnDragStop, findSbCellUnderNode, clearSbDropTarget, clearGhostNodeHidden],
   );
 
   return (
@@ -536,6 +611,7 @@ function CanvasInner() {
         onSelectionChange={onSelectionChange}
         onSelectionEnd={onSelectionEnd}
         onNodeDragStart={handleNodeDragStart}
+        onNodeDrag={handleNodeDrag}
         onNodeDragStop={handleNodeDragStop}
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
@@ -673,6 +749,16 @@ function CanvasInner() {
       {/* Multi-select toolbar */}
       <MultiSelectToolbar />
     </div>
+
+    {/* 拖入宫格：命中格子时的小斜方块幽灵（复用拖出样式）*/}
+    {dropGhost && createPortal(
+      <div className="sb-drag-ghost" style={{ left: dropGhost.x, top: dropGhost.y }}>
+        <div className="sb-drag-ghost-clip">
+          <img src={dropGhost.url} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        </div>
+      </div>,
+      document.body,
+    )}
     </ResizeSnapContext.Provider>
   );
 }

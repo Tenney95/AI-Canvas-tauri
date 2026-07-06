@@ -41,6 +41,69 @@
   flex-shrink: 0;
 }
 
+/* ── 宫格裁切：选择菜单（自按钮向上弹出）── */
+.multigrid-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.multigrid-menu {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10002;
+  min-width: 150px;
+  padding: 6px;
+  background: var(--theme-surface);
+  border: 1px solid var(--theme-border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  animation: fadeIn var(--dur-fast, 0.14s) var(--ease-out-expo, ease-out);
+}
+
+/* 指向按钮的小三角 */
+.multigrid-menu::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--theme-surface);
+}
+
+.multigrid-menu-title {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--theme-text-muted, rgba(255, 255, 255, 0.5));
+  text-align: center;
+}
+
+.multigrid-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--theme-text, #e9eaee);
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--dur-fast, 0.14s);
+}
+
+.multigrid-menu-item:hover {
+  background: var(--theme-hover);
+}
+
+.multigrid-menu-item svg {
+  flex-shrink: 0;
+  color: var(--brand, #8a93ff);
+}
+
 /* ============================================
    Matting Overlay — fullscreen mask editor
    ============================================ */
