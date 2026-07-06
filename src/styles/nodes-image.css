@@ -73,6 +73,19 @@
   border-top-color: var(--theme-surface);
 }
 
+/* ── 向下弹出（上方空间不足时）── */
+.multigrid-menu.multigrid-menu--below {
+  bottom: auto;
+  top: calc(100% + 12px);
+}
+
+.multigrid-menu.multigrid-menu--below::after {
+  top: auto;
+  bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: var(--theme-surface);
+}
+
 .multigrid-menu-title {
   padding: 4px 8px 6px;
   font-size: 11px;
@@ -102,6 +115,16 @@
 .multigrid-menu-item svg {
   flex-shrink: 0;
   color: var(--brand, #8a93ff);
+}
+
+.multigrid-menu-divider {
+  height: 1px;
+  background: var(--theme-border);
+  margin: 4px 8px;
+}
+
+.multigrid-menu-item--custom svg {
+  color: var(--theme-text-secondary);
 }
 
 /* ============================================
@@ -644,4 +667,249 @@
 .annotate-text-delete:hover {
   color: var(--danger);
   background: rgba(0, 0, 0, 0.9);
+}
+
+/* ============================================
+   CustomGridEditor — 自定义宫格裁切
+   ============================================ */
+
+.customgrid-content {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* ── 工具栏（与 CropEditor 的 crop-aspect-bar 统一）── */
+.customgrid-toolbar {
+  position: fixed;
+  top: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 4px 8px;
+  background: var(--glass-bg-light);
+  backdrop-filter: blur(var(--glass-blur-md));
+  border: 1px solid var(--theme-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 24px var(--black-alpha-40);
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+.customgrid-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.customgrid-btn:hover {
+  color: var(--theme-text);
+  background: var(--white-alpha-08);
+}
+
+.customgrid-btn.active {
+  color: var(--brand, #8a93ff);
+  background: rgba(138, 147, 255, 0.12);
+}
+
+.customgrid-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+  pointer-events: none;
+}
+
+.customgrid-btn.act-cancel:hover {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.customgrid-btn.act-confirm {
+  color: var(--success);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  padding: 0 12px;
+}
+
+.customgrid-btn.act-confirm:hover {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--success-light);
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+.customgrid-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 2px;
+}
+
+.customgrid-bar-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--theme-border);
+  margin: 0 6px;
+  flex-shrink: 0;
+}
+
+.customgrid-bar-spacer {
+  flex: 1;
+}
+
+.customgrid-hint {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── 舞台：居中图像 ── */
+.customgrid-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 40px 40px;
+  box-sizing: border-box;
+  overflow: auto;
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+.customgrid-image-wrap {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  animation: stageZoomIn 0.5s var(--ease-out-expo, ease-out) both;
+}
+
+.customgrid-image {
+  display: block;
+  max-width: 85vw;
+  max-height: 75vh;
+  object-fit: contain;
+  border-radius: 4px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* ── 分割线 ── */
+.customgrid-line {
+  position: absolute;
+  z-index: 2;
+  pointer-events: auto;
+  cursor: grab;
+  transition: opacity 0.12s;
+  /* 可交互区域比视觉线更大 */
+}
+
+.customgrid-line::before {
+  content: '';
+  position: absolute;
+  background: var(--brand, #8a93ff);
+  pointer-events: none;
+  border-radius: 1px;
+  box-shadow: 0 0 6px rgba(138, 147, 255, 0.35);
+}
+
+/* 横向线：从左到右，可交互区域 16px 高居中线上下 */
+.customgrid-line--h {
+  left: 0;
+  right: 0;
+  height: 16px;
+  transform: translateY(-50%);
+}
+
+.customgrid-line--h::before {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+/* 竖向线：从上到下，可交互区域 16px 宽居中线左右 */
+.customgrid-line--v {
+  top: 0;
+  bottom: 0;
+  width: 16px;
+  transform: translateX(-50%);
+}
+
+.customgrid-line--v::before {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+}
+
+.customgrid-line.dragging {
+  cursor: grabbing;
+  z-index: 3;
+}
+
+.customgrid-line.dragging::before {
+  box-shadow: 0 0 10px rgba(138, 147, 255, 0.6);
+}
+
+/* ── 删除按钮 ── */
+.customgrid-line-del {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid var(--theme-border);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  z-index: 4;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 居中对齐到线的交叉处 */
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.customgrid-line-del::after {
+  content: '×';
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.customgrid-line:hover .customgrid-line-del,
+.customgrid-line.dragging .customgrid-line-del {
+  opacity: 1;
+}
+
+.customgrid-line-del:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.customgrid-line-del:hover::after {
+  color: #fff;
 }

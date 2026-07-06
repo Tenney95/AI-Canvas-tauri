@@ -12,6 +12,7 @@ interface ImageNodeToolbarProps {
   onMultiAngle?: () => void;
   onExpand?: () => void;
   onMultiGrid?: (side: number) => void;
+  onCustomGrid?: () => void;
   onCompose?: () => void;
   onFullscreen?: () => void;
   onCrop?: () => void;
@@ -43,7 +44,7 @@ function GridIcon({ n }: { n: number }) {
   );
 }
 
-function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand, onMultiGrid, onCompose, onFullscreen, onCrop, onAnnotate, onUpscale, onRepaint }: ImageNodeToolbarProps) {
+function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand, onMultiGrid, onCustomGrid, onCompose, onFullscreen, onCrop, onAnnotate, onUpscale, onRepaint }: ImageNodeToolbarProps) {
   const handleAction = useCallback(
     (handler?: () => void) => (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -54,12 +55,34 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
 
   // ── 宫格选择菜单 ──
   const [gridMenuOpen, setGridMenuOpen] = useState(false);
+  const [gridMenuBelow, setGridMenuBelow] = useState(false);
   const gridWrapRef = useRef<HTMLDivElement>(null);
+  const gridMenuRef = useRef<HTMLDivElement>(null);
 
   const toggleGridMenu = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     setGridMenuOpen((v) => !v);
   }, []);
+
+  // 菜单打开后判断是否超出视口，若上方空间不足则改为往下弹出
+  useEffect(() => {
+    if (!gridMenuOpen) {
+      setGridMenuBelow(false);
+      return;
+    }
+    // 等菜单渲染完成后测量
+    const raf = requestAnimationFrame(() => {
+      const btn = gridWrapRef.current;
+      const menu = gridMenuRef.current;
+      if (!btn || !menu) return;
+      const btnRect = btn.getBoundingClientRect();
+      const menuHeight = menu.offsetHeight;
+      const gap = 12;
+      // 上方所需空间 = 菜单高度 + gap
+      setGridMenuBelow(btnRect.top - menuHeight - gap < 0);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [gridMenuOpen]);
 
   const pickGrid = useCallback(
     (side: number) => (e: React.MouseEvent) => {
@@ -68,6 +91,15 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
       onMultiGrid?.(side);
     },
     [onMultiGrid],
+  );
+
+  const pickCustom = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setGridMenuOpen(false);
+      onCustomGrid?.();
+    },
+    [onCustomGrid],
   );
 
   // 点击外部关闭
@@ -116,7 +148,7 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
               </svg>
             </AnimatedButton>
             {gridMenuOpen && (
-              <div className="multigrid-menu nodrag" onClick={(e) => e.stopPropagation()}>
+              <div ref={gridMenuRef} className={`multigrid-menu nodrag${gridMenuBelow ? ' multigrid-menu--below' : ''}`} onClick={(e) => e.stopPropagation()}>
                 <div className="multigrid-menu-title">选择宫格</div>
                 {GRID_PRESETS.map((side) => (
                   <button key={side} type="button" className="multigrid-menu-item" onClick={pickGrid(side)}>
@@ -124,6 +156,17 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
                     <span>{side * side}宫格</span>
                   </button>
                 ))}
+                <div className="multigrid-menu-divider" />
+                <button type="button" className="multigrid-menu-item multigrid-menu-item--custom" onClick={pickCustom}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+                    <line x1="3" y1="6" x2="21" y2="6" />
+                    <line x1="12" y1="3" x2="12" y2="21" />
+                    <circle cx="5" cy="6" r="1.5" fill="currentColor" stroke="none" />
+                    <circle cx="19" cy="6" r="1.5" fill="currentColor" stroke="none" />
+                    <circle cx="12" cy="10" r="1.5" fill="currentColor" stroke="none" />
+                  </svg>
+                  <span>自定义裁切</span>
+                </button>
               </div>
             )}
           </div>

@@ -16,7 +16,7 @@ import ResizeHandle from './shared/ResizeHandle';
 import NodeError from './shared/NodeError';
 import { useNodeRename } from './shared/useNodeRename';
 import { useAppStore, generateId } from '../../store/useAppStore';
-import { cropImageCell, computeImageNodeDimensions } from './shared/image/imageUtils';
+import { cropImageCell, cropImageByRanges, computeImageNodeDimensions } from './shared/image/imageUtils';
 import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 
 /** 拖出判定阈值（像素）：小于此位移视为误触，不提取 */
@@ -32,6 +32,13 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
   const imageUrl = (data.imageUrl || data.thumbnailUrl) as string | undefined;
   const extracted = (data.storyboardExtracted as boolean[] | undefined) ?? [];
   const overrides = (data.storyboardOverrides as (StoryboardCellOverride | null)[] | undefined) ?? [];
+  const rowPositions = (data.storyboardRowPositions as number[] | undefined) ?? [];
+  const colPositions = (data.storyboardColPositions as number[] | undefined) ?? [];
+  const isCustomGrid = rowPositions.length > 0 || colPositions.length > 0;
+
+  // 行/列边界（含 0 和 100）
+  const hRanges = useMemo(() => (isCustomGrid ? [0, ...rowPositions, 100] : []), [isCustomGrid, rowPositions]);
+  const vRanges = useMemo(() => (isCustomGrid ? [0, ...colPositions, 100] : []), [isCustomGrid, colPositions]);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
@@ -44,26 +51,50 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
     [id, updateNodeData],
   );
 
-  // 均分各格的定位/裁片偏移（百分比）
+  // 计算各格的定位/裁片偏移（百分比）
   const cells = useMemo(() => {
     const arr: { idx: number; r: number; c: number; corner: string; box: React.CSSProperties; img: React.CSSProperties }[] = [];
     const lastRow = rows - 1;
     const lastCol = cols - 1;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const corner = r === 0 && c === 0 ? 'tl' : r === 0 && c === lastCol ? 'tr' : r === lastRow && c === 0 ? 'bl' : r === lastRow && c === lastCol ? 'br' : '';
-        arr.push({
-          idx: r * cols + c,
-          r,
-          c,
-          corner,
-          box: { left: `${(c / cols) * 100}%`, top: `${(r / rows) * 100}%`, width: `${(1 / cols) * 100}%`, height: `${(1 / rows) * 100}%` },
-          img: { width: `${cols * 100}%`, height: `${rows * 100}%`, left: `${-c * 100}%`, top: `${-r * 100}%` },
-        });
+
+    if (isCustomGrid) {
+      // 非均匀宫格：按自定义线位置计算
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const cellTop = hRanges[r];
+          const cellLeft = vRanges[c];
+          const cellH = hRanges[r + 1] - hRanges[r];
+          const cellW = vRanges[c + 1] - vRanges[c];
+          const corner = r === 0 && c === 0 ? 'tl' : r === 0 && c === lastCol ? 'tr' : r === lastRow && c === 0 ? 'bl' : r === lastRow && c === lastCol ? 'br' : '';
+          arr.push({
+            idx: r * cols + c,
+            r, c, corner,
+            box: { left: `${cellLeft}%`, top: `${cellTop}%`, width: `${cellW}%`, height: `${cellH}%` },
+            img: {
+              width: `${(100 / cellW) * 100}%`,
+              height: `${(100 / cellH) * 100}%`,
+              left: `${-(cellLeft / cellW) * 100}%`,
+              top: `${-(cellTop / cellH) * 100}%`,
+            },
+          });
+        }
+      }
+    } else {
+      // 均分宫格：原逻辑
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const corner = r === 0 && c === 0 ? 'tl' : r === 0 && c === lastCol ? 'tr' : r === lastRow && c === 0 ? 'bl' : r === lastRow && c === lastCol ? 'br' : '';
+          arr.push({
+            idx: r * cols + c,
+            r, c, corner,
+            box: { left: `${(c / cols) * 100}%`, top: `${(r / rows) * 100}%`, width: `${(1 / cols) * 100}%`, height: `${(1 / rows) * 100}%` },
+            img: { width: `${cols * 100}%`, height: `${rows * 100}%`, left: `${-c * 100}%`, top: `${-r * 100}%` },
+          });
+        }
       }
     }
     return arr;
-  }, [rows, cols]);
+  }, [rows, cols, isCustomGrid, hRanges, vRanges]);
 
   // ── 双击进入/退出编辑 ──
   const toggleEditing = useCallback((e: React.MouseEvent) => {
@@ -137,7 +168,9 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
       store.commitToHistory();
 
       try {
-        const cell = await cropImageCell(imageUrl, c, r, cols, rows);
+        const cell = isCustomGrid
+          ? await cropImageByRanges(imageUrl, hRanges, vRanges, r, c)
+          : await cropImageCell(imageUrl, c, r, cols, rows);
         let assetUrl = cell.dataUrl;
         let filePath: string | undefined;
         const projectId = store.currentProjectId;
@@ -161,7 +194,7 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
         store.updateNodeData(id, { storyboardExtracted: rollback } as Partial<BaseNodeData>);
       }
     },
-    [id, imageUrl, cols, rows, extracted, overrides, screenToFlowPosition],
+    [id, imageUrl, cols, rows, isCustomGrid, hRanges, vRanges, extracted, overrides, screenToFlowPosition],
   );
 
   const startCellDrag = useCallback(

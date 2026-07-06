@@ -55,8 +55,10 @@ export interface BaseNodeData {
   style?: string;               // 画风 ID（如 'realistic'、'anime'）
   error?: string;             // 错误信息
   // ── 宫格分镜（ai-storyboard）──
-  storyboardCols?: number;              // 列数（均分）
-  storyboardRows?: number;              // 行数（均分）
+  storyboardCols?: number;              // 列数
+  storyboardRows?: number;              // 行数
+  storyboardRowPositions?: number[];    // 自定义横线位置百分比（有序，不含 0/100），非均匀裁切时使用
+  storyboardColPositions?: number[];    // 自定义竖线位置百分比（有序，不含 0/100），非均匀裁切时使用
   storyboardExtracted?: boolean[];      // 各格是否已被拖出提取（行优先），已提取的格显示空占位
   storyboardOverrides?: (StoryboardCellOverride | null)[]; // 各格被拖入的图片（覆盖源图裁片显示）
   [key: string]: unknown;

@@ -60,6 +60,38 @@ export async function cropImageCell(
   return { dataUrl: canvas.toDataURL('image/png'), width: w, height: h };
 }
 
+/**
+ * 按百分比区域裁切图像（非均匀网格用）。
+ * @param hRanges 行边界百分比数组（如 [0, 20, 70, 100]）
+ * @param vRanges 列边界百分比数组（如 [0, 30, 100]）
+ * @param row 第几行（0-based）
+ * @param col 第几列（0-based）
+ */
+export async function cropImageByRanges(
+  imageUrl: string,
+  hRanges: number[],
+  vRanges: number[],
+  row: number,
+  col: number,
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const img = await loadSafeImage(imageUrl);
+  const natW = img.naturalWidth;
+  const natH = img.naturalHeight;
+  const x0 = Math.round((vRanges[col] / 100) * natW);
+  const x1 = Math.round((vRanges[col + 1] / 100) * natW);
+  const y0 = Math.round((hRanges[row] / 100) * natH);
+  const y1 = Math.round((hRanges[row + 1] / 100) * natH);
+  const w = Math.max(1, x1 - x0);
+  const h = Math.max(1, y1 - y0);
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('canvas 2d context unavailable');
+  ctx.drawImage(img, x0, y0, w, h, 0, 0, w, h);
+  return { dataUrl: canvas.toDataURL('image/png'), width: w, height: h };
+}
+
 /** 根据 data URL 计算图像节点的建议尺寸 */
 export function computeImageNodeDimensions(
   dataUrl: string,

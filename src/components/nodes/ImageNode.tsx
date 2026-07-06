@@ -12,6 +12,7 @@ import FreeAnglePanel from './shared/image/FreeAnglePanel';
 import MattingEditor from './shared/image/MattingEditor';
 import AnnotateEditor from './shared/image/AnnotateEditor';
 import CropEditor from './shared/image/CropEditor';
+import CustomGridEditor from './shared/image/CustomGridEditor';
 import ExpandEditor from './shared/image/ExpandEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
@@ -273,6 +274,57 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       store.showToast('裁切完成，已创建新节点');
     },
     [updateNodeData],
+  );
+
+  /* ════════════════════════════════════════════
+     CustomGrid State — 自定义宫格裁切
+     ════════════════════════════════════════════ */
+  const [isCustomGrid, setIsCustomGrid] = useState(false);
+
+  const handleOpenCustomGrid = useCallback(() => setIsCustomGrid(true), []);
+  const handleCloseCustomGrid = useCallback(() => setIsCustomGrid(false), []);
+
+  /** 确认自定义宫格：按实际线位置生成 StoryboardNode */
+  const handleCustomGridConfirm = useCallback(
+    async (hPercentages: number[], vPercentages: number[]) => {
+      setIsCustomGrid(false);
+      const store = useAppStore.getState();
+      const imageUrl = (data.imageUrl || data.thumbnailUrl) as string | undefined;
+      if (!imageUrl) {
+        store.showToast('无可裁切的图像', 'error');
+        return;
+      }
+
+      const rows = hPercentages.length + 1;
+      const cols = vPercentages.length + 1;
+
+      store.commitToHistory();
+      const srcPos = store.nodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
+      const dims = await computeImageNodeDimensions(imageUrl);
+
+      store.addNode({
+        id: `node-${generateId()}`,
+        type: 'ai-storyboard',
+        position: { x: srcPos.x + nodeWidth + 60, y: srcPos.y },
+        data: {
+          label: `${(data.label as string) || '图像'} 自定义宫格${rows}×${cols}`,
+          type: 'ai-storyboard',
+          role: 'source',
+          status: 'success',
+          imageUrl,
+          filePath: data.filePath as string | undefined,
+          storyboardRows: rows,
+          storyboardCols: cols,
+          storyboardRowPositions: hPercentages,
+          storyboardColPositions: vPercentages,
+          nodeWidth: dims.nodeWidth,
+          nodeHeight: dims.nodeHeight,
+        } as BaseNodeData,
+      });
+      store.commitToHistory();
+      store.showToast(`已按线生成 ${rows}×${cols} 自定义宫格节点`);
+    },
+    [id, data.imageUrl, data.thumbnailUrl, data.label, data.filePath, nodeWidth],
   );
 
   /* ════════════════════════════════════════════
@@ -936,6 +988,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               onMultiAngle={handleOpenFreeAngle}
               onExpand={handleOpenExpand}
               onMultiGrid={handleMultiGrid}
+              onCustomGrid={handleOpenCustomGrid}
               onCompose={handleOpenCompose}
               onCrop={handleOpenCrop}
               onFullscreen={handleOpenFullscreen}
@@ -999,6 +1052,16 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           onClose={handleCloseCrop}
           onStart={handleCropStart}
           onSave={handleCropSave}
+        />
+      )}
+
+      {/* CustomGrid Editor */}
+      {isCustomGrid && (
+        <CustomGridEditor
+          isOpen={isCustomGrid}
+          imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+          onClose={handleCloseCustomGrid}
+          onConfirm={handleCustomGridConfirm}
         />
       )}
 
