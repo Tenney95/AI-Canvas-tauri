@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StoryboardNode 宫格分镜 — 单节点内把源图按均分网格拼接展示（多图拼接）。
  *
  * 各格用「超尺寸源图 + 负偏移」呈现对应裁片（object-fit:fill）；分割线固定不可拖拽。
@@ -239,7 +239,7 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
       <div
         className={`node storyboard-node ${selected ? 'selected' : ''} ${editing ? 'editing' : ''}`}
         style={{ height: nodeHeight }}
-        title={editing ? undefined : '双击进入编辑'}
+        data-tooltip={editing ? undefined : '双击进入编辑'}
         onDoubleClick={toggleEditing}
       >
         <div className="storyboard-grid">

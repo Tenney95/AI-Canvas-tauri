@@ -1,4 +1,4 @@
-/**
+﻿/**
  * TextNodeToolbar 文本节点浮动工具栏 — 鼠标悬停文本节点时显示，提供复制、清除空行、全屏操作
  */
 import { memo, useState, useCallback } from 'react';
@@ -60,7 +60,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
     <div className="node-floating-toolbar text-toolbar">
       <AnimatedButton
         className="ftb-btn icon-only act-copy rounded-[6px]"
-        title={copied ? '已复制' : '复制'}
+        data-tooltip={copied ? '已复制' : '复制'}
         aria-label="复制"
         onClick={handleCopy}
       >
@@ -77,7 +77,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
       </AnimatedButton>
       <AnimatedButton
         className="ftb-btn icon-only act-clear-empty-lines rounded-[6px]"
-        title="清除空行"
+        data-tooltip="清除空行"
         aria-label="清除空行"
         onClick={handleClearEmptyLines}
       >
@@ -91,7 +91,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
       </AnimatedButton>
       <AnimatedButton
         className="ftb-btn icon-only act-show-prompt rounded-[6px]"
-        title="查看提示词"
+        data-tooltip="查看提示词"
         aria-label="查看提示词"
         onClick={handleShowPrompt}
       >
@@ -102,7 +102,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
       </AnimatedButton>
       <AnimatedButton
         className="ftb-btn icon-only act-fullscreen rounded-[6px]"
-        title="全屏显示"
+        data-tooltip="全屏显示"
         aria-label="全屏显示"
         onClick={handleFullscreen}
       >

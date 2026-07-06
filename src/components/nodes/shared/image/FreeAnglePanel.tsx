@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FreeAnglePanel — 自由角度控制面板
  * 点击 ImageNodeToolbar 的"控制角度"按钮后弹出，通过拖拽/滑块控制 3D 正方体角度
  */
@@ -152,7 +152,7 @@ function FreeAnglePanel({ isOpen, imageUrl, onClose, onGenerate }: FreeAnglePane
     <FullscreenOverlay
       isOpen={isOpen}
       onClose={onClose}
-      title="拖拽正方体改变角度"
+      data-tooltip="拖拽正方体改变角度"
       panelWidth="520px"
       bodyClassName="fa-body"
     >
@@ -247,7 +247,7 @@ function FreeAnglePanel({ isOpen, imageUrl, onClose, onGenerate }: FreeAnglePane
           <button
             type="button"
             className="fa-debug-btn"
-            title="调试 API 参数"
+            data-tooltip="调试 API 参数"
             aria-label="调试 API 参数"
             onClick={() => { /* TODO: 调试 */ }}
           >
@@ -257,7 +257,7 @@ function FreeAnglePanel({ isOpen, imageUrl, onClose, onGenerate }: FreeAnglePane
           </button>
           <button
             className="fa-gen-btn"
-            title="生成"
+            data-tooltip="生成"
             aria-label="生成"
             onClick={handleGenerate}
           >

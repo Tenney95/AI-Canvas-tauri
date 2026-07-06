@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ConnectedNodesPreview — 已连线节点内容缩略图条
  * 显示在 PromptPanel 上方，展示所有 predecessor 节点的输出缩略图，
  * 点击可快速 @提及 对应节点。
@@ -137,7 +137,7 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
             key={node.id}
             type="button"
             className={`connected-node-thumb ${!node.hasOutput ? 'thumb-idle' : ''} thumb-${node.outputType}`}
-            title={`${node.label}${node.displayId != null ? ` #${node.displayId}` : ''} — 点击引用`}
+            data-tooltip={`${node.label}${node.displayId != null ? ` #${node.displayId}` : ''} — 点击引用`}
             onClick={() => handleClick(node.id, node.label)}
             onHoverStart={() => onHoverStart(idx)}
             onHoverEnd={onHoverEnd}

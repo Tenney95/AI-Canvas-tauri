@@ -1,4 +1,4 @@
-/**
+﻿/**
  * VideoNodeToolbar 视频节点浮动工具栏 — 提供视频帧截取等快捷操作
  */
 import { memo, useCallback } from 'react';
@@ -21,7 +21,7 @@ function VideoNodeToolbar({ onCaptureFrame }: VideoNodeToolbarProps) {
     <div className="node-floating-toolbar text-toolbar nodrag">
       <AnimatedButton
         className="ftb-btn icon-only act-capture-frame rounded-[6px]"
-        title="截取当前帧"
+        data-tooltip="截取当前帧"
         aria-label="截取当前帧"
         onClick={handleCaptureFrame}
       >

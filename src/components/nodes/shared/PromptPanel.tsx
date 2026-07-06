@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
 import { useState, useRef, useCallback } from 'react';
@@ -249,7 +249,7 @@ export default function PromptPanel({
               ref={slashBtnRef}
               type="button"
               className={`prompt-btn prompt-slash-btn${slashOpen ? ' slash-active' : ''}`}
-              title="预设提示词"
+              data-tooltip="预设提示词"
               onClick={handleButtonSlash}
             >
               /
@@ -259,7 +259,7 @@ export default function PromptPanel({
             <button
               type="button"
               className="prompt-btn prompt-debug-btn"
-              title="调试 API 参数"
+              data-tooltip="调试 API 参数"
               onClick={(e) => { e.stopPropagation(); onDebug(); }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -272,7 +272,7 @@ export default function PromptPanel({
               type="button"
               className={`prompt-btn prompt-pass-through-btn ${!prompt.trim() ? 'disabled' : ''}`}
               disabled={!canGenerate || !prompt.trim()}
-              title="直接输出（跳过模型调用）"
+              data-tooltip="直接输出（跳过模型调用）"
               onClick={(e) => {
                 e.stopPropagation();
                 if (prompt.trim()) onPassThrough();
@@ -288,7 +288,7 @@ export default function PromptPanel({
             type="button"
             className={`prompt-btn prompt-submit-btn ${!canGenerate || !prompt.trim() ? 'disabled' : ''}`}
             disabled={!canGenerate || !prompt.trim()}
-            title="调用模型生成"
+            data-tooltip="调用模型生成"
             onClick={(e) => {
               e.stopPropagation();
               if (canGenerate && prompt.trim()) handleSubmit();

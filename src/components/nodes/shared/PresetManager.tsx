@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PresetManager 快捷指令管理器 — 管理用户快捷提示词的增删改查
  * 使用 createPortal 渲染到 body，避免受 React Flow 节点堆叠上下文影响
  * 使用 framer-motion 驱动面板进出场动画
@@ -364,7 +364,7 @@ export default function PresetManager() {
                 >
                   <label
                     className="preset-manager-list-thumb"
-                    title="上传缩略图"
+                    data-tooltip="上传缩略图"
                     data-tooltip-source="native-title"
                     data-native-title="上传缩略图"
                     onClick={(e) => e.stopPropagation()}

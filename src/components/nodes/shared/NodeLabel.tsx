@@ -1,4 +1,4 @@
-/**
+﻿/**
  * NodeLabel 节点标签 — 渲染节点顶部标题栏，按节点类型显示对应图标/颜色/编号/Beta 角标
  * 支持双击标签文本进行重命名
  */
@@ -78,7 +78,7 @@ export default function NodeLabel({ kind, label, displayId, isBeta, nodeId: _nod
         <span
           className="node-label-text text-xs font-medium text-canvas-text truncate flex-1 min-w-0 cursor-default"
           onDoubleClick={handleDoubleClick}
-          title="双击重命名"
+          data-tooltip="双击重命名"
         >
           {label}
         </span>

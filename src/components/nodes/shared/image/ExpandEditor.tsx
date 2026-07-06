@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ExpandEditor — 图像扩图（outpainting）全屏编辑器
  * 与 CropEditor 镜像对称：CropEditor 往内裁，ExpandEditor 往外扩。
  * 选择目标画幅 → 原图居中放入更大的目标画布 → 四周透明留白交给 AI 补全。
@@ -278,7 +278,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
     <FullscreenOverlay
       isOpen={isOpen}
       onClose={handleClose}
-      title="扩图"
+      data-tooltip="扩图"
       hidePanel
       className="crop-overlay expand-overlay"
     >
@@ -294,7 +294,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
           <AnimatedButton
             type="button"
             className="crop-aspect-btn crop-aspect-close act-cancel"
-            title="关闭 (Esc)"
+            data-tooltip="关闭 (Esc)"
             aria-label="关闭"
             onClick={handleClose}
           >
@@ -315,7 +315,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
           <div className="crop-aspect-spacer" />
           <AnimatedButton
             className="crop-action-btn confirm"
-            title="开始扩图"
+            data-tooltip="开始扩图"
             aria-label="开始扩图"
             onClick={handleConfirm}
           >

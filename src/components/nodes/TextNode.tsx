@@ -1,4 +1,4 @@
-/**
+﻿/**
  * TextNode 文本节点 — 在画布上渲染文本内容，支持编辑、复制、清除空行、全屏、拖拽调整大小
  */
 import { memo, useState, useCallback, useRef, useEffect } from 'react';
@@ -245,7 +245,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
             <button
               className="node-upload-btn"
               onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-              title="上传文本文件"
+              data-tooltip="上传文本文件"
               aria-label="上传文本文件"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
@@ -261,7 +261,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
               className={`text-output-content compact nowheel${selectingText ? ' is-selecting nodrag' : ''}`}
               onDoubleClick={enterTextSelect}
               onCopy={() => { requestAnimationFrame(() => setSelectingText(false)); }}
-              title={selectingText ? undefined : '双击可选中复制'}
+              data-tooltip={selectingText ? undefined : '双击可选中复制'}
             >
               {data.output}
             </div>

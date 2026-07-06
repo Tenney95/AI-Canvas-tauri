@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ImageNode 图像节点 — 在画布上渲染图像内容，支持上传/粘贴图片、遮罩编辑、工具栏、全屏预览
  */
 import { memo, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
@@ -853,7 +853,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               <button
                 className="node-upload-btn"
                 onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-                title="上传图片"
+                data-tooltip="上传图片"
                 aria-label="上传图片"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
@@ -1083,7 +1083,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       <FullscreenOverlay
         isOpen={isFullscreen}
         onClose={handleCloseFullscreen}
-        title={(data.label as string) || '图片预览'}
+        data-tooltip={(data.label as string) || '图片预览'}
         hidePanel
       >
         {fullscreenError ? (

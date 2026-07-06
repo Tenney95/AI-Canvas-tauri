@@ -1,4 +1,4 @@
-/**
+﻿/**
  * VideoParamSelector 视频参数选择器 — 弹出面板配置视频分辨率、帧率、帧数等生成参数
  */
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -106,7 +106,7 @@ export default function VideoParamSelector({
                 分辨率
                 <span
                   className="rh-tip"
-                  title="分辨率越高细节越清晰、边缘更稳定。同时显存占用与生成耗时会明显增加。"
+                  data-tooltip="分辨率越高细节越清晰、边缘更稳定。同时显存占用与生成耗时会明显增加。"
                 >
                   !
                 </span>
@@ -134,7 +134,7 @@ export default function VideoParamSelector({
                   <span>帧率</span>
                   <span
                     className="rh-tip"
-                    title="帧率越高运动更顺滑、动作更连贯。但生成更慢、成本更高。常用 24 帧；想更快或更省可选 16 帧。"
+                    data-tooltip="帧率越高运动更顺滑、动作更连贯。但生成更慢、成本更高。常用 24 帧；想更快或更省可选 16 帧。"
                   >
                     !
                   </span>
@@ -160,7 +160,7 @@ export default function VideoParamSelector({
                   <span>生成时长（帧数）</span>
                   <span
                     className="rh-tip"
-                    title="帧数决定生成片段的长度：数值越大视频越长、耗时越高。填 0 表示按源视频全长处理（适合整段替换）。"
+                    data-tooltip="帧数决定生成片段的长度：数值越大视频越长、耗时越高。填 0 表示按源视频全长处理（适合整段替换）。"
                   >
                     !
                   </span>

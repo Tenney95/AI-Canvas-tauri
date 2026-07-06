@@ -567,6 +567,14 @@
   font-weight: 600;
   color: var(--theme-text);
   margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.assets-panel-subtitle {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--theme-text-muted);
 }
 .assets-panel-close {
   width: 28px;
@@ -1136,6 +1144,11 @@
   font-size: 12px;
   color: var(--theme-text-muted);
   font-variant-numeric: tabular-nums;
+}
+.asset-search-hint {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  opacity: 0.7;
 }
 .asset-search-refresh {
   display: flex;

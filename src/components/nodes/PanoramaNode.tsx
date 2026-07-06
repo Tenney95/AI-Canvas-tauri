@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PanoramaNode 360全景图节点 — Three.js WebGL 全景查看器
  * 支持图片/360预览双模式切换、上传、全屏、日夜景切换
  */
@@ -420,7 +420,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
               <button
                 className="node-upload-btn"
                 onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-                title="上传全景图"
+                data-tooltip="上传全景图"
                 aria-label="上传全景图"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
@@ -540,7 +540,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
           <AnimatedButton
             className="pano-fs-btn"
             onClick={handleScreenshot}
-            title="截图并创建图片节点"
+            data-tooltip="截图并创建图片节点"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
               <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />

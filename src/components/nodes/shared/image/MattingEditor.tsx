@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MattingEditor — 图像遮罩编辑全屏覆盖层（portal 到 body）
  * 封装抠图画布、笔画追踪、历史管理、键盘快捷键
  */
@@ -543,7 +543,7 @@ export default function MattingEditor({
             type="button"
             className="matting-zoom-indicator"
             onClick={resetView}
-            title="重置视图"
+            data-tooltip="重置视图"
           >
             {Math.round(scale * 100)}% · 重置
           </button>

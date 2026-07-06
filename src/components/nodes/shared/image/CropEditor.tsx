@@ -1,4 +1,4 @@
-/**
+﻿/**
  * CropEditor — 图像裁切全屏编辑器
  * 基于 react-image-crop，提供自由裁切 + 预设宽高比
  */
@@ -313,7 +313,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     <FullscreenOverlay
       isOpen={isOpen}
       onClose={handleClose}
-      title="裁切"
+      data-tooltip="裁切"
       hidePanel
       className="crop-overlay"
     >
@@ -329,7 +329,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
         <AnimatedButton
           type="button"
           className="crop-aspect-btn crop-aspect-close act-cancel"
-          title="关闭 (Esc)"
+          data-tooltip="关闭 (Esc)"
           aria-label="关闭"
           onClick={handleClose}
         >
@@ -384,7 +384,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
         <div className="crop-aspect-spacer" />
         <AnimatedButton
           className="crop-action-btn confirm"
-          title="确认裁切"
+          data-tooltip="确认裁切"
           aria-label="确认裁切"
           disabled={mode === 'pen' ? !penReady : !completedCrop}
           onClick={handleConfirm}

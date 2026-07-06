@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StyleSelector — 画风选择器，PromptPanel 底部按钮 + ModalOverlay 弹出网格面板
  * 支持用户自定义画风（名称 + 提示词 + 图片）
  */
@@ -182,7 +182,7 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
       <button
         type="button"
         className={`prompt-btn style-selector-btn${open ? ' style-active' : ''}${selectedStyle ? ' has-style' : ''}`}
-        title={selectedName ? `画风: ${selectedName}` : '选择画风'}
+        data-tooltip={selectedName ? `画风: ${selectedName}` : '选择画风'}
         onClick={handleToggle}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -204,7 +204,7 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
                 type="button"
                 className="style-add-btn"
                 onClick={openAddForm}
-                title="添加自定义画风"
+                data-tooltip="添加自定义画风"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="12" y1="5" x2="12" y2="19" />
@@ -250,7 +250,7 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
                     type="button"
                     className="style-card-delete"
                     onClick={(e) => handleDeleteCustom(e, s.id)}
-                    title="删除此画风"
+                    data-tooltip="删除此画风"
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <line x1="18" y1="6" x2="6" y2="18" />

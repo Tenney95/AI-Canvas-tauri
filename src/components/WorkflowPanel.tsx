@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WorkflowPanel 工作流面板 — 管理 RunningHUB 工作流定义，支持导入 JSON、分类筛选、拖放到画布
  * 使用 framer-motion 驱动面板进出场动画
  */
@@ -497,7 +497,7 @@ export default function WorkflowPanel() {
                           type="button"
                           className="wf-item-del"
                           onClick={(e) => handleDelete(wf.id, e)}
-                          title="删除工作流"
+                          data-tooltip="删除工作流"
                           whileHover={{ scale: 1.1 }}
                           whileTap={{ scale: 0.9 }}
                         >

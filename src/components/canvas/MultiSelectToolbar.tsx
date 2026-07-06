@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MultiSelectToolbar 多选工具栏 — 选中 ≥2 个节点时悬浮显示，支持批量执行和对齐操作
  */
 import { memo, useMemo, useCallback, useState } from 'react';
@@ -320,7 +320,7 @@ function MultiSelectToolbar() {
     >
       {/* Batch execute */}
       <AnimatedButton
-        title="批量生成"
+        data-tooltip="批量生成"
         disabled={batchRunning}
         onClick={executeBatch}
         className="w-8 h-8 rounded flex items-center justify-center transition-colors hover:text-green-300 hover:bg-green-500/15 disabled:opacity-30 disabled:cursor-not-allowed"
@@ -334,7 +334,7 @@ function MultiSelectToolbar() {
       {ALIGN_ACTIONS.map(({ icon, label, key }) => (
         <AnimatedButton
           key={key}
-          title={label}
+          data-tooltip={label}
           onClick={() => doAlign(key as AlignKey)}
           className="w-8 h-8 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
         >
@@ -349,7 +349,7 @@ function MultiSelectToolbar() {
           {DISTRIBUTE_ACTIONS.map(({ icon, label, key }) => (
             <AnimatedButton
               key={key}
-              title={label}
+              data-tooltip={label}
               onClick={() => doDistribute(key as DistributeKey)}
               className="w-8 h-8 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
             >

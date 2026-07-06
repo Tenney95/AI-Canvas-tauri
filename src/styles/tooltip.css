@@ -1,1 +1,62 @@
-/* 提示已回退为浏览器默认 title，无自定义样式。 */
+/* ============================================
+   自定义 Tooltip — CSS ::after 伪元素方案
+   用法：<div data-tooltip="提示文字">
+   可选位置：data-tooltip-pos="top" | "bottom" | "left" | "right"，默认 top
+   ============================================ */
+
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--theme-surface, #14141c);
+  color: var(--theme-text, #e8e8ed);
+  border: 1px solid var(--theme-border, #2a2a3a);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease 1s;
+  z-index: 9999;
+}
+
+[data-tooltip]:hover::after {
+  opacity: 1;
+}
+
+/* 下方 */
+[data-tooltip-pos="bottom"]::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+  transform: translateX(-50%);
+}
+
+/* 左侧 */
+[data-tooltip-pos="left"]::after {
+  right: calc(100% + 6px);
+  left: auto;
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* 右侧 */
+[data-tooltip-pos="right"]::after {
+  left: calc(100% + 6px);
+  right: auto;
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+}

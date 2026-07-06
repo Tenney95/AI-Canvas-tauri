@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ZoomableImage — 全屏图片缩放/平移查看器
  *
  * 能力：
@@ -227,7 +227,7 @@ export default function ZoomableImage({ src, alt = '', className = '', onError, 
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
         </button>
-        <button className="zoom-percent" onClick={reset} aria-label="复位缩放" title="点击复位">
+        <button className="zoom-percent" onClick={reset} aria-label="复位缩放" data-tooltip="点击复位">
           {Math.round(scale * 100)}%
         </button>
         <button className="zoom-btn" onClick={() => stepZoom(1)} aria-label="放大" disabled={scale >= MAX_SCALE}>

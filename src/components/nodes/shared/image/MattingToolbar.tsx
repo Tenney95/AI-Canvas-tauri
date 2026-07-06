@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MattingToolbar 遮罩编辑工具栏 — 图像遮罩编辑模式下的工具条，提供画笔(绘制/擦除)、橡皮擦、油漆桶及笔刷大小调整
  */
 import { memo, useCallback, useState, useRef } from 'react';
@@ -95,7 +95,7 @@ function MattingToolbar({
       {/* Cancel */}
       <AnimatedButton
         className="matting-btn icon-only act-cancel"
-        title="取消 (Esc)"
+        data-tooltip="取消 (Esc)"
         aria-label="取消"
         onClick={handleCancel}
       >
@@ -110,7 +110,7 @@ function MattingToolbar({
       <AnimatedButton
         className={`matting-btn icon-only tool-btn${activeTool === 'brush' ? ' active' : ''}`}
         data-tool="brush"
-        title={activeTool === 'brush' ? `画笔 ${brushMode === 'alpha' ? '(擦除模式)' : '(绘制模式)'} B` : '画笔 B'}
+        data-tooltip={activeTool === 'brush' ? `画笔 ${brushMode === 'alpha' ? '(擦除模式)' : '(绘制模式)'} B` : '画笔 B'}
         aria-label="画笔"
         onClick={() => handleToolSelect('brush')}
       >
@@ -132,7 +132,7 @@ function MattingToolbar({
       <AnimatedButton
         className={`matting-btn icon-only tool-btn${activeTool === 'eraser' ? ' active' : ''}`}
         data-tool="eraser"
-        title="橡皮擦 E"
+        data-tooltip="橡皮擦 E"
         aria-label="橡皮擦"
         onClick={() => handleToolSelect('eraser')}
       >
@@ -145,7 +145,7 @@ function MattingToolbar({
       <AnimatedButton
         className={`matting-btn icon-only tool-btn${activeTool === 'bucket' ? ' active' : ''}`}
         data-tool="bucket"
-        title="油漆桶 G"
+        data-tooltip="油漆桶 G"
         aria-label="油漆桶"
         onClick={() => handleToolSelect('bucket')}
       >
@@ -178,7 +178,7 @@ function MattingToolbar({
       {/* Undo */}
       <AnimatedButton
         className="matting-btn icon-only act-undo"
-        title="撤销 Ctrl+Z"
+        data-tooltip="撤销 Ctrl+Z"
         aria-label="撤销"
         onClick={handleUndo}
         disabled={!canUndo}
@@ -192,7 +192,7 @@ function MattingToolbar({
       {/* Redo */}
       <AnimatedButton
         className="matting-btn icon-only act-redo"
-        title="重做 Ctrl+Y"
+        data-tooltip="重做 Ctrl+Y"
         aria-label="重做"
         onClick={handleRedo}
         disabled={!canRedo}
@@ -206,7 +206,7 @@ function MattingToolbar({
       {/* Clear */}
       <AnimatedButton
         className="matting-btn icon-only act-clear"
-        title="清空 R"
+        data-tooltip="清空 R"
         aria-label="清空"
         onClick={handleClear}
       >
@@ -220,7 +220,7 @@ function MattingToolbar({
       {/* Save */}
       <AnimatedButton
         className="matting-btn matting-save act-save"
-        title="保存"
+        data-tooltip="保存"
         aria-label="保存"
         onClick={handleSave}
       >

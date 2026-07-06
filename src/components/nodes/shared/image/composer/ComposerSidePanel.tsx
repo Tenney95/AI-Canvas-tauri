@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ComposerSidePanel — 右侧图层列表 + 选中图层属性
  */
 import { useMemo } from 'react';
@@ -60,13 +60,13 @@ export default function ComposerSidePanel({ composer, nodeId, onMatteSubject, ma
               <button
                 type="button"
                 className="composer-icon-btn"
-                title={l.visible ? '隐藏' : '显示'}
+                data-tooltip={l.visible ? '隐藏' : '显示'}
                 onClick={(e) => { e.stopPropagation(); updateLayer(l.id, { visible: !l.visible }); }}
               >
                 {l.visible ? '👁' : '🚫'}
               </button>
               <span className="composer-layer-name">{l.name}</span>
-              <button type="button" className="composer-icon-btn danger" title="删除" onClick={(e) => { e.stopPropagation(); removeLayer(l.id); }}>✕</button>
+              <button type="button" className="composer-icon-btn danger" data-tooltip="删除" onClick={(e) => { e.stopPropagation(); removeLayer(l.id); }}>✕</button>
             </div>
           ))}
         </div>
@@ -145,10 +145,10 @@ export default function ComposerSidePanel({ composer, nodeId, onMatteSubject, ma
           <div className="composer-field">
             <span>层级</span>
             <div className="composer-seg">
-              <button type="button" onClick={() => reorderLayer(selectedLayer.id, 'bottom')} title="置底">⤓</button>
-              <button type="button" onClick={() => reorderLayer(selectedLayer.id, 'down')} title="下移">▽</button>
-              <button type="button" onClick={() => reorderLayer(selectedLayer.id, 'up')} title="上移">△</button>
-              <button type="button" onClick={() => reorderLayer(selectedLayer.id, 'top')} title="置顶">⤒</button>
+              <button type="button" onClick={() => reorderLayer(selectedLayer.id, 'bottom')} data-tooltip="置底">⤓</button>
+              <button type="button" onClick={() => reorderLayer(selectedLayer.id, 'down')} data-tooltip="下移">▽</button>
+              <button type="button" onClick={() => reorderLayer(selectedLayer.id, 'up')} data-tooltip="上移">△</button>
+              <button type="button" onClick={() => reorderLayer(selectedLayer.id, 'top')} data-tooltip="置顶">⤒</button>
             </div>
           </div>
 
@@ -169,7 +169,7 @@ export default function ComposerSidePanel({ composer, nodeId, onMatteSubject, ma
               key={c.id}
               type="button"
               className="composer-file-card"
-              title={`${c.label}（点击加入图层）`}
+              data-tooltip={`${c.label}（点击加入图层）`}
               onClick={() => (c.img ? addImageLayer(c.img, c.label) : c.text && addText(c.text, c.label))}
             >
               {c.img ? (

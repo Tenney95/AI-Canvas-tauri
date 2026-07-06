@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MarkdownNode 源节点 — 支持 .md 文件的编辑、预览与自动本地保存
  */
 import { memo, useState, useCallback, useMemo, useRef, useEffect } from 'react';
@@ -242,7 +242,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
               className="markdown-mode-btn"
               disabled={isUploading}
               onClick={(e) => { e.stopPropagation(); onUpload(); }}
-              title="上传 .md 文件"
+              data-tooltip="上传 .md 文件"
             >
               {isUploading ? (
                 <div className="spinner-sm" />
@@ -258,7 +258,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
               type="button"
               className="markdown-mode-btn"
               onClick={handleCopy}
-              title={copied ? '已复制' : '复制文本'}
+              data-tooltip={copied ? '已复制' : '复制文本'}
               aria-label={copied ? '已复制' : '复制文本'}
             >
               {copied ? (
@@ -276,7 +276,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
               type="button"
               className="markdown-mode-btn"
               onClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
-              title="全屏显示"
+              data-tooltip="全屏显示"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />

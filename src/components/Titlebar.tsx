@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Titlebar 自定义窗口标题栏 — Tauri 环境下替代系统标题栏，提供最小化/最大化/关闭控制按钮
  */
 import { useState, useEffect } from 'react';
@@ -147,7 +147,7 @@ function MacTrafficLight({
     <AnimatedButton
       onClick={onClick}
       aria-label={label}
-      title={label}
+      data-tooltip={label}
       scale={1.08}
       tapScale={0.92}
       className={`group flex h-3 w-3 items-center justify-center rounded-full

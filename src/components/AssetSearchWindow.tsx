@@ -1,4 +1,4 @@
-/**
+﻿/**
  * AssetSearchWindow — 独立「资源搜索」窗口（由 Alt+Space / Ctrl+Space 唤起）
  *
  * 跨项目 / 全局资产库 / 外部文件夹聚合所有文件，支持按文件名 + 标签搜索，
@@ -258,17 +258,18 @@ export default function AssetSearchWindow() {
       <div className="asset-search-header" data-tauri-drag-region>
         <h1 className="asset-search-title">资源搜索</h1>
         <span className="asset-search-total">{filtered.length} / {files.length}</span>
+        <span className="asset-search-hint">拖拽至画布可创建节点</span>
         <div className="asset-search-winctrls">
-          <button type="button" className="asset-search-refresh" onClick={loadAll} disabled={loading} title="刷新">
+          <button type="button" className="asset-search-refresh" onClick={loadAll} disabled={loading} data-tooltip="刷新">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
             </svg>
           </button>
-          <button type="button" className="asset-search-winbtn" onClick={minimizeWin} aria-label="最小化" title="最小化">
+          <button type="button" className="asset-search-winbtn" onClick={minimizeWin} aria-label="最小化" data-tooltip="最小化">
             <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0" y="5" width="10" height="1" fill="currentColor" /></svg>
           </button>
-          <button type="button" className="asset-search-winbtn close" onClick={closeWin} aria-label="关闭" title="关闭">
+          <button type="button" className="asset-search-winbtn close" onClick={closeWin} aria-label="关闭" data-tooltip="关闭">
             <svg width="10" height="10" viewBox="0 0 10 10">
               <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.2" />
               <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.2" />
@@ -299,7 +300,7 @@ export default function AssetSearchWindow() {
           className="assets-project-select"
           value={activeSource}
           onChange={(e) => setActiveSource(e.target.value)}
-          title="按项目 / 文件夹筛选"
+          data-tooltip="按项目 / 文件夹筛选"
         >
           {groupedSources.flat.map((s) => (
             <option key={s.key} value={s.key}>{s.label}</option>
@@ -406,10 +407,10 @@ function SearchCard({ file, onReveal, onDragStart }: {
       ? shortFolderName(file.folderRoot || '')
       : '全局';
   return (
-    <div className="assets-waterfall-card anim-card-in" draggable onDragStart={onDragStart} title="拖拽到主窗口画布以添加节点">
+    <div className="assets-waterfall-card anim-card-in" draggable onDragStart={onDragStart} data-tooltip="拖拽到主窗口画布以添加节点" data-tooltip-pos="bottom">
       <AssetThumb assetUrl={file.assetUrl} name={file.name} category={file.category} size={file.size} badge={sourceLabel}>
         <div className="assets-card-actions">
-          <button type="button" className="assets-card-action-btn" title="在文件夹中显示" onClick={onReveal}>
+          <button type="button" className="assets-card-action-btn" data-tooltip="在文件夹中显示" onClick={onReveal}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
             </svg>
@@ -421,7 +422,7 @@ function SearchCard({ file, onReveal, onDragStart }: {
           {tags.map((t) => <span key={t} className="assets-card-tag">{t}</span>)}
         </div>
       )}
-      <div className="assets-card-name" title={file.name}>{file.name}</div>
+      <div className="assets-card-name" data-tooltip={file.name}>{file.name}</div>
     </div>
   );
 }

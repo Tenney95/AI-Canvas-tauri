@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ModelSelector 模型选择器 — 下拉面板选择 AI 模型或工作流，支持按供应商分组折叠、搜索过滤、当前选中高亮
  * 未配置 API Key 的供应商分组自动禁用（锁图标 + tooltip + 不可展开）
  * 自动检测上下空间，向上或向下弹出
@@ -278,7 +278,7 @@ export default function ModelSelector({
                 <button
                   type="button"
                   className={`model-group-header${groupAvailable ? '' : ' disabled'}`}
-                  title={groupAvailable ? undefined : `请先在设置中配置 ${group.name} API Key`}
+                  data-tooltip={groupAvailable ? undefined : `请先在设置中配置 ${group.name} API Key`}
                   onClick={(e) => {
                     e.stopPropagation();
                     toggleGroup(group.id);

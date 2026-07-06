@@ -1,4 +1,4 @@
-/**
+﻿/**
  * AudioNode 音频节点 — 在画布上渲染音频内容，支持上传本地音频、波形可视化、连接其他节点
  */
 import { memo, useCallback, useState, useRef, useEffect } from 'react';
@@ -282,7 +282,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             <button
               className="node-upload-btn"
               onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-              title="上传音频"
+              data-tooltip="上传音频"
               aria-label="上传音频"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">

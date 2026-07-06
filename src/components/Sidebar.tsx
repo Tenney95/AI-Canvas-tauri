@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { createPortal } from 'react-dom';
 import type { JSX } from 'react';
@@ -11,6 +11,7 @@ import type { NodeType } from '../types';
 import { NODE_TYPE_CONFIG } from '../types';
 import { uploadSourceFileToProject } from '../services/fileService';
 import { classifyFile } from '../hooks/useNodeCreation';
+import { checkForUpdate } from '../services/updateService';
 import AnimatedButton from './shared/AnimatedButton';
 
 /**
@@ -268,6 +269,27 @@ function AvatarMenu() {
   const menuRef = useRef<HTMLDivElement>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('0.1.0');
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'no-update' | 'error'>('idle');
+  const [updateMsg, setUpdateMsg] = useState('');
+
+  const handleCheckUpdate = async () => {
+    setUpdateStatus('checking');
+    setUpdateMsg('');
+    try {
+      const result = await checkForUpdate();
+      if (result.updated) {
+        // 更新已自动下载安装，应用即将重启，状态保留
+        setUpdateStatus('no-update');
+        setUpdateMsg('已安装新版本，即将重启');
+      } else {
+        setUpdateStatus('no-update');
+        setUpdateMsg('已是最新版本');
+      }
+    } catch {
+      setUpdateStatus('error');
+      setUpdateMsg('检查失败，请稍后重试');
+    }
+  };
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => {});
@@ -346,6 +368,24 @@ function AvatarMenu() {
             <div>
               <h2 className="text-lg font-semibold text-canvas-text">AI Canvas</h2>
               <p className="text-xs text-canvas-text-secondary">v{appVersion} · 开发预览版</p>
+              <button
+                onClick={handleCheckUpdate}
+                disabled={updateStatus === 'checking'}
+                className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300 disabled:text-canvas-text-muted transition-colors"
+              >
+                {updateStatus === 'checking' ? (
+                  <>
+                    <Icon icon="svg-spinners:90-ring" width="12" height="12" />
+                    检查中...
+                  </>
+                ) : updateStatus === 'no-update' && updateMsg ? (
+                  updateMsg
+                ) : updateStatus === 'error' ? (
+                  updateMsg
+                ) : (
+                  '检查更新'
+                )}
+              </button>
             </div>
           </div>
 
@@ -411,7 +451,7 @@ function AvatarMenu() {
               <button
                 type="button"
                 className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-canvas-hover hover:bg-canvas-border transition-colors text-xs text-canvas-text-secondary hover:text-canvas-text text-left cursor-default"
-                title="QQ 群号"
+                data-tooltip="QQ 群号"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M21.395 15.035a39.548 39.548 0 0 0-.803-2.264l-1.079-2.695c.001-.032.014-.562.014-.836C19.526 4.632 17.351 0 12 0S4.474 4.632 4.474 9.241c0 .274.013.804.014.836l-1.08 2.695a38.97 38.97 0 0 0-.802 2.264c-1.021 3.283-1.045 4.643-1.045 4.643 0 1.706 1.036 2.841 2.439 2.841.808 0 1.258-.387 1.85-.92.228-.206.463-.372.708-.498.449-.23 1.022-.405 1.719-.479 1.087-.116 3.274-.464 5.223-.464h.001c1.949 0 4.136.348 5.223.464.697.074 1.27.249 1.719.479.245.126.48.292.708.498.592.533 1.042.92 1.85.92 1.403 0 2.439-1.135 2.439-2.841 0 0-.025-1.361-1.046-4.643z"/></svg>
                 QQ 群：873354155
@@ -483,7 +523,7 @@ function LogoMenu() {
       <button
         type="button"
         className={`sidebar-btn-v3 sidebar-canvas-btn ${open ? 'active' : ''}`}
-        title="画布 / 项目"
+        data-tooltip="画布 / 项目"
         onClick={() => setOpen(!open)}
       >
         {/* <svg className="ico-normal" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -572,7 +612,7 @@ function LogoMenu() {
                       const rect = e.currentTarget.getBoundingClientRect();
                       setConfirmDelete({ id: p.id, rect });
                     }}
-                    title="删除项目"
+                    data-tooltip="删除项目"
                     role="button"
                     tabIndex={0}
                   >
@@ -753,17 +793,17 @@ export default function Sidebar() {
       </div>
 
       {/* Assets */}
-      <button type="button" className="sidebar-btn-v3" title="资产" onClick={() => setAssetsPanelOpen(true)}>
+      <button type="button" className="sidebar-btn-v3" data-tooltip="资产" onClick={() => setAssetsPanelOpen(true)}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"><path strokeDasharray="64" strokeDashoffset="64" d="M12 7h8c0.55 0 1 0.45 1 1v10c0 0.55 -0.45 1 -1 1h-16c-0.55 0 -1 -0.45 -1 -1v-11Z"><animate fill="freeze" attributeName="stroke-dashoffset" dur="0.6s" values="64;0"/></path><path d="M12 7h-9v0c0 0 0.45 0 1 0h6z" opacity="0"><animate fill="freeze" attributeName="d" begin="0.6s" dur="0.2s" values="M12 7h-9v0c0 0 0.45 0 1 0h6z;M12 7h-9v-1c0 -0.55 0.45 -1 1 -1h6z"/><set fill="freeze" attributeName="opacity" begin="0.6s" to="1"/></path></g></svg>
       </button>
 
       {/* Workflows */}
-      <button type="button" className="sidebar-btn-v3" title="工作流" onClick={() => setWorkflowPanelOpen(true)}>
+      <button type="button" className="sidebar-btn-v3" data-tooltip="工作流" onClick={() => setWorkflowPanelOpen(true)}>
         <svg width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M1 3a2 2 0 0 1 2-2h6.5a2 2 0 0 1 2 2v6.5a2 2 0 0 1-2 2H7v4.063C7 16.355 7.644 17 8.438 17H12.5v-2.5a2 2 0 0 1 2-2H21a2 2 0 0 1 2 2V21a2 2 0 0 1-2 2h-6.5a2 2 0 0 1-2-2v-2.5H8.437A2.94 2.94 0 0 1 5.5 15.562V11.5H3a2 2 0 0 1-2-2Zm2-.5a.5.5 0 0 0-.5.5v6.5a.5.5 0 0 0 .5.5h6.5a.5.5 0 0 0 .5-.5V3a.5.5 0 0 0-.5-.5ZM14.5 14a.5.5 0 0 0-.5.5V21a.5.5 0 0 0 .5.5H21a.5.5 0 0 0 .5-.5v-6.5a.5.5 0 0 0-.5-.5Z"/></svg>
       </button>
 
       {/* History */}
-      <button type="button" className="sidebar-btn-v3" title="输出历史" onClick={() => setHistoryPanelOpen(true)}>
+      <button type="button" className="sidebar-btn-v3" data-tooltip="输出历史" onClick={() => setHistoryPanelOpen(true)}>
         <svg width="20" height="20" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5"><path d="M11.007 21H9.605c-3.585 0-5.377 0-6.491-1.135S2 16.903 2 13.25s0-5.48 1.114-6.615S6.02 5.5 9.605 5.5h3.803c3.585 0 5.378 0 6.492 1.135c.857.873 1.054 2.156 1.1 4.365"/><path d="m18.85 18.85l-1.35-.9V15.7M13 17.5a4.5 4.5 0 1 0 9 0a4.5 4.5 0 0 0-9 0m3-12l-.1-.31c-.494-1.54-.742-2.31-1.331-2.75C13.979 2 13.197 2 11.632 2h-.264c-1.565 0-2.348 0-2.937.44c-.59.44-.837 1.21-1.332 2.75L7 5.5"/></g></svg>
       </button>
 
@@ -796,7 +836,7 @@ export default function Sidebar() {
           type="button"
           className="user-gear-plain"
           onClick={toggleAvatarMenu}
-          title="设置"
+          data-tooltip="设置"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="3" />

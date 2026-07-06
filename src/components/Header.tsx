@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Header 顶部栏 — Logo、项目名编辑、侧边栏切换、设置入口、窗口拖拽区域
  */
 import { motion } from 'framer-motion';
@@ -93,7 +93,7 @@ export default function Header() {
         onClick={() => useAppStore.getState().createProject()}
         className="w-7 h-7 rounded-lg hover:bg-canvas-hover flex items-center justify-center
                    text-canvas-text-secondary hover:text-canvas-text"
-        title="新建画布"
+        data-tooltip="新建画布"
         whileHover={{ scale: 1.1 }}
         whileTap={{ scale: 0.92 }}
         transition={{ type: 'spring', stiffness: 400, damping: 17 }}

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MentionEditor @提及编辑器 — 支持 @引用其他节点输出的富文本输入框，实时渲染为彩色标签芯片
  */
 import { useState, useCallback, useRef, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
@@ -1345,7 +1345,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
                           key={file.path}
                           type="button"
                           className="asset-picker-card"
-                          title={file.name}
+                          data-tooltip={file.name}
                           onClick={() => handleSelectAsset(file)}
                         >
                           {file.assetUrl ? (

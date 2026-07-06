@@ -1,4 +1,4 @@
-/**
+﻿/**
  * CustomGridEditor — 自定义宫格裁切编辑器
  * 在全屏 overlay 上拖拽添加横向/竖向分割线，根据线的分布生成 storyboard 节点
  */
@@ -128,7 +128,7 @@ export default function CustomGridEditor({ isOpen, imageUrl, onClose, onConfirm 
     <FullscreenOverlay
       isOpen={isOpen}
       onClose={handleClose}
-      title="自定义宫格裁切"
+      data-tooltip="自定义宫格裁切"
       hidePanel
       className="customgrid-overlay"
     >
@@ -144,7 +144,7 @@ export default function CustomGridEditor({ isOpen, imageUrl, onClose, onConfirm 
           <AnimatedButton
             type="button"
             className="customgrid-btn act-cancel"
-            title="关闭 (Esc)"
+            data-tooltip="关闭 (Esc)"
             aria-label="关闭"
             onClick={handleClose}
           >
@@ -181,7 +181,7 @@ export default function CustomGridEditor({ isOpen, imageUrl, onClose, onConfirm 
             清除全部
           </button>
 
-          <AnimatedButton className="customgrid-btn act-confirm" title="确认裁切" aria-label="确认裁切" onClick={handleConfirm}>
+          <AnimatedButton className="customgrid-btn act-confirm" data-tooltip="确认裁切" aria-label="确认裁切" onClick={handleConfirm}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
               <path d="M3 17l5-5 3 3 8-8" />
             </svg>
