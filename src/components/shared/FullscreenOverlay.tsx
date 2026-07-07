@@ -11,7 +11,7 @@ import { EASE_OUT_EXPO } from '../../utils/motion';
 export interface FullscreenOverlayProps {
   isOpen: boolean;
   onClose: () => void;
-  title: string;
+  title?: string;
   children: ReactNode;
   /** 内层面板宽度，默认 min(90vw, 900px) */
   panelWidth?: string;
@@ -62,7 +62,7 @@ const panelVariants = {
 export default function FullscreenOverlay({
   isOpen,
   onClose,
-  title,
+  title = '',
   children,
   panelWidth = 'min(90vw, 900px)',
   className = '',
