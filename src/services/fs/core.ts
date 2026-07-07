@@ -3,7 +3,7 @@
  * 环境探测、路径/MIME 工具、asset 协议、数据根目录与「项目名-短ID」目录映射、
  * 同名加序号、文件分类与目录列举。被 fs 下其它模块及 fileService 共用。
  */
-import { exists, mkdir, stat, readDir } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, rename, stat, readDir } from '@tauri-apps/plugin-fs';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 
@@ -199,6 +199,64 @@ export async function ensureProjectDataDir(projectId: string): Promise<string | 
     return dirPath;
   } catch (err) {
     console.error('Failed to create project data dir:', dirPath, err);
+    return null;
+  }
+}
+
+export interface ProjectDataDirRenameResult {
+  oldDir: string;
+  newDir: string;
+  dataFolder: string;
+  renamed: boolean;
+}
+
+/** 将项目数据目录从旧文件夹名重命名为新文件夹名，并更新内存映射。 */
+export async function renameProjectDataDir(
+  projectId: string,
+  oldFolderName: string | undefined,
+  newFolderName: string,
+): Promise<ProjectDataDirRenameResult | null> {
+  if (!isTauriEnv()) {
+    registerProjectFolder(projectId, newFolderName);
+    return null;
+  }
+
+  const oldFolder = oldFolderName?.trim() || resolveProjectFolder(projectId);
+  const baseDir = _baseDataDir || await getAppDataDir();
+  if (!baseDir) return null;
+
+  const oldDir = _baseDataDir
+    ? joinPath(baseDir, oldFolder)
+    : joinPath(baseDir, 'data', oldFolder);
+  const newDir = _baseDataDir
+    ? joinPath(baseDir, newFolderName)
+    : joinPath(baseDir, 'data', newFolderName);
+
+  if (!oldDir || !newDir || oldDir === newDir) {
+    registerProjectFolder(projectId, newFolderName);
+    return oldDir && newDir ? { oldDir, newDir, dataFolder: newFolderName, renamed: false } : null;
+  }
+
+  try {
+    const oldExists = await exists(oldDir);
+    const newExists = await exists(newDir);
+    if (oldExists && !newExists) {
+      await rename(oldDir, newDir);
+      registerProjectFolder(projectId, newFolderName);
+      notifyProjectDiskChanged();
+      return { oldDir, newDir, dataFolder: newFolderName, renamed: true };
+    }
+
+    if (!oldExists) {
+      registerProjectFolder(projectId, newFolderName);
+      await mkdir(newDir, { recursive: true });
+      return { oldDir, newDir, dataFolder: newFolderName, renamed: false };
+    }
+
+    console.warn('[fileService] Project data dir rename skipped because target exists:', newDir);
+    return null;
+  } catch (err) {
+    console.warn('[fileService] renameProjectDataDir failed:', oldDir, '→', newDir, err);
     return null;
   }
 }

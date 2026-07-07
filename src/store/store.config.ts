@@ -11,7 +11,7 @@ const defaultConfig: AppConfig = {
   providers: {},
   theme: 'dark',
   canvasBackground: 'default',
-  comfyUIUrl: '',
+  comfyUIUrl: 'http://127.0.0.1:8188',
   comfyUIPath: '',
   generalModels: [],
   mascotVisible: false,

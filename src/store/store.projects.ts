@@ -13,6 +13,55 @@ function getProjectGroups(data: { groups?: unknown } | null | undefined): NodeGr
   return Array.isArray(data?.groups) ? (data.groups as NodeGroup[]) : [];
 }
 
+function replacePathPrefix(path: string | undefined, oldDir: string, newDir: string): string | undefined {
+  if (!path) return path;
+  const normalizedPath = path.replace(/\\/g, '/');
+  const normalizedOldDir = oldDir.replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalizedNewDir = newDir.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!normalizedPath.startsWith(`${normalizedOldDir}/`)) return path;
+  return `${normalizedNewDir}${normalizedPath.slice(normalizedOldDir.length)}`;
+}
+
+async function remapProjectNodePaths(
+  nodes: Node<BaseNodeData>[],
+  oldDir: string,
+  newDir: string,
+): Promise<Node<BaseNodeData>[]> {
+  return Promise.all(nodes.map(async (node) => {
+    const data = node.data as BaseNodeData;
+    const nextFilePath = replacePathPrefix(data.filePath, oldDir, newDir);
+    let changed = nextFilePath !== data.filePath;
+    let nextData: BaseNodeData = changed ? { ...data, filePath: nextFilePath } : data;
+
+    if (changed && nextFilePath) {
+      const assetUrl = await fileService.getAssetUrlFromPath(nextFilePath);
+      if (nextData.imageUrl) nextData.imageUrl = assetUrl;
+      if (nextData.videoUrl) nextData.videoUrl = assetUrl;
+      if (nextData.audioUrl) nextData.audioUrl = assetUrl;
+    }
+
+    if (Array.isArray(data.storyboardOverrides)) {
+      const nextOverrides = await Promise.all(data.storyboardOverrides.map(async (override) => {
+        if (!override) return override;
+        const nextOverridePath = replacePathPrefix(override.filePath, oldDir, newDir);
+        if (nextOverridePath === override.filePath) return override;
+        changed = true;
+        return {
+          ...override,
+          filePath: nextOverridePath,
+          url: nextOverridePath ? await fileService.getAssetUrlFromPath(nextOverridePath) : override.url,
+        };
+      }));
+      if (nextOverrides !== data.storyboardOverrides && nextOverrides.some((override, index) => override !== data.storyboardOverrides?.[index])) {
+        nextData = nextData === data ? { ...data } : nextData;
+        nextData.storyboardOverrides = nextOverrides;
+      }
+    }
+
+    return changed ? { ...node, data: nextData } : node;
+  }));
+}
+
 export interface ProjectSlice {
   projects: CanvasProject[];
   currentProjectId: string | null;
@@ -35,13 +84,60 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   currentProjectId: 'default',
   projectName: '新项目',
 
-  setProjectName: (name) =>
-    set((state) => ({
+  setProjectName: (name) => {
+    const state = get();
+    const currentProjectId = state.currentProjectId;
+    const project = state.projects.find((p) => p.id === currentProjectId);
+    if (!currentProjectId || !project) {
+      set({ projectName: name });
+      return;
+    }
+
+    const nextDataFolder = fileService.buildProjectFolderName(name, currentProjectId);
+    const oldDataFolder = project.dataFolder;
+    const dataFolderChanged = oldDataFolder !== nextDataFolder;
+
+    set((s) => ({
       projectName: name,
-      projects: state.projects.map((p) =>
-        p.id === state.currentProjectId ? { ...p, name } : p
+      projects: s.projects.map((p) =>
+        p.id === currentProjectId ? { ...p, name } : p
       ),
-    })),
+    }));
+
+    if (!dataFolderChanged) return;
+
+    (async () => {
+      const renamed = await fileService.renameProjectDataDir(currentProjectId, oldDataFolder, nextDataFolder);
+      if (!renamed) return;
+
+      const latest = get();
+      const latestProject = latest.projects.find((p) => p.id === currentProjectId);
+      if (!latestProject) return;
+
+      const patch: Partial<Pick<AppState, 'nodes' | 'projects'>> = {
+        projects: latest.projects.map((p) =>
+          p.id === currentProjectId ? { ...p, dataFolder: renamed.dataFolder, updatedAt: Date.now() } : p
+        ),
+      };
+
+      if (latest.currentProjectId === currentProjectId) {
+        patch.nodes = await remapProjectNodePaths(latest.nodes, renamed.oldDir, renamed.newDir);
+      }
+
+      set(patch);
+
+      const after = get();
+      const savedProject = after.projects.find((p) => p.id === currentProjectId);
+      if (savedProject && after.currentProjectId === currentProjectId) {
+        fileService.saveProject({
+          ...savedProject,
+          nodes: after.nodes,
+          edges: after.edges,
+          groups: after.groups,
+        }).catch((e) => console.warn('[项目重命名] 保存失败:', e));
+      }
+    })().catch((e) => console.warn('[项目重命名] 数据目录重命名失败:', e));
+  },
 
   createProject: (name) => {
     const id = generateProjectId();

@@ -4,7 +4,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
-import { getProjectDataDir, getBaseDir } from '../services/fileService';
+import { getProjectDataDir, getBaseDir, PROJECT_DISK_CHANGED_EVENT } from '../services/fileService';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import ModalOverlay from './shared/ModalOverlay';
 import AnimatedButton from './shared/AnimatedButton';
@@ -72,11 +72,26 @@ export default function SettingsPanel() {
   // 加载项目文件夹路径
   useEffect(() => {
     if (!settingsOpen || activeTab !== 'general' || !currentProjectId) return;
-    setDirLoading(true);
-    getProjectDataDir(currentProjectId)
-      .then(setProjectDir)
-      .catch(() => setProjectDir(null))
-      .finally(() => setDirLoading(false));
+    let cancelled = false;
+    const refreshProjectDir = () => {
+      setDirLoading(true);
+      getProjectDataDir(currentProjectId)
+        .then((dir) => {
+          if (!cancelled) setProjectDir(dir);
+        })
+        .catch(() => {
+          if (!cancelled) setProjectDir(null);
+        })
+        .finally(() => {
+          if (!cancelled) setDirLoading(false);
+        });
+    };
+    refreshProjectDir();
+    window.addEventListener(PROJECT_DISK_CHANGED_EVENT, refreshProjectDir);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(PROJECT_DISK_CHANGED_EVENT, refreshProjectDir);
+    };
   }, [settingsOpen, activeTab, currentProjectId]);
 
   /** 在系统文件管理器中打开文件保存根目录 */
@@ -139,7 +154,7 @@ export default function SettingsPanel() {
       // 进程已拉起，但 ComfyUI 导入依赖需要数十秒 —— 轮询 API 直到就绪
       // no-cors 探测：能连通即视为就绪，不依赖服务端 CORS 配置
       const base = (config.comfyUIUrl?.trim() || 'http://127.0.0.1:8188').replace(/\/+$/, '');
-      const deadline = Date.now() + 120_000;
+      const deadline = Date.now() + 300_000;
       let ready = false;
       while (Date.now() < deadline) {
         try {
@@ -368,7 +383,7 @@ export default function SettingsPanel() {
                       {comfyStatus === 'starting' && (
                         <p className="text-[11px] text-canvas-text-secondary mt-2 flex items-center gap-1.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
-                          正在等待 ComfyUI 服务就绪，首次启动可能需要一两分钟…
+                          正在等待 ComfyUI 服务就绪，首次启动可能需要几分钟时间…
                         </p>
                       )}
                       {comfyStatus === 'ready' && (
