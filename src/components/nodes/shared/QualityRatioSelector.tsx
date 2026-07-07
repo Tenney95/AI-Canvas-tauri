@@ -76,6 +76,8 @@ export default function QualityRatioSelector({
     { value: '21:9', className: 'img-rp-ultra' },
     { value: '1:4', className: 'img-rp-p14' },
     { value: '4:1', className: 'img-rp-l41' },
+    { value: '1:6', className: 'img-rp-p16' },
+    { value: '6:1', className: 'img-rp-l61' },
     { value: '1:8', className: 'img-rp-p18' },
     { value: '8:1', className: 'img-rp-l81' },
   ];

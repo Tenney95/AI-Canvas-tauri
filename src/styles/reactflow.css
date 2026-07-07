@@ -138,11 +138,11 @@
 .gooey-btn-wrapper {
   position: absolute;
   z-index: 14;
-  pointer-events: auto;
+  pointer-events: none;
   overflow: visible;
   /* 默认隐藏，仅在节点 hover / 选中 / 手柄 hover 时淡入 */
   opacity: 0;
-  transition: opacity var(--transition-base);
+  transition: opacity var(--transition-base), visibility 0s var(--transition-base);
 }
 
 /* 节点 hover、选中，或手柄自身 hover 时显示两侧手柄 */
@@ -150,6 +150,9 @@
 .react-flow__node.selected .gooey-btn-wrapper,
 .node-handle:hover .gooey-btn-wrapper {
   opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transition: opacity var(--transition-base), visibility 0s 0s;
 }
 
 /* 拖拽节点时隐藏两侧粘液手柄，避免拖动过程中视觉干扰 */

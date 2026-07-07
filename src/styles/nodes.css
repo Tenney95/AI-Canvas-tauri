@@ -135,7 +135,7 @@
 
 /* Upload button on node-preview top-right corner (source nodes) */
 .node-upload-btn {
-  position: absolute;
+  position: absolute !important;
   top: 6px;
   right: 6px;
   z-index: 10;
