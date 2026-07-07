@@ -35,7 +35,9 @@ fn find_main_py(root: &Path) -> Option<PathBuf> {
         // 官方便携版：ComfyUI 子目录
         root.join("ComfyUI"),
         // Comfy Desktop v0.20+：用户选择了基目录（如 F:\ComfyUI）
-        root.join("ComfyUI-Installs").join("ComfyUI").join("ComfyUI"),
+        root.join("ComfyUI-Installs")
+            .join("ComfyUI")
+            .join("ComfyUI"),
         // Comfy Desktop v0.20+：用户选择了 Electron 安装目录（如 F:\ComfyUI\Comfy Desktop）
         root.parent()
             .map(|p| p.join("ComfyUI-Installs").join("ComfyUI").join("ComfyUI"))
@@ -90,6 +92,39 @@ fn find_python(working_dir: &Path, root: &Path) -> Option<String> {
     None
 }
 
+/// 官方 Comfy Desktop 的共享模型配置由桌面端写入 Roaming 配置目录。
+/// 本应用绕过 Electron 启动器、直接启动 main.py，因此需要把该配置显式传给 ComfyUI。
+fn find_comfy_desktop_shared_model_paths(root: &Path, working_dir: &Path) -> Option<PathBuf> {
+    let looks_like_desktop = root.join("Comfy Desktop.exe").is_file()
+        || root
+            .join("Comfy Desktop")
+            .join("Comfy Desktop.exe")
+            .is_file()
+        || working_dir
+            .ancestors()
+            .any(|p| p.file_name().is_some_and(|name| name == "ComfyUI-Installs"));
+
+    if !looks_like_desktop {
+        return None;
+    }
+
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|p| p.join("Comfy Desktop").join("shared_model_paths.yaml"))
+        .filter(|p| p.is_file())
+}
+
+fn build_comfy_args(root: &Path, working_dir: &Path) -> Vec<String> {
+    let mut args: Vec<String> = COMFY_ARGS.iter().map(|arg| (*arg).to_string()).collect();
+
+    if let Some(shared_model_paths) = find_comfy_desktop_shared_model_paths(root, working_dir) {
+        args.push("--extra-model-paths-config".to_string());
+        args.push(shared_model_paths.to_string_lossy().into_owned());
+    }
+
+    args
+}
+
 /// 在 Windows 新终端窗口中启动 ComfyUI
 #[cfg(windows)]
 fn launch_windows(comfy_path: &str) -> Result<String, String> {
@@ -98,7 +133,8 @@ fn launch_windows(comfy_path: &str) -> Result<String, String> {
     // 1) 首选：直接启动 main.py —— 可注入 API/CORS 参数，跳过启动器的 custom_nodes 检测
     if let Some(working_dir) = find_main_py(root) {
         if let Some(python) = find_python(&working_dir, root) {
-            spawn_new_console(&python, COMFY_ARGS, &working_dir)?;
+            let args = build_comfy_args(root, &working_dir);
+            spawn_new_console(&python, &args, &working_dir)?;
             return Ok(format!(
                 "ComfyUI 已启动（API 模式）\n{}",
                 working_dir.display()
@@ -120,7 +156,8 @@ fn launch_windows(comfy_path: &str) -> Result<String, String> {
         root.join("A启动器.exe"),
         root.join("启动器.exe"),
         root.join("Comfy Desktop.exe"),
-        root.join(".launcher").join("StableDiffusionWebUILauncher.exe"),
+        root.join(".launcher")
+            .join("StableDiffusionWebUILauncher.exe"),
     ];
     for launcher_path in &launchers {
         if launcher_path.is_file() {
@@ -189,14 +226,24 @@ fn run_exe_new_console(exe_path: &Path) -> Result<String, String> {
 
 /// 用 cmd /k 在新控制台启动进程（保留窗口以便查看服务日志）
 #[cfg(windows)]
-fn spawn_new_console(program: &str, args: &[&str], working_dir: &Path) -> Result<(), String> {
+fn spawn_new_console(program: &str, args: &[String], working_dir: &Path) -> Result<(), String> {
     let program_normalized = program.replace('/', "\\");
-    let inner = format!(
-        r#"cmd /k ""{}" {}""#,
-        program_normalized,
-        args.join(" ")
-    );
+    let args_joined = args
+        .iter()
+        .map(|arg| quote_cmd_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let inner = format!(r#"cmd /k ""{}" {}""#, program_normalized, args_joined);
     start_new_console(&inner, working_dir, "启动 ComfyUI 失败")
+}
+
+#[cfg(windows)]
+fn quote_cmd_arg(arg: &str) -> String {
+    if arg.is_empty() || arg.contains([' ', '\t', '"']) {
+        format!(r#""{}""#, arg.replace('"', r#"\""#))
+    } else {
+        arg.to_string()
+    }
 }
 
 /// 非 Windows 系统
@@ -204,13 +251,15 @@ fn spawn_new_console(program: &str, args: &[&str], working_dir: &Path) -> Result
 fn launch_unix(comfy_path: &str) -> Result<String, String> {
     let root = Path::new(comfy_path);
 
-    let working_dir = find_main_py(root)
-        .ok_or_else(|| format!("在目录 {} 中未找到 main.py。", comfy_path))?;
+    let working_dir =
+        find_main_py(root).ok_or_else(|| format!("在目录 {} 中未找到 main.py。", comfy_path))?;
 
     let python = find_python(&working_dir, root).unwrap_or_else(|| "python3".to_string());
 
+    let args = build_comfy_args(root, &working_dir);
+
     Command::new(&python)
-        .args(COMFY_ARGS)
+        .args(args)
         .current_dir(&working_dir)
         .spawn()
         .map_err(|e| format!("启动 ComfyUI 失败: {e}"))?;
