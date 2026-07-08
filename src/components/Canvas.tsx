@@ -253,6 +253,8 @@ function CanvasInner() {
     showInFolder,
     handleSaveAs,
     showSaveAs,
+    handleOpenInPS,
+    showOpenInPS,
   } = useNodeContextMenu();
   const isGroupNode = nodeCtxMenu.nodeId
     ? nodes.find((n) => n.id === nodeCtxMenu.nodeId && n.type === 'group') != null
@@ -748,6 +750,7 @@ function CanvasInner() {
         onDelete={handleDelete}
         onShowInFolder={showInFolder ? handleShowInFolder : undefined}
         onSaveAs={showSaveAs ? handleSaveAs : undefined}
+        onOpenInPS={showOpenInPS ? handleOpenInPS : undefined}
       />
 
       {/* Multi-select toolbar */}

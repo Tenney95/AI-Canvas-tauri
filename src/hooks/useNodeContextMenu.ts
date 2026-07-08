@@ -173,6 +173,37 @@ export function useNodeContextMenu() {
     }
   }, [menu.nodeId, nodes, closeMenu]);
 
+  // ── 在 Photoshop 中打开 ──
+  const openInPSTypes: NodeType[] = [
+    'ai-image', 'source-image',
+  ];
+  const showOpenInPS = menu.nodeId != null
+    && nodeType != null
+    && openInPSTypes.includes(nodeType)
+    && !!nodeData?.filePath;
+
+  const handleOpenInPS = useCallback(async () => {
+    if (!menu.nodeId) return;
+    const node = nodes.find((n) => n.id === menu.nodeId);
+    const fp = (node?.data as BaseNodeData | undefined)?.filePath;
+    if (!fp) {
+      useAppStore.getState().showToast('无法找到文件路径');
+      closeMenu();
+      return;
+    }
+    try {
+      const { openInPhotoshop } = await import('../services/fileService');
+      const photoshopPath = useAppStore.getState().config.photoshopPath;
+      await openInPhotoshop(fp, photoshopPath);
+      closeMenu();
+      useAppStore.getState().showToast('已在 Photoshop 中打开');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '打开失败';
+      useAppStore.getState().showToast(message, 'error');
+      closeMenu();
+    }
+  }, [menu.nodeId, nodes, closeMenu]);
+
   // ── 文件另存为 ──
   const saveAsTypes: NodeType[] = [
     'ai-text', 'ai-image', 'ai-video', 'ai-audio',
@@ -230,5 +261,7 @@ export function useNodeContextMenu() {
     showInFolder,
     handleSaveAs,
     showSaveAs,
+    handleOpenInPS,
+    showOpenInPS,
   };
 }

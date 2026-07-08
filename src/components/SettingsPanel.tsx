@@ -138,6 +138,23 @@ export default function SettingsPanel() {
     }
   };
 
+  /** 选择 Photoshop.exe 路径 */
+  const handleChoosePhotoshopPath = async () => {
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        title: '选择 Photoshop.exe',
+        filters: [{ name: 'Photoshop', extensions: ['exe', 'app'] }],
+      });
+      if (selected && typeof selected === 'string') {
+        updateConfig({ photoshopPath: selected });
+        await saveConfig();
+      }
+    } catch {
+      // 浏览器环境忽略
+    }
+  };
+
   /** 启动 ComfyUI：拉起进程后轮询服务端口，直到 API 真正就绪才算启动成功 */
   const handleLaunchComfyUI = async () => {
     const comfyPath = config.comfyUIPath?.trim();
@@ -249,6 +266,7 @@ export default function SettingsPanel() {
 
   const baseDataDir = config.baseDataDir;
   const comfyUIPath = config.comfyUIPath;
+  const photoshopPath = config.photoshopPath;
 
   return (
     <ModalOverlay isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} className="w-[640px] max-h-[80vh]">
@@ -715,6 +733,36 @@ export default function SettingsPanel() {
                         <div className="text-xs text-canvas-text-muted">仅在 Tauri 桌面环境中可用</div>
                       )}
                     </div>
+                  </div>
+                </div>
+
+                {/* Photoshop 路径 */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">Photoshop 路径</h3>
+                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-2">
+                    <div className="text-xs text-canvas-text-muted mb-1.5">Photoshop.exe 路径</div>
+                    {photoshopPath ? (
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="flex-1 min-w-0 text-[11px] text-canvas-text-secondary break-all font-mono leading-relaxed bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border select-all">
+                          {photoshopPath}
+                        </div>
+                        <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChoosePhotoshopPath}>
+                          更换
+                        </AnimatedButton>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="flex-1 text-xs text-canvas-text-muted bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border italic">
+                          未设置（自动检测）
+                        </div>
+                        <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChoosePhotoshopPath}>
+                          选择文件
+                        </AnimatedButton>
+                      </div>
+                    )}
+                    <p className="text-[11px] text-canvas-text-muted leading-relaxed">
+                      右键图片节点选择「在 PS 中打开」时，优先自动检测 Photoshop 安装位置；检测失败时使用此处配置的路径。支持各版本 Photoshop，不限安装盘符
+                    </p>
                   </div>
                 </div>
               </div>

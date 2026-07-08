@@ -179,6 +179,31 @@ async fn move_to_trash(path: String) -> Result<(), String> {
         .map_err(|e| format!("移动文件到回收站失败: {}", e))
 }
 
+/// 使用指定应用打开文件（直接调用系统进程 API，绕过 shell 插件权限限制）
+#[tauri::command]
+async fn open_with_app(app_path: String, file_path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new(&app_path)
+            .arg(&file_path)
+            .spawn()
+            .map_err(|e| format!("启动应用失败: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", &app_path, &file_path])
+            .spawn()
+            .map_err(|e| format!("启动应用失败: {e}"))?;
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = (app_path, file_path);
+        return Err("不支持的操作系统".to_string());
+    }
+    Ok(())
+}
+
 /// 切换当前 WebView 的开发者工具（先关闭再打开实现 toggle 效果）
 #[tauri::command]
 async fn toggle_devtools(app: tauri::AppHandle) -> Result<(), String> {
@@ -279,6 +304,7 @@ pub fn run() {
             dreamina::dreamina_status,
             dreamina::dreamina_generate,
             dreamina::dreamina_query_result,
+            open_with_app,
             toggle_devtools,
             comfyui::launch_comfyui,
             onnx::get_models_dir,

@@ -846,6 +846,120 @@ export async function revealFileInFolder(filePath: string): Promise<void> {
 }
 
 // ============================================
+// 在 Photoshop 中打开 — 用 Photoshop 打开图片文件
+// ============================================
+
+/**
+ * 使用指定应用打开文件（通过 Rust 端 std::process::Command 直接启动，绕过 shell 插件权限限制）
+ * @returns true 表示成功启动
+ */
+async function launchApp(appPath: string, filePath: string): Promise<boolean> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('open_with_app', { appPath, filePath });
+    return true;
+  } catch (err) {
+    console.warn('[fileService] launchApp 失败:', appPath, err);
+    return false;
+  }
+}
+
+/**
+ * 在 Photoshop 中打开图片文件
+ * - Windows：文件查重 → 手动配置路径 → 多驱动盘搜索
+ * - macOS：open -a 自动定位 → 自定义路径
+ */
+export async function openInPhotoshop(filePath: string, customPath?: string): Promise<void> {
+  if (!isTauriEnv()) {
+    console.warn('[fileService] openInPhotoshop: 仅 Tauri 桌面环境支持');
+    return;
+  }
+
+  try {
+    const { stat } = await import('@tauri-apps/plugin-fs');
+
+    const plat = (navigator.platform || '').toLowerCase();
+    const isWin = plat.includes('win');
+    const isMac = plat.includes('mac');
+
+    if (isWin) {
+      const winPath = filePath.replace(/\//g, '\\');
+
+      // 检查文件/路径是否存在
+      const checkPath = async (p: string): Promise<boolean> => {
+        try { await stat(p); return true; } catch { return false; }
+      };
+
+      // 策略 1：用户手动配置的路径（优先级最高）
+      if (customPath?.trim()) {
+        const resolved = customPath.replace(/\/+$/, '').replace(/\\+$/, '');
+        const tries: string[] = [];
+        if (/photoshop\.exe$/i.test(resolved)) {
+          tries.push(resolved);
+        } else {
+          tries.push(resolved, `${resolved}\\Photoshop.exe`);
+        }
+        for (const psPath of tries) {
+          if (await checkPath(psPath) && await launchApp(psPath, winPath)) return;
+        }
+        throw new Error(`配置的 Photoshop 路径无效: ${customPath}`);
+      }
+
+      // 策略 2：多驱动盘 + 多版本的常见安装路径
+      const drives = ['C:', 'D:', 'E:', 'F:', 'G:'];
+      const versions = ['2026', '2025', '2024', '2023', '2022', '2021', ''];
+      const installerPaths: string[] = [];
+      for (const drive of drives) {
+        for (const ver of versions) {
+          const dir = ver ? `Adobe Photoshop ${ver}` : 'Adobe Photoshop';
+          installerPaths.push(`${drive}\\Program Files\\Adobe\\${dir}\\Photoshop.exe`);
+          installerPaths.push(`${drive}\\Program Files (x86)\\Adobe\\${dir}\\Photoshop.exe`);
+        }
+      }
+
+      for (const psPath of installerPaths) {
+        if (await checkPath(psPath) && await launchApp(psPath, winPath)) return;
+      }
+
+      throw new Error('未找到 Photoshop。请在设置中手动配置 Photoshop 安装路径，或确认已安装 Adobe Photoshop');
+    }
+
+    if (isMac) {
+      // 策略 1：open -a 尝试各版本应用名（mac-open 已在 shell scope 白名单中）
+      const { Command } = await import('@tauri-apps/plugin-shell');
+      const psAppNames = [
+        'Adobe Photoshop 2025',
+        'Adobe Photoshop 2024',
+        'Adobe Photoshop 2023',
+        'Adobe Photoshop',
+      ];
+      for (const appName of psAppNames) {
+        try {
+          const cmd = Command.create('mac-open', ['-a', appName, filePath]);
+          await cmd.execute();
+          return;
+        } catch {
+          continue;
+        }
+      }
+
+      // 策略 2：用户自定义路径（通过 Rust 端 open_with_app）
+      if (customPath?.trim()) {
+        if (await launchApp(customPath, filePath)) return;
+        throw new Error(`配置的 Photoshop 路径无效: ${customPath}`);
+      }
+
+      throw new Error('未找到 Photoshop。请在设置中手动配置 Photoshop 安装路径，或确认已安装 Adobe Photoshop');
+    }
+
+    throw new Error('不支持的操作系统');
+  } catch (err) {
+    console.error('[fileService] openInPhotoshop 失败:', filePath, err);
+    throw err;
+  }
+}
+
+// ============================================
 // 节点输出文件另存为 — 将节点的媒体输出或文本输出保存到用户指定位置
 // ============================================
 
