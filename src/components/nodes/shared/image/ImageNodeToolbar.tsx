@@ -19,6 +19,10 @@ interface ImageNodeToolbarProps {
   onAnnotate?: () => void;
   onUpscale?: () => void;
   onRepaint?: () => void;
+  /** 高清超分进行中 — 防止重复触发 */
+  isUpscaling?: boolean;
+  /** 主体识别进行中 — 防止重复触发 */
+  isSubjectMattingRunning?: boolean;
 }
 
 /** 宫格预设：side×side（4/9/16/25 宫格） */
@@ -44,7 +48,7 @@ function GridIcon({ n }: { n: number }) {
   );
 }
 
-function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand, onMultiGrid, onCustomGrid, onCompose, onFullscreen, onCrop, onAnnotate, onUpscale, onRepaint }: ImageNodeToolbarProps) {
+function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand, onMultiGrid, onCustomGrid, onCompose, onFullscreen, onCrop, onAnnotate, onUpscale, onRepaint, isUpscaling, isSubjectMattingRunning }: ImageNodeToolbarProps) {
   const handleAction = useCallback(
     (handler?: () => void) => (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -186,12 +190,12 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
               <path d="m14 18 5-5 2 2-5 5-3 1 1-3Z" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-hd" data-tooltip="高清超分" aria-label="高清超分" onClick={handleAction(onUpscale)}>
+          <AnimatedButton className="ftb-btn icon-only act-hd" data-tooltip={isUpscaling ? '超分处理中...' : '高清超分'} aria-label="高清超分" disabled={isUpscaling} onClick={handleAction(onUpscale)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M12 3v18m9-9H3m14.48-6.36L6.52 17.64m10.96 0L6.52 6.36" />
             </svg>
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-auto-subject" data-tooltip="自动识别主体" aria-label="自动识别主体" onClick={handleAction(onSubjectMatting)}>
+          <AnimatedButton className="ftb-btn icon-only act-auto-subject" data-tooltip={isSubjectMattingRunning ? '主体识别中...' : '自动识别主体'} aria-label="自动识别主体" disabled={isSubjectMattingRunning} onClick={handleAction(onSubjectMatting)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
             </svg>

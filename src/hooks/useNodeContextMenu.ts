@@ -4,6 +4,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { getActiveTextSelection, type ActiveTextSelection } from '../utils/textSelection';
+import { revealFileInFolder, openInPhotoshop, saveNodeOutputToFile } from '../services/fileService';
 import type { BaseNodeData, NodeType } from '../types';
 import type { Node as RFNode } from '@xyflow/react';
 
@@ -163,7 +164,6 @@ export function useNodeContextMenu() {
       return;
     }
     try {
-      const { revealFileInFolder } = await import('../services/fileService');
       await revealFileInFolder(fp);
       closeMenu();
       useAppStore.getState().showToast('已打开文件位置');
@@ -192,7 +192,6 @@ export function useNodeContextMenu() {
       return;
     }
     try {
-      const { openInPhotoshop } = await import('../services/fileService');
       const photoshopPath = useAppStore.getState().config.photoshopPath;
       await openInPhotoshop(fp, photoshopPath);
       closeMenu();
@@ -227,7 +226,6 @@ export function useNodeContextMenu() {
 
     const mediaUrl = data.imageUrl || data.videoUrl || data.audioUrl || undefined;
     try {
-      const { saveNodeOutputToFile } = await import('../services/fileService');
       const result = await saveNodeOutputToFile({
         filePath: data.filePath,
         mediaUrl,

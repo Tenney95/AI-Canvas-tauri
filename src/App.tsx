@@ -3,6 +3,7 @@
  * Tauri 环境下启用自定义窗口装饰和透明圆角窗口
  */
 import { lazy, Suspense, useEffect, useState } from 'react';
+import { motion } from 'framer-motion';
 import Header from './components/Header';
 import Titlebar from './components/Titlebar';
 import Sidebar from './components/Sidebar';
@@ -21,6 +22,7 @@ import { useAutoSave } from './hooks/useAutoSave';
 import { useAppStore } from './store/useAppStore';
 import * as fileService from './services/fileService';
 import { checkForUpdate } from './services/updateService';
+import { DOWNLOAD_MASCOT_EVENT } from './components/shared/ModelDownloadDialog';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -33,12 +35,21 @@ export default function App() {
 
   // 开屏动画状态
   const [splashDone, setSplashDone] = useState(false);
+  // 下载弹窗出现时，右下角吉祥物缩小消失
+  const [mascotShrink, setMascotShrink] = useState(false);
 
   // 开屏动画结束后后台静默检查更新
   useEffect(() => {
     if (!splashDone || !isTauri) return;
     checkForUpdate();
   }, [splashDone]);
+
+  // 监听下载事件 → 控制吉祥物缩小动画
+  useEffect(() => {
+    const handler = ((e: CustomEvent) => setMascotShrink(e.detail.active)) as EventListener;
+    window.addEventListener(DOWNLOAD_MASCOT_EVENT, handler);
+    return () => window.removeEventListener(DOWNLOAD_MASCOT_EVENT, handler);
+  }, []);
 
   // Load projects from IndexedDB on mount
   const initFromDb = useAppStore((s) => s.initFromDb);
@@ -148,9 +159,13 @@ export default function App() {
 
       {/* 吉祥物 — 右下角浮动预览，默认隐藏，Ctrl+Shift+M 切换 */}
       {mascotVisible && (
-        <div className="fixed bottom-40 right-5 z-20 h-[100px] w-[100px] pointer-events-auto">
+        <motion.div
+          className="fixed bottom-40 right-5 z-50 h-[100px] w-[100px] pointer-events-auto"
+          animate={mascotShrink ? { scale: 0, opacity: 0 } : { scale: 1, opacity: 1 }}
+          transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+        >
           <Suspense fallback={null}><Mascot loading={mascotLoading} /></Suspense>
-        </div>
+        </motion.div>
       )}
 
     </div>

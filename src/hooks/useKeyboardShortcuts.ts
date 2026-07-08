@@ -184,6 +184,7 @@ export function useKeyboardShortcuts() {
         store.updateConfig({ mascotVisible: !store.config.mascotVisible });
         const next = useAppStore.getState().config.mascotVisible;
         useAppStore.getState().showToast(next ? '吉祥物已显示' : '吉祥物已隐藏');
+        store.saveConfig();
         return;
       }
 

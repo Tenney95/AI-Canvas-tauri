@@ -2,7 +2,13 @@
  * ModelDownloadDialog — 模型下载确认弹窗 + 下载中遮罩
  * 通过 createPortal 渲染到 document.body，避免被节点裁剪
  */
+import { lazy, Suspense, useEffect } from 'react';
+import { motion } from 'framer-motion';
 import { createPortal } from 'react-dom';
+import { useAppStore } from '../../store/useAppStore';
+
+export const DOWNLOAD_MASCOT_EVENT = 'ai-canvas:download-mascot';
+const PacmanDownloadMascot = lazy(() => import('./mascot/PacmanDownloadMascot'));
 
 interface ModelInfo {
   title: string;
@@ -44,12 +50,24 @@ export default function ModelDownloadDialog({
   onCancel,
 }: ModelDownloadDialogProps) {
   const info = MODEL_MAP[type];
+  const mascotVisible = useAppStore((s) => s.config.mascotVisible);
+
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent(DOWNLOAD_MASCOT_EVENT, { detail: { active: showDownloading } }),
+    );
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent(DOWNLOAD_MASCOT_EVENT, { detail: { active: false } }),
+      );
+    };
+  }, [showDownloading]);
 
   return createPortal(
     <>
       {/* ── 下载确认弹窗 ── */}
       {showPrompt && (
-        <div className="fullscreen-overlay fixed inset-0 z-[100] flex items-center justify-center bg-black/60" onClick={onCancel}>
+        <div className="fullscreen-overlay fixed inset-0 flex items-center justify-center bg-black/60" style={{ zIndex: 15 }} onClick={onCancel}>
           <div
             className="bg-canvas-card border border-canvas-border rounded-xl p-6 max-w-sm mx-4 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
@@ -87,13 +105,35 @@ export default function ModelDownloadDialog({
 
       {/* ── 下载中遮罩 ── */}
       {showDownloading && (
-        <div className="fullscreen-overlay fixed inset-0 z-[100] flex items-center justify-center bg-black/60 rounded-xl">
-          <div className="bg-canvas-card border border-canvas-border rounded-xl p-8 max-w-xs mx-4 shadow-2xl text-center">
-            <div className="spinner large mx-auto mb-4" />
+        <motion.div
+          className="fullscreen-overlay fixed inset-0 flex items-center justify-center bg-black/60 rounded-xl"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.25, ease: 'easeOut' }}
+          style={{ zIndex: 15 }}
+        >
+          <div className="bg-black border border-canvas-border rounded-xl px-8 pb-8 pt-6 max-w-sm mx-4 shadow-2xl text-center">
+            {/* Pacman 吃豆人 — 延迟入场，与右下角吉祥物收放衔接 */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.3 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.42, delay: mascotVisible ? 0.35 : 0.1, ease: [0.16, 1, 0.3, 1] }}
+              className="mx-auto mb-3 h-36 w-64 max-w-full"
+            >
+              <Suspense fallback={<div className="spinner large mx-auto mt-12" />}>
+                <PacmanDownloadMascot />
+              </Suspense>
+            </motion.div>
             <p className="text-sm text-canvas-text font-medium mb-1">{info.loadingText}</p>
             <p className="text-xs text-canvas-text-muted">{info.sizeText}</p>
+            <button
+              className="mt-4 px-4 py-2 text-xs rounded-lg bg-canvas-hover text-canvas-text-secondary hover:bg-canvas-border transition-colors"
+              onClick={onCancel}
+            >
+              取消下载
+            </button>
           </div>
-        </div>
+        </motion.div>
       )}
     </>,
     document.body,

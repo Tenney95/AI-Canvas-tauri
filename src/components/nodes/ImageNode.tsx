@@ -655,6 +655,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   /** 取消下载 */
   const handleDownloadCancel = useCallback(() => {
     setDownloadPrompt(false);
+    setIsDownloadingModel(false);
   }, []);
 
   /** 执行实际的超分推理 */
@@ -774,6 +775,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   const handleMattingDownloadCancel = useCallback(() => {
     setMattingDownloadPrompt(false);
+    setIsDownloadingMattingModel(false);
   }, []);
 
   const doSubjectMatting = useCallback(async (filePath: string) => {
@@ -995,6 +997,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               onAnnotate={handleOpenAnnotate}
               onUpscale={handleUpscale}
               onRepaint={handleRepaint}
+              isUpscaling={isUpscaling}
+              isSubjectMattingRunning={isMattingRunning}
             />
           </div>
         )}
