@@ -214,6 +214,8 @@
 
 [data-theme='light'] .bg-canvas-bg { background-color: #F5F0EB; }
 [data-theme='light'] .bg-canvas-bg\/60 { background-color: rgb(245 240 235 / 0.6); }
+/* app-box 在浅色主题下背景透明，由 CanvasBackground 的米白层负责 */
+[data-theme='light'] .app-box { background-color: transparent; }
 [data-theme='light'] .bg-canvas-surface { background-color: #FFFFFF; }
 [data-theme='light'] .bg-canvas-surface\/60 { background-color: rgb(255 255 255 / 0.6); }
 [data-theme='light'] .bg-canvas-surface\/80 { background-color: rgb(255 255 255 / 0.8); }

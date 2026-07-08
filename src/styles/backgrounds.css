@@ -16,7 +16,7 @@
   position: absolute;
   inset: 0;
   z-index: 0;
-  background: #F5F0EB;
+  background: rgba(245, 240, 235, 0.98);
   pointer-events: none;
 }
 /* 细网格纹理 */
