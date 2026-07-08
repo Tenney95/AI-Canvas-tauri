@@ -21,13 +21,15 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useAppStore } from './store/useAppStore';
 import * as fileService from './services/fileService';
-import { checkForUpdate } from './services/updateService';
+import { checkForUpdate, downloadAndInstallUpdate, type UpdateInfo } from './services/updateService';
 import { DOWNLOAD_MASCOT_EVENT } from './components/shared/ModelDownloadDialog';
+import UpdateBubble from './components/shared/mascot/UpdateBubble';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 // 懒加载：吉祥物引入 three + gsap（体积大户），默认隐藏，首次 Ctrl+Shift+M 显示时才加载
 const Mascot = lazy(() => import('./components/shared/mascot/Mascot'));
+const PacmanMascot = lazy(() => import('./components/shared/mascot/PacmanDownloadMascot'));
 
 export default function App() {
   useKeyboardShortcuts();
@@ -38,10 +40,28 @@ export default function App() {
   // 下载弹窗出现时，右下角吉祥物缩小消失
   const [mascotShrink, setMascotShrink] = useState(false);
 
+  // 更新检测
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateBubbleVisible, setUpdateBubbleVisible] = useState(false);
+  const [updating, setUpdating] = useState(false);
+
   // 开屏动画结束后后台静默检查更新
   useEffect(() => {
     if (!splashDone || !isTauri) return;
-    checkForUpdate();
+    const run = async () => {
+      const result = await checkForUpdate();
+      if (result.available) {
+        const store = useAppStore.getState();
+        // 强制显示吉祥物
+        if (!store.config.mascotVisible) {
+          store.updateConfig({ mascotVisible: true });
+          store.saveConfig();
+        }
+        setUpdateInfo({ version: result.version, body: result.body, date: result.date });
+        setUpdateBubbleVisible(true);
+      }
+    };
+    run();
   }, [splashDone]);
 
   // 监听下载事件 → 控制吉祥物缩小动画
@@ -75,6 +95,16 @@ export default function App() {
     })();
     return () => { unlisten?.(); };
   }, []);
+
+  // ── 更新相关操作 ──
+  const handleUpdateNow = async () => {
+    setUpdating(true);
+    await downloadAndInstallUpdate();
+    setUpdating(false);
+  };
+  const handleDismissUpdate = () => {
+    setUpdateBubbleVisible(false);
+  };
 
   // 同步主题到 document.documentElement，供 CSS [data-theme] 选择器生效
   // 米白色背景时自动切换为 light，其余背景使用用户手动设置的主题
@@ -164,8 +194,25 @@ export default function App() {
           animate={mascotShrink ? { scale: 0, opacity: 0 } : { scale: 1, opacity: 1 }}
           transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
         >
-          <Suspense fallback={null}><Mascot loading={mascotLoading} /></Suspense>
+          <Suspense fallback={null}>
+            {updating ? (
+              <PacmanMascot />
+            ) : (
+              <Mascot loading={mascotLoading} />
+            )}
+          </Suspense>
         </motion.div>
+      )}
+
+      {/* 更新聊天气泡 — 悬停在吉祥物左上方 */}
+      {updateInfo && (
+        <UpdateBubble
+          info={updateInfo}
+          visible={updateBubbleVisible}
+          onUpdate={() => { handleUpdateNow(); }}
+          onDismiss={handleDismissUpdate}
+          updating={updating}
+        />
       )}
 
     </div>

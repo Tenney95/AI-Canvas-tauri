@@ -11,7 +11,7 @@ import type { NodeType } from '../types';
 import { NODE_TYPE_CONFIG } from '../types';
 import { uploadSourceFileToProject } from '../services/fileService';
 import { classifyFile } from '../hooks/useNodeCreation';
-import { checkForUpdate } from '../services/updateService';
+import { checkForUpdate, downloadAndInstallUpdate } from '../services/updateService';
 import AnimatedButton from './shared/AnimatedButton';
 
 /**
@@ -269,18 +269,19 @@ function AvatarMenu() {
   const menuRef = useRef<HTMLDivElement>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('0.1.0');
-  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'no-update' | 'error'>('idle');
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'no-update' | 'available' | 'updating' | 'error'>('idle');
   const [updateMsg, setUpdateMsg] = useState('');
+  const [updateVersion, setUpdateVersion] = useState('');
 
   const handleCheckUpdate = async () => {
     setUpdateStatus('checking');
     setUpdateMsg('');
     try {
       const result = await checkForUpdate();
-      if (result.updated) {
-        // 更新已自动下载安装，应用即将重启，状态保留
-        setUpdateStatus('no-update');
-        setUpdateMsg('已安装新版本，即将重启');
+      if (result.available) {
+        setUpdateStatus('available');
+        setUpdateVersion(result.version);
+        setUpdateMsg(`发现新版本 v${result.version}`);
       } else {
         setUpdateStatus('no-update');
         setUpdateMsg('已是最新版本');
@@ -288,6 +289,16 @@ function AvatarMenu() {
     } catch {
       setUpdateStatus('error');
       setUpdateMsg('检查失败，请稍后重试');
+    }
+  };
+
+  const handleDownloadUpdate = async () => {
+    setUpdateStatus('updating');
+    setUpdateMsg('正在下载更新...');
+    const ok = await downloadAndInstallUpdate();
+    if (!ok) {
+      setUpdateStatus('error');
+      setUpdateMsg('下载失败，请稍后重试');
     }
   };
 
@@ -369,8 +380,8 @@ function AvatarMenu() {
               <h2 className="text-lg font-semibold text-canvas-text">AI Canvas</h2>
               <p className="text-xs text-canvas-text-secondary">v{appVersion} · 开发预览版</p>
               <button
-                onClick={handleCheckUpdate}
-                disabled={updateStatus === 'checking'}
+                onClick={updateStatus === 'available' ? handleDownloadUpdate : handleCheckUpdate}
+                disabled={updateStatus === 'checking' || updateStatus === 'updating'}
                 className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300 disabled:text-canvas-text-muted transition-colors"
               >
                 {updateStatus === 'checking' ? (
@@ -378,8 +389,15 @@ function AvatarMenu() {
                     <Icon icon="svg-spinners:90-ring" width="12" height="12" />
                     检查中...
                   </>
+                ) : updateStatus === 'updating' ? (
+                  <>
+                    <Icon icon="svg-spinners:90-ring" width="12" height="12" />
+                    下载中...
+                  </>
                 ) : updateStatus === 'no-update' && updateMsg ? (
                   updateMsg
+                ) : updateStatus === 'available' ? (
+                  `发现 v${updateVersion}，点击更新`
                 ) : updateStatus === 'error' ? (
                   updateMsg
                 ) : (
