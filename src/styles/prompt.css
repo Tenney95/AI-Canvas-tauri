@@ -96,14 +96,26 @@
 
 /* ── Workflow IO chip — distinct style ── */
 .prompt-chip.prompt-chip-wf {
-  height: 26px;
+  max-height: 26px;
+  overflow: hidden;
   border: 1px solid rgba(245, 158, 11, 0.25);
   background: rgba(245, 158, 11, 0.08);
   color: #fbbf24;
-  padding: 1px 6px 1px 5px;
+  padding: 0 2px;
   gap: 0;
   display: inline-flex;
   align-items: center;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, padding 0.15s ease, max-height 0.2s ease;
+}
+/* 内部 value 聚焦时，chip 整体高亮 + 允许纵向延展 */
+.prompt-chip.prompt-chip-wf:focus-within {
+  border-color: rgba(244, 215, 164, 0.5);
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.12);
+  padding-top: 3px;
+  padding-bottom: 3px;
+  max-height: 200px;
+  overflow: visible;
+  align-items: flex-start;
 }
 .prompt-chip.prompt-chip-wf.chip-workflow-prompt  { background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.25); color: var(--node-text-light); }
 .prompt-chip.prompt-chip-wf.chip-workflow-image   { background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.25); color: var(--success-text); }
@@ -115,6 +127,9 @@
   display: inline-flex;
   align-items: center;
   gap: 1px;
+  flex-shrink: 0;
+  align-self: center;
+  margin-left: 1px;
 }
 
 .prompt-chip-wf-icon {
@@ -133,21 +148,33 @@
   margin: 0 2px 0 1px;
 }
 
-/* Editable value area inside workflow chip */
+/* Editable value area inside workflow chip
+   失焦 → 单行截断；聚焦 → 多行展开、向上对齐 */
 .prompt-chip-wf-value {
   display: inline-block;
-  max-width: 300px;
-  outline: none;
   min-width: 2em;
+  max-width: 200px;
+  outline: none;
   cursor: text;
   caret-color: currentColor;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  vertical-align: bottom;
+  vertical-align: top;
+  align-self: flex-start;
+  padding: 2px 0;
+  line-height: 1.5;
+  transition: max-width 0.12s ease;
 }
-.prompt-chip-wf-value br {
-  display: inline;
+.prompt-chip-wf-value:focus {
+  max-width: 400px;
+  overflow: visible;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.03);
 }
 .prompt-chip-wf-value:empty::before {
   content: '';
