@@ -397,6 +397,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const [mentionQuery, setMentionQuery] = useState('');
   const editorRef = useRef<HTMLDivElement>(null);
   const savedMentionRangeRef = useRef<Range | null>(null);
+  const lastFocusedWfValueRef = useRef<HTMLSpanElement | null>(null);
   const { nodes, edges, workflows } = useAppStore();
 
   // ── 资产引用弹窗 ──
@@ -606,6 +607,23 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     if (!showMention && !showAssetPicker) savedMentionRangeRef.current = null;
   }, [showMention, showAssetPicker]);
 
+  // ── Track last focused workflow chip value area ──
+  // 用于点击 connected-nodes-strip 缩略图时把文本插入到正确的 value 区
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const handler = (e: FocusEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && target.classList.contains('prompt-chip-wf-value')) {
+        lastFocusedWfValueRef.current = target;
+      } else {
+        lastFocusedWfValueRef.current = null;
+      }
+    };
+    editor.addEventListener('focusin', handler);
+    return () => editor.removeEventListener('focusin', handler);
+  }, []);
+
   // ── Click outside closes mention ──
   useEffect(() => {
     if (!showMention) return;
@@ -665,6 +683,45 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     insertMentionAtCursor: (id: string, label: string) => {
       const el = editorRef.current;
       if (!el) return;
+
+      // 若之前焦点在 workflow chip 的 value 区内 → 在该 value 区末尾插入引用芯片
+      const wfValue = lastFocusedWfValueRef.current;
+      if (wfValue && el.contains(wfValue)) {
+        wfValue.focus();
+        // 光标落到 value 区末尾
+        const sel = window.getSelection();
+        if (sel) {
+          const r = document.createRange();
+          r.selectNodeContents(wfValue);
+          r.collapse(false);
+          sel.removeAllRanges();
+          sel.addRange(r);
+          // 如果已有内容，先加个空格
+          const hasContent = wfValue.textContent && wfValue.textContent.trim().length > 0;
+          if (hasContent) {
+            r.insertNode(document.createTextNode(' '));
+            r.collapse(false);
+          } else {
+            // 清除 contenteditable 的占位 <br>，避免芯片前多余换行
+            wfValue.innerHTML = '';
+            // 重新选择空 value 区末尾
+            r.selectNodeContents(wfValue);
+            r.collapse(false);
+            sel.removeAllRanges();
+            sel.addRange(r);
+          }
+          const chip = buildChipEl(id, label, nodeMetaMap);
+          r.insertNode(chip);
+          ensureCaretSlotBeforeChip(chip);
+          r.setStartAfter(chip);
+          r.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(r);
+        }
+        emitDOM();
+        return;
+      }
+
       el.focus();
       const sel = window.getSelection();
       const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
@@ -677,7 +734,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       }
       insertChipAtCursor(id, label);
     },
-  }), [insertChipAtCursor]);
+  }), [insertChipAtCursor, emitDOM, nodeMetaMap]);
 
   // ── Insert a workflow IO chip ──
   const insertWorkflowChipAtCursor = useCallback(
@@ -903,13 +960,20 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           if (sel2 && sel2.rangeCount) {
             savedMentionRangeRef.current = sel2.getRangeAt(0).cloneRange();
           }
-        } else if (cursorPos > 0 && text[cursorPos - 1] === '/') {
-          onSlashTrigger?.();
+        } else {
+          // @ 已被删除或光标不在 @ 后，关闭菜单
+          if (showMention) setShowMention(false);
+          if (cursorPos > 0 && text[cursorPos - 1] === '/') {
+            onSlashTrigger?.();
+          }
         }
+      } else if (showMention) {
+        // 光标移到了非文本节点（如 chip），关闭菜单
+        setShowMention(false);
       }
     }
     emitDOM();
-  }, [emitDOM, onSlashTrigger]);
+  }, [emitDOM, onSlashTrigger, showMention]);
 
   // ── KeyDown: mention navigation / submit / chip deletion ──
   const handleKeyDown = useCallback(
