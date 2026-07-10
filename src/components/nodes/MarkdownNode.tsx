@@ -14,6 +14,7 @@ import { saveBinaryToProjectData } from '../../services/fileService';
 import AnimatedButton from '../shared/AnimatedButton';
 import { renderMarkdown } from '../../utils/renderMarkdown';
 import { textNodeHeight } from '../../utils/num';
+import { useShiftProportional, useProportionalLock, computeResize } from '../../hooks/useShiftProportional';
 
 function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
@@ -139,26 +140,64 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   // ── Auto-save debounce ──
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ── Shift 等比缩放 ──
+  const shiftHeld = useShiftProportional();
+  const { lockRef, reset: resetProportional, lock: lockProportional } = useProportionalLock();
+
   // ── Resize ──
   const isResizing = useRef(false);
   const resizeStart = useRef({ x: 0, y: 0, width: 280, height: 200 });
+  const resizeHandleRef = useRef<HTMLDivElement>(null);
   const nodeWidth = (data.nodeWidth as number) || 280;
   const nodeHeight = (data.nodeHeight as number) || 200;
 
-  const handleResizeStart = useCallback(
-    (e: React.PointerEvent) => {
+  // 最新值 refs（供原生事件闭包读取）
+  const latestResizeRef = useRef({ id, nodeWidth, nodeHeight, updateNodeData });
+  latestResizeRef.current = { id, nodeWidth, nodeHeight, updateNodeData };
+
+  useEffect(() => {
+    const el = resizeHandleRef.current;
+    if (!el) return;
+
+    const onNativePointerDown = (e: PointerEvent) => {
       e.preventDefault();
-      e.stopPropagation();
+      e.stopPropagation(); // 阻止冒泡到 React 根节点 → React Flow 收不到 → 不框选
+
+      const { id: nid, nodeWidth: nw, nodeHeight: nh, updateNodeData: upd } = latestResizeRef.current;
       isResizing.current = true;
-      resizeStart.current = { x: e.clientX, y: e.clientY, width: nodeWidth, height: nodeHeight };
+      resizeStart.current = { x: e.clientX, y: e.clientY, width: nw, height: nh };
+      resetProportional();
 
       const handlePointerMove = (ev: PointerEvent) => {
         if (!isResizing.current) return;
-        const dx = ev.clientX - resizeStart.current.x;
-        const dy = ev.clientY - resizeStart.current.y;
-        updateNodeData(id, {
-          nodeWidth: Math.max(240, resizeStart.current.width + dx),
-          nodeHeight: Math.max(140, resizeStart.current.height + dy),
+
+        let baseW = resizeStart.current.width;
+        let baseH = resizeStart.current.height;
+        let dx = ev.clientX - resizeStart.current.x;
+        let dy = ev.clientY - resizeStart.current.y;
+        let ratio = baseH > 0 ? baseW / baseH : 1;
+        let useProportional = false;
+
+        if (shiftHeld.current) {
+          if (lockRef.current.w === 0) {
+            lockProportional(baseW, baseH, resizeStart.current.x, resizeStart.current.y);
+          }
+          baseW = lockRef.current.w;
+          baseH = lockRef.current.h;
+          dx = ev.clientX - lockRef.current.x;
+          dy = ev.clientY - lockRef.current.y;
+          ratio = lockRef.current.ratio;
+          useProportional = true;
+        } else {
+          resetProportional();
+        }
+
+        const { width: newWidth, height: newHeight } = computeResize(
+          baseW, baseH, dx, dy, ratio, 240, 140, useProportional,
+        );
+        upd(nid, {
+          nodeWidth: newWidth,
+          nodeHeight: newHeight,
         } as Partial<BaseNodeData>);
       };
 
@@ -174,9 +213,11 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       document.body.style.userSelect = 'none';
       document.addEventListener('pointermove', handlePointerMove);
       document.addEventListener('pointerup', handlePointerUp);
-    },
-    [id, nodeWidth, nodeHeight, updateNodeData],
-  );
+    };
+
+    el.addEventListener('pointerdown', onNativePointerDown, true);
+    return () => el.removeEventListener('pointerdown', onNativePointerDown, true);
+  }, [shiftHeld, lockRef, resetProportional, lockProportional]);
 
   // ── Content change (edit mode) with debounced auto-save ──
   const handleContentChange = useCallback(
@@ -324,7 +365,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         </Handle>
       </div>
 
-      <div className="node-resize-handle" onPointerDownCapture={handleResizeStart} />
+      <div className="node-resize-handle nokey nodrag nopan" ref={resizeHandleRef} />
     </div>
 
     {/* Fullscreen overlay */}

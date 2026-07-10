@@ -1,12 +1,17 @@
 /**
  * ResizeHandle — 通用右下角拖拽缩放把手
- * 使用 PointerEvent 捕获阶段拦截，防止 React Flow 抢占事件
+ *
+ * 核心问题：React Flow 的 pane 会在捕获阶段处理 Shift + pointerdown，
+ * 比把手自身的 pointerdown 监听更早进入框选逻辑。
+ *
+ * 解决：为把手添加 React Flow 识别的 nokey 类，让 pane 跳过框选；nodrag / nopan
+ * 同时隔离节点拖拽和画布平移。原生监听器继续负责实际缩放。
  */
-import { useCallback, useContext, useRef } from 'react';
+import { useContext, useEffect, useRef } from 'react';
 import { ResizeSnapContext } from '../../../hooks/useNodeSnap';
+import { useShiftProportional, useProportionalLock, computeResize } from '../../../hooks/useShiftProportional';
 
 interface ResizeHandleProps {
-  /** 节点 id —— 用于缩放吸附对齐（不传则禁用吸附） */
   nodeId?: string;
   currentWidth: number;
   currentHeight: number;
@@ -23,41 +28,70 @@ export default function ResizeHandle({
   minHeight = 120,
   onResize,
 }: ResizeHandleProps) {
+  const handleRef = useRef<HTMLDivElement>(null);
   const isResizing = useRef(false);
   const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
   const snap = useContext(ResizeSnapContext);
+  const shiftHeld = useShiftProportional();
+  const { lockRef, reset: resetProportional, lock: lockProportional } = useProportionalLock();
 
-  const handlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
+  // 最新值 refs（供原生事件闭包读取，避免闭包过期）
+  const latestRef = useRef({ currentWidth, currentHeight, minWidth, minHeight, onResize, nodeId, snap });
+  latestRef.current = { currentWidth, currentHeight, minWidth, minHeight, onResize, nodeId, snap };
+
+  useEffect(() => {
+    const el = handleRef.current;
+    if (!el) return;
+
+    const onNativePointerDown = (e: PointerEvent) => {
       e.preventDefault();
-      e.stopPropagation();
+      e.stopPropagation(); // ← 关键：阻止事件冒泡到 React 根节点，React Flow 收不到
+
+      const { currentWidth: cw, currentHeight: ch, minWidth: mw, minHeight: mh, onResize: rs, nodeId: nid, snap: sp } = latestRef.current;
       isResizing.current = true;
-      resizeStart.current = {
-        x: e.clientX,
-        y: e.clientY,
-        w: currentWidth,
-        h: currentHeight,
-      };
-      if (nodeId) snap?.onResizeStart(nodeId);
+      resizeStart.current = { x: e.clientX, y: e.clientY, w: cw, h: ch };
+      resetProportional();
+      if (nid) sp?.onResizeStart(nid);
 
       const handlePointerMove = (ev: PointerEvent) => {
         if (!isResizing.current) return;
-        const dx = ev.clientX - resizeStart.current.x;
-        const dy = ev.clientY - resizeStart.current.y;
-        let newWidth = Math.max(minWidth, resizeStart.current.w + dx);
-        let newHeight = Math.max(minHeight, resizeStart.current.h + dy);
-        // 缩放吸附：若右/下边对齐了其他节点的边/中线则对齐并画引导线
-        if (nodeId && snap) {
-          const snapped = snap.applyResizeSnap(nodeId, newWidth, newHeight);
-          newWidth = Math.max(minWidth, snapped.width);
-          newHeight = Math.max(minHeight, snapped.height);
+
+        let baseW = resizeStart.current.w;
+        let baseH = resizeStart.current.h;
+        let dx = ev.clientX - resizeStart.current.x;
+        let dy = ev.clientY - resizeStart.current.y;
+        let ratio = baseH > 0 ? baseW / baseH : 1;
+        let useProportional = false;
+
+        if (shiftHeld.current) {
+          if (lockRef.current.w === 0) {
+            lockProportional(baseW, baseH, resizeStart.current.x, resizeStart.current.y);
+          }
+          baseW = lockRef.current.w;
+          baseH = lockRef.current.h;
+          dx = ev.clientX - lockRef.current.x;
+          dy = ev.clientY - lockRef.current.y;
+          ratio = lockRef.current.ratio;
+          useProportional = true;
+        } else {
+          resetProportional();
         }
-        onResize(newWidth, newHeight);
+
+        let { width: newWidth, height: newHeight } = computeResize(
+          baseW, baseH, dx, dy, ratio, mw, mh, useProportional,
+        );
+
+        if (nid && sp) {
+          const snapped = sp.applyResizeSnap(nid, newWidth, newHeight);
+          newWidth = Math.max(mw, snapped.width);
+          newHeight = Math.max(mh, snapped.height);
+        }
+        rs(newWidth, newHeight);
       };
 
       const handlePointerUp = () => {
         isResizing.current = false;
-        if (nodeId) snap?.onResizeStop();
+        if (nid) sp?.onResizeStop();
         document.removeEventListener('pointermove', handlePointerMove);
         document.removeEventListener('pointerup', handlePointerUp);
         document.body.style.cursor = '';
@@ -68,11 +102,12 @@ export default function ResizeHandle({
       document.body.style.userSelect = 'none';
       document.addEventListener('pointermove', handlePointerMove);
       document.addEventListener('pointerup', handlePointerUp);
-    },
-    [nodeId, snap, currentWidth, currentHeight, minWidth, minHeight, onResize],
-  );
+    };
 
-  return (
-    <div className="node-resize-handle" onPointerDownCapture={handlePointerDown} />
-  );
+    // capture:true — 在原生捕获阶段拦截，早于 React 事件代理的冒泡阶段
+    el.addEventListener('pointerdown', onNativePointerDown, true);
+    return () => el.removeEventListener('pointerdown', onNativePointerDown, true);
+  }, [shiftHeld, lockRef, resetProportional, lockProportional]);
+
+  return <div className="node-resize-handle nokey nodrag nopan" ref={handleRef} />;
 }
