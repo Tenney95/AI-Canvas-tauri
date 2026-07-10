@@ -22,6 +22,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   const openNodeDialog = useAppStore((s) => s.openNodeDialog);
   const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
   const isSource = data.role === 'source';
+  const [isUploading, setIsUploading] = useState(false);
 
   // ── Fullscreen ──
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -36,38 +37,55 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     }
   }, []);
 
-  // ── 文本选中模式：双击输出区进入（启用 user-select + nodrag，不影响默认拖拽）──
-  const outputRef = useRef<HTMLDivElement>(null);
-  const [selectingText, setSelectingText] = useState(false);
+  // ── 节点内编辑：双击已有内容或空占位区进入 ──
+  const inlineTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editEndingRef = useRef(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftOutput, setDraftOutput] = useState('');
 
-  const enterTextSelect = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation(); // 阻止冒泡到画布的双击处理
-    setSelectingText(true);
-    // 进入即选中全文，便于直接复制（也可随后拖拽调整选区）
+  const enterInlineEdit = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isUploading || data.status === 'loading') return;
+
+    editEndingRef.current = false;
+    setDraftOutput((data.output as string) || '');
+    setIsEditing(true);
     requestAnimationFrame(() => {
-      const el = outputRef.current;
-      if (!el) return;
-      const sel = window.getSelection();
-      if (!sel) return;
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      sel.removeAllRanges();
-      sel.addRange(range);
+      const textarea = inlineTextareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     });
-  }, []);
+  }, [data.output, data.status, isUploading]);
 
-  // 点击/拖拽到输出区之外时退出选中模式，恢复节点可拖拽
-  useEffect(() => {
-    if (!selectingText) return;
-    const onDown = (ev: MouseEvent) => {
-      if (outputRef.current && !outputRef.current.contains(ev.target as Node)) {
-        setSelectingText(false);
-        window.getSelection()?.removeAllRanges();
-      }
-    };
-    document.addEventListener('mousedown', onDown, true);
-    return () => document.removeEventListener('mousedown', onDown, true);
-  }, [selectingText]);
+  const finishInlineEdit = useCallback((save: boolean) => {
+    if (editEndingRef.current) return;
+    editEndingRef.current = true;
+
+    const previousOutput = (data.output as string) || '';
+    setIsEditing(false);
+    if (save && draftOutput !== previousOutput) {
+      updateNodeData(id, { output: draftOutput });
+    }
+    requestAnimationFrame(() => {
+      editEndingRef.current = false;
+    });
+  }, [data.output, draftOutput, id, updateNodeData]);
+
+  const handleInlineKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      finishInlineEdit(false);
+      return;
+    }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      finishInlineEdit(true);
+    }
+  }, [finishInlineEdit]);
 
   // ── Shift 等比缩放 ──
   const shiftHeld = useShiftProportional();
@@ -82,7 +100,9 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
 
   // 最新值 refs（供原生事件闭包读取）
   const latestResizeRef = useRef({ id, nodeWidth, nodeHeight, updateNodeData });
-  latestResizeRef.current = { id, nodeWidth, nodeHeight, updateNodeData };
+  useEffect(() => {
+    latestResizeRef.current = { id, nodeWidth, nodeHeight, updateNodeData };
+  }, [id, nodeHeight, nodeWidth, updateNodeData]);
 
   useEffect(() => {
     const el = resizeHandleRef.current;
@@ -199,8 +219,6 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   );
 
   // ── Upload handler for source nodes ──
-  const [isUploading, setIsUploading] = useState(false);
-
   const handleUpload = useCallback(async () => {
     setIsUploading(true);
     try {
@@ -242,8 +260,8 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
 
   const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴文本');
 
-  // 文本选中编辑时隐藏连接手柄：保留布局/位置（不脱锚），仅去掉显示与交互
-  const handleHideStyle: React.CSSProperties | undefined = selectingText
+  // 节点内编辑时隐藏连接手柄：保留布局/位置（不脱锚），仅去掉显示与交互
+  const handleHideStyle: React.CSSProperties | undefined = isEditing
     ? { opacity: 0, pointerEvents: 'none' }
     : undefined;
 
@@ -274,7 +292,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
         style={{ height: nodeHeight }}
       >
         <div className="node-preview compact">
-          {isSource && (
+          {isSource && !isEditing && (
             <button
               className="node-upload-btn"
               onClick={(e) => { e.stopPropagation(); handleUpload(); }}
@@ -288,13 +306,24 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
               </svg>
             </button>
           )}
-          {data.output ? (
+          {isEditing ? (
+            <textarea
+              ref={inlineTextareaRef}
+              className="text-output-edit nodrag nowheel"
+              value={draftOutput}
+              onChange={(e) => setDraftOutput(e.target.value)}
+              onBlur={() => finishInlineEdit(true)}
+              onKeyDown={handleInlineKeyDown}
+              onClick={(e) => e.stopPropagation()}
+              placeholder={isSource ? '输入或粘贴文本内容…' : '输入文本内容…'}
+              aria-label="编辑文本节点内容"
+              spellCheck={false}
+            />
+          ) : data.output ? (
             <div
-              ref={outputRef}
-              className={`text-output-content compact nowheel${selectingText ? ' is-selecting nodrag' : ''}`}
-              onDoubleClick={enterTextSelect}
-              onCopy={() => { requestAnimationFrame(() => setSelectingText(false)); }}
-              data-tooltip={selectingText ? undefined : '双击可选中复制'}
+              className="text-output-content compact nowheel"
+              onDoubleClick={enterInlineEdit}
+              title="双击编辑"
             >
               {data.output}
             </div>
@@ -309,21 +338,27 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
               <span>生成中...</span>
             </div>
           ) : (
-            <div className="node-preview-placeholder">
-              {isSource ? '上传文本文件或粘贴内容' : '输入提示词开始创作'}
+            <div
+              className="node-preview-placeholder text-node-empty-editable"
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={enterInlineEdit}
+              title="双击编辑"
+            >
+              <span>{isSource ? '上传文本文件或粘贴内容' : '输入提示词开始创作'}</span>
+              <span className="text-node-edit-hint">双击编辑内容</span>
             </div>
           )}
         </div>
-        {data.output && (
+        {(isEditing || data.output) && (
           <span className="text-node-wordcount">
-            {data.output.length.toLocaleString()} 字
+            {(isEditing ? draftOutput.length : ((data.output as string) || '').length).toLocaleString()} 字
           </span>
         )}
 
         {data.error && <NodeError nodeId={id} message={data.error} />}
 
 
-        {/* 文本选中编辑时隐藏手柄，避免遮挡/干扰选区（用 opacity 而非卸载，保留 handle 位置不让连线脱锚）*/}
+        {/* 节点内编辑时隐藏手柄，避免遮挡输入（用 opacity 而非卸载，保留 handle 位置不让连线脱锚）*/}
         <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-text" style={handleHideStyle} >
           <GooeyBtn className="gooey-btn-left" hue={234} />
         </Handle>
@@ -333,7 +368,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
       </div>
 
       {/* Resize handle — outside .node to avoid overflow:hidden + border-radius clipping */}
-      {!selectingText && (
+      {!isEditing && (
         <div className="node-resize-handle nokey nodrag nopan" ref={resizeHandleRef} />
       )}
     </div>

@@ -12,20 +12,14 @@
   white-space: pre-wrap;
   word-break: break-word;
   padding: 4px;
-  cursor: default;
+  cursor: text;
+  border-radius: 4px;
+  transition: background var(--transition-base), box-shadow var(--transition-base);
 }
 
-/* 双击进入选中模式：可选中复制（覆盖 React Flow 节点的 user-select:none）*/
-.text-output-content.compact.is-selecting {
-  user-select: text;
-  -webkit-user-select: text;
-  cursor: text;
+.text-output-content.compact:hover {
   background: var(--brand-alpha-05);
-  border-radius: 4px;
-}
-.text-output-content.compact.is-selecting::selection,
-.text-output-content.compact.is-selecting *::selection {
-  background: var(--brand-alpha-30);
+  box-shadow: inset 0 0 0 1px var(--brand-alpha-10);
 }
 
 /* Edit mode textarea */
@@ -36,7 +30,7 @@
   font-size: 10px;
   line-height: 1.6;
   color: var(--theme-text);
-  background: rgba(10, 10, 15, 0.6);
+  background: var(--theme-bg);
   border: 1px solid var(--node-text);
   border-radius: 4px;
   resize: none;
@@ -45,6 +39,26 @@
   word-break: break-word;
   padding: 6px;
   font-family: inherit;
+}
+
+.text-output-edit::placeholder {
+  color: var(--theme-text-muted);
+}
+
+.text-node-empty-editable {
+  cursor: text;
+  transition: color var(--transition-base), background var(--transition-base);
+}
+
+.text-node-empty-editable:hover {
+  color: var(--theme-text-secondary);
+  background: var(--brand-alpha-05);
+}
+
+.text-node-edit-hint {
+  font-size: 9px;
+  color: var(--theme-text-muted);
+  opacity: 0.72;
 }
 
 /* Character count — bottom-right inside text node */

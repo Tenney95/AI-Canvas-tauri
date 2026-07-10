@@ -3,8 +3,7 @@
  */
 import { useAppStore } from '../../store/useAppStore';
 import { readFileToDataUrl, getFileCategory } from '../fileService';
-import { resolveNodeReferences } from '../nodeReferenceService';
-import { resolveNodeImageUrl, mergeImageWithOverlays, resolveImageUrlArray } from './imageUtils';
+import { resolveNodeImageUrl, mergeImageWithOverlays } from './imageUtils';
 
 /** 解析 prompt 中的 @{nodeId:label} 引用，返回适合 /chat/completions 的 content 字段
  *  - 仅含文本引用时返回纯字符串

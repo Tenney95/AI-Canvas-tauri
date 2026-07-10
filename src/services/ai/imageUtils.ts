@@ -2,7 +2,7 @@
  * ai/imageUtils — 图片加载、URL 解析、上传辅助
  */
 import { uploadToRemote, isLocalImageUrl } from '../uploadService';
-import { readFileToDataUrl, getFileCategory, getAssetUrlFromPath } from '../fileService';
+import { getAssetUrlFromPath } from '../fileService';
 
 /** 加载图片（自动处理远程 URL 的 CORS） */
 export async function loadImage(src: string): Promise<HTMLImageElement> {

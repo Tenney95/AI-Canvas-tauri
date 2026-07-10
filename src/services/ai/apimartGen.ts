@@ -2,7 +2,6 @@
  * ai/apimartGen — APIMart 图片/视频/音频生成 + 通用异步任务执行器
  */
 import { useAppStore } from '../../store/useAppStore';
-import { mapImageDimensions } from '../aiDimensions';
 import { pollTask } from '../pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
 import { parseMultiPathResponse } from './helpers';
