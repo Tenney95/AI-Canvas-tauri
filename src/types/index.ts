@@ -52,6 +52,10 @@ export interface BaseNodeData {
   videoResolution?: number;   // 视频分辨率：832 | 1024 | 1280 | 1440
   videoFps?: number;          // 视频帧率：16 | 24 | 30
   videoFrames?: number;       // 视频生成帧数（时长）
+  seedanceResolution?: string;// Seedance 分辨率：'480p' | '720p' | '1080p' | '4k'
+  seedanceRatio?: string;     // Seedance 宽高比：'16:9' | '4:3' | '1:1' | '3:4' | '9:16' | '21:9' | 'adaptive'
+  seedanceDuration?: number;  // Seedance 时长（整数秒）：2-15
+  generateAudio?: boolean;    // 生成有声视频（Seedance 2.0 / 1.5 pro）
   style?: string;               // 画风 ID（如 'realistic'、'anime'）
   error?: string;             // 错误信息
   // ── 宫格分镜（ai-storyboard）──

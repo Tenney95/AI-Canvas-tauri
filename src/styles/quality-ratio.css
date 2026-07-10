@@ -211,6 +211,17 @@
 .ui-schema-video-params-popup {
   width: 320px;
 }
+
+/* ── 视频参数分辨率/宽高比分段控件：grid 均匀填满 + 自动换行 ── */
+.rh-video-resolution-seg {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+.rh-video-resolution-seg .img-rp-quality-item {
+  flex: none;
+  padding: 4px 8px;
+  font-size: 11px;
+}
 .rh-v5-meta-panel {
   display: flex;
   flex-direction: column;
@@ -303,4 +314,166 @@
 .rh-stepper-input::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
+}
+
+/* ════════════════════════════════════════════
+   Seedance 时长拖拽滑块
+   ════════════════════════════════════════════ */
+.rh-duration-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rh-duration-track {
+  position: relative;
+  height: 24px;
+  display: flex;
+  align-items: center;
+}
+.rh-duration-fill {
+  position: absolute;
+  inset: 0;
+  height: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--brand);
+  border-radius: 3px;
+  pointer-events: none;
+  transition: width 0.08s linear;
+  box-shadow: 0 0 6px var(--brand-alpha-30);
+}
+.rh-duration-track::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  height: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--theme-card);
+  border-radius: 3px;
+}
+.rh-duration-input {
+  position: relative;
+  width: 100%;
+  height: 24px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+  z-index: 1;
+}
+.rh-duration-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-alpha-20), 0 2px 8px rgba(0,0,0,0.4);
+  cursor: grab;
+  transition: box-shadow 0.15s, transform 0.1s;
+}
+.rh-duration-input::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.15);
+  box-shadow: 0 0 0 5px var(--brand-alpha-30), 0 2px 12px rgba(0,0,0,0.5);
+}
+.rh-duration-input::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-alpha-20), 0 2px 8px rgba(0,0,0,0.4);
+  cursor: grab;
+}
+.rh-duration-input::-moz-range-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.15);
+}
+/* Firefox 轨道 */
+.rh-duration-input::-moz-range-track {
+  background: transparent;
+  height: 6px;
+}
+.rh-duration-labels {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+.rh-duration-tick {
+  font-size: 10px;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition: color 0.15s;
+  user-select: none;
+  padding: 2px 3px;
+  border-radius: 3px;
+}
+.rh-duration-tick:hover {
+  color: var(--theme-text-secondary);
+}
+.rh-duration-tick.active {
+  color: var(--brand);
+  font-weight: 600;
+}
+
+/* ════════════════════════════════════════════
+   有声视频 Toggle 开关
+   ════════════════════════════════════════════ */
+.rh-toggle-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+.rh-toggle-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.rh-toggle-track {
+  display: flex;
+  align-items: center;
+  width: 44px;
+  height: 24px;
+  padding: 2px;
+  background: var(--theme-card);
+  border: 1px solid var(--theme-border);
+  border-radius: 12px;
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+.rh-toggle-switch input:checked + .rh-toggle-track {
+  background: var(--brand);
+  border-color: var(--brand);
+  box-shadow: 0 0 8px var(--brand-alpha-30);
+}
+.rh-toggle-knob {
+  display: block;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform: translateX(0);
+}
+.rh-toggle-switch input:checked + .rh-toggle-track .rh-toggle-knob {
+  transform: translateX(20px);
+}
+.rh-toggle-track:hover {
+  border-color: var(--brand-alpha-40);
+}
+.rh-toggle-switch input:checked + .rh-toggle-track:hover {
+  box-shadow: 0 0 12px var(--brand-alpha-40);
+}
+.rh-toggle-switch:active .rh-toggle-knob {
+  transform: translateX(0) scale(0.9);
+}
+.rh-toggle-switch:active input:checked + .rh-toggle-track .rh-toggle-knob {
+  transform: translateX(20px) scale(0.9);
 }

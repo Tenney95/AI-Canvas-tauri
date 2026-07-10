@@ -183,6 +183,10 @@ function AINodeDialog() {
         const videoResolution = (data.videoResolution as number) || 832;
         const videoFps = (data.videoFps as number) || 24;
         const videoFrames = (data.videoFrames as number) || 77;
+        const seedanceResolution = (data.seedanceResolution as string) || '720p';
+        const seedanceRatio = (data.seedanceRatio as string) || '16:9';
+        const seedanceDuration = (data.seedanceDuration as number) || 5;
+        const generateAudio = (data.generateAudio as boolean) || false;
         const result = await generateVideo({
           prompt: effectivePrompt,
           model: data.model!,
@@ -190,6 +194,10 @@ function AINodeDialog() {
           videoResolution,
           videoFps,
           videoFrames,
+          seedanceResolution,
+          seedanceRatio,
+          seedanceDuration,
+          generateAudio,
           workflowId: data.workflowId,
           workflowInputs: data.workflowInputs,
           nodeId: activeNodeId ?? undefined,
@@ -220,7 +228,7 @@ function AINodeDialog() {
           status: 'success',
           mediaUrl: result.url,
           filePath: saved?.filePath,
-          params: { videoResolution, videoFps, videoFrames },
+          params: { videoResolution, videoFps, videoFrames, seedanceResolution, seedanceRatio, seedanceDuration, generateAudio },
         });
         showToast('视频生成完成');
       } else if (nodeType === 'ai-audio') {
@@ -300,7 +308,7 @@ function AINodeDialog() {
       });
       showToast(msg, 'error');
     }
-  }, [activeNodeId, nodeType, data?.model, data?.provider, data?.label, data?.imageSize, data?.aspectRatio, data?.videoResolution, data?.videoFps, data?.videoFrames, data?.workflowId, data?.workflowInputs, currentProjectId, updateNodeData, recordOutputHistory, showToast]);
+  }, [activeNodeId, nodeType, data?.model, data?.provider, data?.label, data?.imageSize, data?.aspectRatio, data?.videoResolution, data?.videoFps, data?.videoFrames, data?.seedanceResolution, data?.seedanceRatio, data?.seedanceDuration, data?.generateAudio, data?.workflowId, data?.workflowInputs, currentProjectId, updateNodeData, recordOutputHistory, showToast]);
 
   // 直接将输入内容作为节点输出（跳过模型调用）
   const onPassThrough = useCallback(() => {
@@ -386,6 +394,26 @@ function AINodeDialog() {
     [activeNodeId, updateNodeData]
   );
 
+  const onChangeSeedanceResolution = useCallback(
+    (value: string) => updateNodeData(activeNodeId!, { seedanceResolution: value }),
+    [activeNodeId, updateNodeData]
+  );
+
+  const onChangeSeedanceRatio = useCallback(
+    (value: string) => updateNodeData(activeNodeId!, { seedanceRatio: value }),
+    [activeNodeId, updateNodeData]
+  );
+
+  const onChangeSeedanceDuration = useCallback(
+    (value: number) => updateNodeData(activeNodeId!, { seedanceDuration: value }),
+    [activeNodeId, updateNodeData]
+  );
+
+  const onChangeGenerateAudio = useCallback(
+    (value: boolean) => updateNodeData(activeNodeId!, { generateAudio: value }),
+    [activeNodeId, updateNodeData]
+  );
+
   const onStyleChange = useCallback(
     (styleId: string) => updateNodeData(activeNodeId!, { style: styleId }),
     [activeNodeId, updateNodeData]
@@ -460,6 +488,14 @@ function AINodeDialog() {
           onChangeVideoResolution={onChangeVideoResolution}
           onChangeVideoFps={onChangeVideoFps}
           onChangeVideoFrames={onChangeVideoFrames}
+          seedanceResolution={(data.seedanceResolution as string) || '720p'}
+          seedanceRatio={(data.seedanceRatio as string) || '16:9'}
+          seedanceDuration={(data.seedanceDuration as number) || 5}
+          generateAudio={(data.generateAudio as boolean) || false}
+          onChangeSeedanceResolution={onChangeSeedanceResolution}
+          onChangeSeedanceRatio={onChangeSeedanceRatio}
+          onChangeSeedanceDuration={onChangeSeedanceDuration}
+          onChangeGenerateAudio={onChangeGenerateAudio}
           workflows={workflows}
           selectedStyle={data.style as string | undefined}
           onStyleChange={onStyleChange}

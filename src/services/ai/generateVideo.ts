@@ -10,6 +10,8 @@ import type { AIVideoGenParams } from '../aiTypes';
 import { extractModelName, resolveGeneralModel } from './helpers';
 import { resolvePromptWithImageRefs } from './promptResolver';
 import { executeGeneralAsyncTask, generateApimartVideo } from './apimartGen';
+import { pollTask } from '../pollTask';
+import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
 
 export async function generateVideo(params: AIVideoGenParams): Promise<{ url: string }> {
   const { prompt: rawPrompt, model, provider } = params;
@@ -26,7 +28,15 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
   if (provider === 'dreamina') {
     const { prompt: dreaminaPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
     if (!dreaminaPrompt.trim()) throw new Error('提示词不能为空');
-    return generateDreaminaVideo({ prompt: dreaminaPrompt, model, imageUrls, nodeId: params.nodeId });
+    return generateDreaminaVideo({
+      prompt: dreaminaPrompt,
+      model,
+      imageUrls,
+      nodeId: params.nodeId,
+      ratio: params.seedanceRatio,
+      duration: params.seedanceDuration,
+      resolution: params.seedanceResolution,
+    });
   }
 
   // APIMart 视频生成 — 异步提交 + 轮询
@@ -45,6 +55,26 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
     return generateApimartVideo(apiKey, baseUrl, modelName, prompt, params.nodeId);
   }
 
+  // ── 火山方舟 Seedance 视频生成 ──
+  if (provider === 'volcengine') {
+    const config = useAppStore.getState().config;
+    const providerConfig = config.providers.volcengine;
+    const apiKey = providerConfig?.apiKey || '';
+    if (!apiKey) {
+      throw new Error('未配置 火山方舟 的 API Key\n请在「设置 → API Key」中配置');
+    }
+    const baseUrl = (providerConfig?.baseUrl || DEFAULT_BASE_URLS.volcengine || '').replace(/\/+$/, '');
+    if (!baseUrl) {
+      throw new Error('未配置 火山方舟 的服务地址\n请在「设置 → API Key」中添加');
+    }
+    const modelName = extractModelName(model, provider);
+    const { prompt: resolvedPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
+    if (!resolvedPrompt.trim() && imageUrls.length === 0) {
+      throw new Error('提示词不能为空');
+    }
+    return generateVolcengineVideo(apiKey, baseUrl, modelName, resolvedPrompt, imageUrls, params);
+  }
+
   // ── 通用模型视频生成 ──
   if (provider === 'general') {
     const gm = resolveGeneralModel(model);
@@ -55,4 +85,139 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置
   throw new Error('视频生成需要选择 ComfyUI 工作流\n请在模型选择器中导入并选择工作流');
+}
+
+/** 火山方舟 Seedance 视频生成 — 异步提交 + 轮询 */
+async function generateVolcengineVideo(
+  apiKey: string,
+  baseUrl: string,
+  modelName: string,
+  prompt: string,
+  imageUrls: string[],
+  params: AIVideoGenParams,
+): Promise<{ url: string }> {
+  const nodeId = params.nodeId;
+
+  // 预存待续任务
+  if (nodeId) {
+    const projectId = useAppStore.getState().currentProjectId;
+    if (projectId) {
+      savePendingTask({
+        nodeId,
+        projectId,
+        nodeType: 'ai-video',
+        provider: 'volcengine',
+        taskId: '',
+        taskType: 'volcengine',
+        apiKey,
+        baseUrl,
+        submitted: false,
+      });
+    }
+  }
+
+  // 构建 content 数组
+  const content: Array<Record<string, unknown>> = [];
+  if (prompt.trim()) {
+    content.push({ type: 'text', text: prompt.trim() });
+  }
+  for (const url of imageUrls) {
+    content.push({
+      type: 'image_url',
+      image_url: { url },
+    });
+  }
+
+  // 构建请求体 — 直接使用 Seedance 原生参数
+  const ratio = params.seedanceRatio || '16:9';
+  const duration = params.seedanceDuration ?? 5;
+  const resolution = params.seedanceResolution || '720p';
+  const requestBody: Record<string, unknown> = {
+    model: modelName,
+    content,
+    ratio,
+    duration,
+    resolution,
+    watermark: true,
+  };
+  if (params.generateAudio) {
+    requestBody.generate_audio = true;
+  }
+
+  // 提交任务
+  const apiUrl = `${baseUrl}/contents/generations/tasks`;
+  const submitResp = await fetch(apiUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!submitResp.ok) {
+    const errBody = await submitResp.text().catch(() => '');
+    if (nodeId) removePendingTask(nodeId);
+    let errorMsg = `提交失败 (${submitResp.status})`;
+    try {
+      const err = JSON.parse(errBody);
+      errorMsg = err.error?.message || errorMsg;
+    } catch {
+      if (errBody) errorMsg += `: ${errBody.slice(0, 200)}`;
+    }
+    throw new Error(errorMsg);
+  }
+
+  const submitResult = await submitResp.json() as { id?: string };
+  const taskId = submitResult.id;
+  if (!taskId) {
+    if (nodeId) removePendingTask(nodeId);
+    throw new Error('火山方舟视频生成提交失败: 未返回任务 ID');
+  }
+
+  // 回填 taskId
+  if (nodeId) {
+    updatePendingTask(nodeId, { taskId, submitted: true });
+  }
+
+  // 轮询
+  const signal = nodeId ? registerNodePolling(nodeId) : undefined;
+  const pollPromise = pollTask<Record<string, unknown>, { url: string }>({
+    fetchState: async () => {
+      const pollResp = await fetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
+      return (await pollResp.json()) as Record<string, unknown>;
+    },
+    isComplete: (raw) => {
+      const status = raw.status as string;
+      if (status === 'succeeded') {
+        const c = raw.content as Record<string, unknown> | undefined;
+        const videoUrl = c?.video_url as string | undefined;
+        if (videoUrl) return { url: videoUrl };
+        throw new Error('任务完成但未返回视频地址');
+      }
+      return null;
+    },
+    isFailed: (raw) => {
+      const status = raw.status as string;
+      if (status === 'failed') {
+        const err = raw.error as { message?: string } | undefined;
+        return `任务失败: ${err?.message || status}`;
+      }
+      return null;
+    },
+    interval: 3000,
+    onFetchError: 'continue',
+    signal,
+  });
+
+  pollPromise.finally(() => {
+    if (nodeId) {
+      cleanupNodePolling(nodeId);
+      removePendingTask(nodeId);
+    }
+  });
+  return pollPromise;
 }

@@ -143,6 +143,9 @@ export async function generateDreaminaVideo(opts: {
   model: string;
   imageUrls: string[];
   nodeId?: string;
+  ratio?: string;
+  duration?: number;
+  resolution?: string;
 }): Promise<{ url: string }> {
   const modelVersion = modelVersionOf(opts.model);
   const hasImage = opts.imageUrls.length > 0;
@@ -153,6 +156,18 @@ export async function generateDreaminaVideo(opts: {
   // 仅透传 seedance* 系列视频模型版本，其余用 CLI 默认，避免无效组合
   if (modelVersion.startsWith('seedance')) params.modelVersion = modelVersion;
   if (hasImage) params.image = opts.imageUrls[0];
+
+  // Seedance 视频参数 — 与火山方舟共用同一套参数
+  if (opts.ratio && !hasImage) {
+    // image2video 时比例由参考图决定，不传 --ratio
+    params.ratio = opts.ratio;
+  }
+  if (opts.duration != null && opts.duration >= 2 && opts.duration <= 15) {
+    params.duration = opts.duration;
+  }
+  if (opts.resolution) {
+    params.videoResolution = opts.resolution;
+  }
 
   // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
   if (opts.nodeId) {

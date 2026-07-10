@@ -39,6 +39,15 @@ interface PromptPanelProps {
   onChangeVideoResolution?: (value: number) => void;
   onChangeVideoFps?: (value: number) => void;
   onChangeVideoFrames?: (value: number) => void;
+  // ── Seedance 参数 ──
+  seedanceResolution?: string;
+  seedanceRatio?: string;
+  seedanceDuration?: number;
+  generateAudio?: boolean;
+  onChangeSeedanceResolution?: (value: string) => void;
+  onChangeSeedanceRatio?: (value: string) => void;
+  onChangeSeedanceDuration?: (value: number) => void;
+  onChangeGenerateAudio?: (value: boolean) => void;
   workflows?: WorkflowDefinition[];
   editorRef?: React.Ref<MentionEditorHandle>;
   selectedStyle?: string;
@@ -100,6 +109,14 @@ export default function PromptPanel({
   onChangeVideoResolution,
   onChangeVideoFps,
   onChangeVideoFrames,
+  seedanceResolution,
+  seedanceRatio,
+  seedanceDuration,
+  generateAudio,
+  onChangeSeedanceResolution,
+  onChangeSeedanceRatio,
+  onChangeSeedanceDuration,
+  onChangeGenerateAudio,
   workflows = [],
   editorRef,
   selectedStyle,
@@ -233,12 +250,21 @@ export default function PromptPanel({
 
         {nodeType === 'ai-video' && (
           <VideoParamSelector
+            provider={selectedProvider}
             videoResolution={videoResolution}
             videoFps={videoFps}
             videoFrames={videoFrames}
             onChangeResolution={onChangeVideoResolution || (() => {})}
             onChangeFps={onChangeVideoFps || (() => {})}
             onChangeFrames={onChangeVideoFrames || (() => {})}
+            seedanceResolution={seedanceResolution}
+            seedanceRatio={seedanceRatio}
+            seedanceDuration={seedanceDuration}
+            generateAudio={generateAudio}
+            onChangeSeedanceResolution={onChangeSeedanceResolution}
+            onChangeSeedanceRatio={onChangeSeedanceRatio}
+            onChangeSeedanceDuration={onChangeSeedanceDuration}
+            onChangeGenerateAudio={onChangeGenerateAudio}
           />
         )}
 

@@ -227,6 +227,10 @@ function MultiSelectToolbar() {
             videoResolution: (d.videoResolution as number) || 832,
             videoFps: (d.videoFps as number) || 24,
             videoFrames: (d.videoFrames as number) || 77,
+            seedanceResolution: (d.seedanceResolution as string) || '720p',
+            seedanceRatio: (d.seedanceRatio as string) || '16:9',
+            seedanceDuration: (d.seedanceDuration as number) || 5,
+            generateAudio: (d.generateAudio as boolean) || false,
             workflowId: d.workflowId, workflowInputs: d.workflowInputs,
             nodeId: node.id,
           });
@@ -244,7 +248,7 @@ function MultiSelectToolbar() {
             prompt, output: result.url, nodeType: 'ai-video',
             model: d.model!, provider: d.provider!, status: 'success',
             mediaUrl: result.url, filePath: saved?.filePath,
-            params: { videoResolution: d.videoResolution, videoFps: d.videoFps, videoFrames: d.videoFrames },
+            params: { videoResolution: d.videoResolution, videoFps: d.videoFps, videoFrames: d.videoFrames, seedanceResolution: d.seedanceResolution, seedanceRatio: d.seedanceRatio, seedanceDuration: d.seedanceDuration, generateAudio: d.generateAudio },
           });
         } else {
           const result = await generateAudio({

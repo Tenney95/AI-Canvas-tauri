@@ -56,7 +56,7 @@ export interface PendingTask {
   nodeType: NodeType;
   provider: string;
   taskId: string;
-  taskType: 'apimart' | 'dreamina' | 'comfyui' | 'general';
+  taskType: 'apimart' | 'dreamina' | 'comfyui' | 'general' | 'volcengine';
   /** 恢复轮询用：API Key */
   apiKey?: string;
   /** 恢复轮询用：服务地址 */
@@ -496,6 +496,63 @@ async function resumeGeneral(task: PendingTask): Promise<void> {
   }
 }
 
+/* ── 火山方舟 Seedance ── */
+
+async function resumeVolcengine(task: PendingTask): Promise<void> {
+  const { nodeId, taskId, apiKey, baseUrl } = task;
+  if (!apiKey || !baseUrl) {
+    useAppStore.getState().updateNodeData(nodeId, {
+      status: 'error',
+      error: '任务恢复失败：缺少 API 配置',
+    });
+    removePendingTask(nodeId);
+    return;
+  }
+  const node = useAppStore.getState().nodes.find((n) => n.id === nodeId);
+  const label = (node?.data as BaseNodeData | undefined)?.label || '';
+
+  const signal = registerNodePolling(nodeId);
+
+  try {
+    const { url } = await pollTask<Record<string, unknown>, { url: string }>({
+      fetchState: async () => {
+        const resp = await fetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return (await resp.json()) as Record<string, unknown>;
+      },
+      isComplete: (raw) => {
+        const status = raw.status as string;
+        if (status === 'succeeded') {
+          const content = raw.content as Record<string, unknown> | undefined;
+          const videoUrl = content?.video_url as string | undefined;
+          if (videoUrl) return { url: videoUrl };
+          throw new Error('任务完成但未返回视频地址');
+        }
+        return null;
+      },
+      isFailed: (raw) => {
+        const status = raw.status as string;
+        if (status === 'failed') {
+          const err = raw.error as { message?: string } | undefined;
+          return `任务失败: ${err?.message || status}`;
+        }
+        return null;
+      },
+      interval: 3000,
+      onFetchError: 'continue',
+      signal,
+    });
+    await applyNodeResult(nodeId, url, label);
+    removePendingTask(nodeId);
+  } catch (err) {
+    await handleResumeError(nodeId, err);
+  } finally {
+    cleanupNodePolling(nodeId);
+  }
+}
+
 // ═══════════════════════════════════════════
 // 恢复入口
 // ═══════════════════════════════════════════
@@ -505,6 +562,7 @@ const RESUME_MAP: Record<PendingTask['taskType'], (task: PendingTask) => Promise
   dreamina: resumeDreamina,
   comfyui: resumeComfyUI,
   general: resumeGeneral,
+  volcengine: resumeVolcengine,
 };
 
 function isCancellationErrorMessage(message?: string): boolean {
