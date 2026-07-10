@@ -30,6 +30,7 @@ function getShortcutList(): { action: string; key: string }[] {
     { action: '保存画布', key: `${mod} + S` },
     { action: '撤销', key: `${mod} + Z` },
     { action: '重做', key: `${mod} + Y` },
+    { action: '分组 / 取消分组', key: `${mod} + G` },
     { action: '删除节点', key: del },
     { action: '画布复位', key: 'F' },
     { action: '小地图', key: 'M' },

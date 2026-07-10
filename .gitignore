@@ -18,6 +18,7 @@ dist-ssr
 .codegraph/
 .codebuddy/skills/*
 .codebuddy/commands/*
+.workbuddy
 .codegraph/*
 .claude/*
 doc/测试报告.md

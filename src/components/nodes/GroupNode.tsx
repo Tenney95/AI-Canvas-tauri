@@ -5,10 +5,13 @@
  * 拖拽分组时 React Flow 自动同步所有子节点位置，无卡顿。
  * 支持拖拽右下角调整大小。
  */
-import { useRef } from 'react';
+import { useRef, useState, useCallback } from 'react';
 import { NodeResizer, Handle, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
+import { Icon } from '@iconify/react';
 import { useAppStore } from '../../store/useAppStore';
+import AnimatedButton from '../shared/AnimatedButton';
+import { batchExecuteNodes, type BatchContext } from '../../utils/batchExecute';
 
 interface GroupNodeData {
   groupId: string;
@@ -16,11 +19,35 @@ interface GroupNodeData {
   label: string;
 }
 
-export default function GroupNode({ id, data }: NodeProps) {
+export default function GroupNode({ id, data, selected }: NodeProps) {
   const { groupId, color, label } = data as unknown as GroupNodeData;
   const renameGroup = useAppStore((s) => s.renameGroup);
   const childCount = useAppStore((s) => s.nodes.filter((n) => n.parentId === id).length);
   const editingRef = useRef(false);
+  const [batchRunning, setBatchRunning] = useState(false);
+
+  const executeGroupBatch = useCallback(async () => {
+    const state = useAppStore.getState();
+    const allNodes = state.nodes;
+    const allEdges = state.edges;
+    const { updateNodeData, recordOutputHistory, showToast, currentProjectId } = state;
+
+    // 收集该分组下的所有子节点 ID
+    const childIds = allNodes.filter((n) => n.parentId === id).map((n) => n.id);
+    if (childIds.length === 0) return;
+
+    setBatchRunning(true);
+    const ctx: BatchContext = { updateNodeData, recordOutputHistory, currentProjectId };
+    const { ok, fail } = await batchExecuteNodes(childIds, allNodes, allEdges, ctx);
+    setBatchRunning(false);
+
+    const parts: string[] = [];
+    if (ok > 0) parts.push(`${ok} 个成功`);
+    if (fail > 0) parts.push(`${fail} 个失败`);
+    if (parts.length > 0) {
+      showToast(`分组批量生成完成：${parts.join('，')}`, fail > 0 ? 'error' : undefined);
+    }
+  }, [id]);
 
   if (childCount === 0) return null;
 
@@ -72,6 +99,16 @@ export default function GroupNode({ id, data }: NodeProps) {
             {label}
           </span>
           <span className="canvas-group-count">{childCount} 节点</span>
+          {selected && (
+            <AnimatedButton
+              data-tooltip="批量生成"
+              disabled={batchRunning}
+              onClick={executeGroupBatch}
+              className="w-5 h-5 rounded flex items-center justify-center ml-1 transition-colors hover:text-green-300 hover:bg-green-500/15 disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <Icon icon="material-symbols:play-arrow-rounded" width={16} height={16} />
+            </AnimatedButton>
+          )}
         </div>
 
         {/* Group visual box — fills the group body area */}

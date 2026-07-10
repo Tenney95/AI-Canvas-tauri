@@ -9,8 +9,7 @@ import { getNodeBounds, getParentOffset } from '../../utils/nodeBounds.js';
 import type { Node as RFNode } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
-import { generateText, generateImage, generateVideo, generateAudio } from '../../services/aiService';
-import { downloadUrlAndSave } from '../../services/fileService';
+import { batchExecuteNodes, type BatchContext } from '../../utils/batchExecute';
 import DistributionGapHandles from './DistributionGapHandles';
 import {
   distributeNodesWithEqualGap,
@@ -152,10 +151,12 @@ function MultiSelectToolbar() {
   const executeBatch = useCallback(async () => {
     const state = useAppStore.getState();
     const currentNodes = state.nodes;
+    const currentEdges = state.edges;
     const currentIds = state.selectedNodeIds;
     const { updateNodeData, showToast: toast, currentProjectId } = state;
 
-    const toRun = currentNodes.filter(
+    // 前置检查：是否有可执行节点
+    const hasExecutable = currentNodes.some(
       (n) =>
         currentIds.includes(n.id) &&
         n.type !== 'group' &&
@@ -167,123 +168,15 @@ function MultiSelectToolbar() {
         n.data?.status !== 'loading',
     );
 
-    if (toRun.length === 0) {
+    if (!hasExecutable) {
       toast('选中的节点中没有可执行的（需要配置模型且有 prompt）', 'error');
       return;
     }
 
     setBatchRunning(true);
-    let ok = 0, fail = 0;
 
-    for (const node of toRun) {
-      const d = node.data!;
-      const nt = d.type as 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio';
-      const prompt = (d.prompt as string) || '';
-
-      updateNodeData(node.id, { status: 'loading', error: undefined });
-      try {
-        if (nt === 'ai-text') {
-          const result = await generateText({ prompt, model: d.model!, provider: d.provider! });
-          updateNodeData(node.id, { output: result, status: 'success' });
-          recordOutputHistory(node.id, {
-            nodeId: node.id,
-            nodeLabel: d.label,
-            timestamp: Date.now(),
-            prompt,
-            output: result,
-            nodeType: 'ai-text',
-            model: d.model!,
-            provider: d.provider!,
-            status: 'success',
-          });
-        } else if (nt === 'ai-image') {
-          const result = await generateImage({
-            prompt, model: d.model!, provider: d.provider!,
-            imageSize: (d.imageSize as string) || '2K',
-            aspectRatio: (d.aspectRatio as string) || '1:1',
-            workflowId: d.workflowId, workflowInputs: d.workflowInputs,
-            nodeId: node.id,
-          });
-          const saved = currentProjectId
-            ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image', d.label).catch(() => null)
-            : null;
-          const mediaUrl = saved?.assetUrl || result.url;
-          updateNodeData(node.id, {
-            imageUrl: mediaUrl, sourceUrl: result.url,
-            filePath: saved?.filePath, thumbnailUrl: result.url,
-            output: result.url, status: 'success',
-            imageWidth: result.width, imageHeight: result.height,
-          });
-          recordOutputHistory(node.id, {
-            nodeId: node.id, nodeLabel: d.label, timestamp: Date.now(),
-            prompt, output: result.url, nodeType: 'ai-image',
-            model: d.model!, provider: d.provider!, status: 'success',
-            mediaUrl: result.url, filePath: saved?.filePath,
-            params: { imageSize: d.imageSize, aspectRatio: d.aspectRatio },
-          });
-        } else if (nt === 'ai-video') {
-          const result = await generateVideo({
-            prompt, model: d.model!, provider: d.provider!,
-            videoResolution: (d.videoResolution as number) || 832,
-            videoFps: (d.videoFps as number) || 24,
-            videoFrames: (d.videoFrames as number) || 77,
-            seedanceResolution: (d.seedanceResolution as string) || '720p',
-            seedanceRatio: (d.seedanceRatio as string) || '16:9',
-            seedanceDuration: (d.seedanceDuration as number) || 5,
-            generateAudio: (d.generateAudio as boolean) || false,
-            workflowId: d.workflowId, workflowInputs: d.workflowInputs,
-            nodeId: node.id,
-          });
-          const saved = currentProjectId
-            ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video', d.label).catch(() => null)
-            : null;
-          const mediaUrl = saved?.assetUrl || result.url;
-          updateNodeData(node.id, {
-            videoUrl: mediaUrl, sourceUrl: result.url,
-            filePath: saved?.filePath, thumbnailUrl: result.url,
-            output: result.url, status: 'success',
-          });
-          recordOutputHistory(node.id, {
-            nodeId: node.id, nodeLabel: d.label, timestamp: Date.now(),
-            prompt, output: result.url, nodeType: 'ai-video',
-            model: d.model!, provider: d.provider!, status: 'success',
-            mediaUrl: result.url, filePath: saved?.filePath,
-            params: { videoResolution: d.videoResolution, videoFps: d.videoFps, videoFrames: d.videoFrames, seedanceResolution: d.seedanceResolution, seedanceRatio: d.seedanceRatio, seedanceDuration: d.seedanceDuration, generateAudio: d.generateAudio },
-          });
-        } else {
-          const result = await generateAudio({
-            prompt, model: d.model!, provider: d.provider!,
-            workflowId: d.workflowId, workflowInputs: d.workflowInputs,
-            nodeId: node.id,
-          });
-          const saved = currentProjectId
-            ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio', d.label).catch(() => null)
-            : null;
-          const mediaUrl = saved?.assetUrl || result.url;
-          updateNodeData(node.id, {
-            audioUrl: mediaUrl, sourceUrl: result.url,
-            filePath: saved?.filePath, thumbnailUrl: result.url,
-            output: result.url, status: 'success',
-          });
-          recordOutputHistory(node.id, {
-            nodeId: node.id, nodeLabel: d.label, timestamp: Date.now(),
-            prompt, output: result.url, nodeType: 'ai-audio',
-            model: d.model!, provider: d.provider!, status: 'success',
-            mediaUrl: result.url, filePath: saved?.filePath,
-          });
-        }
-        ok++;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');
-        updateNodeData(node.id, { status: 'error', error: msg });
-        recordOutputHistory(node.id, {
-          nodeId: node.id, nodeLabel: d.label, timestamp: Date.now(),
-          prompt, output: '', nodeType: nt,
-          model: d.model!, provider: d.provider!, status: 'error', error: msg,
-        });
-        fail++;
-      }
-    }
+    const ctx: BatchContext = { updateNodeData, recordOutputHistory, currentProjectId };
+    const { ok, fail } = await batchExecuteNodes(currentIds, currentNodes, currentEdges, ctx);
 
     setBatchRunning(false);
     const parts: string[] = [];
