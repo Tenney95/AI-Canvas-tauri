@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { generateId } from '../../../../../store/useAppStore';
 import { loadSafeImage } from '../imageUtils';
-import type { CanvasSettings, Layer, LayerType } from './types';
+import type { CanvasSettings, Layer, LayerType } from '../../../../../types/composerTypes';
 
 const newId = () => `layer-${generateId()}`;
 

@@ -6,7 +6,7 @@ import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { mapImageDimensions } from '../aiDimensions';
 import { generateDreaminaImage } from '../dreaminaService';
 import { executeComfyUIGenerate } from '../comfyWorkflowService';
-import type { AIImageGenParams } from '../aiTypes';
+import type { AIImageGenParams } from '../../types/aiTypes';
 import {
   extractModelName,
   isOpenAIGptImageModel,

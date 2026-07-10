@@ -5,7 +5,7 @@ import { useMemo } from 'react';
 import AnimatedButton from '../../../../shared/AnimatedButton';
 import { useAppStore } from '../../../../../store/useAppStore';
 import type { BaseNodeData } from '../../../../../types';
-import type { Layer } from './types';
+import type { Layer } from '../../../../../types/composerTypes';
 import type { ComposerApi } from './useComposer';
 
 interface Props {

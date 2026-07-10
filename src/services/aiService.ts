@@ -17,4 +17,4 @@ export { generateImage } from './ai/generateImage';
 export { generateVideo } from './ai/generateVideo';
 export { generateAudio } from './ai/generateAudio';
 export { buildPanoramaPrompt } from './ai/panoramaPrompt';
-export type { AIAudioGenParams, AIGenerateParams, AIImageGenParams, AIVideoGenParams } from './aiTypes';
+export type { AIAudioGenParams, AIGenerateParams, AIImageGenParams, AIVideoGenParams } from '../types/aiTypes';

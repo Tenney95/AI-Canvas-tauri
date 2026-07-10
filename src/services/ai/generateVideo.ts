@@ -6,7 +6,7 @@ import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { resolveNodeReferences } from '../nodeReferenceService';
 import { generateDreaminaVideo } from '../dreaminaService';
 import { executeComfyUIVideoGenerate } from '../comfyWorkflowService';
-import type { AIVideoGenParams } from '../aiTypes';
+import type { AIVideoGenParams } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel } from './helpers';
 import { resolvePromptWithImageRefs } from './promptResolver';
 import { executeGeneralAsyncTask, generateApimartVideo } from './apimartGen';

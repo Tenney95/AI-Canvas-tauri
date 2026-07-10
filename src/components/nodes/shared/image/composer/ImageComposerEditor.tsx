@@ -19,7 +19,7 @@ import { clamp } from '../../../../../utils/num';
 import { useComposer } from './useComposer';
 import ComposerToolbar from './ComposerToolbar';
 import ComposerSidePanel from './ComposerSidePanel';
-import type { Layer } from './types';
+import type { Layer } from '../../../../../types/composerTypes';
 
 interface ImageComposerEditorProps {
   isOpen: boolean;

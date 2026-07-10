@@ -6,7 +6,7 @@ import AnimatedButton from '../../../../shared/AnimatedButton';
 import QualityRatioSelector from '../../QualityRatioSelector';
 import { useAppStore } from '../../../../../store/useAppStore';
 import type { BaseNodeData } from '../../../../../types';
-import type { CanvasBg } from './types';
+import type { CanvasBg } from '../../../../../types/composerTypes';
 import type { ComposerApi } from './useComposer';
 
 interface Props {

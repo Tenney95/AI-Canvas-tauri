@@ -5,7 +5,7 @@
  */
 import { useAppStore } from '../store/useAppStore';
 import type { WorkflowIONode } from '../types';
-import type { AIAudioGenParams, AIImageGenParams, AIVideoGenParams } from './aiTypes';
+import type { AIAudioGenParams, AIImageGenParams, AIVideoGenParams } from '../types/aiTypes';
 import { mapImageDimensions } from './aiDimensions';
 import { resolveNodeReferences } from './nodeReferenceService';
 import { pollTask } from './pollTask';

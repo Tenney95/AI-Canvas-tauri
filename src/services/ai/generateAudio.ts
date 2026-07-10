@@ -5,7 +5,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { resolveNodeReferences } from '../nodeReferenceService';
 import { executeComfyUIAudioGenerate } from '../comfyWorkflowService';
-import type { AIAudioGenParams } from '../aiTypes';
+import type { AIAudioGenParams } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel } from './helpers';
 import { executeGeneralAsyncTask, generateApimartAudio } from './apimartGen';
 

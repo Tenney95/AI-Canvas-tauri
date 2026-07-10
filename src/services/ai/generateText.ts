@@ -3,7 +3,7 @@
  */
 import { useAppStore } from '../../store/useAppStore';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
-import type { AIGenerateParams } from '../aiTypes';
+import type { AIGenerateParams } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, parseGeneralTextResponse } from './helpers';
 import { resolvePromptToChatContent } from './promptResolver';
 import { resolveContentImageUrls } from './imageUtils';
