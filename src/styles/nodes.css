@@ -836,9 +836,21 @@
   border-radius: 4px;
   user-select: none;
   -webkit-user-drag: none;
-  /* Apple Photos 式放大浮现：从略缩 + 柔焦优雅展开（放慢，不突兀）*/
+  /* Apple Photos 式放大浮现：从略缩 + 柔焦优雅展开 */
   transform-origin: center;
-  animation: imgZoomIn 1.8s var(--ease-out-expo) both;
+  animation: imgZoomIn 0.5s var(--ease-out-expo) both;
+}
+
+/* 全屏视频预览（hidePanel 模式） */
+.fullscreen-video-view {
+  max-width: 92vw;
+  max-height: 92vh;
+  width: auto;
+  height: auto;
+  border-radius: 4px;
+  background: #000;
+  outline: none;
+  animation: imgZoomIn 0.5s var(--ease-out-expo) both;
 }
 
 @keyframes imgZoomIn {
@@ -864,7 +876,7 @@
   line-height: 0;
   transform-origin: center center;
   will-change: transform, filter;
-  animation: imgZoomIn 1.8s var(--ease-out-expo) both;
+  animation: imgZoomIn 0.5s var(--ease-out-expo) both;
 }
 
 .zoomable-image-stage.is-origin-linked {

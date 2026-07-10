@@ -1,13 +1,14 @@
 ﻿/**
  * VideoNode 视频节点 — 在画布上渲染视频内容，支持上传本地视频、播放控制、连接其他节点
  */
-import { memo, useCallback, useRef } from 'react';
+import { memo, useCallback, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
 import GooeyBtn from './shared/GooeyBtn';
 import VideoNodeToolbar from './shared/VideoNodeToolbar';
+import FullscreenOverlay from '../shared/FullscreenOverlay';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { computeImageNodeDimensions, generateId, useAppStore } from '../../store/useAppStore';
@@ -124,6 +125,17 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     [selected],
   );
 
+  /* ════════════════════════════════════════════
+     Fullscreen State — 双击 / 工具栏按钮打开全屏预览
+     ════════════════════════════════════════════ */
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const fullscreenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const handleOpenFullscreen = useCallback(() => {
+    if (!data.videoUrl && !data.thumbnailUrl) return;
+    setIsFullscreen(true);
+  }, [data.videoUrl, data.thumbnailUrl]);
+  const handleCloseFullscreen = useCallback(() => setIsFullscreen(false), []);
+
   const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴视频');
 
   const handleCaptureFrame = useCallback(async () => {
@@ -225,7 +237,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       />
       {data.videoUrl && (
         <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
-          <VideoNodeToolbar onCaptureFrame={handleCaptureFrame} />
+          <VideoNodeToolbar onCaptureFrame={handleCaptureFrame} onFullscreen={handleOpenFullscreen} />
         </div>
       )}
       <div
@@ -255,6 +267,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               crossOrigin="anonymous"
               controls={Boolean(selected)}
               onClick={handleVideoClick}
+              onDoubleClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
               muted
               data-source-url={data.sourceUrl}
             />
@@ -263,6 +276,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               src={data.thumbnailUrl}
               alt="Video thumbnail"
               className="image-preview-img compact"
+              onDoubleClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
             />
           ) : isUploading ? (
             <div className="node-preview-loading">
@@ -299,6 +313,32 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           <GooeyBtn className="gooey-btn-right" hue={217} />
         </Handle>
       </div>
+
+      {/* 全屏预览 */}
+      <FullscreenOverlay
+        isOpen={isFullscreen}
+        onClose={handleCloseFullscreen}
+        hidePanel
+        title={(data.label as string) || '视频预览'}
+      >
+        {data.videoUrl ? (
+          <video
+            ref={fullscreenVideoRef}
+            src={data.videoUrl}
+            className="fullscreen-video-view"
+            controls
+            autoPlay
+            crossOrigin="anonymous"
+            data-source-url={data.sourceUrl}
+          />
+        ) : data.thumbnailUrl ? (
+          <img
+            src={data.thumbnailUrl}
+            alt="Video thumbnail"
+            className="fullscreen-img-view"
+          />
+        ) : null}
+      </FullscreenOverlay>
     </div>
   );
 }

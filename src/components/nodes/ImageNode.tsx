@@ -891,6 +891,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                     data-source-url={data.sourceUrl}
                     onLoad={() => setImgLoaded(true)}
                     onError={() => setImgLoadError(true)}
+                    onDoubleClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
                   />
                 )}
                 {data.mattingMask && !mattingError && (

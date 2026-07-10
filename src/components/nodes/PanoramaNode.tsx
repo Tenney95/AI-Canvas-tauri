@@ -399,6 +399,12 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
   const show360 = hasImage && previewMode === '360';
   const showImage = hasImage && previewMode === 'image';
 
+  /** 双击节点预览时直接打开全屏（与工具栏 toggle 不同，这里始终置为全屏态）*/
+  const handleOpenFullscreen = useCallback(() => {
+    if (!hasImage) return;
+    updateNodeData(id, { panoFullscreen: true } as Partial<BaseNodeData>);
+  }, [id, hasImage, updateNodeData]);
+
   return (
     <>
       {/* ── Compact node view (always on canvas) ── */}
@@ -414,7 +420,10 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
           className={`node pano-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}
           style={{ height: nodeHeight }}
         >
-          <div className="node-preview compact">
+          <div
+            className="node-preview compact"
+            onDoubleClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
+          >
             {/* Upload button (when no image yet) */}
             {!hasImage && (
               <button

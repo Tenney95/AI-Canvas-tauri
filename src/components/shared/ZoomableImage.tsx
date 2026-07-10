@@ -15,7 +15,7 @@ import { EASE_OUT_EXPO } from '../../utils/motion';
 
 const MIN_SCALE = 1;
 const MAX_SCALE = 8;
-const FLY_DURATION = 1800;
+const FLY_DURATION = 500;
 
 interface ZoomableImageProps {
   src: string;
