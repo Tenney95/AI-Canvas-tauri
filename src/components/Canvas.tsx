@@ -18,7 +18,6 @@ import { ReactFlow,
   applyNodeChanges,
   type OnSelectionChangeParams,
   type NodeChange,
-  type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import TextNode from './nodes/TextNode';
@@ -199,16 +198,6 @@ function CanvasInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [smoothLine]);
 
-  // ── Zoom ──
-  const [zoomPercent, setZoomPercent] = useState(100);
-
-  const handleMove = useCallback(
-    (_event: MouseEvent | TouchEvent | null, { zoom }: Viewport) => {
-      setZoomPercent(Math.round(zoom * 100));
-    },
-    [],
-  );
-
   // Track mouse position on canvas for node creation at cursor (on left-button release)
   const handleMouseUp = useCallback(
     (e: React.MouseEvent) => {
@@ -219,13 +208,6 @@ function CanvasInner() {
   );
 
   const toggleGrid = useCallback(() => setShowGrid((v) => !v), []);
-
-  const handleZoomSlider = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      reactFlowInstance.zoomTo(Number(e.target.value) / 100);
-    },
-    [reactFlowInstance],
-  );
 
   // ── Connection drop menu ──
   const {
@@ -626,7 +608,6 @@ function CanvasInner() {
         minZoom={0.1}
         maxZoom={5}
         defaultEdgeOptions={defaultEdgeOptions}
-        onMove={handleMove}
         proOptions={PRO_OPTIONS}
         panOnScroll={shouldUseMacTrackpadPan}
         zoomOnScroll={!shouldUseMacTrackpadPan}
@@ -686,11 +667,9 @@ function CanvasInner() {
         <Panel position="bottom-right" className="flex items-center gap-2">
           <CanvasToolbar
             showGrid={showGrid}
-            zoomPercent={zoomPercent}
             smoothLine={smoothLine}
             onToggleGrid={toggleGrid}
             onToggleLine={() => setSmoothLine((v) => !v)}
-            onZoomChange={handleZoomSlider}
           />
         </Panel>
 

@@ -1,25 +1,50 @@
 ﻿/**
  * CanvasToolbar 画布工具栏 — 画布右下角浮动工具条，控制网格显隐、连线样式、缩放比例
  */
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
+import { useReactFlow, useStore, type ReactFlowState } from '@xyflow/react';
 import AnimatedButton from '../shared/AnimatedButton';
 
 interface CanvasToolbarProps {
   showGrid: boolean;
-  zoomPercent: number;
   smoothLine: boolean;
   onToggleGrid: () => void;
   onToggleLine: () => void;
-  onZoomChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }
+
+const selectZoomPercent = (state: ReactFlowState) => Math.round(state.transform[2] * 100);
+
+const ZoomControl = memo(function ZoomControl() {
+  const zoomPercent = useStore(selectZoomPercent);
+  const { zoomTo } = useReactFlow();
+
+  const handleZoomChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      zoomTo(Number(e.target.value) / 100);
+    },
+    [zoomTo],
+  );
+
+  return (
+    <>
+      <input
+        type="range"
+        min="10"
+        max="200"
+        value={zoomPercent}
+        onChange={handleZoomChange}
+        className="w-20 accent-indigo-500"
+      />
+      <span className="text-xs text-canvas-text-secondary w-10 text-right tabular-nums">{zoomPercent}%</span>
+    </>
+  );
+});
 
 function CanvasToolbar({
   showGrid,
-  zoomPercent,
   smoothLine,
   onToggleGrid,
   onToggleLine,
-  onZoomChange,
 }: CanvasToolbarProps) {
   return (
     <div className="footer-toolbar flex items-center gap-2 border border-canvas-border backdrop-blur-xl rounded-lg px-3 py-1.5 shadow-lg">
@@ -54,15 +79,7 @@ function CanvasToolbar({
         )}
       </AnimatedButton>
       <div className="w-px h-5 bg-canvas-border mx-0.5" />
-      <input
-        type="range"
-        min="10"
-        max="200"
-        value={zoomPercent}
-        onChange={onZoomChange}
-        className="w-20 accent-indigo-500"
-      />
-      <span className="text-xs text-canvas-text-secondary w-10 text-right tabular-nums">{zoomPercent}%</span>
+      <ZoomControl />
     </div>
   );
 }

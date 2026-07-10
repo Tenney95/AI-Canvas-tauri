@@ -5,6 +5,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
 import type { AIGenerateParams } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, parseGeneralTextResponse } from './helpers';
+import { parseResponseError, buildAuthHeaders } from './httpUtils';
 import { resolvePromptToChatContent } from './promptResolver';
 import { resolveContentImageUrls } from './imageUtils';
 
@@ -63,12 +64,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   const messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [];
   messages.push({ role: 'user', content: resolvedContent });
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`;
-  }
+  const headers = buildAuthHeaders(apiKey);
 
   // 不设超时（仅 ComfyUI 才设超时）
   const response = await fetch(apiUrl, {
@@ -82,15 +78,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   });
 
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => '');
-    let errorMsg = `API 请求失败 (${response.status})`;
-    try {
-      const err = JSON.parse(errorBody);
-      errorMsg = err.error?.message || errorMsg;
-    } catch {
-      if (errorBody) errorMsg += `: ${errorBody.slice(0, 200)}`;
-    }
-    throw new Error(errorMsg);
+    await parseResponseError(response, `API 请求失败 (${response.status})`);
   }
 
   const json = await response.json();
