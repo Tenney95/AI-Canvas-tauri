@@ -27,13 +27,71 @@ import {
   runAssistantPipeline,
   runStreamingPipeline,
 } from '../../services/chat/assistantService';
+import { planCommand } from '../../services/chat/canvasPlanner';
+import { executeCommand, logOperation } from '../../services/chat/commandRegistry';
 import { resolveAssistantModel } from '../../services/ai/assistantStream';
-import type { ChatMessage } from '../../types/chat';
+import type { ChatMessage, CommandResult } from '../../types/chat';
 import type { GeneralModelConfig } from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
 import MascotAvatar from './MascotAvatar';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
+async function confirmMessageCommands(messageId: string): Promise<void> {
+  const store = useAppStore.getState();
+  const message = store.messages.find((item) => item.id === messageId);
+  const intents = message?.commands ?? [];
+  if (!message || message.status !== 'preview' || intents.length === 0) return;
+
+  store.updateMessage(messageId, { status: 'executing' });
+  const results: CommandResult[] = [];
+  try {
+    for (const intent of intents) {
+      const { plan } = planCommand(intent);
+      const result = await executeCommand(plan);
+      results.push(result);
+      logOperation({
+        projectId: store.currentProjectId ?? '',
+        conversationId: message.conversationId,
+        timestamp: Date.now(),
+        commandId: intent.commandId,
+        summary: plan.summary,
+        targetNodeIds: result.affectedNodeIds,
+        parseSource: intent.parseSource,
+        status: result.status === 'rejected' ? 'failed' : result.status,
+        undoable: ['deleteNodes', 'undo', 'redo'].includes(intent.commandId),
+      });
+    }
+
+    const resultText = results.map((result) => result.message).join('\n');
+    store.updateMessage(messageId, {
+      content: `${message.content}${resultText ? `\n\n${resultText}` : ''}`,
+      status: results.some((result) => result.status === 'failed' || result.status === 'rejected') ? 'error' : 'done',
+      commands: undefined,
+      executionResults: results,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('[ChatPanel] Failed to execute confirmed commands:', error);
+    store.updateMessage(messageId, {
+      content: `${message.content}\n\n操作失败：${errorMessage}`,
+      status: 'error',
+      commands: undefined,
+      executionResults: results,
+    });
+  }
+}
+
+function cancelMessageCommands(messageId: string): void {
+  const store = useAppStore.getState();
+  const message = store.messages.find((item) => item.id === messageId);
+  if (!message || message.status !== 'preview') return;
+  store.updateMessage(messageId, {
+    content: `${message.content}\n\n已取消操作。`,
+    status: 'done',
+    commands: undefined,
+  });
+}
 
 interface ChatPanelProps {
   detached?: boolean;
@@ -229,10 +287,11 @@ export default function ChatPanel({
           }
           scrollToBottom();
         },
-        onComplete: (fullText, results) => {
+        onComplete: (fullText, results, pendingIntents) => {
           updateMessage(assistantMsgId, {
             content: fullText,
-            status: results.length > 0 ? 'done' : 'done',
+            status: pendingIntents?.length ? 'preview' : 'done',
+            commands: pendingIntents,
             executionResults: results.length > 0 ? results : undefined,
           });
           scrollToBottom();
@@ -251,7 +310,8 @@ export default function ChatPanel({
         .then((result) => {
           updateMessage(assistantMsgId, {
             content: result.reply,
-            status: result.commandExecuted ? 'done' : 'done',
+            status: result.pendingIntents?.length ? 'preview' : 'done',
+            commands: result.pendingIntents,
             executionResults: result.commandResults.length > 0 ? result.commandResults : undefined,
           });
         })
@@ -337,10 +397,11 @@ export default function ChatPanel({
                       });
                     }
                   },
-                  onComplete: (fullText, results) => {
+                  onComplete: (fullText, results, pendingIntents) => {
                     store.updateMessage(amId, {
                       content: fullText,
-                      status: 'done',
+                      status: pendingIntents?.length ? 'preview' : 'done',
+                      commands: pendingIntents,
                       executionResults: results.length > 0 ? results : undefined,
                     });
                   },
@@ -357,7 +418,8 @@ export default function ChatPanel({
                   .then((result) => {
                     store.updateMessage(amId, {
                       content: result.reply,
-                      status: 'done',
+                      status: result.pendingIntents?.length ? 'preview' : 'done',
+                      commands: result.pendingIntents,
                       executionResults: result.commandResults.length > 0 ? result.commandResults : undefined,
                     });
                   })
@@ -407,6 +469,14 @@ export default function ChatPanel({
 
             case 'select_model':
               store.updateConfig({ assistantModelId: action.modelId });
+              break;
+
+            case 'confirm_commands':
+              void confirmMessageCommands(action.messageId);
+              break;
+
+            case 'cancel_commands':
+              cancelMessageCommands(action.messageId);
               break;
 
             case 'request_sync':
@@ -491,13 +561,29 @@ export default function ChatPanel({
   // 空状态：无活动会话
   const showEmptyState = !effectiveActiveConversationId && viewMode === 'chat';
 
+  const handleConfirmCommands = useCallback((messageId: string) => {
+    if (detached) {
+      void emitAction({ type: 'confirm_commands', messageId });
+    } else {
+      void confirmMessageCommands(messageId);
+    }
+  }, [detached]);
+
+  const handleCancelCommands = useCallback((messageId: string) => {
+    if (detached) {
+      void emitAction({ type: 'cancel_commands', messageId });
+    } else {
+      cancelMessageCommands(messageId);
+    }
+  }, [detached]);
+
   return (
     <AnimatePresence>
       {(detached || (chatOpen && !chatPanelDetached)) && (
-          <motion.aside
-            className={detached
+            <motion.aside
+            className={`chat-panel-root ${detached
               ? 'h-screen w-screen flex flex-col bg-canvas-bg text-canvas-text overflow-hidden'
-              : 'chat-panel fixed z-50 flex flex-col'}
+              : 'chat-panel fixed z-50 flex flex-col'}`}
             initial={detached ? false : { x: '100%', opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={detached ? undefined : { x: '100%', opacity: 0 }}
@@ -506,13 +592,13 @@ export default function ChatPanel({
             {/* Header */}
             <div
               data-tauri-drag-region={detached ? true : undefined}
-              className="flex items-center justify-between px-4 py-3 border-b border-canvas-border flex-shrink-0 select-none"
+              className="chat-panel-header flex items-center justify-between px-4 py-3 border-b border-canvas-border flex-shrink-0 select-none"
             >
-              <div className="flex items-center gap-2">
+              <div className="chat-panel-header-brand flex items-center gap-2">
                 {viewMode === 'chat' && effectiveActiveConversationId && (
                   <button
                     type="button"
-                    className="flex items-center justify-center w-6 h-6 rounded-md text-canvas-text-muted
+                    className="chat-panel-back-btn flex items-center justify-center w-6 h-6 rounded-md text-canvas-text-muted
                                hover:text-canvas-text hover:bg-canvas-hover transition-colors"
                     onClick={() => setViewMode('list')}
                   >
@@ -521,7 +607,7 @@ export default function ChatPanel({
                 )}
                 <div className="flex items-center gap-2">
                   <MascotAvatar size={28} className="shrink-0" />
-                  <span className="text-sm font-medium text-canvas-text">
+                  <span className="chat-panel-title text-sm font-medium text-canvas-text">
                     AI 助手
                   </span>
                   {detached && effectiveProjectName && (
@@ -529,18 +615,18 @@ export default function ChatPanel({
                       — {effectiveProjectName}
                     </span>
                   )}
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400 font-medium uppercase">
+                  <span className="chat-panel-beta-badge text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400 font-medium uppercase">
                     Beta
                   </span>
                 </div>
               </div>
 
               {detached ? detachedHeaderActions : (
-              <div className="flex items-center gap-1">
+              <div className="chat-panel-header-actions flex items-center gap-1">
                 {/* 独立窗口按钮 */}
                 <button
                   type="button"
-                  className="flex items-center justify-center w-7 h-7 rounded-md text-canvas-text-muted
+                  className="chat-panel-detach-btn flex items-center justify-center w-7 h-7 rounded-md text-canvas-text-muted
                              hover:text-canvas-text hover:bg-canvas-hover transition-colors"
                   onClick={handleDetachToggle}
                   data-tooltip={chatPanelDetached ? '收回内嵌' : '独立窗口'}
@@ -552,7 +638,7 @@ export default function ChatPanel({
                 {/* 关闭按钮 */}
                 <button
                   type="button"
-                  className="flex items-center justify-center w-7 h-7 rounded-md text-canvas-text-muted
+                  className="chat-panel-close-btn flex items-center justify-center w-7 h-7 rounded-md text-canvas-text-muted
                              hover:text-canvas-text hover:bg-canvas-hover transition-colors"
                   onClick={closeChat}
                 >
@@ -563,13 +649,13 @@ export default function ChatPanel({
             </div>
 
             {/* Body: dual-pane layout */}
-            <div className="flex flex-1 min-h-0">
+            <div className="chat-panel-body flex flex-1 min-h-0">
               {/* Conversation list pane */}
               {viewMode === 'list' && (
                 <motion.div
                   initial={{ x: -20, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
-                  className="flex-shrink-0 w-full border-r border-canvas-border overflow-hidden"
+                  className="chat-panel-conversation-list flex-shrink-0 w-full border-r border-canvas-border overflow-hidden"
                 >
                   <ConversationList
                     {...(detached ? {
@@ -600,16 +686,16 @@ export default function ChatPanel({
                 <motion.div
                   initial={{ x: 20, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
-                  className="flex-1 flex flex-col min-h-0 min-w-0"
+                  className="chat-panel-chat-area flex-1 flex flex-col min-h-0 min-w-0"
                 >
                   {/* Messages */}
-                  <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 flex flex-col gap-4">
+                  <div className="chat-panel-messages flex-1 min-h-0 overflow-y-auto px-4 py-3 flex flex-col gap-4">
                     {showEmptyState && detachedInitialized && (
                       <EmptyChatState onNew={handleNewConversation} onList={() => setViewMode('list')} />
                     )}
 
                     {!showEmptyState && conversationMessages.length === 0 && detachedInitialized && (
-                      <div className="flex flex-col items-center justify-center h-full text-center px-4">
+                      <div className="chat-panel-start-hint flex flex-col items-center justify-center h-full text-center px-4">
                         <div className="w-16 h-16 rounded-2xl bg-indigo-500/15 flex items-center justify-center mb-4">
                           <Icon icon="mdi:chat-processing-outline" width="28" height="28" className="text-indigo-400" />
                         </div>
@@ -621,7 +707,12 @@ export default function ChatPanel({
                     )}
 
                     {conversationMessages.map((msg) => (
-                      <MessageBubble key={msg.id} message={msg} />
+                      <MessageBubble
+                        key={msg.id}
+                        message={msg}
+                        onConfirm={() => handleConfirmCommands(msg.id)}
+                        onCancel={() => handleCancelCommands(msg.id)}
+                      />
                     ))}
 
                     <div ref={messagesEndRef} />
@@ -629,8 +720,8 @@ export default function ChatPanel({
 
                   {/* Input area */}
                   {!showEmptyState && (
-                    <div className="flex-shrink-0 px-3 pt-2 pb-1">
-                      <div className="flex flex-col bg-canvas-card border border-canvas-border rounded-[14px]
+                    <div className="chat-panel-input-area flex-shrink-0 px-3 pt-2 pb-1">
+                      <div className="chat-panel-input-box flex flex-col bg-canvas-card border border-canvas-border rounded-[14px]
                                       focus-within:border-canvas-text-secondary transition-colors px-4 pt-4 pb-3 shadow-lg">
                         <textarea
                           ref={inputRef}
@@ -639,12 +730,12 @@ export default function ChatPanel({
                           onKeyDown={handleKeyDown}
                           placeholder="输入消息，描述你想对画布进行的修改"
                           rows={1}
-                          className="w-full resize-none bg-transparent text-[15px] leading-6 text-canvas-text
+                          className="chat-panel-textarea w-full resize-none bg-transparent text-[15px] leading-6 text-canvas-text
                                      placeholder:text-canvas-text-muted outline-none
                                      min-h-[64px] max-h-[160px]"
                         />
 
-                        <div className="mt-2 flex items-center justify-between gap-3">
+                        <div className="chat-panel-input-toolbar mt-2 flex items-center justify-between gap-3">
                           {/* ── 模型选择器 ── */}
                           <div className="chat-model-selector min-w-0" ref={modelDropdownRef}>
                           <button
@@ -758,7 +849,7 @@ export default function ChatPanel({
                             scale={1.05}
                             disabled={!inputValue.trim()}
                             aria-label="发送消息"
-                            className={`flex shrink-0 items-center justify-center w-10 h-10 rounded-full transition-colors
+                            className={`chat-panel-send-btn flex shrink-0 items-center justify-center w-10 h-10 rounded-full transition-colors
                                         ${inputValue.trim()
                                           ? 'bg-canvas-text text-canvas-bg hover:opacity-90'
                                           : 'bg-canvas-hover text-canvas-text-muted cursor-not-allowed'
@@ -771,7 +862,7 @@ export default function ChatPanel({
                       </div>
 
                       {/* Disclaimer */}
-                      <p className="text-[10px] text-canvas-text-muted mt-1 text-center px-4">
+                      <p className="chat-panel-disclaimer text-[10px] text-canvas-text-muted mt-1 text-center px-4">
                         AI 助手仅理解画布操作指令，不会执行未授权的修改。
                       </p>
                     </div>
@@ -823,13 +914,21 @@ function getModelBadge(m: GeneralModelConfig): string {
 /* ============================================
    Message bubble
    ============================================ */
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({
+  message,
+  onConfirm,
+  onCancel,
+}: {
+  message: ChatMessage;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
 
   if (isSystem) {
     return (
-      <div className="flex justify-center">
+      <div className="chat-message-bubble chat-message-system flex justify-center">
         <span className="text-[11px] text-canvas-text-muted bg-canvas-hover px-3 py-1 rounded-full">
           {message.content}
         </span>
@@ -838,14 +937,14 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   }
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`chat-message-bubble flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       {/* Assistant avatar */}
       {!isUser && (
-        <MascotAvatar size={28} className="shrink-0 mr-2 mt-0.5" />
+        <MascotAvatar size={28} className="chat-message-avatar chat-message-avatar-assistant shrink-0 mr-2 mt-0.5" />
       )}
 
       <div
-        className={`max-w-[80%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed
+        className={`chat-message-content max-w-[80%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed
                     ${isUser
                       ? 'bg-indigo-500/20 text-canvas-text rounded-br-md'
                       : 'bg-canvas-hover text-canvas-text rounded-bl-md'
@@ -853,18 +952,40 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       >
         <div className="whitespace-pre-wrap break-words">{message.content}</div>
 
+        {message.status === 'preview' && message.commands && message.commands.length > 0 && (
+          <div className="mt-3 flex items-center gap-2 border-t border-canvas-border pt-3">
+            <AnimatedButton
+              scale={1.03}
+              className="flex items-center justify-center gap-1.5 rounded-lg bg-canvas-text px-3 py-1.5
+                         text-xs font-medium text-canvas-bg hover:opacity-90 transition-opacity"
+              onClick={onConfirm}
+            >
+              <Icon icon="mdi:check" width="14" height="14" />
+              确认删除
+            </AnimatedButton>
+            <AnimatedButton
+              scale={1.03}
+              className="flex items-center justify-center rounded-lg border border-canvas-border px-3 py-1.5
+                         text-xs text-canvas-text-secondary hover:bg-canvas-card hover:text-canvas-text transition-colors"
+              onClick={onCancel}
+            >
+              取消
+            </AnimatedButton>
+          </div>
+        )}
+
         {/* Status indicator */}
         {message.status === 'streaming' && (
-          <span className="inline-block w-2 h-3 bg-indigo-400 animate-pulse ml-1 align-middle rounded-sm" />
+          <span className="chat-message-status chat-message-status-streaming inline-block w-2 h-3 bg-indigo-400 animate-pulse ml-1 align-middle rounded-sm" />
         )}
         {message.status === 'error' && (
-          <div className="flex items-center gap-1 mt-1 text-[11px] text-red-400">
+          <div className="chat-message-status chat-message-status-error flex items-center gap-1 mt-1 text-[11px] text-red-400">
             <Icon icon="mdi:alert-circle" width="12" height="12" />
             响应失败
           </div>
         )}
         {message.status === 'interrupted' && (
-          <div className="flex items-center gap-1 mt-1 text-[11px] text-amber-400">
+          <div className="chat-message-status chat-message-status-interrupted flex items-center gap-1 mt-1 text-[11px] text-amber-400">
             <Icon icon="mdi:alert-outline" width="12" height="12" />
             响应中断
           </div>
@@ -873,7 +994,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
       {/* User avatar */}
       {isUser && (
-        <div className="flex-shrink-0 w-7 h-7 rounded-lg bg-canvas-hover flex items-center justify-center ml-2 mt-0.5">
+        <div className="chat-message-avatar chat-message-avatar-user flex-shrink-0 w-7 h-7 rounded-lg bg-canvas-hover flex items-center justify-center ml-2 mt-0.5">
           <Icon icon="mdi:account" width="14" height="14" className="text-canvas-text-secondary" />
         </div>
       )}
@@ -892,13 +1013,13 @@ function EmptyChatState({
   onList: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center h-full text-center px-6">
+    <div className="chat-empty-state flex flex-col items-center justify-center h-full text-center px-6">
       <MascotAvatar size={72} className="mb-5" />
       <h3 className="text-base font-semibold text-canvas-text mb-2">画布 AI 助手</h3>
       <p className="text-sm text-canvas-text-secondary mb-6 max-w-[260px]">
         用自然语言读取和操作画布。查询状态、定位节点、批量管理，一个对话框完成。
       </p>
-      <div className="flex flex-col gap-2 w-48">
+      <div className="chat-empty-state-actions flex flex-col gap-2 w-48">
         <AnimatedButton
           className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl
                      bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-400 transition-colors"
@@ -919,7 +1040,7 @@ function EmptyChatState({
       </div>
 
       {/* Example prompts */}
-      <div className="mt-8 space-y-2 w-56">
+      <div className="chat-empty-state-examples mt-8 space-y-2 w-56">
         <p className="text-[11px] text-canvas-text-muted mb-2">试试这些：</p>
         {[
           '现在有几个失败节点？',

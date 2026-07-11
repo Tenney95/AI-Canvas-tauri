@@ -14,6 +14,7 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { BaseNodeData, StoryboardCellOverride } from '../types';
 import { generateId, getNextDisplayId } from './store.utils';
+import { BATCH_NODE_LIMIT } from './store.chat';
 import * as fileService from '../services/fileService';
 import { playNodeExit } from '../utils/nodeAnimations';
 import { cancelNodePolling } from '../services/pollManager';

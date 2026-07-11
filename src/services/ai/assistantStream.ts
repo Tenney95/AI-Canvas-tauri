@@ -8,7 +8,6 @@
  * 流事件驱动消息状态更新。
  */
 import { useAppStore } from '../../store/useAppStore';
-import { resolveGeneralModel } from './helpers';
 import { buildAuthHeaders } from './httpUtils';
 import { parseStream, parseNonStream } from './streamParsers';
 import type { AssistantStreamEvent } from '../../types/chat';
@@ -186,6 +185,12 @@ export function buildAssistantSystemPrompt(): string {
     `- deleteNodes: 删除节点（需返回完整的 commandId + selector）`,
     `- undo: 撤销上一步`,
     `- redo: 重做`,
+    ``,
+    `selector 格式（必须严格使用以下 op）:`,
+    `- 按编号: { "op": "displayId", "value": 24 }`,
+    `- 按类型: { "op": "type", "value": "ai-video" }`,
+    `- 按状态: { "op": "status", "value": "error" }`,
+    `禁止使用 byType / byStatus / byDisplayId。`,
     ``,
     `回复格式: 先简短回复用户（1-2 句），如果你识别到操作指令，在回复末尾附加一个 JSON 块:`,
     `` + '```intent',

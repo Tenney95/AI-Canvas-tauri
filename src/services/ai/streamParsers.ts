@@ -22,18 +22,17 @@ import type { AssistantStreamEvent, FinishReason } from '../../types/chat';
 function decodeUtf8Lines(
   bytes: Uint8Array,
   prevRemainder: string,
+  decoder: TextDecoder,
 ): { lines: string[]; remainder: string } {
-  const decoder = new TextDecoder('utf-8', { fatal: false });
   const text = prevRemainder + decoder.decode(bytes, { stream: true });
 
   // 按 \n 分割，最后一行可能不完整
   const raw = text.split('\n');
-  // 以 \n 结尾 → 所有行完整
-  // 不以 \n 结尾 → 最后一行是 remainder
-  const endsWithNewline = bytes[bytes.length - 1] === 0x0a;
-
-  if (endsWithNewline) {
-    return { lines: raw.filter((l) => l !== ''), remainder: '' };
+  if (text.endsWith('\n')) {
+    // split 会在末尾多生成一个空字符串；移除它，但必须保留前一个空行，
+    // 因为该空行是 SSE 的事件边界（data: ...\n\n）。
+    raw.pop();
+    return { lines: raw, remainder: '' };
   }
 
   // 移除最后一行作为 remainder
@@ -192,6 +191,7 @@ export async function parseStream(
   // SSE buffer
   let sseLines: string[] = [];
   let remainder = '';
+  const decoder = new TextDecoder('utf-8', { fatal: false });
 
   const sendDoneIfNeeded = () => {
     if (!doneSent) {
@@ -217,7 +217,7 @@ export async function parseStream(
 
       if (!value) continue;
 
-      const { lines, remainder: newRemainder } = decodeUtf8Lines(value, remainder);
+      const { lines, remainder: newRemainder } = decodeUtf8Lines(value, remainder, decoder);
       remainder = newRemainder;
 
       for (const line of lines) {

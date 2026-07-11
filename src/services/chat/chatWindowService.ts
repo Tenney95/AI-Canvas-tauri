@@ -51,6 +51,8 @@ export type ChatAction =
   | { type: 'archive_conversation'; conversationId: string }
   | { type: 'delete_conversation'; conversationId: string }
   | { type: 'select_model'; modelId?: string }
+  | { type: 'confirm_commands'; messageId: string }
+  | { type: 'cancel_commands'; messageId: string }
   | { type: 'request_sync' };
 
 // ============================================

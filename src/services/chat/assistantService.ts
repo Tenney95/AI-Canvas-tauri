@@ -7,7 +7,7 @@
  * 3. 生成自然语言帮助回复（当用户输入非命令时）
  */
 import { useAppStore } from '../../store/useAppStore';
-import { parseRules, isLikelyCommand } from './rulesEngine';
+import { parseLlmIntentResponse, parseRules, isLikelyCommand } from './rulesEngine';
 import { planCommand } from './canvasPlanner';
 import { executeCommand, logOperation } from './commandRegistry';
 import {
@@ -18,7 +18,6 @@ import {
 import type { BaseNodeData } from '../../types';
 import type {
   CommandIntent,
-  CommandPlan,
   CommandResult,
   CanvasContext,
   CanvasNodeSummary,
@@ -68,6 +67,8 @@ export interface PipelineResult {
   commandResults: CommandResult[];
   /** 使用的解析来源 */
   parseSource: 'rule' | 'llm' | 'help';
+  /** 等待用户在消息卡片中确认的破坏性命令 */
+  pendingIntents?: CommandIntent[];
 }
 
 // ============================================
@@ -96,9 +97,16 @@ export async function runAssistantPipeline(
   if (rulesResult.hasHighConfidence && rulesResult.intents.length > 0) {
     // Step 2: 规划 & 执行（循环处理多个意图）
     const results: CommandResult[] = [];
+    const pendingIntents: CommandIntent[] = [];
+    const pendingSummaries: string[] = [];
 
     for (const intent of rulesResult.intents) {
       const { plan } = planCommand(intent);
+      if (intent.commandId === 'deleteNodes') {
+        pendingIntents.push(intent);
+        pendingSummaries.push(plan.summary);
+        continue;
+      }
       const result = await executeCommand(plan);
 
       // 记录操作日志
@@ -110,7 +118,7 @@ export async function runAssistantPipeline(
         summary: plan.summary,
         targetNodeIds: result.affectedNodeIds,
         parseSource: 'rule',
-        status: result.status,
+        status: result.status === 'rejected' ? 'failed' : result.status,
         undoable: ['deleteNodes', 'undo', 'redo'].includes(intent.commandId),
       });
 
@@ -119,10 +127,13 @@ export async function runAssistantPipeline(
 
     const allMessages = results.map((r) => r.message).join('\n');
     return {
-      reply: allMessages || '操作完成',
-      commandExecuted: true,
+      reply: pendingIntents.length > 0
+        ? `${pendingSummaries.join('、')}。请确认是否继续。`
+        : (allMessages || '操作完成'),
+      commandExecuted: results.length > 0,
       commandResults: results,
       parseSource: 'rule',
+      pendingIntents: pendingIntents.length > 0 ? pendingIntents : undefined,
     };
   }
 
@@ -174,7 +185,7 @@ export interface StreamingPipelineCallbacks {
   /** 每次接收文本增量 */
   onTextDelta: (delta: string) => void;
   /** 流结束，传入完整文本和执行结果 */
-  onComplete: (fullText: string, results: CommandResult[]) => void;
+  onComplete: (fullText: string, results: CommandResult[], pendingIntents?: CommandIntent[]) => void;
   /** 出错 */
   onError: (error: string) => void;
   /** 取消信号 */
@@ -198,30 +209,8 @@ export async function runStreamingPipeline(
   const rulesResult = parseRules(userMessage);
 
   if (rulesResult.hasHighConfidence && rulesResult.intents.length > 0) {
-    // 本地规则命中 → 直接执行
-    const store = useAppStore.getState();
-    const results: CommandResult[] = [];
-
-    for (const intent of rulesResult.intents) {
-      const { plan } = planCommand(intent);
-      const result = await executeCommand(plan);
-
-      logOperation({
-        projectId: store.currentProjectId ?? '',
-        conversationId,
-        timestamp: Date.now(),
-        commandId: intent.commandId,
-        summary: plan.summary,
-        targetNodeIds: result.affectedNodeIds,
-        parseSource: 'rule',
-        status: result.status,
-        undoable: ['deleteNodes', 'undo', 'redo'].includes(intent.commandId),
-      });
-
-      results.push(result);
-    }
-
-    callbacks.onComplete(results.map((r) => r.message).join('\n'), results);
+    const result = await runAssistantPipeline(userMessage, conversationId);
+    callbacks.onComplete(result.reply, result.commandResults, result.pendingIntents);
     return;
   }
 
@@ -229,7 +218,7 @@ export async function runStreamingPipeline(
   if (!resolveAssistantModel()) {
     // 无模型 → 回退到本地管线
     const result = await runAssistantPipeline(userMessage, conversationId);
-    callbacks.onComplete(result.reply, result.commandResults);
+    callbacks.onComplete(result.reply, result.commandResults, result.pendingIntents);
     return;
   }
 
@@ -257,14 +246,19 @@ export async function runStreamingPipeline(
     });
 
     // Step 4: 对 LLM 回复进行意图解析
-    const llmResult = parseRules(fullContent);
+    const llmResult = parseLlmIntentResponse(fullContent);
     const results: CommandResult[] = [];
+    const pendingIntents: CommandIntent[] = [];
 
     if (llmResult.intents.length > 0) {
       const store = useAppStore.getState();
 
       for (const intent of llmResult.intents) {
-        const { plan } = planCommand({ ...intent, confidence: intent.confidence * 0.85 });
+        const { plan } = planCommand(intent);
+        if (intent.commandId === 'deleteNodes') {
+          pendingIntents.push(intent);
+          continue;
+        }
         const result = await executeCommand(plan);
 
         logOperation({
@@ -275,7 +269,7 @@ export async function runStreamingPipeline(
           summary: plan.summary,
           targetNodeIds: result.affectedNodeIds,
           parseSource: 'llm',
-          status: result.status,
+          status: result.status === 'rejected' ? 'failed' : result.status,
           undoable: ['deleteNodes', 'undo', 'redo'].includes(intent.commandId),
         });
 
@@ -283,7 +277,11 @@ export async function runStreamingPipeline(
       }
     }
 
-    callbacks.onComplete(fullContent, results);
+    callbacks.onComplete(
+      llmResult.reply || fullContent,
+      results,
+      pendingIntents.length > 0 ? pendingIntents : undefined,
+    );
   } catch (err) {
     if (fullContent) {
       callbacks.onComplete(fullContent, []);
