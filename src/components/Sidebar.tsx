@@ -825,6 +825,35 @@ export default function Sidebar() {
         <svg width="20" height="20" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5"><path d="M11.007 21H9.605c-3.585 0-5.377 0-6.491-1.135S2 16.903 2 13.25s0-5.48 1.114-6.615S6.02 5.5 9.605 5.5h3.803c3.585 0 5.378 0 6.492 1.135c.857.873 1.054 2.156 1.1 4.365"/><path d="m18.85 18.85l-1.35-.9V15.7M13 17.5a4.5 4.5 0 1 0 9 0a4.5 4.5 0 0 0-9 0m3-12l-.1-.31c-.494-1.54-.742-2.31-1.331-2.75C13.979 2 13.197 2 11.632 2h-.264c-1.565 0-2.348 0-2.937.44c-.59.44-.837 1.21-1.332 2.75L7 5.5"/></g></svg>
       </button>
 
+      {/* AI Chat Assistant */}
+      <button
+        type="button"
+        className="sidebar-btn-v3 chat-btn-v3"
+        data-tooltip="画布助手"
+        onClick={async () => {
+          const store = useAppStore.getState();
+          if (store.chatPanelDetached) {
+            // 已分离 → 收回内嵌
+            const { emitCloseChatWindow } = await import('../services/chat/chatWindowService');
+            try {
+              await emitCloseChatWindow();
+              const { invoke } = await import('@tauri-apps/api/core');
+              await invoke('close_chat_window');
+            } catch { /* ignore */ }
+            store.setChatPanelDetached(false);
+          } else {
+            store.toggleChat();
+          }
+        }}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M21 12a9 9 0 0 1-9 9" strokeLinecap="round" />
+          <path d="M3 12a9 9 0 0 1 9-9" strokeLinecap="round" />
+          <circle cx="12" cy="12" r="3" fill="currentColor" opacity="0.4" />
+          <path d="M17 19a2 2 0 1 1-4 0c0-1.5 2-4 2-4s2 2.5 2 4z" fill="currentColor" opacity="0.6" stroke="none" />
+        </svg>
+      </button>
+
       {/* Spacer */}
       <div className="sidebar-flex-spacer" />
 

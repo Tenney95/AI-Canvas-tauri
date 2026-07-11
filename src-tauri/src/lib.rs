@@ -215,6 +215,48 @@ async fn toggle_devtools(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 打开独立的 AI 对话助手窗口
+#[tauri::command]
+async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
+    // 先关闭可能残留的历史窗口
+    if let Some(old) = app.get_webview_window("chat-assistant") {
+        let _ = old.close();
+    }
+
+    #[cfg(debug_assertions)]
+    let url = WebviewUrl::External(
+        Url::parse("http://localhost:1420/?view=chat").map_err(|e| e.to_string())?,
+    );
+    #[cfg(not(debug_assertions))]
+    let url = WebviewUrl::App("index.html?view=chat".into());
+
+    WebviewWindowBuilder::new(&app, "chat-assistant", url)
+        .title("AI 对话助手")
+        .inner_size(480.0, 720.0)
+        .min_inner_size(360.0, 480.0)
+        .center()
+        .resizable(true)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .visible(true)
+        .build()
+        .map_err(|e| format!("创建对话窗口失败: {e}"))?;
+
+    Ok(())
+}
+
+/// 关闭独立的 AI 对话助手窗口
+#[tauri::command]
+async fn close_chat_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("chat-assistant") {
+        window
+            .close()
+            .map_err(|e| format!("关闭对话窗口失败: {e}"))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn dreamina_login(app: tauri::AppHandle) -> Result<DreaminaLoginPayload, String> {
     let login_url = "https://jimeng.jianying.com/";
@@ -304,6 +346,8 @@ pub fn run() {
             dreamina::dreamina_status,
             dreamina::dreamina_generate,
             dreamina::dreamina_query_result,
+            open_chat_window,
+            close_chat_window,
             open_with_app,
             toggle_devtools,
             comfyui::launch_comfyui,

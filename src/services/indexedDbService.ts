@@ -2,7 +2,7 @@
  * indexedDbService IndexedDB 持久化服务 — 浏览器端本地存储，保存项目、工作流、应用配置等数据
  */
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 8; // v8: added skills store (read-only uploaded prompt skills)
+const DB_VERSION = 9; // v9: added chatConversations + chatMessages stores for assistant
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
@@ -11,6 +11,8 @@ const STORE_HISTORY = 'history';
 const STORE_ASSET_META = 'assetMeta';
 const STORE_STYLES = 'styles';
 const STORE_SKILLS = 'skills';
+const STORE_CHAT_CONVERSATIONS = 'chatConversations';
+const STORE_CHAT_MESSAGES = 'chatMessages';
 
 const CONFIG_KEY = 'app-config';
 
@@ -64,6 +66,18 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_SKILLS)) {
         db.createObjectStore(STORE_SKILLS, { keyPath: 'id' });
+      }
+      // v9: chat assistant stores
+      if (!db.objectStoreNames.contains(STORE_CHAT_CONVERSATIONS)) {
+        const convStore = db.createObjectStore(STORE_CHAT_CONVERSATIONS, { keyPath: 'id' });
+        convStore.createIndex('projectId_updatedAt', ['projectId', 'updatedAt'], { unique: false });
+        convStore.createIndex('deletedAt', 'deletedAt', { unique: false });
+        convStore.createIndex('pinned', 'pinned', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_CHAT_MESSAGES)) {
+        const msgStore = db.createObjectStore(STORE_CHAT_MESSAGES, { keyPath: 'id' });
+        msgStore.createIndex('conversationId_sequence', ['conversationId', 'sequence'], { unique: false });
+        msgStore.createIndex('requestId', 'requestId', { unique: false });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -460,6 +474,230 @@ export async function deleteAssetMeta(path: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_ASSET_META, 'readwrite');
     tx.objectStore(STORE_ASSET_META).delete(path);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ============================================
+// Chat Conversations CRUD
+// ============================================
+
+export interface ChatConversationRecord {
+  id: string;
+  projectId: string;
+  title: string;
+  titleSource: 'auto' | 'user';
+  pinned: boolean;
+  archived: boolean;
+  createdAt: number;
+  updatedAt: number;
+  lastMessageAt?: number;
+  lastMessagePreview?: string;
+  messageCount: number;
+  deletedAt?: number;
+}
+
+/** 保存 / 更新会话 */
+export async function putChatConversation(record: ChatConversationRecord): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CHAT_CONVERSATIONS, 'readwrite');
+    tx.objectStore(STORE_CHAT_CONVERSATIONS).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** 获取指定项目的全部会话（不含已删除） */
+export async function getProjectConversations(projectId: string): Promise<ChatConversationRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CHAT_CONVERSATIONS, 'readonly');
+    const store = tx.objectStore(STORE_CHAT_CONVERSATIONS);
+    const index = store.index('projectId_updatedAt');
+    const range = IDBKeyRange.bound([projectId, 0], [projectId, Infinity]);
+    const request = index.getAll(range);
+    request.onsuccess = () => {
+      const all = request.result as ChatConversationRecord[];
+      // 过滤掉已删除的
+      resolve(all.filter((c) => !c.deletedAt));
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/** 获取回收站中的会话 */
+export async function getTrashConversations(projectId: string): Promise<ChatConversationRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CHAT_CONVERSATIONS, 'readonly');
+    const store = tx.objectStore(STORE_CHAT_CONVERSATIONS);
+    const index = store.index('deletedAt');
+    const range = IDBKeyRange.lowerBound(1);
+    const request = index.getAll(range);
+    request.onsuccess = () => {
+      const all = request.result as ChatConversationRecord[];
+      resolve(all.filter((c) => c.projectId === projectId));
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/** 删除单个会话 */
+export async function deleteChatConversation(id: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CHAT_CONVERSATIONS, 'readwrite');
+    tx.objectStore(STORE_CHAT_CONVERSATIONS).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ============================================
+// Chat Messages CRUD
+// ============================================
+
+export interface ChatMessageRecord {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  sequence: number;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  status: string;
+  requestId?: string;
+  modelId?: string;
+  createdAt: number;
+  updatedAt: number;
+  finishReason?: string;
+  commands?: unknown;
+  executionResults?: unknown;
+}
+
+/** 保存 / 更新单条消息 */
+export async function putChatMessage(record: ChatMessageRecord): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CHAT_MESSAGES, 'readwrite');
+    tx.objectStore(STORE_CHAT_MESSAGES).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** 获取指定会话的消息（分页，按 sequence 倒序） */
+export async function getConversationMessages(
+  conversationId: string,
+  offset: number = 0,
+  limit: number = 50,
+): Promise<{ messages: ChatMessageRecord[]; total: number }> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CHAT_MESSAGES, 'readonly');
+    const store = tx.objectStore(STORE_CHAT_MESSAGES);
+    const index = store.index('conversationId_sequence');
+    const range = IDBKeyRange.bound(
+      [conversationId, 0],
+      [conversationId, Infinity],
+    );
+    // 先获取总数
+    const countReq = index.count(range);
+    countReq.onsuccess = () => {
+      const total = countReq.result;
+      // 再获取分页数据（cursor 倒序）
+      const cursorReq = index.openCursor(range, 'prev');
+      const messages: ChatMessageRecord[] = [];
+      let skipped = 0;
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result;
+        if (!cursor) {
+          resolve({ messages, total });
+          return;
+        }
+        if (skipped < offset) {
+          skipped++;
+          cursor.continue();
+          return;
+        }
+        if (messages.length < limit) {
+          messages.push(cursor.value as ChatMessageRecord);
+          cursor.continue();
+        } else {
+          resolve({ messages, total });
+        }
+      };
+      cursorReq.onerror = () => reject(cursorReq.error);
+    };
+    countReq.onerror = () => reject(countReq.error);
+  });
+}
+
+/** 获取会话中下一条消息的 sequence */
+export async function getNextMessageSequence(conversationId: string): Promise<number> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CHAT_MESSAGES, 'readonly');
+    const store = tx.objectStore(STORE_CHAT_MESSAGES);
+    const index = store.index('conversationId_sequence');
+    const range = IDBKeyRange.bound(
+      [conversationId, 0],
+      [conversationId, Infinity],
+    );
+    const countReq = index.count(range);
+    countReq.onsuccess = () => resolve(countReq.result);
+    countReq.onerror = () => reject(countReq.error);
+  });
+}
+
+/** 删除指定会话的全部消息 */
+export async function deleteConversationMessages(conversationId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CHAT_MESSAGES, 'readwrite');
+    const store = tx.objectStore(STORE_CHAT_MESSAGES);
+    const index = store.index('conversationId_sequence');
+    const range = IDBKeyRange.bound(
+      [conversationId, 0],
+      [conversationId, Infinity],
+    );
+    const cursorReq = index.openCursor(range);
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      }
+    };
+    cursorReq.onerror = () => reject(cursorReq.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** 在事务中同时删除会话和全部消息 */
+export async function permanentlyDeleteConversation(convId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(
+      [STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES],
+      'readwrite',
+    );
+    // 删除会话
+    tx.objectStore(STORE_CHAT_CONVERSATIONS).delete(convId);
+    // 删除消息
+    const msgStore = tx.objectStore(STORE_CHAT_MESSAGES);
+    const msgIndex = msgStore.index('conversationId_sequence');
+    const range = IDBKeyRange.bound([convId, 0], [convId, Infinity]);
+    const cursorReq = msgIndex.openCursor(range);
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      }
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

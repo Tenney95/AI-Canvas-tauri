@@ -93,6 +93,8 @@ export interface CanvasProject {
   updatedAt: number;
   /** 本地媒体文件夹名（形如「项目名-短ID」）。创建时确定后保持稳定，旧项目可能缺失（回退到 id）。 */
   dataFolder?: string;
+  /** Store revision 计数模式：project=项目独立计数（默认），global=全局计数 */
+  revisionScope?: 'project' | 'global';
 }
 
 // API 配置
@@ -143,6 +145,8 @@ export interface AppConfig {
   mascotVisible?: boolean;   // 是否显示吉祥物，默认 false
   assetFolders?: string[];    // 资产管理中登记的外部本地文件夹路径（引用不拷贝）
   photoshopPath?: string;    // Photoshop 安装路径，自动检测失败时手动配置
+  assistantModelId?: string;  // 助手模型 ID：generalModels 中的 text 模型 id
+  cloudParseEnabled?: boolean; // 是否启用云端解析，默认 true；关闭后助手仅使用本地规则
 }
 
 // ── 通用模型配置 ──

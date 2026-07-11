@@ -30,6 +30,7 @@ import type { GroupSlice } from './store.groups';
 import type { ClipboardSlice } from './store.clipboard';
 import type { ProjectSlice } from './store.projects';
 import type { StyleSlice } from './store.styles';
+import type { ChatSlice } from './store.chat';
 
 import { createNodeSlice } from './store.nodes';
 import { createUISlice } from './store.ui';
@@ -44,6 +45,7 @@ import { createGroupSlice } from './store.groups';
 import { createClipboardSlice } from './store.clipboard';
 import { createProjectSlice } from './store.projects';
 import { createStyleSlice } from './store.styles';
+import { createChatSlice } from './store.chat';
 
 // ---- Re-export utilities for backward compatibility ----
 export { generateId, computeImageNodeDimensions } from './store.utils';
@@ -61,7 +63,8 @@ export type AppState = NodeSlice
   & StyleSlice
   & GroupSlice
   & ClipboardSlice
-  & ProjectSlice;
+  & ProjectSlice
+  & ChatSlice;
 
 // ---- Store creation via slice composition ----
 export const useAppStore = create<AppState>()((...a) => ({
@@ -78,4 +81,5 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createGroupSlice(...a),
   ...createClipboardSlice(...a),
   ...createProjectSlice(...a),
+  ...createChatSlice(...a),
 }));

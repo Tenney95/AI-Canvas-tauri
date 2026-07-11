@@ -485,3 +485,15 @@
   background: rgba(239, 68, 68, 0.25);
   color: var(--danger-pale);
 }
+
+/* ============================================
+   Chat Assistant sidebar button
+   ============================================ */
+.chat-btn-v3 {
+  color: rgba(192, 132, 252, 0.7); /* purple tone */
+}
+.chat-btn-v3:hover,
+.chat-btn-v3.active {
+  color: #c084fc;
+  background: rgba(192, 132, 252, 0.12);
+}

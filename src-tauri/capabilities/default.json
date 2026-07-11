@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for AI Canvas",
-  "windows": ["main", "asset-search"],
+  "windows": ["main", "asset-search", "chat-assistant"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
@@ -13,6 +13,8 @@
     "core:window:allow-unminimize",
     "core:window:allow-show",
     "core:window:allow-set-always-on-top",
+    "core:window:allow-outer-position",
+    "core:window:allow-set-position",
     "core:webview:allow-create-webview-window",
     "dialog:default",
     "dialog:allow-open",

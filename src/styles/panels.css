@@ -1205,3 +1205,27 @@
   animation: spin 0.6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============================================
+   Chat Panel — AI 对话助手悬浮面板（右侧）
+   ============================================ */
+.chat-panel {
+  right: 10px;
+  bottom: 10px;
+  width: 420px;
+  max-width: calc(100vw - 64px);
+  height: calc(100vh - 40px);
+  background: var(--glass-panel-bg);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  box-shadow: -8px 0 32px var(--black-alpha-50);
+  font-family: inherit;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel {
+    transition: none;
+  }
+}

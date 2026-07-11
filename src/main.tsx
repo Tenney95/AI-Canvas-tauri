@@ -3,13 +3,16 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
 import AssetSearchWindow from './components/AssetSearchWindow'
+import ChatWindow from './components/chat/ChatWindow'
 
-// 资源搜索窗口复用同一入口，通过 ?view=assets 区分
-const isAssetSearchWindow =
-  new URLSearchParams(window.location.search).get('view') === 'assets'
+// 复用同一入口，通过 ?view= 区分窗口类型
+const searchParams = new URLSearchParams(window.location.search)
+const view = searchParams.get('view')
+const isAssetSearchWindow = view === 'assets'
+const isChatWindow = view === 'chat'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    {isAssetSearchWindow ? <AssetSearchWindow /> : <App />}
+    {isAssetSearchWindow ? <AssetSearchWindow /> : isChatWindow ? <ChatWindow /> : <App />}
   </StrictMode>,
 )
