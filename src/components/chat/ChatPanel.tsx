@@ -7,7 +7,7 @@
  * - 右侧关闭按钮 + 独立窗口按钮（P0-A.1 仅预留 UI）
  * - 使用 framer-motion 控制打开/关闭动画
  */
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Icon } from '@iconify/react';
@@ -17,9 +17,11 @@ import { useAppStore } from '../../store/useAppStore';
 import ConversationList from './ConversationList';
 import {
   initMainWindowListener,
+  emitAction,
   emitSyncState,
   emitCloseChatWindow,
   type ChatAction,
+  type ChatStateSnapshot,
 } from '../../services/chat/chatWindowService';
 import {
   runAssistantPipeline,
@@ -33,7 +35,19 @@ import MascotAvatar from './MascotAvatar';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
-export default function ChatPanel() {
+interface ChatPanelProps {
+  detached?: boolean;
+  detachedSnapshot?: ChatStateSnapshot;
+  detachedInitialized?: boolean;
+  detachedHeaderActions?: ReactNode;
+}
+
+export default function ChatPanel({
+  detached = false,
+  detachedSnapshot,
+  detachedInitialized = true,
+  detachedHeaderActions,
+}: ChatPanelProps = {}) {
   const {
     chatOpen,
     chatPanelDetached,
@@ -74,6 +88,14 @@ export default function ChatPanel() {
     })),
   );
 
+  const effectiveConversations = detached ? (detachedSnapshot?.conversations ?? []) : conversations;
+  const effectiveActiveConversationId = detached ? (detachedSnapshot?.activeConversationId ?? null) : activeConversationId;
+  const effectiveMessages = detached ? (detachedSnapshot?.messages ?? []) : messages;
+  const effectiveProjectId = detached ? (detachedSnapshot?.projectId ?? null) : currentProjectId;
+  const effectiveProjectName = detached ? detachedSnapshot?.projectName : undefined;
+  const effectiveGeneralModels = detached ? (detachedSnapshot?.generalModels ?? []) : generalModels;
+  const effectiveAssistantModelId = detached ? detachedSnapshot?.assistantModelId : assistantModelId;
+
   const [inputValue, setInputValue] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'chat'>('chat');
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
@@ -84,8 +106,17 @@ export default function ChatPanel() {
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
 
   // 文本类通用模型
-  const textModels = (generalModels || []).filter((m) => m.category === 'text');
-  const currentAssistantModel = textModels.find((m) => m.id === assistantModelId);
+  const textModels = (effectiveGeneralModels || []).filter((m) => m.category === 'text');
+  const currentAssistantModel = textModels.find((m) => m.id === effectiveAssistantModelId);
+
+  const handleAssistantModelChange = useCallback((modelId?: string) => {
+    if (detached) {
+      void emitAction({ type: 'select_model', modelId });
+    } else {
+      updateConfig({ assistantModelId: modelId });
+    }
+    setModelDropdownOpen(false);
+  }, [detached, updateConfig]);
 
   // 点击外部关闭模型选择器（portal 下需同时检查 trigger 和 dropdown）
   useEffect(() => {
@@ -111,37 +142,54 @@ export default function ChatPanel() {
 
   useEffect(() => {
     if (viewMode === 'chat') scrollToBottom();
-  }, [messages, viewMode, scrollToBottom]);
+  }, [effectiveMessages, viewMode, scrollToBottom]);
 
   // 消息过滤：只显示当前活动会话的消息
-  const conversationMessages = activeConversationId
-    ? messages.filter((m) => m.conversationId === activeConversationId)
+  const conversationMessages = effectiveActiveConversationId
+    ? effectiveMessages.filter((m) => m.conversationId === effectiveActiveConversationId)
     : [];
 
   const handleNewConversation = useCallback(() => {
-    if (!currentProjectId) return;
-    createConversation(currentProjectId);
+    if (!effectiveProjectId) return;
+    if (detached) {
+      void emitAction({ type: 'create_conversation', projectId: effectiveProjectId });
+    } else {
+      createConversation(effectiveProjectId);
+    }
     setViewMode('chat');
-  }, [currentProjectId, createConversation]);
+  }, [detached, effectiveProjectId, createConversation]);
 
   const handleSelectConversation = useCallback(
     (id: string) => {
-      setActiveConversation(id);
+      if (detached) {
+        void emitAction({ type: 'switch_conversation', conversationId: id });
+      } else {
+        setActiveConversation(id);
+        loadConversationMessages(id);
+      }
       setViewMode('chat');
-      // 从 IndexedDB 加载该会话的消息
-      loadConversationMessages(id);
     },
-    [setActiveConversation, loadConversationMessages],
+    [detached, setActiveConversation, loadConversationMessages],
   );
 
   const handleSend = useCallback(() => {
     const text = inputValue.trim();
-    if (!text || !activeConversationId) return;
+    if (!text || !effectiveActiveConversationId) return;
+
+    if (detached) {
+      void emitAction({
+        type: 'send_message',
+        content: text,
+        conversationId: effectiveActiveConversationId,
+      });
+      setInputValue('');
+      return;
+    }
 
     // 创建用户消息
     const userMsg: ChatMessage = {
       id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      conversationId: activeConversationId,
+      conversationId: effectiveActiveConversationId,
       role: 'user',
       content: text,
       timestamp: Date.now(),
@@ -158,7 +206,7 @@ export default function ChatPanel() {
 
     const assistantMsg: ChatMessage = {
       id: assistantMsgId,
-      conversationId: activeConversationId,
+      conversationId: effectiveActiveConversationId,
       role: 'assistant',
       content: '',
       timestamp: Date.now(),
@@ -168,7 +216,7 @@ export default function ChatPanel() {
 
     if (hasModel) {
       // 流式路径
-      runStreamingPipeline(text, activeConversationId, {
+      runStreamingPipeline(text, effectiveActiveConversationId, {
         onTextDelta: (delta) => {
           // 增量更新消息内容
           const store = useAppStore.getState();
@@ -199,7 +247,7 @@ export default function ChatPanel() {
       });
     } else {
       // 本地规则路径
-      runAssistantPipeline(text, activeConversationId)
+      runAssistantPipeline(text, effectiveActiveConversationId)
         .then((result) => {
           updateMessage(assistantMsgId, {
             content: result.reply,
@@ -219,7 +267,8 @@ export default function ChatPanel() {
     scrollToBottom();
   }, [
     inputValue,
-    activeConversationId,
+    detached,
+    effectiveActiveConversationId,
     addMessage,
     updateMessage,
     scrollToBottom,
@@ -237,7 +286,7 @@ export default function ChatPanel() {
 
   // ── 独立窗口通信：监听来自独立窗口的 action ──
   useEffect(() => {
-    if (!isTauri) return;
+    if (!isTauri || detached) return;
 
     let cleanup: (() => void) | undefined;
 
@@ -325,6 +374,7 @@ export default function ChatPanel() {
 
             case 'switch_conversation':
               store.setActiveConversation(action.conversationId);
+              void store.loadConversationMessages(action.conversationId);
               break;
 
             case 'create_conversation':
@@ -355,6 +405,10 @@ export default function ChatPanel() {
               store.removeConversation(action.conversationId);
               break;
 
+            case 'select_model':
+              store.updateConfig({ assistantModelId: action.modelId });
+              break;
+
             case 'request_sync':
               // 独立窗口请求同步 — 由下面的 sync useEffect 处理
               break;
@@ -372,7 +426,7 @@ export default function ChatPanel() {
     })();
 
     return () => { cleanup?.(); };
-  }, []);
+  }, [detached]);
 
   // 状态变更时同步到独立窗口
   const syncToChatWindow = useCallback(() => {
@@ -387,22 +441,24 @@ export default function ChatPanel() {
       messages: s.messages,
       projectId: s.currentProjectId,
       projectName: project?.name,
+      generalModels: s.config.generalModels ?? [],
+      assistantModelId: s.config.assistantModelId,
     });
   }, []);
 
   // 当 chatPanelDetached 变为 true 时发送初始同步
   useEffect(() => {
-    if (chatPanelDetached) {
+    if (!detached && chatPanelDetached) {
       syncToChatWindow();
     }
-  }, [chatPanelDetached, syncToChatWindow]);
+  }, [detached, chatPanelDetached, syncToChatWindow]);
 
   // 当消息/会话变化且处于分离模式时同步
   useEffect(() => {
-    if (chatPanelDetached) {
+    if (!detached && chatPanelDetached) {
       syncToChatWindow();
     }
-  }, [messages, conversations, activeConversationId, chatPanelDetached, syncToChatWindow]);
+  }, [detached, messages, conversations, activeConversationId, chatPanelDetached, syncToChatWindow]);
 
   // ── 分离 / 附着按钮 ──
   const handleDetachToggle = useCallback(async () => {
@@ -433,22 +489,27 @@ export default function ChatPanel() {
   }, [chatPanelDetached, setChatPanelDetached, showToast, syncToChatWindow]);
 
   // 空状态：无活动会话
-  const showEmptyState = !activeConversationId && viewMode === 'chat';
+  const showEmptyState = !effectiveActiveConversationId && viewMode === 'chat';
 
   return (
     <AnimatePresence>
-      {chatOpen && !chatPanelDetached && (
+      {(detached || (chatOpen && !chatPanelDetached)) && (
           <motion.aside
-            className="chat-panel fixed z-50 flex flex-col"
-            initial={{ x: '100%', opacity: 0 }}
+            className={detached
+              ? 'h-screen w-screen flex flex-col bg-canvas-bg text-canvas-text overflow-hidden'
+              : 'chat-panel fixed z-50 flex flex-col'}
+            initial={detached ? false : { x: '100%', opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
-            exit={{ x: '100%', opacity: 0 }}
+            exit={detached ? undefined : { x: '100%', opacity: 0 }}
             transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-canvas-border flex-shrink-0">
+            <div
+              data-tauri-drag-region={detached ? true : undefined}
+              className="flex items-center justify-between px-4 py-3 border-b border-canvas-border flex-shrink-0 select-none"
+            >
               <div className="flex items-center gap-2">
-                {viewMode === 'chat' && activeConversationId && (
+                {viewMode === 'chat' && effectiveActiveConversationId && (
                   <button
                     type="button"
                     className="flex items-center justify-center w-6 h-6 rounded-md text-canvas-text-muted
@@ -463,12 +524,18 @@ export default function ChatPanel() {
                   <span className="text-sm font-medium text-canvas-text">
                     AI 助手
                   </span>
+                  {detached && effectiveProjectName && (
+                    <span className="text-[11px] text-canvas-text-muted truncate max-w-[120px]">
+                      — {effectiveProjectName}
+                    </span>
+                  )}
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400 font-medium uppercase">
                     Beta
                   </span>
                 </div>
               </div>
 
+              {detached ? detachedHeaderActions : (
               <div className="flex items-center gap-1">
                 {/* 独立窗口按钮 */}
                 <button
@@ -492,6 +559,7 @@ export default function ChatPanel() {
                   <Icon icon="mdi:close" width="16" height="16" />
                 </button>
               </div>
+              )}
             </div>
 
             {/* Body: dual-pane layout */}
@@ -504,6 +572,23 @@ export default function ChatPanel() {
                   className="flex-shrink-0 w-full border-r border-canvas-border overflow-hidden"
                 >
                   <ConversationList
+                    {...(detached ? {
+                      conversations: effectiveConversations,
+                      activeConversationId: effectiveActiveConversationId,
+                      projectId: effectiveProjectId ?? undefined,
+                      onRenameConversation: (id: string, title: string) => {
+                        void emitAction({ type: 'rename_conversation', conversationId: id, title });
+                      },
+                      onTogglePin: (id: string) => {
+                        void emitAction({ type: 'toggle_pin', conversationId: id });
+                      },
+                      onArchiveConversation: (id: string) => {
+                        void emitAction({ type: 'archive_conversation', conversationId: id });
+                      },
+                      onDeleteConversation: (id: string) => {
+                        void emitAction({ type: 'delete_conversation', conversationId: id });
+                      },
+                    } : {})}
                     onSelect={handleSelectConversation}
                     onNew={handleNewConversation}
                   />
@@ -519,11 +604,11 @@ export default function ChatPanel() {
                 >
                   {/* Messages */}
                   <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 flex flex-col gap-4">
-                    {showEmptyState && (
+                    {showEmptyState && detachedInitialized && (
                       <EmptyChatState onNew={handleNewConversation} onList={() => setViewMode('list')} />
                     )}
 
-                    {!showEmptyState && conversationMessages.length === 0 && (
+                    {!showEmptyState && conversationMessages.length === 0 && detachedInitialized && (
                       <div className="flex flex-col items-center justify-center h-full text-center px-4">
                         <div className="w-16 h-16 rounded-2xl bg-indigo-500/15 flex items-center justify-center mb-4">
                           <Icon icon="mdi:chat-processing-outline" width="28" height="28" className="text-indigo-400" />
@@ -617,17 +702,14 @@ export default function ChatPanel() {
                                 {/* 本地规则引擎（不使用 LLM） */}
                                 <button
                                   type="button"
-                                  className={`model-item ${!assistantModelId ? 'active' : ''}`}
-                                  onClick={() => {
-                                    updateConfig({ assistantModelId: undefined });
-                                    setModelDropdownOpen(false);
-                                  }}
+                                  className={`model-item ${!effectiveAssistantModelId ? 'active' : ''}`}
+                                  onClick={() => handleAssistantModelChange(undefined)}
                                 >
                                   <div className="model-item-info">
                                     <div className="model-item-name">本地规则引擎</div>
                                     <div className="model-item-desc">仅识别画布命令，不调用 LLM</div>
                                   </div>
-                                  {!assistantModelId && (
+                                {!effectiveAssistantModelId && (
                                     <Icon icon="mdi:check" width="14" height="14" className="model-item-check" />
                                   )}
                                 </button>
@@ -642,11 +724,8 @@ export default function ChatPanel() {
                                         <button
                                           key={m.id}
                                           type="button"
-                                          className={`model-item ${m.id === assistantModelId ? 'active' : ''}`}
-                                          onClick={() => {
-                                            updateConfig({ assistantModelId: m.id });
-                                            setModelDropdownOpen(false);
-                                          }}
+                                          className={`model-item ${m.id === effectiveAssistantModelId ? 'active' : ''}`}
+                                          onClick={() => handleAssistantModelChange(m.id)}
                                         >
                                           <span className="text-model-icon-mini" data-badge={getModelBadge(m)}>
                                             {getModelBadge(m)}
@@ -655,7 +734,7 @@ export default function ChatPanel() {
                                             <div className="model-item-name">{m.name}</div>
                                             <div className="model-item-desc">{m.modelId}</div>
                                           </div>
-                                          {m.id === assistantModelId && (
+                                          {m.id === effectiveAssistantModelId && (
                                             <Icon icon="mdi:check" width="14" height="14" className="model-item-check" />
                                           )}
                                         </button>

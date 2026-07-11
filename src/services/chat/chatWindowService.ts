@@ -17,6 +17,7 @@
  */
 
 import type { ChatConversation, ChatMessage } from '../../types/chat';
+import type { GeneralModelConfig } from '../../types';
 
 export const CHAT_SYNC_EVENT = 'chat:sync-state';
 export const CHAT_ACTION_EVENT = 'chat:action';
@@ -33,6 +34,8 @@ export interface ChatStateSnapshot {
   messages: ChatMessage[];
   projectId: string | null;
   projectName?: string;
+  generalModels: GeneralModelConfig[];
+  assistantModelId?: string;
 }
 
 // ============================================
@@ -47,6 +50,7 @@ export type ChatAction =
   | { type: 'toggle_pin'; conversationId: string }
   | { type: 'archive_conversation'; conversationId: string }
   | { type: 'delete_conversation'; conversationId: string }
+  | { type: 'select_model'; modelId?: string }
   | { type: 'request_sync' };
 
 // ============================================
