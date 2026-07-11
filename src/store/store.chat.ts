@@ -7,7 +7,6 @@ import type { AppState } from './useAppStore';
 import type {
   ChatConversation,
   ChatMessage,
-  ChatMessageStatus,
   OperationLog,
 } from '../types/chat';
 import * as chatHistoryService from '../services/chat/chatHistoryService';
@@ -260,7 +259,6 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
   setMessages: (messages) => set({ messages }),
 
   addMessage: (message) => {
-    const state = get();
     set((s) => {
       const convId = message.conversationId;
       const conversations = convId
@@ -364,7 +362,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
 
   getCurrentRevision: () => {
     const state = get();
-    const project = state.projects.find((p) => p.id === state.currentProjectId);
+    const project = state.projects.find((p: { id: string }) => p.id === state.currentProjectId);
     if (project?.revisionScope === 'global') {
       return state.globalCanvasRevision;
     }

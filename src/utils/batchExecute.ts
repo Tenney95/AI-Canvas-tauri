@@ -7,30 +7,13 @@
  * - 两组之间也并发执行
  */
 import type { Node, Edge } from '@xyflow/react';
-import type { BaseNodeData } from '../types';
+import type { BaseNodeData, OutputHistoryEntry } from '../types';
 import { generateText, generateImage, generateVideo, generateAudio } from '../services/aiService';
 import { downloadUrlAndSave } from '../services/fileService';
 
 export interface BatchContext {
   updateNodeData: (nodeId: string, data: Partial<BaseNodeData>) => void;
-  recordOutputHistory: (
-    nodeId: string,
-    entry: {
-      nodeId: string;
-      nodeLabel: string;
-      timestamp: number;
-      prompt: string;
-      output: string;
-      nodeType: string;
-      model: string;
-      provider: string;
-      status: string;
-      error?: string;
-      mediaUrl?: string;
-      filePath?: string;
-      params?: Record<string, unknown>;
-    },
-  ) => void;
+  recordOutputHistory: (nodeId: string, entry: Omit<OutputHistoryEntry, 'id'>) => Promise<void>;
   currentProjectId: string | null;
 }
 

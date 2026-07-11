@@ -12,7 +12,6 @@ import type {
   OperationLog,
 } from '../../types/chat';
 import type { BaseNodeData } from '../../types';
-import type { Node } from '@xyflow/react';
 
 // ============================================
 // Command executor type

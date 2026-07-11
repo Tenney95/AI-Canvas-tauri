@@ -31,7 +31,6 @@ export default function ConversationList({
   onNew,
   conversations: extConversations,
   activeConversationId: extActiveId,
-  projectId: extProjectId,
   onRenameConversation,
   onTogglePin: extTogglePin,
   onArchiveConversation,
@@ -51,7 +50,9 @@ export default function ConversationList({
 
   const conversations = extConversations ?? store.conversations;
   const activeConversationId = extActiveId !== undefined ? extActiveId : store.activeConversationId;
-  const projectId = extProjectId ?? store.currentProjectId;
+
+
+
 
   const [searchQuery, setSearchQuery] = useState('');
   const [renamingId, setRenamingId] = useState<string | null>(null);

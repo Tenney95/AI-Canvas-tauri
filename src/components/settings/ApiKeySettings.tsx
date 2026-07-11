@@ -210,7 +210,9 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
   const generalModels = config.generalModels || [];
   const textModels = generalModels.filter((m) => m.category === 'text');
-  const currentAssistantModel = textModels.find((m) => m.id === assistantModelId);
+
+
+
 
   // ── 即梦 Dreamina OAuth 登录 ──
   const [dreaminaLoading, setDreaminaLoading] = useState(false);
