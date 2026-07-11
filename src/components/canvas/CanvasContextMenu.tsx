@@ -26,9 +26,9 @@ const SRC_NODE_ITEMS: { label: string; type: NodeType }[] = [
 const ROW_HEIGHT = 28;
 /** 菜单 padding + border 估算 */
 const MENU_PADDING = 10;
-/** 根菜单项数（添加节点 + 分割线 + 粘贴 + 撤销 + 重做 + 删除 = 6 个 .menu-row + 1 个 .menu-sep） */
-const L1_ITEM_COUNT = 6;
-const L1_SEP_COUNT = 2;
+/** 根菜单项数（添加节点 + 分割线 + 粘贴 + 撤销 + 重做 + 分割线 + 打开项目文件夹 + 删除 = 7 个 .menu-row + 3 个 .menu-sep） */
+const L1_ITEM_COUNT = 7;
+const L1_SEP_COUNT = 3;
 /** Level 2 菜单项数（生成节点 + 源节点 = 2） */
 const L2_ITEM_COUNT = 2;
 /** Level 3 菜单项数（5 个节点类型） */
@@ -57,6 +57,7 @@ interface CanvasContextMenuProps {
   onPaste: () => void;
   onDelete: () => void;
   hasSelection: boolean;
+  onOpenProjectDir: () => void;
   onShowSubmenu: (menu: 'addNode' | 'genNode' | 'srcNode' | null) => void;
   onHideSubmenu: (backTo: 'addNode' | 'genNode' | 'srcNode' | null) => void;
 }
@@ -73,6 +74,7 @@ function CanvasContextMenu({
   onPaste,
   onDelete,
   hasSelection,
+  onOpenProjectDir,
   onShowSubmenu,
   onHideSubmenu,
 }: CanvasContextMenuProps) {
@@ -152,6 +154,10 @@ function CanvasContextMenu({
         <div className="menu-row menu-row-split" onClick={onRedo}>
           <span>重做</span>
           <span className="menu-kbd">Ctrl Y</span>
+        </div>
+        <div className="menu-sep" />
+        <div className="menu-row" onClick={onOpenProjectDir}>
+          <span>打开项目文件夹</span>
         </div>
         {hasSelection && (
           <>

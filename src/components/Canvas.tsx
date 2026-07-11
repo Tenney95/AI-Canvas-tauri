@@ -253,6 +253,7 @@ function CanvasInner() {
     handleRedo: handleCtxRedo,
     handlePaste: handleCtxPaste,
     handleDelete: handleCtxDelete,
+    handleOpenProjectDir: handleCtxOpenProjectDir,
     hasSelection: ctxHasSelection,
     showSubmenu,
     hideSubmenu,
@@ -710,6 +711,7 @@ function CanvasInner() {
         onPaste={handleCtxPaste}
         onDelete={handleCtxDelete}
         hasSelection={ctxHasSelection}
+        onOpenProjectDir={handleCtxOpenProjectDir}
         onShowSubmenu={showSubmenu}
         onHideSubmenu={hideSubmenu}
       />

@@ -141,6 +141,28 @@ export function useCanvasContextMenu() {
     }, 250);
   }, []);
 
+  const handleOpenProjectDir = useCallback(async () => {
+    try {
+      const { currentProjectId } = useAppStore.getState();
+      if (!currentProjectId) return;
+      const dir = await fileService.ensureProjectDataDir(currentProjectId);
+      if (!dir) return;
+
+      const { Command } = await import('@tauri-apps/plugin-shell');
+      const isWin = navigator.platform.toLowerCase().includes('win');
+      if (isWin) {
+        await Command.create('explorer', [dir.replace(/\//g, '\\')]).execute();
+      } else {
+        const cmd = navigator.platform.toLowerCase().includes('mac') ? 'mac-open' : 'xdg-open';
+        await Command.create(cmd, [dir]).execute();
+      }
+    } catch (err) {
+      console.warn('无法打开项目文件夹:', err);
+    } finally {
+      closeMenu();
+    }
+  }, [closeMenu]);
+
   const handleDelete = useCallback(() => {
     const state = useAppStore.getState();
     const nodeIds = state.selectedNodeIds;
@@ -218,6 +240,7 @@ export function useCanvasContextMenu() {
     handleRedo,
     handlePaste,
     handleDelete,
+    handleOpenProjectDir,
     hasSelection: selectedNodeIds.length > 0,
     showSubmenu,
     hideSubmenu,
