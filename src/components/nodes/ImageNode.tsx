@@ -1112,6 +1112,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             alt={(data.label as string) || '预览'}
             className="fullscreen-img-view"
             originRect={fullscreenOrigin}
+            onClose={handleCloseFullscreen}
             onError={() => setFullscreenError(true)}
           />
         )}

@@ -27,7 +27,9 @@ export default function Toast() {
             className={`flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-2xl shadow-black/30 border text-sm backdrop-blur-xl ${
               toast.type === 'success'
                 ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300 ring-1 ring-emerald-400/10'
-                : 'bg-red-500/15 border-red-500/30 text-red-300 ring-1 ring-red-400/10'
+                : toast.type === 'info'
+                  ? 'bg-indigo-500/15 border-indigo-500/30 text-indigo-300 ring-1 ring-indigo-400/10'
+                  : 'bg-red-500/15 border-red-500/30 text-red-300 ring-1 ring-red-400/10'
             }`}
           >
             <motion.span
@@ -39,6 +41,12 @@ export default function Toast() {
               {toast.type === 'success' ? (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
                   <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : toast.type === 'info' ? (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="16" x2="12" y2="12" />
+                  <line x1="12" y1="8" x2="12.01" y2="8" />
                 </svg>
               ) : (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">

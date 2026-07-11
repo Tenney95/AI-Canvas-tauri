@@ -22,10 +22,11 @@ interface ZoomableImageProps {
   alt?: string;
   className?: string;
   onError?: () => void;
+  onClose?: () => void;
   originRect?: { left: number; top: number; width: number; height: number };
 }
 
-export default function ZoomableImage({ src, alt = '', className = '', onError, originRect }: ZoomableImageProps) {
+export default function ZoomableImage({ src, alt = '', className = '', onError, onClose, originRect }: ZoomableImageProps) {
   const {
     containerRef,
     containerEl,
@@ -193,6 +194,10 @@ export default function ZoomableImage({ src, alt = '', className = '', onError, 
     zoomTo(scale * (dir > 0 ? 1.4 : 1 / 1.4), 0, 0);
   }, [scale, zoomTo]);
 
+  const handleClick = useCallback(() => {
+    if (scale <= MIN_SCALE) onClose?.();
+  }, [scale, onClose]);
+
   return (
     <div
       ref={containerRef}
@@ -200,6 +205,7 @@ export default function ZoomableImage({ src, alt = '', className = '', onError, 
       style={{ cursor }}
       onPointerDown={onPointerDown}
       onDoubleClick={handleDoubleClick}
+      onClick={handleClick}
     >
       <div
         ref={stageRef}

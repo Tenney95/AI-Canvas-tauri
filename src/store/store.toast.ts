@@ -5,8 +5,8 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 
 export interface ToastSlice {
-  toast: { visible: boolean; message: string; type: 'success' | 'error' };
-  showToast: (message: string, type?: 'success' | 'error') => void;
+  toast: { visible: boolean; message: string; type: 'success' | 'error' | 'info' };
+  showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
   dismissToast: () => void;
 }
 

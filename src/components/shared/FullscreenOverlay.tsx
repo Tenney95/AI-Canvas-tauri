@@ -71,8 +71,8 @@ export default function FullscreenOverlay({
   bodyClassName = '',
   headerContent,
 }: FullscreenOverlayProps) {
-  // Close on Escape
-  const handleKeyDown = useCallback(
+  // Close on Escape release so child keydown handlers cannot swallow the shortcut.
+  const handleKeyUp = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     },
@@ -81,10 +81,10 @@ export default function FullscreenOverlay({
 
   useEffect(() => {
     if (isOpen) {
-      document.addEventListener('keydown', handleKeyDown);
-      return () => document.removeEventListener('keydown', handleKeyDown);
+      window.addEventListener('keyup', handleKeyUp, true);
+      return () => window.removeEventListener('keyup', handleKeyUp, true);
     }
-  }, [isOpen, handleKeyDown]);
+  }, [isOpen, handleKeyUp]);
 
   return createPortal(
     <AnimatePresence>
