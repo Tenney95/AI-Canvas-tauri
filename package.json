@@ -1,7 +1,7 @@
 {
     "name": "ai-canvas-tauri",
     "private": true,
-    "version": "0.4.0-beta",
+    "version": "0.4.0",
     "type": "module",
     "scripts": {
         "postinstall": "node scripts/setup-hooks.js",
