@@ -3,18 +3,27 @@
  *
  * 独立悬浮在窗口右侧的 AI 对话面板。
  * - 双栏布局：会话列表 + 消息区域
- * - 底部输入框
- * - 右侧关闭按钮 + 独立窗口按钮（P0-A.1 仅预留 UI）
+ * - 底部输入框 + 三组模型选择器（文本 / 生图 / 视频）
+ * - 右侧关闭按钮 + 独立窗口按钮
  * - 使用 framer-motion 控制打开/关闭动画
+ *
+ * 子组件：
+ * - ChatHeader.tsx          Header 栏
+ * - ChatMessages.tsx        消息列表区
+ * - ChatInput.tsx           输入区 + 模型选择器
+ * - MessageBubble.tsx       单条消息气泡
+ * - EmptyChatState.tsx      空会话状态
+ * - ChatModelSelector.tsx   模型选择器
  */
-import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store/useAppStore';
 import ConversationList from './ConversationList';
+import ChatHeader from './ChatHeader';
+import ChatMessages from './ChatMessages';
+import ChatInput from './ChatInput';
 import {
   initMainWindowListener,
   emitAction,
@@ -27,71 +36,10 @@ import {
   runAssistantPipeline,
   runStreamingPipeline,
 } from '../../services/chat/assistantService';
-import { planCommand } from '../../services/chat/canvasPlanner';
-import { executeCommand, logOperation } from '../../services/chat/commandRegistry';
 import { resolveAssistantModel } from '../../services/ai/assistantStream';
-import type { ChatMessage, CommandResult } from '../../types/chat';
-import type { GeneralModelConfig } from '../../types';
-import AnimatedButton from '../shared/AnimatedButton';
-import MascotAvatar from './MascotAvatar';
+import type { ChatMessage } from '../../types/chat';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
-
-async function confirmMessageCommands(messageId: string): Promise<void> {
-  const store = useAppStore.getState();
-  const message = store.messages.find((item) => item.id === messageId);
-  const intents = message?.commands ?? [];
-  if (!message || message.status !== 'preview' || intents.length === 0) return;
-
-  store.updateMessage(messageId, { status: 'executing' });
-  const results: CommandResult[] = [];
-  try {
-    for (const intent of intents) {
-      const { plan } = planCommand(intent);
-      const result = await executeCommand(plan);
-      results.push(result);
-      logOperation({
-        projectId: store.currentProjectId ?? '',
-        conversationId: message.conversationId,
-        timestamp: Date.now(),
-        commandId: intent.commandId,
-        summary: plan.summary,
-        targetNodeIds: result.affectedNodeIds,
-        parseSource: intent.parseSource,
-        status: result.status === 'rejected' ? 'failed' : result.status,
-        undoable: ['deleteNodes', 'undo', 'redo'].includes(intent.commandId),
-      });
-    }
-
-    const resultText = results.map((result) => result.message).join('\n');
-    store.updateMessage(messageId, {
-      content: `${message.content}${resultText ? `\n\n${resultText}` : ''}`,
-      status: results.some((result) => result.status === 'failed' || result.status === 'rejected') ? 'error' : 'done',
-      commands: undefined,
-      executionResults: results,
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('[ChatPanel] Failed to execute confirmed commands:', error);
-    store.updateMessage(messageId, {
-      content: `${message.content}\n\n操作失败：${errorMessage}`,
-      status: 'error',
-      commands: undefined,
-      executionResults: results,
-    });
-  }
-}
-
-function cancelMessageCommands(messageId: string): void {
-  const store = useAppStore.getState();
-  const message = store.messages.find((item) => item.id === messageId);
-  if (!message || message.status !== 'preview') return;
-  store.updateMessage(messageId, {
-    content: `${message.content}\n\n已取消操作。`,
-    status: 'done',
-    commands: undefined,
-  });
-}
 
 interface ChatPanelProps {
   detached?: boolean;
@@ -121,8 +69,9 @@ export default function ChatPanel({
     updateMessage,
     loadConversationMessages,
     showToast,
-    generalModels,
     assistantModelId,
+    assistantImageModelId,
+    assistantVideoModelId,
     updateConfig,
   } = useAppStore(
     useShallow((s) => ({
@@ -140,73 +89,53 @@ export default function ChatPanel({
       updateMessage: s.updateMessage,
       loadConversationMessages: s.loadConversationMessages,
       showToast: s.showToast,
-      generalModels: s.config.generalModels,
       assistantModelId: s.config.assistantModelId,
+      assistantImageModelId: s.config.assistantImageModelId,
+      assistantVideoModelId: s.config.assistantVideoModelId,
       updateConfig: s.updateConfig,
     })),
   );
 
+  // ── detached 模式数据 ──
   const effectiveConversations = detached ? (detachedSnapshot?.conversations ?? []) : conversations;
   const effectiveActiveConversationId = detached ? (detachedSnapshot?.activeConversationId ?? null) : activeConversationId;
   const effectiveMessages = detached ? (detachedSnapshot?.messages ?? []) : messages;
   const effectiveProjectId = detached ? (detachedSnapshot?.projectId ?? null) : currentProjectId;
   const effectiveProjectName = detached ? detachedSnapshot?.projectName : undefined;
-  const effectiveGeneralModels = detached ? (detachedSnapshot?.generalModels ?? []) : generalModels;
   const effectiveAssistantModelId = detached ? detachedSnapshot?.assistantModelId : assistantModelId;
+  const effectiveAssistantImageModelId = detached ? detachedSnapshot?.assistantImageModelId : assistantImageModelId;
+  const effectiveAssistantVideoModelId = detached ? detachedSnapshot?.assistantVideoModelId : assistantVideoModelId;
 
   const [inputValue, setInputValue] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'chat'>('chat');
-  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-  const [dropdownPos, setDropdownPos] = useState({ left: 0, top: 0 });
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const modelDropdownRef = useRef<HTMLDivElement>(null);
-  const modelTriggerRef = useRef<HTMLButtonElement>(null);
 
-  // 文本类通用模型
-  const textModels = (effectiveGeneralModels || []).filter((m) => m.category === 'text');
-  const currentAssistantModel = textModels.find((m) => m.id === effectiveAssistantModelId);
+  // ── 模型选择 handlers ──
+  const makeModelChangeHandler = useCallback(
+    (category: 'text' | 'image' | 'video') =>
+      (modelId?: string) => {
+        if (detached) {
+          void emitAction({ type: 'select_model', modelId, category });
+        } else {
+          const cfg: Record<string, string | undefined> = {};
+          if (category === 'image') cfg.assistantImageModelId = modelId;
+          else if (category === 'video') cfg.assistantVideoModelId = modelId;
+          else cfg.assistantModelId = modelId;
+          updateConfig(cfg);
+        }
+      },
+    [detached, updateConfig],
+  );
 
-  const handleAssistantModelChange = useCallback((modelId?: string) => {
-    if (detached) {
-      void emitAction({ type: 'select_model', modelId });
-    } else {
-      updateConfig({ assistantModelId: modelId });
-    }
-    setModelDropdownOpen(false);
-  }, [detached, updateConfig]);
+  const handleTextModelChange = useCallback(makeModelChangeHandler('text'), [makeModelChangeHandler]);
+  const handleImageModelChange = useCallback(makeModelChangeHandler('image'), [makeModelChangeHandler]);
+  const handleVideoModelChange = useCallback(makeModelChangeHandler('video'), [makeModelChangeHandler]);
 
-  // 点击外部关闭模型选择器（portal 下需同时检查 trigger 和 dropdown）
-  useEffect(() => {
-    if (!modelDropdownOpen) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      const inTrigger = modelTriggerRef.current?.contains(target);
-      const inDropdown = document.querySelector('.chat-model-dropdown-portal')?.contains(target);
-      if (!inTrigger && !inDropdown) {
-        setModelDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [modelDropdownOpen]);
-
-  // 自动滚动到底部
-  const scrollToBottom = useCallback(() => {
-    setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
-  }, []);
-
-  useEffect(() => {
-    if (viewMode === 'chat') scrollToBottom();
-  }, [effectiveMessages, viewMode, scrollToBottom]);
-
-  // 消息过滤：只显示当前活动会话的消息
+  // ── 消息过滤 ──
   const conversationMessages = effectiveActiveConversationId
     ? effectiveMessages.filter((m) => m.conversationId === effectiveActiveConversationId)
     : [];
 
+  // ── 会话操作 ──
   const handleNewConversation = useCallback(() => {
     if (!effectiveProjectId) return;
     if (detached) {
@@ -230,6 +159,9 @@ export default function ChatPanel({
     [detached, setActiveConversation, loadConversationMessages],
   );
 
+  const handleShowList = useCallback(() => setViewMode('list'), []);
+
+  // ── 发送消息 ──
   const handleSend = useCallback(() => {
     const text = inputValue.trim();
     if (!text || !effectiveActiveConversationId) return;
@@ -256,10 +188,8 @@ export default function ChatPanel({
     addMessage(userMsg);
     setInputValue('');
 
-    // 创建助手消息（初始状态 parsing）
+    // 创建助手消息
     const assistantMsgId = `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-
-    // 判断是否有 LLM 模型配置
     const hasModel = !!resolveAssistantModel();
 
     const assistantMsg: ChatMessage = {
@@ -272,11 +202,15 @@ export default function ChatPanel({
     };
     addMessage(assistantMsg);
 
+    const scrollToBottom = () => {
+      setTimeout(() => {
+        document.querySelector('.chat-panel-messages')?.lastElementChild?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    };
+
     if (hasModel) {
-      // 流式路径
       runStreamingPipeline(text, effectiveActiveConversationId, {
         onTextDelta: (delta) => {
-          // 增量更新消息内容
           const store = useAppStore.getState();
           const msg = store.messages.find((m) => m.id === assistantMsgId);
           if (msg) {
@@ -287,11 +221,10 @@ export default function ChatPanel({
           }
           scrollToBottom();
         },
-        onComplete: (fullText, results, pendingIntents) => {
+        onComplete: (fullText, results) => {
           updateMessage(assistantMsgId, {
             content: fullText,
-            status: pendingIntents?.length ? 'preview' : 'done',
-            commands: pendingIntents,
+            status: 'done',
             executionResults: results.length > 0 ? results : undefined,
           });
           scrollToBottom();
@@ -305,13 +238,11 @@ export default function ChatPanel({
         },
       });
     } else {
-      // 本地规则路径
       runAssistantPipeline(text, effectiveActiveConversationId)
         .then((result) => {
           updateMessage(assistantMsgId, {
             content: result.reply,
-            status: result.pendingIntents?.length ? 'preview' : 'done',
-            commands: result.pendingIntents,
+            status: 'done',
             executionResults: result.commandResults.length > 0 ? result.commandResults : undefined,
           });
         })
@@ -325,26 +256,9 @@ export default function ChatPanel({
     }
 
     scrollToBottom();
-  }, [
-    inputValue,
-    detached,
-    effectiveActiveConversationId,
-    addMessage,
-    updateMessage,
-    scrollToBottom,
-  ]);
+  }, [inputValue, detached, effectiveActiveConversationId, addMessage, updateMessage]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
-      }
-    },
-    [handleSend],
-  );
-
-  // ── 独立窗口通信：监听来自独立窗口的 action ──
+  // ── 独立窗口通信 ──
   useEffect(() => {
     if (!isTauri || detached) return;
 
@@ -352,13 +266,11 @@ export default function ChatPanel({
 
     (async () => {
       cleanup = await initMainWindowListener(
-        // onAction: 处理来自独立窗口的用户操作
         (action: ChatAction) => {
           const store = useAppStore.getState();
 
           switch (action.type) {
             case 'send_message': {
-              // 同一会话内添加用户消息
               if (action.conversationId !== store.activeConversationId) {
                 store.setActiveConversation(action.conversationId);
               }
@@ -372,7 +284,6 @@ export default function ChatPanel({
               };
               store.addMessage(userMsg);
 
-              // 创建助手消息
               const amId = `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
               const hasModel = !!resolveAssistantModel();
               const am: ChatMessage = {
@@ -397,11 +308,10 @@ export default function ChatPanel({
                       });
                     }
                   },
-                  onComplete: (fullText, results, pendingIntents) => {
+                  onComplete: (fullText, results) => {
                     store.updateMessage(amId, {
                       content: fullText,
-                      status: pendingIntents?.length ? 'preview' : 'done',
-                      commands: pendingIntents,
+                      status: 'done',
                       executionResults: results.length > 0 ? results : undefined,
                     });
                   },
@@ -418,8 +328,7 @@ export default function ChatPanel({
                   .then((result) => {
                     store.updateMessage(amId, {
                       content: result.reply,
-                      status: result.pendingIntents?.length ? 'preview' : 'done',
-                      commands: result.pendingIntents,
+                      status: 'done',
                       executionResults: result.commandResults.length > 0 ? result.commandResults : undefined,
                     });
                   })
@@ -467,27 +376,22 @@ export default function ChatPanel({
               store.removeConversation(action.conversationId);
               break;
 
-            case 'select_model':
-              store.updateConfig({ assistantModelId: action.modelId });
+            case 'select_model': {
+              const cfg: Record<string, string | undefined> = {};
+              const c = action.category || 'text';
+              if (c === 'image') cfg.assistantImageModelId = action.modelId;
+              else if (c === 'video') cfg.assistantVideoModelId = action.modelId;
+              else cfg.assistantModelId = action.modelId;
+              store.updateConfig(cfg);
               break;
-
-            case 'confirm_commands':
-              void confirmMessageCommands(action.messageId);
-              break;
-
-            case 'cancel_commands':
-              cancelMessageCommands(action.messageId);
-              break;
+            }
 
             case 'request_sync':
-              // 独立窗口请求同步 — 由下面的 sync useEffect 处理
               break;
           }
 
-          // 每次 action 处理后同步状态到独立窗口
           syncToChatWindow();
         },
-        // onDetachClosed: 独立窗口关闭回调
         () => {
           useAppStore.getState().setChatPanelDetached(false);
           useAppStore.getState().openChat();
@@ -498,7 +402,7 @@ export default function ChatPanel({
     return () => { cleanup?.(); };
   }, [detached]);
 
-  // 状态变更时同步到独立窗口
+  // ── 状态同步到独立窗口 ──
   const syncToChatWindow = useCallback(() => {
     if (!isTauri) return;
     const s = useAppStore.getState();
@@ -513,24 +417,24 @@ export default function ChatPanel({
       projectName: project?.name,
       generalModels: s.config.generalModels ?? [],
       assistantModelId: s.config.assistantModelId,
+      assistantImageModelId: s.config.assistantImageModelId,
+      assistantVideoModelId: s.config.assistantVideoModelId,
     });
   }, []);
 
-  // 当 chatPanelDetached 变为 true 时发送初始同步
   useEffect(() => {
     if (!detached && chatPanelDetached) {
       syncToChatWindow();
     }
   }, [detached, chatPanelDetached, syncToChatWindow]);
 
-  // 当消息/会话变化且处于分离模式时同步
   useEffect(() => {
     if (!detached && chatPanelDetached) {
       syncToChatWindow();
     }
   }, [detached, messages, conversations, activeConversationId, chatPanelDetached, syncToChatWindow]);
 
-  // ── 分离 / 附着按钮 ──
+  // ── 分离 / 附着 ──
   const handleDetachToggle = useCallback(async () => {
     if (!isTauri) {
       showToast('独立窗口功能需要 Tauri 环境', 'info');
@@ -538,18 +442,15 @@ export default function ChatPanel({
     }
 
     if (chatPanelDetached) {
-      // 当前已分离 → 收回内嵌
       try {
         await emitCloseChatWindow();
         await invoke('close_chat_window');
       } catch { /* ignore */ }
       setChatPanelDetached(false);
     } else {
-      // 当前内嵌 → 打开独立窗口
       try {
         await invoke('open_chat_window');
         setChatPanelDetached(true);
-        // 延迟发送初始同步（等独立窗口渲染完成）
         setTimeout(() => syncToChatWindow(), 500);
       } catch (e) {
         console.error('[ChatPanel] failed to open chat window:', e);
@@ -558,29 +459,14 @@ export default function ChatPanel({
     }
   }, [chatPanelDetached, setChatPanelDetached, showToast, syncToChatWindow]);
 
-  // 空状态：无活动会话
+  // ── 空状态判断 ──
   const showEmptyState = !effectiveActiveConversationId && viewMode === 'chat';
 
-  const handleConfirmCommands = useCallback((messageId: string) => {
-    if (detached) {
-      void emitAction({ type: 'confirm_commands', messageId });
-    } else {
-      void confirmMessageCommands(messageId);
-    }
-  }, [detached]);
-
-  const handleCancelCommands = useCallback((messageId: string) => {
-    if (detached) {
-      void emitAction({ type: 'cancel_commands', messageId });
-    } else {
-      cancelMessageCommands(messageId);
-    }
-  }, [detached]);
-
+  // ── 渲染 ──
   return (
     <AnimatePresence>
       {(detached || (chatOpen && !chatPanelDetached)) && (
-            <motion.aside
+          <motion.aside
             className={`chat-panel-root ${detached
               ? 'h-screen w-screen flex flex-col bg-canvas-bg text-canvas-text overflow-hidden'
               : 'chat-panel fixed z-50 flex flex-col'}`}
@@ -590,63 +476,16 @@ export default function ChatPanel({
             transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
           >
             {/* Header */}
-            <div
-              data-tauri-drag-region={detached ? true : undefined}
-              className="chat-panel-header flex items-center justify-between px-4 py-3 border-b border-canvas-border flex-shrink-0 select-none"
-            >
-              <div className="chat-panel-header-brand flex items-center gap-2">
-                {viewMode === 'chat' && effectiveActiveConversationId && (
-                  <button
-                    type="button"
-                    className="chat-panel-back-btn flex items-center justify-center w-6 h-6 rounded-md text-canvas-text-muted
-                               hover:text-canvas-text hover:bg-canvas-hover transition-colors"
-                    onClick={() => setViewMode('list')}
-                  >
-                    <Icon icon="mdi:menu" width="16" height="16" />
-                  </button>
-                )}
-                <div className="flex items-center gap-2">
-                  <MascotAvatar size={28} className="shrink-0" />
-                  <span className="chat-panel-title text-sm font-medium text-canvas-text">
-                    AI 助手
-                  </span>
-                  {detached && effectiveProjectName && (
-                    <span className="text-[11px] text-canvas-text-muted truncate max-w-[120px]">
-                      — {effectiveProjectName}
-                    </span>
-                  )}
-                  <span className="chat-panel-beta-badge text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400 font-medium uppercase">
-                    Beta
-                  </span>
-                </div>
-              </div>
-
-              {detached ? detachedHeaderActions : (
-              <div className="chat-panel-header-actions flex items-center gap-1">
-                {/* 独立窗口按钮 */}
-                <button
-                  type="button"
-                  className="chat-panel-detach-btn flex items-center justify-center w-7 h-7 rounded-md text-canvas-text-muted
-                             hover:text-canvas-text hover:bg-canvas-hover transition-colors"
-                  onClick={handleDetachToggle}
-                  data-tooltip={chatPanelDetached ? '收回内嵌' : '独立窗口'}
-                >
-                  <Icon icon={chatPanelDetached ? 'mdi:dock-left' : 'mdi:dock-window'} width="16" height="16" />
-                </button>
-
-
-                {/* 关闭按钮 */}
-                <button
-                  type="button"
-                  className="chat-panel-close-btn flex items-center justify-center w-7 h-7 rounded-md text-canvas-text-muted
-                             hover:text-canvas-text hover:bg-canvas-hover transition-colors"
-                  onClick={closeChat}
-                >
-                  <Icon icon="mdi:close" width="16" height="16" />
-                </button>
-              </div>
-              )}
-            </div>
+            <ChatHeader
+              detached={detached}
+              chatPanelDetached={chatPanelDetached}
+              projectName={effectiveProjectName}
+              showBackButton={viewMode === 'chat' && !!effectiveActiveConversationId}
+              onBack={handleShowList}
+              onDetachToggle={handleDetachToggle}
+              onClose={closeChat}
+              detachedHeaderActions={detachedHeaderActions}
+            />
 
             {/* Body: dual-pane layout */}
             <div className="chat-panel-body flex flex-1 min-h-0">
@@ -689,183 +528,28 @@ export default function ChatPanel({
                   className="chat-panel-chat-area flex-1 flex flex-col min-h-0 min-w-0"
                 >
                   {/* Messages */}
-                  <div className="chat-panel-messages flex-1 min-h-0 overflow-y-auto px-4 py-3 flex flex-col gap-4">
-                    {showEmptyState && detachedInitialized && (
-                      <EmptyChatState onNew={handleNewConversation} onList={() => setViewMode('list')} />
-                    )}
-
-                    {!showEmptyState && conversationMessages.length === 0 && detachedInitialized && (
-                      <div className="chat-panel-start-hint flex flex-col items-center justify-center h-full text-center px-4">
-                        <div className="w-16 h-16 rounded-2xl bg-indigo-500/15 flex items-center justify-center mb-4">
-                          <Icon icon="mdi:chat-processing-outline" width="28" height="28" className="text-indigo-400" />
-                        </div>
-                        <p className="text-sm text-canvas-text-secondary mb-1">开始对话</p>
-                        <p className="text-xs text-canvas-text-muted">
-                          用自然语言操作画布，AI 助手帮你完成
-                        </p>
-                      </div>
-                    )}
-
-                    {conversationMessages.map((msg) => (
-                      <MessageBubble
-                        key={msg.id}
-                        message={msg}
-                        onConfirm={() => handleConfirmCommands(msg.id)}
-                        onCancel={() => handleCancelCommands(msg.id)}
-                      />
-                    ))}
-
-                    <div ref={messagesEndRef} />
-                  </div>
+                  <ChatMessages
+                    messages={conversationMessages}
+                    showEmptyState={showEmptyState}
+                    detachedInitialized={detachedInitialized}
+                    currentConversationId={effectiveActiveConversationId}
+                    onNewConversation={handleNewConversation}
+                    onShowList={handleShowList}
+                  />
 
                   {/* Input area */}
                   {!showEmptyState && (
-                    <div className="chat-panel-input-area flex-shrink-0 px-3 pt-2 pb-1">
-                      <div className="chat-panel-input-box flex flex-col bg-canvas-card border border-canvas-border rounded-[14px]
-                                      focus-within:border-canvas-text-secondary transition-colors px-4 pt-4 pb-3 shadow-lg">
-                        <textarea
-                          ref={inputRef}
-                          value={inputValue}
-                          onChange={(e) => setInputValue(e.target.value)}
-                          onKeyDown={handleKeyDown}
-                          placeholder="输入消息，描述你想对画布进行的修改"
-                          rows={1}
-                          className="chat-panel-textarea w-full resize-none bg-transparent text-[15px] leading-6 text-canvas-text
-                                     placeholder:text-canvas-text-muted outline-none
-                                     min-h-[64px] max-h-[160px]"
-                        />
-
-                        <div className="chat-panel-input-toolbar mt-2 flex items-center justify-between gap-3">
-                          {/* ── 模型选择器 ── */}
-                          <div className="chat-model-selector min-w-0" ref={modelDropdownRef}>
-                          <button
-                            ref={modelTriggerRef}
-                            type="button"
-                            className={`chat-model-trigger ${currentAssistantModel ? 'has-model' : ''}`}
-                            onClick={() => {
-                              if (!modelDropdownOpen && modelTriggerRef.current) {
-                                const rect = modelTriggerRef.current.getBoundingClientRect();
-                                setDropdownPos({
-                                  left: rect.left + rect.width / 2,
-                                  top: rect.top,
-                                });
-                              }
-                              setModelDropdownOpen((v) => !v);
-                            }}
-                            title={currentAssistantModel ? currentAssistantModel.name : '选择助手模型'}
-                          >
-                            {currentAssistantModel ? (
-                              <>
-                                <span
-                                  className="text-model-icon-mini"
-                                  data-badge={getModelBadge(currentAssistantModel)}
-                                >
-                                  {getModelBadge(currentAssistantModel)}
-                                </span>
-                                <span className="chat-model-label">{currentAssistantModel.name}</span>
-                              </>
-                            ) : (
-                              <>
-                                <Icon icon="mdi:brain" width="14" height="14" className="text-canvas-text-muted" />
-                                <span className="chat-model-label text-canvas-text-muted">本地规则</span>
-                              </>
-                            )}
-                            <Icon
-                              icon="mdi:chevron-down"
-                              width="12"
-                              height="12"
-                              className={`caret ${modelDropdownOpen ? 'rotate-180' : ''}`}
-                            />
-                          </button>
-
-                          {modelDropdownOpen &&
-                            createPortal(
-                              <div
-                                className="chat-model-dropdown-anchor"
-                                style={{
-                                  position: 'fixed',
-                                  left: `${dropdownPos.left}px`,
-                                  top: `${dropdownPos.top}px`,
-                                  transform: 'translate(-50%, -100%) translateY(-8px)',
-                                }}
-                              >
-                                <div className="model-dropdown chat-model-dropdown-portal">
-                                {/* 本地规则引擎（不使用 LLM） */}
-                                <button
-                                  type="button"
-                                  className={`model-item ${!effectiveAssistantModelId ? 'active' : ''}`}
-                                  onClick={() => handleAssistantModelChange(undefined)}
-                                >
-                                  <div className="model-item-info">
-                                    <div className="model-item-name">本地规则引擎</div>
-                                    <div className="model-item-desc">仅识别画布命令，不调用 LLM</div>
-                                  </div>
-                                {!effectiveAssistantModelId && (
-                                    <Icon icon="mdi:check" width="14" height="14" className="model-item-check" />
-                                  )}
-                                </button>
-
-                                {textModels.length > 0 && (
-                                  <div className="model-group">
-                                    <div className="model-group-header" style={{ pointerEvents: 'none' }}>
-                                      <span className="model-group-name">文本模型</span>
-                                    </div>
-                                    <div className="model-group-items" style={{ padding: '2px 0 4px 4px' }}>
-                                      {textModels.map((m) => (
-                                        <button
-                                          key={m.id}
-                                          type="button"
-                                          className={`model-item ${m.id === effectiveAssistantModelId ? 'active' : ''}`}
-                                          onClick={() => handleAssistantModelChange(m.id)}
-                                        >
-                                          <span className="text-model-icon-mini" data-badge={getModelBadge(m)}>
-                                            {getModelBadge(m)}
-                                          </span>
-                                          <div className="model-item-info">
-                                            <div className="model-item-name">{m.name}</div>
-                                            <div className="model-item-desc">{m.modelId}</div>
-                                          </div>
-                                          {m.id === effectiveAssistantModelId && (
-                                            <Icon icon="mdi:check" width="14" height="14" className="model-item-check" />
-                                          )}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-
-                                {textModels.length === 0 && (
-                                  <div className="model-wf-empty">
-                                    暂无文本模型，请在设置中添加
-                                  </div>
-                                )}
-                              </div>
-                              </div>,
-                              document.body,
-                            )}
-                          </div>
-
-                          <AnimatedButton
-                            scale={1.05}
-                            disabled={!inputValue.trim()}
-                            aria-label="发送消息"
-                            className={`chat-panel-send-btn flex shrink-0 items-center justify-center w-10 h-10 rounded-full transition-colors
-                                        ${inputValue.trim()
-                                          ? 'bg-canvas-text text-canvas-bg hover:opacity-90'
-                                          : 'bg-canvas-hover text-canvas-text-muted cursor-not-allowed'
-                                        }`}
-                            onClick={handleSend}
-                          >
-                            <Icon icon="mdi:arrow-up" width="20" height="20" />
-                          </AnimatedButton>
-                        </div>
-                      </div>
-
-                      {/* Disclaimer */}
-                      <p className="chat-panel-disclaimer text-[10px] text-canvas-text-muted mt-1 text-center px-4">
-                        AI 助手仅理解画布操作指令，不会执行未授权的修改。
-                      </p>
-                    </div>
+                    <ChatInput
+                      assistantModelId={effectiveAssistantModelId}
+                      assistantImageModelId={effectiveAssistantImageModelId}
+                      assistantVideoModelId={effectiveAssistantVideoModelId}
+                      onAssistantModelChange={handleTextModelChange}
+                      onImageModelChange={handleImageModelChange}
+                      onVideoModelChange={handleVideoModelChange}
+                      inputValue={inputValue}
+                      onInputChange={setInputValue}
+                      onSend={handleSend}
+                    />
                   )}
                 </motion.div>
               )}
@@ -873,190 +557,5 @@ export default function ChatPanel({
           </motion.aside>
       )}
     </AnimatePresence>
-  );
-}
-
-/* ============================================
-   Helpers
-   ============================================ */
-
-/** 从模型名称提取 2 字符徽章 */
-function getModelBadge(m: GeneralModelConfig): string {
-  const name = (m.name || m.modelId || '').toUpperCase().replace(/\s/g, '');
-  // 匹配已知品牌
-  const brands: Record<string, string> = {
-    OPENAI: 'OA', GPT: 'OA', CHATGPT: 'OA',
-    CLAUDE: 'AM', ANTHROPIC: 'AM',
-    DEEPSEEK: 'DS',
-    QWEN: 'QW', TONGYI: 'TY',
-    GEMINI: 'GR', GOOGLE: 'GR',
-    MISTRAL: 'M',
-    LLAMA: 'MA', META: 'MA',
-    GROK: 'GK',
-    MINIMAX: 'MX',
-    STEP: 'SP',
-    ERNIE: 'ER', WENXIN: 'ER',
-    GLM: 'GL', CHATGLM: 'GL', ZHIPU: 'ZP',
-    KIMI: 'KM', MOONSHOT: 'KM',
-    BAICHUAN: 'BC',
-    YI: 'YI', LINGYI: 'LY',
-    HUNYUAN: 'HY',
-    SPARK: 'SK',
-  };
-  for (const [key, badge] of Object.entries(brands)) {
-    if (name.includes(key)) return badge;
-  }
-  // 取前两个大写字母/数字
-  const alnum = name.replace(/[^A-Z0-9]/g, '');
-  return alnum.slice(0, 2) || 'AI';
-}
-
-/* ============================================
-   Message bubble
-   ============================================ */
-function MessageBubble({
-  message,
-  onConfirm,
-  onCancel,
-}: {
-  message: ChatMessage;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  const isUser = message.role === 'user';
-  const isSystem = message.role === 'system';
-
-  if (isSystem) {
-    return (
-      <div className="chat-message-bubble chat-message-system flex justify-center">
-        <span className="text-[11px] text-canvas-text-muted bg-canvas-hover px-3 py-1 rounded-full">
-          {message.content}
-        </span>
-      </div>
-    );
-  }
-
-  return (
-    <div className={`chat-message-bubble flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      {/* Assistant avatar */}
-      {!isUser && (
-        <MascotAvatar size={28} className="chat-message-avatar chat-message-avatar-assistant shrink-0 mr-2 mt-0.5" />
-      )}
-
-      <div
-        className={`chat-message-content max-w-[80%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed
-                    ${isUser
-                      ? 'bg-indigo-500/20 text-canvas-text rounded-br-md'
-                      : 'bg-canvas-hover text-canvas-text rounded-bl-md'
-                    }`}
-      >
-        <div className="whitespace-pre-wrap break-words">{message.content}</div>
-
-        {message.status === 'preview' && message.commands && message.commands.length > 0 && (
-          <div className="mt-3 flex items-center gap-2 border-t border-canvas-border pt-3">
-            <AnimatedButton
-              scale={1.03}
-              className="flex items-center justify-center gap-1.5 rounded-lg bg-canvas-text px-3 py-1.5
-                         text-xs font-medium text-canvas-bg hover:opacity-90 transition-opacity"
-              onClick={onConfirm}
-            >
-              <Icon icon="mdi:check" width="14" height="14" />
-              确认删除
-            </AnimatedButton>
-            <AnimatedButton
-              scale={1.03}
-              className="flex items-center justify-center rounded-lg border border-canvas-border px-3 py-1.5
-                         text-xs text-canvas-text-secondary hover:bg-canvas-card hover:text-canvas-text transition-colors"
-              onClick={onCancel}
-            >
-              取消
-            </AnimatedButton>
-          </div>
-        )}
-
-        {/* Status indicator */}
-        {message.status === 'streaming' && (
-          <span className="chat-message-status chat-message-status-streaming inline-block w-2 h-3 bg-indigo-400 animate-pulse ml-1 align-middle rounded-sm" />
-        )}
-        {message.status === 'error' && (
-          <div className="chat-message-status chat-message-status-error flex items-center gap-1 mt-1 text-[11px] text-red-400">
-            <Icon icon="mdi:alert-circle" width="12" height="12" />
-            响应失败
-          </div>
-        )}
-        {message.status === 'interrupted' && (
-          <div className="chat-message-status chat-message-status-interrupted flex items-center gap-1 mt-1 text-[11px] text-amber-400">
-            <Icon icon="mdi:alert-outline" width="12" height="12" />
-            响应中断
-          </div>
-        )}
-      </div>
-
-      {/* User avatar */}
-      {isUser && (
-        <div className="chat-message-avatar chat-message-avatar-user flex-shrink-0 w-7 h-7 rounded-lg bg-canvas-hover flex items-center justify-center ml-2 mt-0.5">
-          <Icon icon="mdi:account" width="14" height="14" className="text-canvas-text-secondary" />
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ============================================
-   Empty chat state
-   ============================================ */
-function EmptyChatState({
-  onNew,
-  onList,
-}: {
-  onNew: () => void;
-  onList: () => void;
-}) {
-  return (
-    <div className="chat-empty-state flex flex-col items-center justify-center h-full text-center px-6">
-      <MascotAvatar size={72} className="mb-5" />
-      <h3 className="text-base font-semibold text-canvas-text mb-2">画布 AI 助手</h3>
-      <p className="text-sm text-canvas-text-secondary mb-6 max-w-[260px]">
-        用自然语言读取和操作画布。查询状态、定位节点、批量管理，一个对话框完成。
-      </p>
-      <div className="chat-empty-state-actions flex flex-col gap-2 w-48">
-        <AnimatedButton
-          className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl
-                     bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-400 transition-colors"
-          onClick={onNew}
-        >
-          <Icon icon="mdi:plus" width="16" height="16" />
-          新建对话
-        </AnimatedButton>
-        <AnimatedButton
-          className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl
-                     bg-canvas-hover text-canvas-text-secondary text-sm hover:text-canvas-text
-                     hover:bg-canvas-border transition-colors"
-          onClick={onList}
-        >
-          <Icon icon="mdi:history" width="16" height="16" />
-          历史记录
-        </AnimatedButton>
-      </div>
-
-      {/* Example prompts */}
-      <div className="chat-empty-state-examples mt-8 space-y-2 w-56">
-        <p className="text-[11px] text-canvas-text-muted mb-2">试试这些：</p>
-        {[
-          '现在有几个失败节点？',
-          '选中 3 号节点',
-          '删除失败节点',
-        ].map((example) => (
-          <div
-            key={example}
-            className="px-3 py-2 text-xs text-canvas-text-secondary bg-canvas-bg border border-canvas-border
-                       rounded-lg hover:border-canvas-text-secondary hover:text-canvas-text
-                       transition-colors cursor-pointer"
-          >
-            {example}
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }

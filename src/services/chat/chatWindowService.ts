@@ -36,6 +36,8 @@ export interface ChatStateSnapshot {
   projectName?: string;
   generalModels: GeneralModelConfig[];
   assistantModelId?: string;
+  assistantImageModelId?: string;
+  assistantVideoModelId?: string;
 }
 
 // ============================================
@@ -50,7 +52,7 @@ export type ChatAction =
   | { type: 'toggle_pin'; conversationId: string }
   | { type: 'archive_conversation'; conversationId: string }
   | { type: 'delete_conversation'; conversationId: string }
-  | { type: 'select_model'; modelId?: string }
+  | { type: 'select_model'; modelId?: string; category?: 'text' | 'image' | 'video' }
   | { type: 'confirm_commands'; messageId: string }
   | { type: 'cancel_commands'; messageId: string }
   | { type: 'request_sync' };

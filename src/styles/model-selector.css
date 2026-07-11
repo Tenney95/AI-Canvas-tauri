@@ -75,8 +75,8 @@
   color: var(--theme-text-secondary);
 }
 .text-model-icon-mini {
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   border-radius: 3px;
   display: flex;
   align-items: center;
@@ -352,71 +352,93 @@
 }
 
 /* ============================================
-   Chat Panel Model Selector
+   Chat Panel — Compact Model Selector
+   直接复用节点 ModelSelector 组件，通过父选择器缩小尺寸。
+   不影响节点对话框中的 ModelSelector 样式。
    ============================================ */
-.chat-model-selector {
-  position: relative;
+
+/* 外层容器：由 ChatModelSelector wrapper 包裹 */
+.chat-panel-input-toolbar .model-selector {
   flex-shrink: 0;
+  min-width: 0;
 }
-.chat-model-trigger {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 5px;
-  background: var(--white-alpha-03);
-  border: 1px solid var(--theme-border);
-  border-radius: 6px;
-  color: var(--theme-text-muted);
+
+/* 触发按钮缩小 */
+.chat-panel-input-toolbar .model-selector-trigger {
+  gap: 2px;
+  padding: 0 4px;
+  border-radius: 5px;
   font-size: 10px;
-  cursor: pointer;
-  transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base);
-  height: 24px;
-  white-space: nowrap;
+  height: 18px;
 }
-.chat-model-trigger:hover {
-  color: var(--theme-text-secondary);
-  background: var(--white-alpha-06);
-  border-color: var(--theme-text-muted);
+
+/* caret 箭头缩小 */
+.chat-panel-input-toolbar .model-selector-trigger .caret {
+  width: 8px;
+  height: 8px;
 }
-.chat-model-trigger.has-model {
-  color: var(--brand-light);
-  border-color: rgba(99, 102, 241, 0.25);
-  background: rgba(99, 102, 241, 0.08);
+
+/* 图标缩小 */
+.chat-panel-input-toolbar .model-selector-icon {
+  width: 12px;
+  height: 12px;
+  font-size: 8px;
 }
-.chat-model-trigger.has-model:hover {
-  background: rgba(99, 102, 241, 0.12);
+
+/* badge 图标缩到匹配 16px 高度 */
+.chat-panel-input-toolbar .text-model-icon-mini {
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+  font-size: 7px;
+  line-height: 12px;
 }
-.chat-model-label {
-  max-width: 56px;
+
+/* 标签：单行截断 */
+.chat-panel-input-toolbar .model-selector-label {
+  font-size: 10px;
+  max-width: 48px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 1;
-}
-.chat-model-trigger .caret {
-  flex-shrink: 0;
-  opacity: 0.5;
-  transition: transform var(--transition-smooth);
-}
-.chat-model-trigger .caret.rotate-180 {
-  transform: rotate(180deg);
+  margin-left: 6px;
 }
 
-/* Portal anchor — only handles positioning, no animation */
-.chat-model-dropdown-anchor {
-  z-index: 9999;
-}
-
-/* Model dropdown inside chat panel — rendered via portal at document level */
-.chat-model-dropdown-portal {
-  width: 240px;
-  max-height: 280px;
-  overflow-y: auto;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-ring);
-  border-radius: 10px;
-  box-shadow: 0 12px 40px var(--black-alpha-50);
-  padding: 4px;
-  transform-origin: bottom center;
+/* 下拉面板缩小 */
+.chat-panel-input-toolbar .model-dropdown {
+  width: 220px;
+  max-height: 240px;
+  transform-origin: bottom left;
   animation: popoverIn var(--dur-normal) var(--ease-spring);
 }
+
+/* 分组标题缩小 */
+.chat-panel-input-toolbar .model-group-header {
+  padding: 4px 5px;
+  gap: 4px;
+}
+.chat-panel-input-toolbar .model-group-name {
+  font-size: 11px;
+}
+.chat-panel-input-toolbar .model-group-desc {
+  font-size: 10px;
+}
+
+/* 分组子项缩进减半 */
+.chat-panel-input-toolbar .model-group-items {
+  padding-left: 14px;
+}
+
+/* 模型项缩小 */
+.chat-panel-input-toolbar .model-item {
+  padding: 4px 5px;
+  gap: 4px;
+}
+.chat-panel-input-toolbar .model-item-name {
+  font-size: 11px;
+}
+.chat-panel-input-toolbar .model-item-desc {
+  font-size: 10px;
+}
+

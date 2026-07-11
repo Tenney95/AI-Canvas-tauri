@@ -828,7 +828,7 @@ export default function Sidebar() {
       {/* AI Chat Assistant */}
       <button
         type="button"
-        className="sidebar-btn-v3 chat-btn-v3"
+        className="sidebar-btn-v3"
         data-tooltip="画布助手"
         onClick={async () => {
           const store = useAppStore.getState();
@@ -846,11 +846,10 @@ export default function Sidebar() {
           }
         }}
       >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <path d="M21 12a9 9 0 0 1-9 9" strokeLinecap="round" />
-          <path d="M3 12a9 9 0 0 1 9-9" strokeLinecap="round" />
-          <circle cx="12" cy="12" r="3" fill="currentColor" opacity="0.4" />
-          <path d="M17 19a2 2 0 1 1-4 0c0-1.5 2-4 2-4s2 2.5 2 4z" fill="currentColor" opacity="0.6" stroke="none" />
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" />
+          <rect x="8.4" y="9.25" width="2" height="5.5" rx="1" fill="currentColor" />
+          <rect x="13.6" y="9.25" width="2" height="5.5" rx="1" fill="currentColor" />
         </svg>
       </button>
 

@@ -1220,7 +1220,6 @@
   box-shadow: -8px 0 32px var(--black-alpha-50);
   font-family: inherit;
   border-radius: 16px;
-  overflow: hidden;
 }
 
 /* Reduced motion */

@@ -146,6 +146,8 @@ export interface AppConfig {
   assetFolders?: string[];    // 资产管理中登记的外部本地文件夹路径（引用不拷贝）
   photoshopPath?: string;    // Photoshop 安装路径，自动检测失败时手动配置
   assistantModelId?: string;  // 助手模型 ID：generalModels 中的 text 模型 id
+  assistantImageModelId?: string;  // 助手生图模型 ID：generalModels 中的 image 模型 id
+  assistantVideoModelId?: string;  // 助手生视频模型 ID：generalModels 中的 video 模型 id
   cloudParseEnabled?: boolean; // 是否启用云端解析，默认 true；关闭后助手仅使用本地规则
 }
 
