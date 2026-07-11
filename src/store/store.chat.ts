@@ -10,6 +10,7 @@ import type {
   ChatMessageStatus,
   OperationLog,
 } from '../types/chat';
+import * as chatHistoryService from '../services/chat/chatHistoryService';
 
 // ============================================
 // 常量
@@ -65,6 +66,14 @@ export interface ChatSlice {
   /** 在当前项目创建空会话 */
   createConversation: (projectId: string, title?: string) => string;
 
+  // ── 持久化 Actions ──
+  /** 从 IndexedDB 加载当前项目的全部会话 */
+  loadConversationsForProject: (projectId: string) => Promise<void>;
+  /** 从 IndexedDB 加载指定会话的消息（替换当前 messages） */
+  loadConversationMessages: (conversationId: string) => Promise<void>;
+  /** 修复启动时遗留的中断消息 */
+  repairInterruptedForProject: (projectId: string) => Promise<void>;
+
   // ── Message Actions ──
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (message: ChatMessage) => void;
@@ -92,6 +101,22 @@ export interface ChatSlice {
   /** 设置 revision（项目切换/加载时使用） */
   setCanvasRevision: (rev: number) => void;
   setGlobalCanvasRevision: (rev: number) => void;
+}
+
+// ============================================
+// 持久化 helper（fire-and-forget，不阻塞状态更新）
+// ============================================
+
+function persistConv(c: ChatConversation) {
+  chatHistoryService.saveConversation(c).catch((e) =>
+    console.warn('[chat.persist] 会话保存失败:', e),
+  );
+}
+
+function persistMsg(m: ChatMessage, projectId: string) {
+  chatHistoryService.persistMessage(m, projectId, m.conversationId).catch((e) =>
+    console.warn('[chat.persist] 消息保存失败:', e),
+  );
 }
 
 // ============================================
@@ -134,23 +159,37 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
 
   setConversations: (conversations) => set({ conversations }),
 
-  addConversation: (conversation) =>
-    set((s) => ({ conversations: [...s.conversations, conversation] })),
+  addConversation: (conversation) => {
+    set((s) => ({ conversations: [...s.conversations, conversation] }));
+    persistConv(conversation);
+  },
 
   updateConversation: (id, partial) =>
-    set((s) => ({
-      conversations: s.conversations.map((c) =>
+    set((s) => {
+      const updated = s.conversations.map((c) =>
         c.id === id ? { ...c, ...partial, updatedAt: Date.now() } : c,
-      ),
-    })),
+      );
+      const changed = updated.find((c) => c.id === id);
+      if (changed) persistConv(changed);
+      return { conversations: updated };
+    }),
 
-  removeConversation: (id) =>
-    set((s) => ({
-      conversations: s.conversations.filter((c) => c.id !== id),
-      // 如果删除的是活动会话，清除活动会话
-      activeConversationId:
-        s.activeConversationId === id ? null : s.activeConversationId,
-    })),
+  removeConversation: (id) => {
+    set((s) => {
+      const conv = s.conversations.find((c) => c.id === id);
+      if (conv) {
+        // 异步软删除（持久化到 IndexedDB）
+        chatHistoryService.softDeleteConversation(conv).catch((e) =>
+          console.warn('[chat] 软删除会话失败:', e),
+        );
+      }
+      return {
+        conversations: s.conversations.filter((c) => c.id !== id),
+        activeConversationId:
+          s.activeConversationId === id ? null : s.activeConversationId,
+      };
+    });
+  },
 
   setActiveConversation: (id) => set({ activeConversationId: id }),
 
@@ -171,7 +210,47 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
       conversations: [...s.conversations, conversation],
       activeConversationId: id,
     }));
+    persistConv(conversation);
     return id;
+  },
+
+  // ==========================================
+  // 持久化 Actions
+  // ==========================================
+
+  loadConversationsForProject: async (projectId) => {
+    try {
+      const conversations = await chatHistoryService.loadProjectConversations(projectId);
+      set({ conversations, activeConversationId: null, messages: [], operationLogs: [] });
+      // 有会话时自动激活最近一个
+      if (conversations.length > 0) {
+        set({ activeConversationId: conversations[0].id });
+      }
+    } catch (e) {
+      console.warn('[chat] 加载会话列表失败:', e);
+    }
+  },
+
+  loadConversationMessages: async (conversationId) => {
+    try {
+      const { messages } = await chatHistoryService.loadMessages(conversationId, 0, 200);
+      // 只保留当前展示的 conversationId 的消息（时序上切换后仍然可能收到旧异步结果）
+      if (get().activeConversationId !== conversationId) return;
+      set({ messages });
+    } catch (e) {
+      console.warn('[chat] 加载消息失败:', e);
+    }
+  },
+
+  repairInterruptedForProject: async (projectId) => {
+    try {
+      const affectedIds = await chatHistoryService.repairInterruptedMessages(projectId);
+      if (affectedIds.length > 0) {
+        console.log('[chat] 已修复中断消息，涉及会话:', affectedIds);
+      }
+    } catch (e) {
+      console.warn('[chat] 修复中断消息失败:', e);
+    }
   },
 
   // ==========================================
@@ -180,10 +259,10 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
 
   setMessages: (messages) => set({ messages }),
 
-  addMessage: (message) =>
+  addMessage: (message) => {
+    const state = get();
     set((s) => {
-      // 更新会话的消息计数和预览
-      const convId = s.activeConversationId;
+      const convId = message.conversationId;
       const conversations = convId
         ? s.conversations.map((c) =>
             c.id === convId
@@ -202,16 +281,31 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
         messages: [...s.messages, message],
         conversations,
       };
-    }),
+    });
+    // 持久化（使用 currentProjectId）
+    const projectId = get().currentProjectId;
+    if (projectId) persistMsg(message, projectId);
+  },
 
   updateMessage: (id, partial) =>
-    set((s) => ({
-      messages: s.messages.map((m) => (m.id === id ? { ...m, ...partial } : m)),
-    })),
+    set((s) => {
+      const updated = s.messages.map((m) => (m.id === id ? { ...m, ...partial } : m));
+      const changed = updated.find((m) => m.id === id);
+      if (changed) {
+        const projectId = get().currentProjectId;
+        if (projectId) persistMsg(changed, projectId);
+      }
+      return { messages: updated };
+    }),
 
   clearMessages: () =>
     set((s) => {
       const convId = s.activeConversationId;
+      if (convId) {
+        chatHistoryService.clearConversationMessages(convId).catch((e) =>
+          console.warn('[chat] 清空消息失败:', e),
+        );
+      }
       const conversations = convId
         ? s.conversations.map((c) =>
             c.id === convId

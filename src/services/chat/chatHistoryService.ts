@@ -63,6 +63,7 @@ function toMessageRecord(
 function fromMessageRecord(r: ChatMessageRecord): ChatMessage {
   return {
     id: r.id,
+    conversationId: r.conversationId,
     role: r.role as 'user' | 'assistant' | 'system',
     content: r.content,
     timestamp: r.createdAt,

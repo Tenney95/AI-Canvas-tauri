@@ -350,3 +350,73 @@
   flex-shrink: 0;
   color: var(--theme-text-muted);
 }
+
+/* ============================================
+   Chat Panel Model Selector
+   ============================================ */
+.chat-model-selector {
+  position: relative;
+  flex-shrink: 0;
+}
+.chat-model-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 5px;
+  background: var(--white-alpha-03);
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base);
+  height: 24px;
+  white-space: nowrap;
+}
+.chat-model-trigger:hover {
+  color: var(--theme-text-secondary);
+  background: var(--white-alpha-06);
+  border-color: var(--theme-text-muted);
+}
+.chat-model-trigger.has-model {
+  color: var(--brand-light);
+  border-color: rgba(99, 102, 241, 0.25);
+  background: rgba(99, 102, 241, 0.08);
+}
+.chat-model-trigger.has-model:hover {
+  background: rgba(99, 102, 241, 0.12);
+}
+.chat-model-label {
+  max-width: 56px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1;
+}
+.chat-model-trigger .caret {
+  flex-shrink: 0;
+  opacity: 0.5;
+  transition: transform var(--transition-smooth);
+}
+.chat-model-trigger .caret.rotate-180 {
+  transform: rotate(180deg);
+}
+
+/* Portal anchor — only handles positioning, no animation */
+.chat-model-dropdown-anchor {
+  z-index: 9999;
+}
+
+/* Model dropdown inside chat panel — rendered via portal at document level */
+.chat-model-dropdown-portal {
+  width: 240px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-ring);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px var(--black-alpha-50);
+  padding: 4px;
+  transform-origin: bottom center;
+  animation: popoverIn var(--dur-normal) var(--ease-spring);
+}

@@ -590,6 +590,11 @@
   border-radius: 8px;
   padding: 10px 12px;
   margin-bottom: 6px;
+  transition: border-color var(--transition-base);
+}
+.general-model-item--active {
+  border-color: var(--success-light);
+  background: rgba(34, 197, 94, 0.06);
 }
 .general-model-item-header {
   display: flex;

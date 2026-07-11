@@ -35,6 +35,8 @@ export interface NodeSlice {
   duplicateNode: (nodeId: string) => void;
   updateNodeData: (nodeId: string, data: Partial<BaseNodeData>) => void;
   deleteNode: (nodeId: string) => void;
+  /** 原子批量删除多个节点（一次 commitToHistory，一次退场动画） */
+  deleteNodesBatch: (nodeIds: string[]) => void;
   onConnect: (connection: Connection) => void;
   onNodesChange: (changes: NodeChange<Node<BaseNodeData>>[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
@@ -151,6 +153,53 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     }
 
     // 先播放退场动画，结束后再真正从状态中移除（动画期间历史已提交，撤销仍指向删除前状态）
+    playNodeExit([...idsToDelete]).then(() => {
+      set((state) => ({
+        nodes: state.nodes.filter((n) => !idsToDelete.has(n.id)),
+        edges: state.edges.filter((e) => !idsToDelete.has(e.source) && !idsToDelete.has(e.target)),
+        groups: state.groups
+          .filter((g) => !idsToDelete.has(g.id))
+          .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !idsToDelete.has(nid)) })),
+      }));
+    });
+  },
+
+  deleteNodesBatch: (nodeIds) => {
+    if (nodeIds.length === 0) return;
+    // 最多删 BATCH_NODE_LIMIT 个
+    const limitedIds = nodeIds.length > BATCH_NODE_LIMIT ? nodeIds.slice(0, BATCH_NODE_LIMIT) : nodeIds;
+
+    get().commitToHistory();
+
+    // 收集所有要删除的 ID（包含子节点递归）
+    const idsToDelete = new Set<string>(limitedIds);
+    const { nodes } = get();
+    const q = [...limitedIds];
+    while (q.length > 0) {
+      const pid = q.shift()!;
+      nodes.filter((n) => n.parentId === pid).forEach((c) => {
+        idsToDelete.add(c.id);
+        q.push(c.id);
+      });
+    }
+
+    // 取消所有轮询
+    for (const id of idsToDelete) {
+      cancelNodePolling(id);
+    }
+
+    // 清理文件
+    const keepPaths = new Set(
+      nodes.filter((n) => !idsToDelete.has(n.id))
+        .map((n) => (n.data as BaseNodeData).filePath)
+        .filter((p): p is string => !!p),
+    );
+    for (const id of idsToDelete) {
+      const n = nodes.find((nn) => nn.id === id);
+      if (n) fileService.deleteNodeFile(n.data as BaseNodeData, keepPaths).catch((e) => console.warn('[批量删除] 文件清理失败:', e));
+    }
+
+    // 统一播放退场动画后移除
     playNodeExit([...idsToDelete]).then(() => {
       set((state) => ({
         nodes: state.nodes.filter((n) => !idsToDelete.has(n.id)),

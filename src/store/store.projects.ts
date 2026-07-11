@@ -263,6 +263,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     }
     // 恢复当前项目的待续轮询任务
     resumePendingTasks(id).catch((e) => console.warn('[切换项目] 恢复待续任务失败:', e));
+    // 加载聊天会话
+    get().loadConversationsForProject(id).catch((e) => console.warn('[切换项目] 加载会话失败:', e));
+    get().repairInterruptedForProject(id).catch((e) => console.warn('[切换项目] 修复中断消息失败:', e));
 
     setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
   },
@@ -416,6 +419,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       // 恢复当前项目的待续轮询任务
       if (activeProjectId) {
         resumePendingTasks(activeProjectId).catch((e) => console.warn('[初始化] 恢复待续任务失败:', e));
+        // 加载聊天会话
+        get().loadConversationsForProject(activeProjectId).catch((e) => console.warn('[初始化] 加载会话失败:', e));
+        get().repairInterruptedForProject(activeProjectId).catch((e) => console.warn('[初始化] 修复中断消息失败:', e));
       }
     } catch (error) {
       console.error('Init from IndexedDB failed:', error);

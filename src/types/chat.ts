@@ -146,6 +146,8 @@ export type ChatMessageStatus =
 
 export interface ChatMessage {
   id: string;
+  /** 所属会话 ID */
+  conversationId: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;

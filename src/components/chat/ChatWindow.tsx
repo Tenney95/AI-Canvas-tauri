@@ -23,6 +23,7 @@ import {
 import type { ChatConversation, ChatMessage } from '../../types/chat';
 import ConversationList from './ConversationList';
 import AnimatedButton from '../shared/AnimatedButton';
+import MascotAvatar from './MascotAvatar';
 
 export default function ChatWindow() {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
@@ -193,6 +194,7 @@ export default function ChatWindow() {
     // 本地乐观添加用户消息
     const userMsg: ChatMessage = {
       id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      conversationId: activeConversationId,
       role: 'user',
       content: text,
       timestamp: Date.now(),
@@ -241,9 +243,7 @@ export default function ChatWindow() {
             </button>
           )}
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-indigo-500/20 flex items-center justify-center">
-              <Icon icon="mdi:robot-outline" width="16" height="16" className="text-indigo-400" />
-            </div>
+            <MascotAvatar size={28} className="shrink-0" />
             <span className="text-sm font-medium">AI 助手</span>
             {projectName && (
               <span className="text-[11px] text-canvas-text-muted truncate max-w-[120px]">
@@ -294,7 +294,7 @@ export default function ChatWindow() {
       </div>
 
       {/* Body: dual-pane */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-1 min-h-0">
         {viewMode === 'list' && (
           <motion.div
             initial={{ x: -20, opacity: 0 }}
@@ -348,32 +348,36 @@ export default function ChatWindow() {
 
             {/* Input area */}
             {!showEmptyState && (
-              <div className="flex-shrink-0 px-4 py-3 border-t border-canvas-border">
-                <div className="flex items-end gap-2 bg-canvas-surface border border-canvas-border rounded-xl
-                                focus-within:border-canvas-text-secondary transition-colors px-3 py-2">
+              <div className="flex-shrink-0 px-3 pt-2 pb-3">
+                <div className="flex flex-col bg-canvas-card border border-canvas-border rounded-[14px]
+                                focus-within:border-canvas-text-secondary transition-colors px-4 pt-4 pb-3 shadow-lg">
                   <textarea
                     ref={inputRef}
                     value={inputValue}
                     onChange={(e) => setInputValue(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="输入消息… (Enter 发送, Shift+Enter 换行)"
+                    placeholder="输入消息，描述你想对画布进行的修改"
                     rows={1}
-                    className="flex-1 resize-none bg-transparent text-sm text-canvas-text
+                    className="w-full resize-none bg-transparent text-[15px] leading-6 text-canvas-text
                                placeholder:text-canvas-text-muted outline-none
-                               min-h-[24px] max-h-[120px] py-1"
+                               min-h-[64px] max-h-[160px]"
                   />
-                  <AnimatedButton
-                    scale={1.05}
-                    disabled={!inputValue.trim()}
-                    className={`flex items-center justify-center w-8 h-8 rounded-lg transition-colors
-                                ${inputValue.trim()
-                                  ? 'bg-indigo-500 text-white hover:bg-indigo-400'
-                                  : 'bg-canvas-hover text-canvas-text-muted cursor-not-allowed'
-                                }`}
-                    onClick={handleSend}
-                  >
-                    <Icon icon="mdi:send" width="16" height="16" />
-                  </AnimatedButton>
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <span className="text-xs text-canvas-text-muted">Enter 发送 · Shift+Enter 换行</span>
+                    <AnimatedButton
+                      scale={1.05}
+                      disabled={!inputValue.trim()}
+                      aria-label="发送消息"
+                      className={`flex shrink-0 items-center justify-center w-10 h-10 rounded-full transition-colors
+                                  ${inputValue.trim()
+                                    ? 'bg-canvas-text text-canvas-bg hover:opacity-90'
+                                    : 'bg-canvas-hover text-canvas-text-muted cursor-not-allowed'
+                                  }`}
+                      onClick={handleSend}
+                    >
+                      <Icon icon="mdi:arrow-up" width="20" height="20" />
+                    </AnimatedButton>
+                  </div>
                 </div>
                 <p className="text-[10px] text-canvas-text-muted mt-2 text-center">
                   AI 助手仅理解画布操作指令，不会执行未授权的修改。
@@ -407,9 +411,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       {!isUser && (
-        <div className="flex-shrink-0 w-7 h-7 rounded-lg bg-indigo-500/20 flex items-center justify-center mr-2 mt-0.5">
-          <Icon icon="mdi:robot-outline" width="14" height="14" className="text-indigo-400" />
-        </div>
+        <MascotAvatar size={28} className="shrink-0 mr-2 mt-0.5" />
       )}
 
       <div
@@ -459,9 +461,7 @@ function EmptyChatState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-6">
-      <div className="w-20 h-20 rounded-2xl bg-indigo-500/10 flex items-center justify-center mb-5">
-        <Icon icon="mdi:robot-happy-outline" width="36" height="36" className="text-indigo-400" />
-      </div>
+      <MascotAvatar size={72} className="mb-5" />
       <h3 className="text-base font-semibold text-canvas-text mb-2">画布 AI 助手</h3>
       <p className="text-sm text-canvas-text-secondary mb-6 max-w-[260px]">
         用自然语言读取和操作画布。查询状态、定位节点、批量管理，一个对话框完成。

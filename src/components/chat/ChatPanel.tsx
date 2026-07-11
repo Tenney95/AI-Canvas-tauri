@@ -8,6 +8,7 @@
  * - 使用 framer-motion 控制打开/关闭动画
  */
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
@@ -20,8 +21,15 @@ import {
   emitCloseChatWindow,
   type ChatAction,
 } from '../../services/chat/chatWindowService';
+import {
+  runAssistantPipeline,
+  runStreamingPipeline,
+} from '../../services/chat/assistantService';
+import { resolveAssistantModel } from '../../services/ai/assistantStream';
 import type { ChatMessage } from '../../types/chat';
+import type { GeneralModelConfig } from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
+import MascotAvatar from './MascotAvatar';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -38,9 +46,12 @@ export default function ChatPanel() {
     createConversation,
     setActiveConversation,
     addMessage,
-    enqueueMessage,
-    dequeueMessage,
+    updateMessage,
+    loadConversationMessages,
     showToast,
+    generalModels,
+    assistantModelId,
+    updateConfig,
   } = useAppStore(
     useShallow((s) => ({
       chatOpen: s.chatOpen,
@@ -54,16 +65,42 @@ export default function ChatPanel() {
       createConversation: s.createConversation,
       setActiveConversation: s.setActiveConversation,
       addMessage: s.addMessage,
-      enqueueMessage: s.enqueueMessage,
-      dequeueMessage: s.dequeueMessage,
+      updateMessage: s.updateMessage,
+      loadConversationMessages: s.loadConversationMessages,
       showToast: s.showToast,
+      generalModels: s.config.generalModels,
+      assistantModelId: s.config.assistantModelId,
+      updateConfig: s.updateConfig,
     })),
   );
 
   const [inputValue, setInputValue] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'chat'>('chat');
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const [dropdownPos, setDropdownPos] = useState({ left: 0, top: 0 });
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
+
+  // 文本类通用模型
+  const textModels = (generalModels || []).filter((m) => m.category === 'text');
+  const currentAssistantModel = textModels.find((m) => m.id === assistantModelId);
+
+  // 点击外部关闭模型选择器（portal 下需同时检查 trigger 和 dropdown）
+  useEffect(() => {
+    if (!modelDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const inTrigger = modelTriggerRef.current?.contains(target);
+      const inDropdown = document.querySelector('.chat-model-dropdown-portal')?.contains(target);
+      if (!inTrigger && !inDropdown) {
+        setModelDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [modelDropdownOpen]);
 
   // 自动滚动到底部
   const scrollToBottom = useCallback(() => {
@@ -78,10 +115,7 @@ export default function ChatPanel() {
 
   // 消息过滤：只显示当前活动会话的消息
   const conversationMessages = activeConversationId
-    ? messages.filter((m) => {
-        // P0-A.1: messages 暂不携带 conversationId，过滤逻辑加在 addMessage 时
-        return true;
-      })
+    ? messages.filter((m) => m.conversationId === activeConversationId)
     : [];
 
   const handleNewConversation = useCallback(() => {
@@ -94,8 +128,10 @@ export default function ChatPanel() {
     (id: string) => {
       setActiveConversation(id);
       setViewMode('chat');
+      // 从 IndexedDB 加载该会话的消息
+      loadConversationMessages(id);
     },
-    [setActiveConversation],
+    [setActiveConversation, loadConversationMessages],
   );
 
   const handleSend = useCallback(() => {
@@ -105,6 +141,7 @@ export default function ChatPanel() {
     // 创建用户消息
     const userMsg: ChatMessage = {
       id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      conversationId: activeConversationId,
       role: 'user',
       content: text,
       timestamp: Date.now(),
@@ -113,25 +150,78 @@ export default function ChatPanel() {
     addMessage(userMsg);
     setInputValue('');
 
-    // 入队等待处理（P0-A.2 实现实际 AI 调用）
-    enqueueMessage(text);
+    // 创建助手消息（初始状态 parsing）
+    const assistantMsgId = `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // P0-A.1 占位响应
+    // 判断是否有 LLM 模型配置
+    const hasModel = !!resolveAssistantModel();
+
     const assistantMsg: ChatMessage = {
-      id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      id: assistantMsgId,
+      conversationId: activeConversationId,
       role: 'assistant',
-      content: '欢迎来到 AI Canvas 对话助手！\n\n当前为基础骨架版本，AI 对话能力将在下一阶段接入。您可以在此查看会话管理和消息界面。',
+      content: '',
       timestamp: Date.now(),
-      status: 'done',
+      status: hasModel ? 'streaming' : 'parsing',
     };
-    setTimeout(() => addMessage(assistantMsg), 500);
+    addMessage(assistantMsg);
+
+    if (hasModel) {
+      // 流式路径
+      runStreamingPipeline(text, activeConversationId, {
+        onTextDelta: (delta) => {
+          // 增量更新消息内容
+          const store = useAppStore.getState();
+          const msg = store.messages.find((m) => m.id === assistantMsgId);
+          if (msg) {
+            store.updateMessage(assistantMsgId, {
+              content: (msg.content || '') + delta,
+              status: 'streaming',
+            });
+          }
+          scrollToBottom();
+        },
+        onComplete: (fullText, results) => {
+          updateMessage(assistantMsgId, {
+            content: fullText,
+            status: results.length > 0 ? 'done' : 'done',
+            executionResults: results.length > 0 ? results : undefined,
+          });
+          scrollToBottom();
+        },
+        onError: (error) => {
+          updateMessage(assistantMsgId, {
+            content: `处理失败: ${error}`,
+            status: 'error',
+            finishReason: 'error',
+          });
+        },
+      });
+    } else {
+      // 本地规则路径
+      runAssistantPipeline(text, activeConversationId)
+        .then((result) => {
+          updateMessage(assistantMsgId, {
+            content: result.reply,
+            status: result.commandExecuted ? 'done' : 'done',
+            executionResults: result.commandResults.length > 0 ? result.commandResults : undefined,
+          });
+        })
+        .catch((err) => {
+          updateMessage(assistantMsgId, {
+            content: `处理失败: ${err instanceof Error ? err.message : '未知错误'}`,
+            status: 'error',
+            finishReason: 'error',
+          });
+        });
+    }
 
     scrollToBottom();
   }, [
     inputValue,
     activeConversationId,
     addMessage,
-    enqueueMessage,
+    updateMessage,
     scrollToBottom,
   ]);
 
@@ -165,23 +255,71 @@ export default function ChatPanel() {
               }
               const userMsg: ChatMessage = {
                 id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                conversationId: action.conversationId,
                 role: 'user',
                 content: action.content,
                 timestamp: Date.now(),
                 status: 'done',
               };
               store.addMessage(userMsg);
-              store.enqueueMessage(action.content);
 
-              // 占位响应
-              const assistantMsg: ChatMessage = {
-                id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+              // 创建助手消息
+              const amId = `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+              const hasModel = !!resolveAssistantModel();
+              const am: ChatMessage = {
+                id: amId,
+                conversationId: action.conversationId,
                 role: 'assistant',
-                content: '欢迎来到 AI Canvas 对话助手！\n\n当前为基础骨架版本，AI 对话能力将在下一阶段接入。',
+                content: '',
                 timestamp: Date.now(),
-                status: 'done',
+                status: hasModel ? 'streaming' : 'parsing',
               };
-              setTimeout(() => store.addMessage(assistantMsg), 500);
+              store.addMessage(am);
+
+              if (hasModel) {
+                runStreamingPipeline(action.content, action.conversationId, {
+                  onTextDelta: (delta) => {
+                    const s = useAppStore.getState();
+                    const m = s.messages.find((mm) => mm.id === amId);
+                    if (m) {
+                      s.updateMessage(amId, {
+                        content: (m.content || '') + delta,
+                        status: 'streaming',
+                      });
+                    }
+                  },
+                  onComplete: (fullText, results) => {
+                    store.updateMessage(amId, {
+                      content: fullText,
+                      status: 'done',
+                      executionResults: results.length > 0 ? results : undefined,
+                    });
+                  },
+                  onError: (error) => {
+                    store.updateMessage(amId, {
+                      content: `处理失败: ${error}`,
+                      status: 'error',
+                      finishReason: 'error',
+                    });
+                  },
+                });
+              } else {
+                runAssistantPipeline(action.content, action.conversationId)
+                  .then((result) => {
+                    store.updateMessage(amId, {
+                      content: result.reply,
+                      status: 'done',
+                      executionResults: result.commandResults.length > 0 ? result.commandResults : undefined,
+                    });
+                  })
+                  .catch((err) => {
+                    store.updateMessage(amId, {
+                      content: `处理失败: ${err instanceof Error ? err.message : '未知错误'}`,
+                      status: 'error',
+                      finishReason: 'error',
+                    });
+                  });
+              }
               break;
             }
 
@@ -321,9 +459,7 @@ export default function ChatPanel() {
                   </button>
                 )}
                 <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg bg-indigo-500/20 flex items-center justify-center">
-                    <Icon icon="mdi:robot-outline" width="16" height="16" className="text-indigo-400" />
-                  </div>
+                  <MascotAvatar size={28} className="shrink-0" />
                   <span className="text-sm font-medium text-canvas-text">
                     AI 助手
                   </span>
@@ -359,7 +495,7 @@ export default function ChatPanel() {
             </div>
 
             {/* Body: dual-pane layout */}
-            <div className="flex flex-1 min-h-0 overflow-hidden">
+            <div className="flex flex-1 min-h-0">
               {/* Conversation list pane */}
               {viewMode === 'list' && (
                 <motion.div
@@ -408,36 +544,155 @@ export default function ChatPanel() {
 
                   {/* Input area */}
                   {!showEmptyState && (
-                    <div className="flex-shrink-0 px-4 py-3 border-t border-canvas-border">
-                      <div className="flex items-end gap-2 bg-canvas-bg border border-canvas-border rounded-xl
-                                      focus-within:border-canvas-text-secondary transition-colors px-3 py-2">
+                    <div className="flex-shrink-0 px-3 pt-2 pb-1">
+                      <div className="flex flex-col bg-canvas-card border border-canvas-border rounded-[14px]
+                                      focus-within:border-canvas-text-secondary transition-colors px-4 pt-4 pb-3 shadow-lg">
                         <textarea
                           ref={inputRef}
                           value={inputValue}
                           onChange={(e) => setInputValue(e.target.value)}
                           onKeyDown={handleKeyDown}
-                          placeholder="输入消息… (Enter 发送, Shift+Enter 换行)"
+                          placeholder="输入消息，描述你想对画布进行的修改"
                           rows={1}
-                          className="flex-1 resize-none bg-transparent text-sm text-canvas-text
+                          className="w-full resize-none bg-transparent text-[15px] leading-6 text-canvas-text
                                      placeholder:text-canvas-text-muted outline-none
-                                     min-h-[24px] max-h-[120px] py-1"
+                                     min-h-[64px] max-h-[160px]"
                         />
-                        <AnimatedButton
-                          scale={1.05}
-                          disabled={!inputValue.trim()}
-                          className={`flex items-center justify-center w-8 h-8 rounded-lg transition-colors
-                                      ${inputValue.trim()
-                                        ? 'bg-indigo-500 text-white hover:bg-indigo-400'
-                                        : 'bg-canvas-hover text-canvas-text-muted cursor-not-allowed'
-                                      }`}
-                          onClick={handleSend}
-                        >
-                          <Icon icon="mdi:send" width="16" height="16" />
-                        </AnimatedButton>
+
+                        <div className="mt-2 flex items-center justify-between gap-3">
+                          {/* ── 模型选择器 ── */}
+                          <div className="chat-model-selector min-w-0" ref={modelDropdownRef}>
+                          <button
+                            ref={modelTriggerRef}
+                            type="button"
+                            className={`chat-model-trigger ${currentAssistantModel ? 'has-model' : ''}`}
+                            onClick={() => {
+                              if (!modelDropdownOpen && modelTriggerRef.current) {
+                                const rect = modelTriggerRef.current.getBoundingClientRect();
+                                setDropdownPos({
+                                  left: rect.left + rect.width / 2,
+                                  top: rect.top,
+                                });
+                              }
+                              setModelDropdownOpen((v) => !v);
+                            }}
+                            title={currentAssistantModel ? currentAssistantModel.name : '选择助手模型'}
+                          >
+                            {currentAssistantModel ? (
+                              <>
+                                <span
+                                  className="text-model-icon-mini"
+                                  data-badge={getModelBadge(currentAssistantModel)}
+                                >
+                                  {getModelBadge(currentAssistantModel)}
+                                </span>
+                                <span className="chat-model-label">{currentAssistantModel.name}</span>
+                              </>
+                            ) : (
+                              <>
+                                <Icon icon="mdi:brain" width="14" height="14" className="text-canvas-text-muted" />
+                                <span className="chat-model-label text-canvas-text-muted">本地规则</span>
+                              </>
+                            )}
+                            <Icon
+                              icon="mdi:chevron-down"
+                              width="12"
+                              height="12"
+                              className={`caret ${modelDropdownOpen ? 'rotate-180' : ''}`}
+                            />
+                          </button>
+
+                          {modelDropdownOpen &&
+                            createPortal(
+                              <div
+                                className="chat-model-dropdown-anchor"
+                                style={{
+                                  position: 'fixed',
+                                  left: `${dropdownPos.left}px`,
+                                  top: `${dropdownPos.top}px`,
+                                  transform: 'translate(-50%, -100%) translateY(-8px)',
+                                }}
+                              >
+                                <div className="model-dropdown chat-model-dropdown-portal">
+                                {/* 本地规则引擎（不使用 LLM） */}
+                                <button
+                                  type="button"
+                                  className={`model-item ${!assistantModelId ? 'active' : ''}`}
+                                  onClick={() => {
+                                    updateConfig({ assistantModelId: undefined });
+                                    setModelDropdownOpen(false);
+                                  }}
+                                >
+                                  <div className="model-item-info">
+                                    <div className="model-item-name">本地规则引擎</div>
+                                    <div className="model-item-desc">仅识别画布命令，不调用 LLM</div>
+                                  </div>
+                                  {!assistantModelId && (
+                                    <Icon icon="mdi:check" width="14" height="14" className="model-item-check" />
+                                  )}
+                                </button>
+
+                                {textModels.length > 0 && (
+                                  <div className="model-group">
+                                    <div className="model-group-header" style={{ pointerEvents: 'none' }}>
+                                      <span className="model-group-name">文本模型</span>
+                                    </div>
+                                    <div className="model-group-items" style={{ padding: '2px 0 4px 4px' }}>
+                                      {textModels.map((m) => (
+                                        <button
+                                          key={m.id}
+                                          type="button"
+                                          className={`model-item ${m.id === assistantModelId ? 'active' : ''}`}
+                                          onClick={() => {
+                                            updateConfig({ assistantModelId: m.id });
+                                            setModelDropdownOpen(false);
+                                          }}
+                                        >
+                                          <span className="text-model-icon-mini" data-badge={getModelBadge(m)}>
+                                            {getModelBadge(m)}
+                                          </span>
+                                          <div className="model-item-info">
+                                            <div className="model-item-name">{m.name}</div>
+                                            <div className="model-item-desc">{m.modelId}</div>
+                                          </div>
+                                          {m.id === assistantModelId && (
+                                            <Icon icon="mdi:check" width="14" height="14" className="model-item-check" />
+                                          )}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {textModels.length === 0 && (
+                                  <div className="model-wf-empty">
+                                    暂无文本模型，请在设置中添加
+                                  </div>
+                                )}
+                              </div>
+                              </div>,
+                              document.body,
+                            )}
+                          </div>
+
+                          <AnimatedButton
+                            scale={1.05}
+                            disabled={!inputValue.trim()}
+                            aria-label="发送消息"
+                            className={`flex shrink-0 items-center justify-center w-10 h-10 rounded-full transition-colors
+                                        ${inputValue.trim()
+                                          ? 'bg-canvas-text text-canvas-bg hover:opacity-90'
+                                          : 'bg-canvas-hover text-canvas-text-muted cursor-not-allowed'
+                                        }`}
+                            onClick={handleSend}
+                          >
+                            <Icon icon="mdi:arrow-up" width="20" height="20" />
+                          </AnimatedButton>
+                        </div>
                       </div>
 
                       {/* Disclaimer */}
-                      <p className="text-[10px] text-canvas-text-muted mt-2 text-center px-4">
+                      <p className="text-[10px] text-canvas-text-muted mt-1 text-center px-4">
                         AI 助手仅理解画布操作指令，不会执行未授权的修改。
                       </p>
                     </div>
@@ -449,6 +704,41 @@ export default function ChatPanel() {
       )}
     </AnimatePresence>
   );
+}
+
+/* ============================================
+   Helpers
+   ============================================ */
+
+/** 从模型名称提取 2 字符徽章 */
+function getModelBadge(m: GeneralModelConfig): string {
+  const name = (m.name || m.modelId || '').toUpperCase().replace(/\s/g, '');
+  // 匹配已知品牌
+  const brands: Record<string, string> = {
+    OPENAI: 'OA', GPT: 'OA', CHATGPT: 'OA',
+    CLAUDE: 'AM', ANTHROPIC: 'AM',
+    DEEPSEEK: 'DS',
+    QWEN: 'QW', TONGYI: 'TY',
+    GEMINI: 'GR', GOOGLE: 'GR',
+    MISTRAL: 'M',
+    LLAMA: 'MA', META: 'MA',
+    GROK: 'GK',
+    MINIMAX: 'MX',
+    STEP: 'SP',
+    ERNIE: 'ER', WENXIN: 'ER',
+    GLM: 'GL', CHATGLM: 'GL', ZHIPU: 'ZP',
+    KIMI: 'KM', MOONSHOT: 'KM',
+    BAICHUAN: 'BC',
+    YI: 'YI', LINGYI: 'LY',
+    HUNYUAN: 'HY',
+    SPARK: 'SK',
+  };
+  for (const [key, badge] of Object.entries(brands)) {
+    if (name.includes(key)) return badge;
+  }
+  // 取前两个大写字母/数字
+  const alnum = name.replace(/[^A-Z0-9]/g, '');
+  return alnum.slice(0, 2) || 'AI';
 }
 
 /* ============================================
@@ -472,9 +762,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       {/* Assistant avatar */}
       {!isUser && (
-        <div className="flex-shrink-0 w-7 h-7 rounded-lg bg-indigo-500/20 flex items-center justify-center mr-2 mt-0.5">
-          <Icon icon="mdi:robot-outline" width="14" height="14" className="text-indigo-400" />
-        </div>
+        <MascotAvatar size={28} className="shrink-0 mr-2 mt-0.5" />
       )}
 
       <div
@@ -526,9 +814,7 @@ function EmptyChatState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-6">
-      <div className="w-20 h-20 rounded-2xl bg-indigo-500/10 flex items-center justify-center mb-5">
-        <Icon icon="mdi:robot-happy-outline" width="36" height="36" className="text-indigo-400" />
-      </div>
+      <MascotAvatar size={72} className="mb-5" />
       <h3 className="text-base font-semibold text-canvas-text mb-2">画布 AI 助手</h3>
       <p className="text-sm text-canvas-text-secondary mb-6 max-w-[260px]">
         用自然语言读取和操作画布。查询状态、定位节点、批量管理，一个对话框完成。
