@@ -21,6 +21,19 @@ interface SnapResult {
   lines: SnapLine[];
 }
 
+interface NodeBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  left: number;
+  centerX: number;
+  right: number;
+  top: number;
+  centerY: number;
+  bottom: number;
+}
+
 function getDefaultNodeSize(nodeType: string | undefined): { width: number; height: number } {
   switch (nodeType) {
     case 'ai-text':
@@ -57,18 +70,7 @@ function getParentOffset(
 function getNodeBounds(
   node: Node<BaseNodeData>,
   nodeMap: Map<string, Node<BaseNodeData>>
-): {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  left: number;
-  centerX: number;
-  right: number;
-  top: number;
-  centerY: number;
-  bottom: number;
-} {
+): NodeBounds {
   const defaultSize = getDefaultNodeSize(node.type);
   const cardWidth = (node.data?.nodeWidth as number | undefined) ?? defaultSize.width;
   const cardHeight = (node.data?.nodeHeight as number | undefined) ?? defaultSize.height;
@@ -86,6 +88,40 @@ function getNodeBounds(
     top: y,
     centerY: y + cardHeight / 2,
     bottom: y + cardHeight,
+  };
+}
+
+function getNodesBounds(
+  nodes: Node<BaseNodeData>[],
+  nodeMap: Map<string, Node<BaseNodeData>>,
+): NodeBounds | null {
+  if (nodes.length === 0) return null;
+
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const node of nodes) {
+    const bounds = getNodeBounds(node, nodeMap);
+    left = Math.min(left, bounds.left);
+    top = Math.min(top, bounds.top);
+    right = Math.max(right, bounds.right);
+    bottom = Math.max(bottom, bounds.bottom);
+  }
+
+  const width = right - left;
+  const height = bottom - top;
+  return {
+    x: left,
+    y: top,
+    width,
+    height,
+    left,
+    centerX: left + width / 2,
+    right,
+    top,
+    centerY: top + height / 2,
+    bottom,
   };
 }
 
@@ -141,6 +177,7 @@ export function useNodeSnap() {
   // 边缘点与中线点分开存放，避免「边↔中」交叉对齐（边只吸边、中线只吸中线）
   const dragCtx = useRef<{
     nodeMap: Map<string, Node<BaseNodeData>>;
+    draggedBounds: NodeBounds;
     otherXEdges: number[];
     otherXCenters: number[];
     otherYEdges: number[];
@@ -161,7 +198,7 @@ export function useNodeSnap() {
   // 预计算静止节点（排除 excludeId 与多选节点）的吸附候选点，做视口裁剪。
   // 拖拽与缩放共用 —— 候选节点在交互过程中均不移动。
   const buildCandidates = useCallback(
-    (excludeId: string) => {
+    (excludeId: string, draggedNodeIds?: Set<string>) => {
       // 从 store 直读而非闭包捕获 nodes：拖拽期间 nodes 每帧变化，闭包依赖会让
       // 本 hook 的回调每帧换新引用 → Canvas 的 resizeSnapApi Context 每帧刷新 →
       // 所有节点的 ResizeHandle 每帧重渲染。直读后回调恒定，Context 不再抖动。
@@ -189,7 +226,7 @@ export function useNodeSnap() {
       const otherYEdges: number[] = [];
       const otherYCenters: number[] = [];
       for (const other of nodes) {
-        if (other.id === excludeId || other.selected === true) continue;
+        if (other.id === excludeId || draggedNodeIds?.has(other.id) || other.selected === true) continue;
         const b = getNodeBounds(other, nodeMap);
         // 与可见区域不相交的节点直接跳过
         if (cull && (b.right < cull.minX || b.left > cull.maxX || b.bottom < cull.minY || b.top > cull.maxY)) {
@@ -208,7 +245,15 @@ export function useNodeSnap() {
   const onNodeDragStart = useCallback(
     (_evt: React.MouseEvent | MouseEvent, node: Node<BaseNodeData>) => {
       dragStartPositions.current.set(node.id, { ...node.position });
-      dragCtx.current = buildCandidates(node.id);
+      const state = useAppStore.getState();
+      const selectedIds = new Set(state.selectedNodeIds);
+      const draggedNodes = selectedIds.has(node.id)
+        ? state.nodes.filter((candidate) => selectedIds.has(candidate.id))
+        : [node];
+      const draggedNodeIds = new Set(draggedNodes.map((candidate) => candidate.id));
+      const candidates = buildCandidates(node.id, draggedNodeIds);
+      const draggedBounds = getNodesBounds(draggedNodes, candidates.nodeMap);
+      dragCtx.current = draggedBounds ? { ...candidates, draggedBounds } : null;
     },
     [buildCandidates]
   );
@@ -222,14 +267,28 @@ export function useNodeSnap() {
     (nodeId: string, proposedPosition: { x: number; y: number }): { x: number; y: number } => {
       const ctx = dragCtx.current;
       if (!ctx) return proposedPosition;
-      const { nodeMap, otherXEdges, otherXCenters, otherYEdges, otherYCenters } = ctx;
+      const { nodeMap, draggedBounds: startDraggedBounds, otherXEdges, otherXCenters, otherYEdges, otherYCenters } = ctx;
       const baseNode = nodeMap.get(nodeId);
       if (!baseNode) return proposedPosition;
 
-      // 用候选位置构造被拖节点的包围盒（parentId/type/data 取自起拖快照）
-      const node = { ...baseNode, position: proposedPosition };
-      const draggedBounds = getNodeBounds(node, nodeMap);
-      const parentOffset = node.parentId ? getParentOffset(node, nodeMap) : { x: 0, y: 0 };
+      // React Flow 对多选节点施加相同位移：用任一位置变更求出位移，
+      // 再移动整个起拖选区包围盒，保证吸附时节点间相对位置不变。
+      const baseBounds = getNodeBounds(baseNode, nodeMap);
+      const proposedNode = { ...baseNode, position: proposedPosition };
+      const proposedBounds = getNodeBounds(proposedNode, nodeMap);
+      const deltaX = proposedBounds.x - baseBounds.x;
+      const deltaY = proposedBounds.y - baseBounds.y;
+      const draggedBounds: NodeBounds = {
+        ...startDraggedBounds,
+        x: startDraggedBounds.x + deltaX,
+        y: startDraggedBounds.y + deltaY,
+        left: startDraggedBounds.left + deltaX,
+        centerX: startDraggedBounds.centerX + deltaX,
+        right: startDraggedBounds.right + deltaX,
+        top: startDraggedBounds.top + deltaY,
+        centerY: startDraggedBounds.centerY + deltaY,
+        bottom: startDraggedBounds.bottom + deltaY,
+      };
 
       const snapResult: SnapResult = { snapX: null, snapY: null, lines: [] };
 
@@ -242,11 +301,11 @@ export function useNodeSnap() {
         snapResult.snapY = bestYSnap.targetValue;
         const snappedEdgeY = bestYSnap.value;
         if (Math.abs(snappedEdgeY - draggedBounds.top) < 0.5) {
-          snapResult.lines.push({ type: 'horizontal', position: draggedBounds.top });
+          snapResult.lines.push({ type: 'horizontal', position: bestYSnap.targetValue });
         } else if (Math.abs(snappedEdgeY - draggedBounds.centerY) < 0.5) {
-          snapResult.lines.push({ type: 'horizontal', position: draggedBounds.centerY });
+          snapResult.lines.push({ type: 'horizontal', position: bestYSnap.targetValue });
         } else {
-          snapResult.lines.push({ type: 'horizontal', position: draggedBounds.bottom });
+          snapResult.lines.push({ type: 'horizontal', position: bestYSnap.targetValue });
         }
       }
 
@@ -259,26 +318,24 @@ export function useNodeSnap() {
         snapResult.snapX = bestXSnap.targetValue;
         const snappedEdgeX = bestXSnap.value;
         if (Math.abs(snappedEdgeX - draggedBounds.left) < 0.5) {
-          snapResult.lines.push({ type: 'vertical', position: draggedBounds.left });
+          snapResult.lines.push({ type: 'vertical', position: bestXSnap.targetValue });
         } else if (Math.abs(snappedEdgeX - draggedBounds.centerX) < 0.5) {
-          snapResult.lines.push({ type: 'vertical', position: draggedBounds.centerX });
+          snapResult.lines.push({ type: 'vertical', position: bestXSnap.targetValue });
         } else {
-          snapResult.lines.push({ type: 'vertical', position: draggedBounds.right });
+          snapResult.lines.push({ type: 'vertical', position: bestXSnap.targetValue });
         }
       }
 
       setSnapLines(snapResult.lines);
 
-      // 将吸附后的绝对坐标换算回相对坐标（减去父级偏移）
+      // 把选区吸附修正量加回主节点；Canvas 会把同一修正量应用到其它选中节点。
       let newX = proposedPosition.x;
       let newY = proposedPosition.y;
       if (snapResult.snapY !== null) {
-        const edgeOffset = bestYSnap!.value - draggedBounds.y;
-        newY = snapResult.snapY - edgeOffset - parentOffset.y;
+        newY += snapResult.snapY - bestYSnap!.value;
       }
       if (snapResult.snapX !== null) {
-        const edgeOffset = bestXSnap!.value - draggedBounds.x;
-        newX = snapResult.snapX - edgeOffset - parentOffset.x;
+        newX += snapResult.snapX - bestXSnap!.value;
       }
       return { x: newX, y: newY };
     },

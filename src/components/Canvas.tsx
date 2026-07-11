@@ -467,20 +467,33 @@ function CanvasInner() {
   // ── Node change handler ──
   const handleNodesChange = useCallback(
     (changes: NodeChange<RFNode<BaseNodeData>>[]) => {
-      // 单节点拖拽时，把吸附后的位置直接注入 React Flow 的变更管线
+      // 把吸附后的位置直接注入 React Flow 的变更管线
       // （成为唯一真相源，避免二次 setNodes 覆盖导致的漂移/橡皮筋）。
       // 注意：松手那一帧 dragging=false 也要吸附，否则会弹回原始落点（位移）。
       // applySnap 在非拖拽期（dragCtx 为空）是无副作用直通，故无需判断 dragging。
-      // 多选拖拽不吸附，以保持选中节点之间的相对位置。
       const draggingPosChanges = changes.filter(
         (c) => c.type === 'position' && c.position,
       );
       let snapped = changes;
-      if (draggingPosChanges.length === 1) {
+      if (draggingPosChanges.length > 0) {
         const dc = draggingPosChanges[0];
         if (dc.type === 'position' && dc.position) {
           const snappedPos = applySnap(dc.id, dc.position);
-          snapped = changes.map((c) => (c === dc ? { ...c, position: snappedPos } : c));
+          const correctionX = snappedPos.x - dc.position.x;
+          const correctionY = snappedPos.y - dc.position.y;
+          const draggedIds = new Set(
+            draggingPosChanges.flatMap((change) => change.type === 'position' ? [change.id] : []),
+          );
+          snapped = changes.map((change) => {
+            if (change.type !== 'position' || !change.position || !draggedIds.has(change.id)) return change;
+            return {
+              ...change,
+              position: {
+                x: change.position.x + correctionX,
+                y: change.position.y + correctionY,
+              },
+            };
+          });
         }
       }
 
