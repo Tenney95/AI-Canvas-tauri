@@ -3,7 +3,7 @@
  *
  * 独立悬浮在窗口右侧的 AI 对话面板。
  * - 双栏布局：会话列表 + 消息区域
- * - 底部输入框 + 三组模型选择器（文本 / 生图 / 视频）
+ * - 底部输入框 + 对话模型选择器 + @媒体模型引用
  * - 右侧关闭按钮 + 独立窗口按钮
  * - 使用 framer-motion 控制打开/关闭动画
  *
@@ -37,7 +37,9 @@ import {
   runStreamingPipeline,
 } from '../../services/chat/assistantService';
 import { resolveAssistantModel } from '../../services/ai/assistantStream';
+import { runMediaGeneration } from '../../services/ai/generationRuntime';
 import type { ChatMessage } from '../../types/chat';
+import type { MediaGenerationIntent } from '../../types/media';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -70,8 +72,7 @@ export default function ChatPanel({
     loadConversationMessages,
     showToast,
     assistantModelId,
-    assistantImageModelId,
-    assistantVideoModelId,
+    generalModels,
     updateConfig,
   } = useAppStore(
     useShallow((s) => ({
@@ -90,8 +91,7 @@ export default function ChatPanel({
       loadConversationMessages: s.loadConversationMessages,
       showToast: s.showToast,
       assistantModelId: s.config.assistantModelId,
-      assistantImageModelId: s.config.assistantImageModelId,
-      assistantVideoModelId: s.config.assistantVideoModelId,
+      generalModels: s.config.generalModels ?? [],
       updateConfig: s.updateConfig,
     })),
   );
@@ -103,32 +103,18 @@ export default function ChatPanel({
   const effectiveProjectId = detached ? (detachedSnapshot?.projectId ?? null) : currentProjectId;
   const effectiveProjectName = detached ? detachedSnapshot?.projectName : undefined;
   const effectiveAssistantModelId = detached ? detachedSnapshot?.assistantModelId : assistantModelId;
-  const effectiveAssistantImageModelId = detached ? detachedSnapshot?.assistantImageModelId : assistantImageModelId;
-  const effectiveAssistantVideoModelId = detached ? detachedSnapshot?.assistantVideoModelId : assistantVideoModelId;
+  const effectiveGeneralModels = detached ? (detachedSnapshot?.generalModels ?? []) : generalModels;
 
   const [inputValue, setInputValue] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'chat'>('chat');
 
-  // ── 模型选择 handlers ──
-  const makeModelChangeHandler = useCallback(
-    (category: 'text' | 'image' | 'video') =>
-      (modelId?: string) => {
-        if (detached) {
-          void emitAction({ type: 'select_model', modelId, category });
-        } else {
-          const cfg: Record<string, string | undefined> = {};
-          if (category === 'image') cfg.assistantImageModelId = modelId;
-          else if (category === 'video') cfg.assistantVideoModelId = modelId;
-          else cfg.assistantModelId = modelId;
-          updateConfig(cfg);
-        }
-      },
-    [detached, updateConfig],
-  );
-
-  const handleTextModelChange = useCallback(makeModelChangeHandler('text'), [makeModelChangeHandler]);
-  const handleImageModelChange = useCallback(makeModelChangeHandler('image'), [makeModelChangeHandler]);
-  const handleVideoModelChange = useCallback(makeModelChangeHandler('video'), [makeModelChangeHandler]);
+  const handleTextModelChange = useCallback((modelId?: string) => {
+    if (detached) {
+      void emitAction({ type: 'select_model', modelId, category: 'text' });
+    } else {
+      updateConfig({ assistantModelId: modelId });
+    }
+  }, [detached, updateConfig]);
 
   // ── 消息过滤 ──
   const conversationMessages = effectiveActiveConversationId
@@ -160,6 +146,28 @@ export default function ChatPanel({
   );
 
   const handleShowList = useCallback(() => setViewMode('list'), []);
+
+  const handleAddMediaToCanvas = useCallback((messageId: string) => {
+    if (detached) return;
+    const store = useAppStore.getState();
+    const message = store.messages.find((item) => item.id === messageId);
+    if (!message?.mediaResult) return;
+
+    store.updateMessage(messageId, { canvasStatus: 'pending', canvasError: undefined });
+    try {
+      const nodeId = store.materializeMediaArtifact(message.mediaResult);
+      store.updateMessage(messageId, {
+        canvasStatus: 'created',
+        canvasNodeId: nodeId,
+        canvasError: undefined,
+      });
+      store.showToast('已添加到画布');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '添加节点失败';
+      store.updateMessage(messageId, { canvasStatus: 'failed', canvasError: errorMessage });
+      store.showToast(errorMessage, 'error');
+    }
+  }, [detached]);
 
   // ── 发送消息 ──
   const handleSend = useCallback(() => {
@@ -236,6 +244,10 @@ export default function ChatPanel({
             finishReason: 'error',
           });
         },
+        // LLM 主动请求生图/生视频 → 用优化后的 prompt 触发生成
+        onMediaIntent: (intent) => {
+          void triggerMediaGeneration(assistantMsgId, intent);
+        },
       });
     } else {
       runAssistantPipeline(text, effectiveActiveConversationId)
@@ -257,6 +269,26 @@ export default function ChatPanel({
 
     scrollToBottom();
   }, [inputValue, detached, effectiveActiveConversationId, addMessage, updateMessage]);
+
+  // ── 状态同步到独立窗口 ──
+  const syncToChatWindow = useCallback(() => {
+    if (!isTauri) return;
+    const s = useAppStore.getState();
+    if (!s.chatPanelDetached) return;
+
+    const project = s.projects.find((p) => p.id === s.currentProjectId);
+    emitSyncState({
+      conversations: s.conversations,
+      activeConversationId: s.activeConversationId,
+      messages: s.messages,
+      projectId: s.currentProjectId,
+      projectName: project?.name,
+      generalModels: s.config.generalModels ?? [],
+      assistantModelId: s.config.assistantModelId,
+      assistantImageModelId: s.config.assistantImageModelId,
+      assistantVideoModelId: s.config.assistantVideoModelId,
+    });
+  }, []);
 
   // ── 独立窗口通信 ──
   useEffect(() => {
@@ -321,6 +353,9 @@ export default function ChatPanel({
                       status: 'error',
                       finishReason: 'error',
                     });
+                  },
+                  onMediaIntent: (intent) => {
+                    void triggerMediaGeneration(amId, intent);
                   },
                 });
               } else {
@@ -400,27 +435,7 @@ export default function ChatPanel({
     })();
 
     return () => { cleanup?.(); };
-  }, [detached]);
-
-  // ── 状态同步到独立窗口 ──
-  const syncToChatWindow = useCallback(() => {
-    if (!isTauri) return;
-    const s = useAppStore.getState();
-    if (!s.chatPanelDetached) return;
-
-    const project = s.projects.find((p) => p.id === s.currentProjectId);
-    emitSyncState({
-      conversations: s.conversations,
-      activeConversationId: s.activeConversationId,
-      messages: s.messages,
-      projectId: s.currentProjectId,
-      projectName: project?.name,
-      generalModels: s.config.generalModels ?? [],
-      assistantModelId: s.config.assistantModelId,
-      assistantImageModelId: s.config.assistantImageModelId,
-      assistantVideoModelId: s.config.assistantVideoModelId,
-    });
-  }, []);
+  }, [detached, syncToChatWindow]);
 
   useEffect(() => {
     if (!detached && chatPanelDetached) {
@@ -532,20 +547,17 @@ export default function ChatPanel({
                     messages={conversationMessages}
                     showEmptyState={showEmptyState}
                     detachedInitialized={detachedInitialized}
-                    currentConversationId={effectiveActiveConversationId}
                     onNewConversation={handleNewConversation}
                     onShowList={handleShowList}
+                    onAddMediaToCanvas={detached ? undefined : handleAddMediaToCanvas}
                   />
 
                   {/* Input area */}
                   {!showEmptyState && (
                     <ChatInput
                       assistantModelId={effectiveAssistantModelId}
-                      assistantImageModelId={effectiveAssistantImageModelId}
-                      assistantVideoModelId={effectiveAssistantVideoModelId}
                       onAssistantModelChange={handleTextModelChange}
-                      onImageModelChange={handleImageModelChange}
-                      onVideoModelChange={handleVideoModelChange}
+                      mediaModels={effectiveGeneralModels}
                       inputValue={inputValue}
                       onInputChange={setInputValue}
                       onSend={handleSend}
@@ -558,4 +570,48 @@ export default function ChatPanel({
       )}
     </AnimatePresence>
   );
+}
+
+async function triggerMediaGeneration(
+  messageId: string,
+  intent: MediaGenerationIntent,
+) {
+  const store = useAppStore.getState();
+  const needsCanvas = intent.deliveryMode === 'canvas' || intent.deliveryMode === 'both';
+  let targetNodeId: string | undefined;
+
+  if (needsCanvas) targetNodeId = store.createMediaPlaceholder(intent);
+  store.updateMessage(messageId, {
+    mediaStatus: 'queued',
+    mediaError: undefined,
+    canvasStatus: needsCanvas ? 'pending' : 'none',
+    canvasNodeId: targetNodeId,
+    canvasError: undefined,
+  });
+  try {
+    store.updateMessage(messageId, { mediaStatus: 'generating' });
+    const result = await runMediaGeneration(intent, store.currentProjectId);
+    const nodeCreated = targetNodeId
+      ? store.settleMediaPlaceholder(targetNodeId, result)
+      : false;
+    store.updateMessage(messageId, {
+      mediaResult: result,
+      mediaStatus: 'succeeded',
+      mediaError: undefined,
+      canvasStatus: targetNodeId ? (nodeCreated ? 'created' : 'failed') : 'none',
+      canvasNodeId: targetNodeId,
+      canvasError: targetNodeId && !nodeCreated ? '生成期间占位节点已被删除' : undefined,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '未知错误';
+    if (targetNodeId) store.failMediaPlaceholder(targetNodeId, message);
+    store.updateMessage(messageId, {
+      mediaStatus: 'failed',
+      mediaError: message,
+      canvasStatus: targetNodeId ? 'failed' : 'none',
+      canvasNodeId: targetNodeId,
+      canvasError: targetNodeId ? message : undefined,
+    });
+    store.showToast(`${intent.kind === 'image' ? '图片' : '视频'}生成失败: ${message}`, 'error');
+  }
 }

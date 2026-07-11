@@ -80,11 +80,23 @@ interface OpenAiChunk {
     delta?: {
       role?: string;
       content?: string;
-      tool_calls?: unknown[];
+      tool_calls?: OpenAiToolCallDelta[];
     };
     finish_reason?: string | null;
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+interface OpenAiToolCallDelta {
+  index?: number;
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+interface BufferedToolCall {
+  callId: string;
+  toolId: string;
+  argumentsJson: string;
 }
 
 function parseOpenAiChunk(json: OpenAiChunk, requestId: string, modelId: string): AssistantStreamEvent[] {
@@ -99,19 +111,6 @@ function parseOpenAiChunk(json: OpenAiChunk, requestId: string, modelId: string)
   const content = json.choices?.[0]?.delta?.content;
   if (content) {
     events.push({ type: 'text.delta', delta: content });
-  }
-
-  // tool call delta (for future P1)
-  const toolCalls = json.choices?.[0]?.delta?.tool_calls;
-  if (toolCalls) {
-    for (const tc of toolCalls) {
-      const c = tc as { index?: number; id?: string; function?: { name?: string; arguments?: string } };
-      if (c.id) {
-        events.push({ type: 'tool.call.final', call: { callId: c.id, toolId: c.function?.name ?? 'unknown', input: {} } });
-      } else if (c.function?.arguments) {
-        events.push({ type: 'tool.call.delta', callId: c.id ?? '', delta: c.function.arguments });
-      }
-    }
   }
 
   // finish reason
@@ -187,14 +186,56 @@ export async function parseStream(
 
   let fullContent = '';
   let doneSent = false;
+  let toolCallsFinalized = false;
+  const toolCallBuffer = new Map<number, BufferedToolCall>();
 
   // SSE buffer
   let sseLines: string[] = [];
   let remainder = '';
   const decoder = new TextDecoder('utf-8', { fatal: false });
 
+  const consumeToolCallDeltas = (json: OpenAiChunk) => {
+    for (const delta of json.choices?.[0]?.delta?.tool_calls ?? []) {
+      const index = delta.index ?? 0;
+      const current = toolCallBuffer.get(index) ?? {
+        callId: delta.id || `tool-${options.requestId}-${index}`,
+        toolId: delta.function?.name || '',
+        argumentsJson: '',
+      };
+      if (delta.id) current.callId = delta.id;
+      if (delta.function?.name) current.toolId = delta.function.name;
+      if (delta.function?.arguments) {
+        current.argumentsJson += delta.function.arguments;
+        onEvent({
+          type: 'tool.call.delta',
+          callId: current.callId,
+          delta: delta.function.arguments,
+        });
+      }
+      toolCallBuffer.set(index, current);
+    }
+  };
+
+  const finalizeToolCalls = () => {
+    if (toolCallsFinalized) return;
+    toolCallsFinalized = true;
+    for (const call of toolCallBuffer.values()) {
+      if (!call.toolId || !call.argumentsJson) continue;
+      try {
+        const input = JSON.parse(call.argumentsJson) as unknown;
+        onEvent({
+          type: 'tool.call.final',
+          call: { callId: call.callId, toolId: call.toolId, input },
+        });
+      } catch {
+        // 不完整或非法 JSON 不能进入工具执行层。
+      }
+    }
+  };
+
   const sendDoneIfNeeded = () => {
     if (!doneSent) {
+      finalizeToolCalls();
       doneSent = true;
       onEvent({ type: 'done', finishReason: 'stop' });
     }
@@ -235,8 +276,13 @@ export async function parseStream(
               }
               try {
                 const json = JSON.parse(event.data) as OpenAiChunk;
+                consumeToolCallDeltas(json);
                 const events = parseOpenAiChunk(json, options.requestId, options.modelId);
                 for (const ev of events) {
+                  if (ev.type === 'done') {
+                    finalizeToolCalls();
+                    doneSent = true;
+                  }
                   if (ev.type === 'text.delta') {
                     fullContent += ev.delta;
                   }
@@ -282,8 +328,34 @@ export async function parseNonStream(
   }
 
   const json = await response.json() as Record<string, unknown>;
-  const choices = json.choices as Array<{ message?: { content?: string } }> | undefined;
+  const choices = json.choices as Array<{
+    message?: {
+      content?: string;
+      tool_calls?: Array<{
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+  }> | undefined;
   const content = choices?.[0]?.message?.content || '';
+
+  for (const [index, call] of (choices?.[0]?.message?.tool_calls ?? []).entries()) {
+    const toolId = call.function?.name;
+    const argumentsJson = call.function?.arguments;
+    if (!toolId || !argumentsJson) continue;
+    try {
+      onEvent({
+        type: 'tool.call.final',
+        call: {
+          callId: call.id || `tool-non-stream-${index}`,
+          toolId,
+          input: JSON.parse(argumentsJson) as unknown,
+        },
+      });
+    } catch {
+      // 非法参数不会触发工具。
+    }
+  }
 
   // usage
   const usage = json.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;

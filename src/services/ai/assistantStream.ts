@@ -11,6 +11,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { buildAuthHeaders } from './httpUtils';
 import { parseStream, parseNonStream } from './streamParsers';
 import type { AssistantStreamEvent } from '../../types/chat';
+import { findMediaModelOption } from '../../components/nodes/shared/defaultModels';
 
 // ============================================
 // Config resolution
@@ -64,6 +65,56 @@ export interface StreamingCallOptions {
   nonStream?: boolean;
 }
 
+interface AssistantToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+function buildAssistantTools(userMessage: string): AssistantToolDefinition[] {
+  const config = useAppStore.getState().config;
+  const mentionedModelId = /@model\{([^|}\s]+)/i.exec(userMessage)?.[1];
+  if (!mentionedModelId) return [];
+  const mentionedModel = findMediaModelOption(mentionedModelId, config.generalModels ?? []);
+  if (!mentionedModel) return [];
+  const providerAvailable = mentionedModel.provider === 'general'
+    || (mentionedModel.provider === 'dreamina'
+      ? !!config.dreaminaAuth?.loggedIn
+      : !!config.providers[mentionedModel.provider]?.apiKey);
+  if (!providerAvailable) return [];
+
+  return [{
+    type: 'function',
+    function: {
+      name: 'media_generate',
+      description: '根据用户明确要求生成图片或视频，并在当前对话中展示结果。普通问答不得调用。',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['kind', 'prompt', 'modelRef'],
+        properties: {
+          kind: { type: 'string', enum: [mentionedModel.mediaKind] },
+          prompt: { type: 'string', minLength: 1 },
+          modelRef: {
+            type: 'string',
+            enum: [mentionedModel.value],
+            description: '必须使用用户通过 @model 显式选择的模型 ID。',
+          },
+          deliveryMode: {
+            type: 'string',
+            enum: ['chat', 'canvas', 'both'],
+            default: 'chat',
+            description: '仅对话=chat，仅画布=canvas，同时呈现=both。',
+          },
+        },
+      },
+    },
+  }];
+}
+
 /**
  * 流式请求助手模型。
  *
@@ -97,6 +148,8 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   }
   useAppStore.getState().setActiveRequestAbort(controller);
 
+  const tools = buildAssistantTools(userMessage);
+
   try {
     const response = await fetch(apiUrl, {
       method: 'POST',
@@ -105,6 +158,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
         model: modelConfig.modelName,
         messages,
         stream: !nonStream,
+        ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
       }),
       signal: controller.signal,
     });
@@ -122,7 +176,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   } catch (error: unknown) {
     if ((error as { name?: string }).name === 'AbortError') {
       onEvent({ type: 'done', finishReason: 'canceled' });
-      throw new Error('请求已取消');
+      throw new Error('请求已取消', { cause: error });
     }
     const msg = error instanceof Error ? error.message : '未知错误';
     onEvent({ type: 'error', code: 'FETCH_ERROR', message: msg, retryable: true });
@@ -139,6 +193,27 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
 // ============================================
 // System prompt builder
 // ============================================
+
+/**
+ * 构建媒体工具约束。媒体生成必须显式 @ 模型，不使用默认媒体模型。
+ */
+function buildMediaPrompt(): string {
+  return [
+    `你可以通过 media_generate 工具生成媒体。`,
+    ``,
+    `媒体工具规则:`,
+    `- 只有用户明确要求生成图片或视频时才能调用 media_generate`,
+    `- 用户必须显式提供 @model{模型ID|名称}；没有 @model 时提示用户选择模型，不得调用工具`,
+    `- 普通聊天、画布查询、操作失败或模型配置存在都不能触发媒体工具`,
+    `- kind 必须与用户要求一致，不能用图片替代视频或反之`,
+    `- prompt 应保留用户语义并补全必要的画面、构图、光照或镜头细节`,
+    `- 把 @model 中的模型 ID 原样写入 modelRef`,
+    `- 用户说“在画布/生成节点”时 deliveryMode=canvas`,
+    `- 用户说“同时放到画布/对话和画布都要”时 deliveryMode=both`,
+    `- 没有明确提到画布时 deliveryMode=chat`,
+    `- 每次回复最多调用一次 media_generate`,
+  ].join('\n');
+}
 
 /**
  * 构建发送给 LLM 的系统提示词（含画布上下文）。
@@ -198,6 +273,8 @@ export function buildAssistantSystemPrompt(): string {
     '```',
     ``,
     `注意: 删除操作需用户确认后才执行。`,
+    ``,
+    buildMediaPrompt(),
   ].join('\n');
 
   return context;

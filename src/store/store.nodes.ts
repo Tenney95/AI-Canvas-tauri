@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Node slice — canvas nodes / edges core state and CRUD
  */
 import {
@@ -13,6 +13,7 @@ import {
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { BaseNodeData, StoryboardCellOverride } from '../types';
+import type { MediaGenerationIntent, MediaGenerationResult } from '../types/media';
 import { generateId, getNextDisplayId } from './store.utils';
 import { BATCH_NODE_LIMIT } from './store.chat';
 import * as fileService from '../services/fileService';
@@ -32,6 +33,16 @@ export interface NodeSlice {
   setSelectedNodeIds: (ids: string[]) => void;
   addNode: (node: Node<BaseNodeData>) => void;
   addNodeWithEdge: (node: Node<BaseNodeData>, edge: Edge) => void;
+  createMediaPlaceholder: (
+    intent: MediaGenerationIntent,
+    position?: { x: number; y: number },
+  ) => string;
+  settleMediaPlaceholder: (nodeId: string, artifact: MediaGenerationResult) => boolean;
+  failMediaPlaceholder: (nodeId: string, error: string) => void;
+  materializeMediaArtifact: (
+    artifact: MediaGenerationResult,
+    position?: { x: number; y: number },
+  ) => string;
   /** 在原位复制一个节点（新 id / displayId，不带边）—— 用于 Ctrl 拖拽复制 */
   duplicateNode: (nodeId: string) => void;
   updateNodeData: (nodeId: string, data: Partial<BaseNodeData>) => void;
@@ -75,6 +86,112 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         edges: [...state.edges, edge],
       };
     });
+  },
+
+  createMediaPlaceholder: (intent, requestedPosition) => {
+    const state = get();
+    const id = `node-${generateId()}`;
+    const type = intent.kind === 'image' ? 'ai-image' : 'ai-video';
+    const position = requestedPosition ?? state.lastCanvasMousePos ?? { x: 300, y: 200 };
+    state.commitToHistory();
+    set((current) => ({
+      nodes: [...current.nodes, {
+        id,
+        type,
+        position,
+        data: {
+          label: intent.kind === 'image' ? '对话生成图片' : '对话生成视频',
+          type,
+          role: 'source',
+          prompt: intent.prompt,
+          model: intent.modelRef,
+          status: 'loading',
+          nodeWidth: 280,
+          nodeHeight: intent.kind === 'image' ? 158 : 160,
+          ...(intent.kind === 'image' ? { aspectRatio: '1:1', imageSize: '2K' } : {}),
+          displayId: getNextDisplayId(current.nodes),
+        },
+      } as Node<BaseNodeData>],
+    }));
+    return id;
+  },
+
+  settleMediaPlaceholder: (nodeId, artifact) => {
+    if (!get().nodes.some((node) => node.id === nodeId)) return false;
+    set((state) => ({
+      nodes: state.nodes.map((node) => {
+        if (node.id !== nodeId) return node;
+        const mediaField = artifact.kind === 'image'
+          ? { imageUrl: artifact.url, imageWidth: artifact.width, imageHeight: artifact.height }
+          : { videoUrl: artifact.url };
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            ...mediaField,
+            artifactId: artifact.id,
+            prompt: artifact.prompt,
+            model: artifact.modelId,
+            provider: artifact.provider,
+            output: artifact.sourceUrl,
+            sourceUrl: artifact.sourceUrl,
+            filePath: artifact.filePath,
+            thumbnailUrl: artifact.kind === 'image' ? artifact.url : undefined,
+            status: 'success',
+            error: undefined,
+          },
+        } as Node<BaseNodeData>;
+      }),
+    }));
+    return true;
+  },
+
+  failMediaPlaceholder: (nodeId, error) => {
+    set((state) => ({
+      nodes: state.nodes.map((node) => node.id === nodeId
+        ? { ...node, data: { ...node.data, status: 'error', error } as BaseNodeData }
+        : node),
+    }));
+  },
+
+  materializeMediaArtifact: (artifact, requestedPosition) => {
+    const state = get();
+    const existing = state.nodes.find((node) => node.data.artifactId === artifact.id);
+    if (existing) return existing.id;
+
+    const id = `node-${generateId()}`;
+    const type = artifact.kind === 'image' ? 'ai-image' : 'ai-video';
+    const position = requestedPosition ?? state.lastCanvasMousePos ?? { x: 300, y: 200 };
+    const mediaField = artifact.kind === 'image'
+      ? { imageUrl: artifact.url, imageWidth: artifact.width, imageHeight: artifact.height }
+      : { videoUrl: artifact.url };
+    state.commitToHistory();
+    set((current) => ({
+      nodes: [...current.nodes, {
+        id,
+        type,
+        position,
+        data: {
+          label: artifact.kind === 'image' ? '对话生成图片' : '对话生成视频',
+          type,
+          role: 'source',
+          artifactId: artifact.id,
+          prompt: artifact.prompt,
+          model: artifact.modelId,
+          provider: artifact.provider,
+          output: artifact.sourceUrl,
+          sourceUrl: artifact.sourceUrl,
+          filePath: artifact.filePath,
+          thumbnailUrl: artifact.kind === 'image' ? artifact.url : undefined,
+          status: 'success',
+          nodeWidth: 280,
+          nodeHeight: artifact.kind === 'image' ? 158 : 160,
+          ...mediaField,
+          displayId: getNextDisplayId(current.nodes),
+        },
+      } as Node<BaseNodeData>],
+    }));
+    return id;
   },
 
   updateNodeData: (nodeId, data) => {
@@ -148,9 +265,14 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         .map((n) => (n.data as BaseNodeData).filePath)
         .filter((p): p is string => !!p),
     );
+    for (const message of get().messages) {
+      if (message.mediaResult?.filePath) keepPaths.add(message.mediaResult.filePath);
+    }
     for (const id of idsToDelete) {
       const n = nodes.find((nn) => nn.id === id);
-      if (n) fileService.deleteNodeFile(n.data as BaseNodeData, keepPaths).catch((e) => console.warn('[删除节点] 文件清理失败:', e));
+      if (n && !n.data.artifactId) {
+        fileService.deleteNodeFile(n.data as BaseNodeData, keepPaths).catch((e) => console.warn('[删除节点] 文件清理失败:', e));
+      }
     }
 
     // 先播放退场动画，结束后再真正从状态中移除（动画期间历史已提交，撤销仍指向删除前状态）
@@ -195,9 +317,14 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         .map((n) => (n.data as BaseNodeData).filePath)
         .filter((p): p is string => !!p),
     );
+    for (const message of get().messages) {
+      if (message.mediaResult?.filePath) keepPaths.add(message.mediaResult.filePath);
+    }
     for (const id of idsToDelete) {
       const n = nodes.find((nn) => nn.id === id);
-      if (n) fileService.deleteNodeFile(n.data as BaseNodeData, keepPaths).catch((e) => console.warn('[批量删除] 文件清理失败:', e));
+      if (n && !n.data.artifactId) {
+        fileService.deleteNodeFile(n.data as BaseNodeData, keepPaths).catch((e) => console.warn('[批量删除] 文件清理失败:', e));
+      }
     }
 
     // 统一播放退场动画后移除

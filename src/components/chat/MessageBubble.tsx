@@ -1,7 +1,7 @@
 /**
  * MessageBubble — 单条聊天消息气泡
  *
- * 渲染用户 / 助手 / 系统消息，含头像、状态指示器。
+ * 渲染用户 / 助手 / 系统消息，含头像、状态指示器、生成图片 / 视频。
  */
 import { Icon } from '@iconify/react';
 import type { ChatMessage } from '../../types/chat';
@@ -9,9 +9,10 @@ import MascotAvatar from './MascotAvatar';
 
 interface MessageBubbleProps {
   message: ChatMessage;
+  onAddToCanvas?: (messageId: string) => void;
 }
 
-export default function MessageBubble({ message }: MessageBubbleProps) {
+export default function MessageBubble({ message, onAddToCanvas }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
 
@@ -24,6 +25,12 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
       </div>
     );
   }
+
+  const mediaResult = message.mediaResult;
+  const showMediaInChat = mediaResult?.deliveryMode !== 'canvas';
+  const hasImage = showMediaInChat && mediaResult?.kind === 'image';
+  const hasVideo = showMediaInChat && mediaResult?.kind === 'video';
+  const isGenerating = message.mediaStatus === 'queued' || message.mediaStatus === 'generating';
 
   return (
     <div className={`chat-message-bubble flex ${isUser ? 'justify-end chat-message-user' : 'justify-start chat-message-assistant'}`}>
@@ -39,7 +46,87 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
                       : 'bg-canvas-hover text-canvas-text rounded-bl-md'
                     }`}
       >
-        <div className="whitespace-pre-wrap break-words">{message.content}</div>
+        {message.content && (
+          <div className="whitespace-pre-wrap break-words">{message.content}</div>
+        )}
+
+        {/* ── 生成中状态 ── */}
+        {isGenerating && (
+          <div className="chat-message-media-generating flex items-center gap-2 mt-2 text-[11px] text-canvas-text-muted">
+            <span className="inline-block w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+            正在生成媒体内容...
+          </div>
+        )}
+
+        {/* ── 图片结果 ── */}
+        {hasImage && !isGenerating && (
+          <div className="chat-message-image mt-2 rounded-lg overflow-hidden border border-canvas-border">
+            <img
+              src={mediaResult.url}
+              alt={mediaResult.prompt || '生成的图片'}
+              className="w-full h-auto max-h-[280px] object-contain bg-canvas-bg"
+              loading="lazy"
+            />
+            {mediaResult.prompt && (
+              <p className="text-[10px] text-canvas-text-muted px-2 py-1.5 bg-canvas-bg/60">
+                {mediaResult.prompt}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* ── 视频结果 ── */}
+        {hasVideo && !isGenerating && (
+          <div className="chat-message-video mt-2 rounded-lg overflow-hidden border border-canvas-border">
+            <video
+              src={mediaResult.url}
+              controls
+              className="w-full max-h-[280px] bg-canvas-bg"
+              preload="metadata"
+            >
+              您的浏览器不支持视频播放
+            </video>
+            {mediaResult.prompt && (
+              <p className="text-[10px] text-canvas-text-muted px-2 py-1.5 bg-canvas-bg/60">
+                {mediaResult.prompt}
+              </p>
+            )}
+          </div>
+        )}
+        {message.mediaStatus === 'failed' && (
+          <div className="chat-message-media-error flex items-start gap-1 mt-2 text-[11px] text-red-400">
+            <Icon icon="mdi:alert-circle-outline" width="13" height="13" className="mt-0.5 shrink-0" />
+            <span>媒体生成失败：{message.mediaError || '未知错误'}</span>
+          </div>
+        )}
+        {message.canvasStatus === 'pending' && (
+          <div className="mt-2 flex items-center gap-1 text-[11px] text-blue-400">
+            <Icon icon="mdi:vector-square" width="13" />
+            正在创建画布节点...
+          </div>
+        )}
+        {message.canvasStatus === 'created' && message.canvasNodeId && (
+          <div className="mt-2 flex items-center gap-1 text-[11px] text-green-400">
+            <Icon icon="mdi:check-circle-outline" width="13" />
+            已添加到画布
+          </div>
+        )}
+        {message.canvasStatus === 'failed' && (
+          <div className="mt-2 flex items-start gap-1 text-[11px] text-red-400">
+            <Icon icon="mdi:vector-square-remove" width="13" className="mt-0.5 shrink-0" />
+            <span>节点创建失败：{message.canvasError || '未知错误'}</span>
+          </div>
+        )}
+        {mediaResult && mediaResult.deliveryMode === 'chat' && message.canvasStatus !== 'created' && onAddToCanvas && (
+          <button
+            type="button"
+            onClick={() => onAddToCanvas(message.id)}
+            className="mt-2 flex items-center gap-1 rounded-md border border-canvas-border px-2 py-1 text-[11px] text-canvas-text-secondary hover:bg-canvas-card hover:text-canvas-text"
+          >
+            <Icon icon="mdi:plus-box-outline" width="14" />
+            添加到画布
+          </button>
+        )}
 
         {/* Status indicator */}
         {message.status === 'streaming' && (

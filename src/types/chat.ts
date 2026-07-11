@@ -4,6 +4,11 @@
  */
 
 import type { NodeType } from './index';
+import type {
+  CanvasMaterializationStatus,
+  MediaGenerationResult,
+  MediaGenerationStatus,
+} from './media';
 
 // ============================================
 // 命令 ID
@@ -162,6 +167,13 @@ export interface ChatMessage {
   executionResults?: CommandResult[];
   /** 流结束原因 */
   finishReason?: FinishReason;
+  /** 媒体生成与文本回答使用独立状态，避免互相覆盖。 */
+  mediaStatus?: MediaGenerationStatus;
+  mediaError?: string;
+  mediaResult?: MediaGenerationResult;
+  canvasStatus?: CanvasMaterializationStatus;
+  canvasNodeId?: string;
+  canvasError?: string;
 }
 
 // ============================================
@@ -183,6 +195,12 @@ export interface PersistedChatMessage {
   finishReason?: FinishReason;
   commands?: CommandIntent[];
   executionResults?: CommandResult[];
+  mediaStatus?: MediaGenerationStatus;
+  mediaError?: string;
+  mediaResult?: MediaGenerationResult;
+  canvasStatus?: CanvasMaterializationStatus;
+  canvasNodeId?: string;
+  canvasError?: string;
 }
 
 // ============================================

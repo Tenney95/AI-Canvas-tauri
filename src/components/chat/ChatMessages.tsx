@@ -14,18 +14,18 @@ interface ChatMessagesProps {
   showEmptyState: boolean;
   /** 独立窗口初始化标记 */
   detachedInitialized: boolean;
-  currentConversationId: string | null | undefined;
   onNewConversation: () => void;
   onShowList: () => void;
+  onAddMediaToCanvas?: (messageId: string) => void;
 }
 
 export default function ChatMessages({
   messages,
   showEmptyState,
   detachedInitialized,
-  currentConversationId,
   onNewConversation,
   onShowList,
+  onAddMediaToCanvas,
 }: ChatMessagesProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -58,7 +58,11 @@ export default function ChatMessages({
       )}
 
       {messages.map((msg) => (
-        <MessageBubble key={msg.id} message={msg} />
+        <MessageBubble
+          key={msg.id}
+          message={msg}
+          onAddToCanvas={onAddMediaToCanvas}
+        />
       ))}
 
       <div ref={messagesEndRef} />

@@ -1,7 +1,15 @@
 /**
  * defaultModels 默认模型配置 — 按类型（文本/图像/视频/音频）定义各厂商预置模型列表和分组
  */
-import type { ModelGroup } from '../../../types';
+import type { GeneralModelConfig, ModelGroup, ModelOption } from '../../../types';
+
+export type MediaModelKind = 'image' | 'video';
+
+export interface MediaModelOption extends ModelOption {
+  mediaKind: MediaModelKind;
+  groupId: string;
+  groupName: string;
+}
 
 export const defaultModelGroups: ModelGroup[] = [
   // ========================================
@@ -754,3 +762,53 @@ export const defaultModelGroups: ModelGroup[] = [
     ],
   },
 ];
+
+/** 节点与对话共用的图片/视频模型目录，不包含工作流。 */
+export function getMediaModelOptions(
+  generalModels: GeneralModelConfig[] = [],
+): MediaModelOption[] {
+  const builtIn = defaultModelGroups.flatMap((group) => group.models.flatMap((model) => {
+    if (model.provider === 'runninghubwf') return [];
+    const supportsImage = model.nodeTypes.includes('ai-image');
+    const supportsVideo = model.nodeTypes.includes('ai-video');
+    const entries: MediaModelOption[] = [];
+    const groupInfo = { groupId: group.id, groupName: group.name };
+    if (supportsImage) entries.push({ ...model, ...groupInfo, mediaKind: 'image' });
+    if (supportsVideo) entries.push({ ...model, ...groupInfo, mediaKind: 'video' });
+    return entries;
+  }));
+
+  const custom: MediaModelOption[] = generalModels
+    .filter((model) => model.category === 'image' || model.category === 'video')
+    .map((model) => {
+      const mediaKind: MediaModelKind = model.category === 'image' ? 'image' : 'video';
+      return {
+        value: `general/${model.id}`,
+        provider: 'general',
+        label: model.name,
+        description: `ID: ${model.modelId}`,
+        iconType: 'badge',
+        badgeText: mediaKind === 'image' ? '图' : '视',
+        nodeTypes: mediaKind === 'image' ? ['ai-image'] : ['ai-video'],
+        mediaKind,
+        groupId: 'general-models',
+        groupName: '通用模型',
+      };
+    });
+
+  const unique = new Map<string, MediaModelOption>();
+  for (const model of [...builtIn, ...custom]) {
+    unique.set(`${model.mediaKind}:${model.value}`, model);
+  }
+  return [...unique.values()];
+}
+
+export function findMediaModelOption(
+  modelRef: string,
+  generalModels: GeneralModelConfig[] = [],
+): MediaModelOption | undefined {
+  const normalized = modelRef.startsWith('general/') ? modelRef : `general/${modelRef}`;
+  return getMediaModelOptions(generalModels).find(
+    (model) => model.value === modelRef || model.value === normalized,
+  );
+}

@@ -574,6 +574,12 @@ export interface ChatMessageRecord {
   finishReason?: string;
   commands?: unknown;
   executionResults?: unknown;
+  mediaStatus?: string;
+  mediaError?: string;
+  mediaResult?: unknown;
+  canvasStatus?: string;
+  canvasNodeId?: string;
+  canvasError?: string;
 }
 
 /** 保存 / 更新单条消息 */

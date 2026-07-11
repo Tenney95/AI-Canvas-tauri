@@ -42,6 +42,7 @@ export interface BaseNodeData {
   audioUrl?: string;          // 生成的音频 URL
   sourceUrl?: string;         // 原始远程生成 URL（下载到本地前保留）
   filePath?: string;          // 本地文件路径（项目 data 目录下，重建 asset URL 用）
+  artifactId?: string;        // 对话媒体 Artifact ID（聊天与节点共享同一产物）
   thumbnailUrl?: string;      // 缩略图
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
   annotation?: string;        // 标注编辑器涂写数据（data URL，透明 PNG）

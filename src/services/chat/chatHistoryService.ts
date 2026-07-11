@@ -6,7 +6,6 @@ import {
   putChatConversation,
   getProjectConversations,
   getTrashConversations,
-  deleteChatConversation,
   putChatMessage,
   getConversationMessages,
   getNextMessageSequence,
@@ -21,8 +20,12 @@ import type {
   ChatMessageStatus,
   CommandIntent,
   CommandResult,
-  PersistedChatMessage,
 } from '../../types/chat';
+import type {
+  CanvasMaterializationStatus,
+  MediaGenerationResult,
+  MediaGenerationStatus,
+} from '../../types/media';
 
 // ============================================
 // Type converters
@@ -57,6 +60,12 @@ function toMessageRecord(
     finishReason: m.finishReason,
     commands: m.commands,
     executionResults: m.executionResults,
+    mediaStatus: m.mediaStatus,
+    mediaError: m.mediaError,
+    mediaResult: m.mediaResult,
+    canvasStatus: m.canvasStatus,
+    canvasNodeId: m.canvasNodeId,
+    canvasError: m.canvasError,
   };
 }
 
@@ -73,6 +82,12 @@ function fromMessageRecord(r: ChatMessageRecord): ChatMessage {
     finishReason: r.finishReason as ChatMessage['finishReason'],
     commands: r.commands as CommandIntent[] | undefined,
     executionResults: r.executionResults as CommandResult[] | undefined,
+    mediaStatus: r.mediaStatus as MediaGenerationStatus | undefined,
+    mediaError: r.mediaError,
+    mediaResult: r.mediaResult as MediaGenerationResult | undefined,
+    canvasStatus: r.canvasStatus as CanvasMaterializationStatus | undefined,
+    canvasNodeId: r.canvasNodeId,
+    canvasError: r.canvasError,
   };
 }
 
@@ -202,7 +217,7 @@ export async function repairInterruptedMessages(
 
   for (const conv of conversations) {
     let repaired = false;
-    const { messages, total } = await loadMessages(conv.id, 0, 50);
+    const { messages } = await loadMessages(conv.id, 0, 50);
     for (const msg of messages) {
       if (
         msg.status === 'streaming' ||

@@ -15,13 +15,16 @@ import {
   buildAssistantSystemPrompt,
   streamAssistantReply,
 } from '../ai/assistantStream';
+import { extractModelMention } from '../ai/generationRuntime';
 import type { BaseNodeData } from '../../types';
+import type { MediaGenerationIntent } from '../../types/media';
 import type {
   CommandIntent,
   CommandResult,
   CanvasContext,
   CanvasNodeSummary,
   AssistantStreamEvent,
+  ProposedToolCall,
 } from '../../types/chat';
 
 // ============================================
@@ -188,8 +191,40 @@ export interface StreamingPipelineCallbacks {
   onComplete: (fullText: string, results: CommandResult[], pendingIntents?: CommandIntent[]) => void;
   /** 出错 */
   onError: (error: string) => void;
+  /** 已通过本地 schema 校验的媒体生成请求。 */
+  onMediaIntent?: (intent: MediaGenerationIntent) => void;
   /** 取消信号 */
   signal?: AbortSignal;
+}
+
+export function parseMediaToolCall(
+  call: ProposedToolCall,
+  userMessage: string,
+): MediaGenerationIntent | null {
+  if (call.toolId !== 'media_generate' || !call.input || typeof call.input !== 'object') {
+    return null;
+  }
+
+  const input = call.input as Record<string, unknown>;
+  const kind = input.kind;
+  const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+  const deliveryMode = input.deliveryMode ?? 'chat';
+  if ((kind !== 'image' && kind !== 'video') || !prompt || prompt.length > 4_000) {
+    return null;
+  }
+  if (deliveryMode !== 'chat' && deliveryMode !== 'canvas' && deliveryMode !== 'both') {
+    return null;
+  }
+
+  const asksForCanvas = /画布|节点/.test(userMessage);
+  const asksForBoth = asksForCanvas && /同时|都要|也(?:放|加|展示)|并(?:放|加|展示)/.test(userMessage);
+
+  return {
+    kind,
+    prompt,
+    modelRef: extractModelMention(userMessage),
+    deliveryMode: asksForBoth ? 'both' : asksForCanvas ? 'canvas' : 'chat',
+  };
 }
 
 /**
@@ -225,6 +260,7 @@ export async function runStreamingPipeline(
   // Step 3: LLM 流式请求
   const systemPrompt = buildAssistantSystemPrompt();
   let fullContent = '';
+  const proposedToolCalls: ProposedToolCall[] = [];
 
   try {
     await streamAssistantReply({
@@ -238,6 +274,9 @@ export async function runStreamingPipeline(
             break;
           case 'error':
             callbacks.onError(event.message);
+            break;
+          case 'tool.call.final':
+            proposedToolCalls.push(event.call);
             break;
           // 其他事件静默处理
         }
@@ -277,11 +316,18 @@ export async function runStreamingPipeline(
       }
     }
 
+    // Step 5: 文本先完成；媒体使用独立状态，不覆盖聊天响应状态。
+    const displayText = llmResult.reply || fullContent;
     callbacks.onComplete(
-      llmResult.reply || fullContent,
+      displayText,
       results,
       pendingIntents.length > 0 ? pendingIntents : undefined,
     );
+
+    const mediaIntent = proposedToolCalls
+      .map((call) => parseMediaToolCall(call, userMessage))
+      .find((intent): intent is MediaGenerationIntent => intent !== null);
+    if (mediaIntent) callbacks.onMediaIntent?.(mediaIntent);
   } catch (err) {
     if (fullContent) {
       callbacks.onComplete(fullContent, []);
