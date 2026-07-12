@@ -1,4 +1,4 @@
-﻿/**
+/**
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
 import { useState, useRef, useCallback } from 'react';
@@ -12,7 +12,7 @@ import MentionEditor, { type MentionEditorHandle } from './MentionEditor';
 import SlashCommandMenu from './SlashCommandMenu';
 import PresetManager from './PresetManager';
 import SkillManager from './SkillManager';
-import { fillTemplate } from './slashCommands';
+import { expandSkillReferences } from '../../../services/skillPromptService';
 
 interface PromptPanelProps {
   nodeType: NodeType;
@@ -52,36 +52,6 @@ interface PromptPanelProps {
   editorRef?: React.Ref<MentionEditorHandle>;
   selectedStyle?: string;
   onStyleChange?: (styleId: string) => void;
-}
-
-const SKILL_REF_REGEX = /@skill\{([^|}]+)\|([^}]+)\}/g;
-const TEMPLATE_PLACEHOLDER = '{{ 文章内容 }}';
-
-function expandSkillReferences(prompt: string, userSkills: UserSkill[]): string {
-  const refs = Array.from(prompt.matchAll(SKILL_REF_REGEX));
-  if (refs.length === 0) return prompt;
-
-  const skillMap = new Map(userSkills.map((skill) => [skill.id, skill]));
-  const promptWithoutSkills = prompt.replace(SKILL_REF_REGEX, '').trim();
-  const expandedParts: string[] = [];
-
-  for (const ref of refs) {
-    const skill = skillMap.get(ref[1]);
-    if (!skill) continue;
-    if (skill.content.includes(TEMPLATE_PLACEHOLDER)) {
-      expandedParts.push(fillTemplate(skill.content, promptWithoutSkills));
-    } else {
-      expandedParts.push(skill.content);
-    }
-  }
-
-  if (expandedParts.length === 0) return promptWithoutSkills;
-  const shouldPrefixPrompt = promptWithoutSkills && expandedParts.every((part) => !part.includes(promptWithoutSkills));
-  return [shouldPrefixPrompt ? promptWithoutSkills : '', ...expandedParts]
-    .filter(Boolean)
-    .join('\n\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 export default function PromptPanel({

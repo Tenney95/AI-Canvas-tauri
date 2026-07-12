@@ -16,6 +16,7 @@ import {
   streamAssistantReply,
 } from '../ai/assistantStream';
 import { extractModelMention } from '../ai/generationRuntime';
+import { expandSkillReferences } from '../skillPromptService';
 import type { BaseNodeData } from '../../types';
 import type { MediaGenerationIntent } from '../../types/media';
 import type {
@@ -218,10 +219,13 @@ export function parseMediaToolCall(
 
   const asksForCanvas = /画布|节点/.test(userMessage);
   const asksForBoth = asksForCanvas && /同时|都要|也(?:放|加|展示)|并(?:放|加|展示)/.test(userMessage);
+  const nodeReferences = userMessage.match(/@\{[^}]+\}/g) ?? [];
+  const missingNodeReferences = nodeReferences.filter((reference) => !prompt.includes(reference));
+  const promptWithReferences = [prompt, ...missingNodeReferences].join(' ').trim();
 
   return {
     kind,
-    prompt,
+    prompt: promptWithReferences,
     modelRef: extractModelMention(userMessage),
     deliveryMode: asksForBoth ? 'both' : asksForCanvas ? 'canvas' : 'chat',
   };
@@ -259,13 +263,18 @@ export async function runStreamingPipeline(
 
   // Step 3: LLM 流式请求
   const systemPrompt = buildAssistantSystemPrompt();
+  const expandedUserMessage = expandSkillReferences(
+    userMessage,
+    useAppStore.getState().userSkills,
+  );
   let fullContent = '';
   const proposedToolCalls: ProposedToolCall[] = [];
 
   try {
     await streamAssistantReply({
       systemPrompt,
-      userMessage,
+      userMessage: expandedUserMessage,
+      toolContextMessage: userMessage,
       onEvent: (event: AssistantStreamEvent) => {
         switch (event.type) {
           case 'text.delta':

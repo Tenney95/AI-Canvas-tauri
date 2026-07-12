@@ -57,6 +57,8 @@ export interface StreamingCallOptions {
   systemPrompt: string;
   /** 用户消息 */
   userMessage: string;
+  /** 仅用于决定开放哪些工具的原始用户输入，避免 Skill 内容扩大权限。 */
+  toolContextMessage?: string;
   /** 回调：每当接收到一个流事件 */
   onEvent: (event: AssistantStreamEvent) => void;
   /** 取消信号 */
@@ -126,7 +128,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
     throw new Error('未配置助手模型，请在「设置 → API Key」中添加');
   }
 
-  const { systemPrompt, userMessage, onEvent, signal, nonStream } = options;
+  const { systemPrompt, userMessage, toolContextMessage, onEvent, signal, nonStream } = options;
 
   const requestId = `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   onEvent({ type: 'start', requestId, modelId: modelConfig.modelName });
@@ -148,7 +150,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   }
   useAppStore.getState().setActiveRequestAbort(controller);
 
-  const tools = buildAssistantTools(userMessage);
+  const tools = buildAssistantTools(toolContextMessage ?? userMessage);
 
   try {
     const response = await fetch(apiUrl, {
@@ -260,6 +262,9 @@ export function buildAssistantSystemPrompt(): string {
     `- deleteNodes: 删除节点（需返回完整的 commandId + selector）`,
     `- undo: 撤销上一步`,
     `- redo: 重做`,
+    `- 用户可用 @{nodeId:label} 引用当前画布节点`,
+    `- 生成媒体工具的 prompt 必须原样保留所有 @{nodeId:label}，由本地 Runtime 解析节点内容`,
+    `- 不要编造、改写或删除节点引用中的 nodeId`,
     ``,
     `selector 格式（必须严格使用以下 op）:`,
     `- 按编号: { "op": "displayId", "value": 24 }`,
