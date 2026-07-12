@@ -6,20 +6,25 @@ import { memo, useLayoutEffect, useState } from 'react';
 import type { NodeType } from '../../types';
 import { calcFixedPosition, calcSubmenuPosition } from '../../utils/popupPosition';
 
-const GEN_NODE_ITEMS: { label: string; type: NodeType }[] = [
-  { label: '生成文本', type: 'ai-text' },
-  { label: '生成图像', type: 'ai-image' },
-  { label: '生成视频', type: 'ai-video' },
-  { label: '生成音频', type: 'ai-audio' },
-  { label: '生成360全景', type: 'ai-panorama' },
-];
+interface MergedNodeItem {
+  label: string;
+  type: NodeType;
+  role: 'generator' | 'source';
+}
 
-const SRC_NODE_ITEMS: { label: string; type: NodeType }[] = [
-  { label: '文本', type: 'ai-text' },
-  { label: '图像', type: 'ai-image' },
-  { label: '视频', type: 'ai-video' },
-  { label: '音频', type: 'ai-audio' },
-  { label: 'Markdown', type: 'ai-markdown' },
+const NODE_ITEMS: MergedNodeItem[] = [
+  // ── 生成节点 ──
+  { label: '生成文本', type: 'ai-text', role: 'generator' },
+  { label: '生成图像', type: 'ai-image', role: 'generator' },
+  { label: '生成视频', type: 'ai-video', role: 'generator' },
+  { label: '生成音频', type: 'ai-audio', role: 'generator' },
+  { label: '生成360全景', type: 'ai-panorama', role: 'generator' },
+  // ── 源节点 ──
+  { label: '文本', type: 'ai-text', role: 'source' },
+  { label: '图像', type: 'ai-image', role: 'source' },
+  { label: '视频', type: 'ai-video', role: 'source' },
+  { label: '音频', type: 'ai-audio', role: 'source' },
+  { label: 'Markdown', type: 'ai-markdown', role: 'source' },
 ];
 
 /** 菜单项行高估算（含 padding） */
@@ -29,10 +34,9 @@ const MENU_PADDING = 10;
 /** 根菜单项数（添加节点 + 分割线 + 粘贴 + 撤销 + 重做 + 分割线 + 打开项目文件夹 + 删除 = 7 个 .menu-row + 3 个 .menu-sep） */
 const L1_ITEM_COUNT = 7;
 const L1_SEP_COUNT = 3;
-/** Level 2 菜单项数（生成节点 + 源节点 = 2） */
-const L2_ITEM_COUNT = 2;
-/** Level 3 菜单项数（5 个节点类型） */
-const L3_ITEM_COUNT = 5;
+/** 子菜单项数（5 个生成节点 + 1 条分割线 + 5 个源节点 = 10 个 .menu-row + 1 个 .menu-sep） */
+const SUB_ITEM_COUNT = 10;
+const SUB_SEP_COUNT = 1;
 
 /** 估算菜单高度 */
 function estMenuHeight(items: number, seps: number = 0): number {
@@ -48,7 +52,7 @@ function estMenuWidth(itemCount: number): number {
 interface CanvasContextMenuProps {
   visible: boolean;
   position: { x: number; y: number };
-  hoverMenu: 'addNode' | 'genNode' | 'srcNode' | null;
+  hoverMenu: 'addNode' | null;
   menuRef: React.RefObject<HTMLDivElement | null>;
   submenuRef: React.RefObject<HTMLDivElement | null>;
   onAddNode: (type: NodeType, label: string, role: 'generator' | 'source') => void;
@@ -58,8 +62,8 @@ interface CanvasContextMenuProps {
   onDelete: () => void;
   hasSelection: boolean;
   onOpenProjectDir: () => void;
-  onShowSubmenu: (menu: 'addNode' | 'genNode' | 'srcNode' | null) => void;
-  onHideSubmenu: (backTo: 'addNode' | 'genNode' | 'srcNode' | null) => void;
+  onShowSubmenu: (menu: 'addNode' | null) => void;
+  onHideSubmenu: (backTo: 'addNode' | null) => void;
 }
 
 function CanvasContextMenu({
@@ -79,8 +83,7 @@ function CanvasContextMenu({
   onHideSubmenu,
 }: CanvasContextMenuProps) {
   // 动态计算子菜单位置，使用 state 触发重渲染。初始值用 CPU 从位置估算，useLayoutEffect 中根据实际 DOM 修正。
-  const [l2Pos, setL2Pos] = useState<{ left: number; top: number } | null>(null);
-  const [l3Pos, setL3Pos] = useState<{ left: number; top: number } | null>(null);
+  const [subPos, setSubPos] = useState<{ left: number; top: number } | null>(null);
 
   const l1Height = estMenuHeight(L1_ITEM_COUNT, L1_SEP_COUNT);
   const l1Width = estMenuWidth(L1_ITEM_COUNT);
@@ -93,36 +96,13 @@ function CanvasContextMenu({
     if (!visible) return;
     const l1El = menuRef.current;
     if (!l1El) return;
+
     const l1Rect = l1El.getBoundingClientRect();
-
-    // Level 2 子菜单位置
-    const l2h = estMenuHeight(L2_ITEM_COUNT);
-    const l2w = estMenuWidth(L2_ITEM_COUNT);
-    const l2 = calcSubmenuPosition(l1Rect, l2w, l2h, 'right');
-    setL2Pos({ left: l2.left, top: l2.top });
-
-    // Level 3：如果 L2 翻到了左边，L3 也应该在左边
-    if (hoverMenu === 'genNode' || hoverMenu === 'srcNode') {
-      const l2El = submenuRef.current;
-      if (l2El) {
-        const l2Rect = l2El.getBoundingClientRect();
-        const l3h = estMenuHeight(L3_ITEM_COUNT);
-        const l3w = estMenuWidth(L3_ITEM_COUNT);
-        // 如果 L2 在 L1 左边，L3 也应在 L2 左边
-        const l2dir = l2.direction === 'left' ? 'left' : 'right';
-        const l3 = calcSubmenuPosition(l2Rect, l3w, l3h, l2dir);
-        setL3Pos({ left: l3.left, top: l3.top });
-      } else {
-        // L2 还未挂载，用 L1 位置估算
-        const l3h = estMenuHeight(L3_ITEM_COUNT);
-        const l3w = estMenuWidth(L3_ITEM_COUNT);
-        const l3dir = l2.direction === 'left' ? 'left' : 'right';
-        const fakeL2Rect = new DOMRect(l2.left, l2.top, l2w, l2h);
-        const l3 = calcSubmenuPosition(fakeL2Rect, l3w, l3h, l3dir);
-        setL3Pos({ left: l3.left, top: l3.top });
-      }
-    }
-  }, [visible, position.x, position.y, hoverMenu, menuRef, submenuRef]);
+    const subH = estMenuHeight(SUB_ITEM_COUNT, SUB_SEP_COUNT);
+    const subW = estMenuWidth(SUB_ITEM_COUNT);
+    const sub = calcSubmenuPosition(l1Rect, subW, subH, 'right');
+    setSubPos({ left: sub.left, top: sub.top });
+  }, [visible, position.x, position.y, menuRef]);
 
   if (!visible) return null;
 
@@ -170,67 +150,25 @@ function CanvasContextMenu({
         )}
       </div>
 
-      {/* Level 2: 添加节点 submenu */}
-      {(hoverMenu === 'addNode' || hoverMenu === 'genNode' || hoverMenu === 'srcNode') && l2Pos && (
+      {/* 合并子菜单：生成节点 + 分割线 + 源节点 */}
+      {hoverMenu === 'addNode' && subPos && (
         <div
           ref={submenuRef}
           className="canvas-ctx-menu submenu"
-          style={{ left: l2Pos.left, top: l2Pos.top }}
+          style={{ left: subPos.left, top: subPos.top }}
           onMouseEnter={() => onShowSubmenu('addNode')}
           onMouseLeave={() => onHideSubmenu(null)}
         >
-          <div
-            className={`menu-row menu-row-split${hoverMenu === 'genNode' ? ' highlight' : ''}`}
-            onMouseEnter={() => onShowSubmenu('genNode')}
-          >
-            <span className="menu-rowlabel">生成节点</span>
-            <span className="menu-arrow menu-arrow-ml8">▶</span>
-          </div>
-          <div
-            className={`menu-row menu-row-split${hoverMenu === 'srcNode' ? ' highlight' : ''}`}
-            onMouseEnter={() => onShowSubmenu('srcNode')}
-          >
-            <span className="menu-rowlabel">源节点</span>
-            <span className="menu-arrow menu-arrow-ml8">▶</span>
-          </div>
-        </div>
-      )}
-
-      {/* Level 3a: 生成节点 submenu */}
-      {hoverMenu === 'genNode' && l3Pos && (
-        <div
-          className="canvas-ctx-menu submenu"
-          style={{ left: l3Pos.left, top: l3Pos.top }}
-          onMouseEnter={() => onShowSubmenu('genNode')}
-          onMouseLeave={() => onHideSubmenu('addNode')}
-        >
-          {GEN_NODE_ITEMS.map((item) => (
-            <div
-              key={item.type}
-              className="menu-row"
-              onClick={() => onAddNode(item.type, item.label, 'generator')}
-            >
-              <span>{item.label}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Level 3b: 源节点 submenu */}
-      {hoverMenu === 'srcNode' && l3Pos && (
-        <div
-          className="canvas-ctx-menu submenu"
-          style={{ left: l3Pos.left, top: l3Pos.top }}
-          onMouseEnter={() => onShowSubmenu('srcNode')}
-          onMouseLeave={() => onHideSubmenu('addNode')}
-        >
-          {SRC_NODE_ITEMS.map((item) => (
-            <div
-              key={item.type}
-              className="menu-row"
-              onClick={() => onAddNode(item.type, item.label, 'source')}
-            >
-              <span>{item.label}</span>
+          {NODE_ITEMS.map((item, i) => (
+            <div key={`${item.role}-${item.type}`}>
+              {/* 第 5 项前插入分割线（生成节点 → 源节点） */}
+              {i === 5 && <div className="menu-sep" />}
+              <div
+                className="menu-row"
+                onClick={() => onAddNode(item.type, item.label, item.role)}
+              >
+                <span>{item.label}</span>
+              </div>
             </div>
           ))}
         </div>

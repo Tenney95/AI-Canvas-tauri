@@ -35,7 +35,7 @@ interface ContextMenuState {
   visible: boolean;
   position: { x: number; y: number };
   flowPosition: { x: number; y: number };
-  hoverMenu: 'addNode' | 'genNode' | 'srcNode' | null;
+  hoverMenu: 'addNode' | null;
 }
 
 export function useCanvasContextMenu() {
