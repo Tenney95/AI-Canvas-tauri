@@ -588,7 +588,7 @@
   background: var(--white-alpha-03);
   border: 1px solid var(--theme-border);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 6px 10px;
   margin-bottom: 6px;
   transition: border-color var(--transition-base);
 }

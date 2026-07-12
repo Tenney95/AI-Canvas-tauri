@@ -184,7 +184,6 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     addGeneralModel,
     updateGeneralModel,
     removeGeneralModel,
-    assistantModelId,
   } = useAppStore(
     useShallow((s) => ({
       config: s.config,
@@ -194,7 +193,6 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       addGeneralModel: s.addGeneralModel,
       updateGeneralModel: s.updateGeneralModel,
       removeGeneralModel: s.removeGeneralModel,
-      assistantModelId: s.config.assistantModelId,
     })),
   );
 
@@ -209,7 +207,8 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const [newModelCategory, setNewModelCategory] = useState<GeneralModelCategory>('text');
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
   const generalModels = config.generalModels || [];
-  const textModels = generalModels.filter((m) => m.category === 'text');
+
+
 
 
 
@@ -773,79 +772,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
           )}
         </div>
 
-        {/* ── AI 助手模型选择 ── */}
-        <div className="settings-section settings-card">
-          <div className="settings-card-head">
-            <svg className="settings-icon--comfyui" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
-            <span className="settings-card-title">AI 助手模型</span>
-            <span className="text-[10px] text-canvas-text-muted">选择对话助手使用的 LLM</span>
-          </div>
 
-          <p className="settings-desc" style={{ marginBottom: 12 }}>
-            选择一个文本模型作为画布 AI 助手。配置后，对话助手将通过流式请求直接与模型交互，
-            识别你的操作意图并执行画布命令。
-          </p>
-
-          {textModels.length === 0 ? (
-            <div className="dreamina-settings-status">
-              暂无文本类通用模型，请先在「通用模型」中添加一个 category 为「文本」的模型
-            </div>
-          ) : (
-            <div className="general-model-list" style={{ marginTop: 0 }}>
-              <div className="settings-label">已配置的文本模型</div>
-              {textModels.map((m) => {
-                const isSelected = m.id === assistantModelId;
-                return (
-                  <div key={m.id} className={`general-model-item${isSelected ? ' general-model-item--active' : ''}`}>
-                    <div className="general-model-item-header">
-                      <span className="general-model-item-name">{m.name}</span>
-                      <span className="general-model-item-id">{m.modelId}</span>
-                      <span className="general-model-item-head-spacer" style={{ flex: 1 }} />
-                      {isSelected ? (
-                        <>
-                          <span
-                            className="general-model-item-category"
-                            style={{ color: '#22c55e', background: 'rgba(34,197,94,0.15)' }}
-                          >
-                            当前助手
-                          </span>
-                          <AnimatedButton
-                            type="button"
-                            className="general-model-item-remove"
-                            style={{ marginLeft: 8 }}
-                            onClick={() => updateConfig({ assistantModelId: undefined })}
-                          >
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <line x1="18" y1="6" x2="6" y2="18" />
-                              <line x1="6" y1="6" x2="18" y2="18" />
-                            </svg>
-                          </AnimatedButton>
-                        </>
-                      ) : (
-                        <AnimatedButton
-                          type="button"
-                          className="settings-save-btn"
-                          style={{ padding: '4px 10px', fontSize: 11 }}
-                          onClick={() => updateConfig({ assistantModelId: m.id })}
-                        >
-                          设为助手
-                        </AnimatedButton>
-                      )}
-                    </div>
-                    {isSelected && (
-                      <div style={{ padding: '6px 0 2px', fontSize: 11, color: '#8888a0' }}>
-                        接口: {m.openaiUrl} &nbsp;|&nbsp; 模型: {m.modelId}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
       </div>
 
       {/* Footer */}
