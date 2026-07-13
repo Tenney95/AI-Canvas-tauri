@@ -31,6 +31,20 @@ function AINodeDialog() {
   const nodeType = data?.type;
 
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // 节点尺寸变化时，重新计算浮动面板位置，使其跟随节点平滑移动
+  useEffect(() => {
+    if (!activeNodeId) return;
+    const el = document.querySelector(`.react-flow__node[data-id="${activeNodeId}"]`);
+    if (!el) return;
+
+    const observer = new ResizeObserver(() => {
+      const rect = el.getBoundingClientRect();
+      useAppStore.getState().openNodeDialog(activeNodeId, { x: rect.left + rect.width / 2, y: rect.bottom });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [activeNodeId]);
   const editorApiRef = useRef<MentionEditorHandle>(null);
 
   // Close on Escape
@@ -92,8 +106,9 @@ function AINodeDialog() {
     updateNodeData(activeNodeId!, { status: 'loading', error: undefined });
     try {
       if (nodeType === 'ai-image') {
-        const imageSize = (data.imageSize as string) || '2K';
-        const aspectRatio = (data.aspectRatio as string) || '1:1';
+        const latestData = useAppStore.getState().nodes.find((n) => n.id === activeNodeId)?.data as BaseNodeData | undefined;
+        const imageSize = (latestData?.imageSize as string) || '2K';
+        const aspectRatio = (latestData?.aspectRatio as string) || '1:1';
         const result = await generateImage({
           prompt: effectivePrompt,
           model: data.model!,

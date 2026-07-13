@@ -2,7 +2,8 @@
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
 import { useState, useRef, useCallback } from 'react';
-import type { NodeType, ModelOption, WorkflowDefinition, UserSkill, UserPreset } from '../../../types';
+import type { NodeType, ModelOption, WorkflowDefinition, UserSkill } from '../../../types';
+import type { PresetOverride } from './SlashCommandMenu';
 import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
@@ -110,7 +111,7 @@ export default function PromptPanel({
     onSubmit(expandSkillReferences(sourcePrompt, userSkills));
   }, [onSubmit, prompt, userSkills]);
 
-  const handleSlashSelect = useCallback((filledPrompt: string, shouldTrigger: boolean, preset?: UserPreset) => {
+  const handleSlashSelect = useCallback((filledPrompt: string, shouldTrigger: boolean, preset?: PresetOverride) => {
     setSlashOpen(false);
     // 如果预设绑定了模型/尺寸，写入节点数据（覆盖节点当前设置）
     if (preset) {
@@ -119,10 +120,8 @@ export default function PromptPanel({
       }
       if (preset.imageSize && onChangeImageSize) {
         onChangeImageSize(preset.imageSize);
-        if (preset.aspectRatio && onChangeAspectRatio) {
-          queueMicrotask(() => onChangeAspectRatio(preset.aspectRatio!));
-        }
-      } else if (preset.aspectRatio && onChangeAspectRatio) {
+      }
+      if (preset.aspectRatio && onChangeAspectRatio) {
         onChangeAspectRatio(preset.aspectRatio);
       }
     }

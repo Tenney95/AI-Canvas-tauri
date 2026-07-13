@@ -11,6 +11,10 @@ export interface SlashCommandItem {
   description: string;
   promptTemplate?: string;
   children?: SlashCommandItem[];
+  /** 可选：预设画质，选择后覆盖节点设置 */
+  imageSize?: string;
+  /** 可选：预设宽高比，选择后覆盖节点设置 */
+  aspectRatio?: string;
 }
 
 // ── 图片预设提示词 ──
@@ -64,6 +68,24 @@ const IMAGE_COMMANDS: SlashCommandItem[] = [
         icon: '🧍',
         description: '包含细节拆解的设定集',
         promptTemplate: '生成人设解析图，包含正视图、侧视图、背视图，以及服装细节拆解、面部特征特写，排版紧凑，\n{{ 文章内容 }}',
+      },
+      {
+        id: 'char-8dir-run',
+        title: '角色8向图-奔跑',
+        icon: '🧭',
+        description: '8方向角色朝向图，奔跑动作 · 9:16 2K',
+        promptTemplate: 'generate five variants in the blank grid spaces. The arrows represent the character\'s facing direction.\nconstraint: 角色奔跑动作，迈开双腿，一前一后\nLayout: {\n   "Row 1": ["Reference image, keep unchanged", "Right side view, facing right"],\n   "Row 2 (Flat view)": ["Absolute front view", "Back view"],\n   "Row 3 (Isometric 45° view)": ["Facing bottom-right, face visible", "Facing top-left, face not visible"]\n   }\n   All character features (appearance, accessories, weapons, pose, etc.) must remain consistent; only the orientation should change. Delete arrows after generation. white background.\n{{ 文章内容 }}',
+        imageSize: '2K',
+        aspectRatio: '9:16',
+      },
+      {
+        id: 'char-8dir-walk',
+        title: '角色8向图-行走',
+        icon: '🧭',
+        description: '8方向角色朝向图，行走动作 · 9:16 2K',
+        promptTemplate: 'generate five variants in the blank grid spaces. The arrows represent the character\'s facing direction.\nconstraint: 角色行走动作\nLayout: {\n   "Row 1": ["Reference image, keep unchanged", "Right side view, facing right"],\n   "Row 2 (Flat view)": ["Absolute front view", "Back view"],\n   "Row 3 (Isometric 45° view)": ["Facing bottom-right, face visible", "Facing top-left, face not visible"]\n   }\n   All character features (appearance, accessories, weapons, pose, etc.) must remain consistent; only the orientation should change. Delete arrows after generation. white background.\n{{ 文章内容 }}',
+        imageSize: '2K',
+        aspectRatio: '9:16',
       },
     ],
   },

@@ -5,6 +5,13 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { NodeType, UserPreset, UserSkill } from '../../../types';
+
+export interface PresetOverride {
+  model?: string;
+  provider?: string;
+  imageSize?: string;
+  aspectRatio?: string;
+}
 import { getSlashCommands, fillTemplate } from './slashCommands';
 import type { SlashCommandItem } from './slashCommands';
 import { calcFixedPosition, calcSubmenuPosition } from '../../../utils/popupPosition';
@@ -17,7 +24,7 @@ interface SlashCommandMenuProps {
   anchorEl: HTMLElement | null;
   userPresets: UserPreset[];
   userSkills: UserSkill[];
-  onSelect: (prompt: string, shouldTrigger: boolean, preset?: UserPreset) => void;
+  onSelect: (prompt: string, shouldTrigger: boolean, preset?: PresetOverride) => void;
   onSelectSkill: (skill: UserSkill) => void;
   onUploadSkill: (source: 'file' | 'folder') => void | Promise<void>;
   onManageSkills: () => void;
@@ -112,8 +119,10 @@ export default function SlashCommandMenu({
   const handleItemSelect = useCallback((item: SlashCommandItem) => {
     if (item.promptTemplate) {
       const filled = fillTemplate(item.promptTemplate, currentPrompt);
-      // Built-in commands always trigger directly: concatenate current input + template → trigger
-      onSelect(filled, true);
+      const override: PresetOverride = {};
+      if (item.imageSize) override.imageSize = item.imageSize;
+      if (item.aspectRatio) override.aspectRatio = item.aspectRatio;
+      onSelect(filled, true, Object.keys(override).length > 0 ? override : undefined);
       onClose();
     }
   }, [currentPrompt, onSelect, onClose]);
