@@ -8,6 +8,7 @@ use url::Url;
 
 mod comfyui;
 mod dreamina;
+mod file_transfer;
 pub mod onnx;
 
 static CHAT_WINDOW_LOCKED: AtomicBool = AtomicBool::new(false);
@@ -417,6 +418,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fetch_image_data_url,
             proxy_fetch,
+            file_transfer::copy_file_streamed,
+            file_transfer::download_file_streamed,
+            file_transfer::cancel_file_transfer,
             move_to_trash,
             dreamina_login,
             dreamina::dreamina_login_start,

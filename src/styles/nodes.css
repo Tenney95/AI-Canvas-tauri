@@ -444,6 +444,12 @@
   object-fit: cover;
 }
 
+/* 原生媒体控件会吞掉 React Flow 拖拽结束所需的 pointerup。
+   节点拖拽期间暂时让视频退出命中测试，松手后由 .dragging 消失自动恢复。 */
+.react-flow:has(.react-flow__node.dragging) .video-preview-player {
+  pointer-events: none;
+}
+
 .audio-player {
   max-width: 100%;
 }

@@ -103,9 +103,6 @@ export function sanitizeFileName(name: string): string {
 // Project data directory — local file storage for media assets
 // ============================================
 
-/** 项目媒体文件大小上限：2GB，超过则引用原路径不拷贝到项目目录（仅 Tauri 下生效） */
-export const MAX_MEDIA_FILE_SIZE = 2 * 1024 * 1024 * 1024;
-
 /** 获取 Tauri 的 convertFileSrc 函数 */
 export function getConvertFileSrc(): ((path: string) => string) | null {
   return (isTauriEnv() ? convertFileSrc : null) as ((path: string) => string) | null;

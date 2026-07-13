@@ -6,6 +6,7 @@
 import { writeFile, readFile as tauriReadFile, stat, rename, readDir, exists, mkdir } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { appDataDir } from '@tauri-apps/api/path';
 import {
   isTauriEnv,
@@ -23,9 +24,64 @@ import {
   listDirectoryFiles,
   getFileCategory,
   CATEGORY_EXTENSIONS,
-  MAX_MEDIA_FILE_SIZE,
   type AssetFileEntry,
 } from './fs/core';
+
+export interface FileTransferProgress {
+  taskId: string;
+  transferredBytes: number;
+  totalBytes: number | null;
+}
+
+export interface FileTransferOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: FileTransferProgress) => void;
+}
+
+interface NativeFileTransferResult {
+  path: string;
+  totalBytes: number;
+  contentType: string | null;
+}
+
+function createTransferTaskId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `transfer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function runNativeFileTransfer(
+  command: 'copy_file_streamed' | 'download_file_streamed',
+  args: Record<string, string>,
+  options?: FileTransferOptions,
+): Promise<NativeFileTransferResult> {
+  const taskId = createTransferTaskId();
+  let unlisten: UnlistenFn | undefined;
+  let cancelRequested = false;
+
+  const cancel = () => {
+    if (cancelRequested) return;
+    cancelRequested = true;
+    void invoke('cancel_file_transfer', { taskId }).catch((error) => {
+      console.warn('[fileService] cancel_file_transfer failed:', error);
+    });
+  };
+
+  if (options?.signal?.aborted) {
+    throw new DOMException('File transfer aborted', 'AbortError');
+  }
+
+  try {
+    if (options?.onProgress) {
+      unlisten = await listen<FileTransferProgress>('file-transfer-progress', ({ payload }) => {
+        if (payload.taskId === taskId) options.onProgress?.(payload);
+      });
+    }
+    options?.signal?.addEventListener('abort', cancel, { once: true });
+    return await invoke<NativeFileTransferResult>(command, { taskId, ...args });
+  } finally {
+    options?.signal?.removeEventListener('abort', cancel);
+    unlisten?.();
+  }
+}
 
 // ── 统一对外导出：存储、基础设施、删除域、资产库域 ──
 export {
@@ -218,6 +274,7 @@ export async function readFileToDataUrl(filePath: string): Promise<string | null
 export async function copyFileToProjectData(
   sourcePath: string,
   projectId: string,
+  options?: FileTransferOptions,
 ): Promise<{ filePath: string; assetUrl: string; fileName: string } | null> {
   if (!isTauriEnv()) return null;
 
@@ -228,27 +285,7 @@ export async function copyFileToProjectData(
   const destPath = await resolveUniqueDestPath(dataDir, fileName);
 
   try {
-    // Try to check source file size (may fail for paths outside fs scope, e.g., external drives)
-    let sourceSize = 0;
-    try {
-      const sourceStat = await stat(sourcePath);
-      sourceSize = sourceStat.size;
-    } catch {
-      // stat not allowed for this path — skip size check and proceed with read+write
-    }
-
-    if (sourceSize > MAX_MEDIA_FILE_SIZE) {
-      console.warn('File too large for project data copy:', sourcePath, sourceSize);
-      // For oversized files, use convertFileSrc on the original path instead
-      const convertFileSrc = await getConvertFileSrc();
-      if (!convertFileSrc) return null;
-      return { filePath: sourcePath, assetUrl: convertFileSrc(sourcePath), fileName };
-    }
-
-    // Use readFile + writeFile instead of copyFile to avoid fs scope issues
-    // readFile on drag-dropped paths bypasses fs scope permission check
-    const content = await tauriReadFile(sourcePath);
-    await writeFile(destPath, new Uint8Array(content));
+    await runNativeFileTransfer('copy_file_streamed', { sourcePath, destinationPath: destPath }, options);
     notifyProjectDiskChanged();
   } catch (err) {
     console.error('Failed to copy file to project data:', sourcePath, err);
@@ -390,28 +427,25 @@ export async function downloadUrlAndSave(
   projectId: string,
   fallbackPrefix: string,
   baseName?: string,
+  options?: FileTransferOptions,
 ): Promise<{ filePath: string; assetUrl: string } | null> {
   if (!isTauriEnv()) return null;
   try {
-    // 通过 Rust 原生 HTTP 下载（绕过 WebView CORS 限制），返回 base64 data URL
-    const dataUrl: string = await invoke('fetch_image_data_url', { url });
-
-    // 解析 data URL 还原为二进制
-    const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
-    if (!match) return null;
-    const mime = match[1];
-    const b64 = match[2];
-    const binaryStr = atob(b64);
-    const data = new Uint8Array(binaryStr.length);
-    for (let i = 0; i < binaryStr.length; i++) {
-      data[i] = binaryStr.charCodeAt(i);
-    }
-
     // 优先用节点名命名；否则沿用从 URL 提取文件名的旧逻辑
     const fileName = baseName && baseName.trim()
-      ? buildNodeFileName(baseName, guessExtension(url, mime, fallbackPrefix), fallbackPrefix)
+      ? buildNodeFileName(baseName, guessExtension(url, undefined, fallbackPrefix), fallbackPrefix)
       : extractFileNameFromUrl(url, fallbackPrefix);
-    return await saveBinaryToProjectData(data, projectId, fileName);
+    const dataDir = await ensureProjectDataDir(projectId);
+    if (!dataDir) return null;
+    const destPath = await resolveUniqueDestPath(dataDir, fileName);
+    const result = await runNativeFileTransfer(
+      'download_file_streamed',
+      { url, destinationPath: destPath },
+      options,
+    );
+    notifyProjectDiskChanged();
+    const toAssetUrl = await getConvertFileSrc();
+    return { filePath: result.path, assetUrl: toAssetUrl ? toAssetUrl(result.path) : '' };
   } catch (err) {
     console.warn('[fileService] downloadUrlAndSave failed:', url, err);
     return null;
