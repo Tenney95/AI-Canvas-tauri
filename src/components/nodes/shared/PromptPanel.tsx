@@ -2,7 +2,7 @@
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
 import { useState, useRef, useCallback } from 'react';
-import type { NodeType, ModelOption, WorkflowDefinition, UserSkill } from '../../../types';
+import type { NodeType, ModelOption, WorkflowDefinition, UserSkill, UserPreset } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
@@ -110,8 +110,22 @@ export default function PromptPanel({
     onSubmit(expandSkillReferences(sourcePrompt, userSkills));
   }, [onSubmit, prompt, userSkills]);
 
-  const handleSlashSelect = useCallback((filledPrompt: string, shouldTrigger: boolean) => {
+  const handleSlashSelect = useCallback((filledPrompt: string, shouldTrigger: boolean, preset?: UserPreset) => {
     setSlashOpen(false);
+    // 如果预设绑定了模型/尺寸，写入节点数据（覆盖节点当前设置）
+    if (preset) {
+      if (preset.model && preset.provider) {
+        onModelSelect({ value: preset.model, provider: preset.provider, label: preset.model, nodeTypes: [] });
+      }
+      if (preset.imageSize && onChangeImageSize) {
+        onChangeImageSize(preset.imageSize);
+        if (preset.aspectRatio && onChangeAspectRatio) {
+          queueMicrotask(() => onChangeAspectRatio(preset.aspectRatio!));
+        }
+      } else if (preset.aspectRatio && onChangeAspectRatio) {
+        onChangeAspectRatio(preset.aspectRatio);
+      }
+    }
     if (shouldTrigger) {
       // Direct trigger: combine preset template + input box content, call model directly
       // Don't update the input box — the preset prompt is only used for this generation
@@ -120,7 +134,7 @@ export default function PromptPanel({
       // Insert mode: update input box with filled template, user can edit before generating
       onChange(filledPrompt);
     }
-  }, [handleSubmit, onChange]);
+  }, [handleSubmit, onChange, onModelSelect, onChangeImageSize, onChangeAspectRatio]);
 
   const handleEditorSlash = useCallback(() => {
     setSlashAnchor(promptInputRef.current);

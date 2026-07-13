@@ -287,7 +287,7 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 7px 10px;
+  padding: 6px 8px;
   border-radius: 7px;
   cursor: pointer;
   transition: background var(--transition-base);

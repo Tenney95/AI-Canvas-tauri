@@ -8,12 +8,14 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '../../../store/useAppStore';
 import { generateId } from '../../../store/useAppStore';
-import type { UserPreset, PresetNodeType, PresetTriggerMode } from '../../../types';
+import type { NodeType, UserPreset, PresetNodeType, PresetTriggerMode, ModelOption } from '../../../types';
 import {
   PRESET_NODE_TYPES,
   PRESET_NODE_TYPE_LABELS,
 } from '../../../types';
 import AnimatedButton from '../../shared/AnimatedButton';
+import ModelSelector from './ModelSelector';
+import QualityRatioSelector from './QualityRatioSelector';
 
 const PLACEHOLDER_MARKER = '\u200B'; // zero-width space as placeholder pill
 
@@ -116,8 +118,18 @@ export default function PresetManager() {
   const [template, setTemplate] = useState('');
   const [triggerMode, setTriggerMode] = useState<PresetTriggerMode>('direct');
   const [thumbnail, setThumbnail] = useState<string | undefined>();
+  // 预设绑定的模型和尺寸（可选）
+  const [presetModel, setPresetModel] = useState('');
+  const [presetProvider, setPresetProvider] = useState('');
+  const [presetImageSize, setPresetImageSize] = useState('');
+  const [presetAspectRatio, setPresetAspectRatio] = useState('');
+  // 是否已激活模型/尺寸覆盖（点了「指定」才展开选择器）
+  const [modelOverrideActive, setModelOverrideActive] = useState(false);
+  const [sizeOverrideActive, setSizeOverrideActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+  // 判断当前标签是否支持尺寸选择
+  const showSizeSelector = activeTab === 'ai-image';
 
   const filteredPresets = useMemo(
     () => userPresets.filter((p) => p.nodeType === activeTab),
@@ -133,6 +145,12 @@ export default function PresetManager() {
         setTemplate('');
         setTriggerMode('direct');
         setThumbnail(undefined);
+        setPresetModel('');
+        setPresetProvider('');
+        setPresetImageSize('');
+        setPresetAspectRatio('');
+        setModelOverrideActive(false);
+        setSizeOverrideActive(false);
         if (editorRef.current) editorRef.current.innerHTML = '';
         return;
       }
@@ -143,7 +161,12 @@ export default function PresetManager() {
         setTemplate(preset.promptTemplate);
         setTriggerMode(preset.triggerMode);
         setThumbnail(preset.thumbnail);
-        // Rebuild editor content
+        setPresetModel(preset.model || '');
+        setPresetProvider(preset.provider || '');
+        setPresetImageSize(preset.imageSize || '');
+        setPresetAspectRatio(preset.aspectRatio || '');
+        setModelOverrideActive(!!preset.model);
+        setSizeOverrideActive(!!preset.imageSize || !!preset.aspectRatio);
         if (editorRef.current) {
           deserializeToEditor(editorRef.current, preset.promptTemplate);
         }
@@ -196,9 +219,13 @@ export default function PresetManager() {
       promptTemplate: templateFromEditor,
       triggerMode,
       thumbnail,
+      model: modelOverrideActive ? (presetModel || undefined) : undefined,
+      provider: modelOverrideActive ? (presetProvider || undefined) : undefined,
+      imageSize: sizeOverrideActive ? (presetImageSize || undefined) : undefined,
+      aspectRatio: sizeOverrideActive ? (presetAspectRatio || undefined) : undefined,
     });
     showToast('快捷指令已保存');
-  }, [selectedId, name, description, template, triggerMode, thumbnail, updateUserPreset, showToast]);
+  }, [selectedId, name, description, template, triggerMode, thumbnail, presetModel, presetProvider, presetImageSize, presetAspectRatio, modelOverrideActive, sizeOverrideActive, updateUserPreset, showToast]);
 
   const handleThumbnailUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -244,6 +271,22 @@ export default function PresetManager() {
     },
     [handleEditorInput],
   );
+
+  const handlePresetModelSelect = useCallback((model: ModelOption) => {
+    setPresetModel(model.value);
+    setPresetProvider(model.provider);
+    setModelOverrideActive(true);
+  }, []);
+
+  const handlePresetImageSizeChange = useCallback((size: string) => {
+    setPresetImageSize(size);
+    setSizeOverrideActive(true);
+  }, []);
+
+  const handlePresetAspectRatioChange = useCallback((ratio: string) => {
+    setPresetAspectRatio(ratio);
+    setSizeOverrideActive(true);
+  }, []);
 
   return createPortal(
     <AnimatePresence>
@@ -480,6 +523,75 @@ export default function PresetManager() {
                     </div>
                   )}
                 </div>
+
+                {/* 模型选择（可选） */}
+                <div className="preset-manager-section">
+                  <span className="preset-manager-section-title">模型</span>
+                  <span className="preset-manager-section-desc">
+                    {modelOverrideActive ? '已指定模型，生图时覆盖节点设置' : '未指定则使用节点当前模型'}
+                  </span>
+                  {modelOverrideActive ? (
+                    <>
+                      <ModelSelector
+                        nodeType={activeTab as NodeType}
+                        selectedModel={presetModel || undefined}
+                        selectedProvider={presetProvider || undefined}
+                        onSelect={handlePresetModelSelect}
+                      />
+                      <button
+                        type="button"
+                        className="preset-manager-section-toggle"
+                        onClick={() => { setModelOverrideActive(false); setPresetModel(''); setPresetProvider(''); }}
+                      >
+                        取消指定
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="preset-manager-section-toggle"
+                      onClick={() => setModelOverrideActive(true)}
+                    >
+                      + 指定模型
+                    </button>
+                  )}
+                </div>
+
+                {/* 尺寸选择（仅图片预设显示） */}
+                {showSizeSelector && (
+                  <div className="preset-manager-section">
+                    <span className="preset-manager-section-title">尺寸</span>
+                    <span className="preset-manager-section-desc">
+                      {sizeOverrideActive ? '已指定尺寸，生图时覆盖节点设置' : '未指定则使用节点当前画质和比例'}
+                    </span>
+                    {sizeOverrideActive ? (
+                      <>
+                        <QualityRatioSelector
+                          imageSize={presetImageSize || undefined}
+                          aspectRatio={presetAspectRatio || undefined}
+                          onChangeImageSize={handlePresetImageSizeChange}
+                          onChangeAspectRatio={handlePresetAspectRatioChange}
+                          showImageSize
+                        />
+                        <button
+                          type="button"
+                          className="preset-manager-section-toggle"
+                          onClick={() => { setSizeOverrideActive(false); setPresetImageSize(''); setPresetAspectRatio(''); }}
+                        >
+                          取消指定
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="preset-manager-section-toggle"
+                        onClick={() => setSizeOverrideActive(true)}
+                      >
+                        + 指定尺寸
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="preset-manager-detail-empty">

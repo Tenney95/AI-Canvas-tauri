@@ -17,7 +17,7 @@ interface SlashCommandMenuProps {
   anchorEl: HTMLElement | null;
   userPresets: UserPreset[];
   userSkills: UserSkill[];
-  onSelect: (prompt: string, shouldTrigger: boolean) => void;
+  onSelect: (prompt: string, shouldTrigger: boolean, preset?: UserPreset) => void;
   onSelectSkill: (skill: UserSkill) => void;
   onUploadSkill: (source: 'file' | 'folder') => void | Promise<void>;
   onManageSkills: () => void;
@@ -120,13 +120,11 @@ export default function SlashCommandMenu({
 
   const handlePresetSelect = useCallback((preset: UserPreset) => {
     if (preset.triggerMode === 'direct') {
-      // Direct trigger: fill template with current input → trigger immediately
       const filled = fillTemplate(preset.promptTemplate, currentPrompt);
-      onSelect(filled, true);
+      onSelect(filled, true, preset);
     } else {
-      // Insert mode: append template to current prompt, don't trigger
       const filled = fillTemplate(preset.promptTemplate, currentPrompt);
-      onSelect(currentPrompt ? `${currentPrompt}\n${filled}` : filled, false);
+      onSelect(currentPrompt ? `${currentPrompt}\n${filled}` : filled, false, preset);
     }
     onClose();
   }, [currentPrompt, onSelect, onClose]);

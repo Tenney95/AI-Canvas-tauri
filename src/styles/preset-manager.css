@@ -504,3 +504,48 @@
 .slash-command-manage-title {
   color: #a0a0b8;
 }
+
+/* ═══════════════════════════════════════════════
+   Preset Manager — 模型 & 尺寸 section
+   ═══════════════════════════════════════════════ */
+
+.preset-manager-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--theme-hover);
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+}
+
+.preset-manager-section-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--theme-text-secondary);
+}
+
+.preset-manager-section-desc {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  margin-bottom: 2px;
+}
+
+.preset-manager-section-placeholder {
+  font-size: 12px;
+  color: var(--theme-text-muted);
+  padding: 6px 0;
+}
+
+.preset-manager-section-toggle {
+  font-size: 12px;
+  color: var(--brand);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  transition: opacity var(--transition-base);
+}
+.preset-manager-section-toggle:hover {
+  opacity: 0.8;
+}

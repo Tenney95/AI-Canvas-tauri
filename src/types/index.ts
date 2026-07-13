@@ -329,6 +329,11 @@ export interface UserPreset {
   promptTemplate: string;
   thumbnail?: string;        // base64 data URL
   triggerMode: PresetTriggerMode;  // direct=替换全文, insertPrompt=追加到提示词
+  // 可选：预设绑定的模型和尺寸，选择后生图时覆盖节点设置
+  model?: string;
+  provider?: string;
+  imageSize?: string;
+  aspectRatio?: string;
 }
 
 // ============================================
