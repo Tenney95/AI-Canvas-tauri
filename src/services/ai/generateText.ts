@@ -58,8 +58,8 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
     throw new Error('提示词不能为空');
   }
 
-  // 将本地图片 URL 上传到远端图床，转为公网 URL
-  const resolvedContent = await resolveContentImageUrls(content);
+  // 将本地图片 URL 上传到远端图床，转为公网 URL（apimart 走 apimart 图床，其他走 uguu.se）
+  const resolvedContent = await resolveContentImageUrls(content, provider);
 
   const messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [];
   messages.push({ role: 'user', content: resolvedContent });

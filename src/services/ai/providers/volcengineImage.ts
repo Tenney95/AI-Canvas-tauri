@@ -38,7 +38,7 @@ export async function generateVolcengineImage(
     prompt,
     sequential_image_generation: 'disabled',
     response_format: 'url',
-    size: seedreamSize,
+    size: `${dimensions.width}*${dimensions.height}`,
     stream: false,
     watermark: true,
   };

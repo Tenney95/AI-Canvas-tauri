@@ -100,18 +100,14 @@ export async function mergeImageWithOverlays(
 /** 上传 content 数组中本地图片 URL 到远端，替换为公网 URL */
 export async function resolveContentImageUrls(
   content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>,
+  provider = '',
 ): Promise<string | Array<{ type: string; text?: string; image_url?: { url: string } }>> {
   if (typeof content === 'string') return content;
   const resolved = await Promise.all(
     content.map(async (part) => {
       if (part.type === 'image_url' && part.image_url?.url && isLocalImageUrl(part.image_url.url)) {
-        try {
-          const publicUrl = await uploadToRemote(part.image_url.url);
-          return { ...part, image_url: { url: publicUrl } };
-        } catch (err) {
-          console.error('[aiService] Failed to upload local image URL:', part.image_url.url, err);
-          return part;
-        }
+        const publicUrl = await uploadToRemote(part.image_url.url, provider);
+        return { ...part, image_url: { url: publicUrl } };
       }
       return part;
     }),
@@ -120,16 +116,11 @@ export async function resolveContentImageUrls(
 }
 
 /** 上传 imageUrls 数组中的本地图片到远端 */
-export async function resolveImageUrlArray(urls: string[]): Promise<string[]> {
+export async function resolveImageUrlArray(urls: string[], provider = ''): Promise<string[]> {
   return Promise.all(
     urls.map(async (url) => {
       if (isLocalImageUrl(url)) {
-        try {
-          return await uploadToRemote(url);
-        } catch (err) {
-          console.error('[aiService] Failed to upload local image URL:', url, err);
-          return url;
-        }
+        return await uploadToRemote(url, provider);
       }
       return url;
     }),

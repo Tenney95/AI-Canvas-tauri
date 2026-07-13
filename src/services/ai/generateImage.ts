@@ -41,8 +41,8 @@ export async function generateImage(
     return generateDreaminaImage({ prompt, model, imageSize, aspectRatio, imageUrls: allImageUrls, nodeId: params.nodeId });
   }
 
-  // 将本地图片 URL 上传到远端图床，转为公网 URL
-  allImageUrls = await resolveImageUrlArray(allImageUrls);
+  // 将本地图片 URL 上传到远端图床，转为公网 URL（apimart 走 apimart 图床，其他走 uguu.se）
+  allImageUrls = await resolveImageUrlArray(allImageUrls, provider);
 
   // ComfyUI 工作流执行路径
   if (params.workflowId) {
