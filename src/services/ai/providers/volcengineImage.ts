@@ -33,15 +33,20 @@ export async function generateVolcengineImage(
   const dimensions = mapImageDimensions(seedreamSize, aspectRatio);
   const apiUrl = baseUrl.replace(/\/+$/, '') + '/images/generations';
 
+  // doubao-seedream-5-0-pro-260628 使用 WxH 格式，且不支持 sequential_image_generation
+  const isPro = modelName === 'doubao-seedream-5-0-pro-260628';
+
   const requestBody: Record<string, unknown> = {
     model: modelName,
     prompt,
-    sequential_image_generation: 'disabled',
     response_format: 'url',
-    size: `${dimensions.width}*${dimensions.height}`,
+    size: isPro ? `${dimensions.width}x${dimensions.height}` : seedreamSize,
     stream: false,
     watermark: true,
   };
+  if (!isPro) {
+    requestBody.sequential_image_generation = 'disabled';
+  }
   if (imageUrls.length > 0) {
     requestBody.image = imageUrls;
   }

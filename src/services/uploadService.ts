@@ -169,20 +169,18 @@ async function formDataToBase64(formData: FormData): Promise<{ body: string; con
   const encoder = new TextEncoder();
   const parts: Uint8Array[] = [];
 
-  for (const [name, value] of formData.entries()) {
-    let header = `--${boundary}\r\n`;
-    if (value instanceof Blob) {
-      const filename = (value as File).name || 'blob';
-      header += `Content-Disposition: form-data; name="${name}"; filename="${filename}"\r\n`;
-      header += `Content-Type: ${value.type || 'application/octet-stream'}\r\n\r\n`;
-      parts.push(encoder.encode(header));
-      parts.push(new Uint8Array(await value.arrayBuffer()));
-      parts.push(encoder.encode('\r\n'));
-    } else {
-      header += `Content-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
-      parts.push(encoder.encode(header));
-    }
-  }
+  // uploadToUguu 只 append 了一个 files[] 字段，直接用 get 取值
+  const file = formData.get('files[]');
+  if (!(file instanceof Blob)) throw new Error('FormData 中未找到文件');
+
+  const filename = (file as File).name || 'blob';
+  let header = `--${boundary}\r\n`;
+  header += `Content-Disposition: form-data; name="files[]"; filename="${filename}"\r\n`;
+  header += `Content-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`;
+  parts.push(encoder.encode(header));
+  parts.push(new Uint8Array(await file.arrayBuffer()));
+  parts.push(encoder.encode('\r\n'));
+
   parts.push(encoder.encode(`--${boundary}--\r\n`));
 
   const totalLen = parts.reduce((acc, p) => acc + p.length, 0);
