@@ -5,8 +5,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { invoke } from '@tauri-apps/api/core';
-import { PhysicalPosition } from '@tauri-apps/api/dpi';
-import { getCurrentWindow, Window } from '@tauri-apps/api/window';
 import ChatPanel from './ChatPanel';
 import {
   emitAction,
@@ -28,8 +26,6 @@ export default function ChatWindow() {
   const [initialized, setInitialized] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const isLockedRef = useRef(false);
-  const lockOffsetRef = useRef({ x: 0, y: 0 });
-  const lockIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const closeWindow = useCallback(() => {
     void emitCloseRequest();
@@ -38,42 +34,13 @@ export default function ChatWindow() {
 
   const handleToggleLock = useCallback(async () => {
     const next = !isLockedRef.current;
-    isLockedRef.current = next;
-    setIsLocked(next);
-
-    if (!next) {
-      if (lockIntervalRef.current) clearInterval(lockIntervalRef.current);
-      lockIntervalRef.current = null;
-      return;
+    try {
+      await invoke('set_chat_window_locked', { locked: next });
+      isLockedRef.current = next;
+      setIsLocked(next);
+    } catch (error) {
+      console.error('[ChatWindow] failed to change lock state:', error);
     }
-
-    const mainWindow = await Window.getByLabel('main');
-    const chatWindow = getCurrentWindow();
-    if (mainWindow) {
-      const [mainPosition, chatPosition] = await Promise.all([
-        mainWindow.outerPosition().catch(() => null),
-        chatWindow.outerPosition().catch(() => null),
-      ]);
-      if (mainPosition && chatPosition) {
-        lockOffsetRef.current = {
-          x: chatPosition.x - mainPosition.x,
-          y: chatPosition.y - mainPosition.y,
-        };
-      }
-    }
-
-    lockIntervalRef.current = setInterval(async () => {
-      if (!isLockedRef.current) return;
-      const parentWindow = await Window.getByLabel('main');
-      if (!parentWindow) return;
-      const parentPosition = await parentWindow.outerPosition().catch(() => null);
-      if (!parentPosition) return;
-      const target = new PhysicalPosition(
-        parentPosition.x + lockOffsetRef.current.x,
-        parentPosition.y + lockOffsetRef.current.y,
-      );
-      void getCurrentWindow().setPosition(target);
-    }, 50);
   }, []);
 
   useEffect(() => {
@@ -104,10 +71,6 @@ export default function ChatWindow() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, []);
 
-  useEffect(() => () => {
-    if (lockIntervalRef.current) clearInterval(lockIntervalRef.current);
-  }, []);
-
   const headerActions = (
     <div className="flex items-center gap-1">
       <button
@@ -126,7 +89,8 @@ export default function ChatWindow() {
                       ? 'text-amber-400 bg-amber-400/15'
                       : 'text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover'
                     }`}
-        data-tooltip={isLocked ? '已锁定相对位置' : '锁定相对位置'}
+        data-tooltip={isLocked ? '已锁定到主窗口' : '锁定到主窗口'}
+        aria-label={isLocked ? '取消位置锁定' : '锁定到主窗口'}
         onClick={handleToggleLock}
       >
         <Icon icon={isLocked ? 'mdi:lock' : 'mdi:lock-open-outline'} width="16" height="16" />

@@ -1,11 +1,17 @@
 use base64::Engine;
-use std::sync::Mutex;
-use tauri::{Listener, Manager, WebviewUrl, WebviewWindowBuilder};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
+use tauri::{Listener, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
 mod comfyui;
 mod dreamina;
 pub mod onnx;
+
+static CHAT_WINDOW_LOCKED: AtomicBool = AtomicBool::new(false);
+static CHAT_WINDOW_LOCK_OFFSET: Mutex<(i32, i32)> = Mutex::new((0, 0));
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct DreaminaLoginPayload {
@@ -218,6 +224,8 @@ async fn toggle_devtools(app: tauri::AppHandle) -> Result<(), String> {
 /// 打开独立的 AI 对话助手窗口
 #[tauri::command]
 async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
+    CHAT_WINDOW_LOCKED.store(false, Ordering::Release);
+
     // 先关闭可能残留的历史窗口
     if let Some(old) = app.get_webview_window("chat-assistant") {
         let _ = old.close();
@@ -230,18 +238,58 @@ async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(not(debug_assertions))]
     let url = WebviewUrl::App("index.html?view=chat".into());
 
-    WebviewWindowBuilder::new(&app, "chat-assistant", url)
+    let main_window = app.get_webview_window("main");
+    let mut chat_window_builder = WebviewWindowBuilder::new(&app, "chat-assistant", url)
         .title("AI 对话助手")
         .inner_size(480.0, 720.0)
         .min_inner_size(360.0, 480.0)
-        .center()
         .resizable(true)
         .decorations(false)
         .transparent(true)
         .shadow(false)
-        .visible(true)
+        .visible(false);
+
+    if let Some(parent) = main_window.as_ref() {
+        chat_window_builder = chat_window_builder
+            .parent(parent)
+            .map_err(|e| format!("绑定对话窗口到主窗口失败: {e}"))?;
+    }
+
+    let chat_window = chat_window_builder
         .build()
         .map_err(|e| format!("创建对话窗口失败: {e}"))?;
+
+    // 与主窗口内的助手面板保持一致：显示在主窗口右侧，并留出相同的边距。
+    let positioned = if let Some(main_window) = main_window {
+        match (
+            main_window.outer_position(),
+            main_window.outer_size(),
+            main_window.scale_factor(),
+            chat_window.outer_size(),
+        ) {
+            (Ok(main_position), Ok(main_size), Ok(scale_factor), Ok(chat_size)) => {
+                let right_margin = (10.0 * scale_factor).round() as i32;
+                let top_margin = (30.0 * scale_factor).round() as i32;
+                let x = main_position.x + main_size.width as i32
+                    - chat_size.width as i32
+                    - right_margin;
+                let y = main_position.y + top_margin;
+                chat_window
+                    .set_position(PhysicalPosition::new(x, y))
+                    .is_ok()
+            }
+            _ => false,
+        }
+    } else {
+        false
+    };
+
+    if !positioned {
+        let _ = chat_window.center();
+    }
+    chat_window
+        .show()
+        .map_err(|e| format!("显示对话窗口失败: {e}"))?;
 
     Ok(())
 }
@@ -249,11 +297,42 @@ async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
 /// 关闭独立的 AI 对话助手窗口
 #[tauri::command]
 async fn close_chat_window(app: tauri::AppHandle) -> Result<(), String> {
+    CHAT_WINDOW_LOCKED.store(false, Ordering::Release);
     if let Some(window) = app.get_webview_window("chat-assistant") {
         window
             .close()
             .map_err(|e| format!("关闭对话窗口失败: {e}"))?;
     }
+    Ok(())
+}
+
+/// 锁定或解锁对话窗口与主窗口的相对位置。
+#[tauri::command]
+async fn set_chat_window_locked(app: tauri::AppHandle, locked: bool) -> Result<(), String> {
+    if locked {
+        let main_window = app
+            .get_webview_window("main")
+            .ok_or("未找到主窗口".to_string())?;
+        let chat_window = app
+            .get_webview_window("chat-assistant")
+            .ok_or("未找到对话窗口".to_string())?;
+        let main_position = main_window
+            .outer_position()
+            .map_err(|e| format!("读取主窗口位置失败: {e}"))?;
+        let chat_position = chat_window
+            .outer_position()
+            .map_err(|e| format!("读取对话窗口位置失败: {e}"))?;
+
+        let mut offset = CHAT_WINDOW_LOCK_OFFSET
+            .lock()
+            .map_err(|_| "保存对话窗口锁定位置失败".to_string())?;
+        *offset = (
+            chat_position.x - main_position.x,
+            chat_position.y - main_position.y,
+        );
+    }
+
+    CHAT_WINDOW_LOCKED.store(locked, Ordering::Release);
     Ok(())
 }
 
@@ -348,6 +427,7 @@ pub fn run() {
             dreamina::dreamina_query_result,
             open_chat_window,
             close_chat_window,
+            set_chat_window_locked,
             open_with_app,
             toggle_devtools,
             comfyui::launch_comfyui,
@@ -358,6 +438,23 @@ pub fn run() {
             onnx::download_onnx_model,
             onnx::get_onnx_gpu_status,
         ])
+        .on_window_event(|window, event| {
+            if window.label() != "main" || !CHAT_WINDOW_LOCKED.load(Ordering::Acquire) {
+                return;
+            }
+            let tauri::WindowEvent::Moved(main_position) = event else {
+                return;
+            };
+            let Ok(offset) = CHAT_WINDOW_LOCK_OFFSET.lock() else {
+                return;
+            };
+            if let Some(chat_window) = window.app_handle().get_webview_window("chat-assistant") {
+                let _ = chat_window.set_position(PhysicalPosition::new(
+                    main_position.x + offset.0,
+                    main_position.y + offset.1,
+                ));
+            }
+        })
         .setup(|_app| {
             // 调试构建自动打开 DevTools（方便排查打包后白屏等问题）
             #[cfg(debug_assertions)]

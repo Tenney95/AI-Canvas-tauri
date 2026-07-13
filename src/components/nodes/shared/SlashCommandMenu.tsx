@@ -202,20 +202,6 @@ export default function SlashCommandMenu({
                 className="slash-command-item has-trigger slash-command-user-preset"
                 onClick={() => handlePresetSelect(preset)}
               >
-                <span className="slash-command-icon">
-                  {preset.thumbnail ? (
-                    <img
-                      className="slash-command-thumb"
-                      src={preset.thumbnail}
-                      alt=""
-                      style={{ width: 22, height: 22, borderRadius: 4, objectFit: 'cover' }}
-                    />
-                  ) : (
-                    preset.nodeType === 'ai-image' ? '🎨' :
-                    preset.nodeType === 'ai-video' ? '🎬' :
-                    preset.nodeType === 'ai-audio' ? '🎵' : '📝'
-                  )}
-                </span>
                 <div className="slash-command-text">
                   <span className="slash-command-title">{preset.name}</span>
                   <span className="slash-command-desc">{preset.description || '点击调用这个快捷指令'}</span>
@@ -283,7 +269,6 @@ export default function SlashCommandMenu({
               onClick={() => handleItemSelect(child)}
               onMouseEnter={() => setHoveredItemId(child.id)}
             >
-              <span className="slash-command-icon">{child.icon}</span>
               <div className="slash-command-text">
                 <span className="slash-command-title">{child.title}</span>
                 <span className="slash-command-desc">{child.description}</span>
@@ -310,7 +295,6 @@ export default function SlashCommandMenu({
               onClick={() => handleSkillSelect(skill)}
               onMouseEnter={() => setHoveredItemId(skill.id)}
             >
-              <span className="slash-command-icon">⚡</span>
               <div className="slash-command-text">
                 <span className="slash-command-title">{skill.name}</span>
                 <span className="slash-command-desc">{skill.description || skill.fileName}</span>
@@ -327,7 +311,6 @@ export default function SlashCommandMenu({
             }}
             onMouseEnter={() => setHoveredItemId('manage-skills')}
           >
-            <span className="slash-command-icon">⚙️</span>
             <div className="slash-command-text">
               <span className="slash-command-title">管理 Skill</span>
               <span className="slash-command-desc">查看内容和删除已上传 Skill</span>
@@ -342,7 +325,6 @@ export default function SlashCommandMenu({
             }}
             onMouseEnter={() => setHoveredItemId('upload-folder')}
           >
-            <span className="slash-command-icon">⬆️</span>
             <div className="slash-command-text">
               <span className="slash-command-title">上传 Skill 文件夹</span>
               <span className="slash-command-desc">保存到应用 skill 目录后调用</span>
@@ -356,7 +338,6 @@ export default function SlashCommandMenu({
             }}
             onMouseEnter={() => setHoveredItemId('upload-file')}
           >
-            <span className="slash-command-icon">📄</span>
             <div className="slash-command-text">
               <span className="slash-command-title">上传 Skill 文件</span>
               <span className="slash-command-desc">选择 .md / .txt / .json 文件</span>
