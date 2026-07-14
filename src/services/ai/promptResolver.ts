@@ -4,6 +4,62 @@
 import { useAppStore } from '../../store/useAppStore';
 import { readFileToDataUrl, getFileCategory } from '../fileService';
 import { resolveNodeImageUrl, mergeImageWithOverlays } from './imageUtils';
+import { cropImageCell, cropImageByRanges } from '../../components/nodes/shared/image/imageUtils';
+import type { BaseNodeData, StoryboardCellOverride } from '../../types';
+
+/**
+ * 解析宫格分镜虚拟 ID：从 {storyboardNodeId}/cell/{idx} 中提取真实 nodeId 和格下标。
+ * 非分镜单元格引用直接返回原 nodeId。
+ */
+function parseStoryboardCellId(nodeId: string): { nodeId: string; cellIdx: number | null } {
+  if (nodeId.includes('/cell/')) {
+    const parts = nodeId.split('/cell/');
+    const idx = parseInt(parts[1], 10);
+    if (!isNaN(idx)) return { nodeId: parts[0], cellIdx: idx };
+  }
+  return { nodeId, cellIdx: null };
+}
+
+/** 从宫格分镜节点数据中提取第 cellIdx 格的真实裁片 dataUrl（含覆盖图直出）。 */
+async function resolveStoryboardCellImage(
+  sbData: BaseNodeData,
+  cellIdx: number,
+): Promise<string | null> {
+  const cols = Math.max(1, (sbData.storyboardCols as number) || 3);
+  const rows = Math.max(1, (sbData.storyboardRows as number) || 3);
+  const total = rows * cols;
+  if (cellIdx < 0 || cellIdx >= total) return null;
+
+  const overrides = (sbData.storyboardOverrides as (StoryboardCellOverride | null)[] | undefined) ?? [];
+  const imageUrl = sbData.imageUrl as string | undefined;
+
+  // 覆盖图直接返回
+  const override = overrides[cellIdx];
+  if (override?.url) return override.url;
+
+  if (!imageUrl) return null;
+
+  const r = Math.floor(cellIdx / cols);
+  const c = cellIdx % cols;
+  const isCustomGrid = (sbData.storyboardRowPositions as number[] | undefined)?.length
+    || (sbData.storyboardColPositions as number[] | undefined)?.length;
+
+  try {
+    if (isCustomGrid) {
+      const rowPositions = (sbData.storyboardRowPositions as number[]) ?? [];
+      const colPositions = (sbData.storyboardColPositions as number[]) ?? [];
+      const hRanges = [0, ...rowPositions, 100];
+      const vRanges = [0, ...colPositions, 100];
+      const cell = await cropImageByRanges(imageUrl, hRanges, vRanges, r, c);
+      return cell.dataUrl;
+    }
+    const cell = await cropImageCell(imageUrl, c, r, cols, rows);
+    return cell.dataUrl;
+  } catch (err) {
+    console.error('[promptResolver] 分镜格裁切失败:', err);
+    return imageUrl; // fallback to whole image
+  }
+}
 
 /** 解析 prompt 中的 @{nodeId:label} 引用，返回适合 /chat/completions 的 content 字段
  *  - 仅含文本引用时返回纯字符串
@@ -48,13 +104,29 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
       continue;
     }
 
-    const nodeId = match[2];
+    const rawNodeId = match[2];
+    const { nodeId, cellIdx } = parseStoryboardCellId(rawNodeId);
     const node = nodes.find((n) => n.id === nodeId);
+
+    // 宫格分镜单元格引用：裁切对应格图片
+    if (cellIdx !== null && node && (node.data.type as string) === 'ai-storyboard') {
+      const sbImage = await resolveStoryboardCellImage(node.data as BaseNodeData, cellIdx);
+      if (sbImage) {
+        const key = `sbcell:${rawNodeId}`;
+        const idx = imageEntries.length + 1;
+        imageKeyToIndex.set(key, idx);
+        imageEntries.push({ url: sbImage });
+        parts.push(`图片${idx}`);
+      }
+      lastIndex = chipRegex.lastIndex;
+      continue;
+    }
+
     if (!node) {
       parts.push(match[0]);
     } else {
       const nodeType = (node.data.type as string) || '';
-      if (nodeType === 'ai-image' || nodeType === 'source-image') {
+      if (nodeType === 'ai-image' || nodeType === 'source-image' || nodeType === 'ai-storyboard') {
         const imageUrl = node.data.imageUrl as string | undefined;
         if (typeof imageUrl === 'string' && imageUrl.trim()) {
           const key = `node:${nodeId}`;
@@ -142,10 +214,26 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
     }
   }
 
+  // 预扫描宫格分镜单元格引用，提前裁切各格图片
+  const sbCellImageMap = new Map<string, string>();
+  for (const m of rawPrompt.matchAll(/@\{([^:]+):([^}]+)\}/g)) {
+    const rawNodeId = m[1];
+    if (rawNodeId.includes('/cell/')) {
+      const { nodeId, cellIdx } = parseStoryboardCellId(rawNodeId);
+      if (cellIdx !== null) {
+        const sbNode = nodes.find((n) => n.id === nodeId);
+        if (sbNode && (sbNode.data.type as string) === 'ai-storyboard') {
+          const url = await resolveStoryboardCellImage(sbNode.data as BaseNodeData, cellIdx);
+          if (url) sbCellImageMap.set(rawNodeId, url);
+        }
+      }
+    }
+  }
+
   const imageKeyToIndex = new Map<string, number>();
 
   const chipRegex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
-  const prompt = rawPrompt.replace(chipRegex, (_match, assetEnc: string | undefined, nodeId: string) => {
+  const prompt = rawPrompt.replace(chipRegex, (_match, assetEnc: string | undefined, rawNodeId: string) => {
     if (assetEnc !== undefined) {
       const dataUrl = assetImageMap.get(assetEnc);
       if (!dataUrl) return '';
@@ -158,15 +246,31 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
       }
       return `图片${idx}`;
     }
-    const node = nodes.find((n) => n.id === nodeId);
+
+    // 宫格分镜单元格引用：使用预裁切好的图
+    if (rawNodeId.includes('/cell/')) {
+      const sbUrl = sbCellImageMap.get(rawNodeId);
+      if (sbUrl) {
+        const key = `sbcell:${rawNodeId}`;
+        let idx = imageKeyToIndex.get(key);
+        if (idx === undefined) {
+          idx = imageEntries.length + 1;
+          imageKeyToIndex.set(key, idx);
+          imageEntries.push({ url: sbUrl });
+        }
+        return `图片${idx}`;
+      }
+      return '';
+    }
+    const node = nodes.find((n) => n.id === rawNodeId);
     if (!node) return '';
 
     const nodeType = (node.data.type as string) || '';
 
-    if (nodeType === 'ai-image' || nodeType === 'source-image') {
+    if (nodeType === 'ai-image' || nodeType === 'source-image' || nodeType === 'ai-storyboard') {
       const imageUrl = node.data.imageUrl as string | undefined;
       if (typeof imageUrl !== 'string' || !imageUrl.trim()) return '';
-      const key = `node:${nodeId}`;
+      const key = `node:${rawNodeId}`;
       let idx = imageKeyToIndex.get(key);
       if (idx === undefined) {
         idx = imageEntries.length + 1;

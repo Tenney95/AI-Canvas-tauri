@@ -55,6 +55,12 @@ const CONNECTION_MENU_MAP: Record<string, ConnectionMenuOption[]> = {
     { label: '生成视频', type: 'ai-video' },
     { label: '生成360全景图', type: 'ai-panorama' },
   ],
+  'ai-storyboard': [
+    { label: '生成文本', type: 'ai-text' },
+    { label: '生成图像', type: 'ai-image' },
+    { label: '生成视频', type: 'ai-video' },
+    { label: '生成360全景图', type: 'ai-panorama' },
+  ],
   'ai-video': [],
   'ai-audio': [
     { label: '生成文本', type: 'ai-text' },

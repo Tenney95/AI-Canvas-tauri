@@ -3,7 +3,7 @@
  */
 import { useState, useCallback, useRef, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
-import type { WorkflowIONodeType } from '../../../types';
+import type { WorkflowIONodeType, StoryboardCellOverride, BaseNodeData, NodeType } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
 import { Icon } from '@iconify/react';
 import { listGlobalFiles, listExternalFolderFiles, getFileCategory, type AssetFileEntry } from '../../../services/fileService';
@@ -55,6 +55,7 @@ const CHIP_STYLE: Record<string, string> = {
   'ai-video': 'chip-video',
   'ai-audio': 'chip-audio',
   'ai-markdown': 'chip-markdown',
+  'ai-storyboard': 'chip-image',
 };
 
 const NODE_ICON: Record<string, string> = {
@@ -171,7 +172,7 @@ function buildChipEl(
   const displayId = meta?.displayId;
   const thumbnailUrl = meta?.thumbnailUrl;
   const chipClass = CHIP_STYLE[nodeType] || CHIP_STYLE['ai-text'];
-  const isMedia = nodeType === 'ai-image' || nodeType === 'ai-video';
+  const isMedia = nodeType === 'ai-image' || nodeType === 'ai-video' || nodeType === 'ai-storyboard';
 
   const span = document.createElement('span');
   span.className = `prompt-chip ${chipClass}`;
@@ -431,6 +432,23 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         // 图片节点优先本地文件（线上地址可能失效）；视频用海报帧；不用 videoUrl（会裂图）
         thumbnailUrl: bestNodeThumb(n.data),
       });
+      // 宫格分镜：为每个非空格子注册虚拟 ID，使芯片渲染能查到缩略图与类型
+      if (n.data.type === 'ai-storyboard') {
+        const cols = Math.max(1, (n.data.storyboardCols as number) || 3);
+        const rows = Math.max(1, (n.data.storyboardRows as number) || 3);
+        const overrides = (n.data.storyboardOverrides as (StoryboardCellOverride | null)[] | undefined) ?? [];
+        const imageUrl = n.data.imageUrl as string | undefined;
+        for (let i = 0; i < rows * cols; i++) {
+          const thumb = overrides[i]?.url || imageUrl;
+          if (thumb) {
+            map.set(`${n.id}/cell/${i}`, {
+              type: 'ai-image',
+              displayId: undefined,
+              thumbnailUrl: thumb,
+            });
+          }
+        }
+      }
     }
     return map;
   }, [nodes]);
@@ -581,6 +599,39 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         isSelf: false as boolean,
       }));
 
+    // 展开宫格分镜节点：为每个非空格子生成独立 @mention 条目（虚拟 ID = nodeId/cell/idx）
+    const expanded: typeof list = [];
+    for (const item of list) {
+      expanded.push(item);
+      if (item.type === 'ai-storyboard') {
+        const sbNode = nodes.find((n) => n.id === item.id);
+        if (sbNode) {
+          const sbData = sbNode.data as BaseNodeData;
+          const cols = Math.max(1, (sbData.storyboardCols as number) || 3);
+          const rows = Math.max(1, (sbData.storyboardRows as number) || 3);
+          const extracted = (sbData.storyboardExtracted as boolean[] | undefined) ?? [];
+          const overrides = (sbData.storyboardOverrides as (StoryboardCellOverride | null)[] | undefined) ?? [];
+          const imageUrl = sbData.imageUrl as string | undefined;
+          for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+              const idx = r * cols + c;
+              if (extracted[idx] && !overrides[idx]) continue; // 已提取的空格跳过
+              expanded.push({
+                id: `${item.id}/cell/${idx}`,
+                label: `${item.label} · 第${r + 1}行${c + 1}列`,
+                type: 'ai-image' as NodeType,
+                displayId: undefined,
+                hasOutput: true,
+                outputType: 'image' as const,
+                thumbnailUrl: overrides[idx]?.url || imageUrl,
+                isSelf: false,
+              });
+            }
+          }
+        }
+      }
+    }
+
     // 自身引用：当前节点有输出内容时可在 @菜单中 @自身
     if (me && me.type !== 'group') {
       const selfOutput = me.data.output as string | undefined;
@@ -589,7 +640,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       const selfAudioUrl = me.data.audioUrl as string | undefined;
       const hasSelfContent = (selfOutput && selfOutput.trim()) || selfImageUrl || selfVideoUrl || selfAudioUrl;
       if (hasSelfContent) {
-        list.unshift({
+        expanded.unshift({
           id: me.id,
           label: (me.data.label as string) || '节点',
           type: me.data.type,
@@ -602,7 +653,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       }
     }
 
-    return list;
+    return expanded;
   }, [nodeId, nodes, edges]);
 
   const getWorkflowMentionNodes = useCallback(() => {
