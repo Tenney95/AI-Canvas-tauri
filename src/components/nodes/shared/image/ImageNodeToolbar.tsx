@@ -3,10 +3,13 @@
  */
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
+import type { NodeType, BaseNodeData } from '../../../../types';
 import AnimatedButton from '../../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../../hooks/useToolbarEdit';
 import ToolbarEditor from '../toolbar/ToolbarEditor';
 import { getButtonRegistry } from '../toolbar/toolbarRegistry';
+import { resolvePresetAction, resolvePresetDef } from '../toolbar/presetAction';
+import { useAppStore } from '../../../../store/useAppStore';
 
 interface ImageNodeToolbarProps {
   nodeId: string;
@@ -101,10 +104,39 @@ function ImageNodeToolbar({
     fullscreen:     (e) => { e.stopPropagation(); onFullscreen?.(); },
   };
 
+  const nodeData = useAppStore((s) => s.nodes.find((n) => n.id === _nodeId)?.data as BaseNodeData | undefined);
+  const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const userPresets = useAppStore((s) => s.userPresets);
+
+  const handlePresetClick = useCallback(
+    (key: string) => (e: React.MouseEvent) => {
+      e.stopPropagation();
+      const resolved = resolvePresetAction(key, nodeType as NodeType, nodeData?.prompt ?? '', userPresets);
+      if (resolved) {
+        updateNodeData(_nodeId, { prompt: resolved.filledPrompt } as Partial<BaseNodeData>);
+      }
+    },
+    [nodeData?.prompt, userPresets, _nodeId, updateNodeData],
+  );
+
   // ── 渲染单个按钮 ──
   const renderButton = useCallback((key: string) => {
     const def = registry.find((d) => d.key === key);
-    if (!def || !actionMap[key]) return null;
+    const handler = actionMap[key];
+    const isPreset = !def;
+
+    if (!def && isPreset) {
+      const presetDef = resolvePresetDef(key, nodeType as NodeType, userPresets);
+      if (!presetDef) return null;
+      return (
+        <AnimatedButton key={key} className="ftb-btn icon-only act-preset"
+          data-tooltip={presetDef.label} aria-label={presetDef.label}
+          onClick={handlePresetClick(key)}>
+          <Icon icon={presetDef.icon} width={14} height={14} />
+        </AnimatedButton>
+      );
+    }
+    if (!def || !handler) return null;
 
     if (key === 'upscale') {
       return (

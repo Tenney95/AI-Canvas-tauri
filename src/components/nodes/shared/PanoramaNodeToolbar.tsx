@@ -3,12 +3,16 @@
  */
 import { memo, useCallback } from 'react';
 import { Icon } from '@iconify/react';
+import type { NodeType, BaseNodeData } from '../../../types';
 import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
 import { getButtonRegistry } from './toolbar/toolbarRegistry';
+import { resolvePresetAction, resolvePresetDef } from './toolbar/presetAction';
+import { useAppStore } from '../../../store/useAppStore';
 
 interface PanoramaNodeToolbarProps {
+  nodeId: string;
   onUpload?: () => void;
   onToggleMode?: () => void;
   previewMode?: 'image' | '360';
@@ -16,16 +20,24 @@ interface PanoramaNodeToolbarProps {
   onFullscreen?: () => void;
 }
 
-function PanoramaNodeToolbar({
-  onUpload,
-  onToggleMode,
-  previewMode,
-  onScreenshot,
-  onFullscreen,
-}: PanoramaNodeToolbarProps) {
+function PanoramaNodeToolbar({ nodeId, onUpload, onToggleMode, previewMode, onScreenshot, onFullscreen }: PanoramaNodeToolbarProps) {
   const nodeType = 'ai-panorama';
   const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
+  const nodeData = useAppStore((s) => s.nodes.find((n) => n.id === nodeId)?.data as BaseNodeData | undefined);
+  const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const userPresets = useAppStore((s) => s.userPresets);
+
+  const handlePresetClick = useCallback(
+    (key: string) => (e: React.MouseEvent) => {
+      e.stopPropagation();
+      const resolved = resolvePresetAction(key, nodeType as NodeType, nodeData?.prompt ?? '', userPresets);
+      if (resolved) {
+        updateNodeData(nodeId, { prompt: resolved.filledPrompt } as Partial<BaseNodeData>);
+      }
+    },
+    [nodeData?.prompt, userPresets, nodeId, updateNodeData],
+  );
 
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {
     upload:     (e) => { e.stopPropagation(); onUpload?.(); },
@@ -34,58 +46,46 @@ function PanoramaNodeToolbar({
     fullscreen: (e) => { e.stopPropagation(); onFullscreen?.(); },
   };
 
-  // ── 编辑态 ──
   if (edit.isEditing) {
     return <ToolbarEditor edit={edit} nodeType={nodeType} />;
   }
 
-  // ── 正常态：按布局渲染 ──
   return (
-    <div
-      className="node-floating-toolbar pano-toolbar nodrag"
-      {...edit.longPressHandlers}
-    >
+    <div className="node-floating-toolbar pano-toolbar nodrag" {...edit.longPressHandlers}>
       <div className="pano-toolbar-main nodrag">
         {edit.layout.zones.map((zone, zi) => (
           <div key={zone.id} className="img-toolbar-zone nodrag">
             {zone.buttonKeys.map((key) => {
-              const def = registry.find((d) => d.key === key);
-              if (!def || !actionMap[key]) return null;
+            const def = registry.find((d) => d.key === key);
+            const handler = actionMap[key];
+            const isPreset = !def;
 
-              // toggleMode 按钮根据当前模式显示不同图标
+            const presetDef = !def ? resolvePresetDef(key, nodeType as NodeType, userPresets) : null;
+            if (!def && !presetDef) return null;
+
+            const resolvedDef = def ?? { key, label: presetDef!.label, icon: presetDef!.icon, defaultZone: '' };
+            const clickHandler = handler ?? handlePresetClick(key);
+
               if (key === 'toggleMode') {
                 return (
-                  <AnimatedButton
-                    key={key}
-                    className="ftb-btn icon-only act-mode"
+                  <AnimatedButton key={key} className="ftb-btn icon-only act-mode"
                     data-tooltip={previewMode === '360' ? '切换到图片视图' : '切换到360全景'}
-                    aria-label="切换视图模式"
-                    onClick={actionMap[key]}
-                  >
-                    {previewMode === '360' ? (
-                      <Icon icon="mdi:image-outline" width={14} height={14} />
-                    ) : (
-                      <Icon icon="mdi:rotate-3d" width={14} height={14} />
-                    )}
+                    aria-label="切换视图模式" onClick={clickHandler}>
+                    {previewMode === '360'
+                      ? <Icon icon="mdi:image-outline" width={14} height={14} />
+                      : <Icon icon="mdi:rotate-3d" width={14} height={14} />}
                   </AnimatedButton>
                 );
               }
 
               return (
-                <AnimatedButton
-                  key={key}
-                  className={`ftb-btn icon-only act-${key}`}
-                  data-tooltip={def.label}
-                  aria-label={def.label}
-                  onClick={actionMap[key]}
-                >
-                  <Icon icon={def.icon} width={14} height={14} />
+                <AnimatedButton key={key} className={`ftb-btn icon-only${isPreset ? ' act-preset' : ''}`}
+                  data-tooltip={resolvedDef.label} aria-label={resolvedDef.label} onClick={clickHandler}>
+                  <Icon icon={resolvedDef.icon} width={14} height={14} />
                 </AnimatedButton>
               );
             })}
-            {zi < edit.layout.zones.length - 1 && (
-              <div className="ftb-divider pano-toolbar-divider" />
-            )}
+            {zi < edit.layout.zones.length - 1 && <div className="ftb-divider pano-toolbar-divider" />}
           </div>
         ))}
       </div>

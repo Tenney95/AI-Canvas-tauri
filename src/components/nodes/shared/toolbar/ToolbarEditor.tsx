@@ -3,10 +3,12 @@
  *
  * 拖拽实现：Pointer Events 手动拖拽（不用 HTML5 DnD，避免 React Flow nodrag 冲突）
  */
-import { memo, useCallback, useState, useRef, useEffect } from 'react';
+import { memo, useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Icon } from '@iconify/react';
-import type { ToolbarButtonDef } from '../../../../types';
+import type { ToolbarButtonDef, NodeType } from '../../../../types';
 import type { UseToolbarEditReturn } from '../../../../hooks/useToolbarEdit';
+import { getSlashCommands } from '../slashCommands';
+import { useAppStore } from '../../../../store/useAppStore';
 
 interface ToolbarEditorProps {
   edit: UseToolbarEditReturn;
@@ -35,6 +37,21 @@ interface DragState {
 interface DragTarget {
   zoneId: string;
   index: number;
+}
+
+interface ZoneDragState {
+  fromIndex: number;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  offsetX: number;
+  offsetY: number;
+  active: boolean;
+  frameId: number | null;
+  sourceEl: HTMLElement;
+  captureEl: HTMLElement;
 }
 
 const DRAG_THRESHOLD_PX = 5;
@@ -104,13 +121,184 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const ghostElRef = useRef<HTMLDivElement | null>(null);
+  const zoneGhostElRef = useRef<HTMLDivElement | null>(null);
 
   // 只在落点变化时更新 React 状态；高频指针坐标保存在 dragRef 中
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
 
+  // ── 分区拖拽排序 ──
+  const [zoneDragFrom, setZoneDragFrom] = useState<number | null>(null);
+  const [zoneDragOver, setZoneDragOver] = useState<number | null>(null);
+  const zoneDragRef = useRef<ZoneDragState | null>(null);
+
   const zones = edit.layout.zones;
   const moveButtonAcross = edit.moveButtonAcross;
+  const setToolbarLayout = edit.setToolbarLayout;
   const exitEdit = edit.exitEdit;
+
+  const calcZoneTarget = useCallback((clientY: number): number | null => {
+    const zonesEl = containerRef.current?.querySelector<HTMLElement>('.toolbar-edit-zones');
+    const zoneEls = Array.from(zonesEl?.querySelectorAll<HTMLElement>('.toolbar-edit-zone') ?? []);
+    if (!zonesEl || zoneEls.length === 0) return null;
+
+    const listRect = zonesEl.getBoundingClientRect();
+    if (clientY < listRect.top - 24 || clientY > listRect.bottom + 24) return null;
+
+    for (let index = 0; index < zoneEls.length; index++) {
+      const rect = zoneEls[index].getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return index;
+    }
+    return zoneEls.length;
+  }, []);
+
+  const updateZoneDragOver = useCallback((index: number | null) => {
+    setZoneDragOver((current) => (current === index ? current : index));
+  }, []);
+
+  const positionZoneGhost = useCallback((clientX: number, clientY: number, drag: ZoneDragState) => {
+    const ghost = zoneGhostElRef.current;
+    if (!ghost) return;
+    ghost.style.setProperty('--toolbar-zone-drag-x', `${clientX - drag.offsetX}px`);
+    ghost.style.setProperty('--toolbar-zone-drag-y', `${clientY - drag.offsetY}px`);
+  }, []);
+
+  const startZoneDragVisuals = useCallback((drag: ZoneDragState, clientX: number, clientY: number) => {
+    drag.active = true;
+    setZoneDragFrom(drag.fromIndex);
+    containerRef.current?.classList.add('is-zone-dragging');
+    document.body.classList.add('toolbar-edit-zone-dragging');
+
+    const ghost = drag.sourceEl.cloneNode(true) as HTMLDivElement;
+    ghost.classList.remove('is-zone-drag-from', 'is-zone-drag-over', 'is-zone-drag-over-end');
+    ghost.classList.add('toolbar-edit-zone-drag-ghost');
+    ghost.removeAttribute('data-zone-id');
+    ghost.querySelectorAll('[data-tooltip]').forEach((element) => element.removeAttribute('data-tooltip'));
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.style.width = `${drag.sourceEl.getBoundingClientRect().width}px`;
+    document.body.appendChild(ghost);
+    zoneGhostElRef.current = ghost;
+    positionZoneGhost(clientX, clientY, drag);
+  }, [positionZoneGhost]);
+
+  const resetZoneDrag = useCallback(() => {
+    const drag = zoneDragRef.current;
+    if (!drag) return;
+
+    zoneDragRef.current = null;
+    if (drag.frameId !== null) cancelAnimationFrame(drag.frameId);
+    containerRef.current?.classList.remove('is-zone-dragging');
+    document.body.classList.remove('toolbar-edit-zone-dragging');
+    zoneGhostElRef.current?.remove();
+    zoneGhostElRef.current = null;
+    setZoneDragFrom(null);
+    updateZoneDragOver(null);
+
+    if (drag.captureEl.hasPointerCapture(drag.pointerId)) {
+      drag.captureEl.releasePointerCapture(drag.pointerId);
+    }
+  }, [updateZoneDragOver]);
+
+  const scheduleZoneDragFrame = useCallback((clientX: number, clientY: number) => {
+    const drag = zoneDragRef.current;
+    if (!drag) return;
+    drag.lastX = clientX;
+    drag.lastY = clientY;
+    if (drag.frameId !== null) return;
+
+    drag.frameId = requestAnimationFrame(() => {
+      const current = zoneDragRef.current;
+      if (!current?.active) return;
+      current.frameId = null;
+      positionZoneGhost(current.lastX, current.lastY, current);
+      updateZoneDragOver(calcZoneTarget(current.lastY));
+    });
+  }, [calcZoneTarget, positionZoneGhost, updateZoneDragOver]);
+
+  const handleZoneDragStart = useCallback((e: React.PointerEvent, zoneIndex: number) => {
+    if (!e.isPrimary || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const sourceEl = el.closest<HTMLElement>('.toolbar-edit-zone');
+    if (!sourceEl) {
+      el.releasePointerCapture(e.pointerId);
+      return;
+    }
+    const rect = sourceEl.getBoundingClientRect();
+    zoneDragRef.current = {
+      fromIndex: zoneIndex,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+      active: false,
+      frameId: null,
+      sourceEl,
+      captureEl: el,
+    };
+  }, []);
+
+  const handleZoneDragMove = useCallback((e: React.PointerEvent) => {
+    const drag = zoneDragRef.current;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    e.preventDefault();
+
+    if (!drag.active) {
+      const deltaX = e.clientX - drag.startX;
+      const deltaY = e.clientY - drag.startY;
+      if (deltaX * deltaX + deltaY * deltaY < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) return;
+      startZoneDragVisuals(drag, e.clientX, e.clientY);
+    }
+    scheduleZoneDragFrame(e.clientX, e.clientY);
+  }, [scheduleZoneDragFrame, startZoneDragVisuals]);
+
+  const handleZoneDragEnd = useCallback((e: React.PointerEvent) => {
+    const drag = zoneDragRef.current;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+
+    const toIndex = drag.active ? calcZoneTarget(e.clientY) : null;
+    resetZoneDrag();
+
+    if (toIndex !== null && toIndex !== drag.fromIndex && toIndex !== drag.fromIndex + 1) {
+      const newZones = [...zones];
+      const [moved] = newZones.splice(drag.fromIndex, 1);
+      const insertAt = toIndex > drag.fromIndex ? toIndex - 1 : toIndex;
+      newZones.splice(insertAt, 0, moved);
+      const next = { ...edit.layout, zones: newZones };
+      setToolbarLayout(next);
+    }
+  }, [calcZoneTarget, edit.layout, resetZoneDrag, setToolbarLayout, zones]);
+
+  const handleZoneDragCancel = useCallback((e: React.PointerEvent) => {
+    if (zoneDragRef.current?.pointerId === e.pointerId) resetZoneDrag();
+  }, [resetZoneDrag]);
+
+  // ── 快捷指令数据 ──
+  const userPresets = useAppStore((s) => s.userPresets);
+  const allSlashCommands = useMemo(() => {
+    const cmds = getSlashCommands(nodeType as NodeType);
+    const flat: { id: string; title: string; icon: string; description: string }[] = [];
+    const walk = (items: typeof cmds) => {
+      for (const item of items) {
+        if (item.promptTemplate) {
+          flat.push({ id: item.id, title: item.title, icon: item.icon, description: item.description });
+        }
+        if (item.children) walk(item.children);
+      }
+    };
+    walk(cmds);
+    return flat;
+  }, [nodeType]);
+
+  const matchingUserPresets = useMemo(
+    () => userPresets.filter((p) => p.nodeType === nodeType),
+    [userPresets, nodeType],
+  );
 
   // ── 根据鼠标位置计算目标 zone + index ──
   const calcTarget = useCallback((clientX: number, clientY: number): { zoneId: string; index: number } | null => {
@@ -297,15 +485,36 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
     if (dragRef.current?.pointerId === e.pointerId) resetDrag();
   }, [resetDrag]);
 
+  const handleEditorPointerMove = useCallback((e: React.PointerEvent) => {
+    if (zoneDragRef.current) handleZoneDragMove(e);
+    else handlePointerMove(e);
+  }, [handlePointerMove, handleZoneDragMove]);
+
+  const handleEditorPointerUp = useCallback((e: React.PointerEvent) => {
+    if (zoneDragRef.current) handleZoneDragEnd(e);
+    else handlePointerUp(e);
+  }, [handlePointerUp, handleZoneDragEnd]);
+
+  const handleEditorPointerCancel = useCallback((e: React.PointerEvent) => {
+    if (zoneDragRef.current) handleZoneDragCancel(e);
+    else handlePointerCancel(e);
+  }, [handlePointerCancel, handleZoneDragCancel]);
+
   // 组件卸载时兜底清理克隆浮层和全局拖拽样式
   useEffect(() => () => {
     const drag = dragRef.current;
     if (drag?.frameId !== null && drag?.frameId !== undefined) cancelAnimationFrame(drag.frameId);
     drag?.sourceEl.classList.remove('is-dragging');
+    const zoneDrag = zoneDragRef.current;
+    if (zoneDrag?.frameId !== null && zoneDrag?.frameId !== undefined) cancelAnimationFrame(zoneDrag.frameId);
     document.body.classList.remove('toolbar-edit-dragging');
+    document.body.classList.remove('toolbar-edit-zone-dragging');
     ghostElRef.current?.remove();
+    zoneGhostElRef.current?.remove();
     ghostElRef.current = null;
+    zoneGhostElRef.current = null;
     dragRef.current = null;
+    zoneDragRef.current = null;
   }, []);
 
   // ── 点击外部退出编辑态 ──
@@ -335,10 +544,10 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
     <div
       className={`toolbar-editor nodrag toolbar-editor--${nodeType}`}
       ref={containerRef}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerCancel}
-      onLostPointerCapture={handlePointerCancel}
+      onPointerMove={handleEditorPointerMove}
+      onPointerUp={handleEditorPointerUp}
+      onPointerCancel={handleEditorPointerCancel}
+      onLostPointerCapture={handleEditorPointerCancel}
     >
       {/* ── 按钮库面板 ── */}
       <div className="toolbar-edit-bank nodrag">
@@ -375,15 +584,24 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
         </div>
       </div>
 
-      {/* ── 可编辑 Zone 列表 ── */}
-      <div className="toolbar-edit-zones nodrag">
-        {zones.map((zone) => (
-          <div
-            key={zone.id}
-            className={`toolbar-edit-zone nodrag${dragTarget?.zoneId === zone.id ? ' drag-over' : ''}`}
-            data-zone-id={zone.id}
-          >
+      {/* ── Zone 编辑区 + 快捷指令面板（左右分栏）── */}
+      <div className="toolbar-edit-main nodrag">
+        {/* 左侧：Zone 列表 */}
+        <div className="toolbar-edit-zones nodrag">
+          {zones.map((zone, zoneIndex) => (
+            <div
+              key={zone.id}
+              className={`toolbar-edit-zone nodrag${dragTarget?.zoneId === zone.id ? ' drag-over' : ''}${zoneDragFrom === zoneIndex ? ' is-zone-drag-from' : ''}${zoneDragOver === zoneIndex ? ' is-zone-drag-over' : ''}${zoneDragOver === zones.length && zoneIndex === zones.length - 1 ? ' is-zone-drag-over-end' : ''}`}
+              data-zone-id={zone.id}
+            >
             <div className="toolbar-edit-zone-header">
+              <span
+                className="toolbar-edit-btn-grip nodrag toolbar-edit-zone-grip"
+                onPointerDown={(e) => handleZoneDragStart(e, zoneIndex)}
+                data-tooltip="拖拽调整分区顺序"
+              >
+                <Icon icon="mdi:drag-vertical" width={12} height={12} />
+              </span>
               <ZoneNameEditor name={zone.name} onRename={(n) => edit.renameZone(zone.id, n)} />
               {zone.buttonKeys.length === 0 && zones.length > 1 && (
                 <button type="button" className="toolbar-edit-zone-del nodrag" onClick={() => edit.removeZone(zone.id)} data-tooltip="删除此分区">
@@ -396,8 +614,8 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
                 const isInsertBefore = dragTarget?.zoneId === zone.id && dragTarget?.index === idx;
                 const def = edit.registry.find((d) => d.key === key);
                 const resolvedDef: ToolbarButtonDef = def ?? (() => {
-                  const p = presetItems.find((pi) => pi.id === key);
-                  const u = userPresetItems.find((ui) => ui.id === key);
+                  const p = allSlashCommands.find((pi) => pi.id === key);
+                  const u = matchingUserPresets.find((ui) => ui.id === key);
                   return { key, label: p?.title || u?.name || key, icon: p?.icon || u?.icon || 'mdi:star', defaultZone: zone.name };
                 })();
 
@@ -442,6 +660,46 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
           <span>新建分区</span>
         </button>
       </div>
+
+      {/* 右侧：快捷指令面板 */}
+      {(allSlashCommands.length > 0 || matchingUserPresets.length > 0) && (
+        <div className="toolbar-edit-commands nodrag">
+          <div className="toolbar-edit-commands-header">快捷指令</div>
+          <div className="toolbar-edit-commands-list nodrag nowheel">
+            {allSlashCommands.map((cmd) => {
+              if (edit.activeButtonKeys.has(cmd.id)) return null;
+              return (
+                <button
+                  key={`sc-${cmd.id}`}
+                  type="button"
+                  className="toolbar-edit-command-item nodrag"
+                  onClick={() => addToZone(cmd.id)}
+                  data-tooltip={cmd.description}
+                >
+                  <span className="toolbar-edit-bank-icon"><MiniIcon icon={cmd.icon} /></span>
+                  <span className="toolbar-edit-command-label">{cmd.title}</span>
+                </button>
+              );
+            })}
+            {matchingUserPresets.map((p) => {
+              if (edit.activeButtonKeys.has(p.id)) return null;
+              return (
+                <button
+                  key={`up-${p.id}`}
+                  type="button"
+                  className="toolbar-edit-command-item nodrag"
+                  onClick={() => addToZone(p.id)}
+                  data-tooltip={p.description || p.name}
+                >
+                  <span className="toolbar-edit-bank-icon"><MiniIcon icon={p.icon || 'mdi:star'} /></span>
+                  <span className="toolbar-edit-command-label">{p.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
     </div>
   );
 }

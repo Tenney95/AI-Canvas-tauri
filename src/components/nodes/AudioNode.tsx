@@ -276,7 +276,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       />
       {data.audioUrl && (
         <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
-          <AudioNodeToolbar isPlaying={isPlaying} onTogglePlay={togglePlay} onUpload={handleUpload} />
+          <AudioNodeToolbar nodeId={id} isPlaying={isPlaying} onTogglePlay={togglePlay} onUpload={handleUpload} />
         </div>
       )}
       <div

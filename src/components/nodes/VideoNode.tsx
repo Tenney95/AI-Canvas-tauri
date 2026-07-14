@@ -237,7 +237,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       />
       {data.videoUrl && (
         <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
-          <VideoNodeToolbar onCaptureFrame={handleCaptureFrame} onFullscreen={handleOpenFullscreen} />
+          <VideoNodeToolbar nodeId={id} onCaptureFrame={handleCaptureFrame} onFullscreen={handleOpenFullscreen} />
         </div>
       )}
       <div

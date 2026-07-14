@@ -45,6 +45,9 @@ export interface UseToolbarEditReturn {
   removeZone: (zoneId: string) => void;
   renameZone: (zoneId: string, name: string) => void;
 
+  /** 直接写入 layout（用于分区排序等整体操作） */
+  setToolbarLayout: (layout: ToolbarLayout) => void;
+
   // ── 布局操作 ──
   resetLayout: () => void;
 
@@ -204,6 +207,10 @@ export function useToolbarEdit({ nodeType }: UseToolbarEditOptions): UseToolbarE
     });
   }, []);
 
+  const setToolbarLayoutLocal = useCallback((layout: ToolbarLayout) => {
+    setDirtyLayout(structuredClone(layout));
+  }, []);
+
   const resetLayout = useCallback(() => {
     const defaultLayout = getDefaultLayout(nodeType);
     setDirtyLayout(structuredClone(defaultLayout));
@@ -244,6 +251,7 @@ export function useToolbarEdit({ nodeType }: UseToolbarEditOptions): UseToolbarE
     addZone,
     removeZone,
     renameZone,
+    setToolbarLayout: setToolbarLayoutLocal,
     resetLayout,
     registry,
     activeButtonKeys,

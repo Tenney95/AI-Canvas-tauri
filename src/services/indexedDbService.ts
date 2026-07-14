@@ -2,7 +2,7 @@
  * indexedDbService IndexedDB 持久化服务 — 浏览器端本地存储，保存项目、工作流、应用配置等数据
  */
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 10; // v10: stable asset identity/index and assetId-keyed metadata
+const DB_VERSION = 11; // v11: toolbar layouts persistence
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
@@ -15,6 +15,7 @@ const STORE_STYLES = 'styles';
 const STORE_SKILLS = 'skills';
 const STORE_CHAT_CONVERSATIONS = 'chatConversations';
 const STORE_CHAT_MESSAGES = 'chatMessages';
+const STORE_TOOLBAR_LAYOUTS = 'toolbarLayouts';
 
 const CONFIG_KEY = 'app-config';
 
@@ -88,6 +89,10 @@ function openDB(): Promise<IDBDatabase> {
         const msgStore = db.createObjectStore(STORE_CHAT_MESSAGES, { keyPath: 'id' });
         msgStore.createIndex('conversationId_sequence', ['conversationId', 'sequence'], { unique: false });
         msgStore.createIndex('requestId', 'requestId', { unique: false });
+      }
+      // v11: toolbar layouts (single record, keyed by 'layouts')
+      if (!db.objectStoreNames.contains(STORE_TOOLBAR_LAYOUTS)) {
+        db.createObjectStore(STORE_TOOLBAR_LAYOUTS, { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -788,5 +793,31 @@ export async function permanentlyDeleteConversation(convId: string): Promise<voi
     };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ============================================
+// Toolbar Layouts persistence (single record)
+// ============================================
+
+const TOOLBAR_LAYOUTS_KEY = 'layouts';
+
+export async function saveToolbarLayoutsToDb(data: Record<string, unknown>): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_TOOLBAR_LAYOUTS, 'readwrite');
+    tx.objectStore(STORE_TOOLBAR_LAYOUTS).put({ id: TOOLBAR_LAYOUTS_KEY, data });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function loadToolbarLayoutsFromDb(): Promise<Record<string, unknown> | null> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_TOOLBAR_LAYOUTS, 'readonly');
+    const request = tx.objectStore(STORE_TOOLBAR_LAYOUTS).get(TOOLBAR_LAYOUTS_KEY);
+    request.onsuccess = () => resolve(request.result?.data ?? null);
+    request.onerror = () => reject(request.error);
   });
 }

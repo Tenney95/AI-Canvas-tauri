@@ -505,6 +505,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
         {hasImage && (
           <div className={`node-toolbar-shell ${selected ? 'is-visible' : ''}`}>
             <PanoramaNodeToolbar
+              nodeId={id}
               onUpload={handleUpload}
               onToggleMode={toggleMode}
               previewMode={previewMode}

@@ -21,6 +21,8 @@ import {
   saveStyleToDb,
   getAllStyles,
   deleteStyleFromDb,
+  saveToolbarLayoutsToDb,
+  loadToolbarLayoutsFromDb,
   type WorkflowRecord,
   type PresetRecord,
   type SkillRecord,
@@ -335,3 +337,23 @@ export async function deleteStyle(id: string): Promise<void> {
 }
 
 export type { WorkflowRecord, PresetRecord, SkillRecord, CustomStyleRecord };
+
+// ── Toolbar Layouts ──
+
+export async function saveToolbarLayouts(data: Record<string, unknown>): Promise<void> {
+  try {
+    await saveToolbarLayoutsToDb(data);
+  } catch (error) {
+    console.error('Save toolbar layouts failed:', error);
+    throw error;
+  }
+}
+
+export async function loadToolbarLayouts(): Promise<Record<string, unknown> | null> {
+  try {
+    return await loadToolbarLayoutsFromDb();
+  } catch (error) {
+    console.error('Load toolbar layouts failed:', error);
+    return null;
+  }
+}

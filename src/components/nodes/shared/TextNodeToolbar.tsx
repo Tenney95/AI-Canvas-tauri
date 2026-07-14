@@ -3,11 +3,13 @@
  */
 import { memo, useState, useCallback } from 'react';
 import { Icon } from '@iconify/react';
-import type { BaseNodeData } from '../../../types';
+import type { BaseNodeData, NodeType } from '../../../types';
 import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
 import { getButtonRegistry } from './toolbar/toolbarRegistry';
+import { resolvePresetAction, resolvePresetDef } from './toolbar/presetAction';
+import { useAppStore } from '../../../store/useAppStore';
 
 interface TextNodeToolbarProps {
   nodeId: string;
@@ -18,10 +20,12 @@ interface TextNodeToolbarProps {
   onFullscreen: () => void;
 }
 
-function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFullscreen }: TextNodeToolbarProps) {
+function TextNodeToolbar({ nodeId, data, onCopy, onClearEmptyLines, onShowPrompt, onFullscreen }: TextNodeToolbarProps) {
   const nodeType = 'ai-text';
   const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
+  const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const userPresets = useAppStore((s) => s.userPresets);
 
   const [copied, setCopied] = useState(false);
 
@@ -43,6 +47,17 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
       onClearEmptyLines();
     },
     [data.output, onClearEmptyLines],
+  );
+
+  const handlePresetClick = useCallback(
+    (key: string) => (e: React.MouseEvent) => {
+      e.stopPropagation();
+      const resolved = resolvePresetAction(key, nodeType as NodeType, data.prompt ?? '', userPresets);
+      if (resolved) {
+        updateNodeData(nodeId, { prompt: resolved.filledPrompt } as Partial<BaseNodeData>);
+      }
+    },
+    [data.prompt, userPresets, nodeId, updateNodeData],
   );
 
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {
@@ -67,7 +82,15 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
         <div key={zone.id} className="img-toolbar-zone nodrag">
           {zone.buttonKeys.map((key) => {
             const def = registry.find((d) => d.key === key);
-            if (!def || !actionMap[key]) return null;
+            const handler = actionMap[key];
+            const isPreset = !def;
+
+            // 查找预设的显示信息
+            const presetDef = !def ? resolvePresetDef(key, nodeType as NodeType, userPresets) : null;
+            if (!def && !presetDef) return null;
+
+            const resolvedDef = def ?? { key, label: presetDef!.label, icon: presetDef!.icon, defaultZone: '' };
+            const clickHandler = handler ?? handlePresetClick(key);
 
             // copy 按钮有 copied 态
             if (key === 'copy' && copied) {
@@ -77,7 +100,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
                   className="ftb-btn icon-only act-copy rounded-[6px]"
                   data-tooltip="已复制"
                   aria-label="复制"
-                  onClick={actionMap[key]}
+                  onClick={clickHandler}
                 >
                   <Icon icon="mdi:check" width={12} height={12} />
                 </AnimatedButton>
@@ -87,12 +110,12 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
             return (
               <AnimatedButton
                 key={key}
-                className={`ftb-btn icon-only act-${key} rounded-[6px]`}
-                data-tooltip={def.label}
-                aria-label={def.label}
-                onClick={actionMap[key]}
+                className={`ftb-btn icon-only${isPreset ? ' act-preset' : ''} rounded-[6px]`}
+                data-tooltip={resolvedDef.label}
+                aria-label={resolvedDef.label}
+                onClick={clickHandler}
               >
-                <Icon icon={def.icon} width={12} height={12} />
+                <Icon icon={resolvedDef.icon} width={12} height={12} />
               </AnimatedButton>
             );
           })}
