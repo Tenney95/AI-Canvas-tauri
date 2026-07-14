@@ -202,6 +202,7 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
 export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ prompt: string; imageUrls: string[] }> {
   const { nodes } = useAppStore.getState();
   const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string; filePath?: string }> = [];
+  const chipRegex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
 
   const assetImageMap = new Map<string, string>();
   for (const m of rawPrompt.matchAll(/@asset\{([^}]+)\}/g)) {
@@ -232,7 +233,6 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
 
   const imageKeyToIndex = new Map<string, number>();
 
-  const chipRegex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
   const prompt = rawPrompt.replace(chipRegex, (_match, assetEnc: string | undefined, rawNodeId: string) => {
     if (assetEnc !== undefined) {
       const dataUrl = assetImageMap.get(assetEnc);

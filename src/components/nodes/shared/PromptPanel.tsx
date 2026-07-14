@@ -1,7 +1,7 @@
 /**
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import type { ImagePostProcess, NodeType, ModelOption, WorkflowDefinition, UserSkill } from '../../../types';
 import type { PresetOverride } from './SlashCommandMenu';
 import { useAppStore } from '../../../store/useAppStore';
@@ -105,6 +105,8 @@ export default function PromptPanel({
   const uploadSkill = useAppStore((s) => s.uploadSkill);
   const setPresetManagerOpen = useAppStore((s) => s.setPresetManagerOpen);
   const showToast = useAppStore((s) => s.showToast);
+  const pendingPresetAction = useAppStore((s) => s.pendingPresetAction);
+  const setPendingPresetAction = useAppStore((s) => s.setPendingPresetAction);
 
   const handleSubmit = useCallback((overridePrompt?: string, postProcess?: ImagePostProcess) => {
     const sourcePrompt = overridePrompt ?? prompt;
@@ -134,6 +136,24 @@ export default function PromptPanel({
       onChange(filledPrompt);
     }
   }, [handleSubmit, onChange, onModelSelect, onChangeImageSize, onChangeAspectRatio]);
+
+  // ── 从 Toolbar 点击快捷指令后的自动执行 ──
+  useEffect(() => {
+    if (!pendingPresetAction || pendingPresetAction.nodeId !== nodeId) return;
+    const { filledPrompt, shouldTrigger, override, postProcess } = pendingPresetAction;
+    // 清除 pending，防止重复执行
+    setPendingPresetAction(null);
+    const raf = requestAnimationFrame(() => {
+      handleSlashSelect(filledPrompt, shouldTrigger, override ? {
+        model: override.model,
+        provider: override.provider,
+        imageSize: override.imageSize,
+        aspectRatio: override.aspectRatio,
+        postProcess: postProcess as ImagePostProcess | undefined,
+      } : { postProcess: postProcess as ImagePostProcess | undefined });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [pendingPresetAction, nodeId, handleSlashSelect, setPendingPresetAction]);
 
   const handleEditorSlash = useCallback(() => {
     setSlashAnchor(promptInputRef.current);

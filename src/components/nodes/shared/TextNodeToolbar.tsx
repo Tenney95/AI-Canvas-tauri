@@ -8,8 +8,10 @@ import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
 import { getButtonRegistry } from './toolbar/toolbarRegistry';
-import { resolvePresetAction, resolvePresetDef } from './toolbar/presetAction';
+import { resolvePresetAction, resolvePresetDef, createPresetNode } from './toolbar/presetAction';
+import { executeGeneration } from '../../../services/generationService';
 import { useAppStore } from '../../../store/useAppStore';
+import type { Node } from '@xyflow/react';
 
 interface TextNodeToolbarProps {
   nodeId: string;
@@ -24,7 +26,6 @@ function TextNodeToolbar({ nodeId, data, onCopy, onClearEmptyLines, onShowPrompt
   const nodeType = 'ai-text';
   const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
-  const updateNodeData = useAppStore((s) => s.updateNodeData);
   const userPresets = useAppStore((s) => s.userPresets);
 
   const [copied, setCopied] = useState(false);
@@ -49,15 +50,24 @@ function TextNodeToolbar({ nodeId, data, onCopy, onClearEmptyLines, onShowPrompt
     [data.output, onClearEmptyLines],
   );
 
+  const addNodeWithEdge = useAppStore((s) => s.addNodeWithEdge);
+
   const handlePresetClick = useCallback(
     (key: string) => (e: React.MouseEvent) => {
       e.stopPropagation();
-      const resolved = resolvePresetAction(key, nodeType as NodeType, data.prompt ?? '', userPresets);
-      if (resolved) {
-        updateNodeData(nodeId, { prompt: resolved.filledPrompt } as Partial<BaseNodeData>);
-      }
+      // 实时从 store 读取，避免闭包过期导致对话框内容/ @引用丢失
+      const liveNode = useAppStore.getState().nodes.find((n) => n.id === nodeId) as Node<BaseNodeData> | undefined;
+      if (!liveNode) return;
+      const livePrompt = (liveNode.data?.prompt as string) ?? '';
+      const livePresets = useAppStore.getState().userPresets;
+      const resolved = resolvePresetAction(key, nodeType as NodeType, livePrompt, livePresets);
+      if (!resolved) return;
+      const { node: newNode, edge } = createPresetNode(liveNode, resolved);
+      addNodeWithEdge(newNode, edge);
+      // 强制用带 @ 引用的 prompt（createPresetNode 已拼好）
+      executeGeneration(newNode.id, newNode.data.prompt as string, resolved.postProcess, newNode.data);
     },
-    [data.prompt, userPresets, nodeId, updateNodeData],
+    [nodeId, addNodeWithEdge],
   );
 
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {

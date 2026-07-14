@@ -8,8 +8,10 @@ import AnimatedButton from '../../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../../hooks/useToolbarEdit';
 import ToolbarEditor from '../toolbar/ToolbarEditor';
 import { getButtonRegistry } from '../toolbar/toolbarRegistry';
-import { resolvePresetAction, resolvePresetDef } from '../toolbar/presetAction';
+import { resolvePresetAction, resolvePresetDef, createPresetNode } from '../toolbar/presetAction';
+import { executeGeneration } from '../../../../services/generationService';
 import { useAppStore } from '../../../../store/useAppStore';
+import type { Node } from '@xyflow/react';
 
 interface ImageNodeToolbarProps {
   nodeId: string;
@@ -81,7 +83,7 @@ function ImageNodeToolbar({
   useEffect(() => {
     if (!gridMenuOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (gridWrapRef.current && !gridWrapRef.current.contains(e.target as Node)) {
+      if (gridWrapRef.current && !gridWrapRef.current.contains(e.target as unknown as globalThis.Node)) {
         setGridMenuOpen(false);
       }
     };
@@ -104,19 +106,25 @@ function ImageNodeToolbar({
     fullscreen:     (e) => { e.stopPropagation(); onFullscreen?.(); },
   };
 
-  const nodeData = useAppStore((s) => s.nodes.find((n) => n.id === _nodeId)?.data as BaseNodeData | undefined);
-  const updateNodeData = useAppStore((s) => s.updateNodeData);
   const userPresets = useAppStore((s) => s.userPresets);
+  const addNodeWithEdge = useAppStore((s) => s.addNodeWithEdge);
 
   const handlePresetClick = useCallback(
     (key: string) => (e: React.MouseEvent) => {
       e.stopPropagation();
-      const resolved = resolvePresetAction(key, nodeType as NodeType, nodeData?.prompt ?? '', userPresets);
-      if (resolved) {
-        updateNodeData(_nodeId, { prompt: resolved.filledPrompt } as Partial<BaseNodeData>);
-      }
+      // 实时从 store 读取，避免闭包过期导致对话框内容/ @引用丢失
+      const liveNode = useAppStore.getState().nodes.find((n) => n.id === _nodeId) as Node<BaseNodeData> | undefined;
+      if (!liveNode) return;
+      const livePrompt = (liveNode.data?.prompt as string) ?? '';
+      const livePresets = useAppStore.getState().userPresets;
+      const resolved = resolvePresetAction(key, nodeType as NodeType, livePrompt, livePresets);
+      if (!resolved) return;
+      const { node: newNode, edge } = createPresetNode(liveNode, resolved);
+      addNodeWithEdge(newNode, edge);
+      // 用 newNode.data.prompt（含 @{sourceId:label} 引用），不用 resolved.filledPrompt（不含 @引用）
+      executeGeneration(newNode.id, newNode.data.prompt, resolved.postProcess, newNode.data);
     },
-    [nodeData?.prompt, userPresets, _nodeId, updateNodeData],
+    [_nodeId, addNodeWithEdge],
   );
 
   // ── 渲染单个按钮 ──

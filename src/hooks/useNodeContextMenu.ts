@@ -144,7 +144,7 @@ export function useNodeContextMenu() {
   const mediaTypes: NodeType[] = [
     'ai-image', 'ai-video', 'ai-audio', 'ai-panorama',
     'source-image', 'source-video', 'source-audio',
-    'ai-markdown',
+    'ai-markdown', 'ai-storyboard',
   ];
   const currentNode = nodes.find((n) => n.id === menu.nodeId);
   const nodeType = (currentNode?.type) as NodeType | undefined;
@@ -175,7 +175,7 @@ export function useNodeContextMenu() {
 
   // ── 在 Photoshop 中打开 ──
   const openInPSTypes: NodeType[] = [
-    'ai-image', 'source-image',
+    'ai-image', 'source-image', 'ai-storyboard',
   ];
   const showOpenInPS = menu.nodeId != null
     && nodeType != null

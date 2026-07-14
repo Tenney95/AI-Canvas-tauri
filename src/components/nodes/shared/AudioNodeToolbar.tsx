@@ -8,8 +8,10 @@ import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
 import { getButtonRegistry } from './toolbar/toolbarRegistry';
-import { resolvePresetAction, resolvePresetDef } from './toolbar/presetAction';
+import { resolvePresetAction, resolvePresetDef, createPresetNode } from './toolbar/presetAction';
+import { executeGeneration } from '../../../services/generationService';
 import { useAppStore } from '../../../store/useAppStore';
+import type { Node } from '@xyflow/react';
 
 interface AudioNodeToolbarProps {
   nodeId: string;
@@ -22,19 +24,24 @@ function AudioNodeToolbar({ nodeId, isPlaying, onTogglePlay, onUpload }: AudioNo
   const nodeType = 'ai-audio';
   const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
-  const nodeData = useAppStore((s) => s.nodes.find((n) => n.id === nodeId)?.data as BaseNodeData | undefined);
-  const updateNodeData = useAppStore((s) => s.updateNodeData);
   const userPresets = useAppStore((s) => s.userPresets);
+  const addNodeWithEdge = useAppStore((s) => s.addNodeWithEdge);
 
   const handlePresetClick = useCallback(
     (key: string) => (e: React.MouseEvent) => {
       e.stopPropagation();
-      const resolved = resolvePresetAction(key, nodeType as NodeType, nodeData?.prompt ?? '', userPresets);
-      if (resolved) {
-        updateNodeData(nodeId, { prompt: resolved.filledPrompt } as Partial<BaseNodeData>);
-      }
+      // 实时从 store 读取，避免闭包过期导致对话框内容/ @引用丢失
+      const liveNode = useAppStore.getState().nodes.find((n) => n.id === nodeId) as Node<BaseNodeData> | undefined;
+      if (!liveNode) return;
+      const livePrompt = (liveNode.data?.prompt as string) ?? '';
+      const livePresets = useAppStore.getState().userPresets;
+      const resolved = resolvePresetAction(key, nodeType as NodeType, livePrompt, livePresets);
+      if (!resolved) return;
+      const { node: newNode, edge } = createPresetNode(liveNode, resolved);
+      addNodeWithEdge(newNode, edge);
+      executeGeneration(newNode.id, newNode.data.prompt, resolved.postProcess, newNode.data);
     },
-    [nodeData?.prompt, userPresets, nodeId, updateNodeData],
+    [nodeId, addNodeWithEdge],
   );
 
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {

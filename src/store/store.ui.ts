@@ -18,6 +18,19 @@ export interface UISlice {
   minimapVisible: boolean;
   /** 当前在 prompt 里被 hover 的 @引用节点 id — 用于联动 connected-nodes-float 高亮 */
   hoveredMentionNodeId: string | null;
+  /** 从 Toolbar 点击快捷指令后，需要 PromptPanel 自动执行的 preset 操作 */
+  pendingPresetAction: {
+    nodeId: string;
+    filledPrompt: string;
+    shouldTrigger: boolean;
+    postProcess?: string;
+    override?: {
+      model?: string;
+      provider?: string;
+      imageSize?: string;
+      aspectRatio?: string;
+    };
+  } | null;
   setSettingsOpen: (open: boolean) => void;
   showNodeMenu: (position: { x: number; y: number }) => void;
   hideNodeMenu: () => void;
@@ -33,6 +46,7 @@ export interface UISlice {
   setHistoryPanelOpen: (open: boolean) => void;
   toggleMinimap: () => void;
   setHoveredMentionNodeId: (id: string | null) => void;
+  setPendingPresetAction: (action: UISlice['pendingPresetAction']) => void;
 }
 
 export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => ({
@@ -48,6 +62,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   historyPanelOpen: false,
   minimapVisible: true,
   hoveredMentionNodeId: null,
+  pendingPresetAction: null,
 
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   showNodeMenu: (position) => set({ nodeMenuVisible: true, nodeMenuPosition: position }),
@@ -58,10 +73,11 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   toggleAvatarMenu: () => set((s) => ({ avatarMenuOpen: !s.avatarMenuOpen, nodePickerOpen: false })),
   closeAvatarMenu: () => set({ avatarMenuOpen: false }),
   openNodeDialog: (nodeId, position) => set({ activeNodeId: nodeId, dialogPosition: position ?? null }),
-  closeNodeDialog: () => set({ activeNodeId: null, dialogPosition: null }),
+  closeNodeDialog: () => set({ activeNodeId: null, dialogPosition: null, pendingPresetAction: null }),
   setLastCanvasMousePos: (position) => set({ lastCanvasMousePos: position }),
   setAssetsPanelOpen: (open) => set({ assetsPanelOpen: open }),
   setHistoryPanelOpen: (open) => set({ historyPanelOpen: open }),
   toggleMinimap: () => set((s) => ({ minimapVisible: !s.minimapVisible })),
   setHoveredMentionNodeId: (id) => set({ hoveredMentionNodeId: id }),
+  setPendingPresetAction: (action) => set({ pendingPresetAction: action }),
 });
