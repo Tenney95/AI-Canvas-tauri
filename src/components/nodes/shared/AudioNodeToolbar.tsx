@@ -14,7 +14,7 @@ import { useAppStore } from '../../../store/useAppStore';
 interface AudioNodeToolbarProps {
   nodeId: string;
   isPlaying?: boolean;
-  onTogglePlay: () => void;
+  onTogglePlay: (e: React.MouseEvent) => void;
   onUpload: () => void;
 }
 
@@ -38,7 +38,7 @@ function AudioNodeToolbar({ nodeId, isPlaying, onTogglePlay, onUpload }: AudioNo
   );
 
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {
-    togglePlay: (e) => { e.stopPropagation(); onTogglePlay(); },
+    togglePlay: (e) => { e.stopPropagation(); onTogglePlay(e); },
     upload:     (e) => { e.stopPropagation(); onUpload(); },
   };
 

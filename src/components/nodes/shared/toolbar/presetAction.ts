@@ -59,7 +59,7 @@ export function resolvePresetAction(
   const walk = (items: typeof commands) => {
     for (const item of items) {
       if (item.promptTemplate) {
-        allFlat.push(item);
+        allFlat.push(item as typeof allFlat[number]);
       }
       if (item.children) walk(item.children);
     }

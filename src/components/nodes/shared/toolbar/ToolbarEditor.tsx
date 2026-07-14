@@ -137,8 +137,10 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
   const exitEdit = edit.exitEdit;
 
   const calcZoneTarget = useCallback((clientY: number): number | null => {
-    const zonesEl = containerRef.current?.querySelector<HTMLElement>('.toolbar-edit-zones');
-    const zoneEls = Array.from(zonesEl?.querySelectorAll<HTMLElement>('.toolbar-edit-zone') ?? []);
+    const zonesEl = containerRef.current?.querySelector('.toolbar-edit-zones') as HTMLElement | null | undefined;
+    const zoneEls: HTMLElement[] = zonesEl
+      ? Array.from(zonesEl.querySelectorAll('.toolbar-edit-zone'))
+      : [];
     if (!zonesEl || zoneEls.length === 0) return null;
 
     const listRect = zonesEl.getBoundingClientRect();
@@ -303,15 +305,19 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
   // ── 根据鼠标位置计算目标 zone + index ──
   const calcTarget = useCallback((clientX: number, clientY: number): { zoneId: string; index: number } | null => {
     if (!containerRef.current) return null;
-    const zoneEls = containerRef.current.querySelectorAll<HTMLElement>('.toolbar-edit-zone');
+    const zoneEls = Array.from(
+      containerRef.current.querySelectorAll('.toolbar-edit-zone'),
+    ) as HTMLElement[];
     for (const zoneEl of zoneEls) {
       const zoneRect = zoneEl.getBoundingClientRect();
       if (clientY >= zoneRect.top && clientY <= zoneRect.bottom
         && clientX >= zoneRect.left && clientX <= zoneRect.right) {
         const zoneId = zoneEl.dataset.zoneId;
         if (!zoneId) return null;
-        const body = zoneEl.querySelector<HTMLElement>('.toolbar-edit-zone-body');
-        const btnEls = Array.from(body?.querySelectorAll<HTMLElement>('.toolbar-edit-btn') ?? []);
+        const body = zoneEl.querySelector('.toolbar-edit-zone-body') as HTMLElement | null;
+        const btnEls: HTMLElement[] = body
+          ? Array.from(body.querySelectorAll('.toolbar-edit-btn'))
+          : [];
         if (btnEls.length === 0) return { zoneId, index: 0 };
 
         // flex-wrap 后不能只比较 X：先选离指针最近的一行，再计算该行内的插入边界

@@ -1,7 +1,7 @@
 /**
  * toolbarRegistry.ts — 各节点类型 Toolbar 的按钮注册表与默认布局
  */
-import type { ToolbarButtonDef, ToolbarZoneLayout, ToolbarLayout } from '../../../types';
+import type { ToolbarButtonDef, ToolbarZoneLayout, ToolbarLayout } from '../../../../types';
 
 // ── 通用图标（复用 inline SVG 太繁琐，用 iconify name，回退到 emoji）──
 
@@ -87,12 +87,16 @@ export function getButtonRegistry(nodeType: string): ToolbarButtonDef[] {
 
 /** 根据 nodeType 获取默认布局 */
 export function getDefaultLayout(nodeType: string): ToolbarLayout {
+  const deepClone = (layout: ToolbarLayout): ToolbarLayout => ({
+    ...layout,
+    zones: layout.zones.map((z: ToolbarZoneLayout) => ({ ...z, buttonKeys: [...z.buttonKeys] })),
+  });
   switch (nodeType) {
-    case 'ai-text':     return { ...DEFAULT_TEXT_LAYOUT,     zones: DEFAULT_TEXT_LAYOUT.zones.map(z => ({ ...z, buttonKeys: [...z.buttonKeys] })) };
-    case 'ai-video':    return { ...DEFAULT_VIDEO_LAYOUT,    zones: DEFAULT_VIDEO_LAYOUT.zones.map(z => ({ ...z, buttonKeys: [...z.buttonKeys] })) };
-    case 'ai-panorama': return { ...DEFAULT_PANORAMA_LAYOUT, zones: DEFAULT_PANORAMA_LAYOUT.zones.map(z => ({ ...z, buttonKeys: [...z.buttonKeys] })) };
-    case 'ai-image':    return { ...DEFAULT_IMAGE_LAYOUT,    zones: DEFAULT_IMAGE_LAYOUT.zones.map(z => ({ ...z, buttonKeys: [...z.buttonKeys] })) };
-    case 'ai-audio':    return { ...DEFAULT_AUDIO_LAYOUT,    zones: DEFAULT_AUDIO_LAYOUT.zones.map(z => ({ ...z, buttonKeys: [...z.buttonKeys] })) };
+    case 'ai-text':     return deepClone(DEFAULT_TEXT_LAYOUT);
+    case 'ai-video':    return deepClone(DEFAULT_VIDEO_LAYOUT);
+    case 'ai-panorama': return deepClone(DEFAULT_PANORAMA_LAYOUT);
+    case 'ai-image':    return deepClone(DEFAULT_IMAGE_LAYOUT);
+    case 'ai-audio':    return deepClone(DEFAULT_AUDIO_LAYOUT);
     default:            return { zones: [], version: 1 };
   }
 }
