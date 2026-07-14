@@ -4,6 +4,7 @@ use std::sync::{
     Mutex,
 };
 use tauri::{Listener, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_fs::FsExt;
 use url::Url;
 
 mod comfyui;
@@ -13,6 +14,49 @@ pub mod onnx;
 
 static CHAT_WINDOW_LOCKED: AtomicBool = AtomicBool::new(false);
 static CHAT_WINDOW_LOCK_OFFSET: Mutex<(i32, i32)> = Mutex::new((0, 0));
+
+/// 将用户明确选择的保存目录和素材目录加入本次进程的文件与 asset 协议 scope。
+/// ComfyUI 安装目录不经过此命令，仍由专用启动命令独立校验。
+#[tauri::command]
+fn sync_authorized_directories(
+    app: tauri::AppHandle,
+    directories: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let fs_scope = app.fs_scope();
+    let asset_scope = app.state::<tauri::scope::Scopes>();
+    let mut rejected = Vec::new();
+
+    for directory in directories {
+        let trimmed = directory.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let path = std::path::PathBuf::from(trimmed);
+        if !path.is_absolute() {
+            rejected.push(trimmed.to_string());
+            continue;
+        }
+
+        let Ok(canonical) = path.canonicalize() else {
+            rejected.push(trimmed.to_string());
+            continue;
+        };
+        if !canonical.is_dir() {
+            rejected.push(trimmed.to_string());
+            continue;
+        }
+
+        fs_scope
+            .allow_directory(&canonical, true)
+            .map_err(|e| format!("文件权限授权失败 {}: {e}", canonical.display()))?;
+        asset_scope
+            .allow_directory(&canonical, true)
+            .map_err(|e| format!("asset 协议授权失败 {}: {e}", canonical.display()))?;
+    }
+
+    Ok(rejected)
+}
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct DreaminaLoginPayload {
@@ -434,6 +478,7 @@ pub fn run() {
             set_chat_window_locked,
             open_with_app,
             toggle_devtools,
+            sync_authorized_directories,
             comfyui::launch_comfyui,
             onnx::get_models_dir,
             onnx::check_model_exists,

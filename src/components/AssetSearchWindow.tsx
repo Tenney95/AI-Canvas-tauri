@@ -16,6 +16,7 @@ import {
   listExternalFolderFiles,
   registerProjectFolders,
   setBaseDataDir,
+  syncAuthorizedDirectories,
   revealFileInFolder,
   addAssetFilesToGlobal,
   pickAssetFolder,
@@ -66,6 +67,7 @@ export default function AssetSearchWindow() {
       document.documentElement.setAttribute('data-theme', cfg?.theme === 'light' ? 'light' : 'dark');
       // 同步用户自定义数据根目录到 fileService
       setBaseDataDir(cfg?.baseDataDir);
+      await syncAuthorizedDirectories(cfg ?? {});
 
       const projects = await loadProjectsList();
       registerProjectFolders(projects);          // 让 getProjectDataDir 解析「项目名-短ID」目录

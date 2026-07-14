@@ -5,7 +5,7 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { AppConfig, GeneralModelConfig } from '../types';
 import * as fileService from '../services/fileService';
-import { setBaseDataDir } from '../services/fileService';
+import { setBaseDataDir, syncAuthorizedDirectories } from '../services/fileService';
 
 const defaultConfig: AppConfig = {
   providers: {},
@@ -117,6 +117,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
       await fileService.saveConfig(config);
       // 同步 baseDataDir 到 fileService
       setBaseDataDir(config.baseDataDir);
+      await syncAuthorizedDirectories(config);
       showToast('设置已保存');
     } catch {
       showToast('设置保存失败', 'error');
@@ -130,6 +131,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
         const cfg = { ...defaultConfig, ...(saved as AppConfig) };
         set({ config: cfg });
         setBaseDataDir(cfg.baseDataDir);
+        await syncAuthorizedDirectories(cfg);
       }
     } catch {
       // Use default config if load fails

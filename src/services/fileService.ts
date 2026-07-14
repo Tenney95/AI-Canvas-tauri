@@ -115,6 +115,28 @@ export * from './fs/assetIndex';
 export * from './fs/trash';
 export * from './fs/assetLibrary';
 
+/**
+ * 同步用户明确选择的文件目录白名单。
+ * 仅保存根目录和素材文件夹可进入；ComfyUI 等其他配置路径不得传入。
+ */
+export async function syncAuthorizedDirectories(config: {
+  baseDataDir?: string;
+  assetFolders?: string[];
+}): Promise<void> {
+  if (!isTauriEnv()) return;
+
+  const directories = [config.baseDataDir, ...(config.assetFolders ?? [])]
+    .map((path) => path?.trim())
+    .filter((path): path is string => !!path);
+
+  const rejected = await invoke<string[]>('sync_authorized_directories', {
+    directories: [...new Set(directories)],
+  });
+  if (rejected.length > 0) {
+    console.warn('[fileService] 已跳过不存在或无效的授权目录:', rejected);
+  }
+}
+
 /** 浏览器降级：通过 file input 读取文件 */
 function browserOpenFile(accept: string): Promise<File | null> {
   return new Promise((resolve) => {

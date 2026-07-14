@@ -48,12 +48,7 @@
     {
       "identifier": "fs:scope",
       "allow": [
-        { "path": "$APPDATA/**" },
-        { "path": "$HOME/**" },
-        { "path": "$DESKTOP/**" },
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DOWNLOAD/**" },
-        { "path": "**" }
+        { "path": "$APPDATA/**" }
       ]
     },
     {
@@ -65,12 +60,7 @@
     {
       "identifier": "fs:read-files",
       "allow": [
-        { "path": "$APPDATA/**" },
-        { "path": "$HOME/**" },
-        { "path": "$DESKTOP/**" },
-        { "path": "$DOCUMENT/**" },
-        { "path": "$DOWNLOAD/**" },
-        { "path": "**" }
+        { "path": "$APPDATA/**" }
       ]
     }
   ]
