@@ -1,8 +1,12 @@
 ﻿/**
- * ImageNodeToolbar 图像节点浮动工具栏 — 鼠标悬停图像节点时显示，提供遮罩、扩图、360全景、裁切、重绘、高清、下载等操作
+ * ImageNodeToolbar 图像节点浮动工具栏 + 编辑态支持
  */
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { Icon } from '@iconify/react';
 import AnimatedButton from '../../../shared/AnimatedButton';
+import { useToolbarEdit } from '../../../../hooks/useToolbarEdit';
+import ToolbarEditor from '../toolbar/ToolbarEditor';
+import { getButtonRegistry } from '../toolbar/toolbarRegistry';
 
 interface ImageNodeToolbarProps {
   nodeId: string;
@@ -19,45 +23,23 @@ interface ImageNodeToolbarProps {
   onAnnotate?: () => void;
   onUpscale?: () => void;
   onRepaint?: () => void;
-  /** 高清超分进行中 — 防止重复触发 */
   isUpscaling?: boolean;
-  /** 主体识别进行中 — 防止重复触发 */
   isSubjectMattingRunning?: boolean;
 }
 
-/** 宫格预设：side×side（4/9/16/25 宫格） */
 const GRID_PRESETS = [2, 3, 4, 5];
 
-/** n×n 网格图标 */
-function GridIcon({ n }: { n: number }) {
-  const cells = [];
-  const box = 18;
-  const pad = 3;
-  const step = box / n;
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) {
-      cells.push(
-        <rect key={`${i}-${j}`} x={pad + j * step + 0.4} y={pad + i * step + 0.4} width={step - 0.8} height={step - 0.8} rx={0.5} />,
-      );
-    }
-  }
-  return (
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" fillOpacity="0.85">
-      {cells}
-    </svg>
-  );
-}
+function ImageNodeToolbar({
+  nodeId: _nodeId,
+  onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand,
+  onMultiGrid, onCustomGrid, onCompose, onFullscreen, onCrop,
+  onAnnotate, onUpscale, onRepaint, isUpscaling, isSubjectMattingRunning,
+}: ImageNodeToolbarProps) {
+  const nodeType = 'ai-image';
+  const registry = getButtonRegistry(nodeType);
+  const edit = useToolbarEdit({ nodeType });
 
-function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand, onMultiGrid, onCustomGrid, onCompose, onFullscreen, onCrop, onAnnotate, onUpscale, onRepaint, isUpscaling, isSubjectMattingRunning }: ImageNodeToolbarProps) {
-  const handleAction = useCallback(
-    (handler?: () => void) => (e: React.MouseEvent) => {
-      e.stopPropagation();
-      handler?.();
-    },
-    [],
-  );
-
-  // ── 宫格选择菜单 ──
+  // ── 宫格子菜单 ──
   const [gridMenuOpen, setGridMenuOpen] = useState(false);
   const [gridMenuBelow, setGridMenuBelow] = useState(false);
   const gridWrapRef = useRef<HTMLDivElement>(null);
@@ -68,45 +50,31 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
     setGridMenuOpen((v) => !v);
   }, []);
 
-  // 菜单打开后判断是否超出视口，若上方空间不足则改为往下弹出
   useEffect(() => {
-    if (!gridMenuOpen) {
-      setGridMenuBelow(false);
-      return;
-    }
-    // 等菜单渲染完成后测量
+    if (!gridMenuOpen) { setGridMenuBelow(false); return; }
     const raf = requestAnimationFrame(() => {
       const btn = gridWrapRef.current;
       const menu = gridMenuRef.current;
       if (!btn || !menu) return;
       const btnRect = btn.getBoundingClientRect();
       const menuHeight = menu.offsetHeight;
-      const gap = 12;
-      // 上方所需空间 = 菜单高度 + gap
-      setGridMenuBelow(btnRect.top - menuHeight - gap < 0);
+      setGridMenuBelow(btnRect.top - menuHeight - 12 < 0);
     });
     return () => cancelAnimationFrame(raf);
   }, [gridMenuOpen]);
 
-  const pickGrid = useCallback(
-    (side: number) => (e: React.MouseEvent) => {
-      e.stopPropagation();
-      setGridMenuOpen(false);
-      onMultiGrid?.(side);
-    },
-    [onMultiGrid],
-  );
+  const pickGrid = useCallback((side: number) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setGridMenuOpen(false);
+    onMultiGrid?.(side);
+  }, [onMultiGrid]);
 
-  const pickCustom = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      setGridMenuOpen(false);
-      onCustomGrid?.();
-    },
-    [onCustomGrid],
-  );
+  const pickCustom = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setGridMenuOpen(false);
+    onCustomGrid?.();
+  }, [onCustomGrid]);
 
-  // 点击外部关闭
   useEffect(() => {
     if (!gridMenuOpen) return;
     const onDown = (e: MouseEvent) => {
@@ -118,132 +86,122 @@ function ImageNodeToolbar({ onUpload, onMatting, onSubjectMatting, onMultiAngle,
     return () => document.removeEventListener('mousedown', onDown, true);
   }, [gridMenuOpen]);
 
-  return (
-    <div className="node-floating-toolbar img-toolbar nodrag">
-      <div className="img-toolbar-main nodrag">
-        {/* Primary zone */}
-        <div className="img-toolbar-zone img-toolbar-zone-primary nodrag">
+  const actionMap: Record<string, (e: React.MouseEvent) => void> = {
+    matting:        (e) => { e.stopPropagation(); onMatting?.(); },
+    expand:         (e) => { e.stopPropagation(); onExpand?.(); },
+    multiGrid:      toggleGridMenu,
+    multiAngle:     (e) => { e.stopPropagation(); onMultiAngle?.(); },
+    repaint:        (e) => { e.stopPropagation(); onRepaint?.(); },
+    upscale:        (e) => { e.stopPropagation(); if (!isUpscaling) onUpscale?.(); },
+    subjectMatting: (e) => { e.stopPropagation(); if (!isSubjectMattingRunning) onSubjectMatting?.(); },
+    annotate:       (e) => { e.stopPropagation(); onAnnotate?.(); },
+    crop:           (e) => { e.stopPropagation(); onCrop?.(); },
+    compose:        (e) => { e.stopPropagation(); onCompose?.(); },
+    upload:         (e) => { e.stopPropagation(); onUpload?.(); },
+    fullscreen:     (e) => { e.stopPropagation(); onFullscreen?.(); },
+  };
+
+  // ── 渲染单个按钮 ──
+  const renderButton = useCallback((key: string) => {
+    const def = registry.find((d) => d.key === key);
+    if (!def || !actionMap[key]) return null;
+
+    if (key === 'upscale') {
+      return (
+        <AnimatedButton
+          key={key}
+          className="ftb-btn icon-only act-hd"
+          data-tooltip={isUpscaling ? '超分处理中...' : '高清超分'}
+          aria-label="高清超分"
+          disabled={isUpscaling}
+          onClick={actionMap[key]}
+        >
+          <Icon icon={def.icon} width={14} height={14} />
+        </AnimatedButton>
+      );
+    }
+
+    if (key === 'subjectMatting') {
+      return (
+        <AnimatedButton
+          key={key}
+          className="ftb-btn icon-only act-auto-subject"
+          data-tooltip={isSubjectMattingRunning ? '主体识别中...' : '自动识别主体'}
+          aria-label="自动识别主体"
+          disabled={isSubjectMattingRunning}
+          onClick={actionMap[key]}
+        >
+          <Icon icon={def.icon} width={14} height={14} />
+        </AnimatedButton>
+      );
+    }
+
+    if (key === 'multiGrid') {
+      return (
+        <div key={key} className="multigrid-wrap" ref={gridWrapRef}>
           <AnimatedButton
-            className="ftb-btn icon-only act-matting"
-            data-tooltip="遮罩编辑器"
-            aria-label="遮罩编辑器"
-            onClick={handleAction(onMatting)}
+            className="ftb-btn icon-only act-multigrid"
+            data-tooltip="宫格裁切"
+            aria-label="宫格裁切"
+            onClick={toggleGridMenu}
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <rect x="3.5" y="3.5" width="17" height="17" rx="3" />
-              <circle cx="12" cy="12" r="5" />
-              <path d="M12 7A5 5 0 0 1 12 17L12 7Z" fill="currentColor" fillOpacity="0.28" stroke="none" />
-              <path d="M7 17l2-2" />
-              <path d="M8.5 18.5l-1-1" />
-            </svg>
+            <Icon icon={def.icon} width={14} height={14} />
           </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-expand" data-tooltip="扩图" aria-label="扩图" onClick={handleAction(onExpand)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-            </svg>
-          </AnimatedButton>
-          <div className="multigrid-wrap" ref={gridWrapRef}>
-            <AnimatedButton className="ftb-btn icon-only act-multigrid" data-tooltip="宫格裁切" aria-label="宫格裁切" onClick={toggleGridMenu}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                <rect x="3" y="3" width="7" height="7" />
-                <rect x="14" y="3" width="7" height="7" />
-                <rect x="14" y="14" width="7" height="7" />
-                <rect x="3" y="14" width="7" height="7" />
-              </svg>
-            </AnimatedButton>
-            {gridMenuOpen && (
-              <div ref={gridMenuRef} className={`multigrid-menu nodrag${gridMenuBelow ? ' multigrid-menu--below' : ''}`} onClick={(e) => e.stopPropagation()}>
-                <div className="multigrid-menu-title">选择宫格</div>
-                {GRID_PRESETS.map((side) => (
-                  <button key={side} type="button" className="multigrid-menu-item" onClick={pickGrid(side)}>
-                    <GridIcon n={side} />
-                    <span>{side * side}宫格</span>
-                  </button>
-                ))}
-                <div className="multigrid-menu-divider" />
-                <button type="button" className="multigrid-menu-item multigrid-menu-item--custom" onClick={pickCustom}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                    <line x1="3" y1="6" x2="21" y2="6" />
-                    <line x1="12" y1="3" x2="12" y2="21" />
-                    <circle cx="5" cy="6" r="1.5" fill="currentColor" stroke="none" />
-                    <circle cx="19" cy="6" r="1.5" fill="currentColor" stroke="none" />
-                    <circle cx="12" cy="10" r="1.5" fill="currentColor" stroke="none" />
-                  </svg>
-                  <span>自定义裁切</span>
+          {gridMenuOpen && (
+            <div
+              ref={gridMenuRef}
+              className={`multigrid-menu nodrag${gridMenuBelow ? ' multigrid-menu--below' : ''}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="multigrid-menu-title">选择宫格</div>
+              {GRID_PRESETS.map((side) => (
+                <button key={side} type="button" className="multigrid-menu-item" onClick={pickGrid(side)}>
+                  <span>{side * side}宫格</span>
                 </button>
-              </div>
+              ))}
+              <div className="multigrid-menu-divider" />
+              <button type="button" className="multigrid-menu-item multigrid-menu-item--custom" onClick={pickCustom}>
+                <span>自定义裁切</span>
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <AnimatedButton
+        key={key}
+        className={`ftb-btn icon-only act-${key}`}
+        data-tooltip={def.label}
+        aria-label={def.label}
+        onClick={actionMap[key]}
+      >
+        <Icon icon={def.icon} width={14} height={14} />
+      </AnimatedButton>
+    );
+  }, [registry, actionMap, isUpscaling, isSubjectMattingRunning, toggleGridMenu, gridMenuOpen, gridMenuBelow, pickGrid, pickCustom]);
+
+  // ── 编辑态 ──
+  if (edit.isEditing) {
+    return <ToolbarEditor edit={edit} nodeType={nodeType} />;
+  }
+
+  // ── 正常态：按布局渲染 ──
+  return (
+    <div
+      className="node-floating-toolbar img-toolbar nodrag"
+      {...edit.longPressHandlers}
+    >
+      <div className="img-toolbar-main nodrag">
+        {edit.layout.zones.map((zone, zi) => (
+          <div key={zone.id} className="img-toolbar-zone nodrag">
+            {zone.buttonKeys.map((key) => renderButton(key))}
+            {zi < edit.layout.zones.length - 1 && (
+              <div className="ftb-divider img-toolbar-main-divider" />
             )}
           </div>
-          <AnimatedButton className="ftb-btn icon-only act-multiangle" data-tooltip="控制角度" aria-label="控制角度" onClick={handleAction(onMultiAngle)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-              <path d="M12 22V12" />
-              <path d="M12 12 3.27 7.73" />
-              <path d="M12 12l8.73-4.27" />
-            </svg>
-          </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-repaint" data-tooltip="重绘" aria-label="重绘" onClick={handleAction(onRepaint)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <rect x="3.5" y="4.5" width="13" height="13" rx="2" />
-              <path d="m3.5 14 3-3a2 2 0 0 1 2.8 0L12 13.7" />
-              <path d="M18.5 3.5l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6.6-1.6Z" fill="currentColor" stroke="none" />
-              <path d="m14 18 5-5 2 2-5 5-3 1 1-3Z" />
-            </svg>
-          </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-hd" data-tooltip={isUpscaling ? '超分处理中...' : '高清超分'} aria-label="高清超分" disabled={isUpscaling} onClick={handleAction(onUpscale)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <path d="M12 3v18m9-9H3m14.48-6.36L6.52 17.64m10.96 0L6.52 6.36" />
-            </svg>
-          </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-auto-subject" data-tooltip={isSubjectMattingRunning ? '主体识别中...' : '自动识别主体'} aria-label="自动识别主体" disabled={isSubjectMattingRunning} onClick={handleAction(onSubjectMatting)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-            </svg>
-          </AnimatedButton>
-        </div>
-
-        {/* Secondary zone */}
-        <div className="img-toolbar-zone img-toolbar-zone-secondary">
-          <AnimatedButton className="ftb-btn icon-only act-annotate" data-tooltip="标注" aria-label="标注" onClick={handleAction(onAnnotate)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-            </svg>
-          </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-crop" data-tooltip="裁切" aria-label="裁切" onClick={handleAction(onCrop)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <path d="M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2" />
-            </svg>
-          </AnimatedButton>
-          <AnimatedButton className="ftb-btn icon-only act-compose" data-tooltip="多图编辑" aria-label="多图编辑" onClick={handleAction(onCompose)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <rect x="3" y="3" width="13" height="13" rx="2" />
-              <path d="M8 8h13v13H8z" fill="currentColor" fillOpacity="0.18" />
-              <rect x="8" y="8" width="13" height="13" rx="2" />
-            </svg>
-          </AnimatedButton>
-          
-          {/* Divider */}
-          <div className="ftb-divider img-toolbar-main-divider" />
-
-          <AnimatedButton className="ftb-btn icon-only act-upload" data-tooltip="上传图片" aria-label="上传图片" onClick={handleAction(onUpload)}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="17 8 12 3 7 8" />
-              <line x1="12" y1="3" x2="12" y2="15" />
-            </svg>
-          </AnimatedButton>
-          <AnimatedButton
-            className="ftb-btn icon-only act-fullscreen"
-            data-tooltip="全屏显示"
-            aria-label="全屏显示"
-            onClick={handleAction(onFullscreen)}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-            </svg>
-          </AnimatedButton>
-        </div>
+        ))}
       </div>
     </div>
   );

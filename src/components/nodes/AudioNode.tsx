@@ -9,6 +9,7 @@ import NodeError from './shared/NodeError';
 import GooeyBtn from './shared/GooeyBtn';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
+import AudioNodeToolbar from './shared/AudioNodeToolbar';
 import { useAppStore } from '../../store/useAppStore';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 
@@ -143,6 +144,7 @@ function formatTime(seconds: number): string {
 function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const justCompleted = useCompletionFlash(data.status);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
   const isSource = data.role === 'source';
 
   // ── Upload state ──
@@ -272,6 +274,11 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         nodeId={id}
         onRename={handleRename}
       />
+      {data.audioUrl && (
+        <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
+          <AudioNodeToolbar isPlaying={isPlaying} onTogglePlay={togglePlay} onUpload={handleUpload} />
+        </div>
+      )}
       <div
         className={`node audio-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}
         style={{ minHeight: 88 }}

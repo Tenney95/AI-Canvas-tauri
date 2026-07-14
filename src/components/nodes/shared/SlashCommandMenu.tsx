@@ -4,6 +4,7 @@
  */
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { Icon } from '@iconify/react';
 import type { ImagePostProcess, NodeType, UserPreset, UserSkill } from '../../../types';
 
 export interface PresetOverride {
@@ -76,6 +77,14 @@ export default function SlashCommandMenu({
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // Render icon: iconify name (contains ':') or emoji
+  const renderIcon = (icon: string, className = 'slash-command-icon') => {
+    if (icon.includes(':')) {
+      return <Icon icon={icon} className={className} width={18} height={18} />;
+    }
+    return <span className={className}>{icon}</span>;
+  };
 
   const itemCount = commands.length
     + matchingPresets.length
@@ -188,7 +197,7 @@ export default function SlashCommandMenu({
                   }
                 }}
               >
-                <span className="slash-command-icon">{item.icon}</span>
+                {renderIcon(item.icon)}
                 <div className="slash-command-text">
                   <span className="slash-command-title">
                     {item.title}
@@ -213,6 +222,7 @@ export default function SlashCommandMenu({
                 className="slash-command-item has-trigger slash-command-user-preset"
                 onClick={() => handlePresetSelect(preset)}
               >
+                {renderIcon(preset.icon || 'mdi:star')}
                 <div className="slash-command-text">
                   <span className="slash-command-title">{preset.name}</span>
                   <span className="slash-command-desc">{preset.description || '点击调用这个快捷指令'}</span>
@@ -280,6 +290,7 @@ export default function SlashCommandMenu({
               onClick={() => handleItemSelect(child)}
               onMouseEnter={() => setHoveredItemId(child.id)}
             >
+              {renderIcon(child.icon)}
               <div className="slash-command-text">
                 <span className="slash-command-title">{child.title}</span>
                 <span className="slash-command-desc">{child.description}</span>

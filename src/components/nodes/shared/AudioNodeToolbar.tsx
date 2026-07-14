@@ -1,55 +1,27 @@
-﻿/**
- * TextNodeToolbar 文本节点浮动工具栏 + 编辑态支持
+/**
+ * AudioNodeToolbar 音频节点浮动工具栏 + 编辑态支持
  */
-import { memo, useState, useCallback } from 'react';
+import { memo } from 'react';
 import { Icon } from '@iconify/react';
-import type { BaseNodeData } from '../../../types';
 import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
 import { getButtonRegistry } from './toolbar/toolbarRegistry';
 
-interface TextNodeToolbarProps {
-  nodeId: string;
-  data: BaseNodeData;
-  onCopy: (text: string) => void;
-  onClearEmptyLines: () => void;
-  onShowPrompt: () => void;
-  onFullscreen: () => void;
+interface AudioNodeToolbarProps {
+  isPlaying?: boolean;
+  onTogglePlay: () => void;
+  onUpload: () => void;
 }
 
-function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFullscreen }: TextNodeToolbarProps) {
-  const nodeType = 'ai-text';
+function AudioNodeToolbar({ isPlaying, onTogglePlay, onUpload }: AudioNodeToolbarProps) {
+  const nodeType = 'ai-audio';
   const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
 
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (!data.output) return;
-      onCopy(data.output);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    },
-    [data.output, onCopy],
-  );
-
-  const handleClearEmptyLines = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (!data.output) return;
-      onClearEmptyLines();
-    },
-    [data.output, onClearEmptyLines],
-  );
-
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {
-    copy: handleCopy,
-    clearEmptyLines: handleClearEmptyLines,
-    showPrompt: (e) => { e.stopPropagation(); onShowPrompt(); },
-    fullscreen: (e) => { e.stopPropagation(); onFullscreen(); },
+    togglePlay: (e) => { e.stopPropagation(); onTogglePlay(); },
+    upload:     (e) => { e.stopPropagation(); onUpload(); },
   };
 
   // ── 编辑态 ──
@@ -57,7 +29,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
     return <ToolbarEditor edit={edit} nodeType={nodeType} />;
   }
 
-  // ── 正常态：按布局渲染 ──
+  // ── 正常态 ──
   return (
     <div
       className="node-floating-toolbar text-toolbar nodrag"
@@ -69,17 +41,16 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
             const def = registry.find((d) => d.key === key);
             if (!def || !actionMap[key]) return null;
 
-            // copy 按钮有 copied 态
-            if (key === 'copy' && copied) {
+            if (key === 'togglePlay') {
               return (
                 <AnimatedButton
                   key={key}
-                  className="ftb-btn icon-only act-copy rounded-[6px]"
-                  data-tooltip="已复制"
-                  aria-label="复制"
+                  className="ftb-btn icon-only act-toggle-play rounded-[6px]"
+                  data-tooltip={isPlaying ? '暂停' : '播放'}
+                  aria-label={isPlaying ? '暂停' : '播放'}
                   onClick={actionMap[key]}
                 >
-                  <Icon icon="mdi:check" width={12} height={12} />
+                  <Icon icon={isPlaying ? 'mdi:pause' : 'mdi:play'} width={14} height={14} />
                 </AnimatedButton>
               );
             }
@@ -92,7 +63,7 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
                 aria-label={def.label}
                 onClick={actionMap[key]}
               >
-                <Icon icon={def.icon} width={12} height={12} />
+                <Icon icon={def.icon} width={14} height={14} />
               </AnimatedButton>
             );
           })}
@@ -105,4 +76,4 @@ function TextNodeToolbar({ data, onCopy, onClearEmptyLines, onShowPrompt, onFull
   );
 }
 
-export default memo(TextNodeToolbar);
+export default memo(AudioNodeToolbar);

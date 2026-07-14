@@ -7,7 +7,7 @@ import type { ImagePostProcess, NodeType } from '../../../types';
 export interface SlashCommandItem {
   id: string;
   title: string;
-  icon: string;     // emoji
+  icon: string;     // iconify icon name (e.g. 'mdi:cube-outline') or emoji
   description: string;
   promptTemplate?: string;
   children?: SlashCommandItem[];
@@ -25,20 +25,20 @@ const IMAGE_COMMANDS: SlashCommandItem[] = [
   {
     id: 'scene',
     title: '场景参考',
-    icon: '📐',
+    icon: 'mdi:cube-outline',
     description: '一键生成场景多视图和全景图',
     children: [
       {
         id: 'scene-four-view',
         title: '场景四视图',
-        icon: '📐',
+        icon: 'mdi:view-grid-outline',
         description: '一键生成场景多视图',
         promptTemplate: '生成一张四宫格场景图（没有人物）包含（顶视图 (Plan View)，轴测图/45° 俯视图 (Axonometric View)，2个多个正交立面图 (Elevations)）\n{{ 文章内容 }}',
       },
       {
         id: 'scene-panorama',
         title: '360°无缝全景图',
-        icon: '🌐',
+        icon: 'mdi:panorama',
         description: '生成适合 VR 查看的一张无缝 360° 全景图',
         promptTemplate: '360-degree equirectangular panorama, spherical panorama for VR viewing, seamless 360° wrap-around environment 场景为：\n{{ 文章内容 }}',
       },
@@ -47,34 +47,34 @@ const IMAGE_COMMANDS: SlashCommandItem[] = [
   {
     id: 'character',
     title: '人设参考',
-    icon: '🧍',
+    icon: 'mdi:account',
     description: '一键生成人物多视图 三视图、三视图加脸部、人设拆解图',
     children: [
       {
         id: 'char-three-view',
         title: '人物三视图',
-        icon: '🧍',
+        icon: 'mdi:account-multiple',
         description: '纯正的三向视图展示',
         promptTemplate: '生成全身三视图，右边放正视图，45度的侧视图，后视图，\n{{ 文章内容 }}',
       },
       {
         id: 'char-three-view-face',
         title: '人物三视图+脸部',
-        icon: '🧍',
+        icon: 'mdi:face-man',
         description: '带脸部特写的三视图',
         promptTemplate: '生成全身三视图以及一张脸部特写（最左边占满三分之一的位置是上半身特写），右边三分之二放正视图，45度的侧视图，后视图，\n{{ 文章内容 }}',
       },
       {
         id: 'char-design-sheet',
         title: '人设解析图',
-        icon: '🧍',
+        icon: 'mdi:file-account-outline',
         description: '包含细节拆解的设定集',
         promptTemplate: '生成人设解析图，包含正视图、侧视图、背视图，以及服装细节拆解、面部特征特写，排版紧凑，\n{{ 文章内容 }}',
       },
       {
         id: 'char-8dir-run',
         title: '角色8向图-奔跑',
-        icon: '🧭',
+        icon: 'mdi:compass',
         description: '8方向角色朝向图，奔跑动作 · 9:16 2K',
         promptTemplate: 'generate five variants in the blank grid spaces. The arrows represent the character\'s facing direction.\nconstraint: 角色奔跑动作，迈开双腿，一前一后\nLayout: {\n   "Row 1": ["Reference image, keep unchanged", "Right side view, facing right"],\n   "Row 2 (Flat view)": ["Absolute front view", "Back view"],\n   "Row 3 (Isometric 45° view)": ["Facing bottom-right, face visible", "Facing top-left, face not visible"]\n   }\n   All character features (appearance, accessories, weapons, pose, etc.) must remain consistent; only the orientation should change. Delete arrows after generation. white background. The image should contain no text. \n{{ 文章内容 }}',
         imageSize: '2K',
@@ -84,7 +84,7 @@ const IMAGE_COMMANDS: SlashCommandItem[] = [
       {
         id: 'char-8dir-walk',
         title: '角色8向图-行走',
-        icon: '🧭',
+        icon: 'mdi:compass-outline',
         description: '8方向角色朝向图，行走动作 · 9:16 2K',
         promptTemplate: 'generate five variants in the blank grid spaces. The arrows represent the character\'s facing direction.\nconstraint: 角色行走动作\nLayout: {\n   "Row 1": ["Reference image, keep unchanged", "Right side view, facing right"],\n   "Row 2 (Flat view)": ["Absolute front view", "Back view"],\n   "Row 3 (Isometric 45° view)": ["Facing bottom-right, face visible", "Facing top-left, face not visible"]\n   }\n   All character features (appearance, accessories, weapons, pose, etc.) must remain consistent; only the orientation should change. Delete arrows after generation. white background.The image should contain no text. \n{{ 文章内容 }}',
         imageSize: '2K',
@@ -96,34 +96,34 @@ const IMAGE_COMMANDS: SlashCommandItem[] = [
   {
     id: 'grid',
     title: '多宫格',
-    icon: '🔲',
+    icon: 'mdi:view-grid-outline',
     description: '一键生成剧情连续的多宫格图片',
     children: [
       {
         id: 'grid-4',
         title: '4宫格',
-        icon: '🔲',
+        icon: 'icon-park-outline:grid-four',
         description: '起承转合更清晰，适合一句话剧情',
         promptTemplate: '生成一张无缝的四宫格（2x2）的连贯剧情分镜图。要求：同一角色的外观、服饰、发型保持一致；场景与光影风格统一；镜头从左上到右下依次推进；每一格都有明确动作与主体，构图干净、排版紧凑。故事/描述：\n{{ 文章内容 }}',
       },
       {
         id: 'grid-9',
         title: '9宫格',
-        icon: '🔲',
+        icon: 'icon-park-outline:grid-nine',
         description: '3x3 更细动作与情绪递进',
         promptTemplate: '生成一张无缝的九宫格（3x3）的连贯剧情分镜图。要求：角色一致性极强（外观、服饰、配色不变）；同一场景基调延续；每格推进一个小动作或情绪变化；分镜顺序从左上到右下；画面干净、排版紧凑。故事/描述：\n{{ 文章内容 }}',
       },
       {
         id: 'grid-16',
         title: '16宫格',
-        icon: '🔲',
+        icon: 'icon-park-outline:grid-sixteen',
         description: '4x4 更密的节奏推进与镜头切换',
         promptTemplate: '生成一张无缝的十六宫格（4x4）的连贯剧情分镜图。要求：角色一致性极强（外观、服饰、配色不变）；同一场景基调延续；每格推进一个小动作或情绪变化；分镜顺序从左上到右下；画面干净、排版紧凑。故事/描述：\n{{ 文章内容 }}',
       },
       {
         id: 'grid-25',
         title: '25宫格',
-        icon: '🔲',
+        icon: 'icon-park-outline:grid-sixteen',
         description: '5x5 长连续剧情，适合完整片段',
         promptTemplate: '生成一张无缝的二十五宫格（5x5）的连贯剧情分镜图。要求：角色一致性极强（外观、服饰、配色不变）；同一场景基调延续；每格推进一个小动作或情绪变化；分镜顺序从左上到右下；画面干净、排版紧凑。故事/描述：\n{{ 文章内容 }}',
       },
@@ -132,13 +132,13 @@ const IMAGE_COMMANDS: SlashCommandItem[] = [
   {
     id: 'storyboard',
     title: '故事板分镜',
-    icon: '🎬',
+    icon: 'mdi:filmstrip',
     description: '一键生成故事板分镜',
     children: [
       {
         id: 'sb-vertical',
         title: '竖版故事分镜',
-        icon: '🎬',
+        icon: 'mdi:filmstrip',
         description: '竖版分镜，从上到下推进',
         promptTemplate: `请根据我后面提供的【用户输入】，生成一张"专业影视分镜设定板 / Storyboard Board"。
 
@@ -170,7 +170,7 @@ const IMAGE_COMMANDS: SlashCommandItem[] = [
       {
         id: 'sb-vertical-scene',
         title: '竖版故事分镜+场景',
-        icon: '🎬',
+        icon: 'mdi:filmstrip',
         description: '竖版分镜，包含场景设定参考',
         promptTemplate: `请根据我后面提供的【用户输入】，生成一张"专业影视分镜设定板 / Storyboard Board"。
 
@@ -203,7 +203,7 @@ const IMAGE_COMMANDS: SlashCommandItem[] = [
       {
         id: 'sb-horizontal',
         title: '横版故事分镜',
-        icon: '🎬',
+        icon: 'mdi:filmstrip',
         description: '横版分镜，从左到右推进',
         promptTemplate: `请根据我后面提供的【用户输入】，生成一张"横版专业影视故事板 / Storyboard Sheet"。  
 要求： 
@@ -224,7 +224,7 @@ const IMAGE_COMMANDS: SlashCommandItem[] = [
       {
         id: 'sb-horizontal-scene',
         title: '横版故事分镜+场景',
-        icon: '🎬',
+        icon: 'mdi:filmstrip',
         description: '横版分镜，包含场景设定参考',
         promptTemplate: `请根据我后面提供的【用户输入】，生成一张"横版专业影视故事板 / Storyboard Sheet"。  
 要求： 
@@ -253,7 +253,7 @@ const TEXT_COMMANDS: SlashCommandItem[] = [
   {
     id: 'text-compress',
     title: '长篇精缩V1',
-    icon: '📝',
+    icon: 'mdi:text-short',
     description: '一键把长篇内容精缩成短篇',
     promptTemplate: `# 对以上的小说剧情文案进行大幅精简（目标篇幅约为原文的50%-70%
 完整保留原文对话，同时按照"对白驱动剧情"的结构重新梳理旁白与独白，保留原文段落结构与标点符号。
@@ -294,7 +294,7 @@ const TEXT_COMMANDS: SlashCommandItem[] = [
   {
     id: 'text-extract',
     title: '提取人物场景道具信息',
-    icon: '📝',
+    icon: 'mdi:text-search',
     description: '提取文本中的人物、场景、道具信息',
     promptTemplate: `{{ 文章内容 }}
 # 筛选出以上故事里的角色（包括主要怪物）、场景以及道具物品
@@ -327,13 +327,13 @@ const TEXT_COMMANDS: SlashCommandItem[] = [
   {
     id: 'text-format',
     title: '格式化短剧提示词',
-    icon: '🧍',
+    icon: 'mdi:format-text',
     description: '将小说一键转化为标准AI视频提示词脚本',
     children: [
       {
         id: 'text-storyboard',
         title: '影视级叙事分镜脚本',
-        icon: '📝',
+        icon: 'mdi:clapperboard',
         description: '将小说一键转化为标准戏剧化脚本，专为AI短剧视频量身定制',
         promptTemplate: `## 核心任务
 你是一个专业的AI分镜脚本生成器。任务是基于提供的文本信息，生成"视频提示词"的分镜脚本，分割后的上下分镜必须十分丝滑的连贯。
@@ -388,7 +388,7 @@ const TEXT_COMMANDS: SlashCommandItem[] = [
       {
         id: 'text-storyboard-seconds',
         title: '影视级叙事分镜脚本-秒级',
-        icon: '📝',
+        icon: 'mdi:timer-outline',
         description: '精确到秒的光影渲染、运镜与音效控制，专为AI短剧视频量身定制',
         promptTemplate: `## 核心任务
 你是一个专业的AI分镜脚本生成器。任务是基于提供的文本信息，生成"视频提示词"的分镜脚本，分割后的上下分镜必须十分丝滑的连贯。
@@ -437,7 +437,7 @@ const TEXT_COMMANDS: SlashCommandItem[] = [
       {
         id: 'text-seedance',
         title: 'Seedance2.0视频格式',
-        icon: '🎬',
+        icon: 'mdi:video-outline',
         description: '按用户秒数或默认15秒输出 Seedance 2.0 秒级视频提示词',
         promptTemplate: `{{ 文章内容 }}
 如用户指定秒数就按照用户的来，如没指定就按照15秒来写提示词，不要输出多余内容。严格按照下面格式输出提示词

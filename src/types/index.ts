@@ -334,6 +334,7 @@ export interface UserPreset {
   name: string;
   description: string;
   promptTemplate: string;
+  icon?: string;              // iconify icon name (e.g. 'mdi:star'), for Toolbar display
   thumbnail?: string;        // base64 data URL
   triggerMode: PresetTriggerMode;  // direct=替换全文, insertPrompt=追加到提示词
   // 可选：预设绑定的模型和尺寸，选择后生图时覆盖节点设置
@@ -384,3 +385,35 @@ export const GROUP_COLOR_PALETTE = [
   '#14b8a6',
   '#f97316',
 ];
+
+// ============================================
+// Toolbar 自定义编辑 — 按钮 / Zone / 布局
+// ============================================
+
+/** Toolbar 按钮定义（注册表中每一项） */
+export interface ToolbarButtonDef {
+  key: string;              // 唯一标识，如 'copy', 'fullscreen', 'matting'
+  label: string;            // tooltip 文本
+  icon: string;             // iconify name (e.g. 'mdi:copy') 或 emoji
+  defaultZone: string;      // 默认归属 Zone 名
+  /** 是否有状态变体（如 copied 状态的图标），默认 false */
+  hasState?: boolean;
+  /** 子菜单项 key 列表（如宫格裁切有子菜单） */
+  subKeys?: string[];
+}
+
+/** 一个 Zone 的布局 */
+export interface ToolbarZoneLayout {
+  id: string;
+  name: string;
+  buttonKeys: string[];
+}
+
+/** 单个节点类型的 Toolbar 布局 */
+export interface ToolbarLayout {
+  zones: ToolbarZoneLayout[];
+  version: number;
+}
+
+/** 所有节点类型的 Toolbar 布局集合 */
+export type ToolbarLayouts = Record<string, ToolbarLayout>;

@@ -186,7 +186,6 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           const x = getDockX(idx);
           const isHovered = effectiveHover === idx;
           const isStoryboard = node.nodeType === 'ai-storyboard';
-          const sbOpen = sbPopupId === node.id;
 
           return (
           <motion.button
