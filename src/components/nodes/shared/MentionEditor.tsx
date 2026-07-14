@@ -567,7 +567,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       }
     }
 
-    return nodes
+    const list = nodes
       .filter((n) => n.id !== nodeId && n.type !== 'group' && sourceNodeIds.has(n.id))
       .map((n) => ({
         id: n.id,
@@ -579,6 +579,29 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         // 图片节点优先本地文件（线上地址可能失效）；视频用海报帧；不用 videoUrl
         thumbnailUrl: bestNodeThumb(n.data),
       }));
+
+    // 自身引用：当前节点有输出内容时可在 @菜单中 @自身
+    if (me && me.type !== 'group') {
+      const selfOutput = me.data.output as string | undefined;
+      const selfImageUrl = me.data.imageUrl as string | undefined;
+      const selfVideoUrl = me.data.videoUrl as string | undefined;
+      const selfAudioUrl = me.data.audioUrl as string | undefined;
+      const hasSelfContent = (selfOutput && selfOutput.trim()) || selfImageUrl || selfVideoUrl || selfAudioUrl;
+      if (hasSelfContent) {
+        list.unshift({
+          id: me.id,
+          label: (me.data.label as string) || '节点',
+          type: me.data.type,
+          displayId: me.data.displayId as number | undefined,
+          hasOutput: true,
+          outputType: selfImageUrl ? 'image' : selfVideoUrl ? 'video' : selfAudioUrl ? 'audio' : 'text',
+          thumbnailUrl: bestNodeThumb(me.data),
+          isSelf: true,
+        });
+      }
+    }
+
+    return list;
   }, [nodeId, nodes, edges]);
 
   const getWorkflowMentionNodes = useCallback(() => {
@@ -1262,6 +1285,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
                     </span>
                     <div className="min-w-0 flex-1 flex items-center gap-1 overflow-hidden">
                       <span className="text-sm text-canvas-text truncate">{node.label}</span>
+                      {(node as { isSelf?: boolean }).isSelf && (
+                        <span className="text-[10px] text-indigo-300 bg-indigo-500/15 px-1 py-px rounded shrink-0">自身</span>
+                      )}
                       <span className="text-[10px] text-canvas-text-muted shrink-0">#{node.displayId}</span>
                       {/* {!node.hasOutput && (
                         <span className="text-[10px] text-canvas-text-muted shrink-0">等待生成</span>
