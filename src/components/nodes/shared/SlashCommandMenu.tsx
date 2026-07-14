@@ -4,13 +4,14 @@
  */
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import type { NodeType, UserPreset, UserSkill } from '../../../types';
+import type { ImagePostProcess, NodeType, UserPreset, UserSkill } from '../../../types';
 
 export interface PresetOverride {
   model?: string;
   provider?: string;
   imageSize?: string;
   aspectRatio?: string;
+  postProcess?: ImagePostProcess;
 }
 import { getSlashCommands, fillTemplate } from './slashCommands';
 import type { SlashCommandItem } from './slashCommands';
@@ -122,6 +123,7 @@ export default function SlashCommandMenu({
       const override: PresetOverride = {};
       if (item.imageSize) override.imageSize = item.imageSize;
       if (item.aspectRatio) override.aspectRatio = item.aspectRatio;
+      if (item.postProcess) override.postProcess = item.postProcess;
       onSelect(filled, true, Object.keys(override).length > 0 ? override : undefined);
       onClose();
     }

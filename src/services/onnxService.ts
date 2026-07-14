@@ -24,6 +24,13 @@ export interface MattingResult {
   input_size: string;
 }
 
+/** 角色 8 向宫格结果 */
+export interface CharacterDirectionGridResult {
+  grid_path: string;
+  cell_size: number;
+  grid_size: number;
+}
+
 /** 模型注册表：模型名 → 下载 URL */
 const MODEL_REGISTRY: Record<string, string> = {
   'realesrgan-x4.onnx':
@@ -130,4 +137,20 @@ export async function subjectMatting(
     taskId,
   });
   return JSON.parse(json) as MattingResult;
+}
+
+/**
+ * 对 2×3 角色视图执行主体识别，并生成 3×3 的 8 向透明宫格。
+ */
+export async function createCharacterDirectionGrid(
+  inputPath: string,
+  modelName: string,
+  taskId: string,
+): Promise<CharacterDirectionGridResult> {
+  const json: string = await invoke('character_direction_grid', {
+    inputPath,
+    modelName,
+    taskId,
+  });
+  return JSON.parse(json) as CharacterDirectionGridResult;
 }

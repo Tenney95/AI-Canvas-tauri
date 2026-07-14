@@ -123,7 +123,6 @@ async function scanDirRecursive(dirPath: string): Promise<ScanFileEntry[]> {
  */
 async function scanProjectStorage(
   project: CanvasProject,
-  nodeFilePaths: Set<string>,
 ): Promise<ProjectStorageInfo | null> {
   if (!isTauriEnv()) return null;
 
@@ -305,7 +304,7 @@ export async function scanStorageHealth(
 
   // 1. 扫描各项目存储
   for (const p of projects) {
-    const info = await scanProjectStorage(p, nodeFilePaths);
+    const info = await scanProjectStorage(p);
     if (info) {
       report.projects.push(info);
       report.totalSize += info.fileSize;

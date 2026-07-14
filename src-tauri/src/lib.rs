@@ -484,6 +484,7 @@ pub fn run() {
             onnx::check_model_exists,
             onnx::image_upscale,
             onnx::subject_matting,
+            onnx::character_direction_grid,
             onnx::download_onnx_model,
             onnx::get_onnx_gpu_status,
         ])

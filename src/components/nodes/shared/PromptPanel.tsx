@@ -2,7 +2,7 @@
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
 import { useState, useRef, useCallback } from 'react';
-import type { NodeType, ModelOption, WorkflowDefinition, UserSkill } from '../../../types';
+import type { ImagePostProcess, NodeType, ModelOption, WorkflowDefinition, UserSkill } from '../../../types';
 import type { PresetOverride } from './SlashCommandMenu';
 import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
@@ -25,7 +25,7 @@ interface PromptPanelProps {
   selectedWorkflowId?: string;
   canGenerate?: boolean;
   onChange: (value: string) => void;
-  onSubmit: (overridePrompt?: string) => void;
+  onSubmit: (overridePrompt?: string, postProcess?: ImagePostProcess) => void;
   onModelSelect: (model: ModelOption) => void;
   onWorkflowSelect?: (workflowId: string | undefined) => void;
   onDebug?: () => void;
@@ -106,9 +106,9 @@ export default function PromptPanel({
   const setPresetManagerOpen = useAppStore((s) => s.setPresetManagerOpen);
   const showToast = useAppStore((s) => s.showToast);
 
-  const handleSubmit = useCallback((overridePrompt?: string) => {
+  const handleSubmit = useCallback((overridePrompt?: string, postProcess?: ImagePostProcess) => {
     const sourcePrompt = overridePrompt ?? prompt;
-    onSubmit(expandSkillReferences(sourcePrompt, userSkills));
+    onSubmit(expandSkillReferences(sourcePrompt, userSkills), postProcess);
   }, [onSubmit, prompt, userSkills]);
 
   const handleSlashSelect = useCallback((filledPrompt: string, shouldTrigger: boolean, preset?: PresetOverride) => {
@@ -128,7 +128,7 @@ export default function PromptPanel({
     if (shouldTrigger) {
       // Direct trigger: combine preset template + input box content, call model directly
       // Don't update the input box — the preset prompt is only used for this generation
-      handleSubmit(filledPrompt);
+      handleSubmit(filledPrompt, preset?.postProcess);
     } else {
       // Insert mode: update input box with filled template, user can edit before generating
       onChange(filledPrompt);

@@ -578,6 +578,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         outputType: n.data.imageUrl ? 'image' : n.data.videoUrl ? 'video' : n.data.audioUrl ? 'audio' : 'text',
         // 图片节点优先本地文件（线上地址可能失效）；视频用海报帧；不用 videoUrl
         thumbnailUrl: bestNodeThumb(n.data),
+        isSelf: false as boolean,
       }));
 
     // 自身引用：当前节点有输出内容时可在 @菜单中 @自身
@@ -1285,7 +1286,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
                     </span>
                     <div className="min-w-0 flex-1 flex items-center gap-1 overflow-hidden">
                       <span className="text-sm text-canvas-text truncate">{node.label}</span>
-                      {(node as { isSelf?: boolean }).isSelf && (
+                      {node.isSelf && (
                         <span className="text-[10px] text-indigo-300 bg-indigo-500/15 px-1 py-px rounded shrink-0">自身</span>
                       )}
                       <span className="text-[10px] text-canvas-text-muted shrink-0">#{node.displayId}</span>

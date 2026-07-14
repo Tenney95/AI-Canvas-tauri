@@ -2,11 +2,13 @@
  * AINodeDialog AI 生成弹窗 — 点击节点后弹出的浮动面板，包含 Prompt 输入、模型选择、参数配置、生成按钮
  */
 import { memo, useCallback, useEffect, useRef } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../../store/useAppStore';
-import type { BaseNodeData, ModelOption } from '../../types';
+import { generateId, useAppStore } from '../../store/useAppStore';
+import type { BaseNodeData, ImagePostProcess, ModelOption } from '../../types';
 import { generateText, generateImage, generateVideo, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
 import { downloadUrlAndSave } from '../../services/fileService';
+import { checkModelExists, createCharacterDirectionGrid, downloadModel } from '../../services/onnxService';
 import PromptPanel from './shared/PromptPanel';
 import type { MentionEditorHandle } from './shared/MentionEditor';
 import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
@@ -80,7 +82,7 @@ function AINodeDialog() {
 
   // 调用选中模型生成（文本 or 图片）
   // overridePrompt: / 指令菜单直接触发时传入的整合后模板，不走 store → 对话框不闪烁
-  const onSubmit = useCallback(async (overridePrompt?: string) => {
+  const onSubmit = useCallback(async (overridePrompt?: string, postProcess?: ImagePostProcess) => {
     const effectivePrompt = overridePrompt ?? (() => {
       const latestNode = useAppStore.getState().nodes.find((n) => n.id === activeNodeId);
       const latestData: BaseNodeData | undefined = latestNode?.data;
@@ -149,7 +151,65 @@ function AINodeDialog() {
           filePath: saved?.filePath,
           params: { imageSize, aspectRatio },
         });
-        showToast('图片生成完成');
+        if (postProcess === 'character-8-direction-grid') {
+          if (!saved?.filePath) {
+            showToast('原图已生成，但未能保存到本地，无法自动生成 8 向宫格', 'error');
+          } else {
+            showToast('图片生成完成，正在后台识别主体并生成 8 向宫格');
+            try {
+              const mattingModelName = 'rmbg-1.4.onnx';
+              if (!(await checkModelExists(mattingModelName))) {
+                showToast('首次使用正在下载主体识别模型（约 176MB）');
+                await downloadModel(mattingModelName);
+              }
+              if (!isStillCurrentSubmission()) return;
+
+              const gridResult = await createCharacterDirectionGrid(
+                saved.filePath,
+                mattingModelName,
+                `direction-grid-${submittingNodeId}-${Date.now()}`,
+              );
+              if (!isStillCurrentSubmission()) return;
+
+              const store = useAppStore.getState();
+              const sourceNode = store.nodes.find((item) => item.id === submittingNodeId);
+              if (!sourceNode) return;
+              const sourceWidth = (sourceNode.data.nodeWidth as number) || 280;
+              store.addNode({
+                id: `node-${generateId()}`,
+                type: 'ai-storyboard',
+                position: {
+                  x: sourceNode.position.x + sourceWidth + 60,
+                  y: sourceNode.position.y,
+                },
+                data: {
+                  label: `${data.label} 8向宫格`,
+                  type: 'ai-storyboard',
+                  role: 'source',
+                  status: 'success',
+                  imageUrl: convertFileSrc(gridResult.grid_path),
+                  filePath: gridResult.grid_path,
+                  imageWidth: gridResult.grid_size,
+                  imageHeight: gridResult.grid_size,
+                  storyboardRows: 3,
+                  storyboardCols: 3,
+                  nodeWidth: 360,
+                  nodeHeight: 360,
+                },
+              });
+              showToast('角色 8 向宫格已生成');
+            } catch (postProcessError) {
+              const message = postProcessError instanceof Error
+                ? postProcessError.message
+                : typeof postProcessError === 'string'
+                  ? postProcessError
+                  : '未知错误';
+              showToast(`原图已生成，8 向宫格处理失败：${message}`, 'error');
+            }
+          }
+        } else {
+          showToast('图片生成完成');
+        }
       } else if (nodeType === 'ai-panorama') {
         const imageSize = (data.imageSize as string) || '2K';
         const aspectRatio = (data.aspectRatio as string) || '2:1';
@@ -323,7 +383,7 @@ function AINodeDialog() {
       });
       showToast(msg, 'error');
     }
-  }, [activeNodeId, nodeType, data?.model, data?.provider, data?.label, data?.imageSize, data?.aspectRatio, data?.videoResolution, data?.videoFps, data?.videoFrames, data?.seedanceResolution, data?.seedanceRatio, data?.seedanceDuration, data?.generateAudio, data?.workflowId, data?.workflowInputs, currentProjectId, updateNodeData, recordOutputHistory, showToast]);
+  }, [activeNodeId, nodeType, data, currentProjectId, updateNodeData, recordOutputHistory, showToast]);
 
   // 直接将输入内容作为节点输出（跳过模型调用）
   const onPassThrough = useCallback(() => {
@@ -340,7 +400,7 @@ function AINodeDialog() {
       provider: data.provider || 'passthrough',
       status: 'success',
     });
-  }, [activeNodeId, data?.prompt, data?.label, data?.type, data?.model, data?.provider, updateNodeData, recordOutputHistory]);
+  }, [activeNodeId, data, updateNodeData, recordOutputHistory]);
 
   const onModelSelect = useCallback(
     (model: ModelOption) => {

@@ -17,6 +17,9 @@ export type NodeType =
   | 'source-text'
   | 'comment';
 
+// 内置图像预设可请求的生成后处理流程
+export type ImagePostProcess = 'character-8-direction-grid';
+
 // 宫格分镜：被拖入某格的图片覆盖
 export interface StoryboardCellOverride {
   url: string;         // 展示用 asset/data URL

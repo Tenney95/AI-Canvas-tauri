@@ -674,3 +674,301 @@ pub async fn subject_matting(
         }
     }
 }
+
+// ════════════════════════════════════════════════
+// Tauri 命令：角色 8 向图自动拆分
+// ════════════════════════════════════════════════
+
+const DIRECTION_CELL_SIZE: u32 = 512;
+const DIRECTION_SUBJECT_MAX_SIZE: u32 = 448;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirectionPlacement {
+    source_index: usize,
+    target_row: u32,
+    target_col: u32,
+    mirror: bool,
+}
+
+// 源图按 2 列 × 3 行、行优先编号：
+// 0=参考图，1=右侧，2=正面，3=背面，4=右下，5=左上。
+// 中心格保留参考图；其余三个缺失方向由水平镜像补齐。
+const DIRECTION_PLACEMENTS: [DirectionPlacement; 9] = [
+    DirectionPlacement {
+        source_index: 5,
+        target_row: 0,
+        target_col: 0,
+        mirror: false,
+    },
+    DirectionPlacement {
+        source_index: 3,
+        target_row: 0,
+        target_col: 1,
+        mirror: false,
+    },
+    DirectionPlacement {
+        source_index: 5,
+        target_row: 0,
+        target_col: 2,
+        mirror: true,
+    },
+    DirectionPlacement {
+        source_index: 1,
+        target_row: 1,
+        target_col: 0,
+        mirror: true,
+    },
+    DirectionPlacement {
+        source_index: 0,
+        target_row: 1,
+        target_col: 1,
+        mirror: false,
+    },
+    DirectionPlacement {
+        source_index: 1,
+        target_row: 1,
+        target_col: 2,
+        mirror: false,
+    },
+    DirectionPlacement {
+        source_index: 4,
+        target_row: 2,
+        target_col: 0,
+        mirror: false,
+    },
+    DirectionPlacement {
+        source_index: 2,
+        target_row: 2,
+        target_col: 1,
+        mirror: false,
+    },
+    DirectionPlacement {
+        source_index: 4,
+        target_row: 2,
+        target_col: 2,
+        mirror: true,
+    },
+];
+
+fn unique_sibling_png(input: &Path, suffix: &str) -> Result<PathBuf, String> {
+    let parent = input.parent().ok_or("无法解析输入图片目录".to_string())?;
+    let stem = input
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("image");
+
+    for index in 0..10_000u32 {
+        let numbered = if index == 0 {
+            format!("{stem}_{suffix}.png")
+        } else {
+            format!("{stem}_{suffix}_{index}.png")
+        };
+        let candidate = parent.join(numbered);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("无法为 8 向图生成不冲突的输出文件名".to_string())
+}
+
+fn alpha_bounds(image: &image::RgbaImage) -> Option<(u32, u32, u32, u32)> {
+    let mut min_x = image.width();
+    let mut min_y = image.height();
+    let mut max_x = 0;
+    let mut max_y = 0;
+    let mut found = false;
+
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if pixel[3] == 0 {
+            continue;
+        }
+        found = true;
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+
+    found.then_some((min_x, min_y, max_x - min_x + 1, max_y - min_y + 1))
+}
+
+fn normalize_direction_cell(
+    subject: &image::RgbaImage,
+    source_index: usize,
+) -> Result<image::RgbaImage, String> {
+    let source_row = source_index / 2;
+    let source_col = source_index % 2;
+    let x0 = source_col as u32 * subject.width() / 2;
+    let x1 = (source_col as u32 + 1) * subject.width() / 2;
+    let y0 = source_row as u32 * subject.height() / 3;
+    let y1 = (source_row as u32 + 1) * subject.height() / 3;
+    let cell_width = x1.saturating_sub(x0);
+    let cell_height = y1.saturating_sub(y0);
+    let inset = (cell_width.min(cell_height) / 128).max(2);
+
+    if cell_width <= inset * 2 || cell_height <= inset * 2 {
+        return Err(format!("源图第 {} 块尺寸过小", source_index + 1));
+    }
+
+    let cell = image::imageops::crop_imm(
+        subject,
+        x0 + inset,
+        y0 + inset,
+        cell_width - inset * 2,
+        cell_height - inset * 2,
+    )
+    .to_image();
+    let (trim_x, trim_y, trim_width, trim_height) =
+        alpha_bounds(&cell).ok_or_else(|| format!("源图第 {} 块未识别到主体", source_index + 1))?;
+    let trimmed =
+        image::imageops::crop_imm(&cell, trim_x, trim_y, trim_width, trim_height).to_image();
+
+    let longest = trim_width.max(trim_height) as f64;
+    let scale = DIRECTION_SUBJECT_MAX_SIZE as f64 / longest;
+    let target_width = ((trim_width as f64 * scale).round() as u32).max(1);
+    let target_height = ((trim_height as f64 * scale).round() as u32).max(1);
+    Ok(image::imageops::resize(
+        &trimmed,
+        target_width,
+        target_height,
+        image::imageops::FilterType::Lanczos3,
+    ))
+}
+
+fn compose_character_direction_grid_image(
+    subject: &image::RgbaImage,
+) -> Result<image::RgbaImage, String> {
+    if subject.width() < 4 || subject.height() < 6 {
+        return Err("8 向图源图片尺寸不足，无法按 2×3 拆分".to_string());
+    }
+
+    let sprites = (0..6)
+        .map(|source_index| normalize_direction_cell(subject, source_index))
+        .collect::<Result<Vec<_>, _>>()?;
+    let grid_size = DIRECTION_CELL_SIZE * 3;
+    let mut grid = image::RgbaImage::new(grid_size, grid_size);
+
+    for placement in DIRECTION_PLACEMENTS {
+        let source = &sprites[placement.source_index];
+        let mirrored;
+        let sprite = if placement.mirror {
+            mirrored = image::imageops::flip_horizontal(source);
+            &mirrored
+        } else {
+            source
+        };
+        let cell_x = placement.target_col * DIRECTION_CELL_SIZE;
+        let cell_y = placement.target_row * DIRECTION_CELL_SIZE;
+        let x = cell_x + (DIRECTION_CELL_SIZE - sprite.width()) / 2;
+        let y = cell_y + (DIRECTION_CELL_SIZE - sprite.height()) / 2;
+        image::imageops::overlay(&mut grid, sprite, i64::from(x), i64::from(y));
+    }
+
+    Ok(grid)
+}
+
+fn compose_character_direction_grid(subject_path: &Path, output_path: &Path) -> Result<(), String> {
+    let subject = image::open(subject_path)
+        .map_err(|error| format!("读取主体识别结果失败: {error}"))?
+        .to_rgba8();
+    let grid = compose_character_direction_grid_image(&subject)?;
+    grid.save(output_path)
+        .map_err(|error| format!("保存角色 8 向宫格失败: {error}"))
+}
+
+/// 对 2×3 角色视图执行主体识别，生成由 9 个 512×512 单元组成的透明宫格图。
+#[tauri::command]
+pub async fn character_direction_grid(
+    app: tauri::AppHandle,
+    input_path: String,
+    model_name: String,
+    task_id: String,
+) -> Result<String, String> {
+    let input = PathBuf::from(&input_path);
+    if !input.is_file() {
+        return Err(format!("输入文件不存在: {input_path}"));
+    }
+
+    let subject_path = unique_sibling_png(&input, "8dir_subject_temp")?;
+    let output_path = unique_sibling_png(&input, "8dir_grid")?;
+    let subject_path_string = subject_path.to_string_lossy().into_owned();
+    let matting_task_id = format!("{task_id}-matting");
+
+    if let Err(error) = subject_matting(
+        app,
+        input_path,
+        subject_path_string,
+        model_name,
+        matting_task_id,
+    )
+    .await
+    {
+        let _ = std::fs::remove_file(&subject_path);
+        return Err(error);
+    }
+
+    let compose_result = compose_character_direction_grid(&subject_path, &output_path);
+    let _ = std::fs::remove_file(&subject_path);
+    compose_result?;
+
+    Ok(json!({
+        "grid_path": output_path.to_string_lossy(),
+        "cell_size": DIRECTION_CELL_SIZE,
+        "grid_size": DIRECTION_CELL_SIZE * 3,
+    })
+    .to_string())
+}
+
+#[cfg(test)]
+mod direction_grid_tests {
+    use super::*;
+
+    #[test]
+    fn direction_mapping_matches_confirmed_layout() {
+        let source_indices = DIRECTION_PLACEMENTS.map(|placement| placement.source_index);
+        let mirror_flags = DIRECTION_PLACEMENTS.map(|placement| placement.mirror);
+
+        assert_eq!(source_indices, [5, 3, 5, 1, 0, 1, 4, 2, 4]);
+        assert_eq!(
+            mirror_flags,
+            [false, false, true, true, false, false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn composition_creates_three_by_three_transparent_grid() {
+        let mut subject = image::RgbaImage::new(200, 300);
+        let colors = [
+            [220, 20, 20, 255],
+            [20, 220, 20, 255],
+            [20, 20, 220, 255],
+            [220, 220, 20, 255],
+            [220, 20, 220, 255],
+            [20, 220, 220, 255],
+        ];
+
+        for (source_index, color) in colors.into_iter().enumerate() {
+            let row = source_index / 2;
+            let col = source_index % 2;
+            for y in (row as u32 * 100 + 20)..(row as u32 * 100 + 80) {
+                for x in (col as u32 * 100 + 20)..(col as u32 * 100 + 80) {
+                    subject.put_pixel(x, y, image::Rgba(color));
+                }
+            }
+        }
+
+        let grid = compose_character_direction_grid_image(&subject).expect("应成功合成宫格");
+        assert_eq!(grid.dimensions(), (1536, 1536));
+        assert_eq!(grid.get_pixel(0, 0)[3], 0);
+
+        let expected_sources = [5usize, 3, 5, 1, 0, 1, 4, 2, 4];
+        for (target_index, source_index) in expected_sources.into_iter().enumerate() {
+            let row = target_index / 3;
+            let col = target_index % 3;
+            let pixel = grid.get_pixel(col as u32 * 512 + 256, row as u32 * 512 + 256);
+            assert_eq!(pixel.0, colors[source_index]);
+        }
+    }
+}

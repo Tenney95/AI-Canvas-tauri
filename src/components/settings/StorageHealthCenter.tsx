@@ -13,7 +13,6 @@ import {
   deleteDuplicateFile,
   collectNodeFilePaths,
   type StorageHealthReport,
-  type ProjectStorageInfo,
   type TrashInfo,
   type OrphanFileInfo,
   type DuplicateFileGroup,
@@ -294,7 +293,7 @@ function StackedBar({ items }: { items: BarItem[] }) {
 // ============================================
 
 export default function StorageHealthCenter() {
-  const { projects, currentProjectId, nodes, showToast } = useAppStore(
+  const { projects, nodes, showToast } = useAppStore(
     useShallow((s) => ({
       projects: s.projects,
       currentProjectId: s.currentProjectId,
