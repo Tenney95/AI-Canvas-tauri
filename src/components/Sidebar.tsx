@@ -468,8 +468,13 @@ function AvatarMenu() {
               </a>
               <button
                 type="button"
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-canvas-hover hover:bg-canvas-border transition-colors text-xs text-canvas-text-secondary hover:text-canvas-text text-left cursor-default"
-                data-tooltip="QQ 群号"
+                onClick={() => {
+                  const qq = '873354155';
+                  navigator.clipboard?.writeText(qq).catch(() => {});
+                  useAppStore.getState().showToast('已复制 QQ 群号：873354155');
+                }}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-canvas-hover hover:bg-canvas-border transition-colors text-xs text-canvas-text-secondary hover:text-canvas-text text-left cursor-pointer"
+                data-tooltip="点击复制 QQ 群号"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M21.395 15.035a39.548 39.548 0 0 0-.803-2.264l-1.079-2.695c.001-.032.014-.562.014-.836C19.526 4.632 17.351 0 12 0S4.474 4.632 4.474 9.241c0 .274.013.804.014.836l-1.08 2.695a38.97 38.97 0 0 0-.802 2.264c-1.021 3.283-1.045 4.643-1.045 4.643 0 1.706 1.036 2.841 2.439 2.841.808 0 1.258-.387 1.85-.92.228-.206.463-.372.708-.498.449-.23 1.022-.405 1.719-.479 1.087-.116 3.274-.464 5.223-.464h.001c1.949 0 4.136.348 5.223.464.697.074 1.27.249 1.719.479.245.126.48.292.708.498.592.533 1.042.92 1.85.92 1.403 0 2.439-1.135 2.439-2.841 0 0-.025-1.361-1.046-4.643z"/></svg>
                 QQ 群：873354155

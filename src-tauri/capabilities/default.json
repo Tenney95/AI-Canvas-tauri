@@ -29,6 +29,8 @@
     "global-shortcut:allow-unregister-all",
     "drag:default",
     "updater:default",
+    "fs:allow-watch",
+    "fs:allow-unwatch",
     "fs:default",
     "shell:default",
     {

@@ -20,6 +20,7 @@ import SplashScreen from './components/SplashScreen';
 import CanvasBackground from './components/backgrounds/CanvasBackground';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
+import { useReferencedImageWatcher } from './hooks/useReferencedImageWatcher';
 import { useAppStore } from './store/useAppStore';
 import * as fileService from './services/fileService';
 import { checkForUpdate, downloadAndInstallUpdate, type UpdateInfo } from './services/updateService';
@@ -35,6 +36,7 @@ const PacmanMascot = lazy(() => import('./components/shared/mascot/PacmanDownloa
 export default function App() {
   useKeyboardShortcuts();
   useAutoSave();
+  useReferencedImageWatcher();
 
   // 开屏动画状态
   const [splashDone, setSplashDone] = useState(false);
