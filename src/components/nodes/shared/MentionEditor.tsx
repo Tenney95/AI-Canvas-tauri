@@ -857,12 +857,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     if (!showAssetPicker) return;
     let alive = true;
     setAssetLoading(true);
-    Promise.all([
-      listGlobalFiles(),
-      listExternalFolderFiles(assetFolders ?? []),
-      getAllAssetMeta().catch(() => []),
-    ])
-      .then(([globalFiles, folderFiles, metas]) => {
+    Promise.all([listGlobalFiles(), listExternalFolderFiles(assetFolders ?? [])])
+      .then(async ([globalFiles, folderFiles]) => {
+        const metas = await getAllAssetMeta().catch(() => []);
         if (!alive) return;
         const seen = new Set<string>();
         const merged: AssetFileEntry[] = [];
@@ -872,7 +869,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           merged.push(f);
         }
         const tagMap: Record<string, string[]> = {};
-        for (const m of metas) if (m.tags?.length) tagMap[m.path] = m.tags;
+        for (const m of metas) if (m.tags?.length) tagMap[m.assetId] = m.tags;
         setAssetList(merged);
         setAssetTagMap(tagMap);
       })
@@ -901,7 +898,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
 
   // 标签合并 + 派生标签 chip
   const taggedAssets = useMemo(
-    () => assetList.map((f) => (assetTagMap[f.path] ? { ...f, tags: assetTagMap[f.path] } : f)),
+    () => assetList.map((f) => {
+      const key = f.assetId ?? f.path;
+      return assetTagMap[key] ? { ...f, tags: assetTagMap[key] } : f;
+    }),
     [assetList, assetTagMap],
   );
   const assetTagList = useMemo(() => {

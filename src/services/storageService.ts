@@ -26,6 +26,117 @@ import {
   type SkillRecord,
   type CustomStyleRecord,
 } from './indexedDbService';
+import { exists } from '@tauri-apps/plugin-fs';
+import type { BaseNodeData, StoryboardCellOverride } from '../types';
+import { getAssetUrlFromPath, getProjectDataDir, joinPath, listDirectoryFiles } from './fs/core';
+import { identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
+
+interface PersistedNodeLike {
+  data?: BaseNodeData;
+  [key: string]: unknown;
+}
+
+async function serializeAssetReference(
+  data: BaseNodeData | StoryboardCellOverride,
+  projectId: string,
+  projectDir: string,
+): Promise<BaseNodeData | StoryboardCellOverride> {
+  if (!data.filePath) return data;
+  const normalizedPath = data.filePath.replace(/\\/g, '/');
+  const normalizedDir = projectDir.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!normalizedPath.toLowerCase().startsWith(`${normalizedDir.toLowerCase()}/`)) return data;
+
+  const identity = await identifyAsset(normalizedPath, {
+    assetId: data.assetId,
+    rootPath: normalizedDir,
+    projectId,
+    source: 'project',
+  });
+  const serialized = { ...data, assetId: identity.assetId, relativePath: identity.relativePath };
+  delete serialized.filePath;
+  return serialized;
+}
+
+async function serializeProjectNodes(nodes: unknown, projectId: string): Promise<unknown> {
+  if (!Array.isArray(nodes)) return nodes;
+  const projectDir = await getProjectDataDir(projectId);
+  if (!projectDir) return nodes;
+  return Promise.all((nodes as PersistedNodeLike[]).map(async (node) => {
+    if (!node.data) return node;
+    let data = await serializeAssetReference(node.data, projectId, projectDir) as BaseNodeData;
+    if (Array.isArray(data.storyboardOverrides)) {
+      const storyboardOverrides = await Promise.all(data.storyboardOverrides.map(async (override) => (
+        override ? serializeAssetReference(override, projectId, projectDir) as Promise<StoryboardCellOverride> : null
+      )));
+      data = { ...data, storyboardOverrides };
+    }
+    return { ...node, data };
+  }));
+}
+
+async function restoreAssetReference<T extends BaseNodeData | StoryboardCellOverride>(
+  data: T,
+  projectId: string,
+  projectDir: string,
+): Promise<T> {
+  let filePath = data.relativePath ? joinPath(projectDir, data.relativePath) : data.filePath;
+  if (filePath && !(await exists(filePath).catch(() => false))) filePath = undefined;
+  if (!filePath && data.assetId) filePath = await resolveIndexedAssetPath(data.assetId) ?? undefined;
+  if (!filePath) return data;
+
+  const identity = await identifyAsset(filePath, {
+    assetId: data.assetId,
+    rootPath: projectDir,
+    projectId,
+    source: 'project',
+  });
+  const restored = { ...data, assetId: identity.assetId, relativePath: identity.relativePath, filePath } as T;
+  const previousDiskName = (data.relativePath ?? data.filePath)?.split(/[/\\]/).pop();
+  const currentDiskName = filePath.split(/[/\\]/).pop();
+  if ('label' in restored && previousDiskName && currentDiskName && previousDiskName !== currentDiskName) {
+    const previousFileName = restored.fileName;
+    const previousLabel = restored.label;
+    const stem = (name: string) => name.replace(/\.[^.]+$/, '');
+    restored.fileName = currentDiskName;
+    if (
+      previousLabel === previousFileName
+      || previousLabel === previousDiskName
+      || stem(previousLabel) === stem(previousDiskName)
+    ) {
+      restored.label = currentDiskName;
+    }
+  }
+  if ('imageUrl' in restored && restored.imageUrl) restored.imageUrl = await getAssetUrlFromPath(filePath);
+  if ('videoUrl' in restored && restored.videoUrl) restored.videoUrl = await getAssetUrlFromPath(filePath);
+  if ('audioUrl' in restored && restored.audioUrl) restored.audioUrl = await getAssetUrlFromPath(filePath);
+  if ('url' in restored) restored.url = await getAssetUrlFromPath(filePath);
+  return restored;
+}
+
+async function restoreProjectNodes(nodes: unknown, projectId: string): Promise<unknown> {
+  if (!Array.isArray(nodes)) return nodes;
+  const projectDir = await getProjectDataDir(projectId);
+  if (!projectDir) return nodes;
+  // 先刷新项目目录索引，使外部重命名/移动后的文件能在按 assetId 恢复节点前被重新识别。
+  const diskFiles = await listDirectoryFiles(projectDir);
+  await Promise.all(diskFiles.map((file) => identifyAsset(file.path, {
+    rootPath: projectDir,
+    projectId,
+    source: 'project',
+    size: file.size,
+  })));
+  return Promise.all((nodes as PersistedNodeLike[]).map(async (node) => {
+    if (!node.data) return node;
+    let data = await restoreAssetReference(node.data, projectId, projectDir);
+    if (Array.isArray(data.storyboardOverrides)) {
+      const storyboardOverrides = await Promise.all(data.storyboardOverrides.map(async (override) => (
+        override ? restoreAssetReference(override, projectId, projectDir) : null
+      )));
+      data = { ...data, storyboardOverrides };
+    }
+    return { ...node, data };
+  }));
+}
 
 export interface ProjectSaveData {
   id: string;
@@ -42,7 +153,7 @@ export interface ProjectSaveData {
 /** 保存项目到 IndexedDB */
 export async function saveProject(data: ProjectSaveData): Promise<string> {
   try {
-    await saveProjectToDb(data);
+    await saveProjectToDb({ ...data, nodes: await serializeProjectNodes(data.nodes, data.id) });
     console.log('Project saved to IndexedDB:', data.id);
     return data.id;
   } catch (error) {
@@ -65,7 +176,8 @@ export async function loadProjectsList(): Promise<ProjectSaveData[]> {
 export async function loadProjectData(id: string): Promise<ProjectSaveData | null> {
   try {
     const record = await getProjectById(id);
-    return record ?? null;
+    if (!record) return null;
+    return { ...record, nodes: await restoreProjectNodes(record.nodes, id) } as ProjectSaveData;
   } catch (error) {
     console.error('Load project data failed:', error);
     return null;

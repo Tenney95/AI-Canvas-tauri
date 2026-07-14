@@ -16,6 +16,7 @@ import {
   type AssetFileEntry,
 } from './core';
 import { moveToTrash } from './trash';
+import { identifyAsset } from './assetIndex';
 
 /** 全局文件目录：{baseDataDir}/file（手动添加的单文件落此处）*/
 export async function getGlobalFilesDir(): Promise<string | null> {
@@ -43,7 +44,10 @@ export async function listGlobalFiles(): Promise<AssetFileEntry[]> {
   if (!dir) return [];
   if (!(await exists(dir).catch(() => false))) return [];
   const files = await listDirectoryFiles(dir);
-  return files.map((f) => ({ ...f, source: 'global' as const }));
+  return Promise.all(files.map(async (f) => {
+    const identity = await identifyAsset(f.path, { rootPath: dir, source: 'global', size: f.size });
+    return { ...f, assetId: identity.assetId, relativePath: identity.relativePath, source: 'global' as const, availability: 'online' as const };
+  }));
 }
 
 /**
@@ -77,7 +81,7 @@ export async function walkDirectoryFiles(
         const filePath = joinPath(dir, e.name);
         try {
           const s = await stat(filePath);
-          return { name: e.name, filePath, size: s.size ?? 0 };
+          return { name: e.name, filePath, size: s.size ?? 0, mtimeMs: s.mtime?.getTime() ?? 0 };
         } catch {
           return null;
         }
@@ -92,12 +96,21 @@ export async function walkDirectoryFiles(
       if (CATEGORY_EXTENSIONS.image.includes(ext) && convertFileSrc) {
         assetUrl = convertFileSrc(r.filePath);
       }
+      const identity = await identifyAsset(r.filePath, {
+        rootPath: rootDir,
+        source: 'folder',
+        size: r.size,
+        mtimeMs: r.mtimeMs,
+      });
       out.push({
+        assetId: identity.assetId,
         name: r.name,
         path: r.filePath,
+        relativePath: identity.relativePath,
         assetUrl,
         size: r.size,
         category: getFileCategory(r.name),
+        availability: 'online',
       });
     }
 

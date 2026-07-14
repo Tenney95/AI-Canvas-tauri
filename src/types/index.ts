@@ -21,6 +21,8 @@ export type NodeType =
 export interface StoryboardCellOverride {
   url: string;         // 展示用 asset/data URL
   filePath?: string;   // 本地文件路径（复用被拖入节点的落盘文件）
+  assetId?: string;    // 稳定资产身份，不随文件移动或重命名变化
+  relativePath?: string; // 项目目录内的相对路径（持久化优先）
 }
 
 // 节点数据接口
@@ -42,6 +44,8 @@ export interface BaseNodeData {
   audioUrl?: string;          // 生成的音频 URL
   sourceUrl?: string;         // 原始远程生成 URL（下载到本地前保留）
   filePath?: string;          // 本地文件路径（项目 data 目录下，重建 asset URL 用）
+  assetId?: string;           // 稳定资产身份；filePath 仅表示当前位置
+  relativePath?: string;      // 项目目录内相对路径，保存时优先于绝对路径
   artifactId?: string;        // 对话媒体 Artifact ID（聊天与节点共享同一产物）
   thumbnailUrl?: string;      // 缩略图
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）

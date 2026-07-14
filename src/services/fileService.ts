@@ -8,6 +8,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { appDataDir } from '@tauri-apps/api/path';
+import { identifyAsset } from './fs/assetIndex';
 import {
   isTauriEnv,
   getMimeType,
@@ -110,6 +111,7 @@ export {
   type CustomStyleRecord,
 } from './storageService';
 export * from './fs/core';
+export * from './fs/assetIndex';
 export * from './fs/trash';
 export * from './fs/assetLibrary';
 
@@ -502,10 +504,25 @@ export async function listProjectFiles(projectId: string): Promise<AssetFileEntr
   if (!projectDir) return [];
   const allFiles = await listDirectoryFiles(projectDir);
   // Filter out files inside AppData subdirectory
-  return allFiles.filter((f) => {
+  const files = allFiles.filter((f) => {
     const relative = f.path.substring(projectDir.length).replace(/\\/g, '/');
     return !relative.startsWith('/AppData/') && !relative.startsWith('AppData/');
   });
+  return Promise.all(files.map(async (file) => {
+    const identity = await identifyAsset(file.path, {
+      rootPath: projectDir,
+      projectId,
+      source: 'project',
+      size: file.size,
+    });
+    return {
+      ...file,
+      assetId: identity.assetId,
+      relativePath: identity.relativePath,
+      source: 'project' as const,
+      availability: 'online' as const,
+    };
+  }));
 }
 
 // ============================================
@@ -824,8 +841,10 @@ export function extractFilesFromNodeData(
   const entryPath = fp || `node://${name}`;
 
   return {
+    assetId: nodeData.assetId as string | undefined,
     name,
     path: entryPath,
+    relativePath: nodeData.relativePath as string | undefined,
     assetUrl: assetUrl || undefined,
     size: 0,
     category,

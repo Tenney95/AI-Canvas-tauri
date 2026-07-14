@@ -106,7 +106,7 @@ export default function AssetSearchWindow() {
       try {
         const metas = await getAllAssetMeta();
         const map: Record<string, string[]> = {};
-        for (const m of metas) if (m.tags?.length) map[m.path] = m.tags;
+        for (const m of metas) if (m.tags?.length) map[m.assetId] = m.tags;
         setTagMap(map);
       } catch { /* ignore */ }
     } catch (err) {
@@ -168,7 +168,10 @@ export default function AssetSearchWindow() {
 
   // 合并标签
   const taggedFiles = useMemo(
-    () => files.map((f) => (tagMap[f.path] ? { ...f, tags: tagMap[f.path] } : f)),
+    () => files.map((f) => {
+      const key = f.assetId ?? f.path;
+      return tagMap[key] ? { ...f, tags: tagMap[key] } : f;
+    }),
     [files, tagMap],
   );
 

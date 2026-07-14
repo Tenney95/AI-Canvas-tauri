@@ -2,13 +2,15 @@
  * indexedDbService IndexedDB 持久化服务 — 浏览器端本地存储，保存项目、工作流、应用配置等数据
  */
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 9; // v9: added chatConversations + chatMessages stores for assistant
+const DB_VERSION = 10; // v10: stable asset identity/index and assetId-keyed metadata
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
 const STORE_PRESETS = 'presets';
 const STORE_HISTORY = 'history';
 const STORE_ASSET_META = 'assetMeta';
+const STORE_ASSET_META_V2 = 'assetMetaV2';
+const STORE_ASSET_INDEX = 'assetIndex';
 const STORE_STYLES = 'styles';
 const STORE_SKILLS = 'skills';
 const STORE_CHAT_CONVERSATIONS = 'chatConversations';
@@ -60,6 +62,14 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_ASSET_META)) {
         db.createObjectStore(STORE_ASSET_META, { keyPath: 'path' });
+      }
+      if (!db.objectStoreNames.contains(STORE_ASSET_META_V2)) {
+        db.createObjectStore(STORE_ASSET_META_V2, { keyPath: 'assetId' });
+      }
+      if (!db.objectStoreNames.contains(STORE_ASSET_INDEX)) {
+        const assetStore = db.createObjectStore(STORE_ASSET_INDEX, { keyPath: 'assetId' });
+        assetStore.createIndex('path', 'path', { unique: true });
+        assetStore.createIndex('fingerprint', 'fingerprint', { unique: false });
       }
       if (!db.objectStoreNames.contains(STORE_STYLES)) {
         db.createObjectStore(STORE_STYLES, { keyPath: 'id' });
@@ -435,11 +445,12 @@ export async function deleteNodeHistoryEntries(nodeId: string): Promise<void> {
 }
 
 // ============================================
-// Asset Meta CRUD — 资产文件标签元数据（键为文件路径）
+// Asset Meta CRUD — 稳定资产标签（v2 以 assetId 为键；v1 path 仅用于迁移）
 // ============================================
 
 export interface AssetMetaRecord {
-  path: string;          // 文件绝对路径（主键）
+  assetId: string;
+  path?: string;         // 最近路径，仅用于诊断和旧数据迁移
   tags: string[];        // 标签
   taggedBy?: 'manual' | 'comfyui' | 'vision'; // 标签来源
   updatedAt: number;
@@ -449,8 +460,8 @@ export interface AssetMetaRecord {
 export async function getAllAssetMeta(): Promise<AssetMetaRecord[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_ASSET_META, 'readonly');
-    const store = tx.objectStore(STORE_ASSET_META);
+    const tx = db.transaction(STORE_ASSET_META_V2, 'readonly');
+    const store = tx.objectStore(STORE_ASSET_META_V2);
     const request = store.getAll();
     request.onsuccess = () => resolve(request.result as AssetMetaRecord[]);
     request.onerror = () => reject(request.error);
@@ -461,19 +472,19 @@ export async function getAllAssetMeta(): Promise<AssetMetaRecord[]> {
 export async function putAssetMeta(record: AssetMetaRecord): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_ASSET_META, 'readwrite');
-    tx.objectStore(STORE_ASSET_META).put(record);
+    const tx = db.transaction(STORE_ASSET_META_V2, 'readwrite');
+    tx.objectStore(STORE_ASSET_META_V2).put(record);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
 /** 删除单个文件的标签元数据 */
-export async function deleteAssetMeta(path: string): Promise<void> {
+export async function deleteAssetMeta(assetId: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_ASSET_META, 'readwrite');
-    tx.objectStore(STORE_ASSET_META).delete(path);
+    const tx = db.transaction(STORE_ASSET_META_V2, 'readwrite');
+    tx.objectStore(STORE_ASSET_META_V2).delete(assetId);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -580,6 +591,77 @@ export interface ChatMessageRecord {
   canvasStatus?: string;
   canvasNodeId?: string;
   canvasError?: string;
+}
+
+export interface LegacyAssetMetaRecord {
+  path: string;
+  tags: string[];
+  taggedBy?: 'manual' | 'comfyui' | 'vision';
+  updatedAt: number;
+}
+
+export async function getLegacyAssetMeta(path: string): Promise<LegacyAssetMetaRecord | undefined> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_ASSET_META, 'readonly');
+    const request = tx.objectStore(STORE_ASSET_META).get(path);
+    request.onsuccess = () => resolve(request.result as LegacyAssetMetaRecord | undefined);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export interface AssetIndexRecord {
+  assetId: string;
+  path: string;
+  relativePath?: string;
+  rootPath?: string;
+  projectId?: string;
+  source: 'project' | 'global' | 'folder';
+  fingerprint: string;
+  size: number;
+  mtimeMs: number;
+  status: 'online' | 'offline';
+  updatedAt: number;
+}
+
+export async function getAssetIndexById(assetId: string): Promise<AssetIndexRecord | undefined> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_ASSET_INDEX, 'readonly');
+    const request = tx.objectStore(STORE_ASSET_INDEX).get(assetId);
+    request.onsuccess = () => resolve(request.result as AssetIndexRecord | undefined);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function getAssetIndexByPath(path: string): Promise<AssetIndexRecord | undefined> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_ASSET_INDEX, 'readonly');
+    const request = tx.objectStore(STORE_ASSET_INDEX).index('path').get(path);
+    request.onsuccess = () => resolve(request.result as AssetIndexRecord | undefined);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function getAssetIndexesByFingerprint(fingerprint: string): Promise<AssetIndexRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_ASSET_INDEX, 'readonly');
+    const request = tx.objectStore(STORE_ASSET_INDEX).index('fingerprint').getAll(fingerprint);
+    request.onsuccess = () => resolve(request.result as AssetIndexRecord[]);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function putAssetIndex(record: AssetIndexRecord): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_ASSET_INDEX, 'readwrite');
+    tx.objectStore(STORE_ASSET_INDEX).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 /** 保存 / 更新单条消息 */

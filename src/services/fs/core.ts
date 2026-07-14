@@ -330,11 +330,14 @@ export const CATEGORY_LABELS: Record<FileCategory, string> = {
 };
 
 export interface AssetFileEntry {
+  assetId?: string;                                 // 稳定身份；旧/虚拟条目可能暂缺
   name: string;
   path: string;
+  relativePath?: string;                            // 相对 source root 的位置
   assetUrl?: string;
   size: number;
   category: FileCategory;
+  availability?: 'online' | 'offline';
   tags?: string[];                                  // 合并自 assetMeta
   source?: 'project' | 'global' | 'folder';         // 来源：项目永久 / 全局 file / 外部文件夹
   folderRoot?: string;                              // source=folder 时所属的登记文件夹

@@ -41,6 +41,10 @@ const PAGE_SIZE = 48;
 /** 标签筛选行最多展示的标签数 */
 const MAX_TAG_CHIPS = 24;
 
+function assetKey(file: AssetFileEntry): string {
+  return file.assetId ?? file.path;
+}
+
 const backdropVariants = { hidden: { opacity: 0 }, visible: { opacity: 1 } };
 const panelVariants = {
   hidden: { opacity: 0, scale: 0.95, y: 20 },
@@ -95,7 +99,7 @@ export default function AssetsPanel() {
     try {
       const metas = await getAllAssetMeta();
       const map: Record<string, string[]> = {};
-      for (const m of metas) if (m.tags?.length) map[m.path] = m.tags;
+      for (const m of metas) if (m.tags?.length) map[m.assetId] = m.tags;
       setTagMap(map);
     } catch { /* ignore */ }
   }, []);
@@ -140,7 +144,12 @@ export default function AssetsPanel() {
   }, [activeTab, currentProjectId, selectedProjectId, folders]);
 
   useEffect(() => {
-    if (assetsPanelOpen) { loadFiles(); loadTags(); void prepareDragIcon(); }
+    if (assetsPanelOpen) {
+      // 异步读取外部文件和 IndexedDB 标签；setState 发生在 Promise 完成后。
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void loadFiles().then(loadTags);
+      void prepareDragIcon();
+    }
   }, [assetsPanelOpen, loadFiles, loadTags]);
 
   const handleClose = useCallback(() => {
@@ -180,7 +189,7 @@ export default function AssetsPanel() {
 
   // 合并标签（useMemo，标签变化时不动文件数组）
   const files = useMemo(
-    () => rawFiles.map((f) => (tagMap[f.path] ? { ...f, tags: tagMap[f.path] } : f)),
+    () => rawFiles.map((f) => (tagMap[assetKey(f)] ? { ...f, tags: tagMap[assetKey(f)] } : f)),
     [rawFiles, tagMap],
   );
 
@@ -212,9 +221,6 @@ export default function AssetsPanel() {
       return true;
     });
   }, [files, activeCategory, activeTag, deferredSearch]);
-
-  // 过滤条件变化时重置增量计数
-  useEffect(() => { setVisibleCount(PAGE_SIZE); }, [activeTab, activeCategory, activeTag, deferredSearch]);
 
   const visibleFiles = useMemo(() => filteredFiles.slice(0, visibleCount), [filteredFiles, visibleCount]);
 
@@ -276,28 +282,30 @@ export default function AssetsPanel() {
   }, [toast]);
 
   // ── 标签编辑（手动）──
-  const persistTags = useCallback(async (path: string, tags: string[]) => {
+  const persistTags = useCallback(async (assetId: string, path: string, tags: string[]) => {
     setTagMap((prev) => {
       const next = { ...prev };
-      if (tags.length) next[path] = tags; else delete next[path];
+      if (tags.length) next[assetId] = tags; else delete next[assetId];
       return next;
     });
     try {
-      if (tags.length) await putAssetMeta({ path, tags, taggedBy: 'manual', updatedAt: Date.now() });
-      else await deleteAssetMeta(path);
+      if (tags.length) await putAssetMeta({ assetId, path, tags, taggedBy: 'manual', updatedAt: Date.now() });
+      else await deleteAssetMeta(assetId);
     } catch { /* ignore */ }
   }, []);
 
-  const addTag = useCallback((path: string, raw: string) => {
+  const addTag = useCallback((file: AssetFileEntry, raw: string) => {
     const tag = raw.trim();
     if (!tag) return;
-    const cur = tagMap[path] ?? [];
+    const key = assetKey(file);
+    const cur = tagMap[key] ?? [];
     if (cur.includes(tag)) return;
-    persistTags(path, [...cur, tag]);
+    persistTags(key, file.path, [...cur, tag]);
   }, [tagMap, persistTags]);
 
-  const removeTag = useCallback((path: string, tag: string) => {
-    persistTags(path, (tagMap[path] ?? []).filter((t) => t !== tag));
+  const removeTag = useCallback((file: AssetFileEntry, tag: string) => {
+    const key = assetKey(file);
+    persistTags(key, file.path, (tagMap[key] ?? []).filter((t) => t !== tag));
   }, [tagMap, persistTags]);
 
   const switchTab = useCallback((tab: TabKey) => {
@@ -305,6 +313,7 @@ export default function AssetsPanel() {
     setActiveCategory(null);
     setActiveTag(null);
     setEditingPath(null);
+    setVisibleCount(PAGE_SIZE);
   }, []);
 
   if (!assetsPanelOpen) return null;
@@ -375,10 +384,10 @@ export default function AssetsPanel() {
                   </svg>
                   <input
                     type="text" placeholder="搜索名称或标签…"
-                    value={search} onChange={(e) => setSearch(e.target.value)}
+                    value={search} onChange={(e) => { setSearch(e.target.value); setVisibleCount(PAGE_SIZE); }}
                   />
                   {search && (
-                    <button type="button" className="assets-search-clear" onClick={() => setSearch('')} aria-label="清空">
+                    <button type="button" className="assets-search-clear" onClick={() => { setSearch(''); setVisibleCount(PAGE_SIZE); }} aria-label="清空">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                         <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                       </svg>
@@ -432,7 +441,7 @@ export default function AssetsPanel() {
               <div className="assets-category-row">
                 <button
                   type="button" className={`assets-cat-chip ${activeCategory === null ? 'active' : ''}`}
-                  onClick={() => setActiveCategory(null)}
+                  onClick={() => { setActiveCategory(null); setVisibleCount(PAGE_SIZE); }}
                 >
                   全部<span className="assets-cat-count">{files.length}</span>
                 </button>
@@ -440,7 +449,7 @@ export default function AssetsPanel() {
                   <button
                     key={cat} type="button"
                     className={`assets-cat-chip ${activeCategory === cat ? 'active' : ''}`}
-                    onClick={() => setActiveCategory(cat)}
+                    onClick={() => { setActiveCategory(cat); setVisibleCount(PAGE_SIZE); }}
                   >
                     {CATEGORY_ICONS[cat]} {CATEGORY_LABELS[cat]}
                     <span className="assets-cat-count">{categoryCounts[cat]}</span>
@@ -451,7 +460,7 @@ export default function AssetsPanel() {
                   <button
                     key={tag} type="button"
                     className={`assets-cat-chip assets-tag-chip ${activeTag === tag ? 'active' : ''}`}
-                    onClick={() => setActiveTag((t) => (t === tag ? null : tag))}
+                    onClick={() => { setActiveTag((t) => (t === tag ? null : tag)); setVisibleCount(PAGE_SIZE); }}
                   >
                     #{tag}<span className="assets-cat-count">{count}</span>
                   </button>
@@ -477,17 +486,17 @@ export default function AssetsPanel() {
                   <>
                     {visibleFiles.map((file) => (
                       <AssetCard
-                        key={file.path}
+                        key={assetKey(file)}
                         file={file}
                         isProject={activeTab === 'project'}
                         draggable={isDraggableEntry(file)}
                         onDragStart={(e) => handleCardDragStart(file, e)}
-                        editing={editingPath === file.path}
-                        tagDraft={editingPath === file.path ? tagDraft : ''}
-                        onToggleEdit={() => { setEditingPath((p) => (p === file.path ? null : file.path)); setTagDraft(''); }}
+                        editing={editingPath === assetKey(file)}
+                        tagDraft={editingPath === assetKey(file) ? tagDraft : ''}
+                        onToggleEdit={() => { const key = assetKey(file); setEditingPath((p) => (p === key ? null : key)); setTagDraft(''); }}
                         onTagDraftChange={setTagDraft}
-                        onAddTag={(t) => { addTag(file.path, t); setTagDraft(''); }}
-                        onRemoveTag={(t) => removeTag(file.path, t)}
+                        onAddTag={(t) => { addTag(file, t); setTagDraft(''); }}
+                        onRemoveTag={(t) => removeTag(file, t)}
                         onSave={() => handleSavePermanent(file)}
                         onDelete={() => handleDeletePermanent(file)}
                       />
