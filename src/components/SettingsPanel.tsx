@@ -9,12 +9,13 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import ModalOverlay from './shared/ModalOverlay';
 import AnimatedButton from './shared/AnimatedButton';
 import ApiKeySettings from './settings/ApiKeySettings';
+import StorageHealthCenter from './settings/StorageHealthCenter';
 import { BACKGROUND_OPTIONS } from './backgrounds/CanvasBackground';
 import { detectBackgroundBrightness, compressImageLossless } from '../services/backgroundService';
 import type { CanvasBackground as CanvasBg } from '../types';
 import type { BackgroundDetection } from '../services/backgroundService';
 
-type SettingsTab = 'general' | 'api' | 'shortcuts' | 'comfyui';
+type SettingsTab = 'general' | 'api' | 'shortcuts' | 'comfyui' | 'storage';
 
 /** 是否运行在 macOS（用于快捷键修饰键显示） */
 const IS_MAC = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '');
@@ -290,6 +291,7 @@ export default function SettingsPanel() {
           <nav className="w-44 border-r border-canvas-border p-3 space-y-0.5 shrink-0">
             {[
               { id: 'general', label: '常规' },
+              { id: 'storage', label: '存储健康' },
               { id: 'api', label: 'API Key' },
               { id: 'comfyui', label: 'ComfyUI' },
               { id: 'shortcuts', label: '快捷键' },
@@ -302,6 +304,13 @@ export default function SettingsPanel() {
                 }`}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  {id === 'storage' && (
+                    <>
+                      <ellipse cx="12" cy="5" rx="9" ry="3" />
+                      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+                      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+                    </>
+                  )}
                   {id === 'api' && (
                     <>
                       <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
@@ -781,6 +790,10 @@ export default function SettingsPanel() {
                   </div>
                 ))}
               </div>
+            )}
+
+            {activeTab === 'storage' && (
+              <StorageHealthCenter />
             )}
           </div>
         </div>
