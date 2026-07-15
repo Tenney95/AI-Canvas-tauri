@@ -29,25 +29,12 @@ import { generateAngleImage, generateOutpaintImage } from '../../services/apimar
 import { imageUpscale, subjectMatting, checkModelExists, downloadModel } from '../../services/onnxService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 import {
-  normalizeWatchedPath,
-  REFERENCED_IMAGE_CHANGED_EVENT,
-  type ReferencedImageChangedDetail,
+  useReferencedImageRevisions,
+  withPreviewRevision,
 } from '../../hooks/useReferencedImageWatcher';
 
 // 懒加载：ImageComposerEditor 引入 konva + react-konva（体积大户），仅在打开合成编辑时才加载
 const ImageComposerEditor = lazy(() => import('./shared/image/composer/ImageComposerEditor'));
-
-function withPreviewRevision(src: string | undefined, revision: number): string | undefined {
-  if (!src || revision === 0) return src;
-  try {
-    const url = new URL(src);
-    url.searchParams.set('_refresh', String(revision));
-    return url.toString();
-  } catch {
-    const separator = src.includes('?') ? '&' : '?';
-    return `${src}${separator}_refresh=${revision}`;
-  }
-}
 
 /* ════════════════════════════════════════════
    AIImageNode
@@ -107,20 +94,10 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const [fullscreenOrigin, setFullscreenOrigin] = useState<{ left: number; top: number; width: number; height: number } | undefined>();
 
   // 文件被外部工具覆盖时只刷新本地预览，不修改节点数据或撤销历史。
-  const [previewRevision, setPreviewRevision] = useState(0);
+  const revisionFor = useReferencedImageRevisions([data.filePath]);
+  const previewRevision = revisionFor(data.filePath);
   const rawDisplaySrc = (data.imageUrl || data.thumbnailUrl) as string | undefined;
   const displaySrc = withPreviewRevision(rawDisplaySrc, previewRevision);
-  useEffect(() => {
-    const filePath = data.filePath as string | undefined;
-    if (!filePath) return;
-    const normalizedFilePath = normalizeWatchedPath(filePath);
-    const onReferencedImageChanged = (event: Event) => {
-      const detail = (event as CustomEvent<ReferencedImageChangedDetail>).detail;
-      if (detail.paths.includes(normalizedFilePath)) setPreviewRevision(detail.revision);
-    };
-    window.addEventListener(REFERENCED_IMAGE_CHANGED_EVENT, onReferencedImageChanged);
-    return () => window.removeEventListener(REFERENCED_IMAGE_CHANGED_EVENT, onReferencedImageChanged);
-  }, [data.filePath]);
 
   // 当 imageUrl 或外部文件版本变化时重置加载错误状态
   useEffect(() => {

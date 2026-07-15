@@ -18,6 +18,7 @@ import { useNodeRename } from './shared/useNodeRename';
 import { useAppStore, generateId } from '../../store/useAppStore';
 import { cropImageCell, cropImageByRanges, computeImageNodeDimensions } from './shared/image/imageUtils';
 import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
+import { useReferencedImageRevisions, withPreviewRevision } from '../../hooks/useReferencedImageWatcher';
 
 /** 拖出判定阈值（像素）：小于此位移视为误触，不提取 */
 const DRAG_THRESHOLD = 8;
@@ -35,6 +36,11 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
   const rowPositions = (data.storyboardRowPositions as number[] | undefined) ?? [];
   const colPositions = (data.storyboardColPositions as number[] | undefined) ?? [];
   const isCustomGrid = rowPositions.length > 0 || colPositions.length > 0;
+  const revisionFor = useReferencedImageRevisions([
+    data.filePath,
+    ...overrides.map((override) => override?.filePath),
+  ]);
+  const displayImageUrl = withPreviewRevision(imageUrl, revisionFor(data.filePath));
 
   // 行/列边界（含 0 和 100）
   const hRanges = useMemo(() => (isCustomGrid ? [0, ...rowPositions, 100] : []), [isCustomGrid, rowPositions]);
@@ -130,7 +136,7 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
   // ── 拖出一格 → 生成「提取分镜」图像节点 ──
   const extractCell = useCallback(
     async (idx: number, clientX: number, clientY: number) => {
-      if (!imageUrl) return;
+      if (!displayImageUrl) return;
       const r = Math.floor(idx / cols);
       const c = idx % cols;
       const store = useAppStore.getState();
@@ -140,12 +146,13 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
 
       // 被拖入的图：直接用它建节点（无需裁切），原格清空
       if (override) {
-        const dims = await computeImageNodeDimensions(override.url).catch(() => ({ nodeWidth: 200, nodeHeight: 200 }));
+        const overrideUrl = withPreviewRevision(override.url, revisionFor(override.filePath)) ?? override.url;
+        const dims = await computeImageNodeDimensions(overrideUrl).catch(() => ({ nodeWidth: 200, nodeHeight: 200 }));
         store.addNode({
           id: `node-${generateId()}`,
           type: 'ai-image',
           position: { x: flowPos.x - 100, y: flowPos.y - 100 },
-          data: { label, type: 'ai-image', role: 'source', status: 'success', imageUrl: override.url, filePath: override.filePath, ...dims } as BaseNodeData,
+          data: { label, type: 'ai-image', role: 'source', status: 'success', imageUrl: overrideUrl, filePath: override.filePath, ...dims } as BaseNodeData,
         } as Node<BaseNodeData>);
         const nextOv = [...overrides]; nextOv[idx] = null;
         const nextEx = [...extracted]; nextEx[idx] = true;
@@ -169,8 +176,8 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
 
       try {
         const cell = isCustomGrid
-          ? await cropImageByRanges(imageUrl, hRanges, vRanges, r, c)
-          : await cropImageCell(imageUrl, c, r, cols, rows);
+          ? await cropImageByRanges(displayImageUrl, hRanges, vRanges, r, c)
+          : await cropImageCell(displayImageUrl, c, r, cols, rows);
         let assetUrl = cell.dataUrl;
         let filePath: string | undefined;
         const projectId = store.currentProjectId;
@@ -194,7 +201,7 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
         store.updateNodeData(id, { storyboardExtracted: rollback } as Partial<BaseNodeData>);
       }
     },
-    [id, imageUrl, cols, rows, isCustomGrid, hRanges, vRanges, extracted, overrides, screenToFlowPosition],
+    [id, displayImageUrl, cols, rows, isCustomGrid, hRanges, vRanges, extracted, overrides, revisionFor, screenToFlowPosition],
   );
 
   const startCellDrag = useCallback(
@@ -243,7 +250,7 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
         onDoubleClick={toggleEditing}
       >
         <div className="storyboard-grid">
-          {imageUrl ? (
+          {displayImageUrl ? (
             cells.map((cell) => {
               const override = overrides[cell.idx];
               const isEmpty = !override && extracted[cell.idx];
@@ -258,11 +265,11 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
                   onPointerDown={draggable ? startCellDrag(cell.idx) : undefined}
                 >
                   {override ? (
-                    <img className="sb-cell-fill" src={override.url} alt="" draggable={false} />
+                    <img className="sb-cell-fill" src={withPreviewRevision(override.url, revisionFor(override.filePath))} alt="" draggable={false} />
                   ) : isEmpty ? (
                     <span className="sb-cell-plus">+</span>
                   ) : (
-                    <img className="sb-cell-img" src={imageUrl} alt="" draggable={false} style={cell.img} />
+                    <img className="sb-cell-img" src={displayImageUrl} alt="" draggable={false} style={cell.img} />
                   )}
                   <span className="sb-cell-overlay" />
                 </div>
@@ -272,7 +279,7 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
             <div className="storyboard-empty">无图像</div>
           )}
 
-          {imageUrl && (
+          {displayImageUrl && (
             <span className="storyboard-badge">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
@@ -303,14 +310,14 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
       />
 
       {/* 拖出幽灵预览（portal 到 body，避免被画布 transform 影响定位）*/}
-      {drag && dragCell && imageUrl &&
+      {drag && dragCell && displayImageUrl &&
         createPortal(
           <div className="sb-drag-ghost" style={{ left: drag.x, top: drag.y }}>
             <div className="sb-drag-ghost-clip">
               {overrides[drag.idx] ? (
-                <img src={overrides[drag.idx]!.url} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <img src={withPreviewRevision(overrides[drag.idx]!.url, revisionFor(overrides[drag.idx]!.filePath))} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               ) : (
-                <img src={imageUrl} alt="" draggable={false} style={dragCell.img} />
+                <img src={displayImageUrl} alt="" draggable={false} style={dragCell.img} />
               )}
             </div>
           </div>,

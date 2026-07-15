@@ -2,7 +2,7 @@
  * 监听画布节点引用的本地图像文件。
  * 监听父目录而不是单个文件，以兼容 Photoshop 等工具通过临时文件替换原文件的保存方式。
  */
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { WatchEvent } from '@tauri-apps/plugin-fs';
 import { useAppStore } from '../store/useAppStore';
 
@@ -20,6 +20,58 @@ export function normalizeWatchedPath(path: string): string {
   return IS_WINDOWS ? normalized.toLocaleLowerCase() : normalized;
 }
 
+/** 为本地资源 URL 添加仅用于预览刷新的版本参数，绕过 WebView 图片缓存。 */
+export function withPreviewRevision(src: string | undefined, revision: number): string | undefined {
+  if (!src || revision === 0) return src;
+  try {
+    const url = new URL(src);
+    url.searchParams.set('_refresh', String(revision));
+    return url.toString();
+  } catch {
+    const separator = src.includes('?') ? '&' : '?';
+    return `${src}${separator}_refresh=${revision}`;
+  }
+}
+
+/**
+ * 消费全局文件变更事件，不创建额外系统 watcher。
+ * 返回按 filePath 查询当前预览版本的方法，供一个节点同时管理多张引用图。
+ */
+export function useReferencedImageRevisions(
+  filePaths: readonly (string | undefined)[],
+): (filePath: string | undefined) => number {
+  const signature = [...new Set(
+    filePaths.filter((path): path is string => !!path).map(normalizeWatchedPath),
+  )].sort().join('\n');
+  const [revisionByPath, setRevisionByPath] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    if (!signature) return;
+    const watchedPaths = new Set(signature.split('\n'));
+    const onReferencedImageChanged = (event: Event) => {
+      const detail = (event as CustomEvent<ReferencedImageChangedDetail>).detail;
+      const affectedPaths = detail.paths
+        .map(normalizeWatchedPath)
+        .filter((path) => watchedPaths.has(path));
+      if (affectedPaths.length === 0) return;
+
+      setRevisionByPath((previous) => {
+        const next = { ...previous };
+        for (const path of affectedPaths) next[path] = detail.revision;
+        return next;
+      });
+    };
+
+    window.addEventListener(REFERENCED_IMAGE_CHANGED_EVENT, onReferencedImageChanged);
+    return () => window.removeEventListener(REFERENCED_IMAGE_CHANGED_EVENT, onReferencedImageChanged);
+  }, [signature]);
+
+  return useCallback(
+    (filePath: string | undefined) => filePath ? revisionByPath[normalizeWatchedPath(filePath)] ?? 0 : 0,
+    [revisionByPath],
+  );
+}
+
 function parentDirectory(path: string): string {
   const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
   const slash = normalized.lastIndexOf('/');
@@ -30,8 +82,18 @@ function parentDirectory(path: string): string {
 
 function referencedImagePaths(): string[] {
   const paths = useAppStore.getState().nodes.flatMap((node) => {
-    const data = node.data as { filePath?: string; imageUrl?: string; thumbnailUrl?: string };
-    return data.filePath && (data.imageUrl || data.thumbnailUrl) ? [data.filePath] : [];
+    const data = node.data as {
+      filePath?: string;
+      imageUrl?: string;
+      thumbnailUrl?: string;
+      storyboardOverrides?: ({ url?: string; filePath?: string } | null)[];
+    };
+    const nodePaths: string[] = [];
+    if (data.filePath && (data.imageUrl || data.thumbnailUrl)) nodePaths.push(data.filePath);
+    for (const override of data.storyboardOverrides ?? []) {
+      if (override?.filePath && override.url) nodePaths.push(override.filePath);
+    }
+    return nodePaths;
   });
   return [...new Set(paths)].sort();
 }
@@ -102,7 +164,9 @@ export function useReferencedImageWatcher(): void {
     };
 
     syncWatcher();
-    const unsubscribe = useAppStore.subscribe(syncWatcher);
+    const unsubscribe = useAppStore.subscribe((state, previousState) => {
+      if (state.nodes !== previousState.nodes) syncWatcher();
+    });
     return () => {
       disposed = true;
       generation++;

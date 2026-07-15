@@ -951,19 +951,12 @@ export async function openInPhotoshop(filePath: string, customPath?: string): Pr
   }
 
   try {
-    const { stat } = await import('@tauri-apps/plugin-fs');
-
     const plat = (navigator.platform || '').toLowerCase();
     const isWin = plat.includes('win');
     const isMac = plat.includes('mac');
 
     if (isWin) {
       const winPath = filePath.replace(/\//g, '\\');
-
-      // 检查文件/路径是否存在
-      const checkPath = async (p: string): Promise<boolean> => {
-        try { await stat(p); return true; } catch { return false; }
-      };
 
       // 策略 1：用户手动配置的路径（优先级最高）
       if (customPath?.trim()) {
@@ -975,7 +968,8 @@ export async function openInPhotoshop(filePath: string, customPath?: string): Pr
           tries.push(resolved, `${resolved}\\Photoshop.exe`);
         }
         for (const psPath of tries) {
-          if (await checkPath(psPath) && await launchApp(psPath, winPath)) return;
+          // 路径可能位于 fs scope 之外，直接交给 Rust/系统进程 API 验证并启动。
+          if (await launchApp(psPath, winPath)) return;
         }
         throw new Error(`配置的 Photoshop 路径无效: ${customPath}`);
       }
@@ -993,7 +987,7 @@ export async function openInPhotoshop(filePath: string, customPath?: string): Pr
       }
 
       for (const psPath of installerPaths) {
-        if (await checkPath(psPath) && await launchApp(psPath, winPath)) return;
+        if (await launchApp(psPath, winPath)) return;
       }
 
       throw new Error('未找到 Photoshop。请在设置中手动配置 Photoshop 安装路径，或确认已安装 Adobe Photoshop');
