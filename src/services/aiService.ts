@@ -13,7 +13,7 @@
  *   ai/panoramaPrompt.ts — 全景图提示词
  */
 export { generateText } from './ai/generateText';
-export { generateImage } from './ai/generateImage';
+export { generateImage, generateImagesBatch } from './ai/generateImage';
 export { generateVideo } from './ai/generateVideo';
 export { generateAudio } from './ai/generateAudio';
 export { buildPanoramaPrompt } from './ai/panoramaPrompt';

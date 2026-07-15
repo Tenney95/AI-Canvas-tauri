@@ -15,8 +15,11 @@ import SlashCommandMenu from './SlashCommandMenu';
 import PresetManager from './PresetManager';
 import SkillManager from './SkillManager';
 import { expandSkillReferences } from '../../../services/skillPromptService';
+import { MAX_IMAGE_BATCH_COUNT } from '../../../types/aiTypes';
 
 const ANIMATION_ACTIONS: AnimationAction[] = ['idle', 'walk', 'run', 'jump', 'attack', 'hit'];
+const IMAGE_BATCH_COUNTS = Array.from({ length: MAX_IMAGE_BATCH_COUNT - 1 }, (_, index) => index + 2);
+const BATCH_LONG_PRESS_MS = 450;
 
 function AnimationPoseIcon({ action }: { action: AnimationAction }) {
   const commonProps = {
@@ -70,6 +73,8 @@ interface PromptPanelProps {
   aspectRatio?: string;
   onChangeImageSize?: (size: string) => void;
   onChangeAspectRatio?: (ratio: string) => void;
+  batchCount?: number;
+  onChangeBatchCount?: (count: number) => void;
   videoResolution?: number;
   videoFps?: number;
   videoFrames?: number;
@@ -114,6 +119,8 @@ export default function PromptPanel({
   aspectRatio,
   onChangeImageSize,
   onChangeAspectRatio,
+  batchCount = 1,
+  onChangeBatchCount,
   videoResolution,
   videoFps,
   videoFrames,
@@ -139,6 +146,10 @@ export default function PromptPanel({
   const [slashAnchor, setSlashAnchor] = useState<HTMLElement | null>(null);
   const slashBtnRef = useRef<HTMLButtonElement>(null);
   const promptInputRef = useRef<HTMLDivElement>(null);
+  const batchTriggerRef = useRef<HTMLDivElement>(null);
+  const batchLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressSubmitClickRef = useRef(false);
+  const [batchMenuOpen, setBatchMenuOpen] = useState(false);
 
   const userPresets = useAppStore((s) => s.userPresets);
   const userSkills = useAppStore((s) => s.userSkills);
@@ -152,6 +163,65 @@ export default function PromptPanel({
     const sourcePrompt = overridePrompt ?? prompt;
     onSubmit(expandSkillReferences(sourcePrompt, userSkills), postProcess);
   }, [onSubmit, prompt, userSkills]);
+
+  const handleSingleSubmit = useCallback((overridePrompt?: string, postProcess?: ImagePostProcess) => {
+    onChangeBatchCount?.(1);
+    setBatchMenuOpen(false);
+    handleSubmit(overridePrompt, postProcess);
+  }, [handleSubmit, onChangeBatchCount]);
+
+  const clearBatchLongPress = useCallback(() => {
+    if (batchLongPressTimerRef.current) {
+      clearTimeout(batchLongPressTimerRef.current);
+      batchLongPressTimerRef.current = null;
+    }
+  }, []);
+
+  const batchSupported = nodeType === 'ai-image'
+    && Boolean(onChangeBatchCount)
+    && selectedProvider !== 'dreamina'
+    && !selectedWorkflowId;
+
+  const handleBatchPointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!batchSupported || event.button !== 0 || !canGenerate || !prompt.trim()) return;
+    suppressSubmitClickRef.current = false;
+    clearBatchLongPress();
+    batchLongPressTimerRef.current = setTimeout(() => {
+      suppressSubmitClickRef.current = true;
+      setBatchMenuOpen(true);
+      batchLongPressTimerRef.current = null;
+    }, BATCH_LONG_PRESS_MS);
+  }, [batchSupported, canGenerate, clearBatchLongPress, prompt]);
+
+  const handleSubmitClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    clearBatchLongPress();
+    if (suppressSubmitClickRef.current) {
+      suppressSubmitClickRef.current = false;
+      return;
+    }
+    if (canGenerate && prompt.trim()) handleSingleSubmit();
+  }, [canGenerate, clearBatchLongPress, handleSingleSubmit, prompt]);
+
+  const handleBatchSelect = useCallback((count: number) => (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    onChangeBatchCount?.(count);
+    setBatchMenuOpen(false);
+    handleSubmit();
+  }, [handleSubmit, onChangeBatchCount]);
+
+  useEffect(() => clearBatchLongPress, [clearBatchLongPress]);
+
+  useEffect(() => {
+    if (!batchMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!batchTriggerRef.current?.contains(event.target as globalThis.Node)) {
+        setBatchMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true);
+  }, [batchMenuOpen]);
 
   const handleSlashSelect = useCallback((filledPrompt: string, shouldTrigger: boolean, preset?: PresetOverride) => {
     setSlashOpen(false);
@@ -170,12 +240,12 @@ export default function PromptPanel({
     if (shouldTrigger) {
       // Direct trigger: combine preset template + input box content, call model directly
       // Don't update the input box — the preset prompt is only used for this generation
-      handleSubmit(filledPrompt, preset?.postProcess);
+      handleSingleSubmit(filledPrompt, preset?.postProcess);
     } else {
       // Insert mode: update input box with filled template, user can edit before generating
       onChange(filledPrompt);
     }
-  }, [handleSubmit, onChange, onModelSelect, onChangeImageSize, onChangeAspectRatio]);
+  }, [handleSingleSubmit, onChange, onModelSelect, onChangeImageSize, onChangeAspectRatio]);
 
   // ── 从 Toolbar 点击快捷指令后的自动执行 ──
   useEffect(() => {
@@ -239,7 +309,7 @@ export default function PromptPanel({
           ref={editorRef}
           value={prompt}
           onChange={onChange}
-          onSubmit={handleSubmit}
+          onSubmit={handleSingleSubmit}
           placeholder={placeholder}
           nodeId={nodeId}
           selectedWorkflowId={selectedWorkflowId}
@@ -389,21 +459,55 @@ export default function PromptPanel({
               </svg>
             </button>
           )}
-          <button
-            type="button"
-            className={`prompt-btn prompt-submit-btn ${!canGenerate || !prompt.trim() ? 'disabled' : ''}`}
-            disabled={!canGenerate || !prompt.trim()}
-            data-tooltip="调用模型生成"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (canGenerate && prompt.trim()) handleSubmit();
-            }}
+          <div
+            ref={batchTriggerRef}
+            className={`prompt-submit-wrap${batchMenuOpen ? ' batch-open' : ''}`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="5" y1="12" x2="19" y2="12" />
-              <polyline points="12 5 19 12 12 19" />
-            </svg>
-          </button>
+            <button
+              type="button"
+              className={`prompt-btn prompt-submit-btn ${!canGenerate || !prompt.trim() ? 'disabled' : ''}`}
+              disabled={!canGenerate || !prompt.trim()}
+              aria-haspopup={batchSupported ? 'menu' : undefined}
+              aria-expanded={batchSupported ? batchMenuOpen : undefined}
+              data-tooltip={batchSupported ? '点击生成 1 张，长按选择数量' : '调用模型生成'}
+              onPointerDown={handleBatchPointerDown}
+              onPointerUp={clearBatchLongPress}
+              onPointerCancel={clearBatchLongPress}
+              onPointerLeave={clearBatchLongPress}
+              onContextMenu={(event) => { if (batchSupported) event.preventDefault(); }}
+              onClick={handleSubmitClick}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="5" y1="12" x2="19" y2="12" />
+                <polyline points="12 5 19 12 12 19" />
+              </svg>
+            </button>
+            {batchSupported && (
+              <div className="image-batch-clip">
+                <div
+                  className="image-batch-menu"
+                  role="menu"
+                  aria-label="选择批量生成数量"
+                  aria-hidden={!batchMenuOpen}
+                >
+                  {IMAGE_BATCH_COUNTS.map((count) => (
+                    <button
+                      key={count}
+                      type="button"
+                      role="menuitem"
+                      tabIndex={batchMenuOpen ? 0 : -1}
+                      className={`image-batch-menu-item${batchCount === count ? ' active' : ''}`}
+                      aria-label={`生成 ${count} 张图片`}
+                      title={count >= 4 ? `生成 ${count} 张，费用可能按张计算` : `生成 ${count} 张`}
+                      onClick={handleBatchSelect(count)}
+                    >
+                      {count}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

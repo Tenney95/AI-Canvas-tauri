@@ -10,6 +10,8 @@
 import { pollTask } from './pollTask';
 import { useAppStore } from '../store/useAppStore';
 import { downloadUrlAndSave } from './fileService';
+import { applyImageBatchResults } from './imageBatchService';
+import { mapImageDimensions } from './aiDimensions';
 import type { BaseNodeData, NodeType } from '../types';
 
 // ═══════════════════════════════════════════
@@ -61,6 +63,8 @@ export interface PendingTask {
   apiKey?: string;
   /** 恢复轮询用：服务地址 */
   baseUrl?: string;
+  /** APIMart 原生批量图片任务请求数量；旧记录缺省为 1。 */
+  batchCount?: number;
   /** 任务是否已向远端提交（false 表示仅预设了 status=loading 但还未拿到 taskId） */
   submitted: boolean;
 }
@@ -226,22 +230,21 @@ async function fetchApimartTask(
   return raw as unknown as ApimartTaskResult;
 }
 
-function extractApimartUrl(
+function extractApimartUrls(
   result: Record<string, unknown> | undefined,
   nodeType: NodeType,
-): string | null {
-  if (!result) return null;
+): string[] {
+  if (!result) return [];
   if (nodeType === 'ai-video') {
     const videos = result.videos as Array<{ url: string[] }> | undefined;
-    if (videos?.[0]?.url?.[0]) return videos[0].url[0];
+    if (videos?.[0]?.url?.[0]) return [videos[0].url[0]];
   }
   if (nodeType === 'ai-audio') {
     const audios = result.audios as Array<{ url: string[] }> | undefined;
-    if (audios?.[0]?.url?.[0]) return audios[0].url[0];
+    if (audios?.[0]?.url?.[0]) return [audios[0].url[0]];
   }
   const images = result.images as Array<{ url: string[] }> | undefined;
-  if (images?.[0]?.url?.[0]) return images[0].url[0];
-  return null;
+  return images?.flatMap((image) => image.url) ?? [];
 }
 
 async function resumeApimart(task: PendingTask): Promise<void> {
@@ -252,17 +255,18 @@ async function resumeApimart(task: PendingTask): Promise<void> {
     return;
   }
   const node = useAppStore.getState().nodes.find((n) => n.id === nodeId);
-  const label = (node?.data as BaseNodeData | undefined)?.label || '';
+  const nodeData = node?.data as BaseNodeData | undefined;
+  const label = nodeData?.label || '';
 
   const signal = registerNodePolling(nodeId);
 
   try {
-    const { url } = await pollTask<ApimartTaskResult, { url: string }>({
+    const { urls } = await pollTask<ApimartTaskResult, { urls: string[] }>({
       fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
       isComplete: (t) => {
         if (t.status === 'completed') {
-          const resolved = extractApimartUrl(t.result, nodeType);
-          if (resolved) return { url: resolved };
+          const resolved = extractApimartUrls(t.result, nodeType);
+          if (resolved.length > 0) return { urls: resolved };
           throw new Error('任务完成但未返回结果');
         }
         return null;
@@ -273,7 +277,27 @@ async function resumeApimart(task: PendingTask): Promise<void> {
       onFetchError: 'continue',
       signal,
     });
-    await applyNodeResult(nodeId, url, label);
+    const requestedCount = Math.max(1, task.batchCount ?? 1);
+    if (nodeType === 'ai-image' && requestedCount > 1 && nodeData) {
+      const imageSize = (nodeData.imageSize as string) || '2K';
+      const aspectRatio = (nodeData.aspectRatio as string) || '1:1';
+      const dimensions = mapImageDimensions(imageSize, aspectRatio);
+      const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions }));
+      await applyImageBatchResults({
+        nodeId,
+        batch: {
+          requestedCount,
+          results,
+          failedCount: Math.max(0, requestedCount - results.length),
+        },
+        projectId: task.projectId,
+        prompt: (nodeData.prompt as string) || '',
+        imageSize,
+        aspectRatio,
+      });
+    } else {
+      await applyNodeResult(nodeId, urls[0], label);
+    }
     removePendingTask(nodeId);
   } catch (err) {
     await handleResumeError(nodeId, err);

@@ -9,6 +9,8 @@
 import { parseResponseError, buildAuthHeaders } from '../httpUtils';
 import { extractModelName, normalizeSeedreamSize, parseGeneralImageResponse } from '../helpers';
 import { mapImageDimensions } from '../../aiDimensions';
+import { runBatchTasks } from '../batchUtils';
+import type { BatchImageResult } from '../../../types/aiTypes';
 
 export interface VolcengineImageParams {
   apiKey: string;
@@ -66,4 +68,20 @@ export async function generateVolcengineImage(
   if (!imageUrl) throw new Error('图片生成返回结果为空');
 
   return { url: imageUrl, width: dimensions.width, height: dimensions.height };
+}
+
+export async function generateVolcengineImagesBatch(
+  params: VolcengineImageParams,
+  count: number,
+): Promise<BatchImageResult> {
+  const requestedCount = Math.max(1, Math.floor(count));
+  const settled = await runBatchTasks(
+    requestedCount,
+    3,
+    () => generateVolcengineImage(params),
+  );
+  if (settled.results.length === 0) {
+    throw new Error('批量图片生成失败：所有火山方舟请求均失败');
+  }
+  return { requestedCount, ...settled };
 }

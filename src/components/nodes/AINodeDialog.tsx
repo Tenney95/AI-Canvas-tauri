@@ -7,8 +7,10 @@ import { useShallow } from 'zustand/react/shallow';
 import { generateId, useAppStore } from '../../store/useAppStore';
 import type { AnimationAction, BaseNodeData, ImagePostProcess, ModelOption } from '../../types';
 import { ANIMATION_ACTION_LABELS, ANIMATION_FRAME_GRIDS } from '../../types';
-import { generateText, generateImage, generateVideo, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
+import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
+import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
 import { downloadUrlAndSave } from '../../services/fileService';
+import { applyImageBatchResults } from '../../services/imageBatchService';
 import { checkModelExists, createCharacterDirectionGrid, downloadModel } from '../../services/onnxService';
 import ModelDownloadDialog from '../shared/ModelDownloadDialog';
 import PromptPanel from './shared/PromptPanel';
@@ -264,6 +266,33 @@ function AINodeDialog() {
     };
     updateNodeData(activeNodeId!, { status: 'loading', error: undefined });
     try {
+      const batchCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(latestData.batchCount) || 1)));
+      if (nodeType === 'ai-image' && batchCount > 1) {
+        if (postProcess) throw new Error('批量生成暂不支持图片后处理，请将数量设为 1');
+        const imageSize = (latestData.imageSize as string) || '2K';
+        const aspectRatio = (latestData.aspectRatio as string) || '1:1';
+        showToast(`正在批量生成 ${batchCount} 张图片`);
+        const batch = await generateImagesBatch({
+          prompt: effectivePrompt,
+          model: nodeModel,
+          provider: nodeProvider,
+          imageSize,
+          aspectRatio,
+          workflowId: latestData.workflowId,
+          workflowInputs: latestData.workflowInputs,
+          nodeId: activeNodeId ?? undefined,
+        }, batchCount);
+        if (!isStillCurrentSubmission()) return;
+        await applyImageBatchResults({
+          nodeId: submittingNodeId,
+          batch,
+          projectId: submittingProjectId,
+          prompt: effectivePrompt,
+          imageSize,
+          aspectRatio,
+        });
+        return;
+      }
       if (nodeType === 'ai-image' || nodeType === 'ai-animation') {
         const isAnimation = nodeType === 'ai-animation';
         const imageSize = (latestData.imageSize as string) || '2K';
@@ -579,7 +608,11 @@ function AINodeDialog() {
 
   const onModelSelect = useCallback(
     (model: ModelOption) => {
-      updateNodeData(activeNodeId!, { model: model.value, provider: model.provider });
+      updateNodeData(activeNodeId!, {
+        model: model.value,
+        provider: model.provider,
+        ...(model.provider === 'dreamina' ? { batchCount: 1 } : {}),
+      });
     },
     [activeNodeId, updateNodeData]
   );
@@ -588,7 +621,7 @@ function AINodeDialog() {
     (workflowId: string | undefined) => {
       updateNodeData(activeNodeId!, {
         workflowId,
-        ...(workflowId ? { provider: 'comfyui', model: 'comfyui/workflow' } : {}),
+        ...(workflowId ? { provider: 'comfyui', model: 'comfyui/workflow', batchCount: 1 } : {}),
       });
     },
     [activeNodeId, updateNodeData]
@@ -627,6 +660,11 @@ function AINodeDialog() {
       updateNodeData(activeNodeId!, updateData);
     },
     [activeNodeId, updateNodeData]
+  );
+
+  const onChangeBatchCount = useCallback(
+    (value: number) => updateNodeData(activeNodeId!, { batchCount: value }),
+    [activeNodeId, updateNodeData],
   );
 
   const onChangeVideoResolution = useCallback(
@@ -746,6 +784,8 @@ function AINodeDialog() {
           aspectRatio={(data.aspectRatio as string) || (nodeType === 'ai-panorama' ? '2:1' : '1:1')}
           onChangeImageSize={onChangeImageSize}
           onChangeAspectRatio={onChangeAspectRatio}
+          batchCount={(data.batchCount as number) || 1}
+          onChangeBatchCount={onChangeBatchCount}
           videoResolution={(data.videoResolution as number) || 832}
           videoFps={(data.videoFps as number) || 24}
           videoFrames={(data.videoFrames as number) || 77}

@@ -289,8 +289,8 @@ export default function SettingsPanel() {
           <nav className="w-44 border-r border-canvas-border p-3 space-y-0.5 shrink-0">
             {[
               { id: 'general', label: '常规' },
-              { id: 'storage', label: '存储健康' },
               { id: 'api', label: 'API Key' },
+              { id: 'storage', label: '存储健康' },
               { id: 'comfyui', label: 'ComfyUI' },
               { id: 'shortcuts', label: '快捷键' },
             ].map(({ id, label }) => (

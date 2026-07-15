@@ -4,8 +4,10 @@
  * 供 Toolbar 快捷指令直接调用，也供 AINodeDialog 复用。
  */
 import type { BaseNodeData, ImagePostProcess } from '../types';
-import { generateText, generateImage, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
+import { MAX_IMAGE_BATCH_COUNT } from '../types/aiTypes';
+import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
 import { downloadUrlAndSave } from './fileService';
+import { applyImageBatchResults } from './imageBatchService';
 import { generateId } from '../store/store.utils';
 import { useAppStore } from '../store/useAppStore';
 
@@ -52,6 +54,25 @@ export async function executeGeneration(
     if (nodeType === 'ai-image') {
       const imageSize = (data.imageSize as string) || '2K';
       const aspectRatio = (data.aspectRatio as string) || '1:1';
+      const batchCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
+      if (batchCount > 1) {
+        if (postProcess) throw new Error('批量生成暂不支持图片后处理，请将数量设为 1');
+        store.showToast(`正在批量生成 ${batchCount} 张图片`);
+        const batch = await generateImagesBatch({
+          prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
+          imageSize, aspectRatio, nodeId,
+        }, batchCount);
+        if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
+        await applyImageBatchResults({
+          nodeId,
+          batch,
+          projectId: submittingProjectId,
+          prompt: effectivePrompt,
+          imageSize,
+          aspectRatio,
+        });
+        return { success: true };
+      }
       const result = await generateImage({
         prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
         imageSize, aspectRatio, nodeId,

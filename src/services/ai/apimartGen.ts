@@ -5,6 +5,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { pollTask } from '../pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
 import { parseMultiPathResponse } from './helpers';
+import type { BatchImageResult } from '../../types/aiTypes';
 
 /* ── APIMart 任务轮询共享类型 ── */
 export interface ApimartTaskResult<TResult = Record<string, unknown>> {
@@ -128,6 +129,28 @@ export async function generateApimartImage(
   imageUrls: string[] = [],
   nodeId?: string,
 ): Promise<{ url: string; width: number; height: number }> {
+  const batch = await generateApimartImagesBatch(
+    apiKey, baseUrl, model, prompt, imageSize, aspectRatio,
+    dimensions, imageUrls, 1, nodeId,
+  );
+  const result = batch.results[0];
+  if (!result) throw new Error('APIMart 生成完成但未返回图片');
+  return result;
+}
+
+export async function generateApimartImagesBatch(
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  prompt: string,
+  imageSize: string,
+  aspectRatio: string,
+  dimensions: { width: number; height: number },
+  imageUrls: string[] = [],
+  count = 1,
+  nodeId?: string,
+): Promise<BatchImageResult> {
+  const requestedCount = Math.max(1, Math.floor(count));
   // 预存待续任务（在 fetch 之前），确保关窗重启后能恢复
   if (nodeId) {
     const projectId = useAppStore.getState().currentProjectId;
@@ -141,6 +164,7 @@ export async function generateApimartImage(
         taskType: 'apimart',
         apiKey,
         baseUrl,
+        batchCount: requestedCount,
         submitted: false,
       });
     }
@@ -150,7 +174,7 @@ export async function generateApimartImage(
   const submitBody: Record<string, unknown> = {
     model,
     prompt,
-    n: 1,
+    n: requestedCount,
     resolution: imageSize,
     size: aspectRatio,
   };
@@ -186,13 +210,22 @@ export async function generateApimartImage(
 
   // 步骤 2: 轮询任务直到完成/失败（不设超时，仅 ComfyUI 才设超时）
   const signal = nodeId ? registerNodePolling(nodeId) : undefined;
-  const pollPromise = pollTask<ApimartTaskResult<{ images?: Array<{ url: string[] }> }>, { url: string; width: number; height: number }>({
+  const pollPromise = pollTask<ApimartTaskResult<{ images?: Array<{ url: string[] }> }>, BatchImageResult>({
     fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
     isComplete: (task) => {
       if (task.status === 'completed') {
         const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
         if (imageUrls.length === 0) throw new Error('APIMart 生成完成但未返回图片');
-        return { url: imageUrls[0], width: dimensions.width, height: dimensions.height };
+        const results = imageUrls.slice(0, requestedCount).map((url) => ({
+          url,
+          width: dimensions.width,
+          height: dimensions.height,
+        }));
+        return {
+          requestedCount,
+          results,
+          failedCount: Math.max(0, requestedCount - results.length),
+        };
       }
       return null;
     },

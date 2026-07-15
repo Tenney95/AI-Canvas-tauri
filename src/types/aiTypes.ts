@@ -14,6 +14,20 @@ export interface AIImageGenParams extends AIGenerateParams {
   workflowInputs?: Record<string, string>; // IO 节点赋值映射
 }
 
+export const MAX_IMAGE_BATCH_COUNT = 8;
+
+export interface ImageGenerationResult {
+  url: string;
+  width: number;
+  height: number;
+}
+
+export interface BatchImageResult {
+  requestedCount: number;
+  results: ImageGenerationResult[];
+  failedCount: number;
+}
+
 export interface AIVideoGenParams {
   prompt: string;
   model: string;

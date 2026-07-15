@@ -129,17 +129,31 @@ export function parseGeneralTextResponse(json: Record<string, unknown>): string 
  * 通用模型的图片响应解析 — 兼容多格式
  */
 export function parseGeneralImageResponse(json: Record<string, unknown>): string | undefined {
+  return parseGeneralImageResponses(json)[0];
+}
+
+/** Parse every image returned by OpenAI-compatible and async-task response shapes. */
+export function parseGeneralImageResponses(json: Record<string, unknown>): string[] {
   // OpenAI Images
   const dataArr = json.data as Array<{ url?: string; b64_json?: string }> | undefined;
-  if (dataArr?.[0]?.url) return dataArr[0].url;
-  if (dataArr?.[0]?.b64_json) return toImageDataUrl(dataArr[0].b64_json);
+  if (Array.isArray(dataArr)) {
+    const urls = dataArr.flatMap((item) => {
+      if (item.url) return [item.url];
+      if (item.b64_json) return [toImageDataUrl(item.b64_json)];
+      return [];
+    });
+    if (urls.length > 0) return urls;
+  }
 
   // result.images 格式（异步任务）
   const images = (json.result as Record<string, Array<{ url: string[] }>>)?.['images'];
-  if (images?.[0]?.url?.[0]) return images[0].url[0];
+  if (Array.isArray(images)) {
+    const urls = images.flatMap((item) => Array.isArray(item.url) ? item.url : []);
+    if (urls.length > 0) return urls;
+  }
 
   // 顶层 url
-  if (typeof json.url === 'string') return json.url;
+  if (typeof json.url === 'string') return [json.url];
 
-  return undefined;
+  return [];
 }

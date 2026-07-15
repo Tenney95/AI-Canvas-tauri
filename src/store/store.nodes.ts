@@ -32,6 +32,7 @@ export interface NodeSlice {
   setEdges: (edges: Edge[]) => void;
   setSelectedNodeIds: (ids: string[]) => void;
   addNode: (node: Node<BaseNodeData>) => void;
+  addNodes: (nodes: Node<BaseNodeData>[]) => void;
   addNodeWithEdge: (node: Node<BaseNodeData>, edge: Edge) => void;
   createMediaPlaceholder: (
     intent: MediaGenerationIntent,
@@ -85,6 +86,19 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         nodes: [...state.nodes, { ...node, data: { ...node.data, displayId } } as Node<BaseNodeData>],
         edges: [...state.edges, edge],
       };
+    });
+  },
+
+  addNodes: (nodes) => {
+    if (nodes.length === 0) return;
+    get().commitToHistory();
+    set((state) => {
+      const nextNodes = [...state.nodes];
+      for (const node of nodes) {
+        const displayId = getNextDisplayId(nextNodes);
+        nextNodes.push({ ...node, data: { ...node.data, displayId } } as Node<BaseNodeData>);
+      }
+      return { nodes: nextNodes };
     });
   },
 
