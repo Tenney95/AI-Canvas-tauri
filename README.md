@@ -8,7 +8,7 @@
 
 AI Canvas Tauri 将文本、图像、视频、音频、Markdown、360° 全景和 ComfyUI 工作流组织成可视化节点。你可以在一块无限画布上自由编排生成链路，把云端模型、本地模型和本地文件管理放在同一个桌面应用里。
 
-![Version](https://img.shields.io/badge/version-0.4.5-6366f1)
+![Version](https://img.shields.io/badge/version-0.4.6-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178c6)
