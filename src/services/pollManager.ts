@@ -12,6 +12,7 @@ import { useAppStore } from '../store/useAppStore';
 import { downloadUrlAndSave } from './fileService';
 import { applyImageBatchResults } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
+import { splitCommaSeparatedUrls } from './ai/helpers';
 import type { BaseNodeData, NodeType } from '../types';
 
 // ═══════════════════════════════════════════
@@ -237,14 +238,14 @@ function extractApimartUrls(
   if (!result) return [];
   if (nodeType === 'ai-video') {
     const videos = result.videos as Array<{ url: string[] }> | undefined;
-    if (videos?.[0]?.url?.[0]) return [videos[0].url[0]];
+    if (videos?.[0]?.url?.[0]) return [splitCommaSeparatedUrls(videos[0].url)[0]];
   }
   if (nodeType === 'ai-audio') {
     const audios = result.audios as Array<{ url: string[] }> | undefined;
-    if (audios?.[0]?.url?.[0]) return [audios[0].url[0]];
+    if (audios?.[0]?.url?.[0]) return [splitCommaSeparatedUrls(audios[0].url)[0]];
   }
   const images = result.images as Array<{ url: string[] }> | undefined;
-  return images?.flatMap((image) => image.url) ?? [];
+  return images?.flatMap((image) => splitCommaSeparatedUrls(image.url)) ?? [];
 }
 
 async function resumeApimart(task: PendingTask): Promise<void> {

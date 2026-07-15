@@ -5,6 +5,7 @@
 
 import { APIMART_BASE_URL } from '../constants/api';
 import { pollTask } from './pollTask';
+import { splitCommaSeparatedUrls } from './ai/helpers';
 const APIMART_BASE = APIMART_BASE_URL;
 
 interface TaskResult {
@@ -236,7 +237,7 @@ export async function generateAngleImage(
   onProgress?.(95);
 
   // 步骤 4: 提取图片 URL
-  const imageUrls = taskData.result?.images?.flatMap((img) => img.url) ?? [];
+  const imageUrls = taskData.result?.images?.flatMap((img) => splitCommaSeparatedUrls(img.url)) ?? [];
   if (imageUrls.length === 0) {
     throw new Error('生成完成但未返回图片');
   }
@@ -307,7 +308,7 @@ export async function generateOutpaintImage(
   onProgress?.(95);
 
   // 步骤 4: 提取图片 URL
-  const imageUrls = taskData.result?.images?.flatMap((img) => img.url) ?? [];
+  const imageUrls = taskData.result?.images?.flatMap((img) => splitCommaSeparatedUrls(img.url)) ?? [];
   if (imageUrls.length === 0) {
     throw new Error('扩图完成但未返回图片');
   }

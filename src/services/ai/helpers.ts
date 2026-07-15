@@ -77,6 +77,14 @@ export function resolveGeneralModel(modelValue: string) {
 }
 
 /**
+ * APIMart 等接口可能把多张图片 / 视频 / 音频的 URL 用逗号拼成一个数组元素返回。
+ * 将 string[] 中的逗号分隔 URL 拆解为扁平的独立 URL 数组。
+ */
+export function splitCommaSeparatedUrls(urls: string[]): string[] {
+  return urls.flatMap((u) => u.split(',').map((s) => s.trim()).filter(Boolean));
+}
+
+/**
  * 多路径响应解析 — 兼容不同厂商的返回值格式
  */
 export function parseMultiPathResponse(
@@ -88,7 +96,7 @@ export function parseMultiPathResponse(
   const primary = (json as Record<string, unknown[]>)[primaryField];
   if (Array.isArray(primary) && primary.length > 0) {
     const item = primary[0] as Record<string, unknown>;
-    if (Array.isArray(item.url)) return item.url[0] as string | undefined;
+    if (Array.isArray(item.url)) return splitCommaSeparatedUrls(item.url as string[])[0];
     if (typeof item.url === 'string') return item.url;
   }
   // 兜底
@@ -96,7 +104,7 @@ export function parseMultiPathResponse(
     const arr = (json as Record<string, unknown[]>)[field];
     if (Array.isArray(arr) && arr.length > 0) {
       const item = arr[0] as Record<string, unknown>;
-      if (Array.isArray(item.url)) return item.url[0] as string | undefined;
+      if (Array.isArray(item.url)) return splitCommaSeparatedUrls(item.url as string[])[0];
       if (typeof item.url === 'string') return item.url;
     }
   }
@@ -148,7 +156,7 @@ export function parseGeneralImageResponses(json: Record<string, unknown>): strin
   // result.images 格式（异步任务）
   const images = (json.result as Record<string, Array<{ url: string[] }>>)?.['images'];
   if (Array.isArray(images)) {
-    const urls = images.flatMap((item) => Array.isArray(item.url) ? item.url : []);
+    const urls = images.flatMap((item) => Array.isArray(item.url) ? splitCommaSeparatedUrls(item.url) : []);
     if (urls.length > 0) return urls;
   }
 

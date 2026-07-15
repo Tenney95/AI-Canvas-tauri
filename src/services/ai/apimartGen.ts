@@ -4,7 +4,7 @@
 import { useAppStore } from '../../store/useAppStore';
 import { pollTask } from '../pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
-import { parseMultiPathResponse } from './helpers';
+import { parseMultiPathResponse, splitCommaSeparatedUrls } from './helpers';
 import type { BatchImageResult } from '../../types/aiTypes';
 
 /* ── APIMart 任务轮询共享类型 ── */
@@ -214,7 +214,7 @@ export async function generateApimartImagesBatch(
     fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
     isComplete: (task) => {
       if (task.status === 'completed') {
-        const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
+        const imageUrls = task.result?.images?.flatMap((img) => splitCommaSeparatedUrls(img.url)) ?? [];
         if (imageUrls.length === 0) throw new Error('APIMart 生成完成但未返回图片');
         const results = imageUrls.slice(0, requestedCount).map((url) => ({
           url,
@@ -335,8 +335,8 @@ export async function generateApimartVideo(
     fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
     isComplete: (task) => {
       if (task.status === 'completed') {
-        const videoUrls = task.result?.videos?.flatMap((v) => v.url) ?? [];
-        const imageUrls = task.result?.images?.flatMap((img) => img.url) ?? [];
+        const videoUrls = task.result?.videos?.flatMap((v) => splitCommaSeparatedUrls(v.url)) ?? [];
+        const imageUrls = task.result?.images?.flatMap((img) => splitCommaSeparatedUrls(img.url)) ?? [];
         const allUrls = videoUrls.length > 0 ? videoUrls : imageUrls;
         if (allUrls.length === 0) throw new Error('APIMart 视频生成完成但未返回结果');
         return { url: allUrls[0] };
@@ -422,7 +422,7 @@ export async function generateApimartAudio(
     fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
     isComplete: (task) => {
       if (task.status === 'completed') {
-        const audioUrls = task.result?.audios?.flatMap((a) => a.url) ?? [];
+        const audioUrls = task.result?.audios?.flatMap((a) => splitCommaSeparatedUrls(a.url)) ?? [];
         if (audioUrls.length === 0) throw new Error('APIMart 音频生成完成但未返回结果');
         return { url: audioUrls[0] };
       }
