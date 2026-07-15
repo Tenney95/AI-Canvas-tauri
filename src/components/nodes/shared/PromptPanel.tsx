@@ -2,7 +2,8 @@
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
-import type { ImagePostProcess, NodeType, ModelOption, WorkflowDefinition, UserSkill } from '../../../types';
+import type { AnimationAction, ImagePostProcess, NodeType, ModelOption, WorkflowDefinition, UserSkill } from '../../../types';
+import { ANIMATION_ACTION_LABELS } from '../../../types';
 import type { PresetOverride } from './SlashCommandMenu';
 import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
@@ -15,6 +16,37 @@ import PresetManager from './PresetManager';
 import SkillManager from './SkillManager';
 import { expandSkillReferences } from '../../../services/skillPromptService';
 
+const ANIMATION_ACTIONS: AnimationAction[] = ['idle', 'walk', 'run', 'jump', 'attack', 'hit'];
+
+function AnimationPoseIcon({ action }: { action: AnimationAction }) {
+  const commonProps = {
+    width: 20,
+    height: 20,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true,
+  };
+
+  switch (action) {
+    case 'walk':
+      return <svg {...commonProps}><circle cx="13" cy="4" r="2" /><path d="m12.5 7-1 7m.5-5-4.5 3.5m4-3 4.5 2.5m-4.5 2L7 20m4.5-6 5 5" /></svg>;
+    case 'run':
+      return <svg {...commonProps}><circle cx="14.5" cy="4" r="2" /><path d="m13.5 7-3 6m2-4-4.5-2m4 3 5 2m-6.5 1-5 3m5-3 5.5 6" /></svg>;
+    case 'jump':
+      return <svg {...commonProps}><circle cx="12" cy="4" r="2" /><path d="M12 7v7m0-5L7 5m5 4 5-4m-5 9-4.5 4m4.5-4 4.5 4" /></svg>;
+    case 'attack':
+      return <svg {...commonProps}><circle cx="9" cy="4.5" r="2" /><path d="m9.5 7 2 7m-1.5-5 7.5 1m-7-1.5L6 12m5.5 2-4.5 6m4.5-6 5 4" /><path d="m17.5 7.5 2.5 2.5-2.5 2.5" /></svg>;
+    case 'hit':
+      return <svg {...commonProps}><circle cx="14.5" cy="4.5" r="2" /><path d="m13 7-2 7m1-5-5-1m5 2 5 3m-6 1-4 5m4-5 5 5" /><path d="m19 5 2-2m-1 5 3-1" /></svg>;
+    default:
+      return <svg {...commonProps}><circle cx="12" cy="4" r="2" /><path d="M12 7v7m0-5-4.5 2m4.5-2 4.5 2M12 14l-3.5 6m3.5-6 3.5 6" /></svg>;
+  }
+}
+
 interface PromptPanelProps {
   nodeType: NodeType;
   nodeId?: string;
@@ -23,6 +55,10 @@ interface PromptPanelProps {
   selectedModel?: string;
   selectedProvider?: string;
   selectedWorkflowId?: string;
+  animationAction?: AnimationAction;
+  onAnimationActionChange?: (action: AnimationAction) => void;
+  animationFrames?: number;
+  onAnimationFramesChange?: (value: number) => void;
   canGenerate?: boolean;
   onChange: (value: string) => void;
   onSubmit: (overridePrompt?: string, postProcess?: ImagePostProcess) => void;
@@ -63,6 +99,10 @@ export default function PromptPanel({
   selectedModel,
   selectedProvider,
   selectedWorkflowId,
+  animationAction = 'idle',
+  onAnimationActionChange,
+  animationFrames = 8,
+  onAnimationFramesChange,
   canGenerate = true,
   onChange,
   onSubmit,
@@ -219,6 +259,42 @@ export default function PromptPanel({
           onWorkflowSelect={onWorkflowSelect}
           workflows={workflows}
         />
+
+        {nodeType === 'ai-animation' && onAnimationActionChange && (
+          <>
+            <div className="animation-action-picker" role="group" aria-label="动画动作">
+              {ANIMATION_ACTIONS.map((action) => (
+                <button
+                  key={action}
+                  type="button"
+                  className={`animation-pose-btn${animationAction === action ? ' active' : ''}`}
+                  data-tooltip={ANIMATION_ACTION_LABELS[action]}
+                  aria-label={ANIMATION_ACTION_LABELS[action]}
+                  aria-pressed={animationAction === action}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onAnimationActionChange(action);
+                  }}
+                >
+                  <AnimationPoseIcon action={action} />
+                </button>
+              ))}
+            </div>
+            <select
+              className="animation-frames-select"
+              value={animationFrames}
+              aria-label="生成帧数"
+              onChange={(event) => {
+                event.stopPropagation();
+                onAnimationFramesChange?.(Number(event.target.value));
+              }}
+            >
+              {[6, 8, 10, 12, 16, 20].map((count) => (
+                <option key={count} value={count}>{count} 帧</option>
+              ))}
+            </select>
+          </>
+        )}
 
         {(nodeType === 'ai-image' || nodeType === 'ai-panorama' || nodeType === 'ai-video') && (
           <StyleSelector

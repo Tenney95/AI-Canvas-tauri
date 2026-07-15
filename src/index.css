@@ -9,6 +9,7 @@
 @import './styles/nodes-text.css';
 @import './styles/nodes-image.css';
 @import './styles/nodes-audio.css';
+@import './styles/nodes-animation.css';
 @import './styles/nodes-panorama.css';
 @import './styles/nodes-storyboard.css';
 @import './styles/nodes-group.css';

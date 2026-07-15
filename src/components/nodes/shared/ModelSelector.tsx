@@ -57,6 +57,7 @@ export default function ModelSelector({
   defaultExpandedGroupIds = [],
 }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
+  const modelNodeType = nodeType === 'ai-panorama' || nodeType === 'ai-animation' ? 'ai-image' : nodeType;
 
   // 读取配置 — 判断哪些 provider 有 API Key
   const configProviders = useAppStore((s) => s.config.providers);
@@ -66,7 +67,7 @@ export default function ModelSelector({
   /** 动态生成「通用模型」分组 */
   const generalModelGroup: ModelGroup | null = useMemo(() => {
     if (generalModels.length === 0) return null;
-    const models: ModelOption[] = generalModels.filter((gm) => CATEGORY_TO_NODE_TYPES[gm.category].includes(nodeType)).map((gm) => ({
+    const models: ModelOption[] = generalModels.filter((gm) => CATEGORY_TO_NODE_TYPES[gm.category].includes(modelNodeType)).map((gm) => ({
       value: `general/${gm.id}`,
       provider: 'general',
       label: gm.name,
@@ -84,7 +85,7 @@ export default function ModelSelector({
       badgeText: 'GM',
       models,
     };
-  }, [generalModels, nodeType]);
+  }, [generalModels, modelNodeType]);
 
   /** 合并默认分组与通用模型分组 */
   const allGroups = useMemo(() => {
@@ -96,7 +97,7 @@ export default function ModelSelector({
   // 默认分组收起，except defaultExpandedGroupIds（含通用模型默认展开）
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
     const ids = allGroups
-      .map((g) => ({ ...g, models: g.models.filter((m) => m.nodeTypes.includes(nodeType)) }))
+      .map((g) => ({ ...g, models: g.models.filter((m) => m.nodeTypes.includes(modelNodeType)) }))
       .filter((g) => g.models.length > 0)
       .map((g) => g.id)
       .filter((id) => !defaultExpandedGroupIds.includes(id) && id !== 'general-models');
@@ -183,12 +184,11 @@ export default function ModelSelector({
   }, [open]);
 
   // 筛选当前节点类型下可用的模型分组
-  // 全景图节点复用生图节点的模型列表
-  const nodeTypeForFilter = nodeType === 'ai-panorama' ? 'ai-image' : nodeType;
+  // 全景图和动画节点只复用生图模型，不复用图片节点的参数 UI
   const filteredGroups = allGroups
     .map((g) => ({
       ...g,
-      models: g.models.filter((m) => m.nodeTypes.includes(nodeTypeForFilter)),
+      models: g.models.filter((m) => m.nodeTypes.includes(modelNodeType)),
     }))
     .filter((g) => g.models.length > 0);
 
@@ -199,7 +199,7 @@ export default function ModelSelector({
       const prefs = loadModelPrefs();
       return selectedModel
         || prefs[nodeType]
-        || (nodeType === 'ai-panorama' ? prefs['ai-image'] : undefined)
+        || (nodeType === 'ai-panorama' || nodeType === 'ai-animation' ? prefs['ai-image'] : undefined)
         || undefined;
     },
     [selectedModel, nodeType],

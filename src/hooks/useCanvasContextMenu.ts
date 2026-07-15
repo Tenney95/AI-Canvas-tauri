@@ -19,7 +19,8 @@ function loadDefaultModel(nodeType: string): { model: string; provider: string }
     if (!raw) return null;
     const prefs: Record<string, string> = JSON.parse(raw);
     // 全景图回退到生图偏好
-    const modelValue = prefs[nodeType] || (nodeType === 'ai-panorama' ? prefs['ai-image'] : undefined);
+    const modelValue = prefs[nodeType]
+      || (nodeType === 'ai-panorama' || nodeType === 'ai-animation' ? prefs['ai-image'] : undefined);
     if (!modelValue) return null;
     const slashIdx = modelValue.indexOf('/');
     if (slashIdx === -1) return null;
@@ -88,9 +89,10 @@ export function useCanvasContextMenu() {
       const flowPos = reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y });
       const isImage = type === 'ai-image';
       const isPanorama = type === 'ai-panorama';
+      const isAnimation = type === 'ai-animation';
       const isSource = role === 'source';
-      const newWidth = type === 'ai-audio' ? 260 : isPanorama ? 300 : type === 'ai-markdown' ? 280 : 280;
-      const newHeight = type === 'ai-audio' ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
+      const newWidth = isAnimation ? 320 : type === 'ai-audio' ? 260 : isPanorama ? 300 : 280;
+      const newHeight = isAnimation ? 358 : type === 'ai-audio' ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
       const defaultModel = !isSource ? loadDefaultModel(type) : null;
       const newNode: RFNode<BaseNodeData> = {
         id: `node-${generateId()}`,
@@ -105,6 +107,14 @@ export function useCanvasContextMenu() {
           nodeWidth: newWidth,
           nodeHeight: newHeight,
           ...(isImage && !isSource ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
+          ...(isAnimation && !isSource ? {
+            prompt: '2D俯视角游戏角色，保持角色造型、朝向、比例和光照一致',
+            animationAction: 'idle' as const,
+            animationFrames: 8 as const,
+            animationPreviewMode: 'playing' as const,
+            aspectRatio: '1:1',
+            imageSize: '2K',
+          } : {}),
           ...(defaultModel ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
         },
       };
@@ -147,15 +157,7 @@ export function useCanvasContextMenu() {
       if (!currentProjectId) return;
       const dir = await fileService.ensureProjectDataDir(currentProjectId);
       if (!dir) return;
-
-      const { Command } = await import('@tauri-apps/plugin-shell');
-      const isWin = navigator.platform.toLowerCase().includes('win');
-      if (isWin) {
-        await Command.create('explorer', [dir.replace(/\//g, '\\')]).execute();
-      } else {
-        const cmd = navigator.platform.toLowerCase().includes('mac') ? 'mac-open' : 'xdg-open';
-        await Command.create(cmd, [dir]).execute();
-      }
+      await fileService.openDirectoryInFileManager(dir);
     } catch (err) {
       console.warn('无法打开项目文件夹:', err);
     } finally {

@@ -8,6 +8,7 @@ export type NodeType =
   | 'ai-image'
   | 'ai-video'
   | 'ai-audio'
+  | 'ai-animation'
   | 'ai-panorama'
   | 'ai-markdown'
   | 'ai-storyboard'
@@ -19,6 +20,27 @@ export type NodeType =
 
 // 内置图像预设可请求的生成后处理流程
 export type ImagePostProcess = 'character-8-direction-grid';
+
+export type AnimationAction = 'idle' | 'walk' | 'run' | 'jump' | 'attack' | 'hit';
+export type AnimationPreviewMode = 'playing' | 'sheet';
+
+export const ANIMATION_ACTION_LABELS: Record<AnimationAction, string> = {
+  idle: '待机',
+  walk: '行走',
+  run: '奔跑',
+  jump: '跳跃',
+  attack: '攻击',
+  hit: '受击',
+};
+
+export const ANIMATION_FRAME_GRIDS: Record<6 | 8 | 10 | 12 | 16 | 20, { cols: number; rows: number }> = {
+  6: { cols: 3, rows: 2 },
+  8: { cols: 4, rows: 2 },
+  10: { cols: 5, rows: 2 },
+  12: { cols: 4, rows: 3 },
+  16: { cols: 4, rows: 4 },
+  20: { cols: 5, rows: 4 },
+};
 
 // 宫格分镜：被拖入某格的图片覆盖
 export interface StoryboardCellOverride {
@@ -60,6 +82,9 @@ export interface BaseNodeData {
   videoResolution?: number;   // 视频分辨率：832 | 1024 | 1280 | 1440
   videoFps?: number;          // 视频帧率：16 | 24 | 30
   videoFrames?: number;       // 视频生成帧数（时长）
+  animationAction?: AnimationAction; // 角色逐帧动画动作
+  animationFrames?: 6 | 8 | 10 | 12 | 16 | 20; // Sprite Sheet 总帧数
+  animationPreviewMode?: AnimationPreviewMode; // 动图预览 / 静态排布
   seedanceResolution?: string;// Seedance 分辨率：'480p' | '720p' | '1080p' | '4k'
   seedanceRatio?: string;     // Seedance 宽高比：'16:9' | '4:3' | '1:1' | '3:4' | '9:16' | '21:9' | 'adaptive'
   seedanceDuration?: number;  // Seedance 时长（整数秒）：2-15
@@ -189,7 +214,7 @@ export const GENERAL_MODEL_CATEGORY_COLORS: Record<GeneralModelCategory, string>
 /** GeneralModelCategory → 适用的节点类型映射 */
 export const CATEGORY_TO_NODE_TYPES: Record<GeneralModelCategory, NodeType[]> = {
   text: ['ai-text'],
-  image: ['ai-image'],
+  image: ['ai-image', 'ai-animation'],
   video: ['ai-video'],
   audio: ['ai-audio'],
 };
@@ -306,6 +331,7 @@ export const NODE_TYPE_CONFIG: Record<string, NodeTypeVisualConfig> = {
   'ai-image':    { icon: 'mdi:image-outline',             color: 'text-green-400',   bg: 'bg-green-500/15',   label: '生成图像' },
   'ai-video':    { icon: 'mdi:video-outline',             color: 'text-blue-400',    bg: 'bg-blue-500/15',    label: '生成视频' },
   'ai-audio':    { icon: 'mdi:volume-high',               color: 'text-orange-400',  bg: 'bg-orange-500/15',  label: '生成音频' },
+  'ai-animation': { icon: 'mdi:animation-play-outline',    color: 'text-fuchsia-400', bg: 'bg-fuchsia-500/15', label: '生成动画' },
   'ai-panorama': { icon: 'mdi:panorama',                  color: 'text-cyan-400',    bg: 'bg-cyan-500/15',    label: '生成360全景' },
   'ai-markdown': { icon: 'mdi:language-markdown-outline', color: 'text-purple-400',  bg: 'bg-purple-500/15',  label: 'Markdown' },
   'ai-storyboard': { icon: 'mdi:grid',                    color: 'text-pink-400',    bg: 'bg-pink-500/15',    label: '宫格分镜' },

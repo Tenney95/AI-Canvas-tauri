@@ -30,11 +30,12 @@ const iconColors: Record<string, string> = {
   'ai-image': 'text-green-400 bg-green-500/10',
   'ai-video': 'text-blue-400 bg-blue-500/10',
   'ai-audio': 'text-orange-400 bg-orange-500/10',
+  'ai-animation': 'text-fuchsia-400 bg-fuchsia-500/10',
   'ai-panorama': 'text-cyan-400 bg-cyan-500/10',
 };
 
 const MENU_W = 260;
-const MENU_H = 290; // header + ~6 items max
+const MENU_H = 350; // header + 6 items max
 
 function ConnectionMenu({
   visible,
@@ -112,6 +113,12 @@ function ConnectionMenu({
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <polygon points="23 7 16 12 23 17 23 7" />
                     <rect x="1" y="5" width="15" height="14" rx="2" />
+                  </svg>
+                ) : opt.type === 'ai-animation' ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="5" width="14" height="14" rx="2" />
+                    <path d="M7 3h12a2 2 0 0 1 2 2v12" />
+                    <path d="m9 9 5 3-5 3V9Z" />
                   </svg>
                 ) : (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

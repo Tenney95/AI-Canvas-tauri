@@ -4,7 +4,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
-import { getProjectDataDir, getBaseDir, PROJECT_DISK_CHANGED_EVENT } from '../services/fileService';
+import { getProjectDataDir, getBaseDir, openDirectoryInFileManager, PROJECT_DISK_CHANGED_EVENT } from '../services/fileService';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import ModalOverlay from './shared/ModalOverlay';
 import AnimatedButton from './shared/AnimatedButton';
@@ -101,14 +101,7 @@ export default function SettingsPanel() {
     try {
       const dir = baseDataDir || await getBaseDir();
       if (!dir) return;
-      const { Command } = await import('@tauri-apps/plugin-shell');
-      const isWin = navigator.platform.toLowerCase().includes('win');
-      if (isWin) {
-        await Command.create('explorer', ['/root,', dir]).execute();
-      } else {
-        const cmd = navigator.platform.toLowerCase().includes('mac') ? 'open' : 'xdg-open';
-        await Command.create(cmd, [dir]).execute();
-      }
+      await openDirectoryInFileManager(dir);
     } catch (err) {
       console.warn('无法打开文件夹:', err);
     }

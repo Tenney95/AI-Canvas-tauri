@@ -1,0 +1,209 @@
+/* ============================================
+   Animation Node — Sprite Sheet generator and preview
+   ============================================ */
+
+.animation-node {
+  position: relative;
+  overflow: visible !important;
+  min-height: 210px;
+}
+
+.animation-action-picker {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--white-alpha-03);
+  flex-shrink: 0;
+}
+
+.animation-pose-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base), transform var(--transition-base);
+}
+
+.animation-pose-btn:hover {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+
+.animation-pose-btn:active {
+  transform: scale(0.92);
+}
+
+.animation-pose-btn.active {
+  color: var(--brand-light);
+  background: var(--brand-alpha-15);
+  border-color: var(--brand-alpha-25);
+}
+
+.animation-pose-btn:focus-visible {
+  outline: 2px solid var(--brand-alpha-25);
+  outline-offset: 1px;
+}
+
+.animation-preview {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 4px 4px 0;
+  overflow: hidden;
+  border-radius: 9px;
+  background:
+    linear-gradient(45deg, var(--white-alpha-03) 25%, transparent 25%, transparent 75%, var(--white-alpha-03) 75%),
+    linear-gradient(45deg, var(--white-alpha-03) 25%, transparent 25%, transparent 75%, var(--white-alpha-03) 75%),
+    var(--theme-surface);
+  background-position: 0 0, 8px 8px;
+  background-size: 16px 16px;
+}
+
+.animation-frame {
+  width: auto;
+  height: 100%;
+  aspect-ratio: 1;
+  margin: 0 auto;
+  background-repeat: no-repeat;
+  image-rendering: auto;
+}
+
+.animation-sheet {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
+.animation-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.animation-empty small {
+  color: var(--theme-text-secondary);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.animation-preview-switch {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--glass-ring);
+  border-radius: 7px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur-sm));
+}
+
+.animation-preview-switch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+
+.animation-preview-switch button:hover {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+
+.animation-preview-switch button.active {
+  color: var(--theme-text);
+  background: var(--brand-alpha-20);
+}
+
+.animation-param-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 42px;
+  padding: 0 10px;
+  border-top: 1px solid var(--theme-border);
+  color: var(--theme-text-secondary);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.animation-param-action,
+.animation-param-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.animation-param-bar select {
+  height: 25px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--theme-surface);
+  color: var(--theme-text);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.animation-param-bar select:hover,
+.animation-param-bar select:focus-visible {
+  border-color: var(--brand-alpha-25);
+}
+
+.animation-frames-select {
+  height: 27px;
+  padding: 0 20px 0 7px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--theme-surface);
+  color: var(--theme-text);
+  font-size: 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: inherit;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%238888a0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+
+.animation-frames-select:hover,
+.animation-frames-select:focus-visible {
+  border-color: var(--brand-alpha-25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animation-pose-btn {
+    transition-duration: 1ms;
+  }
+}

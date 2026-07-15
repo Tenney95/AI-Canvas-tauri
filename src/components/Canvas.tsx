@@ -24,6 +24,7 @@ import TextNode from './nodes/TextNode';
 import ImageNode from './nodes/ImageNode';
 import VideoNode from './nodes/VideoNode';
 import AudioNode from './nodes/AudioNode';
+import AnimationNode from './nodes/AnimationNode';
 import MarkdownNode from './nodes/MarkdownNode';
 import StoryboardNode from './nodes/StoryboardNode';
 import GroupNode from './nodes/GroupNode';
@@ -54,6 +55,7 @@ const nodeTypes: NodeTypes = {
   'ai-image': ImageNode,
   'ai-video': VideoNode,
   'ai-audio': AudioNode,
+  'ai-animation': AnimationNode,
   'ai-panorama': PanoramaNode,
   'ai-markdown': MarkdownNode,
   'ai-storyboard': StoryboardNode,
@@ -83,6 +85,7 @@ const minimapNodeColor = (node: RFNode) => {
     case 'ai-image': return 'color-mix(in srgb, var(--node-image-light) 50%, transparent)';
     case 'ai-video': return 'color-mix(in srgb, var(--node-video-light) 50%, transparent)';
     case 'ai-audio': return 'color-mix(in srgb, var(--node-audio-light) 50%, transparent)';
+    case 'ai-animation': return 'color-mix(in srgb, var(--brand) 50%, transparent)';
     case 'ai-panorama': return 'color-mix(in srgb, var(--node-panorama) 50%, transparent)';
     case 'ai-markdown': return 'color-mix(in srgb, var(--node-markdown-light) 50%, transparent)';
     case 'group': return '#4b556380';
@@ -394,6 +397,7 @@ function CanvasInner() {
       if (node.data?.role === 'source') return;
       if (node.data?.type === 'ai-text' && node.data?.output) return;
       if (node.data?.type === 'ai-image' && node.data?.imageUrl) return;
+      if (node.data?.type === 'ai-animation' && node.data?.imageUrl) return;
       if (node.data?.type === 'ai-panorama' && node.data?.imageUrl) return;
       if (node.data?.type === 'ai-video' && node.data?.videoUrl) return;
 

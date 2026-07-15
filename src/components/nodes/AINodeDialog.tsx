@@ -5,7 +5,8 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
 import { generateId, useAppStore } from '../../store/useAppStore';
-import type { BaseNodeData, ImagePostProcess, ModelOption } from '../../types';
+import type { AnimationAction, BaseNodeData, ImagePostProcess, ModelOption } from '../../types';
+import { ANIMATION_ACTION_LABELS, ANIMATION_FRAME_GRIDS } from '../../types';
 import { generateText, generateImage, generateVideo, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
 import { downloadUrlAndSave } from '../../services/fileService';
 import { checkModelExists, createCharacterDirectionGrid, downloadModel } from '../../services/onnxService';
@@ -13,6 +14,23 @@ import ModelDownloadDialog from '../shared/ModelDownloadDialog';
 import PromptPanel from './shared/PromptPanel';
 import type { MentionEditorHandle } from './shared/MentionEditor';
 import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
+
+const ANIMATION_ACTION_PROMPTS: Record<AnimationAction, string> = {
+  idle: '自然待机循环，轻微呼吸和身体起伏，首尾帧无缝衔接',
+  walk: '稳定行走循环，步态清晰，双脚交替，首尾帧无缝衔接',
+  run: '快速奔跑循环，动作有力量感和速度感，首尾帧无缝衔接',
+  jump: '完整跳跃动作，包含起跳、腾空和落地阶段',
+  attack: '清晰有力的攻击动作，包含蓄力、出招和收势阶段',
+  hit: '受到攻击后的短促受击动作，重心和肢体反馈明确',
+};
+
+function buildAnimationSpritePrompt(characterPrompt: string, action: AnimationAction, frameCount: 6 | 8 | 10 | 12 | 16 | 20) {
+  const grid = ANIMATION_FRAME_GRIDS[frameCount];
+  return `${characterPrompt.trim()}\n生成 ${ANIMATION_ACTION_LABELS[action]} 动画：${ANIMATION_ACTION_PROMPTS[action]}。` +
+    `输出一张完整 Sprite Sheet，共 ${frameCount} 帧，严格按从左到右、从上到下排列为 ${grid.cols} 列 × ${grid.rows} 行。` +
+    '每个单元格尺寸完全相同，角色完整居中，不得越界；所有帧的角色造型、俯视角度、比例、配色、光照和背景必须一致。' +
+    '不要添加文字、编号、边框、间距或额外角色。';
+}
 
 function AINodeDialog() {
   const { activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, recordOutputHistory, showToast, workflows, currentProjectId } = useAppStore(
@@ -196,11 +214,17 @@ function AINodeDialog() {
     };
     updateNodeData(activeNodeId!, { status: 'loading', error: undefined });
     try {
-      if (nodeType === 'ai-image') {
+      if (nodeType === 'ai-image' || nodeType === 'ai-animation') {
+        const isAnimation = nodeType === 'ai-animation';
         const imageSize = (latestData.imageSize as string) || '2K';
         const aspectRatio = (latestData.aspectRatio as string) || '1:1';
+        const animationAction = latestData.animationAction ?? 'idle';
+        const animationFrames = latestData.animationFrames ?? 8;
+        const requestPrompt = isAnimation
+          ? buildAnimationSpritePrompt(effectivePrompt, animationAction, animationFrames)
+          : effectivePrompt;
         const result = await generateImage({
-          prompt: effectivePrompt,
+          prompt: requestPrompt,
           model: nodeModel,
           provider: nodeProvider,
           imageSize,
@@ -231,13 +255,15 @@ function AINodeDialog() {
           timestamp: Date.now(),
           prompt: effectivePrompt,
           output: result.url,
-          nodeType: 'ai-image',
+          nodeType: isAnimation ? 'ai-animation' : 'ai-image',
           model: nodeModel,
           provider: nodeProvider,
           status: 'success',
           mediaUrl: result.url,
           filePath: saved?.filePath,
-          params: { imageSize, aspectRatio },
+          params: isAnimation
+            ? { imageSize, aspectRatio, animationAction, animationFrames, grid: ANIMATION_FRAME_GRIDS[animationFrames] }
+            : { imageSize, aspectRatio },
         });
         if (postProcess === 'character-8-direction-grid') {
           if (!saved?.filePath) {
@@ -303,7 +329,7 @@ function AINodeDialog() {
             }
           }
         } else {
-          showToast('图片生成完成');
+          showToast(isAnimation ? 'Sprite Sheet 生成完成' : '图片生成完成');
         }
       } else if (nodeType === 'ai-panorama') {
         const imageSize = (latestData.imageSize as string) || '2K';
@@ -590,6 +616,16 @@ function AINodeDialog() {
     [activeNodeId, updateNodeData]
   );
 
+  const onAnimationActionChange = useCallback(
+    (action: AnimationAction) => updateNodeData(activeNodeId!, { animationAction: action }),
+    [activeNodeId, updateNodeData]
+  );
+
+  const onAnimationFramesChange = useCallback(
+    (value: number) => updateNodeData(activeNodeId!, { animationFrames: value as BaseNodeData['animationFrames'] }),
+    [activeNodeId, updateNodeData]
+  );
+
   // Early return must come after ALL hooks
   if (!activeNodeId || !node || !data || !nodeType) return null;
 
@@ -643,12 +679,16 @@ function AINodeDialog() {
           selectedModel={data.model}
           selectedProvider={data.provider}
           selectedWorkflowId={data.workflowId}
+          animationAction={data.animationAction ?? 'idle'}
+          onAnimationActionChange={onAnimationActionChange}
+          animationFrames={data.animationFrames ?? 8}
+          onAnimationFramesChange={onAnimationFramesChange}
           canGenerate={data.status !== 'loading'}
           onChange={onPromptChange}
           onSubmit={onSubmit}
           onModelSelect={onModelSelect}
           onWorkflowSelect={onWorkflowSelect}
-          onPassThrough={(nodeType !== 'ai-image' && nodeType !== 'ai-video' && nodeType !== 'ai-audio') ? onPassThrough : undefined}
+          onPassThrough={(nodeType !== 'ai-image' && nodeType !== 'ai-animation' && nodeType !== 'ai-video' && nodeType !== 'ai-audio') ? onPassThrough : undefined}
           imageSize={(data.imageSize as string) || '2K'}
           aspectRatio={(data.aspectRatio as string) || (nodeType === 'ai-panorama' ? '2:1' : '1:1')}
           onChangeImageSize={onChangeImageSize}

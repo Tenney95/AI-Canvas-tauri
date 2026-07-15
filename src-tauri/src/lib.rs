@@ -255,6 +255,70 @@ async fn open_with_app(app_path: String, file_path: String) -> Result<(), String
     Ok(())
 }
 
+/// 在系统文件管理器中打开目录，或定位并选中文件。
+/// 路径会先规范化，避免系统文件管理器在参数无效时回退到默认目录。
+#[tauri::command]
+async fn reveal_in_file_manager(path: String, select: bool) -> Result<(), String> {
+    let canonical_path = std::path::PathBuf::from(&path)
+        .canonicalize()
+        .map_err(|e| format!("目标路径不存在或无法访问（{path}）: {e}"))?;
+
+    if !select && !canonical_path.is_dir() {
+        return Err(format!(
+            "要打开的路径不是文件夹: {}",
+            canonical_path.display()
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // `canonicalize` 在 Windows 上通常返回 `\\?\` 扩展路径；Explorer 对该前缀支持不稳定。
+        let canonical_text = canonical_path.to_string_lossy();
+        let explorer_path = if let Some(path) = canonical_text.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{path}")
+        } else if let Some(path) = canonical_text.strip_prefix(r"\\?\") {
+            path.to_string()
+        } else {
+            canonical_text.into_owned()
+        };
+        let mut command = std::process::Command::new("explorer.exe");
+        if select {
+            command.arg("/select,");
+        }
+        command
+            .arg(explorer_path)
+            .spawn()
+            .map_err(|e| format!("启动 Windows 资源管理器失败: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new("open");
+        if select {
+            command.arg("-R");
+        }
+        command
+            .arg(&canonical_path)
+            .spawn()
+            .map_err(|e| format!("启动 Finder 失败: {e}"))?;
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let target_path = if select && canonical_path.is_file() {
+            canonical_path
+                .parent()
+                .ok_or_else(|| format!("无法确定文件所在目录: {}", canonical_path.display()))?
+        } else {
+            canonical_path.as_path()
+        };
+        std::process::Command::new("xdg-open")
+            .arg(target_path)
+            .spawn()
+            .map_err(|e| format!("启动文件管理器失败: {e}"))?;
+    }
+
+    Ok(())
+}
+
 /// 切换当前 WebView 的开发者工具（先关闭再打开实现 toggle 效果）
 #[tauri::command]
 async fn toggle_devtools(app: tauri::AppHandle) -> Result<(), String> {
@@ -477,6 +541,7 @@ pub fn run() {
             close_chat_window,
             set_chat_window_locked,
             open_with_app,
+            reveal_in_file_manager,
             toggle_devtools,
             sync_authorized_directories,
             comfyui::launch_comfyui,

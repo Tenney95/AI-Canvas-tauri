@@ -18,6 +18,7 @@ const NODE_ITEMS: MergedNodeItem[] = [
   { label: '生成图像', type: 'ai-image', role: 'generator' },
   { label: '生成视频', type: 'ai-video', role: 'generator' },
   { label: '生成音频', type: 'ai-audio', role: 'generator' },
+  { label: '生成动画', type: 'ai-animation', role: 'generator' },
   { label: '生成360全景', type: 'ai-panorama', role: 'generator' },
   // ── 源节点 ──
   { label: '文本', type: 'ai-text', role: 'source' },
@@ -34,8 +35,8 @@ const MENU_PADDING = 10;
 /** 根菜单项数（添加节点 + 分割线 + 粘贴 + 撤销 + 重做 + 分割线 + 打开项目文件夹 + 删除 = 7 个 .menu-row + 3 个 .menu-sep） */
 const L1_ITEM_COUNT = 7;
 const L1_SEP_COUNT = 3;
-/** 子菜单项数（5 个生成节点 + 1 条分割线 + 5 个源节点 = 10 个 .menu-row + 1 个 .menu-sep） */
-const SUB_ITEM_COUNT = 10;
+/** 子菜单项数（6 个生成节点 + 1 条分割线 + 5 个源节点 = 11 个 .menu-row + 1 个 .menu-sep） */
+const SUB_ITEM_COUNT = 11;
 const SUB_SEP_COUNT = 1;
 
 /** 估算菜单高度 */
@@ -118,6 +119,7 @@ function CanvasContextMenu({
           className={`menu-row menu-row-split${hoverMenu === 'addNode' ? ' highlight' : ''}`}
           onMouseEnter={() => onShowSubmenu('addNode')}
           onMouseLeave={() => onHideSubmenu(null)}
+          onClick={() => onShowSubmenu('addNode')}
         >
           <span className="menu-rowlabel">添加节点</span>
           <span className="menu-arrow menu-arrow-ml8">▶</span>
@@ -161,8 +163,8 @@ function CanvasContextMenu({
         >
           {NODE_ITEMS.map((item, i) => (
             <div key={`${item.role}-${item.type}`}>
-              {/* 第 5 项前插入分割线（生成节点 → 源节点） */}
-              {i === 5 && <div className="menu-sep" />}
+              {/* 第 6 项前插入分割线（生成节点 → 源节点） */}
+              {i === 6 && <div className="menu-sep" />}
               <div
                 className="menu-row"
                 onClick={() => onAddNode(item.type, item.label, item.role)}

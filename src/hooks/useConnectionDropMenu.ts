@@ -15,8 +15,9 @@ function loadDefaultModel(nodeType: string): { model: string; provider: string }
     const raw = localStorage.getItem(MODEL_PREF_KEY);
     if (!raw) return null;
     const prefs: Record<string, string> = JSON.parse(raw);
-    // 全景图回退到生图偏好
-    const modelValue = prefs[nodeType] || (nodeType === 'ai-panorama' ? prefs['ai-image'] : undefined);
+    // 全景图和动画节点回退到生图偏好
+    const modelValue = prefs[nodeType]
+      || (nodeType === 'ai-panorama' || nodeType === 'ai-animation' ? prefs['ai-image'] : undefined);
     if (!modelValue) return null;
     const slashIdx = modelValue.indexOf('/');
     if (slashIdx === -1) return null;
@@ -47,18 +48,21 @@ const CONNECTION_MENU_MAP: Record<string, ConnectionMenuOption[]> = {
     { label: '生成图像', type: 'ai-image' },
     { label: '生成视频', type: 'ai-video' },
     { label: '生成音频', type: 'ai-audio' },
+    { label: '生成动画', type: 'ai-animation' },
     { label: '生成360全景图', type: 'ai-panorama' },
   ],
   'ai-image': [
     { label: '生成文本', type: 'ai-text' },
     { label: '生成图像', type: 'ai-image' },
     { label: '生成视频', type: 'ai-video' },
+    { label: '生成动画', type: 'ai-animation' },
     { label: '生成360全景图', type: 'ai-panorama' },
   ],
   'ai-storyboard': [
     { label: '生成文本', type: 'ai-text' },
     { label: '生成图像', type: 'ai-image' },
     { label: '生成视频', type: 'ai-video' },
+    { label: '生成动画', type: 'ai-animation' },
     { label: '生成360全景图', type: 'ai-panorama' },
   ],
   'ai-video': [],
@@ -139,8 +143,9 @@ export function useConnectionDropMenu(smoothLine: boolean) {
       const srcWidth = (sourceNode?.data?.nodeWidth as number | undefined) ?? 280;
       const srcRight = srcX + srcWidth;
 
-      const newWidth = option.type === 'ai-audio' ? 260 : option.type === 'ai-panorama' ? 300 : 280;
-      const newHeight = option.type === 'ai-audio' ? 140 : option.type === 'ai-image' ? 158 : option.type === 'ai-panorama' ? 200 : option.type === 'ai-markdown' ? 200 : 160;
+      const isAnimation = option.type === 'ai-animation';
+      const newWidth = isAnimation ? 320 : option.type === 'ai-audio' ? 260 : option.type === 'ai-panorama' ? 300 : 280;
+      const newHeight = isAnimation ? 358 : option.type === 'ai-audio' ? 140 : option.type === 'ai-image' ? 158 : option.type === 'ai-panorama' ? 200 : option.type === 'ai-markdown' ? 200 : 160;
 
       // Determine handle direction based on position relative to source
       const releasedRight = flowPos.x >= srcRight + 10;
@@ -192,6 +197,14 @@ export function useConnectionDropMenu(smoothLine: boolean) {
           nodeHeight: newHeight,
           ...(option.type === 'ai-image' ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
           ...(option.type === 'ai-panorama' ? { previewMode: 'image' } : {}),
+          ...(isAnimation ? {
+            prompt: '2D俯视角游戏角色，保持角色造型、朝向、比例和光照一致',
+            animationAction: 'idle' as const,
+            animationFrames: 8 as const,
+            animationPreviewMode: 'playing' as const,
+            aspectRatio: '1:1',
+            imageSize: '2K',
+          } : {}),
           ...(defaultModel ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
         },
       };

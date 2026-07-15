@@ -890,34 +890,23 @@ export async function revealFileInFolder(filePath: string): Promise<void> {
   }
 
   try {
-    const { Command } = await import('@tauri-apps/plugin-shell');
-
-    // 检测操作系统
-    const plat = (navigator.platform || '').toLowerCase();
-    const isWin = plat.includes('win');
-    const isMac = plat.includes('mac');
-
-    if (isWin) {
-      // Windows: explorer /select, "path" — 必须用反斜杠
-      const winPath = filePath.replace(/\//g, '\\');
-      const cmd = Command.create('explorer', ['/select,', winPath]);
-      await cmd.execute();
-    } else if (isMac) {
-      // macOS: open -R "path" (Reveal in Finder)
-      // 注意：'mac-open' 是 capabilities 中的 name，会映射到 cmd: 'open'
-      const cmd = Command.create('mac-open', ['-R', filePath]);
-      await cmd.execute();
-    } else {
-      // Linux: xdg-open <dir>
-      const sep = filePath.includes('\\') ? '\\' : '/';
-      const dirPath = filePath.substring(0, filePath.lastIndexOf(sep));
-      const cmd = Command.create('xdg-open', [dirPath]);
-      await cmd.execute();
-    }
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('reveal_in_file_manager', { path: filePath, select: true });
   } catch (err) {
     console.error('[fileService] revealFileInFolder 失败:', filePath, err);
     throw err;
   }
+}
+
+/** 在系统文件管理器中打开目录。 */
+export async function openDirectoryInFileManager(dirPath: string): Promise<void> {
+  if (!isTauriEnv()) {
+    console.warn('[fileService] openDirectoryInFileManager: 仅 Tauri 桌面环境支持');
+    return;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('reveal_in_file_manager', { path: dirPath, select: false });
 }
 
 // ============================================

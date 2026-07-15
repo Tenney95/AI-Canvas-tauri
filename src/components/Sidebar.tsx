@@ -57,6 +57,12 @@ const generationItems: {
     sub: 'AI 全景图生成',
     icon: <Icon icon={NODE_TYPE_CONFIG['ai-panorama'].icon} width="18" height="18" />,
   },
+  {
+    type: 'ai-animation',
+    label: '生成动画',
+    sub: '2D 角色逐帧动画',
+    icon: <Icon icon={NODE_TYPE_CONFIG['ai-animation'].icon} width="18" height="18" />,
+  },
 ];
 
 const resourceItems = [
@@ -99,13 +105,14 @@ function NodePicker({
   const handleAddNode = (type: NodeType) => {
     const isImage = type === 'ai-image';
     const isPanorama = type === 'ai-panorama';
+    const isAnimation = type === 'ai-animation';
     const nodeData: Record<string, unknown> = {
       label: NODE_TYPE_CONFIG[type]?.label || generationItems.find((m) => m.type === type)?.label || '节点',
       type,
       prompt: '',
       status: 'idle' as const,
-      nodeWidth: isPanorama ? 300 : 280,
-      nodeHeight: isImage ? 158 : isPanorama ? 200 : 160,
+      nodeWidth: isAnimation ? 320 : isPanorama ? 300 : 280,
+      nodeHeight: isImage ? 158 : isAnimation ? 358 : isPanorama ? 200 : 160,
     };
     if (isImage) {
       nodeData.aspectRatio = '16:9';
@@ -114,13 +121,22 @@ function NodePicker({
     if (isPanorama) {
       nodeData.previewMode = 'image';
     }
+    if (isAnimation) {
+      nodeData.prompt = '2D俯视角游戏角色，保持角色造型、朝向、比例和光照一致';
+      nodeData.animationAction = 'idle';
+      nodeData.animationFrames = 8;
+      nodeData.animationPreviewMode = 'playing';
+      nodeData.aspectRatio = '1:1';
+      nodeData.imageSize = '2K';
+    }
     // Auto-fill default model from localStorage preference
     // 全景图节点回退到生图节点偏好
     try {
       const raw = localStorage.getItem('canvas-model-prefs');
       if (raw) {
         const prefs: Record<string, string> = JSON.parse(raw);
-        const modelValue = prefs[type] || (type === 'ai-panorama' ? prefs['ai-image'] : undefined);
+        const modelValue = prefs[type]
+          || (type === 'ai-panorama' || type === 'ai-animation' ? prefs['ai-image'] : undefined);
         if (modelValue) {
           const slashIdx = modelValue.indexOf('/');
           if (slashIdx !== -1) {
@@ -797,6 +813,8 @@ export default function Sidebar() {
         className={`sidebar-btn-v3 add-btn-v3 ${nodePickerOpen ? 'active' : ''}`}
         onMouseEnter={handleAddEnter}
         onMouseLeave={handleAddLeave}
+        onClick={() => (nodePickerOpen ? closeNodePicker() : openNodePicker())}
+        aria-label="添加节点"
       >
         {/* Normal: plus */}
         <svg className="ico-normal" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
