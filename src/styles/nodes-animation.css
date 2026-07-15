@@ -70,11 +70,21 @@
 }
 
 .animation-frame {
+  position: relative;
   width: auto;
   height: 100%;
   aspect-ratio: 1;
   margin: 0 auto;
-  background-repeat: no-repeat;
+  overflow: hidden;
+}
+
+.animation-frame-sheet {
+  position: absolute;
+  display: block;
+  max-width: none;
+  max-height: none;
+  pointer-events: none;
+  user-select: none;
   image-rendering: auto;
 }
 

@@ -14,6 +14,12 @@ import GooeyBtn from './shared/GooeyBtn';
 import ResizeHandle from './shared/ResizeHandle';
 import { useNodeRename } from './shared/useNodeRename';
 
+function parseAspectRatio(value: unknown) {
+  if (typeof value !== 'string') return null;
+  const [width, height] = value.split(':').map(Number);
+  return width > 0 && height > 0 ? width / height : null;
+}
+
 function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const justCompleted = useCompletionFlash(data.status);
@@ -47,11 +53,21 @@ function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData;
 
   const column = frameIndex % grid.cols;
   const row = Math.floor(frameIndex / grid.cols);
-  const frameStyle = displaySrc ? {
-    backgroundImage: `url(${JSON.stringify(displaySrc)})`,
-    backgroundSize: `${grid.cols * 100}% ${grid.rows * 100}%`,
-    backgroundPosition: `${grid.cols === 1 ? 0 : (column / (grid.cols - 1)) * 100}% ${grid.rows === 1 ? 0 : (row / (grid.rows - 1)) * 100}%`,
-  } : undefined;
+  const generatedSheetAspect = data.imageWidth && data.imageHeight
+    ? data.imageWidth / data.imageHeight
+    : null;
+  const sheetAspect = generatedSheetAspect
+    ?? parseAspectRatio(data.aspectRatio)
+    ?? grid.cols / grid.rows;
+  const cellAspect = sheetAspect * grid.rows / grid.cols;
+  const cellWidthPercent = cellAspect >= 1 ? 100 : cellAspect * 100;
+  const cellHeightPercent = cellAspect >= 1 ? 100 / cellAspect : 100;
+  const frameImageStyle: React.CSSProperties = {
+    width: `${cellWidthPercent * grid.cols}%`,
+    height: `${cellHeightPercent * grid.rows}%`,
+    left: `${(100 - cellWidthPercent) / 2 - column * cellWidthPercent}%`,
+    top: `${(100 - cellHeightPercent) / 2 - row * cellHeightPercent}%`,
+  };
 
   return (
     <div className="node-wrapper relative" style={{ width: nodeWidth }}>
@@ -70,7 +86,9 @@ function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData;
         <div className="animation-preview">
           {displaySrc ? (
             previewMode === 'playing' ? (
-              <div className="animation-frame" style={frameStyle} role="img" aria-label={`${ANIMATION_ACTION_LABELS[action]}动画第 ${frameIndex + 1} 帧`} />
+              <div className="animation-frame" role="img" aria-label={`${ANIMATION_ACTION_LABELS[action]}动画第 ${frameIndex + 1} 帧`}>
+                <img className="animation-frame-sheet" src={displaySrc} alt="" style={frameImageStyle} draggable={false} />
+              </div>
             ) : (
               <img className="animation-sheet" src={displaySrc} alt={`${ANIMATION_ACTION_LABELS[action]} Sprite Sheet`} draggable={false} />
             )
