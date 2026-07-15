@@ -15,6 +15,7 @@ export const TEXT_BUTTONS: ToolbarButtonDef[] = [
 
 /** 视频节点按钮 */
 export const VIDEO_BUTTONS: ToolbarButtonDef[] = [
+  { key: 'copyFile',      label: '复制视频',    icon: 'mdi:content-copy',             defaultZone: '常用' },
   { key: 'captureFrame',   label: '截取当前帧',  icon: 'mdi:camera-outline',            defaultZone: '常用' },
   { key: 'fullscreen',     label: '全屏预览',    icon: 'mdi:fullscreen',                defaultZone: '常用' },
 ];
@@ -40,12 +41,14 @@ export const IMAGE_BUTTONS: ToolbarButtonDef[] = [
   { key: 'crop',           label: '裁切',        icon: 'mdi:crop',                       defaultZone: 'Secondary' },
   { key: 'compose',        label: '多图编辑',    icon: 'mdi:layers-triple-outline',      defaultZone: 'Secondary' },
   { key: 'upload',         label: '上传图片',    icon: 'mdi:upload',                     defaultZone: 'Secondary' },
+  { key: 'copyFile',      label: '复制图像',    icon: 'mdi:content-copy',             defaultZone: 'Secondary' },
   { key: 'fullscreen',     label: '全屏显示',    icon: 'mdi:fullscreen',                defaultZone: 'Secondary' },
 ];
 
 /** 音频节点按钮 */
 export const AUDIO_BUTTONS: ToolbarButtonDef[] = [
   { key: 'togglePlay',     label: '播放/暂停',   icon: 'mdi:play-pause',                defaultZone: '常用' },
+  { key: 'copyFile',      label: '复制音频',    icon: 'mdi:content-copy',             defaultZone: '常用' },
   { key: 'upload',         label: '上传音频',    icon: 'mdi:upload',                     defaultZone: '常用' },
   { key: 'fullscreen',     label: '全屏显示',    icon: 'mdi:fullscreen',                defaultZone: '常用' },
 ];

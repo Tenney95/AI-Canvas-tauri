@@ -11,6 +11,7 @@ import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import AudioNodeToolbar from './shared/AudioNodeToolbar';
 import { useAppStore } from '../../store/useAppStore';
+import { copyFile as copyFileToClipboard } from '../../services/clipboardService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 
 /* ── Waveform data ── */
@@ -161,6 +162,17 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴音频');
 
+  const handleCopyFile = useCallback(async () => {
+    const store = useAppStore.getState();
+    const filePath = data.filePath as string | undefined;
+    if (!filePath) {
+      store.showToast('该音频没有本地文件，无法复制', 'error');
+      return;
+    }
+    const ok = await copyFileToClipboard(filePath);
+    store.showToast(ok ? '已复制音频到剪贴板' : '复制失败', ok ? undefined : 'error');
+  }, [data.filePath]);
+
   // ── Decode & draw real waveform when audioUrl is set ──
   useEffect(() => {
     if (!data.audioUrl) return;
@@ -276,7 +288,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       />
       {data.audioUrl && (
         <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
-          <AudioNodeToolbar nodeId={id} isPlaying={isPlaying} onTogglePlay={togglePlay} onUpload={handleUpload} />
+          <AudioNodeToolbar nodeId={id} isPlaying={isPlaying} onTogglePlay={togglePlay} onUpload={handleUpload} onCopyFile={handleCopyFile} />
         </div>
       )}
       <div

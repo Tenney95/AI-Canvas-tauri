@@ -240,6 +240,9 @@ function CanvasInner() {
     showSaveAs,
     handleOpenInPS,
     showOpenInPS,
+    handleCopyMedia,
+    showCopyMedia,
+    copyMediaLabel,
   } = useNodeContextMenu();
   const isGroupNode = nodeCtxMenu.nodeId
     ? nodes.find((n) => n.id === nodeCtxMenu.nodeId && n.type === 'group') != null
@@ -252,10 +255,10 @@ function CanvasInner() {
     submenuRef: ctxSubmenuRef,
     openMenu: openCtxMenu,
     addNodeAtCtxPos,
-    handleUndo: handleCtxUndo,
-    handleRedo: handleCtxRedo,
     handlePaste: handleCtxPaste,
     handleDelete: handleCtxDelete,
+    handleCopyNodes: handleCtxCopyNodes,
+    handleCopyFiles: handleCtxCopyFiles,
     handleOpenProjectDir: handleCtxOpenProjectDir,
     hasSelection: ctxHasSelection,
     showSubmenu,
@@ -723,10 +726,10 @@ function CanvasInner() {
         menuRef={ctxMenuRef}
         submenuRef={ctxSubmenuRef}
         onAddNode={addNodeAtCtxPos}
-        onUndo={handleCtxUndo}
-        onRedo={handleCtxRedo}
         onPaste={handleCtxPaste}
         onDelete={handleCtxDelete}
+        onCopyNodes={handleCtxCopyNodes}
+        onCopyFiles={handleCtxCopyFiles}
         hasSelection={ctxHasSelection}
         onOpenProjectDir={handleCtxOpenProjectDir}
         onShowSubmenu={showSubmenu}
@@ -749,6 +752,8 @@ function CanvasInner() {
         onShowInFolder={showInFolder ? handleShowInFolder : undefined}
         onSaveAs={showSaveAs ? handleSaveAs : undefined}
         onOpenInPS={showOpenInPS ? handleOpenInPS : undefined}
+        onCopyMedia={showCopyMedia ? handleCopyMedia : undefined}
+        copyMediaLabel={copyMediaLabel}
       />
 
       {/* Multi-select toolbar */}

@@ -17,9 +17,10 @@ interface VideoNodeToolbarProps {
   nodeId: string;
   onCaptureFrame: () => void;
   onFullscreen: () => void;
+  onCopyFile: () => void;
 }
 
-function VideoNodeToolbar({ nodeId, onCaptureFrame, onFullscreen }: VideoNodeToolbarProps) {
+function VideoNodeToolbar({ nodeId, onCaptureFrame, onFullscreen, onCopyFile }: VideoNodeToolbarProps) {
   const nodeType = 'ai-video';
   const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
@@ -44,6 +45,7 @@ function VideoNodeToolbar({ nodeId, onCaptureFrame, onFullscreen }: VideoNodeToo
   );
 
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {
+    copyFile: (e) => { e.stopPropagation(); onCopyFile(); },
     captureFrame: (e) => { e.stopPropagation(); onCaptureFrame(); },
     fullscreen: (e) => { e.stopPropagation(); onFullscreen(); },
   };

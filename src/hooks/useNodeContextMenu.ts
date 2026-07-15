@@ -5,6 +5,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { getActiveTextSelection, type ActiveTextSelection } from '../utils/textSelection';
 import { revealFileInFolder, openInPhotoshop, saveNodeOutputToFile } from '../services/fileService';
+import { copyImage as copyImageToClipboard, copyFile as copyFileToClipboard } from '../services/clipboardService';
 import type { BaseNodeData, NodeType } from '../types';
 import type { Node as RFNode } from '@xyflow/react';
 
@@ -243,6 +244,44 @@ export function useNodeContextMenu() {
     }
   }, [menu.nodeId, nodeType, nodes, closeMenu]);
 
+  // ── 复制媒体（系统剪贴板）──
+  // 图像节点复制位图到剪贴板；视频/音频节点复制文件到剪贴板（CF_HDROP，可在资源管理器粘贴）。
+  const copyMediaTypes: NodeType[] = ['ai-image', 'ai-video', 'ai-audio'];
+  const showCopyMedia = menu.nodeId != null
+    && nodeType != null
+    && copyMediaTypes.includes(nodeType)
+    && (!!nodeData?.imageUrl || !!nodeData?.videoUrl || !!nodeData?.audioUrl);
+  const copyMediaLabel = nodeType === 'ai-image'
+    ? '复制图像'
+    : nodeType === 'ai-video'
+      ? '复制视频'
+      : '复制音频';
+
+  const handleCopyMedia = useCallback(async () => {
+    if (!menu.nodeId) return;
+    const node = nodes.find((n) => n.id === menu.nodeId);
+    const data = node?.data as BaseNodeData | undefined;
+    if (!data) { closeMenu(); return; }
+    const toast = useAppStore.getState().showToast.bind(useAppStore.getState());
+
+    let ok = false;
+    try {
+      if (nodeType === 'ai-image') {
+        const imageUrl = data.imageUrl || data.thumbnailUrl;
+        if (!imageUrl) { toast('没有可用的图片', 'error'); closeMenu(); return; }
+        ok = await copyImageToClipboard(imageUrl);
+      } else {
+        const filePath = data.filePath;
+        if (!filePath) { toast('该节点没有本地文件，无法复制', 'error'); closeMenu(); return; }
+        ok = await copyFileToClipboard(filePath);
+      }
+      toast(ok ? `已${copyMediaLabel}到剪贴板` : '复制失败', ok ? undefined : 'error');
+    } catch {
+      toast('复制失败', 'error');
+    }
+    closeMenu();
+  }, [menu.nodeId, nodes, nodeType, copyMediaLabel, closeMenu]);
+
   return {
     menu,
     menuRef,
@@ -261,5 +300,8 @@ export function useNodeContextMenu() {
     showSaveAs,
     handleOpenInPS,
     showOpenInPS,
+    handleCopyMedia,
+    showCopyMedia,
+    copyMediaLabel,
   };
 }

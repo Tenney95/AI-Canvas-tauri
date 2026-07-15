@@ -29,6 +29,7 @@ interface ImageNodeToolbarProps {
   onAnnotate?: () => void;
   onUpscale?: () => void;
   onRepaint?: () => void;
+  onCopyFile?: () => void;
   isUpscaling?: boolean;
   isSubjectMattingRunning?: boolean;
 }
@@ -39,7 +40,7 @@ function ImageNodeToolbar({
   nodeId: _nodeId,
   onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand,
   onMultiGrid, onCustomGrid, onCompose, onFullscreen, onCrop,
-  onAnnotate, onUpscale, onRepaint, isUpscaling, isSubjectMattingRunning,
+  onAnnotate, onUpscale, onRepaint, onCopyFile, isUpscaling, isSubjectMattingRunning,
 }: ImageNodeToolbarProps) {
   const nodeType = 'ai-image';
   const registry = getButtonRegistry(nodeType);
@@ -104,6 +105,7 @@ function ImageNodeToolbar({
     crop:           (e) => { e.stopPropagation(); onCrop?.(); },
     compose:        (e) => { e.stopPropagation(); onCompose?.(); },
     upload:         (e) => { e.stopPropagation(); onUpload?.(); },
+    copyFile:       (e) => { e.stopPropagation(); onCopyFile?.(); },
     fullscreen:     (e) => { e.stopPropagation(); onFullscreen?.(); },
   };
 

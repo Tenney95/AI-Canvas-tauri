@@ -58,6 +58,7 @@ function MultiSelectToolbar() {
   const nodes = useAppStore((s) => (s.selectedNodeIds.length >= 2 ? s.nodes : EMPTY_NODES));
   const setNodes = useAppStore((s) => s.setNodes);
   const recordOutputHistory = useAppStore((s) => s.recordOutputHistory);
+  const copySelectedNodes = useAppStore((s) => s.copySelectedNodes);
   const { flowToScreenPosition } = useReactFlow();
   const [batchRunning, setBatchRunning] = useState(false);
   const [distributionMode, setDistributionMode] = useState<DistributionMode | null>(null);
@@ -185,6 +186,12 @@ function MultiSelectToolbar() {
     toast(`批量生成完成：${parts.join('，')}`, fail > 0 ? 'error' : undefined);
   }, [recordOutputHistory]);
 
+  // ── Copy selected nodes to internal clipboard ──
+  const handleCopyNodes = useCallback(() => {
+    copySelectedNodes();
+    useAppStore.getState().showToast(`已复制 ${useAppStore.getState().selectedNodeIds.length} 个节点`);
+  }, [copySelectedNodes]);
+
   if (selectedCount < 2 || !toolbarScreenPos) return null;
 
   return (
@@ -206,6 +213,17 @@ function MultiSelectToolbar() {
         className="w-8 h-8 rounded flex items-center justify-center transition-colors hover:text-green-300 hover:bg-green-500/15 disabled:opacity-30 disabled:cursor-not-allowed"
       >
         <Icon icon="material-symbols:play-arrow-rounded" width={28} height={28} />
+      </AnimatedButton>
+
+      <div className="w-px h-5 bg-canvas-border" />
+
+      {/* Copy nodes */}
+      <AnimatedButton
+        data-tooltip="复制节点"
+        onClick={handleCopyNodes}
+        className="w-8 h-8 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
+      >
+        <Icon icon="mdi:content-copy" width={18} height={18} />
       </AnimatedButton>
 
       <div className="w-px h-5 bg-canvas-border" />

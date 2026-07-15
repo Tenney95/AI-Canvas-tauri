@@ -7,6 +7,7 @@ import type { Node as RFNode } from '@xyflow/react';
 import { useAppStore, generateId } from '../store/useAppStore';
 import type { BaseNodeData, NodeType } from '../types';
 import * as fileService from '../services/fileService';
+import { copyFiles as copyFilesToClipboard } from '../services/clipboardService';
 import { cancelNodePolling } from '../services/pollManager';
 import { playNodeExit } from '../utils/nodeAnimations';
 
@@ -219,6 +220,34 @@ export function useCanvasContextMenu() {
     closeMenu();
   }, [closeMenu]);
 
+  // ── 复制选中节点到内部剪贴板 ──
+  const handleCopyNodes = useCallback(() => {
+    const state = useAppStore.getState();
+    if (state.selectedNodeIds.length === 0) return;
+    state.copySelectedNodes();
+    useAppStore.getState().showToast(`已复制 ${state.selectedNodeIds.length} 个节点`);
+    closeMenu();
+  }, [closeMenu]);
+
+  // ── 复制选中节点的媒体文件到系统剪贴板（CF_HDROP 多文件）──
+  // 收集所有选中节点中带本地文件路径的媒体文件，一次性写入剪贴板。
+  const handleCopyFiles = useCallback(async () => {
+    const state = useAppStore.getState();
+    const toast = state.showToast.bind(state);
+    const filePaths = state.nodes
+      .filter((n) => state.selectedNodeIds.includes(n.id))
+      .map((n) => (n.data as BaseNodeData).filePath)
+      .filter((p): p is string => !!p);
+    if (filePaths.length === 0) {
+      toast('选中节点没有可复制的本地文件', 'error');
+      closeMenu();
+      return;
+    }
+    const ok = await copyFilesToClipboard(filePaths);
+    toast(ok ? `已复制 ${filePaths.length} 个文件到剪贴板` : '复制失败', ok ? undefined : 'error');
+    closeMenu();
+  }, [closeMenu]);
+
   const openMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const target = e.target as HTMLElement;
@@ -242,6 +271,8 @@ export function useCanvasContextMenu() {
     handleRedo,
     handlePaste,
     handleDelete,
+    handleCopyNodes,
+    handleCopyFiles,
     handleOpenProjectDir,
     hasSelection: selectedNodeIds.length > 0,
     showSubmenu,

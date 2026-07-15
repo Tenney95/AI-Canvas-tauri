@@ -10,6 +10,7 @@ const MENU_ITEMS = [
   { label: '剪切', shortcut: 'Ctrl X', action: 'cut' as const },
   { label: '创建副本', shortcut: 'Ctrl D', action: 'duplicate' as const },
   { label: '解除分组', shortcut: '', action: 'ungroup' as const, groupOnly: true },
+  { label: '复制媒体', shortcut: '', action: 'copyMedia' as const, conditional: true, dynamicLabel: true },
   { label: '在 PS 中打开', shortcut: '', action: 'openInPS' as const, conditional: true },
   { label: '打开文件所在位置', shortcut: '', action: 'showInFolder' as const, conditional: true },
   { label: '另存为...', shortcut: '', action: 'saveAs' as const, conditional: true },
@@ -35,6 +36,8 @@ interface NodeContextMenuProps {
   onShowInFolder?: () => void;
   onSaveAs?: () => void;
   onOpenInPS?: () => void;
+  onCopyMedia?: () => void;
+  copyMediaLabel?: string;
 }
 function NodeContextMenu({
   visible,
@@ -51,6 +54,8 @@ function NodeContextMenu({
   onShowInFolder,
   onSaveAs,
   onOpenInPS,
+  onCopyMedia,
+  copyMediaLabel,
 }: NodeContextMenuProps) {
   if (!visible) return null;
 
@@ -69,6 +74,7 @@ function NodeContextMenu({
     showInFolder: onShowInFolder || (() => {}),
     saveAs: onSaveAs || (() => {}),
     openInPS: onOpenInPS || (() => {}),
+    copyMedia: onCopyMedia || (() => {}),
   };
 
   const items = MENU_ITEMS.filter((item) => {
@@ -76,6 +82,7 @@ function NodeContextMenu({
     if (item.conditional && item.action === 'showInFolder' && !onShowInFolder) return false;
     if (item.conditional && item.action === 'saveAs' && !onSaveAs) return false;
     if (item.conditional && item.action === 'openInPS' && !onOpenInPS) return false;
+    if (item.conditional && item.action === 'copyMedia' && !onCopyMedia) return false;
     return true;
   });
 
@@ -105,7 +112,7 @@ function NodeContextMenu({
             className={`menu-row menu-row-split${item.danger ? ' menu-row-danger' : ''}`}
             onClick={item.action === 'ungroup' ? onUngroup : actionMap[item.action]}
           >
-            <span>{item.label}</span>
+            <span>{item.dynamicLabel && item.action === 'copyMedia' ? (copyMediaLabel || item.label) : item.label}</span>
             <span className="menu-kbd">{item.shortcut}</span>
           </div>
         </div>

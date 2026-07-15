@@ -18,9 +18,10 @@ interface AudioNodeToolbarProps {
   isPlaying?: boolean;
   onTogglePlay: (e: React.MouseEvent) => void;
   onUpload: () => void;
+  onCopyFile: () => void;
 }
 
-function AudioNodeToolbar({ nodeId, isPlaying, onTogglePlay, onUpload }: AudioNodeToolbarProps) {
+function AudioNodeToolbar({ nodeId, isPlaying, onTogglePlay, onUpload, onCopyFile }: AudioNodeToolbarProps) {
   const nodeType = 'ai-audio';
   const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
@@ -46,6 +47,7 @@ function AudioNodeToolbar({ nodeId, isPlaying, onTogglePlay, onUpload }: AudioNo
 
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {
     togglePlay: (e) => { e.stopPropagation(); onTogglePlay(e); },
+    copyFile:   (e) => { e.stopPropagation(); onCopyFile(); },
     upload:     (e) => { e.stopPropagation(); onUpload(); },
   };
 

@@ -7,6 +7,7 @@ use tauri::{Listener, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilde
 use tauri_plugin_fs::FsExt;
 use url::Url;
 
+mod clipboard;
 mod comfyui;
 mod dreamina;
 mod file_transfer;
@@ -530,6 +531,7 @@ pub fn run() {
             file_transfer::download_file_streamed,
             file_transfer::cancel_file_transfer,
             move_to_trash,
+            clipboard::copy_files_to_clipboard,
             dreamina_login,
             dreamina::dreamina_login_start,
             dreamina::dreamina_login_runtime,

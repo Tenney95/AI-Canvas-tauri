@@ -24,6 +24,7 @@ import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
 import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
+import { copyImage as copyImageToClipboard } from '../../services/clipboardService';
 import { blobToDataUrl } from '../../store/store.utils';
 import { generateAngleImage, generateOutpaintImage } from '../../services/apimartService';
 import { imageUpscale, subjectMatting, checkModelExists, downloadModel } from '../../services/onnxService';
@@ -636,6 +637,18 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     }
   }, [id]);
 
+  /** 复制图像到系统剪贴板（位图，可粘贴到 PS / 聊天） */
+  const handleCopyImage = useCallback(async () => {
+    const store = useAppStore.getState();
+    const imageUrl = (data.imageUrl || data.thumbnailUrl) as string | undefined;
+    if (!imageUrl) {
+      store.showToast('没有可用的图片', 'error');
+      return;
+    }
+    const ok = await copyImageToClipboard(imageUrl);
+    store.showToast(ok ? '已复制图像到剪贴板' : '复制失败', ok ? undefined : 'error');
+  }, [data.imageUrl, data.thumbnailUrl]);
+
   /** 确认下载模型 */
   const handleDownloadConfirm = useCallback(async () => {
     setDownloadPrompt(false);
@@ -1007,6 +1020,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               onAnnotate={handleOpenAnnotate}
               onUpscale={handleUpscale}
               onRepaint={handleRepaint}
+              onCopyFile={handleCopyImage}
               isUpscaling={isUpscaling}
               isSubjectMattingRunning={isMattingRunning}
             />
