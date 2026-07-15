@@ -5,6 +5,7 @@
  */
 import { memo, useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import { Icon } from '@iconify/react';
+import { useReactFlow } from '@xyflow/react';
 import type { ToolbarButtonDef, NodeType } from '../../../../types';
 import type { UseToolbarEditReturn } from '../../../../hooks/useToolbarEdit';
 import { getSlashCommands } from '../slashCommands';
@@ -55,6 +56,9 @@ interface ZoneDragState {
 }
 
 const DRAG_THRESHOLD_PX = 5;
+const CENTER_VIEWPORT_DURATION_MS = 420;
+const EDITOR_TARGET_ZOOM = 1.2;
+const easeOutCubic = (progress: number) => 1 - (1 - progress) ** 3;
 
 // ── 小型图标渲染 ──
 function MiniIcon({ icon }: { icon: string }) {
@@ -122,6 +126,7 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
   const dragRef = useRef<DragState | null>(null);
   const ghostElRef = useRef<HTMLDivElement | null>(null);
   const zoneGhostElRef = useRef<HTMLDivElement | null>(null);
+  const { screenToFlowPosition, setCenter } = useReactFlow();
 
   // 只在落点变化时更新 React 状态；高频指针坐标保存在 dragRef 中
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
@@ -135,6 +140,33 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
   const moveButtonAcross = edit.moveButtonAcross;
   const setToolbarLayout = edit.setToolbarLayout;
   const exitEdit = edit.exitEdit;
+
+  // 编辑框完成首次布局后，将其平滑移动到画布可视区域中央并缩放至 120%。
+  useEffect(() => {
+    if (!edit.isEditing) return;
+
+    const frameId = requestAnimationFrame(() => {
+      const editorEl = containerRef.current;
+      if (!editorEl) return;
+
+      const editorRect = editorEl.getBoundingClientRect();
+      const editorCenterX = editorRect.left + editorRect.width / 2;
+      const editorCenterY = editorRect.top + editorRect.height / 2;
+      const editorFlowCenter = screenToFlowPosition({ x: editorCenterX, y: editorCenterY });
+
+      void setCenter(
+        editorFlowCenter.x,
+        editorFlowCenter.y,
+        {
+          zoom: EDITOR_TARGET_ZOOM,
+          duration: CENTER_VIEWPORT_DURATION_MS,
+          ease: easeOutCubic,
+        },
+      );
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [edit.isEditing, screenToFlowPosition, setCenter]);
 
   const calcZoneTarget = useCallback((clientY: number): number | null => {
     const zonesEl = containerRef.current?.querySelector('.toolbar-edit-zones') as HTMLElement | null | undefined;
