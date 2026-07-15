@@ -46,6 +46,37 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // Space: 选中节点时弹出 AI 对话框（在 isEditing 守卫之前，防止 React Flow 内部拦截 Space 事件）
+      if ((e.key === ' ' || e.code === 'Space') && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat) {
+        if (!isEditing) {
+          const state = useAppStore.getState();
+          const ids = state.selectedNodeIds;
+          if (ids.length === 1) {
+            const nodeId = ids[0];
+            const node = state.nodes.find((n) => n.id === nodeId);
+            if (node) {
+              const data = node.data as BaseNodeData;
+              const canOpen = !(
+                node.type === 'group' ||
+                data?.type === 'ai-markdown'
+              );
+              if (canOpen) {
+                e.preventDefault();
+                e.stopPropagation();
+                const el = document.querySelector(`.react-flow__node[data-id="${nodeId}"]`);
+                if (el) {
+                  const rect = el.getBoundingClientRect();
+                  state.openNodeDialog(nodeId, { x: rect.left + rect.width / 2, y: rect.bottom });
+                } else {
+                  state.openNodeDialog(nodeId);
+                }
+                return;
+              }
+            }
+          }
+        }
+      }
+
       if (isEditing) return;
 
       // Ctrl+C: 仅当「文本节点选中模式」内有有效选区时走原生文本复制，否则复制选中节点
