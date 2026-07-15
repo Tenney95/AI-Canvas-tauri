@@ -1,7 +1,7 @@
 /**
  * AINodeDialog AI 生成弹窗 — 点击节点后弹出的浮动面板，包含 Prompt 输入、模型选择、参数配置、生成按钮
  */
-import { memo, useCallback, useEffect, useRef } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
 import { generateId, useAppStore } from '../../store/useAppStore';
@@ -9,6 +9,7 @@ import type { BaseNodeData, ImagePostProcess, ModelOption } from '../../types';
 import { generateText, generateImage, generateVideo, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
 import { downloadUrlAndSave } from '../../services/fileService';
 import { checkModelExists, createCharacterDirectionGrid, downloadModel } from '../../services/onnxService';
+import ModelDownloadDialog from '../shared/ModelDownloadDialog';
 import PromptPanel from './shared/PromptPanel';
 import type { MentionEditorHandle } from './shared/MentionEditor';
 import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
@@ -49,6 +50,16 @@ function AINodeDialog() {
   }, [activeNodeId]);
   const editorApiRef = useRef<MentionEditorHandle>(null);
 
+  // ── 主体识别模型下载弹窗（8 向宫格后处理预检） ──
+  const [mattingModelPrompt, setMattingModelPrompt] = useState(false);
+  const [mattingModelDownloading, setMattingModelDownloading] = useState(false);
+  // 挂起 8 向宫格后处理所需的上下文，等待模型下载完成后继续
+  const pendingDirectionGridRef = useRef<{
+    submittingNodeId: string;
+    savedFilePath: string;
+    nodeLabel: string;
+  } | null>(null);
+
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -79,6 +90,78 @@ function AINodeDialog() {
     },
     [activeNodeId, updateNodeData]
   );
+
+  // ── 8 向宫格后处理（模型下载完成后继续执行） ──
+  const executeDirectionGridPostProcess = useCallback(async () => {
+    const pending = pendingDirectionGridRef.current;
+    pendingDirectionGridRef.current = null;
+    if (!pending) return;
+
+    const { submittingNodeId, savedFilePath, nodeLabel } = pending;
+    const mattingModelName = 'rmbg-1.4.onnx';
+    const isStillCurrent = () => {
+      const state = useAppStore.getState();
+      return state.nodes.some((n) => n.id === submittingNodeId);
+    };
+
+    try {
+      if (!(await checkModelExists(mattingModelName))) {
+        showToast('首次使用正在下载主体识别模型（约 176MB）');
+        await downloadModel(mattingModelName);
+      }
+      if (!isStillCurrent()) return;
+
+      const gridResult = await createCharacterDirectionGrid(
+        savedFilePath, mattingModelName, `direction-grid-${submittingNodeId}-${Date.now()}`,
+      );
+      if (!isStillCurrent()) return;
+
+      const store = useAppStore.getState();
+      const sourceNode = store.nodes.find((item) => item.id === submittingNodeId);
+      if (!sourceNode) return;
+      const sourceWidth = (sourceNode.data.nodeWidth as number) || 280;
+      store.addNode({
+        id: `node-${generateId()}`,
+        type: 'ai-storyboard',
+        position: { x: sourceNode.position.x + sourceWidth + 60, y: sourceNode.position.y },
+        data: {
+          label: `${nodeLabel} 8向宫格`, type: 'ai-storyboard', role: 'source', status: 'success',
+          imageUrl: convertFileSrc(gridResult.grid_path), filePath: gridResult.grid_path,
+          imageWidth: gridResult.grid_size, imageHeight: gridResult.grid_size,
+          storyboardRows: 3, storyboardCols: 3, nodeWidth: 360, nodeHeight: 360,
+        },
+      });
+      showToast('角色 8 向宫格已生成');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : '未知错误';
+      showToast(`原图已生成，8 向宫格处理失败：${msg}`, 'error');
+    }
+  }, [showToast]);
+
+  const handleMattingModelConfirm = useCallback(async () => {
+    setMattingModelPrompt(false);
+    setMattingModelDownloading(true);
+    try {
+      await downloadModel('rmbg-1.4.onnx');
+      useAppStore.getState().showToast('模型下载完成', 'success');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '模型下载失败';
+      useAppStore.getState().showToast(msg, 'error');
+      setMattingModelDownloading(false);
+      pendingDirectionGridRef.current = null;
+      return;
+    }
+    setMattingModelDownloading(false);
+    // 模型下载完成，继续执行 8 向宫格后处理
+    await executeDirectionGridPostProcess();
+  }, [executeDirectionGridPostProcess]);
+
+  const handleMattingModelCancel = useCallback(() => {
+    setMattingModelPrompt(false);
+    setMattingModelDownloading(false);
+    pendingDirectionGridRef.current = null;
+    showToast('图片生成完成');
+  }, [showToast]);
 
   // 调用选中模型生成（文本 or 图片）
   // overridePrompt: / 指令菜单直接触发时传入的整合后模板，不走 store → 对话框不闪烁
@@ -160,13 +243,20 @@ function AINodeDialog() {
           if (!saved?.filePath) {
             showToast('原图已生成，但未能保存到本地，无法自动生成 8 向宫格', 'error');
           } else {
+            // 预检主体识别 ONNX 模型是否已安装
+            const mattingModelName = 'rmbg-1.4.onnx';
+            const modelExists = await checkModelExists(mattingModelName);
+            if (!modelExists) {
+              pendingDirectionGridRef.current = {
+                submittingNodeId: submittingNodeId,
+                savedFilePath: saved.filePath,
+                nodeLabel,
+              };
+              setMattingModelPrompt(true);
+              return;
+            }
             showToast('图片生成完成，正在后台识别主体并生成 8 向宫格');
             try {
-              const mattingModelName = 'rmbg-1.4.onnx';
-              if (!(await checkModelExists(mattingModelName))) {
-                showToast('首次使用正在下载主体识别模型（约 176MB）');
-                await downloadModel(mattingModelName);
-              }
               if (!isStillCurrentSubmission()) return;
 
               const gridResult = await createCharacterDirectionGrid(
@@ -176,11 +266,11 @@ function AINodeDialog() {
               );
               if (!isStillCurrentSubmission()) return;
 
-              const store = useAppStore.getState();
-              const sourceNode = store.nodes.find((item) => item.id === submittingNodeId);
+              const store2 = useAppStore.getState();
+              const sourceNode = store2.nodes.find((item) => item.id === submittingNodeId);
               if (!sourceNode) return;
               const sourceWidth = (sourceNode.data.nodeWidth as number) || 280;
-              store.addNode({
+              store2.addNode({
                 id: `node-${generateId()}`,
                 type: 'ai-storyboard',
                 position: {
@@ -582,6 +672,17 @@ function AINodeDialog() {
           onStyleChange={onStyleChange}
         />
       </div>
+
+      {/* 主体识别模型下载弹窗（8 向宫格后处理预检） */}
+      {mattingModelPrompt && (
+        <ModelDownloadDialog
+          type="matting"
+          showPrompt={mattingModelPrompt}
+          showDownloading={mattingModelDownloading}
+          onConfirm={handleMattingModelConfirm}
+          onCancel={handleMattingModelCancel}
+        />
+      )}
     </>
   );
 }

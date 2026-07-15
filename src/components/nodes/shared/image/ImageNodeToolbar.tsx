@@ -5,6 +5,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { NodeType, BaseNodeData } from '../../../../types';
 import AnimatedButton from '../../../shared/AnimatedButton';
+import ModelDownloadDialog from '../../../shared/ModelDownloadDialog';
 import { useToolbarEdit } from '../../../../hooks/useToolbarEdit';
 import ToolbarEditor from '../toolbar/ToolbarEditor';
 import { getButtonRegistry } from '../toolbar/toolbarRegistry';
@@ -109,8 +110,54 @@ function ImageNodeToolbar({
   const userPresets = useAppStore((s) => s.userPresets);
   const addNodeWithEdge = useAppStore((s) => s.addNodeWithEdge);
 
+  // ── 主体识别模型下载弹窗（8 向宫格快捷指令预检） ──
+  const [mattingModelPrompt, setMattingModelPrompt] = useState(false);
+  const [mattingModelDownloading, setMattingModelDownloading] = useState(false);
+  const pendingPresetRef = useRef<{
+    key: string;
+    resolved: ReturnType<typeof resolvePresetAction>;
+  } | null>(null);
+
+  const executePresetNode = useCallback((resolved: NonNullable<ReturnType<typeof resolvePresetAction>>) => {
+    const liveNode = useAppStore.getState().nodes.find((n) => n.id === _nodeId) as Node<BaseNodeData> | undefined;
+    if (!liveNode) return;
+    const { node: newNode, edge } = createPresetNode(liveNode, resolved);
+    addNodeWithEdge(newNode, edge);
+    executeGeneration(newNode.id, newNode.data.prompt, resolved.postProcess, newNode.data);
+  }, [_nodeId, addNodeWithEdge]);
+
+  const handleMattingModelConfirm = useCallback(async () => {
+    setMattingModelPrompt(false);
+    setMattingModelDownloading(true);
+    try {
+      const { downloadModel } = await import('../../../../services/onnxService');
+      await downloadModel('rmbg-1.4.onnx');
+      useAppStore.getState().showToast('模型下载完成', 'success');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '模型下载失败';
+      useAppStore.getState().showToast(msg, 'error');
+      setMattingModelDownloading(false);
+      pendingPresetRef.current = null;
+      return;
+    }
+    setMattingModelDownloading(false);
+
+    // 下载完成后继续执行挂起的快捷指令
+    const pending = pendingPresetRef.current;
+    pendingPresetRef.current = null;
+    if (pending?.resolved) {
+      executePresetNode(pending.resolved);
+    }
+  }, [executePresetNode]);
+
+  const handleMattingModelCancel = useCallback(() => {
+    setMattingModelPrompt(false);
+    setMattingModelDownloading(false);
+    pendingPresetRef.current = null;
+  }, []);
+
   const handlePresetClick = useCallback(
-    (key: string) => (e: React.MouseEvent) => {
+    (key: string) => async (e: React.MouseEvent) => {
       e.stopPropagation();
       // 实时从 store 读取，避免闭包过期导致对话框内容/ @引用丢失
       const liveNode = useAppStore.getState().nodes.find((n) => n.id === _nodeId) as Node<BaseNodeData> | undefined;
@@ -119,12 +166,24 @@ function ImageNodeToolbar({
       const livePresets = useAppStore.getState().userPresets;
       const resolved = resolvePresetAction(key, nodeType as NodeType, livePrompt, livePresets);
       if (!resolved) return;
-      const { node: newNode, edge } = createPresetNode(liveNode, resolved);
-      addNodeWithEdge(newNode, edge);
+
+      // 8 向宫格快捷指令：执行前预检主体识别 ONNX 模型是否已安装
+      if (resolved.postProcess === 'character-8-direction-grid') {
+        try {
+          const { checkModelExists } = await import('../../../../services/onnxService');
+          const exists = await checkModelExists('rmbg-1.4.onnx');
+          if (!exists) {
+            pendingPresetRef.current = { key, resolved };
+            setMattingModelPrompt(true);
+            return;
+          }
+        } catch { /* 检测失败时直接执行，generationService 会兜底下载 */ }
+      }
+
       // 用 newNode.data.prompt（含 @{sourceId:label} 引用），不用 resolved.filledPrompt（不含 @引用）
-      executeGeneration(newNode.id, newNode.data.prompt, resolved.postProcess, newNode.data);
+      executePresetNode(resolved);
     },
-    [_nodeId, addNodeWithEdge],
+    [_nodeId, executePresetNode],
   );
 
   // ── 渲染单个按钮 ──
@@ -224,26 +283,50 @@ function ImageNodeToolbar({
 
   // ── 编辑态 ──
   if (edit.isEditing) {
-    return <ToolbarEditor edit={edit} nodeType={nodeType} />;
+    return (
+      <>
+        <ToolbarEditor edit={edit} nodeType={nodeType} />
+        {mattingModelPrompt && (
+          <ModelDownloadDialog
+            type="matting"
+            showPrompt={mattingModelPrompt}
+            showDownloading={mattingModelDownloading}
+            onConfirm={handleMattingModelConfirm}
+            onCancel={handleMattingModelCancel}
+          />
+        )}
+      </>
+    );
   }
 
   // ── 正常态：按布局渲染 ──
   return (
-    <div
-      className="node-floating-toolbar img-toolbar nodrag"
-      {...edit.longPressHandlers}
-    >
-      <div className="img-toolbar-main nodrag">
-        {edit.layout.zones.map((zone, zi) => (
-          <div key={zone.id} className="img-toolbar-zone nodrag">
-            {zone.buttonKeys.map((key) => renderButton(key))}
-            {zi < edit.layout.zones.length - 1 && (
-              <div className="ftb-divider img-toolbar-main-divider" />
-            )}
-          </div>
-        ))}
+    <>
+      <div
+        className="node-floating-toolbar img-toolbar nodrag"
+        {...edit.longPressHandlers}
+      >
+        <div className="img-toolbar-main nodrag">
+          {edit.layout.zones.map((zone, zi) => (
+            <div key={zone.id} className="img-toolbar-zone nodrag">
+              {zone.buttonKeys.map((key) => renderButton(key))}
+              {zi < edit.layout.zones.length - 1 && (
+                <div className="ftb-divider img-toolbar-main-divider" />
+              )}
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+      {mattingModelPrompt && (
+        <ModelDownloadDialog
+          type="matting"
+          showPrompt={mattingModelPrompt}
+          showDownloading={mattingModelDownloading}
+          onConfirm={handleMattingModelConfirm}
+          onCancel={handleMattingModelCancel}
+        />
+      )}
+    </>
   );
 }
 
