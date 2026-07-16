@@ -15,7 +15,7 @@ import { detectBackgroundBrightness, compressImageLossless } from '../services/b
 import type { CanvasBackground as CanvasBg } from '../types';
 import type { BackgroundDetection } from '../services/backgroundService';
 
-type SettingsTab = 'general' | 'interaction' | 'api' | 'shortcuts' | 'comfyui' | 'storage';
+type SettingsTab = 'general' | 'api' | 'shortcuts' | 'comfyui' | 'storage';
 
 /** 是否运行在 macOS（用于快捷键修饰键显示） */
 const IS_MAC = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '');
@@ -290,7 +290,6 @@ export default function SettingsPanel() {
           <nav className="w-44 border-r border-canvas-border p-3 space-y-0.5 shrink-0">
             {[
               { id: 'general', label: '常规' },
-              { id: 'interaction', label: '画布交互' },
               { id: 'api', label: 'API Key' },
               { id: 'storage', label: '存储健康' },
               { id: 'comfyui', label: 'ComfyUI' },
@@ -330,16 +329,6 @@ export default function SettingsPanel() {
                       <rect x="14" y="3" width="7" height="7" rx="1" />
                       <rect x="14" y="14" width="7" height="7" rx="1" />
                       <rect x="3" y="14" width="7" height="7" rx="1" />
-                    </>
-                  )}
-                  {id === 'interaction' && (
-                    <>
-                      <polyline points="5 9 2 12 5 15" />
-                      <polyline points="9 5 12 2 15 5" />
-                      <polyline points="15 19 12 22 9 19" />
-                      <polyline points="19 9 22 12 19 15" />
-                      <line x1="2" y1="12" x2="22" y2="12" />
-                      <line x1="12" y1="2" x2="12" y2="22" />
                     </>
                   )}
                   {id === 'shortcuts' && (
@@ -651,6 +640,72 @@ export default function SettingsPanel() {
                   />
                 </div>
 
+                {/* 画布交互模式 */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">画布交互</h3>
+                  <div className="space-y-2">
+                    {([
+                      { id: 'default', title: '默认（Figma 风格）' },
+                      { id: 'classic', title: '传统' },
+                    ] as const).map((opt) => {
+                      const active = interactionMode === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            updateConfig({ interactionMode: opt.id });
+                            saveConfig();
+                          }}
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-colors ${
+                            active
+                              ? 'border-indigo-500 bg-indigo-500/10'
+                              : 'border-canvas-border bg-canvas-card hover:border-canvas-hover'
+                          }`}
+                        >
+                          <span
+                            className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
+                              active ? 'border-indigo-500' : 'border-canvas-text-muted'
+                            }`}
+                          >
+                            {active && <span className="w-2 h-2 rounded-full bg-indigo-500" />}
+                          </span>
+                          <span className={`text-sm font-medium ${active ? 'text-indigo-400' : 'text-canvas-text'}`}>
+                            {opt.title}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 当前模式键位说明 */}
+                <div className="bg-canvas-card border border-canvas-border rounded-lg p-3 space-y-2">
+                  <div className="text-xs font-medium text-canvas-text">
+                    {interactionMode === 'default' ? '默认交互（Figma 风格）' : '传统交互'}
+                  </div>
+                  <ul className="text-[11px] text-canvas-text-muted leading-relaxed space-y-1">
+                    {interactionMode === 'default' ? (
+                      <>
+                        <li>· 左键拖动空白：框选节点</li>
+                        <li>· 右键 / 中键拖动：平移画布</li>
+                        <li>· 滚轮：缩放画布</li>
+                        <li>· Shift + 点击节点：加入多选</li>
+                        <li>· 右键轻点：弹出菜单</li>
+                      </>
+                    ) : (
+                      <>
+                        <li>· 左键拖动：平移画布</li>
+                        <li>· Shift + 左键拖动：框选节点</li>
+                        <li>· 滚轮：垂直平移画布</li>
+                        <li>· Shift + 滚轮：水平平移画布</li>
+                        <li>· Ctrl + 滚轮：缩放画布</li>
+                        <li>· 右键：弹出菜单（不平移）</li>
+                      </>
+                    )}
+                  </ul>
+                </div>
+
                 {/* 侧边栏是否悬浮显示 */}
                 <div>
                   <h3 className="text-sm font-medium text-canvas-text mb-3">侧边栏</h3>
@@ -784,75 +839,6 @@ export default function SettingsPanel() {
                       右键图片节点选择「在 PS 中打开」时，优先自动检测 Photoshop 安装位置；检测失败时使用此处配置的路径。支持各版本 Photoshop，不限安装盘符
                     </p>
                   </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'interaction' && (
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-sm font-medium text-canvas-text mb-3">交互模式</h3>
-                  <div className="space-y-2">
-                    {([
-                      { id: 'default', title: '默认（Figma 风格）' },
-                      { id: 'classic', title: '传统' },
-                    ] as const).map((opt) => {
-                      const active = interactionMode === opt.id;
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          onClick={() => {
-                            updateConfig({ interactionMode: opt.id });
-                            saveConfig();
-                          }}
-                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-colors ${
-                            active
-                              ? 'border-indigo-500 bg-indigo-500/10'
-                              : 'border-canvas-border bg-canvas-card hover:border-canvas-hover'
-                          }`}
-                        >
-                          <span
-                            className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
-                              active ? 'border-indigo-500' : 'border-canvas-text-muted'
-                            }`}
-                          >
-                            {active && <span className="w-2 h-2 rounded-full bg-indigo-500" />}
-                          </span>
-                          <span className={`text-sm font-medium ${active ? 'text-indigo-400' : 'text-canvas-text'}`}>
-                            {opt.title}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* 当前模式键位说明 */}
-                <div className="bg-canvas-card border border-canvas-border rounded-lg p-3 space-y-2">
-                  <div className="text-xs font-medium text-canvas-text">
-                    {interactionMode === 'default' ? '默认交互（Figma 风格）' : '传统交互'}
-                  </div>
-                  <ul className="text-[11px] text-canvas-text-muted leading-relaxed space-y-1">
-                    {interactionMode === 'default' ? (
-                      <>
-                        <li>· 左键拖动空白：框选节点</li>
-                        <li>· 右键 / 中键拖动：平移画布</li>
-                        <li>· 滚轮：缩放画布</li>
-                        <li>· Shift + 点击节点：加入多选</li>
-                        <li>· 右键轻点：弹出菜单</li>
-                      </>
-                    ) : (
-                      <>
-                        <li>· 左键拖动：平移画布</li>
-                        <li>· Shift + 左键拖动：框选节点</li>
-                        <li>· 滚轮：垂直平移画布</li>
-                        <li>· Shift + 滚轮：水平平移画布</li>
-                        <li>· Ctrl + 滚轮：缩放画布</li>
-                        <li>· 右键：弹出菜单（不平移）</li>
-                      </>
-                    )}
-                  </ul>
                 </div>
               </div>
             )}
