@@ -10,6 +10,7 @@ import { ReactFlow,
   BackgroundVariant,
   ConnectionMode,
   SelectionMode,
+  PanOnScrollMode,
   useReactFlow,
   useViewport,
   useUpdateNodeInternals,
@@ -66,12 +67,41 @@ const nodeTypes: NodeTypes = {
 //    which makes React Flow re-run internal effects and drop frames on drag) ──
 const FIT_VIEW_OPTIONS = { padding: 0.2 };
 const PRO_OPTIONS = { hideAttribution: true };
-const PAN_ON_DRAG = [1, 2];
+const PAN_ON_DRAG_DEFAULT = [1, 2]; // 默认交互：右键(2) + 中键(1) 拖拽平移
+const PAN_ON_DRAG_CLASSIC = [0];    // 传统交互：左键(0) 拖拽平移
 const DEFAULT_EDGE_STYLE = { stroke: '#33334a', strokeWidth: 1.5 };
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 const isMacOS = typeof navigator !== 'undefined'
   && /Macintosh|Mac OS X/.test(navigator.userAgent);
 const shouldUseMacTrackpadPan = isTauri && isMacOS;
+
+// ── 交互模式预设（冻结对象，避免每次 render 产生新身份，导致 React Flow 内部 effect 重跑、拖拽掉帧）──
+const DEFAULT_INTERACTION = Object.freeze({
+  panOnScroll: shouldUseMacTrackpadPan,
+  zoomOnScroll: !shouldUseMacTrackpadPan,
+  zoomOnPinch: true,
+  panOnDrag: PAN_ON_DRAG_DEFAULT,
+  selectionOnDrag: true,
+  selectionMode: SelectionMode.Partial,
+  multiSelectionKeyCode: 'Shift',
+  deleteKeyCode: null,
+});
+
+const CLASSIC_INTERACTION = Object.freeze({
+  panOnScroll: true,
+  panOnScrollMode: PanOnScrollMode.Free, // Free 才能兼顾 Shift+滚轮水平平移与普通滚轮垂直平移
+  panOnScrollSpeed: 0.5,
+  zoomOnScroll: false,
+  zoomOnPinch: true,
+  zoomOnDoubleClick: false, // 关闭双击缩放，避免与「双击空白创建文本节点」冲突
+  zoomActivationKeyCode: 'Control', // Ctrl+滚轮缩放
+  panOnDrag: PAN_ON_DRAG_CLASSIC,
+  selectionOnDrag: false,
+  selectionKeyCode: 'Shift', // Shift+左键拖拽 → 框选
+  multiSelectionKeyCode: 'Shift',
+  selectionMode: SelectionMode.Partial,
+  deleteKeyCode: null,
+});
 const MINIMAP_STYLE = {
   width: 180,
   height: 120,
@@ -163,6 +193,13 @@ function CanvasInner() {
   const settleNodeGroupingOnDragStop = useAppStore((s) => s.settleNodeGroupingOnDragStop);
   const duplicateNode = useAppStore((s) => s.duplicateNode);
   const minimapVisible = useAppStore((s) => s.minimapVisible);
+  const interactionMode = useAppStore((s) => s.config.interactionMode ?? 'default');
+  const interaction = interactionMode === 'classic' ? CLASSIC_INTERACTION : DEFAULT_INTERACTION;
+  // 右键 effect 用 ref 读取模式，避免把 interactionMode 加进 effect 依赖而导致监听器重挂
+  const interactionModeRef = useRef(interactionMode);
+  useEffect(() => {
+    interactionModeRef.current = interactionMode;
+  }, [interactionMode]);
   const reactFlowInstance = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
 
@@ -291,7 +328,7 @@ function CanvasInner() {
     const onUp = (e: PointerEvent) => {
       if (e.button !== 2 || !drag.down) return;
       drag.down = false;
-      if (drag.moved) return; // 发生了拖拽平移 → 不弹菜单
+      if (drag.moved && interactionModeRef.current === 'default') return; // 默认交互：右键拖拽平移 → 不弹菜单；传统交互：右键不平移，始终弹菜单
 
       const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
       if (!el) return;
@@ -630,14 +667,7 @@ function CanvasInner() {
         maxZoom={5}
         defaultEdgeOptions={defaultEdgeOptions}
         proOptions={PRO_OPTIONS}
-        panOnScroll={shouldUseMacTrackpadPan}
-        zoomOnScroll={!shouldUseMacTrackpadPan}
-        zoomOnPinch
-        panOnDrag={PAN_ON_DRAG}
-        selectionOnDrag
-        selectionMode={SelectionMode.Partial}
-        multiSelectionKeyCode="Shift"
-        deleteKeyCode={null}
+        {...interaction}
         onContextMenu={(e) => e.preventDefault()}
         onMouseUp={handleMouseUp}
         onDragEnter={onDragEnter}

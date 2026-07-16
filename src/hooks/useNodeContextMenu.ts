@@ -50,10 +50,12 @@ export function useNodeContextMenu() {
       closeMenu();
     };
     document.addEventListener('keydown', onKey);
-    document.addEventListener('mousedown', onClick);
+    // 捕获阶段监听：传统交互模式下左键平移会被 React Flow(d3-zoom)在 pane 上 stopPropagation，
+    // 冒泡阶段的 document 监听收不到事件，必须在捕获阶段先于其触发才能关闭菜单。
+    document.addEventListener('mousedown', onClick, true);
     return () => {
       document.removeEventListener('keydown', onKey);
-      document.removeEventListener('mousedown', onClick);
+      document.removeEventListener('mousedown', onClick, true);
     };
   }, [menu.visible, closeMenu]);
 
