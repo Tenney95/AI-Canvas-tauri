@@ -68,6 +68,7 @@ export default function SettingsPanel() {
       })),
     );
   const sidebarFloating = config.sidebarFloating !== false; // 默认开启
+  const interactionMode = config.interactionMode ?? 'default';
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
@@ -271,7 +272,7 @@ export default function SettingsPanel() {
   const photoshopPath = config.photoshopPath;
 
   return (
-    <ModalOverlay isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} className="w-[640px] max-h-[80vh]">
+    <ModalOverlay isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} className="w-[640px] h-[80vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-canvas-border">
           <h2 className="text-base font-semibold text-canvas-text">设置</h2>
@@ -639,6 +640,72 @@ export default function SettingsPanel() {
                     className="hidden"
                     onChange={handleBgFileChange}
                   />
+                </div>
+
+                {/* 画布交互模式 */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">画布交互</h3>
+                  <div className="space-y-2">
+                    {([
+                      { id: 'default', title: '默认（Figma 风格）' },
+                      { id: 'classic', title: '传统' },
+                    ] as const).map((opt) => {
+                      const active = interactionMode === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => {
+                            updateConfig({ interactionMode: opt.id });
+                            saveConfig();
+                          }}
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-colors ${
+                            active
+                              ? 'border-indigo-500 bg-indigo-500/10'
+                              : 'border-canvas-border bg-canvas-card hover:border-canvas-hover'
+                          }`}
+                        >
+                          <span
+                            className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
+                              active ? 'border-indigo-500' : 'border-canvas-text-muted'
+                            }`}
+                          >
+                            {active && <span className="w-2 h-2 rounded-full bg-indigo-500" />}
+                          </span>
+                          <span className={`text-sm font-medium ${active ? 'text-indigo-400' : 'text-canvas-text'}`}>
+                            {opt.title}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 当前模式键位说明 */}
+                <div className="bg-canvas-card border border-canvas-border rounded-lg p-3 space-y-2">
+                  <div className="text-xs font-medium text-canvas-text">
+                    {interactionMode === 'default' ? '默认交互（Figma 风格）' : '传统交互'}
+                  </div>
+                  <ul className="text-[11px] text-canvas-text-muted leading-relaxed space-y-1">
+                    {interactionMode === 'default' ? (
+                      <>
+                        <li>· 左键拖动空白：框选节点</li>
+                        <li>· 右键 / 中键拖动：平移画布</li>
+                        <li>· 滚轮：缩放画布</li>
+                        <li>· Shift + 点击节点：加入多选</li>
+                        <li>· 右键轻点：弹出菜单</li>
+                      </>
+                    ) : (
+                      <>
+                        <li>· 左键拖动：平移画布</li>
+                        <li>· Shift + 左键拖动：框选节点</li>
+                        <li>· 滚轮：垂直平移画布</li>
+                        <li>· Shift + 滚轮：水平平移画布</li>
+                        <li>· Ctrl + 滚轮：缩放画布</li>
+                        <li>· 右键：弹出菜单（不平移）</li>
+                      </>
+                    )}
+                  </ul>
                 </div>
 
                 {/* 侧边栏是否悬浮显示 */}
