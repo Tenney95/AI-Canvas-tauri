@@ -1,5 +1,6 @@
 import { registerCanvasAgentTools } from './canvasTools';
 import { registerMediaAgentTools } from './mediaTools';
+import { registerWebAgentTools } from './webTools';
 
 let registered = false;
 
@@ -10,5 +11,6 @@ export function ensureAgentToolsRegistered(): void {
   if (registered) return;
   registerCanvasAgentTools();
   registerMediaAgentTools();
+  registerWebAgentTools();
   registered = true;
 }

@@ -356,6 +356,7 @@ async function executePreparedToolCall(
           status: result.status,
           summary: persistentSummary,
           truncated: (result.truncated ?? false) || result.modelContent.length > modelContentLimit,
+          sources: result.sources,
         },
         modelContent,
       };
@@ -400,6 +401,7 @@ async function executePreparedToolCall(
           status: 'error',
           summary: message,
           truncated: false,
+          sources: undefined,
         },
         modelContent: message,
       };

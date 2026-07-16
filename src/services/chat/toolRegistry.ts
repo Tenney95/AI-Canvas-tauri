@@ -1,5 +1,6 @@
 import type { AgentMode } from '../../types/agent';
 import type { ProposedToolCall, ToolResultSummary } from '../../types/chat';
+import type { WebSource } from '../../types/chat';
 import {
   validateAgentToolInput,
   type AgentToolSchema,
@@ -31,6 +32,7 @@ export interface AgentToolExecutionResult {
   retryable?: boolean;
   truncated?: boolean;
   errorCode?: string;
+  sources?: WebSource[];
 }
 
 export interface AgentToolDefinition<TInput = unknown> {

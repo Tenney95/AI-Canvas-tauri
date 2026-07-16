@@ -681,6 +681,19 @@ function startAgentMessageExecution({
                 status: 'preview',
               });
             },
+            onToolResult: (result) => {
+              if (!result.sources?.length) return;
+              const currentStore = useAppStore.getState();
+              const message = currentStore.messages.find(
+                (item) => item.id === assistantMessageId,
+              );
+              const sources = [...(message?.sources ?? [])];
+              for (const source of result.sources) {
+                if (!sources.some((item) => item.url === source.url)) sources.push(source);
+              }
+              currentStore.updateMessage(assistantMessageId, { sources });
+              onProgress?.();
+            },
             onError: (error) => {
               failed = true;
               useAppStore.getState().updateMessage(assistantMessageId, {

@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3-B2 已完成
+> 文档状态：P3-C1 已完成
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -43,7 +43,7 @@
 | P3-A2 | `[x]` | Agent Runtime 骨架、B/C 切换与现有对话接入 | 2026-07-16 | 2026-07-16 |
 | P3-B1 | `[x]` | Tool Registry、Policy Engine 和工具调用循环 | 2026-07-16 | 2026-07-16 |
 | P3-B2 | `[x]` | 画布工具与媒体工具迁移 | 2026-07-16 | 2026-07-16 |
-| P3-C1 | `[ ]` | 联网搜索、受控网页读取和来源引用 | - | - |
+| P3-C1 | `[x]` | 联网搜索、受控网页读取和来源引用 | 2026-07-16 | 2026-07-16 |
 | P3-C2 | `[ ]` | 会话级本地文件授权、读取和导出确认 | - | - |
 | P3-D1 | `[ ]` | 模型上下文预算、占用显示和自动压缩 | - | - |
 | P3-D2 | `[ ]` | 用户确认的项目记忆 | - | - |
@@ -486,47 +486,54 @@ type PolicyDecision =
 
 ### P3-C1：联网搜索、网页读取和来源引用
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 ### 目标
 
 提供自动联网搜索和受控网页读取，返回可追溯来源，同时阻止 SSRF、无限重定向和网页提示注入。
 
-### 计划文件
+### 实际文件
 
+- 新增：`src-tauri/src/assistant_web.rs`
 - 新增：`src/services/chat/tools/webTools.ts`
 - 新增：`src/services/webSearchService.ts`
 - 新增：`src/services/webPageService.ts`
 - 新增：`src/components/chat/SourceList.tsx`
-- 新增：`src/components/chat/ToolCallCard.tsx`
+- 修改：`src-tauri/src/lib.rs`
+- 修改：`src/services/chat/tools/index.ts`
 - 修改：`src/services/chat/toolRegistry.ts`
-- 修改：`src/store/store.config.ts`
-- 修改：`src/types/agent.ts`
-- 可能修改：`src-tauri/src/lib.rs`
-- 可能修改：设置面板中的搜索 Provider 配置组件
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/chat/chatHistoryService.ts`
+- 修改：`src/services/indexedDbService.ts`
+- 修改：`src/services/ai/assistantStream.ts`
+- 修改：`src/services/testConnection.ts`
+- 修改：`src/components/settings/ApiKeySettings.tsx`
+- 修改：`src/components/chat/ChatPanel.tsx`
+- 修改：`src/components/chat/MessageBubble.tsx`
+- 修改：`src/types/chat.ts`
 
 ### 实施前确认点
 
-- [ ] 确认首个搜索 Provider、鉴权方式和返回协议。
-- [ ] 确认是否需要新增 Rust 命令；不得把现有通用 `proxy_fetch` 暴露为 Agent 工具。
-- [ ] 如需新增依赖或修改 Tauri capability，单独列出并等待确认。
+- [x] 首个搜索 Provider 采用 Tavily，使用官方 `POST /search` 和 Bearer API Key，返回 `results[].title/url/content/score`。
+- [x] 新增固定 Tavily 端点的搜索命令和受限网页读取 Rust 命令；现有通用 `proxy_fetch` 不注册为 Agent 工具。
+- [x] 复用现有 `reqwest`、`url` 和标准库 DNS 能力，不新增依赖、不修改 Tauri capability。
 
 ### 实施任务
 
-- [ ] 注册 `web.search` 和 `web.readPage`。
-- [ ] 校验协议、域名、重定向、DNS 和解析后的 IP。
-- [ ] 拒绝 localhost、环回、私网、链路本地和不支持协议。
-- [ ] 搜索和读取结果带标题、URL、域名、时间和内容摘要。
-- [ ] 网页正文标记为不可信数据。
-- [ ] 最多自动重试 3 次，记录退避和失败原因。
-- [ ] 回答段落显示来源编号，消息底部展示来源列表。
+- [x] 注册 `web_search` 和 `web_read_page`。
+- [x] 校验协议、标准端口、域名、逐跳重定向、DNS 和解析后的 IP，并把连接固定到已校验地址。
+- [x] 拒绝 localhost、环回、私网、链路本地、共享、保留、文档、组播和不支持协议。
+- [x] 搜索和读取结果带标题、URL、域名、时间和内容摘要。
+- [x] 网页正文使用明确边界标记为不可信数据，不持久化完整正文。
+- [x] 只对瞬时网络、DNS、429 和 5xx 错误自动重试最多 3 次。
+- [x] 回答使用会话内稳定的 `S1/S2` 来源编号，消息底部展示可折叠来源列表。
 
 ### 验收
 
-- [ ] 用户无需确认即可联网搜索。
-- [ ] 搜索回答具有可点击、可追溯来源。
-- [ ] 私网、重定向绕过和非 HTTP(S) URL 被拒绝。
-- [ ] 网页中的“调用工具”指令不能触发额外权限或调用。
+- [x] 联网工具为只读 effect，用户无需确认即可执行。
+- [x] 搜索来源随消息持久化，主窗口和独立窗口均可点击并在系统浏览器打开。
+- [x] Rust 测试覆盖私网、特殊地址、重定向到私网和非 HTTP(S) URL 拒绝。
+- [x] 外部内容只作为带边界的 Tool Observation，不能修改本地 Policy、Agent 模式或工具注册表。
 
 ### 回滚
 
@@ -534,10 +541,17 @@ type PolicyDecision =
 
 ### 完成记录
 
-- 搜索 Provider：待填写
-- 实际文件：待填写
-- SSRF 检查：待填写
-- 来源展示：待填写
+- 完成日期：2026-07-16
+- 搜索 Provider：Tavily 官方 `POST /search`，Bearer API Key，固定 `basic` 深度，不请求生成答案、原始正文或图片
+- 配置入口：设置 → API Key → Tavily 联网搜索，支持单独连接测试
+- SSRF 防护：专用 Rust reader；HTTP(S) 与 80/443 端口白名单；DNS 全地址校验；连接 IP 固定；关闭自动重定向并逐跳复核；最多 5 次重定向；响应上限 1 MB
+- 内容边界：HTML 通过 `DOMParser` 移除脚本、样式、表单和导航后仅提取文本；正文最多 40,000 字符且不持久化
+- 来源展示：消息持久化标题、URL、域名、摘要、时间和稳定引用编号，折叠列表通过系统浏览器打开
+- Rust 检查：`cargo test assistant_web::tests --lib` 通过（3/3）；`cargo check --lib` 通过；新 Rust 文件 `rustfmt --check` 通过
+- 前端检查：`npm run typecheck` 通过；15 个改动 TS/TSX 文件定向 ESLint 通过
+- 构建检查：`npx vite build --outDir <系统临时目录>` 通过，临时产物已安全清理
+- 安全审查：无 Critical/High/Medium 遗留；外链打开前再次执行协议、主机和端口校验；API Key 不进入模型上下文、来源或错误摘要
+- 未配置真实 Tavily Key，因此未发送真实搜索请求；连接测试和真实来源回包留给用户配置 Key 后手测
 
 ### P3-C2：会话级本地文件授权
 
@@ -887,3 +901,4 @@ type PolicyDecision =
 | 2026-07-16 | P3-A | 完成会话级 B/C 模式、AgentTask v12 持久化、任务状态机、后台消息保留、独立窗口同步和会话状态徽标。 |
 | 2026-07-16 | P3-B1 | 完成 Tool Registry、无依赖 schema 校验、Policy Engine、多轮工具循环、预算、只读重试和持久化摘要脱敏。 |
 | 2026-07-16 | P3-B2 | 完成画布工具迁移、批量原子写入、revision 复核、可继续审批闭环，以及图片/视频/音乐/语音逐次确认生成。 |
+| 2026-07-16 | P3-C1 | 完成 Tavily 联网搜索、受限 Rust 网页读取、SSRF 防护、不可信内容边界和稳定来源引用。 |

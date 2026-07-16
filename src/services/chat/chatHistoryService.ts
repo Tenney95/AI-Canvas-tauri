@@ -70,6 +70,7 @@ function toMessageRecord(
     canvasStatus: m.canvasStatus,
     canvasNodeId: m.canvasNodeId,
     canvasError: m.canvasError,
+    sources: m.sources,
   };
 }
 
@@ -93,6 +94,7 @@ function fromMessageRecord(r: ChatMessageRecord): ChatMessage {
     canvasStatus: r.canvasStatus as CanvasMaterializationStatus | undefined,
     canvasNodeId: r.canvasNodeId,
     canvasError: r.canvasError,
+    sources: r.sources as ChatMessage['sources'],
   };
 }
 

@@ -35,7 +35,8 @@ async function testAPIMart(apiKey: string, baseUrl?: string): Promise<TestResult
 }
 
 /** 火山方舟 — 简单 ping */
-async function testVolcengine(_apiKey: string): Promise<TestResult> {
+async function testVolcengine(apiKey: string): Promise<TestResult> {
+  void apiKey;
   try {
     const res = await fetch('https://ark.cn-beijing.volces.com/ping');
     const data = await res.json().catch(() => ({}));
@@ -90,13 +91,51 @@ async function testGRSAI(apiKey: string, baseUrl?: string): Promise<TestResult> 
   return { success: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
 }
 
-export type ProviderTestKey = 'apimart' | 'volcengine' | 'runninghub-model' | 'grsai';
+async function testTavily(apiKey: string): Promise<TestResult> {
+  if (typeof window !== 'undefined' && '__TAURI__' in window) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('assistant_web_search', {
+      request: {
+        apiKey,
+        query: 'Tavily connection test',
+        maxResults: 1,
+        topic: 'general',
+      },
+    });
+    return { success: true };
+  }
+  const response = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query: 'Tavily connection test',
+      search_depth: 'basic',
+      max_results: 1,
+      include_answer: false,
+      include_raw_content: false,
+    }),
+  });
+  return response.ok
+    ? { success: true }
+    : { success: false, error: `HTTP ${response.status}` };
+}
+
+export type ProviderTestKey =
+  | 'apimart'
+  | 'volcengine'
+  | 'runninghub-model'
+  | 'grsai'
+  | 'tavily';
 
 const testFns: Record<ProviderTestKey, (apiKey: string, baseUrl?: string) => Promise<TestResult>> = {
   apimart: testAPIMart,
   volcengine: testVolcengine,
   'runninghub-model': testRunninghubModel,
   grsai: testGRSAI,
+  tavily: testTavily,
 };
 
 export async function testProviderConnection(

@@ -605,6 +605,7 @@ export interface ChatMessageRecord {
   mediaStatus?: string;
   mediaError?: string;
   mediaResult?: unknown;
+  sources?: unknown;
   canvasStatus?: string;
   canvasNodeId?: string;
   canvasError?: string;

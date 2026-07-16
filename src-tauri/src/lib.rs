@@ -7,6 +7,7 @@ use tauri::{Listener, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilde
 use tauri_plugin_fs::FsExt;
 use url::Url;
 
+mod assistant_web;
 mod clipboard;
 mod comfyui;
 mod dreamina;
@@ -527,6 +528,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fetch_image_data_url,
             proxy_fetch,
+            assistant_web::assistant_web_search,
+            assistant_web::assistant_web_read,
             file_transfer::copy_file_streamed,
             file_transfer::download_file_streamed,
             file_transfer::cancel_file_transfer,

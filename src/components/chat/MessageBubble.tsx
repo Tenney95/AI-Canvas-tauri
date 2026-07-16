@@ -7,6 +7,7 @@ import { Icon } from '@iconify/react';
 import type { ChatMessage } from '../../types/chat';
 import type { AgentTask } from '../../types/agent';
 import MascotAvatar from './MascotAvatar';
+import SourceList from './SourceList';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -206,6 +207,9 @@ export default function MessageBubble({
             <Icon icon="mdi:alert-outline" width="12" height="12" />
             响应中断
           </div>
+        )}
+        {!isUser && message.sources && message.sources.length > 0 && (
+          <SourceList sources={message.sources} />
         )}
       </div>
 

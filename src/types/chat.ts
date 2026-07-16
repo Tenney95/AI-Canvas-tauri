@@ -127,6 +127,18 @@ export interface ToolResultSummary {
   status: 'success' | 'error' | 'denied';
   summary: string;
   truncated: boolean;
+  sources?: WebSource[];
+}
+
+export interface WebSource {
+  id: string;
+  citationId?: string;
+  title: string;
+  url: string;
+  domain: string;
+  snippet?: string;
+  fetchedAt: number;
+  sourceType: 'search' | 'page';
 }
 
 // ============================================
@@ -177,6 +189,8 @@ export interface ChatMessage {
   canvasStatus?: CanvasMaterializationStatus;
   canvasNodeId?: string;
   canvasError?: string;
+  /** 联网工具返回的可追溯来源；正文不持久化。 */
+  sources?: WebSource[];
 }
 
 // ============================================
@@ -205,6 +219,7 @@ export interface PersistedChatMessage {
   canvasStatus?: CanvasMaterializationStatus;
   canvasNodeId?: string;
   canvasError?: string;
+  sources?: WebSource[];
 }
 
 // ============================================
