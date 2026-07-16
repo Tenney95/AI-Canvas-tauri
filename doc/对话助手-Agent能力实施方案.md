@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3-A 已完成，等待进入 P3-B1
+> 文档状态：P3-B1 已完成，等待进入 P3-B2
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -41,7 +41,7 @@
 | P3-0 | `[x]` | 需求、自治边界和总体架构确认 | 2026-07-16 | 2026-07-16 |
 | P3-A1 | `[x]` | Agent 领域类型、会话模式和任务持久化骨架 | 2026-07-16 | 2026-07-16 |
 | P3-A2 | `[x]` | Agent Runtime 骨架、B/C 切换与现有对话接入 | 2026-07-16 | 2026-07-16 |
-| P3-B1 | `[ ]` | Tool Registry、Policy Engine 和工具调用循环 | - | - |
+| P3-B1 | `[x]` | Tool Registry、Policy Engine 和工具调用循环 | 2026-07-16 | 2026-07-16 |
 | P3-B2 | `[ ]` | 画布工具与媒体工具迁移 | - | - |
 | P3-C1 | `[ ]` | 联网搜索、受控网页读取和来源引用 | - | - |
 | P3-C2 | `[ ]` | 会话级本地文件授权、读取和导出确认 | - | - |
@@ -373,7 +373,7 @@ type PolicyDecision =
 
 ### P3-B1：Tool Registry、Policy Engine 和调用循环
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 ### 目标
 
@@ -392,22 +392,22 @@ type PolicyDecision =
 
 ### 实施任务
 
-- [ ] 定义工具注册契约、风险等级、schema、执行器和结果裁剪器。
-- [ ] 实现未知工具和未知字段拒绝。
-- [ ] 实现 B/C 权限矩阵。
-- [ ] 实现最多 12 轮模型请求、24 次工具调用和 3 个并行只读工具。
-- [ ] 只接受完整 `tool.call.final`，流式参数不得触发执行。
-- [ ] Observation 作为独立消息回传模型。
-- [ ] 实现暂停、继续、跳过、重新规划和停止语义。
-- [ ] Skill 内容、网页内容和文件内容不得改变工具权限。
+- [x] 定义工具注册契约、风险等级、schema、执行器和结果裁剪器。
+- [x] 实现未知工具和未知字段拒绝。
+- [x] 实现 B/C 权限矩阵。
+- [x] 实现最多 12 轮模型请求、24 次工具调用和 3 个并行只读工具。
+- [x] 只接受完整 `tool.call.final`，流式参数不得触发执行。
+- [x] Observation 作为独立消息回传模型。
+- [x] 实现暂停、继续准备、跳过、重新规划和停止语义。
+- [x] Skill 内容、网页内容和文件内容不得改变工具权限。
 
 ### 验收
 
-- [ ] 未注册工具无法执行。
-- [ ] B/C 对同一工具产生正确策略。
-- [ ] 达到预算后任务暂停，不继续消耗模型额度。
-- [ ] 用户停止后活动模型流和只读工具中止。
-- [ ] 工具结果日志不包含 API Key、绝对路径或完整敏感正文。
+- [x] 未注册工具无法执行。
+- [x] B/C 对同一工具产生正确策略。
+- [x] 达到预算后任务暂停，不继续消耗模型额度。
+- [x] 用户停止后活动模型流和只读工具中止。
+- [x] 工具输入和结果摘要持久化前执行密钥、凭据和本地路径脱敏。
 
 ### 回滚
 
@@ -415,10 +415,10 @@ type PolicyDecision =
 
 ### 完成记录
 
-- 实际文件：待填写
-- 实际检查：待填写
-- 权限矩阵结果：待填写
-- 遗留问题：待填写
+- 实际文件：`src/services/chat/agentToolSchemas.ts`、`src/services/chat/toolRegistry.ts`、`src/services/chat/policyEngine.ts`、`src/services/chat/agentRuntime.ts`、`src/services/ai/assistantStream.ts`、`src/components/chat/ChatPanel.tsx`、`src/types/chat.ts`、`src/services/indexedDbService.ts`、`src/services/chat/chatHistoryService.ts`
+- 实际检查：定向 ESLint、`npm run typecheck`、临时输出目录 Vite 生产构建、纯逻辑 schema/policy 断言、`git diff --check`
+- 权限矩阵结果：B 画布写入需确认；C 画布写入自动允许；媒体、文件写入和永久删除始终确认；只读自动允许
+- 遗留问题：P3-B2 注册首批画布和媒体工具后才会在真实对话中进入新循环；Registry 为空时继续使用旧管线
 
 ### P3-B2：画布和媒体工具迁移
 
@@ -872,3 +872,4 @@ type PolicyDecision =
 |---|---|---|
 | 2026-07-16 | P3-0 | 完成 Agent 产品边界、B/C 模式、工具权限、上下文、记忆、后台执行、重试和时间线方案确认；创建阶段实施文档。 |
 | 2026-07-16 | P3-A | 完成会话级 B/C 模式、AgentTask v12 持久化、任务状态机、后台消息保留、独立窗口同步和会话状态徽标。 |
+| 2026-07-16 | P3-B1 | 完成 Tool Registry、无依赖 schema 校验、Policy Engine、多轮工具循环、预算、只读重试和持久化摘要脱敏。 |

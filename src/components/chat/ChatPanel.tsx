@@ -36,9 +36,16 @@ import {
   runAssistantPipeline,
   runStreamingPipeline,
 } from '../../services/chat/assistantService';
-import { resolveAssistantModel } from '../../services/ai/assistantStream';
+import {
+  buildAssistantSystemPrompt,
+  resolveAssistantModel,
+} from '../../services/ai/assistantStream';
 import { runMediaGeneration } from '../../services/ai/generationRuntime';
-import { runAgentTask } from '../../services/chat/agentRuntime';
+import {
+  runAgentLoop,
+  runAgentTask,
+} from '../../services/chat/agentRuntime';
+import { getAvailableAgentTools } from '../../services/chat/toolRegistry';
 import type { ChatMessage } from '../../types/chat';
 import type { AgentMode } from '../../types/agent';
 import type { MediaGenerationIntent } from '../../types/media';
@@ -586,11 +593,67 @@ function startAgentMessageExecution({
     mode,
     goal: text,
   });
+  store.updateMessage(assistantMessageId, { agentTaskId: task.id });
 
   void runAgentTask(task.id, async (signal) => {
     let failed = false;
 
     if (resolveAssistantModel()) {
+      const availableTools = getAvailableAgentTools({
+        taskId: task.id,
+        projectId,
+        conversationId,
+        mode,
+      });
+      if (availableTools.length > 0) {
+        return runAgentLoop({
+          taskId: task.id,
+          systemPrompt: buildAssistantSystemPrompt(),
+          userMessage: text,
+          signal,
+          callbacks: {
+            onTextDelta: (delta) => {
+              const currentStore = useAppStore.getState();
+              const message = currentStore.messages.find(
+                (item) => item.id === assistantMessageId,
+              );
+              if (message) {
+                currentStore.updateMessage(assistantMessageId, {
+                  content: (message.content || '') + delta,
+                  status: 'streaming',
+                });
+              }
+              onProgress?.();
+            },
+            onComplete: (fullText) => {
+              useAppStore.getState().updateMessage(assistantMessageId, {
+                content: fullText,
+                status: 'done',
+              });
+              onProgress?.();
+            },
+            onApprovalRequired: (step) => {
+              const currentStore = useAppStore.getState();
+              const message = currentStore.messages.find(
+                (item) => item.id === assistantMessageId,
+              );
+              currentStore.updateMessage(assistantMessageId, {
+                content: message?.content || `等待确认：${step.title}`,
+                status: 'preview',
+              });
+            },
+            onError: (error) => {
+              failed = true;
+              useAppStore.getState().updateMessage(assistantMessageId, {
+                content: `处理失败: ${error}`,
+                status: 'error',
+                finishReason: 'error',
+              });
+            },
+          },
+        });
+      }
+
       await runStreamingPipeline(text, conversationId, {
         onTextDelta: (delta) => {
           const currentStore = useAppStore.getState();

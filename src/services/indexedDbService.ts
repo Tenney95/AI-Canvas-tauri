@@ -595,6 +595,7 @@ export interface ChatMessageRecord {
   content: string;
   status: string;
   requestId?: string;
+  agentTaskId?: string;
   modelId?: string;
   createdAt: number;
   updatedAt: number;

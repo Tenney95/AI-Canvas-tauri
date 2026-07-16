@@ -65,14 +65,34 @@ export interface StreamingCallOptions {
   signal?: AbortSignal;
   /** 是否使用非流式模式（某些模型不支持 stream） */
   nonStream?: boolean;
+  /** Agent 多轮调用时传入完整消息序列；存在时不再自动拼接 system/user。 */
+  messages?: AssistantModelMessage[];
+  /** Agent Runtime 经过 Registry 过滤后的工具；空数组表示本轮禁用工具。 */
+  tools?: AssistantToolDefinition[];
 }
 
-interface AssistantToolDefinition {
+export interface AssistantModelToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface AssistantModelMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_call_id?: string;
+  tool_calls?: AssistantModelToolCall[];
+}
+
+export interface AssistantToolDefinition {
   type: 'function';
   function: {
     name: string;
     description: string;
-    parameters: Record<string, unknown>;
+    parameters: object;
   };
 }
 
@@ -128,16 +148,28 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
     throw new Error('未配置助手模型，请在「设置 → API Key」中添加');
   }
 
-  const { systemPrompt, userMessage, toolContextMessage, onEvent, signal, nonStream } = options;
+  const {
+    systemPrompt,
+    userMessage,
+    toolContextMessage,
+    onEvent,
+    signal,
+    nonStream,
+    messages: providedMessages,
+    tools: providedTools,
+  } = options;
 
   const requestId = `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   onEvent({ type: 'start', requestId, modelId: modelConfig.modelName });
 
-  const messages: Array<{ role: string; content: string }> = [];
-  if (systemPrompt) {
-    messages.push({ role: 'system', content: systemPrompt });
-  }
-  messages.push({ role: 'user', content: userMessage });
+  const messages: AssistantModelMessage[] = providedMessages
+    ? [...providedMessages]
+    : [
+        ...(systemPrompt
+          ? [{ role: 'system' as const, content: systemPrompt }]
+          : []),
+        { role: 'user', content: userMessage },
+      ];
 
   const apiUrl = modelConfig.baseUrl + '/chat/completions';
   const headers = buildAuthHeaders(modelConfig.apiKey);
@@ -150,7 +182,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   }
   useAppStore.getState().setActiveRequestAbort(controller);
 
-  const tools = buildAssistantTools(toolContextMessage ?? userMessage);
+  const tools = providedTools ?? buildAssistantTools(toolContextMessage ?? userMessage);
 
   try {
     const response = await fetch(apiUrl, {

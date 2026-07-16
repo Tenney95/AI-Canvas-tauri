@@ -160,6 +160,8 @@ export interface ChatMessage {
   status: ChatMessageStatus;
   /** AI 请求 ID（assistant 消息使用） */
   requestId?: string;
+  /** 关联的 Agent 任务，用于时间线和后台状态恢复。 */
+  agentTaskId?: string;
   /** 使用的模型 ID */
   modelId?: string;
   /** 关联的解析指令 */
@@ -190,6 +192,7 @@ export interface PersistedChatMessage {
   content: string;
   status: ChatMessageStatus;
   requestId?: string;
+  agentTaskId?: string;
   modelId?: string;
   createdAt: number;
   updatedAt: number;
