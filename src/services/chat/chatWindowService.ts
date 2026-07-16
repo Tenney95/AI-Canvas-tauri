@@ -19,6 +19,7 @@
 import type { ChatConversation, ChatMessage } from '../../types/chat';
 import type { GeneralModelConfig } from '../../types';
 import type { AgentMode, AgentTask } from '../../types/agent';
+import type { LocalFileGrantSummary } from './fileGrantService';
 
 export const CHAT_SYNC_EVENT = 'chat:sync-state';
 export const CHAT_ACTION_EVENT = 'chat:action';
@@ -40,6 +41,7 @@ export interface ChatStateSnapshot {
   assistantModelId?: string;
   assistantImageModelId?: string;
   assistantVideoModelId?: string;
+  localFileGrants?: LocalFileGrantSummary[];
 }
 
 // ============================================
@@ -56,6 +58,8 @@ export type ChatAction =
   | { type: 'delete_conversation'; conversationId: string }
   | { type: 'set_agent_mode'; conversationId: string; mode: AgentMode }
   | { type: 'resolve_agent_approval'; approvalId: string; approved: boolean }
+  | { type: 'authorize_local_files'; conversationId: string }
+  | { type: 'revoke_local_file'; conversationId: string; grantId: string }
   | { type: 'select_model'; modelId?: string; category?: 'text' | 'image' | 'video' }
   | { type: 'confirm_commands'; messageId: string }
   | { type: 'cancel_commands'; messageId: string }

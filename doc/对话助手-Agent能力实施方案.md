@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3-C1 已完成
+> 文档状态：P3-C2 已完成
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -44,7 +44,7 @@
 | P3-B1 | `[x]` | Tool Registry、Policy Engine 和工具调用循环 | 2026-07-16 | 2026-07-16 |
 | P3-B2 | `[x]` | 画布工具与媒体工具迁移 | 2026-07-16 | 2026-07-16 |
 | P3-C1 | `[x]` | 联网搜索、受控网页读取和来源引用 | 2026-07-16 | 2026-07-16 |
-| P3-C2 | `[ ]` | 会话级本地文件授权、读取和导出确认 | - | - |
+| P3-C2 | `[x]` | 会话级本地文件授权、读取和导出确认 | 2026-07-16 | 2026-07-16 |
 | P3-D1 | `[ ]` | 模型上下文预算、占用显示和自动压缩 | - | - |
 | P3-D2 | `[ ]` | 用户确认的项目记忆 | - | - |
 | P3-E1 | `[ ]` | Agent 任务时间线和后台控制 | - | - |
@@ -555,40 +555,43 @@ type PolicyDecision =
 
 ### P3-C2：会话级本地文件授权
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 ### 目标
 
 让用户通过原生选择器授权文件或目录，Agent 在当前会话内受控读取、检索、导入和确认后导出。
 
-### 计划文件
+### 实际文件
 
 - 新增：`src/services/chat/fileGrantService.ts`
 - 新增：`src/services/chat/tools/fileTools.ts`
-- 新增：`src/components/chat/ToolPermissionDialog.tsx`
 - 修改：`src/services/fileService.ts`
-- 修改：`src/services/chat/toolRegistry.ts`
-- 修改：`src/store/store.agent.ts`
-- 修改：`src/components/chat/ToolCallCard.tsx`
-- 修改：`src/types/agent.ts`
+- 修改：`src/services/chat/tools/index.ts`
+- 修改：`src/services/chat/chatWindowService.ts`
+- 修改：`src/services/ai/assistantStream.ts`
+- 修改：`src/store/store.chat.ts`
+- 修改：`src/components/chat/ChatPanel.tsx`
+- 修改：`src/components/chat/ChatInput.tsx`
+
+授权入口直接集成到 `ChatInput`，文件写入复用 P3-B2 的通用审批卡，因此未新增重复的 `ToolPermissionDialog` / `ToolCallCard`。
 
 ### 实施任务
 
-- [ ] 用户通过原生选择器创建会话级 `grantId`。
-- [ ] 模型只接收显示名和 grant ID，不接收绝对路径。
-- [ ] 支持受控文本读取、目录检索和导入画布。
-- [ ] 配置文件数量、单文件大小、目录深度和总字符预算。
-- [ ] 文件写入每次打开原生保存流程并确认。
-- [ ] 撤销 grant 后中止活动读取并拒绝排队调用。
-- [ ] 切换会话、删除会话或重启时清理授权。
+- [x] 用户通过原生多文件选择器创建会话级 `grantId`。
+- [x] 模型只接收显示名和 grant ID，不接收绝对路径。
+- [x] 支持列出授权、受控 UTF-8 文本读取和导入 `source-text` 画布节点。
+- [x] 每个对话最多 10 个文件、单文件最多 2 MB、单次读取最多 256 KB、节点正文最多 100,000 字符。
+- [x] 文件写入每次经过 Policy 确认并打开原生保存对话框。
+- [x] 撤销 grant 后中止活动读取并拒绝排队调用。
+- [x] grant 仅保存在运行内存；删除会话时清理，重启后天然失效，切换会话不能跨会话访问。
 
 ### 验收
 
-- [ ] 未授权路径无法读取。
-- [ ] grant 不跨会话、项目或重启恢复。
-- [ ] 日志、模型上下文和 UI 不出现绝对路径。
-- [ ] 删除聊天不会删除原始本地文件。
-- [ ] 文件写入未经确认不产生文件副作用。
+- [x] 文件工具 schema 不接受路径，读取前同时校验 grantId 和 conversationId。
+- [x] grant 不持久化且绑定会话；导入画布时额外校验当前项目和 revision。
+- [x] 模型上下文、工具摘要、UI、窗口同步和保存结果均不包含绝对路径。
+- [x] 撤销或删除聊天只移除内存 grant，不删除、移动或修改原始文件。
+- [x] `file_write_text` 使用 `file_write` effect，未经确认不会打开保存对话框或写入。
 
 ### 回滚
 
@@ -596,10 +599,14 @@ type PolicyDecision =
 
 ### 完成记录
 
-- 实际文件：待填写
-- 授权边界测试：待填写
-- 文件格式限制：待填写
-- 遗留问题：待填写
+- 完成日期：2026-07-16
+- 授权入口：对话输入区“文件”按钮；主窗口和独立窗口均支持授权及即时撤销
+- 工具：`file_list_grants`、`file_read_text`、`file_import_text_to_canvas`、`file_write_text`
+- 文件格式：txt、md/markdown、json、csv/tsv、yaml/yml、xml、html/htm、css、js/jsx、ts/tsx、log；只接受严格 UTF-8
+- 安全边界：路径只存在于 `fileGrantService` 私有内存对象；文件名和正文均标记为不可信数据；底层异常统一处理，避免路径进入模型
+- 策略断言：`AGENT_C2_POLICY_ASSERTIONS=PASS`，覆盖只读自动执行和文件写入始终确认
+- 实际检查：`npm run typecheck` 通过；9 个改动 TS/TSX 文件定向 ESLint 通过；生产 Vite 临时目录构建通过
+- 交互限制：未自动打开原生文件/保存对话框进行无人值守测试，需在 Tauri 应用中完成授权、撤销和保存手测
 
 ### P3-D1：上下文预算、占用显示和自动压缩
 
@@ -902,3 +909,4 @@ type PolicyDecision =
 | 2026-07-16 | P3-B1 | 完成 Tool Registry、无依赖 schema 校验、Policy Engine、多轮工具循环、预算、只读重试和持久化摘要脱敏。 |
 | 2026-07-16 | P3-B2 | 完成画布工具迁移、批量原子写入、revision 复核、可继续审批闭环，以及图片/视频/音乐/语音逐次确认生成。 |
 | 2026-07-16 | P3-C1 | 完成 Tavily 联网搜索、受限 Rust 网页读取、SSRF 防护、不可信内容边界和稳定来源引用。 |
+| 2026-07-16 | P3-C2 | 完成会话级本地文件 grant、受控读取、画布导入、即时撤销和逐次确认写入。 |

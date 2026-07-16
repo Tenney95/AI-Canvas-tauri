@@ -13,6 +13,7 @@ import {
   getMediaModelOptions,
   type MediaModelOption,
 } from '../nodes/shared/defaultModels';
+import type { LocalFileGrantSummary } from '../../services/chat/fileGrantService';
 
 function fuzzyMatchModel(model: MediaModelOption, rawQuery: string): boolean {
   const query = rawQuery.trim().toLocaleLowerCase().replace(/\s+/g, '');
@@ -54,6 +55,9 @@ interface ChatInputProps {
   inputValue: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
+  localFileGrants?: LocalFileGrantSummary[];
+  onAuthorizeLocalFiles?: () => void;
+  onRevokeLocalFile?: (grantId: string) => void;
   disabled?: boolean;
 }
 
@@ -64,6 +68,9 @@ export default function ChatInput({
   inputValue,
   onInputChange,
   onSend,
+  localFileGrants = [],
+  onAuthorizeLocalFiles,
+  onRevokeLocalFile,
   disabled = false,
 }: ChatInputProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -193,6 +200,30 @@ export default function ChatInput({
         className="chat-panel-input-box relative flex flex-col bg-canvas-card border border-canvas-border rounded-[14px]
                     focus-within:border-canvas-text-secondary transition-colors px-4 pt-4 pb-3 shadow-lg"
       >
+        {localFileGrants.length > 0 && (
+          <div className="mb-2 flex max-h-16 flex-wrap gap-1 overflow-y-auto">
+            {localFileGrants.map((grant) => (
+              <span
+                key={grant.id}
+                title={`${grant.displayName} · ${Math.ceil(grant.size / 1024)} KB`}
+                className="flex max-w-[180px] items-center gap-1 rounded-md bg-canvas-hover px-2 py-1 text-[10px] text-canvas-text-secondary"
+              >
+                <Icon icon="mdi:file-document-outline" width="12" className="shrink-0" />
+                <span className="truncate">{grant.displayName}</span>
+                {onRevokeLocalFile && (
+                  <button
+                    type="button"
+                    aria-label={`撤销 ${grant.displayName} 的读取授权`}
+                    onClick={() => onRevokeLocalFile(grant.id)}
+                    className="shrink-0 text-canvas-text-muted hover:text-red-400"
+                  >
+                    <Icon icon="mdi:close" width="12" />
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           ref={inputRef}
           value={inputValue}
@@ -363,6 +394,18 @@ export default function ChatInput({
               <Icon icon="mdi:slash-forward" width="16" />
               Skill
             </button>
+            {onAuthorizeLocalFiles && (
+              <button
+                type="button"
+                onClick={onAuthorizeLocalFiles}
+                aria-label="授权当前对话读取本地文件"
+                title="选择文本文件；授权仅在当前对话和本次运行期间有效"
+                className="flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text"
+              >
+                <Icon icon="mdi:paperclip" width="16" />
+                文件
+              </button>
+            )}
           </div>
 
           <AnimatedButton

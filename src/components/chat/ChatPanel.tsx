@@ -51,6 +51,13 @@ import { ensureAgentToolsRegistered } from '../../services/chat/tools';
 import type { ChatMessage } from '../../types/chat';
 import type { AgentMode } from '../../types/agent';
 import type { MediaGenerationIntent } from '../../types/media';
+import {
+  authorizeConversationFiles,
+  clearConversationFileGrants,
+  listConversationFileGrants,
+  revokeFileGrant,
+  subscribeFileGrants,
+} from '../../services/chat/fileGrantService';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -141,6 +148,15 @@ export default function ChatPanel({
 
   const [inputValue, setInputValue] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'chat'>('chat');
+  const [, setFileGrantVersion] = useState(0);
+  useEffect(() => subscribeFileGrants(
+    () => setFileGrantVersion((version) => version + 1),
+  ), []);
+  const effectiveLocalFileGrants = detached
+    ? (detachedSnapshot?.localFileGrants ?? [])
+    : effectiveActiveConversationId
+      ? listConversationFileGrants(effectiveActiveConversationId)
+      : [];
 
   const handleTextModelChange = useCallback((modelId?: string) => {
     if (detached) {
@@ -239,6 +255,41 @@ export default function ChatPanel({
     }
   }, [detached, showToast]);
 
+  const handleAuthorizeLocalFiles = useCallback(() => {
+    if (!effectiveActiveConversationId) return;
+    if (detached) {
+      void emitAction({
+        type: 'authorize_local_files',
+        conversationId: effectiveActiveConversationId,
+      });
+      return;
+    }
+    void authorizeConversationFiles(effectiveActiveConversationId)
+      .then((created) => {
+        showToast(
+          created.length > 0 ? `已授权 ${created.length} 个文件` : '未新增文件授权',
+          'info',
+        );
+      })
+      .catch((error) => showToast(
+        error instanceof Error ? error.message : '文件授权失败',
+        'error',
+      ));
+  }, [detached, effectiveActiveConversationId, showToast]);
+
+  const handleRevokeLocalFile = useCallback((grantId: string) => {
+    if (!effectiveActiveConversationId) return;
+    if (detached) {
+      void emitAction({
+        type: 'revoke_local_file',
+        conversationId: effectiveActiveConversationId,
+        grantId,
+      });
+      return;
+    }
+    revokeFileGrant(effectiveActiveConversationId, grantId);
+  }, [detached, effectiveActiveConversationId]);
+
   // ── 发送消息 ──
   const handleSend = useCallback(() => {
     const text = inputValue.trim();
@@ -324,6 +375,9 @@ export default function ChatPanel({
       assistantModelId: s.config.assistantModelId,
       assistantImageModelId: s.config.assistantImageModelId,
       assistantVideoModelId: s.config.assistantVideoModelId,
+      localFileGrants: s.activeConversationId
+        ? listConversationFileGrants(s.activeConversationId)
+        : [],
     });
   }, []);
 
@@ -408,8 +462,29 @@ export default function ChatPanel({
               break;
 
             case 'delete_conversation':
+              clearConversationFileGrants(action.conversationId);
               store.updateConversation(action.conversationId, { deletedAt: Date.now() });
               store.removeConversation(action.conversationId);
+              break;
+
+            case 'authorize_local_files':
+              void authorizeConversationFiles(action.conversationId)
+                .then((created) => {
+                  store.showToast(
+                    created.length > 0 ? `已授权 ${created.length} 个文件` : '未新增文件授权',
+                    'info',
+                  );
+                  syncToChatWindow();
+                })
+                .catch((error) => store.showToast(
+                  error instanceof Error ? error.message : '文件授权失败',
+                  'error',
+                ));
+              break;
+
+            case 'revoke_local_file':
+              revokeFileGrant(action.conversationId, action.grantId);
+              syncToChatWindow();
               break;
 
             case 'set_agent_mode':
@@ -593,6 +668,9 @@ export default function ChatPanel({
                       inputValue={inputValue}
                       onInputChange={setInputValue}
                       onSend={handleSend}
+                      localFileGrants={effectiveLocalFileGrants}
+                      onAuthorizeLocalFiles={handleAuthorizeLocalFiles}
+                      onRevokeLocalFile={handleRevokeLocalFile}
                     />
                   )}
                 </motion.div>

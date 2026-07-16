@@ -547,6 +547,78 @@ export async function listProjectFiles(projectId: string): Promise<AssetFileEntr
   }));
 }
 
+export interface AgentTextFileSelection {
+  path: string;
+  fileName: string;
+  size: number;
+  extension: string;
+}
+
+const AGENT_TEXT_EXTENSIONS = [
+  'txt', 'md', 'markdown', 'json', 'csv', 'tsv', 'yaml', 'yml',
+  'xml', 'html', 'htm', 'css', 'js', 'jsx', 'ts', 'tsx', 'log',
+];
+
+/** 通过原生选择器选择 Agent 可读取的文本文件；路径只返回给授权服务，不进入模型。 */
+export async function selectAgentTextFiles(): Promise<AgentTextFileSelection[]> {
+  if (!isTauriEnv()) throw new Error('本地文件授权仅在 Tauri 桌面环境可用');
+  const selected = await open({
+    multiple: true,
+    directory: false,
+    title: '授权当前对话读取本地文件',
+    filters: [{ name: '文本与数据文件', extensions: AGENT_TEXT_EXTENSIONS }],
+  });
+  if (!selected) return [];
+  const paths = Array.isArray(selected) ? selected : [selected];
+  const files: AgentTextFileSelection[] = [];
+  for (const path of paths.slice(0, 10)) {
+    const fileName = path.split(/[/\\]/).pop() || '未命名文件';
+    const extension = fileName.split('.').pop()?.toLowerCase() || '';
+    if (!AGENT_TEXT_EXTENSIONS.includes(extension)) continue;
+    const metadata = await stat(path);
+    if (!metadata.isFile) continue;
+    files.push({ path, fileName, size: metadata.size, extension });
+  }
+  return files;
+}
+
+/** 读取已经由授权服务复核过的路径；严格限制字节数并使用 UTF-8 解码。 */
+export async function readAgentAuthorizedTextFile(
+  path: string,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (!isTauriEnv()) throw new Error('本地文件读取仅在 Tauri 桌面环境可用');
+  if (signal?.aborted) throw new DOMException('读取已取消', 'AbortError');
+  const metadata = await stat(path);
+  if (!metadata.isFile) throw new Error('授权目标已不再是文件');
+  if (metadata.size > maxBytes) throw new Error(`文件超过 ${Math.floor(maxBytes / 1024)} KB 读取限制`);
+  const bytes = await tauriReadFile(path);
+  if (signal?.aborted) throw new DOMException('读取已取消', 'AbortError');
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error('文件不是有效的 UTF-8 文本');
+  }
+}
+
+/** 用户确认后通过原生保存对话框写入文本；返回值不包含绝对路径。 */
+export async function saveAgentTextOutput(
+  content: string,
+  suggestedName: string,
+): Promise<{ fileName: string } | null> {
+  if (!isTauriEnv()) throw new Error('本地文件写入仅在 Tauri 桌面环境可用');
+  const safeName = sanitizeFileName(suggestedName || 'agent-output.txt');
+  const destPath = await save({
+    defaultPath: safeName,
+    title: '保存 Agent 输出',
+    filters: [{ name: '文本文件', extensions: ['txt', 'md', 'json', 'csv'] }],
+  });
+  if (!destPath) return null;
+  await writeFile(destPath, new TextEncoder().encode(content));
+  return { fileName: destPath.split(/[/\\]/).pop() || safeName };
+}
+
 // ============================================
 // Source node file upload (returns dataUrl + fileName)
 // ============================================

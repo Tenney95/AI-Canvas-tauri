@@ -10,6 +10,7 @@ import type {
   OperationLog,
 } from '../types/chat';
 import { AGENT_TERMINAL_STATUSES } from '../types/agent';
+import { clearConversationFileGrants } from '../services/chat/fileGrantService';
 import * as chatHistoryService from '../services/chat/chatHistoryService';
 
 // ============================================
@@ -193,6 +194,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     }),
 
   removeConversation: (id) => {
+    clearConversationFileGrants(id);
     set((s) => {
       const conv = s.conversations.find((c) => c.id === id);
       if (conv) {
