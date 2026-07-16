@@ -1,8 +1,10 @@
 /**
  * indexedDbService IndexedDB 持久化服务 — 浏览器端本地存储，保存项目、工作流、应用配置等数据
  */
+import type { AgentMode, AgentTask } from '../types/agent';
+
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 11; // v11: toolbar layouts persistence
+const DB_VERSION = 12; // v12: Agent task persistence
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
@@ -15,6 +17,7 @@ const STORE_STYLES = 'styles';
 const STORE_SKILLS = 'skills';
 const STORE_CHAT_CONVERSATIONS = 'chatConversations';
 const STORE_CHAT_MESSAGES = 'chatMessages';
+const STORE_AGENT_TASKS = 'agentTasks';
 const STORE_TOOLBAR_LAYOUTS = 'toolbarLayouts';
 
 const CONFIG_KEY = 'app-config';
@@ -89,6 +92,13 @@ function openDB(): Promise<IDBDatabase> {
         const msgStore = db.createObjectStore(STORE_CHAT_MESSAGES, { keyPath: 'id' });
         msgStore.createIndex('conversationId_sequence', ['conversationId', 'sequence'], { unique: false });
         msgStore.createIndex('requestId', 'requestId', { unique: false });
+      }
+      // v12: Agent tasks. Steps are embedded to keep each task update atomic.
+      if (!db.objectStoreNames.contains(STORE_AGENT_TASKS)) {
+        const taskStore = db.createObjectStore(STORE_AGENT_TASKS, { keyPath: 'id' });
+        taskStore.createIndex('projectId_updatedAt', ['projectId', 'updatedAt'], { unique: false });
+        taskStore.createIndex('conversationId_updatedAt', ['conversationId', 'updatedAt'], { unique: false });
+        taskStore.createIndex('status', 'status', { unique: false });
       }
       // v11: toolbar layouts (single record, keyed by 'layouts')
       if (!db.objectStoreNames.contains(STORE_TOOLBAR_LAYOUTS)) {
@@ -506,6 +516,7 @@ export interface ChatConversationRecord {
   titleSource: 'auto' | 'user';
   pinned: boolean;
   archived: boolean;
+  agentMode: AgentMode;
   createdAt: number;
   updatedAt: number;
   lastMessageAt?: number;
@@ -774,7 +785,7 @@ export async function permanentlyDeleteConversation(convId: string): Promise<voi
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(
-      [STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES],
+      [STORE_CHAT_CONVERSATIONS, STORE_CHAT_MESSAGES, STORE_AGENT_TASKS],
       'readwrite',
     );
     // 删除会话
@@ -791,6 +802,120 @@ export async function permanentlyDeleteConversation(convId: string): Promise<voi
         cursor.continue();
       }
     };
+    // 删除该会话的 Agent 任务。
+    const taskStore = tx.objectStore(STORE_AGENT_TASKS);
+    const taskIndex = taskStore.index('conversationId_updatedAt');
+    const taskRange = IDBKeyRange.bound([convId, 0], [convId, Infinity]);
+    const taskCursorReq = taskIndex.openCursor(taskRange);
+    taskCursorReq.onsuccess = () => {
+      const cursor = taskCursorReq.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      }
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ============================================
+// Agent Tasks CRUD
+// ============================================
+
+export type AgentTaskRecord = AgentTask;
+
+export async function putAgentTask(record: AgentTaskRecord): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_AGENT_TASKS, 'readwrite');
+    tx.objectStore(STORE_AGENT_TASKS).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function getAgentTask(id: string): Promise<AgentTaskRecord | null> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_AGENT_TASKS, 'readonly');
+    const request = tx.objectStore(STORE_AGENT_TASKS).get(id);
+    request.onsuccess = () => resolve((request.result as AgentTaskRecord | undefined) ?? null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function getProjectAgentTasks(projectId: string): Promise<AgentTaskRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_AGENT_TASKS, 'readonly');
+    const index = tx.objectStore(STORE_AGENT_TASKS).index('projectId_updatedAt');
+    const range = IDBKeyRange.bound([projectId, 0], [projectId, Infinity]);
+    const request = index.getAll(range);
+    request.onsuccess = () => resolve(request.result as AgentTaskRecord[]);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function getConversationAgentTasks(
+  conversationId: string,
+): Promise<AgentTaskRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_AGENT_TASKS, 'readonly');
+    const index = tx.objectStore(STORE_AGENT_TASKS).index('conversationId_updatedAt');
+    const range = IDBKeyRange.bound([conversationId, 0], [conversationId, Infinity]);
+    const request = index.getAll(range);
+    request.onsuccess = () => resolve(request.result as AgentTaskRecord[]);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function deleteAgentTask(id: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_AGENT_TASKS, 'readwrite');
+    tx.objectStore(STORE_AGENT_TASKS).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteConversationAgentTasks(conversationId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_AGENT_TASKS, 'readwrite');
+    const index = tx.objectStore(STORE_AGENT_TASKS).index('conversationId_updatedAt');
+    const range = IDBKeyRange.bound([conversationId, 0], [conversationId, Infinity]);
+    const cursorRequest = index.openCursor(range);
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      }
+    };
+    cursorRequest.onerror = () => reject(cursorRequest.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteProjectAgentTasks(projectId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_AGENT_TASKS, 'readwrite');
+    const index = tx.objectStore(STORE_AGENT_TASKS).index('projectId_updatedAt');
+    const range = IDBKeyRange.bound([projectId, 0], [projectId, Infinity]);
+    const cursorRequest = index.openCursor(range);
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      }
+    };
+    cursorRequest.onerror = () => reject(cursorRequest.error);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

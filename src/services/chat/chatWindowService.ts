@@ -18,6 +18,7 @@
 
 import type { ChatConversation, ChatMessage } from '../../types/chat';
 import type { GeneralModelConfig } from '../../types';
+import type { AgentMode, AgentTask } from '../../types/agent';
 
 export const CHAT_SYNC_EVENT = 'chat:sync-state';
 export const CHAT_ACTION_EVENT = 'chat:action';
@@ -32,6 +33,7 @@ export interface ChatStateSnapshot {
   conversations: ChatConversation[];
   activeConversationId: string | null;
   messages: ChatMessage[];
+  agentTasks: AgentTask[];
   projectId: string | null;
   projectName?: string;
   generalModels: GeneralModelConfig[];
@@ -52,6 +54,7 @@ export type ChatAction =
   | { type: 'toggle_pin'; conversationId: string }
   | { type: 'archive_conversation'; conversationId: string }
   | { type: 'delete_conversation'; conversationId: string }
+  | { type: 'set_agent_mode'; conversationId: string; mode: AgentMode }
   | { type: 'select_model'; modelId?: string; category?: 'text' | 'image' | 'video' }
   | { type: 'confirm_commands'; messageId: string }
   | { type: 'cancel_commands'; messageId: string }

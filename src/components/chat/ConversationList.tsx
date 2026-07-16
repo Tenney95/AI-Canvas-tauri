@@ -8,6 +8,7 @@ import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import type { ChatConversation } from '../../types/chat';
+import type { AgentTask, AgentTaskStatus } from '../../types/agent';
 import AnimatedButton from '../shared/AnimatedButton';
 
 interface ConversationListProps {
@@ -17,6 +18,8 @@ interface ConversationListProps {
   conversations?: import('../../types/chat').ChatConversation[];
   /** 外部提供的活动会话 ID（独立窗口模式） */
   activeConversationId?: string | null;
+  /** 独立窗口模式下由主窗口同步的 Agent 任务。 */
+  agentTasks?: AgentTask[];
   /** 外部提供的项目 ID（独立窗口模式） */
   projectId?: string;
   /** 独立窗口模式下的回调 */
@@ -31,6 +34,7 @@ export default function ConversationList({
   onNew,
   conversations: extConversations,
   activeConversationId: extActiveId,
+  agentTasks: extAgentTasks,
   onRenameConversation,
   onTogglePin: extTogglePin,
   onArchiveConversation,
@@ -45,14 +49,22 @@ export default function ConversationList({
       currentProjectId: s.currentProjectId,
       updateConversation: s.updateConversation,
       removeConversation: s.removeConversation,
+      agentTasks: s.agentTasks,
     })),
   );
 
   const conversations = extConversations ?? store.conversations;
   const activeConversationId = extActiveId !== undefined ? extActiveId : store.activeConversationId;
+  const agentTasks = extAgentTasks ?? store.agentTasks;
 
-
-
+  const latestTaskByConversation = new Map<string, AgentTask>();
+  for (const task of agentTasks) {
+    if (task.status === 'completed' || task.status === 'stopped') continue;
+    const current = latestTaskByConversation.get(task.conversationId);
+    if (!current || current.updatedAt < task.updatedAt) {
+      latestTaskByConversation.set(task.conversationId, task);
+    }
+  }
 
   const [searchQuery, setSearchQuery] = useState('');
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -195,6 +207,7 @@ export default function ConversationList({
                 <ConversationItem
                   key={conv.id}
                   conv={conv}
+                  agentTaskStatus={latestTaskByConversation.get(conv.id)?.status}
                   active={conv.id === activeConversationId}
                   renaming={renamingId === conv.id}
                   renameValue={renameValue}
@@ -222,6 +235,7 @@ export default function ConversationList({
                 <ConversationItem
                   key={conv.id}
                   conv={conv}
+                  agentTaskStatus={latestTaskByConversation.get(conv.id)?.status}
                   active={conv.id === activeConversationId}
                   renaming={renamingId === conv.id}
                   renameValue={renameValue}
@@ -247,6 +261,7 @@ export default function ConversationList({
    ============================================ */
 function ConversationItem({
   conv,
+  agentTaskStatus,
   active,
   renaming,
   renameValue,
@@ -259,6 +274,7 @@ function ConversationItem({
   onDelete,
 }: {
   conv: ChatConversation;
+  agentTaskStatus?: AgentTaskStatus;
   active: boolean;
   renaming: boolean;
   renameValue: string;
@@ -315,7 +331,10 @@ function ConversationItem({
           />
         ) : (
           <>
-            <div className="truncate leading-tight">{conv.title}</div>
+            <div className="flex items-center gap-1.5">
+              <div className="min-w-0 flex-1 truncate leading-tight">{conv.title}</div>
+              {agentTaskStatus && <AgentTaskStatusBadge status={agentTaskStatus} />}
+            </div>
             {conv.lastMessagePreview && (
               <div className="truncate text-[11px] text-canvas-text-muted mt-0.5">
                 {conv.lastMessagePreview}
@@ -391,6 +410,26 @@ function ConversationItem({
         </AnimatePresence>
       </div>
     </motion.div>
+  );
+}
+
+function AgentTaskStatusBadge({ status }: { status: AgentTaskStatus }) {
+  const config: Partial<Record<AgentTaskStatus, { label: string; className: string }>> = {
+    queued: { label: '排队', className: 'text-slate-400' },
+    planning: { label: '规划', className: 'text-violet-400' },
+    running: { label: '运行', className: 'text-emerald-400' },
+    waiting_tool: { label: '工具', className: 'text-sky-400' },
+    waiting_approval: { label: '待确认', className: 'text-amber-400' },
+    paused: { label: '暂停', className: 'text-slate-400' },
+    failed: { label: '失败', className: 'text-red-400' },
+  };
+  const item = config[status];
+  if (!item) return null;
+
+  return (
+    <span className={`shrink-0 text-[9px] font-medium ${item.className}`}>
+      {item.label}
+    </span>
   );
 }
 

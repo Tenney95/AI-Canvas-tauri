@@ -36,7 +36,10 @@ function toConversationRecord(c: ChatConversation): ChatConversationRecord {
 }
 
 function fromConversationRecord(r: ChatConversationRecord): ChatConversation {
-  return { ...r };
+  return {
+    ...r,
+    agentMode: r.agentMode ?? 'collaborative',
+  };
 }
 
 function toMessageRecord(

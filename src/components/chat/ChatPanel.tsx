@@ -38,7 +38,9 @@ import {
 } from '../../services/chat/assistantService';
 import { resolveAssistantModel } from '../../services/ai/assistantStream';
 import { runMediaGeneration } from '../../services/ai/generationRuntime';
+import { runAgentTask } from '../../services/chat/agentRuntime';
 import type { ChatMessage } from '../../types/chat';
+import type { AgentMode } from '../../types/agent';
 import type { MediaGenerationIntent } from '../../types/media';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
@@ -64,11 +66,12 @@ export default function ChatPanel({
     activeConversationId,
     conversations,
     messages,
+    agentTasks,
     currentProjectId,
     createConversation,
     setActiveConversation,
+    updateConversation,
     addMessage,
-    updateMessage,
     loadConversationMessages,
     showToast,
     assistantModelId,
@@ -83,11 +86,12 @@ export default function ChatPanel({
       activeConversationId: s.activeConversationId,
       conversations: s.conversations,
       messages: s.messages,
+      agentTasks: s.agentTasks,
       currentProjectId: s.currentProjectId,
       createConversation: s.createConversation,
       setActiveConversation: s.setActiveConversation,
+      updateConversation: s.updateConversation,
       addMessage: s.addMessage,
-      updateMessage: s.updateMessage,
       loadConversationMessages: s.loadConversationMessages,
       showToast: s.showToast,
       assistantModelId: s.config.assistantModelId,
@@ -100,10 +104,15 @@ export default function ChatPanel({
   const effectiveConversations = detached ? (detachedSnapshot?.conversations ?? []) : conversations;
   const effectiveActiveConversationId = detached ? (detachedSnapshot?.activeConversationId ?? null) : activeConversationId;
   const effectiveMessages = detached ? (detachedSnapshot?.messages ?? []) : messages;
+  const effectiveAgentTasks = detached ? (detachedSnapshot?.agentTasks ?? []) : agentTasks;
   const effectiveProjectId = detached ? (detachedSnapshot?.projectId ?? null) : currentProjectId;
   const effectiveProjectName = detached ? detachedSnapshot?.projectName : undefined;
   const effectiveAssistantModelId = detached ? detachedSnapshot?.assistantModelId : assistantModelId;
   const effectiveGeneralModels = detached ? (detachedSnapshot?.generalModels ?? []) : generalModels;
+  const effectiveActiveConversation = effectiveConversations.find(
+    (conversation) => conversation.id === effectiveActiveConversationId,
+  );
+  const effectiveAgentMode = effectiveActiveConversation?.agentMode ?? 'collaborative';
 
   const [inputValue, setInputValue] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'chat'>('chat');
@@ -115,6 +124,31 @@ export default function ChatPanel({
       updateConfig({ assistantModelId: modelId });
     }
   }, [detached, updateConfig]);
+
+  const handleAgentModeChange = useCallback((mode: AgentMode) => {
+    if (!effectiveActiveConversationId || mode === effectiveAgentMode) return;
+    if (detached) {
+      void emitAction({
+        type: 'set_agent_mode',
+        conversationId: effectiveActiveConversationId,
+        mode,
+      });
+      return;
+    }
+    updateConversation(effectiveActiveConversationId, { agentMode: mode });
+    showToast(
+      mode === 'autonomous'
+        ? '已切换到 C 自主模式：画布操作可自动执行，付费媒体和文件写入仍需确认'
+        : '已切换到 B 协作模式：画布写操作将先预览确认',
+      'info',
+    );
+  }, [
+    detached,
+    effectiveActiveConversationId,
+    effectiveAgentMode,
+    showToast,
+    updateConversation,
+  ]);
 
   // ── 消息过滤 ──
   const conversationMessages = effectiveActiveConversationId
@@ -216,59 +250,25 @@ export default function ChatPanel({
       }, 100);
     };
 
-    if (hasModel) {
-      runStreamingPipeline(text, effectiveActiveConversationId, {
-        onTextDelta: (delta) => {
-          const store = useAppStore.getState();
-          const msg = store.messages.find((m) => m.id === assistantMsgId);
-          if (msg) {
-            store.updateMessage(assistantMsgId, {
-              content: (msg.content || '') + delta,
-              status: 'streaming',
-            });
-          }
-          scrollToBottom();
-        },
-        onComplete: (fullText, results) => {
-          updateMessage(assistantMsgId, {
-            content: fullText,
-            status: 'done',
-            executionResults: results.length > 0 ? results : undefined,
-          });
-          scrollToBottom();
-        },
-        onError: (error) => {
-          updateMessage(assistantMsgId, {
-            content: `处理失败: ${error}`,
-            status: 'error',
-            finishReason: 'error',
-          });
-        },
-        // LLM 主动请求生图/生视频 → 用优化后的 prompt 触发生成
-        onMediaIntent: (intent) => {
-          void triggerMediaGeneration(assistantMsgId, intent);
-        },
-      });
-    } else {
-      runAssistantPipeline(text, effectiveActiveConversationId)
-        .then((result) => {
-          updateMessage(assistantMsgId, {
-            content: result.reply,
-            status: 'done',
-            executionResults: result.commandResults.length > 0 ? result.commandResults : undefined,
-          });
-        })
-        .catch((err) => {
-          updateMessage(assistantMsgId, {
-            content: `处理失败: ${err instanceof Error ? err.message : '未知错误'}`,
-            status: 'error',
-            finishReason: 'error',
-          });
-        });
-    }
+    startAgentMessageExecution({
+      text,
+      projectId: effectiveProjectId ?? '',
+      conversationId: effectiveActiveConversationId,
+      userMessageId: userMsg.id,
+      assistantMessageId: assistantMsgId,
+      mode: effectiveAgentMode,
+      onProgress: scrollToBottom,
+    });
 
     scrollToBottom();
-  }, [inputValue, detached, effectiveActiveConversationId, addMessage, updateMessage]);
+  }, [
+    inputValue,
+    detached,
+    effectiveActiveConversationId,
+    effectiveAgentMode,
+    effectiveProjectId,
+    addMessage,
+  ]);
 
   // ── 状态同步到独立窗口 ──
   const syncToChatWindow = useCallback(() => {
@@ -281,6 +281,7 @@ export default function ChatPanel({
       conversations: s.conversations,
       activeConversationId: s.activeConversationId,
       messages: s.messages,
+      agentTasks: s.agentTasks,
       projectId: s.currentProjectId,
       projectName: project?.name,
       generalModels: s.config.generalModels ?? [],
@@ -328,53 +329,17 @@ export default function ChatPanel({
               };
               store.addMessage(am);
 
-              if (hasModel) {
-                runStreamingPipeline(action.content, action.conversationId, {
-                  onTextDelta: (delta) => {
-                    const s = useAppStore.getState();
-                    const m = s.messages.find((mm) => mm.id === amId);
-                    if (m) {
-                      s.updateMessage(amId, {
-                        content: (m.content || '') + delta,
-                        status: 'streaming',
-                      });
-                    }
-                  },
-                  onComplete: (fullText, results) => {
-                    store.updateMessage(amId, {
-                      content: fullText,
-                      status: 'done',
-                      executionResults: results.length > 0 ? results : undefined,
-                    });
-                  },
-                  onError: (error) => {
-                    store.updateMessage(amId, {
-                      content: `处理失败: ${error}`,
-                      status: 'error',
-                      finishReason: 'error',
-                    });
-                  },
-                  onMediaIntent: (intent) => {
-                    void triggerMediaGeneration(amId, intent);
-                  },
-                });
-              } else {
-                runAssistantPipeline(action.content, action.conversationId)
-                  .then((result) => {
-                    store.updateMessage(amId, {
-                      content: result.reply,
-                      status: 'done',
-                      executionResults: result.commandResults.length > 0 ? result.commandResults : undefined,
-                    });
-                  })
-                  .catch((err) => {
-                    store.updateMessage(amId, {
-                      content: `处理失败: ${err instanceof Error ? err.message : '未知错误'}`,
-                      status: 'error',
-                      finishReason: 'error',
-                    });
-                  });
-              }
+              const conversation = store.conversations.find(
+                (item) => item.id === action.conversationId,
+              );
+              startAgentMessageExecution({
+                text: action.content,
+                projectId: conversation?.projectId ?? store.currentProjectId ?? '',
+                conversationId: action.conversationId,
+                userMessageId: userMsg.id,
+                assistantMessageId: amId,
+                mode: conversation?.agentMode ?? 'collaborative',
+              });
               break;
             }
 
@@ -409,6 +374,16 @@ export default function ChatPanel({
             case 'delete_conversation':
               store.updateConversation(action.conversationId, { deletedAt: Date.now() });
               store.removeConversation(action.conversationId);
+              break;
+
+            case 'set_agent_mode':
+              store.updateConversation(action.conversationId, { agentMode: action.mode });
+              store.showToast(
+                action.mode === 'autonomous'
+                  ? '已切换到 C 自主模式：画布操作可自动执行，付费媒体和文件写入仍需确认'
+                  : '已切换到 B 协作模式：画布写操作将先预览确认',
+                'info',
+              );
               break;
 
             case 'select_model': {
@@ -447,7 +422,15 @@ export default function ChatPanel({
     if (!detached && chatPanelDetached) {
       syncToChatWindow();
     }
-  }, [detached, messages, conversations, activeConversationId, chatPanelDetached, syncToChatWindow]);
+  }, [
+    detached,
+    messages,
+    conversations,
+    agentTasks,
+    activeConversationId,
+    chatPanelDetached,
+    syncToChatWindow,
+  ]);
 
   // ── 分离 / 附着 ──
   const handleDetachToggle = useCallback(async () => {
@@ -495,6 +478,9 @@ export default function ChatPanel({
               detached={detached}
               chatPanelDetached={chatPanelDetached}
               projectName={effectiveProjectName}
+              agentMode={effectiveAgentMode}
+              onAgentModeChange={handleAgentModeChange}
+              agentModeDisabled={!effectiveActiveConversationId}
               showBackButton={viewMode === 'chat' && !!effectiveActiveConversationId}
               onBack={handleShowList}
               onDetachToggle={handleDetachToggle}
@@ -515,6 +501,7 @@ export default function ChatPanel({
                     {...(detached ? {
                       conversations: effectiveConversations,
                       activeConversationId: effectiveActiveConversationId,
+                      agentTasks: effectiveAgentTasks,
                       projectId: effectiveProjectId ?? undefined,
                       onRenameConversation: (id: string, title: string) => {
                         void emitAction({ type: 'rename_conversation', conversationId: id, title });
@@ -570,6 +557,96 @@ export default function ChatPanel({
       )}
     </AnimatePresence>
   );
+}
+
+interface StartAgentMessageExecutionOptions {
+  text: string;
+  projectId: string;
+  conversationId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+  mode: AgentMode;
+  onProgress?: () => void;
+}
+
+function startAgentMessageExecution({
+  text,
+  projectId,
+  conversationId,
+  userMessageId,
+  assistantMessageId,
+  mode,
+  onProgress,
+}: StartAgentMessageExecutionOptions): void {
+  const store = useAppStore.getState();
+  const task = store.createAgentTask({
+    projectId,
+    conversationId,
+    userMessageId,
+    mode,
+    goal: text,
+  });
+
+  void runAgentTask(task.id, async (signal) => {
+    let failed = false;
+
+    if (resolveAssistantModel()) {
+      await runStreamingPipeline(text, conversationId, {
+        onTextDelta: (delta) => {
+          const currentStore = useAppStore.getState();
+          const message = currentStore.messages.find((item) => item.id === assistantMessageId);
+          if (message) {
+            currentStore.updateMessage(assistantMessageId, {
+              content: (message.content || '') + delta,
+              status: 'streaming',
+            });
+          }
+          onProgress?.();
+        },
+        onComplete: (fullText, results) => {
+          useAppStore.getState().updateMessage(assistantMessageId, {
+            content: fullText,
+            status: 'done',
+            executionResults: results.length > 0 ? results : undefined,
+          });
+          onProgress?.();
+        },
+        onError: (error) => {
+          failed = true;
+          useAppStore.getState().updateMessage(assistantMessageId, {
+            content: `处理失败: ${error}`,
+            status: 'error',
+            finishReason: 'error',
+          });
+        },
+        onMediaIntent: (intent) => {
+          void triggerMediaGeneration(assistantMessageId, intent);
+        },
+        signal,
+      });
+      return failed ? 'failed' : 'completed';
+    }
+
+    try {
+      const result = await runAssistantPipeline(text, conversationId);
+      useAppStore.getState().updateMessage(assistantMessageId, {
+        content: result.reply,
+        status: 'done',
+        executionResults: result.commandResults.length > 0 ? result.commandResults : undefined,
+      });
+      onProgress?.();
+      return 'completed';
+    } catch (error) {
+      useAppStore.getState().updateMessage(assistantMessageId, {
+        content: `处理失败: ${error instanceof Error ? error.message : '未知错误'}`,
+        status: 'error',
+        finishReason: 'error',
+      });
+      return 'failed';
+    }
+  }).catch((error) => {
+    console.error('[AgentRuntime] failed to execute chat task:', error);
+  });
 }
 
 async function triggerMediaGeneration(

@@ -6,6 +6,8 @@
 import { type ReactNode } from 'react';
 import { Icon } from '@iconify/react';
 import MascotAvatar from './MascotAvatar';
+import AgentModeSelector from './AgentModeSelector';
+import type { AgentMode } from '../../types/agent';
 
 interface ChatHeaderProps {
   detached: boolean;
@@ -18,6 +20,9 @@ interface ChatHeaderProps {
   onBack: () => void;
   onDetachToggle: () => void;
   onClose: () => void;
+  agentMode: AgentMode;
+  onAgentModeChange: (mode: AgentMode) => void;
+  agentModeDisabled?: boolean;
   /** 分离模式下由外部传入的 header 操作按钮 */
   detachedHeaderActions?: ReactNode;
 }
@@ -30,6 +35,9 @@ export default function ChatHeader({
   onBack,
   onDetachToggle,
   onClose,
+  agentMode,
+  onAgentModeChange,
+  agentModeDisabled,
   detachedHeaderActions,
 }: ChatHeaderProps) {
   return (
@@ -64,8 +72,15 @@ export default function ChatHeader({
         </div>
       </div>
 
-      {detached ? detachedHeaderActions : (
-        <div className="chat-panel-header-actions flex items-center gap-1">
+      <div className="chat-panel-header-actions flex items-center gap-1">
+        <AgentModeSelector
+          mode={agentMode}
+          onChange={onAgentModeChange}
+          disabled={agentModeDisabled}
+        />
+
+        {detached ? detachedHeaderActions : (
+          <>
           {/* 独立窗口按钮 */}
           <button
             type="button"
@@ -86,8 +101,9 @@ export default function ChatHeader({
           >
             <Icon icon="mdi:close" width="16" height="16" />
           </button>
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

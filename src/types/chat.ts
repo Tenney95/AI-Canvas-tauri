@@ -2,6 +2,7 @@
  * Chat 类型定义 — 对话助手相关的 CommandId、Selector AST、CommandIntent、
  * CommandPlan、CommandResult、ChatMessage、ChatConversation 等核心类型
  */
+import type { AgentMode } from './agent';
 
 import type { NodeType } from './index';
 import type {
@@ -215,6 +216,8 @@ export interface ChatConversation {
   titleSource: 'auto' | 'user';
   pinned: boolean;
   archived: boolean;
+  /** 当前会话的 Agent 自治模式；旧会话读取时回填 collaborative。 */
+  agentMode: AgentMode;
   createdAt: number;
   updatedAt: number;
   lastMessageAt?: number;

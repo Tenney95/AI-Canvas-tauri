@@ -9,6 +9,7 @@ import type {
   ChatMessage,
   OperationLog,
 } from '../types/chat';
+import { AGENT_TERMINAL_STATUSES } from '../types/agent';
 import * as chatHistoryService from '../services/chat/chatHistoryService';
 
 // ============================================
@@ -118,6 +119,24 @@ function persistMsg(m: ChatMessage, projectId: string) {
   );
 }
 
+function retainBackgroundTaskMessages(state: AppState, targetConversationId?: string): ChatMessage[] {
+  const activeConversationIds = new Set(
+    state.agentTasks
+      .filter((task) => !AGENT_TERMINAL_STATUSES.has(task.status))
+      .map((task) => task.conversationId),
+  );
+  return state.messages.filter((message) =>
+    message.conversationId !== targetConversationId
+    && activeConversationIds.has(message.conversationId),
+  );
+}
+
+function resolveMessageProjectId(state: AppState, conversationId: string): string | null {
+  return state.conversations.find((conversation) => conversation.id === conversationId)?.projectId
+    ?? state.agentTasks.find((task) => task.conversationId === conversationId)?.projectId
+    ?? state.currentProjectId;
+}
+
 // ============================================
 // Slice implementation
 // ============================================
@@ -201,6 +220,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
       titleSource: title ? 'user' : 'auto',
       pinned: false,
       archived: false,
+      agentMode: 'collaborative',
       createdAt: Date.now(),
       updatedAt: Date.now(),
       messageCount: 0,
@@ -220,7 +240,12 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
   loadConversationsForProject: async (projectId) => {
     try {
       const conversations = await chatHistoryService.loadProjectConversations(projectId);
-      set({ conversations, activeConversationId: null, messages: [], operationLogs: [] });
+      set((state) => ({
+        conversations,
+        activeConversationId: null,
+        messages: retainBackgroundTaskMessages(state),
+        operationLogs: [],
+      }));
       // 有会话时自动激活最近一个
       if (conversations.length > 0) {
         set({ activeConversationId: conversations[0].id });
@@ -235,7 +260,12 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
       const { messages } = await chatHistoryService.loadMessages(conversationId, 0, 200);
       // 只保留当前展示的 conversationId 的消息（时序上切换后仍然可能收到旧异步结果）
       if (get().activeConversationId !== conversationId) return;
-      set({ messages });
+      set((state) => ({
+        messages: [
+          ...retainBackgroundTaskMessages(state, conversationId),
+          ...messages,
+        ],
+      }));
     } catch (e) {
       console.warn('[chat] 加载消息失败:', e);
     }
@@ -280,8 +310,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
         conversations,
       };
     });
-    // 持久化（使用 currentProjectId）
-    const projectId = get().currentProjectId;
+    const projectId = resolveMessageProjectId(get(), message.conversationId);
     if (projectId) persistMsg(message, projectId);
   },
 
@@ -290,7 +319,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
       const updated = s.messages.map((m) => (m.id === id ? { ...m, ...partial } : m));
       const changed = updated.find((m) => m.id === id);
       if (changed) {
-        const projectId = get().currentProjectId;
+        const projectId = resolveMessageProjectId(get(), changed.conversationId);
         if (projectId) persistMsg(changed, projectId);
       }
       return { messages: updated };

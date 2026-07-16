@@ -17,6 +17,7 @@ const EMPTY_SNAPSHOT: ChatStateSnapshot = {
   conversations: [],
   activeConversationId: null,
   messages: [],
+  agentTasks: [],
   projectId: null,
   generalModels: [],
 };
