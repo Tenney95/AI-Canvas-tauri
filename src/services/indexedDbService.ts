@@ -2,6 +2,7 @@
  * indexedDbService IndexedDB 持久化服务 — 浏览器端本地存储，保存项目、工作流、应用配置等数据
  */
 import type { AgentMode, AgentTask } from '../types/agent';
+import type { ConversationContextSummary } from '../types/chat';
 
 const DB_NAME = 'ai-canvas-db';
 const DB_VERSION = 12; // v12: Agent task persistence
@@ -517,6 +518,7 @@ export interface ChatConversationRecord {
   pinned: boolean;
   archived: boolean;
   agentMode: AgentMode;
+  contextSummary?: ConversationContextSummary;
   createdAt: number;
   updatedAt: number;
   lastMessageAt?: number;

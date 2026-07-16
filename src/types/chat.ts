@@ -226,6 +226,24 @@ export interface PersistedChatMessage {
 // 会话
 // ============================================
 
+/**
+ * 会话上下文压缩摘要（P3-D1）。
+ * 只影响发送给模型的上下文组装，不删除原始消息。
+ */
+export interface ConversationContextSummary {
+  /** 摘要正文；需保留目标、约束、决定、未完成计划、节点 ID、工具来源和失败原因 */
+  text: string;
+  /** 已被摘要覆盖的最后一条消息 ID */
+  coveredUntilMessageId: string;
+  /** 已被摘要覆盖的最后一条消息时间戳；组装时早于等于该时间的消息用摘要替代 */
+  coveredUntilTimestamp: number;
+  /** 被摘要覆盖的消息条数 */
+  coveredMessageCount: number;
+  /** 摘要自身的估算 token 数 */
+  estimatedTokens: number;
+  updatedAt: number;
+}
+
 export interface ChatConversation {
   id: string;
   projectId: string;
@@ -236,6 +254,8 @@ export interface ChatConversation {
   archived: boolean;
   /** 当前会话的 Agent 自治模式；旧会话读取时回填 collaborative。 */
   agentMode: AgentMode;
+  /** 上下文压缩摘要；不存在表示尚未压缩过 */
+  contextSummary?: ConversationContextSummary;
   createdAt: number;
   updatedAt: number;
   lastMessageAt?: number;

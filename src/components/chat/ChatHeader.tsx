@@ -7,7 +7,9 @@ import { type ReactNode } from 'react';
 import { Icon } from '@iconify/react';
 import MascotAvatar from './MascotAvatar';
 import AgentModeSelector from './AgentModeSelector';
+import ContextUsageIndicator from './ContextUsageIndicator';
 import type { AgentMode } from '../../types/agent';
+import type { ContextUsageStat } from '../../services/chat/contextManager';
 
 interface ChatHeaderProps {
   detached: boolean;
@@ -23,6 +25,8 @@ interface ChatHeaderProps {
   agentMode: AgentMode;
   onAgentModeChange: (mode: AgentMode) => void;
   agentModeDisabled?: boolean;
+  /** 当前会话上下文占用（估算）；无会话时为 null */
+  contextUsage?: ContextUsageStat | null;
   /** 分离模式下由外部传入的 header 操作按钮 */
   detachedHeaderActions?: ReactNode;
 }
@@ -38,6 +42,7 @@ export default function ChatHeader({
   agentMode,
   onAgentModeChange,
   agentModeDisabled,
+  contextUsage,
   detachedHeaderActions,
 }: ChatHeaderProps) {
   return (
@@ -73,6 +78,7 @@ export default function ChatHeader({
       </div>
 
       <div className="chat-panel-header-actions flex items-center gap-1">
+        <ContextUsageIndicator usage={contextUsage ?? null} />
         <AgentModeSelector
           mode={agentMode}
           onChange={onAgentModeChange}

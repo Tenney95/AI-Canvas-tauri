@@ -201,6 +201,7 @@ export interface GeneralModelConfig {
   modelId: string;            // 模型 ID
   apiKey: string;             // API 密钥
   category: GeneralModelCategory; // 模型种类
+  contextWindow?: number;     // 文本模型上下文窗口（token）；未声明时按模型 ID 目录推断
 }
 
 export const GENERAL_MODEL_CATEGORY_LABELS: Record<GeneralModelCategory, string> = {

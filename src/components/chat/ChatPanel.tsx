@@ -15,7 +15,7 @@
  * - EmptyChatState.tsx      空会话状态
  * - ChatModelSelector.tsx   模型选择器
  */
-import { useState, useEffect, useCallback, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { invoke } from '@tauri-apps/api/core';
@@ -48,6 +48,7 @@ import {
 } from '../../services/chat/agentRuntime';
 import { getAvailableAgentTools } from '../../services/chat/toolRegistry';
 import { ensureAgentToolsRegistered } from '../../services/chat/tools';
+import { estimateConversationUsage } from '../../services/chat/contextManager';
 import type { ChatMessage } from '../../types/chat';
 import type { AgentMode } from '../../types/agent';
 import type { MediaGenerationIntent } from '../../types/media';
@@ -195,6 +196,27 @@ export default function ChatPanel({
   const conversationMessages = effectiveActiveConversationId
     ? effectiveMessages.filter((m) => m.conversationId === effectiveActiveConversationId)
     : [];
+
+  // ── 上下文占用（估算），模型切换后按新上限重新计算 ──
+  const contextUsage = useMemo(() => {
+    if (!effectiveActiveConversationId) return null;
+    const model = effectiveGeneralModels.find(
+      (item) => item.id === effectiveAssistantModelId && item.category === 'text',
+    ) ?? null;
+    return estimateConversationUsage(
+      conversationMessages,
+      effectiveActiveConversation?.contextSummary,
+      model,
+    );
+    // conversationMessages 每次渲染都是新数组，依赖其来源 effectiveMessages
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    effectiveActiveConversationId,
+    effectiveAssistantModelId,
+    effectiveGeneralModels,
+    effectiveActiveConversation?.contextSummary,
+    effectiveMessages,
+  ]);
 
   // ── 会话操作 ──
   const handleNewConversation = useCallback(() => {
@@ -599,6 +621,7 @@ export default function ChatPanel({
               agentMode={effectiveAgentMode}
               onAgentModeChange={handleAgentModeChange}
               agentModeDisabled={!effectiveActiveConversationId}
+              contextUsage={contextUsage}
               showBackButton={viewMode === 'chat' && !!effectiveActiveConversationId}
               onBack={handleShowList}
               onDetachToggle={handleDetachToggle}
@@ -727,6 +750,7 @@ function startAgentMessageExecution({
           taskId: task.id,
           systemPrompt: buildAssistantSystemPrompt({ agentTools: true }),
           userMessage: text,
+          excludeMessageIds: [userMessageId, assistantMessageId],
           signal,
           callbacks: {
             onTextDelta: (delta) => {

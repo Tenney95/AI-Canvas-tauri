@@ -69,6 +69,11 @@ export interface StreamingCallOptions {
   messages?: AssistantModelMessage[];
   /** Agent Runtime 经过 Registry 过滤后的工具；空数组表示本轮禁用工具。 */
   tools?: AssistantToolDefinition[];
+  /**
+   * 是否把 AbortController 注册到全局 activeRequestAbort（默认 true）。
+   * 后台请求（如上下文压缩）传 false，避免被用户“取消任务”误中止或劫持全局控制器。
+   */
+  trackAbort?: boolean;
 }
 
 export interface AssistantModelToolCall {
@@ -157,6 +162,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
     nonStream,
     messages: providedMessages,
     tools: providedTools,
+    trackAbort = true,
   } = options;
 
   const requestId = `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -180,7 +186,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   if (mergedSignal) {
     mergedSignal.addEventListener('abort', () => controller.abort());
   }
-  useAppStore.getState().setActiveRequestAbort(controller);
+  if (trackAbort) useAppStore.getState().setActiveRequestAbort(controller);
 
   const tools = providedTools ?? buildAssistantTools(toolContextMessage ?? userMessage);
 

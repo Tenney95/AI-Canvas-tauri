@@ -25,6 +25,12 @@ import {
   type PreparedAgentToolCall,
 } from './toolRegistry';
 import { evaluateAgentToolPolicy } from './policyEngine';
+import {
+  assembleAgentContext,
+  estimateModelMessagesTokens,
+  resolveAssistantContextSpec,
+  ContextBudgetError,
+} from './contextManager';
 
 export type AgentExecutionOutcome =
   | 'completed'
@@ -229,6 +235,8 @@ export interface AgentLoopOptions {
   userMessage: string;
   signal: AbortSignal;
   callbacks?: AgentLoopCallbacks;
+  /** 当前轮已在界面新建的消息 ID（用户消息、助手占位），组装历史时排除 */
+  excludeMessageIds?: string[];
 }
 
 interface ExecutedToolCall {
@@ -461,6 +469,7 @@ export async function runAgentLoop({
   userMessage,
   signal,
   callbacks = {},
+  excludeMessageIds,
 }: AgentLoopOptions): Promise<AgentExecutionOutcome> {
   const initialTask = getTask(taskId);
   const contextBase = {
@@ -469,10 +478,30 @@ export async function runAgentLoop({
     conversationId: initialTask.conversationId,
     mode: initialTask.mode,
   };
-  const messages: AssistantModelMessage[] = [
-    ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-    { role: 'user', content: userMessage },
-  ];
+
+  // 按当前模型上下文预算组装历史；接近上限时自动压缩，压缩失败不发送超限请求
+  let messages: AssistantModelMessage[];
+  try {
+    const assembled = await assembleAgentContext({
+      conversationId: initialTask.conversationId,
+      systemPrompt,
+      userMessage,
+      excludeMessageIds,
+      signal,
+    });
+    messages = assembled.messages;
+  } catch (error) {
+    if (signal.aborted) throw error;
+    if (error instanceof ContextBudgetError) {
+      transitionAgentTask(taskId, 'paused', {
+        pausedReason: 'context_compression_failed',
+        errorCode: error.code,
+      });
+      callbacks.onError?.(error.message);
+      return 'paused';
+    }
+    throw error;
+  }
   let fullText = '';
   let totalToolResultChars = 0;
 
@@ -489,6 +518,17 @@ export async function runAgentLoop({
     if (task.modelRounds >= task.budget.maxModelRounds) {
       transitionAgentTask(taskId, 'paused', { pausedReason: 'model_round_budget_exhausted' });
       callbacks.onError?.('已达到模型规划轮次上限，任务已暂停');
+      return 'paused';
+    }
+
+    // 每轮请求前按当前模型上限复核（工具 Observation 会持续增大上下文；模型可能中途切换）
+    const contextSpec = resolveAssistantContextSpec();
+    if (estimateModelMessagesTokens(messages) > contextSpec.inputBudget) {
+      transitionAgentTask(taskId, 'paused', {
+        pausedReason: 'context_budget_exhausted',
+        errorCode: 'CONTEXT_BUDGET_EXHAUSTED',
+      });
+      callbacks.onError?.('任务上下文已接近模型上限，任务已暂停');
       return 'paused';
     }
 

@@ -827,3 +827,64 @@ export function findMediaModelOption(
     (model) => model.value === modelRef || model.value === normalized,
   );
 }
+
+// ============================================
+// 文本模型上下文窗口目录（P3-D1）
+// ============================================
+
+export interface TextModelContextSpec {
+  /** 模型上下文窗口（token，估算口径） */
+  contextWindow: number;
+  /** 建议为输出保留的 token 预算 */
+  outputBudget: number;
+  /** declared=用户声明；catalog=按模型 ID 匹配目录；default=保守默认值 */
+  source: 'declared' | 'catalog' | 'default';
+}
+
+/** 按模型 ID 关键字推断上下文窗口；顺序敏感，先匹配的优先。 */
+const TEXT_MODEL_CONTEXT_CATALOG: Array<[RegExp, number]> = [
+  [/gpt-5/i, 400_000],
+  [/gpt-4o|gpt-4/i, 128_000],
+  [/\bo[34]\b|o[34]-mini/i, 200_000],
+  [/claude/i, 200_000],
+  [/gemini/i, 1_000_000],
+  [/deepseek/i, 128_000],
+  [/kimi|moonshot/i, 256_000],
+  [/glm/i, 128_000],
+  [/minimax/i, 1_000_000],
+  [/qwen/i, 131_072],
+  [/llama/i, 128_000],
+];
+
+/** 未识别模型的保守默认窗口。 */
+export const DEFAULT_TEXT_CONTEXT_WINDOW = 32_000;
+
+function suggestedOutputBudget(contextWindow: number): number {
+  return Math.min(8_192, Math.max(1_024, Math.floor(contextWindow / 8)));
+}
+
+/**
+ * 解析文本模型的上下文规格。
+ * 用户在模型配置中声明的 contextWindow 优先；否则按模型 ID 匹配目录；
+ * 都没有时使用保守默认值。所有结果均为估算口径。
+ */
+export function resolveTextModelContextSpec(
+  model?: Pick<GeneralModelConfig, 'modelId' | 'contextWindow'> | null,
+): TextModelContextSpec {
+  if (model?.contextWindow && model.contextWindow > 0) {
+    return {
+      contextWindow: model.contextWindow,
+      outputBudget: suggestedOutputBudget(model.contextWindow),
+      source: 'declared',
+    };
+  }
+  const matched = model
+    ? TEXT_MODEL_CONTEXT_CATALOG.find(([pattern]) => pattern.test(model.modelId))?.[1]
+    : undefined;
+  const contextWindow = matched ?? DEFAULT_TEXT_CONTEXT_WINDOW;
+  return {
+    contextWindow,
+    outputBudget: suggestedOutputBudget(contextWindow),
+    source: matched ? 'catalog' : 'default',
+  };
+}
