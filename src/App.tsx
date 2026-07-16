@@ -21,6 +21,7 @@ import CanvasBackground from './components/backgrounds/CanvasBackground';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useReferencedImageWatcher } from './hooks/useReferencedImageWatcher';
+import { useTooltipAutoPlacement } from './hooks/useTooltipAutoPlacement';
 import { useAppStore } from './store/useAppStore';
 import * as fileService from './services/fileService';
 import { checkForUpdate, downloadAndInstallUpdate, type UpdateInfo } from './services/updateService';
@@ -37,6 +38,7 @@ export default function App() {
   useKeyboardShortcuts();
   useAutoSave();
   useReferencedImageWatcher();
+  useTooltipAutoPlacement();
 
   // 开屏动画状态
   const [splashDone, setSplashDone] = useState(false);

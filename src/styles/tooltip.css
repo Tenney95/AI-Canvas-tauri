@@ -61,3 +61,11 @@
   top: 50%;
   transform: translateY(-50%);
 }
+
+/* 默认/顶部气泡即将越过窗口上边界时，由全局边界检测临时翻转到下方。 */
+[data-tooltip]:not([data-tooltip-pos])[data-tooltip-auto-pos="bottom"]::after,
+[data-tooltip-pos="top"][data-tooltip-auto-pos="bottom"]::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+  transform: translateX(-50%);
+}
