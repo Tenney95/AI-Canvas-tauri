@@ -27,6 +27,8 @@ interface ChatHeaderProps {
   agentModeDisabled?: boolean;
   /** 当前会话上下文占用（估算）；无会话时为 null */
   contextUsage?: ContextUsageStat | null;
+  /** 打开项目记忆管理面板；不提供时不显示入口（如独立窗口） */
+  onOpenMemory?: () => void;
   /** 分离模式下由外部传入的 header 操作按钮 */
   detachedHeaderActions?: ReactNode;
 }
@@ -43,6 +45,7 @@ export default function ChatHeader({
   onAgentModeChange,
   agentModeDisabled,
   contextUsage,
+  onOpenMemory,
   detachedHeaderActions,
 }: ChatHeaderProps) {
   return (
@@ -84,6 +87,18 @@ export default function ChatHeader({
           onChange={onAgentModeChange}
           disabled={agentModeDisabled}
         />
+
+        {onOpenMemory && (
+          <button
+            type="button"
+            className="chat-panel-memory-btn flex items-center justify-center w-7 h-7 rounded-md text-canvas-text-muted
+                       hover:text-canvas-text hover:bg-canvas-hover transition-colors"
+            onClick={onOpenMemory}
+            data-tooltip="项目记忆"
+          >
+            <Icon icon="mdi:brain" width="16" height="16" />
+          </button>
+        )}
 
         {detached ? detachedHeaderActions : (
           <>

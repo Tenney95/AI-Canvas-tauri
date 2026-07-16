@@ -3,9 +3,10 @@
  */
 import type { AgentMode, AgentTask } from '../types/agent';
 import type { ConversationContextSummary } from '../types/chat';
+import type { ProjectMemory } from '../types/memory';
 
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 12; // v12: Agent task persistence
+const DB_VERSION = 13; // v13: user-confirmed project memory
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
@@ -19,6 +20,7 @@ const STORE_SKILLS = 'skills';
 const STORE_CHAT_CONVERSATIONS = 'chatConversations';
 const STORE_CHAT_MESSAGES = 'chatMessages';
 const STORE_AGENT_TASKS = 'agentTasks';
+const STORE_PROJECT_MEMORIES = 'projectMemories';
 const STORE_TOOLBAR_LAYOUTS = 'toolbarLayouts';
 
 const CONFIG_KEY = 'app-config';
@@ -104,6 +106,12 @@ function openDB(): Promise<IDBDatabase> {
       // v11: toolbar layouts (single record, keyed by 'layouts')
       if (!db.objectStoreNames.contains(STORE_TOOLBAR_LAYOUTS)) {
         db.createObjectStore(STORE_TOOLBAR_LAYOUTS, { keyPath: 'id' });
+      }
+      // v13: user-confirmed project memory
+      if (!db.objectStoreNames.contains(STORE_PROJECT_MEMORIES)) {
+        const memStore = db.createObjectStore(STORE_PROJECT_MEMORIES, { keyPath: 'id' });
+        memStore.createIndex('projectId_updatedAt', ['projectId', 'updatedAt'], { unique: false });
+        memStore.createIndex('conversationId', 'source.conversationId', { unique: false });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -916,6 +924,87 @@ export async function deleteProjectAgentTasks(projectId: string): Promise<void> 
       const cursor = cursorRequest.result;
       if (cursor) {
         cursor.delete();
+        cursor.continue();
+      }
+    };
+    cursorRequest.onerror = () => reject(cursorRequest.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ============================================
+// Project Memory CRUD
+// ============================================
+
+export type ProjectMemoryRecord = ProjectMemory;
+
+export async function putProjectMemory(record: ProjectMemoryRecord): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_PROJECT_MEMORIES, 'readwrite');
+    tx.objectStore(STORE_PROJECT_MEMORIES).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function getProjectMemories(projectId: string): Promise<ProjectMemoryRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_PROJECT_MEMORIES, 'readonly');
+    const index = tx.objectStore(STORE_PROJECT_MEMORIES).index('projectId_updatedAt');
+    const range = IDBKeyRange.bound([projectId, 0], [projectId, Infinity]);
+    const request = index.getAll(range);
+    request.onsuccess = () => resolve(request.result as ProjectMemoryRecord[]);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function deleteProjectMemory(id: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_PROJECT_MEMORIES, 'readwrite');
+    tx.objectStore(STORE_PROJECT_MEMORIES).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteProjectMemories(projectId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_PROJECT_MEMORIES, 'readwrite');
+    const index = tx.objectStore(STORE_PROJECT_MEMORIES).index('projectId_updatedAt');
+    const range = IDBKeyRange.bound([projectId, 0], [projectId, Infinity]);
+    const cursorRequest = index.openCursor(range);
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      }
+    };
+    cursorRequest.onerror = () => reject(cursorRequest.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** 把某会话来源的记忆标记为来源不可用，不删除记忆本身。 */
+export async function markConversationMemoriesUnavailable(conversationId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_PROJECT_MEMORIES, 'readwrite');
+    const index = tx.objectStore(STORE_PROJECT_MEMORIES).index('conversationId');
+    const cursorRequest = index.openCursor(IDBKeyRange.only(conversationId));
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (cursor) {
+        const record = cursor.value as ProjectMemoryRecord;
+        if (!record.source.unavailable) {
+          cursor.update({ ...record, source: { ...record.source, unavailable: true } });
+        }
         cursor.continue();
       }
     };

@@ -2,6 +2,7 @@ import { registerCanvasAgentTools } from './canvasTools';
 import { registerMediaAgentTools } from './mediaTools';
 import { registerWebAgentTools } from './webTools';
 import { registerFileAgentTools } from './fileTools';
+import { registerMemoryAgentTools } from './memoryTools';
 
 let registered = false;
 
@@ -14,5 +15,6 @@ export function ensureAgentToolsRegistered(): void {
   registerMediaAgentTools();
   registerWebAgentTools();
   registerFileAgentTools();
+  registerMemoryAgentTools();
   registered = true;
 }

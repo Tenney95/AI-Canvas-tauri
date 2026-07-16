@@ -24,6 +24,7 @@ import ConversationList from './ConversationList';
 import ChatHeader from './ChatHeader';
 import ChatMessages from './ChatMessages';
 import ChatInput from './ChatInput';
+import ProjectMemoryPanel from './ProjectMemoryPanel';
 import {
   initMainWindowListener,
   emitAction,
@@ -110,6 +111,9 @@ export default function ChatPanel({
     assistantModelId,
     generalModels,
     updateConfig,
+    projectMemories,
+    updateProjectMemory,
+    removeProjectMemory,
   } = useAppStore(
     useShallow((s) => ({
       chatOpen: s.chatOpen,
@@ -130,6 +134,9 @@ export default function ChatPanel({
       assistantModelId: s.config.assistantModelId,
       generalModels: s.config.generalModels ?? [],
       updateConfig: s.updateConfig,
+      projectMemories: s.projectMemories,
+      updateProjectMemory: s.updateProjectMemory,
+      removeProjectMemory: s.removeProjectMemory,
     })),
   );
 
@@ -149,6 +156,10 @@ export default function ChatPanel({
 
   const [inputValue, setInputValue] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'chat'>('chat');
+  const [showMemoryPanel, setShowMemoryPanel] = useState(false);
+  const currentProjectMemories = effectiveProjectId
+    ? projectMemories.filter((memory) => memory.projectId === effectiveProjectId)
+    : [];
   const [, setFileGrantVersion] = useState(0);
   useEffect(() => subscribeFileGrants(
     () => setFileGrantVersion((version) => version + 1),
@@ -622,6 +633,9 @@ export default function ChatPanel({
               onAgentModeChange={handleAgentModeChange}
               agentModeDisabled={!effectiveActiveConversationId}
               contextUsage={contextUsage}
+              onOpenMemory={!detached && effectiveProjectId
+                ? () => setShowMemoryPanel(true)
+                : undefined}
               showBackButton={viewMode === 'chat' && !!effectiveActiveConversationId}
               onBack={handleShowList}
               onDetachToggle={handleDetachToggle}
@@ -699,6 +713,16 @@ export default function ChatPanel({
                 </motion.div>
               )}
             </div>
+
+            {/* 项目记忆管理面板（主窗口） */}
+            {showMemoryPanel && !detached && (
+              <ProjectMemoryPanel
+                memories={currentProjectMemories}
+                onUpdate={updateProjectMemory}
+                onDelete={removeProjectMemory}
+                onClose={() => setShowMemoryPanel(false)}
+              />
+            )}
           </motion.aside>
       )}
     </AnimatePresence>

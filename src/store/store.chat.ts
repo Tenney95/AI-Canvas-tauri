@@ -195,6 +195,8 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
 
   removeConversation: (id) => {
     clearConversationFileGrants(id);
+    // 删除来源对话不删除已确认记忆，只标记来源不可用
+    get().markConversationMemorySourceUnavailable(id);
     set((s) => {
       const conv = s.conversations.find((c) => c.id === id);
       if (conv) {

@@ -226,6 +226,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
     clearProjectTasks(id);
     get().removeProjectAgentTasks(id);
+    get().removeProjectMemories(id);
     fileService.deleteProjectData(id).catch((e) => console.warn('[删除项目] 清理数据失败:', e));
     fileService.deleteProjectDataDir(id).catch((e) => console.warn('[删除项目] 清理目录失败:', e));
   },
@@ -269,6 +270,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     get().repairInterruptedForProject(id).catch((e) => console.warn('[切换项目] 修复中断消息失败:', e));
     // 项目切换只加载任务，不把应用运行期间的后台任务误判为中断。
     get().loadAgentTasksForProject(id).catch((e) => console.warn('[切换项目] 加载 Agent 任务失败:', e));
+    get().loadProjectMemoriesForProject(id).catch((e) => console.warn('[切换项目] 加载项目记忆失败:', e));
 
     setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
   },
@@ -425,6 +427,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         // 加载聊天会话
         get().loadConversationsForProject(activeProjectId).catch((e) => console.warn('[初始化] 加载会话失败:', e));
         get().repairInterruptedForProject(activeProjectId).catch((e) => console.warn('[初始化] 修复中断消息失败:', e));
+        get().loadProjectMemoriesForProject(activeProjectId).catch((e) => console.warn('[初始化] 加载项目记忆失败:', e));
         // 应用重启后，所有项目的未完成 Agent 任务都必须恢复为暂停，禁止自动续跑。
         const projectIds = get().projects.map((project) => project.id);
         await Promise.all(projectIds.map((projectId) =>

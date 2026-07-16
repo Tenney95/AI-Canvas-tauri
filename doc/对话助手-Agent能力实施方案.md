@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3-D1 已完成
+> 文档状态：P3-D2 已完成
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -46,7 +46,7 @@
 | P3-C1 | `[x]` | 联网搜索、受控网页读取和来源引用 | 2026-07-16 | 2026-07-16 |
 | P3-C2 | `[x]` | 会话级本地文件授权、读取和导出确认 | 2026-07-16 | 2026-07-16 |
 | P3-D1 | `[x]` | 模型上下文预算、占用显示和自动压缩 | 2026-07-16 | 2026-07-16 |
-| P3-D2 | `[ ]` | 用户确认的项目记忆 | - | - |
+| P3-D2 | `[x]` | 用户确认的项目记忆 | 2026-07-16 | 2026-07-16 |
 | P3-E1 | `[ ]` | Agent 任务时间线和后台控制 | - | - |
 | P3-E2 | `[ ]` | 重启恢复、安全加固和端到端验收 | - | - |
 
@@ -674,40 +674,50 @@ type PolicyDecision =
 
 ### P3-D2：用户确认的项目记忆
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 ### 目标
 
 建立可查看、可编辑、可删除、有来源的项目记忆，且任何写入都需要用户确认。
 
-### 计划文件
+### 实际文件
 
 - 新增：`src/types/memory.ts`
 - 新增：`src/services/chat/projectMemoryService.ts`
 - 新增：`src/store/store.memory.ts`
-- 新增：`src/components/chat/MemorySuggestionCard.tsx`
+- 新增：`src/services/chat/tools/memoryTools.ts`
 - 新增：`src/components/chat/ProjectMemoryPanel.tsx`
 - 修改：`src/services/indexedDbService.ts`
 - 修改：`src/store/useAppStore.ts`
+- 修改：`src/store/store.projects.ts`
+- 修改：`src/store/store.chat.ts`
 - 修改：`src/services/chat/contextManager.ts`
-- 修改：`src/services/chat/toolRegistry.ts`
+- 修改：`src/services/chat/tools/index.ts`
+- 修改：`src/services/ai/assistantStream.ts`
+- 修改：`src/components/chat/ChatHeader.tsx`
+- 修改：`src/components/chat/ChatPanel.tsx`
+
+与计划的差异：候选记忆通过新增 `memory_suggest` 工具（`memoryTools.ts`）进入 P3-B1 的
+`memory_write` 策略，复用已存在的审批卡确认，因此未新增 `MemorySuggestionCard.tsx`，
+也未改动 `toolRegistry.ts`（`memory_write` effect 和 Policy 分支在 P3-B1 已就绪）。
+记忆加载/清理接入 `store.projects.ts`（切换/初始化/删除项目）和 `store.chat.ts`（删除会话标记来源不可用）。
 
 ### 实施任务
 
-- [ ] 定义偏好、事实、约束和决定四类记忆。
-- [ ] Agent 只能提出候选记忆。
-- [ ] 用户确认后写入，并记录来源会话和消息。
-- [ ] 支持查看、编辑、删除和禁用。
-- [ ] Context Manager 按项目和相关性选择记忆。
-- [ ] 文件全文、网页全文、密钥和临时结果禁止进入记忆。
-- [ ] 删除来源对话时不自动删除已确认记忆，但标记来源不可用。
+- [x] 定义偏好、事实、约束和决定四类记忆。
+- [x] Agent 只能提出候选记忆（`memory_suggest`，effect=memory_write，始终需确认）。
+- [x] 用户确认后写入，并记录来源会话和消息（conversationId + 触发消息 ID + taskId）。
+- [x] 支持查看、编辑、删除和禁用（`ProjectMemoryPanel`）。
+- [x] Context Manager 按项目和相关性选择记忆（类别优先级 + recency + token 预算）。
+- [x] 文件全文、网页全文、密钥和临时结果禁止进入记忆（脱敏 + 500 字符上限）。
+- [x] 删除来源对话时不自动删除已确认记忆，但标记来源不可用。
 
 ### 验收
 
-- [ ] 未确认候选不会进入后续上下文。
-- [ ] 记忆只在所属项目生效。
-- [ ] 删除或禁用后不再发送给模型。
-- [ ] 用户能看到记忆来源和最后更新时间。
+- [x] 未确认候选不会进入后续上下文（候选仅经审批写入 store 后才注入）。
+- [x] 记忆只在所属项目生效（按 projectId 隔离，注入和面板均过滤当前项目）。
+- [x] 删除或禁用后不再发送给模型（注入只选 enabled 且属于当前项目的记忆）。
+- [x] 用户能看到记忆来源和最后更新时间（面板显示来源状态和更新时间）。
 
 ### 回滚
 
@@ -715,10 +725,17 @@ type PolicyDecision =
 
 ### 完成记录
 
-- 实际文件：待填写
-- 记忆类型：待填写
-- 隐私检查：待填写
-- 遗留问题：待填写
+- 完成日期：2026-07-16
+- 记忆类型：偏好 / 事实 / 约束 / 决定；注入排序按类别优先级（约束→决定→偏好→事实）再按更新时间
+- 候选闭环：`memory_suggest` 工具 → P3-B1 `memory_write` 策略强制确认 → 复用主/独立窗口审批卡 → 确认后写入当前项目记忆并记录来源；拒绝作为 Observation 返回模型
+- 持久化：IndexedDB v13 新增 `projectMemories` store（`projectId_updatedAt` 与 `conversationId` 索引），仅新增空 store，向后兼容；回滚必须保留 v13
+- 上下文注入：`contextManager.selectProjectMemoriesForContext` 按类别优先级 + recency 选择启用记忆，累计不超过 1500 token 预算，作为“可信”系统消息注入（与网页/文件的不可信边界区分）；无记忆或未传 projectId 时不注入
+- 隐私检查：写入前 `sanitizeMemoryContent` 脱敏密钥/凭据/本地绝对路径，正文截断到 500 字符上限，阻止文件/网页全文进入长期记忆；单项目上限 100 条，超出淘汰最旧
+- 来源生命周期：删除会话（`removeConversation`）标记来源记忆 `unavailable=true` 但不删除记忆；删除项目清理该项目全部记忆；切换/初始化项目加载对应记忆
+- 逻辑断言：`AGENT_D2_MEMORY_ASSERTIONS=PASS`（rolldown 打包真实源码 + stub），覆盖脱敏（密钥/凭据/路径/截断）、上下文选择（项目隔离/禁用过滤/类别优先级）、注入（可信标记/禁用不注入/无 projectId 不注入）
+- 实际检查：`npm run typecheck` 通过；15 个改动/新增文件定向 ESLint 通过；`git diff --check` 通过；UTF-8 严格解码通过；`npx vite build --outDir <系统临时目录>` 通过并清理
+- 浏览器手测：dev 环境验证——DB 升级到 v13 且含 `projectMemories`；记忆面板打开显示空状态；注入 2 条记忆后正确渲染类别徽标、更新时间和来源（含“来源对话已删除”）；禁用持久化到 IndexedDB 且行变暗；删除持久化并更新计数；全程无控制台错误
+- 交互限制：真实模型下 `memory_suggest` 逐次确认写入和独立窗口审批需在 Tauri 配置模型后手测；独立窗口不提供记忆管理入口（Agent 循环和写入均在主窗口）
 
 ### P3-E1：任务时间线和后台控制
 
@@ -925,3 +942,4 @@ type PolicyDecision =
 | 2026-07-16 | P3-C1 | 完成 Tavily 联网搜索、受限 Rust 网页读取、SSRF 防护、不可信内容边界和稳定来源引用。 |
 | 2026-07-16 | P3-C2 | 完成会话级本地文件 grant、受控读取、画布导入、即时撤销和逐次确认写入。 |
 | 2026-07-16 | P3-D1 | 完成模型上下文规格目录、token 估算、带历史的上下文组装、75%/90% 自动压缩、摘要持久化和占用指示器。 |
+| 2026-07-16 | P3-D2 | 完成四类项目记忆、memory_suggest 候选确认、v13 持久化、按项目和相关性的可信注入、脱敏隐私边界、来源生命周期和记忆管理面板。 |

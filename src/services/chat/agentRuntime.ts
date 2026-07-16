@@ -484,6 +484,7 @@ export async function runAgentLoop({
   try {
     const assembled = await assembleAgentContext({
       conversationId: initialTask.conversationId,
+      projectId: initialTask.projectId,
       systemPrompt,
       userMessage,
       excludeMessageIds,

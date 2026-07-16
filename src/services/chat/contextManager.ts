@@ -20,6 +20,11 @@ import type {
   ConversationContextSummary,
 } from '../../types/chat';
 import type { GeneralModelConfig } from '../../types';
+import {
+  PROJECT_MEMORY_KIND_LABELS,
+  PROJECT_MEMORY_KIND_PRIORITY,
+  type ProjectMemory,
+} from '../../types/memory';
 
 // ============================================
 // 阈值
@@ -151,11 +156,66 @@ export function estimateConversationUsage(
 }
 
 // ============================================
+// 项目记忆注入
+// ============================================
+
+/** 记忆块的 token 预算上限（估算），避免记忆挤占对话历史。 */
+const MEMORY_BLOCK_TOKEN_BUDGET = 1_500;
+
+/**
+ * 选择要注入上下文的已启用项目记忆。
+ * 按类别优先级（约束/决定/偏好/事实）再按更新时间排序，累计不超过 token 预算。
+ *
+ * ponytail: 相关性用"类别优先级 + recency + token 预算"近似；
+ * 若记忆量增大需要按当前对话主题做语义检索，再引入向量或关键词打分。
+ */
+export function selectProjectMemoriesForContext(
+  memories: ProjectMemory[],
+  projectId: string,
+): ProjectMemory[] {
+  const enabled = memories
+    .filter((memory) => memory.projectId === projectId && memory.enabled)
+    .sort((a, b) => {
+      const priorityDelta =
+        PROJECT_MEMORY_KIND_PRIORITY[a.kind] - PROJECT_MEMORY_KIND_PRIORITY[b.kind];
+      return priorityDelta !== 0 ? priorityDelta : b.updatedAt - a.updatedAt;
+    });
+
+  const selected: ProjectMemory[] = [];
+  let tokens = 0;
+  for (const memory of enabled) {
+    const cost = PER_MESSAGE_OVERHEAD + estimateTokens(memory.content);
+    if (tokens + cost > MEMORY_BLOCK_TOKEN_BUDGET) break;
+    selected.push(memory);
+    tokens += cost;
+  }
+  return selected;
+}
+
+/** 构建项目记忆系统消息；无启用记忆时返回空字符串。 */
+function buildMemoryBlock(projectId: string): string {
+  const memories = selectProjectMemoriesForContext(
+    useAppStore.getState().projectMemories,
+    projectId,
+  );
+  if (memories.length === 0) return '';
+  const lines = memories.map(
+    (memory) => `- [${PROJECT_MEMORY_KIND_LABELS[memory.kind]}] ${memory.content}`,
+  );
+  return [
+    '以下是用户已确认的项目长期记忆（可信，应主动遵守；如与用户当前消息冲突，以当前消息为准）：',
+    ...lines,
+  ].join('\n');
+}
+
+// ============================================
 // Agent 上下文组装
 // ============================================
 
 export interface AssembleAgentContextOptions {
   conversationId: string;
+  /** 当前项目 ID；用于注入项目记忆 */
+  projectId?: string;
   systemPrompt: string;
   userMessage: string;
   /** 当前轮已在界面新建的消息（当前用户消息、助手占位），从历史中排除 */
@@ -200,6 +260,7 @@ interface BuildResult {
 
 function buildMessages(
   systemPrompt: string,
+  memoryBlock: string,
   summary: ConversationContextSummary | undefined,
   history: ChatMessage[],
   userMessage: string,
@@ -208,6 +269,9 @@ function buildMessages(
   const systemTokens = systemPrompt
     ? PER_MESSAGE_OVERHEAD + estimateTokens(systemPrompt)
     : 0;
+  const memoryTokens = memoryBlock
+    ? PER_MESSAGE_OVERHEAD + estimateTokens(memoryBlock)
+    : 0;
   const summaryContent = summary
     ? `以下是本会话更早对话的压缩摘要（原始历史仍保留在本地，仅上下文使用摘要）：\n${summary.text}`
     : '';
@@ -215,7 +279,7 @@ function buildMessages(
     ? PER_MESSAGE_OVERHEAD + estimateTokens(summaryContent)
     : 0;
   const userTokens = PER_MESSAGE_OVERHEAD + estimateTokens(userMessage);
-  const fixedTokens = systemTokens + summaryTokens + userTokens;
+  const fixedTokens = systemTokens + memoryTokens + summaryTokens + userTokens;
 
   // 最新消息优先，从新到旧填充预算
   const included: ChatMessage[] = [];
@@ -232,6 +296,7 @@ function buildMessages(
 
   const messages: AssistantModelMessage[] = [
     ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+    ...(memoryBlock ? [{ role: 'system' as const, content: memoryBlock }] : []),
     ...(summaryContent ? [{ role: 'system' as const, content: summaryContent }] : []),
     ...included.map((message) => ({
       role: message.role as 'user' | 'assistant',
@@ -259,14 +324,15 @@ function buildMessages(
 export async function assembleAgentContext(
   options: AssembleAgentContextOptions,
 ): Promise<AssembledAgentContext> {
-  const { conversationId, systemPrompt, userMessage, signal } = options;
+  const { conversationId, projectId, systemPrompt, userMessage, signal } = options;
   const excludeIds = new Set(options.excludeMessageIds ?? []);
   const spec = resolveAssistantContextSpec();
+  const memoryBlock = projectId ? buildMemoryBlock(projectId) : '';
 
   const { messages: persisted } = await loadMessages(conversationId, 0, 200);
   let summary = getConversationSummary(conversationId);
   let history = selectHistoryMessages(persisted, excludeIds, summary);
-  let result = buildMessages(systemPrompt, summary, history, userMessage, spec.inputBudget);
+  let result = buildMessages(systemPrompt, memoryBlock, summary, history, userMessage, spec.inputBudget);
   let forcedCompression = false;
 
   const rawRatio = result.rawEstimatedTokens / spec.inputBudget;
@@ -281,7 +347,7 @@ export async function assembleAgentContext(
         forcedCompression = true;
         summary = compressed;
         history = selectHistoryMessages(persisted, excludeIds, summary);
-        result = buildMessages(systemPrompt, summary, history, userMessage, spec.inputBudget);
+        result = buildMessages(systemPrompt, memoryBlock, summary, history, userMessage, spec.inputBudget);
       }
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -297,8 +363,8 @@ export async function assembleAgentContext(
     }).catch(() => { /* 预压缩失败不影响本次请求，下次达到 90% 时再强制压缩 */ });
   }
 
-  // 系统规则 + 摘要 + 用户消息本身超出预算：无法继续压缩，拒绝发送
-  const fixedOnly = buildMessages(systemPrompt, summary, [], userMessage, spec.inputBudget);
+  // 系统规则 + 记忆 + 摘要 + 用户消息本身超出预算：无法继续压缩，拒绝发送
+  const fixedOnly = buildMessages(systemPrompt, memoryBlock, summary, [], userMessage, spec.inputBudget);
   if (fixedOnly.estimatedTokens > spec.inputBudget) {
     throw new ContextBudgetError(
       'CONTEXT_INPUT_TOO_LARGE',

@@ -32,6 +32,7 @@ import type { ProjectSlice } from './store.projects';
 import type { StyleSlice } from './store.styles';
 import type { ChatSlice } from './store.chat';
 import type { AgentSlice } from './store.agent';
+import type { MemorySlice } from './store.memory';
 import type { ToolbarSlice } from './store.toolbar';
 
 import { createNodeSlice } from './store.nodes';
@@ -49,6 +50,7 @@ import { createProjectSlice } from './store.projects';
 import { createStyleSlice } from './store.styles';
 import { createChatSlice } from './store.chat';
 import { createAgentSlice } from './store.agent';
+import { createMemorySlice } from './store.memory';
 import { createToolbarSlice } from './store.toolbar';
 
 // ---- Re-export utilities for backward compatibility ----
@@ -70,6 +72,7 @@ export type AppState = NodeSlice
   & ProjectSlice
   & ChatSlice
   & AgentSlice
+  & MemorySlice
   & ToolbarSlice;
 
 // ---- Store creation via slice composition ----
@@ -89,5 +92,6 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createProjectSlice(...a),
   ...createChatSlice(...a),
   ...createAgentSlice(...a),
+  ...createMemorySlice(...a),
   ...createToolbarSlice(...a),
 }));
