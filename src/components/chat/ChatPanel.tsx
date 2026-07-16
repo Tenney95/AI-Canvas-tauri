@@ -46,12 +46,16 @@ import {
   resolveAgentApproval,
   runAgentLoop,
   runAgentTask,
+  pauseAgentTask,
+  stopAgentTask,
+  skipAgentStep,
+  requestAgentReplan,
 } from '../../services/chat/agentRuntime';
 import { getAvailableAgentTools } from '../../services/chat/toolRegistry';
 import { ensureAgentToolsRegistered } from '../../services/chat/tools';
 import { estimateConversationUsage } from '../../services/chat/contextManager';
 import type { ChatMessage } from '../../types/chat';
-import type { AgentMode } from '../../types/agent';
+import { DEFAULT_AGENT_TASK_BUDGET, type AgentMode } from '../../types/agent';
 import type { MediaGenerationIntent } from '../../types/media';
 import {
   authorizeConversationFiles,
@@ -288,6 +292,49 @@ export default function ChatPanel({
     }
   }, [detached, showToast]);
 
+  const scrollToBottom = useCallback(() => {
+    setTimeout(() => {
+      document.querySelector('.chat-panel-messages')?.lastElementChild?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  }, []);
+
+  const agentControls = useMemo(() => ({
+    onResolveApproval: handleResolveApproval,
+    onPause: (taskId: string) => {
+      if (detached) { void emitAction({ type: 'pause_agent_task', taskId }); return; }
+      pauseAgentTask(taskId);
+      showToast('已暂停任务', 'info');
+    },
+    onResume: (taskId: string) => {
+      if (detached) { void emitAction({ type: 'resume_agent_task', taskId }); return; }
+      if (resumeAgentTaskExecution(taskId, scrollToBottom)) {
+        showToast('已继续任务', 'info');
+      } else {
+        showToast('无法继续该任务', 'error');
+      }
+    },
+    onStop: (taskId: string) => {
+      if (detached) { void emitAction({ type: 'stop_agent_task', taskId }); return; }
+      stopAgentTask(taskId);
+      showToast('已停止任务', 'info');
+    },
+    onSkip: (taskId: string, stepId: string) => {
+      if (detached) { void emitAction({ type: 'skip_agent_step', taskId, stepId }); return; }
+      try {
+        skipAgentStep(taskId, stepId);
+        showToast('已跳过当前步骤，可继续或重新规划', 'info');
+      } catch {
+        showToast('该步骤已无法跳过', 'error');
+      }
+    },
+    onReplan: (taskId: string) => {
+      if (detached) { void emitAction({ type: 'replan_agent_task', taskId }); return; }
+      requestAgentReplan(taskId);
+      resumeAgentTaskExecution(taskId, scrollToBottom);
+      showToast('正在重新规划任务', 'info');
+    },
+  }), [detached, handleResolveApproval, showToast, scrollToBottom]);
+
   const handleAuthorizeLocalFiles = useCallback(() => {
     if (!effectiveActiveConversationId) return;
     if (detached) {
@@ -364,12 +411,6 @@ export default function ChatPanel({
     };
     addMessage(assistantMsg);
 
-    const scrollToBottom = () => {
-      setTimeout(() => {
-        document.querySelector('.chat-panel-messages')?.lastElementChild?.scrollIntoView({ behavior: 'smooth' });
-      }, 100);
-    };
-
     startAgentMessageExecution({
       text,
       projectId: effectiveProjectId ?? '',
@@ -388,6 +429,7 @@ export default function ChatPanel({
     effectiveAgentMode,
     effectiveProjectId,
     addMessage,
+    scrollToBottom,
   ]);
 
   // ── 状态同步到独立窗口 ──
@@ -535,6 +577,33 @@ export default function ChatPanel({
               if (!resolveAgentApproval(action.approvalId, action.approved)) {
                 store.showToast('该确认已过期，请重新发起操作', 'info');
               }
+              break;
+
+            case 'pause_agent_task':
+              pauseAgentTask(action.taskId);
+              break;
+
+            case 'resume_agent_task':
+              if (!resumeAgentTaskExecution(action.taskId)) {
+                store.showToast('无法继续该任务', 'error');
+              }
+              break;
+
+            case 'stop_agent_task':
+              stopAgentTask(action.taskId);
+              break;
+
+            case 'skip_agent_step':
+              try {
+                skipAgentStep(action.taskId, action.stepId);
+              } catch {
+                store.showToast('该步骤已无法跳过', 'error');
+              }
+              break;
+
+            case 'replan_agent_task':
+              requestAgentReplan(action.taskId);
+              resumeAgentTaskExecution(action.taskId);
               break;
 
             case 'select_model': {
@@ -693,7 +762,7 @@ export default function ChatPanel({
                     onNewConversation={handleNewConversation}
                     onShowList={handleShowList}
                     onAddMediaToCanvas={detached ? undefined : handleAddMediaToCanvas}
-                    onResolveApproval={handleResolveApproval}
+                    agentControls={agentControls}
                   />
 
                   {/* Input area */}
@@ -758,20 +827,66 @@ function startAgentMessageExecution({
     goal: text,
   });
   store.updateMessage(assistantMessageId, { agentTaskId: task.id });
+  driveAgentTask(task.id, assistantMessageId, onProgress);
+}
 
-  void runAgentTask(task.id, async (signal) => {
+/**
+ * 继续执行一个暂停或失败的 Agent 任务。
+ *
+ * 重新驱动多轮循环；预算已耗尽时按默认额度追加，使继续能取得进展。
+ * 完整的 revision / 授权预校验在 P3-E2 落地，这里只保证同一运行会话内可继续。
+ */
+function resumeAgentTaskExecution(taskId: string, onProgress?: () => void): boolean {
+  const store = useAppStore.getState();
+  const task = store.agentTasks.find((item) => item.id === taskId);
+  if (!task) return false;
+  if (!['paused', 'failed'].includes(task.status)) return false;
+  const message = store.messages.find(
+    (item) => item.agentTaskId === taskId && item.role === 'assistant',
+  );
+  if (!message) return false;
+
+  const nextBudget = { ...task.budget };
+  if (task.modelRounds >= task.budget.maxModelRounds) {
+    nextBudget.maxModelRounds = task.modelRounds + DEFAULT_AGENT_TASK_BUDGET.maxModelRounds;
+  }
+  if (task.toolCallCount >= task.budget.maxToolCalls) {
+    nextBudget.maxToolCalls = task.toolCallCount + DEFAULT_AGENT_TASK_BUDGET.maxToolCalls;
+  }
+  store.updateAgentTask(taskId, { budget: nextBudget });
+  driveAgentTask(taskId, message.id, onProgress);
+  return true;
+}
+
+/**
+ * 驱动指定任务的多轮循环。start 与 resume 共用；所有输入从任务快照读取，
+ * 因此关闭面板、切换会话后仍可继续，且不依赖发起时的闭包。
+ */
+function driveAgentTask(
+  taskId: string,
+  assistantMessageId: string,
+  onProgress?: () => void,
+): void {
+  const store = useAppStore.getState();
+  ensureAgentToolsRegistered();
+  const task = store.agentTasks.find((item) => item.id === taskId);
+  if (!task) return;
+  const { projectId, conversationId, userMessageId, goal: text } = task;
+  const mode = store.conversations.find((c) => c.id === conversationId)?.agentMode ?? task.mode;
+
+  void runAgentTask(taskId, async (signal) => {
     let failed = false;
 
     if (resolveAssistantModel()) {
       const availableTools = getAvailableAgentTools({
-        taskId: task.id,
+        taskId,
         projectId,
         conversationId,
         mode,
       });
       if (availableTools.length > 0) {
         return runAgentLoop({
-          taskId: task.id,
+          taskId,
           systemPrompt: buildAssistantSystemPrompt({ agentTools: true }),
           userMessage: text,
           excludeMessageIds: [userMessageId, assistantMessageId],

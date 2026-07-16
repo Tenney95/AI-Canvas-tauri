@@ -132,6 +132,8 @@ export async function runAgentTask(
     if (!current) {
       throw new Error(`Agent 任务在执行期间被删除: ${taskId}`);
     }
+    // 若已有新的运行接管本任务（继续 / 重新规划），不覆盖其状态
+    if (activeControllers.get(taskId) !== controller) return current;
     if (current.status === 'paused' || current.status === 'stopped') return current;
 
     return transitionAgentTask(taskId, outcome, outcome === 'failed'
@@ -140,6 +142,7 @@ export async function runAgentTask(
   } catch (error) {
     const current = useAppStore.getState().agentTasks.find((task) => task.id === taskId);
     if (!current) throw error;
+    if (activeControllers.get(taskId) !== controller) return current;
     if (current.status === 'paused' || current.status === 'stopped') return current;
 
     const aborted = controller.signal.aborted;

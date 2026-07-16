@@ -58,6 +58,11 @@ export type ChatAction =
   | { type: 'delete_conversation'; conversationId: string }
   | { type: 'set_agent_mode'; conversationId: string; mode: AgentMode }
   | { type: 'resolve_agent_approval'; approvalId: string; approved: boolean }
+  | { type: 'pause_agent_task'; taskId: string }
+  | { type: 'resume_agent_task'; taskId: string }
+  | { type: 'stop_agent_task'; taskId: string }
+  | { type: 'skip_agent_step'; taskId: string; stepId: string }
+  | { type: 'replan_agent_task'; taskId: string }
   | { type: 'authorize_local_files'; conversationId: string }
   | { type: 'revoke_local_file'; conversationId: string; grantId: string }
   | { type: 'select_model'; modelId?: string; category?: 'text' | 'image' | 'video' }

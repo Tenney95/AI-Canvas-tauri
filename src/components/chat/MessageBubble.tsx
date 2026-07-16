@@ -8,19 +8,20 @@ import type { ChatMessage } from '../../types/chat';
 import type { AgentTask } from '../../types/agent';
 import MascotAvatar from './MascotAvatar';
 import SourceList from './SourceList';
+import AgentTaskTimeline, { type AgentTaskControls } from './AgentTaskTimeline';
 
 interface MessageBubbleProps {
   message: ChatMessage;
   agentTask?: AgentTask;
   onAddToCanvas?: (messageId: string) => void;
-  onResolveApproval?: (approvalId: string, approved: boolean) => void;
+  agentControls?: AgentTaskControls;
 }
 
 export default function MessageBubble({
   message,
   agentTask,
   onAddToCanvas,
-  onResolveApproval,
+  agentControls,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
@@ -41,9 +42,9 @@ export default function MessageBubble({
   const hasVideo = showMediaInChat && mediaResult?.kind === 'video';
   const hasAudio = showMediaInChat && mediaResult?.kind === 'audio';
   const isGenerating = message.mediaStatus === 'queued' || message.mediaStatus === 'generating';
-  const pendingApprovalStep = agentTask?.steps.find(
-    (step) => step.approval?.status === 'pending',
-  );
+  const showTimeline = !!agentTask
+    && !!agentControls
+    && (agentTask.steps.length > 0 || agentTask.status !== 'completed');
 
   return (
     <div className={`chat-message-bubble flex ${isUser ? 'justify-end chat-message-user' : 'justify-start chat-message-assistant'}`}>
@@ -63,36 +64,8 @@ export default function MessageBubble({
           <div className="whitespace-pre-wrap break-words">{message.content}</div>
         )}
 
-        {pendingApprovalStep?.approval && onResolveApproval && (
-          <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3">
-            <div className="flex items-start gap-2">
-              <Icon icon="mdi:shield-check-outline" width="16" className="mt-0.5 shrink-0 text-amber-400" />
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium text-amber-300">
-                  {pendingApprovalStep.title}
-                </p>
-                <p className="mt-1 text-[11px] leading-4 text-canvas-text-secondary">
-                  {pendingApprovalStep.toolCall?.inputSummary || pendingApprovalStep.approval.summary}
-                </p>
-              </div>
-            </div>
-            <div className="mt-3 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => onResolveApproval(pendingApprovalStep.approval!.id, false)}
-                className="rounded-md px-2.5 py-1 text-[11px] text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text"
-              >
-                拒绝
-              </button>
-              <button
-                type="button"
-                onClick={() => onResolveApproval(pendingApprovalStep.approval!.id, true)}
-                className="rounded-md bg-amber-400 px-2.5 py-1 text-[11px] font-medium text-black hover:bg-amber-300"
-              >
-                确认执行
-              </button>
-            </div>
-          </div>
+        {showTimeline && agentTask && agentControls && (
+          <AgentTaskTimeline task={agentTask} {...agentControls} />
         )}
 
         {/* ── 生成中状态 ── */}

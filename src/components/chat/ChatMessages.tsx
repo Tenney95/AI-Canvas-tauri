@@ -9,6 +9,7 @@ import type { ChatMessage } from '../../types/chat';
 import type { AgentTask } from '../../types/agent';
 import MessageBubble from './MessageBubble';
 import EmptyChatState from './EmptyChatState';
+import type { AgentTaskControls } from './AgentTaskTimeline';
 
 interface ChatMessagesProps {
   messages: ChatMessage[];
@@ -19,7 +20,7 @@ interface ChatMessagesProps {
   onNewConversation: () => void;
   onShowList: () => void;
   onAddMediaToCanvas?: (messageId: string) => void;
-  onResolveApproval?: (approvalId: string, approved: boolean) => void;
+  agentControls?: AgentTaskControls;
 }
 
 export default function ChatMessages({
@@ -30,7 +31,7 @@ export default function ChatMessages({
   onNewConversation,
   onShowList,
   onAddMediaToCanvas,
-  onResolveApproval,
+  agentControls,
 }: ChatMessagesProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -68,7 +69,7 @@ export default function ChatMessages({
           message={msg}
           agentTask={agentTasks.find((task) => task.id === msg.agentTaskId)}
           onAddToCanvas={onAddMediaToCanvas}
-          onResolveApproval={onResolveApproval}
+          agentControls={agentControls}
         />
       ))}
 
