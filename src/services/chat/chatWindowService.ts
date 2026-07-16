@@ -55,6 +55,7 @@ export type ChatAction =
   | { type: 'archive_conversation'; conversationId: string }
   | { type: 'delete_conversation'; conversationId: string }
   | { type: 'set_agent_mode'; conversationId: string; mode: AgentMode }
+  | { type: 'resolve_agent_approval'; approvalId: string; approved: boolean }
   | { type: 'select_model'; modelId?: string; category?: 'text' | 'image' | 'video' }
   | { type: 'confirm_commands'; messageId: string }
   | { type: 'cancel_commands'; messageId: string }

@@ -5,14 +5,22 @@
  */
 import { Icon } from '@iconify/react';
 import type { ChatMessage } from '../../types/chat';
+import type { AgentTask } from '../../types/agent';
 import MascotAvatar from './MascotAvatar';
 
 interface MessageBubbleProps {
   message: ChatMessage;
+  agentTask?: AgentTask;
   onAddToCanvas?: (messageId: string) => void;
+  onResolveApproval?: (approvalId: string, approved: boolean) => void;
 }
 
-export default function MessageBubble({ message, onAddToCanvas }: MessageBubbleProps) {
+export default function MessageBubble({
+  message,
+  agentTask,
+  onAddToCanvas,
+  onResolveApproval,
+}: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
 
@@ -30,7 +38,11 @@ export default function MessageBubble({ message, onAddToCanvas }: MessageBubbleP
   const showMediaInChat = mediaResult?.deliveryMode !== 'canvas';
   const hasImage = showMediaInChat && mediaResult?.kind === 'image';
   const hasVideo = showMediaInChat && mediaResult?.kind === 'video';
+  const hasAudio = showMediaInChat && mediaResult?.kind === 'audio';
   const isGenerating = message.mediaStatus === 'queued' || message.mediaStatus === 'generating';
+  const pendingApprovalStep = agentTask?.steps.find(
+    (step) => step.approval?.status === 'pending',
+  );
 
   return (
     <div className={`chat-message-bubble flex ${isUser ? 'justify-end chat-message-user' : 'justify-start chat-message-assistant'}`}>
@@ -48,6 +60,38 @@ export default function MessageBubble({ message, onAddToCanvas }: MessageBubbleP
       >
         {message.content && (
           <div className="whitespace-pre-wrap break-words">{message.content}</div>
+        )}
+
+        {pendingApprovalStep?.approval && onResolveApproval && (
+          <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3">
+            <div className="flex items-start gap-2">
+              <Icon icon="mdi:shield-check-outline" width="16" className="mt-0.5 shrink-0 text-amber-400" />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-amber-300">
+                  {pendingApprovalStep.title}
+                </p>
+                <p className="mt-1 text-[11px] leading-4 text-canvas-text-secondary">
+                  {pendingApprovalStep.toolCall?.inputSummary || pendingApprovalStep.approval.summary}
+                </p>
+              </div>
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => onResolveApproval(pendingApprovalStep.approval!.id, false)}
+                className="rounded-md px-2.5 py-1 text-[11px] text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text"
+              >
+                拒绝
+              </button>
+              <button
+                type="button"
+                onClick={() => onResolveApproval(pendingApprovalStep.approval!.id, true)}
+                className="rounded-md bg-amber-400 px-2.5 py-1 text-[11px] font-medium text-black hover:bg-amber-300"
+              >
+                确认执行
+              </button>
+            </div>
+          </div>
         )}
 
         {/* ── 生成中状态 ── */}
@@ -88,6 +132,25 @@ export default function MessageBubble({ message, onAddToCanvas }: MessageBubbleP
             </video>
             {mediaResult.prompt && (
               <p className="text-[10px] text-canvas-text-muted px-2 py-1.5 bg-canvas-bg/60">
+                {mediaResult.prompt}
+              </p>
+            )}
+          </div>
+        )}
+        {hasAudio && !isGenerating && (
+          <div className="chat-message-audio mt-2 rounded-lg border border-canvas-border bg-canvas-bg/60 p-2">
+            <div className="mb-2 flex items-center gap-1.5 text-[11px] text-canvas-text-secondary">
+              <Icon
+                icon={mediaResult.audioPurpose === 'music' ? 'mdi:music-note' : 'mdi:account-voice'}
+                width="14"
+              />
+              {mediaResult.audioPurpose === 'music' ? '生成的音乐' : '生成的语音'}
+            </div>
+            <audio src={mediaResult.url} controls className="h-9 w-full" preload="metadata">
+              您的浏览器不支持音频播放
+            </audio>
+            {mediaResult.prompt && (
+              <p className="mt-1.5 text-[10px] text-canvas-text-muted">
                 {mediaResult.prompt}
               </p>
             )}

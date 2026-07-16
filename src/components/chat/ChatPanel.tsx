@@ -42,10 +42,12 @@ import {
 } from '../../services/ai/assistantStream';
 import { runMediaGeneration } from '../../services/ai/generationRuntime';
 import {
+  resolveAgentApproval,
   runAgentLoop,
   runAgentTask,
 } from '../../services/chat/agentRuntime';
 import { getAvailableAgentTools } from '../../services/chat/toolRegistry';
+import { ensureAgentToolsRegistered } from '../../services/chat/tools';
 import type { ChatMessage } from '../../types/chat';
 import type { AgentMode } from '../../types/agent';
 import type { MediaGenerationIntent } from '../../types/media';
@@ -57,6 +59,22 @@ interface ChatPanelProps {
   detachedSnapshot?: ChatStateSnapshot;
   detachedInitialized?: boolean;
   detachedHeaderActions?: ReactNode;
+}
+
+function markApprovalMessageExecuting(approvalId: string): void {
+  const store = useAppStore.getState();
+  const task = store.agentTasks.find((item) =>
+    item.steps.some((step) => step.approval?.id === approvalId),
+  );
+  if (!task) return;
+  const step = task.steps.find((item) => item.approval?.id === approvalId);
+  const message = store.messages.find((item) => item.agentTaskId === task.id);
+  if (!message || !step) return;
+  const placeholder = `等待确认：${step.title}`;
+  store.updateMessage(message.id, {
+    content: message.content === placeholder ? '' : message.content,
+    status: 'executing',
+  });
 }
 
 export default function ChatPanel({
@@ -209,6 +227,17 @@ export default function ChatPanel({
       store.showToast(errorMessage, 'error');
     }
   }, [detached]);
+
+  const handleResolveApproval = useCallback((approvalId: string, approved: boolean) => {
+    if (detached) {
+      void emitAction({ type: 'resolve_agent_approval', approvalId, approved });
+      return;
+    }
+    markApprovalMessageExecuting(approvalId);
+    if (!resolveAgentApproval(approvalId, approved)) {
+      showToast('该确认已过期，请重新发起操作', 'info');
+    }
+  }, [detached, showToast]);
 
   // ── 发送消息 ──
   const handleSend = useCallback(() => {
@@ -393,6 +422,13 @@ export default function ChatPanel({
               );
               break;
 
+            case 'resolve_agent_approval':
+              markApprovalMessageExecuting(action.approvalId);
+              if (!resolveAgentApproval(action.approvalId, action.approved)) {
+                store.showToast('该确认已过期，请重新发起操作', 'info');
+              }
+              break;
+
             case 'select_model': {
               const cfg: Record<string, string | undefined> = {};
               const c = action.category || 'text';
@@ -539,11 +575,13 @@ export default function ChatPanel({
                   {/* Messages */}
                   <ChatMessages
                     messages={conversationMessages}
+                    agentTasks={effectiveAgentTasks}
                     showEmptyState={showEmptyState}
                     detachedInitialized={detachedInitialized}
                     onNewConversation={handleNewConversation}
                     onShowList={handleShowList}
                     onAddMediaToCanvas={detached ? undefined : handleAddMediaToCanvas}
+                    onResolveApproval={handleResolveApproval}
                   />
 
                   {/* Input area */}
@@ -586,6 +624,7 @@ function startAgentMessageExecution({
   onProgress,
 }: StartAgentMessageExecutionOptions): void {
   const store = useAppStore.getState();
+  ensureAgentToolsRegistered();
   const task = store.createAgentTask({
     projectId,
     conversationId,
@@ -608,7 +647,7 @@ function startAgentMessageExecution({
       if (availableTools.length > 0) {
         return runAgentLoop({
           taskId: task.id,
-          systemPrompt: buildAssistantSystemPrompt(),
+          systemPrompt: buildAssistantSystemPrompt({ agentTools: true }),
           userMessage: text,
           signal,
           callbacks: {
@@ -752,6 +791,7 @@ async function triggerMediaGeneration(
       canvasNodeId: targetNodeId,
       canvasError: targetNodeId ? message : undefined,
     });
-    store.showToast(`${intent.kind === 'image' ? '图片' : '视频'}生成失败: ${message}`, 'error');
+    const mediaLabel = intent.kind === 'image' ? '图片' : intent.kind === 'video' ? '视频' : '音频';
+    store.showToast(`${mediaLabel}生成失败: ${message}`, 'error');
   }
 }

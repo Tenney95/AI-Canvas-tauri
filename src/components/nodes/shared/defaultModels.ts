@@ -3,7 +3,7 @@
  */
 import type { GeneralModelConfig, ModelGroup, ModelOption } from '../../../types';
 
-export type MediaModelKind = 'image' | 'video';
+export type MediaModelKind = 'image' | 'video' | 'audio';
 
 export interface MediaModelOption extends ModelOption {
   mediaKind: MediaModelKind;
@@ -763,7 +763,7 @@ export const defaultModelGroups: ModelGroup[] = [
   },
 ];
 
-/** 节点与对话共用的图片/视频模型目录，不包含工作流。 */
+/** 节点与对话共用的图片/视频/音频模型目录，不包含工作流。 */
 export function getMediaModelOptions(
   generalModels: GeneralModelConfig[] = [],
 ): MediaModelOption[] {
@@ -771,25 +771,40 @@ export function getMediaModelOptions(
     if (model.provider === 'runninghubwf') return [];
     const supportsImage = model.nodeTypes.includes('ai-image');
     const supportsVideo = model.nodeTypes.includes('ai-video');
+    const supportsAudio = model.nodeTypes.includes('ai-audio');
     const entries: MediaModelOption[] = [];
     const groupInfo = { groupId: group.id, groupName: group.name };
     if (supportsImage) entries.push({ ...model, ...groupInfo, mediaKind: 'image' });
     if (supportsVideo) entries.push({ ...model, ...groupInfo, mediaKind: 'video' });
+    if (supportsAudio) entries.push({ ...model, ...groupInfo, mediaKind: 'audio' });
     return entries;
   }));
 
   const custom: MediaModelOption[] = generalModels
-    .filter((model) => model.category === 'image' || model.category === 'video')
+    .filter((model) => (
+      model.category === 'image'
+      || model.category === 'video'
+      || model.category === 'audio'
+    ))
     .map((model) => {
-      const mediaKind: MediaModelKind = model.category === 'image' ? 'image' : 'video';
+      const mediaKind: MediaModelKind = model.category === 'image'
+        ? 'image'
+        : model.category === 'video'
+          ? 'video'
+          : 'audio';
+      const nodeType = mediaKind === 'image'
+        ? 'ai-image'
+        : mediaKind === 'video'
+          ? 'ai-video'
+          : 'ai-audio';
       return {
         value: `general/${model.id}`,
         provider: 'general',
         label: model.name,
         description: `ID: ${model.modelId}`,
         iconType: 'badge',
-        badgeText: mediaKind === 'image' ? '图' : '视',
-        nodeTypes: mediaKind === 'image' ? ['ai-image'] : ['ai-video'],
+        badgeText: mediaKind === 'image' ? '图' : mediaKind === 'video' ? '视' : '音',
+        nodeTypes: [nodeType],
         mediaKind,
         groupId: 'general-models',
         groupName: '通用模型',

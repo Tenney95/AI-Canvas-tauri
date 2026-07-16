@@ -18,6 +18,8 @@ export interface AgentToolContext {
   projectId: string;
   conversationId: string;
   mode: AgentMode;
+  /** 工具提案时的画布修订号；写工具执行前必须复核。 */
+  baseRevision?: number;
   signal: AbortSignal;
 }
 

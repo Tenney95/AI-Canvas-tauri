@@ -34,6 +34,7 @@ export type AgentExecutionOutcome =
 export type AgentTaskExecutor = (signal: AbortSignal) => Promise<AgentExecutionOutcome>;
 
 const activeControllers = new Map<string, AbortController>();
+const pendingApprovalResolvers = new Map<string, (approved: boolean) => void>();
 
 const ALLOWED_TRANSITIONS: Record<AgentTaskStatus, ReadonlySet<AgentTaskStatus>> = {
   queued: new Set(['planning', 'paused', 'stopped']),
@@ -158,6 +159,13 @@ export function stopAgentTask(taskId: string): AgentTask {
     pausedReason: undefined,
     errorCode: 'AGENT_STOPPED',
   });
+}
+
+export function resolveAgentApproval(approvalId: string, approved: boolean): boolean {
+  const resolver = pendingApprovalResolvers.get(approvalId);
+  if (!resolver) return false;
+  resolver(approved);
+  return true;
 }
 
 export function prepareAgentTaskResume(taskId: string): AgentTask {
@@ -418,6 +426,28 @@ async function runWithConcurrency<T>(
   await Promise.all(workers);
 }
 
+function waitForAgentApproval(
+  approvalId: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
+    const cleanup = () => {
+      signal.removeEventListener('abort', handleAbort);
+      pendingApprovalResolvers.delete(approvalId);
+    };
+    const handleAbort = () => {
+      cleanup();
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    pendingApprovalResolvers.set(approvalId, (approved) => {
+      cleanup();
+      resolve(approved);
+    });
+    signal.addEventListener('abort', handleAbort, { once: true });
+    if (signal.aborted) handleAbort();
+  });
+}
+
 /**
  * 多轮“模型 → 工具 → Observation → 模型”循环。
  *
@@ -449,7 +479,11 @@ export async function runAgentLoop({
     const currentMode = useAppStore.getState().conversations.find(
       (conversation) => conversation.id === task.conversationId,
     )?.agentMode ?? task.mode;
-    const roundContext = { ...contextBase, mode: currentMode };
+    const roundContext = {
+      ...contextBase,
+      mode: currentMode,
+      baseRevision: useAppStore.getState().getCurrentRevision(),
+    };
     if (task.modelRounds >= task.budget.maxModelRounds) {
       transitionAgentTask(taskId, 'paused', { pausedReason: 'model_round_budget_exhausted' });
       callbacks.onError?.('已达到模型规划轮次上限，任务已暂停');
@@ -592,7 +626,43 @@ export async function runAgentLoop({
       if (policy.outcome === 'require_approval') {
         transitionAgentTask(taskId, 'waiting_approval');
         callbacks.onApprovalRequired?.(step);
-        return 'waiting_approval';
+        const approvalId = step.approval!.id;
+        const approved = await waitForAgentApproval(approvalId, signal);
+        const resolvedAt = Date.now();
+        updateTaskSnapshot(taskId, (current) => ({
+          ...current,
+          steps: current.steps.map((item) => item.id === step.id
+            ? {
+                ...item,
+                status: approved ? 'running' : 'skipped',
+                updatedAt: resolvedAt,
+                approval: item.approval
+                  ? {
+                      ...item.approval,
+                      status: approved ? 'approved' : 'rejected',
+                      resolvedAt,
+                    }
+                  : undefined,
+              }
+            : item),
+        }));
+        if (!approved) {
+          const denied: ToolResultSummary = {
+            callId: call.callId,
+            toolId: call.toolId,
+            status: 'denied',
+            summary: '用户拒绝了本次操作',
+            truncated: false,
+          };
+          results.set(call.callId, {
+            summary: denied,
+            modelContent: denied.summary,
+          });
+          callbacks.onToolResult?.(denied);
+          transitionAgentTask(taskId, 'running');
+          continue;
+        }
+        transitionAgentTask(taskId, 'running');
       }
 
       allowedCalls.push({

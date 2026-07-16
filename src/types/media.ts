@@ -1,5 +1,7 @@
 /** 对话助手媒体生成领域类型。 */
-export type MediaKind = 'image' | 'video';
+export type MediaKind = 'image' | 'video' | 'audio';
+
+export type AudioGenerationPurpose = 'music' | 'speech';
 
 export type MediaDeliveryMode = 'chat' | 'canvas' | 'both';
 
@@ -9,6 +11,8 @@ export interface MediaGenerationIntent {
   /** GeneralModelConfig.id 或供应商模型 value。 */
   modelRef?: string;
   deliveryMode: MediaDeliveryMode;
+  /** 音频生成时用于区分音乐与语音，底层仍复用音频节点执行能力。 */
+  audioPurpose?: AudioGenerationPurpose;
 }
 
 export type MediaGenerationStatus =
@@ -36,6 +40,7 @@ export interface MediaGenerationResult {
   provider: string;
   width?: number;
   height?: number;
+  audioPurpose?: AudioGenerationPurpose;
   createdAt: number;
 }
 

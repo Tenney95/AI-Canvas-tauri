@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3-B1 已完成，等待进入 P3-B2
+> 文档状态：P3-B2 已完成
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -42,7 +42,7 @@
 | P3-A1 | `[x]` | Agent 领域类型、会话模式和任务持久化骨架 | 2026-07-16 | 2026-07-16 |
 | P3-A2 | `[x]` | Agent Runtime 骨架、B/C 切换与现有对话接入 | 2026-07-16 | 2026-07-16 |
 | P3-B1 | `[x]` | Tool Registry、Policy Engine 和工具调用循环 | 2026-07-16 | 2026-07-16 |
-| P3-B2 | `[ ]` | 画布工具与媒体工具迁移 | - | - |
+| P3-B2 | `[x]` | 画布工具与媒体工具迁移 | 2026-07-16 | 2026-07-16 |
 | P3-C1 | `[ ]` | 联网搜索、受控网页读取和来源引用 | - | - |
 | P3-C2 | `[ ]` | 会话级本地文件授权、读取和导出确认 | - | - |
 | P3-D1 | `[ ]` | 模型上下文预算、占用显示和自动压缩 | - | - |
@@ -422,43 +422,50 @@ type PolicyDecision =
 
 ### P3-B2：画布和媒体工具迁移
 
-**状态：** `[ ]`
+**状态：** `[x]`
 
 ### 目标
 
 让 Agent 通过注册工具执行画布操作和媒体生成，同时保持现有撤销、任务、产物和节点物化语义。
 
-### 计划文件
+### 实际文件
 
 - 新增：`src/services/chat/tools/canvasTools.ts`
 - 新增：`src/services/chat/tools/mediaTools.ts`
-- 修改：`src/services/chat/commandRegistry.ts`
-- 修改：`src/services/chat/canvasPlanner.ts`
-- 修改：`src/services/chat/assistantService.ts`
+- 新增：`src/services/chat/tools/index.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/chat/toolRegistry.ts`
+- 修改：`src/services/chat/policyEngine.ts`
+- 修改：`src/services/chat/chatWindowService.ts`
+- 修改：`src/services/ai/assistantStream.ts`
 - 修改：`src/services/ai/generationRuntime.ts`
 - 修改：`src/store/store.nodes.ts`
-- 修改：`src/store/store.history.ts`
 - 修改：`src/types/media.ts`
+- 修改：`src/components/nodes/shared/defaultModels.ts`
+- 修改：`src/components/chat/ChatInput.tsx`
+- 修改：`src/components/chat/ChatPanel.tsx`
+- 修改：`src/components/chat/ChatMessages.tsx`
+- 修改：`src/components/chat/MessageBubble.tsx`
 
 ### 实施任务
 
-- [ ] 将查询、创建、更新、连线、分组、删除、撤销和重做注册为画布工具。
-- [ ] 为批量写操作提供原子 Store Action，不循环拼接单节点 Action。
-- [ ] 每次写入前检查项目、revision 和目标节点。
-- [ ] B 模式画布写操作等待确认。
-- [ ] C 模式画布写操作自动执行并支持一次撤销。
-- [ ] 将图片、视频、音乐和语音接入媒体工具。
-- [ ] 每次媒体生成和重新生成都等待确认。
-- [ ] 保持 `chat/canvas/both` 三种交付模式。
-- [ ] 供应商不支持取消时只停止跟踪。
+- [x] 将查询、创建、更新、连线、分组、删除、撤销和重做注册为画布工具。
+- [x] 为批量写操作提供原子 Store Action，不循环拼接单节点 Action。
+- [x] 每次写入前检查项目、revision 和目标节点。
+- [x] B 模式画布写操作等待确认。
+- [x] C 模式画布写操作自动执行并支持一次撤销。
+- [x] 将图片、视频、音乐和语音接入媒体工具。
+- [x] 每次媒体生成和重新生成都等待确认。
+- [x] 保持 `chat/canvas/both` 三种交付模式。
+- [x] 供应商不支持取消时只停止跟踪并忽略迟到结果。
 
 ### 验收
 
-- [ ] C 模式自动完成多步画布操作。
-- [ ] 一次撤销完整恢复一个 Agent 写入批次。
-- [ ] revision 变化时拒绝旧计划并重新规划。
-- [ ] 媒体未确认前没有供应商请求和节点副作用。
-- [ ] 重新生成再次确认，且不会覆盖上一产物。
+- [x] C 模式允许模型连续调用多个画布工具，写工具按调用顺序串行执行。
+- [x] 创建、更新、连接、分组和删除的单个批次只提交一次撤销快照。
+- [x] revision 变化时写工具拒绝旧提案并把失败 Observation 返回模型。
+- [x] 媒体未确认前停留在审批 Promise，不调用供应商执行器且不创建占位节点。
+- [x] 再次生成会创建新 Agent 调用、再次确认并生成新的 Artifact。
 
 ### 回滚
 
@@ -466,10 +473,16 @@ type PolicyDecision =
 
 ### 完成记录
 
-- 实际文件：待填写
-- 实际检查：待填写
-- 撤销测试：待填写
-- 媒体确认测试：待填写
+- 完成日期：2026-07-16
+- 工具范围：画布查询/选择/创建/更新/连接/分组/删除/撤销/重做；图片/视频/音频生成
+- 音频语义：音乐和语音通过 `audioPurpose` 区分，底层复用现有 `ai-audio` 节点与 `generateAudio` 适配能力
+- 确认闭环：主窗口和独立助手窗口均可确认或拒绝；确认后原多轮循环继续，拒绝结果作为 Observation 返回模型
+- 撤销检查：批量创建使用 `addNodes`；批量更新新增 `updateNodesDataBatch`；连接、分组、删除各自只提交一次历史快照
+- 策略断言：`AGENT_B2_ASSERTIONS=PASS`，覆盖 B/C 画布策略、媒体逐次确认和音频模型目录
+- 实际检查：`npm run typecheck` 通过；16 个改动文件定向 ESLint 通过；`git diff --check` 通过；UTF-8 乱码扫描通过
+- 构建检查：`npx vite build --outDir <系统临时目录>` 通过，临时产物已安全清理
+- 全量 ESLint：`npm run lint` 被仓库现有 ESLint 10.4/解析器接口不兼容阻断，错误为 `scopeManager.addGlobals is not a function`；定向 ESLint 不受影响
+- 未调用真实付费供应商；逐次确认的真实付费端到端测试保留到 P3-E2
 
 ### P3-C1：联网搜索、网页读取和来源引用
 
@@ -873,3 +886,4 @@ type PolicyDecision =
 | 2026-07-16 | P3-0 | 完成 Agent 产品边界、B/C 模式、工具权限、上下文、记忆、后台执行、重试和时间线方案确认；创建阶段实施文档。 |
 | 2026-07-16 | P3-A | 完成会话级 B/C 模式、AgentTask v12 持久化、任务状态机、后台消息保留、独立窗口同步和会话状态徽标。 |
 | 2026-07-16 | P3-B1 | 完成 Tool Registry、无依赖 schema 校验、Policy Engine、多轮工具循环、预算、只读重试和持久化摘要脱敏。 |
+| 2026-07-16 | P3-B2 | 完成画布工具迁移、批量原子写入、revision 复核、可继续审批闭环，以及图片/视频/音乐/语音逐次确认生成。 |

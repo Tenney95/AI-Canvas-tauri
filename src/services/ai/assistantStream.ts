@@ -112,7 +112,7 @@ function buildAssistantTools(userMessage: string): AssistantToolDefinition[] {
     type: 'function',
     function: {
       name: 'media_generate',
-      description: '根据用户明确要求生成图片或视频，并在当前对话中展示结果。普通问答不得调用。',
+      description: '根据用户明确要求生成图片、视频、音乐或语音，并在当前对话或画布中展示结果。普通问答不得调用。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -236,7 +236,7 @@ function buildMediaPrompt(): string {
     `你可以通过 media_generate 工具生成媒体。`,
     ``,
     `媒体工具规则:`,
-    `- 只有用户明确要求生成图片或视频时才能调用 media_generate`,
+    `- 只有用户明确要求生成图片、视频、音乐或语音时才能调用 media_generate`,
     `- 用户必须显式提供 @model{模型ID|名称}；没有 @model 时提示用户选择模型，不得调用工具`,
     `- 普通聊天、画布查询、操作失败或模型配置存在都不能触发媒体工具`,
     `- kind 必须与用户要求一致，不能用图片替代视频或反之`,
@@ -253,7 +253,9 @@ function buildMediaPrompt(): string {
  * 构建发送给 LLM 的系统提示词（含画布上下文）。
  * 脱敏：不发送 prompt/output 等隐私内容。
  */
-export function buildAssistantSystemPrompt(): string {
+export function buildAssistantSystemPrompt(
+  options: { agentTools?: boolean } = {},
+): string {
   const store = useAppStore.getState();
   const nodes = store.nodes;
 
@@ -275,6 +277,46 @@ export function buildAssistantSystemPrompt(): string {
     );
   }
 
+  const toolGuidance = options.agentTools
+    ? [
+        `使用本地提供的函数工具完成画布查询和操作。`,
+        `- 不要输出 intent JSON 代码块；需要操作时直接调用对应工具`,
+        `- 工具返回的是可信 Observation；根据结果决定继续调用工具或回复用户`,
+        `- B 协作模式的画布写操作会由本地策略请求确认，C 自主模式会自动执行`,
+        `- 删除节点属于可撤销的画布修改；永久删除文件是另一类操作`,
+        `- 新建媒体节点与生成媒体内容是两种状态：canvas_create_nodes 只建节点，media_generate 会实际调用生成模型`,
+        `- 用户可用 @{nodeId:label} 引用当前画布节点；不得编造、改写或删除其中的 nodeId`,
+        `- 媒体 prompt 必须原样保留节点引用，由本地 Runtime 解析`,
+        ``,
+        buildMediaPrompt(),
+      ]
+    : [
+        `你可以执行以下操作:`,
+        `- query: 查询节点状态和画布概况`,
+        `- select: 选中节点（按编号/类型/状态）`,
+        `- deleteNodes: 删除节点（需返回完整的 commandId + selector）`,
+        `- undo: 撤销上一步`,
+        `- redo: 重做`,
+        `- 用户可用 @{nodeId:label} 引用当前画布节点`,
+        `- 生成媒体工具的 prompt 必须原样保留所有 @{nodeId:label}，由本地 Runtime 解析节点内容`,
+        `- 不要编造、改写或删除节点引用中的 nodeId`,
+        ``,
+        `selector 格式（必须严格使用以下 op）:`,
+        `- 按编号: { "op": "displayId", "value": 24 }`,
+        `- 按类型: { "op": "type", "value": "ai-video" }`,
+        `- 按状态: { "op": "status", "value": "error" }`,
+        `禁止使用 byType / byStatus / byDisplayId。`,
+        ``,
+        `回复格式: 先简短回复用户（1-2 句），如果你识别到操作指令，在回复末尾附加一个 JSON 块:`,
+        `` + '```intent',
+        `{ "commandId": "...", "selector": { "op": "...", ... }, "params": {} }`,
+        '```',
+        ``,
+        `注意: 删除操作需用户确认后才执行。`,
+        ``,
+        buildMediaPrompt(),
+      ];
+
   const context = [
     `AI Canvas 画布助手`,
     `项目: ${store.currentProjectId ?? 'unknown'}`,
@@ -288,30 +330,7 @@ export function buildAssistantSystemPrompt(): string {
     ...nodeList.slice(0, 30),
     nodeList.length > 30 ? `  ... 共 ${nodes.length} 个节点` : '',
     ``,
-    `你可以执行以下操作:`,
-    `- query: 查询节点状态和画布概况`,
-    `- select: 选中节点（按编号/类型/状态）`,
-    `- deleteNodes: 删除节点（需返回完整的 commandId + selector）`,
-    `- undo: 撤销上一步`,
-    `- redo: 重做`,
-    `- 用户可用 @{nodeId:label} 引用当前画布节点`,
-    `- 生成媒体工具的 prompt 必须原样保留所有 @{nodeId:label}，由本地 Runtime 解析节点内容`,
-    `- 不要编造、改写或删除节点引用中的 nodeId`,
-    ``,
-    `selector 格式（必须严格使用以下 op）:`,
-    `- 按编号: { "op": "displayId", "value": 24 }`,
-    `- 按类型: { "op": "type", "value": "ai-video" }`,
-    `- 按状态: { "op": "status", "value": "error" }`,
-    `禁止使用 byType / byStatus / byDisplayId。`,
-    ``,
-    `回复格式: 先简短回复用户（1-2 句），如果你识别到操作指令，在回复末尾附加一个 JSON 块:`,
-    `` + '```intent',
-    `{ "commandId": "...", "selector": { "op": "...", ... }, "params": {} }`,
-    '```',
-    ``,
-    `注意: 删除操作需用户确认后才执行。`,
-    ``,
-    buildMediaPrompt(),
+    ...toolGuidance,
   ].join('\n');
 
   return context;

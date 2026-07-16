@@ -18,6 +18,7 @@ export interface AgentPolicyContext {
   projectId: string;
   conversationId: string;
   taskId: string;
+  baseRevision?: number;
 }
 
 export function evaluateAgentToolPolicy(

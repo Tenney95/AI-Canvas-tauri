@@ -6,26 +6,31 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { Icon } from '@iconify/react';
 import type { ChatMessage } from '../../types/chat';
+import type { AgentTask } from '../../types/agent';
 import MessageBubble from './MessageBubble';
 import EmptyChatState from './EmptyChatState';
 
 interface ChatMessagesProps {
   messages: ChatMessage[];
+  agentTasks?: AgentTask[];
   showEmptyState: boolean;
   /** 独立窗口初始化标记 */
   detachedInitialized: boolean;
   onNewConversation: () => void;
   onShowList: () => void;
   onAddMediaToCanvas?: (messageId: string) => void;
+  onResolveApproval?: (approvalId: string, approved: boolean) => void;
 }
 
 export default function ChatMessages({
   messages,
+  agentTasks = [],
   showEmptyState,
   detachedInitialized,
   onNewConversation,
   onShowList,
   onAddMediaToCanvas,
+  onResolveApproval,
 }: ChatMessagesProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -61,7 +66,9 @@ export default function ChatMessages({
         <MessageBubble
           key={msg.id}
           message={msg}
+          agentTask={agentTasks.find((task) => task.id === msg.agentTaskId)}
           onAddToCanvas={onAddMediaToCanvas}
+          onResolveApproval={onResolveApproval}
         />
       ))}
 

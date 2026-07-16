@@ -261,9 +261,18 @@ export default function ChatInput({
                         title={available ? model.description : '请先配置对应供应商'}
                         className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${available ? 'text-canvas-text hover:bg-canvas-hover' : 'cursor-not-allowed text-canvas-text-muted opacity-50'}`}
                       >
-                        <Icon icon={model.mediaKind === 'image' ? 'mdi:image-outline' : 'mdi:video-outline'} width="16" />
+                        <Icon
+                          icon={model.mediaKind === 'image'
+                            ? 'mdi:image-outline'
+                            : model.mediaKind === 'video'
+                              ? 'mdi:video-outline'
+                              : 'mdi:music-note-outline'}
+                          width="16"
+                        />
                         <span className="min-w-0 flex-1 truncate">{model.label}</span>
-                        <span className="text-[10px] text-canvas-text-muted">{model.mediaKind === 'image' ? '图片' : '视频'}</span>
+                        <span className="text-[10px] text-canvas-text-muted">
+                          {model.mediaKind === 'image' ? '图片' : model.mediaKind === 'video' ? '视频' : '音频'}
+                        </span>
                         {!available && <Icon icon="mdi:lock-outline" width="13" />}
                       </button>
                     );

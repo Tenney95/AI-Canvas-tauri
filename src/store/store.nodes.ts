@@ -47,6 +47,8 @@ export interface NodeSlice {
   /** 在原位复制一个节点（新 id / displayId，不带边）—— 用于 Ctrl 拖拽复制 */
   duplicateNode: (nodeId: string) => void;
   updateNodeData: (nodeId: string, data: Partial<BaseNodeData>) => void;
+  /** 原子批量更新节点数据（一次历史提交）。 */
+  updateNodesDataBatch: (nodeIds: string[], data: Partial<BaseNodeData>) => void;
   deleteNode: (nodeId: string) => void;
   /** 原子批量删除多个节点（一次 commitToHistory，一次退场动画） */
   deleteNodesBatch: (nodeIds: string[]) => void;
@@ -105,8 +107,19 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
   createMediaPlaceholder: (intent, requestedPosition) => {
     const state = get();
     const id = `node-${generateId()}`;
-    const type = intent.kind === 'image' ? 'ai-image' : 'ai-video';
+    const type = intent.kind === 'image'
+      ? 'ai-image'
+      : intent.kind === 'video'
+        ? 'ai-video'
+        : 'ai-audio';
     const position = requestedPosition ?? state.lastCanvasMousePos ?? { x: 300, y: 200 };
+    const label = intent.kind === 'image'
+      ? '对话生成图片'
+      : intent.kind === 'video'
+        ? '对话生成视频'
+        : intent.audioPurpose === 'music'
+          ? '对话生成音乐'
+          : '对话生成语音';
     state.commitToHistory();
     set((current) => ({
       nodes: [...current.nodes, {
@@ -114,7 +127,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         type,
         position,
         data: {
-          label: intent.kind === 'image' ? '对话生成图片' : '对话生成视频',
+          label,
           type,
           role: 'source',
           prompt: intent.prompt,
@@ -137,7 +150,9 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         if (node.id !== nodeId) return node;
         const mediaField = artifact.kind === 'image'
           ? { imageUrl: artifact.url, imageWidth: artifact.width, imageHeight: artifact.height }
-          : { videoUrl: artifact.url };
+          : artifact.kind === 'video'
+            ? { videoUrl: artifact.url }
+            : { audioUrl: artifact.url };
         return {
           ...node,
           data: {
@@ -174,11 +189,24 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     if (existing) return existing.id;
 
     const id = `node-${generateId()}`;
-    const type = artifact.kind === 'image' ? 'ai-image' : 'ai-video';
+    const type = artifact.kind === 'image'
+      ? 'ai-image'
+      : artifact.kind === 'video'
+        ? 'ai-video'
+        : 'ai-audio';
     const position = requestedPosition ?? state.lastCanvasMousePos ?? { x: 300, y: 200 };
     const mediaField = artifact.kind === 'image'
       ? { imageUrl: artifact.url, imageWidth: artifact.width, imageHeight: artifact.height }
-      : { videoUrl: artifact.url };
+      : artifact.kind === 'video'
+        ? { videoUrl: artifact.url }
+        : { audioUrl: artifact.url };
+    const label = artifact.kind === 'image'
+      ? '对话生成图片'
+      : artifact.kind === 'video'
+        ? '对话生成视频'
+        : artifact.audioPurpose === 'music'
+          ? '对话生成音乐'
+          : '对话生成语音';
     state.commitToHistory();
     set((current) => ({
       nodes: [...current.nodes, {
@@ -186,7 +214,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         type,
         position,
         data: {
-          label: artifact.kind === 'image' ? '对话生成图片' : '对话生成视频',
+          label,
           type,
           role: 'source',
           artifactId: artifact.id,
@@ -214,6 +242,17 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       nodes: state.nodes.map((n) =>
         n.id === nodeId ? { ...n, data: { ...n.data, ...data } as BaseNodeData } : n
       ),
+    }));
+  },
+
+  updateNodesDataBatch: (nodeIds, data) => {
+    if (nodeIds.length === 0) return;
+    const targetIds = new Set(nodeIds);
+    get().commitToHistory();
+    set((state) => ({
+      nodes: state.nodes.map((node) => targetIds.has(node.id)
+        ? { ...node, data: { ...node.data, ...data } as BaseNodeData }
+        : node),
     }));
   },
 

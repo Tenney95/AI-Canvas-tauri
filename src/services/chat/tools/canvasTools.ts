@@ -1,0 +1,459 @@
+import type { Node } from '@xyflow/react';
+import { useAppStore } from '../../../store/useAppStore';
+import type { BaseNodeData, NodeType } from '../../../types';
+import type { CommandId, CommandPlan } from '../../../types/chat';
+import { executeCommand, logOperation } from '../commandRegistry';
+import {
+  registerAgentTool,
+  type AgentToolContext,
+  type AgentToolExecutionResult,
+} from '../toolRegistry';
+
+const NODE_TYPES: NodeType[] = [
+  'ai-text',
+  'ai-image',
+  'ai-video',
+  'ai-audio',
+  'ai-animation',
+  'ai-panorama',
+  'ai-markdown',
+  'ai-storyboard',
+  'source-image',
+  'source-video',
+  'source-audio',
+  'source-text',
+  'comment',
+];
+
+const NODE_STATUSES = ['idle', 'loading', 'success', 'error'] as const;
+
+interface NodeTargetInput {
+  nodeIds?: string[];
+  displayIds?: number[];
+  nodeType?: NodeType;
+  status?: typeof NODE_STATUSES[number];
+  selected?: boolean;
+}
+
+interface CreateNodesInput {
+  nodes: Array<{
+    type: NodeType;
+    label: string;
+    prompt?: string;
+    x?: number;
+    y?: number;
+  }>;
+}
+
+interface UpdateNodesInput extends NodeTargetInput {
+  label?: string;
+  prompt?: string;
+}
+
+interface ConnectNodesInput {
+  sourceId: string;
+  targetId: string;
+}
+
+const targetProperties = {
+  nodeIds: {
+    type: 'array' as const,
+    items: { type: 'string' as const, minLength: 1, maxLength: 120 },
+    maxItems: 50,
+  },
+  displayIds: {
+    type: 'array' as const,
+    items: { type: 'integer' as const, minimum: 1 },
+    maxItems: 50,
+  },
+  nodeType: { type: 'string' as const, enum: NODE_TYPES },
+  status: { type: 'string' as const, enum: [...NODE_STATUSES] },
+  selected: { type: 'boolean' as const },
+};
+
+function isCurrentProject(projectId: string): boolean {
+  return useAppStore.getState().currentProjectId === projectId;
+}
+
+function authorizeCurrentProject(context: { projectId: string }) {
+  return isCurrentProject(context.projectId)
+    ? { allowed: true }
+    : { allowed: false, reason: '目标项目当前未加载，不能操作其他项目的画布' };
+}
+
+function assertCanvasRevision(context: AgentToolContext): void {
+  const currentRevision = useAppStore.getState().getCurrentRevision();
+  if (
+    context.baseRevision !== undefined
+    && currentRevision !== context.baseRevision
+  ) {
+    throw new Error(
+      `画布已变更（rev ${currentRevision} ≠ ${context.baseRevision}），请重新规划`,
+    );
+  }
+}
+
+function resolveTargetIds(input: NodeTargetInput): string[] {
+  const store = useAppStore.getState();
+  const matched = new Set<string>();
+  const hasFilter = Boolean(
+    input.nodeIds?.length
+    || input.displayIds?.length
+    || input.nodeType
+    || input.status
+    || input.selected,
+  );
+  if (!hasFilter) return [];
+
+  for (const node of store.nodes) {
+    const matches = [
+      input.nodeIds?.length ? input.nodeIds.includes(node.id) : true,
+      input.displayIds?.length ? input.displayIds.includes(Number(node.data.displayId)) : true,
+      input.nodeType ? node.type === input.nodeType : true,
+      input.status ? node.data.status === input.status : true,
+      input.selected ? store.selectedNodeIds.includes(node.id) : true,
+    ].every(Boolean);
+    if (matches) matched.add(node.id);
+  }
+  return [...matched];
+}
+
+function buildCommandPlan(
+  commandId: CommandId,
+  targetNodeIds: string[],
+  context: AgentToolContext,
+  summary: string,
+): CommandPlan {
+  return {
+    id: `agent-plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    projectId: context.projectId,
+    baseRevision: context.baseRevision ?? useAppStore.getState().getCurrentRevision(),
+    commandId,
+    targetNodeIds,
+    params: {},
+    summary,
+    risk: commandId === 'query' || commandId === 'select' ? 'read' : 'low',
+    requiresConfirm: false,
+  };
+}
+
+async function executeCanvasCommand(
+  commandId: CommandId,
+  targetNodeIds: string[],
+  context: AgentToolContext,
+  summary: string,
+): Promise<AgentToolExecutionResult> {
+  const result = await executeCommand(buildCommandPlan(
+    commandId,
+    targetNodeIds,
+    context,
+    summary,
+  ));
+  const succeeded = result.status === 'success' || result.status === 'partial';
+  if (
+    succeeded
+    && !['query', 'select'].includes(commandId)
+    && result.status === 'success'
+  ) {
+    useAppStore.getState().incrementRevision();
+  }
+  logOperation({
+    projectId: context.projectId,
+    conversationId: context.conversationId,
+    commandId,
+    summary,
+    targetNodeIds: result.affectedNodeIds,
+    parseSource: 'llm',
+    status: result.status === 'rejected' ? 'failed' : result.status,
+    undoable: !['query', 'select'].includes(commandId),
+    historyIndex: result.historyIndex,
+    errorCode: result.errorCode,
+    timestamp: Date.now(),
+  });
+  return {
+    status: succeeded ? 'success' : 'error',
+    summary: result.message,
+    modelContent: JSON.stringify({
+      affectedNodeIds: result.affectedNodeIds,
+      message: result.message,
+      revision: useAppStore.getState().getCurrentRevision(),
+    }),
+    errorCode: result.errorCode,
+  };
+}
+
+function createCanvasNode(
+  input: CreateNodesInput['nodes'][number],
+  index: number,
+): Node<BaseNodeData> {
+  const store = useAppStore.getState();
+  const id = `node-agent-${Date.now().toString(36)}-${index}-${Math.random().toString(36).slice(2, 7)}`;
+  const fallbackPosition = store.lastCanvasMousePos ?? { x: 300, y: 200 };
+  const type = input.type;
+  return {
+    id,
+    type,
+    position: {
+      x: input.x ?? fallbackPosition.x + index * 32,
+      y: input.y ?? fallbackPosition.y + index * 24,
+    },
+    data: {
+      label: input.label.trim(),
+      type,
+      role: type.startsWith('source-') ? 'source' : 'generator',
+      prompt: input.prompt?.trim(),
+      status: 'idle',
+      nodeWidth: 280,
+      nodeHeight: type === 'comment' ? 120 : 160,
+    },
+  };
+}
+
+export function registerCanvasAgentTools(): Array<() => void> {
+  return [
+    registerAgentTool<NodeTargetInput>({
+      id: 'canvas_query',
+      title: '查询画布',
+      description: '读取画布概况或符合条件的节点。无筛选条件时返回整个画布概况。',
+      inputSchema: {
+        type: 'object',
+        properties: targetProperties,
+        additionalProperties: false,
+      },
+      effect: 'read',
+      authorize: authorizeCurrentProject,
+      summarizeInput: (input) => `查询画布${resolveTargetIds(input).length ? '中的匹配节点' : '概况'}`,
+      execute: async (context, input) => executeCanvasCommand(
+        'query',
+        resolveTargetIds(input),
+        context,
+        '查询画布',
+      ),
+    }),
+    registerAgentTool<NodeTargetInput>({
+      id: 'canvas_select',
+      title: '选择节点',
+      description: '按节点 ID、展示编号、类型、状态或当前选择集选择画布节点。',
+      inputSchema: {
+        type: 'object',
+        properties: targetProperties,
+        additionalProperties: false,
+      },
+      effect: 'read',
+      authorize: authorizeCurrentProject,
+      summarizeInput: (input) => `选择 ${resolveTargetIds(input).length} 个节点`,
+      execute: async (context, input) => {
+        const targetIds = resolveTargetIds(input);
+        if (targetIds.length === 0) {
+          return { status: 'error', summary: '没有找到匹配节点', modelContent: '没有找到匹配节点' };
+        }
+        return executeCanvasCommand('select', targetIds, context, '选择节点');
+      },
+    }),
+    registerAgentTool<CreateNodesInput>({
+      id: 'canvas_create_nodes',
+      title: '新建画布节点',
+      description: '在画布上原子创建一个或多个节点；不会自动运行节点模型。',
+      inputSchema: {
+        type: 'object',
+        required: ['nodes'],
+        additionalProperties: false,
+        properties: {
+          nodes: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 20,
+            items: {
+              type: 'object',
+              required: ['type', 'label'],
+              additionalProperties: false,
+              properties: {
+                type: { type: 'string', enum: NODE_TYPES },
+                label: { type: 'string', minLength: 1, maxLength: 120 },
+                prompt: { type: 'string', maxLength: 8000 },
+                x: { type: 'number', minimum: -100000, maximum: 100000 },
+                y: { type: 'number', minimum: -100000, maximum: 100000 },
+              },
+            },
+          },
+        },
+      },
+      effect: 'canvas_write',
+      authorize: authorizeCurrentProject,
+      summarizeInput: (input) => `新建 ${input.nodes.length} 个画布节点`,
+      execute: async (context, input) => {
+        assertCanvasRevision(context);
+        const nodes = input.nodes.map(createCanvasNode);
+        useAppStore.getState().addNodes(nodes);
+        useAppStore.getState().incrementRevision();
+        return {
+          status: 'success',
+          summary: `已新建 ${nodes.length} 个节点`,
+          modelContent: JSON.stringify({
+            nodes: nodes.map((node) => ({ id: node.id, type: node.type, label: node.data.label })),
+            revision: useAppStore.getState().getCurrentRevision(),
+          }),
+        };
+      },
+    }),
+    registerAgentTool<UpdateNodesInput>({
+      id: 'canvas_update_nodes',
+      title: '更新画布节点',
+      description: '批量更新匹配节点的名称或提示词，不修改生成结果和模型配置。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...targetProperties,
+          label: { type: 'string', minLength: 1, maxLength: 120 },
+          prompt: { type: 'string', maxLength: 8000 },
+        },
+        additionalProperties: false,
+      },
+      effect: 'canvas_write',
+      authorize: authorizeCurrentProject,
+      summarizeInput: (input) => `更新 ${resolveTargetIds(input).length} 个节点`,
+      execute: async (context, input) => {
+        assertCanvasRevision(context);
+        const targetIds = resolveTargetIds(input);
+        if (targetIds.length === 0) {
+          return { status: 'error', summary: '没有找到匹配节点', modelContent: '没有找到匹配节点' };
+        }
+        if (input.label === undefined && input.prompt === undefined) {
+          return { status: 'error', summary: '没有提供需要更新的字段', modelContent: '没有提供需要更新的字段' };
+        }
+        useAppStore.getState().updateNodesDataBatch(targetIds, {
+          ...(input.label !== undefined ? { label: input.label.trim() } : {}),
+          ...(input.prompt !== undefined ? { prompt: input.prompt.trim() } : {}),
+        });
+        useAppStore.getState().incrementRevision();
+        return {
+          status: 'success',
+          summary: `已更新 ${targetIds.length} 个节点`,
+          modelContent: JSON.stringify({
+            affectedNodeIds: targetIds,
+            revision: useAppStore.getState().getCurrentRevision(),
+          }),
+        };
+      },
+    }),
+    registerAgentTool<ConnectNodesInput>({
+      id: 'canvas_connect_nodes',
+      title: '连接画布节点',
+      description: '在两个已存在的画布节点之间创建一条连线。',
+      inputSchema: {
+        type: 'object',
+        required: ['sourceId', 'targetId'],
+        additionalProperties: false,
+        properties: {
+          sourceId: { type: 'string', minLength: 1, maxLength: 120 },
+          targetId: { type: 'string', minLength: 1, maxLength: 120 },
+        },
+      },
+      effect: 'canvas_write',
+      authorize: authorizeCurrentProject,
+      summarizeInput: (input) => `连接 ${input.sourceId} → ${input.targetId}`,
+      execute: async (context, input) => {
+        assertCanvasRevision(context);
+        const store = useAppStore.getState();
+        const existingIds = new Set(store.nodes.map((node) => node.id));
+        if (!existingIds.has(input.sourceId) || !existingIds.has(input.targetId)) {
+          return { status: 'error', summary: '源节点或目标节点不存在', modelContent: '源节点或目标节点不存在' };
+        }
+        if (input.sourceId === input.targetId) {
+          return { status: 'error', summary: '不能连接节点自身', modelContent: '不能连接节点自身' };
+        }
+        if (store.edges.some((edge) => edge.source === input.sourceId && edge.target === input.targetId)) {
+          return { status: 'success', summary: '节点已经连接', modelContent: '节点已经连接，无需重复创建' };
+        }
+        store.onConnect({
+          source: input.sourceId,
+          target: input.targetId,
+          sourceHandle: null,
+          targetHandle: null,
+        });
+        useAppStore.getState().incrementRevision();
+        return {
+          status: 'success',
+          summary: '已创建节点连线',
+          modelContent: JSON.stringify({
+            sourceId: input.sourceId,
+            targetId: input.targetId,
+            revision: useAppStore.getState().getCurrentRevision(),
+          }),
+        };
+      },
+    }),
+    registerAgentTool<NodeTargetInput>({
+      id: 'canvas_group_nodes',
+      title: '组合画布节点',
+      description: '把两个或更多匹配节点放入一个画布分组。',
+      inputSchema: {
+        type: 'object',
+        properties: targetProperties,
+        additionalProperties: false,
+      },
+      effect: 'canvas_write',
+      authorize: authorizeCurrentProject,
+      summarizeInput: (input) => `组合 ${resolveTargetIds(input).length} 个节点`,
+      execute: async (context, input) => {
+        assertCanvasRevision(context);
+        const targetIds = resolveTargetIds(input);
+        if (targetIds.length < 2) {
+          return { status: 'error', summary: '分组至少需要两个节点', modelContent: '分组至少需要两个节点' };
+        }
+        const store = useAppStore.getState();
+        store.setSelectedNodeIds(targetIds);
+        store.groupSelectedNodes();
+        useAppStore.getState().incrementRevision();
+        return {
+          status: 'success',
+          summary: `已组合 ${targetIds.length} 个节点`,
+          modelContent: JSON.stringify({
+            affectedNodeIds: targetIds,
+            revision: useAppStore.getState().getCurrentRevision(),
+          }),
+        };
+      },
+    }),
+    registerAgentTool<NodeTargetInput>({
+      id: 'canvas_delete_nodes',
+      title: '删除画布节点',
+      description: '删除符合条件的画布节点；删除可通过画布撤销恢复，不是永久删除项目文件。',
+      inputSchema: {
+        type: 'object',
+        properties: targetProperties,
+        additionalProperties: false,
+      },
+      effect: 'canvas_write',
+      authorize: authorizeCurrentProject,
+      summarizeInput: (input) => `删除 ${resolveTargetIds(input).length} 个节点`,
+      execute: async (context, input) => {
+        const targetIds = resolveTargetIds(input);
+        if (targetIds.length === 0) {
+          return { status: 'error', summary: '没有找到待删除节点', modelContent: '没有找到待删除节点' };
+        }
+        return executeCanvasCommand('deleteNodes', targetIds, context, '删除画布节点');
+      },
+    }),
+    registerAgentTool<Record<string, never>>({
+      id: 'canvas_undo',
+      title: '撤销画布操作',
+      description: '撤销最近一次可撤销的画布操作。',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      effect: 'canvas_write',
+      authorize: authorizeCurrentProject,
+      summarizeInput: () => '撤销画布操作',
+      execute: async (context) => executeCanvasCommand('undo', [], context, '撤销画布操作'),
+    }),
+    registerAgentTool<Record<string, never>>({
+      id: 'canvas_redo',
+      title: '重做画布操作',
+      description: '恢复最近一次被撤销的画布操作。',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      effect: 'canvas_write',
+      authorize: authorizeCurrentProject,
+      summarizeInput: () => '重做画布操作',
+      execute: async (context) => executeCanvasCommand('redo', [], context, '重做画布操作'),
+    }),
+  ];
+}

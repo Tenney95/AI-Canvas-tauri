@@ -12,6 +12,7 @@ import type {
 } from '../../types/media';
 import { generateImage } from './generateImage';
 import { generateVideo } from './generateVideo';
+import { generateAudio } from './generateAudio';
 import { findMediaModelOption } from '../../components/nodes/shared/defaultModels';
 
 const MODEL_MENTION_RE = /@model\{([^|}\s]+)(?:\|[^}]*)?\}/i;
@@ -27,13 +28,15 @@ export function stripModelMentions(input: string): string {
 export function resolveMediaModel(kind: MediaKind, modelRef?: string): ResolvedMediaModel {
   const config = useAppStore.getState().config;
   if (!modelRef) {
-    throw new Error(`请先通过 @ 选择${kind === 'image' ? '图片' : '视频'}模型`);
+    const label = kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频';
+    throw new Error(`请先通过 @ 选择${label}模型`);
   }
 
   const option = findMediaModelOption(modelRef, config.generalModels ?? []);
   if (!option) throw new Error('未找到 @ 引用的媒体模型');
   if (option.mediaKind !== kind) {
-    throw new Error(`模型“${option.label}”不能用于${kind === 'image' ? '图片' : '视频'}生成`);
+    const label = kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频';
+    throw new Error(`模型“${option.label}”不能用于${label}生成`);
   }
 
   if (option.provider === 'general') {
@@ -71,14 +74,15 @@ async function saveGeneratedMedia(
 ) {
   if (!projectId) return null;
   if (url.startsWith('data:')) {
-    const extension = kind === 'image' ? 'png' : 'mp4';
-    return saveDataUrlToProjectData(url, projectId, `对话${kind === 'image' ? '图片' : '视频'}-${artifactId}.${extension}`);
+    const extension = kind === 'image' ? 'png' : kind === 'video' ? 'mp4' : 'mp3';
+    const label = kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频';
+    return saveDataUrlToProjectData(url, projectId, `对话${label}-${artifactId}.${extension}`);
   }
   return downloadUrlAndSave(
     url,
     projectId,
-    kind === 'image' ? 'ai-image' : 'ai-video',
-    `对话${kind === 'image' ? '图片' : '视频'}-${artifactId}`,
+    kind === 'image' ? 'ai-image' : kind === 'video' ? 'ai-video' : 'ai-audio',
+    `对话${kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频'}-${artifactId}`,
   );
 }
 
@@ -120,11 +124,17 @@ export async function runMediaGeneration(
     };
   }
 
-  const result = await generateVideo({
-    prompt,
-    model: model.requestModel,
-    provider: model.provider,
-  });
+  const result = intent.kind === 'video'
+    ? await generateVideo({
+        prompt,
+        model: model.requestModel,
+        provider: model.provider,
+      })
+    : await generateAudio({
+        prompt,
+        model: model.requestModel,
+        provider: model.provider,
+      });
   const saved = await saveGeneratedMedia(result.url, projectId, intent.kind, id).catch(() => null);
   return {
     id,
@@ -136,6 +146,7 @@ export async function runMediaGeneration(
     prompt,
     modelId: model.configId,
     provider: model.provider,
+    audioPurpose: intent.audioPurpose,
     createdAt: Date.now(),
   };
 }
