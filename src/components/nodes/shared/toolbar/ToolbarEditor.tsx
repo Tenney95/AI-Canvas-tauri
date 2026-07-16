@@ -56,7 +56,7 @@ interface ZoneDragState {
 }
 
 const DRAG_THRESHOLD_PX = 5;
-const CENTER_VIEWPORT_DURATION_MS = 420;
+const VIEWPORT_TRANSITION_DURATION_MS = 420;
 const EDITOR_TARGET_ZOOM = 1.2;
 const easeOutCubic = (progress: number) => 1 - (1 - progress) ** 3;
 
@@ -126,7 +126,9 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
   const dragRef = useRef<DragState | null>(null);
   const ghostElRef = useRef<HTMLDivElement | null>(null);
   const zoneGhostElRef = useRef<HTMLDivElement | null>(null);
-  const { screenToFlowPosition, setCenter } = useReactFlow();
+  const { getViewport, screenToFlowPosition, setCenter, setViewport } = useReactFlow();
+  const originalViewportRef = useRef<ReturnType<typeof getViewport> | null>(null);
+  const unmountRestoreFrameRef = useRef<number | null>(null);
 
   // 只在落点变化时更新 React 状态；高频指针坐标保存在 dragRef 中
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
@@ -141,9 +143,41 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
   const setToolbarLayout = edit.setToolbarLayout;
   const exitEdit = edit.exitEdit;
 
+  const restoreOriginalViewport = useCallback(() => {
+    const originalViewport = originalViewportRef.current;
+    if (!originalViewport) return;
+    originalViewportRef.current = null;
+    void setViewport(originalViewport, {
+      duration: VIEWPORT_TRANSITION_DURATION_MS,
+      ease: easeOutCubic,
+    });
+  }, [setViewport]);
+
+  const handleExitEdit = useCallback(() => {
+    restoreOriginalViewport();
+    exitEdit();
+  }, [exitEdit, restoreOriginalViewport]);
+
+  // 节点隐藏或删除导致编辑器直接卸载时也恢复；下一次 effect setup 会取消 Strict Mode 的模拟卸载。
+  useEffect(() => {
+    if (unmountRestoreFrameRef.current !== null) {
+      cancelAnimationFrame(unmountRestoreFrameRef.current);
+      unmountRestoreFrameRef.current = null;
+    }
+
+    return () => {
+      if (!originalViewportRef.current) return;
+      unmountRestoreFrameRef.current = requestAnimationFrame(() => {
+        unmountRestoreFrameRef.current = null;
+        restoreOriginalViewport();
+      });
+    };
+  }, [restoreOriginalViewport]);
+
   // 编辑框完成首次布局后，将其平滑移动到画布可视区域中央并缩放至 120%。
   useEffect(() => {
     if (!edit.isEditing) return;
+    originalViewportRef.current ??= getViewport();
 
     const frameId = requestAnimationFrame(() => {
       const editorEl = containerRef.current;
@@ -159,14 +193,14 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
         editorFlowCenter.y,
         {
           zoom: EDITOR_TARGET_ZOOM,
-          duration: CENTER_VIEWPORT_DURATION_MS,
+          duration: VIEWPORT_TRANSITION_DURATION_MS,
           ease: easeOutCubic,
         },
       );
     });
 
     return () => cancelAnimationFrame(frameId);
-  }, [edit.isEditing, screenToFlowPosition, setCenter]);
+  }, [edit.isEditing, getViewport, screenToFlowPosition, setCenter]);
 
   const calcZoneTarget = useCallback((clientY: number): number | null => {
     const zonesEl = containerRef.current?.querySelector('.toolbar-edit-zones') as HTMLElement | null | undefined;
@@ -559,14 +593,14 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        exitEdit();
+        handleExitEdit();
       }
     };
     if (edit.isEditing) {
       document.addEventListener('mousedown', onDown, true);
       return () => document.removeEventListener('mousedown', onDown, true);
     }
-  }, [edit.isEditing, exitEdit]);
+  }, [edit.isEditing, handleExitEdit]);
 
   // ── 添加到第一个 Zone ──
   const addToZone = useCallback((buttonKey: string) => {
@@ -615,7 +649,7 @@ function ToolbarEditorInner({ edit, presetItems = [], userPresetItems = [], node
             <Icon icon="mdi:restore" width={14} height={14} />
             <span>恢复默认</span>
           </button>
-          <button type="button" className="toolbar-edit-action-btn toolbar-edit-action-btn--done nodrag" onClick={edit.exitEdit}>
+          <button type="button" className="toolbar-edit-action-btn toolbar-edit-action-btn--done nodrag" onClick={handleExitEdit}>
             <Icon icon="mdi:check" width={14} height={14} />
             <span>完成</span>
           </button>

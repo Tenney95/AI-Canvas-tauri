@@ -35,6 +35,8 @@ function getShortcutList(): { action: string; key: string }[] {
     { action: '粘贴节点', key: `${mod} + V` },
     { action: '删除节点', key: del },
     { action: '分组 / 取消分组', key: `${mod} + G` },
+    { action: '创建生成节点（文本 / 图像 / 视频 / 音频 / 全景 / 动画）', key: '1–6' },
+    { action: '创建源节点（文本 / 图像 / 视频 / 音频 / Markdown）', key: `${alt} + 1–5` },
     { action: '弹出对话框', key: `选中节点+Space` },
     { action: '锁定比例缩放', key: `缩放时按住 ${shift}` },
     { action: '关闭菜单 / 设置', key: 'Escape' },

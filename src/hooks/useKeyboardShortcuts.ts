@@ -9,7 +9,92 @@ import { openAssetSearchWindow } from '../utils/assetSearchWindow';
 import { playNodeExit } from '../utils/nodeAnimations';
 import { hasActiveTextSelection } from '../utils/textSelection';
 import { cancelNodePolling } from '../services/pollManager';
-import type { BaseNodeData } from '../types';
+import type { Node as RFNode } from '@xyflow/react';
+import type { BaseNodeData, NodeType } from '../types';
+
+interface NodeShortcutDefinition {
+  type: NodeType;
+  label: string;
+}
+
+const GENERATOR_NODE_SHORTCUTS: NodeShortcutDefinition[] = [
+  { type: 'ai-text', label: '生成文本' },
+  { type: 'ai-image', label: '生成图像' },
+  { type: 'ai-video', label: '生成视频' },
+  { type: 'ai-audio', label: '生成音频' },
+  { type: 'ai-panorama', label: '生成360全景' },
+  { type: 'ai-animation', label: '生成动画' },
+];
+
+const SOURCE_NODE_SHORTCUTS: NodeShortcutDefinition[] = [
+  { type: 'ai-text', label: '文本' },
+  { type: 'ai-image', label: '图像' },
+  { type: 'ai-video', label: '视频' },
+  { type: 'ai-audio', label: '音频' },
+  { type: 'ai-markdown', label: 'Markdown' },
+];
+
+function loadDefaultModel(nodeType: NodeType): { model: string; provider: string } | null {
+  try {
+    const raw = localStorage.getItem('canvas-model-prefs');
+    if (!raw) return null;
+    const prefs: Record<string, string> = JSON.parse(raw);
+    const model = prefs[nodeType]
+      || (nodeType === 'ai-panorama' || nodeType === 'ai-animation' ? prefs['ai-image'] : undefined);
+    if (!model) return null;
+    const separatorIndex = model.indexOf('/');
+    if (separatorIndex <= 0) return null;
+    return { model, provider: model.slice(0, separatorIndex) };
+  } catch {
+    return null;
+  }
+}
+
+function createNodeFromNumberShortcut(shortcutIndex: number, isSource: boolean) {
+  const definition = (isSource ? SOURCE_NODE_SHORTCUTS : GENERATOR_NODE_SHORTCUTS)[shortcutIndex];
+  if (!definition) return false;
+
+  const { type, label } = definition;
+  const isImage = type === 'ai-image';
+  const isAudio = type === 'ai-audio';
+  const isPanorama = type === 'ai-panorama';
+  const isAnimation = type === 'ai-animation';
+  const nodeWidth = isAnimation ? 320 : isAudio ? 260 : isPanorama ? 300 : 280;
+  const nodeHeight = isAnimation ? 358 : isAudio ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
+  const defaultModel = isSource ? null : loadDefaultModel(type);
+  const state = useAppStore.getState();
+  const position = state.lastCanvasMousePos ?? { x: 300, y: 200 };
+
+  const node: RFNode<BaseNodeData> = {
+    id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type,
+    position: { ...position },
+    data: {
+      label,
+      type,
+      role: isSource ? 'source' : 'generator',
+      prompt: '',
+      status: 'idle',
+      nodeWidth,
+      nodeHeight,
+      ...(isImage && !isSource ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
+      ...(isPanorama && !isSource ? { previewMode: 'image' } : {}),
+      ...(isAnimation && !isSource ? {
+        prompt: '2D俯视角游戏角色，保持角色造型、朝向、比例和光照一致',
+        animationAction: 'idle' as const,
+        animationFrames: 8 as const,
+        animationPreviewMode: 'playing' as const,
+        aspectRatio: '1:1',
+        imageSize: '2K',
+      } : {}),
+      ...(defaultModel ?? {}),
+    },
+  };
+
+  state.addNode(node);
+  return true;
+}
+
 export function useKeyboardShortcuts() {
   useEffect(() => {
     let active = true; // guard against callbacks firing after unmount / HMR reload
@@ -78,6 +163,17 @@ export function useKeyboardShortcuts() {
       }
 
       if (isEditing) return;
+
+      // 1–6: 创建生成节点；Alt+1–5: 创建源节点。节点左上角落在当前鼠标位置。
+      const digitMatch = /^(?:Digit|Numpad)([1-6])$/.exec(e.code);
+      if (digitMatch && !e.repeat && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        const handled = createNodeFromNumberShortcut(Number(digitMatch[1]) - 1, e.altKey);
+        if (handled) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
 
       // Ctrl+C: 仅当「文本节点选中模式」内有有效选区时走原生文本复制，否则复制选中节点
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') {

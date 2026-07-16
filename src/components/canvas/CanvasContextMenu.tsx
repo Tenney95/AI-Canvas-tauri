@@ -10,22 +10,23 @@ interface MergedNodeItem {
   label: string;
   type: NodeType;
   role: 'generator' | 'source';
+  shortcut: string;
 }
 
 const NODE_ITEMS: MergedNodeItem[] = [
   // ── 生成节点 ──
-  { label: '生成文本', type: 'ai-text', role: 'generator' },
-  { label: '生成图像', type: 'ai-image', role: 'generator' },
-  { label: '生成视频', type: 'ai-video', role: 'generator' },
-  { label: '生成音频', type: 'ai-audio', role: 'generator' },
-  { label: '生成动画', type: 'ai-animation', role: 'generator' },
-  { label: '生成360全景', type: 'ai-panorama', role: 'generator' },
+  { label: '生成文本', type: 'ai-text', role: 'generator', shortcut: '1' },
+  { label: '生成图像', type: 'ai-image', role: 'generator', shortcut: '2' },
+  { label: '生成视频', type: 'ai-video', role: 'generator', shortcut: '3' },
+  { label: '生成音频', type: 'ai-audio', role: 'generator', shortcut: '4' },
+  { label: '生成360全景', type: 'ai-panorama', role: 'generator', shortcut: '5' },
+  { label: '生成动画', type: 'ai-animation', role: 'generator', shortcut: '6' },
   // ── 源节点 ──
-  { label: '文本', type: 'ai-text', role: 'source' },
-  { label: '图像', type: 'ai-image', role: 'source' },
-  { label: '视频', type: 'ai-video', role: 'source' },
-  { label: '音频', type: 'ai-audio', role: 'source' },
-  { label: 'Markdown', type: 'ai-markdown', role: 'source' },
+  { label: '文本', type: 'ai-text', role: 'source', shortcut: 'Alt 1' },
+  { label: '图像', type: 'ai-image', role: 'source', shortcut: 'Alt 2' },
+  { label: '视频', type: 'ai-video', role: 'source', shortcut: 'Alt 3' },
+  { label: '音频', type: 'ai-audio', role: 'source', shortcut: 'Alt 4' },
+  { label: 'Markdown', type: 'ai-markdown', role: 'source', shortcut: 'Alt 5' },
 ];
 
 /** 菜单项行高估算（含 padding） */
@@ -171,10 +172,11 @@ function CanvasContextMenu({
               {/* 第 6 项前插入分割线（生成节点 → 源节点） */}
               {i === 6 && <div className="menu-sep" />}
               <div
-                className="menu-row"
+                className="menu-row menu-row-split"
                 onClick={() => onAddNode(item.type, item.label, item.role)}
               >
                 <span>{item.label}</span>
+                <span className="menu-kbd">{item.shortcut}</span>
               </div>
             </div>
           ))}

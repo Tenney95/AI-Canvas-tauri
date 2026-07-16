@@ -201,8 +201,8 @@ function CanvasInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [smoothLine]);
 
-  // Track mouse position on canvas for node creation at cursor (on left-button release)
-  const handleMouseUp = useCallback(
+  // Track the live canvas pointer so keyboard-created nodes can place their top-left corner here.
+  const handleCanvasPointer = useCallback(
     (e: React.MouseEvent) => {
       const flowPos = reactFlowInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY });
       setLastCanvasMousePos(flowPos);
@@ -639,7 +639,8 @@ function CanvasInner() {
         multiSelectionKeyCode="Shift"
         deleteKeyCode={null}
         onContextMenu={(e) => e.preventDefault()}
-        onMouseUp={handleMouseUp}
+        onMouseMove={handleCanvasPointer}
+        onMouseUp={handleCanvasPointer}
         onDragEnter={onDragEnter}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
