@@ -6,6 +6,7 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import Header from './components/Header';
 import Titlebar from './components/Titlebar';
+import SessionProjectTabs from './components/SessionProjectTabs';
 import Sidebar from './components/Sidebar';
 import Canvas from './components/Canvas';
 import NodeMenu from './components/NodeMenu';
@@ -181,6 +182,7 @@ export default function App() {
         <Canvas />
         <Header />
         <Titlebar />
+        <SessionProjectTabs />
         <NodeMenu />
         <SettingsPanel />
         <AINodeDialog />

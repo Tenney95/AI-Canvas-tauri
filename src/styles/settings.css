@@ -642,6 +642,351 @@
 }
 
 /* ============================================
+   画布交互方式（迷你画布预览 + 当前手势地图）
+   ============================================ */
+.canvas-interaction-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.canvas-interaction-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.canvas-interaction-heading h3 {
+  margin: 0;
+  color: var(--theme-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.canvas-interaction-heading p {
+  margin: 3px 0 0;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+}
+.canvas-interaction-heading > span {
+  flex-shrink: 0;
+  padding: 3px 7px;
+  border: 1px solid var(--brand-alpha-20);
+  border-radius: 999px;
+  color: var(--brand-light);
+  background: var(--brand-alpha-10);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+.canvas-interaction-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.canvas-interaction-mode-card {
+  position: relative;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--theme-border);
+  border-radius: 13px;
+  background: var(--theme-card);
+  color: var(--theme-text);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  transition:
+    border-color var(--transition-base),
+    background var(--transition-base),
+    transform var(--dur-fast) var(--ease-out-quart),
+    box-shadow var(--transition-smooth);
+}
+.canvas-interaction-mode-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 18% 0%, var(--brand-alpha-10), transparent 52%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-smooth);
+}
+.canvas-interaction-mode-card:hover {
+  border-color: var(--border-secondary);
+  background: var(--theme-hover);
+  transform: translateY(-1px);
+}
+.canvas-interaction-mode-card:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+.canvas-interaction-mode-card:active {
+  transform: scale(0.985);
+}
+.canvas-interaction-mode-card.is-active {
+  border-color: var(--brand-alpha-30);
+  box-shadow: inset 0 0 0 1px var(--brand-alpha-10), 0 8px 24px var(--black-alpha-30);
+}
+.canvas-interaction-mode-card.is-active::before {
+  opacity: 1;
+}
+.canvas-interaction-preview {
+  position: relative;
+  height: 76px;
+  border: 1px solid var(--theme-border);
+  border-radius: 9px;
+  background: var(--theme-surface);
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--white-alpha-03);
+}
+.canvas-preview-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.48;
+  background-image: radial-gradient(var(--white-alpha-10) 0.8px, transparent 0.8px);
+  background-size: 9px 9px;
+}
+.canvas-preview-node {
+  position: absolute;
+  width: 38px;
+  height: 24px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 5px;
+  background: var(--theme-card);
+  box-shadow: 0 4px 10px var(--black-alpha-30);
+}
+.canvas-preview-node::before,
+.canvas-preview-node::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--white-alpha-12);
+}
+.canvas-preview-node::before {
+  top: 7px;
+  width: 23px;
+}
+.canvas-preview-node::after {
+  top: 13px;
+  width: 15px;
+}
+.canvas-preview-node.node-a {
+  left: 20px;
+  top: 16px;
+}
+.canvas-preview-node.node-b {
+  right: 18px;
+  bottom: 13px;
+}
+.canvas-interaction-preview.is-default .node-a {
+  border-color: var(--brand-alpha-30);
+}
+.canvas-preview-selection {
+  position: absolute;
+  left: 12px;
+  top: 9px;
+  width: 56px;
+  height: 40px;
+  border: 1px solid var(--brand-light);
+  border-radius: 3px;
+  background: var(--brand-alpha-10);
+}
+.canvas-preview-selection i {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 1px;
+  background: var(--brand-light);
+}
+.canvas-preview-selection i:nth-child(1) { left: -2px; top: -2px; }
+.canvas-preview-selection i:nth-child(2) { right: -2px; top: -2px; }
+.canvas-preview-selection i:nth-child(3) { right: -2px; bottom: -2px; }
+.canvas-preview-selection i:nth-child(4) { left: -2px; bottom: -2px; }
+.canvas-preview-cursor {
+  position: absolute;
+  left: 65px;
+  top: 43px;
+  color: var(--brand-light);
+  font-size: 18px;
+  font-weight: 700;
+  transform: rotate(-8deg);
+  text-shadow: 0 2px 8px var(--brand-alpha-30);
+}
+.canvas-preview-pan-axis {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background: var(--brand-alpha-30);
+  transform: translate(-50%, -50%);
+}
+.canvas-preview-pan-axis::before,
+.canvas-preview-pan-axis::after {
+  content: '';
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-top: 1px solid var(--brand-light);
+  border-right: 1px solid var(--brand-light);
+}
+.canvas-preview-pan-axis.axis-x {
+  width: 64px;
+  height: 1px;
+}
+.canvas-preview-pan-axis.axis-x::before {
+  left: 0;
+  top: -2px;
+  transform: rotate(-135deg);
+}
+.canvas-preview-pan-axis.axis-x::after {
+  right: 0;
+  top: -2px;
+  transform: rotate(45deg);
+}
+.canvas-preview-pan-axis.axis-y {
+  width: 1px;
+  height: 45px;
+}
+.canvas-preview-pan-axis.axis-y::before {
+  left: -2px;
+  top: 0;
+  transform: rotate(-45deg);
+}
+.canvas-preview-pan-axis.axis-y::after {
+  left: -2px;
+  bottom: 0;
+  transform: rotate(135deg);
+}
+.canvas-preview-hand {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--brand-alpha-30);
+  border-radius: 50%;
+  color: var(--brand-light);
+  background: var(--theme-card);
+  box-shadow: 0 4px 12px var(--black-alpha-30);
+  font-size: 14px;
+  transform: translate(-50%, -50%);
+}
+.canvas-interaction-mode-copy {
+  position: relative;
+  padding: 9px 2px 2px;
+}
+.canvas-interaction-mode-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.canvas-interaction-mode-title strong {
+  color: var(--theme-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.canvas-interaction-mode-title span {
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: var(--theme-text-muted);
+  background: var(--white-alpha-06);
+  font-size: 9px;
+}
+.canvas-interaction-mode-card.is-active .canvas-interaction-mode-title span {
+  color: var(--brand-light);
+  background: var(--brand-alpha-10);
+}
+.canvas-interaction-mode-copy p {
+  margin: 5px 0 0;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.canvas-interaction-check {
+  position: absolute;
+  right: 13px;
+  top: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  border: 1px solid var(--theme-border);
+  border-radius: 50%;
+  color: transparent;
+  background: var(--theme-card);
+  box-shadow: 0 3px 8px var(--black-alpha-30);
+  transition: color var(--transition-base), border-color var(--transition-base),
+    background var(--transition-base), transform var(--transition-smooth);
+}
+.canvas-interaction-mode-card.is-active .canvas-interaction-check {
+  color: var(--theme-text);
+  border-color: var(--brand);
+  background: var(--brand);
+  transform: scale(1.05);
+}
+.canvas-interaction-gesture-map {
+  padding: 11px 12px 12px;
+  border: 1px solid var(--theme-border);
+  border-radius: 12px;
+  background: var(--theme-card);
+}
+.canvas-gesture-map-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+}
+.canvas-gesture-map-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.04em;
+}
+.canvas-gesture-map-heading strong {
+  color: var(--brand-light);
+  font-size: 10px;
+  font-weight: 600;
+}
+.canvas-gesture-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-light);
+  box-shadow: 0 0 8px var(--brand-alpha-30);
+}
+.canvas-gesture-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.canvas-gesture-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--white-alpha-03);
+}
+.canvas-gesture-item kbd {
+  flex-shrink: 0;
+  color: var(--theme-text-secondary);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 9px;
+}
+.canvas-gesture-item span {
+  color: var(--theme-text-muted);
+  font-size: 9px;
+  text-align: right;
+}
+
+/* ============================================
    侧边栏悬浮显示 开关（迷你界面预览）
    ============================================ */
 .sidebar-pref-card {

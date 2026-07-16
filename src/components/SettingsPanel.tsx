@@ -12,10 +12,46 @@ import ApiKeySettings from './settings/ApiKeySettings';
 import StorageHealthCenter from './settings/StorageHealthCenter';
 import { BACKGROUND_OPTIONS } from './backgrounds/CanvasBackground';
 import { detectBackgroundBrightness, compressImageLossless } from '../services/backgroundService';
-import type { CanvasBackground as CanvasBg } from '../types';
+import type { CanvasBackground as CanvasBg, InteractionMode } from '../types';
 import type { BackgroundDetection } from '../services/backgroundService';
 
 type SettingsTab = 'general' | 'api' | 'shortcuts' | 'comfyui' | 'storage';
+
+const INTERACTION_MODE_OPTIONS: {
+  id: InteractionMode;
+  title: string;
+  badge: string;
+  description: string;
+  gestures: { key: string; action: string }[];
+}[] = [
+  {
+    id: 'default',
+    title: 'Figma 模式',
+    badge: '选择优先',
+    description: '左键框选，滚轮直接缩放，适合高频编辑节点',
+    gestures: [
+      { key: '左键拖动', action: '框选节点' },
+      { key: '右键 / 中键', action: '平移画布' },
+      { key: '滚轮', action: '缩放画布' },
+      { key: 'Shift + 点击', action: '追加多选' },
+      { key: '右键轻点', action: '打开菜单' },
+    ],
+  },
+  {
+    id: 'classic',
+    title: '经典模式',
+    badge: '导航优先',
+    description: '左键拖动画布，组合键缩放，适合大范围浏览',
+    gestures: [
+      { key: '左键拖动', action: '平移画布' },
+      { key: 'Shift + 左键', action: '框选节点' },
+      { key: '滚轮', action: '垂直平移' },
+      { key: 'Shift + 滚轮', action: '水平平移' },
+      { key: 'Ctrl + 滚轮', action: '缩放画布' },
+      { key: '鼠标右键', action: '打开菜单' },
+    ],
+  },
+];
 
 /** 是否运行在 macOS（用于快捷键修饰键显示） */
 const IS_MAC = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '');
@@ -69,6 +105,8 @@ export default function SettingsPanel() {
     );
   const sidebarFloating = config.sidebarFloating !== false; // 默认开启
   const interactionMode = config.interactionMode ?? 'default';
+  const activeInteractionMode = INTERACTION_MODE_OPTIONS.find((option) => option.id === interactionMode)
+    ?? INTERACTION_MODE_OPTIONS[0];
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
@@ -643,70 +681,86 @@ export default function SettingsPanel() {
                 </div>
 
                 {/* 画布交互模式 */}
-                <div>
-                  <h3 className="text-sm font-medium text-canvas-text mb-3">画布交互</h3>
-                  <div className="space-y-2">
-                    {([
-                      { id: 'default', title: '默认（Figma 风格）' },
-                      { id: 'classic', title: '传统' },
-                    ] as const).map((opt) => {
+                <section className="canvas-interaction-settings">
+                  <div className="canvas-interaction-heading">
+                    <div>
+                      <h3>画布交互方式</h3>
+                      <p>选择更符合你操作习惯的画布手感</p>
+                    </div>
+                    <span>即时生效</span>
+                  </div>
+
+                  <div className="canvas-interaction-mode-grid" role="radiogroup" aria-label="画布交互方式">
+                    {INTERACTION_MODE_OPTIONS.map((opt) => {
                       const active = interactionMode === opt.id;
                       return (
                         <button
                           key={opt.id}
                           type="button"
+                          role="radio"
+                          aria-checked={active}
                           onClick={() => {
                             updateConfig({ interactionMode: opt.id });
                             saveConfig();
                           }}
-                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-colors ${
-                            active
-                              ? 'border-indigo-500 bg-indigo-500/10'
-                              : 'border-canvas-border bg-canvas-card hover:border-canvas-hover'
-                          }`}
+                          className={`canvas-interaction-mode-card${active ? ' is-active' : ''}`}
                         >
-                          <span
-                            className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
-                              active ? 'border-indigo-500' : 'border-canvas-text-muted'
-                            }`}
-                          >
-                            {active && <span className="w-2 h-2 rounded-full bg-indigo-500" />}
-                          </span>
-                          <span className={`text-sm font-medium ${active ? 'text-indigo-400' : 'text-canvas-text'}`}>
-                            {opt.title}
+                          <div className={`canvas-interaction-preview is-${opt.id}`} aria-hidden="true">
+                            <span className="canvas-preview-grid" />
+                            <span className="canvas-preview-node node-a" />
+                            <span className="canvas-preview-node node-b" />
+                            {opt.id === 'default' ? (
+                              <>
+                                <span className="canvas-preview-selection">
+                                  <i /><i /><i /><i />
+                                </span>
+                                <span className="canvas-preview-cursor">↖</span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="canvas-preview-pan-axis axis-x" />
+                                <span className="canvas-preview-pan-axis axis-y" />
+                                <span className="canvas-preview-hand">✥</span>
+                              </>
+                            )}
+                          </div>
+
+                          <div className="canvas-interaction-mode-copy">
+                            <div className="canvas-interaction-mode-title">
+                              <strong>{opt.title}</strong>
+                              <span>{opt.badge}</span>
+                            </div>
+                            <p>{opt.description}</p>
+                          </div>
+
+                          <span className="canvas-interaction-check" aria-hidden="true">
+                            <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                              <path d="m2.4 6.1 2.1 2.1 5-5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
                           </span>
                         </button>
                       );
                     })}
                   </div>
-                </div>
 
-                {/* 当前模式键位说明 */}
-                <div className="bg-canvas-card border border-canvas-border rounded-lg p-3 space-y-2">
-                  <div className="text-xs font-medium text-canvas-text">
-                    {interactionMode === 'default' ? '默认交互（Figma 风格）' : '传统交互'}
+                  <div className="canvas-interaction-gesture-map">
+                    <div className="canvas-gesture-map-heading">
+                      <div>
+                        <span className="canvas-gesture-status-dot" />
+                        当前手势地图
+                      </div>
+                      <strong>{activeInteractionMode.title}</strong>
+                    </div>
+                    <div className="canvas-gesture-grid">
+                      {activeInteractionMode.gestures.map((gesture) => (
+                        <div className="canvas-gesture-item" key={gesture.key}>
+                          <kbd>{gesture.key}</kbd>
+                          <span>{gesture.action}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <ul className="text-[11px] text-canvas-text-muted leading-relaxed space-y-1">
-                    {interactionMode === 'default' ? (
-                      <>
-                        <li>· 左键拖动空白：框选节点</li>
-                        <li>· 右键 / 中键拖动：平移画布</li>
-                        <li>· 滚轮：缩放画布</li>
-                        <li>· Shift + 点击节点：加入多选</li>
-                        <li>· 右键轻点：弹出菜单</li>
-                      </>
-                    ) : (
-                      <>
-                        <li>· 左键拖动：平移画布</li>
-                        <li>· Shift + 左键拖动：框选节点</li>
-                        <li>· 滚轮：垂直平移画布</li>
-                        <li>· Shift + 滚轮：水平平移画布</li>
-                        <li>· Ctrl + 滚轮：缩放画布</li>
-                        <li>· 右键：弹出菜单（不平移）</li>
-                      </>
-                    )}
-                  </ul>
-                </div>
+                </section>
 
                 {/* 侧边栏是否悬浮显示 */}
                 <div>
