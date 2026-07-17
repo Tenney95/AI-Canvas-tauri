@@ -292,6 +292,8 @@ function CanvasInner() {
     submenuRef: ctxSubmenuRef,
     openMenu: openCtxMenu,
     addNodeAtCtxPos,
+    handleUndo: handleCtxUndo,
+    handleRedo: handleCtxRedo,
     handlePaste: handleCtxPaste,
     handleDelete: handleCtxDelete,
     handleCopyNodes: handleCtxCopyNodes,
@@ -757,6 +759,8 @@ function CanvasInner() {
         menuRef={ctxMenuRef}
         submenuRef={ctxSubmenuRef}
         onAddNode={addNodeAtCtxPos}
+        onUndo={handleCtxUndo}
+        onRedo={handleCtxRedo}
         onPaste={handleCtxPaste}
         onDelete={handleCtxDelete}
         onCopyNodes={handleCtxCopyNodes}

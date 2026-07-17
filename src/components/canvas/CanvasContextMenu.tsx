@@ -33,10 +33,10 @@ const NODE_ITEMS: MergedNodeItem[] = [
 const ROW_HEIGHT = 28;
 /** 菜单 padding + border 估算 */
 const MENU_PADDING = 10;
-/** 根菜单项数（添加节点 + [复制] + 粘贴 + [复制文件] + 打开项目文件夹 + [删除]）
- *  hasSelection 为真时最多 6 个 .menu-row + 3 个 .menu-sep；未选中时 3 个 .menu-row + 2 个 .menu-sep。
+/** 根菜单项数（添加节点 + [复制] + 粘贴 + [复制文件] + 撤销 + 重做 + 打开项目文件夹 + [删除]）
+ *  hasSelection 为真时最多 8 个 .menu-row + 3 个 .menu-sep；未选中时 5 个 .menu-row + 2 个 .menu-sep。
  *  以选中态最大项数估算高度，避免溢出。 */
-const L1_ITEM_COUNT = 6;
+const L1_ITEM_COUNT = 8;
 const L1_SEP_COUNT = 3;
 /** 子菜单项数（6 个生成节点 + 1 条分割线 + 5 个源节点 = 11 个 .menu-row + 1 个 .menu-sep） */
 const SUB_ITEM_COUNT = 11;
@@ -60,6 +60,8 @@ interface CanvasContextMenuProps {
   menuRef: React.RefObject<HTMLDivElement | null>;
   submenuRef: React.RefObject<HTMLDivElement | null>;
   onAddNode: (type: NodeType, label: string, role: 'generator' | 'source') => void;
+  onUndo: () => void;
+  onRedo: () => void;
   onPaste: () => void;
   onDelete: () => void;
   onCopyNodes?: () => void;
@@ -77,6 +79,8 @@ function CanvasContextMenu({
   menuRef,
   submenuRef,
   onAddNode,
+  onUndo,
+  onRedo,
   onPaste,
   onDelete,
   onCopyNodes,
@@ -143,6 +147,14 @@ function CanvasContextMenu({
             <span>复制文件</span>
           </div>
         )}
+        <div className="menu-row menu-row-split" onClick={onUndo}>
+          <span>撤销</span>
+          <span className="menu-kbd">Ctrl Z</span>
+        </div>
+        <div className="menu-row menu-row-split" onClick={onRedo}>
+          <span>重做</span>
+          <span className="menu-kbd">Ctrl Y</span>
+        </div>
         <div className="menu-sep" />
         <div className="menu-row" onClick={onOpenProjectDir}>
           <span>打开项目文件夹</span>
