@@ -1,30 +1,31 @@
 /**
- * ContextUsageIndicator — 会话上下文占用指示器（P3-D1）
+ * ContextUsageIndicator — 会话上下文占用指示器（P3-D1，E-UI 改为环形）。
  *
- * 显示当前会话估算占用 / 模型上下文窗口和百分比。
+ * 以 Claude 风格的小圆环进度条展示当前会话上下文占用比例。
  * 所有数值为估算口径（无精确 tokenizer），悬停提示中注明。
  */
 import type { ContextUsageStat } from '../../services/chat/contextManager';
-
-function formatTokens(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
-  return `${tokens}`;
-}
 
 interface ContextUsageIndicatorProps {
   usage: ContextUsageStat | null;
 }
 
+const SIZE = 18;
+const STROKE = 2.5;
+const R = (SIZE - STROKE) / 2;
+const CIRC = 2 * Math.PI * R;
+
 export default function ContextUsageIndicator({ usage }: ContextUsageIndicatorProps) {
   if (!usage) return null;
 
+  const ratio = Math.min(1, Math.max(0, usage.ratio));
   const percent = Math.round(usage.ratio * 100);
-  const colorClass = usage.ratio >= 0.9
-    ? 'text-red-400'
+  const color = usage.ratio >= 0.9
+    ? '#f87171' // red-400
     : usage.ratio >= 0.75
-      ? 'text-amber-400'
-      : 'text-canvas-text-muted';
+      ? '#fbbf24' // amber-400
+      : '#818cf8'; // indigo-400
+
   const windowSourceLabel = usage.source === 'declared'
     ? '模型配置声明'
     : usage.source === 'catalog'
@@ -39,11 +40,33 @@ export default function ContextUsageIndicator({ usage }: ContextUsageIndicatorPr
 
   return (
     <span
-      className={`chat-context-usage text-[10px] tabular-nums whitespace-nowrap px-1.5 py-0.5 rounded bg-canvas-hover/60 ${colorClass}`}
+      className="chat-context-usage inline-flex shrink-0 items-center justify-center"
       title={tooltip}
+      role="img"
       aria-label={`上下文占用约 ${percent}%`}
     >
-      {formatTokens(usage.estimatedTokens)}/{formatTokens(usage.contextWindow)} · {percent}%
+      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} className="-rotate-90">
+        <circle
+          cx={SIZE / 2}
+          cy={SIZE / 2}
+          r={R}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={STROKE}
+          className="text-canvas-border"
+        />
+        <circle
+          cx={SIZE / 2}
+          cy={SIZE / 2}
+          r={R}
+          fill="none"
+          stroke={color}
+          strokeWidth={STROKE}
+          strokeLinecap="round"
+          strokeDasharray={CIRC}
+          strokeDashoffset={CIRC * (1 - ratio)}
+        />
+      </svg>
     </span>
   );
 }

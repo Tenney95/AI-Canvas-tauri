@@ -7,9 +7,7 @@ import { type ReactNode } from 'react';
 import { Icon } from '@iconify/react';
 import MascotAvatar from './MascotAvatar';
 import AgentModeSelector from './AgentModeSelector';
-import ContextUsageIndicator from './ContextUsageIndicator';
 import type { AgentMode } from '../../types/agent';
-import type { ContextUsageStat } from '../../services/chat/contextManager';
 
 interface ChatHeaderProps {
   detached: boolean;
@@ -25,8 +23,6 @@ interface ChatHeaderProps {
   agentMode: AgentMode;
   onAgentModeChange: (mode: AgentMode) => void;
   agentModeDisabled?: boolean;
-  /** 当前会话上下文占用（估算）；无会话时为 null */
-  contextUsage?: ContextUsageStat | null;
   /** 打开项目记忆管理面板；不提供时不显示入口（如独立窗口） */
   onOpenMemory?: () => void;
   /** 分离模式下由外部传入的 header 操作按钮 */
@@ -44,57 +40,63 @@ export default function ChatHeader({
   agentMode,
   onAgentModeChange,
   agentModeDisabled,
-  contextUsage,
   onOpenMemory,
   detachedHeaderActions,
 }: ChatHeaderProps) {
   return (
     <div
       data-tauri-drag-region={detached ? true : undefined}
-      className="chat-panel-header flex items-center justify-between px-4 py-3 border-b border-canvas-border flex-shrink-0 select-none"
+      className="chat-panel-header flex items-center justify-between gap-2 px-3.5 py-2.5
+                 border-b border-canvas-border flex-shrink-0 select-none"
     >
-      <div className="chat-panel-header-brand flex items-center gap-2">
+      <div className="chat-panel-header-brand flex items-center gap-1.5 min-w-0">
         {showBackButton && (
           <button
             type="button"
-            className="chat-panel-back-btn flex items-center justify-center w-6 h-6 rounded-md text-canvas-text-muted
-                       hover:text-canvas-text hover:bg-canvas-hover transition-colors"
+            className="chat-panel-back-btn flex items-center justify-center w-7 h-7 -ml-1 rounded-lg
+                       text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
+                       active:scale-95 transition-all"
             onClick={onBack}
+            aria-label="返回会话列表"
           >
-            <Icon icon="mdi:menu" width="16" height="16" />
+            <Icon icon="mdi:arrow-left" width="18" height="18" />
           </button>
         )}
-        <div className="flex items-center gap-2">
-          <MascotAvatar size={28} className="shrink-0" />
-          <span className="chat-panel-title text-sm font-medium text-canvas-text">
+        <MascotAvatar size={26} className="shrink-0" />
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="chat-panel-title text-[13px] font-semibold text-canvas-text tracking-tight truncate">
             AI 助手
           </span>
           {detached && projectName && (
             <span className="text-[11px] text-canvas-text-muted truncate max-w-[120px]">
-              — {projectName}
+              · {projectName}
             </span>
           )}
-          <span className="chat-panel-beta-badge text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400 font-medium uppercase">
+          <span className="chat-panel-beta-badge text-[9px] leading-none px-1.5 py-0.5 rounded-full
+                           bg-brand/15 text-brand-light font-semibold uppercase tracking-wider">
             Beta
           </span>
         </div>
       </div>
 
       <div className="chat-panel-header-actions flex items-center gap-1">
-        <ContextUsageIndicator usage={contextUsage ?? null} />
         <AgentModeSelector
           mode={agentMode}
           onChange={onAgentModeChange}
           disabled={agentModeDisabled}
         />
 
+        <span className="mx-0.5 h-4 w-px bg-canvas-border" aria-hidden="true" />
+
         {onOpenMemory && (
           <button
             type="button"
-            className="chat-panel-memory-btn flex items-center justify-center w-7 h-7 rounded-md text-canvas-text-muted
-                       hover:text-canvas-text hover:bg-canvas-hover transition-colors"
+            className="chat-panel-memory-btn flex items-center justify-center w-7 h-7 rounded-lg
+                       text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
+                       active:scale-95 transition-all"
             onClick={onOpenMemory}
             data-tooltip="项目记忆"
+            aria-label="项目记忆"
           >
             <Icon icon="mdi:brain" width="16" height="16" />
           </button>
@@ -105,10 +107,12 @@ export default function ChatHeader({
           {/* 独立窗口按钮 */}
           <button
             type="button"
-            className="chat-panel-detach-btn flex items-center justify-center w-7 h-7 rounded-md text-canvas-text-muted
-                       hover:text-canvas-text hover:bg-canvas-hover transition-colors"
+            className="chat-panel-detach-btn flex items-center justify-center w-7 h-7 rounded-lg
+                       text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
+                       active:scale-95 transition-all"
             onClick={onDetachToggle}
             data-tooltip={chatPanelDetached ? '收回内嵌' : '独立窗口'}
+            aria-label={chatPanelDetached ? '收回内嵌' : '独立窗口'}
           >
             <Icon icon={chatPanelDetached ? 'mdi:dock-left' : 'mdi:dock-window'} width="16" height="16" />
           </button>
@@ -116,11 +120,13 @@ export default function ChatHeader({
           {/* 关闭按钮 */}
           <button
             type="button"
-            className="chat-panel-close-btn flex items-center justify-center w-7 h-7 rounded-md text-canvas-text-muted
-                       hover:text-canvas-text hover:bg-canvas-hover transition-colors"
+            className="chat-panel-close-btn flex items-center justify-center w-7 h-7 rounded-lg
+                       text-canvas-text-muted hover:text-red-400 hover:bg-red-500/10
+                       active:scale-95 transition-all"
             onClick={onClose}
+            aria-label="关闭"
           >
-            <Icon icon="mdi:close" width="16" height="16" />
+            <Icon icon="mdi:close" width="18" height="18" />
           </button>
           </>
         )}

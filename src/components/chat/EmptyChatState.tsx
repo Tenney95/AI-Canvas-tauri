@@ -10,6 +10,8 @@ import MascotAvatar from './MascotAvatar';
 interface EmptyChatStateProps {
   onNew: () => void;
   onList: () => void;
+  /** 点击示例提示 → 预填输入框（不提供时示例不可点击） */
+  onExample?: (text: string) => void;
 }
 
 const EXAMPLES = [
@@ -18,7 +20,7 @@ const EXAMPLES = [
   '删除失败节点',
 ];
 
-export default function EmptyChatState({ onNew, onList }: EmptyChatStateProps) {
+export default function EmptyChatState({ onNew, onList, onExample }: EmptyChatStateProps) {
   return (
     <div className="chat-empty-state flex flex-col items-center justify-center h-full text-center px-6">
       <MascotAvatar size={72} className="mb-5" />
@@ -29,7 +31,7 @@ export default function EmptyChatState({ onNew, onList }: EmptyChatStateProps) {
       <div className="chat-empty-state-actions flex flex-col gap-2 w-48">
         <AnimatedButton
           className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl
-                     bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-400 transition-colors"
+                     bg-brand text-white text-sm font-medium hover:bg-brand-light transition-colors"
           onClick={onNew}
         >
           <Icon icon="mdi:plus" width="16" height="16" />
@@ -47,19 +49,23 @@ export default function EmptyChatState({ onNew, onList }: EmptyChatStateProps) {
       </div>
 
       {/* Example prompts */}
-      <div className="chat-empty-state-examples mt-8 space-y-2 w-56">
-        <p className="text-[11px] text-canvas-text-muted mb-2">试试这些：</p>
-        {EXAMPLES.map((example) => (
-          <div
-            key={example}
-            className="px-3 py-2 text-xs text-canvas-text-secondary bg-canvas-bg border border-canvas-border
-                       rounded-lg hover:border-canvas-text-secondary hover:text-canvas-text
-                       transition-colors cursor-pointer"
-          >
-            {example}
-          </div>
-        ))}
-      </div>
+      {onExample && (
+        <div className="chat-empty-state-examples mt-8 space-y-2 w-56">
+          <p className="text-[11px] text-canvas-text-muted mb-2">试试这些：</p>
+          {EXAMPLES.map((example) => (
+            <button
+              key={example}
+              type="button"
+              onClick={() => onExample(example)}
+              className="w-full text-left px-3 py-2 text-xs text-canvas-text-secondary bg-canvas-bg
+                         border border-canvas-border rounded-lg transition-colors
+                         hover:border-brand-light/50 hover:text-canvas-text hover:bg-canvas-hover"
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

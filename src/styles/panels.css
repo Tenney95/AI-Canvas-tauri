@@ -1212,21 +1212,80 @@
    Chat Panel — AI 对话助手悬浮面板（右侧）
    ============================================ */
 .chat-panel {
-  right: 10px;
-  bottom: 10px;
-  width: 420px;
+  right: 12px;
+  bottom: 12px;
+  width: 400px;
   max-width: calc(100vw - 64px);
   height: calc(100vh - 40px);
   background: var(--glass-panel-bg);
   backdrop-filter: blur(var(--glass-blur-lg));
-  box-shadow: -8px 0 32px var(--black-alpha-50);
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
+  box-shadow:
+    0 24px 64px var(--black-alpha-50),
+    0 8px 24px rgba(0, 0, 0, 0.32),
+    0 0 0 1px var(--white-alpha-03);
   font-family: inherit;
-  border-radius: 16px;
+  border-radius: 18px;
+}
+
+/* 消息列表：细滚动条 + 平滑滚动 */
+.chat-panel-messages {
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(58, 58, 80, 0.55) transparent;
+}
+.chat-panel-messages::-webkit-scrollbar {
+  width: 6px;
+}
+.chat-panel-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-panel-messages::-webkit-scrollbar-thumb {
+  background: rgba(58, 58, 80, 0.55);
+  border-radius: 3px;
+}
+.chat-panel-messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(85, 85, 112, 0.8);
+}
+
+/* 消息入场微动画（仅挂载时执行一次） */
+.chat-message-bubble {
+  animation: chat-msg-in 0.22s var(--ease-out-expo);
+}
+@keyframes chat-msg-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 助手思考中的三点指示 */
+.chat-typing-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--brand-light);
+  animation: chat-typing-bounce 1.2s infinite ease-in-out;
+}
+.chat-typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.chat-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chat-typing-bounce {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
 }
 
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .chat-panel {
     transition: none;
+  }
+  .chat-panel-messages {
+    scroll-behavior: auto;
+  }
+  .chat-message-bubble {
+    animation: none;
+  }
+  .chat-typing-dot {
+    animation: none;
+    opacity: 0.7;
   }
 }

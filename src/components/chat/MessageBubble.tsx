@@ -16,6 +16,12 @@ interface MessageBubbleProps {
   agentControls?: AgentTaskControls;
 }
 
+function formatMessageTime(timestamp: number): string {
+  const d = new Date(timestamp);
+  const pad = (n: number) => `${n}`.padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export default function MessageBubble({
   message,
   agentTask,
@@ -28,7 +34,7 @@ export default function MessageBubble({
   if (isSystem) {
     return (
       <div className="chat-message-bubble chat-message-system flex justify-center">
-        <span className="text-[11px] text-canvas-text-muted bg-canvas-hover px-3 py-1 rounded-full">
+        <span className="text-[10px] text-canvas-text-muted bg-canvas-hover px-2.5 py-0.5 rounded-full">
           {message.content}
         </span>
       </div>
@@ -44,21 +50,42 @@ export default function MessageBubble({
   const showTimeline = !!agentTask
     && !!agentControls
     && (agentTask.steps.length > 0 || agentTask.status !== 'completed');
+  // 助手正在响应但还没有任何内容 → 三点思考动画
+  const isThinking = !isUser
+    && !message.content
+    && !showTimeline
+    && !isGenerating
+    && ['queued', 'parsing', 'streaming'].includes(message.status);
 
   return (
-    <div className={`chat-message-bubble flex ${isUser ? 'justify-end chat-message-user' : 'justify-start chat-message-assistant'}`}>
+    <div className={`chat-message-bubble group flex items-end gap-1.5 ${isUser ? 'justify-end chat-message-user' : 'justify-start chat-message-assistant'}`}>
       {/* Assistant avatar */}
       {!isUser && (
-        <MascotAvatar size={28} className="chat-message-avatar chat-message-avatar-assistant shrink-0 mr-2 mt-0.5" />
+        <MascotAvatar size={20} className="chat-message-avatar chat-message-avatar-assistant shrink-0 mb-0.5" />
+      )}
+
+      {/* 悬停时间戳（用户消息在左侧） */}
+      {isUser && (
+        <span className="chat-message-time shrink-0 self-end mb-1 text-[9px] tabular-nums text-canvas-text-muted opacity-0 transition-opacity group-hover:opacity-100">
+          {formatMessageTime(message.timestamp)}
+        </span>
       )}
 
       <div
-        className={`chat-message-content max-w-[80%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed
+        className={`chat-message-content max-w-[85%] px-3.5 py-2 rounded-2xl text-[13px] leading-relaxed
+                    transition-colors
                     ${isUser
-                      ? 'bg-indigo-500/20 text-canvas-text rounded-br-md'
-                      : 'bg-canvas-hover text-canvas-text rounded-bl-md'
+                      ? 'bg-indigo-500/15 text-canvas-text rounded-br-sm'
+                      : 'bg-canvas-hover text-canvas-text rounded-bl-sm'
                     }`}
       >
+        {isThinking && (
+          <span className="flex items-center gap-1 py-1.5" aria-label="助手正在思考">
+            <span className="chat-typing-dot" />
+            <span className="chat-typing-dot" />
+            <span className="chat-typing-dot" />
+          </span>
+        )}
         {message.content && (
           <div className="whitespace-pre-wrap break-words">{message.content}</div>
         )}
@@ -165,8 +192,8 @@ export default function MessageBubble({
         )}
 
         {/* Status indicator */}
-        {message.status === 'streaming' && (
-          <span className="chat-message-status chat-message-status-streaming inline-block w-2 h-3 bg-indigo-400 animate-pulse ml-1 align-middle rounded-sm" />
+        {message.status === 'streaming' && !!message.content && (
+          <span className="chat-message-status chat-message-status-streaming inline-block w-1.5 h-3.5 bg-indigo-400/80 animate-pulse ml-1 align-text-bottom rounded-full" />
         )}
         {message.status === 'error' && (
           <div className="chat-message-status chat-message-status-error flex items-center gap-1 mt-1 text-[11px] text-red-400">
@@ -182,11 +209,11 @@ export default function MessageBubble({
         )}
       </div>
 
-      {/* User avatar */}
-      {isUser && (
-        <div className="chat-message-avatar chat-message-avatar-user flex-shrink-0 w-7 h-7 rounded-lg bg-canvas-hover flex items-center justify-center ml-2 mt-0.5">
-          <Icon icon="mdi:account" width="14" height="14" className="text-canvas-text-secondary" />
-        </div>
+      {/* 悬停时间戳（助手消息在右侧） */}
+      {!isUser && (
+        <span className="chat-message-time shrink-0 self-end mb-1 text-[9px] tabular-nums text-canvas-text-muted opacity-0 transition-opacity group-hover:opacity-100">
+          {formatMessageTime(message.timestamp)}
+        </span>
       )}
     </div>
   );

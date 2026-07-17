@@ -261,6 +261,13 @@ export default function ChatPanel({
 
   const handleShowList = useCallback(() => setViewMode('list'), []);
 
+  const handleExampleClick = useCallback((text: string) => {
+    if (!effectiveActiveConversationId && effectiveProjectId) {
+      handleNewConversation();
+    }
+    setInputValue(text);
+  }, [effectiveActiveConversationId, effectiveProjectId, handleNewConversation]);
+
   const handleAddMediaToCanvas = useCallback((messageId: string) => {
     if (detached) return;
     const store = useAppStore.getState();
@@ -700,7 +707,6 @@ export default function ChatPanel({
               agentMode={effectiveAgentMode}
               onAgentModeChange={handleAgentModeChange}
               agentModeDisabled={!effectiveActiveConversationId}
-              contextUsage={contextUsage}
               onOpenMemory={!detached && effectiveProjectId
                 ? () => setShowMemoryPanel(true)
                 : undefined}
@@ -716,9 +722,10 @@ export default function ChatPanel({
               {/* Conversation list pane */}
               {viewMode === 'list' && (
                 <motion.div
-                  initial={{ x: -20, opacity: 0 }}
+                  initial={{ x: -12, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
-                  className="chat-panel-conversation-list flex-shrink-0 w-full border-r border-canvas-border overflow-hidden"
+                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                  className="chat-panel-conversation-list flex-shrink-0 w-full overflow-hidden"
                 >
                   <ConversationList
                     {...(detached ? {
@@ -748,8 +755,9 @@ export default function ChatPanel({
               {/* Chat pane */}
               {viewMode === 'chat' && (
                 <motion.div
-                  initial={{ x: 20, opacity: 0 }}
+                  initial={{ x: 12, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
+                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
                   className="chat-panel-chat-area flex-1 flex flex-col min-h-0 min-w-0"
                 >
                   {/* Messages */}
@@ -760,6 +768,7 @@ export default function ChatPanel({
                     detachedInitialized={detachedInitialized}
                     onNewConversation={handleNewConversation}
                     onShowList={handleShowList}
+                    onExampleClick={handleExampleClick}
                     onAddMediaToCanvas={detached ? undefined : handleAddMediaToCanvas}
                     agentControls={agentControls}
                   />
@@ -776,6 +785,7 @@ export default function ChatPanel({
                       localFileGrants={effectiveLocalFileGrants}
                       onAuthorizeLocalFiles={handleAuthorizeLocalFiles}
                       onRevokeLocalFile={handleRevokeLocalFile}
+                      contextUsage={contextUsage}
                     />
                   )}
                 </motion.div>

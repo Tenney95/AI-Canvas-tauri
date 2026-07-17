@@ -4,10 +4,13 @@
  * 常驻对话模型选择器；媒体模型通过轻量 @model mention 按轮覆盖。
  */
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import AnimatedButton from '../shared/AnimatedButton';
 import ChatModelSelector from './ChatModelSelector';
+import ContextUsageIndicator from './ContextUsageIndicator';
 import type { GeneralModelConfig } from '../../types';
+import type { ContextUsageStat } from '../../services/chat/contextManager';
 import { useAppStore } from '../../store/useAppStore';
 import {
   getMediaModelOptions,
@@ -58,6 +61,8 @@ interface ChatInputProps {
   localFileGrants?: LocalFileGrantSummary[];
   onAuthorizeLocalFiles?: () => void;
   onRevokeLocalFile?: (grantId: string) => void;
+  /** 当前会话上下文占用（估算）；无会话时为 null */
+  contextUsage?: ContextUsageStat | null;
   disabled?: boolean;
 }
 
@@ -71,6 +76,7 @@ export default function ChatInput({
   localFileGrants = [],
   onAuthorizeLocalFiles,
   onRevokeLocalFile,
+  contextUsage,
   disabled = false,
 }: ChatInputProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -197,27 +203,30 @@ export default function ChatInput({
   return (
     <div className="chat-panel-input-area flex-shrink-0 px-3 pt-2 pb-1">
       <div
-        className="chat-panel-input-box relative flex flex-col bg-canvas-card border border-canvas-border rounded-[14px]
-                    focus-within:border-canvas-text-secondary transition-colors px-4 pt-4 pb-3 shadow-lg"
+        className="chat-panel-input-box relative flex flex-col bg-canvas-card border border-canvas-border
+                    rounded-[14px] transition-all duration-200
+                    focus-within:border-brand-light focus-within:ring-2 focus-within:ring-brand/15
+                    px-2 py-2 shadow-lg shadow-black/20"
       >
         {localFileGrants.length > 0 && (
-          <div className="mb-2 flex max-h-16 flex-wrap gap-1 overflow-y-auto">
+          <div className="mb-2 flex max-h-16 flex-wrap gap-1.5 overflow-y-auto">
             {localFileGrants.map((grant) => (
               <span
                 key={grant.id}
                 title={`${grant.displayName} · ${Math.ceil(grant.size / 1024)} KB`}
-                className="flex max-w-[180px] items-center gap-1 rounded-md bg-canvas-hover px-2 py-1 text-[10px] text-canvas-text-secondary"
+                className="inline-flex items-center gap-1 rounded-full border border-canvas-border/60
+                           bg-canvas-hover/70 pl-2.5 pr-1 py-0.5 text-[10px] text-canvas-text-secondary leading-none"
               >
-                <Icon icon="mdi:file-document-outline" width="12" className="shrink-0" />
-                <span className="truncate">{grant.displayName}</span>
+                <Icon icon="mdi:file-document-outline" width="12" className="shrink-0 text-canvas-text-muted/80" />
+                <span className="max-w-[100px] truncate">{grant.displayName}</span>
                 {onRevokeLocalFile && (
                   <button
                     type="button"
                     aria-label={`撤销 ${grant.displayName} 的读取授权`}
                     onClick={() => onRevokeLocalFile(grant.id)}
-                    className="shrink-0 text-canvas-text-muted hover:text-red-400"
+                    className="shrink-0 rounded-full p-0.5 text-canvas-text-muted hover:bg-red-500/15 hover:text-red-400 transition-colors"
                   >
-                    <Icon icon="mdi:close" width="12" />
+                    <Icon icon="mdi:close" width="11" />
                   </button>
                 )}
               </span>
@@ -250,8 +259,14 @@ export default function ChatInput({
         />
 
         <div className="chat-panel-input-toolbar mt-2 flex items-end justify-between gap-3">
-          {modelMenuOpen && (
-            <div className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface p-1 shadow-xl">
+          <AnimatePresence>
+            {modelMenuOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: 6, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 6, scale: 0.97 }}
+              transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+              className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface p-1 shadow-xl">
               {filteredCanvasNodes.length > 0 && (
                 <div className="py-1">
                   <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-canvas-text-muted">
@@ -312,13 +327,20 @@ export default function ChatInput({
               ))}
               {filteredCanvasNodes.length === 0 && groupedMediaModels.length === 0 && (
                 <p className="px-3 py-3 text-center text-xs text-canvas-text-muted">
-                  {modelQuery ? `没有匹配“${modelQuery}”的节点或模型` : '暂无可引用的节点或模型'}
+                  {modelQuery ? `没有匹配"${modelQuery}"的节点或模型` : '暂无可引用的节点或模型'}
                 </p>
               )}
-            </div>
+            </motion.div>
           )}
-          {skillMenuOpen && (
-            <div className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface p-1 shadow-xl">
+          </AnimatePresence>
+          <AnimatePresence>
+            {skillMenuOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: 6, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 6, scale: 0.97 }}
+              transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+              className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface p-1 shadow-xl">
               <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-canvas-text-muted">
                 <span>Skill</span>
                 <span className="flex items-center gap-2">
@@ -332,7 +354,7 @@ export default function ChatInput({
                     }}
                     aria-label="上传 Skill"
                     title="上传 Skill 文件"
-                    className="flex h-6 w-6 items-center justify-center rounded-md text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text disabled:cursor-wait disabled:opacity-50"
+                    className="flex h-5 w-5 items-center justify-center rounded-md text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text disabled:cursor-wait disabled:opacity-50"
                   >
                     <Icon icon={skillUploading ? 'mdi:loading' : 'mdi:plus'} width="15" className={skillUploading ? 'animate-spin' : ''} />
                   </button>
@@ -354,80 +376,111 @@ export default function ChatInput({
                 </button>
               )) : (
                 <p className="px-3 py-3 text-center text-xs text-canvas-text-muted">
-                  {skillQuery ? `没有匹配“${skillQuery}”的 Skill` : '暂无已上传 Skill'}
+                  {skillQuery ? `没有匹配"${skillQuery}"的 Skill` : '暂无已上传 Skill'}
                 </p>
               )}
-            </div>
+            </motion.div>
           )}
+          </AnimatePresence>
 
-          <div className="flex items-center gap-2 min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 min-w-0">
             <ChatModelSelector
               category="text"
               selectedId={assistantModelId}
               onSelect={onAssistantModelChange}
             />
-            <button
-              type="button"
-              onClick={() => {
-                setModelQuery('');
-                setMentionCursor(inputValue.length);
-                setSkillMenuOpen(false);
-                setModelMenuOpen((open) => !open);
-              }}
-              aria-label="引用画布节点或媒体模型"
-              className="flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text"
-            >
-              <Icon icon="mdi:at" width="16" />
-              引用
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSkillQuery('');
-                setSkillCursor(inputValue.length);
-                setModelMenuOpen(false);
-                setSkillMenuOpen((open) => !open);
-              }}
-              aria-label="调用 Skill"
-              className="flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text"
-            >
-              <Icon icon="mdi:slash-forward" width="16" />
-              Skill
-            </button>
-            {onAuthorizeLocalFiles && (
-              <button
-                type="button"
-                onClick={onAuthorizeLocalFiles}
-                aria-label="授权当前对话读取本地文件"
-                title="选择文本文件；授权仅在当前对话和本次运行期间有效"
-                className="flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text"
-              >
-                <Icon icon="mdi:paperclip" width="16" />
-                文件
-              </button>
-            )}
           </div>
 
-          <AnimatedButton
-            scale={1.05}
-            disabled={!inputValue.trim() || disabled}
-            aria-label="发送消息"
-            className={`chat-panel-send-btn flex shrink-0 items-center justify-center w-10 h-10 rounded-full transition-colors
-                        ${inputValue.trim() && !disabled
-                          ? 'bg-canvas-text text-canvas-bg hover:opacity-90'
-                          : 'bg-canvas-hover text-canvas-text-muted cursor-not-allowed'
-                        }`}
-            onClick={onSend}
-          >
-            <Icon icon="mdi:arrow-up" width="20" height="20" />
-          </AnimatedButton>
+          <div className="flex items-end gap-1.5 shrink-0">
+            <div className="flex items-center gap-px">
+              <button
+                type="button"
+                onClick={() => {
+                  setModelQuery('');
+                  setMentionCursor(inputValue.length);
+                  setSkillMenuOpen(false);
+                  setModelMenuOpen((open) => !open);
+                }}
+                aria-label="引用画布节点或媒体模型"
+                title="引用画布节点或媒体模型"
+                className={`flex h-5 w-5 items-center justify-center rounded-md transition-all
+                  ${modelMenuOpen
+                    ? 'bg-brand/15 text-brand-light'
+                    : 'text-canvas-text-secondary hover:bg-canvas-surface hover:text-canvas-text'
+                  }`}
+              >
+                <Icon icon="mdi:at" width="14" />
+              </button>
+              <span className="w-px h-3.5 bg-canvas-border/50" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={() => {
+                  setSkillQuery('');
+                  setSkillCursor(inputValue.length);
+                  setModelMenuOpen(false);
+                  setSkillMenuOpen((open) => !open);
+                }}
+                aria-label="调用 Skill"
+                title="调用 Skill"
+                className={`flex h-5 w-5 items-center justify-center rounded-md transition-all
+                  ${skillMenuOpen
+                    ? 'bg-brand/15 text-brand-light'
+                    : 'text-canvas-text-secondary hover:bg-canvas-surface hover:text-canvas-text'
+                  }`}
+              >
+                <Icon icon="mdi:slash-forward" width="14" />
+              </button>
+              {onAuthorizeLocalFiles && (
+                <>
+                  <span className="w-px h-3.5 bg-canvas-border/50" aria-hidden="true" />
+                  <button
+                    type="button"
+                    onClick={onAuthorizeLocalFiles}
+                    aria-label="授权当前对话读取本地文件"
+                    title="选择文本文件；授权仅在当前对话和本次运行期间有效"
+                    className="flex h-5 w-5 items-center justify-center rounded-md text-canvas-text-secondary
+                               hover:bg-canvas-surface hover:text-canvas-text transition-all"
+                  >
+                    <Icon icon="mdi:paperclip" width="14" />
+                  </button>
+                </>
+              )}
+            </div>
+            {inputValue.trim() && !disabled && (
+              <span className="hidden sm:inline text-[10px] text-canvas-text-muted/45 tabular-nums tracking-wider select-none">
+                ↵ Enter
+              </span>
+            )}
+            <div className={`flex h-5 w-5 items-center justify-center`}>
+              <ContextUsageIndicator usage={contextUsage ?? null} />
+            </div>
+            
+            <AnimatedButton
+              scale={1.05}
+              disabled={!inputValue.trim() || disabled}
+              aria-label="发送消息"
+              className={`chat-panel-send-btn flex shrink-0 items-center justify-center h-8 w-8 rounded-full
+                          transition-all duration-200 active:scale-95
+                          ${inputValue.trim() && !disabled
+                            ? 'bg-brand text-white hover:bg-brand-light shadow-lg shadow-brand/30'
+                            : 'bg-canvas-hover text-canvas-text-muted cursor-not-allowed'
+                          }`}
+              onClick={onSend}
+            >
+              <Icon icon="mdi:arrow-up" width="18" height="18" />
+            </AnimatedButton>
+          </div>
         </div>
       </div>
 
       {/* Disclaimer */}
-      <p className="chat-panel-disclaimer text-[10px] text-canvas-text-muted mt-1 text-center px-4">
-        AI 助手仅理解画布操作指令，不会执行未授权的修改。
-      </p>
+      <div className="flex items-center justify-center gap-1.5 mt-1.5">
+        <span className="h-px flex-1 max-w-4 bg-canvas-border/40" aria-hidden="true" />
+        <p className="chat-panel-disclaimer text-[9px] text-canvas-text-muted/55">
+          AI 助手仅理解画布操作指令，不会执行未授权的修改
+        </p>
+        <span className="h-px flex-1 max-w-4 bg-canvas-border/40" aria-hidden="true" />
+      </div>
     </div>
   );
 }
