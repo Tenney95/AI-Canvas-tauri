@@ -78,7 +78,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all var(--transition-base);
+  transition: var(--transition-colors);
 }
 
 .preset-manager-close-btn:hover {
@@ -106,12 +106,12 @@
   font-size: 13px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
-  transition: all var(--transition-base);
+  transition: var(--transition-colors);
   margin-bottom: -1px;
 }
 
 .preset-manager-tab:hover {
-  color: #c0c0d0;
+  color: var(--theme-text);
   background: var(--theme-hover);
 }
 
@@ -153,10 +153,10 @@
   border-radius: 7px;
   border: 1px dashed var(--border-secondary);
   background: transparent;
-  color: #a0a0b8;
+  color: var(--theme-text-secondary);
   font-size: 13px;
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: var(--transition-colors);
 }
 
 .preset-manager-new-btn:hover {
@@ -180,7 +180,7 @@
   padding: 6px 8px;
   border-radius: 7px;
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: background-color var(--transition-base);
   position: relative;
 }
 
@@ -249,7 +249,7 @@
 
 .preset-manager-list-desc {
   font-size: 11px;
-  color: #666680;
+  color: var(--theme-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -268,7 +268,7 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: all var(--transition-base);
+  transition: var(--transition-colors);
 }
 
 .preset-manager-list-item:hover .preset-manager-list-delete {
@@ -353,15 +353,15 @@
   border-radius: 6px;
   border: 1px solid var(--border-secondary);
   background: var(--theme-hover);
-  color: #a0a0b8;
+  color: var(--theme-text-secondary);
   font-size: 12px;
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: var(--transition-colors);
 }
 
 .preset-modal-btn-secondary:hover {
   border-color: var(--brand);
-  color: #c0c0d0;
+  color: var(--theme-text);
   background: var(--brand-alpha-10);
 }
 
@@ -446,11 +446,11 @@
   color: var(--theme-text-secondary);
   font-size: 12px;
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: var(--transition-colors);
 }
 .preset-manager-trigger-mode:hover {
   border-color: var(--brand);
-  color: #c0c0d0;
+  color: var(--theme-text);
 }
 .preset-manager-trigger-mode.is-active {
   border-color: var(--brand);
@@ -466,7 +466,9 @@
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition:
+    background-color var(--transition-base),
+    opacity var(--transition-base);
 }
 
 .preset-modal-btn-primary:hover {

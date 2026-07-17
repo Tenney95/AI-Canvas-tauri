@@ -63,7 +63,7 @@
   font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 120ms ease;
+  transition: var(--transition-colors);
   flex-shrink: 0;
 }
 
@@ -112,7 +112,7 @@
   color: var(--theme-text-secondary, #8888a0);
   font-size: 11px;
   cursor: pointer;
-  transition: all 120ms ease;
+  transition: var(--transition-colors);
 }
 
 .toolbar-edit-action-btn:hover {
@@ -246,7 +246,7 @@ body.toolbar-edit-zone-dragging {
   display: flex;
   align-items: center;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
 }
 
 .toolbar-edit-zone-name:hover {
@@ -264,7 +264,7 @@ body.toolbar-edit-zone-dragging {
   width: 80px;
   outline: none;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
 }
 
 .toolbar-edit-zone-del {
@@ -278,7 +278,7 @@ body.toolbar-edit-zone-dragging {
   color: var(--theme-text-muted, #555566);
   cursor: pointer;
   border-radius: 4px;
-  transition: all 100ms ease;
+  transition: var(--transition-colors);
 }
 
 .toolbar-edit-zone-del:hover {
@@ -320,7 +320,10 @@ body.toolbar-edit-zone-dragging {
   font-size: 11px;
   color: var(--theme-text-secondary, #8888a0);
   cursor: grab;
-  transition: all 100ms ease;
+  transition:
+    var(--transition-colors),
+    opacity var(--transition-base),
+    transform var(--transition-base);
   flex-shrink: 0;
   touch-action: none;
   user-select: none;
@@ -415,7 +418,7 @@ body.toolbar-edit-dragging {
   color: var(--theme-text-muted, #555566);
   cursor: pointer;
   border-radius: 3px;
-  transition: all 100ms ease;
+  transition: var(--transition-colors);
   margin-left: 2px;
 }
 
@@ -438,7 +441,7 @@ body.toolbar-edit-dragging {
   color: var(--theme-text-muted, #555566);
   font-size: 11px;
   cursor: pointer;
-  transition: all 100ms ease;
+  transition: var(--transition-colors);
 }
 
 .toolbar-edit-add-zone:hover {
@@ -467,7 +470,7 @@ body.toolbar-edit-dragging {
   font-weight: 600;
   color: var(--theme-text-muted, #555566);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
   padding: 0 4px;
 }
 
@@ -492,7 +495,7 @@ body.toolbar-edit-dragging {
   font-size: 11px;
   cursor: pointer;
   text-align: left;
-  transition: all 100ms ease;
+  transition: var(--transition-colors);
   flex-shrink: 0;
 }
 

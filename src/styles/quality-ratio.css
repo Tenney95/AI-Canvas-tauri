@@ -20,7 +20,7 @@
   color: var(--theme-text-secondary);
   font-size: 12px;
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: var(--transition-colors);
   font-family: inherit;
 }
 .img-pill-btn:hover {
@@ -62,7 +62,7 @@
   color: var(--theme-text-muted);
   margin-bottom: 6px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
 }
 .img-rp-quality-segmented {
   display: flex;
@@ -81,7 +81,10 @@
   color: var(--theme-text-secondary);
   cursor: pointer;
   border-radius: 6px;
-  transition: all 0.15s ease;
+  transition:
+    var(--transition-colors),
+    transform var(--transition-base),
+    box-shadow var(--transition-base);
   font-family: inherit;
   font-weight: 500;
 }
@@ -118,7 +121,9 @@
   color: var(--theme-text-secondary);
   border-radius: 8px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition:
+    var(--transition-colors),
+    transform var(--transition-base);
   font-family: inherit;
   font-size: 11px;
 }
@@ -160,7 +165,9 @@
   color: var(--theme-text-secondary);
   border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition:
+    var(--transition-colors),
+    transform var(--transition-base);
   font-family: inherit;
   font-size: 10px;
 }
@@ -240,7 +247,7 @@
   font-weight: 600;
   color: var(--theme-text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
 }
 .rh-vram-adv-label > span:first-child {
   color: var(--theme-text-secondary);

@@ -360,13 +360,10 @@
   text-align: right;
 }
 
+/* 滑块基础样式（不依赖 freeangle.css） */
 .expand-slider {
   flex: 1;
   min-width: 0;
-}
-
-/* 滑块基础样式（不依赖 freeangle.css） */
-.expand-slider {
   -webkit-appearance: none;
   appearance: none;
   height: 4px;

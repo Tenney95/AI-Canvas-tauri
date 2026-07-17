@@ -117,6 +117,13 @@
   /* Composite transitions (most common patterns) / 组合过渡（最常用模式） */
   --transition-base: var(--dur-fast) var(--ease-out-expo);
   --transition-smooth: var(--dur-normal) var(--ease-out-expo);
+  --transition-colors:
+    color var(--transition-base),
+    background-color var(--transition-base),
+    border-color var(--transition-base);
+  --transition-control:
+    var(--transition-colors),
+    opacity var(--transition-base);
 
   /* ════════════════════════════════════════════════════════════════════════
      Glass / Frosted Surface Tokens / 毛玻璃表面令牌
@@ -343,6 +350,21 @@ textarea:focus {
   outline: none;
 }
 
+:where(
+  button,
+  input,
+  textarea,
+  select,
+  [contenteditable='true'],
+  [role='button'],
+  [role='tab'],
+  [role='radio'],
+  [tabindex]
+):focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    Animation Keyframes (unified expo-out curves) / 动画关键帧（统一 expo-out 缓动曲线）
    ════════════════════════════════════════════════════════════════════════ */
@@ -434,6 +456,7 @@ textarea:focus {
   *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
 }

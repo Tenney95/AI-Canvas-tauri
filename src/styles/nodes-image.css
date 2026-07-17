@@ -168,23 +168,31 @@
   --theme-text-secondary: var(--theme-text);
 }
 
-.matting-btn {
+.matting-btn,
+.annotate-btn,
+.customgrid-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
   border: none;
   background: transparent;
   color: var(--theme-text-secondary);
   cursor: pointer;
   border-radius: 6px;
-  transition: color 0.15s, background 0.15s;
-  padding: 0;
+  transition: var(--transition-colors);
   flex-shrink: 0;
 }
 
-.matting-btn:hover {
+.matting-btn,
+.annotate-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+.matting-btn:hover,
+.annotate-btn:hover,
+.customgrid-btn:hover {
   color: var(--theme-text);
   background: var(--white-alpha-08);
 }
@@ -194,20 +202,25 @@
   background: rgba(34, 197, 94, 0.12);
 }
 
-.matting-btn:disabled {
+.matting-btn:disabled,
+.annotate-btn:disabled,
+.customgrid-btn:disabled {
   opacity: 0.3;
   cursor: default;
   pointer-events: none;
 }
 
 /* Cancel button hover red */
-.matting-btn.act-cancel:hover {
+.matting-btn.act-cancel:hover,
+.annotate-btn.act-cancel:hover,
+.customgrid-btn.act-cancel:hover {
   color: var(--danger);
   background: var(--danger-bg);
 }
 
 /* Save button */
-.matting-save {
+.matting-save,
+.annotate-save {
   gap: 6px;
   padding: 0 12px;
   width: auto;
@@ -219,17 +232,22 @@
   margin-left: 2px;
 }
 
-.matting-save:hover {
+.matting-save:hover,
+.annotate-save:hover,
+.customgrid-btn.act-confirm:hover {
   background: rgba(34, 197, 94, 0.1);
   color: var(--success-light);
   border-color: rgba(34, 197, 94, 0.5);
 }
 
-.matting-save span {
+.matting-save span,
+.annotate-save span {
   white-space: nowrap;
 }
 
-.matting-divider {
+.matting-divider,
+.annotate-divider,
+.customgrid-bar-divider {
   width: 1px;
   height: 22px;
   background: var(--theme-border);
@@ -238,7 +256,8 @@
 }
 
 /* Brush size */
-.matting-size {
+.matting-size,
+.annotate-size {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -253,7 +272,8 @@
   text-align: center;
 }
 
-.matting-size-range {
+.matting-size-range,
+.annotate-size-range {
   width: 80px;
   height: 4px;
   -webkit-appearance: none;
@@ -264,24 +284,34 @@
   cursor: pointer;
 }
 
-.matting-size-range::-webkit-slider-thumb {
+.matting-size-range::-webkit-slider-thumb,
+.annotate-size-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--success);
   border: none;
   cursor: pointer;
 }
 
-.matting-size-range::-moz-range-thumb {
+.matting-size-range::-moz-range-thumb,
+.annotate-size-range::-moz-range-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--success);
   border: none;
   cursor: pointer;
+}
+
+.matting-size-range::-webkit-slider-thumb,
+.matting-size-range::-moz-range-thumb {
+  background: var(--success);
+}
+
+.annotate-size-range::-webkit-slider-thumb,
+.annotate-size-range::-moz-range-thumb {
+  background: var(--theme-text);
 }
 
 /* Stage — centers the image */
@@ -398,75 +428,9 @@
   white-space: nowrap;
 }
 
-.annotate-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: none;
-  background: transparent;
-  color: var(--theme-text-secondary);
-  cursor: pointer;
-  border-radius: 6px;
-  transition: color 0.15s, background 0.15s;
-  padding: 0;
-  flex-shrink: 0;
-}
-
-.annotate-btn:hover {
-  color: var(--theme-text);
-  background: var(--white-alpha-08);
-}
-
 .annotate-btn.active {
   color: var(--success);
   background: rgba(34, 197, 94, 0.12);
-}
-
-.annotate-btn:disabled {
-  opacity: 0.3;
-  cursor: default;
-  pointer-events: none;
-}
-
-.annotate-btn.act-cancel:hover {
-  color: var(--danger);
-  background: var(--danger-bg);
-}
-
-.annotate-save {
-  gap: 6px;
-  padding: 0 12px;
-  width: auto;
-  color: var(--success);
-  border: 1px solid rgba(34, 197, 94, 0.3);
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  margin-left: 2px;
-}
-
-.annotate-save:hover {
-  background: rgba(34, 197, 94, 0.1);
-  color: var(--success-light);
-  border-color: rgba(34, 197, 94, 0.5);
-}
-
-.annotate-save span {
-  white-space: nowrap;
-}
-
-.annotate-save span {
-  white-space: nowrap;
-}
-
-.annotate-divider {
-  width: 1px;
-  height: 22px;
-  background: var(--theme-border);
-  margin: 0 6px;
-  flex-shrink: 0;
 }
 
 /* Color swatches */
@@ -497,13 +461,6 @@
 }
 
 /* Brush size */
-.annotate-size {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 2px;
-}
-
 .annotate-size-value {
   font-size: 12px;
   color: var(--theme-text);
@@ -516,37 +473,6 @@
   font-size: 11px;
   color: var(--theme-text-muted);
   white-space: nowrap;
-}
-
-.annotate-size-range {
-  width: 80px;
-  height: 4px;
-  -webkit-appearance: none;
-  appearance: none;
-  background: var(--theme-border);
-  border-radius: 2px;
-  outline: none;
-  cursor: pointer;
-}
-
-.annotate-size-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--theme-text);
-  border: none;
-  cursor: pointer;
-}
-
-.annotate-size-range::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--theme-text);
-  border: none;
-  cursor: pointer;
 }
 
 /* Stage — centers the image */
@@ -703,43 +629,17 @@
 }
 
 .customgrid-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   gap: 4px;
   height: 32px;
   padding: 0 10px;
-  border: none;
-  background: transparent;
-  color: var(--theme-text-secondary);
   font-size: 13px;
   font-weight: 500;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
-  flex-shrink: 0;
   white-space: nowrap;
-}
-
-.customgrid-btn:hover {
-  color: var(--theme-text);
-  background: var(--white-alpha-08);
 }
 
 .customgrid-btn.active {
   color: var(--brand, #8a93ff);
   background: rgba(138, 147, 255, 0.12);
-}
-
-.customgrid-btn:disabled {
-  opacity: 0.3;
-  cursor: default;
-  pointer-events: none;
-}
-
-.customgrid-btn.act-cancel:hover {
-  color: var(--danger);
-  background: var(--danger-bg);
 }
 
 .customgrid-btn.act-confirm {
@@ -748,25 +648,11 @@
   padding: 0 12px;
 }
 
-.customgrid-btn.act-confirm:hover {
-  background: rgba(34, 197, 94, 0.1);
-  color: var(--success-light);
-  border-color: rgba(34, 197, 94, 0.5);
-}
-
 .customgrid-mode-toggle {
   display: flex;
   align-items: center;
   gap: 2px;
   margin: 0 2px;
-}
-
-.customgrid-bar-divider {
-  width: 1px;
-  height: 22px;
-  background: var(--theme-border);
-  margin: 0 6px;
-  flex-shrink: 0;
 }
 
 .customgrid-bar-spacer {

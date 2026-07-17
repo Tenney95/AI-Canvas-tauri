@@ -425,7 +425,7 @@
 }
 .dreamina-manual-code-input {
   font-weight: 700;
-  letter-spacing: 2px;
+  letter-spacing: 0;
   text-align: center;
 }
 .dreamina-login-modal-error {
@@ -463,7 +463,7 @@
   border-radius: 7px;
   cursor: pointer;
   font-family: inherit;
-  transition: all var(--transition-base);
+  transition: var(--transition-control);
   background: var(--brand-alpha-12);
   color: var(--brand-light);
 }
@@ -565,7 +565,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: var(--transition-colors);
   font-family: inherit;
 }
 .general-model-category-btn:hover {
@@ -629,7 +629,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: var(--transition-colors);
 }
 .general-model-item-remove:hover {
   color: var(--danger-light);
@@ -674,7 +674,7 @@
   color: var(--brand-light);
   background: var(--brand-alpha-10);
   font-size: 9px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
 }
 .canvas-interaction-mode-grid {
   display: grid;
@@ -944,7 +944,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
 }
 .canvas-gesture-map-heading strong {
   color: var(--brand-light);

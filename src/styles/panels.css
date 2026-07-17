@@ -130,7 +130,7 @@
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   color: var(--theme-text-muted);
   margin-bottom: 8px;
 }
@@ -195,7 +195,7 @@
   color: var(--theme-text-secondary);
   border-radius: 7px;
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: var(--transition-colors);
   font-family: inherit;
 }
 .wf-cat-chip:hover {
@@ -262,7 +262,7 @@
   border-radius: 7px;
   cursor: pointer;
   font-family: inherit;
-  transition: all var(--transition-base);
+  transition: var(--transition-control);
 }
 .wf-btn-primary {
   background: var(--brand-alpha-15);
@@ -659,10 +659,10 @@
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: var(--transition-control);
 }
 .assets-cat-chip:hover:not(:disabled) {
-  color: #c0c0d0;
+  color: var(--theme-text);
   background: var(--white-alpha-08);
 }
 .assets-cat-chip.active {
@@ -1206,7 +1206,6 @@
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ============================================
    Chat Panel — AI 对话助手悬浮面板（右侧）
