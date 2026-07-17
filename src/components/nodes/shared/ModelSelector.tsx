@@ -4,7 +4,13 @@
  * 自动检测上下空间，向上或向下弹出
  */
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
-import type { NodeType, ModelOption, ModelGroup, WorkflowDefinition } from '../../../types';
+import type {
+  GeneralModelConfig,
+  NodeType,
+  ModelOption,
+  ModelGroup,
+  WorkflowDefinition,
+} from '../../../types';
 import { getWorkflowCategory, CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS } from '../../../types';
 import { defaultModelGroups } from './defaultModels';
 import { useAppStore } from '../../../store/useAppStore';
@@ -41,6 +47,8 @@ interface ModelSelectorProps {
   onWorkflowSelect?: (workflowId: string | undefined) => void;
   groups?: ModelGroup[];
   workflows?: WorkflowDefinition[];
+  generalModelsOverride?: GeneralModelConfig[];
+  groupAvailability?: Record<string, boolean>;
   /** 默认展开的分组 ID 列表（其余分组默认收起） */
   defaultExpandedGroupIds?: string[];
 }
@@ -48,12 +56,13 @@ interface ModelSelectorProps {
 export default function ModelSelector({
   nodeType,
   selectedModel,
-  selectedProvider: _selectedProvider,
   selectedWorkflowId,
   onSelect,
   onWorkflowSelect,
   groups = defaultModelGroups,
   workflows = [],
+  generalModelsOverride,
+  groupAvailability,
   defaultExpandedGroupIds = [],
 }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
@@ -61,8 +70,9 @@ export default function ModelSelector({
 
   // 读取配置 — 判断哪些 provider 有 API Key
   const configProviders = useAppStore((s) => s.config.providers);
-  const generalModels = useAppStore((s) => s.config.generalModels || []);
+  const configuredGeneralModels = useAppStore((s) => s.config.generalModels || []);
   const dreaminaLoggedIn = useAppStore((s) => !!s.config.dreaminaAuth?.loggedIn);
+  const generalModels = generalModelsOverride ?? configuredGeneralModels;
 
   /** 动态生成「通用模型」分组 */
   const generalModelGroup: ModelGroup | null = useMemo(() => {
@@ -109,13 +119,16 @@ export default function ModelSelector({
     (groupId: string) => {
       // 通用模型分组：每个模型自带 API Key，始终可用
       if (groupId === 'general-models') return true;
+      if (groupAvailability && groupId in groupAvailability) {
+        return groupAvailability[groupId];
+      }
       // 即梦：走 OAuth 登录，无 API Key，按登录态判定
       if (groupId === 'dreamina') return dreaminaLoggedIn;
       const providerKey = groupId === 'runninghubwf' ? 'runninghub' : groupId;
       const provider = configProviders[providerKey];
       return !!provider?.apiKey;
     },
-    [configProviders, dreaminaLoggedIn],
+    [configProviders, dreaminaLoggedIn, groupAvailability],
   );
   const ref = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);

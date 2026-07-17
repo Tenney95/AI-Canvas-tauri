@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { invoke } from '@tauri-apps/api/core';
+import { useTooltipAutoPlacement } from '../../hooks/useTooltipAutoPlacement';
 import ChatPanel from './ChatPanel';
 import {
   emitAction,
@@ -23,6 +24,7 @@ const EMPTY_SNAPSHOT: ChatStateSnapshot = {
 };
 
 export default function ChatWindow() {
+  useTooltipAutoPlacement();
   const [snapshot, setSnapshot] = useState<ChatStateSnapshot>(EMPTY_SNAPSHOT);
   const [initialized, setInitialized] = useState(false);
   const [isLocked, setIsLocked] = useState(false);

@@ -286,6 +286,13 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
+html[data-chat-window-platform='windows'],
+html[data-chat-window-platform='windows'] body,
+html[data-chat-window-platform='windows'] #root,
+html[data-chat-window-platform='windows'] .chat-panel-detached {
+  border-radius: 8px;
+}
+
 html {
   position: fixed;
   inset: 0;

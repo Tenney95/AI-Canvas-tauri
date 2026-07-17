@@ -386,7 +386,7 @@ function AvatarMenu() {
       {/* About dialog — portal to body to escape aside containing block */}
       {createPortal(
         <ModalOverlay isOpen={aboutOpen} onClose={() => setAboutOpen(false)} className="w-[420px] max-h-[85vh] overflow-y-auto">
-        <div className="p-6 space-y-5">
+        <div className="p-4 space-y-4">
           {/* Header */}
           <div className="flex items-center gap-4">
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-500/20">
@@ -503,7 +503,7 @@ function AvatarMenu() {
             <span className="text-[11px] text-canvas-text-muted">© 2026 AI Canvas Team</span>
             <AnimatedButton
               type="button"
-              className="px-4 py-1.5 text-xs font-medium text-canvas-text bg-canvas-hover hover:bg-canvas-border rounded-lg transition-colors"
+              className="px-3 py-1.5 text-xs font-medium text-canvas-text bg-canvas-hover hover:bg-canvas-border rounded-lg transition-colors"
               onClick={() => setAboutOpen(false)}
             >
               知道了

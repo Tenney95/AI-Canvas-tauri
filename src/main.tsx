@@ -11,6 +11,10 @@ const view = searchParams.get('view')
 const isAssetSearchWindow = view === 'assets'
 const isChatWindow = view === 'chat'
 
+if (isChatWindow && /Windows NT/i.test(navigator.userAgent)) {
+  document.documentElement.setAttribute('data-chat-window-platform', 'windows')
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {isAssetSearchWindow ? <AssetSearchWindow /> : isChatWindow ? <ChatWindow /> : <App />}

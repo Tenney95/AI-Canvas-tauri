@@ -7,9 +7,9 @@ import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import AnimatedButton from '../shared/AnimatedButton';
-import ChatModelSelector from './ChatModelSelector';
+import ModelSelector from '../nodes/shared/ModelSelector';
 import ContextUsageIndicator from './ContextUsageIndicator';
-import type { GeneralModelConfig } from '../../types';
+import type { GeneralModelConfig, ModelOption } from '../../types';
 import type { ContextUsageStat } from '../../services/chat/contextManager';
 import { useAppStore } from '../../store/useAppStore';
 import {
@@ -55,6 +55,7 @@ interface ChatInputProps {
   assistantModelId?: string;
   onAssistantModelChange: (modelId?: string) => void;
   mediaModels: GeneralModelConfig[];
+  mediaModelAvailability: Record<string, boolean>;
   inputValue: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
@@ -70,6 +71,7 @@ export default function ChatInput({
   assistantModelId,
   onAssistantModelChange,
   mediaModels,
+  mediaModelAvailability,
   inputValue,
   onInputChange,
   onSend,
@@ -88,8 +90,6 @@ export default function ChatInput({
   const [skillQuery, setSkillQuery] = useState('');
   const [skillCursor, setSkillCursor] = useState(0);
   const [skillUploading, setSkillUploading] = useState(false);
-  const providers = useAppStore((state) => state.config.providers);
-  const dreaminaLoggedIn = useAppStore((state) => !!state.config.dreaminaAuth?.loggedIn);
   const canvasNodes = useAppStore((state) => state.nodes);
   const userSkills = useAppStore((state) => state.userSkills);
   const uploadSkill = useAppStore((state) => state.uploadSkill);
@@ -129,12 +129,26 @@ export default function ChatInput({
     skill.fileName,
   )), [skillQuery, userSkills]);
 
-  const isModelAvailable = useCallback((model: MediaModelOption) => {
-    if (model.provider === 'general') return true;
-    if (model.provider === 'dreamina') return dreaminaLoggedIn;
-    const providerKey = model.provider === 'runninghubwf' ? 'runninghub' : model.provider;
-    return !!providers[providerKey]?.apiKey;
-  }, [dreaminaLoggedIn, providers]);
+  const modelGroupAvailability = useMemo(() => {
+    const availability: Record<string, boolean> = { 'general-models': true };
+    for (const model of compatibleMediaModels) {
+      availability[model.groupId] = availability[model.groupId]
+        || !!mediaModelAvailability[model.value];
+    }
+    return availability;
+  }, [compatibleMediaModels, mediaModelAvailability]);
+
+  const isModelAvailable = useCallback(
+    (model: MediaModelOption) => !!mediaModelAvailability[model.value],
+    [mediaModelAvailability],
+  );
+
+  const handleTextModelSelect = useCallback((model: ModelOption) => {
+    const modelId = model.value.startsWith('general/')
+      ? model.value.slice('general/'.length)
+      : model.value;
+    onAssistantModelChange(modelId);
+  }, [onAssistantModelChange]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -392,10 +406,12 @@ export default function ChatInput({
           </AnimatePresence>
 
           <div className="flex items-center gap-1.5 min-w-0">
-            <ChatModelSelector
-              category="text"
-              selectedId={assistantModelId}
-              onSelect={onAssistantModelChange}
+            <ModelSelector
+              nodeType="ai-text"
+              selectedModel={assistantModelId ? `general/${assistantModelId}` : undefined}
+              onSelect={handleTextModelSelect}
+              generalModelsOverride={mediaModels}
+              groupAvailability={modelGroupAvailability}
             />
           </div>
 

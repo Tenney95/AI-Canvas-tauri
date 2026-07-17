@@ -330,9 +330,9 @@ export default function OutputHistoryPanel() {
             </div>
 
             {/* Entry list */}
-            <div className="flex-1 overflow-y-auto px-5 pb-4">
+            <div className="flex-1 overflow-y-auto px-3 pb-3">
               {filteredEntries.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-canvas-text-muted">
+                <div className="flex flex-col items-center justify-center py-8 text-canvas-text-muted">
                   <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-3 opacity-40">
                     <circle cx="12" cy="12" r="10" />
                     <line x1="12" y1="8" x2="12" y2="12" />
@@ -546,7 +546,7 @@ export default function OutputHistoryPanel() {
 
             {/* Footer */}
             {allEntries.length > 0 && (
-              <div className="flex items-center justify-between px-5 py-3 border-t border-canvas-border shrink-0 bg-canvas-surface/80">
+              <div className="flex items-center justify-between px-3 py-3 border-t border-canvas-border shrink-0 bg-canvas-surface/80">
                 {confirmClear ? (
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] text-canvas-text-secondary">确认清空全部历史？</span>

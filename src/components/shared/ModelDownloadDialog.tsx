@@ -69,7 +69,7 @@ export default function ModelDownloadDialog({
       {showPrompt && (
         <div className="fullscreen-overlay fixed inset-0 flex items-center justify-center bg-black/60" style={{ zIndex: 15 }} onClick={onCancel}>
           <div
-            className="bg-canvas-card border border-canvas-border rounded-xl p-6 max-w-sm mx-4 shadow-2xl"
+            className="bg-canvas-card border border-canvas-border rounded-xl p-4 max-w-sm mx-4 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start gap-3 mb-4">
@@ -87,13 +87,13 @@ export default function ModelDownloadDialog({
             </div>
             <div className="flex justify-end gap-2">
               <button
-                className="px-4 py-2 text-xs rounded-lg bg-canvas-hover text-canvas-text-secondary hover:bg-canvas-border transition-colors"
+                className="px-3 py-2 text-xs rounded-lg bg-canvas-hover text-canvas-text-secondary hover:bg-canvas-border transition-colors"
                 onClick={onCancel}
               >
                 取消
               </button>
               <button
-                className="px-4 py-2 text-xs rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors font-medium"
+                className="px-3 py-2 text-xs rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors font-medium"
                 onClick={onConfirm}
               >
                 下载模型
@@ -112,7 +112,7 @@ export default function ModelDownloadDialog({
           transition={{ duration: 0.25, ease: 'easeOut' }}
           style={{ zIndex: 15 }}
         >
-          <div className="bg-black border border-canvas-border rounded-xl px-8 pb-8 pt-6 max-w-sm mx-4 shadow-2xl text-center">
+          <div className="bg-black border border-canvas-border rounded-xl px-5 py-4 max-w-sm mx-4 shadow-2xl text-center">
             {/* Pacman 吃豆人 — 延迟入场，与右下角吉祥物收放衔接 */}
             <motion.div
               initial={{ opacity: 0, scale: 0.3 }}
@@ -127,7 +127,7 @@ export default function ModelDownloadDialog({
             <p className="text-sm text-canvas-text font-medium mb-1">{info.loadingText}</p>
             <p className="text-xs text-canvas-text-muted">{info.sizeText}</p>
             <button
-              className="mt-4 px-4 py-2 text-xs rounded-lg bg-canvas-hover text-canvas-text-secondary hover:bg-canvas-border transition-colors"
+              className="mt-4 px-3 py-2 text-xs rounded-lg bg-canvas-hover text-canvas-text-secondary hover:bg-canvas-border transition-colors"
               onClick={onCancel}
             >
               取消下载

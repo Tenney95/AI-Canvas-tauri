@@ -542,7 +542,7 @@ export default function StorageHealthCenter() {
       </div>
 
       {scanning && !report && (
-        <div className="flex flex-col items-center justify-center py-16 gap-3">
+        <div className="flex flex-col items-center justify-center py-8 gap-3">
           <svg className="animate-spin text-indigo-400" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="8" />
           </svg>
@@ -553,7 +553,7 @@ export default function StorageHealthCenter() {
       {report && !isEmpty && overview && (
         <div className="space-y-5">
           {/* 总览卡片 */}
-          <div className="bg-canvas-card border border-canvas-border rounded-xl p-4">
+          <div className="bg-canvas-card border border-canvas-border rounded-xl p-3">
             <div className="flex items-center gap-6">
               {/* 圆环图 */}
               <DonutChart
@@ -604,7 +604,7 @@ export default function StorageHealthCenter() {
           </div>
 
           {/* 条状图 — 各项目存储占用 */}
-          <div className="bg-canvas-card border border-canvas-border rounded-xl p-4">
+          <div className="bg-canvas-card border border-canvas-border rounded-xl p-3">
             <h4 className="text-sm font-medium text-canvas-text mb-4">各项目占用空间</h4>
             <StackedBar items={overview.projectBars} />
           </div>
@@ -664,7 +664,7 @@ export default function StorageHealthCenter() {
           {activeSection === 'trash' && (
             <div className="space-y-3">
               {report.trashes.length === 0 ? (
-                <div className="text-center py-6 text-xs text-canvas-text-muted">
+                <div className="text-center py-4 text-xs text-canvas-text-muted">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto mb-2 opacity-40">
                     <path d="M9 9l6 6m0-6l-6 6m-7 3h20L19 4H5L2 18z" />
                   </svg>
@@ -713,7 +713,7 @@ export default function StorageHealthCenter() {
           {activeSection === 'orphans' && (
             <div className="space-y-3">
               {report.orphans.length === 0 ? (
-                <div className="text-center py-6 text-xs text-canvas-text-muted">
+                <div className="text-center py-4 text-xs text-canvas-text-muted">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto mb-2 opacity-40">
                     <path d="M22 11.08V12a10 10 0 11-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
                   </svg>
@@ -762,7 +762,7 @@ export default function StorageHealthCenter() {
           {activeSection === 'duplicates' && (
             <div className="space-y-3">
               {report.duplicates.length === 0 ? (
-                <div className="text-center py-6 text-xs text-canvas-text-muted">
+                <div className="text-center py-4 text-xs text-canvas-text-muted">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto mb-2 opacity-40">
                     <rect x="8" y="2" width="8" height="4" rx="1" /><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2" />
                   </svg>
@@ -810,7 +810,7 @@ export default function StorageHealthCenter() {
       )}
 
       {report && isEmpty && (
-        <div className="text-center py-12">
+        <div className="text-center py-6">
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto mb-3 text-canvas-text-muted opacity-40">
             <path d="M4 19.5A2.5 2.5 0 016.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
           </svg>

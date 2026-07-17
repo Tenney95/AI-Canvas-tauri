@@ -387,7 +387,7 @@ export default function SettingsPanel() {
           </nav>
 
           {/* Content */}
-          <div className="settings-content flex-1 overflow-y-auto overflow-x-hidden p-5">
+          <div className="settings-content flex-1 overflow-y-auto overflow-x-hidden p-4">
             {activeTab === 'api' && (
               <ApiKeySettings onClose={() => setSettingsOpen(false)} />
             )}
