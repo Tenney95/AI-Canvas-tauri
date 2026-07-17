@@ -9,6 +9,7 @@ import { Icon } from '@iconify/react';
 import AnimatedButton from '../shared/AnimatedButton';
 import ModelSelector from '../nodes/shared/ModelSelector';
 import ContextUsageIndicator from './ContextUsageIndicator';
+import ChatComposerEditor, { type ChatComposerEditorHandle } from './ChatComposerEditor';
 import type { GeneralModelConfig, ModelOption } from '../../types';
 import type { ContextUsageStat } from '../../services/chat/contextManager';
 import { useAppStore } from '../../store/useAppStore';
@@ -81,14 +82,12 @@ export default function ChatInput({
   contextUsage,
   disabled = false,
 }: ChatInputProps) {
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<ChatComposerEditorHandle>(null);
   const reduceMotion = useReducedMotion();
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState('');
-  const [mentionCursor, setMentionCursor] = useState(0);
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
   const [skillQuery, setSkillQuery] = useState('');
-  const [skillCursor, setSkillCursor] = useState(0);
   const [skillUploading, setSkillUploading] = useState(false);
   const canvasNodes = useAppStore((state) => state.nodes);
   const userSkills = useAppStore((state) => state.userSkills);
@@ -128,6 +127,10 @@ export default function ChatInput({
     skill.description,
     skill.fileName,
   )), [skillQuery, userSkills]);
+  const nodeDisplayIds = useMemo(
+    () => new Map(canvasNodes.map((node) => [node.id, node.data.displayId])),
+    [canvasNodes],
+  );
 
   const modelGroupAvailability = useMemo(() => {
     const availability: Record<string, boolean> = { 'general-models': true };
@@ -150,51 +153,36 @@ export default function ChatInput({
     onAssistantModelChange(modelId);
   }, [onAssistantModelChange]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        onSend();
-      }
-    },
-    [onSend],
-  );
-
   const insertModelMention = useCallback((model: MediaModelOption) => {
-    const cursor = Math.min(mentionCursor, inputValue.length);
-    const before = inputValue.slice(0, cursor);
-    const after = inputValue.slice(cursor);
-    const mentionStart = before.search(/@[^\s@]*$/);
-    const prefix = mentionStart >= 0 ? before.slice(0, mentionStart) : `${before}${before && !before.endsWith(' ') ? ' ' : ''}`;
-    const nextValue = `${prefix}@model{${model.value}|${model.label}} ${after}`;
-    onInputChange(nextValue);
+    inputRef.current?.insertReference({
+      kind: 'model',
+      id: model.value,
+      label: model.label,
+    });
     setModelMenuOpen(false);
     setModelQuery('');
-  }, [inputValue, mentionCursor, onInputChange]);
+  }, []);
 
-  const insertNodeMention = useCallback((nodeId: string, label: string) => {
-    const cursor = Math.min(mentionCursor, inputValue.length);
-    const before = inputValue.slice(0, cursor);
-    const after = inputValue.slice(cursor);
-    const mentionStart = before.search(/@[^\s@]*$/);
-    const prefix = mentionStart >= 0 ? before.slice(0, mentionStart) : `${before}${before && !before.endsWith(' ') ? ' ' : ''}`;
-    const safeLabel = label.replace(/}/g, '').trim() || '节点';
-    onInputChange(`${prefix}@{${nodeId}:${safeLabel}} ${after}`);
+  const insertNodeMention = useCallback((nodeId: string, label: string, displayId?: number) => {
+    inputRef.current?.insertReference({
+      kind: 'node',
+      id: nodeId,
+      label,
+      displayId,
+    });
     setModelMenuOpen(false);
     setModelQuery('');
-  }, [inputValue, mentionCursor, onInputChange]);
+  }, []);
 
   const insertSkillReference = useCallback((skillId: string, skillName: string) => {
-    const cursor = Math.min(skillCursor, inputValue.length);
-    const before = inputValue.slice(0, cursor);
-    const after = inputValue.slice(cursor);
-    const slashStart = before.search(/\/[^\s/]*$/);
-    const prefix = slashStart >= 0 ? before.slice(0, slashStart) : `${before}${before && !before.endsWith(' ') ? ' ' : ''}`;
-    const token = `@skill{${skillId}|${encodeURIComponent(skillName)}}`;
-    onInputChange(`${prefix}${token} ${after}`);
+    inputRef.current?.insertReference({
+      kind: 'skill',
+      id: skillId,
+      label: skillName,
+    });
     setSkillMenuOpen(false);
     setSkillQuery('');
-  }, [inputValue, onInputChange, skillCursor]);
+  }, []);
 
   const handleUploadSkill = useCallback(async () => {
     if (skillUploading) return;
@@ -249,33 +237,27 @@ export default function ChatInput({
             ))}
           </div>
         )}
-        <textarea
+        <ChatComposerEditor
           ref={inputRef}
           value={inputValue}
-          onChange={(e) => {
-            onInputChange(e.target.value);
-            const cursor = e.target.selectionStart;
-            const beforeCursor = e.target.value.slice(0, cursor);
-            const mention = /@([^\s@]*)$/.exec(beforeCursor);
-            const slash = /(?:^|\s)\/([^\s/]*)$/.exec(beforeCursor);
-            setMentionCursor(cursor);
-            setModelMenuOpen(!!mention);
-            setModelQuery(mention?.[1] ?? '');
-            setSkillCursor(cursor);
-            setSkillMenuOpen(!mention && !!slash);
-            setSkillQuery(slash?.[1] ?? '');
+          onChange={onInputChange}
+          onSubmit={onSend}
+          nodeDisplayIds={nodeDisplayIds}
+          onMentionQueryChange={(query) => {
+            setModelMenuOpen(query != null);
+            setModelQuery(query ?? '');
+            if (query != null) setSkillMenuOpen(false);
           }}
-          onKeyDown={handleKeyDown}
-          aria-label="对话消息"
+          onSlashQueryChange={(query) => {
+            setSkillMenuOpen(query != null);
+            setSkillQuery(query ?? '');
+            if (query != null) setModelMenuOpen(false);
+          }}
           placeholder="输入消息，描述你想对画布进行的修改"
-          rows={1}
           disabled={disabled}
-          className="chat-panel-textarea w-full resize-none bg-transparent text-[15px] leading-6 text-canvas-text
-                     placeholder:text-canvas-text-muted outline-none
-                     min-h-[64px] max-h-[160px]"
         />
 
-        <div className="chat-panel-input-toolbar mt-2 flex items-end justify-between gap-3">
+        <div className="chat-panel-input-toolbar flex items-end justify-between gap-3">
           <AnimatePresence>
             {modelMenuOpen && (
             <motion.div
@@ -296,7 +278,11 @@ export default function ChatInput({
                     <button
                       key={node.id}
                       type="button"
-                      onClick={() => insertNodeMention(node.id, String(node.data.label || '节点'))}
+                      onClick={() => insertNodeMention(
+                        node.id,
+                        String(node.data.label || '节点'),
+                        node.data.displayId,
+                      )}
                       className="flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-canvas-text hover:bg-canvas-hover"
                     >
                       <Icon icon="mdi:vector-square" width="16" />
@@ -421,9 +407,9 @@ export default function ChatInput({
                 type="button"
                 onClick={() => {
                   setModelQuery('');
-                  setMentionCursor(inputValue.length);
                   setSkillMenuOpen(false);
                   setModelMenuOpen((open) => !open);
+                  inputRef.current?.focus();
                 }}
                 aria-label="引用画布节点或媒体模型"
                 title="引用画布节点或媒体模型"
@@ -441,9 +427,9 @@ export default function ChatInput({
                 type="button"
                 onClick={() => {
                   setSkillQuery('');
-                  setSkillCursor(inputValue.length);
                   setModelMenuOpen(false);
                   setSkillMenuOpen((open) => !open);
+                  inputRef.current?.focus();
                 }}
                 aria-label="调用 Skill"
                 title="调用 Skill"
