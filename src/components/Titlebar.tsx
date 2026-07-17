@@ -37,9 +37,8 @@ function TitlebarInner({
 }) {
   const [isMaximized, setIsMaximized] = useState(false);
   const appWindow = getCurrentWindow();
-
-  // 标题栏悬浮开关：开启时红绿灯内移（left-10）并带毛玻璃胶囊；关闭时停靠在窗口原生位置（left-3）
-  const titlebarFloating = useAppStore((s) => s.config.titlebarFloating) !== false;
+  const sidebarFloating = useAppStore((state) => state.config.sidebarFloating) !== false
+    && !isMaximized;
 
   useEffect(() => {
     const check = () => appWindow.isMaximized().then(setIsMaximized);
@@ -52,7 +51,9 @@ function TitlebarInner({
     return (
       <div
         data-tauri-drag-region
-        className={`fixed top-3 z-[200] flex h-6 items-center select-none ${titlebarFloating ? 'left-10' : 'left-3'}`}
+        className={`fixed top-3 z-[200] flex h-6 items-center select-none ${
+          sidebarFloating ? 'left-10' : 'left-3'
+        }`}
       >
         <div
           className="flex items-center gap-1.5 rounded-full border border-white/[0.08]

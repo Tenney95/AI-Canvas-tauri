@@ -202,7 +202,7 @@ export default function ChatInput({
   }, [disabled]);
 
   return (
-    <div className="chat-panel-input-area flex-shrink-0 px-3 pt-2 pb-1">
+    <div className="chat-panel-input-area flex-shrink-0 px-3 pt-2">
       <div
         className="chat-panel-input-box relative flex flex-col bg-canvas-card border border-canvas-border
                     rounded-[14px] transition-all duration-200
@@ -486,7 +486,7 @@ export default function ChatInput({
       </div>
 
       {/* Disclaimer */}
-      <div className="mt-1.5 flex min-h-5 items-center justify-center">
+      <div className="flex min-h-5 items-center justify-center">
         <p className="chat-panel-disclaimer text-[11px] text-canvas-text-muted/75">
           重要操作执行前会请求确认
         </p>

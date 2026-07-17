@@ -1,9 +1,13 @@
 use base64::Engine;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Mutex,
 };
-use tauri::{Listener, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+use std::{path::PathBuf, time::Duration};
+use tauri::{
+    Listener, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 use tauri_plugin_fs::FsExt;
 use url::Url;
 
@@ -15,6 +19,91 @@ pub mod onnx;
 
 static CHAT_WINDOW_LOCKED: AtomicBool = AtomicBool::new(false);
 static CHAT_WINDOW_LOCK_OFFSET: Mutex<(i32, i32)> = Mutex::new((0, 0));
+static CHAT_WINDOW_SIZE_SAVE_VERSION: AtomicU64 = AtomicU64::new(0);
+
+const CHAT_WINDOW_DEFAULT_SIZE: (f64, f64) = (480.0, 720.0);
+const CHAT_WINDOW_MIN_SIZE: (f64, f64) = (360.0, 480.0);
+const CHAT_WINDOW_SIZE_FILE: &str = "chat-window-size.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ChatWindowSizeState {
+    width: f64,
+    height: f64,
+}
+
+fn chat_window_size_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join(CHAT_WINDOW_SIZE_FILE))
+        .map_err(|e| format!("读取应用数据目录失败: {e}"))
+}
+
+fn persist_chat_window_size(
+    app: &tauri::AppHandle,
+    physical_size: PhysicalSize<u32>,
+    scale_factor: f64,
+) -> Result<(), String> {
+    if !scale_factor.is_finite() || scale_factor <= 0.0 {
+        return Ok(());
+    }
+    let state = ChatWindowSizeState {
+        width: physical_size.width as f64 / scale_factor,
+        height: physical_size.height as f64 / scale_factor,
+    };
+    if state.width < CHAT_WINDOW_MIN_SIZE.0 || state.height < CHAT_WINDOW_MIN_SIZE.1 {
+        return Ok(());
+    }
+
+    let path = chat_window_size_path(app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建窗口状态目录失败: {e}"))?;
+    }
+    let json = serde_json::to_string(&state).map_err(|e| format!("序列化窗口尺寸失败: {e}"))?;
+    std::fs::write(path, json).map_err(|e| format!("保存窗口尺寸失败: {e}"))
+}
+
+fn persist_current_chat_window_size(window: &WebviewWindow) {
+    if let (Ok(size), Ok(scale_factor)) = (window.inner_size(), window.scale_factor()) {
+        let _ = persist_chat_window_size(window.app_handle(), size, scale_factor);
+    }
+}
+
+fn load_chat_window_size(
+    app: &tauri::AppHandle,
+    main_window: Option<&WebviewWindow>,
+) -> (f64, f64) {
+    let saved = chat_window_size_path(app)
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|json| serde_json::from_str::<ChatWindowSizeState>(&json).ok())
+        .filter(|state| {
+            state.width.is_finite()
+                && state.height.is_finite()
+                && state.width >= CHAT_WINDOW_MIN_SIZE.0
+                && state.height >= CHAT_WINDOW_MIN_SIZE.1
+        });
+    let mut width = saved
+        .as_ref()
+        .map(|state| state.width)
+        .unwrap_or(CHAT_WINDOW_DEFAULT_SIZE.0);
+    let mut height = saved
+        .as_ref()
+        .map(|state| state.height)
+        .unwrap_or(CHAT_WINDOW_DEFAULT_SIZE.1);
+
+    if let Some(monitor) = main_window.and_then(|window| window.current_monitor().ok().flatten()) {
+        let scale_factor = monitor.scale_factor();
+        if scale_factor.is_finite() && scale_factor > 0.0 {
+            let monitor_size = monitor.size();
+            let max_width = monitor_size.width as f64 / scale_factor * 0.95;
+            let max_height = monitor_size.height as f64 / scale_factor * 0.95;
+            width = width.min(max_width.max(CHAT_WINDOW_MIN_SIZE.0));
+            height = height.min(max_height.max(CHAT_WINDOW_MIN_SIZE.1));
+        }
+    }
+
+    (width, height)
+}
 
 /// 将用户明确选择的保存目录和素材目录加入本次进程的文件与 asset 协议 scope。
 /// ComfyUI 安装目录不经过此命令，仍由专用启动命令独立校验。
@@ -338,6 +427,7 @@ async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
 
     // 先关闭可能残留的历史窗口
     if let Some(old) = app.get_webview_window("chat-assistant") {
+        persist_current_chat_window_size(&old);
         let _ = old.close();
     }
 
@@ -349,9 +439,10 @@ async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
     let url = WebviewUrl::App("index.html?view=chat".into());
 
     let main_window = app.get_webview_window("main");
+    let (chat_width, chat_height) = load_chat_window_size(&app, main_window.as_ref());
     let mut chat_window_builder = WebviewWindowBuilder::new(&app, "chat-assistant", url)
         .title("AI 对话助手")
-        .inner_size(480.0, 720.0)
+        .inner_size(chat_width, chat_height)
         .min_inner_size(360.0, 480.0)
         .resizable(true)
         .decorations(false)
@@ -409,6 +500,7 @@ async fn open_chat_window(app: tauri::AppHandle) -> Result<(), String> {
 async fn close_chat_window(app: tauri::AppHandle) -> Result<(), String> {
     CHAT_WINDOW_LOCKED.store(false, Ordering::Release);
     if let Some(window) = app.get_webview_window("chat-assistant") {
+        persist_current_chat_window_size(&window);
         window
             .close()
             .map_err(|e| format!("关闭对话窗口失败: {e}"))?;
@@ -556,6 +648,24 @@ pub fn run() {
             onnx::get_onnx_gpu_status,
         ])
         .on_window_event(|window, event| {
+            if window.label() == "chat-assistant" {
+                if let tauri::WindowEvent::Resized(size) = event {
+                    let Ok(scale_factor) = window.scale_factor() else {
+                        return;
+                    };
+                    let app = window.app_handle().clone();
+                    let size = *size;
+                    let save_version =
+                        CHAT_WINDOW_SIZE_SAVE_VERSION.fetch_add(1, Ordering::AcqRel) + 1;
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(350)).await;
+                        if CHAT_WINDOW_SIZE_SAVE_VERSION.load(Ordering::Acquire) == save_version {
+                            let _ = persist_chat_window_size(&app, size, scale_factor);
+                        }
+                    });
+                }
+                return;
+            }
             if window.label() != "main" || !CHAT_WINDOW_LOCKED.load(Ordering::Acquire) {
                 return;
             }
