@@ -8,10 +8,12 @@ import {
   streamAssistantReply,
   type AssistantModelMessage,
 } from '../ai/assistantStream';
-import type {
-  AgentStep,
-  AgentTask,
-  AgentTaskStatus,
+import {
+  AGENT_TERMINAL_STATUSES,
+  type AgentStep,
+  type AgentTask,
+  type AgentTaskBudget,
+  type AgentTaskStatus,
 } from '../../types/agent';
 import type {
   AssistantStreamEvent,
@@ -22,6 +24,7 @@ import {
   buildAssistantFunctionTools,
   prepareAgentToolCall,
   type AgentToolContext,
+  type AgentToolEffect,
   type PreparedAgentToolCall,
 } from './toolRegistry';
 import { evaluateAgentToolPolicy } from './policyEngine';
@@ -170,6 +173,68 @@ export function stopAgentTask(taskId: string): AgentTask {
   });
 }
 
+/**
+ * 中止并停止某会话的全部未完成任务。
+ * 删除会话时调用，避免后台任务继续在已删除会话上产生副作用。
+ */
+export function stopConversationAgentTasks(conversationId: string): void {
+  const tasks = useAppStore.getState().agentTasks.filter(
+    (task) => task.conversationId === conversationId
+      && !AGENT_TERMINAL_STATUSES.has(task.status),
+  );
+  for (const task of tasks) {
+    activeControllers.get(task.id)?.abort();
+    try {
+      transitionAgentTask(task.id, 'stopped', {
+        pausedReason: undefined,
+        errorCode: 'AGENT_STOPPED',
+      });
+    } catch {
+      /* 非法迁移（如已终态）忽略 */
+    }
+  }
+}
+
+export interface AgentResumeValidation {
+  ok: boolean;
+  errorCode?: string;
+  message?: string;
+}
+
+/**
+ * 继续前重新校验（P3-E2）。
+ *
+ * 校验任务存在、状态可继续、所属项目已加载、来源会话仍存在。
+ * 画布 revision 由写工具在每轮执行前按当前值复核；模型缺失时降级到本地管线。
+ * 返回稳定错误码，供 UI 展示可理解的恢复建议。
+ */
+export function validateTaskResumable(taskId: string): AgentResumeValidation {
+  const store = useAppStore.getState();
+  const task = store.agentTasks.find((item) => item.id === taskId);
+  if (!task) {
+    return { ok: false, errorCode: 'AGENT_RESUME_TASK_NOT_FOUND', message: '任务不存在' };
+  }
+  if (!['paused', 'failed'].includes(task.status)) {
+    return { ok: false, errorCode: 'AGENT_RESUME_NOT_RESUMABLE', message: '任务当前状态不支持继续' };
+  }
+  if (store.currentProjectId !== task.projectId) {
+    return {
+      ok: false,
+      errorCode: 'AGENT_RESUME_PROJECT_NOT_ACTIVE',
+      message: '请先切回该任务所属项目再继续',
+    };
+  }
+  const conversation = store.conversations.find((item) => item.id === task.conversationId);
+  if (!conversation || conversation.deletedAt) {
+    return {
+      ok: false,
+      errorCode: 'AGENT_RESUME_CONVERSATION_GONE',
+      message: '来源对话不存在或已删除，无法继续',
+    };
+  }
+  return { ok: true };
+}
+
 export function resolveAgentApproval(approvalId: string, approved: boolean): boolean {
   const resolver = pendingApprovalResolvers.get(approvalId);
   if (!resolver) return false;
@@ -306,13 +371,28 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function sanitizePersistentSummary(value: string): string {
+/**
+ * 持久化摘要脱敏：移除密钥、凭据和本地绝对路径，并截断长度。
+ * 导出供安全断言复用，保证密钥/路径不会进入任务摘要或日志。
+ */
+export function sanitizePersistentSummary(value: string): string {
   return value
     .replace(/\b(?:sk|key|token)-[A-Za-z0-9_-]{12,}\b/gi, '[已脱敏密钥]')
     .replace(/\b(?:api[_-]?key|authorization|token)\s*[:=]\s*\S+/gi, '[已脱敏凭据]')
     .replace(/[A-Za-z]:\\(?:[^\\\r\n]+\\)*[^\\\r\n]*/g, '[本地路径]')
     .replace(/\/(?:Users|home)\/[^\s"'`]+/g, '[本地路径]')
     .slice(0, 1_000);
+}
+
+/**
+ * 一个工具调用允许的自动重试次数。
+ * 只有只读工具在瞬时错误时重试；付费媒体、画布写入、文件写入和永久删除永不自动重试。
+ */
+export function maxAutoRetriesForEffect(
+  effect: AgentToolEffect,
+  budget: AgentTaskBudget,
+): number {
+  return effect === 'read' ? budget.maxReadRetries : 0;
 }
 
 async function executePreparedToolCall(
@@ -322,9 +402,10 @@ async function executePreparedToolCall(
   context: AgentToolContext,
   step: AgentStep,
 ): Promise<ExecutedToolCall> {
-  const maxRetries = prepared.definition.effect === 'read'
-    ? getTask(taskId).budget.maxReadRetries
-    : 0;
+  const maxRetries = maxAutoRetriesForEffect(
+    prepared.definition.effect,
+    getTask(taskId).budget,
+  );
   let retryCount = 0;
 
   while (true) {
@@ -367,7 +448,6 @@ async function executePreparedToolCall(
           status: result.status,
           summary: persistentSummary,
           truncated: (result.truncated ?? false) || result.modelContent.length > modelContentLimit,
-          sources: result.sources,
         },
         modelContent,
       };
@@ -412,7 +492,6 @@ async function executePreparedToolCall(
           status: 'error',
           summary: message,
           truncated: false,
-          sources: undefined,
         },
         modelContent: message,
       };

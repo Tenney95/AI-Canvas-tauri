@@ -11,6 +11,7 @@ import type {
 } from '../types/chat';
 import { AGENT_TERMINAL_STATUSES } from '../types/agent';
 import { clearConversationFileGrants } from '../services/chat/fileGrantService';
+import { stopConversationAgentTasks } from '../services/chat/agentRuntime';
 import * as chatHistoryService from '../services/chat/chatHistoryService';
 
 // ============================================
@@ -195,6 +196,8 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
 
   removeConversation: (id) => {
     clearConversationFileGrants(id);
+    // 停止该会话仍在后台运行的 Agent 任务，避免删除后继续产生副作用
+    stopConversationAgentTasks(id);
     // 删除来源对话不删除已确认记忆，只标记来源不可用
     get().markConversationMemorySourceUnavailable(id);
     set((s) => {

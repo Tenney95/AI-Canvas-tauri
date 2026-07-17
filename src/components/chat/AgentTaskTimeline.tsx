@@ -9,6 +9,7 @@
 import { useState } from 'react';
 import { Icon } from '@iconify/react';
 import { AGENT_TERMINAL_STATUSES, type AgentTask, type AgentTaskStatus } from '../../types/agent';
+import { getAgentRecoveryHint } from '../../services/chat/agentErrorCodes';
 import AgentStepCard from './AgentStepCard';
 import AgentApprovalCard from './AgentApprovalCard';
 
@@ -95,6 +96,9 @@ export default function AgentTaskTimeline({
     ['succeeded', 'failed', 'skipped', 'stopped'].includes(step.status),
   ).length;
   const pendingApprovalStep = task.steps.find((step) => step.approval?.status === 'pending');
+  const recoveryHint = (task.status === 'paused' || task.status === 'failed')
+    ? getAgentRecoveryHint(task.errorCode)
+    : undefined;
 
   return (
     <div className="agent-task-timeline mt-2 rounded-lg border border-canvas-border bg-canvas-bg/50 p-2.5">
@@ -129,6 +133,12 @@ export default function AgentTaskTimeline({
       )}
       {task.status === 'failed' && task.errorMessage && (
         <p className="mt-1.5 text-[10px] text-red-400/90 break-words">{task.errorMessage}</p>
+      )}
+      {recoveryHint && (
+        <p className="mt-1 flex items-start gap-1 text-[10px] text-canvas-text-muted">
+          <Icon icon="mdi:lightbulb-on-outline" width="12" className="mt-0.5 shrink-0 text-amber-400/80" />
+          <span className="break-words">{recoveryHint.hint}</span>
+        </p>
       )}
 
       {expanded && (

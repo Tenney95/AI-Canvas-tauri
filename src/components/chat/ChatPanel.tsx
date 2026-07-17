@@ -50,6 +50,8 @@ import {
   stopAgentTask,
   skipAgentStep,
   requestAgentReplan,
+  validateTaskResumable,
+  type AgentResumeValidation,
 } from '../../services/chat/agentRuntime';
 import { getAvailableAgentTools } from '../../services/chat/toolRegistry';
 import { ensureAgentToolsRegistered } from '../../services/chat/tools';
@@ -307,11 +309,8 @@ export default function ChatPanel({
     },
     onResume: (taskId: string) => {
       if (detached) { void emitAction({ type: 'resume_agent_task', taskId }); return; }
-      if (resumeAgentTaskExecution(taskId, scrollToBottom)) {
-        showToast('已继续任务', 'info');
-      } else {
-        showToast('无法继续该任务', 'error');
-      }
+      const result = resumeAgentTaskExecution(taskId, scrollToBottom);
+      showToast(result.ok ? '已继续任务' : (result.message ?? '无法继续该任务'), result.ok ? 'info' : 'error');
     },
     onStop: (taskId: string) => {
       if (detached) { void emitAction({ type: 'stop_agent_task', taskId }); return; }
@@ -583,11 +582,11 @@ export default function ChatPanel({
               pauseAgentTask(action.taskId);
               break;
 
-            case 'resume_agent_task':
-              if (!resumeAgentTaskExecution(action.taskId)) {
-                store.showToast('无法继续该任务', 'error');
-              }
+            case 'resume_agent_task': {
+              const result = resumeAgentTaskExecution(action.taskId);
+              if (!result.ok) store.showToast(result.message ?? '无法继续该任务', 'error');
               break;
+            }
 
             case 'stop_agent_task':
               stopAgentTask(action.taskId);
@@ -831,20 +830,23 @@ function startAgentMessageExecution({
 }
 
 /**
- * 继续执行一个暂停或失败的 Agent 任务。
+ * 继续执行一个暂停或失败的 Agent 任务（P3-E2）。
  *
- * 重新驱动多轮循环；预算已耗尽时按默认额度追加，使继续能取得进展。
- * 完整的 revision / 授权预校验在 P3-E2 落地，这里只保证同一运行会话内可继续。
+ * 继续前重新校验项目、会话和任务状态；预算已耗尽时按默认额度追加。
+ * 画布 revision 由写工具在每轮执行前按当前值复核，避免恢复后重复副作用。
  */
-function resumeAgentTaskExecution(taskId: string, onProgress?: () => void): boolean {
+function resumeAgentTaskExecution(taskId: string, onProgress?: () => void): AgentResumeValidation {
+  const validation = validateTaskResumable(taskId);
+  if (!validation.ok) return validation;
+
   const store = useAppStore.getState();
-  const task = store.agentTasks.find((item) => item.id === taskId);
-  if (!task) return false;
-  if (!['paused', 'failed'].includes(task.status)) return false;
+  const task = store.agentTasks.find((item) => item.id === taskId)!;
   const message = store.messages.find(
     (item) => item.agentTaskId === taskId && item.role === 'assistant',
   );
-  if (!message) return false;
+  if (!message) {
+    return { ok: false, errorCode: 'AGENT_RESUME_NO_MESSAGE', message: '找不到对应的助手消息，无法继续' };
+  }
 
   const nextBudget = { ...task.budget };
   if (task.modelRounds >= task.budget.maxModelRounds) {
@@ -855,7 +857,7 @@ function resumeAgentTaskExecution(taskId: string, onProgress?: () => void): bool
   }
   store.updateAgentTask(taskId, { budget: nextBudget });
   driveAgentTask(taskId, message.id, onProgress);
-  return true;
+  return { ok: true };
 }
 
 /**
@@ -921,19 +923,6 @@ function driveAgentTask(
                 content: message?.content || `等待确认：${step.title}`,
                 status: 'preview',
               });
-            },
-            onToolResult: (result) => {
-              if (!result.sources?.length) return;
-              const currentStore = useAppStore.getState();
-              const message = currentStore.messages.find(
-                (item) => item.id === assistantMessageId,
-              );
-              const sources = [...(message?.sources ?? [])];
-              for (const source of result.sources) {
-                if (!sources.some((item) => item.url === source.url)) sources.push(source);
-              }
-              currentStore.updateMessage(assistantMessageId, { sources });
-              onProgress?.();
             },
             onError: (error) => {
               failed = true;

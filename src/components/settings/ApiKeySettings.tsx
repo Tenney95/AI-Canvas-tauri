@@ -22,7 +22,6 @@ const PROVIDER_URLS: Record<string, string> = {
   runninghub: 'https://www.runninghub.cn/',
   grsai: 'https://grsai.com/zh/dashboard/user-info',
   dreamina: 'https://www.dreamina.com',
-  tavily: 'https://app.tavily.com',
 };
 
 type TestState = { status: 'idle' | 'testing' | 'done'; result?: TestResult };
@@ -373,33 +372,6 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         <p className="settings-desc settings-desc-lead">
           为每个厂商单独配置接口地址和密钥，节点会根据所选模型自动路由。
         </p>
-
-        {/* ── Tavily 联网搜索 ── */}
-        <div className="settings-section settings-card">
-          <div className="settings-card-head">
-            <div className="settings-card-badge">搜</div>
-            <span className="settings-card-title">Tavily 联网搜索</span>
-            <ProviderStatusBadge result={testStates.tavily?.result} />
-            <span className="settings-card-head-spacer" style={{ flex: 1 }} />
-            <TestButton
-              label="Tavily"
-              state={testStates.tavily || { status: 'idle' }}
-              onTest={() => handleTest('tavily', config.providers.tavily?.apiKey || '')}
-            />
-            <GetKeyButton provider="tavily" label="Tavily" />
-          </div>
-          <div className="settings-label">搜索 API 密钥</div>
-          <ConfigInput
-            type="password"
-            id="providerKey-tavily"
-            defaultValue={config.providers.tavily?.apiKey || ''}
-            placeholder="tvly-..."
-            onSave={(value) => setProviderKey('tavily', value)}
-          />
-          <div className="dreamina-settings-desc">
-            用于对话助手自动联网搜索；网页正文仍由本地受限读取器校验后读取。
-          </div>
-        </div>
 
         {/* ── APIMart ── */}
         <div className="settings-section settings-card">
@@ -815,7 +787,6 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                   { key: 'volcengine' as const, apiKey: config.providers.volcengine?.apiKey },
                   { key: 'runninghub-model' as const, apiKey: config.providers['runninghub-model']?.apiKey },
                   { key: 'grsai' as const, apiKey: config.providers.grsai?.apiKey, baseUrl: config.providers.grsai?.baseUrl },
-                  { key: 'tavily' as const, apiKey: config.providers.tavily?.apiKey },
                 ];
                 for (const p of providers) {
                   if (!p.apiKey) continue;
