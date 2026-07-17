@@ -562,10 +562,14 @@ function CanvasInner() {
     [applySnap, applyStableNodeChanges],
   );
 
-  // ── 拖入宫格分镜：把图像节点拖到分镜的某格 → 填充该格（不要求编辑态）──
+  // ── 拖入宫格分镜：进入节点范围显示缩略图，只有空格允许放置 ──
   const sbDropTarget = useRef<HTMLElement | null>(null);
-  // 命中格子时：隐藏真实被拖节点，改为跟随光标的小斜方块幽灵（同拖出样式）
-  const [dropGhost, setDropGhost] = useState<{ url: string; x: number; y: number } | null>(null);
+  const [dropGhost, setDropGhost] = useState<{
+    url: string;
+    x: number;
+    y: number;
+    canDrop: boolean;
+  } | null>(null);
   const ghostNodeId = useRef<string | null>(null);
 
   const clearGhostNodeHidden = useCallback(() => {
@@ -580,34 +584,40 @@ function CanvasInner() {
     sbDropTarget.current = null;
   }, []);
 
-  // 命中：被拖图像节点中心下方、处于编辑态分镜的格子元素
-  const findSbCellUnderNode = useCallback((node: RFNode): HTMLElement | null => {
+  // 按鼠标位置命中宫格节点与真实空格，兼容缩放和非均匀自定义宫格。
+  const findStoryboardDropHit = useCallback((
+    node: RFNode,
+    clientX: number,
+    clientY: number,
+  ): { storyboard: HTMLElement; emptyCell: HTMLElement | null } | null => {
     if (node.type !== 'ai-image') return null;
-    const nodeEl = document.querySelector(`.react-flow__node[data-id="${node.id}"]`);
-    if (!nodeEl) return null;
-    const r = nodeEl.getBoundingClientRect();
-    const stack = document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const stack = document.elementsFromPoint(clientX, clientY);
     for (const el of stack) {
-      if (el instanceof HTMLElement && el.dataset.sbCellIdx != null) {
-        // 排除被拖节点自身；接受所有分镜的格（不要求编辑态）
-        if (el.closest(`.react-flow__node[data-id="${node.id}"]`)) continue;
-        if (el.closest('.storyboard-node')) return el;
-      }
+      const storyboard = el.closest<HTMLElement>('.storyboard-node');
+      if (!storyboard) continue;
+      if (storyboard.closest(`.react-flow__node[data-id="${node.id}"]`)) continue;
+      const cell = el.closest<HTMLElement>('[data-sb-cell-idx]');
+      const emptyCell = cell?.closest('.storyboard-node') === storyboard
+        && cell.classList.contains('sb-cell--empty')
+        ? cell
+        : null;
+      return { storyboard, emptyCell };
     }
     return null;
   }, []);
 
   const handleNodeDrag = useCallback(
     (e: React.MouseEvent, node: RFNode) => {
-      const cell = findSbCellUnderNode(node);
+      const hit = findStoryboardDropHit(node, e.clientX, e.clientY);
+      const cell = hit?.emptyCell ?? null;
       if (cell !== sbDropTarget.current) {
         clearSbDropTarget();
         if (cell) { cell.classList.add('sb-cell--drop-target'); sbDropTarget.current = cell; }
       }
-      // 命中格子 → 隐藏真实节点，显示跟随光标的小斜方块幽灵；离开 → 复原
+      // 进入宫格节点后隐藏真实节点；空格上倾斜表示可放置，占用区域保持水平。
       const url = (node.data?.imageUrl || node.data?.thumbnailUrl) as string | undefined;
-      if (cell && url) {
-        setDropGhost({ url, x: e.clientX, y: e.clientY });
+      if (hit && url) {
+        setDropGhost({ url, x: e.clientX, y: e.clientY, canDrop: cell != null });
         if (ghostNodeId.current !== node.id) {
           clearGhostNodeHidden();
           document.querySelector(`.react-flow__node[data-id="${node.id}"]`)?.classList.add('sb-drop-hidden');
@@ -618,13 +628,13 @@ function CanvasInner() {
         clearGhostNodeHidden();
       }
     },
-    [findSbCellUnderNode, clearSbDropTarget, clearGhostNodeHidden],
+    [findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden],
   );
 
   // ── Auto group/ungroup on drag stop ──
   const handleNodeDragStop = useCallback(
-    (_event: React.MouseEvent, node: RFNode) => {
-      const cell = findSbCellUnderNode(node);
+    (event: React.MouseEvent, node: RFNode) => {
+      const cell = findStoryboardDropHit(node, event.clientX, event.clientY)?.emptyCell ?? null;
       clearSbDropTarget();
       setDropGhost(null);
       clearGhostNodeHidden();
@@ -640,7 +650,7 @@ function CanvasInner() {
       settleNodeGroupingOnDragStop(node as RFNode<BaseNodeData>);
       onNodeDragStop();
     },
-    [onNodeDragStop, settleNodeGroupingOnDragStop, findSbCellUnderNode, clearSbDropTarget, clearGhostNodeHidden],
+    [onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden],
   );
 
   return (
@@ -795,9 +805,12 @@ function CanvasInner() {
       <MultiSelectToolbar />
     </div>
 
-    {/* 拖入宫格：命中格子时的小斜方块幽灵（复用拖出样式）*/}
+    {/* 拖入宫格：节点范围内显示缩略图，空格上倾斜表示可放置 */}
     {dropGhost && createPortal(
-      <div className="sb-drag-ghost" style={{ left: dropGhost.x, top: dropGhost.y }}>
+      <div
+        className={`sb-drag-ghost${dropGhost.canDrop ? '' : ' sb-drag-ghost--over-storyboard'}`}
+        style={{ left: dropGhost.x, top: dropGhost.y }}
+      >
         <div className="sb-drag-ghost-clip">
           <img src={dropGhost.url} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
         </div>

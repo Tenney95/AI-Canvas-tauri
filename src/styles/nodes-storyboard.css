@@ -156,7 +156,10 @@
   overflow: hidden;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
   border: 2px solid var(--brand, #8a93ff);
-  transform: rotate(-3deg);
+  transform: rotate(-5deg);
+}
+.sb-drag-ghost--over-storyboard {
+  transform: rotate(0deg);
 }
 .sb-drag-ghost-clip {
   position: relative;

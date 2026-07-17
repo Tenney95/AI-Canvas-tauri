@@ -400,8 +400,6 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     const url = (src.data.imageUrl || src.data.thumbnailUrl) as string | undefined;
     if (!url) return;
 
-    get().commitToHistory();
-
     const cols = (sb.data.storyboardCols as number) || 3;
     const rows = (sb.data.storyboardRows as number) || 3;
     const total = cols * rows;
@@ -413,6 +411,18 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       : new Array(total).fill(false);
     while (overrides.length < total) overrides.push(null);
     while (extracted.length < total) extracted.push(false);
+
+    // 只允许填入已提取形成的空格；同时防止陈旧拖拽目标覆盖已有 override。
+    if (
+      !Number.isInteger(cellIdx)
+      || cellIdx < 0
+      || cellIdx >= total
+      || overrides[cellIdx]
+      || !extracted[cellIdx]
+    ) return;
+
+    get().commitToHistory();
+
     overrides[cellIdx] = { url, filePath: (src.data.filePath as string) || undefined };
     extracted[cellIdx] = false;
     get().updateNodeData(storyboardId, {
