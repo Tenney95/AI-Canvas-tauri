@@ -34,7 +34,7 @@ export default function MessageBubble({
   if (isSystem) {
     return (
       <div className="chat-message-bubble chat-message-system flex justify-center">
-        <span className="text-[10px] text-canvas-text-muted bg-canvas-hover px-2.5 py-0.5 rounded-full">
+        <span className="text-[11px] text-canvas-text-muted bg-canvas-hover px-2.5 py-0.5 rounded-full">
           {message.content}
         </span>
       </div>
@@ -66,17 +66,16 @@ export default function MessageBubble({
 
       {/* 悬停时间戳（用户消息在左侧） */}
       {isUser && (
-        <span className="chat-message-time shrink-0 self-end mb-1 text-[9px] tabular-nums text-canvas-text-muted opacity-0 transition-opacity group-hover:opacity-100">
+        <span className="chat-message-time shrink-0 self-end mb-1 text-[11px] tabular-nums text-canvas-text-muted opacity-60 transition-opacity group-hover:opacity-100">
           {formatMessageTime(message.timestamp)}
         </span>
       )}
 
       <div
-        className={`chat-message-content max-w-[85%] px-3.5 py-2 rounded-2xl text-[13px] leading-relaxed
-                    transition-colors
+        className={`chat-message-content max-w-[88%] text-[13px] leading-relaxed
                     ${isUser
-                      ? 'bg-indigo-500/15 text-canvas-text rounded-br-sm'
-                      : 'bg-canvas-hover text-canvas-text rounded-bl-sm'
+                      ? 'rounded-2xl rounded-br-sm bg-indigo-500/15 px-3.5 py-2 text-canvas-text'
+                      : 'min-w-0 px-1 py-1 text-canvas-text'
                     }`}
       >
         {isThinking && (
@@ -112,7 +111,7 @@ export default function MessageBubble({
               loading="lazy"
             />
             {mediaResult.prompt && (
-              <p className="text-[10px] text-canvas-text-muted px-2 py-1.5 bg-canvas-bg/60">
+              <p className="bg-canvas-bg/60 px-2 py-1.5 text-[11px] leading-[17px] text-canvas-text-muted">
                 {mediaResult.prompt}
               </p>
             )}
@@ -131,7 +130,7 @@ export default function MessageBubble({
               您的浏览器不支持视频播放
             </video>
             {mediaResult.prompt && (
-              <p className="text-[10px] text-canvas-text-muted px-2 py-1.5 bg-canvas-bg/60">
+              <p className="bg-canvas-bg/60 px-2 py-1.5 text-[11px] leading-[17px] text-canvas-text-muted">
                 {mediaResult.prompt}
               </p>
             )}
@@ -150,7 +149,7 @@ export default function MessageBubble({
               您的浏览器不支持音频播放
             </audio>
             {mediaResult.prompt && (
-              <p className="mt-1.5 text-[10px] text-canvas-text-muted">
+              <p className="mt-1.5 text-[11px] leading-[17px] text-canvas-text-muted">
                 {mediaResult.prompt}
               </p>
             )}
@@ -184,7 +183,8 @@ export default function MessageBubble({
           <button
             type="button"
             onClick={() => onAddToCanvas(message.id)}
-            className="mt-2 flex items-center gap-1 rounded-md border border-canvas-border px-2 py-1 text-[11px] text-canvas-text-secondary hover:bg-canvas-card hover:text-canvas-text"
+            className="mt-2 flex min-h-8 items-center gap-1.5 rounded-md border border-canvas-border px-2.5 py-1 text-xs text-canvas-text-secondary
+                       hover:bg-canvas-card hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
           >
             <Icon icon="mdi:plus-box-outline" width="14" />
             添加到画布
@@ -211,7 +211,7 @@ export default function MessageBubble({
 
       {/* 悬停时间戳（助手消息在右侧） */}
       {!isUser && (
-        <span className="chat-message-time shrink-0 self-end mb-1 text-[9px] tabular-nums text-canvas-text-muted opacity-0 transition-opacity group-hover:opacity-100">
+        <span className="chat-message-time shrink-0 self-end mb-1 text-[11px] tabular-nums text-canvas-text-muted opacity-60 transition-opacity group-hover:opacity-100">
           {formatMessageTime(message.timestamp)}
         </span>
       )}

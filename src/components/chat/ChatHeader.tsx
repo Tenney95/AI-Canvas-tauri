@@ -47,15 +47,15 @@ export default function ChatHeader({
     <div
       data-tauri-drag-region={detached ? true : undefined}
       className="chat-panel-header flex items-center justify-between gap-2 px-3.5 py-2.5
-                 border-b border-canvas-border flex-shrink-0 select-none"
+                 flex-shrink-0 select-none"
     >
       <div className="chat-panel-header-brand flex items-center gap-1.5 min-w-0">
         {showBackButton && (
           <button
             type="button"
-            className="chat-panel-back-btn flex items-center justify-center w-7 h-7 -ml-1 rounded-lg
+            className="chat-panel-back-btn flex items-center justify-center w-8 h-8 -ml-1 rounded-lg
                        text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
-                       active:scale-95 transition-all"
+                       active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             onClick={onBack}
             aria-label="返回会话列表"
           >
@@ -64,7 +64,7 @@ export default function ChatHeader({
         )}
         <MascotAvatar size={26} className="shrink-0" />
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="chat-panel-title text-[13px] font-semibold text-canvas-text tracking-tight truncate">
+          <span className="chat-panel-title text-sm font-semibold text-canvas-text truncate">
             AI 助手
           </span>
           {detached && projectName && (
@@ -72,8 +72,8 @@ export default function ChatHeader({
               · {projectName}
             </span>
           )}
-          <span className="chat-panel-beta-badge text-[9px] leading-none px-1.5 py-0.5 rounded-full
-                           bg-brand/15 text-brand-light font-semibold uppercase tracking-wider">
+          <span className="chat-panel-beta-badge text-[10px] leading-none px-1.5 py-0.5 rounded-full
+                           bg-brand/15 text-brand-light font-semibold uppercase">
             Beta
           </span>
         </div>
@@ -91,9 +91,9 @@ export default function ChatHeader({
         {onOpenMemory && (
           <button
             type="button"
-            className="chat-panel-memory-btn flex items-center justify-center w-7 h-7 rounded-lg
+            className="chat-panel-memory-btn flex items-center justify-center w-8 h-8 rounded-lg
                        text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
-                       active:scale-95 transition-all"
+                       active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             onClick={onOpenMemory}
             data-tooltip="项目记忆"
             aria-label="项目记忆"
@@ -107,9 +107,9 @@ export default function ChatHeader({
           {/* 独立窗口按钮 */}
           <button
             type="button"
-            className="chat-panel-detach-btn flex items-center justify-center w-7 h-7 rounded-lg
+            className="chat-panel-detach-btn flex items-center justify-center w-8 h-8 rounded-lg
                        text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
-                       active:scale-95 transition-all"
+                       active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             onClick={onDetachToggle}
             data-tooltip={chatPanelDetached ? '收回内嵌' : '独立窗口'}
             aria-label={chatPanelDetached ? '收回内嵌' : '独立窗口'}
@@ -120,9 +120,9 @@ export default function ChatHeader({
           {/* 关闭按钮 */}
           <button
             type="button"
-            className="chat-panel-close-btn flex items-center justify-center w-7 h-7 rounded-lg
+            className="chat-panel-close-btn flex items-center justify-center w-8 h-8 rounded-lg
                        text-canvas-text-muted hover:text-red-400 hover:bg-red-500/10
-                       active:scale-95 transition-all"
+                       active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50"
             onClick={onClose}
             aria-label="关闭"
           >

@@ -44,7 +44,7 @@ export default function AgentStepCard({ step }: AgentStepCardProps) {
         className={`mt-0.5 shrink-0 ${meta.className} ${meta.spin ? 'animate-spin' : ''}`}
       />
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5 text-[11px]">
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[17px]">
           <span className="font-medium text-canvas-text truncate">{step.title}</span>
           <span className={`shrink-0 ${meta.className}`}>· {meta.label}</span>
           {retryCount > 0 && (
@@ -55,12 +55,12 @@ export default function AgentStepCard({ step }: AgentStepCardProps) {
           )}
         </div>
         {step.toolCall?.inputSummary && (
-          <p className="mt-0.5 text-[10px] leading-4 text-canvas-text-muted break-words">
+          <p className="mt-0.5 break-words text-[11px] leading-[17px] text-canvas-text-muted">
             {step.toolCall.inputSummary}
           </p>
         )}
         {detail && detail !== step.toolCall?.inputSummary && (
-          <p className={`mt-0.5 text-[10px] leading-4 break-words ${step.status === 'failed' ? 'text-red-400/80' : 'text-canvas-text-secondary'}`}>
+          <p className={`mt-0.5 break-words text-[11px] leading-[17px] ${step.status === 'failed' ? 'text-red-400/80' : 'text-canvas-text-secondary'}`}>
             {detail}
           </p>
         )}

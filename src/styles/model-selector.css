@@ -363,13 +363,13 @@
   min-width: 0;
 }
 
-/* 触发按钮缩小 */
+/* 触发按钮保持紧凑，同时保留稳定命中区 */
 .chat-panel-input-toolbar .model-selector-trigger {
   gap: 2px;
-  padding: 0 4px;
-  border-radius: 5px;
-  font-size: 10px;
-  height: 18px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  height: 28px;
 }
 
 /* caret 箭头缩小 */
@@ -380,49 +380,49 @@
 
 /* 图标缩小 */
 .chat-panel-input-toolbar .model-selector-icon {
-  width: 12px;
-  height: 12px;
-  font-size: 8px;
+  width: 14px;
+  height: 14px;
+  font-size: 9px;
 }
 
 /* badge 图标缩到匹配 16px 高度 */
 .chat-panel-input-toolbar .text-model-icon-mini {
-  width: 18px;
-  height: 18px;
-  border-radius: 2px;
-  font-size: 7px;
-  line-height: 12px;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  font-size: 9px;
+  line-height: 14px;
 }
 
 /* 标签：单行截断 */
 .chat-panel-input-toolbar .model-selector-label {
-  font-size: 10px;
-  max-width: 48px;
+  font-size: 11px;
+  max-width: 72px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 1;
-  margin-left: 6px;
+  margin-left: 4px;
 }
 
 /* 下拉面板缩小 */
 .chat-panel-input-toolbar .model-dropdown {
-  width: 220px;
-  max-height: 240px;
+  width: 240px;
+  max-height: 280px;
   transform-origin: bottom left;
-  animation: popoverIn var(--dur-normal) var(--ease-spring);
+  animation: popoverIn var(--dur-normal) var(--ease-out-expo);
 }
 
 /* 分组标题缩小 */
 .chat-panel-input-toolbar .model-group-header {
-  padding: 4px 5px;
+  padding: 6px 7px;
   gap: 4px;
 }
 .chat-panel-input-toolbar .model-group-name {
   font-size: 11px;
 }
 .chat-panel-input-toolbar .model-group-desc {
-  font-size: 10px;
+  font-size: 11px;
 }
 
 /* 分组子项缩进减半 */
@@ -432,13 +432,14 @@
 
 /* 模型项缩小 */
 .chat-panel-input-toolbar .model-item {
-  padding: 4px 5px;
+  min-height: 32px;
+  padding: 6px 7px;
   gap: 4px;
 }
 .chat-panel-input-toolbar .model-item-name {
   font-size: 11px;
 }
 .chat-panel-input-toolbar .model-item-desc {
-  font-size: 10px;
+  font-size: 11px;
 }
 

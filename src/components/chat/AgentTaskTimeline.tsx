@@ -70,9 +70,10 @@ function ControlButton({ icon, label, onClick, tone = 'default' }: ControlButton
       type="button"
       onClick={onClick}
       aria-label={label}
-      className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${toneClass}`}
+      className={`flex min-h-8 items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors
+                  focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${toneClass}`}
     >
-      <Icon icon={icon} width="13" />
+      <Icon icon={icon} width="14" />
       {label}
     </button>
   );
@@ -101,13 +102,13 @@ export default function AgentTaskTimeline({
     : undefined;
 
   return (
-    <div className="agent-task-timeline mt-2 rounded-lg border border-canvas-border bg-canvas-bg/50 p-2.5">
+    <div className="agent-task-timeline mt-2 border-l border-canvas-border/80 pl-2.5 pr-1 py-1">
       {/* Header：状态 + 进度 + 折叠 */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40 rounded"
+        className="flex min-h-8 w-full items-center gap-2 rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40"
       >
         <Icon
           icon={meta.icon}
@@ -116,27 +117,27 @@ export default function AgentTaskTimeline({
         />
         <span className={`text-xs font-medium ${meta.className}`}>{meta.label}</span>
         {task.steps.length > 0 && (
-          <span className="text-[10px] text-canvas-text-muted">
+          <span className="text-[11px] text-canvas-text-muted">
             {doneSteps}/{task.steps.length} 步
           </span>
         )}
-        <span className="ml-auto flex items-center gap-2 text-[10px] text-canvas-text-muted">
+        <span className="ml-auto flex items-center gap-2 text-[11px] text-canvas-text-muted">
           <span>轮 {task.modelRounds}/{task.budget.maxModelRounds}</span>
           <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width="16" />
         </span>
       </button>
 
       {task.status === 'paused' && task.pausedReason && (
-        <p className="mt-1.5 text-[10px] text-amber-300/90">
+        <p className="mt-1.5 text-[11px] leading-[17px] text-amber-300/90">
           {PAUSE_REASON_LABELS[task.pausedReason] ?? task.pausedReason}
         </p>
       )}
       {task.status === 'failed' && task.errorMessage && (
-        <p className="mt-1.5 text-[10px] text-red-400/90 break-words">{task.errorMessage}</p>
+        <p className="mt-1.5 break-words text-[11px] leading-[17px] text-red-400/90">{task.errorMessage}</p>
       )}
       {recoveryHint && (
-        <p className="mt-1 flex items-start gap-1 text-[10px] text-canvas-text-muted">
-          <Icon icon="mdi:lightbulb-on-outline" width="12" className="mt-0.5 shrink-0 text-amber-400/80" />
+        <p className="mt-1 flex items-start gap-1.5 text-[11px] leading-[17px] text-canvas-text-muted">
+          <Icon icon="mdi:lightbulb-on-outline" width="13" className="mt-0.5 shrink-0 text-amber-400/80" />
           <span className="break-words">{recoveryHint.hint}</span>
         </p>
       )}

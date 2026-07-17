@@ -4,7 +4,7 @@
  * 常驻对话模型选择器；媒体模型通过轻量 @model mention 按轮覆盖。
  */
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import AnimatedButton from '../shared/AnimatedButton';
 import ChatModelSelector from './ChatModelSelector';
@@ -80,6 +80,7 @@ export default function ChatInput({
   disabled = false,
 }: ChatInputProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const reduceMotion = useReducedMotion();
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState('');
   const [mentionCursor, setMentionCursor] = useState(0);
@@ -215,7 +216,7 @@ export default function ChatInput({
                 key={grant.id}
                 title={`${grant.displayName} · ${Math.ceil(grant.size / 1024)} KB`}
                 className="inline-flex items-center gap-1 rounded-full border border-canvas-border/60
-                           bg-canvas-hover/70 pl-2.5 pr-1 py-0.5 text-[10px] text-canvas-text-secondary leading-none"
+                           bg-canvas-hover/70 py-1 pl-2.5 pr-1 text-[11px] leading-none text-canvas-text-secondary"
               >
                 <Icon icon="mdi:file-document-outline" width="12" className="shrink-0 text-canvas-text-muted/80" />
                 <span className="max-w-[100px] truncate">{grant.displayName}</span>
@@ -224,7 +225,8 @@ export default function ChatInput({
                     type="button"
                     aria-label={`撤销 ${grant.displayName} 的读取授权`}
                     onClick={() => onRevokeLocalFile(grant.id)}
-                    className="shrink-0 rounded-full p-0.5 text-canvas-text-muted hover:bg-red-500/15 hover:text-red-400 transition-colors"
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-canvas-text-muted transition-colors
+                               hover:bg-red-500/15 hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50"
                   >
                     <Icon icon="mdi:close" width="11" />
                   </button>
@@ -250,6 +252,7 @@ export default function ChatInput({
             setSkillQuery(slash?.[1] ?? '');
           }}
           onKeyDown={handleKeyDown}
+          aria-label="对话消息"
           placeholder="输入消息，描述你想对画布进行的修改"
           rows={1}
           disabled={disabled}
@@ -262,14 +265,16 @@ export default function ChatInput({
           <AnimatePresence>
             {modelMenuOpen && (
             <motion.div
-              initial={{ opacity: 0, y: 6, scale: 0.97 }}
+              initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 6, scale: 0.97 }}
-              transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.97 }}
+              transition={reduceMotion
+                ? { duration: 0.1 }
+                : { type: 'spring', visualDuration: 0.22, bounce: 0 }}
               className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface p-1 shadow-xl">
               {filteredCanvasNodes.length > 0 && (
                 <div className="py-1">
-                  <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-canvas-text-muted">
+                  <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[11px] font-medium text-canvas-text-muted">
                     <span>画布节点</span>
                     <span>{filteredCanvasNodes.length}</span>
                   </div>
@@ -278,21 +283,21 @@ export default function ChatInput({
                       key={node.id}
                       type="button"
                       onClick={() => insertNodeMention(node.id, String(node.data.label || '节点'))}
-                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-canvas-text hover:bg-canvas-hover"
+                      className="flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-canvas-text hover:bg-canvas-hover"
                     >
                       <Icon icon="mdi:vector-square" width="16" />
                       <span className="min-w-0 flex-1 truncate">{String(node.data.label || '节点')}</span>
                       {node.data.displayId != null && (
-                        <span className="text-[10px] text-canvas-text-muted">#{String(node.data.displayId)}</span>
+                        <span className="text-[11px] text-canvas-text-muted">#{String(node.data.displayId)}</span>
                       )}
-                      <span className="text-[10px] text-canvas-text-muted">{String(node.data.type)}</span>
+                      <span className="text-[11px] text-canvas-text-muted">{String(node.data.type)}</span>
                     </button>
                   ))}
                 </div>
               )}
               {groupedMediaModels.map((group) => (
                 <div key={group.id} className="py-1">
-                  <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-canvas-text-muted">
+                  <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[11px] font-medium text-canvas-text-muted">
                     <span>{group.name}</span>
                     <span>{group.models.length}</span>
                   </div>
@@ -305,7 +310,7 @@ export default function ChatInput({
                         disabled={!available}
                         onClick={() => insertModelMention(model)}
                         title={available ? model.description : '请先配置对应供应商'}
-                        className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${available ? 'text-canvas-text hover:bg-canvas-hover' : 'cursor-not-allowed text-canvas-text-muted opacity-50'}`}
+                        className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${available ? 'text-canvas-text hover:bg-canvas-hover' : 'cursor-not-allowed text-canvas-text-muted opacity-50'}`}
                       >
                         <Icon
                           icon={model.mediaKind === 'image'
@@ -316,7 +321,7 @@ export default function ChatInput({
                           width="16"
                         />
                         <span className="min-w-0 flex-1 truncate">{model.label}</span>
-                        <span className="text-[10px] text-canvas-text-muted">
+                        <span className="text-[11px] text-canvas-text-muted">
                           {model.mediaKind === 'image' ? '图片' : model.mediaKind === 'video' ? '视频' : '音频'}
                         </span>
                         {!available && <Icon icon="mdi:lock-outline" width="13" />}
@@ -336,12 +341,14 @@ export default function ChatInput({
           <AnimatePresence>
             {skillMenuOpen && (
             <motion.div
-              initial={{ opacity: 0, y: 6, scale: 0.97 }}
+              initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 6, scale: 0.97 }}
-              transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.97 }}
+              transition={reduceMotion
+                ? { duration: 0.1 }
+                : { type: 'spring', visualDuration: 0.22, bounce: 0 }}
               className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface p-1 shadow-xl">
-              <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-canvas-text-muted">
+              <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[11px] font-medium text-canvas-text-muted">
                 <span>Skill</span>
                 <span className="flex items-center gap-2">
                   <span>{filteredSkills.length}</span>
@@ -354,7 +361,8 @@ export default function ChatInput({
                     }}
                     aria-label="上传 Skill"
                     title="上传 Skill 文件"
-                    className="flex h-5 w-5 items-center justify-center rounded-md text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text disabled:cursor-wait disabled:opacity-50"
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 disabled:cursor-wait disabled:opacity-50"
                   >
                     <Icon icon={skillUploading ? 'mdi:loading' : 'mdi:plus'} width="15" className={skillUploading ? 'animate-spin' : ''} />
                   </button>
@@ -366,12 +374,12 @@ export default function ChatInput({
                   type="button"
                   onClick={() => insertSkillReference(skill.id, skill.name)}
                   title={skill.description}
-                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-canvas-text hover:bg-canvas-hover"
+                  className="flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-canvas-text hover:bg-canvas-hover"
                 >
                   <Icon icon="mdi:puzzle-outline" width="16" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate">{skill.name}</span>
-                    <span className="block truncate text-[10px] text-canvas-text-muted">{skill.description}</span>
+                    <span className="block truncate text-[11px] text-canvas-text-muted">{skill.description}</span>
                   </span>
                 </button>
               )) : (
@@ -403,7 +411,8 @@ export default function ChatInput({
                 }}
                 aria-label="引用画布节点或媒体模型"
                 title="引用画布节点或媒体模型"
-                className={`flex h-5 w-5 items-center justify-center rounded-md transition-all
+                className={`flex h-7 w-7 items-center justify-center rounded-md transition-all
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50
                   ${modelMenuOpen
                     ? 'bg-brand/15 text-brand-light'
                     : 'text-canvas-text-secondary hover:bg-canvas-surface hover:text-canvas-text'
@@ -422,7 +431,8 @@ export default function ChatInput({
                 }}
                 aria-label="调用 Skill"
                 title="调用 Skill"
-                className={`flex h-5 w-5 items-center justify-center rounded-md transition-all
+                className={`flex h-7 w-7 items-center justify-center rounded-md transition-all
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50
                   ${skillMenuOpen
                     ? 'bg-brand/15 text-brand-light'
                     : 'text-canvas-text-secondary hover:bg-canvas-surface hover:text-canvas-text'
@@ -438,8 +448,9 @@ export default function ChatInput({
                     onClick={onAuthorizeLocalFiles}
                     aria-label="授权当前对话读取本地文件"
                     title="选择文本文件；授权仅在当前对话和本次运行期间有效"
-                    className="flex h-5 w-5 items-center justify-center rounded-md text-canvas-text-secondary
-                               hover:bg-canvas-surface hover:text-canvas-text transition-all"
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-canvas-text-secondary
+                               hover:bg-canvas-surface hover:text-canvas-text transition-all
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
                   >
                     <Icon icon="mdi:paperclip" width="14" />
                   </button>
@@ -447,11 +458,11 @@ export default function ChatInput({
               )}
             </div>
             {inputValue.trim() && !disabled && (
-              <span className="hidden sm:inline text-[10px] text-canvas-text-muted/45 tabular-nums tracking-wider select-none">
+              <span className="hidden sm:inline text-[11px] text-canvas-text-muted/60 tabular-nums select-none">
                 ↵ Enter
               </span>
             )}
-            <div className={`flex h-5 w-5 items-center justify-center`}>
+            <div className="flex h-7 w-7 items-center justify-center">
               <ContextUsageIndicator usage={contextUsage ?? null} />
             </div>
             
@@ -461,6 +472,7 @@ export default function ChatInput({
               aria-label="发送消息"
               className={`chat-panel-send-btn flex shrink-0 items-center justify-center h-8 w-8 rounded-full
                           transition-all duration-200 active:scale-95
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300/70
                           ${inputValue.trim() && !disabled
                             ? 'bg-brand text-white hover:bg-brand-light shadow-lg shadow-brand/30'
                             : 'bg-canvas-hover text-canvas-text-muted cursor-not-allowed'
@@ -474,12 +486,10 @@ export default function ChatInput({
       </div>
 
       {/* Disclaimer */}
-      <div className="flex items-center justify-center gap-1.5 mt-1.5">
-        <span className="h-px flex-1 max-w-4 bg-canvas-border/40" aria-hidden="true" />
-        <p className="chat-panel-disclaimer text-[9px] text-canvas-text-muted/55">
-          AI 助手仅理解画布操作指令，不会执行未授权的修改
+      <div className="mt-1.5 flex min-h-5 items-center justify-center">
+        <p className="chat-panel-disclaimer text-[11px] text-canvas-text-muted/75">
+          重要操作执行前会请求确认
         </p>
-        <span className="h-px flex-1 max-w-4 bg-canvas-border/40" aria-hidden="true" />
       </div>
     </div>
   );

@@ -29,8 +29,14 @@ export default function ChatWindow() {
   const isLockedRef = useRef(false);
 
   const closeWindow = useCallback(() => {
-    void emitCloseRequest();
-    void invoke('close_chat_window');
+    void (async () => {
+      try {
+        await emitCloseRequest();
+        await invoke('close_chat_window');
+      } catch (error) {
+        console.error('[ChatWindow] failed to close window:', error);
+      }
+    })();
   }, []);
 
   const handleToggleLock = useCallback(async () => {

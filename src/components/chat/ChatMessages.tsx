@@ -3,7 +3,7 @@
  *
  * 渲染所有消息 + 空状态提示，自动滚动到底部。
  */
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, type UIEvent } from 'react';
 import { Icon } from '@iconify/react';
 import type { ChatMessage } from '../../types/chat';
 import type { AgentTask } from '../../types/agent';
@@ -38,20 +38,30 @@ export default function ChatMessages({
   agentControls,
   onExampleClick,
 }: ChatMessagesProps) {
+  const messagesRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
 
-  const scrollToBottom = useCallback(() => {
-    setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
+  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    const container = event.currentTarget;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    isNearBottomRef.current = distanceFromBottom < 80;
   }, []);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom]);
+    if (!isNearBottomRef.current) return;
+    const frameId = requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ block: 'end' });
+    });
+    return () => cancelAnimationFrame(frameId);
+  }, [messages]);
 
   return (
-    <div className="chat-panel-messages flex-1 min-h-0 overflow-y-auto px-3.5 py-3 flex flex-col gap-3">
+    <div
+      ref={messagesRef}
+      onScroll={handleScroll}
+      className="chat-panel-messages flex-1 min-h-0 overflow-y-auto px-3.5 py-3 flex flex-col gap-3"
+    >
       {showEmptyState && detachedInitialized && (
         <EmptyChatState
           onNew={onNewConversation}

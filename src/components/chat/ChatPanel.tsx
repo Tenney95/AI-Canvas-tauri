@@ -16,7 +16,7 @@
  * - ChatModelSelector.tsx   模型选择器
  */
 import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store/useAppStore';
@@ -98,6 +98,7 @@ export default function ChatPanel({
   detachedInitialized = true,
   detachedHeaderActions,
 }: ChatPanelProps = {}) {
+  const reduceMotion = useReducedMotion();
   const {
     chatOpen,
     chatPanelDetached,
@@ -694,10 +695,20 @@ export default function ChatPanel({
             className={`chat-panel-root ${detached
               ? 'h-screen w-screen flex flex-col bg-canvas-bg text-canvas-text overflow-hidden'
               : 'chat-panel fixed z-50 flex flex-col'}`}
-            initial={detached ? false : { x: '100%', opacity: 0 }}
+            initial={detached
+              ? false
+              : reduceMotion
+                ? { opacity: 0 }
+                : { x: '100%', opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
-            exit={detached ? undefined : { x: '100%', opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+            exit={detached
+              ? undefined
+              : reduceMotion
+                ? { opacity: 0 }
+                : { x: '100%', opacity: 0 }}
+            transition={reduceMotion
+              ? { duration: 0.12 }
+              : { type: 'spring', visualDuration: 0.35, bounce: 0 }}
           >
             {/* Header */}
             <ChatHeader
@@ -722,9 +733,11 @@ export default function ChatPanel({
               {/* Conversation list pane */}
               {viewMode === 'list' && (
                 <motion.div
-                  initial={{ x: -12, opacity: 0 }}
+                  initial={reduceMotion ? { opacity: 0 } : { x: -12, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
-                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                  transition={reduceMotion
+                    ? { duration: 0.12 }
+                    : { type: 'spring', visualDuration: 0.24, bounce: 0 }}
                   className="chat-panel-conversation-list flex-shrink-0 w-full overflow-hidden"
                 >
                   <ConversationList
@@ -755,9 +768,11 @@ export default function ChatPanel({
               {/* Chat pane */}
               {viewMode === 'chat' && (
                 <motion.div
-                  initial={{ x: 12, opacity: 0 }}
+                  initial={reduceMotion ? { opacity: 0 } : { x: 12, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
-                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                  transition={reduceMotion
+                    ? { duration: 0.12 }
+                    : { type: 'spring', visualDuration: 0.24, bounce: 0 }}
                   className="chat-panel-chat-area flex-1 flex flex-col min-h-0 min-w-0"
                 >
                   {/* Messages */}

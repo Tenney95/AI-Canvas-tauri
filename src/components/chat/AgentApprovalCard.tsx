@@ -26,14 +26,18 @@ export default function AgentApprovalCard({ step, onResolve }: AgentApprovalCard
   const meta = KIND_META[approval.kind];
 
   return (
-    <div className="mt-2 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3">
+    <div
+      className="mt-2 border-l-2 border-amber-400/60 bg-amber-400/5 px-3 py-2.5"
+      role="group"
+      aria-label={`${meta.label}待确认`}
+    >
       <div className="flex items-start gap-2">
         <Icon icon={meta.icon} width="16" className="mt-0.5 shrink-0 text-amber-400" />
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium text-amber-300">
             待确认 · {meta.label}
           </p>
-          <p className="mt-1 text-[11px] leading-4 text-canvas-text-secondary break-words">
+          <p className="mt-1 break-words text-xs leading-[18px] text-canvas-text-secondary">
             {step.toolCall?.inputSummary || approval.summary}
           </p>
         </div>
@@ -42,14 +46,14 @@ export default function AgentApprovalCard({ step, onResolve }: AgentApprovalCard
         <button
           type="button"
           onClick={() => onResolve(approval.id, false)}
-          className="rounded-md px-2.5 py-1 text-[11px] text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50"
+          className="min-h-8 rounded-md px-3 py-1 text-xs text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50"
         >
           拒绝
         </button>
         <button
           type="button"
           onClick={() => onResolve(approval.id, true)}
-          className="rounded-md bg-amber-400 px-2.5 py-1 text-[11px] font-medium text-black hover:bg-amber-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
+          className="min-h-8 rounded-md bg-amber-400 px-3 py-1 text-xs font-medium text-black hover:bg-amber-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
         >
           确认执行
         </button>
