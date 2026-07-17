@@ -256,7 +256,7 @@ function StackedBar({ items }: { items: BarItem[] }) {
           return (
             <div
               key={i}
-              className="h-full transition-all duration-500 ease-out relative group min-w-[3px]"
+              className="h-full transition-[width] duration-500 ease-out motion-reduce:transition-none relative group min-w-[3px]"
               style={{
                 width: `${seg.pct}%`,
                 backgroundColor: seg.color,
@@ -553,7 +553,7 @@ export default function StorageHealthCenter() {
       {report && !isEmpty && overview && (
         <div className="space-y-5">
           {/* 总览卡片 */}
-          <div className="bg-canvas-card border border-canvas-border rounded-xl p-3">
+          <div className="bg-canvas-card border border-canvas-border rounded-[10px] p-3">
             <div className="flex items-center gap-6">
               {/* 圆环图 */}
               <DonutChart
@@ -604,7 +604,7 @@ export default function StorageHealthCenter() {
           </div>
 
           {/* 条状图 — 各项目存储占用 */}
-          <div className="bg-canvas-card border border-canvas-border rounded-xl p-3">
+          <div className="bg-canvas-card border border-canvas-border rounded-[10px] p-3">
             <h4 className="text-sm font-medium text-canvas-text mb-4">各项目占用空间</h4>
             <StackedBar items={overview.projectBars} />
           </div>

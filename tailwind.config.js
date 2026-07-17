@@ -15,7 +15,7 @@ export default {
         'canvas-hover': '#252535',
         'canvas-text': '#e8e8ed',
         'canvas-text-secondary': '#8888a0',
-        'canvas-text-muted': '#555566',
+        'canvas-text-muted': '#7d7d91',
 
         /* Brand */
         'brand': '#6366f1',

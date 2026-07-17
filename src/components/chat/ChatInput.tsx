@@ -219,7 +219,7 @@ export default function ChatInput({
     <div className="chat-panel-input-area flex-shrink-0 px-3 pt-2">
       <div
         className="chat-panel-input-box relative flex flex-col bg-canvas-card border border-canvas-border
-                    rounded-[14px] transition-all duration-200
+                    rounded-[14px] transition-[border-color,box-shadow] duration-200
                     focus-within:border-brand-light focus-within:ring-2 focus-within:ring-brand/15
                     px-2 py-2 shadow-lg shadow-black/20"
       >
@@ -427,7 +427,7 @@ export default function ChatInput({
                 }}
                 aria-label="引用画布节点或媒体模型"
                 title="引用画布节点或媒体模型"
-                className={`flex h-7 w-7 items-center justify-center rounded-md transition-all
+                className={`flex h-7 w-7 items-center justify-center rounded-md transition-[color,background-color,box-shadow]
                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50
                   ${modelMenuOpen
                     ? 'bg-brand/15 text-brand-light'
@@ -447,7 +447,7 @@ export default function ChatInput({
                 }}
                 aria-label="调用 Skill"
                 title="调用 Skill"
-                className={`flex h-7 w-7 items-center justify-center rounded-md transition-all
+                className={`flex h-7 w-7 items-center justify-center rounded-md transition-[color,background-color,box-shadow]
                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50
                   ${skillMenuOpen
                     ? 'bg-brand/15 text-brand-light'
@@ -465,7 +465,7 @@ export default function ChatInput({
                     aria-label="授权当前对话读取本地文件"
                     title="选择文本文件；授权仅在当前对话和本次运行期间有效"
                     className="flex h-7 w-7 items-center justify-center rounded-md text-canvas-text-secondary
-                               hover:bg-canvas-surface hover:text-canvas-text transition-all
+                               hover:bg-canvas-surface hover:text-canvas-text transition-[color,background-color,box-shadow]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
                   >
                     <Icon icon="mdi:paperclip" width="14" />
@@ -487,7 +487,8 @@ export default function ChatInput({
               disabled={!inputValue.trim() || disabled}
               aria-label="发送消息"
               className={`chat-panel-send-btn flex shrink-0 items-center justify-center h-8 w-8 rounded-full
-                          transition-all duration-200 active:scale-95
+                          transition-[color,background-color,box-shadow,opacity,transform] duration-200 active:scale-95
+                          motion-reduce:transform-none
                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300/70
                           ${inputValue.trim() && !disabled
                             ? 'bg-brand text-white hover:bg-brand-light shadow-lg shadow-brand/30'

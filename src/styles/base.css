@@ -18,7 +18,7 @@
   --theme-hover: #252535;
   --theme-text: #dddde4;
   --theme-text-secondary: #8888a0;
-  --theme-text-muted: #555566;
+  --theme-text-muted: #7d7d91;
 
   /* Brand (Indigo) / 品牌色（靛蓝）── */
   --brand: #6366f1;
@@ -153,7 +153,7 @@
   --theme-hover: #EDE8E0;
   --theme-text: #1a1a2e;
   --theme-text-secondary: #6b6b7b;
-  --theme-text-muted: #9a9aaa;
+  --theme-text-muted: #6c6c7a;
 
   /* Semantics remain the same but adjust backgrounds for readability / 语义色保持一致，仅调整背景 */
   --success-bg: rgba(16, 185, 129, 0.10);
@@ -217,7 +217,7 @@
 [data-theme='light'] .focus\:text-canvas-text\/90:focus { color: rgb(26 26 46 / 0.9); }
 [data-theme='light'] .text-canvas-text-secondary { color: #6b6b7b; }
 [data-theme='light'] .text-canvas-text-secondary\/80 { color: rgb(107 107 123 / 0.8); }
-[data-theme='light'] .text-canvas-text-muted { color: #9a9aaa; }
+[data-theme='light'] .text-canvas-text-muted { color: #6c6c7a; }
 
 [data-theme='light'] .bg-canvas-bg { background-color: #F5F0EB; }
 [data-theme='light'] .bg-canvas-bg\/60 { background-color: rgb(245 240 235 / 0.6); }
@@ -465,6 +465,11 @@ textarea:focus {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .anim-btn:hover:not(:disabled),
+  .anim-btn:active:not(:disabled) {
+    transform: none;
   }
 }
 

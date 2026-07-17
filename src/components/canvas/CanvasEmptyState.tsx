@@ -49,7 +49,7 @@ function CanvasEmptyState() {
                   },
                 });
               }}
-              className="px-4 py-2 bg-canvas-card border border-canvas-border rounded-lg text-sm text-canvas-text-secondary hover:border-indigo-500/50 hover:text-canvas-text transition-all"
+              className="px-4 py-2 bg-canvas-card border border-canvas-border rounded-lg text-sm text-canvas-text-secondary hover:border-indigo-500/50 hover:text-canvas-text transition-colors"
             >
               {EMPTY_STATE_LABELS[type]}
             </AnimatedButton>

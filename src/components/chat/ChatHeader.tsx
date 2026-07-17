@@ -55,7 +55,8 @@ export default function ChatHeader({
             type="button"
             className="chat-panel-back-btn flex items-center justify-center w-8 h-8 -ml-1 rounded-lg
                        text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
-                       active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+                       active:scale-95 transition-[color,background-color,box-shadow,transform] duration-150
+                       motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             onClick={onBack}
             aria-label="返回会话列表"
           >
@@ -90,7 +91,8 @@ export default function ChatHeader({
             type="button"
             className="chat-panel-memory-btn flex items-center justify-center w-8 h-8 rounded-lg
                        text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
-                       active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+                       active:scale-95 transition-[color,background-color,box-shadow,transform] duration-150
+                       motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             onClick={onOpenMemory}
             data-tooltip="项目记忆"
             aria-label="项目记忆"
@@ -106,7 +108,8 @@ export default function ChatHeader({
             type="button"
             className="chat-panel-detach-btn flex items-center justify-center w-8 h-8 rounded-lg
                        text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
-                       active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+                       active:scale-95 transition-[color,background-color,box-shadow,transform] duration-150
+                       motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
             onClick={onDetachToggle}
             data-tooltip={chatPanelDetached ? '收回内嵌' : '独立窗口'}
             aria-label={chatPanelDetached ? '收回内嵌' : '独立窗口'}
@@ -119,7 +122,8 @@ export default function ChatHeader({
             type="button"
             className="chat-panel-close-btn flex items-center justify-center w-8 h-8 rounded-lg
                        text-canvas-text-muted hover:text-red-400 hover:bg-red-500/10
-                       active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50"
+                       active:scale-95 transition-[color,background-color,box-shadow,transform] duration-150
+                       motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50"
             onClick={onClose}
             aria-label="关闭"
           >

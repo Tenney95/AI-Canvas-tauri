@@ -38,7 +38,10 @@
 }
 
 .react-flow__handle {
-  transition: all var(--transition-base);
+  transition:
+    transform var(--transition-base),
+    border-color var(--transition-base),
+    background-color var(--transition-base);
 }
 
 .react-flow__handle:hover {
@@ -74,7 +77,11 @@
   border-color: var(--border-subtle) !important;
   color: var(--theme-text-secondary) !important;
   fill: var(--theme-text-secondary) !important;
-  transition: all var(--transition-base) !important;
+  transition:
+    color var(--transition-base),
+    fill var(--transition-base),
+    background-color var(--transition-base),
+    border-color var(--transition-base) !important;
 }
 
 .react-flow__controls-button:hover {

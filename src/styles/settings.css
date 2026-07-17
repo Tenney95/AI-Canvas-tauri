@@ -391,8 +391,8 @@
 }
 .dreamina-manual-guide {
   margin-top: 6px;
-  padding: 14px;
-  border-radius: 12px;
+  padding: 12px;
+  border-radius: 10px;
   background: var(--white-alpha-04, rgba(255, 255, 255, 0.04));
   border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.08));
 }
@@ -686,7 +686,7 @@
   min-width: 0;
   padding: 8px;
   border: 1px solid var(--theme-border);
-  border-radius: 13px;
+  border-radius: 10px;
   background: var(--theme-card);
   color: var(--theme-text);
   cursor: pointer;
@@ -928,7 +928,7 @@
 .canvas-interaction-gesture-map {
   padding: 11px 12px 12px;
   border: 1px solid var(--theme-border);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--theme-card);
 }
 .canvas-gesture-map-heading {
@@ -993,11 +993,11 @@
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 14px;
+  gap: 12px;
+  padding: 12px;
   background: var(--theme-card);
   border: 1px solid var(--theme-border);
-  border-radius: 12px;
+  border-radius: 10px;
   cursor: pointer;
   text-align: left;
   transition: background var(--transition-base), border-color var(--transition-base),

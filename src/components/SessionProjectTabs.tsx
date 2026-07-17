@@ -92,7 +92,7 @@ export default function SessionProjectTabs() {
                 disabled={switchingProjectId !== null}
                 onClick={() => { void handleSwitch(project.id); }}
                 className={`group relative flex h-7 min-w-0 max-w-[150px] shrink-0 items-center gap-1.5
-                            rounded-lg px-2.5 text-[11px] transition-all duration-150
+                            rounded-lg px-2.5 text-[11px] transition-[color,background-color,box-shadow,opacity] duration-150
                             disabled:cursor-wait ${
                               isActive
                                 ? 'bg-canvas-hover text-canvas-text shadow-sm shadow-black/20'

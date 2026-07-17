@@ -358,7 +358,7 @@ export default function OutputHistoryPanel() {
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.2 }}
-                        className={`rounded-xl border bg-canvas-surface/60 transition-colors ${
+                        className={`rounded-lg border bg-canvas-surface/60 transition-colors ${
                           isError
                             ? 'border-red-500/20'
                             : 'border-canvas-border hover:border-canvas-border/80'
