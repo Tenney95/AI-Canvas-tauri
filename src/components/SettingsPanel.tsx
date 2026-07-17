@@ -54,7 +54,7 @@ const INTERACTION_MODE_OPTIONS: {
 ];
 
 /** 是否运行在 macOS（用于快捷键修饰键显示） */
-const IS_MAC = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '');
+const IS_MAC =  typeof navigator !== 'undefined'  && /Macintosh|Mac OS X/.test(navigator.userAgent);
 
 /** 按当前系统生成键盘快捷键列表（修饰键 Win/Mac 自适应） */
 function getShortcutList(): { action: string; key: string }[] {
@@ -104,6 +104,7 @@ export default function SettingsPanel() {
       })),
     );
   const sidebarFloating = config.sidebarFloating !== false; // 默认开启
+  const titlebarFloating = config.titlebarFloating !== false; // 默认开启
   const interactionMode = config.interactionMode ?? 'default';
   const activeInteractionMode = INTERACTION_MODE_OPTIONS.find((option) => option.id === interactionMode)
     ?? INTERACTION_MODE_OPTIONS[0];
@@ -680,7 +681,8 @@ export default function SettingsPanel() {
                   />
                 </div>
 
-                {/* 画布交互模式 */}
+                {/* 画布交互模式（macOS 使用系统原生手势，隐藏此设置） */}
+                {!IS_MAC && (
                 <section className="canvas-interaction-settings">
                   <div className="canvas-interaction-heading">
                     <div>
@@ -761,6 +763,7 @@ export default function SettingsPanel() {
                     </div>
                   </div>
                 </section>
+                )}
 
                 {/* 侧边栏是否悬浮显示 */}
                 <div>
@@ -788,6 +791,44 @@ export default function SettingsPanel() {
                         {sidebarFloating
                           ? '侧边栏半隐于窗口边缘，悬浮在画布之上'
                           : '侧边栏停靠在窗口内侧'}
+                      </div>
+                    </div>
+
+                    <div className="sidebar-pref-switch" aria-hidden="true">
+                      <span />
+                    </div>
+                  </button>
+                </div>
+
+                {/* 标题栏是否悬浮显示（仅 macOS 自定义标题栏生效） */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">标题栏</h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateConfig({ titlebarFloating: !titlebarFloating });
+                      saveConfig();
+                    }}
+                    aria-pressed={titlebarFloating}
+                    className={`sidebar-pref-card${titlebarFloating ? ' is-floating' : ''}`}
+                  >
+                    <div className="sidebar-pref-window" aria-hidden="true">
+                      <div className="sidebar-pref-content">
+                        <span className="sidebar-pref-status-dot" />
+                        <div className="titlebar-pref-traffic">
+                          <span className="tl tl-red" />
+                          <span className="tl tl-amber" />
+                          <span className="tl tl-green" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="sidebar-pref-text">
+                      <div className="sidebar-pref-title">悬浮显示</div>
+                      <div className="sidebar-pref-desc">
+                        {titlebarFloating
+                          ? '红绿灯内移至画布上方，带毛玻璃胶囊'
+                          : '红绿灯停靠在窗口原生位置'}
                       </div>
                     </div>
 
