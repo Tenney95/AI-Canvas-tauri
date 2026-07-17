@@ -71,6 +71,21 @@ export interface AgentToolCallSnapshot {
   errorCode?: string;
 }
 
+export interface AgentApprovalInputRequest {
+  kind: 'media_model';
+  mediaKind: 'image' | 'video' | 'audio';
+  selectedModelRef?: string;
+}
+
+export interface AgentApprovalInputValues {
+  modelRef?: string;
+}
+
+export interface AgentApprovalResolution {
+  approved: boolean;
+  inputValues?: AgentApprovalInputValues;
+}
+
 export interface AgentApprovalSnapshot {
   id: string;
   kind: AgentApprovalKind;
@@ -78,6 +93,7 @@ export interface AgentApprovalSnapshot {
   summary: string;
   requestedAt: number;
   resolvedAt?: number;
+  inputRequest?: AgentApprovalInputRequest;
 }
 
 export interface AgentStep {

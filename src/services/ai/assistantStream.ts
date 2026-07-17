@@ -117,14 +117,22 @@ function buildAssistantTools(userMessage: string): AssistantToolDefinition[] {
     type: 'function',
     function: {
       name: 'media_generate',
-      description: '根据用户明确要求生成图片、视频、音乐或语音，并在当前对话或画布中展示结果。普通问答不得调用。',
+      description: [
+        '根据用户明确要求生成或编辑图片、视频、音乐或语音，并在当前对话或画布中展示结果。',
+        '图片 prompt 可保留 @{nodeId:label} 或 @asset{path} 作为参考图，运行时会自动解析。',
+        '普通问答不得调用。',
+      ].join(''),
       parameters: {
         type: 'object',
         additionalProperties: false,
         required: ['kind', 'prompt', 'modelRef'],
         properties: {
           kind: { type: 'string', enum: [mentionedModel.mediaKind] },
-          prompt: { type: 'string', minLength: 1 },
+          prompt: {
+            type: 'string',
+            minLength: 1,
+            description: '生成或编辑要求；图片编辑时原样保留用户给出的节点或资产引用标记。',
+          },
           modelRef: {
             type: 'string',
             enum: [mentionedModel.value],
@@ -235,7 +243,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
 // ============================================
 
 /**
- * 构建媒体工具约束。媒体生成必须显式 @ 模型，不使用默认媒体模型。
+ * 构建媒体工具约束。未显式 @ 模型时由审批卡补全，不使用默认媒体模型。
  */
 function buildMediaPrompt(): string {
   return [
@@ -243,11 +251,15 @@ function buildMediaPrompt(): string {
     ``,
     `媒体工具规则:`,
     `- 只有用户明确要求生成图片、视频、音乐或语音时才能调用 media_generate`,
-    `- 用户必须显式提供 @model{模型ID|名称}；没有 @model 时提示用户选择模型，不得调用工具`,
+    `- 用户提供 @model{模型ID|名称} 时把模型 ID 原样写入 modelRef`,
+    `- 用户未提供 @model 时仍可调用 media_generate，但必须省略 modelRef，由本地审批卡让用户选择兼容模型`,
     `- 普通聊天、画布查询、操作失败或模型配置存在都不能触发媒体工具`,
     `- kind 必须与用户要求一致，不能用图片替代视频或反之`,
     `- prompt 应保留用户语义并补全必要的画面、构图、光照或镜头细节`,
-    `- 把 @model 中的模型 ID 原样写入 modelRef`,
+    `- 图片 prompt 可以原样包含 @{nodeId:label} 或 @asset{path}；运行时会把这些引用解析为参考图输入`,
+    `- 用户已经同时给出参考图片、图片模型和明确编辑要求时，直接调用 media_generate 进入确认，不要先读取节点原 prompt，不要追问画面描述`,
+    `- 不得声称 media_generate 只能接受纯文本；只有真正缺少编辑目标时才询问一个必要问题`,
+    `- 模型选择和本次付费生成确认是同一个步骤，不要在工具调用前后再次要求用户确认或重新 @ 模型`,
     `- 用户说“在画布/生成节点”时 deliveryMode=canvas`,
     `- 用户说“同时放到画布/对话和画布都要”时 deliveryMode=both`,
     `- 没有明确提到画布时 deliveryMode=chat`,

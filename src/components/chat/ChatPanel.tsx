@@ -57,8 +57,17 @@ import { getAvailableAgentTools } from '../../services/chat/toolRegistry';
 import { ensureAgentToolsRegistered } from '../../services/chat/tools';
 import { estimateConversationUsage } from '../../services/chat/contextManager';
 import type { ChatMessage } from '../../types/chat';
-import { DEFAULT_AGENT_TASK_BUDGET, type AgentMode } from '../../types/agent';
+import {
+  DEFAULT_AGENT_TASK_BUDGET,
+  type AgentApprovalResolution,
+  type AgentMode,
+} from '../../types/agent';
+import type { ApiProviderConfig, GeneralModelConfig } from '../../types';
 import type { MediaGenerationIntent } from '../../types/media';
+import {
+  getMediaModelOptions,
+  type MediaModelOption,
+} from '../nodes/shared/defaultModels';
 import {
   authorizeConversationFiles,
   clearConversationFileGrants,
@@ -68,6 +77,30 @@ import {
 } from '../../services/chat/fileGrantService';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
+function getMediaModelAvailability(
+  options: MediaModelOption[],
+  generalModels: GeneralModelConfig[],
+  providers: Record<string, ApiProviderConfig>,
+  dreaminaLoggedIn: boolean,
+): Record<string, boolean> {
+  return Object.fromEntries(options.map((option) => {
+    if (option.provider === 'general') {
+      const generalModel = generalModels.find(
+        (model) => `general/${model.id}` === option.value,
+      );
+      return [option.value, !!generalModel?.openaiUrl && !!generalModel.modelId];
+    }
+    if (option.provider === 'dreamina') {
+      return [option.value, dreaminaLoggedIn];
+    }
+    return [option.value, !!providers[option.provider]?.apiKey];
+  }));
+}
+
+function sanitizeGeneralModels(models: GeneralModelConfig[]): GeneralModelConfig[] {
+  return models.map((model) => ({ ...model, apiKey: '' }));
+}
 
 interface ChatPanelProps {
   detached?: boolean;
@@ -117,6 +150,8 @@ export default function ChatPanel({
     showToast,
     assistantModelId,
     generalModels,
+    providers,
+    dreaminaLoggedIn,
     updateConfig,
     projectMemories,
     updateProjectMemory,
@@ -140,6 +175,8 @@ export default function ChatPanel({
       showToast: s.showToast,
       assistantModelId: s.config.assistantModelId,
       generalModels: s.config.generalModels ?? [],
+      providers: s.config.providers,
+      dreaminaLoggedIn: !!s.config.dreaminaAuth?.loggedIn,
       updateConfig: s.updateConfig,
       projectMemories: s.projectMemories,
       updateProjectMemory: s.updateProjectMemory,
@@ -155,7 +192,29 @@ export default function ChatPanel({
   const effectiveProjectId = detached ? (detachedSnapshot?.projectId ?? null) : currentProjectId;
   const effectiveProjectName = detached ? detachedSnapshot?.projectName : undefined;
   const effectiveAssistantModelId = detached ? detachedSnapshot?.assistantModelId : assistantModelId;
-  const effectiveGeneralModels = detached ? (detachedSnapshot?.generalModels ?? []) : generalModels;
+  const effectiveGeneralModels = useMemo(
+    () => detached ? (detachedSnapshot?.generalModels ?? []) : generalModels,
+    [detached, detachedSnapshot?.generalModels, generalModels],
+  );
+  const mediaModelOptions = useMemo(
+    () => getMediaModelOptions(effectiveGeneralModels),
+    [effectiveGeneralModels],
+  );
+  const localMediaModelAvailability = useMemo(
+    () => getMediaModelAvailability(
+      mediaModelOptions,
+      generalModels,
+      providers,
+      dreaminaLoggedIn,
+    ),
+    [dreaminaLoggedIn, generalModels, mediaModelOptions, providers],
+  );
+  const effectiveMediaModelAvailability = useMemo(
+    () => detached
+      ? (detachedSnapshot?.mediaModelAvailability ?? {})
+      : localMediaModelAvailability,
+    [detached, detachedSnapshot?.mediaModelAvailability, localMediaModelAvailability],
+  );
   const effectiveActiveConversation = effectiveConversations.find(
     (conversation) => conversation.id === effectiveActiveConversationId,
   );
@@ -291,15 +350,19 @@ export default function ChatPanel({
     }
   }, [detached]);
 
-  const handleResolveApproval = useCallback((approvalId: string, approved: boolean) => {
+  const handleResolveApproval = useCallback((
+    approvalId: string,
+    resolution: AgentApprovalResolution,
+  ) => {
     if (detached) {
-      void emitAction({ type: 'resolve_agent_approval', approvalId, approved });
+      void emitAction({ type: 'resolve_agent_approval', approvalId, resolution });
+      return;
+    }
+    if (!resolveAgentApproval(approvalId, resolution)) {
+      showToast('该确认已过期，请重新发起操作', 'info');
       return;
     }
     markApprovalMessageExecuting(approvalId);
-    if (!resolveAgentApproval(approvalId, approved)) {
-      showToast('该确认已过期，请重新发起操作', 'info');
-    }
   }, [detached, showToast]);
 
   const scrollToBottom = useCallback(() => {
@@ -310,6 +373,8 @@ export default function ChatPanel({
 
   const agentControls = useMemo(() => ({
     onResolveApproval: handleResolveApproval,
+    mediaModelOptions,
+    mediaModelAvailability: effectiveMediaModelAvailability,
     onPause: (taskId: string) => {
       if (detached) { void emitAction({ type: 'pause_agent_task', taskId }); return; }
       pauseAgentTask(taskId);
@@ -340,7 +405,14 @@ export default function ChatPanel({
       resumeAgentTaskExecution(taskId, scrollToBottom);
       showToast('正在重新规划任务', 'info');
     },
-  }), [detached, handleResolveApproval, showToast, scrollToBottom]);
+  }), [
+    detached,
+    effectiveMediaModelAvailability,
+    handleResolveApproval,
+    mediaModelOptions,
+    showToast,
+    scrollToBottom,
+  ]);
 
   const handleAuthorizeLocalFiles = useCallback(() => {
     if (!effectiveActiveConversationId) return;
@@ -453,10 +525,16 @@ export default function ChatPanel({
       agentTasks: s.agentTasks,
       projectId: s.currentProjectId,
       projectName: project?.name,
-      generalModels: s.config.generalModels ?? [],
+      generalModels: sanitizeGeneralModels(s.config.generalModels ?? []),
       assistantModelId: s.config.assistantModelId,
       assistantImageModelId: s.config.assistantImageModelId,
       assistantVideoModelId: s.config.assistantVideoModelId,
+      mediaModelAvailability: getMediaModelAvailability(
+        getMediaModelOptions(s.config.generalModels ?? []),
+        s.config.generalModels ?? [],
+        s.config.providers,
+        !!s.config.dreaminaAuth?.loggedIn,
+      ),
       localFileGrants: s.activeConversationId
         ? listConversationFileGrants(s.activeConversationId)
         : [],
@@ -580,10 +658,11 @@ export default function ChatPanel({
               break;
 
             case 'resolve_agent_approval':
-              markApprovalMessageExecuting(action.approvalId);
-              if (!resolveAgentApproval(action.approvalId, action.approved)) {
+              if (!resolveAgentApproval(action.approvalId, action.resolution)) {
                 store.showToast('该确认已过期，请重新发起操作', 'info');
+                break;
               }
+              markApprovalMessageExecuting(action.approvalId);
               break;
 
             case 'pause_agent_task':

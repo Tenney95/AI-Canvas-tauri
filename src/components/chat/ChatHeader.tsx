@@ -72,10 +72,7 @@ export default function ChatHeader({
               · {projectName}
             </span>
           )}
-          <span className="chat-panel-beta-badge text-[10px] leading-none px-1.5 py-0.5 rounded-full
-                           bg-brand/15 text-brand-light font-semibold uppercase">
-            Beta
-          </span>
+
         </div>
       </div>
 

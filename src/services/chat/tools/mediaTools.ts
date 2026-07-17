@@ -6,6 +6,9 @@ import type {
   MediaKind,
 } from '../../../types/media';
 import {
+  findMediaModelOption,
+} from '../../../components/nodes/shared/defaultModels';
+import {
   extractModelMention,
   runMediaGeneration,
 } from '../../ai/generationRuntime';
@@ -17,7 +20,7 @@ import {
 interface GenerateMediaInput {
   kind: MediaKind;
   prompt: string;
-  modelRef: string;
+  modelRef?: string;
   deliveryMode: MediaDeliveryMode;
   audioPurpose?: AudioGenerationPurpose;
 }
@@ -34,16 +37,24 @@ export function registerMediaAgentTools(): Array<() => void> {
       id: 'media_generate',
       title: '生成媒体内容',
       description: [
-        '使用用户本轮通过 @model 明确选择的模型生成图片、视频、音乐或语音。',
+        '生成图片、视频、音乐或语音。用户本轮已提供 @model 时把模型 ID 写入 modelRef；',
+        '未提供 @model 时省略 modelRef，运行时会在审批卡中让用户选择兼容模型。',
+        '图片 prompt 可以原样包含用户提供的 @{nodeId:label} 或 @asset{path} 引用，',
+        '运行时会自动解析为参考图输入；无需先读取节点原 prompt，也不要要求用户重新描述图片。',
         '每次调用都会向用户确认。deliveryMode 控制结果显示在对话、画布或两者。',
       ].join(''),
       inputSchema: {
         type: 'object',
-        required: ['kind', 'prompt', 'modelRef', 'deliveryMode'],
+        required: ['kind', 'prompt', 'deliveryMode'],
         additionalProperties: false,
         properties: {
           kind: { type: 'string', enum: ['image', 'video', 'audio'] },
-          prompt: { type: 'string', minLength: 1, maxLength: 12000 },
+          prompt: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 12000,
+            description: '生成或编辑要求；图片编辑时必须原样保留用户给出的节点或资产引用标记。',
+          },
           modelRef: { type: 'string', minLength: 1, maxLength: 240 },
           deliveryMode: { type: 'string', enum: ['chat', 'canvas', 'both'] },
           audioPurpose: { type: 'string', enum: ['music', 'speech'] },
@@ -54,11 +65,31 @@ export function registerMediaAgentTools(): Array<() => void> {
         const store = useAppStore.getState();
         const task = store.agentTasks.find((item) => item.id === context.taskId);
         const mentionedModel = task ? extractModelMention(task.goal) : undefined;
-        if (!mentionedModel || mentionedModel !== input.modelRef) {
+        if (mentionedModel && mentionedModel !== input.modelRef) {
           return {
             allowed: false,
-            reason: '媒体模型必须由用户在本轮消息中通过 @model 明确选择',
+            reason: '工具使用的媒体模型与用户本轮 @model 选择不一致',
           };
+        }
+        if (input.modelRef) {
+          const option = findMediaModelOption(input.modelRef, store.config.generalModels ?? []);
+          if (!option || option.mediaKind !== input.kind) {
+            return { allowed: false, reason: '所选模型与本次媒体类型不兼容' };
+          }
+          if (option.provider === 'general') {
+            const generalModel = (store.config.generalModels ?? []).find(
+              (model) => `general/${model.id}` === option.value,
+            );
+            if (!generalModel?.openaiUrl || !generalModel.modelId) {
+              return { allowed: false, reason: `模型“${option.label}”的接口配置不完整` };
+            }
+          } else if (option.provider === 'dreamina') {
+            if (!store.config.dreaminaAuth?.loggedIn) {
+              return { allowed: false, reason: '请先登录即梦账号' };
+            }
+          } else if (!store.config.providers[option.provider]?.apiKey) {
+            return { allowed: false, reason: `请先配置 ${option.provider} 的 API Key` };
+          }
         }
         if (
           input.deliveryMode !== 'chat'
@@ -85,7 +116,8 @@ export function registerMediaAgentTools(): Array<() => void> {
             : input.audioPurpose === 'music'
               ? '音乐'
               : '语音';
-        return `使用 ${input.modelRef} 生成${label}，输出到${
+        const referenceCount = input.prompt.match(/@asset\{[^}]+\}|@\{[^:}]+:[^}]+\}/g)?.length ?? 0;
+        return `${input.modelRef ? `使用 ${input.modelRef}` : '选择模型后'}${referenceCount > 0 ? `，基于 ${referenceCount} 个参考输入` : ''}生成${label}，输出到${
           input.deliveryMode === 'chat'
             ? '对话'
             : input.deliveryMode === 'canvas'
@@ -95,6 +127,27 @@ export function registerMediaAgentTools(): Array<() => void> {
       },
       execute: async (context, input): Promise<AgentToolExecutionResult> => {
         const store = useAppStore.getState();
+        if (!input.modelRef) {
+          return {
+            status: 'error',
+            summary: '未选择媒体模型',
+            modelContent: '未选择媒体模型',
+            errorCode: 'AGENT_MEDIA_MODEL_REQUIRED',
+          };
+        }
+        const referencedNodeIds = [...input.prompt.matchAll(/@\{([^:}]+):[^}]+\}/g)]
+          .map((match) => match[1].split('/cell/')[0]);
+        const missingNodeId = referencedNodeIds.find(
+          (nodeId) => !store.nodes.some((node) => node.id === nodeId),
+        );
+        if (missingNodeId) {
+          return {
+            status: 'error',
+            summary: '参考节点已不存在，请重新选择图片',
+            modelContent: '参考节点已不存在，请重新选择图片',
+            errorCode: 'AGENT_MEDIA_REFERENCE_NOT_FOUND',
+          };
+        }
         const assistantMessageId = getAssistantMessageId(context.taskId);
         if (!assistantMessageId) {
           return {

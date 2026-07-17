@@ -103,11 +103,11 @@ export default function MessageBubble({
 
         {/* ── 图片结果 ── */}
         {hasImage && !isGenerating && (
-          <div className="chat-message-image mt-2 rounded-lg overflow-hidden border border-canvas-border">
+          <div className="chat-message-image mt-1 pt-2 rounded-lg overflow-hidden border border-canvas-border">
             <img
               src={mediaResult.url}
               alt={mediaResult.prompt || '生成的图片'}
-              className="w-full h-auto max-h-[280px] object-contain bg-canvas-bg"
+              className="w-full h-auto max-h-[280px] object-contain bg-canvas-bg rounded-lg"
               loading="lazy"
             />
             {mediaResult.prompt && (

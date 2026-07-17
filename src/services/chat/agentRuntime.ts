@@ -10,6 +10,8 @@ import {
 } from '../ai/assistantStream';
 import {
   AGENT_TERMINAL_STATUSES,
+  type AgentApprovalInputRequest,
+  type AgentApprovalResolution,
   type AgentStep,
   type AgentTask,
   type AgentTaskBudget,
@@ -43,7 +45,10 @@ export type AgentExecutionOutcome =
 export type AgentTaskExecutor = (signal: AbortSignal) => Promise<AgentExecutionOutcome>;
 
 const activeControllers = new Map<string, AbortController>();
-const pendingApprovalResolvers = new Map<string, (approved: boolean) => void>();
+const pendingApprovalResolvers = new Map<
+  string,
+  (resolution: AgentApprovalResolution) => void
+>();
 
 const ALLOWED_TRANSITIONS: Record<AgentTaskStatus, ReadonlySet<AgentTaskStatus>> = {
   queued: new Set(['planning', 'paused', 'stopped']),
@@ -235,10 +240,24 @@ export function validateTaskResumable(taskId: string): AgentResumeValidation {
   return { ok: true };
 }
 
-export function resolveAgentApproval(approvalId: string, approved: boolean): boolean {
+export function resolveAgentApproval(
+  approvalId: string,
+  resolution: AgentApprovalResolution,
+): boolean {
   const resolver = pendingApprovalResolvers.get(approvalId);
   if (!resolver) return false;
-  resolver(approved);
+  const store = useAppStore.getState();
+  const task = store.agentTasks.find((item) =>
+    item.steps.some((step) => step.approval?.id === approvalId),
+  );
+  if (
+    !task
+    || store.activeConversationId !== task.conversationId
+    || store.currentProjectId !== task.projectId
+  ) {
+    return false;
+  }
+  resolver(resolution);
   return true;
 }
 
@@ -521,8 +540,8 @@ async function runWithConcurrency<T>(
 function waitForAgentApproval(
   approvalId: string,
   signal: AbortSignal,
-): Promise<boolean> {
-  return new Promise<boolean>((resolve, reject) => {
+): Promise<AgentApprovalResolution> {
+  return new Promise<AgentApprovalResolution>((resolve, reject) => {
     const cleanup = () => {
       signal.removeEventListener('abort', handleAbort);
       pendingApprovalResolvers.delete(approvalId);
@@ -531,13 +550,55 @@ function waitForAgentApproval(
       cleanup();
       reject(new DOMException('Aborted', 'AbortError'));
     };
-    pendingApprovalResolvers.set(approvalId, (approved) => {
+    pendingApprovalResolvers.set(approvalId, (resolution) => {
       cleanup();
-      resolve(approved);
+      resolve(resolution);
     });
     signal.addEventListener('abort', handleAbort, { once: true });
     if (signal.aborted) handleAbort();
   });
+}
+
+function prepareApprovalInput(
+  prepared: PreparedAgentToolCall,
+  taskGoal: string,
+): {
+  prepared: PreparedAgentToolCall;
+  inputRequest?: AgentApprovalInputRequest;
+} {
+  if (
+    prepared.definition.id !== 'media_generate'
+    || prepared.definition.effect !== 'media_generation'
+  ) {
+    return { prepared };
+  }
+
+  const input = prepared.input as Record<string, unknown>;
+  const mentionedModelRef = /@model\{([^|}\s]+)/i.exec(taskGoal)?.[1]?.trim();
+  if (mentionedModelRef) {
+    return {
+      prepared: input.modelRef
+        ? prepared
+        : {
+            ...prepared,
+            input: { ...input, modelRef: mentionedModelRef },
+          },
+    };
+  }
+  const mediaKind = input.kind;
+  if (mediaKind !== 'image' && mediaKind !== 'video' && mediaKind !== 'audio') {
+    return { prepared };
+  }
+
+  const inputWithoutModel = { ...input };
+  delete inputWithoutModel.modelRef;
+  return {
+    prepared: { ...prepared, input: inputWithoutModel },
+    inputRequest: {
+      kind: 'media_model',
+      mediaKind,
+    },
+  };
 }
 
 /**
@@ -691,9 +752,15 @@ export async function runAgentLoop({
         continue;
       }
 
+      const approvalInput = prepareApprovalInput(
+        preparedResult.prepared,
+        getTask(taskId).goal,
+      );
+      let prepared = approvalInput.prepared;
+      let resolvedCall = call;
       const policy = evaluateAgentToolPolicy(
-        preparedResult.prepared.definition,
-        preparedResult.prepared.input,
+        prepared.definition,
+        prepared.input,
         roundContext,
       );
       if (policy.outcome === 'deny') {
@@ -717,7 +784,7 @@ export async function runAgentLoop({
         taskId,
         index: stepIndex,
         kind: policy.outcome === 'require_approval' ? 'approval' : 'tool',
-        title: preparedResult.prepared.definition.title,
+        title: prepared.definition.title,
         status: policy.outcome === 'require_approval' ? 'waiting_approval' : 'running',
         createdAt: now,
         updatedAt: now,
@@ -725,9 +792,9 @@ export async function runAgentLoop({
           callId: call.callId,
           toolId: call.toolId,
           inputSummary: sanitizePersistentSummary(
-            preparedResult.prepared.definition.summarizeInput
-              ? preparedResult.prepared.definition.summarizeInput(
-                  preparedResult.prepared.input,
+            prepared.definition.summarizeInput
+              ? prepared.definition.summarizeInput(
+                  prepared.input,
                 )
               : '参数已通过本地 schema 校验',
           ).slice(0, 500),
@@ -742,6 +809,7 @@ export async function runAgentLoop({
                 status: 'pending' as const,
                 summary: policy.reason,
                 requestedAt: now,
+                inputRequest: approvalInput.inputRequest,
               },
             }
           : {}),
@@ -752,26 +820,86 @@ export async function runAgentLoop({
         transitionAgentTask(taskId, 'waiting_approval');
         callbacks.onApprovalRequired?.(step);
         const approvalId = step.approval!.id;
-        const approved = await waitForAgentApproval(approvalId, signal);
+        const resolution = await waitForAgentApproval(approvalId, signal);
+        let approvalError: ToolResultSummary | undefined;
+        const selectedModelRef = resolution.inputValues?.modelRef?.trim();
+        if (resolution.approved && approvalInput.inputRequest) {
+          if (!selectedModelRef) {
+            approvalError = {
+              callId: call.callId,
+              toolId: call.toolId,
+              status: 'denied',
+              summary: '确认生成前必须选择一个可用模型',
+              truncated: false,
+            };
+          } else {
+            resolvedCall = {
+              ...call,
+              input: {
+                ...(prepared.input as Record<string, unknown>),
+                modelRef: selectedModelRef,
+              },
+            };
+            const selectedPreparedResult = prepareAgentToolCall(resolvedCall, roundContext);
+            if (!selectedPreparedResult.ok) {
+              approvalError = selectedPreparedResult.result;
+            } else {
+              const authorization = selectedPreparedResult.prepared.definition.authorize?.(
+                roundContext,
+                selectedPreparedResult.prepared.input,
+              );
+              if (authorization && !authorization.allowed) {
+                approvalError = {
+                  callId: call.callId,
+                  toolId: call.toolId,
+                  status: 'denied',
+                  summary: authorization.reason || '所选模型当前不可用',
+                  truncated: false,
+                };
+              } else {
+                prepared = selectedPreparedResult.prepared;
+              }
+            }
+          }
+        }
+        const canExecute = resolution.approved && !approvalError;
         const resolvedAt = Date.now();
         updateTaskSnapshot(taskId, (current) => ({
           ...current,
           steps: current.steps.map((item) => item.id === step.id
             ? {
                 ...item,
-                status: approved ? 'running' : 'skipped',
+                status: canExecute ? 'running' : resolution.approved ? 'failed' : 'skipped',
                 updatedAt: resolvedAt,
+                errorCode: approvalError ? 'AGENT_APPROVAL_INPUT_INVALID' : item.errorCode,
+                errorMessage: approvalError?.summary,
+                toolCall: canExecute && item.toolCall
+                  ? {
+                      ...item.toolCall,
+                      inputSummary: sanitizePersistentSummary(
+                        prepared.definition.summarizeInput
+                          ? prepared.definition.summarizeInput(prepared.input)
+                          : item.toolCall.inputSummary || '参数已通过本地 schema 校验',
+                      ).slice(0, 500),
+                    }
+                  : item.toolCall,
                 approval: item.approval
                   ? {
                       ...item.approval,
-                      status: approved ? 'approved' : 'rejected',
+                      status: resolution.approved ? 'approved' : 'rejected',
                       resolvedAt,
+                      inputRequest: item.approval.inputRequest
+                        ? {
+                            ...item.approval.inputRequest,
+                            selectedModelRef,
+                          }
+                        : undefined,
                     }
                   : undefined,
               }
             : item),
         }));
-        if (!approved) {
+        if (!resolution.approved) {
           const denied: ToolResultSummary = {
             callId: call.callId,
             toolId: call.toolId,
@@ -787,12 +915,21 @@ export async function runAgentLoop({
           transitionAgentTask(taskId, 'running');
           continue;
         }
+        if (approvalError) {
+          results.set(call.callId, {
+            summary: approvalError,
+            modelContent: approvalError.summary,
+          });
+          callbacks.onToolResult?.(approvalError);
+          transitionAgentTask(taskId, 'running');
+          continue;
+        }
         transitionAgentTask(taskId, 'running');
       }
 
       allowedCalls.push({
-        call,
-        prepared: preparedResult.prepared,
+        call: resolvedCall,
+        prepared,
         step,
         context: { ...roundContext, signal },
       });

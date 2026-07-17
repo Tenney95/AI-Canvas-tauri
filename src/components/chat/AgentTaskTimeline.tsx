@@ -8,13 +8,21 @@
  */
 import { useState } from 'react';
 import { Icon } from '@iconify/react';
-import { AGENT_TERMINAL_STATUSES, type AgentTask, type AgentTaskStatus } from '../../types/agent';
+import {
+  AGENT_TERMINAL_STATUSES,
+  type AgentApprovalResolution,
+  type AgentTask,
+  type AgentTaskStatus,
+} from '../../types/agent';
 import { getAgentRecoveryHint } from '../../services/chat/agentErrorCodes';
 import AgentStepCard from './AgentStepCard';
 import AgentApprovalCard from './AgentApprovalCard';
+import type { MediaModelOption } from '../nodes/shared/defaultModels';
 
 export interface AgentTaskControls {
-  onResolveApproval: (approvalId: string, approved: boolean) => void;
+  onResolveApproval: (approvalId: string, resolution: AgentApprovalResolution) => void;
+  mediaModelOptions: MediaModelOption[];
+  mediaModelAvailability: Record<string, boolean>;
   onPause: (taskId: string) => void;
   onResume: (taskId: string) => void;
   onStop: (taskId: string) => void;
@@ -82,6 +90,8 @@ function ControlButton({ icon, label, onClick, tone = 'default' }: ControlButton
 export default function AgentTaskTimeline({
   task,
   onResolveApproval,
+  mediaModelOptions,
+  mediaModelAvailability,
   onPause,
   onResume,
   onStop,
@@ -153,7 +163,13 @@ export default function AgentTaskTimeline({
           )}
 
           {pendingApprovalStep && (
-            <AgentApprovalCard step={pendingApprovalStep} onResolve={onResolveApproval} />
+            <AgentApprovalCard
+              key={pendingApprovalStep.approval?.id}
+              step={pendingApprovalStep}
+              mediaModelOptions={mediaModelOptions}
+              mediaModelAvailability={mediaModelAvailability}
+              onResolve={onResolveApproval}
+            />
           )}
 
           {/* 控制操作 */}
