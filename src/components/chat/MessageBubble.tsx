@@ -8,6 +8,7 @@ import type { ChatMessage } from '../../types/chat';
 import type { AgentTask } from '../../types/agent';
 import MascotAvatar from './MascotAvatar';
 import AgentTaskTimeline, { type AgentTaskControls } from './AgentTaskTimeline';
+import ChatReferenceText from './ChatReferenceText';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -86,7 +87,9 @@ export default function MessageBubble({
           </span>
         )}
         {message.content && (
-          <div className="whitespace-pre-wrap break-words">{message.content}</div>
+          <div className="whitespace-pre-wrap break-words">
+            <ChatReferenceText value={message.content} compact />
+          </div>
         )}
 
         {showTimeline && agentTask && agentControls && (
