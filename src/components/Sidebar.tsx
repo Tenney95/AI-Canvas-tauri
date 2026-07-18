@@ -385,7 +385,12 @@ function AvatarMenu() {
 
       {/* About dialog — portal to body to escape aside containing block */}
       {createPortal(
-        <ModalOverlay isOpen={aboutOpen} onClose={() => setAboutOpen(false)} className="w-[420px] max-h-[85vh] overflow-y-auto">
+        <ModalOverlay
+          isOpen={aboutOpen}
+          onClose={() => setAboutOpen(false)}
+          ariaLabel="关于 AI Canvas"
+          className="w-[420px] max-h-[85vh] overflow-y-auto"
+        >
         <div className="p-4 space-y-4">
           {/* Header */}
           <div className="flex items-center gap-4">

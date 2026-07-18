@@ -195,6 +195,7 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
         <ModalOverlay
           isOpen={open}
           onClose={() => setOpen(false)}
+          ariaLabel="选择画风"
           className="style-picker-panel"
         >
           <div className="style-picker-header">
@@ -215,6 +216,7 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
                 type="button"
                 className="asset-picker-close"
                 onClick={() => setOpen(false)}
+                aria-label="关闭画风选择"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -270,6 +272,7 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
         <ModalOverlay
           isOpen={addOpen}
           onClose={() => setAddOpen(false)}
+          ariaLabel="添加自定义画风"
           className="style-add-panel"
         >
           <div className="style-picker-header">
@@ -278,6 +281,7 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
               type="button"
               className="asset-picker-close"
               onClick={() => setAddOpen(false)}
+              aria-label="关闭自定义画风编辑"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="18" y1="6" x2="6" y2="18" />

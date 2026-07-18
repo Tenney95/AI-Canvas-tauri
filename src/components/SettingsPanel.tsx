@@ -310,11 +310,17 @@ export default function SettingsPanel() {
   const photoshopPath = config.photoshopPath;
 
   return (
-    <ModalOverlay isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} className="w-[640px] h-[80vh]">
+    <ModalOverlay
+      isOpen={settingsOpen}
+      onClose={() => setSettingsOpen(false)}
+      ariaLabel="设置"
+      className="w-[640px] h-[80vh]"
+    >
         {/* Header */}
         <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-canvas-border">
           <h2 className="text-base font-semibold text-canvas-text">设置</h2>
           <AnimatedButton
+            aria-label="关闭设置"
             onClick={() => setSettingsOpen(false)}
             className="w-8 h-8 rounded-lg hover:bg-canvas-hover flex items-center justify-center text-canvas-text-secondary hover:text-canvas-text transition-colors"
           >
