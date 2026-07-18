@@ -23,6 +23,7 @@ import * as fileService from './services/fileService';
 import { checkForUpdate, downloadAndInstallUpdate, type UpdateInfo } from './services/updateService';
 import { DOWNLOAD_MASCOT_EVENT } from './components/shared/ModelDownloadDialog';
 import UpdateBubble from './components/shared/mascot/UpdateBubble';
+import LazyLoadBoundary, { LazyLoadFallback } from './components/shared/LazyLoadBoundary';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -220,24 +221,36 @@ export default function App() {
         <Titlebar />
         <SessionProjectTabs />
         <NodeMenu />
-        <Suspense fallback={null}>
-          {mountSettings && <SettingsPanel />}
-        </Suspense>
-        <Suspense fallback={null}>
-          {mountNodeDialog && <AINodeDialog />}
-        </Suspense>
-        <Suspense fallback={null}>
-          {mountWorkflows && <WorkflowPanel />}
-        </Suspense>
-        <Suspense fallback={null}>
-          {mountAssets && <AssetsPanel />}
-        </Suspense>
-        <Suspense fallback={null}>
-          {mountHistory && <OutputHistoryPanel />}
-        </Suspense>
-        <Suspense fallback={null}>
-          {mountChat && <ChatPanel />}
-        </Suspense>
+        <LazyLoadBoundary label="设置面板">
+          <Suspense fallback={<LazyLoadFallback label="设置面板" />}>
+            {mountSettings && <SettingsPanel />}
+          </Suspense>
+        </LazyLoadBoundary>
+        <LazyLoadBoundary label="节点编辑器">
+          <Suspense fallback={<LazyLoadFallback label="节点编辑器" />}>
+            {mountNodeDialog && <AINodeDialog />}
+          </Suspense>
+        </LazyLoadBoundary>
+        <LazyLoadBoundary label="工作流面板">
+          <Suspense fallback={<LazyLoadFallback label="工作流面板" />}>
+            {mountWorkflows && <WorkflowPanel />}
+          </Suspense>
+        </LazyLoadBoundary>
+        <LazyLoadBoundary label="资产面板">
+          <Suspense fallback={<LazyLoadFallback label="资产面板" />}>
+            {mountAssets && <AssetsPanel />}
+          </Suspense>
+        </LazyLoadBoundary>
+        <LazyLoadBoundary label="输出历史">
+          <Suspense fallback={<LazyLoadFallback label="输出历史" />}>
+            {mountHistory && <OutputHistoryPanel />}
+          </Suspense>
+        </LazyLoadBoundary>
+        <LazyLoadBoundary label="对话助手">
+          <Suspense fallback={<LazyLoadFallback label="对话助手" />}>
+            {mountChat && <ChatPanel />}
+          </Suspense>
+        </LazyLoadBoundary>
         <Toast />
       </div>
       {/* Sidebar — outside the overflow-hidden container so it's not clipped */}
@@ -245,19 +258,34 @@ export default function App() {
 
       {/* 吉祥物 — 右下角浮动预览，默认隐藏，Ctrl+Shift+M 切换 */}
       {mascotVisible && (
-        <motion.div
-          className="fixed bottom-40 right-5 z-50 h-[100px] w-[100px] pointer-events-auto"
-          animate={mascotShrink ? { scale: 0, opacity: 0 } : { scale: 1, opacity: 1 }}
-          transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-        >
-          <Suspense fallback={null}>
-            {updating ? (
-              <PacmanMascot />
-            ) : (
-              <Mascot loading={mascotLoading} />
-            )}
-          </Suspense>
-        </motion.div>
+        <LazyLoadBoundary label="吉祥物">
+          <motion.div
+            className="fixed bottom-40 right-5 z-50 h-[100px] w-[100px] pointer-events-auto"
+            animate={mascotShrink ? { scale: 0, opacity: 0 } : { scale: 1, opacity: 1 }}
+            transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <Suspense
+              fallback={(
+                <div
+                  className="flex h-full w-full items-center justify-center"
+                  role="status"
+                  aria-label="正在加载吉祥物"
+                >
+                  <span
+                    className="h-5 w-5 animate-spin rounded-full border-2 border-canvas-border border-t-canvas-text-secondary"
+                    aria-hidden="true"
+                  />
+                </div>
+              )}
+            >
+              {updating ? (
+                <PacmanMascot />
+              ) : (
+                <Mascot loading={mascotLoading} />
+              )}
+            </Suspense>
+          </motion.div>
+        </LazyLoadBoundary>
       )}
 
       {/* 更新聊天气泡 — 悬停在吉祥物左上方 */}

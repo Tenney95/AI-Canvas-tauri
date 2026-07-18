@@ -2,7 +2,7 @@
  * SplashScreen — Hatom 风格黑白光影开屏
  * 黑暗虚空 → 中心光点爆发 → Logo 浮现 → 消散
  */
-import { useEffect, useRef, useMemo } from 'react';
+import { useEffect, useRef } from 'react';
 import gsap from 'gsap';
 
 interface SplashScreenProps {
@@ -52,36 +52,35 @@ function LogoOutline() {
   );
 }
 
-/* ============================================
-   Cosmic Particles — 漂浮的宇宙微尘
-   ============================================ */
-function CosmicParticles() {
-  const particles = useMemo(() => {
-    return Array.from({ length: 24 }, (_, i) => ({
-      id: i,
-      size: 1 + Math.random() * 2,
-      x: (Math.random() - 0.5) * 360,
-      y: (Math.random() - 0.5) * 360,
-      delay: Math.random() * 3,
-      duration: 3 + Math.random() * 5,
-    }));
-  }, []);
+const PARTICLES = [
+  { x: -148, y: -92, size: 1 },
+  { x: -104, y: 126, size: 1.5 },
+  { x: -72, y: -142, size: 1 },
+  { x: -38, y: 96, size: 1 },
+  { x: 22, y: -118, size: 1.5 },
+  { x: 54, y: 136, size: 1 },
+  { x: 92, y: -76, size: 1 },
+  { x: 132, y: 84, size: 1.5 },
+  { x: 158, y: -18, size: 1 },
+  { x: -164, y: 28, size: 1 },
+] as const;
 
+function CosmicParticles() {
   return (
     <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden" style={{ zIndex: 0 }}>
-      {particles.map((p) => (
+      {PARTICLES.map((particle, index) => (
         <div
-          key={p.id}
+          key={index}
           data-cosmic-particle
           className="absolute rounded-full"
           style={{
-            width: p.size,
-            height: p.size,
+            width: particle.size,
+            height: particle.size,
             background: 'rgba(255,255,255,0.3)',
             opacity: 0,
             left: '50%',
             top: '50%',
-            transform: `translate(${p.x}px, ${p.y}px)`,
+            transform: `translate(${particle.x}px, ${particle.y}px)`,
           }}
         />
       ))}
@@ -91,6 +90,7 @@ function CosmicParticles() {
 
 export default function SplashScreen({ onComplete }: SplashScreenProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const onCompleteRef = useRef(onComplete);
   const logoWrapRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
   const titleInnerRef = useRef<HTMLSpanElement>(null);
@@ -99,227 +99,176 @@ export default function SplashScreen({ onComplete }: SplashScreenProps) {
   const vignetteRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    let skip = () => {};
     const ctx = gsap.context(() => {
       const sparklePath = logoWrapRef.current?.querySelector('[data-logo-sparkle]') as SVGPathElement | null;
       const squirclePath = logoWrapRef.current?.querySelector('[data-logo-squircle]') as SVGPathElement | null;
       const coreCircle = logoWrapRef.current?.querySelector('[data-logo-core]') as SVGCircleElement | null;
-      const cosmicParticles = document.querySelectorAll('[data-cosmic-particle]');
-      // ── 初始状态 ──
-      gsap.set([logoWrapRef.current, titleRef.current], { opacity: 0, scale: 0.8 });
-      gsap.set(containerRef.current, { opacity: 1 });
+      const cosmicParticles = container.querySelectorAll('[data-cosmic-particle]');
+      let timeline: gsap.core.Timeline | null = null;
+      let finishing = false;
+
+      const finish = (duration = 0.2) => {
+        if (finishing) return;
+        finishing = true;
+        timeline?.kill();
+        gsap.to(container, {
+          opacity: 0,
+          duration,
+          ease: 'power2.inOut',
+          overwrite: true,
+          onComplete: () => onCompleteRef.current(),
+        });
+      };
+
+      skip = () => finish(0.1);
+
+      gsap.set([logoWrapRef.current, titleRef.current], { opacity: 0, scale: 0.88 });
+      gsap.set(titleRef.current, { y: 6 });
+      gsap.set(container, { opacity: 1 });
       gsap.set(lightSweepRef.current, { left: '-100%', opacity: 0 });
       gsap.set(coreLightRef.current, { opacity: 0, scale: 0 });
       if (sparklePath) gsap.set(sparklePath, { strokeOpacity: 0 });
       if (squirclePath) gsap.set(squirclePath, { strokeOpacity: 0 });
       if (coreCircle) gsap.set(coreCircle, { strokeOpacity: 0 });
 
-      const tl = gsap.timeline({
-        onComplete: () => {
-          gsap.to(containerRef.current, {
-            opacity: 0,
-            duration: 0.7,
-            ease: 'power2.in',
-            onComplete,
-          });
-        },
-      });
-
-      // ═══════════════════════════════════════
-      // Phase 1: Void — 宇宙微尘浮现
-      // ═══════════════════════════════════════
-      tl.to(cosmicParticles, {
-        opacity: 0.5,
-        duration: 0.25,
-        stagger: 0.015,
-        ease: 'power2.out',
-      });
-
-      // ═══════════════════════════════════════
-      // Phase 2: Ignition — 中心光点亮起
-      // ═══════════════════════════════════════
-      tl.to(vignetteRef.current, {
-        opacity: 1,
-        duration: 0.15,
-        ease: 'power2.out',
-      }, '-=0.1');
-
-      tl.to(coreLightRef.current, {
-        opacity: 1,
-        scale: 1,
-        duration: 0.2,
-        ease: 'power2.out',
-      }, '-=0.08');
-
-      // 光点脉动一下后稳定
-      tl.to(coreLightRef.current, {
-        scale: 0.7,
-        duration: 0.1,
-        ease: 'power2.inOut',
-      });
-      tl.to(coreLightRef.current, {
-        scale: 1,
-        duration: 0.12,
-        ease: 'power2.out',
-      });
-
-      // ═══════════════════════════════════════
-      // Phase 3: Emergence — Logo 从光中浮现
-      // ═══════════════════════════════════════
-      // Logo 出现 — 带弹性
-      tl.to(logoWrapRef.current, {
-        opacity: 1,
-        scale: 1,
-        duration: 0.25,
-        ease: 'back.out(1.7)',
-      }, '-=0.1');
-
-      // Squircle 描边渐现
-      if (squirclePath) {
-        tl.to(squirclePath, {
-          strokeOpacity: 0.25,
-          duration: 0.15,
-          ease: 'power2.out',
-        }, '-=0.15');
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        gsap.set([logoWrapRef.current, titleRef.current], { opacity: 1, scale: 1, y: 0 });
+        gsap.set(coreLightRef.current, { opacity: 0.18, scale: 0.5 });
+        if (sparklePath) gsap.set(sparklePath, { strokeOpacity: 0.7 });
+        if (squirclePath) gsap.set(squirclePath, { strokeOpacity: 0.25 });
+        if (coreCircle) gsap.set(coreCircle, { strokeOpacity: 0.4 });
+        gsap.delayedCall(0.08, () => finish(0.12));
+        return;
       }
 
-      // Sparkle 描边渐现
-      if (sparklePath) {
-        tl.to(sparklePath, {
-          strokeOpacity: 0.7,
+      timeline = gsap.timeline({ onComplete: () => finish() });
+
+      timeline
+        .to(cosmicParticles, {
+          opacity: 0.32,
+          duration: 0.16,
+          stagger: 0.008,
+          ease: 'power2.out',
+        }, 0)
+        .to(vignetteRef.current, {
+          opacity: 1,
+          duration: 0.14,
+          ease: 'power2.out',
+        }, 0)
+        .to(coreLightRef.current, {
+          opacity: 1,
+          scale: 1,
+          duration: 0.18,
+          ease: 'power3.out',
+        }, 0.07)
+        .to(logoWrapRef.current, {
+          opacity: 1,
+          scale: 1,
+          duration: 0.24,
+          ease: 'power3.out',
+        }, 0.16)
+        .to(coreLightRef.current, {
+          opacity: 0.28,
+          scale: 0.5,
+          duration: 0.18,
+          ease: 'power2.inOut',
+        }, 0.22);
+
+      if (squirclePath) {
+        timeline.to(squirclePath, {
+          strokeOpacity: 0.25,
           duration: 0.18,
           ease: 'power2.out',
-        }, '-=0.1');
+        }, 0.2);
+      }
+      if (sparklePath) {
+        timeline.to(sparklePath, {
+          strokeOpacity: 0.7,
+          duration: 0.2,
+          ease: 'power2.out',
+        }, 0.24);
+      }
+      if (coreCircle) {
+        timeline.to(coreCircle, {
+          strokeOpacity: 0.45,
+          duration: 0.16,
+          ease: 'power2.out',
+        }, 0.28);
       }
 
-      // 中心圆描边
-      if (coreCircle) {
-        tl.to(coreCircle, {
-          strokeOpacity: 0.5,
+      timeline
+        .to(logoWrapRef.current, {
+          boxShadow: '0 0 72px rgba(255,255,255,0.10), 0 0 140px rgba(255,255,255,0.035)',
+          duration: 0.22,
+          ease: 'power2.out',
+        }, 0.22)
+        .to(titleRef.current, {
+          opacity: 1,
+          scale: 1,
+          y: 0,
+          duration: 0.2,
+          ease: 'power3.out',
+        }, 0.36)
+        .to(lightSweepRef.current, {
+          opacity: 1,
+          left: '100%',
+          duration: 0.28,
+          ease: 'power2.inOut',
+        }, 0.46)
+        .to(titleInnerRef.current, {
+          textShadow: '0 0 12px rgba(255,255,255,0.14), 0 0 24px rgba(255,255,255,0.04)',
           duration: 0.12,
           ease: 'power2.out',
-        }, '-=0.08');
-      }
+        }, 0.5)
+        .to(titleInnerRef.current, {
+          textShadow: '0 1px 6px rgba(255,255,255,0.06), 0 2px 14px rgba(255,255,255,0.03)',
+          duration: 0.16,
+          ease: 'power2.inOut',
+        }, 0.62)
+        .to(lightSweepRef.current, {
+          opacity: 0,
+          duration: 0.1,
+          ease: 'power2.in',
+        }, 0.7)
+        .to(logoWrapRef.current, {
+          boxShadow: '0 0 56px rgba(255,255,255,0.07), 0 0 110px rgba(255,255,255,0.025)',
+          duration: 0.2,
+          ease: 'power2.inOut',
+        }, 0.62)
+        .to(cosmicParticles, {
+          opacity: 0,
+          duration: 0.18,
+          ease: 'power2.in',
+        }, 0.68)
+        .to({}, { duration: 0.08 });
+    }, container);
 
-      // Logo 环光
-      tl.to(logoWrapRef.current, {
-        boxShadow: '0 0 80px rgba(255,255,255,0.10), 0 0 160px rgba(255,255,255,0.04)',
-        duration: 0.18,
-        ease: 'power2.out',
-      }, '-=0.15');
+    const completionTimeout = window.setTimeout(() => skip(), 1400);
+    window.addEventListener('keydown', skip);
+    container.addEventListener('pointerdown', skip);
 
-      // 中心光弱化
-      tl.to(coreLightRef.current, {
-        opacity: 0.3,
-        scale: 0.5,
-        duration: 0.2,
-        ease: 'power2.in',
-      }, '-=0.2');
-
-      // ═══════════════════════════════════════
-      // Phase 4: Title — 标题浮现
-      // ═══════════════════════════════════════
-      tl.to(titleRef.current, {
-        opacity: 1,
-        duration: 0.25,
-        ease: 'power2.out',
-      }, '-=0.1');
-
-      // 光条从文字背后滑过
-      tl.to({}, { duration: 0.08 });
-      tl.to(lightSweepRef.current, {
-        opacity: 1,
-        left: '100%',
-        duration: 0.3,
-        ease: 'power2.inOut',
-      });
-      tl.to(titleInnerRef.current, {
-        textShadow: '-2px 0 10px rgba(255,255,255,0.12), -6px 0 20px rgba(255,255,255,0.04)',
-        duration: 0.08,
-        ease: 'power2.out',
-      }, '-=0.22');
-      tl.to(titleInnerRef.current, {
-        textShadow: '0 0 12px rgba(255,255,255,0.15), 0 0 28px rgba(255,255,255,0.05)',
-        duration: 0.08,
-        ease: 'none',
-      });
-      tl.to(titleInnerRef.current, {
-        textShadow: '2px 0 10px rgba(255,255,255,0.12), 6px 0 20px rgba(255,255,255,0.04)',
-        duration: 0.08,
-        ease: 'power2.in',
-      });
-      tl.to(lightSweepRef.current, {
-        opacity: 0,
-        duration: 0.1,
-        ease: 'power2.in',
-      });
-      tl.to(titleInnerRef.current, {
-        textShadow: '0 1px 6px rgba(255,255,255,0.06), 0 2px 14px rgba(255,255,255,0.03)',
-        duration: 0.12,
-        ease: 'power2.out',
-      }, '-=0.04');
-
-      // ═══════════════════════════════════════
-      // Phase 5: Breathe — 呼吸
-      // ═══════════════════════════════════════
-      tl.to({}, { duration: 0.15 });
-
-      // Logo 环光呼吸
-      tl.to(logoWrapRef.current, {
-        boxShadow: '0 0 90px rgba(255,255,255,0.12), 0 0 180px rgba(255,255,255,0.05)',
-        duration: 0.4,
-        ease: 'sine.inOut',
-      });
-      tl.to(logoWrapRef.current, {
-        boxShadow: '0 0 60px rgba(255,255,255,0.08), 0 0 120px rgba(255,255,255,0.03)',
-        duration: 0.4,
-        ease: 'sine.inOut',
-      });
-
-      // 标题投影微呼吸
-      tl.to(titleInnerRef.current, {
-        textShadow: '0 -1px 8px rgba(255,255,255,0.08), 0 -2px 16px rgba(255,255,255,0.03)',
-        duration: 0.4,
-        ease: 'sine.inOut',
-      }, '-=0.75');
-      tl.to(titleInnerRef.current, {
-        textShadow: '0 1px 6px rgba(255,255,255,0.06), 0 2px 14px rgba(255,255,255,0.03)',
-        duration: 0.4,
-        ease: 'sine.inOut',
-      });
-
-      // 中心微光呼吸
-      tl.to(coreLightRef.current, {
-        opacity: 0.4,
-        scale: 0.6,
-        duration: 0.4,
-        ease: 'sine.inOut',
-      }, '-=0.75');
-      tl.to(coreLightRef.current, {
-        opacity: 0.25,
-        scale: 0.45,
-        duration: 0.4,
-        ease: 'sine.inOut',
-      });
-
-      // ═══════════════════════════════════════
-      // Phase 6: Exit — 消散
-      // ═══════════════════════════════════════
-      tl.to({}, { duration: 0.1 });
-
-      tl.to(cosmicParticles, {
-        opacity: 0,
-        duration: 0.2,
-        ease: 'power2.in',
-      });
-    });
-
-    return () => ctx.revert();
-  }, [onComplete]);
+    return () => {
+      window.clearTimeout(completionTimeout);
+      window.removeEventListener('keydown', skip);
+      container.removeEventListener('pointerdown', skip);
+      ctx.revert();
+    };
+  }, []);
 
   return (
     <div
       data-tauri-drag-region
       ref={containerRef}
+      role="status"
+      aria-label="AI Canvas 正在启动"
       className="fixed inset-0 z-[9999] select-none overflow-hidden flex items-center justify-center bg-black rounded-[16px]"
     >
       {/* 宇宙微尘 */}

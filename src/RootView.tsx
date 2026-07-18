@@ -1,4 +1,5 @@
 import { lazy, Suspense } from 'react';
+import LazyLoadBoundary, { LazyLoadFallback } from './components/shared/LazyLoadBoundary';
 
 const App = lazy(() => import('./App'));
 const AssetSearchWindow = lazy(() => import('./components/AssetSearchWindow'));
@@ -9,9 +10,17 @@ interface RootViewProps {
 }
 
 export default function RootView({ view }: RootViewProps) {
+  const viewLabel = view === 'assets'
+    ? '资产搜索窗口'
+    : view === 'chat'
+      ? '独立聊天窗口'
+      : 'AI Canvas';
+
   return (
-    <Suspense fallback={null}>
-      {view === 'assets' ? <AssetSearchWindow /> : view === 'chat' ? <ChatWindow /> : <App />}
-    </Suspense>
+    <LazyLoadBoundary label={viewLabel} variant="root">
+      <Suspense fallback={<LazyLoadFallback label={viewLabel} variant="root" />}>
+        {view === 'assets' ? <AssetSearchWindow /> : view === 'chat' ? <ChatWindow /> : <App />}
+      </Suspense>
+    </LazyLoadBoundary>
   );
 }

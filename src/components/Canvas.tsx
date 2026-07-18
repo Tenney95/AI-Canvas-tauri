@@ -66,7 +66,7 @@ const nodeTypes: NodeTypes = {
 
 // ── Stable ReactFlow props (hoisted to avoid new identities every render,
 //    which makes React Flow re-run internal effects and drop frames on drag) ──
-const FIT_VIEW_OPTIONS = { padding: 0.2 };
+const FIT_VIEW_OPTIONS = { padding: 0.2, maxZoom: 1 };
 const PRO_OPTIONS = { hideAttribution: true };
 const PAN_ON_DRAG_DEFAULT = [1, 2]; // 默认交互：右键(2) + 中键(1) 拖拽平移
 const PAN_ON_DRAG_CLASSIC = [0];    // 传统交互：左键(0) 拖拽平移
@@ -406,7 +406,7 @@ function CanvasInner() {
     const handler = () => {
       // Wait one frame for React to finish rendering new nodes/edges
       requestAnimationFrame(() => {
-        reactFlowInstance.fitView({ padding: 0.2 });
+        void reactFlowInstance.fitView(FIT_VIEW_OPTIONS);
       });
     };
     window.addEventListener('canvas-fit-view', handler);
