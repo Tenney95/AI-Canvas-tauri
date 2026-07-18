@@ -142,6 +142,32 @@ export interface CanvasProject {
   dataFolder?: string;
   /** Store revision 计数模式：project=项目独立计数（默认），global=全局计数 */
   revisionScope?: 'project' | 'global';
+  /** 项目级创作基线；旧项目缺失时沿用应用与节点默认值。 */
+  settings?: ProjectSettings;
+}
+
+export type ProjectModelKind = 'text' | 'image' | 'video' | 'audio';
+
+export interface ProjectVisualStyleSettings {
+  styleId?: string;
+  styleName?: string;
+  /** 保存选择时的提示词快照，避免自定义画风被删除后项目失去基线。 */
+  prompt?: string;
+  locked?: boolean;
+}
+
+export interface ProjectGenerationDefaults {
+  imageAspectRatio?: string;
+  imageSize?: string;
+  videoResolution?: '480p' | '720p' | '1080p';
+  videoDuration?: number;
+}
+
+export interface ProjectSettings {
+  visualStyle?: ProjectVisualStyleSettings;
+  promptSuffix?: string;
+  defaultModels?: Partial<Record<ProjectModelKind, string>>;
+  generation?: ProjectGenerationDefaults;
 }
 
 // API 配置

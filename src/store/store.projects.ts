@@ -4,10 +4,11 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { BaseNodeData, CanvasProject, NodeGroup } from '../types';
+import type { BaseNodeData, CanvasProject, NodeGroup, ProjectSettings } from '../types';
 import { generateProjectId } from './store.utils';
 import * as fileService from '../services/fileService';
 import { resumePendingTasks, clearProjectTasks } from '../services/pollManager';
+import { normalizeProjectSettings } from '../services/projectSettingsService';
 
 function getProjectGroups(data: { groups?: unknown } | null | undefined): NodeGroup[] {
   return Array.isArray(data?.groups) ? (data.groups as NodeGroup[]) : [];
@@ -68,6 +69,7 @@ export interface ProjectSlice {
   projectName: string;
   _autoSaveFailedNotified?: boolean;
   setProjectName: (name: string) => void;
+  updateProjectSettings: (settings: ProjectSettings) => Promise<boolean>;
   createProject: (name?: string) => void;
   deleteProject: (id: string) => Promise<void>;
   switchProject: (id: string) => void;
@@ -137,6 +139,45 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         }).catch((e) => console.warn('[项目重命名] 保存失败:', e));
       }
     })().catch((e) => console.warn('[项目重命名] 数据目录重命名失败:', e));
+  },
+
+  updateProjectSettings: async (settings) => {
+    const state = get();
+    const projectId = state.currentProjectId;
+    const previousProject = state.projects.find((project) => project.id === projectId);
+    if (!projectId || !previousProject) return false;
+
+    const nextProject: CanvasProject = {
+      ...previousProject,
+      settings: normalizeProjectSettings(settings),
+      updatedAt: Date.now(),
+    };
+    set((current) => ({
+      projects: current.projects.map((project) => (
+        project.id === projectId ? nextProject : project
+      )),
+    }));
+
+    try {
+      await fileService.saveProject({
+        ...nextProject,
+        name: state.projectName,
+        nodes: state.nodes,
+        edges: state.edges,
+        groups: state.groups,
+      });
+      get().showToast('项目设置已保存');
+      return true;
+    } catch (error) {
+      console.error('Save project settings failed:', error);
+      set((current) => ({
+        projects: current.projects.map((project) => (
+          project.id === projectId ? previousProject : project
+        )),
+      }));
+      get().showToast('项目设置保存失败', 'error');
+      return false;
+    }
   },
 
   createProject: (name) => {
@@ -286,6 +327,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         createdAt: project.createdAt,
         updatedAt: Date.now(),
         dataFolder: project.dataFolder,
+        settings: project.settings,
         nodes,
         edges,
         groups,
@@ -317,6 +359,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         createdAt: project.createdAt,
         updatedAt: Date.now(),
         dataFolder: project.dataFolder,
+        settings: project.settings,
         nodes,
         edges,
         groups,
@@ -346,7 +389,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       const allProjects = await fileService.loadProjectsList();
       if (allProjects.length > 0) {
         const mapped: CanvasProject[] = allProjects.map((p) => ({
-          id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt, dataFolder: p.dataFolder,
+          id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
+          dataFolder: p.dataFolder, settings: p.settings,
         }));
         fileService.registerProjectFolders(mapped);
         const current = get().currentProjectId;
@@ -385,7 +429,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       let activeProjectId: string | null = null;
       if (valid.length > 0) {
         const mapped: CanvasProject[] = valid.map((p) => ({
-          id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt, dataFolder: p.dataFolder,
+          id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
+          dataFolder: p.dataFolder, settings: p.settings,
         }));
         fileService.registerProjectFolders(mapped);
         mapped.sort((a, b) => b.updatedAt - a.updatedAt);

@@ -19,6 +19,7 @@ import { BATCH_NODE_LIMIT } from './store.chat';
 import * as fileService from '../services/fileService';
 import { playNodeExit } from '../utils/nodeAnimations';
 import { cancelNodePolling } from '../services/pollManager';
+import { applyProjectDefaultsToNodeData } from '../services/projectSettingsService';
 
 interface GroupNodeDataAccess {
   groupId: string;
@@ -74,8 +75,10 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     get().commitToHistory();
     set((state) => {
       const displayId = getNextDisplayId(state.nodes);
+      const settings = state.projects.find((project) => project.id === state.currentProjectId)?.settings;
+      const data = applyProjectDefaultsToNodeData(node.data, settings);
       return {
-        nodes: [...state.nodes, { ...node, data: { ...node.data, displayId } } as Node<BaseNodeData>],
+        nodes: [...state.nodes, { ...node, data: { ...data, displayId } } as Node<BaseNodeData>],
       };
     });
   },
@@ -84,8 +87,10 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     get().commitToHistory();
     set((state) => {
       const displayId = getNextDisplayId(state.nodes);
+      const settings = state.projects.find((project) => project.id === state.currentProjectId)?.settings;
+      const data = applyProjectDefaultsToNodeData(node.data, settings);
       return {
-        nodes: [...state.nodes, { ...node, data: { ...node.data, displayId } } as Node<BaseNodeData>],
+        nodes: [...state.nodes, { ...node, data: { ...data, displayId } } as Node<BaseNodeData>],
         edges: [...state.edges, edge],
       };
     });
@@ -96,9 +101,11 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     get().commitToHistory();
     set((state) => {
       const nextNodes = [...state.nodes];
+      const settings = state.projects.find((project) => project.id === state.currentProjectId)?.settings;
       for (const node of nodes) {
         const displayId = getNextDisplayId(nextNodes);
-        nextNodes.push({ ...node, data: { ...node.data, displayId } } as Node<BaseNodeData>);
+        const data = applyProjectDefaultsToNodeData(node.data, settings);
+        nextNodes.push({ ...node, data: { ...data, displayId } } as Node<BaseNodeData>);
       }
       return { nodes: nextNodes };
     });

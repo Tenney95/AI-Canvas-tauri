@@ -3,9 +3,12 @@
  * 支持用户自定义画风（名称 + 提示词 + 图片）
  */
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { Icon } from '@iconify/react';
 import { createPortal } from 'react-dom';
 import ModalOverlay from '../../shared/ModalOverlay';
 import { useAppStore } from '../../../store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
+import { PROJECT_STYLE_OPTIONS } from '../../../services/projectSettingsService';
 
 // ── 画风缩略图 ──
 import thumbRealistic from '../../../assets/images/styles/realistic.png';
@@ -37,7 +40,7 @@ const THUMBNAILS: Record<string, string> = {
   vintage: thumbVintage,
 };
 
-export interface StyleOption {
+interface StyleOption {
   id: string;
   name: string;
   description?: string;
@@ -47,23 +50,13 @@ export interface StyleOption {
 }
 
 /** 画风列表 — ai-image / ai-panorama / ai-video 共用同一套选项 */
-const SHARED_STYLES: StyleOption[] = [
-  { id: 'realistic', name: '写实摄影', description: '真实质感，光影自然', thumbnail: THUMBNAILS.realistic },
-  { id: 'anime', name: '动漫风格', description: '日系二次元绘画', thumbnail: THUMBNAILS.anime },
-  { id: 'watercolor', name: '水彩画', description: '柔和通透的晕染', thumbnail: THUMBNAILS.watercolor },
-  { id: 'oil-painting', name: '油画', description: '厚重肌理与笔触', thumbnail: THUMBNAILS['oil-painting'] },
-  { id: 'sketch', name: '素描', description: '黑白线条速写', thumbnail: THUMBNAILS.sketch },
-  { id: 'cyberpunk', name: '赛博朋克', description: '霓虹都市科技感', thumbnail: THUMBNAILS.cyberpunk },
-  { id: 'ink-wash', name: '水墨画', description: '水墨画', thumbnail: THUMBNAILS['ink-wash'] },
-  { id: 'pixel-art', name: '像素艺术', description: '像素风', thumbnail: THUMBNAILS['pixel-art'] },
-  { id: '3d-render', name: '3D 渲染', description: 'C4D 质感立体', thumbnail: THUMBNAILS['3d-render'] },
-  { id: 'flat-illustration', name: '扁平插画', description: '简洁干净的矢量风', thumbnail: THUMBNAILS['flat-illustration'] },
-  { id: 'cinematic', name: '电影质感', description: '电影级调色与光影', thumbnail: THUMBNAILS.cinematic },
-  { id: 'vintage', name: '复古胶片', description: '胶片颗粒与暖调', thumbnail: THUMBNAILS.vintage },
-];
+const SHARED_STYLES: StyleOption[] = PROJECT_STYLE_OPTIONS.map((style) => ({
+  ...style,
+  thumbnail: THUMBNAILS[style.id],
+}));
 
 /** 画风列表 — 按 nodeType 分组（当前共用同一套选项） */
-export const STYLE_GROUPS: Record<string, StyleOption[]> = {
+const STYLE_GROUPS: Record<string, StyleOption[]> = {
   'ai-image': SHARED_STYLES,
   'ai-panorama': SHARED_STYLES,
   'ai-video': SHARED_STYLES,
@@ -72,10 +65,22 @@ export const STYLE_GROUPS: Record<string, StyleOption[]> = {
 interface StyleSelectorProps {
   nodeType: string;
   selectedStyle?: string;
+  selectedStyleName?: string;
   onChange?: (styleId: string) => void;
+  triggerVariant?: 'icon' | 'field';
+  respectProjectLock?: boolean;
+  onModalOpenChange?: (open: boolean) => void;
 }
 
-export default function StyleSelector({ nodeType, selectedStyle, onChange }: StyleSelectorProps) {
+export default function StyleSelector({
+  nodeType,
+  selectedStyle,
+  selectedStyleName,
+  onChange,
+  triggerVariant = 'icon',
+  respectProjectLock = true,
+  onModalOpenChange,
+}: StyleSelectorProps) {
   const [open, setOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
 
@@ -88,6 +93,14 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
   const customStyles = useAppStore((s) => s.customStyles);
   const addCustomStyle = useAppStore((s) => s.addCustomStyle);
   const deleteCustomStyle = useAppStore((s) => s.deleteCustomStyle);
+  const storedLockedProjectStyle = useAppStore(
+    useShallow((state) => {
+      const project = state.projects.find((item) => item.id === state.currentProjectId);
+      const style = project?.settings?.visualStyle;
+      return style?.locked && style.styleId ? style : null;
+    }),
+  );
+  const lockedProjectStyle = respectProjectLock ? storedLockedProjectStyle : null;
 
   // 合并内置 + 自定义画风
   const builtin = STYLE_GROUPS[nodeType] ?? [];
@@ -113,6 +126,11 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [open, addOpen]);
+
+  useEffect(() => {
+    onModalOpenChange?.(open || addOpen);
+    return () => onModalOpenChange?.(false);
+  }, [addOpen, onModalOpenChange, open]);
 
   const handleToggle = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -175,20 +193,47 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
     setAddOpen(false);
   }, [formName, formPrompt, formThumbnail, nodeType, addCustomStyle]);
 
-  const selectedName = styles.find((s) => s.id === selectedStyle)?.name;
+  const effectiveSelectedStyle = lockedProjectStyle?.styleId ?? selectedStyle;
+  const selectedName = styles.find((s) => s.id === effectiveSelectedStyle)?.name
+    ?? lockedProjectStyle?.styleName
+    ?? selectedStyleName;
 
   return (
     <>
-      <button
-        type="button"
-        className={`prompt-btn style-selector-btn${open ? ' style-active' : ''}${selectedStyle ? ' has-style' : ''}`}
-        data-tooltip={selectedName ? `画风: ${selectedName}` : '选择画风'}
-        onClick={handleToggle}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z" />
-        </svg>
-      </button>
+      {triggerVariant === 'field' ? (
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          disabled={!!lockedProjectStyle}
+          onClick={handleToggle}
+          className="flex h-9 w-full items-center gap-2 rounded-md border border-canvas-border
+                     bg-canvas-card px-3 text-left text-xs text-canvas-text outline-none
+                     transition-colors hover:border-border-secondary focus:border-indigo-500
+                     disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Icon icon="lucide:palette" className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
+          <span className={`min-w-0 flex-1 truncate ${selectedName ? '' : 'text-canvas-text-muted'}`}>
+            {selectedName || '选择画风'}
+          </span>
+          <Icon icon="lucide:chevron-right" className="h-3.5 w-3.5 shrink-0 text-canvas-text-muted" />
+        </button>
+      ) : (
+        <button
+          type="button"
+          className={`prompt-btn style-selector-btn${open ? ' style-active' : ''}${effectiveSelectedStyle ? ' has-style' : ''}${lockedProjectStyle ? ' cursor-not-allowed opacity-70' : ''}`}
+          data-tooltip={lockedProjectStyle
+            ? `项目已锁定画风：${selectedName || '项目画风'}`
+            : selectedName ? `画风: ${selectedName}` : '选择画风'}
+          disabled={!!lockedProjectStyle}
+          aria-disabled={!!lockedProjectStyle}
+          onClick={handleToggle}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z" />
+          </svg>
+        </button>
+      )}
 
       {/* ── 画风选择弹窗 ── */}
       {createPortal(
@@ -201,6 +246,17 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
           <div className="style-picker-header">
             <span className="asset-picker-title">选择画风</span>
             <div className="style-picker-header-actions">
+              {effectiveSelectedStyle ? (
+                <button
+                  type="button"
+                  className="style-add-btn"
+                  onClick={() => handleSelect('')}
+                  data-tooltip="清除画风"
+                  aria-label="清除当前画风"
+                >
+                  <Icon icon="lucide:circle-off" className="h-4 w-4" />
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="style-add-btn"
@@ -233,7 +289,7 @@ export default function StyleSelector({ nodeType, selectedStyle, onChange }: Sty
               <button
                 key={s.id}
                 type="button"
-                className={`style-card${selectedStyle === s.id ? ' selected' : ''}${s.isCustom ? ' is-custom' : ''}`}
+                className={`style-card${effectiveSelectedStyle === s.id ? ' selected' : ''}${s.isCustom ? ' is-custom' : ''}`}
                 onClick={() => handleSelect(s.id)}
               >
                 <div className="style-card-img">

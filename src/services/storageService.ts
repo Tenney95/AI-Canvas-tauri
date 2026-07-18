@@ -29,7 +29,7 @@ import {
   type CustomStyleRecord,
 } from './indexedDbService';
 import { exists } from '@tauri-apps/plugin-fs';
-import type { BaseNodeData, StoryboardCellOverride } from '../types';
+import type { BaseNodeData, ProjectSettings, StoryboardCellOverride } from '../types';
 import { getAssetUrlFromPath, getProjectDataDir, joinPath, listDirectoryFiles } from './fs/core';
 import { identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
 
@@ -150,6 +150,7 @@ export interface ProjectSaveData {
   groups?: unknown;
   /** 本地媒体文件夹名（形如「项目名-短ID」），创建时确定后保持稳定 */
   dataFolder?: string;
+  settings?: ProjectSettings;
 }
 
 /** 保存项目到 IndexedDB */

@@ -11,6 +11,11 @@ import { downloadUrlAndSave } from './fileService';
 import { applyImageBatchResults } from './imageBatchService';
 import { generateId } from '../store/store.utils';
 import { useAppStore } from '../store/useAppStore';
+import {
+  getProjectModelKind,
+  parseProjectModelRef,
+  resolveProjectGenerationPrompt,
+} from './projectSettingsService';
 
 export interface GenerationResult {
   success: boolean;
@@ -29,15 +34,29 @@ export async function executeGeneration(
   if (!data) return { success: false, message: '节点不存在' };
 
   const nodeType = data?.type;
-  const effectivePrompt = overridePrompt ?? (data?.prompt as string) ?? '';
+  const rawPrompt = overridePrompt ?? (data?.prompt as string) ?? '';
 
-  if (!effectivePrompt.trim()) {
+  if (!rawPrompt.trim()) {
     store.showToast('请输入提示词', 'error');
     return { success: false, message: '提示词为空' };
   }
 
-  const nodeModel = data?.model;
-  const nodeProvider = data?.provider;
+  const projectSettings = store.projects.find(
+    (project) => project.id === store.currentProjectId,
+  )?.settings;
+  const effectivePrompt = resolveProjectGenerationPrompt({
+    prompt: rawPrompt,
+    data,
+    settings: projectSettings,
+    customStyles: store.customStyles,
+  });
+  const projectModelKind = getProjectModelKind(nodeType);
+  const projectModel = parseProjectModelRef(
+    projectModelKind ? projectSettings?.defaultModels?.[projectModelKind] : undefined,
+  );
+  const parsedNodeModel = parseProjectModelRef(data?.model);
+  const nodeModel = data?.model || projectModel?.model;
+  const nodeProvider = data?.provider || parsedNodeModel?.provider || projectModel?.provider;
   if (!nodeModel || !nodeProvider) {
     store.showToast('请先在底部模型选择器中选择一个模型', 'error');
     return { success: false, message: '未选择模型' };
