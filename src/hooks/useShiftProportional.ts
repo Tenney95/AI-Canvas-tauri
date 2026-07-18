@@ -85,18 +85,20 @@ export function computeResize(
     };
   }
 
-  // 比例模式：以变化更大的轴向为主导，另一轴按比例计算
+  // 比例模式：以变化更大的轴向为主导，另一轴按比例计算。
+  // 最小尺寸也换算到同一比例，避免触底时被 minW / minH 拉伸变形。
   const rawW = baseW + dx;
   const rawH = baseH + dy;
+  const safeRatio = ratio > 0 && Number.isFinite(ratio) ? ratio : 1;
   let width: number;
   let height: number;
 
   if (Math.abs(dx) >= Math.abs(dy)) {
-    width = Math.max(minW, rawW);
-    height = Math.max(minH, width / ratio);
+    width = Math.max(minW, minH * safeRatio, rawW);
+    height = width / safeRatio;
   } else {
-    height = Math.max(minH, rawH);
-    width = Math.max(minW, height * ratio);
+    height = Math.max(minH, minW / safeRatio, rawH);
+    width = height * safeRatio;
   }
 
   return { width, height };

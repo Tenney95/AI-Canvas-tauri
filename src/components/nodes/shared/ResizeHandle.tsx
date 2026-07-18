@@ -17,6 +17,7 @@ interface ResizeHandleProps {
   currentHeight: number;
   minWidth?: number;
   minHeight?: number;
+  lockAspectRatio?: boolean;
   onResize: (width: number, height: number) => void;
 }
 
@@ -26,6 +27,7 @@ export default function ResizeHandle({
   currentHeight,
   minWidth = 160,
   minHeight = 120,
+  lockAspectRatio = false,
   onResize,
 }: ResizeHandleProps) {
   const handleRef = useRef<HTMLDivElement>(null);
@@ -36,8 +38,10 @@ export default function ResizeHandle({
   const { lockRef, reset: resetProportional, lock: lockProportional } = useProportionalLock();
 
   // 最新值 refs（供原生事件闭包读取，避免闭包过期）
-  const latestRef = useRef({ currentWidth, currentHeight, minWidth, minHeight, onResize, nodeId, snap });
-  latestRef.current = { currentWidth, currentHeight, minWidth, minHeight, onResize, nodeId, snap };
+  const latestRef = useRef({ currentWidth, currentHeight, minWidth, minHeight, lockAspectRatio, onResize, nodeId, snap });
+  useEffect(() => {
+    latestRef.current = { currentWidth, currentHeight, minWidth, minHeight, lockAspectRatio, onResize, nodeId, snap };
+  }, [currentHeight, currentWidth, lockAspectRatio, minHeight, minWidth, nodeId, onResize, snap]);
 
   useEffect(() => {
     const el = handleRef.current;
@@ -47,7 +51,16 @@ export default function ResizeHandle({
       e.preventDefault();
       e.stopPropagation(); // ← 关键：阻止事件冒泡到 React 根节点，React Flow 收不到
 
-      const { currentWidth: cw, currentHeight: ch, minWidth: mw, minHeight: mh, onResize: rs, nodeId: nid, snap: sp } = latestRef.current;
+      const {
+        currentWidth: cw,
+        currentHeight: ch,
+        minWidth: mw,
+        minHeight: mh,
+        lockAspectRatio: keepRatio,
+        onResize: rs,
+        nodeId: nid,
+        snap: sp,
+      } = latestRef.current;
       isResizing.current = true;
       resizeStart.current = { x: e.clientX, y: e.clientY, w: cw, h: ch };
       resetProportional();
@@ -61,9 +74,9 @@ export default function ResizeHandle({
         let dx = ev.clientX - resizeStart.current.x;
         let dy = ev.clientY - resizeStart.current.y;
         let ratio = baseH > 0 ? baseW / baseH : 1;
-        let useProportional = false;
+        let useProportional = keepRatio;
 
-        if (shiftHeld.current) {
+        if (!keepRatio && shiftHeld.current) {
           if (lockRef.current.w === 0) {
             lockProportional(baseW, baseH, resizeStart.current.x, resizeStart.current.y);
           }
@@ -81,7 +94,7 @@ export default function ResizeHandle({
           baseW, baseH, dx, dy, ratio, mw, mh, useProportional,
         );
 
-        if (nid && sp) {
+        if (nid && sp && !keepRatio) {
           const snapped = sp.applyResizeSnap(nid, newWidth, newHeight);
           newWidth = Math.max(mw, snapped.width);
           newHeight = Math.max(mh, snapped.height);

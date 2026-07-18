@@ -7,6 +7,8 @@ import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
 import GooeyBtn from './shared/GooeyBtn';
+import ResizeHandle from './shared/ResizeHandle';
+import VideoNodeControls from './shared/VideoNodeControls';
 import VideoNodeToolbar from './shared/VideoNodeToolbar';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import { useNodeRename } from './shared/useNodeRename';
@@ -15,6 +17,28 @@ import { computeImageNodeDimensions, generateId, useAppStore } from '../../store
 import { downloadUrlAndSave, saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { copyFile as copyFileToClipboard } from '../../services/clipboardService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
+
+const DEFAULT_VIDEO_NODE_WIDTH = 280;
+const DEFAULT_VIDEO_NODE_HEIGHT = 158;
+const VIDEO_NODE_MAX_DIMENSION = 320;
+const VIDEO_NODE_MIN_WIDTH = 180;
+const VIDEO_NODE_MIN_HEIGHT = 110;
+
+function computeVideoNodeDimensions(videoWidth: number, videoHeight: number): { nodeWidth: number; nodeHeight: number } {
+  if (videoWidth <= 0 || videoHeight <= 0) {
+    return { nodeWidth: DEFAULT_VIDEO_NODE_WIDTH, nodeHeight: DEFAULT_VIDEO_NODE_HEIGHT };
+  }
+
+  const scale = Math.max(
+    VIDEO_NODE_MAX_DIMENSION / Math.max(videoWidth, videoHeight),
+    VIDEO_NODE_MIN_WIDTH / videoWidth,
+    VIDEO_NODE_MIN_HEIGHT / videoHeight,
+  );
+  return {
+    nodeWidth: Math.round(videoWidth * scale),
+    nodeHeight: Math.round(videoHeight * scale),
+  };
+}
 
 function captureVideoFrame(video: HTMLVideoElement): { dataUrl: string; width: number; height: number } {
   const width = video.videoWidth;
@@ -102,6 +126,33 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
   const isSource = data.role === 'source';
+  const fallbackDimensions = computeVideoNodeDimensions(data.videoWidth ?? 0, data.videoHeight ?? 0);
+  const nodeWidth = data.nodeWidth ?? fallbackDimensions.nodeWidth;
+  const nodeHeight = data.nodeHeight ?? fallbackDimensions.nodeHeight;
+
+  const handleResize = useCallback(
+    (newWidth: number, newHeight: number) => {
+      updateNodeData(id, { nodeWidth: newWidth, nodeHeight: newHeight });
+    },
+    [id, updateNodeData],
+  );
+
+  const handleLoadedMetadata = useCallback((event: React.SyntheticEvent<HTMLVideoElement>) => {
+    const video = event.currentTarget;
+    const videoWidth = video.videoWidth;
+    const videoHeight = video.videoHeight;
+    if (videoWidth <= 0 || videoHeight <= 0) return;
+
+    const mediaDimensionsChanged = data.videoWidth !== videoWidth || data.videoHeight !== videoHeight;
+    const nodeDimensionsMissing = data.nodeWidth == null || data.nodeHeight == null;
+    if (!mediaDimensionsChanged && !nodeDimensionsMissing) return;
+
+    updateNodeData(id, {
+      videoWidth,
+      videoHeight,
+      ...computeVideoNodeDimensions(videoWidth, videoHeight),
+    });
+  }, [data.nodeHeight, data.nodeWidth, data.videoHeight, data.videoWidth, id, updateNodeData]);
 
   // ── Upload handler for source nodes ──
   const { isUploading, handleUpload: doUpload } = useSourceFileUpload('.mp4,.webm,.avi,.mov,.mkv');
@@ -117,14 +168,6 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       status: 'success',
     } as Partial<BaseNodeData>);
   }, [doUpload, id, updateNodeData]);
-
-  const handleVideoClick = useCallback(
-    (e: React.MouseEvent<HTMLVideoElement>) => {
-      if (selected) return;
-      e.preventDefault();
-    },
-    [selected],
-  );
 
   /* ════════════════════════════════════════════
      Fullscreen State — 双击 / 工具栏按钮打开全屏预览
@@ -168,7 +211,6 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       const dims = await computeImageNodeDimensions(frame.dataUrl);
       const currentNode = store.nodes.find((node) => node.id === id);
       const currentPosition = currentNode?.position ?? { x: 0, y: 0 };
-      const nodeWidth = (data.nodeWidth as number | undefined) ?? 280;
       const frameFileName = buildNodeFileName(`${displayLabel} 当前帧`, 'png', `video-frame-${Date.now()}`);
       const projectId = store.currentProjectId;
       const savedFrame = projectId && projectId !== 'default'
@@ -236,10 +278,10 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         store.showToast(`截取当前帧失败：${message}`, 'error');
       }
     }
-  }, [data.nodeWidth, data.sourceUrl, data.videoUrl, displayLabel, id]);
+  }, [data.sourceUrl, data.videoUrl, displayLabel, id, nodeWidth]);
 
   return (
-    <div className="node-wrapper relative" style={{ width: 280 }}>
+    <div className="node-wrapper relative" style={{ width: nodeWidth }}>
       <NodeLabel
         kind="ai-video"
         label={displayLabel}
@@ -254,40 +296,26 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       )}
       <div
         className={`node video-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}
-        style={{ minHeight: 160 }}
+        style={{ height: nodeHeight }}
       >
         <div className="node-preview compact">
-          {isSource && (
-            <button
-              className="node-upload-btn"
-              onClick={(e) => { e.stopPropagation(); handleUpload(); }}
-              data-tooltip="上传视频"
-              aria-label="上传视频"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="17 8 12 3 7 8" />
-                <line x1="12" y1="3" x2="12" y2="15" />
-              </svg>
-            </button>
-          )}
           {data.videoUrl ? (
             <video
               ref={videoRef}
               src={data.videoUrl}
               className="video-preview-player compact"
               crossOrigin="anonymous"
-              controls={Boolean(selected)}
-              onClick={handleVideoClick}
+              playsInline
+              preload="metadata"
+              onLoadedMetadata={handleLoadedMetadata}
               onDoubleClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
-              muted
               data-source-url={data.sourceUrl}
             />
           ) : data.thumbnailUrl ? (
             <img
               src={data.thumbnailUrl}
               alt="Video thumbnail"
-              className="image-preview-img compact"
+              className="video-node-poster"
               onDoubleClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
             />
           ) : isUploading ? (
@@ -301,21 +329,33 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               <span>生成视频中...</span>
             </div>
           ) : (
-            <div className="node-preview-placeholder">
-              {isSource ? (
+            isSource ? (
+              <button
+                type="button"
+                className="node-preview-placeholder nodrag nopan border-0 bg-transparent p-0 cursor-pointer transition-[color,transform] duration-100 hover:text-canvas-text-secondary active:scale-[0.98] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-canvas-border"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void handleUpload();
+                }}
+                data-tooltip="上传视频"
+                aria-label="上传视频"
+              >
                 <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                   <polyline points="17 8 12 3 7 8" />
                   <line x1="12" y1="3" x2="12" y2="15" />
                 </svg>
-              ) : (
+              </button>
+            ) : (
+              <div className="node-preview-placeholder">
                 <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
                   <polygon points="23 7 16 12 23 17 23 7" />
                   <rect x="1" y="5" width="15" height="14" rx="2" />
                 </svg>
-              )}
-            </div>
+              </div>
+            )
           )}
+          {data.videoUrl && <VideoNodeControls videoRef={videoRef} source={data.videoUrl} />}
         </div>
         {data.error && <NodeError nodeId={id} message={data.error} />}
         <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-video" >
@@ -325,6 +365,16 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           <GooeyBtn className="gooey-btn-right" hue={217} />
         </Handle>
       </div>
+
+      <ResizeHandle
+        nodeId={id}
+        currentWidth={nodeWidth}
+        currentHeight={nodeHeight}
+        minWidth={VIDEO_NODE_MIN_WIDTH}
+        minHeight={VIDEO_NODE_MIN_HEIGHT}
+        lockAspectRatio
+        onResize={handleResize}
+      />
 
       {/* 全屏预览 */}
       <FullscreenOverlay

@@ -553,7 +553,16 @@
 }
 
 .video-node {
+  position: relative;
   overflow: visible !important;
+}
+
+.video-node .node-preview.compact {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--theme-bg);
 }
 
 .audio-node {
@@ -588,12 +597,172 @@
   border-color: transparent transparent #a8a8f3 transparent;
 }
 
-.image-preview-img.compact,
-.video-preview-player.compact {
+.image-preview-img.compact {
   width: 100%;
   height: 100%;
   object-fit: cover;
   border-radius: 12px;
+}
+
+.video-preview-player.compact,
+.video-node-poster {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+}
+
+/* Video controls stay inside the media frame so the node keeps the source ratio. */
+.video-node-controls {
+  --video-progress: 0%;
+  --video-volume: 100%;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 6px 5px;
+  color: var(--theme-text);
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--theme-bg) 94%, transparent));
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(3px);
+  pointer-events: none;
+  transition:
+    opacity 140ms var(--ease-out-quart),
+    transform 140ms var(--ease-out-quart),
+    visibility 0s linear 140ms;
+}
+
+.video-node:hover .video-node-controls,
+.video-node.selected .video-node-controls,
+.video-node-controls:focus-within {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+.video-node-control-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 22px;
+  gap: 4px;
+}
+
+.video-node-control-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background var(--dur-fast) ease, transform 80ms ease-out;
+}
+
+.video-node-control-btn:hover {
+  background: var(--white-alpha-12);
+}
+
+.video-node-control-btn:active {
+  transform: scale(0.92);
+}
+
+.video-node-control-btn:focus-visible,
+.video-node-progress:focus-visible,
+.video-node-volume:focus-visible {
+  outline: 1px solid var(--node-video-light);
+  outline-offset: 1px;
+}
+
+.video-node-time {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--theme-text-secondary);
+  font-size: 9px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-node-control-spacer {
+  min-width: 0;
+  flex: 1;
+}
+
+.video-node-progress,
+.video-node-volume {
+  height: 12px;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.video-node-progress {
+  width: 100%;
+}
+
+.video-node-volume {
+  width: 42px;
+  flex: 0 1 42px;
+}
+
+.video-node-progress::-webkit-slider-runnable-track,
+.video-node-volume::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--node-video-light) 0 var(--range-progress),
+    var(--white-alpha-15) var(--range-progress) 100%
+  );
+}
+
+.video-node-progress::-webkit-slider-runnable-track {
+  --range-progress: var(--video-progress);
+}
+
+.video-node-volume::-webkit-slider-runnable-track {
+  --range-progress: var(--video-volume);
+}
+
+.video-node-progress::-webkit-slider-thumb,
+.video-node-volume::-webkit-slider-thumb {
+  width: 9px;
+  height: 9px;
+  margin-top: -3px;
+  appearance: none;
+  border: 0;
+  border-radius: 50%;
+  background: var(--theme-text);
+  box-shadow: 0 1px 3px var(--black-alpha-50);
+}
+
+.video-node-progress:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-node-controls,
+  .video-node-control-btn {
+    transition-duration: 1ms;
+  }
 }
 
 /* ════════════════════════════════════════════
