@@ -35,7 +35,7 @@ export function useNodeRename(id: string, data: BaseNodeData, fallback: string) 
           for (const key of ['imageUrl', 'videoUrl', 'audioUrl'] as const) {
             if (cur[key] && cur[key] === oldAssetUrl) patch[key] = renamed.assetUrl;
           }
-          store.updateNodeData(id, patch as Partial<BaseNodeData>);
+          store.updateNodeDataTransient(id, patch as Partial<BaseNodeData>);
           // 文件已重命名（fileService 已派发磁盘变更事件），useAutoSave 会静默落盘
         })();
       }

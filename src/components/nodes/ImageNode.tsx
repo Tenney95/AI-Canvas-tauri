@@ -273,7 +273,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       }
 
       const dims = await computeImageNodeDimensions(assetUrl);
-      store.updateNodeData(nodeId, {
+      store.updateNodeDataTransient(nodeId, {
         imageUrl: assetUrl,
         filePath,
         status: 'success',
@@ -282,6 +282,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         nodeWidth: dims.nodeWidth,
         nodeHeight: dims.nodeHeight,
       } as Partial<BaseNodeData>);
+      store.commitToHistory();
 
       store.showToast('裁切完成，已创建新节点');
     },
@@ -314,7 +315,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       const srcPos = store.nodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
       const dims = await computeImageNodeDimensions(imageUrl);
 
-      store.addNode({
+      store.addNodeTransient({
         id: `node-${generateId()}`,
         type: 'ai-storyboard',
         position: { x: srcPos.x + nodeWidth + 60, y: srcPos.y },
@@ -356,7 +357,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       // 分镜节点按源图纵横比展示 → 复用图像节点的尺寸计算
       const dims = await computeImageNodeDimensions(imageUrl);
 
-      store.addNode({
+      store.addNodeTransient({
         id: `node-${generateId()}`,
         type: 'ai-storyboard',
         position: { x: srcPos.x + nodeWidth + 60, y: srcPos.y },
@@ -442,7 +443,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       }
 
       const dims = await computeImageNodeDimensions(assetUrl);
-      store.updateNodeData(nodeId, {
+      store.updateNodeDataTransient(nodeId, {
         imageUrl: assetUrl,
         filePath,
         status: 'success',
@@ -451,6 +452,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         nodeWidth: dims.nodeWidth,
         nodeHeight: dims.nodeHeight,
       } as Partial<BaseNodeData>);
+      store.commitToHistory();
 
       store.showToast('合成完成，已创建新节点');
     },
@@ -533,7 +535,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         }
 
         const dims = await computeImageNodeDimensions(assetUrl);
-        store.updateNodeData(newNodeId, {
+        store.updateNodeDataTransient(newNodeId, {
           imageUrl: assetUrl,
           filePath,
           status: 'success',

@@ -34,7 +34,9 @@ export interface NodeSlice {
   setEdges: (edges: Edge[]) => void;
   setSelectedNodeIds: (ids: string[]) => void;
   addNode: (node: Node<BaseNodeData>) => void;
+  addNodeTransient: (node: Node<BaseNodeData>) => void;
   addNodes: (nodes: Node<BaseNodeData>[]) => void;
+  addNodesTransient: (nodes: Node<BaseNodeData>[]) => void;
   addNodeWithEdge: (node: Node<BaseNodeData>, edge: Edge) => void;
   createMediaPlaceholder: (
     intent: MediaGenerationIntent,
@@ -76,6 +78,10 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
 
   addNode: (node) => {
     get().commitToHistory();
+    get().addNodeTransient(node);
+  },
+
+  addNodeTransient: (node) => {
     set((state) => {
       const displayId = getNextDisplayId(state.nodes);
       const settings = state.projects.find((project) => project.id === state.currentProjectId)?.settings;
@@ -102,6 +108,11 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
   addNodes: (nodes) => {
     if (nodes.length === 0) return;
     get().commitToHistory();
+    get().addNodesTransient(nodes);
+  },
+
+  addNodesTransient: (nodes) => {
+    if (nodes.length === 0) return;
     set((state) => {
       const nextNodes = [...state.nodes];
       const settings = state.projects.find((project) => project.id === state.currentProjectId)?.settings;
@@ -443,7 +454,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
 
     overrides[cellIdx] = { url, filePath: (src.data.filePath as string) || undefined };
     extracted[cellIdx] = false;
-    get().updateNodeData(storyboardId, {
+    get().updateNodeDataTransient(storyboardId, {
       storyboardOverrides: overrides,
       storyboardExtracted: extracted,
     } as Partial<BaseNodeData>);
@@ -454,6 +465,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       nodes: state.nodes.filter((n) => n.id !== sourceNodeId),
       edges: state.edges.filter((e) => e.source !== sourceNodeId && e.target !== sourceNodeId),
     }));
+    get().commitToHistory();
     get().showToast('已放入宫格');
   },
 

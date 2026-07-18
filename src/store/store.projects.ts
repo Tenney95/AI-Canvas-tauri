@@ -5,6 +5,7 @@ import type { Node, Edge } from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { BaseNodeData, CanvasProject, NodeGroup, ProjectSettings } from '../types';
+import type { ProjectSaveData } from '../services/fileService';
 import { generateProjectId } from './store.utils';
 import * as fileService from '../services/fileService';
 import { resumePendingTasks, clearProjectTasks } from '../services/pollManager';
@@ -61,6 +62,86 @@ async function remapProjectNodePaths(
 
     return changed ? { ...node, data: nextData } : node;
   }));
+}
+
+interface ProjectSaveWaiter {
+  resolve: (projectId: string) => void;
+  reject: (error: unknown) => void;
+}
+
+interface PendingProjectSave {
+  record: ProjectSaveData;
+  waiters: ProjectSaveWaiter[];
+}
+
+interface ProjectSaveQueue {
+  running: boolean;
+  pending: PendingProjectSave | null;
+}
+
+const projectSaveQueues = new Map<string, ProjectSaveQueue>();
+
+async function drainProjectSaveQueue(projectId: string, queue: ProjectSaveQueue): Promise<void> {
+  if (queue.running) return;
+  queue.running = true;
+
+  try {
+    while (queue.pending) {
+      const batch = queue.pending;
+      queue.pending = null;
+
+      try {
+        const savedProjectId = await fileService.saveProject(batch.record);
+        batch.waiters.forEach((waiter) => waiter.resolve(savedProjectId));
+      } catch (error) {
+        batch.waiters.forEach((waiter) => waiter.reject(error));
+      }
+    }
+  } finally {
+    queue.running = false;
+    if (queue.pending) {
+      void drainProjectSaveQueue(projectId, queue);
+    } else if (projectSaveQueues.get(projectId) === queue) {
+      projectSaveQueues.delete(projectId);
+    }
+  }
+}
+
+function enqueueProjectSave(record: ProjectSaveData): Promise<string> {
+  let queue = projectSaveQueues.get(record.id);
+  if (!queue) {
+    queue = { running: false, pending: null };
+    projectSaveQueues.set(record.id, queue);
+  }
+
+  return new Promise((resolve, reject) => {
+    const waiter = { resolve, reject };
+    if (queue.pending) {
+      queue.pending.record = record;
+      queue.pending.waiters.push(waiter);
+    } else {
+      queue.pending = { record, waiters: [waiter] };
+    }
+    void drainProjectSaveQueue(record.id, queue);
+  });
+}
+
+function createCurrentProjectSaveRecord(state: AppState): ProjectSaveData | null {
+  const projectId = state.currentProjectId;
+  const project = state.projects.find((item) => item.id === projectId);
+  if (!projectId || !project) return null;
+
+  return {
+    id: projectId,
+    name: state.projectName,
+    createdAt: project.createdAt,
+    updatedAt: Date.now(),
+    dataFolder: project.dataFolder,
+    settings: project.settings,
+    nodes: state.nodes,
+    edges: state.edges,
+    groups: state.groups,
+  };
 }
 
 export interface ProjectSlice {
@@ -317,62 +398,38 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   saveCurrentProject: async () => {
-    const { projects, currentProjectId, projectName, nodes, edges, showToast, groups } = get();
-    const project = projects.find((p) => p.id === currentProjectId);
-    if (!project) return undefined;
+    const record = createCurrentProjectSaveRecord(get());
+    if (!record) return undefined;
     try {
-      const record = {
-        id: currentProjectId!,
-        name: projectName,
-        createdAt: project.createdAt,
-        updatedAt: Date.now(),
-        dataFolder: project.dataFolder,
-        settings: project.settings,
-        nodes,
-        edges,
-        groups,
-      };
-      await fileService.saveProject(record);
+      await enqueueProjectSave(record);
       set((state) => ({
         projects: state.projects.map((p) =>
-          p.id === currentProjectId ? { ...p, updatedAt: Date.now(), name: projectName } : p
+          p.id === record.id ? { ...p, updatedAt: record.updatedAt, name: record.name } : p
         ),
       }));
-      showToast('项目已保存');
-      return currentProjectId!;
+      get().showToast('项目已保存');
+      return record.id;
     } catch (error) {
       console.error('Save failed:', error);
-      showToast('保存失败', 'error');
+      get().showToast('保存失败', 'error');
       return undefined;
     }
   },
 
   /** 静默保存（不弹 toast），用于自动保存 */
   saveCurrentProjectSilent: async () => {
-    const { projects, currentProjectId, projectName, nodes, edges, groups } = get();
-    const project = projects.find((p) => p.id === currentProjectId);
-    if (!project) return undefined;
+    const record = createCurrentProjectSaveRecord(get());
+    if (!record) return undefined;
     try {
-      const record = {
-        id: currentProjectId!,
-        name: projectName,
-        createdAt: project.createdAt,
-        updatedAt: Date.now(),
-        dataFolder: project.dataFolder,
-        settings: project.settings,
-        nodes,
-        edges,
-        groups,
-      };
-      await fileService.saveProject(record);
+      await enqueueProjectSave(record);
       set((state) => ({
         projects: state.projects.map((p) =>
-          p.id === currentProjectId ? { ...p, updatedAt: Date.now(), name: projectName } : p
+          p.id === record.id ? { ...p, updatedAt: record.updatedAt, name: record.name } : p
         ),
       }));
       // 成功后重置失败通知标志
       set({ _autoSaveFailedNotified: false });
-      return currentProjectId!;
+      return record.id;
     } catch (error) {
       console.warn('[自动保存] 保存失败:', error);
       // 首次失败才弹 toast，避免每 2 秒刷屏

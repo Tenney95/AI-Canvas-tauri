@@ -67,6 +67,7 @@ interface PromptPanelProps {
   onAnimationFramesChange?: (value: number) => void;
   canGenerate?: boolean;
   onChange: (value: string) => void;
+  onContinuousEditEnd?: () => void;
   onSubmit: (overridePrompt?: string, postProcess?: ImagePostProcess) => void;
   onModelSelect: (model: ModelOption) => void;
   onWorkflowSelect?: (workflowId: string | undefined) => void;
@@ -130,6 +131,7 @@ export default function PromptPanel({
   onAnimationFramesChange,
   canGenerate = true,
   onChange,
+  onContinuousEditEnd,
   onSubmit,
   onModelSelect,
   onWorkflowSelect,
@@ -281,8 +283,9 @@ export default function PromptPanel({
     } else {
       // Insert mode: update input box with filled template, user can edit before generating
       onChange(filledPrompt);
+      onContinuousEditEnd?.();
     }
-  }, [handleSingleSubmit, onChange, onModelSelect, onChangeImageSize, onChangeAspectRatio]);
+  }, [handleSingleSubmit, onChange, onContinuousEditEnd, onModelSelect, onChangeImageSize, onChangeAspectRatio]);
 
   // ── 从 Toolbar 点击快捷指令后的自动执行 ──
   useEffect(() => {
@@ -326,7 +329,8 @@ export default function PromptPanel({
     const token = `@skill{${skill.id}|${encodeURIComponent(skill.name)}}`;
     const spacer = prompt && !/\s$/.test(prompt) ? ' ' : '';
     onChange(`${prompt}${spacer}${token}`);
-  }, [onChange, prompt]);
+    onContinuousEditEnd?.();
+  }, [onChange, onContinuousEditEnd, prompt]);
 
   const handleUploadSkill = useCallback(async (source: 'file' | 'folder') => {
     setSlashOpen(false);
@@ -352,7 +356,10 @@ export default function PromptPanel({
           selectedWorkflowId={selectedWorkflowId}
           canSubmit={canGenerate}
           onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
+          onBlur={() => {
+            setFocused(false);
+            queueMicrotask(() => onContinuousEditEnd?.());
+          }}
           onSlashTrigger={handleEditorSlash}
         />
       </div>
@@ -452,6 +459,7 @@ export default function PromptPanel({
             onChangeSeedanceRatio={onChangeSeedanceRatio}
             onChangeSeedanceDuration={onChangeSeedanceDuration}
             onChangeGenerateAudio={onChangeGenerateAudio}
+            onContinuousEditEnd={onContinuousEditEnd}
           />
         )}
 
@@ -474,6 +482,7 @@ export default function PromptPanel({
             onChangeMusicBpm={onChangeMusicBpm}
             onChangeMusicDuration={onChangeMusicDuration}
             onChangeAutoGenerateLyrics={onChangeAutoGenerateLyrics}
+            onContinuousEditEnd={onContinuousEditEnd}
           />
         )}
 

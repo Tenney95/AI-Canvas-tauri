@@ -312,18 +312,18 @@ export function useNodeCreation() {
                       const result = await copyFileToProjectData(fp, projectId);
                       if (result && result.assetUrl) {
                         const dims = await computeImageNodeDimensions(result.assetUrl);
-                        store.updateNodeData(nodeId, { label: result.fileName, imageUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success', ...dims });
+                        store.updateNodeDataTransient(nodeId, { label: result.fileName, imageUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success', ...dims });
                       } else {
                         const content = await readFile(fp);
                         const base64 = arrayBufferToBase64(content.buffer);
                         const mime = MIME_MAP[ext] || 'application/octet-stream';
                         const dataUrl = `data:${mime};base64,${base64}`;
                         const dims = await computeImageNodeDimensions(dataUrl);
-                        store.updateNodeData(nodeId, { imageUrl: dataUrl, status: 'success', ...dims });
+                        store.updateNodeDataTransient(nodeId, { imageUrl: dataUrl, status: 'success', ...dims });
                       }
                     } catch (err) {
                       console.error(`[drop] failed for "${fp}":`, err);
-                      store.updateNodeData(nodeId, { status: 'error', error: err instanceof Error ? err.message : '拷贝失败' });
+                      store.updateNodeDataTransient(nodeId, { status: 'error', error: err instanceof Error ? err.message : '拷贝失败' });
                     }
                   })();
                 } else if (cat === 'video') {
@@ -339,17 +339,17 @@ export function useNodeCreation() {
                     try {
                       const result = await copyFileToProjectData(fp, projectId);
                       if (result && result.assetUrl) {
-                        store.updateNodeData(nodeId, { label: result.fileName, videoUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success' });
+                        store.updateNodeDataTransient(nodeId, { label: result.fileName, videoUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success' });
                       } else {
                         const content = await readFile(fp);
                         const base64 = arrayBufferToBase64(content.buffer);
                         const mime = MIME_MAP[ext] || 'application/octet-stream';
                         const dataUrl = `data:${mime};base64,${base64}`;
-                        store.updateNodeData(nodeId, { videoUrl: dataUrl, status: 'success' });
+                        store.updateNodeDataTransient(nodeId, { videoUrl: dataUrl, status: 'success' });
                       }
                     } catch (err) {
                       console.error(`[drop] failed for "${fp}":`, err);
-                      store.updateNodeData(nodeId, { status: 'error', error: err instanceof Error ? err.message : '拷贝失败' });
+                      store.updateNodeDataTransient(nodeId, { status: 'error', error: err instanceof Error ? err.message : '拷贝失败' });
                     }
                   })();
                 } else {
@@ -365,17 +365,17 @@ export function useNodeCreation() {
                     try {
                       const result = await copyFileToProjectData(fp, projectId);
                       if (result && result.assetUrl) {
-                        store.updateNodeData(nodeId, { label: result.fileName, audioUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success' });
+                        store.updateNodeDataTransient(nodeId, { label: result.fileName, audioUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success' });
                       } else {
                         const content = await readFile(fp);
                         const base64 = arrayBufferToBase64(content.buffer);
                         const mime = MIME_MAP[ext] || 'application/octet-stream';
                         const dataUrl = `data:${mime};base64,${base64}`;
-                        store.updateNodeData(nodeId, { audioUrl: dataUrl, status: 'success' });
+                        store.updateNodeDataTransient(nodeId, { audioUrl: dataUrl, status: 'success' });
                       }
                     } catch (err) {
                       console.error(`[drop] failed for "${fp}":`, err);
-                      store.updateNodeData(nodeId, { status: 'error', error: err instanceof Error ? err.message : '拷贝失败' });
+                      store.updateNodeDataTransient(nodeId, { status: 'error', error: err instanceof Error ? err.message : '拷贝失败' });
                     }
                   })();
                 }

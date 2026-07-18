@@ -149,7 +149,7 @@ async function generateFlowMusic(
         && useAppStore.getState().currentProjectId === projectId
         && useAppStore.getState().nodes.some((node) => node.id === params.nodeId)
       ) {
-        useAppStore.getState().updateNodeData(params.nodeId, {
+        useAppStore.getState().updateNodeDataTransient(params.nodeId, {
           musicTitle: generatedLyrics.title || params.musicTitle,
           musicLyrics: generatedLyrics.lyrics,
         });

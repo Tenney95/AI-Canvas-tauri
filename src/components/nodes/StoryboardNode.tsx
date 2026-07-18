@@ -144,12 +144,13 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
       const flowPos = screenToFlowPosition({ x: clientX, y: clientY });
       const label = `提取分镜${r + 1}-${c + 1}`;
       const override = overrides[idx];
+      store.commitToHistory();
 
       // 被拖入的图：直接用它建节点（无需裁切），原格清空
       if (override) {
         const overrideUrl = withPreviewRevision(override.url, revisionFor(override.filePath)) ?? override.url;
         const dims = await computeImageNodeDimensions(overrideUrl).catch(() => ({ nodeWidth: 200, nodeHeight: 200 }));
-        store.addNode({
+        store.addNodeTransient({
           id: `node-${generateId()}`,
           type: 'ai-image',
           position: { x: flowPos.x - 100, y: flowPos.y - 100 },
@@ -157,14 +158,14 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
         } as Node<BaseNodeData>);
         const nextOv = [...overrides]; nextOv[idx] = null;
         const nextEx = [...extracted]; nextEx[idx] = true;
-        store.updateNodeData(id, { storyboardOverrides: nextOv, storyboardExtracted: nextEx } as Partial<BaseNodeData>);
+        store.updateNodeDataTransient(id, { storyboardOverrides: nextOv, storyboardExtracted: nextEx } as Partial<BaseNodeData>);
         store.commitToHistory();
         return;
       }
 
       // 立即建 loading 节点 + 标记原格已提取
       const newId = `node-${generateId()}`;
-      store.addNode({
+      store.addNodeTransient({
         id: newId,
         type: 'ai-image',
         position: { x: flowPos.x - 100, y: flowPos.y - 100 },
@@ -172,8 +173,7 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
       } as Node<BaseNodeData>);
       const nextExtracted = [...extracted];
       nextExtracted[idx] = true;
-      store.updateNodeData(id, { storyboardExtracted: nextExtracted } as Partial<BaseNodeData>);
-      store.commitToHistory();
+      store.updateNodeDataTransient(id, { storyboardExtracted: nextExtracted } as Partial<BaseNodeData>);
 
       try {
         const cell = isCustomGrid
@@ -187,19 +187,21 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
           if (saved?.assetUrl) { assetUrl = saved.assetUrl; filePath = saved.filePath; }
         }
         const dims = await computeImageNodeDimensions(assetUrl);
-        store.updateNodeData(newId, {
+        store.updateNodeDataTransient(newId, {
           imageUrl: assetUrl, filePath, status: 'success',
           imageWidth: cell.width, imageHeight: cell.height,
           nodeWidth: dims.nodeWidth, nodeHeight: dims.nodeHeight,
         } as Partial<BaseNodeData>);
+        store.commitToHistory();
       } catch (err) {
         console.error('[Storyboard] 提取失败:', err);
-        store.deleteNode(newId);
+        const latestStore = useAppStore.getState();
+        latestStore.setNodes(latestStore.nodes.filter((node) => node.id !== newId));
         store.showToast('提取分镜失败，请重试', 'error');
         // 回滚提取标记
         const rollback = [...(useAppStore.getState().nodes.find((n) => n.id === id)?.data.storyboardExtracted as boolean[] ?? [])];
         rollback[idx] = false;
-        store.updateNodeData(id, { storyboardExtracted: rollback } as Partial<BaseNodeData>);
+        store.updateNodeDataTransient(id, { storyboardExtracted: rollback } as Partial<BaseNodeData>);
       }
     },
     [id, displayImageUrl, cols, rows, isCustomGrid, hRanges, vRanges, extracted, overrides, revisionFor, screenToFlowPosition],

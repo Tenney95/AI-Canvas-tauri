@@ -22,6 +22,7 @@ interface AudioParamSelectorProps {
   onChangeMusicBpm?: (value: number | undefined) => void;
   onChangeMusicDuration?: (value: number) => void;
   onChangeAutoGenerateLyrics?: (value: boolean) => void;
+  onContinuousEditEnd?: () => void;
 }
 
 const VOICES: Array<{ value: AudioTtsVoice; label: string }> = [
@@ -53,6 +54,7 @@ function AudioParamSelector({
   onChangeMusicBpm,
   onChangeMusicDuration,
   onChangeAutoGenerateLyrics,
+  onContinuousEditEnd,
 }: AudioParamSelectorProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -141,6 +143,7 @@ function AudioParamSelector({
                     step={0.05}
                     value={speed}
                     onChange={(event) => onChangeSpeed?.(Number(event.target.value))}
+                    onBlur={onContinuousEditEnd}
                   />
                 </label>
               </div>
@@ -153,6 +156,7 @@ function AudioParamSelector({
                     value={musicTitle}
                     maxLength={120}
                     onChange={(event) => onChangeMusicTitle?.(event.target.value)}
+                    onBlur={onContinuousEditEnd}
                   />
                 </label>
 
@@ -168,6 +172,7 @@ function AudioParamSelector({
                         const value = event.target.value ? Number(event.target.value) : undefined;
                         onChangeMusicBpm?.(value);
                       }}
+                      onBlur={onContinuousEditEnd}
                     />
                   </label>
                   <label className="rh-vram-adv-row">
@@ -180,6 +185,7 @@ function AudioParamSelector({
                       step={1}
                       value={musicDuration}
                       onChange={(event) => onChangeMusicDuration?.(Number(event.target.value))}
+                      onBlur={onContinuousEditEnd}
                     />
                   </label>
                 </div>
@@ -203,6 +209,7 @@ function AudioParamSelector({
                       className="min-h-24 w-full resize-y rounded-md border border-canvas-border bg-canvas-bg px-2 py-1.5 text-xs leading-5 text-canvas-text outline-none focus:border-orange-400"
                       value={musicLyrics}
                       onChange={(event) => onChangeMusicLyrics?.(event.target.value)}
+                      onBlur={onContinuousEditEnd}
                     />
                   </label>
                 ) : null}

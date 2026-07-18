@@ -10,7 +10,7 @@ const VISIBLE_MS = 20000; // 显示时长
 const FADE_MS = 1100; // 淡出动画时长（与 CSS transition 对齐）
 
 export default function NodeError({ nodeId, message }: { nodeId: string; message: string }) {
-  const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
   const [fading, setFading] = useState(false);
 
   useEffect(() => {
@@ -23,13 +23,13 @@ export default function NodeError({ nodeId, message }: { nodeId: string; message
       if ((node?.data as { status?: string } | undefined)?.status === 'error') {
         patch.status = 'idle';
       }
-      updateNodeData(nodeId, patch);
+      updateNodeDataTransient(nodeId, patch);
     }, VISIBLE_MS + FADE_MS);
     return () => {
       clearTimeout(fadeTimer);
       clearTimeout(clearTimer);
     };
-  }, [nodeId, message, updateNodeData]);
+  }, [nodeId, message, updateNodeDataTransient]);
 
   return <div className={`node-error${fading ? ' node-error--fading' : ''}`}>{message}</div>;
 }

@@ -60,7 +60,8 @@ export async function applyImageBatchResults({
   const nodeHeight = (liveSource.data.nodeHeight as number) || 280;
   const gap = 40;
 
-  store.updateNodeData(nodeId, {
+  store.commitToHistory();
+  store.updateNodeDataTransient(nodeId, {
     imageUrl: first.saved?.assetUrl || first.result.url,
     sourceUrl: first.result.url,
     filePath: first.saved?.filePath,
@@ -113,7 +114,8 @@ export async function applyImageBatchResults({
       },
     } as Node<BaseNodeData>;
   });
-  store.addNodes(additionalNodes);
+  store.addNodesTransient(additionalNodes);
+  store.commitToHistory();
 
   const nodeIds = [nodeId, ...additionalNodes.map((node) => node.id)];
   await Promise.all(items.map((item, index) => store.recordOutputHistory(nodeIds[index], {

@@ -26,6 +26,7 @@ interface VideoParamSelectorProps {
   onChangeSeedanceRatio?: (value: string) => void;
   onChangeSeedanceDuration?: (value: number) => void;
   onChangeGenerateAudio?: (value: boolean) => void;
+  onContinuousEditEnd?: () => void;
 }
 
 const SEEDANCE_RESOLUTIONS = [
@@ -59,7 +60,7 @@ export default function VideoParamSelector({
   seedanceResolution = '720p', seedanceRatio = '16:9',
   seedanceDuration = 5, generateAudio = false,
   onChangeSeedanceResolution, onChangeSeedanceRatio,
-  onChangeSeedanceDuration, onChangeGenerateAudio,
+  onChangeSeedanceDuration, onChangeGenerateAudio, onContinuousEditEnd,
 }: VideoParamSelectorProps) {
   const [open, setOpen] = useState(false);
   const [editingFrames, setEditingFrames] = useState<string | null>(null);
@@ -238,6 +239,7 @@ export default function VideoParamSelector({
                           step={1}
                           value={displayedDuration}
                           onChange={(e) => onChangeSeedanceDuration?.(Number(e.target.value))}
+                          onBlur={onContinuousEditEnd}
                         />
                       </div>
                       <div className="rh-duration-labels">

@@ -21,7 +21,6 @@ function parseAspectRatio(value: unknown) {
 }
 
 function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
-  const updateNodeData = useAppStore((s) => s.updateNodeData);
   const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
   const commitToHistory = useAppStore((s) => s.commitToHistory);
   const justCompleted = useCompletionFlash(data.status);
@@ -46,8 +45,8 @@ function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData;
   }, [displaySrc, frameCount, previewMode]);
 
   const handlePreviewModeChange = useCallback((mode: AnimationPreviewMode) => {
-    updateNodeData(id, { animationPreviewMode: mode });
-  }, [id, updateNodeData]);
+    updateNodeDataTransient(id, { animationPreviewMode: mode });
+  }, [id, updateNodeDataTransient]);
 
   const handleResize = useCallback((width: number) => {
     updateNodeDataTransient(id, { nodeWidth: width, nodeHeight: width + 38 });

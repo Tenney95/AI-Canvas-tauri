@@ -301,12 +301,12 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
   })();
 
   const toggleMode = useCallback(() => {
-    updateNodeData(id, { previewMode: previewMode === '360' ? 'image' : '360' } as Partial<BaseNodeData>);
-  }, [id, previewMode, updateNodeData]);
+    updateNodeDataTransient(id, { previewMode: previewMode === '360' ? 'image' : '360' } as Partial<BaseNodeData>);
+  }, [id, previewMode, updateNodeDataTransient]);
 
   const toggleFullscreen = useCallback(() => {
-    updateNodeData(id, { panoFullscreen: !isFullscreen } as Partial<BaseNodeData>);
-  }, [id, isFullscreen, updateNodeData]);
+    updateNodeDataTransient(id, { panoFullscreen: !isFullscreen } as Partial<BaseNodeData>);
+  }, [id, isFullscreen, updateNodeDataTransient]);
 
   /* ── Screenshot → save to project dir & create image node ── */
   const handleScreenshot = useCallback(async () => {
@@ -404,8 +404,8 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
   /** 双击节点预览时直接打开全屏（与工具栏 toggle 不同，这里始终置为全屏态）*/
   const handleOpenFullscreen = useCallback(() => {
     if (!hasImage) return;
-    updateNodeData(id, { panoFullscreen: true } as Partial<BaseNodeData>);
-  }, [id, hasImage, updateNodeData]);
+    updateNodeDataTransient(id, { panoFullscreen: true } as Partial<BaseNodeData>);
+  }, [id, hasImage, updateNodeDataTransient]);
 
   return (
     <>

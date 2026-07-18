@@ -87,12 +87,14 @@ function buildAnimationSpritePrompt(
 }
 
 function AINodeDialog() {
-  const { activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, recordOutputHistory, showToast, workflows, currentProjectId } = useAppStore(
+  const { activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, updateNodeDataTransient, commitToHistory, recordOutputHistory, showToast, workflows, currentProjectId } = useAppStore(
     useShallow((s) => ({
       activeNodeId: s.activeNodeId,
       dialogPosition: s.dialogPosition,
       closeNodeDialog: s.closeNodeDialog,
       updateNodeData: s.updateNodeData,
+      updateNodeDataTransient: s.updateNodeDataTransient,
+      commitToHistory: s.commitToHistory,
       recordOutputHistory: s.recordOutputHistory,
       showToast: s.showToast,
       workflows: s.workflows,
@@ -132,17 +134,38 @@ function AINodeDialog() {
     nodeLabel: string;
   } | null>(null);
 
+  const continuousEditActiveRef = useRef(false);
+  const finishContinuousEdit = useCallback(() => {
+    if (!continuousEditActiveRef.current) return;
+    commitToHistory();
+    continuousEditActiveRef.current = false;
+  }, [commitToHistory]);
+  const updateContinuousNodeData = useCallback((patch: Partial<BaseNodeData>) => {
+    if (!activeNodeId) return;
+    if (!continuousEditActiveRef.current) {
+      commitToHistory();
+      continuousEditActiveRef.current = true;
+    }
+    updateNodeDataTransient(activeNodeId, patch);
+  }, [activeNodeId, commitToHistory, updateNodeDataTransient]);
+  const handleCloseNodeDialog = useCallback(() => {
+    finishContinuousEdit();
+    closeNodeDialog();
+  }, [closeNodeDialog, finishContinuousEdit]);
+
+  useEffect(() => () => finishContinuousEdit(), [activeNodeId, finishContinuousEdit]);
+
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        closeNodeDialog();
+        handleCloseNodeDialog();
       }
     };
     window.addEventListener('keydown', handler, true);
     return () => window.removeEventListener('keydown', handler, true);
-  }, [closeNodeDialog]);
+  }, [handleCloseNodeDialog]);
 
   // All hooks must be called before any early return
   const onPromptChange = useCallback(
@@ -158,9 +181,9 @@ function AINodeDialog() {
         const valueText = match[4].replace(/\n$/, '');
         workflowInputs[ioNodeId] = valueText;
       }
-      updateNodeData(activeNodeId!, { prompt: value, workflowInputs: Object.keys(workflowInputs).length > 0 ? workflowInputs : undefined });
+      updateContinuousNodeData({ prompt: value, workflowInputs: Object.keys(workflowInputs).length > 0 ? workflowInputs : undefined });
     },
-    [activeNodeId, updateNodeData]
+    [updateContinuousNodeData]
   );
 
   // ── 8 向宫格后处理（模型下载完成后继续执行） ──
@@ -238,6 +261,7 @@ function AINodeDialog() {
   // 调用选中模型生成（文本 or 图片）
   // overridePrompt: / 指令菜单直接触发时传入的整合后模板，不走 store → 对话框不闪烁
   const onSubmit = useCallback(async (overridePrompt?: string, postProcess?: ImagePostProcess) => {
+    finishContinuousEdit();
     const effectivePrompt = overridePrompt ?? (() => {
       const latestNode = useAppStore.getState().nodes.find((n) => n.id === activeNodeId);
       const latestData: BaseNodeData | undefined = latestNode?.data;
@@ -266,7 +290,7 @@ function AINodeDialog() {
         && state.nodes.some((n) => n.id === submittingNodeId)
       );
     };
-    updateNodeData(activeNodeId!, { status: 'loading', error: undefined });
+    updateNodeDataTransient(activeNodeId!, { status: 'loading', error: undefined });
     try {
       const batchCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(latestData.batchCount) || 1)));
       if (nodeType === 'ai-image' && batchCount > 1) {
@@ -592,7 +616,7 @@ function AINodeDialog() {
         return;
       }
       if (!isStillCurrentSubmission()) return;
-      updateNodeData(activeNodeId!, { status: 'error', error: msg });
+      updateNodeDataTransient(activeNodeId!, { status: 'error', error: msg });
       recordOutputHistory(activeNodeId!, {
         nodeId: activeNodeId!,
         nodeLabel: nodeLabel,
@@ -607,7 +631,7 @@ function AINodeDialog() {
       });
       showToast(msg, 'error');
     }
-  }, [activeNodeId, nodeType, currentProjectId, updateNodeData, recordOutputHistory, showToast]);
+  }, [activeNodeId, nodeType, currentProjectId, finishContinuousEdit, updateNodeData, updateNodeDataTransient, recordOutputHistory, showToast]);
 
   // 直接将输入内容作为节点输出（跳过模型调用）
   const onPassThrough = useCallback(() => {
@@ -715,8 +739,8 @@ function AINodeDialog() {
   );
 
   const onChangeSeedanceDuration = useCallback(
-    (value: number) => updateNodeData(activeNodeId!, { seedanceDuration: value }),
-    [activeNodeId, updateNodeData]
+    (value: number) => updateContinuousNodeData({ seedanceDuration: value }),
+    [updateContinuousNodeData]
   );
 
   const onChangeGenerateAudio = useCallback(
@@ -735,28 +759,28 @@ function AINodeDialog() {
   );
 
   const onChangeAudioSpeed = useCallback(
-    (value: number) => updateNodeData(activeNodeId!, { audioSpeed: value }),
-    [activeNodeId, updateNodeData],
+    (value: number) => updateContinuousNodeData({ audioSpeed: value }),
+    [updateContinuousNodeData],
   );
 
   const onChangeMusicTitle = useCallback(
-    (value: string) => updateNodeData(activeNodeId!, { musicTitle: value }),
-    [activeNodeId, updateNodeData],
+    (value: string) => updateContinuousNodeData({ musicTitle: value }),
+    [updateContinuousNodeData],
   );
 
   const onChangeMusicLyrics = useCallback(
-    (value: string) => updateNodeData(activeNodeId!, { musicLyrics: value }),
-    [activeNodeId, updateNodeData],
+    (value: string) => updateContinuousNodeData({ musicLyrics: value }),
+    [updateContinuousNodeData],
   );
 
   const onChangeMusicBpm = useCallback(
-    (value: number | undefined) => updateNodeData(activeNodeId!, { musicBpm: value }),
-    [activeNodeId, updateNodeData],
+    (value: number | undefined) => updateContinuousNodeData({ musicBpm: value }),
+    [updateContinuousNodeData],
   );
 
   const onChangeMusicDuration = useCallback(
-    (value: number) => updateNodeData(activeNodeId!, { musicDuration: value }),
-    [activeNodeId, updateNodeData],
+    (value: number) => updateContinuousNodeData({ musicDuration: value }),
+    [updateContinuousNodeData],
   );
 
   const onChangeAutoGenerateLyrics = useCallback(
@@ -796,13 +820,13 @@ function AINodeDialog() {
     const liveData = useAppStore.getState().nodes.find((n) => n.id === activeNodeId)?.data;
     const currentPrompt = ((liveData?.prompt ?? data.prompt) as string) || '';
     const newPrompt = currentPrompt ? `${currentPrompt} ${mentionStr}` : mentionStr;
-    updateNodeData(activeNodeId, { prompt: newPrompt });
+    updateContinuousNodeData({ prompt: newPrompt });
   };
 
   return (
     <>
       {/* Transparent overlay — captures clicks outside to close */}
-      <div className="ai-dialog-backdrop" onMouseDown={closeNodeDialog} />
+      <div className="ai-dialog-backdrop" onMouseDown={handleCloseNodeDialog} />
 
       {/* Connected nodes preview — above backdrop, below dialog (model-dropdown covers it) */}
       <div
@@ -841,6 +865,7 @@ function AINodeDialog() {
           onAnimationFramesChange={onAnimationFramesChange}
           canGenerate={data.status !== 'loading'}
           onChange={onPromptChange}
+          onContinuousEditEnd={finishContinuousEdit}
           onSubmit={onSubmit}
           onModelSelect={onModelSelect}
           onWorkflowSelect={onWorkflowSelect}

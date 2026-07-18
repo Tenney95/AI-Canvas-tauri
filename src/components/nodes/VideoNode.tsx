@@ -149,12 +149,12 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     const nodeDimensionsMissing = data.nodeWidth == null || data.nodeHeight == null;
     if (!mediaDimensionsChanged && !nodeDimensionsMissing) return;
 
-    updateNodeData(id, {
+    updateNodeDataTransient(id, {
       videoWidth,
       videoHeight,
       ...computeVideoNodeDimensions(videoWidth, videoHeight),
     });
-  }, [data.nodeHeight, data.nodeWidth, data.videoHeight, data.videoWidth, id, updateNodeData]);
+  }, [data.nodeHeight, data.nodeWidth, data.videoHeight, data.videoWidth, id, updateNodeDataTransient]);
 
   // ── Upload handler for source nodes ──
   const { isUploading, handleUpload: doUpload } = useSourceFileUpload('.mp4,.webm,.avi,.mov,.mkv');
