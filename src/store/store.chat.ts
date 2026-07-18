@@ -22,6 +22,9 @@ import * as chatHistoryService from '../services/chat/chatHistoryService';
 export const BATCH_NODE_LIMIT = 50;
 /** 画布 revision 初始值 */
 const INITIAL_REVISION = 0;
+/** 流式消息持续输出时的持久化节流间隔。 */
+const STREAMING_MESSAGE_PERSIST_INTERVAL_MS = 500;
+const scheduledMessagePersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // ============================================
 // Slice interface
@@ -80,6 +83,8 @@ export interface ChatSlice {
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (message: ChatMessage) => void;
   updateMessage: (id: string, partial: Partial<ChatMessage>) => void;
+  /** 更新流式展示状态，并按固定间隔持久化最新快照。 */
+  updateMessageTransient: (id: string, partial: Partial<ChatMessage>) => void;
   clearMessages: () => void;
   /** 设置活动 AbortController */
   setActiveRequestAbort: (ctrl: AbortController | null) => void;
@@ -137,6 +142,42 @@ function resolveMessageProjectId(state: AppState, conversationId: string): strin
   return state.conversations.find((conversation) => conversation.id === conversationId)?.projectId
     ?? state.agentTasks.find((task) => task.conversationId === conversationId)?.projectId
     ?? state.currentProjectId;
+}
+
+function mergeMessage(
+  messages: ChatMessage[],
+  id: string,
+  partial: Partial<ChatMessage>,
+): { messages: ChatMessage[]; changed: ChatMessage } | null {
+  const index = messages.findIndex((message) => message.id === id);
+  if (index < 0) return null;
+  const changed = { ...messages[index], ...partial };
+  const updated = [...messages];
+  updated[index] = changed;
+  return { messages: updated, changed };
+}
+
+function cancelScheduledMessagePersist(id: string): void {
+  const timer = scheduledMessagePersistTimers.get(id);
+  if (!timer) return;
+  clearTimeout(timer);
+  scheduledMessagePersistTimers.delete(id);
+}
+
+function persistMessageFromState(state: AppState, id: string): void {
+  const message = state.messages.find((item) => item.id === id);
+  if (!message) return;
+  const projectId = resolveMessageProjectId(state, message.conversationId);
+  if (projectId) persistMsg(message, projectId);
+}
+
+function scheduleMessagePersist(id: string, getState: () => AppState): void {
+  if (scheduledMessagePersistTimers.has(id)) return;
+  const timer = setTimeout(() => {
+    scheduledMessagePersistTimers.delete(id);
+    persistMessageFromState(getState(), id);
+  }, STREAMING_MESSAGE_PERSIST_INTERVAL_MS);
+  scheduledMessagePersistTimers.set(id, timer);
 }
 
 // ============================================
@@ -321,16 +362,31 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     if (projectId) persistMsg(message, projectId);
   },
 
-  updateMessage: (id, partial) =>
+  updateMessage: (id, partial) => {
+    cancelScheduledMessagePersist(id);
+    let changed: ChatMessage | undefined;
     set((s) => {
-      const updated = s.messages.map((m) => (m.id === id ? { ...m, ...partial } : m));
-      const changed = updated.find((m) => m.id === id);
-      if (changed) {
-        const projectId = resolveMessageProjectId(get(), changed.conversationId);
-        if (projectId) persistMsg(changed, projectId);
-      }
-      return { messages: updated };
-    }),
+      const result = mergeMessage(s.messages, id, partial);
+      if (!result) return s;
+      changed = result.changed;
+      return { messages: result.messages };
+    });
+    if (changed) {
+      const projectId = resolveMessageProjectId(get(), changed.conversationId);
+      if (projectId) persistMsg(changed, projectId);
+    }
+  },
+
+  updateMessageTransient: (id, partial) => {
+    let changed = false;
+    set((s) => {
+      const result = mergeMessage(s.messages, id, partial);
+      if (!result) return s;
+      changed = true;
+      return { messages: result.messages };
+    });
+    if (changed) scheduleMessagePersist(id, get);
+  },
 
   clearMessages: () =>
     set((s) => {

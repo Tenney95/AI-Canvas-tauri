@@ -68,7 +68,7 @@ export async function executeGeneration(
     return s.currentProjectId === submittingProjectId && s.nodes.some((n) => n.id === nodeId);
   };
 
-  store.updateNodeData(nodeId, { status: 'loading', error: undefined });
+  store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined });
 
   try {
     if (nodeType === 'ai-image') {
@@ -255,7 +255,7 @@ export async function executeGeneration(
     const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');
     if (msg === '任务已被取消') return { success: false, message: '任务已取消' };
     if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
-    store.updateNodeData(nodeId, { status: 'error', error: msg });
+    store.updateNodeDataTransient(nodeId, { status: 'error', error: msg });
     store.recordOutputHistory(nodeId, {
       nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
       output: '', nodeType: nodeType as 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio' | 'ai-panorama',

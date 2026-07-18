@@ -1,4 +1,5 @@
 import type { Node } from '@xyflow/react';
+import { getLastCanvasPointerPosition } from '../../canvasPointerService';
 import { useAppStore } from '../../../store/useAppStore';
 import type { BaseNodeData, NodeType } from '../../../types';
 import type { CommandId, CommandPlan } from '../../../types/chat';
@@ -325,8 +326,9 @@ function resolveCreateNodePositions(
       { x: centeredX, y: referencedBounds.y - clusterHeight - AGENT_NODE_ANCHOR_GAP },
       { x: referencedBounds.x - clusterWidth - AGENT_NODE_ANCHOR_GAP, y: centeredY },
     );
-  } else if (store.lastCanvasMousePos) {
-    candidates.push(store.lastCanvasMousePos);
+  } else {
+    const pointerPosition = getLastCanvasPointerPosition();
+    if (pointerPosition) candidates.push(pointerPosition);
   }
 
   if (canvasBounds) {

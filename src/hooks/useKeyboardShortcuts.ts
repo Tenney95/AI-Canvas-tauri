@@ -9,6 +9,7 @@ import { openAssetSearchWindow } from '../utils/assetSearchWindow';
 import { playNodeExit } from '../utils/nodeAnimations';
 import { hasActiveTextSelection } from '../utils/textSelection';
 import { cancelNodePolling } from '../services/pollManager';
+import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import type { Node as RFNode } from '@xyflow/react';
 import type { BaseNodeData, NodeType } from '../types';
 
@@ -63,7 +64,7 @@ function createNodeFromNumberShortcut(shortcutIndex: number, isSource: boolean) 
   const nodeHeight = isAnimation ? 358 : isAudio ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
   const defaultModel = isSource ? null : loadDefaultModel(type);
   const state = useAppStore.getState();
-  const position = state.lastCanvasMousePos ?? { x: 300, y: 200 };
+  const position = getCanvasPointerPosition();
 
   const node: RFNode<BaseNodeData> = {
     id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,

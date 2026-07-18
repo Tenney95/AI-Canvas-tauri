@@ -30,10 +30,11 @@ interface ChatMessagesProps extends ChatReferenceHandlers {
 }
 
 const START_EXAMPLES = ['现在有几个失败节点？', '选中 3 号节点', '删除失败节点'];
+const EMPTY_AGENT_TASKS: AgentTask[] = [];
 
 export default function ChatMessages({
   messages,
-  agentTasks = [],
+  agentTasks = EMPTY_AGENT_TASKS,
   showEmptyState,
   detachedInitialized,
   onNewConversation,
@@ -54,6 +55,10 @@ export default function ChatMessages({
   const previousMessagesRef = useRef<ChatMessage[]>([]);
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
+  const agentTaskById = useMemo(
+    () => new Map(agentTasks.map((task) => [task.id, task])),
+    [agentTasks],
+  );
   const regeneratePrompts = useMemo(() => {
     const prompts = new Map<string, string>();
     let latestUserContent = '';
@@ -167,12 +172,11 @@ export default function ChatMessages({
             <MessageBubble
               key={msg.id}
               message={msg}
-              agentTask={agentTasks.find((task) => task.id === msg.agentTaskId)}
+              agentTask={msg.agentTaskId ? agentTaskById.get(msg.agentTaskId) : undefined}
               onAddToCanvas={onAddMediaToCanvas}
               onEditMessage={onEditMessage}
-              onRegenerate={regeneratePrompt && onRegenerateMessage
-                ? () => onRegenerateMessage(regeneratePrompt)
-                : undefined}
+              regeneratePrompt={regeneratePrompt}
+              onRegenerate={onRegenerateMessage}
               onNodeActivate={onNodeActivate}
               onNodeHover={onNodeHover}
               onModelActivate={onModelActivate}

@@ -3,7 +3,7 @@
  *
  * 渲染用户 / 助手 / 系统消息，含头像、状态指示器、生成图片 / 视频。
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { ChatMessage } from '../../types/chat';
 import type { AgentTask } from '../../types/agent';
@@ -17,7 +17,8 @@ interface MessageBubbleProps extends ChatReferenceHandlers {
   agentTask?: AgentTask;
   onAddToCanvas?: (messageId: string) => void;
   onEditMessage?: (content: string) => void;
-  onRegenerate?: (messageId: string) => void;
+  regeneratePrompt?: string;
+  onRegenerate?: (content: string) => void;
   agentControls?: AgentTaskControls;
 }
 
@@ -27,11 +28,12 @@ function formatMessageTime(timestamp: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-export default function MessageBubble({
+function MessageBubble({
   message,
   agentTask,
   onAddToCanvas,
   onEditMessage,
+  regeneratePrompt,
   onRegenerate,
   onNodeActivate,
   onNodeHover,
@@ -69,6 +71,7 @@ export default function MessageBubble({
     && ['queued', 'parsing', 'streaming'].includes(message.status);
   const canRegenerate = !isUser
     && !!message.content
+    && !!regeneratePrompt
     && !!onRegenerate
     && ['done', 'partial', 'interrupted', 'error', 'canceled'].includes(message.status);
 
@@ -273,7 +276,7 @@ export default function MessageBubble({
             {canRegenerate && (
               <button
                 type="button"
-                onClick={() => onRegenerate(message.id)}
+                onClick={() => onRegenerate?.(regeneratePrompt || '')}
                 aria-label="再次生成回答"
                 data-tooltip="再次生成"
                 className="flex h-7 w-7 items-center justify-center rounded-md text-canvas-text-muted transition-colors hover:bg-canvas-hover hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
@@ -294,3 +297,5 @@ export default function MessageBubble({
     </div>
   );
 }
+
+export default memo(MessageBubble);

@@ -1,4 +1,5 @@
 import { saveAgentTextOutput } from '../../fileService';
+import { getCanvasPointerPosition } from '../../canvasPointerService';
 import { useAppStore } from '../../../store/useAppStore';
 import type { BaseNodeData } from '../../../types';
 import type { Node } from '@xyflow/react';
@@ -164,7 +165,7 @@ export function registerFileAgentTools(): Array<() => void> {
           && store.getCurrentRevision() !== context.baseRevision
         ) throw new Error('画布已变更，请重新规划文件导入');
         const id = `node-file-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-        const position = store.lastCanvasMousePos ?? { x: 300, y: 200 };
+        const position = getCanvasPointerPosition();
         const node: Node<BaseNodeData> = {
           id,
           type: 'source-text',

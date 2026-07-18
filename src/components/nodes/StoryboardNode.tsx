@@ -24,7 +24,8 @@ import { useReferencedImageRevisions, withPreviewRevision } from '../../hooks/us
 const DRAG_THRESHOLD = 8;
 
 function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
-  const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
+  const commitToHistory = useAppStore((s) => s.commitToHistory);
   const { screenToFlowPosition } = useReactFlow();
   const nodeWidth = (data.nodeWidth as number) || 280;
   const nodeHeight = (data.nodeHeight as number) || 280;
@@ -53,8 +54,8 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
   const dragStart = useRef<{ x: number; y: number } | null>(null);
 
   const handleResize = useCallback(
-    (w: number, h: number) => updateNodeData(id, { nodeWidth: w, nodeHeight: h } as Partial<BaseNodeData>),
-    [id, updateNodeData],
+    (w: number, h: number) => updateNodeDataTransient(id, { nodeWidth: w, nodeHeight: h } as Partial<BaseNodeData>),
+    [id, updateNodeDataTransient],
   );
 
   // 计算各格的定位/裁片偏移（百分比）
@@ -306,6 +307,8 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
         currentHeight={nodeHeight}
         minWidth={160}
         minHeight={120}
+        onResizeStart={commitToHistory}
+        onResizeEnd={commitToHistory}
         onResize={handleResize}
       />
 

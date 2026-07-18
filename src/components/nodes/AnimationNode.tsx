@@ -22,6 +22,8 @@ function parseAspectRatio(value: unknown) {
 
 function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
+  const commitToHistory = useAppStore((s) => s.commitToHistory);
   const justCompleted = useCompletionFlash(data.status);
   const nodeWidth = (data.nodeWidth as number) || 320;
   // 预览区宽高始终一致：节点总高 = 4px 顶边距 + 正方形预览 + 42px 参数栏
@@ -48,8 +50,8 @@ function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData;
   }, [id, updateNodeData]);
 
   const handleResize = useCallback((width: number) => {
-    updateNodeData(id, { nodeWidth: width, nodeHeight: width + 38 });
-  }, [id, updateNodeData]);
+    updateNodeDataTransient(id, { nodeWidth: width, nodeHeight: width + 38 });
+  }, [id, updateNodeDataTransient]);
 
   const column = frameIndex % grid.cols;
   const row = Math.floor(frameIndex / grid.cols);
@@ -151,6 +153,8 @@ function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData;
         currentHeight={nodeHeight}
         minWidth={280}
         minHeight={318}
+        onResizeStart={commitToHistory}
+        onResizeEnd={commitToHistory}
         onResize={handleResize}
       />
     </div>

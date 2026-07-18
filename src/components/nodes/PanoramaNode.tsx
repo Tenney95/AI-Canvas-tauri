@@ -253,6 +253,8 @@ const PanoramaViewer = forwardRef<PanoramaViewerHandle, PanoramaViewerProps>(fun
 function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const justCompleted = useCompletionFlash(data.status);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
+  const commitToHistory = useAppStore((s) => s.commitToHistory);
   const nodeWidth = (data.nodeWidth as number) || 280;
   const nodeHeight = (data.nodeHeight as number) || 200;
 
@@ -268,9 +270,9 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
   /* ── Resize handler ── */
   const handleResize = useCallback(
     (newWidth: number, newHeight: number) => {
-      updateNodeData(id, { nodeWidth: newWidth, nodeHeight: newHeight } as Partial<BaseNodeData>);
+      updateNodeDataTransient(id, { nodeWidth: newWidth, nodeHeight: newHeight } as Partial<BaseNodeData>);
     },
-    [id, updateNodeData],
+    [id, updateNodeDataTransient],
   );
 
   /* ── States ── */
@@ -498,6 +500,8 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
           currentHeight={nodeHeight}
           minWidth={160}
           minHeight={120}
+          onResizeStart={commitToHistory}
+          onResizeEnd={commitToHistory}
           onResize={handleResize}
         />
 

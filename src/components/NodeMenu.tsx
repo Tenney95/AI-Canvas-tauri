@@ -13,6 +13,7 @@ import type { NodeType } from '../types';
 import { NODE_TYPE_CONFIG } from '../types';
 import { calcFixedPosition } from '../utils/popupPosition';
 import { uploadSourceFileToProject } from '../services/fileService';
+import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { classifyFile } from '../hooks/useNodeCreation';
 import AnimatedButton from './shared/AnimatedButton';
 
@@ -52,13 +53,12 @@ const NODE_MENU_W = 240;
 const NODE_MENU_H = 338; // 5 items + header + footer
 
 export default function NodeMenu() {
-  const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, lastCanvasMousePos, currentProjectId, showToast } = useAppStore(
+  const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, currentProjectId, showToast } = useAppStore(
     useShallow((s) => ({
       nodeMenuVisible: s.nodeMenuVisible,
       nodeMenuPosition: s.nodeMenuPosition,
       hideNodeMenu: s.hideNodeMenu,
       addNode: s.addNode,
-      lastCanvasMousePos: s.lastCanvasMousePos,
       currentProjectId: s.currentProjectId,
       showToast: s.showToast,
     })),
@@ -80,7 +80,7 @@ export default function NodeMenu() {
   const handleAddNode = (type: NodeType) => {
     const isImage = type === 'ai-image';
     const isAnimation = type === 'ai-animation';
-    const pos = lastCanvasMousePos ?? { x: 300, y: 200 };
+    const pos = getCanvasPointerPosition();
     const newNode: Record<string, unknown> = {
       id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       type,
@@ -121,7 +121,7 @@ export default function NodeMenu() {
         return;
       }
 
-      const pos = lastCanvasMousePos ?? { x: 300, y: 200 };
+      const pos = getCanvasPointerPosition();
       const typeMap: Record<string, { type: NodeType; label: string; field: string }> = {
         image: { type: 'ai-image', label: result.fileName, field: 'imageUrl' },
         video: { type: 'ai-video', label: result.fileName, field: 'videoUrl' },

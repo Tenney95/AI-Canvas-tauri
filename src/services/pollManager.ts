@@ -178,7 +178,7 @@ async function applyNodeResult(
     updateData.audioUrl = mediaUrl;
   }
 
-  store.updateNodeData(nodeId, updateData);
+  store.updateNodeDataTransient(nodeId, updateData);
   store.recordOutputHistory(nodeId, {
     nodeId,
     nodeLabel,
@@ -200,7 +200,7 @@ async function handleResumeError(
   err: unknown,
 ): Promise<void> {
   const msg = err instanceof Error ? err.message : String(err || '任务恢复失败');
-  useAppStore.getState().updateNodeData(nodeId, { status: 'error', error: msg });
+  useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: msg });
   cleanupNodePolling(nodeId);
   removePendingTask(nodeId);
 }
@@ -260,7 +260,7 @@ function extractApimartUrls(
 async function resumeApimart(task: PendingTask): Promise<void> {
   const { nodeId, taskId, apiKey, baseUrl, nodeType } = task;
   if (!apiKey || !baseUrl) {
-    useAppStore.getState().updateNodeData(nodeId, { status: 'error', error: '任务恢复失败：缺少 API 配置' });
+    useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: '任务恢复失败：缺少 API 配置' });
     removePendingTask(nodeId);
     return;
   }
@@ -339,7 +339,7 @@ async function pollFlowMusicTask(
 async function resumeApimartFlowMusic(task: PendingTask): Promise<void> {
   const { nodeId, apiKey, baseUrl } = task;
   if (!apiKey || !baseUrl) {
-    useAppStore.getState().updateNodeData(nodeId, { status: 'error', error: '任务恢复失败：缺少 API 配置' });
+    useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: '任务恢复失败：缺少 API 配置' });
     removePendingTask(nodeId);
     return;
   }
@@ -360,7 +360,7 @@ async function resumeApimartFlowMusic(task: PendingTask): Promise<void> {
       const generated = extractFlowMusicLyrics(
         await pollFlowMusicTask(apiKey, baseUrl, taskId, signal),
       );
-      useAppStore.getState().updateNodeData(nodeId, {
+      useAppStore.getState().updateNodeDataTransient(nodeId, {
         musicTitle: generated.title || data.musicTitle,
         musicLyrics: generated.lyrics,
       });
@@ -384,7 +384,7 @@ async function resumeApimartFlowMusic(task: PendingTask): Promise<void> {
       await pollFlowMusicTask(apiKey, baseUrl, taskId, signal),
     );
     const latestData = useAppStore.getState().nodes.find((item) => item.id === nodeId)?.data as BaseNodeData | undefined;
-    useAppStore.getState().updateNodeData(nodeId, {
+    useAppStore.getState().updateNodeDataTransient(nodeId, {
       musicClipId: result.clipId,
       musicTitle: result.title || latestData?.musicTitle,
       musicLyrics: result.lyrics || latestData?.musicLyrics,
@@ -470,7 +470,7 @@ function buildComfyFileUrl(baseUrl: string, file: ComfyOutputFile): string {
 async function resumeComfyUI(task: PendingTask): Promise<void> {
   const { nodeId, taskId, baseUrl, nodeType } = task;
   if (!baseUrl) {
-    useAppStore.getState().updateNodeData(nodeId, {
+    useAppStore.getState().updateNodeDataTransient(nodeId, {
       status: 'error',
       error: '任务恢复失败：缺少 ComfyUI 地址',
     });
@@ -558,7 +558,7 @@ function parseMultiPathResponse(
 async function resumeGeneral(task: PendingTask): Promise<void> {
   const { nodeId, taskId, apiKey, baseUrl, nodeType } = task;
   if (!apiKey || !baseUrl) {
-    useAppStore.getState().updateNodeData(nodeId, {
+    useAppStore.getState().updateNodeDataTransient(nodeId, {
       status: 'error',
       error: '任务恢复失败：缺少 API 配置',
     });
@@ -617,7 +617,7 @@ async function resumeGeneral(task: PendingTask): Promise<void> {
 async function resumeVolcengine(task: PendingTask): Promise<void> {
   const { nodeId, taskId, apiKey, baseUrl } = task;
   if (!apiKey || !baseUrl) {
-    useAppStore.getState().updateNodeData(nodeId, {
+    useAppStore.getState().updateNodeDataTransient(nodeId, {
       status: 'error',
       error: '任务恢复失败：缺少 API 配置',
     });
@@ -708,7 +708,7 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
       `[pollManager] 发现 ${orphanLoadingNodes.length} 个孤立 loading 节点（未完成提交），标记为错误`,
     );
     for (const node of orphanLoadingNodes) {
-      store.updateNodeData(node.id, {
+      store.updateNodeDataTransient(node.id, {
         status: 'error',
         error: '任务未完成提交，请重新点击生成',
       });
@@ -735,7 +735,7 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
         && nodeData?.status === 'error'
         && isCancellationErrorMessage(nodeData.error)
       ) {
-        store.updateNodeData(task.nodeId, { status: 'loading', error: undefined });
+        store.updateNodeDataTransient(task.nodeId, { status: 'loading', error: undefined });
       } else {
         // 节点已成功、失败或被用户改为其他状态，清理过期记录
         removePendingTask(task.nodeId);
@@ -746,7 +746,7 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
     // 任务记录存在但未提交到远端（关闭窗口时还没来得及拿到 taskId）
     if (!task.submitted || !task.taskId) {
       console.warn(`[pollManager] 任务 ${task.nodeId} 未完成远端提交，需要重新生成`);
-      store.updateNodeData(task.nodeId, {
+      store.updateNodeDataTransient(task.nodeId, {
         status: 'error',
         error: '任务未完成提交，请重新点击生成',
       });

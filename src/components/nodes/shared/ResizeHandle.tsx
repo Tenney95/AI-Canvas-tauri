@@ -18,6 +18,8 @@ interface ResizeHandleProps {
   minWidth?: number;
   minHeight?: number;
   lockAspectRatio?: boolean;
+  onResizeStart?: () => void;
+  onResizeEnd?: () => void;
   onResize: (width: number, height: number) => void;
 }
 
@@ -28,6 +30,8 @@ export default function ResizeHandle({
   minWidth = 160,
   minHeight = 120,
   lockAspectRatio = false,
+  onResizeStart,
+  onResizeEnd,
   onResize,
 }: ResizeHandleProps) {
   const handleRef = useRef<HTMLDivElement>(null);
@@ -38,10 +42,10 @@ export default function ResizeHandle({
   const { lockRef, reset: resetProportional, lock: lockProportional } = useProportionalLock();
 
   // 最新值 refs（供原生事件闭包读取，避免闭包过期）
-  const latestRef = useRef({ currentWidth, currentHeight, minWidth, minHeight, lockAspectRatio, onResize, nodeId, snap });
+  const latestRef = useRef({ currentWidth, currentHeight, minWidth, minHeight, lockAspectRatio, onResizeStart, onResizeEnd, onResize, nodeId, snap });
   useEffect(() => {
-    latestRef.current = { currentWidth, currentHeight, minWidth, minHeight, lockAspectRatio, onResize, nodeId, snap };
-  }, [currentHeight, currentWidth, lockAspectRatio, minHeight, minWidth, nodeId, onResize, snap]);
+    latestRef.current = { currentWidth, currentHeight, minWidth, minHeight, lockAspectRatio, onResizeStart, onResizeEnd, onResize, nodeId, snap };
+  }, [currentHeight, currentWidth, lockAspectRatio, minHeight, minWidth, nodeId, onResize, onResizeEnd, onResizeStart, snap]);
 
   useEffect(() => {
     const el = handleRef.current;
@@ -57,6 +61,8 @@ export default function ResizeHandle({
         minWidth: mw,
         minHeight: mh,
         lockAspectRatio: keepRatio,
+        onResizeStart: startResize,
+        onResizeEnd: endResize,
         onResize: rs,
         nodeId: nid,
         snap: sp,
@@ -65,6 +71,10 @@ export default function ResizeHandle({
       resizeStart.current = { x: e.clientX, y: e.clientY, w: cw, h: ch };
       resetProportional();
       if (nid) sp?.onResizeStart(nid);
+
+      let historyCommitted = false;
+      let lastWidth = cw;
+      let lastHeight = ch;
 
       const handlePointerMove = (ev: PointerEvent) => {
         if (!isResizing.current) return;
@@ -99,11 +109,20 @@ export default function ResizeHandle({
           newWidth = Math.max(mw, snapped.width);
           newHeight = Math.max(mh, snapped.height);
         }
+
+        if (newWidth === lastWidth && newHeight === lastHeight) return;
+        if (!historyCommitted) {
+          startResize?.();
+          historyCommitted = true;
+        }
+        lastWidth = newWidth;
+        lastHeight = newHeight;
         rs(newWidth, newHeight);
       };
 
       const handlePointerUp = () => {
         isResizing.current = false;
+        if (historyCommitted) endResize?.();
         if (nid) sp?.onResizeStop();
         document.removeEventListener('pointermove', handlePointerMove);
         document.removeEventListener('pointerup', handlePointerUp);

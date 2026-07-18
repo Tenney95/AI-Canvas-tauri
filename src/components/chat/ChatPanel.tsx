@@ -77,6 +77,60 @@ import {
 } from '../../services/chat/fileGrantService';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+const STREAMING_UI_FLUSH_INTERVAL_MS = 50;
+
+interface StreamingMessageBuffer {
+  append: (delta: string) => void;
+  flush: () => void;
+  cancel: () => void;
+}
+
+function createStreamingMessageBuffer(
+  messageId: string,
+  onProgress?: () => void,
+): StreamingMessageBuffer {
+  let pendingText = '';
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushPending = () => {
+    flushTimer = null;
+    if (!pendingText) return;
+    const delta = pendingText;
+    pendingText = '';
+    const store = useAppStore.getState();
+    const message = store.messages.find((item) => item.id === messageId);
+    if (!message) return;
+    store.updateMessageTransient(messageId, {
+      content: (message.content || '') + delta,
+      status: 'streaming',
+    });
+    onProgress?.();
+  };
+
+  const clearFlushTimer = () => {
+    if (!flushTimer) return;
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  };
+
+  return {
+    append: (delta) => {
+      if (!delta) return;
+      pendingText += delta;
+      if (!flushTimer) {
+        flushTimer = setTimeout(flushPending, STREAMING_UI_FLUSH_INTERVAL_MS);
+      }
+    },
+    flush: () => {
+      clearFlushTimer();
+      flushPending();
+    },
+    cancel: () => {
+      clearFlushTimer();
+      pendingText = '';
+    },
+  };
+}
 
 function getMediaModelAvailability(
   options: MediaModelOption[],
@@ -1073,6 +1127,7 @@ function driveAgentTask(
     let failed = false;
 
     if (resolveAssistantModel()) {
+      const streamingMessage = createStreamingMessageBuffer(assistantMessageId, onProgress);
       const availableTools = getAvailableAgentTools({
         taskId,
         projectId,
@@ -1087,20 +1142,9 @@ function driveAgentTask(
           excludeMessageIds: [userMessageId, assistantMessageId],
           signal,
           callbacks: {
-            onTextDelta: (delta) => {
-              const currentStore = useAppStore.getState();
-              const message = currentStore.messages.find(
-                (item) => item.id === assistantMessageId,
-              );
-              if (message) {
-                currentStore.updateMessage(assistantMessageId, {
-                  content: (message.content || '') + delta,
-                  status: 'streaming',
-                });
-              }
-              onProgress?.();
-            },
+            onTextDelta: streamingMessage.append,
             onComplete: (fullText) => {
+              streamingMessage.cancel();
               useAppStore.getState().updateMessage(assistantMessageId, {
                 content: fullText,
                 status: 'done',
@@ -1108,6 +1152,7 @@ function driveAgentTask(
               onProgress?.();
             },
             onApprovalRequired: (step) => {
+              streamingMessage.flush();
               const currentStore = useAppStore.getState();
               const message = currentStore.messages.find(
                 (item) => item.id === assistantMessageId,
@@ -1118,6 +1163,7 @@ function driveAgentTask(
               });
             },
             onError: (error) => {
+              streamingMessage.cancel();
               failed = true;
               useAppStore.getState().updateMessage(assistantMessageId, {
                 content: `处理失败: ${error}`,
@@ -1130,18 +1176,9 @@ function driveAgentTask(
       }
 
       await runStreamingPipeline(text, conversationId, {
-        onTextDelta: (delta) => {
-          const currentStore = useAppStore.getState();
-          const message = currentStore.messages.find((item) => item.id === assistantMessageId);
-          if (message) {
-            currentStore.updateMessage(assistantMessageId, {
-              content: (message.content || '') + delta,
-              status: 'streaming',
-            });
-          }
-          onProgress?.();
-        },
+        onTextDelta: streamingMessage.append,
         onComplete: (fullText, results) => {
+          streamingMessage.cancel();
           useAppStore.getState().updateMessage(assistantMessageId, {
             content: fullText,
             status: 'done',
@@ -1150,6 +1187,7 @@ function driveAgentTask(
           onProgress?.();
         },
         onError: (error) => {
+          streamingMessage.cancel();
           failed = true;
           useAppStore.getState().updateMessage(assistantMessageId, {
             content: `处理失败: ${error}`,

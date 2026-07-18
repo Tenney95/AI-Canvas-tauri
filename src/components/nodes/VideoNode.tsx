@@ -124,6 +124,8 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const justCompleted = useCompletionFlash(data.status);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
+  const commitToHistory = useAppStore((s) => s.commitToHistory);
   const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
   const isSource = data.role === 'source';
   const fallbackDimensions = computeVideoNodeDimensions(data.videoWidth ?? 0, data.videoHeight ?? 0);
@@ -132,9 +134,9 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   const handleResize = useCallback(
     (newWidth: number, newHeight: number) => {
-      updateNodeData(id, { nodeWidth: newWidth, nodeHeight: newHeight });
+      updateNodeDataTransient(id, { nodeWidth: newWidth, nodeHeight: newHeight });
     },
-    [id, updateNodeData],
+    [id, updateNodeDataTransient],
   );
 
   const handleLoadedMetadata = useCallback((event: React.SyntheticEvent<HTMLVideoElement>) => {
@@ -373,6 +375,8 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         minWidth={VIDEO_NODE_MIN_WIDTH}
         minHeight={VIDEO_NODE_MIN_HEIGHT}
         lockAspectRatio
+        onResizeStart={commitToHistory}
+        onResizeEnd={commitToHistory}
         onResize={handleResize}
       />
 

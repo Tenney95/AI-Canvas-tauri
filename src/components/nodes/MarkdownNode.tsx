@@ -18,6 +18,8 @@ import { useShiftProportional, useProportionalLock, computeResize } from '../../
 
 function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
+  const commitToHistory = useAppStore((s) => s.commitToHistory);
   const currentProjectId = useAppStore((s) => s.currentProjectId);
   const showToast = useAppStore((s) => s.showToast);
 
@@ -28,6 +30,13 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fsViewMode, setFsViewMode] = useState<'edit' | 'preview'>('preview');
   const fullscreenTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const contentEditActiveRef = useRef(false);
+
+  const finishContentEdit = useCallback(() => {
+    if (!contentEditActiveRef.current) return;
+    commitToHistory();
+    contentEditActiveRef.current = false;
+  }, [commitToHistory]);
 
   const handleOpenFullscreen = useCallback(() => {
     setFsViewMode('preview');
@@ -35,8 +44,9 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   }, []);
 
   const handleCloseFullscreen = useCallback(() => {
+    finishContentEdit();
     setIsFullscreen(false);
-  }, []);
+  }, [finishContentEdit]);
 
   // ── Copy content ──
   const [copied, setCopied] = useState(false);
@@ -91,7 +101,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       if (result) {
         const resolvedName = result.filePath.split(/[/\\]/).pop() || fileName;
         savedFileNameRef.current = resolvedName;
-        updateNodeData(id, {
+        updateNodeDataTransient(id, {
           fileName: resolvedName,
           filePath: result.filePath,
           status: 'success',
@@ -100,7 +110,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     } catch {
       // ignore save errors (non-Tauri environment etc.)
     }
-  }, [currentProjectId, id, updateNodeData]);
+  }, [currentProjectId, id, updateNodeDataTransient]);
 
   const onUpload = useCallback(async () => {
     const result = await handleUpload();
@@ -152,8 +162,10 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const nodeHeight = (data.nodeHeight as number) || 200;
 
   // 最新值 refs（供原生事件闭包读取）
-  const latestResizeRef = useRef({ id, nodeWidth, nodeHeight, updateNodeData });
-  latestResizeRef.current = { id, nodeWidth, nodeHeight, updateNodeData };
+  const latestResizeRef = useRef({ id, nodeWidth, nodeHeight, updateNodeDataTransient, commitToHistory });
+  useEffect(() => {
+    latestResizeRef.current = { id, nodeWidth, nodeHeight, updateNodeDataTransient, commitToHistory };
+  }, [commitToHistory, id, nodeHeight, nodeWidth, updateNodeDataTransient]);
 
   useEffect(() => {
     const el = resizeHandleRef.current;
@@ -163,10 +175,20 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       e.preventDefault();
       e.stopPropagation(); // 阻止冒泡到 React 根节点 → React Flow 收不到 → 不框选
 
-      const { id: nid, nodeWidth: nw, nodeHeight: nh, updateNodeData: upd } = latestResizeRef.current;
+      const {
+        id: nid,
+        nodeWidth: nw,
+        nodeHeight: nh,
+        updateNodeDataTransient: updateTransient,
+        commitToHistory: commitHistory,
+      } = latestResizeRef.current;
       isResizing.current = true;
       resizeStart.current = { x: e.clientX, y: e.clientY, width: nw, height: nh };
       resetProportional();
+
+      let historyCommitted = false;
+      let lastWidth = nw;
+      let lastHeight = nh;
 
       const handlePointerMove = (ev: PointerEvent) => {
         if (!isResizing.current) return;
@@ -195,7 +217,15 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         const { width: newWidth, height: newHeight } = computeResize(
           baseW, baseH, dx, dy, ratio, 240, 140, useProportional,
         );
-        upd(nid, {
+
+        if (newWidth === lastWidth && newHeight === lastHeight) return;
+        if (!historyCommitted) {
+          commitHistory();
+          historyCommitted = true;
+        }
+        lastWidth = newWidth;
+        lastHeight = newHeight;
+        updateTransient(nid, {
           nodeWidth: newWidth,
           nodeHeight: newHeight,
         } as Partial<BaseNodeData>);
@@ -203,6 +233,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
 
       const handlePointerUp = () => {
         isResizing.current = false;
+        if (historyCommitted) commitHistory();
         document.removeEventListener('pointermove', handlePointerMove);
         document.removeEventListener('pointerup', handlePointerUp);
         document.body.style.cursor = '';
@@ -223,7 +254,11 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const handleContentChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const value = e.target.value;
-      updateNodeData(id, { output: value } as Partial<BaseNodeData>);
+      if (!contentEditActiveRef.current) {
+        commitToHistory();
+        contentEditActiveRef.current = true;
+      }
+      updateNodeDataTransient(id, { output: value } as Partial<BaseNodeData>);
 
       // debounce auto-save: 1.5s after last keystroke
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
@@ -231,7 +266,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         doSave(value);
       }, 1500);
     },
-    [id, updateNodeData, doSave],
+    [commitToHistory, doSave, id, updateNodeDataTransient],
   );
 
   // ── Markdown preview HTML ──（memo：编辑时每次按键都会重渲染，避免全文重复解析）
@@ -333,6 +368,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
               className="nodrag nowheel markdown-edit-area text-selection-source"
               value={(data.output as string) || ''}
               onChange={handleContentChange}
+              onBlur={finishContentEdit}
               placeholder="# Markdown 文档&#10;&#10;点击上方按钮上传 .md 文件，或直接在此编辑…"
               spellCheck={false}
             />
@@ -402,9 +438,8 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
           ref={fullscreenTextareaRef}
           className="fullscreen-textarea"
           value={(data.output as string) || ''}
-          onChange={(e) => {
-            updateNodeData(id, { output: e.target.value } as Partial<BaseNodeData>);
-          }}
+          onChange={handleContentChange}
+          onBlur={finishContentEdit}
           spellCheck={false}
         />
       ) : (

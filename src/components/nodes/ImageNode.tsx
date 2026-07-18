@@ -43,6 +43,8 @@ const ImageComposerEditor = lazy(() => import('./shared/image/composer/ImageComp
 function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const justCompleted = useCompletionFlash(data.status);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
+  const commitToHistory = useAppStore((s) => s.commitToHistory);
   const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
   const isSource = data.role === 'source';
   const nodeWidth = (data.nodeWidth as number) || 280;
@@ -51,9 +53,9 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   // ── Resize handler ──
   const handleResize = useCallback(
     (newWidth: number, newHeight: number) => {
-      updateNodeData(id, { nodeWidth: newWidth, nodeHeight: newHeight } as Partial<BaseNodeData>);
+      updateNodeDataTransient(id, { nodeWidth: newWidth, nodeHeight: newHeight } as Partial<BaseNodeData>);
     },
-    [id, updateNodeData],
+    [id, updateNodeDataTransient],
   );
 
   // ── Upload ──
@@ -142,13 +144,13 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         ? params.model.slice('apimart/'.length)
         : params.model;
 
-      updateNodeData(id, { status: 'loading', output: undefined, error: undefined });
+      updateNodeDataTransient(id, { status: 'loading', output: undefined, error: undefined });
 
       try {
         const result = await generateAngleImage(
           { apiKey, model, imageUrl, rotation: params.rotation, pitch: params.pitch },
           (progress) => {
-            updateNodeData(id, { output: `生成中 ${progress}%...` });
+            updateNodeDataTransient(id, { output: `生成中 ${progress}%...` });
           },
         );
 
@@ -195,15 +197,15 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           store.addNode(newNode);
         }
 
-        updateNodeData(id, { status: 'success' });
+        updateNodeDataTransient(id, { status: 'success' });
         store.showToast(`已生成 ${result.imageUrls.length} 张角度图片`);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : '生成失败';
-        updateNodeData(id, { status: 'error', error: message });
+        updateNodeDataTransient(id, { status: 'error', error: message });
         store.showToast(message, 'error');
       }
     },
-    [id, data.imageUrl, data.thumbnailUrl, updateNodeData],
+    [id, data.imageUrl, data.thumbnailUrl, updateNodeDataTransient],
   );
 
   /* ════════════════════════════════════════════
@@ -508,7 +510,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         const result = await generateOutpaintImage(
           { apiKey, model, imageUrl: compositeDataUrl, size: meta.size, prompt: meta.prompt },
           (progress) => {
-            store.updateNodeData(newNodeId, { output: `扩图中 ${progress}%...` });
+            store.updateNodeDataTransient(newNodeId, { output: `扩图中 ${progress}%...` });
           },
         );
 
@@ -684,7 +686,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const doUpscale = useCallback(async (filePath: string) => {
     setIsUpscaling(true);
     setUpscaleProgress(0);
-    updateNodeData(id, { status: 'loading', output: 'ONNX 超分处理中...' });
+    updateNodeDataTransient(id, { status: 'loading', output: 'ONNX 超分处理中...' });
 
     // 监听后端分块进度，仅响应本次任务（taskId 隔离多节点并发超分）
     const taskId = `upscale-${id}-${Date.now()}`;
@@ -731,7 +733,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       store.addNode(newNode);
       store.commitToHistory();
 
-      updateNodeData(id, { status: 'success' });
+      updateNodeDataTransient(id, { status: 'success' });
       store.showToast(`超分完成 ${result.input_size} → ${result.output_size}`);
     } catch (err: unknown) {
       // Tauri 2 invoke reject 抛出的是字符串或 { message } 对象，非标准 Error
@@ -740,14 +742,14 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         : err instanceof Error ? err.message
         : (err && typeof err === 'object' && 'message' in err) ? String((err as Record<string, unknown>).message)
         : 'ONNX 超分失败';
-      updateNodeData(id, { status: 'error', error: message });
+      updateNodeDataTransient(id, { status: 'error', error: message });
       useAppStore.getState().showToast(message, 'error');
     } finally {
       unlisten();
       setIsUpscaling(false);
       setUpscaleProgress(0);
     }
-  }, [id, data.label, nodeWidth, modelName, updateNodeData]);
+  }, [id, data.label, nodeWidth, modelName, updateNodeDataTransient]);
 
   /* ════════════════════════════════════════════
      Subject Matting — ONNX RMBG-1.4 主体识别
@@ -802,7 +804,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   const doSubjectMatting = useCallback(async (filePath: string) => {
     setIsMattingRunning(true);
-    updateNodeData(id, { status: 'loading', output: 'AI 识别主体中...' });
+    updateNodeDataTransient(id, { status: 'loading', output: 'AI 识别主体中...' });
 
     const taskId = `matting-${id}-${Date.now()}`;
 
@@ -841,7 +843,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       store.addNode(newNode);
       store.commitToHistory();
 
-      updateNodeData(id, { status: 'success' });
+      updateNodeDataTransient(id, { status: 'success' });
       store.showToast(`主体识别完成，已创建新节点 (${result.input_size})`);
     } catch (err: unknown) {
       const message =
@@ -849,12 +851,12 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         : err instanceof Error ? err.message
         : (err && typeof err === 'object' && 'message' in err) ? String((err as Record<string, unknown>).message)
         : '主体识别失败';
-      updateNodeData(id, { status: 'error', error: message });
+      updateNodeDataTransient(id, { status: 'error', error: message });
       useAppStore.getState().showToast(message, 'error');
     } finally {
       setIsMattingRunning(false);
     }
-  }, [id, data.label, nodeWidth, mattingModelName, updateNodeData]);
+  }, [id, data.label, nodeWidth, mattingModelName, updateNodeDataTransient]);
 
   const { displayLabel, handleRename } = useNodeRename(id, data, '粘贴图像');
 
@@ -996,6 +998,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           currentHeight={nodeHeight}
           minWidth={160}
           minHeight={120}
+          onResizeStart={commitToHistory}
+          onResizeEnd={commitToHistory}
           onResize={handleResize}
         />
 

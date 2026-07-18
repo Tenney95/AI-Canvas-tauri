@@ -43,6 +43,7 @@ import { useNodeCreation } from '../hooks/useNodeCreation';
 import type { BaseNodeData } from '../types';
 import type { Node as RFNode, NodeTypes, Connection, Edge } from '@xyflow/react';
 import { useNodeSnap, ResizeSnapContext, type SnapLine } from '../hooks/useNodeSnap';
+import { setCanvasPointerPosition } from '../services/canvasPointerService';
 
 // 懒加载：全景节点引入 three（体积大户），画布上出现全景节点时才加载
 const PanoramaNodeLazy = lazy(() => import('./nodes/PanoramaNode'));
@@ -187,7 +188,6 @@ function CanvasInner() {
   const onConnect = useAppStore((s) => s.onConnect);
   const setEdges = useAppStore((s) => s.setEdges);
   const setSelectedNodeIds = useAppStore((s) => s.setSelectedNodeIds);
-  const setLastCanvasMousePos = useAppStore((s) => s.setLastCanvasMousePos);
   const applyStableNodeChanges = useAppStore((s) => s.onNodesChange);
   const handleEdgesChange = useAppStore((s) => s.onEdgesChange);
   const clearGroupedSelection = useAppStore((s) => s.clearGroupedSelection);
@@ -243,9 +243,9 @@ function CanvasInner() {
   const handleCanvasPointer = useCallback(
     (e: React.MouseEvent) => {
       const flowPos = reactFlowInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      setLastCanvasMousePos(flowPos);
+      setCanvasPointerPosition(flowPos);
     },
-    [reactFlowInstance, setLastCanvasMousePos],
+    [reactFlowInstance],
   );
 
   const toggleGrid = useCallback(() => setShowGrid((v) => !v), []);

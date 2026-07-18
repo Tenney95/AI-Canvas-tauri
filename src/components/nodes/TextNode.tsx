@@ -19,6 +19,8 @@ import { useShiftProportional, useProportionalLock, computeResize } from '../../
 function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
   const justCompleted = useCompletionFlash(data.status);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
+  const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
+  const commitToHistory = useAppStore((s) => s.commitToHistory);
   const openNodeDialog = useAppStore((s) => s.openNodeDialog);
   const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
   const isSource = data.role === 'source';
@@ -27,6 +29,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   // ── Fullscreen ──
   const [isFullscreen, setIsFullscreen] = useState(false);
   const fullscreenTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const fullscreenEditActiveRef = useRef(false);
 
   // ── Copy ──
   const handleCopyToClipboard = useCallback(async (text: string) => {
@@ -66,12 +69,14 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     const previousOutput = (data.output as string) || '';
     setIsEditing(false);
     if (save && draftOutput !== previousOutput) {
-      updateNodeData(id, { output: draftOutput });
+      commitToHistory();
+      updateNodeDataTransient(id, { output: draftOutput });
+      commitToHistory();
     }
     requestAnimationFrame(() => {
       editEndingRef.current = false;
     });
-  }, [data.output, draftOutput, id, updateNodeData]);
+  }, [commitToHistory, data.output, draftOutput, id, updateNodeDataTransient]);
 
   const handleInlineKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Escape') {
@@ -99,10 +104,10 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   const nodeHeight = (data.nodeHeight as number) || 160;
 
   // 最新值 refs（供原生事件闭包读取）
-  const latestResizeRef = useRef({ id, nodeWidth, nodeHeight, updateNodeData });
+  const latestResizeRef = useRef({ id, nodeWidth, nodeHeight, updateNodeDataTransient, commitToHistory });
   useEffect(() => {
-    latestResizeRef.current = { id, nodeWidth, nodeHeight, updateNodeData };
-  }, [id, nodeHeight, nodeWidth, updateNodeData]);
+    latestResizeRef.current = { id, nodeWidth, nodeHeight, updateNodeDataTransient, commitToHistory };
+  }, [commitToHistory, id, nodeHeight, nodeWidth, updateNodeDataTransient]);
 
   useEffect(() => {
     const el = resizeHandleRef.current;
@@ -112,10 +117,20 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
       e.preventDefault();
       e.stopPropagation(); // 阻止冒泡到 React 根节点 → React Flow 收不到 → 不框选
 
-      const { id: nid, nodeWidth: nw, nodeHeight: nh, updateNodeData: upd } = latestResizeRef.current;
+      const {
+        id: nid,
+        nodeWidth: nw,
+        nodeHeight: nh,
+        updateNodeDataTransient: updateTransient,
+        commitToHistory: commitHistory,
+      } = latestResizeRef.current;
       isResizing.current = true;
       resizeStart.current = { x: e.clientX, y: e.clientY, width: nw, height: nh };
       resetProportional();
+
+      let historyCommitted = false;
+      let lastWidth = nw;
+      let lastHeight = nh;
 
       const handlePointerMove = (ev: PointerEvent) => {
         if (!isResizing.current) return;
@@ -144,11 +159,20 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
         const { width: newWidth, height: newHeight } = computeResize(
           baseW, baseH, dx, dy, ratio, 200, 120, useProportional,
         );
-        upd(nid, { nodeWidth: newWidth, nodeHeight: newHeight } as Partial<BaseNodeData>);
+
+        if (newWidth === lastWidth && newHeight === lastHeight) return;
+        if (!historyCommitted) {
+          commitHistory();
+          historyCommitted = true;
+        }
+        lastWidth = newWidth;
+        lastHeight = newHeight;
+        updateTransient(nid, { nodeWidth: newWidth, nodeHeight: newHeight } as Partial<BaseNodeData>);
       };
 
       const handlePointerUp = () => {
         isResizing.current = false;
+        if (historyCommitted) commitHistory();
         document.removeEventListener('pointermove', handlePointerMove);
         document.removeEventListener('pointerup', handlePointerUp);
         document.body.style.cursor = '';
@@ -194,9 +218,16 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
     openNodeDialog(id);
   }, [id, openNodeDialog]);
 
+  const finishFullscreenEdit = useCallback(() => {
+    if (!fullscreenEditActiveRef.current) return;
+    commitToHistory();
+    fullscreenEditActiveRef.current = false;
+  }, [commitToHistory]);
+
   const handleCloseFullscreen = useCallback(() => {
+    finishFullscreenEdit();
     setIsFullscreen(false);
-  }, []);
+  }, [finishFullscreenEdit]);
 
   // Auto-focus textarea when fullscreen opens
   useEffect(() => {
@@ -213,9 +244,13 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
 
   const handleFullscreenChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      updateNodeData(id, { output: e.target.value });
+      if (!fullscreenEditActiveRef.current) {
+        commitToHistory();
+        fullscreenEditActiveRef.current = true;
+      }
+      updateNodeDataTransient(id, { output: e.target.value });
     },
-    [id, updateNodeData],
+    [commitToHistory, id, updateNodeDataTransient],
   );
 
   // ── Upload handler for source nodes ──
@@ -384,6 +419,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
         className="fullscreen-textarea"
         value={(data.output as string) || ''}
         onChange={handleFullscreenChange}
+        onBlur={finishFullscreenEdit}
         spellCheck={false}
       />
       </FullscreenOverlay>

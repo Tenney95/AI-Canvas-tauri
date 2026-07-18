@@ -10,6 +10,7 @@ import ModalOverlay from './shared/ModalOverlay';
 import type { NodeType } from '../types';
 import { NODE_TYPE_CONFIG } from '../types';
 import { uploadSourceFileToProject } from '../services/fileService';
+import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { classifyFile } from '../hooks/useNodeCreation';
 import { checkForUpdate, downloadAndInstallUpdate } from '../services/updateService';
 import AnimatedButton from './shared/AnimatedButton';
@@ -90,12 +91,11 @@ function NodePicker({
   onEnter: () => void;
   onLeave: () => void;
 }) {
-  const { nodePickerOpen, closeNodePicker, addNode, lastCanvasMousePos, currentProjectId, showToast } = useAppStore(
+  const { nodePickerOpen, closeNodePicker, addNode, currentProjectId, showToast } = useAppStore(
     useShallow((s) => ({
       nodePickerOpen: s.nodePickerOpen,
       closeNodePicker: s.closeNodePicker,
       addNode: s.addNode,
-      lastCanvasMousePos: s.lastCanvasMousePos,
       currentProjectId: s.currentProjectId,
       showToast: s.showToast,
     })),
@@ -149,7 +149,7 @@ function NodePicker({
         }
       }
     } catch { /* ignore */ }
-    const pos = lastCanvasMousePos ?? { x: 300, y: 200 };
+    const pos = getCanvasPointerPosition();
     addNode({
       id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       type,
@@ -173,7 +173,7 @@ function NodePicker({
         return;
       }
 
-      const pos = lastCanvasMousePos ?? { x: 300, y: 200 };
+      const pos = getCanvasPointerPosition();
       const typeMap: Record<string, { type: NodeType; label: string; field: string }> = {
         image: { type: 'ai-image', label: result.fileName, field: 'imageUrl' },
         video: { type: 'ai-video', label: result.fileName, field: 'videoUrl' },

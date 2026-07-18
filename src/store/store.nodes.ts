@@ -20,6 +20,7 @@ import * as fileService from '../services/fileService';
 import { playNodeExit } from '../utils/nodeAnimations';
 import { cancelNodePolling } from '../services/pollManager';
 import { applyProjectDefaultsToNodeData } from '../services/projectSettingsService';
+import { getCanvasPointerPosition } from '../services/canvasPointerService';
 
 interface GroupNodeDataAccess {
   groupId: string;
@@ -48,6 +49,8 @@ export interface NodeSlice {
   /** 在原位复制一个节点（新 id / displayId，不带边）—— 用于 Ctrl 拖拽复制 */
   duplicateNode: (nodeId: string) => void;
   updateNodeData: (nodeId: string, data: Partial<BaseNodeData>) => void;
+  /** 高频手势内更新节点数据，不创建历史快照；调用方负责提交手势开始和结束状态。 */
+  updateNodeDataTransient: (nodeId: string, data: Partial<BaseNodeData>) => void;
   /** 原子批量更新节点数据（一次历史提交）。 */
   updateNodesDataBatch: (nodeIds: string[], data: Partial<BaseNodeData>) => void;
   deleteNode: (nodeId: string) => void;
@@ -119,7 +122,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       : intent.kind === 'video'
         ? 'ai-video'
         : 'ai-audio';
-    const position = requestedPosition ?? state.lastCanvasMousePos ?? { x: 300, y: 200 };
+    const position = requestedPosition ?? getCanvasPointerPosition();
     const label = intent.kind === 'image'
       ? '对话生成图片'
       : intent.kind === 'video'
@@ -201,7 +204,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       : artifact.kind === 'video'
         ? 'ai-video'
         : 'ai-audio';
-    const position = requestedPosition ?? state.lastCanvasMousePos ?? { x: 300, y: 200 };
+    const position = requestedPosition ?? getCanvasPointerPosition();
     const mediaField = artifact.kind === 'image'
       ? { imageUrl: artifact.url, imageWidth: artifact.width, imageHeight: artifact.height }
       : artifact.kind === 'video'
@@ -248,6 +251,14 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === nodeId ? { ...n, data: { ...n.data, ...data } as BaseNodeData } : n
+      ),
+    }));
+  },
+
+  updateNodeDataTransient: (nodeId, data) => {
+    set((state) => ({
+      nodes: state.nodes.map((node) =>
+        node.id === nodeId ? { ...node, data: { ...node.data, ...data } as BaseNodeData } : node
       ),
     }));
   },
