@@ -4,7 +4,8 @@
 import { useState, useCallback, useRef, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import type { WorkflowIONodeType, StoryboardCellOverride, BaseNodeData, NodeType } from '../../../types';
-import { useAppStore } from '../../../store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore, type AppState } from '../../../store/useAppStore';
 import { Icon } from '@iconify/react';
 import { listGlobalFiles, listExternalFolderFiles, getFileCategory, type AssetFileEntry } from '../../../services/fileService';
 import { getAllAssetMeta } from '../../../services/indexedDbService';
@@ -26,6 +27,45 @@ function bestNodeThumb(data: { imageUrl?: unknown; thumbnailUrl?: unknown; fileP
       || (data.imageUrl as string | undefined);
   }
   return data.thumbnailUrl as string | undefined;
+}
+
+type NodeMeta = {
+  type: string;
+  displayId: number | undefined;
+  thumbnailUrl?: string;
+};
+
+const nodeMetaCache = new WeakMap<AppState['nodes'], Map<string, NodeMeta>>();
+
+function getNodeMetaMap(nodes: AppState['nodes']) {
+  const cached = nodeMetaCache.get(nodes);
+  if (cached) return cached;
+
+  const map = new Map<string, NodeMeta>();
+  for (const node of nodes) {
+    map.set(node.id, {
+      type: (node.data.type as string) || '',
+      displayId: node.data.displayId as number | undefined,
+      thumbnailUrl: bestNodeThumb(node.data),
+    });
+    if (node.data.type === 'ai-storyboard') {
+      const cols = Math.max(1, (node.data.storyboardCols as number) || 3);
+      const rows = Math.max(1, (node.data.storyboardRows as number) || 3);
+      const overrides = (node.data.storyboardOverrides as (StoryboardCellOverride | null)[] | undefined) ?? [];
+      const imageUrl = node.data.imageUrl as string | undefined;
+      for (let index = 0; index < rows * cols; index += 1) {
+        const thumbnailUrl = overrides[index]?.url || imageUrl;
+        if (!thumbnailUrl) continue;
+        map.set(`${node.id}/cell/${index}`, {
+          type: 'ai-image',
+          displayId: undefined,
+          thumbnailUrl,
+        });
+      }
+    }
+  }
+  nodeMetaCache.set(nodes, map);
+  return map;
 }
 
 // ── Props ──
@@ -399,7 +439,13 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const editorRef = useRef<HTMLDivElement>(null);
   const savedMentionRangeRef = useRef<Range | null>(null);
   const lastFocusedWfValueRef = useRef<HTMLSpanElement | null>(null);
-  const { nodes, edges, workflows } = useAppStore();
+  const { nodes, edges, workflows } = useAppStore(
+    useShallow((state) => ({
+      nodes: state.nodes,
+      edges: state.edges,
+      workflows: state.workflows,
+    })),
+  );
 
   // ── 资产引用弹窗 ──
   const assetFolders = useAppStore((s) => s.config.assetFolders);
@@ -423,35 +469,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   );
 
   // ── Build nodeId → { type, displayId, thumbnailUrl } map ──
-  const nodeMetaMap = useMemo(() => {
-    const map = new Map<string, { type: string; displayId: number | undefined; thumbnailUrl?: string }>();
-    for (const n of nodes) {
-      map.set(n.id, {
-        type: (n.data.type as string) || '',
-        displayId: n.data.displayId as number | undefined,
-        // 图片节点优先本地文件（线上地址可能失效）；视频用海报帧；不用 videoUrl（会裂图）
-        thumbnailUrl: bestNodeThumb(n.data),
-      });
-      // 宫格分镜：为每个非空格子注册虚拟 ID，使芯片渲染能查到缩略图与类型
-      if (n.data.type === 'ai-storyboard') {
-        const cols = Math.max(1, (n.data.storyboardCols as number) || 3);
-        const rows = Math.max(1, (n.data.storyboardRows as number) || 3);
-        const overrides = (n.data.storyboardOverrides as (StoryboardCellOverride | null)[] | undefined) ?? [];
-        const imageUrl = n.data.imageUrl as string | undefined;
-        for (let i = 0; i < rows * cols; i++) {
-          const thumb = overrides[i]?.url || imageUrl;
-          if (thumb) {
-            map.set(`${n.id}/cell/${i}`, {
-              type: 'ai-image',
-              displayId: undefined,
-              thumbnailUrl: thumb,
-            });
-          }
-        }
-      }
-    }
-    return map;
-  }, [nodes]);
+  const nodeMetaMap = useMemo(() => getNodeMetaMap(nodes), [nodes]);
 
   // ── Rebuild DOM when prompt changes externally ──
   useEffect(() => {
@@ -666,8 +684,14 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     }));
   }, [selectedWorkflowId, workflowIONodes]);
 
-  const canvasMentionNodes = getCanvasMentionNodes();
-  const workflowMentionNodes = getWorkflowMentionNodes();
+  const canvasMentionNodes = useMemo(
+    () => (showMention ? getCanvasMentionNodes() : []),
+    [getCanvasMentionNodes, showMention],
+  );
+  const workflowMentionNodes = useMemo(
+    () => (showMention ? getWorkflowMentionNodes() : []),
+    [getWorkflowMentionNodes, showMention],
+  );
 
   const filteredCanvasMentions = mentionQuery
     ? canvasMentionNodes.filter((n) => n.label.toLowerCase().includes(mentionQuery.toLowerCase()))

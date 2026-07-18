@@ -22,43 +22,64 @@ interface WaveformData {
   duration: number;      // seconds
 }
 
+const WAVEFORM_COLUMNS = 220;
+const WAVEFORM_CACHE_LIMIT = 64;
+const waveformCache = new Map<string, Promise<WaveformData>>();
+let waveformDecodeContext: OfflineAudioContext | null = null;
+
 /* ── Waveform drawing helpers ── */
 
-/** Decode audio → extract peaks → cache & draw */
-async function decodeAndDrawWaveform(
-  audioUrl: string,
-  canvas: HTMLCanvasElement,
-  cache: React.MutableRefObject<WaveformData | null>,
-  audioCtx: AudioContext,
-) {
-  try {
-    const response = await fetch(audioUrl);
-    const arrayBuffer = await response.arrayBuffer();
-    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-
-    const w = canvas.width;
-    const channelData = audioBuffer.getChannelData(0);
-    const step = Math.max(1, Math.floor(channelData.length / w));
-
-    const peaks: number[] = [];
-    for (let i = 0; i < w; i++) {
-      let max = 0;
-      const start = i * step;
-      const end = Math.min(start + step, channelData.length);
-      for (let j = start; j < end; j++) {
-        const abs = Math.abs(channelData[j]);
-        if (abs > max) max = abs;
-      }
-      peaks.push(max);
-    }
-
-    const data: WaveformData = { peaks, duration: audioBuffer.duration };
-    cache.current = data;
-    drawWaveform(canvas, data);
-  } catch {
-    // fallback: draw empty / failed state
-    drawEmptyWaveform(canvas);
+function getWaveformDecodeContext() {
+  if (!waveformDecodeContext) {
+    waveformDecodeContext = new OfflineAudioContext(1, 1, 44_100);
   }
+  return waveformDecodeContext;
+}
+
+async function decodeWaveform(audioUrl: string): Promise<WaveformData> {
+  const response = await fetch(audioUrl);
+  if (!response.ok && response.status !== 0) {
+    throw new Error(`Failed to load audio: ${response.status}`);
+  }
+  const audioBuffer = await getWaveformDecodeContext().decodeAudioData(await response.arrayBuffer());
+  const channelData = audioBuffer.getChannelData(0);
+  const step = Math.max(1, Math.floor(channelData.length / WAVEFORM_COLUMNS));
+  const peaks: number[] = [];
+
+  for (let index = 0; index < WAVEFORM_COLUMNS; index += 1) {
+    let max = 0;
+    const start = index * step;
+    const end = Math.min(start + step, channelData.length);
+    for (let sample = start; sample < end; sample += 1) {
+      const absoluteValue = Math.abs(channelData[sample]);
+      if (absoluteValue > max) max = absoluteValue;
+    }
+    peaks.push(max);
+  }
+
+  return { peaks, duration: audioBuffer.duration };
+}
+
+function getCachedWaveform(audioUrl: string) {
+  const cached = waveformCache.get(audioUrl);
+  if (cached) {
+    waveformCache.delete(audioUrl);
+    waveformCache.set(audioUrl, cached);
+    return cached;
+  }
+
+  const pending = decodeWaveform(audioUrl).catch((error) => {
+    if (waveformCache.get(audioUrl) === pending) waveformCache.delete(audioUrl);
+    throw error;
+  });
+  waveformCache.set(audioUrl, pending);
+
+  while (waveformCache.size > WAVEFORM_CACHE_LIMIT) {
+    const oldest = waveformCache.keys().next();
+    if (oldest.done) break;
+    waveformCache.delete(oldest.value);
+  }
+  return pending;
 }
 
 function drawWaveform(canvas: HTMLCanvasElement, data: WaveformData) {
@@ -159,7 +180,6 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const [currentTime, setCurrentTime] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const waveformRef = useRef<WaveformData | null>(null);
   const animFrameRef = useRef(0);
 
@@ -240,28 +260,13 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     }
   }, [id]);
 
-  // ── Decode & draw real waveform when audioUrl is set ──
-  useEffect(() => {
-    if (!data.audioUrl) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new AudioContext();
-    }
-
-    decodeAndDrawWaveform(data.audioUrl, canvas, waveformRef, audioCtxRef.current);
-  }, [data.audioUrl]);
-
   // ── Reset when URL changes ──
   useEffect(() => {
     audioRef.current?.pause();
     cancelAnimationFrame(animFrameRef.current);
     waveformRef.current = null;
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
-    }
+    const canvas = canvasRef.current;
+    if (canvas) drawEmptyWaveform(canvas);
     const resetFrame = requestAnimationFrame(() => {
       setIsPlaying(false);
       setCurrentTime(0);
@@ -269,13 +274,70 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     return () => cancelAnimationFrame(resetFrame);
   }, [data.audioUrl]);
 
+  // ── Decode visible waveforms during idle time; selected nodes load immediately ──
+  useEffect(() => {
+    const audioUrl = data.audioUrl;
+    const canvas = canvasRef.current;
+    if (!audioUrl || !canvas) return;
+
+    let cancelled = false;
+    let cancelScheduled: (() => void) | undefined;
+
+    const loadWaveform = async () => {
+      try {
+        const waveform = await getCachedWaveform(audioUrl);
+        if (cancelled || document.hidden || canvasRef.current !== canvas) return;
+        waveformRef.current = waveform;
+        drawWaveform(canvas, waveform);
+      } catch {
+        if (!cancelled && canvasRef.current === canvas) drawEmptyWaveform(canvas);
+      }
+    };
+
+    const scheduleWaveform = () => {
+      if (cancelled || document.hidden || waveformRef.current) return;
+      cancelScheduled?.();
+      if (selected || typeof window.requestIdleCallback !== 'function') {
+        void loadWaveform();
+        cancelScheduled = undefined;
+        return;
+      }
+      const idleId = window.requestIdleCallback(() => {
+        cancelScheduled = undefined;
+        void loadWaveform();
+      }, { timeout: 1_000 });
+      cancelScheduled = () => window.cancelIdleCallback(idleId);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        cancelScheduled?.();
+        cancelScheduled = undefined;
+        const audio = audioRef.current;
+        if (audio && !audio.paused) {
+          audio.pause();
+          cancelAnimationFrame(animFrameRef.current);
+          renderCanvas(canvas, waveformRef.current, -1);
+          setIsPlaying(false);
+        }
+        return;
+      }
+      scheduleWaveform();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    scheduleWaveform();
+    return () => {
+      cancelled = true;
+      cancelScheduled?.();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [data.audioUrl, selected]);
+
   // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {
       cancelAnimationFrame(animFrameRef.current);
-      if (audioCtxRef.current) {
-        audioCtxRef.current.close().catch(() => {});
-      }
     };
   }, []);
 
@@ -283,14 +345,13 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const startProgressLoop = useCallback(() => {
     const audio = audioRef.current;
     const canvas = canvasRef.current;
-    const data = waveformRef.current;
     if (!audio || !canvas) return;
 
     const loop = () => {
       setCurrentTime(audio.currentTime);
       const dur = audio.duration;
       const p = dur > 0 ? audio.currentTime / dur : -1;
-      renderCanvas(canvas, data, p);
+      renderCanvas(canvas, waveformRef.current, p);
       animFrameRef.current = requestAnimationFrame(loop);
     };
     animFrameRef.current = requestAnimationFrame(loop);
@@ -392,14 +453,14 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           )}
           {data.audioUrl ? (
             <div className="audio-waveform-wrapper" onClick={togglePlay} onContextMenu={(e) => e.preventDefault()}>
-              <canvas ref={canvasRef} className="audio-waveform-canvas" width={220} height={80} />
+              <canvas ref={canvasRef} className="audio-waveform-canvas" width={WAVEFORM_COLUMNS} height={80} />
               <audio
                 ref={audioRef}
                 src={data.audioUrl}
                 data-source-url={data.sourceUrl}
                 onEnded={handleEnded}
                 onTimeUpdate={handleTimeUpdate}
-                preload="auto"
+                preload="none"
               />
               {!isPlaying && (
                 <div className="audio-play-overlay">

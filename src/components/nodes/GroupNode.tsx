@@ -9,7 +9,7 @@ import { useRef, useState, useCallback } from 'react';
 import { NodeResizer, Handle, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import { Icon } from '@iconify/react';
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, type AppState } from '../../store/useAppStore';
 import AnimatedButton from '../shared/AnimatedButton';
 import { batchExecuteNodes, type BatchContext } from '../../utils/batchExecute';
 
@@ -19,10 +19,25 @@ interface GroupNodeData {
   label: string;
 }
 
+const childCountCache = new WeakMap<AppState['nodes'], Map<string, number>>();
+
+function getGroupChildCount(nodes: AppState['nodes'], groupId: string) {
+  let counts = childCountCache.get(nodes);
+  if (!counts) {
+    counts = new Map<string, number>();
+    for (const node of nodes) {
+      if (!node.parentId) continue;
+      counts.set(node.parentId, (counts.get(node.parentId) ?? 0) + 1);
+    }
+    childCountCache.set(nodes, counts);
+  }
+  return counts.get(groupId) ?? 0;
+}
+
 export default function GroupNode({ id, data, selected }: NodeProps) {
   const { groupId, color, label } = data as unknown as GroupNodeData;
   const renameGroup = useAppStore((s) => s.renameGroup);
-  const childCount = useAppStore((s) => s.nodes.filter((n) => n.parentId === id).length);
+  const childCount = useAppStore((s) => getGroupChildCount(s.nodes, id));
   const editingRef = useRef(false);
   const [batchRunning, setBatchRunning] = useState(false);
 

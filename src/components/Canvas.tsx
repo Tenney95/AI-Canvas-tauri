@@ -742,6 +742,7 @@ function CanvasInner() {
         onEdgesChange={handleEdgesChange}
         nodeTypes={nodeTypes}
         connectionMode={ConnectionMode.Loose}
+        onlyRenderVisibleElements
         fitView
         fitViewOptions={FIT_VIEW_OPTIONS}
         minZoom={0.1}

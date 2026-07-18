@@ -10,12 +10,6 @@ import SessionProjectTabs from './components/SessionProjectTabs';
 import Sidebar from './components/Sidebar';
 import Canvas from './components/Canvas';
 import NodeMenu from './components/NodeMenu';
-import SettingsPanel from './components/SettingsPanel';
-import AINodeDialog from './components/nodes/AINodeDialog';
-import WorkflowPanel from './components/WorkflowPanel';
-import AssetsPanel from './components/AssetsPanel';
-import OutputHistoryPanel from './components/OutputHistoryPanel';
-import ChatPanel from './components/chat/ChatPanel';
 import Toast from './components/Toast';
 import SplashScreen from './components/SplashScreen';
 import CanvasBackground from './components/backgrounds/CanvasBackground';
@@ -23,7 +17,8 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useReferencedImageWatcher } from './hooks/useReferencedImageWatcher';
 import { useTooltipAutoPlacement } from './hooks/useTooltipAutoPlacement';
-import { useAppStore } from './store/useAppStore';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore, type AppState } from './store/useAppStore';
 import * as fileService from './services/fileService';
 import { checkForUpdate, downloadAndInstallUpdate, type UpdateInfo } from './services/updateService';
 import { DOWNLOAD_MASCOT_EVENT } from './components/shared/ModelDownloadDialog';
@@ -34,12 +29,55 @@ const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 // 懒加载：吉祥物引入 three + gsap（体积大户），默认隐藏，首次 Ctrl+Shift+M 显示时才加载
 const Mascot = lazy(() => import('./components/shared/mascot/Mascot'));
 const PacmanMascot = lazy(() => import('./components/shared/mascot/PacmanDownloadMascot'));
+const SettingsPanel = lazy(() => import('./components/SettingsPanel'));
+const AINodeDialog = lazy(() => import('./components/nodes/AINodeDialog'));
+const WorkflowPanel = lazy(() => import('./components/WorkflowPanel'));
+const AssetsPanel = lazy(() => import('./components/AssetsPanel'));
+const OutputHistoryPanel = lazy(() => import('./components/OutputHistoryPanel'));
+const ChatPanel = lazy(() => import('./components/chat/ChatPanel'));
+
+let cachedMascotNodes: AppState['nodes'] | undefined;
+let cachedMascotLoading = false;
+
+function selectMascotLoading(state: AppState) {
+  if (!state.config.mascotVisible) return false;
+  if (state.nodes !== cachedMascotNodes) {
+    cachedMascotNodes = state.nodes;
+    cachedMascotLoading = state.nodes.some(
+      (node) => (node.data as { status?: string })?.status === 'loading',
+    );
+  }
+  return cachedMascotLoading;
+}
+
+function useFeatureMount(active: boolean) {
+  const [hasMounted, setHasMounted] = useState(active);
+  if (active && !hasMounted) setHasMounted(true);
+  return active || hasMounted;
+}
 
 export default function App() {
   useKeyboardShortcuts();
   useAutoSave();
   useReferencedImageWatcher();
   useTooltipAutoPlacement();
+
+  const featureVisibility = useAppStore(
+    useShallow((state) => ({
+      settings: state.settingsOpen,
+      nodeDialog: state.activeNodeId !== null,
+      workflows: state.workflowPanelOpen,
+      assets: state.assetsPanelOpen,
+      history: state.historyPanelOpen,
+      chat: state.chatOpen || state.chatPanelDetached,
+    })),
+  );
+  const mountSettings = useFeatureMount(featureVisibility.settings);
+  const mountNodeDialog = useFeatureMount(featureVisibility.nodeDialog);
+  const mountWorkflows = useFeatureMount(featureVisibility.workflows);
+  const mountAssets = useFeatureMount(featureVisibility.assets);
+  const mountHistory = useFeatureMount(featureVisibility.history);
+  const mountChat = useFeatureMount(featureVisibility.chat);
 
   // 开屏动画状态
   const [splashDone, setSplashDone] = useState(false);
@@ -118,9 +156,7 @@ export default function App() {
   const canvasBackground = useAppStore((s) => s.config.canvasBackground);
   const mascotVisible = useAppStore((s) => s.config.mascotVisible);
   // 任意节点处于生成中 → 吉祥物切换为 LOADING 形态
-  const mascotLoading = useAppStore((s) =>
-    s.nodes.some((n) => (n.data as { status?: string })?.status === 'loading'),
-  );
+  const mascotLoading = useAppStore(selectMascotLoading);
   const effectiveTheme = canvasBackground === 'off-white' ? 'light' : configTheme;
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', effectiveTheme);
@@ -184,12 +220,24 @@ export default function App() {
         <Titlebar />
         <SessionProjectTabs />
         <NodeMenu />
-        <SettingsPanel />
-        <AINodeDialog />
-        <WorkflowPanel />
-        <AssetsPanel />
-        <OutputHistoryPanel />
-        <ChatPanel />
+        <Suspense fallback={null}>
+          {mountSettings && <SettingsPanel />}
+        </Suspense>
+        <Suspense fallback={null}>
+          {mountNodeDialog && <AINodeDialog />}
+        </Suspense>
+        <Suspense fallback={null}>
+          {mountWorkflows && <WorkflowPanel />}
+        </Suspense>
+        <Suspense fallback={null}>
+          {mountAssets && <AssetsPanel />}
+        </Suspense>
+        <Suspense fallback={null}>
+          {mountHistory && <OutputHistoryPanel />}
+        </Suspense>
+        <Suspense fallback={null}>
+          {mountChat && <ChatPanel />}
+        </Suspense>
         <Toast />
       </div>
       {/* Sidebar — outside the overflow-hidden container so it's not clipped */}

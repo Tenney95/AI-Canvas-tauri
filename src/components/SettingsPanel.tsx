@@ -2,6 +2,7 @@
  * SettingsPanel 设置面板 — 模态弹窗，管理常规设置、API Key 配置、快捷键、ComfyUI
  */
 import { useState, useEffect, useRef } from 'react';
+import '../styles/settings.css';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { getProjectDataDir, getBaseDir, openDirectoryInFileManager, PROJECT_DISK_CHANGED_EVENT } from '../services/fileService';

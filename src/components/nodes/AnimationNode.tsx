@@ -1,7 +1,7 @@
 /**
  * AnimationNode — 2D 角色 Sprite Sheet 生成与逐帧预览节点
  */
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { Icon } from '@iconify/react';
 import { Handle, Position } from '@xyflow/react';
 import type { AnimationPreviewMode, BaseNodeData } from '../../types';
@@ -13,6 +13,36 @@ import NodeError from './shared/NodeError';
 import GooeyBtn from './shared/GooeyBtn';
 import ResizeHandle from './shared/ResizeHandle';
 import { useNodeRename } from './shared/useNodeRename';
+
+const pageVisibilityListeners = new Set<() => void>();
+let listeningForPageVisibility = false;
+
+function handlePageVisibilityChange() {
+  pageVisibilityListeners.forEach((listener) => listener());
+}
+
+function subscribeToPageVisibility(listener: () => void) {
+  pageVisibilityListeners.add(listener);
+  if (!listeningForPageVisibility) {
+    document.addEventListener('visibilitychange', handlePageVisibilityChange);
+    listeningForPageVisibility = true;
+  }
+  return () => {
+    pageVisibilityListeners.delete(listener);
+    if (pageVisibilityListeners.size === 0 && listeningForPageVisibility) {
+      document.removeEventListener('visibilitychange', handlePageVisibilityChange);
+      listeningForPageVisibility = false;
+    }
+  };
+}
+
+function usePageVisible() {
+  return useSyncExternalStore(
+    subscribeToPageVisibility,
+    () => !document.hidden,
+    () => true,
+  );
+}
 
 function parseAspectRatio(value: unknown) {
   if (typeof value !== 'string') return null;
@@ -33,16 +63,16 @@ function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData;
   const displaySrc = (data.imageUrl || data.thumbnailUrl) as string | undefined;
   const grid = ANIMATION_FRAME_GRIDS[frameCount];
   const [frameIndex, setFrameIndex] = useState(0);
+  const pageVisible = usePageVisible();
   const { displayLabel, handleRename } = useNodeRename(id, data, '生成动画');
 
   useEffect(() => {
-    setFrameIndex(0);
-    if (!displaySrc || previewMode !== 'playing') return;
+    if (!pageVisible || !displaySrc || previewMode !== 'playing') return;
     const timer = window.setInterval(() => {
       setFrameIndex((current) => (current + 1) % frameCount);
     }, 125);
     return () => window.clearInterval(timer);
-  }, [displaySrc, frameCount, previewMode]);
+  }, [displaySrc, frameCount, pageVisible, previewMode]);
 
   const handlePreviewModeChange = useCallback((mode: AnimationPreviewMode) => {
     updateNodeDataTransient(id, { animationPreviewMode: mode });
@@ -52,8 +82,9 @@ function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData;
     updateNodeDataTransient(id, { nodeWidth: width, nodeHeight: width + 38 });
   }, [id, updateNodeDataTransient]);
 
-  const column = frameIndex % grid.cols;
-  const row = Math.floor(frameIndex / grid.cols);
+  const visibleFrameIndex = frameIndex % frameCount;
+  const column = visibleFrameIndex % grid.cols;
+  const row = Math.floor(visibleFrameIndex / grid.cols);
   const generatedSheetAspect = data.imageWidth && data.imageHeight
     ? data.imageWidth / data.imageHeight
     : null;
@@ -87,7 +118,7 @@ function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData;
         <div className="animation-preview">
           {displaySrc ? (
             previewMode === 'playing' ? (
-              <div className="animation-frame" role="img" aria-label={`${ANIMATION_ACTION_LABELS[action]}动画第 ${frameIndex + 1} 帧`}>
+              <div className="animation-frame" role="img" aria-label={`${ANIMATION_ACTION_LABELS[action]}动画第 ${visibleFrameIndex + 1} 帧`}>
                 <img className="animation-frame-sheet" src={displaySrc} alt="" style={frameImageStyle} draggable={false} />
               </div>
             ) : (
