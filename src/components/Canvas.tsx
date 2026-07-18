@@ -41,9 +41,14 @@ import { useNodeContextMenu } from '../hooks/useNodeContextMenu';
 import { useAppStore } from '../store/useAppStore';
 import { useNodeCreation } from '../hooks/useNodeCreation';
 import type { BaseNodeData } from '../types';
-import type { Node as RFNode, NodeTypes, Connection, Edge } from '@xyflow/react';
+import type { Node as RFNode, NodeTypes, Connection, Edge, OnMove } from '@xyflow/react';
 import { useNodeSnap, ResizeSnapContext, type SnapLine } from '../hooks/useNodeSnap';
 import { setCanvasPointerPosition } from '../services/canvasPointerService';
+import {
+  CANVAS_PAN_BY_EVENT,
+  CANVAS_PAN_DURATION_MS,
+  type CanvasPanByDetail,
+} from '../services/canvasViewportService';
 
 // 懒加载：全景节点引入 three（体积大户），画布上出现全景节点时才加载
 const PanoramaNodeLazy = lazy(() => import('./nodes/PanoramaNode'));
@@ -75,6 +80,7 @@ const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 const isMacOS = typeof navigator !== 'undefined'
   && /Macintosh|Mac OS X/.test(navigator.userAgent);
 const shouldUseMacTrackpadPan = isTauri && isMacOS;
+const easeOutCubic = (progress: number) => 1 - (1 - progress) ** 3;
 
 // ── 交互模式预设（冻结对象，避免每次 render 产生新身份，导致 React Flow 内部 effect 重跑、拖拽掉帧）──
 const DEFAULT_INTERACTION = Object.freeze({
@@ -203,6 +209,20 @@ function CanvasInner() {
   }, [interactionMode]);
   const reactFlowInstance = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
+  const activeCanvasPanRef = useRef<{
+    startX: number;
+    startY: number;
+    detail: CanvasPanByDetail;
+  } | null>(null);
+
+  const handleCanvasViewportMove = useCallback<OnMove>((_, viewport) => {
+    const activePan = activeCanvasPanRef.current;
+    if (!activePan) return;
+    activePan.detail.onProgress?.({
+      deltaX: viewport.x - activePan.startX,
+      deltaY: viewport.y - activePan.startY,
+    });
+  }, []);
 
   // 节点进场动画（translateY）会让 React Flow 在挂载瞬间测得偏移的 handle 锚点并缓存，
   // 导致连线起止点错位。进场动画结束（落位 translateY:0）后重新测量该节点的 handle。
@@ -411,6 +431,55 @@ function CanvasInner() {
     };
     window.addEventListener('canvas-fit-view', handler);
     return () => window.removeEventListener('canvas-fit-view', handler);
+  }, [reactFlowInstance]);
+
+  // ── Keep anchored overlays visible by panning the whole canvas ──
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<CanvasPanByDetail>).detail;
+      if (!detail) return;
+      const { deltaX, deltaY, duration = CANVAS_PAN_DURATION_MS } = detail;
+      if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
+      if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
+
+      const viewport = reactFlowInstance.getViewport();
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const activePan = {
+        startX: viewport.x,
+        startY: viewport.y,
+        detail,
+      };
+      activeCanvasPanRef.current = activePan;
+
+      void reactFlowInstance.setViewport(
+        {
+          x: viewport.x + deltaX,
+          y: viewport.y + deltaY,
+          zoom: viewport.zoom,
+        },
+        {
+          duration: reduceMotion ? 0 : duration,
+          ease: easeOutCubic,
+          interpolate: 'linear',
+        },
+      ).finally(() => {
+        if (activeCanvasPanRef.current !== activePan) return;
+        const finalViewport = reactFlowInstance.getViewport();
+        const progress = {
+          deltaX: finalViewport.x - activePan.startX,
+          deltaY: finalViewport.y - activePan.startY,
+        };
+        detail.onProgress?.(progress);
+        detail.onComplete?.(progress);
+        activeCanvasPanRef.current = null;
+      });
+    };
+
+    window.addEventListener(CANVAS_PAN_BY_EVENT, handler);
+    return () => {
+      activeCanvasPanRef.current = null;
+      window.removeEventListener(CANVAS_PAN_BY_EVENT, handler);
+    };
   }, [reactFlowInstance]);
 
   // ── Focus node events (history / Agent-created node batch) ──
@@ -751,6 +820,7 @@ function CanvasInner() {
         proOptions={PRO_OPTIONS}
         {...interaction}
         onContextMenu={(e) => e.preventDefault()}
+        onMove={handleCanvasViewportMove}
         onMouseMove={handleCanvasPointer}
         onMouseUp={handleCanvasPointer}
         onDragEnter={onDragEnter}

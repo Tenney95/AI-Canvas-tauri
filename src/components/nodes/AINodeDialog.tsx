@@ -1,7 +1,7 @@
 /**
  * AINodeDialog AI 生成弹窗 — 点击节点后弹出的浮动面板，包含 Prompt 输入、模型选择、参数配置、生成按钮
  */
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
 import { generateId, useAppStore } from '../../store/useAppStore';
@@ -18,6 +18,10 @@ import PromptPanel from './shared/PromptPanel';
 import type { MentionEditorHandle } from './shared/MentionEditor';
 import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
 import { findMediaModelOption } from './shared/defaultModels';
+import {
+  CANVAS_PAN_DURATION_MS,
+  requestCanvasPanBy,
+} from '../../services/canvasViewportService';
 
 type AnimationFrameCount = 6 | 8 | 10 | 12 | 16 | 20;
 
@@ -55,6 +59,7 @@ const DREAMINA_ANIMATION_SHEET_RATIOS: Partial<Record<AnimationFrameCount, strin
 };
 
 const LOOPING_ACTIONS = new Set<AnimationAction>(['idle', 'walk', 'run']);
+const DIALOG_VIEWPORT_MARGIN = 16;
 
 function resolveAnimationSheetAspectRatio(frameCount: AnimationFrameCount, provider: string) {
   return provider === 'dreamina'
@@ -108,6 +113,148 @@ function AINodeDialog() {
   const nodeType = data?.type;
 
   const panelRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const preview = previewRef.current;
+    if (!panel || !activeNodeId) return;
+
+    let scheduledFrame = 0;
+    let settleTimer = 0;
+    let releaseTransitionFrame = 0;
+    let adjustmentLocked = false;
+    let disposed = false;
+    let trackedNodeElement: HTMLElement | null = null;
+
+    const positionDialog = (anchor: { x: number; y: number }) => {
+      panel.style.left = `${anchor.x}px`;
+      panel.style.top = `${anchor.y - 20}px`;
+      if (preview) {
+        preview.style.left = `${anchor.x}px`;
+        preview.style.top = `${anchor.y - 10 - 42}px`;
+      }
+    };
+
+    const syncDialogToNode = () => {
+      if (!trackedNodeElement?.isConnected) {
+        trackedNodeElement = document.querySelector<HTMLElement>(
+          `.react-flow__node[data-id="${activeNodeId}"]`,
+        );
+      }
+      const nodeRect = trackedNodeElement?.getBoundingClientRect();
+      if (!nodeRect) return null;
+
+      const anchor = {
+        x: nodeRect.left + nodeRect.width / 2,
+        y: nodeRect.bottom,
+      };
+      positionDialog(anchor);
+      return anchor;
+    };
+
+    const panCanvasWithDialog = (deltaX: number, deltaY: number, duration: number) => {
+      cancelAnimationFrame(releaseTransitionFrame);
+      panel.style.transition = 'none';
+      if (preview) preview.style.transition = 'none';
+      const startAnchor = syncDialogToNode();
+      if (!startAnchor) {
+        adjustmentLocked = false;
+        panel.style.removeProperty('transition');
+        preview?.style.removeProperty('transition');
+        return;
+      }
+
+      requestCanvasPanBy({
+        deltaX,
+        deltaY,
+        duration,
+        onProgress: (progress) => {
+          if (disposed) return;
+          positionDialog({
+            x: startAnchor.x + progress.deltaX,
+            y: startAnchor.y + progress.deltaY,
+          });
+        },
+        onComplete: (progress) => {
+          if (disposed) return;
+          const finalAnchor = {
+            x: startAnchor.x + progress.deltaX,
+            y: startAnchor.y + progress.deltaY,
+          };
+          positionDialog(finalAnchor);
+          useAppStore.getState().openNodeDialog(activeNodeId, finalAnchor);
+          releaseTransitionFrame = requestAnimationFrame(() => {
+            panel.style.removeProperty('transition');
+            preview?.style.removeProperty('transition');
+            adjustmentLocked = false;
+            scheduleUpdate();
+          });
+        },
+      });
+    };
+
+    const revealDialog = () => {
+      if (adjustmentLocked) return;
+
+      const panelRect = panel.getBoundingClientRect();
+      const visualViewport = window.visualViewport;
+      const appRect = panel.closest<HTMLElement>('.app-box')?.getBoundingClientRect();
+      const viewportLeft = visualViewport?.offsetLeft ?? 0;
+      const viewportTop = visualViewport?.offsetTop ?? 0;
+      const viewportRight = viewportLeft + (visualViewport?.width ?? window.innerWidth);
+      const viewportBottom = viewportTop + (visualViewport?.height ?? window.innerHeight);
+      const safeLeft = Math.max(viewportLeft, appRect?.left ?? viewportLeft) + DIALOG_VIEWPORT_MARGIN;
+      const safeTop = Math.max(viewportTop, appRect?.top ?? viewportTop) + DIALOG_VIEWPORT_MARGIN;
+      const safeRight = Math.min(viewportRight, appRect?.right ?? viewportRight) - DIALOG_VIEWPORT_MARGIN;
+      const safeBottom = Math.min(viewportBottom, appRect?.bottom ?? viewportBottom) - DIALOG_VIEWPORT_MARGIN;
+      const availableWidth = safeRight - safeLeft;
+      const availableHeight = safeBottom - safeTop;
+      let deltaX = 0;
+      let deltaY = 0;
+
+      if (panelRect.width <= availableWidth) {
+        if (panelRect.left < safeLeft) deltaX = safeLeft - panelRect.left;
+        else if (panelRect.right > safeRight) deltaX = safeRight - panelRect.right;
+      }
+      if (panelRect.height <= availableHeight) {
+        if (panelRect.top < safeTop) deltaY = safeTop - panelRect.top;
+        else if (panelRect.bottom > safeBottom) deltaY = safeBottom - panelRect.bottom;
+      }
+
+      if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
+
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const duration = reduceMotion ? 0 : CANVAS_PAN_DURATION_MS;
+      adjustmentLocked = true;
+      panCanvasWithDialog(deltaX, deltaY, duration);
+    };
+
+    const scheduleUpdate = () => {
+      cancelAnimationFrame(scheduledFrame);
+      scheduledFrame = requestAnimationFrame(revealDialog);
+    };
+    const observer = new ResizeObserver(scheduleUpdate);
+    observer.observe(panel);
+    const appBox = panel.closest<HTMLElement>('.app-box');
+    if (appBox) observer.observe(appBox);
+    scheduleUpdate();
+    settleTimer = window.setTimeout(scheduleUpdate, CANVAS_PAN_DURATION_MS);
+    window.addEventListener('resize', scheduleUpdate);
+    window.visualViewport?.addEventListener('resize', scheduleUpdate);
+
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(scheduledFrame);
+      cancelAnimationFrame(releaseTransitionFrame);
+      window.clearTimeout(settleTimer);
+      panel.style.removeProperty('transition');
+      preview?.style.removeProperty('transition');
+      observer.disconnect();
+      window.removeEventListener('resize', scheduleUpdate);
+      window.visualViewport?.removeEventListener('resize', scheduleUpdate);
+    };
+  }, [activeNodeId]);
 
   // 节点尺寸变化时，重新计算浮动面板位置，使其跟随节点平滑移动
   useEffect(() => {
@@ -830,6 +977,7 @@ function AINodeDialog() {
 
       {/* Connected nodes preview — above backdrop, below dialog (model-dropdown covers it) */}
       <div
+        ref={previewRef}
         className="ai-dialog-preview-float"
         style={dialogPosition ? {
           left: `${dialogPosition.x}px`,
