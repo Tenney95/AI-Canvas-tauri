@@ -781,14 +781,13 @@ function LogoMenu() {
    Main Sidebar
    ============================================ */
 export default function Sidebar() {
-  const { openNodePicker, closeNodePicker, toggleAvatarMenu, nodePickerOpen, setWorkflowPanelOpen, setAssetsPanelOpen, setHistoryPanelOpen } =
+  const { openNodePicker, closeNodePicker, toggleAvatarMenu, nodePickerOpen, setAssetsPanelOpen, setHistoryPanelOpen } =
     useAppStore(
       useShallow((s) => ({
         openNodePicker: s.openNodePicker,
         closeNodePicker: s.closeNodePicker,
         toggleAvatarMenu: s.toggleAvatarMenu,
         nodePickerOpen: s.nodePickerOpen,
-        setWorkflowPanelOpen: s.setWorkflowPanelOpen,
         setAssetsPanelOpen: s.setAssetsPanelOpen,
         setHistoryPanelOpen: s.setHistoryPanelOpen,
       })),
@@ -841,11 +840,6 @@ export default function Sidebar() {
       {/* Assets */}
       <button type="button" className="sidebar-btn-v3" data-tooltip="资产" onClick={() => setAssetsPanelOpen(true)}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"><path strokeDasharray="64" strokeDashoffset="64" d="M12 7h8c0.55 0 1 0.45 1 1v10c0 0.55 -0.45 1 -1 1h-16c-0.55 0 -1 -0.45 -1 -1v-11Z"><animate fill="freeze" attributeName="stroke-dashoffset" dur="0.6s" values="64;0"/></path><path d="M12 7h-9v0c0 0 0.45 0 1 0h6z" opacity="0"><animate fill="freeze" attributeName="d" begin="0.6s" dur="0.2s" values="M12 7h-9v0c0 0 0.45 0 1 0h6z;M12 7h-9v-1c0 -0.55 0.45 -1 1 -1h6z"/><set fill="freeze" attributeName="opacity" begin="0.6s" to="1"/></path></g></svg>
-      </button>
-
-      {/* Workflows */}
-      <button type="button" className="sidebar-btn-v3" data-tooltip="工作流" onClick={() => setWorkflowPanelOpen(true)}>
-        <svg width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M1 3a2 2 0 0 1 2-2h6.5a2 2 0 0 1 2 2v6.5a2 2 0 0 1-2 2H7v4.063C7 16.355 7.644 17 8.438 17H12.5v-2.5a2 2 0 0 1 2-2H21a2 2 0 0 1 2 2V21a2 2 0 0 1-2 2h-6.5a2 2 0 0 1-2-2v-2.5H8.437A2.94 2.94 0 0 1 5.5 15.562V11.5H3a2 2 0 0 1-2-2Zm2-.5a.5.5 0 0 0-.5.5v6.5a.5.5 0 0 0 .5.5h6.5a.5.5 0 0 0 .5-.5V3a.5.5 0 0 0-.5-.5ZM14.5 14a.5.5 0 0 0-.5.5V21a.5.5 0 0 0 .5.5H21a.5.5 0 0 0 .5-.5v-6.5a.5.5 0 0 0-.5-.5Z"/></svg>
       </button>
 
       {/* History */}

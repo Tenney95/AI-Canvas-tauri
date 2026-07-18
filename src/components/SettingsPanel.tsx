@@ -2,6 +2,7 @@
  * SettingsPanel 设置面板 — 模态弹窗，管理常规设置、API Key 配置、快捷键、ComfyUI
  */
 import { useState, useEffect, useRef } from 'react';
+import { Icon } from '@iconify/react';
 import '../styles/settings.css';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
@@ -92,7 +93,7 @@ function formatBytes(bytes: number): string {
 }
 
 export default function SettingsPanel() {
-  const { settingsOpen, setSettingsOpen, config, updateConfig, saveConfig, currentProjectId, showToast } =
+  const { settingsOpen, setSettingsOpen, config, updateConfig, saveConfig, currentProjectId, workflows, setWorkflowPanelOpen, showToast } =
     useAppStore(
       useShallow((s) => ({
         settingsOpen: s.settingsOpen,
@@ -101,6 +102,8 @@ export default function SettingsPanel() {
         updateConfig: s.updateConfig,
         saveConfig: s.saveConfig,
         currentProjectId: s.currentProjectId,
+        workflows: s.workflows,
+        setWorkflowPanelOpen: s.setWorkflowPanelOpen,
         showToast: s.showToast,
       })),
     );
@@ -310,6 +313,11 @@ export default function SettingsPanel() {
   const comfyUIPath = config.comfyUIPath;
   const photoshopPath = config.photoshopPath;
 
+  const handleOpenWorkflowPanel = () => {
+    setSettingsOpen(false);
+    setWorkflowPanelOpen(true);
+  };
+
   return (
     <ModalOverlay
       isOpen={settingsOpen}
@@ -499,6 +507,28 @@ export default function SettingsPanel() {
                     <p className="text-[11px] text-canvas-text-muted mt-2">
                       ComfyUI 后端服务的地址，用于执行导入的工作流。默认端口为 8188
                     </p>
+                  </div>
+                </div>
+
+                {/* ComfyUI 工作流 */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">ComfyUI 工作流</h3>
+                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-2 flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-purple-500/15 text-purple-400 flex items-center justify-center shrink-0">
+                      <Icon icon="lucide:workflow" width="18" height="18" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium text-canvas-text">工作流管理</div>
+                      <div className="text-[11px] text-canvas-text-muted mt-0.5">已导入 {workflows.length} 个工作流</div>
+                    </div>
+                    <AnimatedButton
+                      type="button"
+                      className="settings-save-btn shrink-0 text-xs flex items-center gap-1.5"
+                      onClick={handleOpenWorkflowPanel}
+                    >
+                      管理工作流
+                      <Icon icon="lucide:chevron-right" width="14" height="14" />
+                    </AnimatedButton>
                   </div>
                 </div>
               </div>

@@ -374,6 +374,13 @@
   padding: 0;
   flex-shrink: 0;
 }
+.wf-item-del[data-tooltip]::after {
+  top: 50%;
+  right: calc(100% + 6px);
+  bottom: auto;
+  left: auto;
+  transform: translateY(-50%);
+}
 .wf-item-del:hover {
   color: var(--danger-light);
   background: var(--danger-bg);
