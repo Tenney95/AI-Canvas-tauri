@@ -82,6 +82,12 @@ export function normalizeProjectSettings(settings: ProjectSettings): ProjectSett
       .map(([kind, model]) => [kind, clean(model)])
       .filter((entry): entry is [string, string] => !!entry[1]),
   ) as ProjectSettings['defaultModels'];
+  const hasTypedPromptSuffixes = settings.promptSuffixes !== undefined;
+  const promptSuffixes = Object.fromEntries(
+    Object.entries(settings.promptSuffixes ?? {})
+      .map(([kind, suffix]) => [kind, clean(suffix)])
+      .filter((entry): entry is [string, string] => !!entry[1]),
+  ) as ProjectSettings['promptSuffixes'];
 
   const generation = settings.generation;
   const imageAspectRatio = PROJECT_IMAGE_ASPECT_RATIOS.includes(
@@ -99,7 +105,12 @@ export function normalizeProjectSettings(settings: ProjectSettings): ProjectSett
 
   return {
     ...(visualStyle ? { visualStyle } : {}),
-    ...(clean(settings.promptSuffix) ? { promptSuffix: clean(settings.promptSuffix) } : {}),
+    ...(hasTypedPromptSuffixes && promptSuffixes && Object.keys(promptSuffixes).length > 0
+      ? { promptSuffixes }
+      : {}),
+    ...(!hasTypedPromptSuffixes && clean(settings.promptSuffix)
+      ? { promptSuffix: clean(settings.promptSuffix) }
+      : {}),
     ...(defaultModels && Object.keys(defaultModels).length > 0 ? { defaultModels } : {}),
     ...(imageAspectRatio || imageSize || videoResolution || videoDuration
       ? { generation: { imageAspectRatio, imageSize, videoResolution, videoDuration } }
@@ -192,6 +203,10 @@ export function resolveProjectGenerationPrompt({
     : undefined;
 
   if (stylePrompt?.trim()) parts.push(stylePrompt.trim());
-  if (settings?.promptSuffix?.trim()) parts.push(settings.promptSuffix.trim());
+  const promptKind = getProjectModelKind(data.type);
+  const promptSuffix = settings?.promptSuffixes !== undefined
+    ? promptKind ? settings.promptSuffixes[promptKind] : undefined
+    : settings?.promptSuffix;
+  if (promptSuffix?.trim()) parts.push(promptSuffix.trim());
   return [...new Set(parts.filter(Boolean))].join('\n\n');
 }

@@ -47,6 +47,7 @@ interface ModelRowDefinition {
   nodeType: NodeType;
   icon: string;
   colorClass: string;
+  tabActiveClass: string;
 }
 
 interface ModelOptionGroup {
@@ -56,16 +57,36 @@ interface ModelOptionGroup {
 }
 
 const MODEL_ROWS: ModelRowDefinition[] = [
-  { kind: 'text', label: '文本', nodeType: 'ai-text', icon: 'lucide:type', colorClass: 'text-indigo-400' },
-  { kind: 'image', label: '图像', nodeType: 'ai-image', icon: 'lucide:image', colorClass: 'text-green-400' },
-  { kind: 'video', label: '视频', nodeType: 'ai-video', icon: 'lucide:clapperboard', colorClass: 'text-blue-400' },
-  { kind: 'audio', label: '音频', nodeType: 'ai-audio', icon: 'lucide:audio-lines', colorClass: 'text-orange-400' },
+  {
+    kind: 'text', label: '文本', nodeType: 'ai-text', icon: 'lucide:type',
+    colorClass: 'text-indigo-400',
+    tabActiveClass: 'bg-node-text/15 text-node-text-light ring-1 ring-inset ring-node-text/25',
+  },
+  {
+    kind: 'image', label: '图像', nodeType: 'ai-image', icon: 'lucide:image',
+    colorClass: 'text-green-400',
+    tabActiveClass: 'bg-node-image/15 text-node-image-light ring-1 ring-inset ring-node-image/25',
+  },
+  {
+    kind: 'video', label: '视频', nodeType: 'ai-video', icon: 'lucide:clapperboard',
+    colorClass: 'text-blue-400',
+    tabActiveClass: 'bg-node-video/15 text-node-video-light ring-1 ring-inset ring-node-video/25',
+  },
+  {
+    kind: 'audio', label: '音频', nodeType: 'ai-audio', icon: 'lucide:audio-lines',
+    colorClass: 'text-orange-400',
+    tabActiveClass: 'bg-node-audio/15 text-node-audio-light ring-1 ring-inset ring-node-audio/25',
+  },
 ];
 
 function cloneSettings(settings: ProjectSettings | undefined): ProjectSettings {
+  const legacyPromptSuffix = settings?.promptSuffix ?? '';
   return {
     visualStyle: settings?.visualStyle ? { ...settings.visualStyle } : undefined,
-    promptSuffix: settings?.promptSuffix ?? '',
+    promptSuffixes: Object.fromEntries(MODEL_ROWS.map((row) => [
+      row.kind,
+      settings?.promptSuffixes?.[row.kind] ?? legacyPromptSuffix,
+    ])),
     defaultModels: { ...settings?.defaultModels },
     generation: { ...settings?.generation },
   };
@@ -155,6 +176,7 @@ export default function ProjectSettingsPopover({
   const panelRef = useRef<HTMLDivElement>(null);
   const reduceMotion = useReducedMotion();
   const [draft, setDraft] = useState<ProjectSettings>(() => cloneSettings(project?.settings));
+  const [activePromptKind, setActivePromptKind] = useState<ProjectModelKind>('image');
   const [saving, setSaving] = useState(false);
   const [position, setPosition] = useState({ top: 44, left: 12 });
   const nestedModalOpenRef = useRef(false);
@@ -236,6 +258,7 @@ export default function ProjectSettingsPopover({
   const modelGroups = useMemo(() => Object.fromEntries(
     MODEL_ROWS.map((row) => [row.kind, buildModelGroups(row, generalModels)]),
   ) as Record<ProjectModelKind, ModelOptionGroup[]>, [generalModels]);
+  const activePromptRow = MODEL_ROWS.find((row) => row.kind === activePromptKind) ?? MODEL_ROWS[0];
 
   const handleStyleChange = (styleId: string) => {
     const style = styleOptions.find((option) => option.id === styleId);
@@ -364,23 +387,52 @@ export default function ProjectSettingsPopover({
                     </button>
                   </div>
                 </div>
-                <label className="grid gap-1.5">
-                  <span className="text-[11px] font-medium text-canvas-text-muted">项目提示词后缀</span>
+                <div className="grid gap-1.5">
+                  <span className="flex items-center justify-between gap-3">
+                    <span className="text-[11px] font-medium text-canvas-text-muted">项目提示词后缀</span>
+                    <span
+                      role="tablist"
+                      aria-label="提示词后缀节点类型"
+                      className="flex h-7 items-center gap-0.5 rounded-md bg-canvas-card p-0.5"
+                    >
+                      {MODEL_ROWS.map((row) => (
+                        <button
+                          key={row.kind}
+                          type="button"
+                          role="tab"
+                          aria-selected={activePromptKind === row.kind}
+                          onClick={() => setActivePromptKind(row.kind)}
+                          className={`h-6 min-w-10 rounded px-2 text-[10px] font-medium
+                                      transition-[color,background-color,box-shadow] ${
+                            activePromptKind === row.kind
+                              ? row.tabActiveClass
+                              : 'text-canvas-text-muted hover:text-canvas-text-secondary'
+                          }`}
+                        >
+                          {row.label}
+                        </button>
+                      ))}
+                    </span>
+                  </span>
                   <textarea
-                    value={draft.promptSuffix ?? ''}
+                    value={draft.promptSuffixes?.[activePromptKind] ?? ''}
                     maxLength={2000}
                     rows={3}
+                    aria-label={`${activePromptRow.label}节点提示词后缀`}
                     onChange={(event) => setDraft((current) => ({
                       ...current,
-                      promptSuffix: event.target.value,
+                      promptSuffixes: {
+                        ...current.promptSuffixes,
+                        [activePromptKind]: event.target.value,
+                      },
                     }))}
                     className="min-h-20 resize-y rounded-md border border-canvas-border bg-canvas-card px-3 py-2
                                text-xs leading-5 text-canvas-text outline-none transition-colors
                                placeholder:text-canvas-text-muted/60 hover:border-border-secondary
                                focus:border-indigo-500"
-                    placeholder="角色、品牌或镜头的一致性约束"
+                    placeholder={`${activePromptRow.label}节点的一致性约束`}
                   />
-                </label>
+                </div>
               </section>
 
               <section className="grid gap-3 border-t border-border-subtle px-4 py-4">

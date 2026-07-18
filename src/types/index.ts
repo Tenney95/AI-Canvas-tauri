@@ -165,7 +165,9 @@ export interface ProjectGenerationDefaults {
 
 export interface ProjectSettings {
   visualStyle?: ProjectVisualStyleSettings;
+  /** @deprecated 旧项目的全类型提示词后缀；编辑保存后迁移到 promptSuffixes。 */
   promptSuffix?: string;
+  promptSuffixes?: Partial<Record<ProjectModelKind, string>>;
   defaultModels?: Partial<Record<ProjectModelKind, string>>;
   generation?: ProjectGenerationDefaults;
 }
