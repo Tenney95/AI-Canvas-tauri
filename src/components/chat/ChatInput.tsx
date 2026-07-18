@@ -22,6 +22,12 @@ import type { LocalFileGrantSummary } from '../../services/chat/fileGrantService
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 type ReferenceScope = 'all' | 'nodes' | 'models';
+type ReferenceSuggestion =
+  | { key: string; kind: 'node'; nodeId: string; label: string; displayId?: number }
+  | { key: string; kind: 'model'; model: MediaModelOption };
+
+const REFERENCE_SUGGESTION_LIST_ID = 'chat-reference-suggestions';
+const SKILL_SUGGESTION_LIST_ID = 'chat-skill-suggestions';
 
 function parseReferenceQuery(query: string): { scope: ReferenceScope; query: string } {
   const shortcut = query.toLocaleLowerCase();
@@ -137,6 +143,7 @@ export default function ChatInput({
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
   const [skillQuery, setSkillQuery] = useState('');
   const [skillUploading, setSkillUploading] = useState(false);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const canvasNodes = useAppStore((state) => state.nodes);
   const userSkills = useAppStore((state) => state.userSkills);
   const uploadSkill = useAppStore((state) => state.uploadSkill);
@@ -179,8 +186,14 @@ export default function ChatInput({
     () => new Map(canvasNodes.map((node) => [node.id, node.data.displayId])),
     [canvasNodes],
   );
-  const visibleCanvasNodes = referenceScope === 'models' ? [] : filteredCanvasNodes;
-  const visibleMediaGroups = referenceScope === 'nodes' ? [] : groupedMediaModels;
+  const visibleCanvasNodes = useMemo(
+    () => referenceScope === 'models' ? [] : filteredCanvasNodes,
+    [filteredCanvasNodes, referenceScope],
+  );
+  const visibleMediaGroups = useMemo(
+    () => referenceScope === 'nodes' ? [] : groupedMediaModels,
+    [groupedMediaModels, referenceScope],
+  );
 
   const modelGroupAvailability = useMemo(() => {
     const availability: Record<string, boolean> = { 'general-models': true };
@@ -212,6 +225,7 @@ export default function ChatInput({
     setModelMenuOpen(false);
     setModelQuery('');
     setReferenceScope('all');
+    setActiveSuggestionIndex(0);
   }, []);
 
   const insertNodeMention = useCallback((nodeId: string, label: string, displayId?: number) => {
@@ -224,6 +238,7 @@ export default function ChatInput({
     setModelMenuOpen(false);
     setModelQuery('');
     setReferenceScope('all');
+    setActiveSuggestionIndex(0);
   }, []);
 
   const insertSkillReference = useCallback((skillId: string, skillName: string) => {
@@ -234,7 +249,102 @@ export default function ChatInput({
     });
     setSkillMenuOpen(false);
     setSkillQuery('');
+    setActiveSuggestionIndex(0);
   }, []);
+
+  const referenceSuggestions = useMemo<ReferenceSuggestion[]>(() => [
+    ...visibleCanvasNodes.map((node) => ({
+      key: `node:${node.id}`,
+      kind: 'node' as const,
+      nodeId: node.id,
+      label: String(node.data.label || '节点'),
+      displayId: node.data.displayId,
+    })),
+    ...visibleMediaGroups.flatMap((group) => group.models
+      .filter(isModelAvailable)
+      .map((model) => ({
+        key: `model:${model.mediaKind}:${model.value}`,
+        kind: 'model' as const,
+        model,
+      }))),
+  ], [isModelAvailable, visibleCanvasNodes, visibleMediaGroups]);
+  const skillSuggestions = useMemo(
+    () => filteredSkills.map((skill) => ({ key: `skill:${skill.id}`, skill })),
+    [filteredSkills],
+  );
+  const referenceSuggestionIndexes = useMemo(
+    () => new Map(referenceSuggestions.map((suggestion, index) => [suggestion.key, index])),
+    [referenceSuggestions],
+  );
+  const activeSuggestionCount = modelMenuOpen
+    ? referenceSuggestions.length
+    : skillMenuOpen
+      ? skillSuggestions.length
+      : 0;
+  const resolvedActiveSuggestionIndex = activeSuggestionCount > 0
+    ? Math.min(activeSuggestionIndex, activeSuggestionCount - 1)
+    : 0;
+
+  const selectReferenceSuggestion = useCallback((suggestion: ReferenceSuggestion) => {
+    if (suggestion.kind === 'node') {
+      insertNodeMention(suggestion.nodeId, suggestion.label, suggestion.displayId);
+    } else {
+      insertModelMention(suggestion.model);
+    }
+  }, [insertModelMention, insertNodeMention]);
+
+  const handleSuggestionKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const suggestionsOpen = modelMenuOpen || skillMenuOpen;
+    if (!suggestionsOpen) return false;
+    if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) return false;
+    if (event.key === 'Enter' && event.shiftKey) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      setModelMenuOpen(false);
+      setSkillMenuOpen(false);
+      setModelQuery('');
+      setSkillQuery('');
+      setReferenceScope('all');
+      return true;
+    }
+
+    const suggestionCount = modelMenuOpen
+      ? referenceSuggestions.length
+      : skillSuggestions.length;
+    if (suggestionCount === 0) return true;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      const offset = event.key === 'ArrowDown' ? 1 : -1;
+      setActiveSuggestionIndex((index) => (index + offset + suggestionCount) % suggestionCount);
+      return true;
+    }
+
+    if (modelMenuOpen) {
+      const suggestion = referenceSuggestions[resolvedActiveSuggestionIndex] ?? referenceSuggestions[0];
+      if (suggestion) selectReferenceSuggestion(suggestion);
+    } else {
+      const suggestion = skillSuggestions[resolvedActiveSuggestionIndex] ?? skillSuggestions[0];
+      if (suggestion) insertSkillReference(suggestion.skill.id, suggestion.skill.name);
+    }
+    return true;
+  }, [
+    insertSkillReference,
+    modelMenuOpen,
+    referenceSuggestions,
+    resolvedActiveSuggestionIndex,
+    selectReferenceSuggestion,
+    skillMenuOpen,
+    skillSuggestions,
+  ]);
+
+  const activeSuggestionId = modelMenuOpen
+    ? (referenceSuggestions.length > 0
+      ? `chat-reference-suggestion-${resolvedActiveSuggestionIndex}`
+      : undefined)
+    : skillMenuOpen && skillSuggestions.length > 0
+      ? `chat-skill-suggestion-${resolvedActiveSuggestionIndex}`
+      : undefined;
 
   const handleUploadSkill = useCallback(async () => {
     if (skillUploading) return;
@@ -254,6 +364,20 @@ export default function ChatInput({
       inputRef.current?.focus();
     }
   }, [disabled]);
+
+  useEffect(() => {
+    const openModelReferences = () => {
+      setSkillMenuOpen(false);
+      setSkillQuery('');
+      setReferenceScope('models');
+      setModelQuery('');
+      setModelMenuOpen(true);
+      setActiveSuggestionIndex(0);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    };
+    window.addEventListener('chat-open-reference-menu', openModelReferences);
+    return () => window.removeEventListener('chat-open-reference-menu', openModelReferences);
+  }, []);
 
   return (
     <div className="chat-panel-input-area flex-shrink-0 px-3 pt-2">
@@ -297,6 +421,7 @@ export default function ChatInput({
           nodeDisplayIds={nodeDisplayIds}
           onMentionQueryChange={(query) => {
             setModelMenuOpen(query != null);
+            setActiveSuggestionIndex(0);
             const parsedQuery = parseReferenceQuery(query ?? '');
             setReferenceScope(query == null ? 'all' : parsedQuery.scope);
             setModelQuery(parsedQuery.query);
@@ -304,9 +429,14 @@ export default function ChatInput({
           }}
           onSlashQueryChange={(query) => {
             setSkillMenuOpen(query != null);
+            setActiveSuggestionIndex(0);
             setSkillQuery(query ?? '');
             if (query != null) setModelMenuOpen(false);
           }}
+          onSuggestionKeyDown={handleSuggestionKeyDown}
+          suggestionListId={modelMenuOpen ? REFERENCE_SUGGESTION_LIST_ID : SKILL_SUGGESTION_LIST_ID}
+          activeSuggestionId={activeSuggestionId}
+          suggestionsOpen={modelMenuOpen || skillMenuOpen}
           placeholder="输入消息，@n 选节点 · @m 选模型 · / 调用 Skill"
           disabled={disabled}
         />
@@ -318,35 +448,46 @@ export default function ChatInput({
               initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.97 }}
-              transition={reduceMotion
-                ? { duration: 0.1 }
-                : { type: 'spring', visualDuration: 0.22, bounce: 0 }}
-              className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface shadow-xl">
+               transition={reduceMotion
+                 ? { duration: 0.1 }
+                 : { type: 'spring', visualDuration: 0.22, bounce: 0 }}
+               id={REFERENCE_SUGGESTION_LIST_ID}
+               role="listbox"
+               aria-label="节点与模型引用"
+               className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface shadow-xl">
               {visibleCanvasNodes.length > 0 && (
                 <div className="px-1 pb-1">
                   <div className="sticky top-0 z-20 -mx-1 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[10px] font-medium text-canvas-text-muted">
                     <span>画布节点</span>
                     <span>{visibleCanvasNodes.length}</span>
                   </div>
-                  {visibleCanvasNodes.map((node) => (
-                    <button
-                      key={node.id}
-                      type="button"
-                      onClick={() => insertNodeMention(
-                        node.id,
-                        String(node.data.label || '节点'),
-                        node.data.displayId,
-                      )}
-                      className="flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] text-canvas-text hover:bg-canvas-hover"
-                    >
-                      <NodeReferenceThumbnail data={node.data} />
-                      <span className="min-w-0 flex-1 truncate">{String(node.data.label || '节点')}</span>
-                      {node.data.displayId != null && (
-                        <span className="text-[10px] text-canvas-text-muted">#{String(node.data.displayId)}</span>
-                      )}
-                      <span className="text-[10px] text-canvas-text-muted">{String(node.data.type)}</span>
-                    </button>
-                  ))}
+                  {visibleCanvasNodes.map((node) => {
+                    const suggestionIndex = referenceSuggestionIndexes.get(`node:${node.id}`);
+                    const active = suggestionIndex === resolvedActiveSuggestionIndex;
+                    return (
+                      <button
+                        key={node.id}
+                        id={suggestionIndex == null ? undefined : `chat-reference-suggestion-${suggestionIndex}`}
+                        type="button"
+                        role="option"
+                        aria-selected={active}
+                        onMouseEnter={() => suggestionIndex != null && setActiveSuggestionIndex(suggestionIndex)}
+                        onClick={() => insertNodeMention(
+                          node.id,
+                          String(node.data.label || '节点'),
+                          node.data.displayId,
+                        )}
+                        className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] text-canvas-text transition-colors ${active ? 'bg-canvas-hover ring-1 ring-inset ring-indigo-400/25' : 'hover:bg-canvas-hover'}`}
+                      >
+                        <NodeReferenceThumbnail data={node.data} />
+                        <span className="min-w-0 flex-1 truncate">{String(node.data.label || '节点')}</span>
+                        {node.data.displayId != null && (
+                          <span className="text-[10px] text-canvas-text-muted">#{String(node.data.displayId)}</span>
+                        )}
+                        <span className="text-[10px] text-canvas-text-muted">{String(node.data.type)}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
               {visibleMediaGroups.map((group) => (
@@ -357,14 +498,20 @@ export default function ChatInput({
                   </div>
                   {group.models.map((model) => {
                     const available = isModelAvailable(model);
+                    const suggestionIndex = referenceSuggestionIndexes.get(`model:${model.mediaKind}:${model.value}`);
+                    const active = suggestionIndex === resolvedActiveSuggestionIndex;
                     return (
                       <button
                         key={`${model.mediaKind}:${model.value}`}
+                        id={suggestionIndex == null ? undefined : `chat-reference-suggestion-${suggestionIndex}`}
                         type="button"
+                        role="option"
+                        aria-selected={active}
                         disabled={!available}
+                        onMouseEnter={() => suggestionIndex != null && setActiveSuggestionIndex(suggestionIndex)}
                         onClick={() => insertModelMention(model)}
                         title={available ? model.description : '请先配置对应供应商'}
-                        className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] ${available ? 'text-canvas-text hover:bg-canvas-hover' : 'cursor-not-allowed text-canvas-text-muted opacity-50'}`}
+                        className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] transition-colors ${available ? `text-canvas-text ${active ? 'bg-canvas-hover ring-1 ring-inset ring-indigo-400/25' : 'hover:bg-canvas-hover'}` : 'cursor-not-allowed text-canvas-text-muted opacity-50'}`}
                       >
                         <Icon
                           icon={model.mediaKind === 'image'
@@ -404,10 +551,13 @@ export default function ChatInput({
               initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, scale: 0.97 }}
-              transition={reduceMotion
-                ? { duration: 0.1 }
-                : { type: 'spring', visualDuration: 0.22, bounce: 0 }}
-              className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface shadow-xl">
+               transition={reduceMotion
+                 ? { duration: 0.1 }
+                 : { type: 'spring', visualDuration: 0.22, bounce: 0 }}
+               id={SKILL_SUGGESTION_LIST_ID}
+               role="listbox"
+               aria-label="Skill 引用"
+               className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface shadow-xl">
               <div className="sticky top-0 z-20 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[10px] font-medium text-canvas-text-muted">
                 <span>Skill</span>
                 <span className="flex items-center gap-2">
@@ -429,13 +579,17 @@ export default function ChatInput({
                 </span>
               </div>
               <div className="px-1 pb-1">
-                {filteredSkills.length > 0 ? filteredSkills.map((skill) => (
+                {filteredSkills.length > 0 ? filteredSkills.map((skill, skillIndex) => (
                   <button
                     key={skill.id}
+                    id={`chat-skill-suggestion-${skillIndex}`}
                     type="button"
+                    role="option"
+                    aria-selected={skillIndex === resolvedActiveSuggestionIndex}
+                    onMouseEnter={() => setActiveSuggestionIndex(skillIndex)}
                     onClick={() => insertSkillReference(skill.id, skill.name)}
                     title={skill.description}
-                    className="flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] text-canvas-text hover:bg-canvas-hover"
+                    className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] text-canvas-text transition-colors ${skillIndex === resolvedActiveSuggestionIndex ? 'bg-canvas-hover ring-1 ring-inset ring-indigo-400/25' : 'hover:bg-canvas-hover'}`}
                   >
                     <Icon icon="mdi:puzzle-outline" width="16" />
                     <span className="min-w-0 flex-1">
@@ -471,6 +625,7 @@ export default function ChatInput({
                   setModelQuery('');
                   setReferenceScope('all');
                   setSkillMenuOpen(false);
+                  setActiveSuggestionIndex(0);
                   setModelMenuOpen((open) => !open);
                   inputRef.current?.focus();
                 }}
@@ -491,6 +646,7 @@ export default function ChatInput({
                 onClick={() => {
                   setSkillQuery('');
                   setModelMenuOpen(false);
+                  setActiveSuggestionIndex(0);
                   setSkillMenuOpen((open) => !open);
                   inputRef.current?.focus();
                 }}

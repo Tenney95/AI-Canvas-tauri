@@ -23,6 +23,10 @@ interface ChatComposerEditorProps {
   nodeDisplayIds: ReadonlyMap<string, number | undefined>;
   onMentionQueryChange: (query: string | null) => void;
   onSlashQueryChange: (query: string | null) => void;
+  onSuggestionKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => boolean;
+  suggestionListId?: string;
+  activeSuggestionId?: string;
+  suggestionsOpen?: boolean;
   placeholder: string;
   disabled?: boolean;
 }
@@ -234,6 +238,10 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
   nodeDisplayIds,
   onMentionQueryChange,
   onSlashQueryChange,
+  onSuggestionKeyDown,
+  suggestionListId,
+  activeSuggestionId,
+  suggestionsOpen = false,
   placeholder,
   disabled = false,
 }, ref) {
@@ -300,6 +308,12 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
     for (const node of renderValue(value, nodeDisplayIds)) editor.appendChild(node);
     if (hadFocus) placeCaretAtEnd(editor);
   }, [nodeDisplayIds, value]);
+
+  useEffect(() => {
+    const focusEditor = () => editorRef.current?.focus();
+    window.addEventListener('chat-focus-composer', focusEditor);
+    return () => window.removeEventListener('chat-focus-composer', focusEditor);
+  }, []);
 
   useImperativeHandle(ref, () => ({
     focus: () => editorRef.current?.focus(),
@@ -374,6 +388,7 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.nativeEvent.isComposing) return;
+    if (onSuggestionKeyDown?.(event)) return;
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       if (!disabled && value.trim()) onSubmit();
@@ -398,7 +413,7 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
     }
     if (event.key === 'Backspace' && removeAdjacentReference('before')) event.preventDefault();
     if (event.key === 'Delete' && removeAdjacentReference('after')) event.preventDefault();
-  }, [disabled, emitValue, onSubmit, removeAdjacentReference, value]);
+  }, [disabled, emitValue, onSubmit, onSuggestionKeyDown, removeAdjacentReference, value]);
 
   const handlePaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -427,6 +442,10 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
         role="textbox"
         aria-label="对话消息"
         aria-multiline="true"
+        aria-autocomplete="list"
+        aria-controls={suggestionsOpen ? suggestionListId : undefined}
+        aria-activedescendant={suggestionsOpen ? activeSuggestionId : undefined}
+        aria-expanded={suggestionsOpen}
         contentEditable={!disabled}
         suppressContentEditableWarning
         spellCheck={false}
@@ -437,7 +456,7 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
         onPaste={handlePaste}
         onBlur={emitValue}
         className={`chat-panel-textarea relative z-10 block w-full min-h-[64px] max-h-[160px]
-          overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-[15px] leading-6 text-canvas-text
+          overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-[13px] leading-5 text-canvas-text
           outline-none selection:bg-indigo-400/25 rounded-[8px] ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
       />
     </div>
