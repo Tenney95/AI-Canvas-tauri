@@ -59,7 +59,6 @@
   flex: 1;
   min-height: 0;
   margin: 4px 4px 0;
-  overflow: hidden;
   border-radius: 9px;
   background:
     linear-gradient(45deg, var(--white-alpha-03) 25%, transparent 25%, transparent 75%, var(--white-alpha-03) 75%),
@@ -75,6 +74,7 @@
   height: 100%;
   aspect-ratio: 1;
   margin: 0 auto;
+  border-radius: 9px;
   overflow: hidden;
 }
 

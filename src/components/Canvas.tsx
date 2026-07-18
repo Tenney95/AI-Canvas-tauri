@@ -108,6 +108,7 @@ const MINIMAP_STYLE = {
   border: '1px solid var(--theme-border)',
   borderRadius: '8px',
 };
+const INLINE_EDIT_DOUBLE_CLICK_DELAY_MS = 280;
 const isValidConnection = (conn: Connection | Edge) => conn.source !== conn.target;
 const minimapNodeColor = (node: RFNode) => {
   switch (node.type) {
@@ -429,10 +430,49 @@ function CanvasInner() {
 
   // ── Node click → AI dialog ──
   const openNodeDialog = useAppStore((s) => s.openNodeDialog);
+  const inlineEditClickTimerRef = useRef<number | null>(null);
+  const openDialogForNode = useCallback(
+    (node: RFNode<BaseNodeData>) => {
+      const el = document.querySelector(`.react-flow__node[data-id="${node.id}"]`);
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        openNodeDialog(node.id, { x: rect.left + rect.width / 2, y: rect.bottom });
+        return;
+      }
+      openNodeDialog(node.id);
+    },
+    [openNodeDialog],
+  );
+
+  useEffect(() => () => {
+    if (inlineEditClickTimerRef.current !== null) {
+      window.clearTimeout(inlineEditClickTimerRef.current);
+    }
+  }, []);
+
   const onNodeClick = useCallback(
     (e: React.MouseEvent, node: RFNode<BaseNodeData>) => {
+      if (inlineEditClickTimerRef.current !== null) {
+        window.clearTimeout(inlineEditClickTimerRef.current);
+        inlineEditClickTimerRef.current = null;
+      }
       // Shift+click is for multi-select, don't open dialog
       if (e.shiftKey) return;
+      const target = e.target instanceof Element ? e.target : null;
+      const isEmptyTextEditTrigger = target?.closest('[data-inline-edit-trigger]')
+        && node.data?.type === 'ai-text'
+        && node.data?.role !== 'source';
+      if (isEmptyTextEditTrigger) {
+        // 第一次点击先让 React Flow 完成选中；第二次点击会取消弹窗并交给 TextNode 的双击编辑。
+        if (e.detail > 1) return;
+        inlineEditClickTimerRef.current = window.setTimeout(() => {
+          inlineEditClickTimerRef.current = null;
+          const latestNode = useAppStore.getState().nodes.find((item) => item.id === node.id);
+          if (!latestNode?.selected || latestNode.data.output) return;
+          openDialogForNode(latestNode);
+        }, INLINE_EDIT_DOUBLE_CLICK_DELAY_MS);
+        return;
+      }
       // Group / Markdown / source nodes have no AI dialog
       if (node.type === 'group') return;
       if (node.data?.type === 'ai-markdown') return;
@@ -443,15 +483,9 @@ function CanvasInner() {
       if (node.data?.type === 'ai-panorama' && node.data?.imageUrl) return;
       if (node.data?.type === 'ai-video' && node.data?.videoUrl) return;
 
-      const el = document.querySelector(`.react-flow__node[data-id="${node.id}"]`);
-      if (el) {
-        const rect = el.getBoundingClientRect();
-        openNodeDialog(node.id, { x: rect.left + rect.width / 2, y: rect.bottom });
-      } else {
-        openNodeDialog(node.id);
-      }
+      openDialogForNode(node);
     },
-    [openNodeDialog],
+    [openDialogForNode],
   );
 
   // ── Selection sync ──

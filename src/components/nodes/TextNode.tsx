@@ -340,7 +340,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
           ) : (
             <div
               className="node-preview-placeholder text-node-empty-editable"
-              onClick={(e) => e.stopPropagation()}
+              data-inline-edit-trigger="true"
               onDoubleClick={enterInlineEdit}
               title="双击编辑"
             >
