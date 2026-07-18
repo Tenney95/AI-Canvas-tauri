@@ -1,7 +1,7 @@
 /**
  * testConnection 连接测试服务 — 按厂商调用对应 API 端点验证密钥有效性和余额（APIMart/GRSAI/OpenAI/火山方舟/RunningHUB
  */
-import { APIMART_BASE_URL } from '../constants/api';
+import { APIMART_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
 
 export interface TestResult {
   success: boolean;
@@ -35,10 +35,12 @@ async function testAPIMart(apiKey: string, baseUrl?: string): Promise<TestResult
 }
 
 /** 火山方舟 — 简单 ping */
-async function testVolcengine(apiKey: string): Promise<TestResult> {
-  void apiKey;
+async function testVolcengine(apiKey: string, baseUrl?: string): Promise<TestResult> {
   try {
-    const res = await fetch('https://ark.cn-beijing.volces.com/ping');
+    const url = new URL('/ping', baseUrl || VOLCENGINE_BASE_URL).toString();
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
     const data = await res.json().catch(() => ({}));
     if (data.message === 'pong') {
       return { success: true };

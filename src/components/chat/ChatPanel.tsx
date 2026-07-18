@@ -78,6 +78,7 @@ import {
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 const STREAMING_UI_FLUSH_INTERVAL_MS = 50;
+const DETACHED_CHAT_SYNC_INTERVAL_MS = 150;
 
 interface StreamingMessageBuffer {
   append: (delta: string) => void;
@@ -196,6 +197,7 @@ export default function ChatPanel({
     messages,
     agentTasks,
     currentProjectId,
+    currentProjectName,
     createConversation,
     setActiveConversation,
     updateConversation,
@@ -203,6 +205,8 @@ export default function ChatPanel({
     loadConversationMessages,
     showToast,
     assistantModelId,
+    assistantImageModelId,
+    assistantVideoModelId,
     generalModels,
     providers,
     dreaminaLoggedIn,
@@ -221,6 +225,7 @@ export default function ChatPanel({
       messages: s.messages,
       agentTasks: s.agentTasks,
       currentProjectId: s.currentProjectId,
+      currentProjectName: s.projects.find((project) => project.id === s.currentProjectId)?.name,
       createConversation: s.createConversation,
       setActiveConversation: s.setActiveConversation,
       updateConversation: s.updateConversation,
@@ -228,6 +233,8 @@ export default function ChatPanel({
       loadConversationMessages: s.loadConversationMessages,
       showToast: s.showToast,
       assistantModelId: s.config.assistantModelId,
+      assistantImageModelId: s.config.assistantImageModelId,
+      assistantVideoModelId: s.config.assistantVideoModelId,
       generalModels: s.config.generalModels ?? [],
       providers: s.config.providers,
       dreaminaLoggedIn: !!s.config.dreaminaAuth?.loggedIn,
@@ -282,7 +289,7 @@ export default function ChatPanel({
   const currentProjectMemories = effectiveProjectId
     ? projectMemories.filter((memory) => memory.projectId === effectiveProjectId)
     : [];
-  const [, setFileGrantVersion] = useState(0);
+  const [fileGrantVersion, setFileGrantVersion] = useState(0);
   useEffect(() => subscribeFileGrants(
     () => setFileGrantVersion((version) => version + 1),
   ), []);
@@ -630,34 +637,102 @@ export default function ChatPanel({
     }));
   }, []);
 
-  // ── 状态同步到独立窗口 ──
-  const syncToChatWindow = useCallback(() => {
-    if (!isTauri) return;
-    const s = useAppStore.getState();
-    if (!s.chatPanelDetached) return;
+  // ── 状态同步到独立窗口：限频 + 单飞 + 最新状态合并 ──
+  const chatSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chatSyncInFlightRef = useRef(false);
+  const chatSyncPendingRef = useRef(false);
+  const chatSyncImmediateRef = useRef(false);
+  const chatSyncDisposedRef = useRef(false);
+  const chatSyncLastStartedAtRef = useRef(0);
 
-    const project = s.projects.find((p) => p.id === s.currentProjectId);
-    emitSyncState({
-      conversations: s.conversations,
-      activeConversationId: s.activeConversationId,
-      messages: s.messages,
-      agentTasks: s.agentTasks,
-      projectId: s.currentProjectId,
-      projectName: project?.name,
-      generalModels: sanitizeGeneralModels(s.config.generalModels ?? []),
-      assistantModelId: s.config.assistantModelId,
-      assistantImageModelId: s.config.assistantImageModelId,
-      assistantVideoModelId: s.config.assistantVideoModelId,
-      mediaModelAvailability: getMediaModelAvailability(
-        getMediaModelOptions(s.config.generalModels ?? []),
-        s.config.generalModels ?? [],
-        s.config.providers,
-        !!s.config.dreaminaAuth?.loggedIn,
-      ),
-      localFileGrants: s.activeConversationId
-        ? listConversationFileGrants(s.activeConversationId)
-        : [],
-    });
+  const emitLatestChatWindowSnapshot = useCallback(async function emitLatestSnapshot() {
+    chatSyncTimerRef.current = null;
+    if (chatSyncDisposedRef.current || chatSyncInFlightRef.current || !chatSyncPendingRef.current) return;
+
+    const state = useAppStore.getState();
+    if (!state.chatPanelDetached) {
+      chatSyncPendingRef.current = false;
+      chatSyncImmediateRef.current = false;
+      return;
+    }
+
+    chatSyncPendingRef.current = false;
+    chatSyncImmediateRef.current = false;
+    chatSyncInFlightRef.current = true;
+    chatSyncLastStartedAtRef.current = performance.now();
+
+    const project = state.projects.find((item) => item.id === state.currentProjectId);
+    try {
+      await emitSyncState({
+        conversations: state.conversations,
+        activeConversationId: state.activeConversationId,
+        messages: state.messages,
+        agentTasks: state.agentTasks,
+        projectId: state.currentProjectId,
+        projectName: project?.name,
+        generalModels: sanitizeGeneralModels(state.config.generalModels ?? []),
+        assistantModelId: state.config.assistantModelId,
+        assistantImageModelId: state.config.assistantImageModelId,
+        assistantVideoModelId: state.config.assistantVideoModelId,
+        mediaModelAvailability: getMediaModelAvailability(
+          getMediaModelOptions(state.config.generalModels ?? []),
+          state.config.generalModels ?? [],
+          state.config.providers,
+          !!state.config.dreaminaAuth?.loggedIn,
+        ),
+        localFileGrants: state.activeConversationId
+          ? listConversationFileGrants(state.activeConversationId)
+          : [],
+      });
+    } finally {
+      chatSyncInFlightRef.current = false;
+      if (!chatSyncDisposedRef.current && chatSyncPendingRef.current) {
+        const elapsed = performance.now() - chatSyncLastStartedAtRef.current;
+        const delay = chatSyncImmediateRef.current
+          ? 0
+          : Math.max(0, DETACHED_CHAT_SYNC_INTERVAL_MS - elapsed);
+        chatSyncTimerRef.current = setTimeout(() => {
+          void emitLatestSnapshot();
+        }, delay);
+      }
+    }
+  }, []);
+
+  const syncToChatWindow = useCallback((immediate = false) => {
+    if (!isTauri) return;
+    const state = useAppStore.getState();
+    if (!state.chatPanelDetached) return;
+
+    chatSyncPendingRef.current = true;
+    if (immediate) chatSyncImmediateRef.current = true;
+
+    if (chatSyncTimerRef.current) {
+      if (!immediate) return;
+      clearTimeout(chatSyncTimerRef.current);
+      chatSyncTimerRef.current = null;
+    }
+    if (chatSyncInFlightRef.current) return;
+
+    const elapsed = performance.now() - chatSyncLastStartedAtRef.current;
+    const delay = immediate ? 0 : Math.max(0, DETACHED_CHAT_SYNC_INTERVAL_MS - elapsed);
+    if (delay === 0) {
+      void emitLatestChatWindowSnapshot();
+      return;
+    }
+    chatSyncTimerRef.current = setTimeout(() => {
+      void emitLatestChatWindowSnapshot();
+    }, delay);
+  }, [emitLatestChatWindowSnapshot]);
+
+  useEffect(() => {
+    chatSyncDisposedRef.current = false;
+    return () => {
+      chatSyncDisposedRef.current = true;
+      chatSyncPendingRef.current = false;
+      chatSyncImmediateRef.current = false;
+      if (chatSyncTimerRef.current) clearTimeout(chatSyncTimerRef.current);
+      chatSyncTimerRef.current = null;
+    };
   }, []);
 
   // ── 独立窗口通信 ──
@@ -753,7 +828,6 @@ export default function ChatPanel({
                     created.length > 0 ? `已授权 ${created.length} 个文件` : '未新增文件授权',
                     'info',
                   );
-                  syncToChatWindow();
                 })
                 .catch((error) => store.showToast(
                   error instanceof Error ? error.message : '文件授权失败',
@@ -763,7 +837,6 @@ export default function ChatPanel({
 
             case 'revoke_local_file':
               revokeFileGrant(action.conversationId, action.grantId);
-              syncToChatWindow();
               break;
 
             case 'set_agent_mode':
@@ -838,10 +911,9 @@ export default function ChatPanel({
               break;
 
             case 'request_sync':
+              syncToChatWindow(true);
               break;
           }
-
-          syncToChatWindow();
         },
         () => {
           const store = useAppStore.getState();
@@ -855,16 +927,18 @@ export default function ChatPanel({
     return () => { cleanup?.(); };
   }, [detached, syncToChatWindow]);
 
+  const chatWindowWasDetachedRef = useRef(false);
   useEffect(() => {
+    const wasDetached = chatWindowWasDetachedRef.current;
+    chatWindowWasDetachedRef.current = !detached && chatPanelDetached;
     if (!detached && chatPanelDetached) {
-      syncToChatWindow();
+      syncToChatWindow(!wasDetached);
+      return;
     }
-  }, [detached, chatPanelDetached, syncToChatWindow]);
-
-  useEffect(() => {
-    if (!detached && chatPanelDetached) {
-      syncToChatWindow();
-    }
+    chatSyncPendingRef.current = false;
+    chatSyncImmediateRef.current = false;
+    if (chatSyncTimerRef.current) clearTimeout(chatSyncTimerRef.current);
+    chatSyncTimerRef.current = null;
   }, [
     detached,
     messages,
@@ -872,6 +946,15 @@ export default function ChatPanel({
     agentTasks,
     activeConversationId,
     chatPanelDetached,
+    currentProjectId,
+    currentProjectName,
+    generalModels,
+    providers,
+    dreaminaLoggedIn,
+    assistantModelId,
+    assistantImageModelId,
+    assistantVideoModelId,
+    fileGrantVersion,
     syncToChatWindow,
   ]);
 
@@ -892,13 +975,12 @@ export default function ChatPanel({
       try {
         await invoke('open_chat_window');
         setChatPanelDetached(true);
-        setTimeout(() => syncToChatWindow(), 500);
       } catch (e) {
         console.error('[ChatPanel] failed to open chat window:', e);
         showToast('打开独立窗口失败', 'error');
       }
     }
-  }, [chatPanelDetached, setChatPanelDetached, showToast, syncToChatWindow]);
+  }, [chatPanelDetached, setChatPanelDetached, showToast]);
 
   // ── 空状态判断 ──
   const showEmptyState = !effectiveActiveConversationId && viewMode === 'chat';

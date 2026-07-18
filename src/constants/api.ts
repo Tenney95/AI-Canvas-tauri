@@ -18,6 +18,9 @@ export const DREAMINA_BASE_URL = 'https://api.dreamina.com';
 /** RunningHUB */
 export const RUNNINGHUB_BASE_URL = 'https://api.runninghub.cn';
 
+/** RunningHUB 标准模型 API（异步任务协议） */
+export const RUNNINGHUB_MODEL_BASE_URL = 'https://www.runninghub.cn/openapi/v2';
+
 /** 默认供应商 base URL 映射（用于 aiService 的 fallback） */
 export const DEFAULT_BASE_URLS: Record<string, string> = {
   apimart: APIMART_BASE_URL,

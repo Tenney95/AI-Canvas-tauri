@@ -19,7 +19,7 @@ import {
 const PROVIDER_URLS: Record<string, string> = {
   apimart: 'https://apimart.ai/register?aff=ZnmCKm',
   volcengine: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
-  runninghub: 'https://www.runninghub.cn/',
+  runninghub: 'https://www.runninghub.cn?inviteCode=iadc40jt',
   grsai: 'https://grsai.com/zh/dashboard/user-info',
   dreamina: 'https://www.dreamina.com',
 };

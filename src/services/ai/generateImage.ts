@@ -6,13 +6,14 @@
  *   apimart    → apimartGen（异步任务轮询）
  *   general    → providers/standardImage（通用模型，OpenAI 兼容）
  *   volcengine → providers/volcengineImage（Seedream 专属请求格式）
+ *   runninghub → providers/runninghubImage（标准模型异步任务协议）
  *   localllm   → 已废弃，引导迁移到通用模型
  *   其他       → providers/standardImage（标准 OpenAI 兼容）
  *
  * 公共前置处理（prompt 解析、图床上传、空值校验）统一在此完成。
  */
 import { useAppStore } from '../../store/useAppStore';
-import { DEFAULT_BASE_URLS } from '../../constants/api';
+import { DEFAULT_BASE_URLS, RUNNINGHUB_MODEL_BASE_URL } from '../../constants/api';
 import { mapImageDimensions } from '../aiDimensions';
 import { generateDreaminaImage } from '../dreaminaService';
 import { executeComfyUIGenerate } from '../comfyWorkflowService';
@@ -24,6 +25,7 @@ import { resolveImageUrlArray } from './imageUtils';
 import { generateApimartImagesBatch } from './apimartGen';
 import { generateImageStandardBatch } from './providers/standardImage';
 import { generateVolcengineImagesBatch } from './providers/volcengineImage';
+import { generateRunningHubImagesBatch } from './providers/runninghubImage';
 
 export async function generateImage(
   params: AIImageGenParams,
@@ -117,6 +119,28 @@ export async function generateImagesBatch(
         imageSize,
         aspectRatio,
         imageUrls: allImageUrls,
+      }, requestedCount);
+    }
+
+    case 'runninghub': {
+      const pc = config.providers['runninghub-model'];
+      const apiKey = pc?.apiKey || '';
+      if (!apiKey) {
+        throw new Error('未配置 RunningHub 模型 API Key\n请在「设置 → API Key」中配置企业级-共享密钥');
+      }
+      const baseUrl = (pc?.baseUrl || RUNNINGHUB_MODEL_BASE_URL).replace(/\/+$/, '');
+      if (!baseUrl) throw new Error('未配置 RunningHub 模型 API 服务地址');
+      const dimensions = mapImageDimensions(imageSize, aspectRatio);
+      return generateRunningHubImagesBatch({
+        apiKey,
+        baseUrl,
+        model,
+        prompt,
+        imageSize,
+        aspectRatio,
+        dimensions,
+        imageUrls: allImageUrls,
+        nodeId: params.nodeId,
       }, requestedCount);
     }
 

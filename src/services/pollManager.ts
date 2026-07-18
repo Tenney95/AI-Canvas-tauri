@@ -66,7 +66,7 @@ export interface PendingTask {
   nodeType: NodeType;
   provider: string;
   taskId: string;
-  taskType: 'apimart' | 'apimart-flow-music' | 'dreamina' | 'comfyui' | 'general' | 'volcengine';
+  taskType: 'apimart' | 'apimart-flow-music' | 'dreamina' | 'comfyui' | 'general' | 'volcengine' | 'runninghub';
   /** Flow Music 当前远端任务阶段。 */
   audioTaskStage?: 'lyrics' | 'music';
   /** 恢复轮询用：API Key */
@@ -75,6 +75,8 @@ export interface PendingTask {
   baseUrl?: string;
   /** APIMart 原生批量图片任务请求数量；旧记录缺省为 1。 */
   batchCount?: number;
+  /** 同一节点对应的多个异步任务 ID（RunningHub 批量图片生成）。 */
+  taskIds?: string[];
   /** 任务是否已向远端提交（false 表示仅预设了 status=loading 但还未拿到 taskId） */
   submitted: boolean;
 }
@@ -311,6 +313,122 @@ async function resumeApimart(task: PendingTask): Promise<void> {
     removePendingTask(nodeId);
   } catch (err) {
     await handleResumeError(nodeId, err);
+  } finally {
+    cleanupNodePolling(nodeId);
+  }
+}
+
+/* ── RunningHub 标准模型 ── */
+
+interface RunningHubTaskResult {
+  status?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  results?: Array<{ url?: string | null }> | null;
+}
+
+async function fetchRunningHubTask(
+  apiKey: string,
+  baseUrl: string,
+  taskId: string,
+): Promise<RunningHubTaskResult> {
+  const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/query`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ taskId }),
+  });
+  const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+  const code = payload.code;
+  if (!response.ok || (typeof code === 'number' && code !== 0)) {
+    const message = typeof payload.msg === 'string' ? payload.msg : `HTTP ${response.status}`;
+    throw new Error(`RunningHub 任务查询失败：${message}`);
+  }
+  const data = payload.data;
+  return data && typeof data === 'object' && !Array.isArray(data)
+    ? data as RunningHubTaskResult
+    : payload as RunningHubTaskResult;
+}
+
+async function pollRunningHubTask(
+  apiKey: string,
+  baseUrl: string,
+  taskId: string,
+  signal: AbortSignal,
+): Promise<string[]> {
+  return pollTask<RunningHubTaskResult, string[]>({
+    fetchState: () => fetchRunningHubTask(apiKey, baseUrl, taskId),
+    isComplete: (result) => {
+      if (result.status?.toUpperCase() !== 'SUCCESS') return null;
+      const urls = result.results?.flatMap((item) => item.url ? [item.url] : []) ?? [];
+      if (urls.length === 0) throw new Error('RunningHub 任务完成但未返回图片');
+      return urls;
+    },
+    isFailed: (result) => result.status?.toUpperCase() === 'FAILED'
+      ? `RunningHub 任务失败：${result.errorMessage || result.errorCode || '未知错误'}`
+      : null,
+    interval: 3000,
+    signal,
+  });
+}
+
+async function resumeRunningHub(task: PendingTask): Promise<void> {
+  const { nodeId, baseUrl } = task;
+  const apiKey = useAppStore.getState().config.providers['runninghub-model']?.apiKey || '';
+  const taskIds = (task.taskIds?.length ? task.taskIds : [task.taskId]).filter(Boolean);
+  if (!apiKey || !baseUrl || taskIds.length === 0) {
+    useAppStore.getState().updateNodeDataTransient(nodeId, {
+      status: 'error',
+      error: '任务恢复失败：缺少 RunningHub 模型 API 配置',
+    });
+    removePendingTask(nodeId);
+    return;
+  }
+
+  const node = useAppStore.getState().nodes.find((item) => item.id === nodeId);
+  const nodeData = node?.data as BaseNodeData | undefined;
+  if (!nodeData) {
+    removePendingTask(nodeId);
+    return;
+  }
+
+  const signal = registerNodePolling(nodeId);
+  try {
+    const settled = await Promise.allSettled(
+      taskIds.map((taskId) => pollRunningHubTask(apiKey, baseUrl, taskId, signal)),
+    );
+    const urls = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+    if (urls.length === 0) {
+      const failed = settled.find((result) => result.status === 'rejected') as PromiseRejectedResult | undefined;
+      throw failed?.reason || new Error('RunningHub 图片生成未返回可用结果');
+    }
+
+    const requestedCount = Math.max(1, task.batchCount ?? taskIds.length);
+    const imageSize = (nodeData.imageSize as string) || '2K';
+    const aspectRatio = (nodeData.aspectRatio as string) || '1:1';
+    const dimensions = mapImageDimensions(imageSize, aspectRatio);
+    if (requestedCount > 1) {
+      const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions }));
+      await applyImageBatchResults({
+        nodeId,
+        batch: {
+          requestedCount,
+          results,
+          failedCount: Math.max(0, requestedCount - results.length),
+        },
+        projectId: task.projectId,
+        prompt: (nodeData.prompt as string) || '',
+        imageSize,
+        aspectRatio,
+      });
+    } else {
+      await applyNodeResult(nodeId, urls[0], nodeData.label || '');
+    }
+    removePendingTask(nodeId);
+  } catch (error) {
+    await handleResumeError(nodeId, error);
   } finally {
     cleanupNodePolling(nodeId);
   }
@@ -680,6 +798,7 @@ const RESUME_MAP: Record<PendingTask['taskType'], (task: PendingTask) => Promise
   comfyui: resumeComfyUI,
   general: resumeGeneral,
   volcengine: resumeVolcengine,
+  runninghub: resumeRunningHub,
 };
 
 function isCancellationErrorMessage(message?: string): boolean {
