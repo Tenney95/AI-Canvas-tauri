@@ -75,6 +75,8 @@ export type ChatAction =
   | { type: 'authorize_local_files'; conversationId: string }
   | { type: 'revoke_local_file'; conversationId: string; grantId: string }
   | { type: 'select_model'; modelId?: string; category?: 'text' | 'image' | 'video' }
+  | { type: 'focus_node'; nodeId: string }
+  | { type: 'set_hovered_node'; nodeId: string | null }
   | { type: 'confirm_commands'; messageId: string }
   | { type: 'cancel_commands'; messageId: string }
   | { type: 'request_sync' };

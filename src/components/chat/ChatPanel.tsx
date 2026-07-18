@@ -15,7 +15,7 @@
  * - EmptyChatState.tsx      空会话状态
  * - ChatModelSelector.tsx   模型选择器
  */
-import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { invoke } from '@tauri-apps/api/core';
@@ -221,6 +221,8 @@ export default function ChatPanel({
   const effectiveAgentMode = effectiveActiveConversation?.agentMode ?? 'collaborative';
 
   const [inputValue, setInputValue] = useState('');
+  const conversationDraftsRef = useRef(new Map<string, string>());
+  const pendingConversationDraftRef = useRef<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'chat'>('chat');
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
   const currentProjectMemories = effectiveProjectId
@@ -235,6 +237,26 @@ export default function ChatPanel({
     : effectiveActiveConversationId
       ? listConversationFileGrants(effectiveActiveConversationId)
       : [];
+
+  const updateInputDraft = useCallback((value: string) => {
+    setInputValue(value);
+    if (!effectiveActiveConversationId) return;
+    if (value) conversationDraftsRef.current.set(effectiveActiveConversationId, value);
+    else conversationDraftsRef.current.delete(effectiveActiveConversationId);
+  }, [effectiveActiveConversationId]);
+
+  useEffect(() => {
+    if (effectiveActiveConversationId && pendingConversationDraftRef.current != null) {
+      const pendingDraft = pendingConversationDraftRef.current;
+      pendingConversationDraftRef.current = null;
+      conversationDraftsRef.current.set(effectiveActiveConversationId, pendingDraft);
+      setInputValue(pendingDraft);
+      return;
+    }
+    setInputValue(effectiveActiveConversationId
+      ? (conversationDraftsRef.current.get(effectiveActiveConversationId) ?? '')
+      : '');
+  }, [effectiveActiveConversationId]);
 
   const handleTextModelChange = useCallback((modelId?: string) => {
     if (detached) {
@@ -323,10 +345,13 @@ export default function ChatPanel({
 
   const handleExampleClick = useCallback((text: string) => {
     if (!effectiveActiveConversationId && effectiveProjectId) {
+      pendingConversationDraftRef.current = text;
       handleNewConversation();
+      setInputValue(text);
+      return;
     }
-    setInputValue(text);
-  }, [effectiveActiveConversationId, effectiveProjectId, handleNewConversation]);
+    updateInputDraft(text);
+  }, [effectiveActiveConversationId, effectiveProjectId, handleNewConversation, updateInputDraft]);
 
   const handleAddMediaToCanvas = useCallback((messageId: string) => {
     if (detached) return;
@@ -450,8 +475,8 @@ export default function ChatPanel({
   }, [detached, effectiveActiveConversationId]);
 
   // ── 发送消息 ──
-  const handleSend = useCallback(() => {
-    const text = inputValue.trim();
+  const sendMessageText = useCallback((content: string) => {
+    const text = content.trim();
     if (!text || !effectiveActiveConversationId) return;
 
     if (detached) {
@@ -460,7 +485,7 @@ export default function ChatPanel({
         content: text,
         conversationId: effectiveActiveConversationId,
       });
-      setInputValue('');
+      updateInputDraft('');
       return;
     }
 
@@ -474,7 +499,7 @@ export default function ChatPanel({
       status: 'done',
     };
     addMessage(userMsg);
-    setInputValue('');
+    updateInputDraft('');
 
     // 创建助手消息
     const assistantMsgId = `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -502,14 +527,54 @@ export default function ChatPanel({
 
     scrollToBottom();
   }, [
-    inputValue,
     detached,
     effectiveActiveConversationId,
     effectiveAgentMode,
     effectiveProjectId,
     addMessage,
     scrollToBottom,
+    updateInputDraft,
   ]);
+
+  const handleSend = useCallback(() => {
+    sendMessageText(inputValue);
+  }, [inputValue, sendMessageText]);
+
+  const handleEditMessage = useCallback((content: string) => {
+    updateInputDraft(content);
+    window.dispatchEvent(new CustomEvent('chat-focus-composer'));
+  }, [updateInputDraft]);
+
+  const handleRegenerateMessage = useCallback((content: string) => {
+    sendMessageText(content);
+  }, [sendMessageText]);
+
+  const handleNodeActivate = useCallback((nodeId: string) => {
+    if (detached) {
+      void emitAction({ type: 'focus_node', nodeId });
+      return;
+    }
+    const nodeExists = useAppStore.getState().nodes.some((node) => node.id === nodeId);
+    if (!nodeExists) {
+      showToast('引用的节点已不存在', 'error');
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('canvas-focus-node', { detail: { nodeId } }));
+  }, [detached, showToast]);
+
+  const handleNodeHover = useCallback((nodeId: string | null) => {
+    if (detached) {
+      void emitAction({ type: 'set_hovered_node', nodeId });
+      return;
+    }
+    useAppStore.getState().setHoveredMentionNodeId(nodeId);
+  }, [detached]);
+
+  const handleModelActivate = useCallback((modelId: string) => {
+    window.dispatchEvent(new CustomEvent('chat-open-reference-menu', {
+      detail: { kind: 'model', modelId },
+    }));
+  }, []);
 
   // ── 状态同步到独立窗口 ──
   const syncToChatWindow = useCallback(() => {
@@ -702,6 +767,22 @@ export default function ChatPanel({
               break;
             }
 
+            case 'focus_node': {
+              const nodeExists = store.nodes.some((node) => node.id === action.nodeId);
+              if (!nodeExists) {
+                store.showToast('引用的节点已不存在', 'error');
+                break;
+              }
+              window.dispatchEvent(new CustomEvent('canvas-focus-node', {
+                detail: { nodeId: action.nodeId },
+              }));
+              break;
+            }
+
+            case 'set_hovered_node':
+              store.setHoveredMentionNodeId(action.nodeId);
+              break;
+
             case 'request_sync':
               break;
           }
@@ -709,8 +790,10 @@ export default function ChatPanel({
           syncToChatWindow();
         },
         () => {
-          useAppStore.getState().setChatPanelDetached(false);
-          useAppStore.getState().openChat();
+          const store = useAppStore.getState();
+          store.setHoveredMentionNodeId(null);
+          store.setChatPanelDetached(false);
+          store.openChat();
         },
       );
     })();
@@ -864,6 +947,11 @@ export default function ChatPanel({
                     onShowList={handleShowList}
                     onExampleClick={handleExampleClick}
                     onAddMediaToCanvas={detached ? undefined : handleAddMediaToCanvas}
+                    onEditMessage={handleEditMessage}
+                    onRegenerateMessage={handleRegenerateMessage}
+                    onNodeActivate={handleNodeActivate}
+                    onNodeHover={handleNodeHover}
+                    onModelActivate={handleModelActivate}
                     agentControls={agentControls}
                   />
 
@@ -875,7 +963,7 @@ export default function ChatPanel({
                       mediaModels={effectiveGeneralModels}
                       mediaModelAvailability={effectiveMediaModelAvailability}
                       inputValue={inputValue}
-                      onInputChange={setInputValue}
+                      onInputChange={updateInputDraft}
                       onSend={handleSend}
                       localFileGrants={effectiveLocalFileGrants}
                       onAuthorizeLocalFiles={handleAuthorizeLocalFiles}

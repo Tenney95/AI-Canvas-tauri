@@ -3,17 +3,21 @@
  *
  * 渲染用户 / 助手 / 系统消息，含头像、状态指示器、生成图片 / 视频。
  */
+import { useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { ChatMessage } from '../../types/chat';
 import type { AgentTask } from '../../types/agent';
 import MascotAvatar from './MascotAvatar';
 import AgentTaskTimeline, { type AgentTaskControls } from './AgentTaskTimeline';
-import ChatReferenceText from './ChatReferenceText';
+import ChatReferenceText, { type ChatReferenceHandlers } from './ChatReferenceText';
+import ChatMarkdown from './ChatMarkdown';
 
-interface MessageBubbleProps {
+interface MessageBubbleProps extends ChatReferenceHandlers {
   message: ChatMessage;
   agentTask?: AgentTask;
   onAddToCanvas?: (messageId: string) => void;
+  onEditMessage?: (content: string) => void;
+  onRegenerate?: (messageId: string) => void;
   agentControls?: AgentTaskControls;
 }
 
@@ -27,8 +31,14 @@ export default function MessageBubble({
   message,
   agentTask,
   onAddToCanvas,
+  onEditMessage,
+  onRegenerate,
+  onNodeActivate,
+  onNodeHover,
+  onModelActivate,
   agentControls,
 }: MessageBubbleProps) {
+  const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
 
@@ -57,6 +67,20 @@ export default function MessageBubble({
     && !showTimeline
     && !isGenerating
     && ['queued', 'parsing', 'streaming'].includes(message.status);
+  const canRegenerate = !isUser
+    && !!message.content
+    && !!onRegenerate
+    && ['done', 'partial', 'interrupted', 'error', 'canceled'].includes(message.status);
+
+  const copyMessage = async () => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   return (
     <div className={`chat-message-bubble group flex items-end gap-1.5 ${isUser ? 'justify-end chat-message-user' : 'justify-start chat-message-assistant'}`}>
@@ -86,11 +110,24 @@ export default function MessageBubble({
             <span className="chat-typing-dot" />
           </span>
         )}
-        {message.content && (
+        {message.content && (isUser ? (
           <div className="whitespace-pre-wrap break-words">
-            <ChatReferenceText value={message.content} compact />
+            <ChatReferenceText
+              value={message.content}
+              compact
+              onNodeActivate={onNodeActivate}
+              onNodeHover={onNodeHover}
+              onModelActivate={onModelActivate}
+            />
           </div>
-        )}
+        ) : (
+          <ChatMarkdown
+            value={message.content}
+            onNodeActivate={onNodeActivate}
+            onNodeHover={onNodeHover}
+            onModelActivate={onModelActivate}
+          />
+        ))}
 
         {showTimeline && agentTask && agentControls && (
           <AgentTaskTimeline task={agentTask} {...agentControls} />
@@ -208,6 +245,42 @@ export default function MessageBubble({
           <div className="chat-message-status chat-message-status-interrupted flex items-center gap-1 mt-1 text-[11px] text-amber-400">
             <Icon icon="mdi:alert-outline" width="12" height="12" />
             响应中断
+          </div>
+        )}
+
+        {!!message.content && (
+          <div className={`mt-1 flex h-7 items-center gap-0.5 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 ${isUser ? 'justify-end' : 'justify-start'}`}>
+            <button
+              type="button"
+              onClick={() => void copyMessage()}
+              aria-label={copied ? '消息已复制' : '复制消息'}
+              data-tooltip={copied ? '已复制' : '复制'}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-canvas-text-muted transition-colors hover:bg-canvas-hover hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+            >
+              <Icon icon={copied ? 'mdi:check' : 'mdi:content-copy'} width="14" />
+            </button>
+            {isUser && onEditMessage && (
+              <button
+                type="button"
+                onClick={() => onEditMessage(message.content)}
+                aria-label="编辑并再次发送"
+                data-tooltip="编辑并再次发送"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-canvas-text-muted transition-colors hover:bg-canvas-hover hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+              >
+                <Icon icon="mdi:pencil-outline" width="14" />
+              </button>
+            )}
+            {canRegenerate && (
+              <button
+                type="button"
+                onClick={() => onRegenerate(message.id)}
+                aria-label="再次生成回答"
+                data-tooltip="再次生成"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-canvas-text-muted transition-colors hover:bg-canvas-hover hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+              >
+                <Icon icon="mdi:refresh" width="15" />
+              </button>
+            )}
           </div>
         )}
       </div>
