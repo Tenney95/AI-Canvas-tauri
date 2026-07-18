@@ -413,19 +413,54 @@ function CanvasInner() {
     return () => window.removeEventListener('canvas-fit-view', handler);
   }, [reactFlowInstance]);
 
-  // ── Focus node event (history panel "查看节点") ──
+  // ── Focus node events (history / Agent-created node batch) ──
   useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ nodeId: string }>).detail;
-      if (!detail?.nodeId || !reactFlowInstance) return;
-      const node = useAppStore.getState().nodes.find((n) => n.id === detail.nodeId);
-      if (!node) return;
-      requestAnimationFrame(() => {
-        reactFlowInstance.setCenter(node.position.x, node.position.y, { zoom: 1, duration: 400 });
+    const scheduledFrames = new Set<number>();
+    const focusNodes = (
+      nodeIds: string[],
+      options?: { padding?: number; maxZoom?: number; duration?: number },
+    ) => {
+      if (nodeIds.length === 0) return;
+      const firstFrame = requestAnimationFrame(() => {
+        scheduledFrames.delete(firstFrame);
+        const secondFrame = requestAnimationFrame(() => {
+          scheduledFrames.delete(secondFrame);
+          const targetIds = new Set(nodeIds);
+          const targetNodes = reactFlowInstance.getNodes().filter((node) => targetIds.has(node.id));
+          if (targetNodes.length === 0) return;
+          const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          void reactFlowInstance.fitView({
+            nodes: targetNodes,
+            padding: options?.padding ?? (targetNodes.length === 1 ? 0.45 : 0.3),
+            minZoom: targetNodes.length > 6 ? 0.18 : 0.28,
+            maxZoom: options?.maxZoom ?? (targetNodes.length === 1 ? 1.1 : 0.95),
+            duration: reduceMotion ? 0 : (options?.duration ?? 420),
+          });
+        });
+        scheduledFrames.add(secondFrame);
       });
+      scheduledFrames.add(firstFrame);
     };
-    window.addEventListener('canvas-focus-node', handler);
-    return () => window.removeEventListener('canvas-focus-node', handler);
+    const handleSingleNodeFocus = (e: Event) => {
+      const detail = (e as CustomEvent<{ nodeId: string }>).detail;
+      if (detail?.nodeId) focusNodes([detail.nodeId], { maxZoom: 1, duration: 400 });
+    };
+    const handleNodeBatchFocus = (e: Event) => {
+      const detail = (e as CustomEvent<{
+        nodeIds: string[];
+        padding?: number;
+        maxZoom?: number;
+        duration?: number;
+      }>).detail;
+      if (detail?.nodeIds?.length) focusNodes(detail.nodeIds, detail);
+    };
+    window.addEventListener('canvas-focus-node', handleSingleNodeFocus);
+    window.addEventListener('canvas-focus-nodes', handleNodeBatchFocus);
+    return () => {
+      window.removeEventListener('canvas-focus-node', handleSingleNodeFocus);
+      window.removeEventListener('canvas-focus-nodes', handleNodeBatchFocus);
+      for (const frameId of scheduledFrames) cancelAnimationFrame(frameId);
+    };
   }, [reactFlowInstance]);
 
   // ── Node click → AI dialog ──

@@ -45,6 +45,27 @@ interface CreateNodesInput {
   }>;
 }
 
+type CreateNodeInput = CreateNodesInput['nodes'][number];
+
+interface CanvasPoint {
+  x: number;
+  y: number;
+}
+
+interface CanvasRect extends CanvasPoint {
+  width: number;
+  height: number;
+}
+
+const DEFAULT_NODE_WIDTH = 280;
+const DEFAULT_NODE_HEIGHT = 160;
+const COMMENT_NODE_HEIGHT = 120;
+const AGENT_NODE_COLUMN_GAP = 56;
+const AGENT_NODE_ROW_GAP = 48;
+const AGENT_NODE_ANCHOR_GAP = 72;
+const AGENT_NODE_COLLISION_GAP = 24;
+const NODE_REFERENCE_PATTERN = /@\{([^:}\r\n]+):[^}\r\n]+\}/g;
+
 interface UpdateNodesInput extends NodeTargetInput {
   label?: string;
   prompt?: string;
@@ -182,29 +203,164 @@ async function executeCanvasCommand(
   };
 }
 
-function createCanvasNode(
-  input: CreateNodesInput['nodes'][number],
-  index: number,
-): Node<BaseNodeData> {
+function getNodeDimensions(input: CreateNodeInput): { width: number; height: number } {
+  return {
+    width: DEFAULT_NODE_WIDTH,
+    height: input.type === 'comment' ? COMMENT_NODE_HEIGHT : DEFAULT_NODE_HEIGHT,
+  };
+}
+
+function getAbsoluteNodePosition(node: Node<BaseNodeData>, nodes: Node<BaseNodeData>[]): CanvasPoint {
+  const position = { ...node.position };
+  const visited = new Set<string>();
+  let parentId = node.parentId;
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = nodes.find((candidate) => candidate.id === parentId);
+    if (!parent) break;
+    position.x += parent.position.x;
+    position.y += parent.position.y;
+    parentId = parent.parentId;
+  }
+  return position;
+}
+
+function getExistingNodeRect(node: Node<BaseNodeData>, nodes: Node<BaseNodeData>[]): CanvasRect {
+  const position = getAbsoluteNodePosition(node, nodes);
+  const styleWidth = typeof node.style?.width === 'number' ? node.style.width : undefined;
+  const styleHeight = typeof node.style?.height === 'number' ? node.style.height : undefined;
+  return {
+    ...position,
+    width: Number(node.data?.nodeWidth) || node.measured?.width || styleWidth || DEFAULT_NODE_WIDTH,
+    height: Number(node.data?.nodeHeight) || node.measured?.height || styleHeight || DEFAULT_NODE_HEIGHT,
+  };
+}
+
+function getRectBounds(rects: CanvasRect[]): CanvasRect | null {
+  if (rects.length === 0) return null;
+  const left = Math.min(...rects.map((rect) => rect.x));
+  const top = Math.min(...rects.map((rect) => rect.y));
+  const right = Math.max(...rects.map((rect) => rect.x + rect.width));
+  const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function rectsOverlap(first: CanvasRect, second: CanvasRect): boolean {
+  return first.x < second.x + second.width + AGENT_NODE_COLLISION_GAP
+    && first.x + first.width + AGENT_NODE_COLLISION_GAP > second.x
+    && first.y < second.y + second.height + AGENT_NODE_COLLISION_GAP
+    && first.y + first.height + AGENT_NODE_COLLISION_GAP > second.y;
+}
+
+function resolveReferencedNodes(taskId: string, nodes: Node<BaseNodeData>[]): Node<BaseNodeData>[] {
+  const task = useAppStore.getState().agentTasks.find((candidate) => candidate.id === taskId);
+  if (!task) return [];
+  const referencedIds = new Set(
+    [...task.goal.matchAll(NODE_REFERENCE_PATTERN)].map((match) => match[1]),
+  );
+  return nodes.filter((node) => referencedIds.has(node.id));
+}
+
+function resolveCreateNodePositions(
+  context: AgentToolContext,
+  inputs: CreateNodeInput[],
+): CanvasPoint[] {
   const store = useAppStore.getState();
+  const existingNodes = store.nodes;
+  const obstacles = existingNodes.map((node) => getExistingNodeRect(node, existingNodes));
+  const autoEntries = inputs
+    .map((input, index) => ({ input, index }))
+    .filter(({ input }) => input.x === undefined || input.y === undefined);
+  const positions = inputs.map((input) => ({
+    x: input.x ?? 0,
+    y: input.y ?? 0,
+  }));
+  if (autoEntries.length === 0) return positions;
+
+  const columns = Math.min(3, autoEntries.length);
+  const rows = Math.ceil(autoEntries.length / columns);
+  const maxNodeHeight = Math.max(...autoEntries.map(({ input }) => getNodeDimensions(input).height));
+  const clusterWidth = columns * DEFAULT_NODE_WIDTH + (columns - 1) * AGENT_NODE_COLUMN_GAP;
+  const clusterHeight = rows * maxNodeHeight + (rows - 1) * AGENT_NODE_ROW_GAP;
+
+  const buildLayout = (anchor: CanvasPoint) => autoEntries.map(({ input, index }, layoutIndex) => {
+    const column = layoutIndex % columns;
+    const row = Math.floor(layoutIndex / columns);
+    const dimensions = getNodeDimensions(input);
+    return {
+      index,
+      position: {
+        x: input.x ?? Math.round(anchor.x + column * (DEFAULT_NODE_WIDTH + AGENT_NODE_COLUMN_GAP)),
+        y: input.y ?? Math.round(anchor.y + row * (maxNodeHeight + AGENT_NODE_ROW_GAP)),
+      },
+      dimensions,
+    };
+  });
+
+  const isLayoutFree = (anchor: CanvasPoint) => {
+    const layoutRects = buildLayout(anchor).map(({ position, dimensions }) => ({
+      ...position,
+      width: dimensions.width,
+      height: dimensions.height,
+    }));
+    return layoutRects.every((rect, index) => (
+      obstacles.every((obstacle) => !rectsOverlap(rect, obstacle))
+      && layoutRects.slice(index + 1).every((other) => !rectsOverlap(rect, other))
+    ));
+  };
+
+  const referencedNodes = resolveReferencedNodes(context.taskId, existingNodes);
+  const referencedBounds = getRectBounds(
+    referencedNodes.map((node) => getExistingNodeRect(node, existingNodes)),
+  );
+  const canvasBounds = getRectBounds(obstacles);
+  const candidates: CanvasPoint[] = [];
+
+  if (referencedBounds) {
+    const centeredX = referencedBounds.x + (referencedBounds.width - clusterWidth) / 2;
+    const centeredY = referencedBounds.y + (referencedBounds.height - clusterHeight) / 2;
+    candidates.push(
+      { x: referencedBounds.x + referencedBounds.width + AGENT_NODE_ANCHOR_GAP, y: centeredY },
+      { x: centeredX, y: referencedBounds.y + referencedBounds.height + AGENT_NODE_ANCHOR_GAP },
+      { x: centeredX, y: referencedBounds.y - clusterHeight - AGENT_NODE_ANCHOR_GAP },
+      { x: referencedBounds.x - clusterWidth - AGENT_NODE_ANCHOR_GAP, y: centeredY },
+    );
+  } else if (store.lastCanvasMousePos) {
+    candidates.push(store.lastCanvasMousePos);
+  }
+
+  if (canvasBounds) {
+    candidates.push({
+      x: canvasBounds.x + canvasBounds.width + AGENT_NODE_ANCHOR_GAP,
+      y: referencedBounds?.y ?? canvasBounds.y,
+    });
+  }
+  if (candidates.length === 0) candidates.push({ x: 300, y: 200 });
+
+  const anchor = candidates.find(isLayoutFree) ?? candidates[candidates.length - 1];
+  for (const entry of buildLayout(anchor)) positions[entry.index] = entry.position;
+  return positions;
+}
+
+function createCanvasNode(
+  input: CreateNodeInput,
+  index: number,
+  position: CanvasPoint,
+): Node<BaseNodeData> {
   const id = `node-agent-${Date.now().toString(36)}-${index}-${Math.random().toString(36).slice(2, 7)}`;
-  const fallbackPosition = store.lastCanvasMousePos ?? { x: 300, y: 200 };
   const type = input.type;
   return {
     id,
     type,
-    position: {
-      x: input.x ?? fallbackPosition.x + index * 32,
-      y: input.y ?? fallbackPosition.y + index * 24,
-    },
+    position,
     data: {
       label: input.label.trim(),
       type,
       role: type.startsWith('source-') ? 'source' : 'generator',
       prompt: input.prompt?.trim(),
       status: 'idle',
-      nodeWidth: 280,
-      nodeHeight: type === 'comment' ? 120 : 160,
+      nodeWidth: DEFAULT_NODE_WIDTH,
+      nodeHeight: type === 'comment' ? COMMENT_NODE_HEIGHT : DEFAULT_NODE_HEIGHT,
     },
   };
 }
@@ -283,14 +439,29 @@ export function registerCanvasAgentTools(): Array<() => void> {
       summarizeInput: (input) => `新建 ${input.nodes.length} 个画布节点`,
       execute: async (context, input) => {
         assertCanvasRevision(context);
-        const nodes = input.nodes.map(createCanvasNode);
+        const positions = resolveCreateNodePositions(context, input.nodes);
+        const nodes = input.nodes.map((nodeInput, index) => createCanvasNode(
+          nodeInput,
+          index,
+          positions[index],
+        ));
         useAppStore.getState().addNodes(nodes);
         useAppStore.getState().incrementRevision();
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('canvas-focus-nodes', {
+            detail: { nodeIds: nodes.map((node) => node.id) },
+          }));
+        }
         return {
           status: 'success',
           summary: `已新建 ${nodes.length} 个节点`,
           modelContent: JSON.stringify({
-            nodes: nodes.map((node) => ({ id: node.id, type: node.type, label: node.data.label })),
+            nodes: nodes.map((node) => ({
+              id: node.id,
+              type: node.type,
+              label: node.data.label,
+              position: node.position,
+            })),
             revision: useAppStore.getState().getCurrentRevision(),
           }),
         };
