@@ -1,6 +1,8 @@
 /**
  * types 全局类型定义 — 定义 NodeType、BaseNodeData、CanvasProject、AppConfig、ModelOption、WorkflowDefinition 等核心类型
  */
+import type { AudioOutputFormat, AudioTtsVoice } from './aiTypes';
+import type { AudioGenerationPurpose } from './media';
 
 // 节点类型定义
 export type NodeType =
@@ -91,6 +93,16 @@ export interface BaseNodeData {
   seedanceRatio?: string;     // Seedance 宽高比：'16:9' | '4:3' | '1:1' | '3:4' | '9:16' | '21:9' | 'adaptive'
   seedanceDuration?: number;  // Seedance 时长（整数秒）：2-15
   generateAudio?: boolean;    // 生成有声视频（Seedance 2.0 / 1.5 pro）
+  audioVoice?: AudioTtsVoice; // TTS 音色
+  audioFormat?: AudioOutputFormat; // TTS 输出格式
+  audioSpeed?: number;        // TTS 播放速度：0.25-4
+  audioPurpose?: AudioGenerationPurpose; // 当前音频模型用途
+  musicTitle?: string;        // Flow Music 标题
+  musicLyrics?: string;       // Flow Music 歌词
+  musicClipId?: string;       // Flow Music 产物标识
+  musicBpm?: number;          // Flow Music BPM
+  musicDuration?: number;     // Flow Music 时长：1-240 秒
+  autoGenerateLyrics?: boolean; // 是否先调用歌词生成接口
   style?: string;               // 画风 ID（如 'realistic'、'anime'）
   error?: string;             // 错误信息
   // ── 宫格分镜（ai-storyboard）──
@@ -249,6 +261,7 @@ export interface ModelOption {
   badgeText?: string;
   nodeTypes: NodeType[];      // 可用于哪些节点类型
   nbFamily?: string;          // RunningHub/GRSAI nanobanana 家族标识（可选）
+  audioPurpose?: AudioGenerationPurpose; // 音频模型用途，避免音乐与语音混用
 }
 
 export interface ModelGroup {

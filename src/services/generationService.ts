@@ -6,6 +6,7 @@
 import type { BaseNodeData, ImagePostProcess } from '../types';
 import { MAX_IMAGE_BATCH_COUNT } from '../types/aiTypes';
 import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
+import { persistAudioGenerationResult } from './ai/generateAudio';
 import { downloadUrlAndSave } from './fileService';
 import { applyImageBatchResults } from './imageBatchService';
 import { generateId } from '../store/store.utils';
@@ -120,7 +121,7 @@ export async function executeGeneration(
             });
           }
           store.showToast('角色 8 向宫格已生成');
-        } catch (e) {
+        } catch {
           store.showToast(`原图已生成，8 向宫格处理失败`, 'error');
         }
       } else {
@@ -179,19 +180,46 @@ export async function executeGeneration(
       });
       store.showToast('视频生成完成');
     } else if (nodeType === 'ai-audio') {
-      const result = await generateAudio({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider, nodeId });
-      if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
-      const saved = submittingProjectId
-        ? await downloadUrlAndSave(result.url, submittingProjectId, 'ai-audio', data.label).catch(() => null)
-        : null;
+      const result = await generateAudio({
+        prompt: effectivePrompt,
+        model: nodeModel,
+        provider: nodeProvider,
+        audioVoice: data.audioVoice,
+        audioFormat: data.audioFormat,
+        audioSpeed: data.audioSpeed,
+        musicTitle: data.musicTitle,
+        musicLyrics: data.musicLyrics,
+        musicBpm: data.musicBpm,
+        musicDuration: data.musicDuration,
+        autoGenerateLyrics: data.autoGenerateLyrics,
+        nodeId,
+      });
+      if (!isStillCurrentSubmission()) {
+        if (result.url.startsWith('blob:')) URL.revokeObjectURL(result.url);
+        return { success: false, message: '任务已取消' };
+      }
+      const persisted = await persistAudioGenerationResult(result, submittingProjectId, data.label);
       store.updateNodeData(nodeId, {
-        audioUrl: saved?.assetUrl || result.url, sourceUrl: result.url, filePath: saved?.filePath,
-        thumbnailUrl: result.url, output: result.url, status: 'success',
+        audioUrl: persisted.mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
+        thumbnailUrl: persisted.mediaUrl, output: persisted.outputUrl,
+        musicClipId: result.clipId,
+        ...(result.title ? { musicTitle: result.title } : {}),
+        ...(result.lyrics ? { musicLyrics: result.lyrics } : {}),
+        status: 'success',
       });
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
-        output: result.url, nodeType: 'ai-audio', model: nodeModel, provider: nodeProvider,
-        status: 'success', mediaUrl: result.url, filePath: saved?.filePath,
+        output: persisted.outputUrl, nodeType: 'ai-audio', model: nodeModel, provider: nodeProvider,
+        status: 'success', mediaUrl: persisted.mediaUrl, filePath: persisted.filePath,
+        params: {
+          audioVoice: data.audioVoice,
+          audioFormat: data.audioFormat,
+          audioSpeed: data.audioSpeed,
+          musicTitle: result.title || data.musicTitle,
+          musicBpm: data.musicBpm,
+          musicDuration: data.musicDuration,
+          autoGenerateLyrics: data.autoGenerateLyrics,
+        },
       });
       store.showToast('音频生成完成');
     } else {

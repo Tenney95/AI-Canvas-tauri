@@ -12,7 +12,7 @@ import type {
 } from '../../types/media';
 import { generateImage } from './generateImage';
 import { generateVideo } from './generateVideo';
-import { generateAudio } from './generateAudio';
+import { generateAudio, persistAudioGenerationResult } from './generateAudio';
 import { findMediaModelOption } from '../../components/nodes/shared/defaultModels';
 
 const MODEL_MENTION_RE = /@model\{([^|}\s]+)(?:\|[^}]*)?\}/i;
@@ -50,6 +50,7 @@ export function resolveMediaModel(kind: MediaKind, modelRef?: string): ResolvedM
       configId: option.value,
       requestModel: `general/${generalModel.id}`,
       provider: 'general',
+      audioPurpose: option.audioPurpose,
     };
   }
 
@@ -63,6 +64,7 @@ export function resolveMediaModel(kind: MediaKind, modelRef?: string): ResolvedM
     configId: option.value,
     requestModel: option.value,
     provider: option.provider,
+    audioPurpose: option.audioPurpose,
   };
 }
 
@@ -97,6 +99,14 @@ export async function runMediaGeneration(
   if (!prompt) throw new Error('媒体生成提示词不能为空');
 
   const model = resolveMediaModel(intent.kind, intent.modelRef);
+  if (
+    intent.kind === 'audio'
+    && intent.audioPurpose
+    && model.audioPurpose
+    && intent.audioPurpose !== model.audioPurpose
+  ) {
+    throw new Error(`所选模型不支持${intent.audioPurpose === 'music' ? '音乐' : '语音'}生成`);
+  }
   const id = `media-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
   if (intent.kind === 'image') {
@@ -124,25 +134,44 @@ export async function runMediaGeneration(
     };
   }
 
-  const result = intent.kind === 'video'
-    ? await generateVideo({
-        prompt,
-        model: model.requestModel,
-        provider: model.provider,
-      })
-    : await generateAudio({
-        prompt,
-        model: model.requestModel,
-        provider: model.provider,
-      });
-  const saved = await saveGeneratedMedia(result.url, projectId, intent.kind, id).catch(() => null);
+  if (intent.kind === 'video') {
+    const result = await generateVideo({
+      prompt,
+      model: model.requestModel,
+      provider: model.provider,
+    });
+    const saved = await saveGeneratedMedia(result.url, projectId, intent.kind, id).catch(() => null);
+    return {
+      id,
+      kind: intent.kind,
+      deliveryMode: intent.deliveryMode,
+      url: saved?.assetUrl || result.url,
+      sourceUrl: result.url,
+      filePath: saved?.filePath,
+      prompt,
+      modelId: model.configId,
+      provider: model.provider,
+      createdAt: Date.now(),
+    };
+  }
+
+  const result = await generateAudio({
+    prompt,
+    model: model.requestModel,
+    provider: model.provider,
+  });
+  const persisted = await persistAudioGenerationResult(
+    result,
+    projectId,
+    `对话音频-${id}`,
+  );
   return {
     id,
     kind: intent.kind,
     deliveryMode: intent.deliveryMode,
-    url: saved?.assetUrl || result.url,
-    sourceUrl: result.url,
-    filePath: saved?.filePath,
+    url: persisted.mediaUrl,
+    sourceUrl: persisted.sourceUrl || persisted.outputUrl,
+    filePath: persisted.filePath,
     prompt,
     modelId: model.configId,
     provider: model.provider,

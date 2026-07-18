@@ -9,6 +9,7 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { BaseNodeData, OutputHistoryEntry } from '../types';
 import { generateText, generateImage, generateVideo, generateAudio } from '../services/aiService';
+import { persistAudioGenerationResult } from '../services/ai/generateAudio';
 import { downloadUrlAndSave } from '../services/fileService';
 
 export interface BatchContext {
@@ -136,20 +137,28 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         prompt,
         model: d.model!,
         provider: d.provider!,
+        audioVoice: d.audioVoice,
+        audioFormat: d.audioFormat,
+        audioSpeed: d.audioSpeed,
+        musicTitle: d.musicTitle,
+        musicLyrics: d.musicLyrics,
+        musicBpm: d.musicBpm,
+        musicDuration: d.musicDuration,
+        autoGenerateLyrics: d.autoGenerateLyrics,
         workflowId: d.workflowId,
         workflowInputs: d.workflowInputs,
         nodeId: node.id,
       });
-      const saved = ctx.currentProjectId
-        ? await downloadUrlAndSave(result.url, ctx.currentProjectId, 'ai-audio', d.label).catch(() => null)
-        : null;
-      const mediaUrl = saved?.assetUrl || result.url;
+      const persisted = await persistAudioGenerationResult(result, ctx.currentProjectId, d.label);
       ctx.updateNodeData(node.id, {
-        audioUrl: mediaUrl,
-        sourceUrl: result.url,
-        filePath: saved?.filePath,
-        thumbnailUrl: result.url,
-        output: result.url,
+        audioUrl: persisted.mediaUrl,
+        sourceUrl: persisted.sourceUrl,
+        filePath: persisted.filePath,
+        thumbnailUrl: persisted.mediaUrl,
+        output: persisted.outputUrl,
+        musicClipId: result.clipId,
+        ...(result.title ? { musicTitle: result.title } : {}),
+        ...(result.lyrics ? { musicLyrics: result.lyrics } : {}),
         status: 'success',
       });
       ctx.recordOutputHistory(node.id, {
@@ -157,13 +166,22 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         nodeLabel: d.label,
         timestamp: Date.now(),
         prompt,
-        output: result.url,
+        output: persisted.outputUrl,
         nodeType: 'ai-audio',
         model: d.model!,
         provider: d.provider!,
         status: 'success',
-        mediaUrl: result.url,
-        filePath: saved?.filePath,
+        mediaUrl: persisted.mediaUrl,
+        filePath: persisted.filePath,
+        params: {
+          audioVoice: d.audioVoice,
+          audioFormat: d.audioFormat,
+          audioSpeed: d.audioSpeed,
+          musicTitle: result.title || d.musicTitle,
+          musicBpm: d.musicBpm,
+          musicDuration: d.musicDuration,
+          autoGenerateLyrics: d.autoGenerateLyrics,
+        },
       });
     }
     return true;

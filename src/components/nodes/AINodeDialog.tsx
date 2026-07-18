@@ -7,8 +7,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { generateId, useAppStore } from '../../store/useAppStore';
 import type { AnimationAction, BaseNodeData, ImagePostProcess, ModelOption } from '../../types';
 import { ANIMATION_ACTION_LABELS, ANIMATION_FRAME_GRIDS } from '../../types';
-import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
+import { MAX_IMAGE_BATCH_COUNT, type AudioOutputFormat, type AudioTtsVoice } from '../../types/aiTypes';
 import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
+import { persistAudioGenerationResult } from '../../services/ai/generateAudio';
 import { downloadUrlAndSave } from '../../services/fileService';
 import { applyImageBatchResults } from '../../services/imageBatchService';
 import { checkModelExists, createCharacterDirectionGrid, downloadModel } from '../../services/onnxService';
@@ -16,6 +17,7 @@ import ModelDownloadDialog from '../shared/ModelDownloadDialog';
 import PromptPanel from './shared/PromptPanel';
 import type { MentionEditorHandle } from './shared/MentionEditor';
 import ConnectedNodesPreview from './shared/ConnectedNodesPreview';
+import { findMediaModelOption } from './shared/defaultModels';
 
 type AnimationFrameCount = 6 | 8 | 10 | 12 | 16 | 20;
 
@@ -514,22 +516,32 @@ function AINodeDialog() {
           prompt: effectivePrompt,
           model: nodeModel,
           provider: nodeProvider,
+          audioVoice: latestData.audioVoice,
+          audioFormat: latestData.audioFormat,
+          audioSpeed: latestData.audioSpeed,
+          musicTitle: latestData.musicTitle,
+          musicLyrics: latestData.musicLyrics,
+          musicBpm: latestData.musicBpm,
+          musicDuration: latestData.musicDuration,
+          autoGenerateLyrics: latestData.autoGenerateLyrics,
           workflowId: latestData.workflowId,
           workflowInputs: latestData.workflowInputs,
           nodeId: activeNodeId ?? undefined,
         });
-        if (!isStillCurrentSubmission()) return;
-        // 下载远程 URL 到本地项目目录
-        const saved = currentProjectId
-          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-audio', nodeLabel).catch(() => null)
-          : null;
-        const mediaUrl = saved?.assetUrl || result.url;
+        if (!isStillCurrentSubmission()) {
+          if (result.url.startsWith('blob:')) URL.revokeObjectURL(result.url);
+          return;
+        }
+        const persisted = await persistAudioGenerationResult(result, currentProjectId, nodeLabel);
         updateNodeData(activeNodeId!, {
-          audioUrl: mediaUrl,
-          sourceUrl: result.url,
-          filePath: saved?.filePath,
-          thumbnailUrl: result.url,
-          output: result.url,
+          audioUrl: persisted.mediaUrl,
+          sourceUrl: persisted.sourceUrl,
+          filePath: persisted.filePath,
+          thumbnailUrl: persisted.mediaUrl,
+          output: persisted.outputUrl,
+          musicClipId: result.clipId,
+          ...(result.title ? { musicTitle: result.title } : {}),
+          ...(result.lyrics ? { musicLyrics: result.lyrics } : {}),
           status: 'success',
         });
         recordOutputHistory(activeNodeId!, {
@@ -537,13 +549,22 @@ function AINodeDialog() {
           nodeLabel: nodeLabel,
           timestamp: Date.now(),
           prompt: effectivePrompt,
-          output: result.url,
+          output: persisted.outputUrl,
           nodeType: 'ai-audio',
           model: nodeModel,
           provider: nodeProvider,
           status: 'success',
-          mediaUrl: result.url,
-          filePath: saved?.filePath,
+          mediaUrl: persisted.mediaUrl,
+          filePath: persisted.filePath,
+          params: {
+            audioVoice: latestData.audioVoice,
+            audioFormat: latestData.audioFormat,
+            audioSpeed: latestData.audioSpeed,
+            musicTitle: result.title || latestData.musicTitle,
+            musicBpm: latestData.musicBpm,
+            musicDuration: latestData.musicDuration,
+            autoGenerateLyrics: latestData.autoGenerateLyrics,
+          },
         });
         showToast('音频生成完成');
       } else {
@@ -586,7 +607,7 @@ function AINodeDialog() {
       });
       showToast(msg, 'error');
     }
-  }, [activeNodeId, nodeType, data, currentProjectId, updateNodeData, recordOutputHistory, showToast]);
+  }, [activeNodeId, nodeType, currentProjectId, updateNodeData, recordOutputHistory, showToast]);
 
   // 直接将输入内容作为节点输出（跳过模型调用）
   const onPassThrough = useCallback(() => {
@@ -611,6 +632,7 @@ function AINodeDialog() {
       updateNodeData(activeNodeId!, {
         model: model.value,
         provider: model.provider,
+        audioPurpose: model.audioPurpose,
         ...(model.provider === 'dreamina' ? { batchCount: 1 } : {}),
       });
     },
@@ -621,7 +643,7 @@ function AINodeDialog() {
     (workflowId: string | undefined) => {
       updateNodeData(activeNodeId!, {
         workflowId,
-        ...(workflowId ? { provider: 'comfyui', model: 'comfyui/workflow', batchCount: 1 } : {}),
+        ...(workflowId ? { provider: 'comfyui', model: 'comfyui/workflow', batchCount: 1, audioPurpose: undefined } : {}),
       });
     },
     [activeNodeId, updateNodeData]
@@ -702,6 +724,46 @@ function AINodeDialog() {
     [activeNodeId, updateNodeData]
   );
 
+  const onChangeAudioVoice = useCallback(
+    (value: AudioTtsVoice) => updateNodeData(activeNodeId!, { audioVoice: value }),
+    [activeNodeId, updateNodeData],
+  );
+
+  const onChangeAudioFormat = useCallback(
+    (value: AudioOutputFormat) => updateNodeData(activeNodeId!, { audioFormat: value }),
+    [activeNodeId, updateNodeData],
+  );
+
+  const onChangeAudioSpeed = useCallback(
+    (value: number) => updateNodeData(activeNodeId!, { audioSpeed: value }),
+    [activeNodeId, updateNodeData],
+  );
+
+  const onChangeMusicTitle = useCallback(
+    (value: string) => updateNodeData(activeNodeId!, { musicTitle: value }),
+    [activeNodeId, updateNodeData],
+  );
+
+  const onChangeMusicLyrics = useCallback(
+    (value: string) => updateNodeData(activeNodeId!, { musicLyrics: value }),
+    [activeNodeId, updateNodeData],
+  );
+
+  const onChangeMusicBpm = useCallback(
+    (value: number | undefined) => updateNodeData(activeNodeId!, { musicBpm: value }),
+    [activeNodeId, updateNodeData],
+  );
+
+  const onChangeMusicDuration = useCallback(
+    (value: number) => updateNodeData(activeNodeId!, { musicDuration: value }),
+    [activeNodeId, updateNodeData],
+  );
+
+  const onChangeAutoGenerateLyrics = useCallback(
+    (value: boolean) => updateNodeData(activeNodeId!, { autoGenerateLyrics: value }),
+    [activeNodeId, updateNodeData],
+  );
+
   const onStyleChange = useCallback(
     (styleId: string) => updateNodeData(activeNodeId!, { style: styleId }),
     [activeNodeId, updateNodeData]
@@ -719,6 +781,9 @@ function AINodeDialog() {
 
   // Early return must come after ALL hooks
   if (!activeNodeId || !node || !data || !nodeType) return null;
+
+  const audioPurpose = data.audioPurpose
+    ?? (data.model ? findMediaModelOption(data.model)?.audioPurpose : undefined);
 
   const handleInsertMention = (mentionStr: string) => {
     // 优先在编辑器的「当前光标位置」插入引用芯片（点击 float 时编辑器焦点仍在）
@@ -800,6 +865,23 @@ function AINodeDialog() {
           onChangeSeedanceRatio={onChangeSeedanceRatio}
           onChangeSeedanceDuration={onChangeSeedanceDuration}
           onChangeGenerateAudio={onChangeGenerateAudio}
+          audioPurpose={audioPurpose}
+          audioVoice={data.audioVoice ?? 'alloy'}
+          audioFormat={data.audioFormat ?? 'wav'}
+          audioSpeed={data.audioSpeed ?? 1}
+          musicTitle={data.musicTitle ?? ''}
+          musicLyrics={data.musicLyrics ?? ''}
+          musicBpm={data.musicBpm}
+          musicDuration={data.musicDuration ?? 60}
+          autoGenerateLyrics={data.autoGenerateLyrics ?? false}
+          onChangeAudioVoice={onChangeAudioVoice}
+          onChangeAudioFormat={onChangeAudioFormat}
+          onChangeAudioSpeed={onChangeAudioSpeed}
+          onChangeMusicTitle={onChangeMusicTitle}
+          onChangeMusicLyrics={onChangeMusicLyrics}
+          onChangeMusicBpm={onChangeMusicBpm}
+          onChangeMusicDuration={onChangeMusicDuration}
+          onChangeAutoGenerateLyrics={onChangeAutoGenerateLyrics}
           workflows={workflows}
           selectedStyle={data.style as string | undefined}
           onStyleChange={onStyleChange}

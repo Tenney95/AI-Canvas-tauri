@@ -2,7 +2,7 @@
  * AudioNode 音频节点 — 在画布上渲染音频内容，支持上传本地音频、波形可视化、连接其他节点
  */
 import { memo, useCallback, useState, useRef, useEffect } from 'react';
-import { Handle, Position } from '@xyflow/react';
+import { Handle, Position, type Edge, type Node } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
@@ -10,9 +10,11 @@ import GooeyBtn from './shared/GooeyBtn';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import AudioNodeToolbar from './shared/AudioNodeToolbar';
-import { useAppStore } from '../../store/useAppStore';
+import { generateId, useAppStore } from '../../store/useAppStore';
 import { copyFile as copyFileToClipboard } from '../../services/clipboardService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
+import { transcribeAudio } from '../../services/ai/transcribeAudio';
+import { textNodeHeight } from '../../utils/num';
 
 /* ── Waveform data ── */
 interface WaveformData {
@@ -150,6 +152,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   // ── Upload state ──
   const { isUploading, handleUpload: doUpload } = useSourceFileUpload('.mp3,.wav,.ogg,.flac,.aac,.m4a,.wma');
+  const [isTranscribing, setIsTranscribing] = useState(false);
 
   // ── Audio playback state ──
   const [isPlaying, setIsPlaying] = useState(false);
@@ -173,6 +176,70 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     store.showToast(ok ? '已复制音频到剪贴板' : '复制失败', ok ? undefined : 'error');
   }, [data.filePath]);
 
+  const handleTranscribe = useCallback(async () => {
+    const store = useAppStore.getState();
+    const sourceNode = store.nodes.find((node) => node.id === id);
+    const audioUrl = sourceNode?.data.audioUrl;
+    if (!sourceNode || !audioUrl) {
+      store.showToast('没有可转录的音频', 'error');
+      return;
+    }
+
+    const projectId = store.currentProjectId;
+    setIsTranscribing(true);
+    try {
+      const transcript = await transcribeAudio({
+        audioUrl,
+        fileName: sourceNode.data.fileName,
+        responseFormat: 'json',
+      });
+
+      const liveStore = useAppStore.getState();
+      const liveSource = liveStore.nodes.find((node) => node.id === id);
+      if (!liveSource || liveStore.currentProjectId !== projectId) return;
+
+      const newNodeId = `node-${generateId()}`;
+      const sourceWidth = Number(liveSource.data.nodeWidth) || 260;
+      const estimatedLines = transcript.split(/\r?\n/).reduce(
+        (count, line) => count + Math.max(1, Math.ceil(line.length / 36)),
+        0,
+      );
+      const sourceLabel = liveSource.data.label?.trim() || liveSource.data.fileName?.trim() || '音频';
+      const transcriptNode: Node<BaseNodeData> = {
+        id: newNodeId,
+        type: 'ai-text',
+        position: {
+          x: liveSource.position.x + sourceWidth + 40,
+          y: liveSource.position.y,
+        },
+        data: {
+          label: `${sourceLabel} 转录`,
+          type: 'ai-text',
+          role: 'source',
+          output: transcript,
+          status: 'success',
+          nodeWidth: 280,
+          nodeHeight: textNodeHeight(estimatedLines),
+        },
+      };
+      const edge: Edge = {
+        id: generateId(),
+        source: id,
+        target: newNodeId,
+        sourceHandle: 'right',
+        targetHandle: 'left',
+      };
+
+      liveStore.addNodeWithEdge(transcriptNode, edge);
+      liveStore.showToast('音频转录完成');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '音频转录失败';
+      useAppStore.getState().showToast(message, 'error');
+    } finally {
+      setIsTranscribing(false);
+    }
+  }, [id]);
+
   // ── Decode & draw real waveform when audioUrl is set ──
   useEffect(() => {
     if (!data.audioUrl) return;
@@ -188,14 +255,18 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   // ── Reset when URL changes ──
   useEffect(() => {
-    setIsPlaying(false);
-    setCurrentTime(0);
+    audioRef.current?.pause();
     cancelAnimationFrame(animFrameRef.current);
     waveformRef.current = null;
     if (audioCtxRef.current) {
       audioCtxRef.current.close().catch(() => {});
       audioCtxRef.current = null;
     }
+    const resetFrame = requestAnimationFrame(() => {
+      setIsPlaying(false);
+      setCurrentTime(0);
+    });
+    return () => cancelAnimationFrame(resetFrame);
   }, [data.audioUrl]);
 
   // ── Cleanup on unmount ──
@@ -288,7 +359,15 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       />
       {data.audioUrl && (
         <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
-          <AudioNodeToolbar nodeId={id} isPlaying={isPlaying} onTogglePlay={togglePlay} onUpload={handleUpload} onCopyFile={handleCopyFile} />
+          <AudioNodeToolbar
+            nodeId={id}
+            isPlaying={isPlaying}
+            isTranscribing={isTranscribing}
+            onTogglePlay={togglePlay}
+            onTranscribe={handleTranscribe}
+            onUpload={handleUpload}
+            onCopyFile={handleCopyFile}
+          />
         </div>
       )}
       <div

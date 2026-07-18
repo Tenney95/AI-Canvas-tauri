@@ -1,5 +1,5 @@
 /**
- * ai/apimartGen — APIMart 图片/视频/音频生成 + 通用异步任务执行器
+ * ai/apimartGen — APIMart 图片/视频生成 + 通用异步任务执行器
  */
 import { useAppStore } from '../../store/useAppStore';
 import { pollTask } from '../pollTask';
@@ -15,7 +15,6 @@ export interface ApimartTaskResult<TResult = Record<string, unknown>> {
   progress?: number;
   result?: TResult;
 }
-
 /**
  * 通用异步任务执行器 — 提交 + 轮询，兼容支持 task_id 模式的 OpenAI 兼容接口
  */
@@ -116,7 +115,6 @@ export async function executeGeneralAsyncTask(
   });
   return pollPromise;
 }
-
 /** APIMart 图片生成 — 异步提交 + 轮询 */
 export async function generateApimartImage(
   apiKey: string,
@@ -240,7 +238,6 @@ export async function generateApimartImagesBatch(
   });
   return pollPromise;
 }
-
 /** 获取单次 APIMart 轮询数据并标准化为 task 对象 */
 export async function fetchApimartTask<TResult = Record<string, unknown>>(
   apiKey: string,
@@ -340,91 +337,6 @@ export async function generateApimartVideo(
         const allUrls = videoUrls.length > 0 ? videoUrls : imageUrls;
         if (allUrls.length === 0) throw new Error('APIMart 视频生成完成但未返回结果');
         return { url: allUrls[0] };
-      }
-      return null;
-    },
-    interval: 3000,
-    signal,
-  });
-  pollPromise.finally(() => {
-    if (nodeId) {
-      cleanupNodePolling(nodeId);
-      removePendingTask(nodeId);
-    }
-  });
-  return pollPromise;
-}
-
-/** APIMart 音频生成 — 异步提交 + 轮询 */
-export async function generateApimartAudio(
-  apiKey: string,
-  baseUrl: string,
-  model: string,
-  prompt: string,
-  nodeId?: string,
-): Promise<{ url: string }> {
-  // 预存待续任务（在 fetch 之前），确保关窗重启后能恢复
-  if (nodeId) {
-    const projectId = useAppStore.getState().currentProjectId;
-    if (projectId) {
-      savePendingTask({
-        nodeId,
-        projectId,
-        nodeType: 'ai-audio',
-        provider: 'apimart',
-        taskId: '',
-        taskType: 'apimart',
-        apiKey,
-        baseUrl,
-        submitted: false,
-      });
-    }
-  }
-
-  // 步骤 1: 提交音频生成任务
-  const submitResp = await fetch(`${baseUrl}/images/generations`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      prompt,
-      n: 1,
-    }),
-  });
-
-  if (!submitResp.ok) {
-    const errBody = await submitResp.text().catch(() => '');
-    if (nodeId) removePendingTask(nodeId);
-    throw new Error(`APIMart 音频提交失败 (${submitResp.status}): ${errBody.slice(0, 200)}`);
-  }
-
-  const submitResult = await submitResp.json() as { code: number; data: Array<{ task_id: string; status: string }> };
-  const taskId = submitResult.data?.[0]?.task_id;
-  if (!taskId) {
-    if (nodeId) removePendingTask(nodeId);
-    throw new Error('APIMart 音频提交失败: 未返回 task_id');
-  }
-
-  // 回填 taskId，标记为已提交
-  if (nodeId) {
-    updatePendingTask(nodeId, { taskId, submitted: true });
-  }
-
-  // 步骤 2: 轮询（不设超时，仅 ComfyUI 才设超时）
-  const signal = nodeId ? registerNodePolling(nodeId) : undefined;
-  const pollPromise = pollTask<
-    ApimartTaskResult<{ audios?: Array<{ url: string[] }>; images?: Array<{ url: string[] }>; videos?: Array<{ url: string[] }> }>,
-    { url: string }
-  >({
-    fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
-    isComplete: (task) => {
-      if (task.status === 'completed') {
-        const audioUrls = task.result?.audios?.flatMap((a) => splitCommaSeparatedUrls(a.url)) ?? [];
-        if (audioUrls.length === 0) throw new Error('APIMart 音频生成完成但未返回结果');
-        return { url: audioUrls[0] };
       }
       return null;
     },

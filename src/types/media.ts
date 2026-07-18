@@ -48,4 +48,5 @@ export interface ResolvedMediaModel {
   configId: string;
   requestModel: string;
   provider: string;
+  audioPurpose?: AudioGenerationPurpose;
 }
