@@ -418,7 +418,7 @@ const ChatComposerEditor = forwardRef<ChatComposerEditorHandle, ChatComposerEdit
   return (
     <div className="relative min-h-[64px] max-h-[160px]">
       {!value && (
-        <span className="pointer-events-none absolute inset-x-0 top-0 text-[15px] leading-6 text-canvas-text-muted">
+        <span className="pointer-events-none absolute inset-x-0 top-0 text-[13px] leading-5 text-canvas-text-muted">
           {placeholder}
         </span>
       )}

@@ -6,11 +6,12 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Icon } from '@iconify/react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import AnimatedButton from '../shared/AnimatedButton';
 import ModelSelector from '../nodes/shared/ModelSelector';
 import ContextUsageIndicator from './ContextUsageIndicator';
 import ChatComposerEditor, { type ChatComposerEditorHandle } from './ChatComposerEditor';
-import type { GeneralModelConfig, ModelOption } from '../../types';
+import type { BaseNodeData, GeneralModelConfig, ModelOption } from '../../types';
 import type { ContextUsageStat } from '../../services/chat/contextManager';
 import { useAppStore } from '../../store/useAppStore';
 import {
@@ -18,6 +19,52 @@ import {
   type MediaModelOption,
 } from '../nodes/shared/defaultModels';
 import type { LocalFileGrantSummary } from '../../services/chat/fileGrantService';
+
+const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+type ReferenceScope = 'all' | 'nodes' | 'models';
+
+function parseReferenceQuery(query: string): { scope: ReferenceScope; query: string } {
+  const shortcut = query.toLocaleLowerCase();
+  if (shortcut === 'n') return { scope: 'nodes', query: '' };
+  if (shortcut === 'm') return { scope: 'models', query: '' };
+  return { scope: 'all', query };
+}
+
+function resolveNodeThumbnail(data: BaseNodeData): string | undefined {
+  if (data.imageUrl) {
+    if (data.filePath && IS_TAURI) {
+      try {
+        return convertFileSrc(data.filePath);
+      } catch {
+        return data.thumbnailUrl || data.imageUrl;
+      }
+    }
+    return data.thumbnailUrl || data.imageUrl;
+  }
+  return data.thumbnailUrl;
+}
+
+function NodeReferenceThumbnail({ data }: { data: BaseNodeData }) {
+  const source = resolveNodeThumbnail(data);
+  const [failedSource, setFailedSource] = useState<string>();
+
+  return (
+    <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-md border border-canvas-border/60 bg-canvas-card text-canvas-text-secondary shadow-sm">
+      {source && failedSource !== source ? (
+        <img
+          src={source}
+          alt=""
+          loading="lazy"
+          draggable={false}
+          onError={() => setFailedSource(source)}
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <Icon icon="mdi:vector-square" width="16" />
+      )}
+    </span>
+  );
+}
 
 function fuzzyMatchModel(model: MediaModelOption, rawQuery: string): boolean {
   const query = rawQuery.trim().toLocaleLowerCase().replace(/\s+/g, '');
@@ -86,6 +133,7 @@ export default function ChatInput({
   const reduceMotion = useReducedMotion();
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState('');
+  const [referenceScope, setReferenceScope] = useState<ReferenceScope>('all');
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
   const [skillQuery, setSkillQuery] = useState('');
   const [skillUploading, setSkillUploading] = useState(false);
@@ -131,6 +179,8 @@ export default function ChatInput({
     () => new Map(canvasNodes.map((node) => [node.id, node.data.displayId])),
     [canvasNodes],
   );
+  const visibleCanvasNodes = referenceScope === 'models' ? [] : filteredCanvasNodes;
+  const visibleMediaGroups = referenceScope === 'nodes' ? [] : groupedMediaModels;
 
   const modelGroupAvailability = useMemo(() => {
     const availability: Record<string, boolean> = { 'general-models': true };
@@ -161,6 +211,7 @@ export default function ChatInput({
     });
     setModelMenuOpen(false);
     setModelQuery('');
+    setReferenceScope('all');
   }, []);
 
   const insertNodeMention = useCallback((nodeId: string, label: string, displayId?: number) => {
@@ -172,6 +223,7 @@ export default function ChatInput({
     });
     setModelMenuOpen(false);
     setModelQuery('');
+    setReferenceScope('all');
   }, []);
 
   const insertSkillReference = useCallback((skillId: string, skillName: string) => {
@@ -245,7 +297,9 @@ export default function ChatInput({
           nodeDisplayIds={nodeDisplayIds}
           onMentionQueryChange={(query) => {
             setModelMenuOpen(query != null);
-            setModelQuery(query ?? '');
+            const parsedQuery = parseReferenceQuery(query ?? '');
+            setReferenceScope(query == null ? 'all' : parsedQuery.scope);
+            setModelQuery(parsedQuery.query);
             if (query != null) setSkillMenuOpen(false);
           }}
           onSlashQueryChange={(query) => {
@@ -253,7 +307,7 @@ export default function ChatInput({
             setSkillQuery(query ?? '');
             if (query != null) setModelMenuOpen(false);
           }}
-          placeholder="输入消息，描述你想对画布进行的修改"
+          placeholder="输入消息，@n 选节点 · @m 选模型 · / 调用 Skill"
           disabled={disabled}
         />
 
@@ -267,14 +321,14 @@ export default function ChatInput({
               transition={reduceMotion
                 ? { duration: 0.1 }
                 : { type: 'spring', visualDuration: 0.22, bounce: 0 }}
-              className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface p-1 shadow-xl">
-              {filteredCanvasNodes.length > 0 && (
-                <div className="py-1">
-                  <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[11px] font-medium text-canvas-text-muted">
+              className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface shadow-xl">
+              {visibleCanvasNodes.length > 0 && (
+                <div className="px-1 pb-1">
+                  <div className="sticky top-0 z-20 -mx-1 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[10px] font-medium text-canvas-text-muted">
                     <span>画布节点</span>
-                    <span>{filteredCanvasNodes.length}</span>
+                    <span>{visibleCanvasNodes.length}</span>
                   </div>
-                  {filteredCanvasNodes.map((node) => (
+                  {visibleCanvasNodes.map((node) => (
                     <button
                       key={node.id}
                       type="button"
@@ -283,21 +337,21 @@ export default function ChatInput({
                         String(node.data.label || '节点'),
                         node.data.displayId,
                       )}
-                      className="flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-canvas-text hover:bg-canvas-hover"
+                      className="flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] text-canvas-text hover:bg-canvas-hover"
                     >
-                      <Icon icon="mdi:vector-square" width="16" />
+                      <NodeReferenceThumbnail data={node.data} />
                       <span className="min-w-0 flex-1 truncate">{String(node.data.label || '节点')}</span>
                       {node.data.displayId != null && (
-                        <span className="text-[11px] text-canvas-text-muted">#{String(node.data.displayId)}</span>
+                        <span className="text-[10px] text-canvas-text-muted">#{String(node.data.displayId)}</span>
                       )}
-                      <span className="text-[11px] text-canvas-text-muted">{String(node.data.type)}</span>
+                      <span className="text-[10px] text-canvas-text-muted">{String(node.data.type)}</span>
                     </button>
                   ))}
                 </div>
               )}
-              {groupedMediaModels.map((group) => (
-                <div key={group.id} className="py-1">
-                  <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[11px] font-medium text-canvas-text-muted">
+              {visibleMediaGroups.map((group) => (
+                <div key={group.id} className="px-1 pb-1">
+                  <div className="sticky top-0 z-20 -mx-1 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[10px] font-medium text-canvas-text-muted">
                     <span>{group.name}</span>
                     <span>{group.models.length}</span>
                   </div>
@@ -310,7 +364,7 @@ export default function ChatInput({
                         disabled={!available}
                         onClick={() => insertModelMention(model)}
                         title={available ? model.description : '请先配置对应供应商'}
-                        className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${available ? 'text-canvas-text hover:bg-canvas-hover' : 'cursor-not-allowed text-canvas-text-muted opacity-50'}`}
+                        className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] ${available ? 'text-canvas-text hover:bg-canvas-hover' : 'cursor-not-allowed text-canvas-text-muted opacity-50'}`}
                       >
                         <Icon
                           icon={model.mediaKind === 'image'
@@ -321,7 +375,7 @@ export default function ChatInput({
                           width="16"
                         />
                         <span className="min-w-0 flex-1 truncate">{model.label}</span>
-                        <span className="text-[11px] text-canvas-text-muted">
+                        <span className="text-[10px] text-canvas-text-muted">
                           {model.mediaKind === 'image' ? '图片' : model.mediaKind === 'video' ? '视频' : '音频'}
                         </span>
                         {!available && <Icon icon="mdi:lock-outline" width="13" />}
@@ -330,9 +384,15 @@ export default function ChatInput({
                   })}
                 </div>
               ))}
-              {filteredCanvasNodes.length === 0 && groupedMediaModels.length === 0 && (
-                <p className="px-3 py-3 text-center text-xs text-canvas-text-muted">
-                  {modelQuery ? `没有匹配"${modelQuery}"的节点或模型` : '暂无可引用的节点或模型'}
+              {visibleCanvasNodes.length === 0 && visibleMediaGroups.length === 0 && (
+                <p className="m-1 px-3 py-3 text-center text-[11px] text-canvas-text-muted">
+                  {modelQuery
+                    ? `没有匹配"${modelQuery}"的${referenceScope === 'nodes' ? '节点' : referenceScope === 'models' ? '模型' : '节点或模型'}`
+                    : referenceScope === 'nodes'
+                      ? '暂无可引用的节点'
+                      : referenceScope === 'models'
+                        ? '暂无可引用的模型'
+                        : '暂无可引用的节点或模型'}
                 </p>
               )}
             </motion.div>
@@ -347,8 +407,8 @@ export default function ChatInput({
               transition={reduceMotion
                 ? { duration: 0.1 }
                 : { type: 'spring', visualDuration: 0.22, bounce: 0 }}
-              className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface p-1 shadow-xl">
-              <div className="sticky top-0 z-10 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[11px] font-medium text-canvas-text-muted">
+              className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-72 overflow-y-auto rounded-xl border border-canvas-border bg-canvas-surface shadow-xl">
+              <div className="sticky top-0 z-20 flex items-center justify-between bg-canvas-surface px-3 py-1.5 text-[10px] font-medium text-canvas-text-muted">
                 <span>Skill</span>
                 <span className="flex items-center gap-2">
                   <span>{filteredSkills.length}</span>
@@ -368,25 +428,27 @@ export default function ChatInput({
                   </button>
                 </span>
               </div>
-              {filteredSkills.length > 0 ? filteredSkills.map((skill) => (
-                <button
-                  key={skill.id}
-                  type="button"
-                  onClick={() => insertSkillReference(skill.id, skill.name)}
-                  title={skill.description}
-                  className="flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-canvas-text hover:bg-canvas-hover"
-                >
-                  <Icon icon="mdi:puzzle-outline" width="16" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate">{skill.name}</span>
-                    <span className="block truncate text-[11px] text-canvas-text-muted">{skill.description}</span>
-                  </span>
-                </button>
-              )) : (
-                <p className="px-3 py-3 text-center text-xs text-canvas-text-muted">
-                  {skillQuery ? `没有匹配"${skillQuery}"的 Skill` : '暂无已上传 Skill'}
-                </p>
-              )}
+              <div className="px-1 pb-1">
+                {filteredSkills.length > 0 ? filteredSkills.map((skill) => (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    onClick={() => insertSkillReference(skill.id, skill.name)}
+                    title={skill.description}
+                    className="flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] text-canvas-text hover:bg-canvas-hover"
+                  >
+                    <Icon icon="mdi:puzzle-outline" width="16" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{skill.name}</span>
+                      <span className="block truncate text-[10px] text-canvas-text-muted">{skill.description}</span>
+                    </span>
+                  </button>
+                )) : (
+                  <p className="px-3 py-3 text-center text-[11px] text-canvas-text-muted">
+                    {skillQuery ? `没有匹配"${skillQuery}"的 Skill` : '暂无已上传 Skill'}
+                  </p>
+                )}
+              </div>
             </motion.div>
           )}
           </AnimatePresence>
@@ -407,6 +469,7 @@ export default function ChatInput({
                 type="button"
                 onClick={() => {
                   setModelQuery('');
+                  setReferenceScope('all');
                   setSkillMenuOpen(false);
                   setModelMenuOpen((open) => !open);
                   inputRef.current?.focus();
