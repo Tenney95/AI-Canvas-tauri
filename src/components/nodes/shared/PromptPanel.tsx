@@ -9,6 +9,7 @@ import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
 import VideoParamSelector from './VideoParamSelector';
+import AudioParamSelector from './AudioParamSelector';
 import StyleSelector from './StyleSelector';
 import MentionEditor, { type MentionEditorHandle } from './MentionEditor';
 import SlashCommandMenu from './SlashCommandMenu';
@@ -16,6 +17,8 @@ import PresetManager from './PresetManager';
 import SkillManager from './SkillManager';
 import { expandSkillReferences } from '../../../services/skillPromptService';
 import { MAX_IMAGE_BATCH_COUNT } from '../../../types/aiTypes';
+import type { AudioOutputFormat, AudioTtsVoice } from '../../../types/aiTypes';
+import type { AudioGenerationPurpose } from '../../../types/media';
 
 const ANIMATION_ACTIONS: AnimationAction[] = ['idle', 'walk', 'run', 'jump', 'attack', 'hit'];
 const IMAGE_BATCH_COUNTS = Array.from({ length: MAX_IMAGE_BATCH_COUNT - 1 }, (_, index) => index + 2);
@@ -90,6 +93,23 @@ interface PromptPanelProps {
   onChangeSeedanceRatio?: (value: string) => void;
   onChangeSeedanceDuration?: (value: number) => void;
   onChangeGenerateAudio?: (value: boolean) => void;
+  audioPurpose?: AudioGenerationPurpose;
+  audioVoice?: AudioTtsVoice;
+  audioFormat?: AudioOutputFormat;
+  audioSpeed?: number;
+  musicTitle?: string;
+  musicLyrics?: string;
+  musicBpm?: number;
+  musicDuration?: number;
+  autoGenerateLyrics?: boolean;
+  onChangeAudioVoice?: (value: AudioTtsVoice) => void;
+  onChangeAudioFormat?: (value: AudioOutputFormat) => void;
+  onChangeAudioSpeed?: (value: number) => void;
+  onChangeMusicTitle?: (value: string) => void;
+  onChangeMusicLyrics?: (value: string) => void;
+  onChangeMusicBpm?: (value: number | undefined) => void;
+  onChangeMusicDuration?: (value: number) => void;
+  onChangeAutoGenerateLyrics?: (value: boolean) => void;
   workflows?: WorkflowDefinition[];
   editorRef?: React.Ref<MentionEditorHandle>;
   selectedStyle?: string;
@@ -135,6 +155,23 @@ export default function PromptPanel({
   onChangeSeedanceRatio,
   onChangeSeedanceDuration,
   onChangeGenerateAudio,
+  audioPurpose,
+  audioVoice,
+  audioFormat,
+  audioSpeed,
+  musicTitle,
+  musicLyrics,
+  musicBpm,
+  musicDuration,
+  autoGenerateLyrics,
+  onChangeAudioVoice,
+  onChangeAudioFormat,
+  onChangeAudioSpeed,
+  onChangeMusicTitle,
+  onChangeMusicLyrics,
+  onChangeMusicBpm,
+  onChangeMusicDuration,
+  onChangeAutoGenerateLyrics,
   workflows = [],
   editorRef,
   selectedStyle,
@@ -414,6 +451,28 @@ export default function PromptPanel({
             onChangeSeedanceRatio={onChangeSeedanceRatio}
             onChangeSeedanceDuration={onChangeSeedanceDuration}
             onChangeGenerateAudio={onChangeGenerateAudio}
+          />
+        )}
+
+        {nodeType === 'ai-audio' && (
+          <AudioParamSelector
+            purpose={audioPurpose}
+            voice={audioVoice}
+            format={audioFormat}
+            speed={audioSpeed}
+            musicTitle={musicTitle}
+            musicLyrics={musicLyrics}
+            musicBpm={musicBpm}
+            musicDuration={musicDuration}
+            autoGenerateLyrics={autoGenerateLyrics}
+            onChangeVoice={onChangeAudioVoice}
+            onChangeFormat={onChangeAudioFormat}
+            onChangeSpeed={onChangeAudioSpeed}
+            onChangeMusicTitle={onChangeMusicTitle}
+            onChangeMusicLyrics={onChangeMusicLyrics}
+            onChangeMusicBpm={onChangeMusicBpm}
+            onChangeMusicDuration={onChangeMusicDuration}
+            onChangeAutoGenerateLyrics={onChangeAutoGenerateLyrics}
           />
         )}
 

@@ -13,6 +13,13 @@ import { downloadUrlAndSave } from './fileService';
 import { applyImageBatchResults } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
 import { splitCommaSeparatedUrls } from './ai/helpers';
+import {
+  extractFlowMusicLyrics,
+  extractFlowMusicTrack,
+  fetchFlowMusicTask,
+  submitFlowMusicGeneration,
+  type FlowMusicTaskState,
+} from './ai/apimartAudio';
 import type { BaseNodeData, NodeType } from '../types';
 
 // ═══════════════════════════════════════════
@@ -59,7 +66,9 @@ export interface PendingTask {
   nodeType: NodeType;
   provider: string;
   taskId: string;
-  taskType: 'apimart' | 'dreamina' | 'comfyui' | 'general' | 'volcengine';
+  taskType: 'apimart' | 'apimart-flow-music' | 'dreamina' | 'comfyui' | 'general' | 'volcengine';
+  /** Flow Music 当前远端任务阶段。 */
+  audioTaskStage?: 'lyrics' | 'music';
   /** 恢复轮询用：API Key */
   apiKey?: string;
   /** 恢复轮询用：服务地址 */
@@ -299,6 +308,88 @@ async function resumeApimart(task: PendingTask): Promise<void> {
     } else {
       await applyNodeResult(nodeId, urls[0], label);
     }
+    removePendingTask(nodeId);
+  } catch (err) {
+    await handleResumeError(nodeId, err);
+  } finally {
+    cleanupNodePolling(nodeId);
+  }
+}
+
+async function pollFlowMusicTask(
+  apiKey: string,
+  baseUrl: string,
+  taskId: string,
+  signal: AbortSignal,
+): Promise<FlowMusicTaskState> {
+  return pollTask<FlowMusicTaskState, FlowMusicTaskState>({
+    fetchState: () => fetchFlowMusicTask(apiKey, baseUrl, taskId),
+    isComplete: (state) => state.status === 'completed' ? state : null,
+    isFailed: (state) =>
+      state.status === 'failed' || state.status === 'error'
+        ? `APIMart 音乐任务失败: ${state.status}`
+        : null,
+    interval: 3000,
+    onFetchError: 'continue',
+    signal,
+  });
+}
+
+/** Flow Music 使用独立查询端点，并支持歌词完成后继续提交音乐阶段。 */
+async function resumeApimartFlowMusic(task: PendingTask): Promise<void> {
+  const { nodeId, apiKey, baseUrl } = task;
+  if (!apiKey || !baseUrl) {
+    useAppStore.getState().updateNodeData(nodeId, { status: 'error', error: '任务恢复失败：缺少 API 配置' });
+    removePendingTask(nodeId);
+    return;
+  }
+
+  const node = useAppStore.getState().nodes.find((item) => item.id === nodeId);
+  const data = node?.data as BaseNodeData | undefined;
+  if (!data) {
+    removePendingTask(nodeId);
+    return;
+  }
+
+  const signal = registerNodePolling(nodeId);
+  let taskId = task.taskId;
+  let stage = task.audioTaskStage ?? 'music';
+
+  try {
+    if (stage === 'lyrics') {
+      const generated = extractFlowMusicLyrics(
+        await pollFlowMusicTask(apiKey, baseUrl, taskId, signal),
+      );
+      useAppStore.getState().updateNodeData(nodeId, {
+        musicTitle: generated.title || data.musicTitle,
+        musicLyrics: generated.lyrics,
+      });
+      updatePendingTask(nodeId, {
+        taskId: '',
+        audioTaskStage: 'music',
+        submitted: false,
+      });
+      taskId = await submitFlowMusicGeneration(apiKey, baseUrl, {
+        soundPrompt: data.prompt || '',
+        lyrics: generated.lyrics,
+        title: generated.title || data.musicTitle,
+        bpm: data.musicBpm,
+        length: data.musicDuration ?? 60,
+      });
+      stage = 'music';
+      updatePendingTask(nodeId, { taskId, audioTaskStage: stage, submitted: true });
+    }
+
+    const result = extractFlowMusicTrack(
+      await pollFlowMusicTask(apiKey, baseUrl, taskId, signal),
+    );
+    const latestData = useAppStore.getState().nodes.find((item) => item.id === nodeId)?.data as BaseNodeData | undefined;
+    useAppStore.getState().updateNodeData(nodeId, {
+      musicClipId: result.clipId,
+      musicTitle: result.title || latestData?.musicTitle,
+      musicLyrics: result.lyrics || latestData?.musicLyrics,
+    });
+    await applyNodeResult(nodeId, result.url, data.label);
     removePendingTask(nodeId);
   } catch (err) {
     await handleResumeError(nodeId, err);
@@ -584,6 +675,7 @@ async function resumeVolcengine(task: PendingTask): Promise<void> {
 
 const RESUME_MAP: Record<PendingTask['taskType'], (task: PendingTask) => Promise<void>> = {
   apimart: resumeApimart,
+  'apimart-flow-music': resumeApimartFlowMusic,
   dreamina: resumeDreamina,
   comfyui: resumeComfyUI,
   general: resumeGeneral,

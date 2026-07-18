@@ -48,6 +48,7 @@ export const IMAGE_BUTTONS: ToolbarButtonDef[] = [
 /** 音频节点按钮 */
 export const AUDIO_BUTTONS: ToolbarButtonDef[] = [
   { key: 'togglePlay',     label: '播放/暂停',   icon: 'mdi:play-pause',                defaultZone: '常用' },
+  { key: 'transcribe',     label: '转录音频',    icon: 'mdi:text-box-search-outline',   defaultZone: '常用' },
   { key: 'copyFile',      label: '复制音频',    icon: 'mdi:content-copy',             defaultZone: '常用' },
   { key: 'upload',         label: '上传音频',    icon: 'mdi:upload',                     defaultZone: '常用' },
   { key: 'fullscreen',     label: '全屏显示',    icon: 'mdi:fullscreen',                defaultZone: '常用' },

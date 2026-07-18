@@ -16,12 +16,22 @@ import type { Node } from '@xyflow/react';
 interface AudioNodeToolbarProps {
   nodeId: string;
   isPlaying?: boolean;
+  isTranscribing?: boolean;
   onTogglePlay: (e: React.MouseEvent) => void;
+  onTranscribe: () => void;
   onUpload: () => void;
   onCopyFile: () => void;
 }
 
-function AudioNodeToolbar({ nodeId, isPlaying, onTogglePlay, onUpload, onCopyFile }: AudioNodeToolbarProps) {
+function AudioNodeToolbar({
+  nodeId,
+  isPlaying,
+  isTranscribing,
+  onTogglePlay,
+  onTranscribe,
+  onUpload,
+  onCopyFile,
+}: AudioNodeToolbarProps) {
   const nodeType = 'ai-audio';
   const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
@@ -47,9 +57,28 @@ function AudioNodeToolbar({ nodeId, isPlaying, onTogglePlay, onUpload, onCopyFil
 
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {
     togglePlay: (e) => { e.stopPropagation(); onTogglePlay(e); },
+    transcribe: (e) => { e.stopPropagation(); onTranscribe(); },
     copyFile:   (e) => { e.stopPropagation(); onCopyFile(); },
     upload:     (e) => { e.stopPropagation(); onUpload(); },
   };
+
+  const renderTranscribeButton = (key: string) => (
+    <AnimatedButton
+      key={key}
+      className="ftb-btn icon-only rounded-[6px]"
+      data-tooltip={isTranscribing ? '正在转录' : '转录音频'}
+      aria-label={isTranscribing ? '正在转录音频' : '转录音频'}
+      disabled={isTranscribing}
+      onClick={actionMap.transcribe}
+    >
+      <Icon
+        icon={isTranscribing ? 'mdi:loading' : 'mdi:text-box-search-outline'}
+        className={isTranscribing ? 'animate-spin' : undefined}
+        width={14}
+        height={14}
+      />
+    </AnimatedButton>
+  );
 
   if (edit.isEditing) {
     return <ToolbarEditor edit={edit} nodeType={nodeType} />;
@@ -80,6 +109,8 @@ function AudioNodeToolbar({ nodeId, isPlaying, onTogglePlay, onUpload, onCopyFil
               );
             }
 
+            if (key === 'transcribe') return renderTranscribeButton(key);
+
             return (
               <AnimatedButton key={key} className={`ftb-btn icon-only${isPreset ? ' act-preset' : ''} rounded-[6px]`}
                 data-tooltip={resolvedDef.label} aria-label={resolvedDef.label} onClick={clickHandler}>
@@ -90,6 +121,11 @@ function AudioNodeToolbar({ nodeId, isPlaying, onTogglePlay, onUpload, onCopyFil
           {zi < edit.layout.zones.length - 1 && <div className="ftb-divider img-toolbar-main-divider" />}
         </div>
       ))}
+      {!edit.activeButtonKeys.has('transcribe') && (
+        <div className="img-toolbar-zone nodrag">
+          {renderTranscribeButton('transcribe-fallback')}
+        </div>
+      )}
     </div>
   );
 }

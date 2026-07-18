@@ -56,8 +56,38 @@ export interface AIAudioGenParams {
   prompt: string;
   model: string;
   provider: string;
+  /** TTS 音色。 */
+  audioVoice?: AudioTtsVoice;
+  /** TTS 输出格式。 */
+  audioFormat?: AudioOutputFormat;
+  /** TTS 播放速度，范围 0.25-4。 */
+  audioSpeed?: number;
+  /** Flow Music 标题。 */
+  musicTitle?: string;
+  /** Flow Music 歌词；为空时可只按风格提示词生成。 */
+  musicLyrics?: string;
+  /** Flow Music BPM，最小值 1。 */
+  musicBpm?: number;
+  /** Flow Music 时长，范围 1-240 秒。 */
+  musicDuration?: number;
+  /** 先调用 Flow Music 歌词接口，再把结果回填到音乐生成。 */
+  autoGenerateLyrics?: boolean;
   workflowId?: string;       // ComfyUI 工作流 ID
   workflowInputs?: Record<string, string>; // IO 节点赋值映射
   /** 关联的节点 ID（用于中断恢复） */
   nodeId?: string;
+}
+
+export type AudioTtsVoice = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
+
+export type AudioOutputFormat = 'wav' | 'opus' | 'aac' | 'flac' | 'pcm';
+
+export interface AudioGenerationResult {
+  url: string;
+  /** 同步二进制接口返回的运行时数据，只用于落盘，不得写入 Store 或 IndexedDB。 */
+  bytes?: Uint8Array;
+  format?: AudioOutputFormat;
+  clipId?: string;
+  title?: string;
+  lyrics?: string;
 }
