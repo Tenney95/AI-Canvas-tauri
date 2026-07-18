@@ -437,6 +437,7 @@ export default function PromptPanel({
         {nodeType === 'ai-video' && (
           <VideoParamSelector
             provider={selectedProvider}
+            selectedModel={selectedModel}
             videoResolution={videoResolution}
             videoFps={videoFps}
             videoFrames={videoFrames}

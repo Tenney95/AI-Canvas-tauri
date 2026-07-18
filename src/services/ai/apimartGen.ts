@@ -6,6 +6,10 @@ import { pollTask } from '../pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './helpers';
 import type { BatchImageResult } from '../../types/aiTypes';
+import {
+  buildApimartSeedanceRequest,
+  type ApimartSeedanceRequestParams,
+} from './apimartVideoModels';
 
 /* ── APIMart 任务轮询共享类型 ── */
 export interface ApimartTaskResult<TResult = Record<string, unknown>> {
@@ -272,6 +276,7 @@ export async function generateApimartVideo(
   model: string,
   prompt: string,
   nodeId?: string,
+  params: ApimartSeedanceRequestParams = {},
 ): Promise<{ url: string }> {
   // 预存待续任务（在 fetch 之前），确保关窗重启后能恢复
   if (nodeId) {
@@ -291,18 +296,18 @@ export async function generateApimartVideo(
     }
   }
 
+  const seedanceRequest = buildApimartSeedanceRequest(model, prompt, params);
+  const submitPath = seedanceRequest ? '/videos/generations' : '/images/generations';
+  const requestBody = seedanceRequest ?? { model, prompt, n: 1 };
+
   // 步骤 1: 提交视频生成任务
-  const submitResp = await fetch(`${baseUrl}/images/generations`, {
+  const submitResp = await fetch(`${baseUrl}${submitPath}`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model,
-      prompt,
-      n: 1,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!submitResp.ok) {

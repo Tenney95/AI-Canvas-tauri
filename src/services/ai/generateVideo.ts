@@ -10,6 +10,7 @@ import type { AIVideoGenParams } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel } from './helpers';
 import { resolvePromptWithImageRefs } from './promptResolver';
 import { executeGeneralAsyncTask, generateApimartVideo } from './apimartGen';
+import { isApimartSeedanceModel } from './apimartVideoModels';
 import { pollTask } from '../pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
 
@@ -52,6 +53,19 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
       throw new Error('未配置 apimart 的服务地址\n请在「设置 → API Key」中添加');
     }
     const modelName = extractModelName(model, provider);
+    if (isApimartSeedanceModel(modelName)) {
+      const { prompt: resolvedPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
+      if (!resolvedPrompt.trim() && imageUrls.length === 0) {
+        throw new Error('提示词不能为空');
+      }
+      return generateApimartVideo(apiKey, baseUrl, modelName, resolvedPrompt, params.nodeId, {
+        resolution: params.seedanceResolution,
+        ratio: params.seedanceRatio,
+        duration: params.seedanceDuration,
+        generateAudio: params.generateAudio,
+        imageUrls,
+      });
+    }
     return generateApimartVideo(apiKey, baseUrl, modelName, prompt, params.nodeId);
   }
 

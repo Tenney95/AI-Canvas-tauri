@@ -1,13 +1,15 @@
 ﻿/**
  * VideoParamSelector 视频参数选择器
- * - volcengine provider → Seedance 参数（分辨率、宽高比、时长、有声视频）
+ * - Seedance 模型 → Seedance 参数（分辨率、宽高比、时长、有声视频）
  * - 其他 provider → ComfyUI / RunningHub 参数（像素分辨率、帧率、帧数）
  */
 import { useState, useRef, useEffect, useCallback } from 'react';
 import AnimatedButton from '../../shared/AnimatedButton';
+import { getApimartSeedanceCapability } from '../../../services/ai/apimartVideoModels';
 
 interface VideoParamSelectorProps {
   provider?: string;
+  selectedModel?: string;
   // ── ComfyUI / RunningHub ──
   videoResolution?: number;
   videoFps?: number;
@@ -51,7 +53,7 @@ const COMBO_FPS_OPTIONS = [
 ];
 
 export default function VideoParamSelector({
-  provider,
+  provider, selectedModel,
   videoResolution = 832, videoFps = 24, videoFrames = 77,
   onChangeResolution, onChangeFps, onChangeFrames,
   seedanceResolution = '720p', seedanceRatio = '16:9',
@@ -64,8 +66,59 @@ export default function VideoParamSelector({
   const ref = useRef<HTMLDivElement>(null);
   const framesInputRef = useRef<HTMLInputElement>(null);
 
-  const isSeedance = provider === 'volcengine' || provider === 'dreamina';
+  const apimartCapability = provider === 'apimart'
+    ? getApimartSeedanceCapability(selectedModel)
+    : undefined;
+  const isSeedance = provider === 'volcengine' || provider === 'dreamina' || Boolean(apimartCapability);
   const isVolcengine = provider === 'volcengine';
+  const seedanceResolutions = apimartCapability
+    ? apimartCapability.resolutions.map((value) => ({ value, label: value === '4k' ? '4K' : value }))
+    : SEEDANCE_RESOLUTIONS;
+  const seedanceRatios = apimartCapability
+    ? apimartCapability.ratios.map((value) => ({ value, label: value }))
+    : SEEDANCE_RATIOS;
+  const minDuration = apimartCapability?.minDuration ?? 2;
+  const maxDuration = apimartCapability?.maxDuration ?? 15;
+  const displayedDuration = Math.min(maxDuration, Math.max(minDuration, seedanceDuration));
+  const displayedResolution = seedanceResolutions.some((item) => item.value === seedanceResolution)
+    ? seedanceResolution
+    : apimartCapability?.defaultResolution ?? seedanceResolution;
+  const displayedRatio = seedanceRatios.some((item) => item.value === seedanceRatio)
+    ? seedanceRatio
+    : apimartCapability?.defaultRatio ?? seedanceRatio;
+  const durationTicks = Array.from(new Set([minDuration, 5, 8, 10, 12, maxDuration]))
+    .filter((value) => value >= minDuration && value <= maxDuration)
+    .sort((a, b) => a - b);
+  const supportsAudio = isVolcengine || Boolean(apimartCapability?.audioField);
+
+  useEffect(() => {
+    if (!apimartCapability) return;
+    if (displayedResolution !== seedanceResolution) {
+      onChangeSeedanceResolution?.(displayedResolution);
+    }
+    if (displayedRatio !== seedanceRatio) {
+      onChangeSeedanceRatio?.(displayedRatio);
+    }
+    if (displayedDuration !== seedanceDuration) {
+      onChangeSeedanceDuration?.(displayedDuration);
+    }
+    if (!apimartCapability.audioField && generateAudio) {
+      onChangeGenerateAudio?.(false);
+    }
+  }, [
+    apimartCapability,
+    displayedDuration,
+    displayedRatio,
+    displayedResolution,
+    generateAudio,
+    onChangeGenerateAudio,
+    onChangeSeedanceDuration,
+    onChangeSeedanceRatio,
+    onChangeSeedanceResolution,
+    seedanceDuration,
+    seedanceRatio,
+    seedanceResolution,
+  ]);
 
   // Close popup on outside click
   useEffect(() => {
@@ -102,7 +155,7 @@ export default function VideoParamSelector({
 
   // ── 触发按钮文案 ──
   const triggerLabel = isSeedance
-    ? `时长${seedanceDuration}s · ${seedanceRatio}`
+    ? `时长${displayedDuration}s · ${displayedRatio}`
     : `帧数${videoFrames} · 帧率${videoFps} · 分辨率${videoResolution}`;
 
   return (
@@ -131,11 +184,11 @@ export default function VideoParamSelector({
                     <span className="rh-tip" data-tooltip="分辨率越高细节越清晰，但生成耗时会明显增加。4K 仅 Seedance 2.0 支持。">!</span>
                   </div>
                   <div className="img-rp-quality-segmented rh-video-resolution-seg">
-                    {SEEDANCE_RESOLUTIONS.map((opt) => (
+                    {seedanceResolutions.map((opt) => (
                       <AnimatedButton
                         key={opt.value}
                         type="button"
-                        className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${seedanceResolution === opt.value ? 'active' : ''}`}
+                        className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${displayedResolution === opt.value ? 'active' : ''}`}
                         onClick={() => onChangeSeedanceResolution?.(opt.value)}
                       >
                         {opt.label}
@@ -151,11 +204,11 @@ export default function VideoParamSelector({
                     <span className="rh-tip" data-tooltip="决定输出视频的画面比例。自适应 = 由模型智能决定。">!</span>
                   </div>
                   <div className="img-rp-quality-segmented rh-video-resolution-seg">
-                    {SEEDANCE_RATIOS.map((opt) => (
+                    {seedanceRatios.map((opt) => (
                       <AnimatedButton
                         key={opt.value}
                         type="button"
-                        className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${seedanceRatio === opt.value ? 'active' : ''}`}
+                        className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${displayedRatio === opt.value ? 'active' : ''}`}
                         onClick={() => onChangeSeedanceRatio?.(opt.value)}
                       >
                         {opt.label}
@@ -169,27 +222,27 @@ export default function VideoParamSelector({
                   <div className="rh-vram-adv-row">
                     <div className="rh-vram-adv-label">
                       <span>生成时长（秒）</span>
-                      <span className="rh-tip" data-tooltip="整数秒，范围 2-15。值越大视频越长、耗时越高。">!</span>
+                      <span className="rh-tip" data-tooltip={`整数秒，范围 ${minDuration}-${maxDuration}。值越大视频越长、耗时越高。`}>!</span>
                     </div>
                     <div className="rh-duration-slider">
                       <div className="rh-duration-track">
                         <div
                           className="rh-duration-fill"
-                          style={{ width: `${((seedanceDuration - 2) / 13) * 100}%` }}
+                          style={{ width: `${((displayedDuration - minDuration) / (maxDuration - minDuration)) * 100}%` }}
                         />
                         <input
                           type="range"
                           className="rh-duration-input"
-                          min={2}
-                          max={15}
+                          min={minDuration}
+                          max={maxDuration}
                           step={1}
-                          value={seedanceDuration}
+                          value={displayedDuration}
                           onChange={(e) => onChangeSeedanceDuration?.(Number(e.target.value))}
                         />
                       </div>
                       <div className="rh-duration-labels">
-                        {[2, 5, 8, 10, 12, 15].map((v) => (
-                          <span key={v} className={`rh-duration-tick ${seedanceDuration >= v ? 'active' : ''}`} onClick={() => onChangeSeedanceDuration?.(v)}>
+                        {durationTicks.map((v) => (
+                          <span key={v} className={`rh-duration-tick ${displayedDuration >= v ? 'active' : ''}`} onClick={() => onChangeSeedanceDuration?.(v)}>
                             {v}s
                           </span>
                         ))}
@@ -198,8 +251,8 @@ export default function VideoParamSelector({
                   </div>
 
 
-                  {/* 有声视频开关 — 仅火山方舟 API 支持 */}
-                  {isVolcengine && (
+                  {/* 有声视频开关 — 仅支持音频参数的 Seedance 模型显示 */}
+                  {supportsAudio && (
                   <div className="rh-vram-adv-row">
                     <div className="rh-vram-adv-label" style={{ justifyContent: 'space-between', width: '100%' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
