@@ -8,6 +8,7 @@ import { Icon } from '@iconify/react';
 import MascotAvatar from './MascotAvatar';
 import AgentModeSelector from './AgentModeSelector';
 import type { AgentMode } from '../../types/agent';
+import PopupCloseButton from '../shared/PopupCloseButton';
 
 interface ChatHeaderProps {
   detached: boolean;
@@ -118,17 +119,7 @@ export default function ChatHeader({
           </button>
 
           {/* 关闭按钮 */}
-          <button
-            type="button"
-            className="chat-panel-close-btn flex items-center justify-center w-8 h-8 rounded-lg
-                       text-canvas-text-muted hover:text-red-400 hover:bg-red-500/10
-                       active:scale-95 transition-[color,background-color,box-shadow,transform] duration-150
-                       motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50"
-            onClick={onClose}
-            aria-label="关闭"
-          >
-            <Icon icon="mdi:close" width="18" height="18" />
-          </button>
+          <PopupCloseButton onClick={onClose} />
           </>
         )}
       </div>

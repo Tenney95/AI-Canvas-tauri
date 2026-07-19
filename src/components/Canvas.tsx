@@ -33,6 +33,7 @@ import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
 import NodeContextMenu from './canvas/NodeContextMenu';
 import CanvasToolbar from './canvas/CanvasToolbar';
+import RoundedMiniMapMask from './canvas/RoundedMiniMapMask';
 import MultiSelectToolbar from './canvas/MultiSelectToolbar';
 import CanvasEmptyState from './canvas/CanvasEmptyState';
 import { useConnectionDropMenu } from '../hooks/useConnectionDropMenu';
@@ -844,21 +845,24 @@ function CanvasInner() {
 
         {/* Mini Map — interactive navigator, toggle with M key */}
         {minimapVisible && (
-          <MiniMap
-            position="bottom-right"
-            pannable
-            zoomable
-          nodeColor={minimapNodeColor}
-          nodeStrokeColor="var(--theme-border)"
-          nodeStrokeWidth={1.5}
-          nodeBorderRadius={35}
-          bgColor="var(--theme-surface)"
-          maskColor="rgba(10, 10, 15, 0.75)"
-          maskStrokeColor="var(--brand)"
-          maskStrokeWidth={1}
-          style={MINIMAP_STYLE}
-          className="!bottom-12 !right-1"
-        />
+          <>
+            <MiniMap
+              position="bottom-right"
+              pannable
+              zoomable
+              nodeColor={minimapNodeColor}
+              nodeStrokeColor="var(--theme-border)"
+              nodeStrokeWidth={1.5}
+              nodeBorderRadius={35}
+              bgColor="var(--theme-surface)"
+              maskColor="var(--minimap-mask)"
+              maskStrokeColor="var(--brand)"
+              maskStrokeWidth={2}
+              style={MINIMAP_STYLE}
+              className="!bottom-12 !right-1"
+            />
+            <RoundedMiniMapMask />
+          </>
         )}
 
         {/* Canvas Controls */}

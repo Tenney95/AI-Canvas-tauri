@@ -12,6 +12,7 @@ import { getAllAssetMeta } from '../../../services/indexedDbService';
 import { springSmooth, fadeFast } from '../../../utils/motion';
 import { AnimatePresence, motion } from 'framer-motion';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import PopupCloseButton from '../../shared/PopupCloseButton';
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 /** 本地文件路径 → asset URL（Tauri 端，不会失效）；非 Tauri 返回 undefined */
@@ -1472,11 +1473,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
                       value={assetSearch} onChange={(e) => setAssetSearch(e.target.value)}
                     />
                   </div>
-                  <button type="button" className="asset-picker-close" onClick={() => setShowAssetPicker(false)} aria-label="关闭">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  </button>
+                  <PopupCloseButton onClick={() => setShowAssetPicker(false)} />
                 </div>
 
 

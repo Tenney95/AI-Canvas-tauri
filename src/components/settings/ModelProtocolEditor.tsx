@@ -16,7 +16,7 @@ import {
   parseModelExecutionProtocol,
   validateModelExecutionProtocol,
 } from '../../services/ai/modelProtocol';
-import AnimatedButton from '../shared/AnimatedButton';
+import PopupCloseButton from '../shared/PopupCloseButton';
 
 type ProtocolChoice = ModelProtocolPresetId | 'legacy';
 type EditorView = 'form' | 'json';
@@ -311,14 +311,7 @@ export default function ModelProtocolEditor({
           <span>模型调用协议</span>
           <strong>{model.name}</strong>
         </div>
-        <AnimatedButton
-          type="button"
-          className="provider-icon-btn"
-          aria-label="关闭协议设置"
-          onClick={onClose}
-        >
-          <Icon icon="mdi:close" width="15" />
-        </AnimatedButton>
+        <PopupCloseButton ariaLabel="关闭协议设置" onClick={onClose} />
       </div>
 
       <div className="provider-protocol-topbar">

@@ -18,6 +18,7 @@ import {
 import { testProviderConnection } from '../../services/testConnection';
 import AnimatedButton from '../shared/AnimatedButton';
 import ModalOverlay from '../shared/ModalOverlay';
+import PopupCloseButton from '../shared/PopupCloseButton';
 import ModelProtocolEditor from './ModelProtocolEditor';
 
 const CATEGORY_ORDER: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
@@ -356,9 +357,7 @@ export default function ProviderConnectionDialog({
           <span className="provider-dialog-kicker">{editing ? '编辑连接' : '新建连接'}</span>
           <h3>{definition ? definition.name : '选择 API 厂商'}</h3>
         </div>
-        <AnimatedButton type="button" className="provider-icon-btn" aria-label="关闭" onClick={onClose}>
-          <Icon icon="mdi:close" width="17" />
-        </AnimatedButton>
+        <PopupCloseButton onClick={onClose} />
       </header>
 
       {!definition ? (

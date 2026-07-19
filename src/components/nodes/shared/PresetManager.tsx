@@ -22,6 +22,7 @@ import {
   PRESET_NODE_TYPE_LABELS,
 } from '../../../types';
 import AnimatedButton from '../../shared/AnimatedButton';
+import PopupCloseButton from '../../shared/PopupCloseButton';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
 import PresetAdvancedEditor from './PresetAdvancedEditor';
@@ -371,14 +372,7 @@ export default function PresetManager() {
               管理 {PRESET_NODE_TYPE_LABELS[activeTab].replace('预设', '快捷指令')} 的提示词模板
             </div>
           </div>
-          <AnimatedButton
-            type="button"
-            className="preset-manager-close-btn"
-            aria-label="关闭"
-            onClick={() => setPresetManagerOpen(false)}
-          >
-            ×
-          </AnimatedButton>
+          <PopupCloseButton onClick={() => setPresetManagerOpen(false)} />
         </div>
 
         {/* Tabs */}

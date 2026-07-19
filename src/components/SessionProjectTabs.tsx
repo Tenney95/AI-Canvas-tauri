@@ -115,8 +115,8 @@ export default function SessionProjectTabs() {
       />
       <nav
         aria-label="最近打开的项目"
-        className={`max-w-full rounded-lg border border-white/[0.08] bg-canvas-surface/75 p-1
-                    shadow-xl shadow-black/30 backdrop-blur-2xl backdrop-saturate-150
+        className={`max-w-full rounded-lg border border-canvas-border bg-[var(--floating-surface-bg)] p-1
+                    shadow-xl shadow-black/30 backdrop-blur-xl backdrop-saturate-150
                     transition-[transform,opacity] duration-200 ease-out will-change-transform
                     motion-reduce:transition-opacity ${
                       settingsOpen
@@ -147,8 +147,8 @@ export default function SessionProjectTabs() {
                     layoutId="session-project-active-tab"
                     aria-hidden="true"
                     transition={layoutTransition}
-                    className="absolute inset-0 rounded-md bg-white/[0.07] shadow-sm shadow-black/20
-                               ring-1 ring-inset ring-white/[0.06]"
+                    className="absolute inset-0 rounded-md bg-[var(--white-alpha-06)] shadow-sm shadow-black/20
+                               ring-1 ring-inset ring-[var(--border-subtle)]"
                   />
                 ) : null}
                 <motion.button
@@ -167,7 +167,7 @@ export default function SessionProjectTabs() {
                               transition-[color,background-color,opacity] duration-150 disabled:cursor-wait ${
                                 isActive
                                   ? 'text-canvas-text'
-                                  : 'text-canvas-text-muted hover:bg-white/[0.04] hover:text-canvas-text-secondary'
+                                  : 'text-canvas-text-muted hover:bg-canvas-hover hover:text-canvas-text-secondary'
                               }`}
                 >
                   <span className="relative z-10 grid h-2.5 w-2.5 shrink-0 place-items-center">
@@ -207,10 +207,10 @@ export default function SessionProjectTabs() {
                       openProjectId === currentProjectId ? null : currentProjectId
                     ))}
                     className={`relative z-10 grid h-8 w-8 shrink-0 place-items-center border-l
-                                border-white/[0.06] transition-colors disabled:cursor-wait ${
+                                border-canvas-border transition-colors disabled:cursor-wait ${
                                   settingsOpen
                                     ? 'bg-indigo-500/15 text-indigo-400'
-                                    : 'text-canvas-text-muted hover:bg-white/[0.05] hover:text-canvas-text-secondary'
+                                    : 'text-canvas-text-muted hover:bg-canvas-hover hover:text-canvas-text-secondary'
                                 }`}
                   >
                     <Icon icon="lucide:settings-2" className="h-3.5 w-3.5" />

@@ -6,6 +6,7 @@
  */
 import { useState } from 'react';
 import { Icon } from '@iconify/react';
+import PopupCloseButton from '../shared/PopupCloseButton';
 import {
   PROJECT_MEMORY_CONTENT_LIMIT,
   PROJECT_MEMORY_KIND_LABELS,
@@ -146,14 +147,7 @@ export default function ProjectMemoryPanel({
           <span className="text-sm font-medium text-canvas-text">项目记忆</span>
           <span className="text-[11px] text-canvas-text-muted">{sorted.length} 条</span>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-canvas-text-muted hover:bg-canvas-hover hover:text-canvas-text"
-          title="关闭"
-        >
-          <Icon icon="mdi:close" width="16" />
-        </button>
+        <PopupCloseButton onClick={onClose} />
       </div>
 
       <div className="flex-1 space-y-2 overflow-y-auto p-3">

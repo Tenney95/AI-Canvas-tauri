@@ -27,6 +27,7 @@ import { getAllAssetMeta, putAssetMeta, deleteAssetMeta } from '../services/inde
 import { startAssetDrag, prepareDragIcon } from '../utils/assetDrag';
 import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetFormat';
 import AssetThumb from './shared/AssetThumb';
+import PopupCloseButton from './shared/PopupCloseButton';
 import { springSmooth, fadeFast } from '../utils/motion';
 
 /** 仅磁盘真实文件可拖拽（排除节点引用的 node:// / virtual:// 虚拟路径）*/
@@ -339,14 +340,7 @@ export default function AssetsPanel() {
               {/* Header */}
               <div className="assets-panel-header">
                 <h2 className="assets-panel-title">资产管理<span className="assets-panel-subtitle">拖拽卡片到画布即可添加节点</span></h2>
-                <motion.button
-                  type="button" className="assets-panel-close" onClick={handleClose} aria-label="关闭"
-                  whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </motion.button>
+                <PopupCloseButton onClick={handleClose} />
               </div>
 
               {/* Tabs */}

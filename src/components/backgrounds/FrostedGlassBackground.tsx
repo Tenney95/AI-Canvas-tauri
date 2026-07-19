@@ -4,8 +4,9 @@ import {
   AmbientLight,
   Color,
   DirectionalLight,
-  Group,
   HemisphereLight,
+  InstancedMesh,
+  Matrix4,
   Mesh,
   MeshPhysicalMaterial,
   MeshStandardMaterial,
@@ -19,17 +20,12 @@ import {
 } from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import {
-  BlendFunction,
-  BloomEffect,
-  EffectComposer,
-  EffectPass,
-  KernelSize,
-  RenderPass,
-} from 'postprocessing';
 
 const WORLD_HEIGHT = 12;
-const POINTER_LERP = 0.11;
+const POINTER_LERP = 0.16;
+const INTERACTION_FRAME_INTERVAL = 1000 / 40;
+const MAX_PIXEL_RATIO = 1.2;
+const TRANSMISSION_RESOLUTION_SCALE = 0.55;
 
 export default function FrostedGlassBackground() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -48,12 +44,13 @@ export default function FrostedGlassBackground() {
 
     const renderer = new WebGLRenderer({
       antialias: true,
-      powerPreference: 'high-performance',
+      powerPreference: 'low-power',
     });
     renderer.outputColorSpace = SRGBColorSpace;
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 0.92;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.transmissionResolutionScale = TRANSMISSION_RESOLUTION_SCALE;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
     renderer.domElement.setAttribute('aria-hidden', 'true');
     container.appendChild(renderer.domElement);
 
@@ -64,34 +61,19 @@ export default function FrostedGlassBackground() {
     roomEnvironment.dispose();
     pmremGenerator.dispose();
 
-    const composer = new EffectComposer(renderer);
-    composer.addPass(new RenderPass(scene, camera));
-    const bloomEffect = new BloomEffect({
-      blendFunction: BlendFunction.SCREEN,
-      kernelSize: KernelSize.LARGE,
-      luminanceThreshold: 0.62,
-      luminanceSmoothing: 0.52,
-    });
-    bloomEffect.blendMode.opacity.value = 0.18;
-    const bloomPass = new EffectPass(camera, bloomEffect);
-    bloomPass.renderToScreen = true;
-    composer.addPass(bloomPass);
-
     scene.add(new AmbientLight(0xffffff, 0.012));
     const directionalLight = new DirectionalLight(0xffffff, 0.035);
     directionalLight.position.set(-4, 6, 10);
     scene.add(directionalLight);
 
-    const sphereKeyLight = new DirectionalLight(0xfff0a8, 3.3);
+    const sphereKeyLight = new DirectionalLight(0xfff0a8, 3.8);
     sphereKeyLight.position.set(6, 7, 3);
     sphereKeyLight.layers.set(1);
     scene.add(sphereKeyLight);
-    const sphereFillLight = new HemisphereLight(0xffca65, 0x2b0700, 0.12);
+    const sphereFillLight = new HemisphereLight(0xffca65, 0x2b0700, 0.18);
     sphereFillLight.layers.set(1);
     scene.add(sphereFillLight);
 
-    const tileGroup = new Group();
-    scene.add(tileGroup);
     const glassUniforms = {
       glowCenter: { value: new Vector3() },
       glowRadius: { value: 4 },
@@ -122,7 +104,7 @@ export default function FrostedGlassBackground() {
         )
         .replace(
           '#include <worldpos_vertex>',
-          '#include <worldpos_vertex>\nvFrostedWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;',
+          '#include <worldpos_vertex>\nvFrostedWorldPosition = worldPosition.xyz;',
         );
       shader.fragmentShader = shader.fragmentShader
         .replace(
@@ -139,14 +121,14 @@ export default function FrostedGlassBackground() {
     };
 
     const sphereMaterial = new MeshStandardMaterial({
-      color: 0xffaa00,
+      color: 0xffb000,
       emissive: 0x3a1000,
       emissiveIntensity: 0,
       roughness: 0.96,
       metalness: 0,
       envMapIntensity: 0.02,
     });
-    let sphereGeometry = new SphereGeometry(1, 64, 48);
+    let sphereGeometry = new SphereGeometry(1, 48, 32);
     const sphere = new Mesh(sphereGeometry, sphereMaterial);
     sphere.position.z = -2.2;
     sphere.layers.set(1);
@@ -159,12 +141,20 @@ export default function FrostedGlassBackground() {
     let targetX = currentX;
     let targetY = currentY;
     let animationFrame = 0;
+    let lastFrameTime = 0;
     let hasPointerPosition = false;
+    let tileMesh: InstancedMesh | null = null;
 
-    const renderScene = () => composer.render();
+    const renderScene = () => renderer.render(scene, camera);
 
-    const animate = () => {
+    const animate = (timestamp: number) => {
       animationFrame = 0;
+      const elapsed = timestamp - lastFrameTime;
+      if (elapsed < INTERACTION_FRAME_INTERVAL) {
+        animationFrame = requestAnimationFrame(animate);
+        return;
+      }
+      lastFrameTime = timestamp - (elapsed % INTERACTION_FRAME_INTERVAL);
       currentX += (targetX - currentX) * POINTER_LERP;
       currentY += (targetY - currentY) * POINTER_LERP;
       sphere.position.x = currentX;
@@ -205,7 +195,7 @@ export default function FrostedGlassBackground() {
       const tileSize = tilePixels * worldPerPixel;
       const gapSize = gapPixels * worldPerPixel;
 
-      tileGroup.clear();
+      if (tileMesh) scene.remove(tileMesh);
       tileGeometry?.dispose();
       const tileDepth = tileSize * 0.72;
       tileGeometry = new RoundedBoxGeometry(
@@ -221,22 +211,27 @@ export default function FrostedGlassBackground() {
       const tileStride = tileSize + gapSize;
       const startX = -((columns - 1) * tileStride) / 2;
       const startY = ((rows - 1) * tileStride) / 2;
+      tileMesh = new InstancedMesh(tileGeometry, tileMaterial, columns * rows);
+      const instanceMatrix = new Matrix4();
+      let instanceIndex = 0;
       for (let row = 0; row < rows; row += 1) {
         for (let column = 0; column < columns; column += 1) {
-          const tile = new Mesh(tileGeometry, tileMaterial);
-          tile.position.set(
+          instanceMatrix.makeTranslation(
             startX + column * tileStride,
             startY - row * tileStride,
             0,
           );
-          tileGroup.add(tile);
+          tileMesh.setMatrixAt(instanceIndex, instanceMatrix);
+          instanceIndex += 1;
         }
       }
+      tileMesh.instanceMatrix.needsUpdate = true;
+      scene.add(tileMesh);
 
       sphereGeometry.dispose();
       const sphereRadiusPixels = Math.min(180, Math.max(108, shortestSide * 0.137));
       const sphereRadius = sphereRadiusPixels * worldPerPixel;
-      sphereGeometry = new SphereGeometry(sphereRadius, 64, 48);
+      sphereGeometry = new SphereGeometry(sphereRadius, 48, 32);
       sphere.geometry = sphereGeometry;
       const glowRadiusPixels = Math.min(340, Math.max(270, shortestSide * 0.33));
       glassUniforms.glowRadius.value = glowRadiusPixels * worldPerPixel;
@@ -255,9 +250,8 @@ export default function FrostedGlassBackground() {
       const width = container.clientWidth;
       const height = container.clientHeight;
       if (!width || !height) return;
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
       renderer.setSize(width, height, false);
-      composer.setSize(width, height);
       rebuildTiles(width, height);
       renderScene();
     });
@@ -299,13 +293,12 @@ export default function FrostedGlassBackground() {
       coarsePointer.removeEventListener('change', handleMotionPreference);
       if (animationFrame) cancelAnimationFrame(animationFrame);
 
-      tileGroup.clear();
+      if (tileMesh) scene.remove(tileMesh);
       tileGeometry?.dispose();
       tileMaterial.dispose();
       sphereGeometry.dispose();
       sphereMaterial.dispose();
       environmentTexture.dispose();
-      composer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }

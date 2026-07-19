@@ -29,6 +29,7 @@ import {
   isProviderCategoryVisible,
 } from './nodes/shared/defaultModels';
 import StyleSelector from './nodes/shared/StyleSelector';
+import PopupCloseButton from './shared/PopupCloseButton';
 import {
   PROJECT_IMAGE_ASPECT_RATIOS,
   PROJECT_IMAGE_SIZES,
@@ -326,8 +327,8 @@ export default function ProjectSettingsPopover({
             ? { duration: 0.12 }
             : { type: 'spring', bounce: 0, duration: 0.32 }}
           className="fixed z-[200] flex max-h-[min(78vh,680px)] w-[min(420px,calc(100vw-24px))]
-                     origin-top-right flex-col overflow-hidden rounded-lg border border-white/[0.09]
-                     bg-canvas-surface/90 text-canvas-text shadow-2xl shadow-black/40
+                     origin-top-right flex-col overflow-hidden rounded-lg border border-[var(--glass-ring)]
+                     bg-[var(--glass-bg)] text-canvas-text shadow-2xl shadow-black/40
                      outline-none backdrop-blur-2xl backdrop-saturate-150"
         >
           <form onSubmit={(event) => { void handleSubmit(event); }} className="flex min-h-0 flex-col">
@@ -339,16 +340,7 @@ export default function ProjectSettingsPopover({
                 <h2 className="truncate text-sm font-semibold leading-5">项目设置</h2>
                 <p className="truncate text-[11px] leading-4 text-canvas-text-muted">{project.name}</p>
               </div>
-              <button
-                type="button"
-                aria-label="关闭项目设置"
-                data-tooltip="关闭"
-                onClick={onClose}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-canvas-text-muted
-                           transition-colors hover:bg-white/[0.06] hover:text-canvas-text"
-              >
-                <Icon icon="lucide:x" className="h-4 w-4" />
-              </button>
+              <PopupCloseButton ariaLabel="关闭项目设置" onClick={onClose} />
             </header>
 
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
@@ -544,7 +536,7 @@ export default function ProjectSettingsPopover({
                 onClick={onClose}
                 disabled={saving}
                 className="h-8 rounded-md px-3 text-xs font-medium text-canvas-text-secondary
-                           transition-colors hover:bg-white/[0.05] hover:text-canvas-text disabled:opacity-50"
+                           transition-colors hover:bg-canvas-hover hover:text-canvas-text disabled:opacity-50"
               >
                 取消
               </button>

@@ -6,6 +6,7 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '../../../store/useAppStore';
 import AnimatedButton from '../../shared/AnimatedButton';
+import PopupCloseButton from '../../shared/PopupCloseButton';
 
 interface SkillManagerProps {
   open: boolean;
@@ -86,14 +87,7 @@ export default function SkillManager({ open, onClose }: SkillManagerProps) {
                   <div className="preset-modal-title">Skill 管理</div>
                   <div className="preset-modal-desc">查看已上传 Skill，删除不再使用的 Skill</div>
                 </div>
-                <AnimatedButton
-                  type="button"
-                  className="preset-manager-close-btn"
-                  aria-label="关闭"
-                  onClick={onClose}
-                >
-                  ×
-                </AnimatedButton>
+                <PopupCloseButton onClick={onClose} />
               </div>
 
               <div className="preset-manager-shell">

@@ -66,10 +66,10 @@
 .react-flow__controls {
   border-radius: 10px !important;
   overflow: hidden !important;
-  background: var(--glass-bg) !important;
-  backdrop-filter: blur(var(--glass-blur-md)) !important;
+  background: var(--floating-surface-bg) !important;
+  backdrop-filter: blur(var(--glass-blur-lg)) !important;
   border: 1px solid var(--glass-ring) !important;
-  box-shadow: 0 8px 32px var(--black-alpha-40) !important;
+  box-shadow: var(--floating-surface-shadow, 0 8px 32px var(--black-alpha-40)) !important;
 }
 
 .react-flow__controls-button {
@@ -102,9 +102,15 @@
 .react-flow__minimap {
   border-radius: 8px !important;
   overflow: hidden !important;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3) !important;
+  box-shadow: var(--floating-surface-shadow, 0 4px 16px rgba(0, 0, 0, 0.3)) !important;
   background-color: color-mix(in srgb, var(--theme-surface) 50%, transparent) !important;
   backdrop-filter: blur(var(--glass-blur-sm));
+}
+
+.react-flow__minimap-mask {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  shape-rendering: geometricPrecision;
 }
 
 

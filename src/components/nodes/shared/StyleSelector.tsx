@@ -6,6 +6,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { Icon } from '@iconify/react';
 import { createPortal } from 'react-dom';
 import ModalOverlay from '../../shared/ModalOverlay';
+import PopupCloseButton from '../../shared/PopupCloseButton';
 import { useAppStore } from '../../../store/useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { PROJECT_STYLE_OPTIONS } from '../../../services/projectSettingsService';
@@ -268,17 +269,10 @@ export default function StyleSelector({
                   <line x1="5" y1="12" x2="19" y2="12" />
                 </svg>
               </button>
-              <button
-                type="button"
-                className="asset-picker-close"
+              <PopupCloseButton
+                ariaLabel="关闭画风选择"
                 onClick={() => setOpen(false)}
-                aria-label="关闭画风选择"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+              />
             </div>
           </div>
           <div className="style-picker-grid">
@@ -333,17 +327,10 @@ export default function StyleSelector({
         >
           <div className="style-picker-header">
             <span className="asset-picker-title">添加自定义画风</span>
-            <button
-              type="button"
-              className="asset-picker-close"
+            <PopupCloseButton
+              ariaLabel="关闭自定义画风编辑"
               onClick={() => setAddOpen(false)}
-              aria-label="关闭自定义画风编辑"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
+            />
           </div>
           <div className="style-add-body">
             {/* 缩略图 */}

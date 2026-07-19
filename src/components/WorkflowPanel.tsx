@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, generateId } from '../store/useAppStore';
 import type { WorkflowDefinition, WorkflowCategory, WorkflowIONode, WorkflowIONodeType } from '../types';
+import PopupCloseButton from './shared/PopupCloseButton';
 
 const CATEGORIES: { value: WorkflowCategory; label: string }[] = [
   { value: 'ai-text', label: '生成文本' },
@@ -286,19 +287,7 @@ export default function WorkflowPanel() {
         {/* Header */}
         <div className="wf-panel-header">
           <h2 className="wf-panel-title">工作流管理</h2>
-          <motion.button
-            type="button"
-            className="wf-panel-close"
-            onClick={handleClose}
-            aria-label="关闭"
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </motion.button>
+          <PopupCloseButton onClick={handleClose} />
         </div>
 
         {/* Import section */}

@@ -10,6 +10,7 @@ import { getProjectDataDir, getBaseDir, openDirectoryInFileManager, PROJECT_DISK
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import ModalOverlay from './shared/ModalOverlay';
 import AnimatedButton from './shared/AnimatedButton';
+import PopupCloseButton from './shared/PopupCloseButton';
 import ApiKeySettings from './settings/ApiKeySettings';
 import StorageHealthCenter from './settings/StorageHealthCenter';
 import { BACKGROUND_OPTIONS } from './backgrounds/CanvasBackground';
@@ -328,16 +329,10 @@ export default function SettingsPanel() {
         {/* Header */}
         <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-canvas-border">
           <h2 className="text-base font-semibold text-canvas-text">设置</h2>
-          <AnimatedButton
-            aria-label="关闭设置"
+          <PopupCloseButton
+            ariaLabel="关闭设置"
             onClick={() => setSettingsOpen(false)}
-            className="w-8 h-8 rounded-lg hover:bg-canvas-hover flex items-center justify-center text-canvas-text-secondary hover:text-canvas-text transition-colors"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </AnimatedButton>
+          />
         </div>
 
         <div className="flex flex-1 min-h-0">

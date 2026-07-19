@@ -137,6 +137,8 @@
   --glass-blur-sm: 6px;
   --glass-blur-md: 16px;
   --glass-blur-lg: 24px;
+  --floating-surface-bg: color-mix(in srgb, var(--theme-surface) 60%, transparent);
+  --minimap-mask: rgba(10, 10, 15, 0.75);
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -205,6 +207,11 @@
   --glass-panel-bg: rgba(255, 255, 255, 0.67);
   --glass-ring: rgba(0, 0, 0, 0.10);
   --glass-ring-strong: rgba(0, 0, 0, 0.06);
+  --minimap-mask: color-mix(in srgb, var(--theme-text) 14%, transparent);
+  --floating-surface-shadow:
+    0 1px 2px color-mix(in srgb, var(--theme-text) 7%, transparent),
+    0 10px 30px color-mix(in srgb, var(--theme-text) 10%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--theme-surface) 78%, transparent);
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -474,8 +481,10 @@ textarea:focus {
 }
 
 .app-header {
-  background-color: var(--glass-bg);
+  background-color: var(--floating-surface-bg);
+  box-shadow: var(--floating-surface-shadow, var(--tw-shadow));
 }
 .footer-toolbar {
-  background-color: var(--glass-bg);
+  background-color: var(--floating-surface-bg);
+  box-shadow: var(--floating-surface-shadow, var(--tw-shadow));
 }

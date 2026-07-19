@@ -7,6 +7,7 @@
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { DreaminaRuntime } from '../../types';
+import PopupCloseButton from '../shared/PopupCloseButton';
 
 interface DreaminaLoginModalProps {
   isOpen: boolean;
@@ -51,14 +52,11 @@ export default function DreaminaLoginModal({
             transition={{ type: 'spring', stiffness: 350, damping: 30 }}
             onClick={(e) => e.stopPropagation()}
           >
-            <button
-              type="button"
-              className="dreamina-login-modal-close"
-              aria-label="关闭即梦登录窗口"
+            <PopupCloseButton
+              ariaLabel="关闭即梦登录窗口"
+              className="absolute right-3.5 top-3"
               onClick={onClose}
-            >
-              ×
-            </button>
+            />
 
             <div className="dreamina-login-modal-badge">即梦账号</div>
 

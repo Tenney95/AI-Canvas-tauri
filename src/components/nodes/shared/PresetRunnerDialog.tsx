@@ -17,6 +17,7 @@ import {
   type PresetParameterValues,
 } from '../../../services/presetTemplateService';
 import { isAdvancedPreset, runPresetSequence } from '../../../services/presetSequenceService';
+import PopupCloseButton from '../../shared/PopupCloseButton';
 
 const EMPTY_PARAMETERS: PresetParameterDefinition[] = [];
 const EMPTY_STEPS: NonNullable<UserPreset['advanced']>['steps'] = [];
@@ -162,9 +163,7 @@ function PresetRunnerContent({
                 <p>将从“{sourceNode.data.label || sourceNode.id}”开始顺序执行</p>
               </div>
             </div>
-            <button type="button" className="preset-manager-close-btn" aria-label="关闭" onClick={onClose}>
-              <Icon icon="mdi:close" width={18} height={18} />
-            </button>
+            <PopupCloseButton onClick={onClose} />
           </header>
 
           <div className="preset-runner-body">

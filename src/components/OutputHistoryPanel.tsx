@@ -10,6 +10,7 @@ import { useAppStore } from '../store/useAppStore';
 import type { OutputHistoryEntry } from '../types';
 import { NODE_TYPE_CONFIG } from '../types';
 import AnimatedButton from './shared/AnimatedButton';
+import PopupCloseButton from './shared/PopupCloseButton';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
 const EASE = [0.16, 1, 0.3, 1] as const;
@@ -306,16 +307,7 @@ export default function OutputHistoryPanel() {
                 <h2 className="text-sm font-semibold text-canvas-text">输出历史</h2>
                 <span className="text-[11px] text-canvas-text-muted">共 {allEntries.length} 条</span>
               </div>
-              <button
-                type="button"
-                className="w-7 h-7 rounded-lg hover:bg-canvas-hover flex items-center justify-center text-canvas-text-secondary hover:text-canvas-text transition-colors"
-                onClick={() => setHistoryPanelOpen(false)}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+              <PopupCloseButton onClick={() => setHistoryPanelOpen(false)} />
             </div>
 
             {/* Filter tabs + Search */}
