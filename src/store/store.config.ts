@@ -3,7 +3,7 @@
  */
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { AppConfig, GeneralModelConfig } from '../types';
+import type { ApiProviderConfig, AppConfig, GeneralModelConfig } from '../types';
 import * as fileService from '../services/fileService';
 import { setBaseDataDir, syncAuthorizedDirectories } from '../services/fileService';
 
@@ -23,12 +23,106 @@ export interface ConfigSlice {
   updateConfig: (config: Partial<AppConfig>) => void;
   setProviderKey: (providerName: string, key: string) => void;
   setProviderUrl: (providerName: string, url: string) => void;
-  setProviderConfig: (providerName: string, cfg: Partial<{ apiKey: string; baseUrl: string }>) => void;
+  setProviderConfig: (providerName: string, cfg: Partial<ApiProviderConfig>) => void;
+  saveProviderConfig: (providerName: string, cfg: ApiProviderConfig) => void;
+  removeProviderConfig: (providerName: string) => void;
   addGeneralModel: (model: Omit<GeneralModelConfig, 'id'>) => void;
   updateGeneralModel: (id: string, model: Partial<GeneralModelConfig>) => void;
   removeGeneralModel: (id: string) => void;
   saveConfig: () => Promise<void>;
   loadConfig: () => Promise<void>;
+}
+
+function createGeneralModelId(providerConfigId: string, modelId: string): string {
+  const safeProviderId = providerConfigId.replace(/[^a-zA-Z0-9_-]/g, '-');
+  let hash = 2166136261;
+  for (let index = 0; index < modelId.length; index += 1) {
+    hash ^= modelId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `provider-${safeProviderId}-${(hash >>> 0).toString(36)}`;
+}
+
+function syncCustomProviderModels(
+  generalModels: GeneralModelConfig[],
+  providerConfigId: string,
+  config: ApiProviderConfig,
+): GeneralModelConfig[] {
+  if (config.catalogId !== 'custom-openai' || config.selectedModels === undefined) return generalModels;
+
+  const linkedModels = new Map(
+    generalModels
+      .filter((model) => model.providerConfigId === providerConfigId)
+      .map((model) => [model.modelId, model]),
+  );
+  const otherModels = generalModels.filter((model) => model.providerConfigId !== providerConfigId);
+  const selectedModels = config.selectedModels.map((model) => {
+    const existing = linkedModels.get(model.id);
+    return {
+      id: existing?.id || createGeneralModelId(providerConfigId, model.id),
+      name: model.name,
+      openaiUrl: config.baseUrl || '',
+      anthropicUrl: config.anthropicUrl || '',
+      modelId: model.id,
+      apiKey: config.apiKey,
+      category: model.category,
+      contextWindow: existing?.contextWindow,
+      providerConfigId,
+    } satisfies GeneralModelConfig;
+  });
+  return [...otherModels, ...selectedModels];
+}
+
+function migrateLegacyGeneralModels(config: AppConfig): AppConfig {
+  const generalModels = config.generalModels ?? [];
+  if (generalModels.length === 0 || generalModels.every((model) => model.providerConfigId)) return config;
+
+  const providers = { ...config.providers };
+  const connectionBySignature = new Map<string, string>();
+  for (const [providerId, provider] of Object.entries(providers)) {
+    if (provider.catalogId !== 'custom-openai') continue;
+    connectionBySignature.set(
+      `${provider.baseUrl || ''}\u0000${provider.anthropicUrl || ''}\u0000${provider.apiKey}`,
+      providerId,
+    );
+  }
+
+  let nextCustomIndex = 1;
+  const migratedModels = generalModels.map((model) => {
+    if (model.providerConfigId) return model;
+    const signature = `${model.openaiUrl}\u0000${model.anthropicUrl}\u0000${model.apiKey}`;
+    let providerConfigId = connectionBySignature.get(signature);
+    if (!providerConfigId) {
+      do {
+        providerConfigId = `custom-${nextCustomIndex}`;
+        nextCustomIndex += 1;
+      } while (providers[providerConfigId]);
+      providers[providerConfigId] = {
+        name: model.name || '自定义接口',
+        apiKey: model.apiKey,
+        baseUrl: model.openaiUrl,
+        anthropicUrl: model.anthropicUrl,
+        catalogId: 'custom-openai',
+        selectedModels: [],
+      };
+      connectionBySignature.set(signature, providerConfigId);
+    }
+    const provider = providers[providerConfigId];
+    if (!provider.selectedModels?.some((selection) => selection.id === model.modelId)) {
+      provider.selectedModels = [
+        ...(provider.selectedModels ?? []),
+        {
+          id: model.modelId,
+          name: model.name,
+          category: model.category,
+          provider: providerConfigId,
+        },
+      ];
+    }
+    return { ...model, providerConfigId };
+  });
+
+  return { ...config, providers, generalModels: migratedModels };
 }
 
 export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (set, get) => ({
@@ -83,6 +177,34 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
       },
     })),
 
+  saveProviderConfig: (providerName, cfg) =>
+    set((state) => ({
+      config: {
+        ...state.config,
+        providers: { ...state.config.providers, [providerName]: cfg },
+        generalModels: syncCustomProviderModels(
+          state.config.generalModels ?? [],
+          providerName,
+          cfg,
+        ),
+      },
+    })),
+
+  removeProviderConfig: (providerName) =>
+    set((state) => {
+      const providers = { ...state.config.providers };
+      delete providers[providerName];
+      return {
+        config: {
+          ...state.config,
+          providers,
+          generalModels: (state.config.generalModels ?? []).filter(
+            (model) => model.providerConfigId !== providerName,
+          ),
+        },
+      };
+    }),
+
   addGeneralModel: (model) =>
     set((state) => ({
       config: {
@@ -129,7 +251,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
     try {
       const saved = await fileService.loadConfig();
       if (saved) {
-        const cfg = { ...defaultConfig, ...(saved as AppConfig) };
+        const cfg = migrateLegacyGeneralModels({ ...defaultConfig, ...(saved as AppConfig) });
         set({ config: cfg });
         setBaseDataDir(cfg.baseDataDir);
         await syncAuthorizedDirectories(cfg);

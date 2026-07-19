@@ -177,10 +177,29 @@ export interface ProjectSettings {
 }
 
 // API 配置
+export type GeneralModelCategory = 'text' | 'image' | 'audio' | 'video';
+
+export type ProviderCatalogAdapter = 'openai-compatible' | 'local-manifest';
+
+/** 用户在厂商目录中明确启用的模型，不包含凭据。 */
+export interface ProviderModelSelection {
+  id: string;
+  name: string;
+  category: GeneralModelCategory;
+  provider: string;
+  description?: string;
+}
+
 export interface ApiProviderConfig {
   name: string;
   apiKey: string;
   baseUrl?: string;
+  /** 内置目录定义 ID；自定义连接的配置 key 与目录定义 ID 不同。 */
+  catalogId?: string;
+  anthropicUrl?: string;
+  /** undefined 表示旧配置尚未选择；空数组表示用户明确未启用任何模型。 */
+  selectedModels?: ProviderModelSelection[];
+  catalogUpdatedAt?: number;
 }
 
 // 即梦/Dreamina OAuth 登录态（登录态由官方 dreamina_cli 持久化，此处仅镜像用于 UI）
@@ -236,8 +255,6 @@ export interface AppConfig {
 }
 
 // ── 通用模型配置 ──
-export type GeneralModelCategory = 'text' | 'image' | 'audio' | 'video';
-
 export interface GeneralModelConfig {
   id: string;
   name: string;               // 名称
@@ -247,6 +264,8 @@ export interface GeneralModelConfig {
   apiKey: string;             // API 密钥
   category: GeneralModelCategory; // 模型种类
   contextWindow?: number;     // 文本模型上下文窗口（token）；未声明时按模型 ID 目录推断
+  /** 对应 config.providers 中的连接 ID；旧配置可能缺失。 */
+  providerConfigId?: string;
 }
 
 export const GENERAL_MODEL_CATEGORY_LABELS: Record<GeneralModelCategory, string> = {
