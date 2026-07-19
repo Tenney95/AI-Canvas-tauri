@@ -254,6 +254,194 @@ const HELP_CATEGORIES = [
 
 type HelpCategoryId = (typeof HELP_CATEGORIES)[number]['id'];
 
+interface HelpDemoConfig {
+  caption: string;
+  steps: readonly {
+    icon: string;
+    label: string;
+    tone: string;
+  }[];
+}
+
+const HELP_DEMOS = {
+  'getting-started': {
+    caption: '创建节点，补充模型与输入，然后获得第一份生成结果。',
+    steps: [
+      { icon: 'lucide:plus', label: '创建节点', tone: 'border-indigo-400/25 bg-indigo-500/10 text-indigo-400' },
+      { icon: 'lucide:settings-2', label: '选择模型', tone: 'border-blue-400/25 bg-blue-500/10 text-blue-400' },
+      { icon: 'lucide:sparkles', label: '生成结果', tone: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-400' },
+    ],
+  },
+  canvas: {
+    caption: '先选中内容，再平移或缩放画布，最后快速适配全部节点。',
+    steps: [
+      { icon: 'lucide:mouse-pointer-2', label: '选择内容', tone: 'border-indigo-400/25 bg-indigo-500/10 text-indigo-400' },
+      { icon: 'lucide:move', label: '平移缩放', tone: 'border-cyan-400/25 bg-cyan-500/10 text-cyan-400' },
+      { icon: 'lucide:scan', label: '适配视野', tone: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-400' },
+    ],
+  },
+  nodes: {
+    caption: '选中节点后按 Space，可直接进入提示词与参数编辑。',
+    steps: [
+      { icon: 'lucide:box-select', label: '选中节点', tone: 'border-blue-400/25 bg-blue-500/10 text-blue-400' },
+      { icon: 'lucide:keyboard', label: '按 Space', tone: 'border-amber-400/25 bg-amber-500/10 text-amber-400' },
+      { icon: 'lucide:panel-top-open', label: '打开编辑', tone: 'border-indigo-400/25 bg-indigo-500/10 text-indigo-400' },
+    ],
+  },
+  shortcuts: {
+    caption: '拖动节点尺寸时按住 Shift，可随时切换为等比缩放。',
+    steps: [
+      { icon: 'lucide:move-diagonal-2', label: '拖动尺寸', tone: 'border-blue-400/25 bg-blue-500/10 text-blue-400' },
+      { icon: 'lucide:arrow-up', label: '按住 Shift', tone: 'border-amber-400/25 bg-amber-500/10 text-amber-400' },
+      { icon: 'lucide:proportions', label: '锁定比例', tone: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-400' },
+    ],
+  },
+  generation: {
+    caption: '在画布助手中明确引用模型，确认调用后再生成媒体内容。',
+    steps: [
+      { icon: 'lucide:at-sign', label: '引用模型', tone: 'border-indigo-400/25 bg-indigo-500/10 text-indigo-400' },
+      { icon: 'lucide:badge-check', label: '确认调用', tone: 'border-amber-400/25 bg-amber-500/10 text-amber-400' },
+      { icon: 'lucide:image', label: '生成内容', tone: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-400' },
+    ],
+  },
+  projects: {
+    caption: '项目、导入素材与资产历史保持在同一个独立工作空间中。',
+    steps: [
+      { icon: 'lucide:folder-plus', label: '新建项目', tone: 'border-indigo-400/25 bg-indigo-500/10 text-indigo-400' },
+      { icon: 'lucide:file-up', label: '导入素材', tone: 'border-blue-400/25 bg-blue-500/10 text-blue-400' },
+      { icon: 'lucide:archive', label: '管理资产', tone: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-400' },
+    ],
+  },
+  assistant: {
+    caption: '描述任务并确认执行计划，助手会把每一步结果写回正确项目。',
+    steps: [
+      { icon: 'lucide:message-square', label: '描述任务', tone: 'border-blue-400/25 bg-blue-500/10 text-blue-400' },
+      { icon: 'lucide:list-checks', label: '确认计划', tone: 'border-amber-400/25 bg-amber-500/10 text-amber-400' },
+      { icon: 'lucide:workflow', label: '执行画布', tone: 'border-emerald-400/25 bg-emerald-500/10 text-emerald-400' },
+    ],
+  },
+} satisfies Record<HelpCategoryId, HelpDemoConfig>;
+
+function HelpDemo({ categoryId }: { categoryId: HelpCategoryId }) {
+  const rootRef = useRef<HTMLElement>(null);
+  const [playbackKey, setPlaybackKey] = useState(0);
+  const demo = HELP_DEMOS[categoryId];
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    let cancelled = false;
+    let context: { revert: () => void } | undefined;
+
+    // GSAP is only needed while the help demo is mounted.
+    void import('gsap').then(({ gsap }) => {
+      if (cancelled || !rootRef.current) return;
+
+      context = gsap.context(() => {
+        const steps = gsap.utils.toArray<HTMLElement>('[data-help-demo-step]');
+        const connectors = gsap.utils.toArray<HTMLElement>('[data-help-demo-connector]');
+        const caption = root.querySelector<HTMLElement>('[data-help-demo-caption]');
+
+        gsap.set(steps, { opacity: 0.35, transform: 'translateY(4px) scale(0.96)' });
+        gsap.set(connectors, {
+          opacity: 0.35,
+          transform: 'scaleX(0)',
+          transformOrigin: 'left center',
+        });
+        if (caption) gsap.set(caption, { opacity: 0, transform: 'translateY(4px)' });
+
+        const timeline = gsap.timeline();
+        steps.forEach((step, index) => {
+          timeline.to(step, {
+            opacity: 1,
+            transform: 'translateY(0) scale(1)',
+            duration: 0.28,
+            ease: 'power3.out',
+          }, index === 0 ? 0 : '>+0.06');
+
+          const connector = connectors[index];
+          if (connector) {
+            timeline.to(connector, {
+              opacity: 1,
+              transform: 'scaleX(1)',
+              duration: 0.32,
+              ease: 'power2.inOut',
+            }, '>-0.04');
+          }
+        });
+
+        if (caption) {
+          timeline.to(caption, {
+            opacity: 1,
+            transform: 'translateY(0)',
+            duration: 0.24,
+            ease: 'power3.out',
+          }, '>-0.05');
+        }
+      }, root);
+    });
+
+    return () => {
+      cancelled = true;
+      context?.revert();
+    };
+  }, [categoryId, playbackKey]);
+
+  return (
+    <section
+      ref={rootRef}
+      aria-label={`${demo.caption} 操作演示`}
+      className="relative mb-5 overflow-hidden rounded-lg border border-canvas-border bg-canvas-bg/60 px-3 py-3"
+    >
+      <div
+        className="pointer-events-none absolute inset-0 opacity-30 [background-image:radial-gradient(var(--separator-color)_1px,transparent_1px)] [background-size:12px_12px]"
+        aria-hidden="true"
+      />
+      <div className="relative mb-3 flex items-center justify-between gap-3">
+        <span className="text-[11px] font-medium text-canvas-text-secondary">操作演示</span>
+        <button
+          type="button"
+          aria-label="重新播放操作演示"
+          data-tooltip="重新播放"
+          onClick={() => setPlaybackKey((key) => key + 1)}
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-canvas-text-muted transition-colors hover:bg-canvas-hover hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+        >
+          <Icon icon="lucide:rotate-ccw" width="14" height="14" aria-hidden="true" />
+        </button>
+      </div>
+
+      <div className="relative flex min-h-14 items-center">
+        {demo.steps.map((step, index) => (
+          <div key={step.label} className="contents">
+            <div
+              data-help-demo-step
+              className={`flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-1.5 rounded-lg border px-1.5 ${step.tone}`}
+            >
+              <Icon icon={step.icon} width="17" height="17" aria-hidden="true" />
+              <span className="max-w-full truncate text-[10px] font-medium text-canvas-text-secondary">{step.label}</span>
+            </div>
+            {index < demo.steps.length - 1 ? (
+              <div
+                data-help-demo-connector
+                className="mx-2 h-px min-w-3 flex-[0.35] bg-[var(--separator-color)]"
+                aria-hidden="true"
+              />
+            ) : null}
+          </div>
+        ))}
+      </div>
+
+      <p
+        data-help-demo-caption
+        className="relative mt-3 text-pretty text-[11px] leading-5 text-canvas-text-secondary"
+      >
+        {demo.caption}
+      </p>
+    </section>
+  );
+}
+
 /* ============================================
    Node Picker popup
    ============================================ */
@@ -633,6 +821,8 @@ function AvatarMenu() {
                     <p className="text-[11px] font-medium text-indigo-400">{selectedHelpCategory.label}</p>
                     <h3 className="mt-1 text-lg font-semibold text-canvas-text">{selectedHelpCategory.summary}</h3>
                   </div>
+
+                  <HelpDemo categoryId={activeHelpCategory} />
 
                   <ol className="space-y-1">
                     {selectedHelpCategory.items.map((item, index) => (
