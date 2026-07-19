@@ -149,7 +149,10 @@ function getMediaModelAvailability(
     if (option.provider === 'dreamina') {
       return [option.value, dreaminaLoggedIn];
     }
-    return [option.value, !!providers[option.provider]?.apiKey];
+    const providerConfigId = option.groupId === 'runninghub'
+      ? 'runninghub-model'
+      : option.groupId;
+    return [option.value, !!providers[providerConfigId]?.apiKey];
   }));
 }
 
@@ -257,9 +260,30 @@ export default function ChatPanel({
     () => detached ? (detachedSnapshot?.generalModels ?? []) : generalModels,
     [detached, detachedSnapshot?.generalModels, generalModels],
   );
+  const mediaCatalogConfig = useMemo(() => ({
+    providers,
+    dreaminaAuth: { loggedIn: dreaminaLoggedIn },
+  }), [dreaminaLoggedIn, providers]);
   const mediaModelOptions = useMemo(
-    () => getMediaModelOptions(effectiveGeneralModels),
-    [effectiveGeneralModels],
+    () => {
+      const options = getMediaModelOptions(
+        effectiveGeneralModels,
+        detached ? undefined : mediaCatalogConfig,
+      );
+      if (!detached) return options;
+      const availability = detachedSnapshot?.mediaModelAvailability;
+      if (!availability) return [];
+      return options.filter((option) => Object.prototype.hasOwnProperty.call(
+        availability,
+        option.value,
+      ));
+    },
+    [
+      detached,
+      detachedSnapshot?.mediaModelAvailability,
+      effectiveGeneralModels,
+      mediaCatalogConfig,
+    ],
   );
   const localMediaModelAvailability = useMemo(
     () => getMediaModelAvailability(
@@ -675,7 +699,7 @@ export default function ChatPanel({
         assistantImageModelId: state.config.assistantImageModelId,
         assistantVideoModelId: state.config.assistantVideoModelId,
         mediaModelAvailability: getMediaModelAvailability(
-          getMediaModelOptions(state.config.generalModels ?? []),
+          getMediaModelOptions(state.config.generalModels ?? [], state.config),
           state.config.generalModels ?? [],
           state.config.providers,
           !!state.config.dreaminaAuth?.loggedIn,
@@ -1097,6 +1121,7 @@ export default function ChatPanel({
                       assistantModelId={effectiveAssistantModelId}
                       onAssistantModelChange={handleTextModelChange}
                       mediaModels={effectiveGeneralModels}
+                      mediaModelOptions={mediaModelOptions}
                       mediaModelAvailability={effectiveMediaModelAvailability}
                       inputValue={inputValue}
                       onInputChange={updateInputDraft}

@@ -15,7 +15,6 @@ import type { BaseNodeData, GeneralModelConfig, ModelOption } from '../../types'
 import type { ContextUsageStat } from '../../services/chat/contextManager';
 import { useAppStore } from '../../store/useAppStore';
 import {
-  getMediaModelOptions,
   type MediaModelOption,
 } from '../nodes/shared/defaultModels';
 import type { LocalFileGrantSummary } from '../../services/chat/fileGrantService';
@@ -109,6 +108,7 @@ interface ChatInputProps {
   assistantModelId?: string;
   onAssistantModelChange: (modelId?: string) => void;
   mediaModels: GeneralModelConfig[];
+  mediaModelOptions: MediaModelOption[];
   mediaModelAvailability: Record<string, boolean>;
   inputValue: string;
   onInputChange: (value: string) => void;
@@ -125,6 +125,7 @@ export default function ChatInput({
   assistantModelId,
   onAssistantModelChange,
   mediaModels,
+  mediaModelOptions,
   mediaModelAvailability,
   inputValue,
   onInputChange,
@@ -148,10 +149,7 @@ export default function ChatInput({
   const userSkills = useAppStore((state) => state.userSkills);
   const uploadSkill = useAppStore((state) => state.uploadSkill);
   const showToast = useAppStore((state) => state.showToast);
-  const compatibleMediaModels = useMemo(
-    () => getMediaModelOptions(mediaModels),
-    [mediaModels],
-  );
+  const compatibleMediaModels = mediaModelOptions;
   const groupedMediaModels = useMemo(() => {
     const groups = new Map<string, { id: string; name: string; models: MediaModelOption[] }>();
     for (const model of compatibleMediaModels) {
@@ -215,6 +213,14 @@ export default function ChatInput({
       : model.value;
     onAssistantModelChange(modelId);
   }, [onAssistantModelChange]);
+
+  const selectedTextModel = useMemo(() => {
+    if (!assistantModelId || assistantModelId.startsWith('general/')) return assistantModelId;
+    const isGeneralModel = mediaModels.some((model) => (
+      model.category === 'text' && model.id === assistantModelId
+    ));
+    return isGeneralModel ? `general/${assistantModelId}` : assistantModelId;
+  }, [assistantModelId, mediaModels]);
 
   const insertModelMention = useCallback((model: MediaModelOption) => {
     inputRef.current?.insertReference({
@@ -610,7 +616,7 @@ export default function ChatInput({
           <div className="flex items-center gap-1.5 min-w-0">
             <ModelSelector
               nodeType="ai-text"
-              selectedModel={assistantModelId ? `general/${assistantModelId}` : undefined}
+              selectedModel={selectedTextModel}
               onSelect={handleTextModelSelect}
               generalModelsOverride={mediaModels}
               groupAvailability={modelGroupAvailability}

@@ -12,6 +12,8 @@ import type {
 
 export type MediaModelKind = 'image' | 'video' | 'audio';
 
+type ProviderModelVisibilityConfig = Pick<AppConfig, 'providers' | 'dreaminaAuth'>;
+
 export interface MediaModelOption extends ModelOption {
   mediaKind: MediaModelKind;
   groupId: string;
@@ -818,7 +820,7 @@ function providerConfigIdForGroup(groupId: string): string {
 }
 
 export function isProviderCategoryVisible(
-  config: AppConfig,
+  config: ProviderModelVisibilityConfig,
   providerConfigId: string | undefined,
   category: GeneralModelCategory,
 ): boolean {
@@ -839,7 +841,7 @@ interface ConfiguredModelGroupOptions {
  * Missing providers are removed instead of being rendered as permanently locked groups.
  */
 export function getConfiguredModelGroups(
-  config: AppConfig,
+  config: ProviderModelVisibilityConfig,
   nodeType: NodeType,
   groups: ModelGroup[] = defaultModelGroups,
   options: ConfiguredModelGroupOptions = {},
@@ -880,25 +882,38 @@ export function getConfiguredModelGroups(
 /** 节点与对话共用的图片/视频/音频模型目录，不包含工作流。 */
 export function getMediaModelOptions(
   generalModels: GeneralModelConfig[] = [],
+  config?: ProviderModelVisibilityConfig,
 ): MediaModelOption[] {
-  const builtIn = defaultModelGroups.flatMap((group) => group.models.flatMap((model) => {
-    if (model.provider === 'runninghubwf') return [];
-    const supportsImage = model.nodeTypes.includes('ai-image');
-    const supportsVideo = model.nodeTypes.includes('ai-video');
-    const supportsAudio = model.nodeTypes.includes('ai-audio');
-    const entries: MediaModelOption[] = [];
-    const groupInfo = { groupId: group.id, groupName: group.name };
-    if (supportsImage) entries.push({ ...model, ...groupInfo, mediaKind: 'image' });
-    if (supportsVideo) entries.push({ ...model, ...groupInfo, mediaKind: 'video' });
-    if (supportsAudio) entries.push({ ...model, ...groupInfo, mediaKind: 'audio' });
-    return entries;
-  }));
+  const mediaTargets: Array<{ mediaKind: MediaModelKind; nodeType: NodeType }> = [
+    { mediaKind: 'image', nodeType: 'ai-image' },
+    { mediaKind: 'video', nodeType: 'ai-video' },
+    { mediaKind: 'audio', nodeType: 'ai-audio' },
+  ];
+  const builtIn = mediaTargets.flatMap(({ mediaKind, nodeType }) => {
+    const groups = config
+      ? getConfiguredModelGroups(config, nodeType)
+      : defaultModelGroups;
+    return groups.flatMap((group) => group.models.flatMap((model) => {
+      if (model.provider === 'runninghubwf' || !model.nodeTypes.includes(nodeType)) return [];
+      return [{
+        ...model,
+        groupId: group.id,
+        groupName: group.name,
+        mediaKind,
+      } satisfies MediaModelOption];
+    }));
+  });
 
   const custom: MediaModelOption[] = generalModels
     .filter((model) => (
-      model.category === 'image'
-      || model.category === 'video'
-      || model.category === 'audio'
+      (model.category === 'image'
+        || model.category === 'video'
+        || model.category === 'audio')
+      && (!config || isProviderCategoryVisible(
+        config,
+        model.providerConfigId,
+        model.category,
+      ))
     ))
     .map((model) => {
       const mediaKind: MediaModelKind = model.category === 'image'
@@ -935,9 +950,10 @@ export function getMediaModelOptions(
 export function findMediaModelOption(
   modelRef: string,
   generalModels: GeneralModelConfig[] = [],
+  config?: ProviderModelVisibilityConfig,
 ): MediaModelOption | undefined {
   const normalized = modelRef.startsWith('general/') ? modelRef : `general/${modelRef}`;
-  return getMediaModelOptions(generalModels).find(
+  return getMediaModelOptions(generalModels, config).find(
     (model) => model.value === modelRef || model.value === normalized,
   );
 }
