@@ -868,6 +868,57 @@ type PolicyDecision =
 - 未复跑浏览器手测：本阶段 UI 变更仅在 E1 已验证的时间线上新增一行恢复建议文本；Chrome 调试连接在本阶段末不可用，逻辑与渲染由断言 + 类型检查 + 构建覆盖
 - 交互限制：真实文本/付费媒体模型下的 B/C 完整端到端、原生文件/保存对话框、独立窗口控制路由需在 Tauri 配置模型后手测
 
+### P3-F1：Agent 快捷指令工具
+
+**状态：** `[x]`
+
+### 目标
+
+让 Agent 能查询、读取、创建、修改和调用用户快捷指令，同时保持现有 B/C 模式、画布 revision 校验、写操作零自动重试和媒体逐次确认语义。
+
+### 实际文件
+
+- 新增：`src/services/chat/tools/presetTools.ts`
+- 修改：`src/services/chat/tools/index.ts`
+- 新增：`doc/adr/0001-agent-preset-tools.md`
+- 新增：`doc/plans/2026-07-19-agent-preset-tools.md`
+- 修改：`doc/对话助手-Agent能力实施方案.md`
+
+### 工具和权限
+
+| 工具 | effect | 行为 |
+|---|---|---|
+| `preset_list` | `read` | 返回快捷指令、参数和步骤概况 |
+| `preset_get` | `read` | 返回一个快捷指令的完整模板 |
+| `preset_create` | `file_write` | 确认后创建并持久化快捷指令 |
+| `preset_update` | `file_write` | 确认后修改并持久化快捷指令 |
+| `preset_start_run` | `canvas_write` | 校验参数和 revision，创建运行节点，不调用模型 |
+| `preset_run_text_step` | `canvas_write` | 执行一个文本步骤 |
+| `preset_run_media_step` | `media_generation` | 确认后执行一个图片、视频或音频步骤 |
+
+### 实施结果
+
+- [x] 复用 `UserPreset`、快捷指令 Store CRUD、`resolvePresetAction()`、`buildPresetSequencePlan()` 和 `executeGeneration()`，未新增依赖或数据库迁移。
+- [x] 工具 schema 禁止未知字段，限制模板长度、参数数量和步骤数量；Agent 创建的高级快捷指令最多 10 步，以适配默认 12 轮模型预算。
+- [x] 高级参数支持默认值和运行值校验；布尔、数字、选择项、重复键和未知键均在执行前拒绝。
+- [x] 运行节点记录 preset/run/task/step 归属；步骤工具只能执行当前 Agent 任务创建的节点，且前序步骤必须成功。
+- [x] 已成功的步骤再次调用时返回幂等结果，不重复付费生成；失败不会自动重试，Observation 明确要求停止或重新规划。
+- [x] 启动和每个步骤分别复核 canvas revision；模型若在同一轮并发提出启动与执行，后一个旧 revision 提案会被拒绝。
+- [x] 媒体序列不复用会一次执行整条链的 `runPresetSequence()`；每个媒体节点均通过独立 `media_generation` 工具逐次确认。
+- [x] 不提供 Agent 删除快捷指令入口，不开放任意 Store、脚本、路径或供应商请求。
+
+### 回滚
+
+从 `tools/index.ts` 退掉 `registerPresetAgentTools()` 并删除 `presetTools.ts` 即可关闭 Agent 入口。现有界面快捷指令、Store、IndexedDB 数据和 `runPresetSequence()` 均未修改，不需要数据回滚。
+
+### 完成记录
+
+- 完成日期：2026-07-19
+- 架构决策：`doc/adr/0001-agent-preset-tools.md`
+- 实施计划：`doc/plans/2026-07-19-agent-preset-tools.md`
+- 实际检查：`npm run typecheck`、改动 TypeScript 文件定向 ESLint、`npm run build`、`git diff --check` 和 UTF-8 严格解码均通过；全量 `npm run lint` 被仓库当前 ESLint 10/scope manager 兼容错误 `scopeManager.addGlobals is not a function` 中断
+- 交互限制：真实文本/付费媒体模型下的多轮步骤推进和逐次审批需要在 Tauri 配置模型与 Key 后手测
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -973,3 +1024,4 @@ type PolicyDecision =
 | 2026-07-16 | P3-E1 | 完成任务时间线、步骤/审批卡、暂停/继续/跳过/重新规划/停止控制、安全重入守卫、后台驱动重构和独立窗口控制路由。 |
 | 2026-07-16 | P3-E2 | 完成继续前校验、稳定错误码与恢复建议、删除会话资源清理、付费零重试与安全断言、旧路径评估，全部阶段收尾。 |
 | 2026-07-16 | P3-C1 移除 | 按用户决定整体移除联网搜索/网页读取/来源引用：删除 `assistant_web.rs`、`webSearchService`、`webPageService`、`webTools`、`SourceList`，退掉 `web_search`/`web_read_page` 工具、Tavily 设置与连接测试、消息 `sources` 与 `WebSource` 类型；保留通用 `proxy_fetch`。typecheck / 定向 ESLint / `cargo check --lib` / 生产构建均通过。 |
+| 2026-07-19 | P3-F1 | 新增 Agent 快捷指令查询、创建、修改和分步调用工具；定义写入与画布操作沿用既有审批，媒体步骤逐次确认，运行节点校验 task 归属、顺序和 revision。 |
