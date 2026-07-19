@@ -70,7 +70,7 @@ function ConnectionMenu({
         >
       {/* Header */}
       <div className="px-3 py-2.5 border-b border-canvas-border">
-        <div className="text-[11px] font-medium text-canvas-text-muted uppercase tracking-wider mb-1">
+        <div className="text-[11px] font-medium text-canvas-text-muted uppercase mb-1">
           引用该节点生成
         </div>
         <div className="text-xs text-canvas-text-secondary truncate">

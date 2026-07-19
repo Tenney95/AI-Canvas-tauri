@@ -99,14 +99,6 @@ const CHIP_STYLE: Record<string, string> = {
   'ai-storyboard': 'chip-image',
 };
 
-const NODE_ICON: Record<string, string> = {
-  'ai-text': 'T',
-  'ai-image': 'I',
-  'ai-video': 'V',
-  'ai-audio': 'A',
-  'ai-markdown': 'M',
-};
-
 // ── Workflow IO node chip color/icon per IONodeType ──
 const WF_IO_STYLE: Record<string, string> = {
   prompt: 'chip-workflow-prompt',
@@ -216,21 +208,24 @@ function buildChipEl(
   const isMedia = nodeType === 'ai-image' || nodeType === 'ai-video' || nodeType === 'ai-storyboard';
 
   const span = document.createElement('span');
-  span.className = `prompt-chip ${chipClass}`;
+  span.className = `prompt-chip prompt-chip-node ${chipClass}`;
   span.contentEditable = 'false';
   span.setAttribute('data-ref-id', nodeId);
   span.setAttribute('data-ref-label', label);
+  span.title = displayId != null ? `${label} (#${displayId})` : label;
 
   const iconSpan = document.createElement('span');
   iconSpan.className = 'prompt-chip-icon';
+  iconSpan.setAttribute('aria-hidden', 'true');
   if (isMedia && thumbnailUrl) {
+    iconSpan.classList.add('has-thumbnail');
     const img = document.createElement('img');
     img.src = thumbnailUrl;
     img.className = 'prompt-chip-thumb';
     img.alt = '';
     iconSpan.appendChild(img);
   } else {
-    iconSpan.textContent = NODE_ICON[nodeType] || '?';
+    iconSpan.textContent = '@';
   }
   span.appendChild(iconSpan);
 
@@ -280,14 +275,16 @@ function buildSkillChipEl(skillId: string, skillName: string): HTMLSpanElement {
   span.contentEditable = 'false';
   span.setAttribute('data-skill-id', skillId);
   span.setAttribute('data-skill-name', skillName);
+  span.title = skillName;
 
   const iconSpan = document.createElement('span');
-  iconSpan.className = 'prompt-chip-icon';
-  iconSpan.textContent = 'S';
+  iconSpan.className = 'prompt-chip-icon prompt-chip-skill-icon';
+  iconSpan.setAttribute('aria-hidden', 'true');
+  iconSpan.textContent = '✦';
   span.appendChild(iconSpan);
 
   const nameSpan = document.createElement('span');
-  nameSpan.className = 'prompt-chip-id';
+  nameSpan.className = 'prompt-chip-skill-name';
   nameSpan.textContent = skillName.length > 20 ? `${skillName.slice(0, 18)}...` : skillName;
   span.appendChild(nameSpan);
   return span;

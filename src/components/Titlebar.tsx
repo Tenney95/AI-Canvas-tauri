@@ -56,7 +56,7 @@ function TitlebarInner({
         }`}
       >
         <div
-          className="flex items-center gap-1.5 rounded-full border border-white/[0.08]
+          className="flex items-center gap-1.5 rounded-full border border-canvas-border
                      bg-canvas-surface/45 px-2 py-1.5 shadow-lg shadow-black/20 backdrop-blur-xl"
         >
           <MacTrafficLight

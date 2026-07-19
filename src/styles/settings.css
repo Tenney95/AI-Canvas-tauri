@@ -259,7 +259,7 @@
   padding: 10px 14px;
   font-size: 12px;
   line-height: 1.55;
-  color: #c0c0d0;
+  color: var(--theme-text-secondary);
   box-shadow: 0 4px 20px var(--black-alpha-40);
   white-space: normal;
 }
@@ -294,7 +294,7 @@
 }
 .dreamina-settings-inline {
   font-size: 13px;
-  color: #c0c0d0;
+  color: var(--theme-text-secondary);
   margin-bottom: 10px;
 }
 .dreamina-settings-actions {

@@ -33,7 +33,9 @@ const ZoomControl = memo(function ZoomControl() {
         max="200"
         value={zoomPercent}
         onChange={handleZoomChange}
-        className="w-20 accent-indigo-500"
+        aria-label="画布缩放比例"
+        aria-valuetext={`${zoomPercent}%`}
+        className="canvas-zoom-slider"
       />
       <span className="text-xs text-canvas-text-secondary w-10 text-right tabular-nums">{zoomPercent}%</span>
     </>
@@ -47,9 +49,11 @@ function CanvasToolbar({
   onToggleLine,
 }: CanvasToolbarProps) {
   return (
-    <div className="footer-toolbar flex items-center gap-2 border border-canvas-border backdrop-blur-xl rounded-lg px-3 py-1.5 shadow-lg">
+    <div className="footer-toolbar flex items-center gap-2 border border-canvas-border backdrop-blur-xl rounded-xl px-3 py-1.5 shadow-lg">
       <AnimatedButton
-        className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${
+        type="button"
+        aria-label={showGrid ? '隐藏背景网格' : '显示背景网格'}
+        className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
           showGrid
             ? 'text-indigo-400 hover:text-indigo-300 bg-indigo-500/15'
             : 'text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover'
@@ -57,28 +61,30 @@ function CanvasToolbar({
         onClick={onToggleGrid}
         data-tooltip={showGrid ? '隐藏背景网格' : '显示背景网格'}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
           <circle cx="5" cy="5" r="1.5" /><circle cx="12" cy="5" r="1.5" /><circle cx="19" cy="5" r="1.5" />
           <circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" />
           <circle cx="5" cy="19" r="1.5" /><circle cx="12" cy="19" r="1.5" /><circle cx="19" cy="19" r="1.5" />
         </svg>
       </AnimatedButton>
       <AnimatedButton
-        className="w-7 h-7 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
+        type="button"
+        aria-label={smoothLine ? '切换为曲线连线' : '切换为直角连线'}
+        className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
         onClick={onToggleLine}
         data-tooltip={smoothLine ? '连线类型：直角 → 切换为曲线' : '连线类型：曲线 → 切换为直角'}
       >
         {smoothLine ? (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
             <path d="M4 20 L10 20 L10 10 L20 4" />
           </svg>
         ) : (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
             <path d="M4 20 Q12 8 20 4" />
           </svg>
         )}
       </AnimatedButton>
-      <div className="w-px h-5 bg-canvas-border mx-0.5" />
+      <div className="w-px h-4 bg-[var(--separator-color)] mx-0.5" />
       <ZoomControl />
     </div>
   );

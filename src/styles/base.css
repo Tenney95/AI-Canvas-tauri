@@ -10,6 +10,8 @@
    Dark Theme (default) / 暗色主题（默认）
    ════════════════════════════════════════════════════════════════════════ */
 :root {
+  color-scheme: dark;
+
   /* Theme Layer / 主题层 ── */
   --theme-bg: #0a0a0f;
   --theme-surface: #14141c;
@@ -87,6 +89,7 @@
   --black-alpha-60: rgba(0, 0, 0, 0.60);
 
   /* Border Variants / 边框变体 ── */
+  --separator-color: rgba(232, 232, 237, 0.10);
   --border-subtle: rgba(255, 255, 255, 0.06);
   --border-secondary: #3a3a4a;
   --border-focus: rgba(99, 102, 241, 0.40);
@@ -147,6 +150,8 @@
    切换主题层、透明度系列、边框、毛玻璃和滚动条为浅色值。
    ════════════════════════════════════════════════════════════════════════ */
 [data-theme='light'] {
+  color-scheme: light;
+
   /* Theme Layer / 主题层 ── */
   --theme-bg: #F5F0EB;
   --theme-surface: #FFFFFF;
@@ -191,6 +196,7 @@
   --white-alpha-15: rgba(0, 0, 0, 0.15);
 
   /* Border Variants / 边框变体 ── */
+  --separator-color: rgba(26, 26, 46, 0.14);
   --border-subtle: rgba(0, 0, 0, 0.06);
   --border-secondary: #d4d0c8;
   --border-focus: rgba(99, 102, 241, 0.45);
@@ -575,4 +581,40 @@ textarea:focus {
 .footer-toolbar {
   background-color: var(--floating-surface-bg);
   box-shadow: var(--floating-surface-shadow, var(--tw-shadow));
+}
+
+.canvas-zoom-slider {
+  width: 80px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 2px;
+  background: var(--separator-color);
+  cursor: pointer;
+}
+
+.canvas-zoom-slider::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  -webkit-appearance: none;
+  appearance: none;
+  border: 2px solid var(--theme-surface);
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 1px 4px var(--black-alpha-30);
+}
+
+.canvas-zoom-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--separator-color);
+}
+
+.canvas-zoom-slider::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--theme-surface);
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 1px 4px var(--black-alpha-30);
 }

@@ -81,12 +81,6 @@
   color: rgba(136, 136, 160, 0.5);
 }
 
-/* Flex spacer pushes task center to bottom */
-.sidebar-flex-spacer {
-  flex: 1;
-  min-height: 6px;
-}
-
 /* Task center button */
 .task-center-btn {
   position: relative;
@@ -232,7 +226,7 @@
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   color: var(--theme-text-muted);
   white-space: nowrap;
 }

@@ -200,7 +200,7 @@
 }
 .wf-cat-chip:hover {
   color: var(--theme-text);
-  border-color: rgba(255, 255, 255, 0.14);
+  border-color: var(--border-secondary);
 }
 .wf-cat-chip.active {
   color: var(--brand-light);
@@ -210,7 +210,7 @@
 
 /* File picker area */
 .wf-file-area {
-  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border: 1px dashed var(--separator-color);
   border-radius: 8px;
   padding: 14px;
   cursor: pointer;
@@ -628,7 +628,7 @@
   margin-bottom: -1px;
 }
 .assets-tab:hover {
-  color: #c0c0d0;
+  color: var(--theme-text);
 }
 .assets-tab.active {
   color: var(--theme-text);
@@ -711,7 +711,7 @@
 .assets-spinner {
   width: 24px;
   height: 24px;
-  border: 2px solid rgba(255, 255, 255, 0.1);
+  border: 2px solid var(--separator-color);
   border-top-color: var(--brand-light);
   border-radius: 50%;
   /* rotation handled by framer-motion */
@@ -721,15 +721,15 @@
 .assets-waterfall-card {
   break-inside: avoid;
   margin-bottom: 12px;
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: var(--white-alpha-03);
+  border: 1px solid var(--border-subtle);
   transition: border-color 0.2s, background 0.2s;
 }
 .assets-waterfall-card:hover {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border-secondary);
+  background: var(--white-alpha-06);
 }
 
 /* Image wrapper */
@@ -787,8 +787,14 @@
   opacity: 0;
   transition: opacity 0.2s;
 }
-.assets-waterfall-card:hover .assets-card-actions {
+.assets-waterfall-card:hover .assets-card-actions,
+.assets-waterfall-card:focus-within .assets-card-actions {
   opacity: 1;
+}
+@media (hover: none) {
+  .assets-card-actions {
+    opacity: 1;
+  }
 }
 .assets-card-action-btn {
   width: 28px;

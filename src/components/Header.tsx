@@ -25,7 +25,7 @@ export default function Header() {
                   }`}
     >
       {/* Logo */}
-      <div className="flex items-center gap-2 pr-2 mr-0.5 border-r border-canvas-border">
+      <div className="flex items-center gap-2 pr-1">
         <div className="w-6 h-6 rounded-md bg-gradient-to-br to-purple-600 flex items-center justify-center shrink-0">
           <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
             <defs>
@@ -60,8 +60,11 @@ export default function Header() {
             </g>
           </svg>
         </div>
-        <span className="text-[11px] font-semibold text-canvas-text/90 tracking-wide">AI Canvas</span>
+        <span className="text-[11px] font-semibold text-canvas-text/90">AI Canvas</span>
       </div>
+
+      {/* Divider */}
+      <div className="w-px h-4 bg-[var(--separator-color)] mx-0.5" />
 
       {/* Project Name */}
       <div
@@ -86,10 +89,12 @@ export default function Header() {
       </div>
 
       {/* Divider */}
-      <div className="w-px h-4 bg-canvas-hover mx-0.5" />
+      <div className="w-px h-4 bg-[var(--separator-color)] mx-0.5" />
 
       {/* Actions */}
       <motion.button
+        type="button"
+        aria-label="新建画布"
         onClick={() => useAppStore.getState().createProject()}
         className="w-7 h-7 rounded-lg hover:bg-canvas-hover flex items-center justify-center
                    text-canvas-text-secondary hover:text-canvas-text"
@@ -98,7 +103,7 @@ export default function Header() {
         whileTap={{ scale: 0.92 }}
         transition={{ type: 'spring', stiffness: 400, damping: 17 }}
       >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
           <line x1="12" y1="5" x2="12" y2="19" />
           <line x1="5" y1="12" x2="19" y2="12" />
         </svg>

@@ -1,0 +1,18 @@
+/* Shared separators use one semantic color while keeping local geometry. */
+.sidebar-sep-v3,
+.avatar-menu-sep,
+.menu-rule,
+.canvas-ctx-menu .menu-sep,
+.wf-section-rule,
+.assets-chip-sep,
+.slash-command-divider,
+.img-toolbar-main-divider,
+.multigrid-menu-divider,
+.matting-divider,
+.annotate-divider,
+.customgrid-bar-divider,
+.crop-bar-divider,
+.pano-toolbar-divider,
+.toolbar-edit-zone-divider {
+  background-color: var(--separator-color);
+}

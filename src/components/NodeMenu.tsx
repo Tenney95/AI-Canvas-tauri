@@ -180,7 +180,7 @@ export default function NodeMenu() {
           transition={springSmooth}
         >
       <div className="p-2">
-        <div className="text-[11px] font-medium text-canvas-text-muted uppercase tracking-wider px-2 py-1.5">
+        <div className="text-[11px] font-medium text-canvas-text-muted uppercase px-2 py-1.5">
           添加节点
         </div>
         <div className="space-y-0.5 mt-1">

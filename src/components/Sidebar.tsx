@@ -721,7 +721,7 @@ function AvatarMenu() {
 
           {/* Feature list */}
           <div className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-canvas-text-muted">核心能力</h3>
+            <h3 className="text-xs font-semibold uppercase text-canvas-text-muted">核心能力</h3>
             <div className="grid grid-cols-2 gap-2">
               {[
                 { label: 'AI 文本生成', color: 'bg-indigo-500/20 text-indigo-400' },
@@ -748,7 +748,7 @@ function AvatarMenu() {
 
           {/* Tech stack */}
           <div className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-canvas-text-muted">技术栈</h3>
+            <h3 className="text-xs font-semibold uppercase text-canvas-text-muted">技术栈</h3>
             <div className="flex flex-wrap gap-1.5">
               {['Tauri 2', 'React 19', 'React Flow 12', 'TypeScript', 'Zustand 5', 'Tailwind CSS 3', 'Vite 8'].map((tech) => (
                 <span key={tech} className="px-2.5 py-1 rounded-md bg-canvas-hover text-xs text-canvas-text-secondary">
@@ -760,7 +760,7 @@ function AvatarMenu() {
 
           {/* Community */}
           <div className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-canvas-text-muted">社区</h3>
+            <h3 className="text-xs font-semibold uppercase text-canvas-text-muted">社区</h3>
             <div className="flex flex-col gap-2">
               <a
                 href="https://github.com/Tenney95/AI-Canvas-tauri"
@@ -1158,9 +1158,6 @@ export default function Sidebar() {
           <rect x="13.6" y="9.25" width="2" height="5.5" rx="1" fill="currentColor" />
         </svg>
       </button>
-
-      {/* Spacer */}
-      <div className="sidebar-flex-spacer" />
 
       {/* Task Center */}
       {/* <button type="button" className="sidebar-btn-v3 task-center-btn">
