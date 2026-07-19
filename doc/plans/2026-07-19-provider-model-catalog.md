@@ -93,3 +93,8 @@
 - `git diff --check` 通过。
 - 阶段 1 文件严格 UTF-8 解码通过，未发现常见乱码序列。
 - `npx vite build --outDir %TEMP%/ai-canvas-provider-catalog-build-20260719` 通过；仅有既有动态导入与 chunk 体积警告。
+- 2026-07-19 完成阶段 2：API Key 标题加号、厂商选择、凭据配置、远程/本地模型目录、搜索分类勾选、编辑删除，以及 RunningHub 双 Key 与即梦 OAuth 兼容。
+- `npm run typecheck` 与阶段 2 TSX 文件定向 ESLint 通过。
+- `git diff --check` 与阶段 2 文件严格 UTF-8 解码通过。
+- `npx vite build --outDir %TEMP%/ai-canvas-provider-settings-build-20260719` 通过；仅有既有动态导入与 chunk 体积警告。
+- 在本地 Web 模式验证 1280×720 与 680×760 视口：厂商弹窗 Portal 层级、搜索、分类、勾选、自定义手动模型、RunningHub 双 Key、固定操作栏和内部滚动均正常；浏览器控制台无错误，未写入测试配置。
