@@ -30,140 +30,21 @@
   pointer-events: none;
 }
 
-/* ── 磨砂暖光背景 ── */
-.canvas-bg-frosted {
-  --frosted-orb-x: 58%;
-  --frosted-orb-y: 38%;
-  --frosted-grid-columns: 6;
+/* ── 磨砂暖光背景（Three.js）── */
+.canvas-bg-frosted-three {
   position: absolute;
   inset: 0;
   z-index: 0;
   overflow: hidden;
   isolation: isolate;
-  background:
-    radial-gradient(circle at 16% 10%, rgba(255, 255, 255, 0.5), transparent 40%),
-    linear-gradient(145deg, #e8e9e9, #d6d7d7 72%, #cecfcf);
+  background: #d9dad9;
   pointer-events: none;
 }
 
-.canvas-bg-frosted__orb {
-  position: absolute;
-  z-index: 0;
-  top: 0;
-  left: 0;
-  width: clamp(220px, 28vw, 430px);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background:
-    radial-gradient(
-      circle at 68% 25%,
-      rgba(255, 255, 224, 0.98) 0%,
-      rgba(255, 249, 145, 0.9) 7%,
-      rgba(255, 231, 61, 0.3) 19%,
-      transparent 34%
-    ),
-    radial-gradient(
-      circle at 48% 43%,
-      #ffe72c 0%,
-      #ffd21d 25%,
-      #f5a90d 48%,
-      #d9750a 66%,
-      rgba(128, 52, 5, 0.76) 82%,
-      transparent 100%
-    );
-  box-shadow:
-    0 0 44px rgba(255, 220, 30, 0.58),
-    -18px 26px 86px rgba(214, 99, 8, 0.42);
-  filter: blur(13px) saturate(1.16);
-  opacity: 0.94;
-  transform: translate3d(
-    calc(var(--frosted-orb-x) - 50%),
-    calc(var(--frosted-orb-y) - 50%),
-    0
-  );
-  transform-origin: center;
-  will-change: transform;
-}
-
-.canvas-bg-frosted__grid {
-  position: absolute;
-  z-index: 1;
-  top: -2px;
-  left: -2px;
-  width: calc(100% + 4px);
-  display: grid;
-  grid-template-columns: repeat(var(--frosted-grid-columns), minmax(0, 1fr));
-  grid-auto-flow: row;
-  gap: clamp(3px, 0.22vmin, 4px);
-}
-
-.canvas-bg-frosted__pane {
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  aspect-ratio: 1;
-  overflow: hidden;
-  border-radius: 11px;
-  background:
-    linear-gradient(
-      145deg,
-      rgba(255, 255, 255, 0.9) 0%,
-      rgba(255, 255, 255, 0.38) 24%,
-      rgba(228, 231, 228, 0.12) 51%,
-      rgba(104, 103, 94, 0.2) 78%,
-      rgba(255, 244, 210, 0.5) 100%
-    );
-  box-shadow:
-    0 2px 3px rgba(61, 58, 50, 0.14),
-    0 8px 18px rgba(61, 55, 40, 0.08),
-    inset 2px 2px 3px rgba(255, 255, 255, 0.9),
-    inset -2px -3px 5px rgba(74, 61, 35, 0.2);
-}
-
-.canvas-bg-frosted__pane::before {
-  content: '';
-  position: absolute;
-  z-index: 0;
-  inset: 5px;
-  border-radius: 7px;
-  background:
-    radial-gradient(88% 16% at 50% 0%, rgba(255, 255, 255, 0.48), transparent 76%),
-    radial-gradient(16% 88% at 0% 50%, rgba(255, 255, 255, 0.28), transparent 78%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.045) 48%, rgba(214, 213, 204, 0.1));
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.5),
-    inset 0 -8px 15px -11px rgba(61, 49, 28, 0.34),
-    inset -7px 0 13px -11px rgba(81, 62, 26, 0.26);
-  backdrop-filter: blur(21px) saturate(1.34) contrast(1.03);
-  -webkit-backdrop-filter: blur(21px) saturate(1.34) contrast(1.03);
-}
-
-.canvas-bg-frosted__pane::after {
-  content: '';
-  position: absolute;
-  z-index: 1;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1px;
-  background:
-    conic-gradient(
-      from 216deg,
-      rgba(79, 82, 78, 0.2),
-      rgba(255, 255, 255, 0.94) 19%,
-      rgba(255, 255, 255, 0.32) 43%,
-      rgba(85, 82, 71, 0.22) 66%,
-      rgba(255, 237, 180, 0.42) 83%,
-      rgba(79, 82, 78, 0.2)
-    );
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  opacity: 0.82;
+.canvas-bg-frosted-three canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .canvas-bg-frosted__grain {
@@ -208,12 +89,6 @@
   box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.76);
   backdrop-filter: blur(7px) saturate(1.2);
   -webkit-backdrop-filter: blur(7px) saturate(1.2);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .canvas-bg-frosted__orb {
-    will-change: auto;
-  }
 }
 
 /* ── 太阳系背景 ── */
