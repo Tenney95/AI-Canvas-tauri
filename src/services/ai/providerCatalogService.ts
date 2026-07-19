@@ -221,6 +221,46 @@ function safeCatalogError(error: unknown): string {
   return '无法连接模型目录，请检查接口地址、网络和 API Key';
 }
 
+interface ProxyFetchResponse {
+  status: number;
+  body: string;
+  headers: [string, string][];
+}
+
+function decodeBase64Body(value: string): ArrayBuffer {
+  const binary = atob(value);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+async function fetchCatalogResponse(
+  url: string,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+  if (!('__TAURI_INTERNALS__' in window)) {
+    return fetch(url, { method: 'GET', headers, signal });
+  }
+
+  if (signal?.aborted) throw new DOMException('模型列表拉取已取消', 'AbortError');
+  const { invoke } = await import('@tauri-apps/api/core');
+  const result = await invoke<ProxyFetchResponse>('proxy_fetch', {
+    req: {
+      url,
+      method: 'GET',
+      headers: headers ? Object.entries(headers) : [],
+      body: null,
+    },
+  });
+  if (signal?.aborted) throw new DOMException('模型列表拉取已取消', 'AbortError');
+
+  return new Response(decodeBase64Body(result.body), {
+    status: result.status,
+    headers: new Headers(result.headers),
+  });
+}
+
 async function fetchOpenAiCompatibleCatalog(
   definition: ProviderDefinition,
   providerId: string,
@@ -230,11 +270,11 @@ async function fetchOpenAiCompatibleCatalog(
   const baseUrl = (config.baseUrl || definition.defaultBaseUrl || '').replace(/\/+$/, '');
   if (!baseUrl) throw new Error('请填写接口地址');
 
-  const response = await fetch(`${baseUrl}${definition.modelsPath || '/models'}`, {
-    method: 'GET',
-    headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : undefined,
+  const response = await fetchCatalogResponse(
+    `${baseUrl}${definition.modelsPath || '/models'}`,
+    config.apiKey,
     signal,
-  });
+  );
   if (!response.ok) throw new Error(`模型列表拉取失败 (HTTP ${response.status})`);
 
   const payload: unknown = await response.json().catch(() => null);
