@@ -546,7 +546,7 @@
 }
 .assets-panel {
   width: calc(100vw - 140px);
-  max-height: calc(100vh - 64px);
+  height: calc(100vh - 64px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -687,9 +687,12 @@
 }
 
 /* File waterfall (masonry) */
-.assets-file-waterfall {
+.assets-file-scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+}
+.assets-file-waterfall {
   padding: 8px 2px 10px 10px;
   columns: 3;
   column-gap: 10px;

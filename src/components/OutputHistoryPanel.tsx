@@ -2,7 +2,7 @@
  * OutputHistoryPanel — AI 输出历史记录底部抽屉面板
  * 从屏幕底部抬起，统一查看所有节点的生成历史
  */
-import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { startTransition, useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
@@ -13,6 +13,7 @@ import AnimatedButton from './shared/AnimatedButton';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
 const EASE = [0.16, 1, 0.3, 1] as const;
+const HISTORY_PAGE_SIZE = 16;
 
 type FilterType = 'all' | 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio';
 
@@ -72,6 +73,8 @@ function HistoryThumbnail({ mediaUrl, filePath }: { mediaUrl?: string; filePath?
     <img
       src={src}
       alt=""
+      loading="lazy"
+      decoding="async"
       className="w-12 h-12 rounded object-cover shrink-0"
       onError={handleError}
       style={errored && src === mediaUrl ? { display: 'none' } : undefined}
@@ -102,7 +105,10 @@ export default function OutputHistoryPanel() {
   const [search, setSearch] = useState('');
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [confirmClear, setConfirmClear] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(HISTORY_PAGE_SIZE);
   const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   // Escape to close
   useEffect(() => {
@@ -121,6 +127,12 @@ export default function OutputHistoryPanel() {
     if (historyPanelOpen) {
       setTimeout(() => searchRef.current?.focus(), 100);
     }
+  }, [historyPanelOpen]);
+
+  useEffect(() => {
+    if (historyPanelOpen) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset while rows are unmounted
+    setVisibleCount(HISTORY_PAGE_SIZE);
   }, [historyPanelOpen]);
 
   // History entries stored independently from nodes — deleting a node won't lose records
@@ -146,6 +158,37 @@ export default function OutputHistoryPanel() {
     }
     return list;
   }, [allEntries, filter, search]);
+
+  const visibleEntries = useMemo(
+    () => filteredEntries.slice(0, visibleCount),
+    [filteredEntries, visibleCount],
+  );
+  const hasMoreEntries = visibleEntries.length < filteredEntries.length;
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!historyPanelOpen || !hasMoreEntries || !sentinel) return;
+
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries[0]?.isIntersecting) return;
+      startTransition(() => {
+        setVisibleCount((current) => Math.min(
+          current + HISTORY_PAGE_SIZE,
+          filteredEntries.length,
+        ));
+      });
+    }, {
+      root: listRef.current,
+      rootMargin: '300px 0px',
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [filteredEntries.length, hasMoreEntries, historyPanelOpen, visibleEntries.length]);
+
+  const resetVisibleEntries = useCallback(() => {
+    setVisibleCount(HISTORY_PAGE_SIZE);
+    listRef.current?.scrollTo({ top: 0 });
+  }, []);
 
   const toggleExpand = useCallback((id: string) => {
     setExpandedIds((prev) => {
@@ -286,7 +329,10 @@ export default function OutputHistoryPanel() {
                       ? 'bg-indigo-500/20 text-indigo-400'
                       : 'text-canvas-text-muted hover:text-canvas-text-secondary hover:bg-canvas-hover'
                   }`}
-                  onClick={() => setFilter(key)}
+                  onClick={() => {
+                    setFilter(key);
+                    resetVisibleEntries();
+                  }}
                 >
                   {label}
                 </button>
@@ -308,7 +354,10 @@ export default function OutputHistoryPanel() {
                   ref={searchRef}
                   type="text"
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    resetVisibleEntries();
+                  }}
                   placeholder="搜索提示词、输出内容或模型..."
                   className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-canvas-bg border border-canvas-border
                              text-[12px] text-canvas-text placeholder:text-canvas-text-muted
@@ -318,7 +367,10 @@ export default function OutputHistoryPanel() {
                   <button
                     type="button"
                     className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center text-canvas-text-muted hover:text-canvas-text"
-                    onClick={() => setSearch('')}
+                    onClick={() => {
+                      setSearch('');
+                      resetVisibleEntries();
+                    }}
                   >
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <line x1="18" y1="6" x2="6" y2="18" />
@@ -330,7 +382,7 @@ export default function OutputHistoryPanel() {
             </div>
 
             {/* Entry list */}
-            <div className="flex-1 overflow-y-auto px-3 pb-3">
+            <div ref={listRef} className="flex-1 overflow-y-auto px-3 pb-3">
               {filteredEntries.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-8 text-canvas-text-muted">
                   <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mb-3 opacity-40">
@@ -344,7 +396,7 @@ export default function OutputHistoryPanel() {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {filteredEntries.map((entry) => {
+                  {visibleEntries.map((entry) => {
                     const isExpanded = expandedIds.has(entry.id);
                     const exists = nodeExists(entry.nodeId);
                     const isText = entry.nodeType === 'ai-text';
@@ -540,6 +592,9 @@ export default function OutputHistoryPanel() {
                       </motion.div>
                     );
                   })}
+                  {hasMoreEntries && (
+                    <div ref={sentinelRef} className="h-1 w-full" aria-hidden="true" />
+                  )}
                 </div>
               )}
             </div>

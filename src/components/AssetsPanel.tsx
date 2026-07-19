@@ -468,44 +468,46 @@ export default function AssetsPanel() {
               </div>
 
               {/* 文件瀑布流 */}
-              <div className="assets-file-waterfall">
-                {loading ? (
-                  <div className="assets-empty">
-                    <motion.div className="assets-spinner" animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.6, ease: 'linear' }} />
-                    <span>加载中...</span>
-                  </div>
-                ) : filteredFiles.length === 0 ? (
-                  <div className="assets-empty">
-                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.3">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                      <polyline points="14 2 14 8 20 8" /><line x1="9" y1="15" x2="15" y2="15" />
-                    </svg>
-                    <span>{search || activeCategory || activeTag ? '没有匹配的文件' : activeTab === 'project' ? '暂无项目文件' : '暂无文件，点击「添加」导入'}</span>
-                  </div>
-                ) : (
-                  <>
-                    {visibleFiles.map((file) => (
-                      <AssetCard
-                        key={assetKey(file)}
-                        file={file}
-                        isProject={activeTab === 'project'}
-                        draggable={isDraggableEntry(file)}
-                        onDragStart={(e) => handleCardDragStart(file, e)}
-                        editing={editingPath === assetKey(file)}
-                        tagDraft={editingPath === assetKey(file) ? tagDraft : ''}
-                        onToggleEdit={() => { const key = assetKey(file); setEditingPath((p) => (p === key ? null : key)); setTagDraft(''); }}
-                        onTagDraftChange={setTagDraft}
-                        onAddTag={(t) => { addTag(file, t); setTagDraft(''); }}
-                        onRemoveTag={(t) => removeTag(file, t)}
-                        onSave={() => handleSavePermanent(file)}
-                        onDelete={() => handleDeletePermanent(file)}
-                      />
-                    ))}
-                    {visibleCount < filteredFiles.length && (
-                      <div ref={sentinelRef} className="assets-load-sentinel">加载更多…</div>
-                    )}
-                  </>
-                )}
+              <div className="assets-file-scroll">
+                <div className="assets-file-waterfall">
+                  {loading ? (
+                    <div className="assets-empty">
+                      <motion.div className="assets-spinner" animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.6, ease: 'linear' }} />
+                      <span>加载中...</span>
+                    </div>
+                  ) : filteredFiles.length === 0 ? (
+                    <div className="assets-empty">
+                      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.3">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" /><line x1="9" y1="15" x2="15" y2="15" />
+                      </svg>
+                      <span>{search || activeCategory || activeTag ? '没有匹配的文件' : activeTab === 'project' ? '暂无项目文件' : '暂无文件，点击「添加」导入'}</span>
+                    </div>
+                  ) : (
+                    <>
+                      {visibleFiles.map((file) => (
+                        <AssetCard
+                          key={assetKey(file)}
+                          file={file}
+                          isProject={activeTab === 'project'}
+                          draggable={isDraggableEntry(file)}
+                          onDragStart={(e) => handleCardDragStart(file, e)}
+                          editing={editingPath === assetKey(file)}
+                          tagDraft={editingPath === assetKey(file) ? tagDraft : ''}
+                          onToggleEdit={() => { const key = assetKey(file); setEditingPath((p) => (p === key ? null : key)); setTagDraft(''); }}
+                          onTagDraftChange={setTagDraft}
+                          onAddTag={(t) => { addTag(file, t); setTagDraft(''); }}
+                          onRemoveTag={(t) => removeTag(file, t)}
+                          onSave={() => handleSavePermanent(file)}
+                          onDelete={() => handleDeletePermanent(file)}
+                        />
+                      ))}
+                      {visibleCount < filteredFiles.length && (
+                        <div ref={sentinelRef} className="assets-load-sentinel">加载更多…</div>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
 
               {/* Toast */}
