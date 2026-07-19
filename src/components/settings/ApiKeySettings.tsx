@@ -322,29 +322,52 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
               const selectedCount = item.config.selectedModels?.length;
               const summaryUrl = providerSummaryUrl(item.config, definition.defaultBaseUrl);
               const isDreamina = definition.id === 'dreamina';
-              const isWorkflowOnly = definition.id === 'runninghub-model' && !item.config.apiKey;
+              const isRunningHub = definition.id === 'runninghub-model';
+              const hasRunningHubModelKey = isRunningHub && !!item.config.apiKey.trim();
+              const hasRunningHubWorkflowKey = isRunningHub
+                && !!config.providers.runninghub?.apiKey.trim();
+              const runningHubKeyCount = Number(hasRunningHubModelKey)
+                + Number(hasRunningHubWorkflowKey);
               const displayName = definition.id === 'custom-openai'
                 ? item.config.name.trim() || definition.name
                 : definition.name;
+              const statusLabel = isDreamina
+                ? 'OAuth 已连接'
+                : isRunningHub
+                  ? `${runningHubKeyCount}/2 密钥已配置`
+                  : '已连接';
               return (
                 <div key={item.id} className="provider-connection-card">
                   <div className={`provider-badge provider-badge--${definition.id}`}>{definition.badgeText}</div>
                   <div className="provider-connection-copy">
                     <div className="provider-connection-title-row">
                       <strong>{displayName}</strong>
-                      <span className={`provider-list-status${isWorkflowOnly ? ' is-limited' : ''}`}>
-                        {isDreamina ? 'OAuth 已连接' : isWorkflowOnly ? '仅工作流' : '已连接'}
+                      <span className={`provider-list-status${isRunningHub && runningHubKeyCount < 2 ? ' is-limited' : ''}`}>
+                        {statusLabel}
                       </span>
                     </div>
                     <div className="provider-connection-meta">
-                      <span>
-                        {selectedCount === undefined
-                          ? '沿用内置模型目录'
-                          : `${selectedCount} 个模型`}
-                      </span>
-                      {summaryUrl && <span>{summaryUrl}</span>}
-                      {definition.id === 'runninghub-model' && config.providers.runninghub?.apiKey && (
-                        <span>工作流已配置</span>
+                      {isRunningHub ? (
+                        <>
+                          <span>{hasRunningHubModelKey ? '企业级-共享已配置' : '企业级-共享未配置'}</span>
+                          <span>{hasRunningHubWorkflowKey ? '消费级-会员已配置' : '消费级-会员未配置'}</span>
+                          {hasRunningHubModelKey && (
+                            <span>
+                              {selectedCount === undefined
+                                ? '沿用内置模型目录'
+                                : `${selectedCount} 个模型`}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <span>
+                            {selectedCount === undefined
+                              ? '沿用内置模型目录'
+                              : `${selectedCount} 个模型`}
+                          </span>
+                          {summaryUrl && <span>{summaryUrl}</span>}
+                        </>
                       )}
                     </div>
                   </div>

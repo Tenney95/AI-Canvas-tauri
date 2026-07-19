@@ -418,11 +418,11 @@ export default function ProviderConnectionDialog({
                   })}
                   {definition.id === 'runninghub-model' && (
                     <label className="provider-field">
-                      <span>工作流 API Key</span>
+                      <span>消费级-会员 API Key</span>
                       <input
                         type="password"
                         value={workflowApiKey}
-                        placeholder="可选，用于 RunningHub 工作流"
+                        placeholder="用于 RunningHub 工作流执行（可选）"
                         onChange={(event) => setWorkflowApiKey(event.target.value)}
                       />
                     </label>

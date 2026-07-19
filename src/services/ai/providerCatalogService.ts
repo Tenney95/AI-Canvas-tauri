@@ -93,13 +93,17 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
   },
   {
     id: 'runninghub-model',
-    name: 'RunningHub 模型 API',
-    description: 'RunningHub 标准模型 API',
+    name: 'RunningHub',
+    description: 'RunningHub 标准模型 API 与工作流',
     badgeText: 'RH',
     authType: 'api-key',
     catalogAdapter: 'local-manifest',
     defaultBaseUrl: RUNNINGHUB_MODEL_BASE_URL,
-    credentials: [API_KEY_FIELD],
+    credentials: [{
+      ...API_KEY_FIELD,
+      label: '企业级-共享 API Key',
+      placeholder: '用于 RunningHub 标准模型 API',
+    }],
   },
   {
     id: 'grsai',
