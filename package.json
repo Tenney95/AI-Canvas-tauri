@@ -8,7 +8,11 @@
         "dev": "vite",
         "lint": "eslint .",
         "typecheck": "tsc -b",
-        "check": "npm run typecheck && npm run lint",
+        "test:typecheck": "tsc -p tsconfig.test.json --noEmit",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "check": "npm run typecheck && npm run test:typecheck && npm run test",
+        "ci": "npm run check && npm run build",
         "build": "tsc -b && vite build",
         "preview": "vite preview",
         "tauri": "tauri",
@@ -48,11 +52,13 @@
         "eslint": "^10.3.0",
         "eslint-plugin-react-hooks": "^7.1.1",
         "eslint-plugin-react-refresh": "^0.5.2",
+        "fake-indexeddb": "^6.2.5",
         "globals": "^17.6.0",
         "postcss": "^8.4.49",
         "tailwindcss": "^3.4.17",
         "typescript": "~6.0.2",
         "typescript-eslint": "^8.59.2",
-        "vite": "^8.0.12"
+        "vite": "^8.0.12",
+        "vitest": "^4.1.10"
     }
 }
