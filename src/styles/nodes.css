@@ -507,16 +507,57 @@
 /* Node Error */
 .node-error {
   position: absolute;
-  bottom: 4px;
-  margin: 0px 12px 8px;
-  padding: 4px 8px;
-  background: var(--danger-bg);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  border-radius: 6px;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  max-width: calc(100% - 20px);
+  max-height: min(76px, calc(100% - 20px));
+  margin: 0;
+  padding: 7px 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid color-mix(in srgb, var(--danger) 26%, var(--glass-ring));
+  border-radius: 7px;
+  color: color-mix(in srgb, var(--danger) 72%, var(--theme-text));
+  background: color-mix(in srgb, var(--glass-bg-node) 88%, var(--danger-bg));
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--danger) 9%, transparent);
+  backdrop-filter: blur(var(--glass-blur-sm));
+  -webkit-backdrop-filter: blur(var(--glass-blur-sm));
   font-size: 10px;
-  color: var(--danger-light);
+  font-weight: 500;
+  line-height: 1.4;
   opacity: 1;
+  user-select: text;
+  scrollbar-color: color-mix(in srgb, var(--danger) 28%, transparent) transparent;
+  scrollbar-width: thin;
   transition: opacity 1.1s ease, transform 1.1s ease;
+}
+
+.node-error__icon {
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.node-error__message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.node-error::-webkit-scrollbar {
+  width: 4px;
+}
+
+.node-error::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 28%, transparent);
 }
 
 /* 20 秒后缓慢淡出 */

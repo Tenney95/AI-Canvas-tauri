@@ -21,7 +21,7 @@ export default function UpdateBubble({ info, visible, onUpdate, onDismiss, updat
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.6, y: 6 }}
           transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-          className="fixed bottom-[245px] right-[28px] z-50 max-w-[280px]"
+          className="update-bubble fixed bottom-[245px] right-[28px] z-50"
         >
           {/* 聊天气泡尖角 — 指向右下吉祥物 */}
           <div className="absolute -bottom-2 right-6 w-4 h-4 rotate-45 bg-canvas-card border-r border-b border-canvas-border" />
@@ -31,7 +31,7 @@ export default function UpdateBubble({ info, visible, onUpdate, onDismiss, updat
               发现新版本 v{info.version}
             </p>
             {info.body && (
-              <p className="text-xs text-canvas-text-secondary mb-3 line-clamp-3">
+              <p className="update-bubble__body text-xs text-canvas-text-secondary mb-3">
                 {info.body}
               </p>
             )}

@@ -21,12 +21,13 @@ function CanvasEmptyState() {
   return (
     <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
       <div className="flex flex-col items-center gap-4 opacity-50">
-        <div className="w-16 h-16 rounded-2xl bg-canvas-card border border-canvas-border flex items-center justify-center">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2">
-            <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
-            <circle cx="2" cy="2" r="1.5" fill="var(--brand)" />
-          </svg>
-        </div>
+        <img
+          src="/favicon.svg"
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          className="h-16 w-16 select-none"
+        />
         <div className="text-center">
           <div className="text-lg font-medium text-canvas-text mb-1">AI画布</div>
           <div className="text-sm text-canvas-text-muted">右键自由生成节点，或从左侧面板选择节点类型</div>

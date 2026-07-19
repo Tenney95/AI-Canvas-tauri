@@ -279,6 +279,75 @@
   border: 1px solid var(--glass-ring);
 }
 
+/* Global toast: neutral glass surface with restrained semantic accents. */
+.app-toast {
+  --toast-accent: var(--success);
+  --toast-tint: var(--success-bg);
+  color: var(--theme-text);
+  background: var(--glass-bg);
+  border-color: color-mix(in srgb, var(--toast-accent) 22%, var(--glass-ring));
+  box-shadow:
+    var(--floating-surface-shadow, 0 10px 28px var(--black-alpha-30)),
+    inset 0 1px 0 var(--glass-ring-strong);
+  backdrop-filter: blur(var(--glass-blur-md)) saturate(130%);
+  -webkit-backdrop-filter: blur(var(--glass-blur-md)) saturate(130%);
+}
+.app-toast.is-info {
+  --toast-accent: var(--info);
+  --toast-tint: var(--info-bg);
+}
+.app-toast.is-error {
+  --toast-accent: var(--danger);
+  --toast-tint: var(--danger-bg);
+}
+.app-toast-icon {
+  color: color-mix(in srgb, var(--toast-accent) 78%, var(--theme-text));
+  background: var(--toast-tint);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--toast-accent) 20%, transparent);
+}
+
+/* Update bubble: compact by default, fully readable on hover or keyboard focus. */
+.update-bubble {
+  width: min(280px, calc(100vw - 32px));
+  transition: width var(--transition-smooth);
+}
+
+.update-bubble:hover,
+.update-bubble:focus-within {
+  width: min(360px, calc(100vw - 32px));
+}
+
+.update-bubble__body {
+  display: -webkit-box;
+  max-height: 4.5em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.update-bubble:hover .update-bubble__body,
+.update-bubble:focus-within .update-bubble__body {
+  display: block;
+  max-height: clamp(96px, calc(100vh - 360px), 320px);
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+  scrollbar-width: thin;
+  -webkit-line-clamp: unset;
+}
+
+.update-bubble__body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.update-bubble__body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+}
+
 /* ==========================================================================
    AI Canvas - Base & Reset / 基础重置
    ========================================================================== */

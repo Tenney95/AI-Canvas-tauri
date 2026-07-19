@@ -3,6 +3,7 @@
  *
  * 显示 20 秒后缓慢淡出，淡出结束清除节点的 error 状态（并把 error 状态复位为 idle）。
  */
+import { Icon } from '@iconify/react';
 import { useEffect, useState } from 'react';
 import { useAppStore } from '../../../store/useAppStore';
 
@@ -11,11 +12,11 @@ const FADE_MS = 1100; // 淡出动画时长（与 CSS transition 对齐）
 
 export default function NodeError({ nodeId, message }: { nodeId: string; message: string }) {
   const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
-  const [fading, setFading] = useState(false);
+  const [fadingMessage, setFadingMessage] = useState<string | null>(null);
+  const fading = fadingMessage === message;
 
   useEffect(() => {
-    setFading(false);
-    const fadeTimer = setTimeout(() => setFading(true), VISIBLE_MS);
+    const fadeTimer = setTimeout(() => setFadingMessage(message), VISIBLE_MS);
     const clearTimer = setTimeout(() => {
       const node = useAppStore.getState().nodes.find((n) => n.id === nodeId);
       const patch: Record<string, unknown> = { error: undefined };
@@ -31,5 +32,14 @@ export default function NodeError({ nodeId, message }: { nodeId: string; message
     };
   }, [nodeId, message, updateNodeDataTransient]);
 
-  return <div className={`node-error${fading ? ' node-error--fading' : ''}`}>{message}</div>;
+  return (
+    <div
+      role="alert"
+      aria-atomic="true"
+      className={`node-error nodrag nopan nowheel${fading ? ' node-error--fading' : ''}`}
+    >
+      <Icon className="node-error__icon" icon="lucide:triangle-alert" width={13} height={13} aria-hidden="true" />
+      <span className="node-error__message">{message}</span>
+    </div>
+  );
 }
