@@ -152,14 +152,14 @@ export default function ModalOverlay({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={fadeNormal}
-          onClick={closeOnBackdrop ? onClose : undefined}
         >
           <motion.div
-            data-tauri-drag-region
+            aria-hidden="true"
             className="absolute inset-0 bg-black/50 backdrop-blur-sm rounded-2xl"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            onClick={closeOnBackdrop ? onClose : undefined}
           />
           <motion.div
             ref={panelRef}

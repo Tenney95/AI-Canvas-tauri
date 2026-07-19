@@ -324,6 +324,7 @@ export default function StyleSelector({
           onClose={() => setAddOpen(false)}
           ariaLabel="添加自定义画风"
           className="style-add-panel"
+          closeOnBackdrop={false}
         >
           <div className="style-picker-header">
             <span className="asset-picker-title">添加自定义画风</span>

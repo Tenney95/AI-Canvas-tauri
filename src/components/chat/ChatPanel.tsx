@@ -1015,7 +1015,7 @@ export default function ChatPanel({
       {(detached || (chatOpen && !chatPanelDetached)) && (
           <motion.aside
             className={`chat-panel-root ${detached
-              ? 'chat-panel-detached h-screen w-screen flex flex-col overflow-hidden rounded-[16px] border border-white/[0.08] bg-canvas-bg/[0.72] text-canvas-text backdrop-blur-2xl'
+              ? 'chat-panel-detached h-screen w-screen flex flex-col overflow-hidden rounded-[16px] border border-canvas-border bg-[var(--glass-panel-bg)] text-canvas-text backdrop-blur-2xl'
               : 'chat-panel fixed z-50 flex flex-col'}`}
             initial={detached
               ? false

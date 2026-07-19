@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTooltipAutoPlacement } from '../../hooks/useTooltipAutoPlacement';
+import { loadConfig } from '../../services/fileService';
+import type { AppConfig } from '../../types';
 import ChatPanel from './ChatPanel';
 import {
   emitAction,
@@ -29,6 +31,30 @@ export default function ChatWindow() {
   const [initialized, setInitialized] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const isLockedRef = useRef(false);
+
+  useEffect(() => {
+    let disposed = false;
+
+    const syncTheme = () => {
+      void loadConfig().then((savedConfig) => {
+        if (disposed) return;
+        const config = savedConfig as AppConfig | null;
+        const effectiveTheme = config?.canvasBackground === 'off-white'
+          ? 'light'
+          : config?.theme === 'light' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', effectiveTheme);
+      });
+    };
+
+    syncTheme();
+    window.addEventListener('focus', syncTheme);
+
+    return () => {
+      disposed = true;
+      window.removeEventListener('focus', syncTheme);
+      document.documentElement.removeAttribute('data-theme');
+    };
+  }, []);
 
   const closeWindow = useCallback(() => {
     void (async () => {

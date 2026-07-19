@@ -14,6 +14,7 @@ import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { classifyFile } from '../hooks/useNodeCreation';
 import { checkForUpdate, downloadAndInstallUpdate } from '../services/updateService';
 import AnimatedButton from './shared/AnimatedButton';
+import PopupCloseButton from './shared/PopupCloseButton';
 
 /**
  * Sidebar 侧边栏面板 — 左侧节点类型列表、上传入口、项目切换、拖拽添加节点
@@ -80,6 +81,178 @@ const resourceItems = [
     ),
   },
 ];
+
+const HELP_CATEGORIES = [
+  {
+    id: 'getting-started',
+    label: '快速开始',
+    icon: 'mdi:rocket-launch-outline',
+    summary: '从创建节点到获得第一份结果',
+    items: [
+      {
+        title: '创建内容节点',
+        description: '点击左侧加号选择文本、图像、视频、音频、全景或动画节点。也可以直接按数字键 1-6 快速创建对应的生成节点。',
+      },
+      {
+        title: '补充输入与模型',
+        description: '选中节点后填写提示词、选择模型，并按需要添加参考素材。模型不可用时，先到“设置 > API Key”完成对应服务配置。',
+      },
+      {
+        title: '生成并继续编排',
+        description: '在节点中发起生成。结果会保留在当前项目中，可继续连接到下游节点，也可在左侧“输出历史”中回看。',
+      },
+    ],
+  },
+  {
+    id: 'canvas',
+    label: '画布导航',
+    icon: 'mdi:cursor-move',
+    summary: '选择、平移、缩放与快速定位',
+    items: [
+      {
+        title: '选择与多选',
+        description: '点击节点进行选择；按住 Shift 点击可追加选择。框选手势会跟随“设置 > 常规”中的画布交互模式。',
+        shortcut: 'Shift + 点击',
+      },
+      {
+        title: '平移与缩放',
+        description: 'Figma 模式使用右键或中键拖动画布、滚轮缩放；经典模式使用左键拖动画布、Ctrl + 滚轮缩放。触控板可直接使用双指手势。',
+      },
+      {
+        title: '找回画布内容',
+        description: '按 F 将全部内容适配到当前视野；按 M 显示或隐藏小地图。画布右下角的缩放控件可精确调整比例。',
+        shortcut: 'F / M',
+      },
+    ],
+  },
+  {
+    id: 'nodes',
+    label: '节点与连线',
+    icon: 'mdi:vector-polyline',
+    summary: '组织节点、建立数据流与批量编辑',
+    items: [
+      {
+        title: '移动与编辑节点',
+        description: '拖动节点标题区域调整位置。单独选中一个节点后按 Space，可直接打开该节点的提示词对话框，集中调整提示词、参数和参考内容。',
+        shortcut: '选中节点 + Space',
+      },
+      {
+        title: '连接上下游',
+        description: '从节点的输出连接点拖向另一个节点的输入连接点。把连线释放到画布空白处时，可从菜单中创建后续节点。',
+      },
+      {
+        title: '批量整理',
+        description: '多选节点后可使用浮动工具栏对齐、分布或分组。Ctrl + G 用于分组或取消分组，误操作可用 Ctrl + Z 撤销。',
+        shortcut: 'Ctrl/⌘ + G',
+      },
+    ],
+  },
+  {
+    id: 'shortcuts',
+    label: '快捷操作',
+    icon: 'mdi:keyboard-outline',
+    summary: '少点几次鼠标，更快完成高频编辑',
+    items: [
+      {
+        title: '快速打开提示词',
+        description: '先单独选中一个普通内容节点，再按 Space 打开提示词对话框。正在输入文字、多选节点、分组节点或 Markdown 节点时不会触发。',
+        shortcut: '选中节点 + Space',
+      },
+      {
+        title: '锁定节点缩放比例',
+        description: '拖动节点右下角的尺寸控制点时按住 Shift，宽高会按当前比例一起变化；拖拽过程中也可以随时按下或松开 Shift 切换。',
+        shortcut: '拖拽缩放 + Shift',
+      },
+      {
+        title: '在鼠标位置创建节点',
+        description: '按 1-6 创建文本、图像、视频、音频、全景和动画生成节点；按 Alt + 1-5 创建文本、图像、视频、音频和 Markdown 源节点。',
+        shortcut: '1-6 / Alt + 1-5',
+      },
+      {
+        title: '快速创建文本节点',
+        description: '在画布空白区域双击，可直接创建一个文本生成节点。右键画布还能打开完整的节点创建菜单。',
+        shortcut: '双击画布空白处',
+      },
+      {
+        title: '复制、粘贴与删除',
+        description: 'Ctrl/⌘ + C 和 Ctrl/⌘ + V 用于复制、粘贴选中节点；未复制节点时，直接粘贴外部图片或文件会将内容导入画布。Delete 或 Backspace 删除当前选择。',
+        shortcut: 'Ctrl/⌘ + C / V',
+      },
+      {
+        title: '保存、撤销与重做',
+        description: 'Ctrl/⌘ + S 保存当前项目；Ctrl/⌘ + Z 撤销；Ctrl/⌘ + Y 或 Ctrl/⌘ + Shift + Z 重做。快捷键在输入框内会优先保留文字编辑行为。',
+        shortcut: 'Ctrl/⌘ + S / Z / Y',
+      },
+      {
+        title: '定位与资源搜索',
+        description: 'F 适配全部画布内容，M 切换小地图，Esc 关闭当前弹窗或菜单。Alt + Space 或 Ctrl + Shift + Space 可打开资源搜索窗口。',
+        shortcut: 'F / M / Esc',
+      },
+    ],
+  },
+  {
+    id: 'generation',
+    label: 'AI 生成',
+    icon: 'mdi:creation-outline',
+    summary: '配置模型、引用素材与处理生成结果',
+    items: [
+      {
+        title: '配置服务',
+        description: '在“设置 > API Key”中添加模型服务和密钥。ComfyUI 用户还需在对应设置页配置服务地址或安装目录。',
+      },
+      {
+        title: '选择正确的输入',
+        description: '不同媒体节点会显示各自支持的参数。参考图、首尾帧或音频素材可通过节点连接或节点内的素材入口补充。',
+      },
+      {
+        title: '留意付费操作',
+        description: '通过画布助手生成图片、视频或音频时，本轮需要显式 @ 对应模型；实际调用前会再次展示模型并请求确认。',
+      },
+    ],
+  },
+  {
+    id: 'projects',
+    label: '项目与文件',
+    icon: 'mdi:folder-outline',
+    summary: '切换项目、导入素材与管理产出',
+    items: [
+      {
+        title: '管理项目',
+        description: '点击左上角项目入口可新建、切换或删除项目。每个项目拥有独立的画布、对话、任务、资产和记忆。',
+      },
+      {
+        title: '导入本地素材',
+        description: '从左侧加号选择“上传文件”，或将支持的文件拖入画布。素材会按类型创建为可继续连接和编辑的节点。',
+      },
+      {
+        title: '查找历史内容',
+        description: '“资产”用于浏览项目素材，“输出历史”用于回看生成结果。文件保存位置和外部程序路径可在设置中管理。',
+      },
+    ],
+  },
+  {
+    id: 'assistant',
+    label: '画布助手',
+    icon: 'mdi:message-processing-outline',
+    summary: '用自然语言查询和操作当前画布',
+    items: [
+      {
+        title: '引用明确对象',
+        description: '打开左侧画布助手后，可在输入中 @ 节点、模型、声音或资产。明确引用能减少歧义，并确保媒体生成使用你本轮选择的模型。',
+      },
+      {
+        title: '理解协作模式',
+        description: 'B 模式会在写入画布前请求确认；C 模式可自动完成画布写入。文件写入、永久删除、媒体生成和项目记忆写入始终需要确认。',
+      },
+      {
+        title: '控制执行任务',
+        description: '工具调用和执行步骤会显示在任务时间线中，可按状态暂停、继续或取消。切换项目不会把后台结果写入其他项目。',
+      },
+    ],
+  },
+] as const;
+
+type HelpCategoryId = (typeof HELP_CATEGORIES)[number]['id'];
 
 /* ============================================
    Node Picker popup
@@ -283,6 +456,8 @@ function AvatarMenu() {
     })),
   );
   const menuRef = useRef<HTMLDivElement>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [activeHelpCategory, setActiveHelpCategory] = useState<HelpCategoryId>('getting-started');
   const [aboutOpen, setAboutOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('0.1.0');
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'no-update' | 'available' | 'updating' | 'error'>('idle');
@@ -336,6 +511,9 @@ function AvatarMenu() {
     return () => document.removeEventListener('mousedown', handler, true);
   }, [avatarMenuOpen, closeAvatarMenu]);
 
+  const selectedHelpCategory = HELP_CATEGORIES.find(({ id }) => id === activeHelpCategory)
+    ?? HELP_CATEGORIES[0];
+
   return (
     <>
       <AnimatePresence>
@@ -367,6 +545,18 @@ function AvatarMenu() {
           <AnimatedButton
             type="button"
             className="avatar-menu-item"
+            scale={1.02}
+            onClick={() => {
+              setHelpOpen(true);
+              closeAvatarMenu();
+            }}
+          >
+            <Icon icon="mdi:help-circle-outline" width="16" height="16" aria-hidden="true" />
+            帮助
+          </AnimatedButton>
+          <AnimatedButton
+            type="button"
+            className="avatar-menu-item"
             onClick={() => {
               setAboutOpen(true);
               closeAvatarMenu();
@@ -382,6 +572,100 @@ function AvatarMenu() {
         </motion.div>
       )}
     </AnimatePresence>
+
+      {/* Help dialog — portal to body to escape aside containing block */}
+      {createPortal(
+        <ModalOverlay
+          isOpen={helpOpen}
+          onClose={() => setHelpOpen(false)}
+          ariaLabel="AI Canvas 使用帮助"
+          className="h-[min(620px,calc(100vh-24px))] w-[min(760px,calc(100vw-24px))]"
+        >
+          <div className="flex min-h-0 flex-1 flex-col">
+            <header className="flex shrink-0 items-center justify-between border-b border-canvas-border px-5 py-4">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-400">
+                  <Icon icon="mdi:book-open-page-variant-outline" width="20" height="20" aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold text-canvas-text">使用帮助</h2>
+                  <p className="mt-0.5 truncate text-xs text-canvas-text-secondary">按场景查找常用操作和注意事项</p>
+                </div>
+              </div>
+              <PopupCloseButton ariaLabel="关闭帮助" onClick={() => setHelpOpen(false)} />
+            </header>
+
+            <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
+              <nav
+                aria-label="帮助分类"
+                className="flex shrink-0 gap-1 overflow-x-auto border-b border-canvas-border p-2 sm:w-48 sm:flex-col sm:overflow-y-auto sm:border-b-0 sm:border-r sm:p-3"
+              >
+                {HELP_CATEGORIES.map((category) => {
+                  const isActive = category.id === activeHelpCategory;
+                  return (
+                    <button
+                      key={category.id}
+                      type="button"
+                      aria-current={isActive ? 'page' : undefined}
+                      onClick={() => setActiveHelpCategory(category.id)}
+                      className={`group flex min-w-max items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors sm:min-w-0 ${
+                        isActive
+                          ? 'bg-indigo-500/15 font-medium text-indigo-300'
+                          : 'text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text'
+                      }`}
+                    >
+                      <Icon
+                        icon={category.icon}
+                        width="16"
+                        height="16"
+                        className={isActive ? 'text-indigo-400' : 'text-canvas-text-muted group-hover:text-canvas-text-secondary'}
+                        aria-hidden="true"
+                      />
+                      <span>{category.label}</span>
+                    </button>
+                  );
+                })}
+              </nav>
+
+              <main className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-7 sm:py-6">
+                <div className="mx-auto max-w-xl">
+                  <div className="mb-5">
+                    <p className="text-[11px] font-medium text-indigo-400">{selectedHelpCategory.label}</p>
+                    <h3 className="mt-1 text-lg font-semibold text-canvas-text">{selectedHelpCategory.summary}</h3>
+                  </div>
+
+                  <ol className="space-y-1">
+                    {selectedHelpCategory.items.map((item, index) => (
+                      <li key={item.title} className="flex gap-4 border-b border-canvas-border/70 py-4 first:pt-0 last:border-b-0">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-canvas-hover text-[11px] font-semibold text-canvas-text-secondary">
+                          {index + 1}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h4 className="text-sm font-medium text-canvas-text">{item.title}</h4>
+                            {'shortcut' in item && item.shortcut ? (
+                              <kbd className="rounded-md border border-canvas-border bg-canvas-hover px-1.5 py-0.5 font-sans text-[10px] font-medium text-canvas-text-secondary">
+                                {item.shortcut}
+                              </kbd>
+                            ) : null}
+                          </div>
+                          <p className="mt-1.5 text-xs leading-5 text-canvas-text-secondary">{item.description}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+
+                  <div className="mt-5 flex items-start gap-2 border-t border-canvas-border pt-4 text-xs leading-5 text-canvas-text-muted">
+                    <Icon icon="mdi:keyboard-outline" width="16" height="16" className="mt-0.5 shrink-0" aria-hidden="true" />
+                    <p>完整快捷键可在“设置 &gt; 快捷键”中查看；按 Esc 可随时关闭当前弹窗或菜单。</p>
+                  </div>
+                </div>
+              </main>
+            </div>
+          </div>
+        </ModalOverlay>,
+        document.body,
+      )}
 
       {/* About dialog — portal to body to escape aside containing block */}
       {createPortal(

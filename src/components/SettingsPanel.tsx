@@ -325,6 +325,7 @@ export default function SettingsPanel() {
       onClose={() => setSettingsOpen(false)}
       ariaLabel="设置"
       className="w-[640px] h-[80vh]"
+      closeOnBackdrop={false}
     >
         {/* Header */}
         <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-canvas-border">

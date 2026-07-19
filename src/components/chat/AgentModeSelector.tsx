@@ -26,7 +26,7 @@ export default function AgentModeSelector({
 }: AgentModeSelectorProps) {
   return (
     <div
-      className="pointer-events-auto flex items-center rounded-lg border border-canvas-border bg-canvas-bg/70 p-0.5"
+      className="pointer-events-auto flex items-center rounded-lg border border-canvas-border bg-canvas-bg/60 p-0.5"
       role="group"
       aria-label="Agent 模式"
     >
