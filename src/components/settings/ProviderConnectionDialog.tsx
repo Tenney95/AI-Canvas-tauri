@@ -18,6 +18,7 @@ import {
 import { testProviderConnection } from '../../services/testConnection';
 import AnimatedButton from '../shared/AnimatedButton';
 import ModalOverlay from '../shared/ModalOverlay';
+import ModelProtocolEditor from './ModelProtocolEditor';
 
 const CATEGORY_ORDER: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
 const CATEGORY_LABELS: Record<GeneralModelCategory, string> = {
@@ -137,6 +138,8 @@ export default function ProviderConnectionDialog({
   const [manualModelId, setManualModelId] = useState('');
   const [manualModelName, setManualModelName] = useState('');
   const [manualCategory, setManualCategory] = useState<GeneralModelCategory>('text');
+  const [protocolModelId, setProtocolModelId] = useState<string | null>(null);
+  const [protocolValid, setProtocolValid] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
 
   const definition = getProviderDefinition(definitionId, initialConfig);
@@ -168,6 +171,11 @@ export default function ProviderConnectionDialog({
     [models, selectedIds],
   );
 
+  const protocolModel = useMemo(
+    () => models.find((model) => model.id === protocolModelId),
+    [models, protocolModelId],
+  );
+
   const missingCredentials = useMemo(() => {
     if (!definition) return true;
     if (definition.authType === 'oauth') return !dreaminaLoggedIn;
@@ -197,6 +205,8 @@ export default function ProviderConnectionDialog({
     setManualModelId('');
     setManualModelName('');
     setManualCategory('text');
+    setProtocolModelId(null);
+    setProtocolValid(true);
   };
 
   const handleFetchModels = async () => {
@@ -234,6 +244,7 @@ export default function ProviderConnectionDialog({
   };
 
   const toggleModel = (modelId: string) => {
+    if (selectedIds.has(modelId) && protocolModelId === modelId) closeProtocolEditor();
     setSelectedIds((current) => {
       const next = new Set(current);
       if (next.has(modelId)) next.delete(modelId);
@@ -245,6 +256,13 @@ export default function ProviderConnectionDialog({
   const toggleVisibleModels = () => {
     const allVisibleSelected = filteredModels.length > 0
       && filteredModels.every((model) => selectedIds.has(model.id));
+    if (
+      allVisibleSelected
+      && protocolModelId
+      && filteredModels.some((model) => model.id === protocolModelId)
+    ) {
+      closeProtocolEditor();
+    }
     setSelectedIds((current) => {
       const next = new Set(current);
       for (const model of filteredModels) {
@@ -285,8 +303,22 @@ export default function ProviderConnectionDialog({
     setManualModelName('');
   };
 
+  const updateModelProtocol = (
+    modelId: string,
+    executionProfile: ProviderModelSelection['executionProfile'],
+  ) => {
+    setModels((current) => current.map((model) =>
+      model.id === modelId ? { ...model, executionProfile } : model,
+    ));
+  };
+
+  const closeProtocolEditor = () => {
+    setProtocolModelId(null);
+    setProtocolValid(true);
+  };
+
   const handleSave = async () => {
-    if (!definition || missingCredentials || selectedModels.length === 0) return;
+    if (!definition || missingCredentials || selectedModels.length === 0 || !protocolValid) return;
     const nextConnectionId = connectionId || createConnectionId(definition.id);
     await onSave(
       nextConnectionId,
@@ -313,8 +345,13 @@ export default function ProviderConnectionDialog({
       onClose={onClose}
       ariaLabel={editing ? '编辑 API 厂商' : '添加 API 厂商'}
       className="provider-dialog"
+      closeOnBackdrop={false}
+      draggable
     >
-      <header className="provider-dialog-header">
+      <header
+        className="provider-dialog-header cursor-move select-none touch-none"
+        data-modal-drag-handle
+      >
         <div>
           <span className="provider-dialog-kicker">{editing ? '编辑连接' : '新建连接'}</span>
           <h3>{definition ? definition.name : '选择 API 厂商'}</h3>
@@ -556,24 +593,52 @@ export default function ProviderConnectionDialog({
 
                   <div className="provider-model-list">
                     {filteredModels.length > 0 ? filteredModels.map((model) => (
-                      <label key={model.id} className="provider-model-row">
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.has(model.id)}
-                          onChange={() => toggleModel(model.id)}
-                        />
-                        <span className={`provider-model-kind is-${model.category}`}>
-                          {CATEGORY_LABELS[model.category]}
-                        </span>
-                        <span className="provider-model-copy">
-                          <strong>{model.name}</strong>
-                          <small>{model.id}</small>
-                        </span>
-                      </label>
+                      <div key={model.id} className="provider-model-row">
+                        <label className="provider-model-select">
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(model.id)}
+                            onChange={() => toggleModel(model.id)}
+                          />
+                          <span className={`provider-model-kind is-${model.category}`}>
+                            {CATEGORY_LABELS[model.category]}
+                          </span>
+                          <span className="provider-model-copy">
+                            <strong>{model.name}</strong>
+                            <small>{model.id}</small>
+                          </span>
+                        </label>
+                        {definition.id === 'custom-openai' && selectedIds.has(model.id) ? (
+                            <AnimatedButton
+                              type="button"
+                              className={`provider-model-protocol-btn ${model.executionProfile ? 'is-configured' : ''}`}
+                              aria-label={`配置 ${model.name} 调用协议`}
+                              title="调用协议"
+                              onClick={() => {
+                                setProtocolModelId(model.id);
+                                setProtocolValid(true);
+                              }}
+                            >
+                              <Icon icon="mdi:tune-variant" width="15" />
+                            </AnimatedButton>
+                          ) : null}
+                      </div>
                     )) : (
                       <div className="provider-model-empty">没有匹配的模型</div>
                     )}
                   </div>
+
+                  {definition.id === 'custom-openai'
+                    && protocolModel
+                    && selectedIds.has(protocolModel.id) ? (
+                      <ModelProtocolEditor
+                        key={protocolModel.id}
+                        model={protocolModel}
+                        onChange={(profile) => updateModelProtocol(protocolModel.id, profile)}
+                        onValidityChange={setProtocolValid}
+                        onClose={closeProtocolEditor}
+                      />
+                    ) : null}
                 </>
               )}
 
@@ -624,7 +689,7 @@ export default function ProviderConnectionDialog({
               <AnimatedButton
                 type="button"
                 className="provider-primary-btn"
-                disabled={missingCredentials || selectedModels.length === 0}
+                disabled={missingCredentials || selectedModels.length === 0 || !protocolValid}
                 onClick={() => void handleSave()}
               >
                 {editing ? '保存更改' : '添加厂商'}

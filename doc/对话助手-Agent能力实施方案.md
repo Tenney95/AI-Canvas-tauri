@@ -1025,3 +1025,4 @@ type PolicyDecision =
 | 2026-07-16 | P3-E2 | 完成继续前校验、稳定错误码与恢复建议、删除会话资源清理、付费零重试与安全断言、旧路径评估，全部阶段收尾。 |
 | 2026-07-16 | P3-C1 移除 | 按用户决定整体移除联网搜索/网页读取/来源引用：删除 `assistant_web.rs`、`webSearchService`、`webPageService`、`webTools`、`SourceList`，退掉 `web_search`/`web_read_page` 工具、Tavily 设置与连接测试、消息 `sources` 与 `WebSource` 类型；保留通用 `proxy_fetch`。typecheck / 定向 ESLint / `cargo check --lib` / 生产构建均通过。 |
 | 2026-07-19 | P3-F1 | 新增 Agent 快捷指令查询、创建、修改和分步调用工具；定义写入与画布操作沿用既有审批，媒体步骤逐次确认，运行节点校验 task 归属、顺序和 revision。 |
+| 2026-07-19 | 平台补充 | 通用模型增加声明式执行协议：文本节点可配置端点、鉴权、请求/响应和同步/异步轮询；对话助手与 Agent 仅接受显式 `openai-sse` 兼容协议，未扩大工具、确认或付费媒体权限。 |

@@ -3,11 +3,12 @@
  */
 import { useAppStore } from '../../store/useAppStore';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
-import type { AIGenerateParams } from '../../types/aiTypes';
+import type { AIGenerateParams, ProtocolJsonValue } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, parseGeneralTextResponse } from './helpers';
 import { parseResponseError, buildAuthHeaders } from './httpUtils';
 import { resolvePromptToChatContent } from './promptResolver';
 import { resolveContentImageUrls } from './imageUtils';
+import { executeModelProtocol, resolveModelExecutionProfile } from './modelProtocol';
 
 // aiService 内部仍保留 runninghubwf 的默认 URL
 (DEFAULT_BASE_URLS as Record<string, string>).runninghubwf = 'https://api.runninghub.cn';
@@ -20,6 +21,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   let baseUrl: string;
   let apiKey: string;
   let modelName = '';
+  let generalModel: ReturnType<typeof resolveGeneralModel> = undefined;
 
   // ── 通用模型 ──
   if (provider === 'general') {
@@ -29,6 +31,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
     apiKey = gm.apiKey || '';
     baseUrl = gm.openaiUrl;
     modelName = gm.modelId;
+    generalModel = gm;
   } else if (provider === 'localllm') {
     // 已合并到通用模型，此处保留兼容旧数据
     throw new Error('本地大模型已迁移到「通用模型」，请重新选择模型\n请在「设置 → API Key」中添加通用模型');
@@ -45,9 +48,6 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
     throw new Error(`未配置 ${provider === 'general' ? resolveGeneralModel(model)?.name || '通用模型' : provider} 的服务地址\n请在「设置 → API Key」中添加`);
   }
 
-  // 去掉末尾斜杠，拼接 /chat/completions
-  const apiUrl = baseUrl.replace(/\/+$/, '') + '/chat/completions';
-
   if (provider !== 'general') {
     modelName = extractModelName(model, provider);
   }
@@ -63,6 +63,27 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
 
   const messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [];
   messages.push({ role: 'user', content: resolvedContent });
+
+  if (generalModel?.executionProfile) {
+    const protocol = resolveModelExecutionProfile(generalModel.executionProfile);
+    if (!protocol) throw new Error(`通用模型 "${generalModel.name}" 未配置调用协议`);
+    const result = await executeModelProtocol({
+      apiKey,
+      baseUrl,
+      protocol,
+      variables: {
+        model: modelName,
+        prompt: textContent,
+        messages: messages as unknown as ProtocolJsonValue,
+        stream: false,
+      },
+    });
+    if (!result.text) throw new Error('模型返回结果为空');
+    return result.text;
+  }
+
+  // 未配置模型级协议时保持原 OpenAI Chat Completions 兼容方式。
+  const apiUrl = baseUrl.replace(/\/+$/, '') + '/chat/completions';
 
   const headers = buildAuthHeaders(apiKey);
 

@@ -13,6 +13,7 @@ import { downloadUrlAndSave } from './fileService';
 import { applyImageBatchResults } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
 import { splitCommaSeparatedUrls } from './ai/helpers';
+import { pollResolvedModelProtocol } from './ai/modelProtocol';
 import {
   extractFlowMusicLyrics,
   extractFlowMusicTrack,
@@ -21,6 +22,7 @@ import {
   type FlowMusicTaskState,
 } from './ai/apimartAudio';
 import type { BaseNodeData, NodeType } from '../types';
+import type { ResolvedModelProtocolPoll } from '../types/aiTypes';
 
 // ═══════════════════════════════════════════
 // AbortController 注册表 — 节点删除时取消轮询
@@ -66,7 +68,7 @@ export interface PendingTask {
   nodeType: NodeType;
   provider: string;
   taskId: string;
-  taskType: 'apimart' | 'apimart-flow-music' | 'dreamina' | 'comfyui' | 'general' | 'volcengine' | 'runninghub';
+  taskType: 'apimart' | 'apimart-flow-music' | 'dreamina' | 'comfyui' | 'general' | 'custom-protocol' | 'volcengine' | 'runninghub';
   /** Flow Music 当前远端任务阶段。 */
   audioTaskStage?: 'lyrics' | 'music';
   /** 恢复轮询用：API Key */
@@ -77,6 +79,9 @@ export interface PendingTask {
   batchCount?: number;
   /** 同一节点对应的多个异步任务 ID（RunningHub 批量图片生成）。 */
   taskIds?: string[];
+  /** 声明式协议任务从连接配置重新读取密钥，不在此处新增密钥副本。 */
+  providerConfigId?: string;
+  protocolPoll?: ResolvedModelProtocolPoll;
   /** 任务是否已向远端提交（false 表示仅预设了 status=loading 但还未拿到 taskId） */
   submitted: boolean;
 }
@@ -730,6 +735,68 @@ async function resumeGeneral(task: PendingTask): Promise<void> {
   }
 }
 
+async function resumeCustomProtocol(task: PendingTask): Promise<void> {
+  const { nodeId, nodeType, providerConfigId, protocolPoll } = task;
+  const providerConfig = providerConfigId
+    ? useAppStore.getState().config.providers[providerConfigId]
+    : undefined;
+  if (!providerConfig?.apiKey || !protocolPoll) {
+    useAppStore.getState().updateNodeDataTransient(nodeId, {
+      status: 'error',
+      error: '任务恢复失败：调用协议或连接配置已不存在',
+    });
+    removePendingTask(nodeId);
+    return;
+  }
+
+  const node = useAppStore.getState().nodes.find((item) => item.id === nodeId);
+  const nodeData = node?.data as BaseNodeData | undefined;
+  if (!nodeData) {
+    removePendingTask(nodeId);
+    return;
+  }
+
+  const signal = registerNodePolling(nodeId);
+  try {
+    const result = await pollResolvedModelProtocol(
+      protocolPoll,
+      providerConfig.apiKey,
+      signal,
+      providerConfig.baseUrl,
+    );
+    const urls = result.urls;
+    if (!urls) throw new Error('媒体模型任务完成但未返回结果 URL');
+    const requestedCount = Math.max(1, task.batchCount ?? 1);
+    if (nodeType === 'ai-image' && requestedCount > 1) {
+      const imageSize = nodeData.imageSize || '2K';
+      const aspectRatio = nodeData.aspectRatio || '1:1';
+      const dimensions = mapImageDimensions(imageSize, aspectRatio);
+      const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions }));
+      await applyImageBatchResults({
+        nodeId,
+        batch: {
+          requestedCount,
+          results,
+          failedCount: Math.max(0, requestedCount - results.length),
+        },
+        projectId: task.projectId,
+        prompt: nodeData.prompt || '',
+        imageSize,
+        aspectRatio,
+      });
+    } else {
+      const url = urls[0];
+      if (!url) throw new Error('任务完成但未返回结果 URL');
+      await applyNodeResult(nodeId, url, nodeData.label || '');
+    }
+    removePendingTask(nodeId);
+  } catch (error) {
+    await handleResumeError(nodeId, error);
+  } finally {
+    cleanupNodePolling(nodeId);
+  }
+}
+
 /* ── 火山方舟 Seedance ── */
 
 async function resumeVolcengine(task: PendingTask): Promise<void> {
@@ -797,6 +864,7 @@ const RESUME_MAP: Record<PendingTask['taskType'], (task: PendingTask) => Promise
   dreamina: resumeDreamina,
   comfyui: resumeComfyUI,
   general: resumeGeneral,
+  'custom-protocol': resumeCustomProtocol,
   volcengine: resumeVolcengine,
   runninghub: resumeRunningHub,
 };

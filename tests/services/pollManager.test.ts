@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseNodeData } from '../../src/types';
 import {
   getPendingTasksForProject,
@@ -85,5 +85,79 @@ describe('pending generation task recovery', () => {
 
     expect(getPendingTasksForProject('project-1').map((task) => task.nodeId)).toEqual(['node-1']);
     expect(getPendingTasksForProject('project-2').map((task) => task.nodeId)).toEqual(['node-2']);
+  });
+
+  it('resumes declarative protocol tasks with credentials from the provider connection', async () => {
+    useAppStore.setState((state) => ({
+      config: {
+        ...state.config,
+        providers: {
+          ...state.config.providers,
+          'custom-agnes': {
+            name: 'Agnes',
+            apiKey: 'provider-secret',
+            baseUrl: 'https://apihub.agnes-ai.com/v1',
+            catalogId: 'custom-openai',
+          },
+        },
+      },
+      nodes: [{
+        id: 'agnes-video-node',
+        type: 'ai-video',
+        position: { x: 0, y: 0 },
+        data: {
+          label: 'Agnes video',
+          type: 'ai-video',
+          status: 'loading',
+          prompt: 'A cinematic cat',
+        } satisfies BaseNodeData,
+      }],
+    }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status: 'completed',
+      progress: 100,
+      url: 'https://cdn.example/agnes.mp4',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    savePendingTask({
+      nodeId: 'agnes-video-node',
+      projectId: 'project-1',
+      nodeType: 'ai-video',
+      provider: 'general',
+      providerConfigId: 'custom-agnes',
+      taskId: 'video-1',
+      taskType: 'custom-protocol',
+      submitted: true,
+      protocolPoll: {
+        method: 'GET',
+        url: 'https://apihub.agnes-ai.com/agnesapi?video_id=video-1',
+        statusPath: 'status',
+        successValues: ['completed'],
+        failureValues: ['failed', 'error'],
+        resultUrlPath: 'url',
+        errorPath: 'error',
+        progressPath: 'progress',
+        intervalMs: 3000,
+      },
+    });
+
+    await resumePendingTasks('project-1');
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().nodes[0].data).toMatchObject({
+        status: 'success',
+        videoUrl: 'https://cdn.example/agnes.mp4',
+      });
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://apihub.agnes-ai.com/agnesapi?video_id=video-1',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer provider-secret' }),
+      }),
+    );
+    expect(getPendingTasksForProject('project-1')).toEqual([]);
   });
 });

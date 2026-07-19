@@ -300,7 +300,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         className={`node video-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}
         style={{ height: nodeHeight }}
       >
-        <div className="node-preview compact">
+        <div className={`node-preview compact${data.videoUrl || data.thumbnailUrl ? ' has-media' : ''}`}>
           {data.videoUrl ? (
             <video
               ref={videoRef}

@@ -17,6 +17,7 @@ import {
 import type { AIAudioGenParams, AudioGenerationResult } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel } from './helpers';
 import { executeGeneralAsyncTask } from './apimartGen';
+import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 import {
   extractFlowMusicLyrics,
   extractFlowMusicTrack,
@@ -231,6 +232,29 @@ export async function generateAudio(params: AIAudioGenParams): Promise<AudioGene
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
     if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+    if (gm.executionProfile) {
+      const urls = await runConfiguredModelProtocol({
+        model: gm,
+        category: 'audio',
+        nodeId: params.nodeId,
+        variables: {
+          model: gm.modelId,
+          prompt,
+          audioVoice: params.audioVoice,
+          audioFormat: params.audioFormat,
+          audioSpeed: params.audioSpeed,
+          duration: params.musicDuration,
+          musicTitle: params.musicTitle,
+          musicLyrics: params.musicLyrics,
+          musicBpm: params.musicBpm,
+          n: 1,
+          batchCount: 1,
+        },
+      });
+      const url = urls[0];
+      if (!url) throw new Error('音频生成完成但未返回结果');
+      return { url };
+    }
     return executeGeneralAsyncTask(gm.apiKey || '', gm.openaiUrl, gm.modelId, prompt, 'audios', params.nodeId);
   }
 

@@ -8,10 +8,15 @@
  * 流事件驱动消息状态更新。
  */
 import { useAppStore } from '../../store/useAppStore';
-import { buildAuthHeaders } from './httpUtils';
 import { parseStream, parseNonStream } from './streamParsers';
 import type { AssistantStreamEvent } from '../../types/chat';
+import type { ModelExecutionProtocol, ProtocolJsonValue } from '../../types/aiTypes';
 import { findMediaModelOption } from '../../components/nodes/shared/defaultModels';
+import {
+  buildModelProtocolRequest,
+  getModelProtocolPreset,
+  resolveModelExecutionProfile,
+} from './modelProtocol';
 
 // ============================================
 // Config resolution
@@ -21,6 +26,7 @@ interface ResolvedModelConfig {
   baseUrl: string;
   apiKey: string;
   modelName: string;
+  protocol: ModelExecutionProtocol;
 }
 
 /**
@@ -41,10 +47,20 @@ export function resolveAssistantModel(): ResolvedModelConfig | null {
 
   if (!gm.openaiUrl || !gm.modelId) return null;
 
+  let protocol: ModelExecutionProtocol;
+  try {
+    protocol = gm.executionProfile
+      ? resolveModelExecutionProfile(gm.executionProfile) ?? getModelProtocolPreset('openai-chat')
+      : getModelProtocolPreset('openai-chat');
+  } catch {
+    return null;
+  }
+
   return {
     baseUrl: gm.openaiUrl.replace(/\/+$/, ''),
     apiKey: gm.apiKey || '',
     modelName: gm.modelId,
+    protocol,
   };
 }
 
@@ -160,6 +176,9 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   if (!modelConfig) {
     throw new Error('未配置助手模型，请在「设置 → API Key」中添加');
   }
+  if (modelConfig.protocol.streamFormat !== 'openai-sse') {
+    throw new Error('当前助手模型协议未声明 OpenAI SSE 兼容能力，不能用于对话助手或 Agent 工具调用');
+  }
 
   const {
     systemPrompt,
@@ -185,9 +204,6 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
         { role: 'user', content: userMessage },
       ];
 
-  const apiUrl = modelConfig.baseUrl + '/chat/completions';
-  const headers = buildAuthHeaders(modelConfig.apiKey);
-
   // 设置 AbortController
   const controller = new AbortController();
   const mergedSignal = signal;
@@ -199,17 +215,21 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   const tools = providedTools ?? buildAssistantTools(toolContextMessage ?? userMessage);
 
   try {
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: modelConfig.modelName,
-        messages,
-        stream: !nonStream,
-        ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
-      }),
+    const builtRequest = buildModelProtocolRequest({
+      apiKey: modelConfig.apiKey,
+      baseUrl: modelConfig.baseUrl,
+      protocol: modelConfig.protocol,
       signal: controller.signal,
+      variables: {
+        model: modelConfig.modelName,
+        prompt: userMessage,
+        messages: messages as unknown as ProtocolJsonValue,
+        stream: !nonStream,
+        tools: tools.length > 0 ? tools as unknown as ProtocolJsonValue : undefined,
+        toolChoice: tools.length > 0 ? 'auto' : undefined,
+      },
     });
+    const response = await fetch(builtRequest.url, builtRequest.init);
 
     if (nonStream) {
       return await parseNonStream(response, { onEvent });

@@ -68,6 +68,7 @@ function syncCustomProviderModels(
       category: model.category,
       contextWindow: existing?.contextWindow,
       providerConfigId,
+      executionProfile: model.executionProfile,
     } satisfies GeneralModelConfig;
   });
   return [...otherModels, ...selectedModels];

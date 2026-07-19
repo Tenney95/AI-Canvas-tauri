@@ -1,7 +1,7 @@
 /**
  * types 全局类型定义 — 定义 NodeType、BaseNodeData、CanvasProject、AppConfig、ModelOption、WorkflowDefinition 等核心类型
  */
-import type { AudioOutputFormat, AudioTtsVoice } from './aiTypes';
+import type { AudioOutputFormat, AudioTtsVoice, ModelExecutionProfile } from './aiTypes';
 import type { AudioGenerationPurpose } from './media';
 
 // 节点类型定义
@@ -188,6 +188,8 @@ export interface ProviderModelSelection {
   category: GeneralModelCategory;
   provider: string;
   description?: string;
+  /** 自定义媒体模型的提交、轮询与结果解析规则。 */
+  executionProfile?: ModelExecutionProfile;
 }
 
 export interface ApiProviderConfig {
@@ -277,6 +279,7 @@ export interface GeneralModelConfig {
   contextWindow?: number;     // 文本模型上下文窗口（token）；未声明时按模型 ID 目录推断
   /** 对应 config.providers 中的连接 ID；旧配置可能缺失。 */
   providerConfigId?: string;
+  executionProfile?: ModelExecutionProfile;
 }
 
 export const GENERAL_MODEL_CATEGORY_LABELS: Record<GeneralModelCategory, string> = {

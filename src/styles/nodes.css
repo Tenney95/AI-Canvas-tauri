@@ -562,6 +562,9 @@
   padding: 0;
   overflow: hidden;
   border-radius: inherit;
+}
+
+.video-node .node-preview.compact.has-media {
   background: var(--theme-bg);
 }
 

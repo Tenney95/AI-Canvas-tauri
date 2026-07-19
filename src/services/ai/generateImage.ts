@@ -26,6 +26,7 @@ import { generateApimartImagesBatch } from './apimartGen';
 import { generateImageStandardBatch } from './providers/standardImage';
 import { generateVolcengineImagesBatch } from './providers/volcengineImage';
 import { generateRunningHubImagesBatch } from './providers/runninghubImage';
+import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 
 export async function generateImage(
   params: AIImageGenParams,
@@ -94,6 +95,32 @@ export async function generateImagesBatch(
       if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
       if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
       const dimensions = mapImageDimensions(imageSize, aspectRatio);
+      if (gm.executionProfile) {
+        const urls = await runConfiguredModelProtocol({
+          model: gm,
+          category: 'image',
+          nodeId: params.nodeId,
+          variables: {
+            model: gm.modelId,
+            prompt,
+            imageSize,
+            aspectRatio,
+            size: `${dimensions.width}x${dimensions.height}`,
+            width: dimensions.width,
+            height: dimensions.height,
+            n: requestedCount,
+            batchCount: requestedCount,
+            imageUrls: allImageUrls,
+          },
+        });
+        const results = urls.slice(0, requestedCount).map((url) => ({ url, ...dimensions }));
+        if (results.length === 0) throw new Error('图片生成返回结果为空');
+        return {
+          requestedCount,
+          results,
+          failedCount: Math.max(0, requestedCount - results.length),
+        };
+      }
       return generateImageStandardBatch({
         apiKey: gm.apiKey || '',
         baseUrl: gm.openaiUrl,

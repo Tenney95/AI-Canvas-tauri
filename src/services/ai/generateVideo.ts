@@ -12,6 +12,8 @@ import { resolvePromptWithImageRefs } from './promptResolver';
 import { executeGeneralAsyncTask, generateApimartVideo } from './apimartGen';
 import { isApimartSeedanceModel } from './apimartVideoModels';
 import { pollTask } from '../pollTask';
+import { runConfiguredModelProtocol } from './modelProtocolRuntime';
+import { normalizeFrames8n1 } from './modelProtocol';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
 
 export async function generateVideo(params: AIVideoGenParams): Promise<{ url: string }> {
@@ -94,6 +96,42 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
     if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+    if (gm.executionProfile) {
+      const frames = params.videoFrames ?? 121;
+      const width = params.videoResolution ?? 1152;
+      const height = 768;
+      const fps = params.videoFps ?? 24;
+      const duration = params.seedanceDuration ?? 10;
+      const urls = await runConfiguredModelProtocol({
+        model: gm,
+        category: 'video',
+        nodeId: params.nodeId,
+        variables: {
+          model: gm.modelId,
+          prompt,
+          size: `${width}x${height}`,
+          aspectRatio: params.seedanceRatio,
+          width,
+          height,
+          frames,
+          frames8n1: normalizeFrames8n1(frames),
+          fps,
+          duration,
+          videoResolution: params.videoResolution,
+          videoFrames: params.videoFrames,
+          videoFps: params.videoFps,
+          seedanceResolution: params.seedanceResolution,
+          seedanceRatio: params.seedanceRatio,
+          seedanceDuration: params.seedanceDuration,
+          generateAudio: params.generateAudio,
+          n: 1,
+          batchCount: 1,
+        },
+      });
+      const url = urls[0];
+      if (!url) throw new Error('视频生成完成但未返回结果');
+      return { url };
+    }
     return executeGeneralAsyncTask(gm.apiKey || '', gm.openaiUrl, gm.modelId, prompt, 'videos', params.nodeId);
   }
 

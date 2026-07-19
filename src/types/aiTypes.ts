@@ -14,6 +14,94 @@ export interface AIImageGenParams extends AIGenerateParams {
   workflowInputs?: Record<string, string>; // IO 节点赋值映射
 }
 
+export type ProtocolJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ProtocolJsonValue[]
+  | { [key: string]: ProtocolJsonValue };
+
+export type ModelProtocolHttpMethod = 'GET' | 'POST';
+
+export type ModelProtocolAuthType = 'bearer' | 'header' | 'query' | 'none';
+
+export interface ModelProtocolAuthConfig {
+  type: ModelProtocolAuthType;
+  /** header/query 模式使用的字段名；密钥值只在运行时注入。 */
+  name?: string;
+  /** 可选值前缀，例如 `Token `；Bearer 默认使用 `Bearer `。 */
+  prefix?: string;
+}
+
+export interface ModelProtocolRequestTemplate {
+  method: ModelProtocolHttpMethod;
+  /** 只允许相对于连接 baseUrl 的同源路径。 */
+  path: string;
+  /** append 默认拼接到 baseUrl；origin 从同源根路径发起。 */
+  pathMode?: 'append' | 'origin';
+  /** 受控静态请求头；禁止覆盖鉴权、来源、Cookie 和传输层字段。 */
+  headers?: Record<string, string>;
+  query?: Record<string, ProtocolJsonValue>;
+  body?: ProtocolJsonValue;
+}
+
+export interface ModelProtocolPollTemplate extends ModelProtocolRequestTemplate {
+  statusPath: string;
+  successValues: string[];
+  failureValues: string[];
+  resultUrlPath?: string;
+  resultTextPath?: string;
+  errorPath?: string;
+  progressPath?: string;
+  intervalMs?: number;
+}
+
+export interface ModelExecutionProtocol {
+  version: 1;
+  mode: 'sync' | 'async';
+  /** 缺省为 Bearer，保持旧配置兼容。 */
+  auth?: ModelProtocolAuthConfig;
+  /** 对话助手仅接受显式声明的 OpenAI SSE 兼容流。 */
+  streamFormat?: 'openai-sse';
+  submit: ModelProtocolRequestTemplate;
+  /** 同步协议的结果 URL 路径。 */
+  resultUrlPath?: string;
+  /** 同步文本协议的结果文本路径。 */
+  resultTextPath?: string;
+  /** 提交响应或 HTTP 错误响应中的错误详情路径。 */
+  errorPath?: string;
+  /** 异步协议用于记录远端任务身份的提交响应路径。 */
+  taskIdPath?: string;
+  poll?: ModelProtocolPollTemplate;
+}
+
+export type ModelProtocolPresetId = 'openai-chat' | 'openai-image' | 'agnes-video' | 'custom';
+
+export interface ModelExecutionProfile {
+  preset: ModelProtocolPresetId;
+  /** preset=custom 时保存用户声明的协议。 */
+  protocol?: ModelExecutionProtocol;
+}
+
+/** 异步任务提交后解析出的轮询描述；不包含 API Key。 */
+export interface ResolvedModelProtocolPoll {
+  method: ModelProtocolHttpMethod;
+  url: string;
+  /** 只保存鉴权方式，不保存密钥。 */
+  auth?: ModelProtocolAuthConfig;
+  headers?: Record<string, string>;
+  body?: ProtocolJsonValue;
+  statusPath: string;
+  successValues: string[];
+  failureValues: string[];
+  resultUrlPath?: string;
+  resultTextPath?: string;
+  errorPath?: string;
+  progressPath?: string;
+  intervalMs: number;
+}
+
 export const MAX_IMAGE_BATCH_COUNT = 8;
 
 export interface ImageGenerationResult {
