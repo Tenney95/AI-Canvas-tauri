@@ -323,12 +323,15 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
               const summaryUrl = providerSummaryUrl(item.config, definition.defaultBaseUrl);
               const isDreamina = definition.id === 'dreamina';
               const isWorkflowOnly = definition.id === 'runninghub-model' && !item.config.apiKey;
+              const displayName = definition.id === 'custom-openai'
+                ? item.config.name.trim() || definition.name
+                : definition.name;
               return (
                 <div key={item.id} className="provider-connection-card">
                   <div className={`provider-badge provider-badge--${definition.id}`}>{definition.badgeText}</div>
                   <div className="provider-connection-copy">
                     <div className="provider-connection-title-row">
-                      <strong>{item.config.name || definition.name}</strong>
+                      <strong>{displayName}</strong>
                       <span className={`provider-list-status${isWorkflowOnly ? ' is-limited' : ''}`}>
                         {isDreamina ? 'OAuth 已连接' : isWorkflowOnly ? '仅工作流' : '已连接'}
                       </span>

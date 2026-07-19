@@ -93,7 +93,7 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
   },
   {
     id: 'runninghub-model',
-    name: 'RunningHub',
+    name: 'RunningHub 模型 API',
     description: 'RunningHub 标准模型 API',
     badgeText: 'RH',
     authType: 'api-key',
