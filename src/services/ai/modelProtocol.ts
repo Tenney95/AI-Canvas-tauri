@@ -599,12 +599,15 @@ export function buildModelProtocolRequest(
 }
 
 class ModelProtocolHttpError extends Error {
+  readonly status: number;
+
   constructor(
-    readonly status: number,
+    status: number,
     message: string,
   ) {
     super(message);
     this.name = 'ModelProtocolHttpError';
+    this.status = status;
   }
 }
 
