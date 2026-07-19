@@ -109,6 +109,7 @@ export default function ProviderConnectionDialog({
   const initialDefinitionId = initialConfig?.catalogId || connectionId || '';
   const initialDefinition = getProviderDefinition(initialDefinitionId, initialConfig);
   const initialSelectedModels = initialConfig?.selectedModels || [];
+  const initialCatalogModels = initialConfig?.catalogModels || [];
   const initialLocalModels = initialDefinition ? (fallbackModels[initialDefinition.id] || []) : [];
   const [definitionId, setDefinitionId] = useState(initialDefinitionId);
   const [connectionName, setConnectionName] = useState(initialConfig?.name || initialDefinition?.name || '');
@@ -117,7 +118,7 @@ export default function ProviderConnectionDialog({
   const [anthropicUrl, setAnthropicUrl] = useState(initialConfig?.anthropicUrl || '');
   const [workflowApiKey, setWorkflowApiKey] = useState(runninghubWorkflowApiKey);
   const [models, setModels] = useState<ProviderModelSelection[]>(
-    mergeModels(initialSelectedModels, initialLocalModels),
+    mergeModels(mergeModels(initialLocalModels, initialCatalogModels), initialSelectedModels),
   );
   const [selectedIds, setSelectedIds] = useState(() =>
     new Set(initialSelectedModels.map((model) => model.id)),
@@ -125,9 +126,14 @@ export default function ProviderConnectionDialog({
   const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>(
     initialSelectedModels.length > 0 || initialLocalModels.length > 0 ? 'ready' : 'idle',
   );
-  const [catalogMessage, setCatalogMessage] = useState('');
+  const [catalogMessage, setCatalogMessage] = useState(
+    initialCatalogModels.length > 0 ? `已加载本地缓存 ${initialCatalogModels.length} 个模型` : '',
+  );
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<GeneralModelCategory | 'all'>('all');
+  const [visibleModelCategories, setVisibleModelCategories] = useState(
+    () => new Set(initialConfig?.visibleModelCategories ?? CATEGORY_ORDER),
+  );
   const [manualModelId, setManualModelId] = useState('');
   const [manualModelName, setManualModelName] = useState('');
   const [manualCategory, setManualCategory] = useState<GeneralModelCategory>('text');
@@ -187,6 +193,7 @@ export default function ProviderConnectionDialog({
     setCatalogMessage('');
     setQuery('');
     setCategory('all');
+    setVisibleModelCategories(new Set(CATEGORY_ORDER));
     setManualModelId('');
     setManualModelName('');
     setManualCategory('text');
@@ -248,6 +255,21 @@ export default function ProviderConnectionDialog({
     });
   };
 
+  const toggleVisibleCategory = (nextCategory: GeneralModelCategory) => {
+    setVisibleModelCategories((current) => {
+      const next = new Set(current);
+      if (next.has(nextCategory)) next.delete(nextCategory);
+      else next.add(nextCategory);
+      return next;
+    });
+  };
+
+  const toggleAllVisibleCategories = () => {
+    setVisibleModelCategories((current) =>
+      current.size === CATEGORY_ORDER.length ? new Set() : new Set(CATEGORY_ORDER),
+    );
+  };
+
   const addManualModel = () => {
     const id = manualModelId.trim();
     if (!id || !definition) return;
@@ -275,6 +297,8 @@ export default function ProviderConnectionDialog({
         anthropicUrl: anthropicUrl.trim() || undefined,
         catalogId: definition.id,
         selectedModels: selectedModels.map((model) => ({ ...model, provider: nextConnectionId })),
+        catalogModels: models.map((model) => ({ ...model, provider: nextConnectionId })),
+        visibleModelCategories: CATEGORY_ORDER.filter((item) => visibleModelCategories.has(item)),
         catalogUpdatedAt: Date.now(),
       },
       definition.id === 'runninghub-model'
@@ -437,6 +461,42 @@ export default function ProviderConnectionDialog({
                   />
                   {catalogStatus === 'loading' ? '拉取中' : '拉取模型'}
                 </AnimatedButton>
+              </div>
+
+              <div className="mb-3 flex min-h-8 items-center justify-between gap-3 rounded-md border border-canvas-border bg-white/[0.03] px-2.5 py-1.5">
+                <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-canvas-text-secondary">
+                  <Icon icon="mdi:eye-outline" width="14" />
+                  节点列表显示
+                </span>
+                <div className="flex min-w-0 flex-wrap justify-end gap-1" role="group" aria-label="节点列表显示分类">
+                  <button
+                    type="button"
+                    aria-pressed={visibleModelCategories.size === CATEGORY_ORDER.length}
+                    className={`h-6 rounded px-2 text-[9px] transition-colors ${
+                      visibleModelCategories.size === CATEGORY_ORDER.length
+                        ? 'bg-indigo-500/20 text-indigo-400'
+                        : 'bg-white/[0.04] text-canvas-text-muted hover:text-canvas-text-secondary'
+                    }`}
+                    onClick={toggleAllVisibleCategories}
+                  >
+                    全部
+                  </button>
+                  {CATEGORY_ORDER.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      aria-pressed={visibleModelCategories.has(item)}
+                      className={`h-6 rounded px-2 text-[9px] transition-colors ${
+                        visibleModelCategories.has(item)
+                          ? 'bg-white/10 text-canvas-text'
+                          : 'bg-transparent text-canvas-text-muted hover:bg-white/[0.04]'
+                      }`}
+                      onClick={() => toggleVisibleCategory(item)}
+                    >
+                      {CATEGORY_LABELS[item]}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {catalogMessage && (

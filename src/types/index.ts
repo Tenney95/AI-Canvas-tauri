@@ -199,6 +199,10 @@ export interface ApiProviderConfig {
   anthropicUrl?: string;
   /** undefined 表示旧配置尚未选择；空数组表示用户明确未启用任何模型。 */
   selectedModels?: ProviderModelSelection[];
+  /** 最近一次拉取并保存在本地的完整模型目录，不包含凭据。 */
+  catalogModels?: ProviderModelSelection[];
+  /** undefined 表示旧配置全部可见；空数组表示从所有节点模型列表隐藏该厂商。 */
+  visibleModelCategories?: GeneralModelCategory[];
   catalogUpdatedAt?: number;
 }
 

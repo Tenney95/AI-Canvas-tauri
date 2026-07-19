@@ -51,15 +51,18 @@
 ### 阶段 3：画布与项目设置模型过滤
 
 **Files:**
+- Modify: `src/types/index.ts`
+- Modify: `src/components/settings/ProviderConnectionDialog.tsx`
 - Modify: `src/components/nodes/shared/defaultModels.ts`
 - Modify: `src/components/nodes/shared/ModelSelector.tsx`
 - Modify: `src/components/ProjectSettingsPopover.tsx`
 
 **Steps:**
-1. 建立目录选择到既有 `ModelOption` 的统一映射。
-2. 旧厂商配置继续显示全部内置模型；明确选择后仅显示勾选项。
-3. 自定义连接模型继续通过兼容 `generalModels` 出现在对应节点类型。
-4. 项目默认模型失效时显示明确空态，不静默改写已保存配置。
+1. 将完整模型目录缓存到厂商配置，重新编辑时按“内置目录、缓存目录、已选模型”顺序合并恢复。
+2. 建立目录选择到既有 `ModelOption` 的统一映射，明确选择后仅显示勾选项。
+3. 为每个厂商增加文本、图片、视频、音频分类可见性；全部关闭时从所有节点模型列表移除该厂商。
+4. 自定义连接模型继续通过兼容 `generalModels` 出现在对应节点类型，并遵循厂商分类可见性。
+5. 项目默认模型失效时显示“已隐藏”状态，不静默改写已保存配置。
 
 ### 阶段 4：对话与执行链统一解析
 
@@ -98,3 +101,7 @@
 - `git diff --check` 与阶段 2 文件严格 UTF-8 解码通过。
 - `npx vite build --outDir %TEMP%/ai-canvas-provider-settings-build-20260719` 通过；仅有既有动态导入与 chunk 体积警告。
 - 在本地 Web 模式验证 1280×720 与 680×760 视口：厂商弹窗 Portal 层级、搜索、分类、勾选、自定义手动模型、RunningHub 双 Key、固定操作栏和内部滚动均正常；浏览器控制台无错误，未写入测试配置。
+- 2026-07-19 完成阶段 3：完整模型目录本地缓存、节点模型白名单过滤、厂商分类可见性、RunningHub 模型 API 配置映射，以及项目默认模型隐藏状态。
+- `npm run typecheck`、阶段 3 改动文件定向 ESLint 与 `git diff --check` 通过。
+- 在本地 Web 模式验证 APIMart 仅展示 4 个已选图片模型；关闭图片分类后整个 APIMart 分组从生图节点移除。
+- 阶段 3 厂商编辑弹窗在 1280×720 与 680×760 视口无横向溢出，浏览器控制台无 warning/error；测试连接与测试节点已清理。

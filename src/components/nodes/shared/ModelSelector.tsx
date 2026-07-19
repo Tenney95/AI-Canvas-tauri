@@ -12,7 +12,11 @@ import type {
   WorkflowDefinition,
 } from '../../../types';
 import { getWorkflowCategory, CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS } from '../../../types';
-import { defaultModelGroups } from './defaultModels';
+import {
+  defaultModelGroups,
+  getConfiguredModelGroups,
+  isProviderCategoryVisible,
+} from './defaultModels';
 import { useAppStore } from '../../../store/useAppStore';
 
 const MODEL_PREF_KEY = 'canvas-model-prefs';
@@ -69,23 +73,36 @@ export default function ModelSelector({
   const modelNodeType = nodeType === 'ai-panorama' || nodeType === 'ai-animation' ? 'ai-image' : nodeType;
 
   // 读取配置 — 判断哪些 provider 有 API Key
-  const configProviders = useAppStore((s) => s.config.providers);
-  const configuredGeneralModels = useAppStore((s) => s.config.generalModels || []);
-  const dreaminaLoggedIn = useAppStore((s) => !!s.config.dreaminaAuth?.loggedIn);
+  const config = useAppStore((s) => s.config);
+  const configProviders = config.providers;
+  const configuredGeneralModels = config.generalModels || [];
+  const dreaminaLoggedIn = !!config.dreaminaAuth?.loggedIn;
   const generalModels = generalModelsOverride ?? configuredGeneralModels;
+
+  const configuredGroups = useMemo(
+    () => getConfiguredModelGroups(config, modelNodeType, groups, {
+      filterSelectedModels: groups === defaultModelGroups,
+    }),
+    [config, groups, modelNodeType],
+  );
 
   /** 动态生成「通用模型」分组 */
   const generalModelGroup: ModelGroup | null = useMemo(() => {
     if (generalModels.length === 0) return null;
-    const models: ModelOption[] = generalModels.filter((gm) => CATEGORY_TO_NODE_TYPES[gm.category].includes(modelNodeType)).map((gm) => ({
-      value: `general/${gm.id}`,
-      provider: 'general',
-      label: gm.name,
-      description: `ID: ${gm.modelId}`,
-      iconType: 'badge' as const,
-      badgeText: GENERAL_MODEL_CATEGORY_LABELS[gm.category].slice(0, 2),
-      nodeTypes: CATEGORY_TO_NODE_TYPES[gm.category],
-    }));
+    const models: ModelOption[] = generalModels
+      .filter((gm) => (
+        CATEGORY_TO_NODE_TYPES[gm.category].includes(modelNodeType)
+        && isProviderCategoryVisible(config, gm.providerConfigId, gm.category)
+      ))
+      .map((gm) => ({
+        value: `general/${gm.id}`,
+        provider: 'general',
+        label: gm.name,
+        description: `ID: ${gm.modelId}`,
+        iconType: 'badge' as const,
+        badgeText: GENERAL_MODEL_CATEGORY_LABELS[gm.category].slice(0, 2),
+        nodeTypes: CATEGORY_TO_NODE_TYPES[gm.category],
+      }));
     if (models.length === 0) return null;
     return {
       id: 'general-models',
@@ -95,14 +112,14 @@ export default function ModelSelector({
       badgeText: 'GM',
       models,
     };
-  }, [generalModels, modelNodeType]);
+  }, [config, generalModels, modelNodeType]);
 
   /** 合并默认分组与通用模型分组 */
   const allGroups = useMemo(() => {
-    const merged = [...groups];
+    const merged = [...configuredGroups];
     if (generalModelGroup) merged.push(generalModelGroup);
     return merged;
-  }, [groups, generalModelGroup]);
+  }, [configuredGroups, generalModelGroup]);
 
   // 默认分组收起，except defaultExpandedGroupIds（含通用模型默认展开）
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
@@ -124,7 +141,11 @@ export default function ModelSelector({
       }
       // 即梦：走 OAuth 登录，无 API Key，按登录态判定
       if (groupId === 'dreamina') return dreaminaLoggedIn;
-      const providerKey = groupId === 'runninghubwf' ? 'runninghub' : groupId;
+      const providerKey = groupId === 'runninghubwf'
+        ? 'runninghub'
+        : groupId === 'runninghub'
+          ? 'runninghub-model'
+          : groupId;
       const provider = configProviders[providerKey];
       return !!provider?.apiKey;
     },

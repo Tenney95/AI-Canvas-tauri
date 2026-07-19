@@ -17,14 +17,17 @@ import {
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import type {
+  AppConfig,
   CanvasProject,
-  GeneralModelConfig,
   NodeType,
   ProjectModelKind,
   ProjectSettings,
 } from '../types';
 import { useAppStore } from '../store/useAppStore';
-import { defaultModelGroups } from './nodes/shared/defaultModels';
+import {
+  getConfiguredModelGroups,
+  isProviderCategoryVisible,
+} from './nodes/shared/defaultModels';
 import StyleSelector from './nodes/shared/StyleSelector';
 import {
   PROJECT_IMAGE_ASPECT_RATIOS,
@@ -94,10 +97,10 @@ function cloneSettings(settings: ProjectSettings | undefined): ProjectSettings {
 
 function buildModelGroups(
   row: ModelRowDefinition,
-  generalModels: GeneralModelConfig[],
+  config: AppConfig,
 ): ModelOptionGroup[] {
   const seen = new Set<string>();
-  const groups = defaultModelGroups.flatMap((group) => {
+  const groups = getConfiguredModelGroups(config, row.nodeType).flatMap((group) => {
     const options = group.models.flatMap((model) => {
       if (
         model.provider === 'runninghubwf'
@@ -110,8 +113,11 @@ function buildModelGroups(
     return options.length > 0 ? [{ id: group.id, name: group.name, options }] : [];
   });
 
-  const generalOptions = generalModels.flatMap((model) => {
-    if (model.category !== row.kind) return [];
+  const generalOptions = (config.generalModels ?? []).flatMap((model) => {
+    if (
+      model.category !== row.kind
+      || !isProviderCategoryVisible(config, model.providerConfigId, model.category)
+    ) return [];
     const value = `general/${model.id}`;
     if (seen.has(value)) return [];
     seen.add(value);
@@ -180,9 +186,9 @@ export default function ProjectSettingsPopover({
   const [saving, setSaving] = useState(false);
   const [position, setPosition] = useState({ top: 44, left: 12 });
   const nestedModalOpenRef = useRef(false);
-  const { generalModels, customStyles, updateProjectSettings } = useAppStore(
+  const { config, customStyles, updateProjectSettings } = useAppStore(
     useShallow((state) => ({
-      generalModels: state.config.generalModels ?? [],
+      config: state.config,
       customStyles: state.customStyles,
       updateProjectSettings: state.updateProjectSettings,
     })),
@@ -256,8 +262,8 @@ export default function ProjectSettingsPopover({
   }, [customStyles]);
 
   const modelGroups = useMemo(() => Object.fromEntries(
-    MODEL_ROWS.map((row) => [row.kind, buildModelGroups(row, generalModels)]),
-  ) as Record<ProjectModelKind, ModelOptionGroup[]>, [generalModels]);
+    MODEL_ROWS.map((row) => [row.kind, buildModelGroups(row, config)]),
+  ) as Record<ProjectModelKind, ModelOptionGroup[]>, [config]);
   const activePromptRow = MODEL_ROWS.find((row) => row.kind === activePromptKind) ?? MODEL_ROWS[0];
 
   const handleStyleChange = (styleId: string) => {
@@ -438,38 +444,47 @@ export default function ProjectSettingsPopover({
               <section className="grid gap-3 border-t border-border-subtle px-4 py-4">
                 <SectionTitle icon="lucide:cpu">默认模型</SectionTitle>
                 <div className="grid gap-2">
-                  {MODEL_ROWS.map((row) => (
-                    <label key={row.kind} className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-3">
-                      <span className="flex items-center gap-2 text-xs text-canvas-text-secondary">
-                        <Icon icon={row.icon} className={`h-3.5 w-3.5 ${row.colorClass}`} />
-                        {row.label}
-                      </span>
-                      <span className="relative">
-                        <select
-                          value={draft.defaultModels?.[row.kind] ?? ''}
-                          onChange={(event) => handleModelChange(row.kind, event.target.value)}
-                          className="h-9 w-full appearance-none rounded-md border border-canvas-border
-                                     bg-canvas-card px-3 pr-8 text-xs text-canvas-text outline-none
-                                     transition-colors hover:border-border-secondary focus:border-indigo-500"
-                        >
-                          <option value="">跟随应用默认</option>
-                          {modelGroups[row.kind].map((group) => (
-                            <optgroup key={group.id} label={group.name}>
-                              {group.options.map((option) => (
-                                <option key={option.value} value={option.value}>{option.label}</option>
-                              ))}
-                            </optgroup>
-                          ))}
-                        </select>
-                        <Icon
-                          icon="lucide:chevron-down"
-                          aria-hidden="true"
-                          className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5
-                                     -translate-y-1/2 text-canvas-text-muted"
-                        />
-                      </span>
-                    </label>
-                  ))}
+                  {MODEL_ROWS.map((row) => {
+                    const selectedModel = draft.defaultModels?.[row.kind] ?? '';
+                    const selectedModelVisible = !selectedModel || modelGroups[row.kind].some((group) =>
+                      group.options.some((option) => option.value === selectedModel),
+                    );
+                    return (
+                      <label key={row.kind} className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-3">
+                        <span className="flex items-center gap-2 text-xs text-canvas-text-secondary">
+                          <Icon icon={row.icon} className={`h-3.5 w-3.5 ${row.colorClass}`} />
+                          {row.label}
+                        </span>
+                        <span className="relative">
+                          <select
+                            value={selectedModel}
+                            onChange={(event) => handleModelChange(row.kind, event.target.value)}
+                            className="h-9 w-full appearance-none rounded-md border border-canvas-border
+                                       bg-canvas-card px-3 pr-8 text-xs text-canvas-text outline-none
+                                       transition-colors hover:border-border-secondary focus:border-indigo-500"
+                          >
+                            <option value="">跟随应用默认</option>
+                            {!selectedModelVisible && (
+                              <option value={selectedModel} disabled>已隐藏 · {selectedModel}</option>
+                            )}
+                            {modelGroups[row.kind].map((group) => (
+                              <optgroup key={group.id} label={group.name}>
+                                {group.options.map((option) => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </optgroup>
+                            ))}
+                          </select>
+                          <Icon
+                            icon="lucide:chevron-down"
+                            aria-hidden="true"
+                            className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5
+                                       -translate-y-1/2 text-canvas-text-muted"
+                          />
+                        </span>
+                      </label>
+                    );
+                  })}
                 </div>
               </section>
 

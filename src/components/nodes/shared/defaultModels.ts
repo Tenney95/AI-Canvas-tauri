@@ -1,7 +1,14 @@
 /**
  * defaultModels 默认模型配置 — 按类型（文本/图像/视频/音频）定义各厂商预置模型列表和分组
  */
-import type { GeneralModelConfig, ModelGroup, ModelOption } from '../../../types';
+import type {
+  AppConfig,
+  GeneralModelCategory,
+  GeneralModelConfig,
+  ModelGroup,
+  ModelOption,
+  NodeType,
+} from '../../../types';
 
 export type MediaModelKind = 'image' | 'video' | 'audio';
 
@@ -791,6 +798,84 @@ export const defaultModelGroups: ModelGroup[] = [
     ],
   },
 ];
+
+function modelCategoryForNodeType(nodeType: NodeType): GeneralModelCategory | null {
+  if (nodeType === 'ai-text') return 'text';
+  if (nodeType === 'ai-image' || nodeType === 'ai-animation' || nodeType === 'ai-panorama') return 'image';
+  if (nodeType === 'ai-video') return 'video';
+  if (nodeType === 'ai-audio') return 'audio';
+  return null;
+}
+
+function normalizedCatalogModelId(value: string): string {
+  const separator = value.indexOf('/');
+  const modelId = separator >= 0 ? value.slice(separator + 1) : value;
+  return modelId.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function providerConfigIdForGroup(groupId: string): string {
+  return groupId === 'runninghub' ? 'runninghub-model' : groupId;
+}
+
+export function isProviderCategoryVisible(
+  config: AppConfig,
+  providerConfigId: string | undefined,
+  category: GeneralModelCategory,
+): boolean {
+  if (!providerConfigId) return true;
+  const provider = config.providers[providerConfigId];
+  if (!provider) return false;
+  return provider.visibleModelCategories === undefined
+    || provider.visibleModelCategories.includes(category);
+}
+
+interface ConfiguredModelGroupOptions {
+  /** Special-purpose model groups may use adapter-specific IDs that are not catalog IDs. */
+  filterSelectedModels?: boolean;
+}
+
+/**
+ * Apply provider connection, selected-model and per-category visibility rules to a node model menu.
+ * Missing providers are removed instead of being rendered as permanently locked groups.
+ */
+export function getConfiguredModelGroups(
+  config: AppConfig,
+  nodeType: NodeType,
+  groups: ModelGroup[] = defaultModelGroups,
+  options: ConfiguredModelGroupOptions = {},
+): ModelGroup[] {
+  const modelNodeType = nodeType === 'ai-animation' || nodeType === 'ai-panorama'
+    ? 'ai-image'
+    : nodeType;
+  const category = modelCategoryForNodeType(nodeType);
+  if (!category) return [];
+  const filterSelectedModels = options.filterSelectedModels ?? true;
+
+  return groups.flatMap((group) => {
+    if (group.id === 'runninghubwf') {
+      if (!config.providers.runninghub?.apiKey) return [];
+      const workflowModels = group.models.filter((model) => model.nodeTypes.includes(modelNodeType));
+      return workflowModels.length > 0 ? [{ ...group, models: workflowModels }] : [];
+    }
+
+    const providerConfigId = providerConfigIdForGroup(group.id);
+    const provider = config.providers[providerConfigId];
+    const dreaminaLegacyConnection = group.id === 'dreamina' && !!config.dreaminaAuth?.loggedIn;
+    if (!provider && !dreaminaLegacyConnection) return [];
+    if (group.id !== 'dreamina' && !provider?.apiKey) return [];
+    if (provider && !isProviderCategoryVisible(config, providerConfigId, category)) return [];
+
+    const selectedIds = provider?.selectedModels === undefined
+      ? null
+      : new Set(provider.selectedModels.map((model) => normalizedCatalogModelId(model.id)));
+    const models = group.models.filter((model) => {
+      if (!model.nodeTypes.includes(modelNodeType)) return false;
+      if (!filterSelectedModels || selectedIds === null) return true;
+      return selectedIds.has(normalizedCatalogModelId(model.value));
+    });
+    return models.length > 0 ? [{ ...group, models }] : [];
+  });
+}
 
 /** 节点与对话共用的图片/视频/音频模型目录，不包含工作流。 */
 export function getMediaModelOptions(
