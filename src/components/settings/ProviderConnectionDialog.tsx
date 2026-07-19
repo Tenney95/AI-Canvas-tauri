@@ -508,10 +508,8 @@ export default function ProviderConnectionDialog({
                   <button
                     type="button"
                     aria-pressed={visibleModelCategories.size === CATEGORY_ORDER.length}
-                    className={`h-6 rounded px-2 text-[9px] transition-colors ${
-                      visibleModelCategories.size === CATEGORY_ORDER.length
-                        ? 'bg-indigo-500/20 text-indigo-400'
-                        : 'bg-white/[0.04] text-canvas-text-muted hover:text-canvas-text-secondary'
+                    className={`provider-category-choice is-all h-6 rounded px-2 text-[9px] ${
+                      visibleModelCategories.size === CATEGORY_ORDER.length ? 'is-active' : ''
                     }`}
                     onClick={toggleAllVisibleCategories}
                   >
@@ -522,10 +520,8 @@ export default function ProviderConnectionDialog({
                       key={item}
                       type="button"
                       aria-pressed={visibleModelCategories.has(item)}
-                      className={`h-6 rounded px-2 text-[9px] transition-colors ${
-                        visibleModelCategories.has(item)
-                          ? 'bg-white/10 text-canvas-text'
-                          : 'bg-transparent text-canvas-text-muted hover:bg-white/[0.04]'
+                      className={`provider-category-choice is-${item} h-6 rounded px-2 text-[9px] ${
+                        visibleModelCategories.has(item) ? 'is-active' : ''
                       }`}
                       onClick={() => toggleVisibleCategory(item)}
                     >
@@ -560,7 +556,8 @@ export default function ProviderConnectionDialog({
                     <div className="provider-category-tabs" aria-label="模型类别">
                       <button
                         type="button"
-                        className={category === 'all' ? 'is-active' : ''}
+                        aria-pressed={category === 'all'}
+                        className={`provider-category-choice is-all ${category === 'all' ? 'is-active' : ''}`}
                         onClick={() => setCategory('all')}
                       >
                         全部
@@ -569,7 +566,8 @@ export default function ProviderConnectionDialog({
                         <button
                           key={item}
                           type="button"
-                          className={category === item ? 'is-active' : ''}
+                          aria-pressed={category === item}
+                          className={`provider-category-choice is-${item} ${category === item ? 'is-active' : ''}`}
                           onClick={() => setCategory(item)}
                         >
                           {CATEGORY_LABELS[item]}

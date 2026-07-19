@@ -225,6 +225,8 @@
 [data-theme='light'] .text-canvas-text-secondary { color: #6b6b7b; }
 [data-theme='light'] .text-canvas-text-secondary\/80 { color: rgb(107 107 123 / 0.8); }
 [data-theme='light'] .text-canvas-text-muted { color: #6c6c7a; }
+[data-theme='light'] .hover\:text-canvas-text:hover { color: var(--theme-text); }
+[data-theme='light'] .hover\:text-canvas-text-secondary:hover { color: var(--theme-text-secondary); }
 
 [data-theme='light'] .bg-canvas-bg { background-color: #F5F0EB; }
 [data-theme='light'] .bg-canvas-bg\/60 { background-color: rgb(245 240 235 / 0.6); }
@@ -236,11 +238,28 @@
 [data-theme='light'] .bg-canvas-card { background-color: #F8F6F3; }
 [data-theme='light'] .bg-canvas-card\/95 { background-color: rgb(248 246 243 / 0.95); }
 [data-theme='light'] .bg-canvas-hover { background-color: #EDE8E0; }
+[data-theme='light'] .hover\:bg-canvas-border:hover { background-color: var(--theme-border); }
+[data-theme='light'] .hover\:bg-canvas-card:hover { background-color: var(--theme-card); }
 [data-theme='light'] .hover\:bg-canvas-hover:hover { background-color: #EDE8E0; }
+[data-theme='light'] .hover\:bg-canvas-hover\/80:hover {
+  background-color: color-mix(in srgb, var(--theme-hover) 80%, transparent);
+}
+[data-theme='light'] .hover\:bg-canvas-surface:hover { background-color: var(--theme-surface); }
+[data-theme='light'] .hover\:bg-canvas-text-muted\/60:hover,
+[data-theme='light'] .group:hover .group-hover\:bg-canvas-text-muted\/60 {
+  background-color: color-mix(in srgb, var(--theme-text-muted) 60%, transparent);
+}
 
 [data-theme='light'] .border-canvas-border { border-color: #E5E0D8; }
 [data-theme='light'] .border-border-subtle { border-color: rgba(0, 0, 0, 0.06); }
 [data-theme='light'] .border-border-secondary { border-color: #d4d0c8; }
+[data-theme='light'] .hover\:border-canvas-border\/80:hover {
+  border-color: color-mix(in srgb, var(--theme-border) 80%, transparent);
+}
+[data-theme='light'] .hover\:border-canvas-hover:hover { border-color: var(--theme-hover); }
+[data-theme='light'] .focus\:border-canvas-text-secondary:focus {
+  border-color: var(--theme-text-secondary);
+}
 
 [data-theme='light'] .shadow-canvas-border { --tw-shadow-color: #E5E0D8; }
 [data-theme='light'] .ring-canvas-border { --tw-ring-color: #E5E0D8; }

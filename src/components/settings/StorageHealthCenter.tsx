@@ -586,9 +586,9 @@ export default function StorageHealthCenter() {
                         key={s.id}
                         type="button"
                         onClick={() => setActiveSection(s.id)}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors
+                        className={`storage-health-selection inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-[color,background-color,box-shadow]
                           ${activeSection === s.id
-                            ? 'bg-canvas-border text-canvas-text'
+                            ? 'is-active'
                             : 'bg-canvas-hover text-canvas-text-secondary hover:text-canvas-text'
                           }`}
                       >
@@ -620,9 +620,9 @@ export default function StorageHealthCenter() {
               <button
                 key={tab.id}
                 type="button"
-                className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                className={`storage-health-selection px-3 py-1.5 text-xs rounded-md transition-[color,background-color,box-shadow] ${
                   activeSection === tab.id
-                    ? 'bg-canvas-border text-canvas-text font-medium'
+                    ? 'is-active font-medium'
                     : 'text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover'
                 }`}
                 onClick={() => setActiveSection(tab.id)}
