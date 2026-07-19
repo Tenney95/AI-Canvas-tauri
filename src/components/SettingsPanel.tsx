@@ -578,6 +578,8 @@ export default function SettingsPanel() {
                               ? 'bg-gradient-to-b from-[#0a0514] via-[#14081e] to-[#0a0514]'
                               : value === 'off-white'
                               ? 'bg-[#F5F0EB]'
+                              : value === 'frosted-glass'
+                              ? 'canvas-bg-frosted-preview'
                               : value === 'custom'
                               ? (config.customBackgroundUrl
                                 ? ''

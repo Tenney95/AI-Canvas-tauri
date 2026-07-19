@@ -229,7 +229,14 @@ export interface DreaminaRuntime {
 }
 
 /** 画布背景主题 */
-export type CanvasBackground = 'default' | 'solar-system' | 'minimal' | 'nebula' | 'off-white' | 'custom';
+export type CanvasBackground =
+  | 'default'
+  | 'solar-system'
+  | 'minimal'
+  | 'nebula'
+  | 'off-white'
+  | 'frosted-glass'
+  | 'custom';
 
 /** 画布交互模式：default = Figma 风格（左键框选 / 右键·中键平移 / 滚轮缩放）；classic = 传统（左键平移 / Shift+拖动框选 / 滚轮纵横平移 / Ctrl+滚轮缩放） */
 export type InteractionMode = 'default' | 'classic';
