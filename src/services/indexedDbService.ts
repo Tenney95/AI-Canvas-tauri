@@ -4,6 +4,7 @@
 import type { AgentMode, AgentTask } from '../types/agent';
 import type { ConversationContextSummary } from '../types/chat';
 import type { ProjectMemory } from '../types/memory';
+import type { PresetAdvancedConfig, UserPresetMode } from '../types';
 
 const DB_NAME = 'ai-canvas-db';
 const DB_VERSION = 13; // v13: user-confirmed project memory
@@ -253,6 +254,13 @@ export interface PresetRecord {
   promptTemplate: string;
   thumbnail?: string;
   triggerMode: string;
+  icon?: string;
+  model?: string;
+  provider?: string;
+  imageSize?: string;
+  aspectRatio?: string;
+  mode?: UserPresetMode;
+  advanced?: PresetAdvancedConfig;
 }
 
 export async function savePresetToDb(record: PresetRecord): Promise<void> {

@@ -36,6 +36,7 @@ const WorkflowPanel = lazy(() => import('./components/WorkflowPanel'));
 const AssetsPanel = lazy(() => import('./components/AssetsPanel'));
 const OutputHistoryPanel = lazy(() => import('./components/OutputHistoryPanel'));
 const ChatPanel = lazy(() => import('./components/chat/ChatPanel'));
+const PresetRunnerDialog = lazy(() => import('./components/nodes/shared/PresetRunnerDialog'));
 
 let cachedMascotNodes: AppState['nodes'] | undefined;
 let cachedMascotLoading = false;
@@ -71,6 +72,7 @@ export default function App() {
       assets: state.assetsPanelOpen,
       history: state.historyPanelOpen,
       chat: state.chatOpen || state.chatPanelDetached,
+      presetRunner: state.presetRunRequest !== null,
     })),
   );
   const mountSettings = useFeatureMount(featureVisibility.settings);
@@ -79,6 +81,7 @@ export default function App() {
   const mountAssets = useFeatureMount(featureVisibility.assets);
   const mountHistory = useFeatureMount(featureVisibility.history);
   const mountChat = useFeatureMount(featureVisibility.chat);
+  const mountPresetRunner = useFeatureMount(featureVisibility.presetRunner);
 
   // 开屏动画状态
   const [splashDone, setSplashDone] = useState(false);
@@ -249,6 +252,11 @@ export default function App() {
         <LazyLoadBoundary label="对话助手">
           <Suspense fallback={<LazyLoadFallback label="对话助手" />}>
             {mountChat && <ChatPanel />}
+          </Suspense>
+        </LazyLoadBoundary>
+        <LazyLoadBoundary label="快捷指令运行器">
+          <Suspense fallback={null}>
+            {mountPresetRunner && <PresetRunnerDialog />}
           </Suspense>
         </LazyLoadBoundary>
         <Toast />

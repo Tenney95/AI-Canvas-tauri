@@ -2,7 +2,7 @@
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
-import type { AnimationAction, ImagePostProcess, NodeType, ModelOption, WorkflowDefinition, UserSkill } from '../../../types';
+import type { AnimationAction, ImagePostProcess, NodeType, ModelOption, WorkflowDefinition, UserPreset, UserSkill } from '../../../types';
 import { ANIMATION_ACTION_LABELS } from '../../../types';
 import type { PresetOverride } from './SlashCommandMenu';
 import { useAppStore } from '../../../store/useAppStore';
@@ -194,6 +194,7 @@ export default function PromptPanel({
   const userSkills = useAppStore((s) => s.userSkills);
   const uploadSkill = useAppStore((s) => s.uploadSkill);
   const setPresetManagerOpen = useAppStore((s) => s.setPresetManagerOpen);
+  const setPresetRunRequest = useAppStore((s) => s.setPresetRunRequest);
   const showToast = useAppStore((s) => s.showToast);
   const pendingPresetAction = useAppStore((s) => s.pendingPresetAction);
   const setPendingPresetAction = useAppStore((s) => s.setPendingPresetAction);
@@ -319,6 +320,14 @@ export default function PromptPanel({
   const handleManagePresets = useCallback(() => {
     setPresetManagerOpen(true);
   }, [setPresetManagerOpen]);
+
+  const handleRunAdvancedPreset = useCallback((preset: UserPreset) => {
+    if (!nodeId) {
+      showToast('高级快捷指令需要从画布节点中运行', 'error');
+      return;
+    }
+    setPresetRunRequest({ presetId: preset.id, sourceNodeId: nodeId });
+  }, [nodeId, setPresetRunRequest, showToast]);
 
   const handleManageSkills = useCallback(() => {
     setSkillManagerOpen(true);
@@ -588,6 +597,7 @@ export default function PromptPanel({
         userPresets={userPresets}
         userSkills={userSkills}
         onSelect={handleSlashSelect}
+        onRunAdvancedPreset={handleRunAdvancedPreset}
         onSelectSkill={handleSkillSelect}
         onUploadSkill={handleUploadSkill}
         onManageSkills={handleManageSkills}

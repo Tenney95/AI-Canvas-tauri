@@ -10,6 +10,7 @@ import ToolbarEditor from './toolbar/ToolbarEditor';
 import { getButtonRegistry } from './toolbar/toolbarRegistry';
 import { resolvePresetAction, resolvePresetDef, createPresetNode } from './toolbar/presetAction';
 import { executeGeneration } from '../../../services/generationService';
+import { requestPresetSequence } from '../../../services/presetSequenceService';
 import { useAppStore } from '../../../store/useAppStore';
 import type { Node } from '@xyflow/react';
 
@@ -60,6 +61,7 @@ function TextNodeToolbar({ nodeId, data, onCopy, onClearEmptyLines, onShowPrompt
       if (!liveNode) return;
       const livePrompt = (liveNode.data?.prompt as string) ?? '';
       const livePresets = useAppStore.getState().userPresets;
+      if (requestPresetSequence(key, nodeType as NodeType, nodeId, livePresets)) return;
       const resolved = resolvePresetAction(key, nodeType as NodeType, livePrompt, livePresets);
       if (!resolved) return;
       const { node: newNode, edge } = createPresetNode(liveNode, resolved);

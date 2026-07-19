@@ -7,8 +7,16 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '../../../store/useAppStore';
-import { generateId } from '../../../store/useAppStore';
-import type { NodeType, UserPreset, PresetNodeType, PresetTriggerMode, ModelOption } from '../../../types';
+import { generateId } from '../../../store/store.utils';
+import type {
+  ModelOption,
+  NodeType,
+  PresetAdvancedConfig,
+  PresetNodeType,
+  PresetTriggerMode,
+  UserPreset,
+  UserPresetMode,
+} from '../../../types';
 import {
   PRESET_NODE_TYPES,
   PRESET_NODE_TYPE_LABELS,
@@ -16,8 +24,22 @@ import {
 import AnimatedButton from '../../shared/AnimatedButton';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
+import PresetAdvancedEditor from './PresetAdvancedEditor';
+import { validatePresetAdvancedConfig } from '../../../services/presetTemplateService';
 
 const PLACEHOLDER_MARKER = '\u200B'; // zero-width space as placeholder pill
+
+function createDefaultAdvancedConfig(nodeType: PresetNodeType): PresetAdvancedConfig {
+  return {
+    parameters: [],
+    steps: [{
+      id: 'step-' + generateId(),
+      name: '步骤 1',
+      nodeType,
+      promptTemplate: '{{currentPrompt}}',
+    }],
+  };
+}
 
 function buildPillEl(label: string): HTMLSpanElement {
   const span = document.createElement('span');
@@ -117,6 +139,10 @@ export default function PresetManager() {
   const [description, setDescription] = useState('');
   const [template, setTemplate] = useState('');
   const [triggerMode, setTriggerMode] = useState<PresetTriggerMode>('direct');
+  const [presetMode, setPresetMode] = useState<UserPresetMode>('basic');
+  const [advancedConfig, setAdvancedConfig] = useState<PresetAdvancedConfig>(
+    () => createDefaultAdvancedConfig('ai-text'),
+  );
   const [thumbnail, setThumbnail] = useState<string | undefined>();
   // 预设绑定的模型和尺寸（可选）
   const [presetModel, setPresetModel] = useState('');
@@ -144,6 +170,8 @@ export default function PresetManager() {
         setDescription('');
         setTemplate('');
         setTriggerMode('direct');
+        setPresetMode('basic');
+        setAdvancedConfig(createDefaultAdvancedConfig(activeTab));
         setThumbnail(undefined);
         setPresetModel('');
         setPresetProvider('');
@@ -160,6 +188,8 @@ export default function PresetManager() {
         setDescription(preset.description);
         setTemplate(preset.promptTemplate);
         setTriggerMode(preset.triggerMode);
+        setPresetMode(preset.mode === 'advanced' ? 'advanced' : 'basic');
+        setAdvancedConfig(preset.advanced ?? createDefaultAdvancedConfig(preset.nodeType));
         setThumbnail(preset.thumbnail);
         setPresetModel(preset.model || '');
         setPresetProvider(preset.provider || '');
@@ -172,7 +202,7 @@ export default function PresetManager() {
         }
       }
     });
-  }, [selectedId, userPresets]);
+  }, [activeTab, selectedId, userPresets]);
 
   // When switching tabs, select first preset
   useEffect(() => {
@@ -189,6 +219,8 @@ export default function PresetManager() {
       description: '输入说明与提示词模板',
       promptTemplate: '',
       triggerMode: 'direct',
+      mode: 'basic',
+      advanced: createDefaultAdvancedConfig(activeTab),
     };
     addUserPreset(newPreset);
     setSelectedId(newId);
@@ -210,7 +242,14 @@ export default function PresetManager() {
 
   const handleSave = useCallback(() => {
     if (!selectedId || !name.trim()) return;
-    const templateFromEditor = editorRef.current
+    if (presetMode === 'advanced') {
+      const advancedErrors = validatePresetAdvancedConfig(advancedConfig);
+      if (advancedErrors[0]) {
+        showToast(advancedErrors[0], 'error');
+        return;
+      }
+    }
+    const templateFromEditor = presetMode === 'basic' && editorRef.current
       ? serializePresetEditor(editorRef.current)
       : template;
     updateUserPreset(selectedId, {
@@ -223,9 +262,20 @@ export default function PresetManager() {
       provider: modelOverrideActive ? (presetProvider || undefined) : undefined,
       imageSize: sizeOverrideActive ? (presetImageSize || undefined) : undefined,
       aspectRatio: sizeOverrideActive ? (presetAspectRatio || undefined) : undefined,
+      mode: presetMode,
+      advanced: advancedConfig,
     });
     showToast('快捷指令已保存');
-  }, [selectedId, name, description, template, triggerMode, thumbnail, presetModel, presetProvider, presetImageSize, presetAspectRatio, modelOverrideActive, sizeOverrideActive, updateUserPreset, showToast]);
+  }, [selectedId, name, description, template, triggerMode, thumbnail, presetModel, presetProvider, presetImageSize, presetAspectRatio, modelOverrideActive, sizeOverrideActive, presetMode, advancedConfig, updateUserPreset, showToast]);
+
+  const handlePresetModeChange = useCallback((mode: UserPresetMode) => {
+    setPresetMode(mode);
+    if (mode === 'basic') {
+      requestAnimationFrame(() => {
+        if (editorRef.current) deserializeToEditor(editorRef.current, template);
+      });
+    }
+  }, [template]);
 
   const handleThumbnailUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -489,6 +539,36 @@ export default function PresetManager() {
                     onChange={(e) => setDescription(e.target.value)}
                   />
                 </label>
+                <div className="preset-manager-mode-picker">
+                  <div>
+                    <span className="preset-manager-label">配置模式</span>
+                    <span className="preset-manager-mode-help">
+                      {presetMode === 'basic'
+                        ? '适合快速保存单次提示词操作'
+                        : '使用参数和步骤定义顺序生成链'}
+                    </span>
+                  </div>
+                  <div className="preset-manager-mode-segment" role="group" aria-label="配置模式">
+                    <button
+                      type="button"
+                      className={presetMode === 'basic' ? 'is-active' : ''}
+                      aria-pressed={presetMode === 'basic'}
+                      onClick={() => handlePresetModeChange('basic')}
+                    >
+                      基础
+                    </button>
+                    <button
+                      type="button"
+                      className={presetMode === 'advanced' ? 'is-active' : ''}
+                      aria-pressed={presetMode === 'advanced'}
+                      onClick={() => handlePresetModeChange('advanced')}
+                    >
+                      高级
+                    </button>
+                  </div>
+                </div>
+                {presetMode === 'basic' ? (
+                  <>
                 <div className="preset-manager-template-tools">
                   <span className="preset-manager-label">提示词模板</span>
                   <AnimatedButton
@@ -592,6 +672,14 @@ export default function PresetManager() {
                     )}
                   </div>
                 )}
+                  </>
+                ) : (
+                  <PresetAdvancedEditor
+                    config={advancedConfig}
+                    defaultNodeType={activeTab}
+                    onChange={setAdvancedConfig}
+                  />
+                )}
               </div>
             ) : (
               <div className="preset-manager-detail-empty">
@@ -603,27 +691,34 @@ export default function PresetManager() {
 
         {/* Footer */}
         <div className="preset-modal-actions">
-          <div className="preset-manager-trigger-modes" role="group" aria-label="快捷指令触发方式">
-            <span className="preset-manager-trigger-mode-label">模式：</span>
-            <AnimatedButton
-              type="button"
-              className={`preset-manager-trigger-mode${triggerMode === 'direct' ? ' is-active' : ''}`}
-              data-trigger-mode="direct"
-              aria-pressed={triggerMode === 'direct'}
-              onClick={() => setTriggerMode('direct')}
-            >
-              直接触发
-            </AnimatedButton>
-            <AnimatedButton
-              type="button"
-              className={`preset-manager-trigger-mode${triggerMode === 'insertPrompt' ? ' is-active' : ''}`}
-              data-trigger-mode="insertPrompt"
-              aria-pressed={triggerMode === 'insertPrompt'}
-              onClick={() => setTriggerMode('insertPrompt')}
-            >
-              加入提示词
-            </AnimatedButton>
-          </div>
+          {presetMode === 'basic' ? (
+            <div className="preset-manager-trigger-modes" role="group" aria-label="快捷指令触发方式">
+              <span className="preset-manager-trigger-mode-label">模式：</span>
+              <AnimatedButton
+                type="button"
+                className={`preset-manager-trigger-mode${triggerMode === 'direct' ? ' is-active' : ''}`}
+                data-trigger-mode="direct"
+                aria-pressed={triggerMode === 'direct'}
+                onClick={() => setTriggerMode('direct')}
+              >
+                直接触发
+              </AnimatedButton>
+              <AnimatedButton
+                type="button"
+                className={`preset-manager-trigger-mode${triggerMode === 'insertPrompt' ? ' is-active' : ''}`}
+                data-trigger-mode="insertPrompt"
+                aria-pressed={triggerMode === 'insertPrompt'}
+                onClick={() => setTriggerMode('insertPrompt')}
+              >
+                加入提示词
+              </AnimatedButton>
+            </div>
+          ) : (
+            <div className="preset-manager-sequence-mode">
+              <span className="preset-manager-sequence-dot" aria-hidden="true" />
+              <span>按步骤顺序自动执行，失败时停止</span>
+            </div>
+          )}
           <AnimatedButton type="button" className="preset-modal-btn-primary" onClick={handleSave}>
             保存
           </AnimatedButton>

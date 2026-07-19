@@ -38,6 +38,8 @@ export interface NodeSlice {
   addNodes: (nodes: Node<BaseNodeData>[]) => void;
   addNodesTransient: (nodes: Node<BaseNodeData>[]) => void;
   addNodeWithEdge: (node: Node<BaseNodeData>, edge: Edge) => void;
+  /** 原子添加一组节点和连线，只创建一次历史快照。 */
+  addNodesWithEdges: (nodes: Node<BaseNodeData>[], edges: Edge[]) => void;
   createMediaPlaceholder: (
     intent: MediaGenerationIntent,
     position?: { x: number; y: number },
@@ -101,6 +103,24 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       return {
         nodes: [...state.nodes, { ...node, data: { ...data, displayId } } as Node<BaseNodeData>],
         edges: [...state.edges, edge],
+      };
+    });
+  },
+
+  addNodesWithEdges: (nodes, edges) => {
+    if (nodes.length === 0) return;
+    get().commitToHistory();
+    set((state) => {
+      const nextNodes = [...state.nodes];
+      const settings = state.projects.find((project) => project.id === state.currentProjectId)?.settings;
+      for (const node of nodes) {
+        const displayId = getNextDisplayId(nextNodes);
+        const data = applyProjectDefaultsToNodeData(node.data, settings);
+        nextNodes.push({ ...node, data: { ...data, displayId } } as Node<BaseNodeData>);
+      }
+      return {
+        nodes: nextNodes,
+        edges: [...state.edges, ...edges],
       };
     });
   },

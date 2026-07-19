@@ -3,13 +3,15 @@
  */
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { UserPreset, PresetNodeType } from '../types';
+import type { UserPreset, PresetNodeType, PresetRunRequest } from '../types';
 import * as fileService from '../services/fileService';
 
 export interface PresetSlice {
   userPresets: UserPreset[];
   presetManagerOpen: boolean;
+  presetRunRequest: PresetRunRequest | null;
   setPresetManagerOpen: (open: boolean) => void;
+  setPresetRunRequest: (request: PresetRunRequest | null) => void;
   addUserPreset: (preset: UserPreset) => Promise<void>;
   updateUserPreset: (id: string, data: Partial<UserPreset>) => Promise<void>;
   deleteUserPreset: (id: string) => Promise<void>;
@@ -19,8 +21,10 @@ export interface PresetSlice {
 export const createPresetSlice: StateCreator<AppState, [], [], PresetSlice> = (set, get) => ({
   userPresets: [],
   presetManagerOpen: false,
+  presetRunRequest: null,
 
   setPresetManagerOpen: (open) => set({ presetManagerOpen: open }),
+  setPresetRunRequest: (request) => set({ presetRunRequest: request }),
 
   addUserPreset: async (preset) => {
     set((state) => ({ userPresets: [...state.userPresets, preset] }));
@@ -56,8 +60,15 @@ export const createPresetSlice: StateCreator<AppState, [], [], PresetSlice> = (s
           name: r.name,
           description: r.description,
           promptTemplate: r.promptTemplate,
+          icon: r.icon,
           thumbnail: r.thumbnail,
           triggerMode: (r.triggerMode as UserPreset['triggerMode']) || 'direct',
+          model: r.model,
+          provider: r.provider,
+          imageSize: r.imageSize,
+          aspectRatio: r.aspectRatio,
+          mode: r.mode === 'advanced' ? 'advanced' : 'basic',
+          advanced: r.advanced,
         })),
       });
     }

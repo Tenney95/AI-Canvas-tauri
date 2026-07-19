@@ -17,6 +17,7 @@ export interface PresetOverride {
 import { getSlashCommands, fillTemplate } from './slashCommands';
 import type { SlashCommandItem } from './slashCommands';
 import { calcFixedPosition, calcSubmenuPosition } from '../../../utils/popupPosition';
+import { isAdvancedPreset } from '../../../services/presetSequenceService';
 
 const SKILL_PARENT_ID = '__skills__';
 
@@ -27,6 +28,7 @@ interface SlashCommandMenuProps {
   userPresets: UserPreset[];
   userSkills: UserSkill[];
   onSelect: (prompt: string, shouldTrigger: boolean, preset?: PresetOverride) => void;
+  onRunAdvancedPreset: (preset: UserPreset) => void;
   onSelectSkill: (skill: UserSkill) => void;
   onUploadSkill: (source: 'file' | 'folder') => void | Promise<void>;
   onManageSkills: () => void;
@@ -41,6 +43,7 @@ export default function SlashCommandMenu({
   userPresets,
   userSkills,
   onSelect,
+  onRunAdvancedPreset,
   onSelectSkill,
   onUploadSkill,
   onManageSkills,
@@ -139,7 +142,9 @@ export default function SlashCommandMenu({
   }, [currentPrompt, onSelect, onClose]);
 
   const handlePresetSelect = useCallback((preset: UserPreset) => {
-    if (preset.triggerMode === 'direct') {
+    if (isAdvancedPreset(preset)) {
+      onRunAdvancedPreset(preset);
+    } else if (preset.triggerMode === 'direct') {
       const filled = fillTemplate(preset.promptTemplate, currentPrompt);
       onSelect(filled, true, preset);
     } else {
@@ -147,7 +152,7 @@ export default function SlashCommandMenu({
       onSelect(currentPrompt ? `${currentPrompt}\n${filled}` : filled, false, preset);
     }
     onClose();
-  }, [currentPrompt, onSelect, onClose]);
+  }, [currentPrompt, onSelect, onRunAdvancedPreset, onClose]);
 
   const handleSkillSelect = useCallback((skill: UserSkill) => {
     onSelectSkill(skill);
@@ -228,7 +233,9 @@ export default function SlashCommandMenu({
                   <span className="slash-command-desc">{preset.description || '点击调用这个快捷指令'}</span>
                 </div>
                 <span className="slash-command-badge">
-                  {preset.triggerMode === 'direct' ? '直接触发' : '加入提示词'}
+                  {isAdvancedPreset(preset)
+                    ? '顺序执行'
+                    : preset.triggerMode === 'direct' ? '直接触发' : '加入提示词'}
                 </span>
               </div>
             ))}

@@ -397,6 +397,43 @@ export function getNodeTypeConfig(kind: string): NodeTypeVisualConfig {
 
 export type PresetTriggerMode = 'direct' | 'insertPrompt';
 
+export type UserPresetMode = 'basic' | 'advanced';
+
+export type PresetParameterType = 'text' | 'textarea' | 'number' | 'select' | 'boolean';
+
+export type PresetParameterValue = string | number | boolean;
+
+export interface PresetParameterDefinition {
+  id: string;
+  key: string;
+  label: string;
+  type: PresetParameterType;
+  required?: boolean;
+  defaultValue?: PresetParameterValue;
+  options?: string[];
+}
+
+export interface PresetSequenceStep {
+  id: string;
+  name: string;
+  nodeType: PresetNodeType;
+  promptTemplate: string;
+  model?: string;
+  provider?: string;
+  imageSize?: string;
+  aspectRatio?: string;
+}
+
+export interface PresetAdvancedConfig {
+  parameters: PresetParameterDefinition[];
+  steps: PresetSequenceStep[];
+}
+
+export interface PresetRunRequest {
+  presetId: string;
+  sourceNodeId: string;
+}
+
 // ── 用户自定义画风 ──
 export interface CustomStyle {
   id: string;
@@ -421,6 +458,9 @@ export interface UserPreset {
   provider?: string;
   imageSize?: string;
   aspectRatio?: string;
+  /** 旧数据缺省时按 basic 读取。 */
+  mode?: UserPresetMode;
+  advanced?: PresetAdvancedConfig;
 }
 
 // ============================================
