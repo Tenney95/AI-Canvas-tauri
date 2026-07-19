@@ -61,7 +61,14 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   hoveredMentionNodeId: null,
   pendingPresetAction: null,
 
-  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setSettingsOpen: (open) => set(open
+    ? {
+        settingsOpen: true,
+        assetsPanelOpen: false,
+        historyPanelOpen: false,
+        chatOpen: false,
+      }
+    : { settingsOpen: false }),
   showNodeMenu: (position) => set({ nodeMenuVisible: true, nodeMenuPosition: position }),
   hideNodeMenu: () => set({ nodeMenuVisible: false }),
   openNodePicker: () => set({ nodePickerOpen: true, avatarMenuOpen: false }),
@@ -71,8 +78,22 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   closeAvatarMenu: () => set({ avatarMenuOpen: false }),
   openNodeDialog: (nodeId, position) => set({ activeNodeId: nodeId, dialogPosition: position ?? null }),
   closeNodeDialog: () => set({ activeNodeId: null, dialogPosition: null, pendingPresetAction: null }),
-  setAssetsPanelOpen: (open) => set({ assetsPanelOpen: open }),
-  setHistoryPanelOpen: (open) => set({ historyPanelOpen: open }),
+  setAssetsPanelOpen: (open) => set(open
+    ? {
+        settingsOpen: false,
+        assetsPanelOpen: true,
+        historyPanelOpen: false,
+        chatOpen: false,
+      }
+    : { assetsPanelOpen: false }),
+  setHistoryPanelOpen: (open) => set(open
+    ? {
+        settingsOpen: false,
+        assetsPanelOpen: false,
+        historyPanelOpen: true,
+        chatOpen: false,
+      }
+    : { historyPanelOpen: false }),
   toggleMinimap: () => set((s) => ({ minimapVisible: !s.minimapVisible })),
   setHoveredMentionNodeId: (id) => set({ hoveredMentionNodeId: id }),
   setPendingPresetAction: (action) => set({ pendingPresetAction: action }),

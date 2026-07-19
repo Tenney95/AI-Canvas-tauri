@@ -209,9 +209,21 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
   // Panel Actions
   // ==========================================
 
-  openChat: () => set({ chatOpen: true }),
+  openChat: () => set({
+    chatOpen: true,
+    settingsOpen: false,
+    assetsPanelOpen: false,
+    historyPanelOpen: false,
+  }),
   closeChat: () => set({ chatOpen: false }),
-  toggleChat: () => set((s) => ({ chatOpen: !s.chatOpen })),
+  toggleChat: () => set((s) => (s.chatOpen
+    ? { chatOpen: false }
+    : {
+        chatOpen: true,
+        settingsOpen: false,
+        assetsPanelOpen: false,
+        historyPanelOpen: false,
+      })),
   setChatPanelDetached: (detached) => set({ chatPanelDetached: detached }),
 
   // ==========================================
