@@ -67,7 +67,20 @@ function mergeModels(
   incoming: ProviderModelSelection[],
 ): ProviderModelSelection[] {
   const models = new Map(current.map((model) => [model.id, model]));
-  for (const model of incoming) models.set(model.id, model);
+  for (const model of incoming) {
+    const existing = models.get(model.id);
+    const incomingHasOnlyRawName = model.name.trim().toLowerCase() === model.id.trim().toLowerCase();
+    const existingHasFriendlyName = existing
+      && existing.name.trim().toLowerCase() !== existing.id.trim().toLowerCase();
+    const preserveExistingMetadata = incomingHasOnlyRawName && existingHasFriendlyName;
+    models.set(model.id, {
+      ...existing,
+      ...model,
+      name: preserveExistingMetadata ? existing.name : model.name,
+      category: preserveExistingMetadata ? existing.category : model.category,
+      description: model.description || existing?.description,
+    });
+  }
   return [...models.values()];
 }
 
