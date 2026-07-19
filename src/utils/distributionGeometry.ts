@@ -36,7 +36,14 @@ export function getDistributionItems(
         crossEnd: isHorizontal ? bounds.bottom : bounds.right,
       };
     })
-    .sort((a, b) => a.center - b.center);
+    .sort((a, b) => {
+      if (isHorizontal) return a.center - b.center;
+
+      // 纵向分布的上下顺序由节点原本的左右顺序决定。
+      const aCrossCenter = (a.crossStart + a.crossEnd) / 2;
+      const bCrossCenter = (b.crossStart + b.crossEnd) / 2;
+      return aCrossCenter - bCrossCenter || a.center - b.center;
+    });
 }
 
 export function getItemGap(leftOrTop: DistributionItem, rightOrBottom: DistributionItem): number {
@@ -77,16 +84,21 @@ export function distributeNodesWithEqualGap(
   const items = getDistributionItems(nodes, selectedNodeIds, axis);
   if (items.length < 3) return nodes;
 
-  const first = items[0];
-  const last = items[items.length - 1];
+  // 纵向项目不按 Y 排序，因此单独读取原始 Y 边界以保持原有占用范围。
+  const extentStart = axis === 'horizontal'
+    ? items[0].start
+    : Math.min(...items.map((item) => item.start));
+  const extentEnd = axis === 'horizontal'
+    ? items[items.length - 1].end
+    : Math.max(...items.map((item) => item.end));
   const totalNodeSize = items.reduce((sum, item) => sum + item.size, 0);
-  const currentSpan = last.end - first.start;
+  const currentSpan = extentEnd - extentStart;
   const gap = Math.max(
     0,
     requestedGap ?? (currentSpan - totalNodeSize) / (items.length - 1),
   );
   const layoutSize = totalNodeSize + gap * (items.length - 1);
-  const layoutCenter = (first.start + last.end) / 2;
+  const layoutCenter = (extentStart + extentEnd) / 2;
   const absolutePositions = new Map<string, number>();
   let cursor = layoutCenter - layoutSize / 2;
 

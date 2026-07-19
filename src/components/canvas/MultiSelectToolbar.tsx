@@ -1,7 +1,8 @@
 ﻿/**
  * MultiSelectToolbar 多选工具栏 — 选中 ≥2 个节点时悬浮显示，支持批量执行和对齐操作
  */
-import { memo, useMemo, useCallback, useState } from 'react';
+import { memo, useMemo, useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useReactFlow } from '@xyflow/react';
 import { Icon } from '@iconify/react';
 import { useAppStore } from '../../store/useAppStore';
@@ -51,6 +52,21 @@ interface DistributionMode {
 
 const getSelectionKey = (ids: string[]) => [...ids].sort().join('\u0000');
 
+const NODE_MOVE_DURATION_MS = 200;
+const NODE_MOVE_EASING = 'cubic-bezier(0.16, 1, 0.3, 1)';
+
+function getCanvasNodeElements(nodeIds: string[]): Map<string, HTMLElement> {
+  const targetIds = new Set(nodeIds);
+  const elements = new Map<string, HTMLElement>();
+
+  document.querySelectorAll<HTMLElement>('.react-flow__node[data-id]').forEach((element) => {
+    const nodeId = element.dataset.id;
+    if (nodeId && targetIds.has(nodeId)) elements.set(nodeId, element);
+  });
+
+  return elements;
+}
+
 function MultiSelectToolbar() {
   const selectedNodeIds = useAppStore((s) => s.selectedNodeIds);
   // 仅当选中 ≥2 个节点时才订阅 nodes；否则返回稳定空引用，
@@ -59,9 +75,77 @@ function MultiSelectToolbar() {
   const setNodes = useAppStore((s) => s.setNodes);
   const recordOutputHistory = useAppStore((s) => s.recordOutputHistory);
   const copySelectedNodes = useAppStore((s) => s.copySelectedNodes);
-  const { flowToScreenPosition } = useReactFlow();
+  const { flowToScreenPosition, getZoom } = useReactFlow();
   const [batchRunning, setBatchRunning] = useState(false);
   const [distributionMode, setDistributionMode] = useState<DistributionMode | null>(null);
+  const activeNodeAnimationsRef = useRef(new Set<Animation>());
+
+  const cancelActiveNodeAnimations = useCallback(() => {
+    for (const animation of activeNodeAnimationsRef.current) animation.cancel();
+    activeNodeAnimationsRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    const cancelOnNodePointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('.react-flow__node')) cancelActiveNodeAnimations();
+    };
+
+    document.addEventListener('pointerdown', cancelOnNodePointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', cancelOnNodePointerDown, true);
+      cancelActiveNodeAnimations();
+    };
+  }, [cancelActiveNodeAnimations]);
+
+  const applyNodePositions = useCallback(
+    (nextNodes: RFNode<BaseNodeData>[], movedNodeIds: string[]) => {
+      cancelActiveNodeAnimations();
+
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (reduceMotion) {
+        setNodes(nextNodes);
+        return;
+      }
+
+      const beforeElements = getCanvasNodeElements(movedNodeIds);
+      const beforeRects = new Map<string, DOMRect>();
+      for (const [nodeId, element] of beforeElements) {
+        beforeRects.set(nodeId, element.getBoundingClientRect());
+      }
+
+      flushSync(() => setNodes(nextNodes));
+
+      const zoom = Math.max(getZoom(), Number.EPSILON);
+      const afterElements = getCanvasNodeElements(movedNodeIds);
+      for (const [nodeId, element] of afterElements) {
+        const beforeRect = beforeRects.get(nodeId);
+        if (!beforeRect) continue;
+
+        const afterRect = element.getBoundingClientRect();
+        const deltaX = (beforeRect.left - afterRect.left) / zoom;
+        const deltaY = (beforeRect.top - afterRect.top) / zoom;
+        if (Math.abs(deltaX) < 0.1 && Math.abs(deltaY) < 0.1) continue;
+
+        // React Flow owns the element's transform; the independent translate property composes with it.
+        const animation = element.animate(
+          [
+            { translate: `${deltaX}px ${deltaY}px` },
+            { translate: '0px 0px' },
+          ],
+          {
+            duration: NODE_MOVE_DURATION_MS,
+            easing: NODE_MOVE_EASING,
+          },
+        );
+        const removeAnimation = () => activeNodeAnimationsRef.current.delete(animation);
+        animation.addEventListener('finish', removeAnimation, { once: true });
+        animation.addEventListener('cancel', removeAnimation, { once: true });
+        activeNodeAnimationsRef.current.add(animation);
+      }
+    },
+    [cancelActiveNodeAnimations, getZoom, setNodes],
+  );
 
   const selectedCount = selectedNodeIds.length;
   const selectionKey = useMemo(() => getSelectionKey(selectedNodeIds), [selectedNodeIds]);
@@ -126,9 +210,9 @@ function MultiSelectToolbar() {
         return { ...n, position: newPos };
       });
 
-      setNodes(updated as RFNode<BaseNodeData & Record<string, unknown>>[]);
+      applyNodePositions(updated, sel.map((node) => node.id));
     },
-    [setNodes],
+    [applyNodePositions],
   );
 
   // ── Distribute ──
@@ -142,10 +226,13 @@ function MultiSelectToolbar() {
       if (sel.length < 3) return;
 
       useAppStore.getState().commitToHistory();
-      setNodes(distributeNodesWithEqualGap(currentNodes, currentIds, key));
+      applyNodePositions(
+        distributeNodesWithEqualGap(currentNodes, currentIds, key),
+        sel.map((node) => node.id),
+      );
       setDistributionMode({ axis: key, selectionKey: getSelectionKey(currentIds) });
     },
-    [setNodes],
+    [applyNodePositions],
   );
 
   // ── Batch Execute ──
