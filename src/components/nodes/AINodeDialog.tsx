@@ -759,9 +759,17 @@ function AINodeDialog() {
           status: 'success',
         });
         if (processed.kind) {
+          if (processed.ok && processed.parsed) {
+            useAppStore.getState().mergeDramaExtract(processed.parsed, {
+              sourceNodeId: activeNodeId!,
+              modelId: nodeModel,
+            });
+          }
+          const kindLabel =
+            processed.kind === 'character' ? '人物' : processed.kind === 'scene' ? '场景' : '道具';
           showToast(
             processed.ok
-              ? `${processed.kind === 'character' ? '人物' : processed.kind === 'scene' ? '场景' : '道具'}简介提取完成`
+              ? `${kindLabel}简介已提取并入库`
               : '已提取，但 JSON 未完全规范化，请检查输出',
             processed.ok ? undefined : 'error',
           );

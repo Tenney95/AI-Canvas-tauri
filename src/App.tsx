@@ -34,6 +34,7 @@ const SettingsPanel = lazy(() => import('./components/SettingsPanel'));
 const AINodeDialog = lazy(() => import('./components/nodes/AINodeDialog'));
 const WorkflowPanel = lazy(() => import('./components/WorkflowPanel'));
 const AssetsPanel = lazy(() => import('./components/AssetsPanel'));
+const DramaAssetsPanel = lazy(() => import('./components/DramaAssetsPanel'));
 const OutputHistoryPanel = lazy(() => import('./components/OutputHistoryPanel'));
 const ChatPanel = lazy(() => import('./components/chat/ChatPanel'));
 const PresetRunnerDialog = lazy(() => import('./components/nodes/shared/PresetRunnerDialog'));
@@ -70,6 +71,7 @@ export default function App() {
       nodeDialog: state.activeNodeId !== null,
       workflows: state.workflowPanelOpen,
       assets: state.assetsPanelOpen,
+      dramaAssets: state.dramaAssetsPanelOpen,
       history: state.historyPanelOpen,
       chat: state.chatOpen || state.chatPanelDetached,
       presetRunner: state.presetRunRequest !== null,
@@ -79,6 +81,7 @@ export default function App() {
   const mountNodeDialog = useFeatureMount(featureVisibility.nodeDialog);
   const mountWorkflows = useFeatureMount(featureVisibility.workflows);
   const mountAssets = useFeatureMount(featureVisibility.assets);
+  const mountDramaAssets = useFeatureMount(featureVisibility.dramaAssets);
   const mountHistory = useFeatureMount(featureVisibility.history);
   const mountChat = useFeatureMount(featureVisibility.chat);
   const mountPresetRunner = useFeatureMount(featureVisibility.presetRunner);
@@ -244,6 +247,11 @@ export default function App() {
         <LazyLoadBoundary label="资产面板">
           <Suspense fallback={<LazyLoadFallback label="资产面板" />}>
             {mountAssets && <AssetsPanel />}
+          </Suspense>
+        </LazyLoadBoundary>
+        <LazyLoadBoundary label="短剧资产">
+          <Suspense fallback={<LazyLoadFallback label="短剧资产" />}>
+            {mountDramaAssets && <DramaAssetsPanel />}
           </Suspense>
         </LazyLoadBoundary>
         <LazyLoadBoundary label="输出历史">

@@ -172,6 +172,7 @@ function createCurrentProjectSaveRecord(state: AppState): ProjectSaveData | null
     nodes: state.nodes,
     edges: state.edges,
     groups: state.groups,
+    dramaAssets: state.dramaAssets,
   };
 }
 
@@ -398,8 +399,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       nodes: [],
       edges: [],
       groups: [],
+      dramaAssets: { version: 1 as const, characters: [], scenes: [], props: [] },
     }));
-    fileService.saveProject({ ...project, nodes: [], edges: [], groups: [] }).catch((e) => console.warn('[创建项目] 保存失败:', e));
+    fileService.saveProject({ ...project, nodes: [], edges: [], groups: [], dramaAssets: { version: 1, characters: [], scenes: [], props: [] } }).catch((e) => console.warn('[创建项目] 保存失败:', e));
     fileService.ensureProjectDataDir(id).catch((e) => console.warn('[创建项目] 数据目录初始化失败:', e));
     setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
   },
@@ -422,6 +424,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         edges: [],
         history: [],
         historyIndex: -1,
+        dramaAssets: { version: 1 as const, characters: [], scenes: [], props: [] },
       });
       fileService.saveProject({ id: newId, name: '默认画布', createdAt: now, updatedAt: now, dataFolder: newFolder, nodes: [], edges: [] }).catch((e) => console.warn('[重建默认项目] 保存失败:', e));
       fileService.ensureProjectDataDir(newId).catch((e) => console.warn('[重建默认项目] 数据目录初始化失败:', e));
@@ -434,18 +437,30 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         projects: filtered,
         currentProjectId: nextId,
         ...(isCurrent
-          ? { projectName: nextName, nodes: [], edges: [], history: [], historyIndex: -1 }
+          ? {
+              projectName: nextName,
+              nodes: [],
+              edges: [],
+              history: [],
+              historyIndex: -1,
+              dramaAssets: { version: 1 as const, characters: [], scenes: [], props: [] },
+            }
           : {}),
       });
 
       if (isCurrent && nextId) {
         try {
           const data = await fileService.loadProjectData(nextId);
+          const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
           if (data?.nodes) {
             set({
               nodes: data.nodes as Node<BaseNodeData>[],
               edges: (data.edges as Edge[]) || [],
+              groups: getProjectGroups(data),
+              dramaAssets: data.dramaAssets ?? emptyDramaAssetLibrary(),
             });
+          } else {
+            set({ dramaAssets: emptyDramaAssetLibrary() });
           }
           setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
         } catch { /* Keep empty canvas */ }
@@ -475,6 +490,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     fileService.ensureProjectDataDir(id).catch((e) => console.warn('[切换项目] 数据目录初始化失败:', e));
 
     const data = await fileService.loadProjectData(id);
+    const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
     if (data?.nodes) {
       set({
         currentProjectId: id,
@@ -484,6 +500,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         groups: getProjectGroups(data),
         history: [],
         historyIndex: -1,
+        dramaAssets: data.dramaAssets ?? emptyDramaAssetLibrary(),
       });
     } else {
       set({
@@ -494,6 +511,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         edges: [],
         history: [],
         historyIndex: -1,
+        dramaAssets: emptyDramaAssetLibrary(),
       });
     }
     // 恢复当前项目的待续轮询任务
@@ -568,6 +586,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
         const data = await fileService.loadProjectData(targetId!);
         if (data) {
+          const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
           set({
             projectName: data.name || '已加载项目',
             nodes: data.nodes as Node<BaseNodeData>[],
@@ -575,6 +594,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             groups: getProjectGroups(data),
             history: [],
             historyIndex: -1,
+            dramaAssets: data.dramaAssets ?? emptyDramaAssetLibrary(),
           });
         }
         // 恢复待续轮询任务
@@ -606,6 +626,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         activeProjectId = lastId;
 
         const data = await fileService.loadProjectData(lastId);
+        const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
         if (data) {
           set({
             projects: mapped,
@@ -614,9 +635,15 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             nodes: (data.nodes as Node<BaseNodeData>[]) || [],
             edges: (data.edges as Edge[]) || [],
             groups: getProjectGroups(data),
+            dramaAssets: data.dramaAssets ?? emptyDramaAssetLibrary(),
           });
         } else {
-          set({ projects: mapped, currentProjectId: lastId, groups: [] });
+          set({
+            projects: mapped,
+            currentProjectId: lastId,
+            groups: [],
+            dramaAssets: emptyDramaAssetLibrary(),
+          });
         }
         fileService.ensureProjectDataDir(lastId).catch((e) => console.warn('[初始化] 数据目录初始化失败:', e));
       } else {

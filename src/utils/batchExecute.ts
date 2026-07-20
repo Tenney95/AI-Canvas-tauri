@@ -44,6 +44,13 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         provider: d.provider!,
         status: 'success',
       });
+      if (processed.ok && processed.parsed) {
+        const { useAppStore } = await import('../store/useAppStore');
+        useAppStore.getState().mergeDramaExtract(processed.parsed, {
+          sourceNodeId: node.id,
+          modelId: d.model,
+        });
+      }
     } else if (nt === 'ai-image') {
       const result = await generateImage({
         prompt,

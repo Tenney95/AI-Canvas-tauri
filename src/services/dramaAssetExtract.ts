@@ -284,10 +284,12 @@ export function formatDramaExtractMarkdown(
  * 若 prompt 含提取标记，尝试把模型输出规范成简介表。
  * 解析失败则返回原文并附简短说明，避免吞结果。
  */
+export type DramaExtractParseResult = ReturnType<typeof parseDramaExtractResponse>;
+
 export function postProcessDramaExtractOutput(
   prompt: string,
   rawOutput: string,
-): { output: string; kind?: DramaAssetKind; ok: boolean } {
+): { output: string; kind?: DramaAssetKind; ok: boolean; parsed?: DramaExtractParseResult } {
   let kind: DramaAssetKind | undefined;
   for (const [k, marker] of Object.entries(DRAMA_EXTRACT_MARKER) as Array<[DramaAssetKind, string]>) {
     if (prompt.includes(marker)) {
@@ -300,7 +302,7 @@ export function postProcessDramaExtractOutput(
   try {
     const parsed = parseDramaExtractResponse(rawOutput, kind);
     const md = formatDramaExtractMarkdown(kind, parsed);
-    return { output: md, kind, ok: true };
+    return { output: md, kind, ok: true, parsed };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
@@ -315,6 +317,61 @@ export function postProcessDramaExtractOutput(
       ok: false,
     };
   }
+}
+
+/** 按 key/name 合并入库，保留旧 id 与图片绑定 */
+export function mergeDramaExtractIntoLibrary(
+  library: import('../types/dramaAssets').DramaAssetLibrary,
+  parsed: DramaExtractParseResult,
+  meta?: { sourceNodeId?: string; modelId?: string },
+): import('../types/dramaAssets').DramaAssetLibrary {
+  const mergeList = <T extends { id: string; key: string; name: string; imageNodeId?: string; imageUrl?: string; confirmed: boolean; createdAt: number; source: string }>(
+    existing: T[],
+    incoming: T[],
+  ): T[] => {
+    const result = [...existing];
+    for (const item of incoming) {
+      const idx = result.findIndex((e) => e.key === item.key || e.name === item.name);
+      if (idx >= 0) {
+        const old = result[idx];
+        result[idx] = {
+          ...item,
+          id: old.id,
+          imageNodeId: old.imageNodeId,
+          imageUrl: old.imageUrl,
+          confirmed: old.confirmed,
+          createdAt: old.createdAt,
+          updatedAt: Date.now(),
+          source: 'merge' as T['source'],
+        };
+      } else {
+        result.push(item);
+      }
+    }
+    return result;
+  };
+
+  return {
+    version: 1,
+    lastExtract: {
+      at: Date.now(),
+      kinds: [parsed.kind],
+      sourceNodeId: meta?.sourceNodeId,
+      modelId: meta?.modelId,
+    },
+    characters:
+      parsed.kind === 'character'
+        ? mergeList(library.characters, parsed.characters)
+        : library.characters,
+    scenes:
+      parsed.kind === 'scene'
+        ? mergeList(library.scenes, parsed.scenes)
+        : library.scenes,
+    props:
+      parsed.kind === 'prop'
+        ? mergeList(library.props, parsed.props)
+        : library.props,
+  };
 }
 
 /** 检测 prompt 是否为资产提取任务 */
