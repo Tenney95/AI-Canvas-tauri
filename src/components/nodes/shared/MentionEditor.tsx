@@ -1013,10 +1013,15 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
 
   const handleSelectDramaMention = useCallback(
     (item: { id: string; name: string; kind: string; imageNodeId?: string; imageUrl?: string }) => {
-      // 已绑图：优先引用图像节点，走既有图生图链路
+      // 仅当绑图节点上已有真实图片时，才 @ 图像节点；否则始终 @drama 芯片（解析时展开单条简介）
       if (item.imageNodeId) {
         const imgNode = nodes.find((n) => n.id === item.imageNodeId);
-        if (imgNode) {
+        const hasImage = !!(
+          (imgNode?.data?.imageUrl as string | undefined)
+          || (imgNode?.data?.thumbnailUrl as string | undefined)
+          || item.imageUrl
+        );
+        if (imgNode && hasImage) {
           handleSelectCanvasMention(item.imageNodeId, item.name);
           return;
         }
@@ -1033,10 +1038,12 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         }
       }
       deleteAtChar();
-      let thumb = item.imageUrl;
+      let thumb: string | undefined;
       if (item.imageNodeId) {
         const n = nodes.find((x) => x.id === item.imageNodeId);
         thumb = bestNodeThumb(n?.data ?? {}) || item.imageUrl;
+      } else {
+        thumb = item.imageUrl;
       }
       insertDramaChipAtCursor(item.id, item.name, item.kind, thumb);
       setShowMention(false);
@@ -1525,18 +1532,25 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
             </>
           )}
 
-          {/* 短剧资产 section */}
+          {/* 短剧资产：无图时插入单条简介；有图时引用图像节点 */}
           {dramaMentionItems.length > 0 && (
             <>
-              <div className="px-3 py-2 text-[11px] text-violet-400/80 uppercase tracking-wider border-t border-canvas-border">
+              <div className="px-3 py-2 text-[11px] text-violet-400/80 tracking-wider border-t border-canvas-border">
                 短剧资产
+                <span className="ml-1.5 normal-case opacity-70">无图=简介 · 有图=参考图</span>
               </div>
               {dramaMentionItems.map((item) => {
                 const kindLabel = item.kind === 'character' ? '人物' : item.kind === 'scene' ? '场景' : '道具';
-                let thumb = item.imageUrl;
+                let thumb: string | undefined;
+                let hasImage = false;
                 if (item.imageNodeId) {
                   const n = nodes.find((x) => x.id === item.imageNodeId);
                   thumb = bestNodeThumb(n?.data ?? {}) || item.imageUrl;
+                  hasImage = !!(
+                    (n?.data?.imageUrl as string | undefined)
+                    || (n?.data?.thumbnailUrl as string | undefined)
+                    || item.imageUrl
+                  );
                 }
                 return (
                   <button
@@ -1549,7 +1563,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
                     className="w-full flex items-center gap-2 px-3 py-2 hover:bg-canvas-hover transition-colors text-left"
                   >
                     <span className="w-6 h-6 rounded flex items-center justify-center text-[10px] shrink-0 overflow-hidden bg-violet-500/15 text-violet-300">
-                      {thumb ? (
+                      {hasImage && thumb ? (
                         <img src={thumb} alt="" className="w-full h-full object-cover rounded" />
                       ) : (
                         kindLabel[0]
@@ -1558,9 +1572,11 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
                     <div className="min-w-0 flex-1 flex items-center gap-1 overflow-hidden">
                       <span className="text-sm text-canvas-text truncate">{item.name}</span>
                       <span className="text-[10px] text-canvas-text-muted shrink-0">{kindLabel}</span>
-                      {item.imageNodeId ? (
+                      {hasImage ? (
                         <span className="text-[10px] text-indigo-300 bg-indigo-500/15 px-1 py-px rounded shrink-0">有图</span>
-                      ) : null}
+                      ) : (
+                        <span className="text-[10px] text-canvas-text-muted bg-canvas-hover px-1 py-px rounded shrink-0">简介</span>
+                      )}
                     </div>
                   </button>
                 );

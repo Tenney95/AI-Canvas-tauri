@@ -106,26 +106,30 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
       continue;
     }
 
-    // 短剧资产引用：优先绑图节点，否则展开简介文本
+    // 短剧资产：有绑图且已出图 → 图片引用；否则 → 单条简介文本（首次生资产图的正常路径）
     if (match[2] !== undefined) {
       const dramaId = match[2];
       const dramaName = match[3] || '';
-      const { findDramaAsset, formatDramaAssetTextBrief } = await import('../dramaAssetPrompt');
+      const {
+        findDramaAsset,
+        formatDramaAssetTextBrief,
+        resolveDramaAssetImageRef,
+      } = await import('../dramaAssetPrompt');
       const dramaAsset = findDramaAsset(store.dramaAssets, dramaId);
-      if (dramaAsset?.imageNodeId) {
-        const imgNode = nodes.find((n) => n.id === dramaAsset.imageNodeId);
-        const imageUrl =
-          (imgNode?.data?.imageUrl as string | undefined)
-          || (imgNode?.data?.thumbnailUrl as string | undefined)
-          || dramaAsset.imageUrl;
-        if (imageUrl) {
+      if (dramaAsset) {
+        const imgRef = resolveDramaAssetImageRef(
+          dramaAsset,
+          nodes as Array<{ id: string; data?: Record<string, unknown> }>,
+        );
+        if (imgRef) {
+          const imgNode = nodes.find((n) => n.id === imgRef.imageNodeId);
           const key = `drama:${dramaId}`;
           let idx = imageKeyToIndex.get(key);
           if (idx === undefined) {
             idx = imageEntries.length + 1;
             imageKeyToIndex.set(key, idx);
             imageEntries.push({
-              url: imageUrl,
+              url: imgRef.imageUrl,
               mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
               annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
               filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
@@ -135,8 +139,6 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
         } else {
           parts.push(formatDramaAssetTextBrief(dramaAsset));
         }
-      } else if (dramaAsset) {
-        parts.push(formatDramaAssetTextBrief(dramaAsset));
       } else {
         parts.push(dramaName || match[0]);
       }
@@ -273,7 +275,11 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
     }
   }
 
-  const { findDramaAsset, formatDramaAssetTextBrief } = await import('../dramaAssetPrompt');
+  const {
+    findDramaAsset,
+    formatDramaAssetTextBrief,
+    resolveDramaAssetImageRef,
+  } = await import('../dramaAssetPrompt');
   const imageKeyToIndex = new Map<string, number>();
 
   const prompt = rawPrompt.replace(
@@ -300,20 +306,20 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
 
     if (dramaId !== undefined) {
       const dramaAsset = findDramaAsset(store.dramaAssets, dramaId);
-      if (dramaAsset?.imageNodeId) {
-        const imgNode = nodes.find((n) => n.id === dramaAsset.imageNodeId);
-        const imageUrl =
-          (imgNode?.data?.imageUrl as string | undefined)
-          || (imgNode?.data?.thumbnailUrl as string | undefined)
-          || dramaAsset.imageUrl;
-        if (imageUrl) {
+      if (dramaAsset) {
+        const imgRef = resolveDramaAssetImageRef(
+          dramaAsset,
+          nodes as Array<{ id: string; data?: Record<string, unknown> }>,
+        );
+        if (imgRef) {
+          const imgNode = nodes.find((n) => n.id === imgRef.imageNodeId);
           const key = `drama:${dramaId}`;
           let idx = imageKeyToIndex.get(key);
           if (idx === undefined) {
             idx = imageEntries.length + 1;
             imageKeyToIndex.set(key, idx);
             imageEntries.push({
-              url: imageUrl,
+              url: imgRef.imageUrl,
               mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
               annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
               filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
@@ -321,8 +327,8 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
           }
           return `图片${idx}`;
         }
+        return formatDramaAssetTextBrief(dramaAsset);
       }
-      if (dramaAsset) return formatDramaAssetTextBrief(dramaAsset);
       return dramaName || '';
     }
 

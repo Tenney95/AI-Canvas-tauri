@@ -1,6 +1,7 @@
 /**
  * DramaAssetsPanel — 项目级短剧资产库（人物 / 场景 / 道具）
- * 查看、编辑、确认、删除、绑图、生成定妆/场景/道具图。
+ * 仅管理：查看 / 编辑 / 确认 / 删除 / 绑图。
+ * 生图在画布图像节点完成：@ 资产（无图=简介，有图=参考图）+ slash 人设参考等。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -8,11 +9,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import type { DramaAsset, DramaAssetKind } from '../types/dramaAssets';
 import { DRAMA_ASSET_KIND_LABEL } from '../types/dramaAssets';
-import {
-  buildDramaAssetImagePrompt,
-  defaultPurposeForKind,
-  purposeLabel,
-} from '../services/dramaAssetPrompt';
+import { formatDramaAssetTextBrief } from '../services/dramaAssetPrompt';
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
@@ -64,8 +61,7 @@ function DramaAssetCard({
   onSaveFields,
   onBindImage,
   onUnbindImage,
-  onCreateImageNode,
-  onCopyPrompt,
+  onCopyBrief,
 }: {
   asset: DramaAsset;
   thumb?: string;
@@ -77,8 +73,7 @@ function DramaAssetCard({
   onSaveFields: (patch: { name: string; summary: string; visualNotes: string; storyRole: string }) => void;
   onBindImage: (nodeId: string) => void;
   onUnbindImage: () => void;
-  onCreateImageNode: () => void;
-  onCopyPrompt: () => void;
+  onCopyBrief: () => void;
 }) {
   const [name, setName] = useState(asset.name);
   const [summary, setSummary] = useState(asset.summary);
@@ -94,8 +89,6 @@ function DramaAssetCard({
       setStoryRole(asset.storyRole ?? '');
     }
   }, [editing, asset]);
-
-  const purpose = defaultPurposeForKind(asset.kind);
 
   return (
     <div className="rounded-xl border border-canvas-border bg-canvas-bg/60 p-3 hover:border-indigo-500/30 transition-colors">
@@ -241,22 +234,15 @@ function DramaAssetCard({
           )}
         </div>
 
-        {/* Actions */}
+        {/* Actions — 仅管理，生图请在画布图像节点 @ + slash */}
         <div className="flex flex-col gap-1 shrink-0 items-stretch min-w-[72px]">
           <button
             type="button"
-            className="px-2 py-1 rounded-lg text-[11px] font-medium bg-indigo-500/25 text-indigo-200 hover:bg-indigo-500/40 transition-colors border border-indigo-500/30"
-            onClick={onCreateImageNode}
-            title={`创建${purposeLabel(purpose)}图像节点并填入提示词`}
-          >
-            {purposeLabel(purpose)}
-          </button>
-          <button
-            type="button"
             className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
-            onClick={onCopyPrompt}
+            onClick={onCopyBrief}
+            title="复制本条简介（可粘到图像节点 prompt）"
           >
-            复制提示词
+            复制简介
           </button>
           <button
             type="button"
@@ -324,7 +310,6 @@ export default function DramaAssetsPanel() {
     clearDramaAssetsByKind,
     bindDramaAssetImage,
     unbindDramaAssetImage,
-    createImageNodeFromDramaAsset,
     showToast,
   } = useAppStore(
     useShallow((s) => ({
@@ -338,7 +323,6 @@ export default function DramaAssetsPanel() {
       clearDramaAssetsByKind: s.clearDramaAssetsByKind,
       bindDramaAssetImage: s.bindDramaAssetImage,
       unbindDramaAssetImage: s.unbindDramaAssetImage,
-      createImageNodeFromDramaAsset: s.createImageNodeFromDramaAsset,
       showToast: s.showToast,
     })),
   );
@@ -428,12 +412,12 @@ export default function DramaAssetsPanel() {
     clearDramaAssetsByKind(tab);
   }, [tab, clearDramaAssetsByKind]);
 
-  const copyPrompt = useCallback(
+  const copyBrief = useCallback(
     async (asset: DramaAsset) => {
-      const prompt = buildDramaAssetImagePrompt(asset);
+      const text = formatDramaAssetTextBrief(asset);
       try {
-        await navigator.clipboard.writeText(prompt);
-        showToast('生图提示词已复制');
+        await navigator.clipboard.writeText(text);
+        showToast('简介已复制');
       } catch {
         showToast('复制失败', 'error');
       }
@@ -574,11 +558,11 @@ export default function DramaAssetsPanel() {
                     {search ? '无匹配资产' : '暂无短剧资产'}
                   </p>
                   <div className="text-[11px] text-center max-w-[340px] leading-relaxed opacity-90 space-y-1.5">
-                    <p className="font-medium text-canvas-text-secondary">如何添加条目：</p>
-                    <p>1. 画布新建「生成文本」节点，粘贴剧本</p>
-                    <p>2. 提示词框输入 <code className="px-1 rounded bg-canvas-hover">/</code> → 选「提取资产信息」→「提取人物」</p>
-                    <p>3. 运行生成；成功后会自动打开本面板，并出现列表</p>
-                    <p>4. 每条右侧有「定妆图」按钮；其它节点 prompt 里输入 <code className="px-1 rounded bg-canvas-hover">@</code> 可引用</p>
+                    <p className="font-medium text-canvas-text-secondary">本面板只管理简介与绑图</p>
+                    <p>1. 文本节点 <code className="px-1 rounded bg-canvas-hover">/</code> → 提取人物/场景/道具</p>
+                    <p>2. 图像节点 prompt 里 <code className="px-1 rounded bg-canvas-hover">@</code> 选资产（无图=简介）</p>
+                    <p>3. 再 <code className="px-1 rounded bg-canvas-hover">/</code> 人设参考等生成资产图</p>
+                    <p>4. 生成后可在此「绑图」，之后 @ 即为参考图</p>
                   </div>
                 </div>
               ) : (
@@ -618,10 +602,7 @@ export default function DramaAssetsPanel() {
                       unbindDramaAssetImage(asset.kind, asset.id);
                       showToast('已解绑');
                     }}
-                    onCreateImageNode={() => {
-                      createImageNodeFromDramaAsset(asset.kind, asset.id);
-                    }}
-                    onCopyPrompt={() => void copyPrompt(asset)}
+                    onCopyBrief={() => void copyBrief(asset)}
                   />
                 ))
               )}

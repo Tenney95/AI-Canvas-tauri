@@ -207,11 +207,45 @@ describe('buildDramaAssetImagePrompt', () => {
     expect(p).toContain('lookbook');
   });
 
-  it('formats text brief for @drama fallback', () => {
+  it('formats single-asset brief for @drama without image', () => {
     const text = formatDramaAssetTextBrief(character);
-    expect(text).toContain('人物');
     expect(text).toContain('主角');
-    expect(text).toContain('外形');
+    expect(text).toContain('外形要点');
+    expect(text).toContain('默认造型');
+    expect(text).toMatch(/简介：/);
+    // 单条，不应像整表那样带「共 N 条」
+    expect(text).not.toContain('共 ');
+  });
+});
+
+describe('resolveDramaAssetImageRef', () => {
+  const sample: DramaCharacter = {
+    kind: 'character',
+    id: 'c1',
+    key: '主角',
+    name: '主角',
+    summary: '简介',
+    visualNotes: '外形',
+    identity: '身份',
+    importance: 'main',
+    confirmed: false,
+    createdAt: 1,
+    updatedAt: 1,
+    source: 'ai',
+  };
+
+  it('returns null when no image yet (first lookbook gen)', async () => {
+    const { resolveDramaAssetImageRef } = await import('../../src/services/dramaAssetPrompt');
+    expect(resolveDramaAssetImageRef(sample, [])).toBeNull();
+  });
+
+  it('returns image when bound node has imageUrl', async () => {
+    const { resolveDramaAssetImageRef } = await import('../../src/services/dramaAssetPrompt');
+    const withBind = { ...sample, imageNodeId: 'node-1' };
+    const ref = resolveDramaAssetImageRef(withBind, [
+      { id: 'node-1', data: { imageUrl: 'https://cdn/x.png' } },
+    ]);
+    expect(ref).toEqual({ imageNodeId: 'node-1', imageUrl: 'https://cdn/x.png' });
   });
 });
 

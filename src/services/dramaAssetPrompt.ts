@@ -41,37 +41,70 @@ export function findDramaAssetByKind(
   return library.props.find((a) => a.id === id);
 }
 
-/** 文本引用用的简介块（无图时塞进 prompt） */
+/**
+ * 无图时 @ 资产插入的单条简介（对齐提取节点输出的条目格式）。
+ * 只含这一条，不带整表其它人/场景/道具。
+ */
 export function formatDramaAssetTextBrief(asset: DramaAsset): string {
-  const kindLabel = DRAMA_ASSET_KIND_LABEL[asset.kind];
-  const lines = [
-    `【${kindLabel}：${asset.name}】`,
-    asset.summary ? `简介：${asset.summary}` : '',
-    asset.visualNotes ? `外形/视觉：${asset.visualNotes}` : '',
+  const imp =
+    asset.importance === 'main' ? '（主要）'
+      : asset.importance === 'supporting' ? '（次要）'
+        : '';
+  const lines: string[] = [
+    `## ${DRAMA_ASSET_KIND_LABEL[asset.kind]}：${asset.name}${imp}`,
   ];
 
   if (asset.kind === 'character') {
     const c = asset as DramaCharacter;
-    if (c.identity) lines.push(`身份：${c.identity}`);
-    if (c.ageBand) lines.push(`年龄段：${c.ageBand}`);
-    if (c.gender) lines.push(`性别呈现：${c.gender}`);
-    if (c.personality) lines.push(`气质：${c.personality}`);
-    if (c.wardrobeDefault) lines.push(`默认造型：${c.wardrobeDefault}`);
+    if (c.identity) lines.push(`- 身份：${c.identity}`);
+    if (c.aliases?.length) lines.push(`- 别名：${c.aliases.join('、')}`);
+    if (c.ageBand) lines.push(`- 年龄段：${c.ageBand}`);
+    if (c.gender) lines.push(`- 性别呈现：${c.gender}`);
+    if (c.personality) lines.push(`- 性格：${c.personality}`);
+    if (c.summary) lines.push(`- 简介：${c.summary}`);
+    if (c.visualNotes) lines.push(`- 外形要点：${c.visualNotes}`);
+    if (c.wardrobeDefault) lines.push(`- 默认造型：${c.wardrobeDefault}`);
+    if (c.storyRole) lines.push(`- 剧情功能：${c.storyRole}`);
+    if (c.relationships?.length) {
+      lines.push(
+        `- 关系：${c.relationships.map((r) => `${r.targetName}（${r.relation}）`).join('；')}`,
+      );
+    }
   } else if (asset.kind === 'scene') {
     const s = asset as DramaScene;
-    if (s.placeType) lines.push(`类型：${s.placeType}`);
-    if (s.timeOfDay) lines.push(`时段：${s.timeOfDay}`);
-    if (s.atmosphere) lines.push(`氛围：${s.atmosphere}`);
-    if (s.spatialNotes) lines.push(`空间：${s.spatialNotes}`);
+    if (s.summary) lines.push(`- 简介：${s.summary}`);
+    if (s.placeType) lines.push(`- 类型：${s.placeType}`);
+    if (s.timeOfDay) lines.push(`- 时段：${s.timeOfDay}`);
+    if (s.atmosphere) lines.push(`- 氛围：${s.atmosphere}`);
+    if (s.visualNotes) lines.push(`- 视觉要点：${s.visualNotes}`);
+    if (s.spatialNotes) lines.push(`- 空间：${s.spatialNotes}`);
+    if (s.storyRole) lines.push(`- 剧情功能：${s.storyRole}`);
   } else {
     const p = asset as DramaProp;
-    if (p.ownerName) lines.push(`归属：${p.ownerName}`);
-    if (p.category) lines.push(`分类：${p.category}`);
-    if (p.significance) lines.push(`意义：${p.significance}`);
+    if (p.summary) lines.push(`- 简介：${p.summary}`);
+    if (p.ownerName) lines.push(`- 归属：${p.ownerName}`);
+    if (p.category) lines.push(`- 分类：${p.category}`);
+    if (p.visualNotes) lines.push(`- 外观要点：${p.visualNotes}`);
+    if (p.significance) lines.push(`- 为何重要：${p.significance}`);
+    if (p.storyRole) lines.push(`- 剧情功能：${p.storyRole}`);
   }
 
-  if (asset.storyRole) lines.push(`剧情功能：${asset.storyRole}`);
-  return lines.filter(Boolean).join('\n');
+  return lines.join('\n');
+}
+
+/** 已绑图像节点且该节点已有图时，才视为「可引图」 */
+export function resolveDramaAssetImageRef(
+  asset: DramaAsset,
+  nodes: Array<{ id: string; data?: Record<string, unknown> }>,
+): { imageNodeId: string; imageUrl: string } | null {
+  if (!asset.imageNodeId) return null;
+  const node = nodes.find((n) => n.id === asset.imageNodeId);
+  const imageUrl =
+    (node?.data?.imageUrl as string | undefined)
+    || (node?.data?.thumbnailUrl as string | undefined)
+    || asset.imageUrl;
+  if (!imageUrl || !String(imageUrl).trim()) return null;
+  return { imageNodeId: asset.imageNodeId, imageUrl };
 }
 
 function joinParts(parts: Array<string | undefined | false>): string {

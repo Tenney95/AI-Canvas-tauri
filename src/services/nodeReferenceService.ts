@@ -8,6 +8,7 @@ export function resolveNodeReferences(value: string): string {
   let cleaned = value.replace(/@asset\{[^}]+\}/g, '');
 
   cleaned = cleaned.replace(/@drama\{([^:]+):([^}]+)\}/g, (_match, dramaId: string, dramaName: string) => {
+    // 延迟 require 形状的 import 在顶部已有 store；简介格式与 promptResolver 一致
     const lib = store.dramaAssets;
     const asset =
       lib.characters.find((a) => a.id === dramaId)
@@ -18,11 +19,19 @@ export function resolveNodeReferences(value: string): string {
       const imgNode = nodes.find((n) => n.id === asset.imageNodeId);
       const imageUrl =
         (imgNode?.data?.imageUrl as string | undefined)
+        || (imgNode?.data?.thumbnailUrl as string | undefined)
         || asset.imageUrl;
-      if (imageUrl) return imageUrl;
+      if (imageUrl && String(imageUrl).trim()) return imageUrl;
     }
-    const bits = [asset.name, asset.summary, asset.visualNotes].filter(Boolean);
-    return bits.join('，') || dramaName;
+    // 无图：展开单条简介字段（与 formatDramaAssetTextBrief 同信息，避免循环依赖用内联）
+    const parts = [
+      asset.name,
+      asset.summary,
+      asset.visualNotes,
+      asset.kind === 'character' ? (asset as { identity?: string }).identity : undefined,
+      asset.kind === 'character' ? (asset as { wardrobeDefault?: string }).wardrobeDefault : undefined,
+    ].filter(Boolean);
+    return parts.join('，') || dramaName;
   });
 
   const chipRegex = /@\{([^:]+):([^}]+)\}/g;
