@@ -70,8 +70,10 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
   content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
   textContent: string;
 }> {
-  const { nodes } = useAppStore.getState();
-  const chipRegex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
+  const store = useAppStore.getState();
+  const { nodes } = store;
+  // groups: 1=@asset  2,3=@drama  4,5=@node
+  const chipRegex = /@asset\{([^}]+)\}|@drama\{([^:]+):([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
   const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string; filePath?: string }> = [];
   const imageKeyToIndex = new Map<string, number>();
   const parts: string[] = [];
@@ -104,7 +106,45 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
       continue;
     }
 
-    const rawNodeId = match[2];
+    // 短剧资产引用：优先绑图节点，否则展开简介文本
+    if (match[2] !== undefined) {
+      const dramaId = match[2];
+      const dramaName = match[3] || '';
+      const { findDramaAsset, formatDramaAssetTextBrief } = await import('../dramaAssetPrompt');
+      const dramaAsset = findDramaAsset(store.dramaAssets, dramaId);
+      if (dramaAsset?.imageNodeId) {
+        const imgNode = nodes.find((n) => n.id === dramaAsset.imageNodeId);
+        const imageUrl =
+          (imgNode?.data?.imageUrl as string | undefined)
+          || (imgNode?.data?.thumbnailUrl as string | undefined)
+          || dramaAsset.imageUrl;
+        if (imageUrl) {
+          const key = `drama:${dramaId}`;
+          let idx = imageKeyToIndex.get(key);
+          if (idx === undefined) {
+            idx = imageEntries.length + 1;
+            imageKeyToIndex.set(key, idx);
+            imageEntries.push({
+              url: imageUrl,
+              mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
+              annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
+              filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
+            });
+          }
+          parts.push(`图片${idx}（${dramaAsset.name || dramaName}）`);
+        } else {
+          parts.push(formatDramaAssetTextBrief(dramaAsset));
+        }
+      } else if (dramaAsset) {
+        parts.push(formatDramaAssetTextBrief(dramaAsset));
+      } else {
+        parts.push(dramaName || match[0]);
+      }
+      lastIndex = chipRegex.lastIndex;
+      continue;
+    }
+
+    const rawNodeId = match[4];
     const { nodeId, cellIdx } = parseStoryboardCellId(rawNodeId);
     const node = nodes.find((n) => n.id === nodeId);
 
@@ -200,9 +240,11 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
 /** 解析 prompt 中的 @{nodeId:label} 引用：图片节点 URL 提取到 image_urls，文本/视频/音频节点内联替换到 prompt
  *  图片节点有蒙版/标注时自动合并到原图 */
 export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ prompt: string; imageUrls: string[] }> {
-  const { nodes } = useAppStore.getState();
+  const store = useAppStore.getState();
+  const { nodes } = store;
   const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string; filePath?: string }> = [];
-  const chipRegex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
+  // groups: 1=@asset  2,3=@drama  4,5=@node
+  const chipRegex = /@asset\{([^}]+)\}|@drama\{([^:]+):([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
 
   const assetImageMap = new Map<string, string>();
   for (const m of rawPrompt.matchAll(/@asset\{([^}]+)\}/g)) {
@@ -231,9 +273,18 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
     }
   }
 
+  const { findDramaAsset, formatDramaAssetTextBrief } = await import('../dramaAssetPrompt');
   const imageKeyToIndex = new Map<string, number>();
 
-  const prompt = rawPrompt.replace(chipRegex, (_match, assetEnc: string | undefined, rawNodeId: string) => {
+  const prompt = rawPrompt.replace(
+    chipRegex,
+    (
+      _match,
+      assetEnc: string | undefined,
+      dramaId: string | undefined,
+      dramaName: string | undefined,
+      rawNodeId: string | undefined,
+    ) => {
     if (assetEnc !== undefined) {
       const dataUrl = assetImageMap.get(assetEnc);
       if (!dataUrl) return '';
@@ -246,6 +297,36 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
       }
       return `图片${idx}`;
     }
+
+    if (dramaId !== undefined) {
+      const dramaAsset = findDramaAsset(store.dramaAssets, dramaId);
+      if (dramaAsset?.imageNodeId) {
+        const imgNode = nodes.find((n) => n.id === dramaAsset.imageNodeId);
+        const imageUrl =
+          (imgNode?.data?.imageUrl as string | undefined)
+          || (imgNode?.data?.thumbnailUrl as string | undefined)
+          || dramaAsset.imageUrl;
+        if (imageUrl) {
+          const key = `drama:${dramaId}`;
+          let idx = imageKeyToIndex.get(key);
+          if (idx === undefined) {
+            idx = imageEntries.length + 1;
+            imageKeyToIndex.set(key, idx);
+            imageEntries.push({
+              url: imageUrl,
+              mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
+              annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
+              filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
+            });
+          }
+          return `图片${idx}`;
+        }
+      }
+      if (dramaAsset) return formatDramaAssetTextBrief(dramaAsset);
+      return dramaName || '';
+    }
+
+    if (!rawNodeId) return '';
 
     // 宫格分镜单元格引用：使用预裁切好的图
     if (rawNodeId.includes('/cell/')) {

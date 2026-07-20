@@ -504,6 +504,7 @@ function AINodeDialog() {
           imageHeight: result.height,
           ...(isAnimation ? { aspectRatio } : {}),
         });
+        useAppStore.getState().syncDramaAssetImageFromNode?.(activeNodeId!, mediaUrl);
         recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
           nodeLabel: nodeLabel,

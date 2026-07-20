@@ -109,6 +109,7 @@ export async function executeGeneration(
         thumbnailUrl: result.url, output: result.url, status: 'success',
         imageWidth: result.width, imageHeight: result.height,
       });
+      store.syncDramaAssetImageFromNode?.(nodeId, mediaUrl);
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
         output: result.url, nodeType: 'ai-image', model: nodeModel, provider: nodeProvider,

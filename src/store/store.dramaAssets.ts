@@ -2,18 +2,25 @@
  * 项目级短剧资产库（人物 / 场景 / 道具）
  */
 import type { StateCreator } from 'zustand';
+import type { Node } from '@xyflow/react';
 import type { AppState } from './useAppStore';
 import type {
   DramaAsset,
   DramaAssetKind,
   DramaAssetLibrary,
-  DramaCharacter,
-  DramaProp,
-  DramaScene,
 } from '../types/dramaAssets';
 import { emptyDramaAssetLibrary } from '../types/dramaAssets';
 import type { DramaExtractParseResult } from '../services/dramaAssetExtract';
 import { mergeDramaExtractIntoLibrary } from '../services/dramaAssetExtract';
+import {
+  buildDramaAssetImagePrompt,
+  defaultAspectRatioForAsset,
+  defaultPurposeForKind,
+  findDramaAssetByKind,
+  purposeLabel,
+} from '../services/dramaAssetPrompt';
+import { generateId } from './store.utils';
+import type { BaseNodeData } from '../types';
 
 export interface DramaAssetsSlice {
   dramaAssets: DramaAssetLibrary;
@@ -34,6 +41,21 @@ export interface DramaAssetsSlice {
     patch: Partial<Pick<DramaAsset, 'summary' | 'visualNotes' | 'storyRole' | 'name'>>,
   ) => void;
   clearDramaAssetsByKind: (kind: DramaAssetKind) => void;
+  /** 绑定画布图像节点 */
+  bindDramaAssetImage: (
+    kind: DramaAssetKind,
+    id: string,
+    imageNodeId: string,
+    imageUrl?: string,
+  ) => void;
+  unbindDramaAssetImage: (kind: DramaAssetKind, id: string) => void;
+  /** 图像生成成功后：按 imageNodeId / dramaAssetId 回写 imageUrl */
+  syncDramaAssetImageFromNode: (imageNodeId: string, imageUrl: string) => void;
+  /**
+   * 从资产创建图像节点并填入定妆/场景/道具 prompt，自动绑定。
+   * 返回新节点 id；失败返回 null。
+   */
+  createImageNodeFromDramaAsset: (kind: DramaAssetKind, id: string) => string | null;
 }
 
 function patchList<T extends { id: string; updatedAt: number }>(
@@ -44,6 +66,39 @@ function patchList<T extends { id: string; updatedAt: number }>(
   return list.map((item) =>
     item.id === id ? { ...item, ...patch, updatedAt: Date.now() } : item,
   );
+}
+
+function mapKindList(
+  lib: DramaAssetLibrary,
+  kind: DramaAssetKind,
+  mapper: (list: DramaAsset[]) => DramaAsset[],
+): DramaAssetLibrary {
+  if (kind === 'character') {
+    return { ...lib, characters: mapper(lib.characters) as DramaAssetLibrary['characters'] };
+  }
+  if (kind === 'scene') {
+    return { ...lib, scenes: mapper(lib.scenes) as DramaAssetLibrary['scenes'] };
+  }
+  return { ...lib, props: mapper(lib.props) as DramaAssetLibrary['props'] };
+}
+
+function silentSave(get: () => AppState) {
+  void get().saveCurrentProjectSilent?.();
+}
+
+function pickSpawnPosition(nodes: Node<BaseNodeData>[]): { x: number; y: number } {
+  if (nodes.length === 0) return { x: 120, y: 120 };
+  let maxX = 0;
+  let yAtMax = 120;
+  for (const n of nodes) {
+    const w = (n.data?.nodeWidth as number) || 280;
+    const right = n.position.x + w;
+    if (right > maxX) {
+      maxX = right;
+      yAtMax = n.position.y;
+    }
+  }
+  return { x: maxX + 80, y: yAtMax };
 }
 
 export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsSlice> = (set, get) => ({
@@ -67,35 +122,17 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
   mergeDramaExtract: (parsed, meta) => {
     const next = mergeDramaExtractIntoLibrary(get().dramaAssets, parsed, meta);
     set({ dramaAssets: next });
-    // 触发静默保存
-    void get().saveCurrentProjectSilent?.();
+    silentSave(get);
   },
 
   confirmDramaAsset: (kind, id, confirmed = true) => {
     const lib = get().dramaAssets;
-    if (kind === 'character') {
-      set({
-        dramaAssets: {
-          ...lib,
-          characters: patchList(lib.characters, id, { confirmed } as Partial<DramaCharacter>),
-        },
-      });
-    } else if (kind === 'scene') {
-      set({
-        dramaAssets: {
-          ...lib,
-          scenes: patchList(lib.scenes, id, { confirmed } as Partial<DramaScene>),
-        },
-      });
-    } else {
-      set({
-        dramaAssets: {
-          ...lib,
-          props: patchList(lib.props, id, { confirmed } as Partial<DramaProp>),
-        },
-      });
-    }
-    void get().saveCurrentProjectSilent?.();
+    set({
+      dramaAssets: mapKindList(lib, kind, (list) =>
+        patchList(list, id, { confirmed } as Partial<DramaAsset>),
+      ),
+    });
+    silentSave(get);
   },
 
   deleteDramaAsset: (kind, id) => {
@@ -107,34 +144,17 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     } else {
       set({ dramaAssets: { ...lib, props: lib.props.filter((c) => c.id !== id) } });
     }
-    void get().saveCurrentProjectSilent?.();
+    silentSave(get);
   },
 
   updateDramaAssetFields: (kind, id, patch) => {
     const lib = get().dramaAssets;
-    if (kind === 'character') {
-      set({
-        dramaAssets: {
-          ...lib,
-          characters: patchList(lib.characters, id, patch as Partial<DramaCharacter>),
-        },
-      });
-    } else if (kind === 'scene') {
-      set({
-        dramaAssets: {
-          ...lib,
-          scenes: patchList(lib.scenes, id, patch as Partial<DramaScene>),
-        },
-      });
-    } else {
-      set({
-        dramaAssets: {
-          ...lib,
-          props: patchList(lib.props, id, patch as Partial<DramaProp>),
-        },
-      });
-    }
-    void get().saveCurrentProjectSilent?.();
+    set({
+      dramaAssets: mapKindList(lib, kind, (list) =>
+        patchList(list, id, patch as Partial<DramaAsset>),
+      ),
+    });
+    silentSave(get);
   },
 
   clearDramaAssetsByKind: (kind) => {
@@ -142,6 +162,144 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     if (kind === 'character') set({ dramaAssets: { ...lib, characters: [] } });
     else if (kind === 'scene') set({ dramaAssets: { ...lib, scenes: [] } });
     else set({ dramaAssets: { ...lib, props: [] } });
-    void get().saveCurrentProjectSilent?.();
+    silentSave(get);
+  },
+
+  bindDramaAssetImage: (kind, id, imageNodeId, imageUrl) => {
+    const lib = get().dramaAssets;
+    const node = get().nodes.find((n) => n.id === imageNodeId);
+    const resolvedUrl =
+      imageUrl
+      || (node?.data?.imageUrl as string | undefined)
+      || (node?.data?.thumbnailUrl as string | undefined);
+    set({
+      dramaAssets: mapKindList(lib, kind, (list) =>
+        patchList(list, id, {
+          imageNodeId,
+          imageUrl: resolvedUrl,
+        } as Partial<DramaAsset>),
+      ),
+    });
+    silentSave(get);
+  },
+
+  unbindDramaAssetImage: (kind, id) => {
+    const lib = get().dramaAssets;
+    set({
+      dramaAssets: mapKindList(lib, kind, (list) =>
+        patchList(list, id, {
+          imageNodeId: undefined,
+          imageUrl: undefined,
+        } as Partial<DramaAsset>),
+      ),
+    });
+    silentSave(get);
+  },
+
+  syncDramaAssetImageFromNode: (imageNodeId, imageUrl) => {
+    const lib = get().dramaAssets;
+    let changed = false;
+
+    const syncList = <T extends DramaAsset>(list: T[]): T[] =>
+      list.map((item) => {
+        if (item.imageNodeId === imageNodeId) {
+          changed = true;
+          return { ...item, imageUrl, updatedAt: Date.now() };
+        }
+        return item;
+      });
+
+    const next: DramaAssetLibrary = {
+      ...lib,
+      characters: syncList(lib.characters),
+      scenes: syncList(lib.scenes),
+      props: syncList(lib.props),
+    };
+
+    // 也按节点 data.dramaAssetId 补绑（一键创建后尚未 bind 的兜底）
+    const node = get().nodes.find((n) => n.id === imageNodeId);
+    const dramaAssetId = node?.data?.dramaAssetId as string | undefined;
+    const dramaAssetKind = node?.data?.dramaAssetKind as DramaAssetKind | undefined;
+    if (dramaAssetId && dramaAssetKind) {
+      const asset = findDramaAssetByKind(next, dramaAssetKind, dramaAssetId);
+      if (asset && asset.imageNodeId !== imageNodeId) {
+        changed = true;
+        const bindPatch = { imageNodeId, imageUrl, updatedAt: Date.now() };
+        if (dramaAssetKind === 'character') {
+          next.characters = next.characters.map((c) =>
+            c.id === dramaAssetId ? { ...c, ...bindPatch } : c,
+          );
+        } else if (dramaAssetKind === 'scene') {
+          next.scenes = next.scenes.map((c) =>
+            c.id === dramaAssetId ? { ...c, ...bindPatch } : c,
+          );
+        } else {
+          next.props = next.props.map((c) =>
+            c.id === dramaAssetId ? { ...c, ...bindPatch } : c,
+          );
+        }
+      } else if (asset && asset.imageUrl !== imageUrl) {
+        changed = true;
+        // already handled by imageNodeId sync above if bound
+      }
+    }
+
+    if (!changed) return;
+    set({ dramaAssets: next });
+    silentSave(get);
+  },
+
+  createImageNodeFromDramaAsset: (kind, id) => {
+    const asset = findDramaAssetByKind(get().dramaAssets, kind, id);
+    if (!asset) {
+      get().showToast?.('未找到该资产', 'error');
+      return null;
+    }
+
+    const purpose = defaultPurposeForKind(kind);
+    const prompt = buildDramaAssetImagePrompt(asset, purpose);
+    const nodeId = `node-${generateId()}`;
+    const pos = pickSpawnPosition(get().nodes as Node<BaseNodeData>[]);
+    const aspectRatio = defaultAspectRatioForAsset(kind);
+    const label = `${asset.name} · ${purposeLabel(purpose)}`;
+
+    // 粗算节点高度
+    const nodeWidth = 280;
+    const ratioParts = aspectRatio.split(':').map(Number);
+    const ar = ratioParts[0] && ratioParts[1] ? ratioParts[0] / ratioParts[1] : 1;
+    const nodeHeight = Math.max(160, Math.round((nodeWidth - 4) / ar) + 4);
+
+    const newNode: Node<BaseNodeData> = {
+      id: nodeId,
+      type: 'ai-image',
+      position: pos,
+      data: {
+        label,
+        type: 'ai-image',
+        role: 'generator',
+        prompt,
+        status: 'idle',
+        aspectRatio,
+        imageSize: '2K',
+        nodeWidth,
+        nodeHeight,
+        dramaAssetId: asset.id,
+        dramaAssetKind: kind,
+      },
+    };
+
+    get().addNode(newNode);
+    get().bindDramaAssetImage(kind, id, nodeId);
+    get().setDramaAssetsPanelOpen(false);
+    get().showToast?.(
+      `已创建「${label}」图像节点，可直接生成`,
+    );
+
+    // 聚焦新节点
+    try {
+      get().setSelectedNodeIds?.([nodeId]);
+    } catch { /* optional */ }
+
+    return nodeId;
   },
 });

@@ -74,7 +74,12 @@ export interface BaseNodeData {
   assetId?: string;           // 稳定资产身份；filePath 仅表示当前位置
   relativePath?: string;      // 项目目录内相对路径，保存时优先于绝对路径
   artifactId?: string;        // 对话媒体 Artifact ID（聊天与节点共享同一产物）
-  thumbnailUrl?: string;      // 缩略图
+  thumbnailUrl?: string;      // 缩略图（应与 imageUrl 同步；全屏/预览统一读 resolveNodeImageDisplaySrc）
+  /** 每次生成成功写入的单调版本号，用于绕过 WebView 图片缓存 */
+  mediaVersion?: number;
+  /** 由短剧资产一键创建的图像节点：反查绑定 */
+  dramaAssetId?: string;
+  dramaAssetKind?: import('./dramaAssets').DramaAssetKind;
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
   annotation?: string;        // 标注编辑器涂写数据（data URL，透明 PNG）
   imageWidth?: number;        // 生成图片实际宽度

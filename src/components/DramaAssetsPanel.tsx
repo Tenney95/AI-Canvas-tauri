@@ -1,6 +1,6 @@
 /**
  * DramaAssetsPanel — 项目级短剧资产库（人物 / 场景 / 道具）
- * 查看提取结果、确认、删除；数据随项目保存。
+ * 查看、编辑、确认、删除、绑图、生成定妆/场景/道具图。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -8,6 +8,11 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import type { DramaAsset, DramaAssetKind } from '../types/dramaAssets';
 import { DRAMA_ASSET_KIND_LABEL } from '../types/dramaAssets';
+import {
+  buildDramaAssetImagePrompt,
+  defaultPurposeForKind,
+  purposeLabel,
+} from '../services/dramaAssetPrompt';
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
@@ -26,29 +31,86 @@ const IMPORTANCE_LABEL: Record<string, string> = {
 
 function assetExtraLine(asset: DramaAsset): string {
   if (asset.kind === 'character') {
-    const parts = [asset.identity, asset.personality].filter(Boolean);
-    return parts.join(' · ');
+    return [asset.identity, asset.personality].filter(Boolean).join(' · ');
   }
   if (asset.kind === 'scene') {
-    const parts = [asset.placeType, asset.timeOfDay, asset.atmosphere].filter(Boolean);
-    return parts.join(' · ');
+    return [asset.placeType, asset.timeOfDay, asset.atmosphere].filter(Boolean).join(' · ');
   }
-  const parts = [asset.ownerName, asset.category, asset.significance].filter(Boolean);
-  return parts.join(' · ');
+  return [asset.ownerName, asset.category, asset.significance].filter(Boolean).join(' · ');
+}
+
+function resolveThumb(
+  asset: DramaAsset,
+  nodes: Array<{ id: string; data: Record<string, unknown> }>,
+): string | undefined {
+  if (asset.imageNodeId) {
+    const n = nodes.find((x) => x.id === asset.imageNodeId);
+    const url =
+      (n?.data?.imageUrl as string | undefined)
+      || (n?.data?.thumbnailUrl as string | undefined);
+    if (url) return url;
+  }
+  return asset.imageUrl;
 }
 
 function DramaAssetCard({
   asset,
+  thumb,
+  imageNodes,
+  editing,
+  onToggleEdit,
   onConfirm,
   onDelete,
+  onSaveFields,
+  onBindImage,
+  onUnbindImage,
+  onCreateImageNode,
+  onCopyPrompt,
 }: {
   asset: DramaAsset;
+  thumb?: string;
+  imageNodes: Array<{ id: string; label: string }>;
+  editing: boolean;
+  onToggleEdit: () => void;
   onConfirm: () => void;
   onDelete: () => void;
+  onSaveFields: (patch: { name: string; summary: string; visualNotes: string; storyRole: string }) => void;
+  onBindImage: (nodeId: string) => void;
+  onUnbindImage: () => void;
+  onCreateImageNode: () => void;
+  onCopyPrompt: () => void;
 }) {
+  const [name, setName] = useState(asset.name);
+  const [summary, setSummary] = useState(asset.summary);
+  const [visualNotes, setVisualNotes] = useState(asset.visualNotes);
+  const [storyRole, setStoryRole] = useState(asset.storyRole ?? '');
+  const [bindOpen, setBindOpen] = useState(false);
+
+  useEffect(() => {
+    if (editing) {
+      setName(asset.name);
+      setSummary(asset.summary);
+      setVisualNotes(asset.visualNotes);
+      setStoryRole(asset.storyRole ?? '');
+    }
+  }, [editing, asset]);
+
+  const purpose = defaultPurposeForKind(asset.kind);
+
   return (
     <div className="rounded-xl border border-canvas-border bg-canvas-bg/60 p-3 hover:border-indigo-500/30 transition-colors">
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-2.5">
+        {/* Thumb */}
+        <div className="w-12 h-12 rounded-lg overflow-hidden shrink-0 bg-canvas-hover border border-canvas-border flex items-center justify-center">
+          {thumb ? (
+            <img src={thumb} alt="" className="w-full h-full object-cover" />
+          ) : (
+            <span className="text-[11px] text-canvas-text-muted">
+              {DRAMA_ASSET_KIND_LABEL[asset.kind][0]}
+            </span>
+          )}
+        </div>
+
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[13px] font-semibold text-canvas-text truncate">{asset.name}</span>
@@ -73,24 +135,137 @@ function DramaAssetCard({
               </span>
             ) : null}
           </div>
-          {asset.summary ? (
-            <p className="mt-1 text-[12px] text-canvas-text-secondary leading-relaxed line-clamp-2">
-              {asset.summary}
-            </p>
-          ) : null}
-          {asset.visualNotes ? (
-            <p className="mt-0.5 text-[11px] text-canvas-text-muted leading-relaxed line-clamp-2">
-              外形：{asset.visualNotes}
-            </p>
-          ) : null}
-          {assetExtraLine(asset) ? (
-            <p className="mt-0.5 text-[11px] text-canvas-text-muted/80 line-clamp-1">
-              {assetExtraLine(asset)}
-            </p>
-          ) : null}
+
+          {!editing && (
+            <>
+              {asset.summary ? (
+                <p className="mt-1 text-[12px] text-canvas-text-secondary leading-relaxed line-clamp-2">
+                  {asset.summary}
+                </p>
+              ) : null}
+              {asset.visualNotes ? (
+                <p className="mt-0.5 text-[11px] text-canvas-text-muted leading-relaxed line-clamp-2">
+                  外形：{asset.visualNotes}
+                </p>
+              ) : null}
+              {assetExtraLine(asset) ? (
+                <p className="mt-0.5 text-[11px] text-canvas-text-muted/80 line-clamp-1">
+                  {assetExtraLine(asset)}
+                </p>
+              ) : null}
+            </>
+          )}
+
+          {editing && (
+            <div className="mt-2 space-y-1.5">
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="名称"
+                className="w-full px-2 py-1 rounded-lg bg-canvas-bg border border-canvas-border text-[12px] text-canvas-text focus:outline-none focus:border-indigo-500/50"
+              />
+              <textarea
+                value={summary}
+                onChange={(e) => setSummary(e.target.value)}
+                placeholder="简介"
+                rows={2}
+                className="w-full px-2 py-1 rounded-lg bg-canvas-bg border border-canvas-border text-[12px] text-canvas-text focus:outline-none focus:border-indigo-500/50 resize-none"
+              />
+              <textarea
+                value={visualNotes}
+                onChange={(e) => setVisualNotes(e.target.value)}
+                placeholder="外形/视觉要点"
+                rows={2}
+                className="w-full px-2 py-1 rounded-lg bg-canvas-bg border border-canvas-border text-[12px] text-canvas-text focus:outline-none focus:border-indigo-500/50 resize-none"
+              />
+              <input
+                value={storyRole}
+                onChange={(e) => setStoryRole(e.target.value)}
+                placeholder="剧情功能（可选）"
+                className="w-full px-2 py-1 rounded-lg bg-canvas-bg border border-canvas-border text-[12px] text-canvas-text focus:outline-none focus:border-indigo-500/50"
+              />
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30"
+                  onClick={() =>
+                    onSaveFields({
+                      name: name.trim() || asset.name,
+                      summary: summary.trim(),
+                      visualNotes: visualNotes.trim(),
+                      storyRole: storyRole.trim(),
+                    })
+                  }
+                >
+                  保存
+                </button>
+                <button
+                  type="button"
+                  className="px-2.5 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover"
+                  onClick={onToggleEdit}
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Bind image picker */}
+          {bindOpen && (
+            <div className="mt-2 p-2 rounded-lg border border-canvas-border bg-canvas-bg/80 max-h-32 overflow-y-auto space-y-1">
+              {imageNodes.length === 0 ? (
+                <p className="text-[11px] text-canvas-text-muted px-1">画布上暂无图像节点</p>
+              ) : (
+                imageNodes.map((n) => (
+                  <button
+                    key={n.id}
+                    type="button"
+                    className="w-full text-left px-2 py-1 rounded text-[11px] text-canvas-text hover:bg-canvas-hover truncate"
+                    onClick={() => {
+                      onBindImage(n.id);
+                      setBindOpen(false);
+                    }}
+                  >
+                    {n.label}
+                  </button>
+                ))
+              )}
+              <button
+                type="button"
+                className="text-[11px] text-canvas-text-muted hover:text-canvas-text px-1"
+                onClick={() => setBindOpen(false)}
+              >
+                关闭
+              </button>
+            </div>
+          )}
         </div>
-        <div className="flex flex-col gap-1 shrink-0">
-          {!asset.confirmed && (
+
+        {/* Actions */}
+        <div className="flex flex-col gap-1 shrink-0 items-stretch min-w-[72px]">
+          <button
+            type="button"
+            className="px-2 py-1 rounded-lg text-[11px] font-medium bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 transition-colors"
+            onClick={onCreateImageNode}
+            title={`创建${purposeLabel(purpose)}图像节点并填入提示词`}
+          >
+            {purposeLabel(purpose)}
+          </button>
+          <button
+            type="button"
+            className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
+            onClick={onCopyPrompt}
+          >
+            复制提示词
+          </button>
+          <button
+            type="button"
+            className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
+            onClick={onToggleEdit}
+          >
+            {editing ? '收起' : '编辑'}
+          </button>
+          {!asset.confirmed ? (
             <button
               type="button"
               className="px-2 py-1 rounded-lg text-[11px] font-medium bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors"
@@ -98,15 +273,30 @@ function DramaAssetCard({
             >
               确认
             </button>
-          )}
-          {asset.confirmed && (
+          ) : (
             <button
               type="button"
-              className="px-2 py-1 rounded-lg text-[11px] font-medium text-canvas-text-muted hover:bg-canvas-hover transition-colors"
+              className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
               onClick={onConfirm}
-              title="取消确认"
             >
               撤销
+            </button>
+          )}
+          {asset.imageNodeId ? (
+            <button
+              type="button"
+              className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
+              onClick={onUnbindImage}
+            >
+              解绑图
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
+              onClick={() => setBindOpen((v) => !v)}
+            >
+              绑图
             </button>
           )}
           <button
@@ -127,22 +317,35 @@ export default function DramaAssetsPanel() {
     dramaAssetsPanelOpen,
     setDramaAssetsPanelOpen,
     dramaAssets,
+    nodes,
     confirmDramaAsset,
     deleteDramaAsset,
+    updateDramaAssetFields,
     clearDramaAssetsByKind,
+    bindDramaAssetImage,
+    unbindDramaAssetImage,
+    createImageNodeFromDramaAsset,
+    showToast,
   } = useAppStore(
     useShallow((s) => ({
       dramaAssetsPanelOpen: s.dramaAssetsPanelOpen,
       setDramaAssetsPanelOpen: s.setDramaAssetsPanelOpen,
       dramaAssets: s.dramaAssets,
+      nodes: s.nodes,
       confirmDramaAsset: s.confirmDramaAsset,
       deleteDramaAsset: s.deleteDramaAsset,
+      updateDramaAssetFields: s.updateDramaAssetFields,
       clearDramaAssetsByKind: s.clearDramaAssetsByKind,
+      bindDramaAssetImage: s.bindDramaAssetImage,
+      unbindDramaAssetImage: s.unbindDramaAssetImage,
+      createImageNodeFromDramaAsset: s.createImageNodeFromDramaAsset,
+      showToast: s.showToast,
     })),
   );
 
   const [tab, setTab] = useState<DramaAssetKind | 'all'>('all');
   const [search, setSearch] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const close = useCallback(() => setDramaAssetsPanelOpen(false), [setDramaAssetsPanelOpen]);
 
@@ -154,6 +357,25 @@ export default function DramaAssetsPanel() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [dramaAssetsPanelOpen, close]);
+
+  const imageNodes = useMemo(
+    () =>
+      nodes
+        .filter((n) => {
+          const t = n.data?.type as string;
+          return (
+            t === 'ai-image'
+            || t === 'source-image'
+            || t === 'ai-panorama'
+            || t === 'ai-storyboard'
+          );
+        })
+        .map((n) => ({
+          id: n.id,
+          label: `${(n.data?.label as string) || '图像'} #${n.data?.displayId ?? ''}`,
+        })),
+    [nodes],
+  );
 
   const totals = useMemo(
     () => ({
@@ -184,7 +406,6 @@ export default function DramaAssetsPanel() {
           (a.storyRole ?? '').toLowerCase().includes(q),
       );
     }
-    // 待确认优先，再按更新时间
     return list.sort((a, b) => {
       if (a.confirmed !== b.confirmed) return a.confirmed ? 1 : -1;
       return b.updatedAt - a.updatedAt;
@@ -207,6 +428,19 @@ export default function DramaAssetsPanel() {
     clearDramaAssetsByKind(tab);
   }, [tab, clearDramaAssetsByKind]);
 
+  const copyPrompt = useCallback(
+    async (asset: DramaAsset) => {
+      const prompt = buildDramaAssetImagePrompt(asset);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        showToast('生图提示词已复制');
+      } catch {
+        showToast('复制失败', 'error');
+      }
+    },
+    [showToast],
+  );
+
   return (
     <AnimatePresence>
       {dramaAssetsPanelOpen && (
@@ -221,7 +455,7 @@ export default function DramaAssetsPanel() {
           />
 
           <motion.div
-            className="fixed inset-x-0 bottom-0 z-[250] mx-auto w-full max-w-[720px] max-h-[75vh] flex flex-col
+            className="fixed inset-x-0 bottom-0 z-[250] mx-auto w-full max-w-[780px] max-h-[80vh] flex flex-col
                        glass-panel border border-b-0 rounded-t-2xl shadow-2xl overflow-hidden"
             initial={{ y: '100%' }}
             animate={{ y: 0 }}
@@ -229,7 +463,6 @@ export default function DramaAssetsPanel() {
             transition={{ duration: 0.3, ease: EASE }}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Header */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-canvas-border shrink-0">
               <div className="flex items-center gap-2.5 min-w-0">
                 <svg
@@ -266,7 +499,6 @@ export default function DramaAssetsPanel() {
               </button>
             </div>
 
-            {/* Tabs + search */}
             <div className="flex items-center gap-2 px-3 pt-3 pb-2 shrink-0">
               {KIND_TABS.map(({ key, label }) => {
                 const count = key === 'all' ? totals.all : totals[key];
@@ -323,7 +555,6 @@ export default function DramaAssetsPanel() {
               </div>
             ) : null}
 
-            {/* List */}
             <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-2">
               {items.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-10 text-canvas-text-muted">
@@ -342,8 +573,9 @@ export default function DramaAssetsPanel() {
                   <p className="text-[13px] mb-1">
                     {search ? '无匹配资产' : '暂无短剧资产'}
                   </p>
-                  <p className="text-[11px] text-center max-w-[280px] leading-relaxed opacity-80">
-                    在文本节点用斜杠命令「提取人物 / 场景 / 道具」运行后，结果会自动写入本项目资产库。
+                  <p className="text-[11px] text-center max-w-[320px] leading-relaxed opacity-80">
+                    文本节点用「提取人物 / 场景 / 道具」入库后，可在此编辑、绑图、一键生成定妆/场景/道具图；
+                    提示词里用 @ 可引用短剧资产。
                   </p>
                 </div>
               ) : (
@@ -351,6 +583,12 @@ export default function DramaAssetsPanel() {
                   <DramaAssetCard
                     key={asset.id}
                     asset={asset}
+                    thumb={resolveThumb(asset, nodes as Array<{ id: string; data: Record<string, unknown> }>)}
+                    imageNodes={imageNodes}
+                    editing={editingId === asset.id}
+                    onToggleEdit={() =>
+                      setEditingId((cur) => (cur === asset.id ? null : asset.id))
+                    }
                     onConfirm={() =>
                       confirmDramaAsset(asset.kind, asset.id, !asset.confirmed)
                     }
@@ -359,6 +597,28 @@ export default function DramaAssetsPanel() {
                         deleteDramaAsset(asset.kind, asset.id);
                       }
                     }}
+                    onSaveFields={(patch) => {
+                      updateDramaAssetFields(asset.kind, asset.id, {
+                        name: patch.name,
+                        summary: patch.summary,
+                        visualNotes: patch.visualNotes,
+                        storyRole: patch.storyRole || undefined,
+                      });
+                      setEditingId(null);
+                      showToast('已保存');
+                    }}
+                    onBindImage={(nodeId) => {
+                      bindDramaAssetImage(asset.kind, asset.id, nodeId);
+                      showToast(`已绑定图像节点`);
+                    }}
+                    onUnbindImage={() => {
+                      unbindDramaAssetImage(asset.kind, asset.id);
+                      showToast('已解绑');
+                    }}
+                    onCreateImageNode={() => {
+                      createImageNodeFromDramaAsset(asset.kind, asset.id);
+                    }}
+                    onCopyPrompt={() => void copyPrompt(asset)}
                   />
                 ))
               )}

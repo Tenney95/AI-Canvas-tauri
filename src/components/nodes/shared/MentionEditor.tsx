@@ -120,13 +120,14 @@ const WF_IO_ICON: Record<string, string> = {
 /** 零宽空格 —— 作为不可编辑芯片（contenteditable=false）前的光标落点占位符。 */
 const ZWSP = '\u200B';
 
-/** 是否为不可编辑的引用芯片（节点 / 资产 / 工作流 IO）。 */
+/** 是否为不可编辑的引用芯片（节点 / 文件资产 / 短剧资产 / 工作流 IO）。 */
 function isChipEl(node: Node | null | undefined): node is HTMLElement {
   if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
   const el = node as HTMLElement;
   return (
     el.hasAttribute('data-ref-id') ||
     el.hasAttribute('data-asset-path') ||
+    el.hasAttribute('data-drama-id') ||
     el.hasAttribute('data-wf-id') ||
     el.hasAttribute('data-skill-id')
   );
@@ -150,7 +151,7 @@ function ensureCaretSlotBeforeChip(chip: Node): void {
 /** 扫描所有芯片，给「行首芯片」补零宽空格落点。幂等（已有文本/ZWSP 前缀则跳过）。
  *  用于编辑/导航/聚焦时修复任何来源（粘贴、删字后行首化等）的无落点芯片。ZWSP 在序列化时被剥除。 */
 function normalizeChipSlots(root: HTMLElement): void {
-  const chips = root.querySelectorAll('[data-ref-id],[data-asset-path],[data-wf-id],[data-skill-id]');
+  const chips = root.querySelectorAll('[data-ref-id],[data-asset-path],[data-drama-id],[data-wf-id],[data-skill-id]');
   for (const chip of Array.from(chips)) ensureCaretSlotBeforeChip(chip);
 }
 
@@ -166,6 +167,10 @@ function serializeDOM(root: HTMLElement): string {
         const id = el.getAttribute('data-ref-id') || '';
         const label = el.getAttribute('data-ref-label') || '';
         result += `@{${id}:${label}}`;
+      } else if (el.hasAttribute('data-drama-id')) {
+        const id = el.getAttribute('data-drama-id') || '';
+        const label = el.getAttribute('data-drama-label') || '';
+        result += `@drama{${id}:${label}}`;
       } else if (el.hasAttribute('data-asset-path')) {
         result += `@asset{${encodeURIComponent(el.getAttribute('data-asset-path') || '')}}`;
       } else if (el.hasAttribute('data-skill-id')) {
@@ -268,6 +273,36 @@ function buildAssetChipEl(path: string, assetUrl?: string): HTMLSpanElement {
   return span;
 }
 
+/** Build a chip for a short-drama library asset (@drama{id:name}). */
+function buildDramaChipEl(dramaId: string, name: string, kind: string, thumbUrl?: string): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = 'prompt-chip chip-image';
+  span.contentEditable = 'false';
+  span.setAttribute('data-drama-id', dramaId);
+  span.setAttribute('data-drama-label', name);
+  span.setAttribute('data-drama-kind', kind);
+
+  const iconSpan = document.createElement('span');
+  iconSpan.className = 'prompt-chip-icon';
+  if (thumbUrl) {
+    const img = document.createElement('img');
+    img.src = thumbUrl;
+    img.className = 'prompt-chip-thumb';
+    img.alt = '';
+    iconSpan.appendChild(img);
+  } else {
+    iconSpan.textContent = kind === 'character' ? '人' : kind === 'scene' ? '场' : '道';
+  }
+  span.appendChild(iconSpan);
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'prompt-chip-id';
+  nameSpan.textContent = name.length > 16 ? `${name.slice(0, 14)}…` : name;
+  span.appendChild(nameSpan);
+  appendChipRemoveBtn(span, `移除短剧资产 ${name}`);
+  return span;
+}
+
 /** Build a chip for a Skill reference (@skill{id|encodedName}). */
 function buildSkillChipEl(skillId: string, skillName: string): HTMLSpanElement {
   const span = document.createElement('span');
@@ -330,7 +365,8 @@ function renderPromptToNodes(
   text: string,
   metaMap: Map<string, { type: string; displayId: number | undefined; thumbnailUrl?: string }>,
 ): Node[] {
-  const regex = /@asset\{([^}]+)\}|@\{([^:]+):([^}]+)\}|@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}|@skill\{([^|}]+)\|([^}]+)\}/g;
+  // groups: 1=@asset  2,3=@drama  4,5=@node  6,7,8=@wf  9,10=@skill
+  const regex = /@asset\{([^}]+)\}|@drama\{([^:]+):([^}]+)\}|@\{([^:]+):([^}]+)\}|@wf\{([^|]+)\|([^|]+)\|([^|}]+)\}|@skill\{([^|}]+)\|([^}]+)\}/g;
   const nodes: Node[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -354,12 +390,38 @@ function renderPromptToNodes(
       pushChip(buildAssetChipEl(path));
       lastIndex = regex.lastIndex;
     } else if (match[2] !== undefined) {
-      pushChip(buildChipEl(match[2], match[3], metaMap));
+      // Drama library asset
+      const dramaId = match[2];
+      const dramaName = match[3];
+      let kind = 'character';
+      let thumb: string | undefined;
+      try {
+        const lib = useAppStore.getState().dramaAssets;
+        const found =
+          lib.characters.find((a) => a.id === dramaId)
+          || lib.scenes.find((a) => a.id === dramaId)
+          || lib.props.find((a) => a.id === dramaId);
+        if (found) {
+          kind = found.kind;
+          if (found.imageNodeId) {
+            const n = useAppStore.getState().nodes.find((x) => x.id === found.imageNodeId);
+            thumb =
+              bestNodeThumb(n?.data ?? {})
+              || found.imageUrl;
+          } else {
+            thumb = found.imageUrl;
+          }
+        }
+      } catch { /* ignore */ }
+      pushChip(buildDramaChipEl(dramaId, dramaName, kind, thumb));
       lastIndex = regex.lastIndex;
     } else if (match[4] !== undefined) {
-      const id = match[4];
-      const title = match[5];
-      const type = match[6] as WorkflowIONodeType;
+      pushChip(buildChipEl(match[4], match[5], metaMap));
+      lastIndex = regex.lastIndex;
+    } else if (match[6] !== undefined) {
+      const id = match[6];
+      const title = match[7];
+      const type = match[8] as WorkflowIONodeType;
       const matchEnd = regex.lastIndex;
 
       // Value area is wrapped in (...) — find matching closing paren with depth tracking.
@@ -393,10 +455,10 @@ function renderPromptToNodes(
         lastIndex = matchEnd;
         regex.lastIndex = matchEnd;
       }
-    } else {
-      const id = match[7];
-      let name = match[8];
-      try { name = decodeURIComponent(match[8]); } catch { /* keep raw */ }
+    } else if (match[9] !== undefined) {
+      const id = match[9];
+      let name = match[10];
+      try { name = decodeURIComponent(match[10]); } catch { /* keep raw */ }
       pushChip(buildSkillChipEl(id, name));
       lastIndex = regex.lastIndex;
     }
@@ -437,11 +499,12 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const editorRef = useRef<HTMLDivElement>(null);
   const savedMentionRangeRef = useRef<Range | null>(null);
   const lastFocusedWfValueRef = useRef<HTMLSpanElement | null>(null);
-  const { nodes, edges, workflows } = useAppStore(
+  const { nodes, edges, workflows, dramaAssets } = useAppStore(
     useShallow((state) => ({
       nodes: state.nodes,
       edges: state.edges,
       workflows: state.workflows,
+      dramaAssets: state.dramaAssets,
     })),
   );
 
@@ -698,6 +761,18 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     ? workflowMentionNodes.filter((n) => n.label.toLowerCase().includes(mentionQuery.toLowerCase()))
     : workflowMentionNodes;
 
+  const dramaMentionItems = useMemo(() => {
+    if (!showMention) return [];
+    const items = [
+      ...dramaAssets.characters.map((a) => ({ id: a.id, name: a.name, kind: a.kind as string, imageNodeId: a.imageNodeId, imageUrl: a.imageUrl })),
+      ...dramaAssets.scenes.map((a) => ({ id: a.id, name: a.name, kind: a.kind as string, imageNodeId: a.imageNodeId, imageUrl: a.imageUrl })),
+      ...dramaAssets.props.map((a) => ({ id: a.id, name: a.name, kind: a.kind as string, imageNodeId: a.imageNodeId, imageUrl: a.imageUrl })),
+    ];
+    if (!mentionQuery) return items.slice(0, 20);
+    const q = mentionQuery.toLowerCase();
+    return items.filter((a) => a.name.toLowerCase().includes(q)).slice(0, 20);
+  }, [showMention, dramaAssets, mentionQuery]);
+
   // ── Clear saved range when both mention menu and asset picker are closed ──
   // （@ 菜单切到资产弹窗时需保留光标范围，供选中资产后插入芯片）
   useEffect(() => {
@@ -910,6 +985,63 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     [deleteAtChar, insertWorkflowChipAtCursor],
   );
 
+  const insertDramaChipAtCursor = useCallback(
+    (dramaId: string, name: string, kind: string, thumbUrl?: string) => {
+      const el = editorRef.current;
+      if (!el) return;
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return;
+      const range = sel.getRangeAt(0);
+      if (!el.contains(range.startContainer)) {
+        range.selectNodeContents(el);
+        range.collapse(false);
+      }
+      const chip = buildDramaChipEl(dramaId, name, kind, thumbUrl);
+      range.insertNode(chip);
+      ensureCaretSlotBeforeChip(chip);
+      range.setStartAfter(chip);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      emitDOM();
+    },
+    [emitDOM],
+  );
+
+  const handleSelectDramaMention = useCallback(
+    (item: { id: string; name: string; kind: string; imageNodeId?: string; imageUrl?: string }) => {
+      // 已绑图：优先引用图像节点，走既有图生图链路
+      if (item.imageNodeId) {
+        const imgNode = nodes.find((n) => n.id === item.imageNodeId);
+        if (imgNode) {
+          handleSelectCanvasMention(item.imageNodeId, item.name);
+          return;
+        }
+      }
+      const el = editorRef.current;
+      if (el) el.focus();
+      const saved = savedMentionRangeRef.current;
+      savedMentionRangeRef.current = null;
+      if (saved) {
+        const sel = window.getSelection();
+        if (sel) {
+          sel.removeAllRanges();
+          sel.addRange(saved);
+        }
+      }
+      deleteAtChar();
+      let thumb = item.imageUrl;
+      if (item.imageNodeId) {
+        const n = nodes.find((x) => x.id === item.imageNodeId);
+        thumb = bestNodeThumb(n?.data ?? {}) || item.imageUrl;
+      }
+      insertDramaChipAtCursor(item.id, item.name, item.kind, thumb);
+      setShowMention(false);
+      setMentionQuery('');
+    },
+    [nodes, handleSelectCanvasMention, deleteAtChar, insertDramaChipAtCursor],
+  );
+
   // ── Insert an asset reference chip ──
   const insertAssetChipAtCursor = useCallback(
     (path: string, assetUrl?: string) => {
@@ -1084,6 +1216,11 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           handleSelectCanvasMention(filteredCanvasMentions[0].id, filteredCanvasMentions[0].label);
           return;
         }
+        if (dramaMentionItems.length > 0) {
+          e.preventDefault();
+          handleSelectDramaMention(dramaMentionItems[0]);
+          return;
+        }
         if (filteredWorkflowMentions.length > 0) {
           e.preventDefault();
           const wf = filteredWorkflowMentions[0] as typeof filteredWorkflowMentions[number] & { _ioNodeId: string; _ioType: WorkflowIONodeType };
@@ -1229,11 +1366,13 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       showMention,
       filteredCanvasMentions,
       filteredWorkflowMentions,
+      dramaMentionItems,
       canSubmit,
       onSubmit,
       emitDOM,
       handleSelectCanvasMention,
       handleSelectWorkflowMention,
+      handleSelectDramaMention,
     ],
   );
 
@@ -1377,6 +1516,49 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
             </>
           )}
 
+          {/* 短剧资产 section */}
+          {dramaMentionItems.length > 0 && (
+            <>
+              <div className="px-3 py-2 text-[11px] text-violet-400/80 uppercase tracking-wider border-t border-canvas-border">
+                短剧资产
+              </div>
+              {dramaMentionItems.map((item) => {
+                const kindLabel = item.kind === 'character' ? '人物' : item.kind === 'scene' ? '场景' : '道具';
+                let thumb = item.imageUrl;
+                if (item.imageNodeId) {
+                  const n = nodes.find((x) => x.id === item.imageNodeId);
+                  thumb = bestNodeThumb(n?.data ?? {}) || item.imageUrl;
+                }
+                return (
+                  <button
+                    key={`drama-${item.id}`}
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      handleSelectDramaMention(item);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 hover:bg-canvas-hover transition-colors text-left"
+                  >
+                    <span className="w-6 h-6 rounded flex items-center justify-center text-[10px] shrink-0 overflow-hidden bg-violet-500/15 text-violet-300">
+                      {thumb ? (
+                        <img src={thumb} alt="" className="w-full h-full object-cover rounded" />
+                      ) : (
+                        kindLabel[0]
+                      )}
+                    </span>
+                    <div className="min-w-0 flex-1 flex items-center gap-1 overflow-hidden">
+                      <span className="text-sm text-canvas-text truncate">{item.name}</span>
+                      <span className="text-[10px] text-canvas-text-muted shrink-0">{kindLabel}</span>
+                      {item.imageNodeId ? (
+                        <span className="text-[10px] text-indigo-300 bg-indigo-500/15 px-1 py-px rounded shrink-0">有图</span>
+                      ) : null}
+                    </div>
+                  </button>
+                );
+              })}
+            </>
+          )}
+
           {/* Workflow IO nodes section */}
           {workflowMentionNodes.length > 0 && (
             <>
@@ -1423,8 +1605,11 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           )}
 
           {/* No node results for query */}
-          {mentionQuery && filteredCanvasMentions.length === 0 && filteredWorkflowMentions.length === 0 && (
-            <div className="px-3 py-3 text-center text-xs text-canvas-text-muted">无匹配节点</div>
+          {mentionQuery
+            && filteredCanvasMentions.length === 0
+            && filteredWorkflowMentions.length === 0
+            && dramaMentionItems.length === 0 && (
+            <div className="px-3 py-3 text-center text-xs text-canvas-text-muted">无匹配节点或资产</div>
           )}
 
           {/* 引用资产 — 常驻入口 */}

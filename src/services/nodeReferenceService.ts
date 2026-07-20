@@ -1,10 +1,30 @@
 import { useAppStore } from '../store/useAppStore';
 
-/** 解析 workflowInputs 值中的 @{nodeId:label} 引用，替换为对应节点的实际输出内容 */
+/** 解析 workflowInputs 值中的 @{nodeId:label} / @drama{id:name} 引用，替换为对应输出内容 */
 export function resolveNodeReferences(value: string): string {
-  const { nodes } = useAppStore.getState();
-  // 资产引用在工作流文本输入中不适用，直接移除标记
-  const cleaned = value.replace(/@asset\{[^}]+\}/g, '');
+  const store = useAppStore.getState();
+  const { nodes } = store;
+  // 文件资产引用在工作流文本输入中不适用，直接移除标记
+  let cleaned = value.replace(/@asset\{[^}]+\}/g, '');
+
+  cleaned = cleaned.replace(/@drama\{([^:]+):([^}]+)\}/g, (_match, dramaId: string, dramaName: string) => {
+    const lib = store.dramaAssets;
+    const asset =
+      lib.characters.find((a) => a.id === dramaId)
+      || lib.scenes.find((a) => a.id === dramaId)
+      || lib.props.find((a) => a.id === dramaId);
+    if (!asset) return dramaName || _match;
+    if (asset.imageNodeId) {
+      const imgNode = nodes.find((n) => n.id === asset.imageNodeId);
+      const imageUrl =
+        (imgNode?.data?.imageUrl as string | undefined)
+        || asset.imageUrl;
+      if (imageUrl) return imageUrl;
+    }
+    const bits = [asset.name, asset.summary, asset.visualNotes].filter(Boolean);
+    return bits.join('，') || dramaName;
+  });
+
   const chipRegex = /@\{([^:]+):([^}]+)\}/g;
   return cleaned.replace(chipRegex, (_match, nodeId: string) => {
     const node = nodes.find((n) => n.id === nodeId);

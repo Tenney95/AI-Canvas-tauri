@@ -76,6 +76,10 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         imageWidth: result.width,
         imageHeight: result.height,
       });
+      {
+        const { useAppStore } = await import('../store/useAppStore');
+        useAppStore.getState().syncDramaAssetImageFromNode?.(node.id, mediaUrl);
+      }
       ctx.recordOutputHistory(node.id, {
         nodeId: node.id,
         nodeLabel: d.label,

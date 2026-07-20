@@ -92,3 +92,10 @@ export const DRAMA_EXTRACT_MARKER: Record<DramaAssetKind, string> = {
 export function emptyDramaAssetLibrary(): DramaAssetLibrary {
   return { version: 1, characters: [], scenes: [], props: [] };
 }
+
+/** @ 引用短剧资产标记：@drama{id:name} */
+export const DRAMA_MENTION_PREFIX = '@drama{';
+
+export function formatDramaMention(id: string, name: string): string {
+  return `@drama{${id}:${name}}`;
+}
