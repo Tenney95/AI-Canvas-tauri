@@ -15,6 +15,7 @@ import { classifyFile } from '../hooks/useNodeCreation';
 import { checkForUpdate, downloadAndInstallUpdate } from '../services/updateService';
 import AnimatedButton from './shared/AnimatedButton';
 import PopupCloseButton from './shared/PopupCloseButton';
+import ProjectLibraryModal from './ProjectLibraryModal';
 
 /**
  * Sidebar 侧边栏面板 — 左侧节点类型列表、上传入口、项目切换、拖拽添加节点
@@ -1000,254 +1001,27 @@ function AvatarMenu() {
    Logo / Project switcher menu
    ============================================ */
 function LogoMenu() {
-  const {
-    projects,
-    currentProjectId,
-    projectName,
-    switchProject,
-    createProject,
-    deleteProject,
-  } = useAppStore(
-    useShallow((s) => ({
-      projects: s.projects,
-      currentProjectId: s.currentProjectId,
-      projectName: s.projectName,
-      switchProject: s.switchProject,
-      createProject: s.createProject,
-      deleteProject: s.deleteProject,
-    })),
-  );
   const [open, setOpen] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<{ id: string; rect: DOMRect } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    // Suppress outside-click close while delete confirmation is showing,
-    // otherwise the capture-phase mousedown fires setOpen(false) which
-    // causes a re-render that prevents the confirm button's onClick.
-    if (confirmDelete) return;
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler, true);
-    return () => document.removeEventListener('mousedown', handler, true);
-  }, [open, confirmDelete]);
 
   return (
-    <div ref={menuRef} style={{ position: 'relative' }}>
+    <>
       <button
         type="button"
         className={`sidebar-btn-v3 sidebar-canvas-btn ${open ? 'active' : ''}`}
         data-tooltip="画布 / 项目"
-        onClick={() => setOpen(!open)}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen(true)}
       >
-        {/* <svg className="ico-normal" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <rect x="3" y="6" width="14" height="11" rx="2" />
-          <rect x="7" y="3" width="14" height="11" rx="2" />
-          <circle cx="19" cy="4" r="2.5" fill="currentColor" opacity="0.6" />
-        </svg> */}
-        <svg className="ico-normal" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path fill="currentColor" fillRule="evenodd" d="M3 4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm0 14a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM18 3a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1zm-1 8a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zm-6-1a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1zm-8 1a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm8-8a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1zm-1 15a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zm8-1a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1z" clipRule="evenodd"/></svg>
-        <svg className="ico-hover" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <rect x="3" y="4" width="13" height="16" rx="2" />
-          <path d="M19 8l3 4-3 4" strokeLinecap="round" strokeLinejoin="round" />
-          <line x1="13" y1="12" x2="22" y2="12" />
-        </svg>
+        <Icon className="ico-normal" icon="mdi:view-grid-outline" width="20" height="20" aria-hidden="true" />
+        <Icon className="ico-hover" icon="mdi:folder-open-outline" width="20" height="20" aria-hidden="true" />
       </button>
 
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            className="node-picker"
-            initial={{ opacity: 0, scale: 0.95, y: -4 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: -4 }}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-          >
-            <div className="menu-section">
-              <span className="menu-title">当前项目</span>
-              <div className="menu-rule" />
-            </div>
-          <div className="menu-row menu-row-current">
-            <div className="menu-ico menu-ico--brand">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <rect x="3" y="6" width="14" height="11" rx="2" />
-                <rect x="7" y="3" width="14" height="11" rx="2" />
-                <circle cx="19" cy="4" r="2.5" fill="currentColor" opacity="0.6" />
-              </svg>
-            </div>
-            <div className="menu-txt-wrap">
-              <span className="menu-lbl">{projectName}</span>
-            </div>
-          </div>
-
-          <div className="menu-section">
-            <span className="menu-title">项目列表</span>
-            <div className="menu-rule" />
-          </div>
-          <div className="project-list-scroll">
-            {projects.map((p) => (
-              <AnimatedButton
-                key={p.id}
-                type="button"
-                scale={1.01}
-                className={`menu-row${p.id === currentProjectId ? ' menu-row--active' : ''}`}
-                onClick={() => {
-                  switchProject(p.id);
-                  setOpen(false);
-                }}
-              >
-                <div className="menu-ico">
-                  {p.id === currentProjectId ? (
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <circle cx="12" cy="12" r="5" />
-                      <line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" />
-                      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                      <line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" />
-                      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-                    </svg>
-                  ) : (
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                      <rect x="3" y="3" width="18" height="18" rx="3" />
-                    </svg>
-                  )}
-                </div>
-                <div className="menu-txt-wrap">
-                  <span className="menu-lbl">
-                    {p.name}
-                  </span>
-                  <span className="menu-sub">
-                    {new Date(p.updatedAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </div>
-                {p.id !== 'default' && projects.filter(proj => proj.id !== 'default').length > 1 && (
-                  <span
-                    className="project-delete-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      setConfirmDelete({ id: p.id, rect });
-                    }}
-                    data-tooltip="删除项目"
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  </span>
-                )}
-              </AnimatedButton>
-            ))}
-          </div>
-
-          <div className="menu-section">
-            <span className="menu-title">操作</span>
-            <div className="menu-rule" />
-          </div>
-          <AnimatedButton
-            type="button"
-            className="menu-row"
-            scale={1.02}
-            onClick={() => {
-              createProject();
-              setOpen(false);
-            }}
-          >
-            <div className="menu-ico">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            </div>
-            <div className="menu-txt-wrap">
-              <span className="menu-lbl">新建项目</span>
-            </div>
-          </AnimatedButton>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Delete Project Confirm Popover — portal to body, positioned above the delete button */}
-      {confirmDelete && createPortal((() => {
-        const target = projects.find((p) => p.id === confirmDelete.id);
-        const DIALOG_W = 260;
-        const DIALOG_H = 130;
-        const PAD = 8;
-        const r = confirmDelete.rect;
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-
-        // 水平居中于删除按钮，但不超出屏幕
-        let left = r.left + r.width / 2;
-        if (left < PAD) left = PAD;
-        if (left + DIALOG_W / 2 > vw - PAD) left = vw - PAD - DIALOG_W / 2;
-        if (left - DIALOG_W / 2 < PAD) left = DIALOG_W / 2 + PAD;
-
-        // 优先在按钮上方弹出；上方空间不足则改为下方
-        const aboveSpace = r.top - DIALOG_H - 10;
-        let top: number;
-        let arrowClass = '';
-        if (aboveSpace >= PAD) {
-          top = r.top - DIALOG_H - 10;
-          arrowClass = ' delete-confirm-below'; // arrow points down
-        } else {
-          top = r.bottom + 10;
-          arrowClass = ' delete-confirm-above'; // arrow points up
-          if (top + DIALOG_H > vh - PAD) {
-            top = Math.max(PAD, vh - DIALOG_H - PAD);
-          }
-        }
-
-        const dialogStyle: React.CSSProperties = {
-          position: 'fixed' as const,
-          left: `${left}px`,
-          top: `${top}px`,
-          transform: 'translateX(-50%)',
-        };
-        return (
-          <>
-            <div className="delete-confirm-overlay" onClick={() => setConfirmDelete(null)} />
-            <div className={`delete-confirm-dialog${arrowClass}`} style={dialogStyle} onClick={(e) => e.stopPropagation()}>
-              <div className="delete-confirm-icon">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="8" x2="12" y2="12" />
-                  <line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
-              </div>
-              <div className="delete-confirm-text">
-                <p className="delete-confirm-title">确认删除「{target?.name ?? '未命名项目'}」</p>
-                <p className="delete-confirm-hint">此操作不可撤销</p>
-              </div>
-              <div className="delete-confirm-actions">
-                <AnimatedButton
-                  type="button"
-                  className="delete-confirm-btn cancel"
-                  onClick={() => setConfirmDelete(null)}
-                >
-                  取消
-                </AnimatedButton>
-                <AnimatedButton
-                  type="button"
-                  className="delete-confirm-btn confirm"
-                  onClick={() => {
-                    deleteProject(confirmDelete.id);
-                    setConfirmDelete(null);
-                    setOpen(false);
-                  }}
-                >
-                  确认删除
-                </AnimatedButton>
-              </div>
-            </div>
-          </>
-        );
-      })(), document.body)}
-    </div>
+      {createPortal(
+        <ProjectLibraryModal isOpen={open} onClose={() => setOpen(false)} />,
+        document.body,
+      )}
+    </>
   );
 }
 
