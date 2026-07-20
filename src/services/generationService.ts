@@ -16,6 +16,7 @@ import {
   parseProjectModelRef,
   resolveProjectGenerationPrompt,
 } from './projectSettingsService';
+import { postProcessDramaExtractOutput } from './dramaAssetExtract';
 
 export interface GenerationResult {
   success: boolean;
@@ -244,11 +245,20 @@ export async function executeGeneration(
     } else {
       const result = await generateText({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
-      store.updateNodeData(nodeId, { output: result, status: 'success' });
+      const processed = postProcessDramaExtractOutput(effectivePrompt, result);
+      store.updateNodeData(nodeId, { output: processed.output, status: 'success' });
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
-        output: result, nodeType: 'ai-text', model: nodeModel, provider: nodeProvider, status: 'success',
+        output: processed.output, nodeType: 'ai-text', model: nodeModel, provider: nodeProvider, status: 'success',
       });
+      if (processed.kind) {
+        store.showToast(
+          processed.ok
+            ? `${processed.kind === 'character' ? '人物' : processed.kind === 'scene' ? '场景' : '道具'}简介提取完成`
+            : '已提取，但 JSON 未完全规范化，请检查输出',
+          processed.ok ? undefined : 'error',
+        );
+      }
     }
     return { success: true };
   } catch (err) {

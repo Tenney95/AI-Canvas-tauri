@@ -30,13 +30,15 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
   try {
     if (nt === 'ai-text') {
       const result = await generateText({ prompt, model: d.model!, provider: d.provider! });
-      ctx.updateNodeData(node.id, { output: result, status: 'success' });
+      const { postProcessDramaExtractOutput } = await import('../services/dramaAssetExtract');
+      const processed = postProcessDramaExtractOutput(prompt, result);
+      ctx.updateNodeData(node.id, { output: processed.output, status: 'success' });
       ctx.recordOutputHistory(node.id, {
         nodeId: node.id,
         nodeLabel: d.label,
         timestamp: Date.now(),
         prompt,
-        output: result,
+        output: processed.output,
         nodeType: 'ai-text',
         model: d.model!,
         provider: d.provider!,

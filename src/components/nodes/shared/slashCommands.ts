@@ -3,6 +3,7 @@
  * 根据 nodeType 返回对应的指令菜单树
  */
 import type { ImagePostProcess, NodeType } from '../../../types';
+import { DRAMA_EXTRACT_MARKER } from '../../../types/dramaAssets';
 
 export interface SlashCommandItem {
   id: string;
@@ -292,10 +293,137 @@ const TEXT_COMMANDS: SlashCommandItem[] = [
 {{ 文章内容 }}`,
   },
   {
-    id: 'text-extract',
-    title: '提取人物场景道具信息',
+    id: 'text-extract-assets',
+    title: '提取资产信息',
+    icon: 'mdi:database-search-outline',
+    description: '从剧本结构化提取人物/场景/道具简介（非生图提示词）',
+    children: [
+      {
+        id: 'text-extract-characters',
+        title: '提取人物',
+        icon: 'mdi:account-search',
+        description: '只提取人物简介表（一套默认造型，无状态变体）',
+        promptTemplate: `${DRAMA_EXTRACT_MARKER.character}
+你是剧本资产分析助手。请阅读下列剧本，**仅提取人物**，输出 JSON（不要 Markdown 说明、不要生图提示词）。
+
+# 规则
+1. 只输出一个 JSON 对象，kind 必须为 "character"。
+2. 每条人物只要**一套默认主造型**；禁止「流泪/受伤/年轻时」等状态变体。
+3. 禁止输出：三视图、白底设定集、8K、镜头运镜、分镜、对白原文大段。
+4. visualNotes 用短关键词描述外形要点；wardrobeDefault 为一套默认服装简述。
+5. 同名角色合并，别名写入 aliases。
+6. importance 只能是 main | supporting | minor。
+
+# JSON 形状
+{
+  "kind": "character",
+  "items": [
+    {
+      "name": "角色名或称呼",
+      "aliases": ["别名"],
+      "identity": "身份职业",
+      "ageBand": "年龄段",
+      "gender": "性别呈现",
+      "summary": "一句话简介",
+      "visualNotes": "外形要点关键词",
+      "wardrobeDefault": "默认造型简述",
+      "personality": "性格要点",
+      "storyRole": "剧情功能",
+      "importance": "main",
+      "firstSeen": "首次出现场次/段落",
+      "appearances": ["出场简述"],
+      "relationships": [{ "targetName": "他人", "relation": "关系" }]
+    }
+  ],
+  "notes": "可选：遗漏风险说明"
+}
+
+# 剧本正文
+{{ 文章内容 }}`,
+      },
+      {
+        id: 'text-extract-scenes',
+        title: '提取场景',
+        icon: 'mdi:map-search-outline',
+        description: '只提取场景简介表（空间与氛围，非空镜长 prompt）',
+        promptTemplate: `${DRAMA_EXTRACT_MARKER.scene}
+你是剧本资产分析助手。请阅读下列剧本，**仅提取场景**，输出 JSON（不要 Markdown 说明、不要生图提示词）。
+
+# 规则
+1. 只输出一个 JSON 对象，kind 必须为 "scene"。
+2. 合并同一地点不同叫法；按时段/氛围可拆条（如「电影院-夜」）。
+3. 禁止输出：完整空镜生图长文、运镜指令、8K、杰作等。
+4. 不要展开人物外貌；人物只可在 storyRole/appearances 中点到为止。
+5. importance 只能是 main | supporting | minor。
+
+# JSON 形状
+{
+  "kind": "scene",
+  "items": [
+    {
+      "name": "场景名",
+      "placeType": "室内/室外/…",
+      "timeOfDay": "日/夜/黄昏…",
+      "summary": "一句话简介",
+      "visualNotes": "视觉要点关键词",
+      "spatialNotes": "空间结构简述",
+      "atmosphere": "氛围",
+      "storyRole": "剧情功能",
+      "importance": "main",
+      "firstSeen": "首次出现",
+      "appearances": ["相关情节简述"]
+    }
+  ],
+  "notes": "可选"
+}
+
+# 剧本正文
+{{ 文章内容 }}`,
+      },
+      {
+        id: 'text-extract-props',
+        title: '提取道具',
+        icon: 'mdi:treasure-chest',
+        description: '只提取关键道具简介（宁缺毋滥）',
+        promptTemplate: `${DRAMA_EXTRACT_MARKER.prop}
+你是剧本资产分析助手。请阅读下列剧本，**仅提取关键道具**，输出 JSON（不要 Markdown 说明、不要生图提示词）。
+
+# 规则
+1. 只输出一个 JSON 对象，kind 必须为 "prop"。
+2. 只列**反复出场或推动情节**的道具；不要罗列所有桌椅杯盏。
+3. 禁止输出完整静物摄影长 prompt、8K、三视图指令。
+4. importance 只能是 main | supporting | minor。
+
+# JSON 形状
+{
+  "kind": "prop",
+  "items": [
+    {
+      "name": "道具名",
+      "ownerName": "归属角色",
+      "category": "分类",
+      "summary": "一句话简介",
+      "visualNotes": "外观要点",
+      "significance": "为何重要",
+      "storyRole": "剧情功能",
+      "importance": "supporting",
+      "firstSeen": "首次出现",
+      "appearances": ["出场简述"]
+    }
+  ],
+  "notes": "可选"
+}
+
+# 剧本正文
+{{ 文章内容 }}`,
+      },
+    ],
+  },
+  {
+    id: 'text-extract-legacy',
+    title: '提取人物场景道具（旧版混排）',
     icon: 'mdi:text-search',
-    description: '提取文本中的人物、场景、道具信息',
+    description: '旧版：一次混排人设/场景/道具（含状态，效果一般，不推荐）',
     promptTemplate: `{{ 文章内容 }}
 # 筛选出以上故事里的角色（包括主要怪物）、场景以及道具物品
 把以上每个角色根据剧情写出详细中文提示词包括五官相貌，脸型，发型，全身服饰提示词。重要物品，场景

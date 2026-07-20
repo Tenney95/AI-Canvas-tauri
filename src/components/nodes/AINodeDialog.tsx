@@ -744,18 +744,28 @@ function AINodeDialog() {
           model: nodeModel,
           provider: nodeProvider,
         });
-        updateNodeData(activeNodeId!, { output: result, status: 'success' });
+        const { postProcessDramaExtractOutput } = await import('../../services/dramaAssetExtract');
+        const processed = postProcessDramaExtractOutput(effectivePrompt, result);
+        updateNodeData(activeNodeId!, { output: processed.output, status: 'success' });
         recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
           nodeLabel: nodeLabel,
           timestamp: Date.now(),
           prompt: effectivePrompt,
-          output: result,
+          output: processed.output,
           nodeType: 'ai-text',
           model: nodeModel,
           provider: nodeProvider,
           status: 'success',
         });
+        if (processed.kind) {
+          showToast(
+            processed.ok
+              ? `${processed.kind === 'character' ? '人物' : processed.kind === 'scene' ? '场景' : '道具'}简介提取完成`
+              : '已提取，但 JSON 未完全规范化，请检查输出',
+            processed.ok ? undefined : 'error',
+          );
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');
