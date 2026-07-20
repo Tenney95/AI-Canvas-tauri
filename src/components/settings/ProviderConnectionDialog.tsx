@@ -15,11 +15,13 @@ import {
   getProviderDefinitions,
   type ProviderDefinition,
 } from '../../services/ai/providerCatalogService';
+import type { ModelProtocolImportResult } from '../../services/ai/modelProtocolImport';
 import { testProviderConnection } from '../../services/testConnection';
 import AnimatedButton from '../shared/AnimatedButton';
 import ModalOverlay from '../shared/ModalOverlay';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import ModelProtocolEditor from './ModelProtocolEditor';
+import ProtocolImportPanel from './ProtocolImportPanel';
 
 const CATEGORY_ORDER: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
 const CATEGORY_LABELS: Record<GeneralModelCategory, string> = {
@@ -38,6 +40,18 @@ const PROVIDER_LINKS: Record<string, string> = {
 };
 
 type CatalogStatus = 'idle' | 'loading' | 'ready' | 'warning' | 'error';
+
+interface ProtocolImportSnapshot {
+  baseUrl: string;
+  models: ProviderModelSelection[];
+  selectedIds: Set<string>;
+  visibleModelCategories: Set<GeneralModelCategory>;
+  category: GeneralModelCategory | 'all';
+  protocolModelId: string | null;
+  protocolValid: boolean;
+  catalogStatus: CatalogStatus;
+  catalogMessage: string;
+}
 
 interface ProviderConnectionDialogProps {
   isOpen: boolean;
@@ -141,6 +155,8 @@ export default function ProviderConnectionDialog({
   const [manualCategory, setManualCategory] = useState<GeneralModelCategory>('text');
   const [protocolModelId, setProtocolModelId] = useState<string | null>(null);
   const [protocolValid, setProtocolValid] = useState(true);
+  const [protocolImportOpen, setProtocolImportOpen] = useState(false);
+  const [protocolImportSnapshot, setProtocolImportSnapshot] = useState<ProtocolImportSnapshot | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const definition = getProviderDefinition(definitionId, initialConfig);
@@ -208,6 +224,8 @@ export default function ProviderConnectionDialog({
     setManualCategory('text');
     setProtocolModelId(null);
     setProtocolValid(true);
+    setProtocolImportOpen(false);
+    setProtocolImportSnapshot(null);
   };
 
   const handleFetchModels = async () => {
@@ -318,6 +336,78 @@ export default function ProviderConnectionDialog({
     setProtocolValid(true);
   };
 
+  const applyProtocolImport = (result: ModelProtocolImportResult) => {
+    if (
+      definition?.id !== 'custom-openai'
+      || !result.baseUrl
+      || !result.modelId
+      || !result.category
+      || !result.protocol
+    ) return;
+    setProtocolImportSnapshot({
+      baseUrl,
+      models: structuredClone(models),
+      selectedIds: new Set(selectedIds),
+      visibleModelCategories: new Set(visibleModelCategories),
+      category,
+      protocolModelId,
+      protocolValid,
+      catalogStatus,
+      catalogMessage,
+    });
+    const modelId = result.modelId;
+    const importedModel: ProviderModelSelection = {
+      id: modelId,
+      name: models.find((model) => model.id === modelId)?.name || modelId,
+      category: result.category,
+      provider: connectionId || definition.id,
+      executionProfile: { preset: 'custom', protocol: result.protocol },
+    };
+    setBaseUrl(result.baseUrl);
+    setModels((current) => {
+      const existing = current.find((model) => model.id === modelId);
+      if (!existing) return [...current, importedModel];
+      return current.map((model) => model.id === modelId
+        ? { ...model, category: importedModel.category, executionProfile: importedModel.executionProfile }
+        : model);
+    });
+    setSelectedIds((current) => new Set(current).add(modelId));
+    setVisibleModelCategories((current) => new Set(current).add(importedModel.category));
+    setCategory('all');
+    setProtocolModelId(modelId);
+    setProtocolValid(true);
+    setCatalogStatus('ready');
+    setCatalogMessage(`已从接口文档导入模型 ${modelId}，保存前可继续检查调用协议`);
+    setProtocolImportOpen(false);
+  };
+
+  const undoProtocolImport = () => {
+    if (!protocolImportSnapshot) return;
+    setBaseUrl(protocolImportSnapshot.baseUrl);
+    setModels(protocolImportSnapshot.models);
+    setSelectedIds(protocolImportSnapshot.selectedIds);
+    setVisibleModelCategories(protocolImportSnapshot.visibleModelCategories);
+    setCategory(protocolImportSnapshot.category);
+    setProtocolModelId(protocolImportSnapshot.protocolModelId);
+    setProtocolValid(protocolImportSnapshot.protocolValid);
+    setCatalogStatus(protocolImportSnapshot.catalogStatus);
+    setCatalogMessage(protocolImportSnapshot.catalogMessage);
+    setProtocolImportSnapshot(null);
+    setProtocolImportOpen(false);
+  };
+
+  const closeDialog = () => {
+    setProtocolImportOpen(false);
+    setProtocolImportSnapshot(null);
+    onClose();
+  };
+
+  const returnToDefinitionPicker = () => {
+    setProtocolImportOpen(false);
+    setProtocolImportSnapshot(null);
+    setDefinitionId('');
+  };
+
   const handleSave = async () => {
     if (!definition || missingCredentials || selectedModels.length === 0 || !protocolValid) return;
     const nextConnectionId = connectionId || createConnectionId(definition.id);
@@ -343,7 +433,7 @@ export default function ProviderConnectionDialog({
   return createPortal(
     <ModalOverlay
       isOpen={isOpen}
-      onClose={onClose}
+      onClose={closeDialog}
       ariaLabel={editing ? '编辑 API 厂商' : '添加 API 厂商'}
       className="provider-dialog"
       closeOnBackdrop={false}
@@ -357,7 +447,7 @@ export default function ProviderConnectionDialog({
           <span className="provider-dialog-kicker">{editing ? '编辑连接' : '新建连接'}</span>
           <h3>{definition ? definition.name : '选择 API 厂商'}</h3>
         </div>
-        <PopupCloseButton onClick={onClose} />
+        <PopupCloseButton onClick={closeDialog} />
       </header>
 
       {!definition ? (
@@ -393,7 +483,7 @@ export default function ProviderConnectionDialog({
                   <AnimatedButton
                     type="button"
                     className="provider-text-btn"
-                    onClick={() => setDefinitionId('')}
+                    onClick={returnToDefinitionPicker}
                   >
                     更换厂商
                   </AnimatedButton>
@@ -484,20 +574,52 @@ export default function ProviderConnectionDialog({
                   <h4>启用模型</h4>
                   <p>仅勾选会在应用中使用的模型</p>
                 </div>
-                <AnimatedButton
-                  type="button"
-                  className="provider-fetch-btn"
-                  disabled={missingCredentials || catalogStatus === 'loading'}
-                  onClick={() => void handleFetchModels()}
-                >
-                  <Icon
-                    icon={catalogStatus === 'loading' ? 'mdi:loading' : 'mdi:cloud-download-outline'}
-                    className={catalogStatus === 'loading' ? 'settings-spin' : undefined}
-                    width="15"
-                  />
-                  {catalogStatus === 'loading' ? '拉取中' : '拉取模型'}
-                </AnimatedButton>
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  {definition.id === 'custom-openai' ? (
+                    <>
+                      {protocolImportSnapshot ? (
+                        <AnimatedButton
+                          type="button"
+                          className="provider-text-btn h-7"
+                          onClick={undoProtocolImport}
+                        >
+                          <Icon icon="mdi:undo-variant" width="14" />
+                          撤销导入
+                        </AnimatedButton>
+                      ) : null}
+                      <AnimatedButton
+                        type="button"
+                        className="provider-secondary-btn h-7"
+                        aria-expanded={protocolImportOpen}
+                        onClick={() => setProtocolImportOpen((open) => !open)}
+                      >
+                        <Icon icon="mdi:file-import-outline" width="14" />
+                        导入文档
+                      </AnimatedButton>
+                    </>
+                  ) : null}
+                  <AnimatedButton
+                    type="button"
+                    className="provider-fetch-btn"
+                    disabled={missingCredentials || catalogStatus === 'loading'}
+                    onClick={() => void handleFetchModels()}
+                  >
+                    <Icon
+                      icon={catalogStatus === 'loading' ? 'mdi:loading' : 'mdi:cloud-download-outline'}
+                      className={catalogStatus === 'loading' ? 'settings-spin' : undefined}
+                      width="15"
+                    />
+                    {catalogStatus === 'loading' ? '拉取中' : '拉取模型'}
+                  </AnimatedButton>
+                </div>
               </div>
+
+              {definition.id === 'custom-openai' && protocolImportOpen ? (
+                <ProtocolImportPanel
+                  onApply={applyProtocolImport}
+                  onClose={() => setProtocolImportOpen(false)}
+                />
+              ) : null}
 
               <div className="mb-3 flex min-h-8 items-center justify-between gap-3 rounded-md border border-canvas-border bg-white/[0.03] px-2.5 py-1.5">
                 <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-canvas-text-secondary">
@@ -680,7 +802,7 @@ export default function ProviderConnectionDialog({
           <footer className="provider-dialog-footer">
             <span>{selectedModels.length > 0 ? `将启用 ${selectedModels.length} 个模型` : '至少选择一个模型'}</span>
             <div>
-              <AnimatedButton type="button" className="provider-secondary-btn" onClick={onClose}>
+              <AnimatedButton type="button" className="provider-secondary-btn" onClick={closeDialog}>
                 取消
               </AnimatedButton>
               <AnimatedButton
