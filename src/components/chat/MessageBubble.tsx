@@ -107,7 +107,10 @@ function MessageBubble({
                     }`}
       >
         {isThinking && (
-          <span className="flex items-center gap-1 py-1.5" aria-label="助手正在思考">
+          <span
+            className="flex w-fit items-center gap-1 rounded-2xl rounded-bl-sm border border-canvas-border/80 bg-canvas-card/80 px-3.5 py-2.5 shadow-sm shadow-black/10 backdrop-blur-sm"
+            aria-label="助手正在思考"
+          >
             <span className="chat-typing-dot" />
             <span className="chat-typing-dot" />
             <span className="chat-typing-dot" />
@@ -124,12 +127,14 @@ function MessageBubble({
             />
           </div>
         ) : (
-          <ChatMarkdown
-            value={message.content}
-            onNodeActivate={onNodeActivate}
-            onNodeHover={onNodeHover}
-            onModelActivate={onModelActivate}
-          />
+          <div className="rounded-2xl rounded-bl-sm border border-canvas-border/80 bg-canvas-card/80 px-3.5 py-2.5 text-canvas-text shadow-sm shadow-black/10 backdrop-blur-sm">
+            <ChatMarkdown
+              value={message.content}
+              onNodeActivate={onNodeActivate}
+              onNodeHover={onNodeHover}
+              onModelActivate={onModelActivate}
+            />
+          </div>
         ))}
 
         {showTimeline && agentTask && agentControls && (

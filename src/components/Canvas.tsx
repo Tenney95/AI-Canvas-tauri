@@ -121,7 +121,8 @@ const isValidConnection = (conn: Connection | Edge) => conn.source !== conn.targ
 const minimapNodeColor = (node: RFNode) => {
   switch (node.type) {
     case 'ai-text': return 'color-mix(in srgb, var(--node-text-light) 50%, transparent)';
-    case 'ai-image': return 'color-mix(in srgb, var(--node-image-light) 50%, transparent)';
+    case 'ai-image':
+    case 'ai-storyboard': return 'color-mix(in srgb, var(--node-image-light) 50%, transparent)';
     case 'ai-video': return 'color-mix(in srgb, var(--node-video-light) 50%, transparent)';
     case 'ai-audio': return 'color-mix(in srgb, var(--node-audio-light) 50%, transparent)';
     case 'ai-animation': return 'color-mix(in srgb, var(--brand) 50%, transparent)';

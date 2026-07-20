@@ -6,13 +6,35 @@ interface ProxyFetchResponse {
   headers: [string, string][];
 }
 
-function encodeUtf8Base64(value: string): string {
-  const bytes = new TextEncoder().encode(value);
+function encodeBytesBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let offset = 0; offset < bytes.length; offset += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
   }
   return btoa(binary);
+}
+
+async function encodeRequestBody(body: BodyInit | null | undefined): Promise<string | null> {
+  if (body === undefined || body === null) return null;
+  if (typeof body === 'string') {
+    return encodeBytesBase64(new TextEncoder().encode(body));
+  }
+  if (body instanceof URLSearchParams) {
+    return encodeBytesBase64(new TextEncoder().encode(body.toString()));
+  }
+  if (body instanceof Blob) {
+    return encodeBytesBase64(new Uint8Array(await body.arrayBuffer()));
+  }
+  if (body instanceof ArrayBuffer) {
+    return encodeBytesBase64(new Uint8Array(body));
+  }
+  if (ArrayBuffer.isView(body)) {
+    return encodeBytesBase64(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+  }
+  if (body instanceof FormData) {
+    throw new Error('原生协议传输需要先序列化 multipart 请求体');
+  }
+  throw new Error('原生协议传输不支持流式请求体');
 }
 
 function decodeBase64Body(value: string): ArrayBuffer {
@@ -27,18 +49,16 @@ export async function corsSafeFetch(url: string, init: RequestInit = {}): Promis
     return fetch(url, init);
   }
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
-  if (init.body !== undefined && init.body !== null && typeof init.body !== 'string') {
-    throw new Error('原生协议传输只支持字符串请求体');
-  }
 
   const headers = Array.from(new Headers(init.headers).entries());
+  const body = await encodeRequestBody(init.body);
   const { invoke } = await import('@tauri-apps/api/core');
   const result = await invoke<ProxyFetchResponse>('proxy_fetch', {
     req: {
       url,
       method: init.method || 'GET',
       headers,
-      body: typeof init.body === 'string' ? encodeUtf8Base64(init.body) : null,
+      body,
     },
   });
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');

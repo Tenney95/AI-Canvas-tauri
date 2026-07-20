@@ -52,4 +52,24 @@ describe('CORS-safe AI HTTP transport', () => {
     ]));
     await expect(response.json()).resolves.toEqual({ result: '完成' });
   });
+
+  it('uses proxy_fetch in Tauri and preserves arbitrary request bytes', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    invokeMock.mockResolvedValue({
+      status: 200,
+      body: Buffer.from([0, 255, 10, 20]).toString('base64'),
+      headers: [['content-type', 'application/octet-stream']],
+    });
+    const requestBytes = Uint8Array.from([1, 2, 0, 255]);
+
+    const response = await corsSafeFetch('https://gateway.example/v1/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: requestBytes.buffer,
+    });
+
+    const request = invokeMock.mock.calls[0]?.[1]?.req as { body: string };
+    expect([...Buffer.from(request.body, 'base64')]).toEqual([...requestBytes]);
+    expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([0, 255, 10, 20]);
+  });
 });

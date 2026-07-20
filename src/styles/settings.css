@@ -1746,12 +1746,12 @@
 .provider-protocol-editor-head span,
 .provider-protocol-field > span {
   color: var(--theme-text-muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 .provider-protocol-editor-head strong {
   overflow: hidden;
   color: var(--theme-text);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1779,7 +1779,7 @@
   color: var(--theme-text-muted);
   background: transparent;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
 }
 .provider-protocol-view-tabs button.is-active {
   color: var(--theme-text);
@@ -1799,12 +1799,43 @@
   padding-top: 12px;
   border-top: 1px solid var(--border-subtle);
 }
+.provider-protocol-editor.is-small .provider-protocol-form {
+  gap: 9px;
+}
+.provider-protocol-editor.is-small .provider-protocol-form-section {
+  gap: 7px;
+  padding-top: 9px;
+}
+.provider-protocol-editor.is-small .provider-protocol-field {
+  gap: 4px;
+}
+.provider-protocol-editor.is-small .provider-protocol-field input,
+.provider-protocol-editor.is-small .provider-protocol-field select {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.provider-protocol-editor.is-small .provider-protocol-field textarea {
+  padding: 7px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.provider-protocol-editor.is-small .provider-protocol-json-field textarea {
+  min-height: 64px;
+}
+.provider-protocol-editor.is-small .provider-protocol-view-tabs {
+  height: 28px;
+}
+.provider-protocol-editor.is-small .provider-protocol-view-tabs button {
+  height: 22px;
+  padding: 0 8px;
+}
 .provider-protocol-section-title {
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--theme-text-secondary);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
 }
 .provider-protocol-section-title svg {
@@ -1843,7 +1874,7 @@
   color: var(--theme-text);
   background: var(--white-alpha-04);
   font: inherit;
-  font-size: 10px;
+  font-size: 12px;
 }
 .provider-protocol-field input,
 .provider-protocol-field select {
@@ -1874,11 +1905,99 @@
 }
 .provider-protocol-json-field > small {
   color: var(--danger-light);
-  font-size: 8px;
+  font-size: 12px;
   line-height: 1.3;
 }
 .provider-protocol-full-json textarea {
   min-height: 360px;
+}
+.provider-protocol-full-json > label {
+  color: var(--theme-text-muted);
+  font-size: 12px;
+}
+.provider-protocol-json-variables,
+.provider-protocol-json-help {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--white-alpha-03);
+}
+.provider-protocol-json-guide-title {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.provider-protocol-json-guide-title svg {
+  flex: 0 0 auto;
+  color: var(--brand-light);
+}
+.provider-protocol-json-guide-title strong {
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.provider-protocol-json-variable-list {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.provider-protocol-json-variable-list code,
+.provider-protocol-json-help code {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+}
+.provider-protocol-json-variable-list code {
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: var(--theme-text-secondary);
+  background: var(--white-alpha-05);
+  font-size: 12px;
+}
+.provider-protocol-json-help dl {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 12px;
+  margin: 0;
+}
+.provider-protocol-json-help dl > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(92px, auto) 1fr;
+  align-items: start;
+  gap: 7px;
+}
+.provider-protocol-json-help dt,
+.provider-protocol-json-help dd,
+.provider-protocol-json-help p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.provider-protocol-json-help dt {
+  color: var(--theme-text-secondary);
+  font-weight: 600;
+}
+.provider-protocol-json-help dd,
+.provider-protocol-json-help p {
+  color: var(--theme-text-muted);
+}
+.provider-protocol-json-help code {
+  color: var(--theme-text-secondary);
+  font-size: inherit;
+}
+.provider-protocol-json-help p {
+  padding-top: 7px;
+  border-top: 1px solid var(--border-subtle);
 }
 .provider-protocol-prefix-field,
 .provider-protocol-size-insert {
@@ -1891,7 +2010,7 @@
   gap: 7px;
   color: var(--theme-text-secondary);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
 }
 .provider-protocol-toggle input {
   accent-color: var(--brand);
@@ -1900,7 +2019,7 @@
   padding-top: 10px;
   border-top: 1px solid var(--border-subtle);
   color: var(--theme-text-muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 .provider-protocol-variables summary {
   width: fit-content;
@@ -1918,14 +2037,83 @@
   color: var(--theme-text-secondary);
   background: var(--white-alpha-04);
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 8px;
+  font-size: 12px;
+}
+.provider-protocol-response-preview {
+  padding-top: 9px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--theme-text-muted);
+  font-size: 12px;
+}
+.provider-protocol-response-preview > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--theme-text-secondary);
+}
+.provider-protocol-response-preview-content {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 8px;
+}
+.provider-protocol-response-preview .provider-protocol-field > small {
+  color: var(--danger-light);
+  font-size: 12px;
+}
+.provider-protocol-response-results {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+.provider-protocol-response-results > span {
+  color: var(--theme-text-muted);
+}
+.provider-protocol-response-result {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.provider-protocol-response-result > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.provider-protocol-response-result strong {
+  flex: none;
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.provider-protocol-response-result code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--theme-text-muted);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.provider-protocol-response-result > code {
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--white-alpha-03);
+}
+.provider-protocol-response-result > code.is-matched {
+  color: var(--theme-text-secondary);
 }
 .provider-protocol-error {
   display: flex;
   align-items: flex-start;
   gap: 6px;
   color: var(--danger-light);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.4;
 }
 .provider-model-copy strong,
@@ -1993,7 +2181,9 @@
   .provider-protocol-grid,
   .provider-protocol-grid.is-three,
   .provider-protocol-grid.is-request,
-  .provider-protocol-json-grid {
+  .provider-protocol-json-grid,
+  .provider-protocol-response-preview-content,
+  .provider-protocol-json-help dl {
     grid-template-columns: minmax(0, 1fr);
   }
   .provider-protocol-path-field {

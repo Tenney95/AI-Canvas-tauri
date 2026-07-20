@@ -257,7 +257,7 @@ export default function ChatMarkdown({
             <tbody>{rows.map((row, rowIndex) => (
               <tr key={rowIndex} className="border-b border-canvas-border/60 last:border-b-0">
                 {header.map((_, cellIndex) => (
-                  <td key={cellIndex} className="px-2.5 py-2 align-top text-canvas-text-secondary">
+                  <td key={cellIndex} className="px-2.5 py-2 align-top text-canvas-text/90">
                     <InlineContent value={row[cellIndex] ?? ''} {...inlineProps} />
                   </td>
                 ))}
@@ -285,9 +285,9 @@ export default function ChatMarkdown({
         </li>
       ));
       blocks.push(ordered ? (
-        <ol key={`list-${index}`} className="my-1.5 list-decimal space-y-1 pl-5 text-canvas-text-secondary">{children}</ol>
+        <ol key={`list-${index}`} className="my-1.5 list-decimal space-y-1 pl-5 text-canvas-text/90">{children}</ol>
       ) : (
-        <ul key={`list-${index}`} className="my-1.5 list-disc space-y-1 pl-5 text-canvas-text-secondary">{children}</ul>
+        <ul key={`list-${index}`} className="my-1.5 list-disc space-y-1 pl-5 text-canvas-text/90">{children}</ul>
       ));
       continue;
     }
@@ -315,7 +315,7 @@ export default function ChatMarkdown({
       index += 1;
     }
     blocks.push(
-      <p key={`p-${index}`} className="my-1.5 break-words text-canvas-text-secondary first:mt-0 last:mb-0">
+      <p key={`p-${index}`} className="my-1.5 break-words text-canvas-text/90 first:mt-0 last:mb-0">
         {paragraph.map((paragraphLine, lineIndex) => (
           <span key={lineIndex}>
             {lineIndex > 0 && <br />}

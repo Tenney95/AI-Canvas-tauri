@@ -24,6 +24,10 @@ export type ProtocolJsonValue =
 
 export type ModelProtocolHttpMethod = 'GET' | 'POST';
 
+export type ModelProtocolBodyEncoding = 'json' | 'form-urlencoded' | 'multipart';
+
+export type ModelProtocolResponseType = 'json' | 'text' | 'binary';
+
 export type ModelProtocolAuthType = 'bearer' | 'header' | 'query' | 'none';
 
 export interface ModelProtocolAuthConfig {
@@ -43,21 +47,77 @@ export interface ModelProtocolRequestTemplate {
   /** 受控静态请求头；禁止覆盖鉴权、来源、Cookie 和传输层字段。 */
   headers?: Record<string, string>;
   query?: Record<string, ProtocolJsonValue>;
+  /** 请求体编码，缺省为 JSON。multipart 文件只接受受控的 data URL 声明。 */
+  bodyEncoding?: ModelProtocolBodyEncoding;
   body?: ProtocolJsonValue;
 }
 
-export interface ModelProtocolPollTemplate extends ModelProtocolRequestTemplate {
+export type ModelProtocolPollBackoff = 'fixed' | 'linear' | 'exponential';
+
+export interface ModelProtocolPollRetryConfig {
+  /** 仅状态查询可重试的 HTTP 状态码。 */
+  httpStatuses?: number[];
+  /** 连续查询错误最多重试次数，默认 3。 */
+  maxRetries?: number;
+  backoff?: ModelProtocolPollBackoff;
+  /** 退避或 Retry-After 允许的最大等待时间。 */
+  maxDelayMs?: number;
+  /** 是否遵循响应中的 Retry-After，默认 true。 */
+  honorRetryAfter?: boolean;
+  /** 是否重试瞬时网络错误，默认 true。 */
+  retryNetworkErrors?: boolean;
+}
+
+export interface ModelProtocolResultConfig {
+  urlPath?: string;
+  textPath?: string;
+  base64Path?: string;
+  mimeType?: string;
+}
+
+export interface ModelProtocolResponseConfig {
+  type: ModelProtocolResponseType;
+  /** 异步提交响应中的任务 ID 路径。 */
+  taskIdPath?: string;
+  result?: ModelProtocolResultConfig;
+  errorPath?: string;
+}
+
+export interface ModelProtocolPollResponseConfig {
+  statusPath: string;
+  successValues: string[];
+  failureValues: string[];
+  result: ModelProtocolResultConfig;
+  errorPath?: string;
+  progressPath?: string;
+}
+
+/** version 1 兼容输入；不再作为新协议的写入格式。 */
+export interface LegacyModelProtocolPollTemplate extends ModelProtocolRequestTemplate {
   statusPath: string;
   successValues: string[];
   failureValues: string[];
   resultUrlPath?: string;
   resultTextPath?: string;
+  resultBase64Path?: string;
+  resultMimeType?: string;
   errorPath?: string;
   progressPath?: string;
   intervalMs?: number;
+  maxAttempts?: number;
+  maxDurationMs?: number;
+  retry?: ModelProtocolPollRetryConfig;
 }
 
-export interface ModelExecutionProtocol {
+export interface ModelProtocolPollTemplate extends ModelProtocolRequestTemplate {
+  response: ModelProtocolPollResponseConfig;
+  intervalMs?: number;
+  maxAttempts?: number;
+  maxDurationMs?: number;
+  retry?: ModelProtocolPollRetryConfig;
+}
+
+export interface ModelExecutionProtocolV1 {
   version: 1;
   mode: 'sync' | 'async';
   /** 缺省为 Bearer，保持旧配置兼容。 */
@@ -65,16 +125,39 @@ export interface ModelExecutionProtocol {
   /** 对话助手仅接受显式声明的 OpenAI SSE 兼容流。 */
   streamFormat?: 'openai-sse';
   submit: ModelProtocolRequestTemplate;
+  /** 同步响应类型，缺省为 JSON；异步协议固定使用 JSON。 */
+  responseType?: ModelProtocolResponseType;
   /** 同步协议的结果 URL 路径。 */
   resultUrlPath?: string;
   /** 同步文本协议的结果文本路径。 */
   resultTextPath?: string;
+  /** 同步 JSON 响应中的 Base64 媒体路径。 */
+  resultBase64Path?: string;
+  /** Base64 结果或无 Content-Type 二进制响应使用的 MIME 类型。 */
+  resultMimeType?: string;
   /** 提交响应或 HTTP 错误响应中的错误详情路径。 */
   errorPath?: string;
   /** 异步协议用于记录远端任务身份的提交响应路径。 */
   taskIdPath?: string;
+  poll?: LegacyModelProtocolPollTemplate;
+}
+
+export interface ModelExecutionProtocolV2 {
+  version: 2;
+  mode: 'sync' | 'async';
+  /** 缺省为 Bearer，保持旧配置兼容。 */
+  auth?: ModelProtocolAuthConfig;
+  /** 对话助手仅接受显式声明的 OpenAI SSE 兼容流。 */
+  streamFormat?: 'openai-sse';
+  submit: ModelProtocolRequestTemplate;
+  response: ModelProtocolResponseConfig;
   poll?: ModelProtocolPollTemplate;
 }
+
+export type ModelExecutionProtocol = ModelExecutionProtocolV1 | ModelExecutionProtocolV2;
+
+/** parser、编辑器与执行器统一使用的规范协议。 */
+export type NormalizedModelExecutionProtocol = ModelExecutionProtocolV2;
 
 export type ModelProtocolPresetId = 'openai-chat' | 'openai-image' | 'agnes-video' | 'custom';
 
@@ -91,15 +174,21 @@ export interface ResolvedModelProtocolPoll {
   /** 只保存鉴权方式，不保存密钥。 */
   auth?: ModelProtocolAuthConfig;
   headers?: Record<string, string>;
+  bodyEncoding?: Exclude<ModelProtocolBodyEncoding, 'multipart'>;
   body?: ProtocolJsonValue;
   statusPath: string;
   successValues: string[];
   failureValues: string[];
   resultUrlPath?: string;
   resultTextPath?: string;
+  resultBase64Path?: string;
+  resultMimeType?: string;
   errorPath?: string;
   progressPath?: string;
   intervalMs: number;
+  maxAttempts?: number;
+  maxDurationMs?: number;
+  retry?: ModelProtocolPollRetryConfig;
 }
 
 export const MAX_IMAGE_BATCH_COUNT = 8;

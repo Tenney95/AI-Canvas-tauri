@@ -127,6 +127,8 @@
 
 /* 裁切主舞台 — 居中内容，填满视口，overflow 裁剪缩放溢出 */
 .crop-stage {
+  --crop-stage-inline-gutter: clamp(32px, 6vw, 96px);
+  --crop-stage-block-gutter: 144px;
   flex: 1;
   display: flex;
   align-items: center;
@@ -144,6 +146,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  max-width: calc(100vw - var(--crop-stage-inline-gutter));
+  max-height: calc(100vh - var(--crop-stage-block-gutter));
+  max-height: calc(100dvh - var(--crop-stage-block-gutter));
   transform-origin: center center;
 }
 
@@ -171,12 +176,22 @@
 }
 
 /* 裁切图片 */
-.crop-image {
-  max-width: 100%;
-  max-height: 100%;
+.crop-stage .crop-image {
+  width: auto;
+  height: auto;
+  max-width: calc(100vw - var(--crop-stage-inline-gutter));
+  max-height: calc(100vh - var(--crop-stage-block-gutter));
+  max-height: calc(100dvh - var(--crop-stage-block-gutter));
   display: block;
   user-select: none;
   -webkit-user-drag: none;
+}
+
+@media (max-width: 720px), (max-height: 560px) {
+  .crop-stage {
+    --crop-stage-inline-gutter: 24px;
+    --crop-stage-block-gutter: 128px;
+  }
 }
 
 /* 缩放指示器 */
