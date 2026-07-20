@@ -114,4 +114,34 @@ describe('dramaAssets store', () => {
     useAppStore.getState().deleteDramaAsset('character', 'char_1');
     expect(useAppStore.getState().dramaAssets.characters).toHaveLength(0);
   });
+
+  it('renaming updates key for future merge', () => {
+    useAppStore.setState({
+      dramaAssets: {
+        ...emptyDramaAssetLibrary(),
+        characters: [sampleCharacter({ name: '旧名', key: '旧名' })],
+      },
+    });
+    useAppStore.getState().updateDramaAssetFields('character', 'char_1', {
+      name: '新 角色',
+      summary: '简介',
+      visualNotes: '外形',
+    });
+    const asset = useAppStore.getState().dramaAssets.characters[0];
+    expect(asset.name).toBe('新 角色');
+    expect(asset.key).toBe('新角色');
+  });
+
+  it('unbind fully removes image fields', () => {
+    useAppStore.setState({
+      dramaAssets: {
+        ...emptyDramaAssetLibrary(),
+        characters: [sampleCharacter({ imageNodeId: 'n1', imageUrl: 'http://x' })],
+      },
+    });
+    useAppStore.getState().unbindDramaAssetImage('character', 'char_1');
+    const asset = useAppStore.getState().dramaAssets.characters[0];
+    expect(asset).not.toHaveProperty('imageNodeId');
+    expect(asset).not.toHaveProperty('imageUrl');
+  });
 });

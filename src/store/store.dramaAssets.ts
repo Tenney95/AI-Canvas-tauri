@@ -11,7 +11,7 @@ import type {
 } from '../types/dramaAssets';
 import { emptyDramaAssetLibrary } from '../types/dramaAssets';
 import type { DramaExtractParseResult } from '../services/dramaAssetExtract';
-import { mergeDramaExtractIntoLibrary } from '../services/dramaAssetExtract';
+import { mergeDramaExtractIntoLibrary, normalizeAssetKey } from '../services/dramaAssetExtract';
 import {
   buildDramaAssetImagePrompt,
   defaultAspectRatioForAsset,
@@ -149,9 +149,14 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
 
   updateDramaAssetFields: (kind, id, patch) => {
     const lib = get().dramaAssets;
+    // 改名时同步 key，保证后续重提取 merge 仍能对上
+    const nextPatch: Partial<DramaAsset> = { ...patch };
+    if (typeof patch.name === 'string' && patch.name.trim()) {
+      nextPatch.key = normalizeAssetKey(patch.name);
+    }
     set({
       dramaAssets: mapKindList(lib, kind, (list) =>
-        patchList(list, id, patch as Partial<DramaAsset>),
+        patchList(list, id, nextPatch),
       ),
     });
     silentSave(get);
@@ -185,14 +190,13 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
 
   unbindDramaAssetImage: (kind, id) => {
     const lib = get().dramaAssets;
-    set({
-      dramaAssets: mapKindList(lib, kind, (list) =>
-        patchList(list, id, {
-          imageNodeId: undefined,
-          imageUrl: undefined,
-        } as Partial<DramaAsset>),
-      ),
-    });
+    const strip = (list: DramaAsset[]): DramaAsset[] =>
+      list.map((item) => {
+        if (item.id !== id) return item;
+        const { imageNodeId: _n, imageUrl: _u, ...rest } = item;
+        return { ...rest, updatedAt: Date.now() } as DramaAsset;
+      });
+    set({ dramaAssets: mapKindList(lib, kind, strip) });
     silentSave(get);
   },
 
@@ -203,6 +207,7 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     const syncList = <T extends DramaAsset>(list: T[]): T[] =>
       list.map((item) => {
         if (item.imageNodeId === imageNodeId) {
+          if (item.imageUrl === imageUrl) return item;
           changed = true;
           return { ...item, imageUrl, updatedAt: Date.now() };
         }
@@ -216,13 +221,13 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
       props: syncList(lib.props),
     };
 
-    // 也按节点 data.dramaAssetId 补绑（一键创建后尚未 bind 的兜底）
+    // 按节点 data.dramaAssetId 补绑（一键创建路径兜底）
     const node = get().nodes.find((n) => n.id === imageNodeId);
     const dramaAssetId = node?.data?.dramaAssetId as string | undefined;
     const dramaAssetKind = node?.data?.dramaAssetKind as DramaAssetKind | undefined;
     if (dramaAssetId && dramaAssetKind) {
       const asset = findDramaAssetByKind(next, dramaAssetKind, dramaAssetId);
-      if (asset && asset.imageNodeId !== imageNodeId) {
+      if (asset && (asset.imageNodeId !== imageNodeId || asset.imageUrl !== imageUrl)) {
         changed = true;
         const bindPatch = { imageNodeId, imageUrl, updatedAt: Date.now() };
         if (dramaAssetKind === 'character') {
@@ -238,9 +243,6 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
             c.id === dramaAssetId ? { ...c, ...bindPatch } : c,
           );
         }
-      } else if (asset && asset.imageUrl !== imageUrl) {
-        changed = true;
-        // already handled by imageNodeId sync above if bound
       }
     }
 
@@ -288,17 +290,27 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
       },
     };
 
+    // 回填本地偏好模型（与侧栏添加图像节点一致）
+    try {
+      const raw = localStorage.getItem('canvas-model-prefs');
+      if (raw) {
+        const prefs: Record<string, string> = JSON.parse(raw);
+        const modelValue = prefs['ai-image'];
+        if (modelValue && modelValue.includes('::')) {
+          const [provider, model] = modelValue.split('::');
+          if (provider && model) {
+            newNode.data.provider = provider;
+            newNode.data.model = model;
+          }
+        }
+      }
+    } catch { /* ignore */ }
+
     get().addNode(newNode);
     get().bindDramaAssetImage(kind, id, nodeId);
     get().setDramaAssetsPanelOpen(false);
-    get().showToast?.(
-      `已创建「${label}」图像节点，可直接生成`,
-    );
-
-    // 聚焦新节点
-    try {
-      get().setSelectedNodeIds?.([nodeId]);
-    } catch { /* optional */ }
+    get().setSelectedNodeIds([nodeId]);
+    get().showToast(`已创建「${label}」图像节点，可直接生成`);
 
     return nodeId;
   },

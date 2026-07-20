@@ -809,21 +809,24 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   }, [showMention]);
 
   // ── Helpers ──
+  /** 删除光标前的 @ 及后续查询字（如 `@主角` → 整段删掉再插入芯片） */
   const deleteAtChar = useCallback(() => {
     const sel = window.getSelection();
-    if (sel && sel.rangeCount) {
-      const range = sel.getRangeAt(0);
-      const textBefore = range.startContainer?.textContent?.slice(0, range.startOffset) || '';
-      const atIdx = textBefore.lastIndexOf('@');
-      if (atIdx >= 0 && range.startContainer) {
-        range.setStart(range.startContainer, atIdx);
-        range.setEnd(range.startContainer, atIdx + 1);
-        range.deleteContents();
-        range.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
-    }
+    if (!sel || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    const container = range.startContainer;
+    if (!container || container.nodeType !== Node.TEXT_NODE) return;
+    const cursor = range.startOffset;
+    const textBefore = (container.textContent || '').slice(0, cursor);
+    const atIdx = textBefore.lastIndexOf('@');
+    if (atIdx < 0) return;
+    const r = document.createRange();
+    r.setStart(container, atIdx);
+    r.setEnd(container, cursor);
+    r.deleteContents();
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
   }, []);
 
   // ── Insert a canvas node chip ──
@@ -1180,17 +1183,23 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       if (node && node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent || '';
         const cursorPos = range.startOffset;
-        if (cursorPos > 0 && text[cursorPos - 1] === '@') {
-          // 资产引用始终可用，故 @ 总是打开菜单
-          setMentionQuery('');
+        const before = text.slice(0, cursorPos);
+        // 光标前最近的 @… 查询段（不含空格/换行）
+        const atIdx = before.lastIndexOf('@');
+        const afterAt = atIdx >= 0 ? before.slice(atIdx + 1) : '';
+        const inMention =
+          atIdx >= 0
+          && !afterAt.includes(' ')
+          && !afterAt.includes('\n')
+          && !afterAt.includes('{'); // 已完成的 @{...} 芯片序列化文本不走菜单
+        if (inMention) {
+          setMentionQuery(afterAt);
           setShowMention(true);
-          // Save cursor range before the menu steals focus
           const sel2 = window.getSelection();
           if (sel2 && sel2.rangeCount) {
             savedMentionRangeRef.current = sel2.getRangeAt(0).cloneRange();
           }
         } else {
-          // @ 已被删除或光标不在 @ 后，关闭菜单
           if (showMention) setShowMention(false);
           if (cursorPos > 0 && text[cursorPos - 1] === '/') {
             onSlashTrigger?.();
