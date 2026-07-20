@@ -123,6 +123,12 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     const next = mergeDramaExtractIntoLibrary(get().dramaAssets, parsed, meta);
     set({ dramaAssets: next });
     silentSave(get);
+    // 提取成功后自动打开面板，避免用户找不到入口
+    const total =
+      next.characters.length + next.scenes.length + next.props.length;
+    if (total > 0) {
+      get().setDramaAssetsPanelOpen(true);
+    }
   },
 
   confirmDramaAsset: (kind, id, confirmed = true) => {

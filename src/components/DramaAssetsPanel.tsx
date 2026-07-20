@@ -245,7 +245,7 @@ function DramaAssetCard({
         <div className="flex flex-col gap-1 shrink-0 items-stretch min-w-[72px]">
           <button
             type="button"
-            className="px-2 py-1 rounded-lg text-[11px] font-medium bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 transition-colors"
+            className="px-2 py-1 rounded-lg text-[11px] font-medium bg-indigo-500/25 text-indigo-200 hover:bg-indigo-500/40 transition-colors border border-indigo-500/30"
             onClick={onCreateImageNode}
             title={`创建${purposeLabel(purpose)}图像节点并填入提示词`}
           >
@@ -573,10 +573,13 @@ export default function DramaAssetsPanel() {
                   <p className="text-[13px] mb-1">
                     {search ? '无匹配资产' : '暂无短剧资产'}
                   </p>
-                  <p className="text-[11px] text-center max-w-[320px] leading-relaxed opacity-80">
-                    文本节点用「提取人物 / 场景 / 道具」入库后，可在此编辑、绑图、一键生成定妆/场景/道具图；
-                    提示词里用 @ 可引用短剧资产。
-                  </p>
+                  <div className="text-[11px] text-center max-w-[340px] leading-relaxed opacity-90 space-y-1.5">
+                    <p className="font-medium text-canvas-text-secondary">如何添加条目：</p>
+                    <p>1. 画布新建「生成文本」节点，粘贴剧本</p>
+                    <p>2. 提示词框输入 <code className="px-1 rounded bg-canvas-hover">/</code> → 选「提取资产信息」→「提取人物」</p>
+                    <p>3. 运行生成；成功后会自动打开本面板，并出现列表</p>
+                    <p>4. 每条右侧有「定妆图」按钮；其它节点 prompt 里输入 <code className="px-1 rounded bg-canvas-hover">@</code> 可引用</p>
+                  </div>
                 </div>
               ) : (
                 items.map((asset) => (
