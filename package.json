@@ -5,7 +5,9 @@
     "type": "module",
     "scripts": {
         "postinstall": "node scripts/setup-hooks.js",
-        "dev": "vite",
+        "dev": "node scripts/dev-with-director.mjs",
+        "dev:web-only": "vite",
+        "director": "node scripts/ensure-director-desk.mjs",
         "lint": "eslint .",
         "typecheck": "tsc -b",
         "test:typecheck": "tsc -p tsconfig.test.json --noEmit",
@@ -15,7 +17,8 @@
         "ci": "npm run check && npm run build",
         "build": "tsc -b && vite build",
         "preview": "vite preview",
-        "tauri": "tauri",
+        "tauri": "node scripts/tauri-with-director.mjs",
+        "tauri:raw": "tauri",
         "sync-version": "node scripts/sync-version.js"
     },
     "dependencies": {

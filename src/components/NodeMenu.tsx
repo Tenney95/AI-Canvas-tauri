@@ -47,10 +47,16 @@ const menuItems: { type: NodeType; label: string; icon: JSX.Element; badge?: str
     icon: <Icon icon={NODE_TYPE_CONFIG['ai-animation'].icon} width="18" height="18" />,
     badge: 'Sprite',
   },
+  {
+    type: 'ai-director',
+    label: '3D导演台',
+    icon: <Icon icon={NODE_TYPE_CONFIG['ai-director'].icon} width="18" height="18" />,
+    badge: '3D',
+  },
 ];
 
 const NODE_MENU_W = 240;
-const NODE_MENU_H = 338; // 5 items + header + footer
+const NODE_MENU_H = 390; // items + header + footer
 
 export default function NodeMenu() {
   const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, currentProjectId, showToast } = useAppStore(
@@ -80,6 +86,7 @@ export default function NodeMenu() {
   const handleAddNode = (type: NodeType) => {
     const isImage = type === 'ai-image';
     const isAnimation = type === 'ai-animation';
+    const isDirector = type === 'ai-director';
     const pos = getCanvasPointerPosition();
     const newNode: Record<string, unknown> = {
       id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -90,8 +97,8 @@ export default function NodeMenu() {
         type,
         prompt: '',
         status: 'idle' as const,
-        nodeWidth: isAnimation ? 320 : 280,
-        nodeHeight: isImage ? 158 : isAnimation ? 358 : 160,
+        nodeWidth: isAnimation || isDirector ? 320 : 280,
+        nodeHeight: isDirector ? 240 : isImage ? 158 : isAnimation ? 358 : 160,
         ...(isImage ? { aspectRatio: '16:9', imageSize: '2K' } : {}),
         ...(isAnimation ? {
           prompt: '2D俯视角游戏角色，保持角色造型、朝向、比例和光照一致',
@@ -100,6 +107,11 @@ export default function NodeMenu() {
           animationPreviewMode: 'playing',
           aspectRatio: '1:1',
           imageSize: '2K',
+        } : {}),
+        ...(isDirector ? {
+          role: 'source',
+          directorStatus: 'idle',
+          directorCaptureUrls: [],
         } : {}),
       },
     };

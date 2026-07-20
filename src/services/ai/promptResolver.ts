@@ -126,8 +126,17 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
       parts.push(match[0]);
     } else {
       const nodeType = (node.data.type as string) || '';
-      if (nodeType === 'ai-image' || nodeType === 'source-image' || nodeType === 'ai-storyboard') {
-        const imageUrl = node.data.imageUrl as string | undefined;
+      if (
+        nodeType === 'ai-image'
+        || nodeType === 'source-image'
+        || nodeType === 'ai-storyboard'
+        || nodeType === 'ai-director'
+        || nodeType === 'ai-panorama'
+      ) {
+        const imageUrl = (
+          (node.data.imageUrl as string | undefined)
+          || (node.data.thumbnailUrl as string | undefined)
+        );
         if (typeof imageUrl === 'string' && imageUrl.trim()) {
           const key = `node:${nodeId}`;
           let idx = imageKeyToIndex.get(key);
@@ -142,6 +151,19 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
             });
           }
           parts.push(`图片${idx}`);
+        }
+        if (nodeType === 'ai-director' && Array.isArray(node.data.directorCaptureUrls)) {
+          for (const [i, url] of (node.data.directorCaptureUrls as string[]).entries()) {
+            if (typeof url !== 'string' || !url.trim() || url === imageUrl) continue;
+            const key = `node:${nodeId}:cap:${i}`;
+            let idx = imageKeyToIndex.get(key);
+            if (idx === undefined) {
+              idx = imageEntries.length + 1;
+              imageKeyToIndex.set(key, idx);
+              imageEntries.push({ url });
+            }
+            parts.push(`图片${idx}`);
+          }
         }
       } else {
         const output = node.data.output as string | undefined;
@@ -267,9 +289,33 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
 
     const nodeType = (node.data.type as string) || '';
 
-    if (nodeType === 'ai-image' || nodeType === 'source-image' || nodeType === 'ai-storyboard') {
-      const imageUrl = node.data.imageUrl as string | undefined;
-      if (typeof imageUrl !== 'string' || !imageUrl.trim()) return '';
+    if (
+      nodeType === 'ai-image'
+      || nodeType === 'source-image'
+      || nodeType === 'ai-storyboard'
+      || nodeType === 'ai-director'
+      || nodeType === 'ai-panorama'
+    ) {
+      const imageUrl = (
+        (node.data.imageUrl as string | undefined)
+        || (node.data.thumbnailUrl as string | undefined)
+      );
+      if (typeof imageUrl !== 'string' || !imageUrl.trim()) {
+        if (nodeType === 'ai-director' && Array.isArray(node.data.directorCaptureUrls)) {
+          const first = (node.data.directorCaptureUrls as string[]).find((u) => typeof u === 'string' && u.trim());
+          if (first) {
+            const key = `node:${rawNodeId}:cap0`;
+            let idx = imageKeyToIndex.get(key);
+            if (idx === undefined) {
+              idx = imageEntries.length + 1;
+              imageKeyToIndex.set(key, idx);
+              imageEntries.push({ url: first });
+            }
+            return `图片${idx}`;
+          }
+        }
+        return '';
+      }
       const key = `node:${rawNodeId}`;
       let idx = imageKeyToIndex.get(key);
       if (idx === undefined) {
@@ -281,6 +327,16 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
           annotation: (node.data.annotation as string | undefined) || undefined,
           filePath: (node.data.filePath as string | undefined) || undefined,
         });
+      }
+      if (nodeType === 'ai-director' && Array.isArray(node.data.directorCaptureUrls)) {
+        for (const [i, url] of (node.data.directorCaptureUrls as string[]).entries()) {
+          if (typeof url !== 'string' || !url.trim() || url === imageUrl) continue;
+          const capKey = `node:${rawNodeId}:cap:${i}`;
+          if (!imageKeyToIndex.has(capKey)) {
+            imageKeyToIndex.set(capKey, imageEntries.length + 1);
+            imageEntries.push({ url });
+          }
+        }
       }
       return `图片${idx}`;
     }

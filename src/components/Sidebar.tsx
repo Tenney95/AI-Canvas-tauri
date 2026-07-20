@@ -25,7 +25,7 @@ import ProjectLibraryModal from './ProjectLibraryModal';
    Node picker menu items
    ============================================ */
 const generationItems: {
-  type: NodeType | '3d-director';
+  type: NodeType;
   label: string;
   sub: string;
   icon: JSX.Element;
@@ -65,6 +65,12 @@ const generationItems: {
     label: '生成动画',
     sub: '2D 角色逐帧动画',
     icon: <Icon icon={NODE_TYPE_CONFIG['ai-animation'].icon} width="18" height="18" />,
+  },
+  {
+    type: 'ai-director',
+    label: '3D 导演台',
+    sub: '运镜预演 · 截图供生视频',
+    icon: <Icon icon={NODE_TYPE_CONFIG['ai-director'].icon} width="18" height="18" />,
   },
 ];
 
@@ -468,13 +474,14 @@ function NodePicker({
     const isImage = type === 'ai-image';
     const isPanorama = type === 'ai-panorama';
     const isAnimation = type === 'ai-animation';
+    const isDirector = type === 'ai-director';
     const nodeData: Record<string, unknown> = {
       label: NODE_TYPE_CONFIG[type]?.label || generationItems.find((m) => m.type === type)?.label || '节点',
       type,
       prompt: '',
       status: 'idle' as const,
-      nodeWidth: isAnimation ? 320 : isPanorama ? 300 : 280,
-      nodeHeight: isImage ? 158 : isAnimation ? 358 : isPanorama ? 200 : 160,
+      nodeWidth: isAnimation || isDirector ? 320 : isPanorama ? 300 : 280,
+      nodeHeight: isDirector ? 240 : isImage ? 158 : isAnimation ? 358 : isPanorama ? 200 : 160,
     };
     if (isImage) {
       nodeData.aspectRatio = '16:9';
@@ -490,6 +497,11 @@ function NodePicker({
       nodeData.animationPreviewMode = 'playing';
       nodeData.aspectRatio = '1:1';
       nodeData.imageSize = '2K';
+    }
+    if (isDirector) {
+      nodeData.role = 'source';
+      nodeData.directorStatus = 'idle';
+      nodeData.directorCaptureUrls = [];
     }
     // Auto-fill default model from localStorage preference
     // 全景图节点回退到生图节点偏好
@@ -599,8 +611,7 @@ function NodePicker({
           scale={1.02}
           className="menu-row has-desc"
           onClick={() => {
-            if (type === '3d-director') return; // placeholder
-            handleAddNode(type as NodeType);
+            handleAddNode(type);
           }}
         >
           <div className="menu-ico">{icon}</div>
