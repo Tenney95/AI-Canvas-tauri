@@ -292,18 +292,13 @@ const TEXT_COMMANDS: SlashCommandItem[] = [
 
 {{ 文章内容 }}`,
   },
+  // 三类提取与「提取人物」同级：顶级入口 + 直接触发，成功后写入短剧资产库
   {
-    id: 'text-extract-assets',
-    title: '提取资产信息',
-    icon: 'mdi:database-search-outline',
-    description: '从剧本结构化提取人物/场景/道具简介（非生图提示词）',
-    children: [
-      {
-        id: 'text-extract-characters',
-        title: '提取人物',
-        icon: 'mdi:account-search',
-        description: '只提取人物简介表（一套默认造型，无状态变体）',
-        promptTemplate: `${DRAMA_EXTRACT_MARKER.character}
+    id: 'text-extract-characters',
+    title: '提取人物',
+    icon: 'mdi:account-search',
+    description: '只提取人物简介表，入库后可 @ 引用（一套默认造型，无状态变体）',
+    promptTemplate: `${DRAMA_EXTRACT_MARKER.character}
 你是剧本资产分析助手。请阅读下列剧本，**仅提取人物**，输出 JSON（不要 Markdown 说明、不要生图提示词）。
 
 # 规则
@@ -340,13 +335,13 @@ const TEXT_COMMANDS: SlashCommandItem[] = [
 
 # 剧本正文
 {{ 文章内容 }}`,
-      },
-      {
-        id: 'text-extract-scenes',
-        title: '提取场景',
-        icon: 'mdi:map-search-outline',
-        description: '只提取场景简介表（空间与氛围，非空镜长 prompt）',
-        promptTemplate: `${DRAMA_EXTRACT_MARKER.scene}
+  },
+  {
+    id: 'text-extract-scenes',
+    title: '提取场景',
+    icon: 'mdi:map-search-outline',
+    description: '只提取场景简介表，入库后可 @ 引用（空间与氛围，非空镜长 prompt）',
+    promptTemplate: `${DRAMA_EXTRACT_MARKER.scene}
 你是剧本资产分析助手。请阅读下列剧本，**仅提取场景**，输出 JSON（不要 Markdown 说明、不要生图提示词）。
 
 # 规则
@@ -379,13 +374,13 @@ const TEXT_COMMANDS: SlashCommandItem[] = [
 
 # 剧本正文
 {{ 文章内容 }}`,
-      },
-      {
-        id: 'text-extract-props',
-        title: '提取道具',
-        icon: 'mdi:treasure-chest',
-        description: '只提取关键道具简介（宁缺毋滥）',
-        promptTemplate: `${DRAMA_EXTRACT_MARKER.prop}
+  },
+  {
+    id: 'text-extract-props',
+    title: '提取道具',
+    icon: 'mdi:treasure-chest',
+    description: '只提取关键道具简介，入库后可 @ 引用（宁缺毋滥）',
+    promptTemplate: `${DRAMA_EXTRACT_MARKER.prop}
 你是剧本资产分析助手。请阅读下列剧本，**仅提取关键道具**，输出 JSON（不要 Markdown 说明、不要生图提示词）。
 
 # 规则
@@ -416,8 +411,6 @@ const TEXT_COMMANDS: SlashCommandItem[] = [
 
 # 剧本正文
 {{ 文章内容 }}`,
-      },
-    ],
   },
   {
     id: 'text-extract-legacy',

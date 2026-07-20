@@ -63,7 +63,7 @@ describe('parseDramaExtractResponse', () => {
 });
 
 describe('postProcessDramaExtractOutput', () => {
-  it('returns markdown and parsed on success', () => {
+  it('returns markdown and parsed on success (人物)', () => {
     const prompt = `${DRAMA_EXTRACT_MARKER.character}\n剧本…`;
     const json = JSON.stringify({
       kind: 'character',
@@ -83,6 +83,54 @@ describe('postProcessDramaExtractOutput', () => {
     expect(result.parsed?.characters[0].name).toBe('阿宁');
     expect(result.output).toContain('人物');
     expect(result.output).toContain('阿宁');
+  });
+
+  it('parses and formats scene extract like character', () => {
+    const prompt = `${DRAMA_EXTRACT_MARKER.scene}\n剧本…`;
+    const json = JSON.stringify({
+      kind: 'scene',
+      items: [
+        {
+          name: '现代电影院',
+          placeType: '室内',
+          timeOfDay: '夜',
+          summary: '银幕光映照的观众席',
+          visualNotes: '暗场、银幕冷光',
+          atmosphere: '孤寂',
+          importance: 'main',
+        },
+      ],
+    });
+    const result = postProcessDramaExtractOutput(prompt, json);
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('scene');
+    expect(result.parsed?.scenes[0].name).toBe('现代电影院');
+    expect(result.output).toContain('场景');
+    expect(result.output).toContain('现代电影院');
+  });
+
+  it('parses and formats prop extract like character', () => {
+    const prompt = `${DRAMA_EXTRACT_MARKER.prop}\n剧本…`;
+    const json = JSON.stringify({
+      kind: 'prop',
+      items: [
+        {
+          name: '旧运动鞋',
+          ownerName: '主角',
+          category: '服饰/鞋履',
+          summary: '青春记忆符号',
+          visualNotes: '磨损鞋面',
+          significance: '人物识别点',
+          importance: 'supporting',
+        },
+      ],
+    });
+    const result = postProcessDramaExtractOutput(prompt, json);
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('prop');
+    expect(result.parsed?.props[0].name).toBe('旧运动鞋');
+    expect(result.output).toContain('道具');
+    expect(result.output).toContain('旧运动鞋');
   });
 
   it('falls back when JSON invalid', () => {
