@@ -159,12 +159,29 @@ export interface CanvasProject {
 
 export type ProjectModelKind = 'text' | 'image' | 'video' | 'audio';
 
+/** 项目级风格母图：生图时自动作为风格参考注入，无需每次 @ */
+export interface ProjectStyleReference {
+  /** 项目 data 目录下的本地路径 */
+  filePath?: string;
+  /** 展示/生成用 URL（asset:// 或 data:） */
+  imageUrl?: string;
+  /** 文件名（展示用） */
+  fileName?: string;
+  /**
+   * 是否启用自动注入。
+   * 有 imageUrl 时默认 true；关闭后仅保留母图文件，不参与生成。
+   */
+  enabled?: boolean;
+}
+
 export interface ProjectVisualStyleSettings {
   styleId?: string;
   styleName?: string;
   /** 保存选择时的提示词快照，避免自定义画风被删除后项目失去基线。 */
   prompt?: string;
   locked?: boolean;
+  /** 上传的风格母图（卡通/电影截图等），整项目图像生成自动跟随 */
+  styleReference?: ProjectStyleReference;
 }
 
 export interface ProjectGenerationDefaults {
