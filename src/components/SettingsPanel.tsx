@@ -1,12 +1,19 @@
 /**
- * SettingsPanel 设置面板 — 模态弹窗，管理常规设置、API Key 配置、快捷键、ComfyUI
+ * SettingsPanel 设置面板 — 模态弹窗，管理常规、文件与应用、API Key、快捷键、ComfyUI 等设置
  */
 import { useState, useEffect, useRef } from 'react';
 import { Icon } from '@iconify/react';
 import '../styles/settings.css';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
-import { getProjectDataDir, getBaseDir, openDirectoryInFileManager, PROJECT_DISK_CHANGED_EVENT } from '../services/fileService';
+import {
+  getAppExecutableDir,
+  getBaseDir,
+  getDefaultBaseDir,
+  getProjectDataDir,
+  openDirectoryInFileManager,
+  PROJECT_DISK_CHANGED_EVENT,
+} from '../services/fileService';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import ModalOverlay from './shared/ModalOverlay';
 import AnimatedButton from './shared/AnimatedButton';
@@ -18,7 +25,7 @@ import { detectBackgroundBrightness, compressImageLossless } from '../services/b
 import type { CanvasBackground as CanvasBg, InteractionMode } from '../types';
 import type { BackgroundDetection } from '../services/backgroundService';
 
-type SettingsTab = 'general' | 'api' | 'shortcuts' | 'comfyui' | 'storage';
+type SettingsTab = 'general' | 'files' | 'api' | 'shortcuts' | 'comfyui' | 'storage';
 
 const INTERACTION_MODE_OPTIONS: {
   id: InteractionMode;
@@ -114,6 +121,8 @@ export default function SettingsPanel() {
     ?? INTERACTION_MODE_OPTIONS[0];
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [projectDir, setProjectDir] = useState<string | null>(null);
+  const [defaultBaseDir, setDefaultBaseDir] = useState<string | null>(null);
+  const [appExecutableDir, setAppExecutableDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
   const [comfyUiLaunching, setComfyUiLaunching] = useState(false);
   // ComfyUI 服务状态：启动按钮下方的即时反馈（starting → ready / failed）
@@ -122,28 +131,38 @@ export default function SettingsPanel() {
   const [bgDetection, setBgDetection] = useState<BackgroundDetection | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 加载项目文件夹路径
+  // 加载应用、默认存储和当前项目目录
   useEffect(() => {
-    if (!settingsOpen || activeTab !== 'general' || !currentProjectId) return;
+    if (!settingsOpen || activeTab !== 'files') return;
     let cancelled = false;
-    const refreshProjectDir = () => {
+    const refreshDirectories = () => {
       setDirLoading(true);
-      getProjectDataDir(currentProjectId)
-        .then((dir) => {
-          if (!cancelled) setProjectDir(dir);
+      Promise.all([
+        currentProjectId ? getProjectDataDir(currentProjectId) : Promise.resolve(null),
+        getDefaultBaseDir(),
+        getAppExecutableDir(),
+      ])
+        .then(([nextProjectDir, nextDefaultBaseDir, nextAppExecutableDir]) => {
+          if (cancelled) return;
+          setProjectDir(nextProjectDir);
+          setDefaultBaseDir(nextDefaultBaseDir);
+          setAppExecutableDir(nextAppExecutableDir);
         })
         .catch(() => {
-          if (!cancelled) setProjectDir(null);
+          if (cancelled) return;
+          setProjectDir(null);
+          setDefaultBaseDir(null);
+          setAppExecutableDir(null);
         })
         .finally(() => {
           if (!cancelled) setDirLoading(false);
         });
     };
-    refreshProjectDir();
-    window.addEventListener(PROJECT_DISK_CHANGED_EVENT, refreshProjectDir);
+    refreshDirectories();
+    window.addEventListener(PROJECT_DISK_CHANGED_EVENT, refreshDirectories);
     return () => {
       cancelled = true;
-      window.removeEventListener(PROJECT_DISK_CHANGED_EVENT, refreshProjectDir);
+      window.removeEventListener(PROJECT_DISK_CHANGED_EVENT, refreshDirectories);
     };
   }, [settingsOpen, activeTab, currentProjectId]);
 
@@ -194,6 +213,40 @@ export default function SettingsPanel() {
       });
       if (selected && typeof selected === 'string') {
         updateConfig({ photoshopPath: selected });
+        await saveConfig();
+      }
+    } catch {
+      // 浏览器环境忽略
+    }
+  };
+
+  /** 选择剪映专业版可执行文件路径 */
+  const handleChooseJianyingPath = async () => {
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        title: '选择剪映专业版',
+        filters: [{ name: '剪映专业版', extensions: ['exe', 'app'] }],
+      });
+      if (selected && typeof selected === 'string') {
+        updateConfig({ jianyingPath: selected });
+        await saveConfig();
+      }
+    } catch {
+      // 浏览器环境忽略
+    }
+  };
+
+  /** 选择 Adobe Premiere Pro 可执行文件路径 */
+  const handleChoosePremierePath = async () => {
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        title: '选择 Adobe Premiere Pro',
+        filters: [{ name: 'Adobe Premiere Pro', extensions: ['exe', 'app'] }],
+      });
+      if (selected && typeof selected === 'string') {
+        updateConfig({ premierePath: selected });
         await saveConfig();
       }
     } catch {
@@ -313,6 +366,8 @@ export default function SettingsPanel() {
   const baseDataDir = config.baseDataDir;
   const comfyUIPath = config.comfyUIPath;
   const photoshopPath = config.photoshopPath;
+  const jianyingPath = config.jianyingPath;
+  const premierePath = config.premierePath;
 
   const handleOpenWorkflowPanel = () => {
     setSettingsOpen(false);
@@ -341,6 +396,7 @@ export default function SettingsPanel() {
           <nav className="w-44 border-r border-canvas-border p-3 space-y-0.5 shrink-0">
             {[
               { id: 'general', label: '常规' },
+              { id: 'files', label: '文件与应用' },
               { id: 'api', label: 'API Key' },
               { id: 'storage', label: '存储健康' },
               { id: 'comfyui', label: 'ComfyUI' },
@@ -367,6 +423,12 @@ export default function SettingsPanel() {
                       <polyline points="14 2 14 8 20 8" />
                       <line x1="16" y1="13" x2="8" y2="13" />
                       <line x1="16" y1="17" x2="8" y2="17" />
+                    </>
+                  )}
+                  {id === 'files' && (
+                    <>
+                      <path d="M3 7a2 2 0 012-2h4l2 3h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                      <path d="M8 13h8" />
                     </>
                   )}
                   {id === 'comfyui' && (
@@ -833,7 +895,11 @@ export default function SettingsPanel() {
                     </div>
                   </button>
                 </div>
+              </div>
+            )}
 
+            {activeTab === 'files' && (
+              <div className="space-y-6">
                 {/* 文件保存位置 */}
                 <div>
                   <h3 className="text-sm font-medium text-canvas-text mb-3">文件保存位置</h3>
@@ -867,8 +933,28 @@ export default function SettingsPanel() {
                       文件保存为：<span className="text-canvas-text-secondary font-mono">{baseDataDir || '系统目录'}/{'{项目ID}'}/...</span>
                     </div>
 
+                    {/* 应用与默认存储目录 */}
+                    <div className="space-y-2 py-2 border-y border-canvas-border">
+                      <div className="min-w-0">
+                        <div className="text-xs text-canvas-text-muted mb-0.5">应用所在目录</div>
+                        <div className={`text-[11px] break-all leading-relaxed select-all ${
+                          appExecutableDir ? 'text-canvas-text-secondary font-mono' : 'text-canvas-text-muted italic'
+                        }`}>
+                          {dirLoading ? '加载中…' : appExecutableDir || '仅在 Tauri 桌面环境中可用'}
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs text-canvas-text-muted mb-0.5">默认存储目录</div>
+                        <div className={`text-[11px] break-all leading-relaxed select-all ${
+                          defaultBaseDir ? 'text-canvas-text-secondary font-mono' : 'text-canvas-text-muted italic'
+                        }`}>
+                          {dirLoading ? '加载中…' : defaultBaseDir || '仅在 Tauri 桌面环境中可用'}
+                        </div>
+                      </div>
+                    </div>
+
                     {/* 当前项目目录 + 打开按钮 */}
-                    <div className="pt-2 border-t border-canvas-border">
+                    <div className="pt-2">
                       {dirLoading ? (
                         <div className="text-xs text-canvas-text-muted">加载中…</div>
                       ) : projectDir ? (
@@ -904,33 +990,56 @@ export default function SettingsPanel() {
                   </div>
                 </div>
 
-                {/* Photoshop 路径 */}
+                {/* 外部编辑器路径 */}
                 <div>
-                  <h3 className="text-sm font-medium text-canvas-text mb-3">Photoshop 路径</h3>
-                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-2">
-                    <div className="text-xs text-canvas-text-muted mb-1.5">Photoshop.exe 路径</div>
-                    {photoshopPath ? (
-                      <div className="flex items-center gap-2 mb-3">
-                        <div className="flex-1 min-w-0 text-[11px] text-canvas-text-secondary break-all font-mono leading-relaxed bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border select-all">
-                          {photoshopPath}
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">外部编辑器</h3>
+                  <div className="bg-canvas-card border border-canvas-border rounded-lg p-2 divide-y divide-canvas-border">
+                    {[
+                      {
+                        id: 'photoshop',
+                        label: 'Photoshop',
+                        path: photoshopPath,
+                        description: '用于图片节点的「在 PS 中打开」',
+                        onChoose: handleChoosePhotoshopPath,
+                      },
+                      {
+                        id: 'jianying',
+                        label: '剪映专业版',
+                        path: jianyingPath,
+                        description: '用于视频节点的「在剪映中打开」',
+                        onChoose: handleChooseJianyingPath,
+                      },
+                      {
+                        id: 'premiere',
+                        label: 'Adobe Premiere Pro',
+                        path: premierePath,
+                        description: '用于视频节点的「在 PR 中打开」',
+                        onChoose: handleChoosePremierePath,
+                      },
+                    ].map((editor) => (
+                      <div key={editor.id} className="py-2 first:pt-0 last:pb-0">
+                        <div className="text-xs text-canvas-text-muted mb-1.5">{editor.label}</div>
+                        <div className="flex items-center gap-2">
+                          <div className={`flex-1 min-w-0 text-[11px] break-all leading-relaxed rounded-md px-3 py-1.5 border border-canvas-border ${
+                            editor.path
+                              ? 'text-canvas-text-secondary font-mono bg-canvas-surface select-all'
+                              : 'text-canvas-text-muted bg-canvas-surface italic'
+                          }`}>
+                            {editor.path || '未设置（自动检测）'}
+                          </div>
+                          <AnimatedButton
+                            type="button"
+                            className="settings-save-btn shrink-0 text-xs"
+                            onClick={editor.onChoose}
+                          >
+                            {editor.path ? '更换' : '选择文件'}
+                          </AnimatedButton>
                         </div>
-                        <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChoosePhotoshopPath}>
-                          更换
-                        </AnimatedButton>
+                        <p className="text-[11px] text-canvas-text-muted leading-relaxed mt-1.5">
+                          {editor.description}；手动路径优先，未设置时自动检测常见安装位置
+                        </p>
                       </div>
-                    ) : (
-                      <div className="flex items-center gap-2 mb-3">
-                        <div className="flex-1 text-xs text-canvas-text-muted bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border italic">
-                          未设置（自动检测）
-                        </div>
-                        <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs" onClick={handleChoosePhotoshopPath}>
-                          选择文件
-                        </AnimatedButton>
-                      </div>
-                    )}
-                    <p className="text-[11px] text-canvas-text-muted leading-relaxed">
-                      右键图片节点选择「在 PS 中打开」时，优先自动检测 Photoshop 安装位置；检测失败时使用此处配置的路径。支持各版本 Photoshop，不限安装盘符
-                    </p>
+                    ))}
                   </div>
                 </div>
               </div>

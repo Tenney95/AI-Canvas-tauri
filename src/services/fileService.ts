@@ -7,7 +7,7 @@ import { writeFile, readFile as tauriReadFile, stat, rename, readDir, exists, mk
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { appDataDir } from '@tauri-apps/api/path';
+import { appDataDir, localDataDir } from '@tauri-apps/api/path';
 import { identifyAsset } from './fs/assetIndex';
 import {
   isTauriEnv,
@@ -1055,7 +1055,13 @@ export async function openInPhotoshop(filePath: string, customPath?: string): Pr
     }
 
     if (isMac) {
-      // 策略 1：open -a 尝试各版本应用名（mac-open 已在 shell scope 白名单中）
+      // 策略 1：用户手动配置的路径
+      if (customPath?.trim()) {
+        if (await launchApp(customPath, filePath)) return;
+        throw new Error(`配置的 Photoshop 路径无效: ${customPath}`);
+      }
+
+      // 策略 2：open -a 尝试各版本应用名（mac-open 已在 shell scope 白名单中）
       const { Command } = await import('@tauri-apps/plugin-shell');
       const psAppNames = [
         'Adobe Photoshop 2025',
@@ -1073,12 +1079,6 @@ export async function openInPhotoshop(filePath: string, customPath?: string): Pr
         }
       }
 
-      // 策略 2：用户自定义路径（通过 Rust 端 open_with_app）
-      if (customPath?.trim()) {
-        if (await launchApp(customPath, filePath)) return;
-        throw new Error(`配置的 Photoshop 路径无效: ${customPath}`);
-      }
-
       throw new Error('未找到 Photoshop。请在设置中手动配置 Photoshop 安装路径，或确认已安装 Adobe Photoshop');
     }
 
@@ -1087,6 +1087,149 @@ export async function openInPhotoshop(filePath: string, customPath?: string): Pr
     console.error('[fileService] openInPhotoshop 失败:', filePath, err);
     throw err;
   }
+}
+
+// ============================================
+// 在视频编辑器中打开 — 剪映专业版 / Adobe Premiere Pro
+// ============================================
+
+type VideoEditorId = 'jianying' | 'premiere';
+
+interface VideoEditorDefinition {
+  displayName: string;
+  executableNames: string[];
+  macAppNames: string[];
+}
+
+const VIDEO_EDITOR_DEFINITIONS: Record<VideoEditorId, VideoEditorDefinition> = {
+  jianying: {
+    displayName: '剪映专业版',
+    executableNames: ['JianyingPro.exe'],
+    macAppNames: ['剪映专业版', 'JianyingPro'],
+  },
+  premiere: {
+    displayName: 'Adobe Premiere Pro',
+    executableNames: ['Adobe Premiere Pro.exe'],
+    macAppNames: [
+      'Adobe Premiere Pro 2026',
+      'Adobe Premiere Pro 2025',
+      'Adobe Premiere Pro 2024',
+      'Adobe Premiere Pro 2023',
+      'Adobe Premiere Pro 2022',
+      'Adobe Premiere Pro 2021',
+      'Adobe Premiere Pro',
+    ],
+  },
+};
+
+function buildConfiguredExecutablePaths(customPath: string, executableNames: string[]): string[] {
+  const resolved = customPath.trim().replace(/\/+$/, '').replace(/\\+$/, '');
+  if (/\.exe$/i.test(resolved)) return [resolved];
+  return [resolved, ...executableNames.map((name) => `${resolved}\\${name}`)];
+}
+
+async function buildVideoEditorWindowsPaths(editor: VideoEditorId): Promise<string[]> {
+  const drives = ['C:', 'D:', 'E:', 'F:', 'G:'];
+
+  if (editor === 'jianying') {
+    const paths: string[] = [];
+    try {
+      const localDir = await localDataDir();
+      paths.push(
+        joinPath(localDir, 'JianyingPro', 'Apps', 'JianyingPro.exe'),
+        joinPath(localDir, 'JianyingPro', 'JianyingPro.exe'),
+      );
+    } catch {
+      // 系统目录不可用时继续检查常见安装盘。
+    }
+    for (const drive of drives) {
+      paths.push(
+        `${drive}\\Program Files\\JianyingPro\\JianyingPro.exe`,
+        `${drive}\\Program Files\\ByteDance\\JianyingPro\\JianyingPro.exe`,
+        `${drive}\\Program Files (x86)\\JianyingPro\\JianyingPro.exe`,
+      );
+    }
+    return paths;
+  }
+
+  const versions = ['2026', '2025', '2024', '2023', '2022', '2021', '2020', ''];
+  const paths: string[] = [];
+  for (const drive of drives) {
+    for (const version of versions) {
+      const dir = version ? `Adobe Premiere Pro ${version}` : 'Adobe Premiere Pro';
+      paths.push(
+        `${drive}\\Program Files\\Adobe\\${dir}\\Adobe Premiere Pro.exe`,
+        `${drive}\\Program Files (x86)\\Adobe\\${dir}\\Adobe Premiere Pro.exe`,
+      );
+    }
+  }
+  return paths;
+}
+
+async function openInVideoEditor(
+  filePath: string,
+  editor: VideoEditorId,
+  customPath?: string,
+): Promise<void> {
+  const definition = VIDEO_EDITOR_DEFINITIONS[editor];
+  if (!isTauriEnv()) {
+    console.warn(`[fileService] openInVideoEditor(${editor}): 仅 Tauri 桌面环境支持`);
+    return;
+  }
+
+  try {
+    const platform = (navigator.platform || '').toLowerCase();
+
+    if (platform.includes('win')) {
+      const winPath = filePath.replace(/\//g, '\\');
+      if (customPath?.trim()) {
+        const configuredPaths = buildConfiguredExecutablePaths(customPath, definition.executableNames);
+        for (const appPath of configuredPaths) {
+          if (await launchApp(appPath, winPath)) return;
+        }
+        throw new Error(`配置的 ${definition.displayName} 路径无效: ${customPath}`);
+      }
+
+      const installerPaths = await buildVideoEditorWindowsPaths(editor);
+      for (const appPath of installerPaths) {
+        if (await launchApp(appPath, winPath)) return;
+      }
+      throw new Error(`未找到 ${definition.displayName}。请在设置中手动配置安装路径，或确认已安装该应用`);
+    }
+
+    if (platform.includes('mac')) {
+      if (customPath?.trim()) {
+        if (await launchApp(customPath, filePath)) return;
+        throw new Error(`配置的 ${definition.displayName} 路径无效: ${customPath}`);
+      }
+
+      const { Command } = await import('@tauri-apps/plugin-shell');
+      for (const appName of definition.macAppNames) {
+        try {
+          await Command.create('mac-open', ['-a', appName, filePath]).execute();
+          return;
+        } catch {
+          continue;
+        }
+      }
+      throw new Error(`未找到 ${definition.displayName}。请在设置中手动配置安装路径，或确认已安装该应用`);
+    }
+
+    throw new Error('不支持的操作系统');
+  } catch (err) {
+    console.error(`[fileService] openInVideoEditor(${editor}) 失败:`, filePath, err);
+    throw err;
+  }
+}
+
+/** 在剪映专业版中打开视频文件。 */
+export async function openInJianying(filePath: string, customPath?: string): Promise<void> {
+  return openInVideoEditor(filePath, 'jianying', customPath);
+}
+
+/** 在 Adobe Premiere Pro 中打开视频文件。 */
+export async function openInPremiere(filePath: string, customPath?: string): Promise<void> {
+  return openInVideoEditor(filePath, 'premiere', customPath);
 }
 
 // ============================================

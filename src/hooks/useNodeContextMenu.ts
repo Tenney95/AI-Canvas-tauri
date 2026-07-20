@@ -4,7 +4,13 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { getActiveTextSelection, type ActiveTextSelection } from '../utils/textSelection';
-import { revealFileInFolder, openInPhotoshop, saveNodeOutputToFile } from '../services/fileService';
+import {
+  revealFileInFolder,
+  openInJianying,
+  openInPhotoshop,
+  openInPremiere,
+  saveNodeOutputToFile,
+} from '../services/fileService';
 import { copyImage as copyImageToClipboard, copyFile as copyFileToClipboard } from '../services/clipboardService';
 import type { BaseNodeData, NodeType } from '../types';
 import type { Node as RFNode } from '@xyflow/react';
@@ -206,6 +212,49 @@ export function useNodeContextMenu() {
     }
   }, [menu.nodeId, nodes, closeMenu]);
 
+  // ── 在视频编辑器中打开 ──
+  const openInVideoEditorTypes: NodeType[] = ['ai-video', 'source-video'];
+  const showOpenInVideoEditor = menu.nodeId != null
+    && nodeType != null
+    && openInVideoEditorTypes.includes(nodeType)
+    && !!nodeData?.filePath;
+
+  const handleOpenInVideoEditor = useCallback(async (editor: 'jianying' | 'premiere') => {
+    if (!menu.nodeId) return;
+    const node = nodes.find((candidate) => candidate.id === menu.nodeId);
+    const filePath = (node?.data as BaseNodeData | undefined)?.filePath;
+    if (!filePath) {
+      useAppStore.getState().showToast('无法找到文件路径');
+      closeMenu();
+      return;
+    }
+
+    const state = useAppStore.getState();
+    try {
+      if (editor === 'jianying') {
+        await openInJianying(filePath, state.config.jianyingPath);
+        state.showToast('已在剪映中打开');
+      } else {
+        await openInPremiere(filePath, state.config.premierePath);
+        state.showToast('已在 Premiere Pro 中打开');
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '打开失败';
+      state.showToast(message, 'error');
+    } finally {
+      closeMenu();
+    }
+  }, [menu.nodeId, nodes, closeMenu]);
+
+  const handleOpenInJianying = useCallback(
+    () => handleOpenInVideoEditor('jianying'),
+    [handleOpenInVideoEditor],
+  );
+  const handleOpenInPremiere = useCallback(
+    () => handleOpenInVideoEditor('premiere'),
+    [handleOpenInVideoEditor],
+  );
+
   // ── 文件另存为 ──
   const saveAsTypes: NodeType[] = [
     'ai-text', 'ai-image', 'ai-video', 'ai-audio',
@@ -266,7 +315,7 @@ export function useNodeContextMenu() {
     if (!data) { closeMenu(); return; }
     const toast = useAppStore.getState().showToast.bind(useAppStore.getState());
 
-    let ok = false;
+    let ok: boolean;
     try {
       if (nodeType === 'ai-image') {
         const imageUrl = data.imageUrl || data.thumbnailUrl;
@@ -302,6 +351,9 @@ export function useNodeContextMenu() {
     showSaveAs,
     handleOpenInPS,
     showOpenInPS,
+    handleOpenInJianying,
+    handleOpenInPremiere,
+    showOpenInVideoEditor,
     handleCopyMedia,
     showCopyMedia,
     copyMediaLabel,

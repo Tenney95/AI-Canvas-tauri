@@ -12,13 +12,15 @@ const MENU_ITEMS = [
   { label: '解除分组', shortcut: '', action: 'ungroup' as const, groupOnly: true },
   { label: '复制媒体', shortcut: '', action: 'copyMedia' as const, conditional: true, dynamicLabel: true },
   { label: '在 PS 中打开', shortcut: '', action: 'openInPS' as const, conditional: true },
+  { label: '在剪映中打开', shortcut: '', action: 'openInJianying' as const, conditional: true },
+  { label: '在 PR 中打开', shortcut: '', action: 'openInPremiere' as const, conditional: true },
   { label: '打开文件所在位置', shortcut: '', action: 'showInFolder' as const, conditional: true },
   { label: '另存为...', shortcut: '', action: 'saveAs' as const, conditional: true },
   { label: '删除', shortcut: 'Del', action: 'delete' as const, danger: true },
 ];
 
 const MENU_W = 176;
-const MENU_H = 322; // 8 items + 2 seps
+const MENU_H = 356; // 视频节点最多 9 items + 1 sep
 const TEXT_SELECTION_MENU_EXTRA_H = 78; // 2 text-selection items + separator
 
 interface NodeContextMenuProps {
@@ -36,6 +38,8 @@ interface NodeContextMenuProps {
   onShowInFolder?: () => void;
   onSaveAs?: () => void;
   onOpenInPS?: () => void;
+  onOpenInJianying?: () => void;
+  onOpenInPremiere?: () => void;
   onCopyMedia?: () => void;
   copyMediaLabel?: string;
 }
@@ -54,6 +58,8 @@ function NodeContextMenu({
   onShowInFolder,
   onSaveAs,
   onOpenInPS,
+  onOpenInJianying,
+  onOpenInPremiere,
   onCopyMedia,
   copyMediaLabel,
 }: NodeContextMenuProps) {
@@ -74,6 +80,8 @@ function NodeContextMenu({
     showInFolder: onShowInFolder || (() => {}),
     saveAs: onSaveAs || (() => {}),
     openInPS: onOpenInPS || (() => {}),
+    openInJianying: onOpenInJianying || (() => {}),
+    openInPremiere: onOpenInPremiere || (() => {}),
     copyMedia: onCopyMedia || (() => {}),
   };
 
@@ -82,6 +90,8 @@ function NodeContextMenu({
     if (item.conditional && item.action === 'showInFolder' && !onShowInFolder) return false;
     if (item.conditional && item.action === 'saveAs' && !onSaveAs) return false;
     if (item.conditional && item.action === 'openInPS' && !onOpenInPS) return false;
+    if (item.conditional && item.action === 'openInJianying' && !onOpenInJianying) return false;
+    if (item.conditional && item.action === 'openInPremiere' && !onOpenInPremiere) return false;
     if (item.conditional && item.action === 'copyMedia' && !onCopyMedia) return false;
     return true;
   });

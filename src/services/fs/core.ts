@@ -5,7 +5,7 @@
  */
 import { exists, mkdir, rename, stat, readDir } from '@tauri-apps/plugin-fs';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { appDataDir } from '@tauri-apps/api/path';
+import { appDataDir, executableDir } from '@tauri-apps/api/path';
 
 /** 检测是否运行在 Tauri 桌面环境中 */
 export function isTauriEnv(): boolean {
@@ -118,6 +118,23 @@ async function getAppDataDir(): Promise<string | null> {
   }
 }
 
+/** 获取应用可执行文件所在目录（Tauri: executableDir, 浏览器: null） */
+export async function getAppExecutableDir(): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+  try {
+    return await executableDir();
+  } catch {
+    return null;
+  }
+}
+
+/** 获取系统默认的文件保存根目录，不受用户自定义目录影响 */
+export async function getDefaultBaseDir(): Promise<string | null> {
+  const base = await getAppDataDir();
+  if (!base) return null;
+  return joinPath(base, 'data');
+}
+
 /** 用户自定义的文件保存根目录，由 store.config 在加载配置时注入 */
 let _baseDataDir: string | null = null;
 
@@ -129,9 +146,7 @@ export function setBaseDataDir(dir: string | undefined): void {
 /** 获取文件保存根目录（用户自定义或系统默认），不含项目 ID */
 export async function getBaseDir(): Promise<string | null> {
   if (_baseDataDir) return _baseDataDir;
-  const base = await getAppDataDir();
-  if (!base) return null;
-  return joinPath(base, 'data');
+  return getDefaultBaseDir();
 }
 
 /**
