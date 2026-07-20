@@ -142,6 +142,8 @@ export interface CanvasProject {
   name: string;
   createdAt: number;
   updatedAt: number;
+  /** 最近一次离开/切换时捕获的画布 WebP 快照（Data URL）。 */
+  snapshot?: string;
   /** 本地媒体文件夹名（形如「项目名-短ID」）。创建时确定后保持稳定，旧项目可能缺失（回退到 id）。 */
   dataFolder?: string;
   /** Store revision 计数模式：project=项目独立计数（默认），global=全局计数 */

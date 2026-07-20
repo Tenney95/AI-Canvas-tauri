@@ -135,7 +135,9 @@ export default function App() {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const win = getCurrentWindow();
         unlisten = await win.onCloseRequested(async () => {
-          await useAppStore.getState().saveCurrentProjectSilent();
+          const store = useAppStore.getState();
+          await store.captureCurrentProjectSnapshot();
+          await store.saveCurrentProjectSilent();
           await fileService.flushUndoTrashDirs();
           win.destroy();
         });

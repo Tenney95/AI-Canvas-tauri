@@ -1003,6 +1003,17 @@ function AvatarMenu() {
 function LogoMenu() {
   const [open, setOpen] = useState(false);
 
+  const openProjectLibrary = () => {
+    setOpen(true);
+    window.setTimeout(async () => {
+      const store = useAppStore.getState();
+      const capturedProjectId = await store.captureCurrentProjectSnapshot();
+      if (capturedProjectId && useAppStore.getState().currentProjectId === capturedProjectId) {
+        await useAppStore.getState().saveCurrentProjectSilent();
+      }
+    }, 220);
+  };
+
   return (
     <>
       <button
@@ -1011,10 +1022,16 @@ function LogoMenu() {
         data-tooltip="画布 / 项目"
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen(true)}
+        onClick={openProjectLibrary}
       >
-        <Icon className="ico-normal" icon="mdi:view-grid-outline" width="20" height="20" aria-hidden="true" />
-        <Icon className="ico-hover" icon="mdi:folder-open-outline" width="20" height="20" aria-hidden="true" />
+        <svg className="ico-normal" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path fillRule="evenodd" d="M3 4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm0 14a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM18 3a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1zm-1 8a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zm-6-1a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1zm-8 1a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm8-8a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V4a1 1 0 0 0-1-1zm-1 15a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1zm8-1a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1z" clipRule="evenodd" />
+        </svg>
+        <svg className="ico-hover" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+          <rect x="3" y="4" width="13" height="16" rx="2" />
+          <path d="m19 8 3 4-3 4" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M13 12h9" strokeLinecap="round" />
+        </svg>
       </button>
 
       {createPortal(

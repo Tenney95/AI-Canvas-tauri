@@ -10,6 +10,7 @@ import { generateProjectId } from './store.utils';
 import * as fileService from '../services/fileService';
 import { resumePendingTasks, clearProjectTasks } from '../services/pollManager';
 import { normalizeProjectSettings } from '../services/projectSettingsService';
+import { captureCurrentCanvasSnapshot } from '../services/projectSnapshotService';
 
 function getProjectGroups(data: { groups?: unknown } | null | undefined): NodeGroup[] {
   return Array.isArray(data?.groups) ? (data.groups as NodeGroup[]) : [];
@@ -81,6 +82,35 @@ interface ProjectSaveQueue {
 
 const projectSaveQueues = new Map<string, ProjectSaveQueue>();
 
+interface CapturedCanvasState {
+  projectId: string;
+  nodes: AppState['nodes'];
+  edges: AppState['edges'];
+  groups: AppState['groups'];
+  viewportTransform: string;
+}
+
+interface CaptureProjectSnapshotOptions {
+  allowProjectChange?: boolean;
+  persistRecord?: ProjectSaveData | null;
+}
+
+let lastCapturedCanvasState: CapturedCanvasState | null = null;
+
+function getCanvasViewportTransform(): string {
+  if (typeof document === 'undefined') return '';
+  const viewport = document.querySelector<HTMLElement>('.react-flow__viewport');
+  return viewport?.style.transform ?? '';
+}
+
+function isCanvasSnapshotFresh(state: AppState, projectId: string): boolean {
+  return lastCapturedCanvasState?.projectId === projectId
+    && lastCapturedCanvasState.nodes === state.nodes
+    && lastCapturedCanvasState.edges === state.edges
+    && lastCapturedCanvasState.groups === state.groups
+    && lastCapturedCanvasState.viewportTransform === getCanvasViewportTransform();
+}
+
 async function drainProjectSaveQueue(projectId: string, queue: ProjectSaveQueue): Promise<void> {
   if (queue.running) return;
   queue.running = true;
@@ -136,6 +166,7 @@ function createCurrentProjectSaveRecord(state: AppState): ProjectSaveData | null
     name: state.projectName,
     createdAt: project.createdAt,
     updatedAt: Date.now(),
+    snapshot: project.snapshot,
     dataFolder: project.dataFolder,
     settings: project.settings,
     nodes: state.nodes,
@@ -151,6 +182,9 @@ export interface ProjectSlice {
   _autoSaveFailedNotified?: boolean;
   setProjectName: (name: string) => void;
   updateProjectSettings: (settings: ProjectSettings) => Promise<boolean>;
+  captureCurrentProjectSnapshot: (
+    options?: CaptureProjectSnapshotOptions,
+  ) => Promise<string | undefined>;
   createProject: (name?: string) => void;
   deleteProject: (id: string) => Promise<void>;
   switchProject: (id: string) => void;
@@ -261,6 +295,78 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     }
   },
 
+  captureCurrentProjectSnapshot: async (options = {}) => {
+    const state = get();
+    const projectId = state.currentProjectId;
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!projectId || !project) return undefined;
+
+    if (state.nodes.length === 0) {
+      lastCapturedCanvasState = null;
+      if (project.snapshot) {
+        set((current) => ({
+          projects: current.projects.map((item) => (
+            item.id === projectId ? { ...item, snapshot: undefined } : item
+          )),
+        }));
+      }
+      return projectId;
+    }
+
+    if (project.snapshot && isCanvasSnapshotFresh(state, projectId)) return projectId;
+
+    const viewportTransform = getCanvasViewportTransform();
+    const snapshot = await captureCurrentCanvasSnapshot(projectId);
+    const latest = get();
+    const projectStillExists = latest.projects.some((item) => item.id === projectId);
+    if (!projectStillExists) return undefined;
+
+    const isStillCurrent = latest.currentProjectId === projectId;
+    const currentCanvasChanged = isStillCurrent && (
+      latest.nodes !== state.nodes
+      || latest.edges !== state.edges
+      || latest.groups !== state.groups
+      || getCanvasViewportTransform() !== viewportTransform
+    );
+    if (currentCanvasChanged || (!isStillCurrent && !options.allowProjectChange)) return undefined;
+
+    if (snapshot) {
+      lastCapturedCanvasState = {
+        projectId,
+        nodes: state.nodes,
+        edges: state.edges,
+        groups: state.groups,
+        viewportTransform,
+      };
+      set((current) => ({
+        projects: current.projects.map((item) => (
+          item.id === projectId ? { ...item, snapshot } : item
+        )),
+      }));
+
+      if (options.persistRecord) {
+        const snapshotRecord: ProjectSaveData = {
+          ...options.persistRecord,
+          updatedAt: Date.now(),
+          snapshot,
+        };
+        try {
+          await enqueueProjectSave(snapshotRecord);
+          set((current) => ({
+            projects: current.projects.map((item) => (
+              item.id === projectId
+                ? { ...item, updatedAt: Math.max(item.updatedAt, snapshotRecord.updatedAt) }
+                : item
+            )),
+          }));
+        } catch (error) {
+          console.warn('[项目快照] 持久化失败:', error);
+        }
+      }
+    }
+    return projectId;
+  },
+
   createProject: (name) => {
     const id = generateProjectId();
     let defaultName: string;
@@ -354,6 +460,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   switchProject: async (id) => {
+    const snapshotRecord = createCurrentProjectSaveRecord(get());
+    void get().captureCurrentProjectSnapshot({
+      allowProjectChange: true,
+      persistRecord: snapshotRecord,
+    });
     await get().saveCurrentProject();
     // Clean up undo-trash dirs from the old project before switching
     await fileService.flushUndoTrashDirs();
@@ -447,7 +558,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (allProjects.length > 0) {
         const mapped: CanvasProject[] = allProjects.map((p) => ({
           id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
-          dataFolder: p.dataFolder, settings: p.settings,
+          snapshot: p.snapshot, dataFolder: p.dataFolder, settings: p.settings,
         }));
         fileService.registerProjectFolders(mapped);
         const current = get().currentProjectId;
@@ -487,7 +598,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       if (valid.length > 0) {
         const mapped: CanvasProject[] = valid.map((p) => ({
           id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
-          dataFolder: p.dataFolder, settings: p.settings,
+          snapshot: p.snapshot, dataFolder: p.dataFolder, settings: p.settings,
         }));
         fileService.registerProjectFolders(mapped);
         mapped.sort((a, b) => b.updatedAt - a.updatedAt);

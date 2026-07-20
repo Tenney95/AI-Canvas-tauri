@@ -145,6 +145,7 @@ export interface ProjectSaveData {
   name: string;
   createdAt: number;
   updatedAt: number;
+  snapshot?: string;
   nodes: unknown;
   edges: unknown;
   groups?: unknown;

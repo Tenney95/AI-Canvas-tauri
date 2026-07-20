@@ -9,7 +9,7 @@ import {
   useMotionValue,
   useReducedMotion,
 } from 'framer-motion';
-import { fadeNormal, springSmooth } from '../../utils/motion';
+import { fadeFast, fadeNormal, springSmooth } from '../../utils/motion';
 
 export default function ModalOverlay({
   isOpen,
@@ -19,6 +19,8 @@ export default function ModalOverlay({
   className = '',
   closeOnBackdrop = true,
   draggable = false,
+  motionPreset = 'spring',
+  backdropBlur = true,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -27,8 +29,11 @@ export default function ModalOverlay({
   className?: string;
   closeOnBackdrop?: boolean;
   draggable?: boolean;
+  motionPreset?: 'spring' | 'quick';
+  backdropBlur?: boolean;
 }) {
   const reduceMotion = useReducedMotion();
+  const quickMotion = motionPreset === 'quick';
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -151,14 +156,15 @@ export default function ModalOverlay({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={fadeNormal}
+          transition={quickMotion ? fadeFast : fadeNormal}
         >
           <motion.div
+            data-tauri-drag-region
             aria-hidden="true"
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm rounded-2xl"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            className={`absolute inset-0 bg-black/50 rounded-2xl ${backdropBlur ? 'backdrop-blur-sm' : ''}`}
+            initial={quickMotion ? false : { opacity: 0 }}
+            animate={quickMotion ? undefined : { opacity: 1 }}
+            exit={quickMotion ? undefined : { opacity: 0 }}
             onClick={closeOnBackdrop ? onClose : undefined}
           />
           <motion.div
@@ -171,16 +177,24 @@ export default function ModalOverlay({
             style={draggable ? { x: dragX, y: dragY } : undefined}
             initial={reduceMotion
               ? { opacity: 0 }
+              : quickMotion
+                ? { transform: 'translate3d(0, 6px, 0) scale(0.99)' }
               : draggable
                 ? { opacity: 0, scale: 0.94 }
                 : { opacity: 0, scale: 0.94, y: 14 }}
-            animate={draggable ? { opacity: 1, scale: 1 } : { opacity: 1, scale: 1, y: 0 }}
+            animate={quickMotion
+              ? { transform: 'translate3d(0, 0, 0) scale(1)' }
+              : draggable
+                ? { opacity: 1, scale: 1 }
+                : { opacity: 1, scale: 1, y: 0 }}
             exit={reduceMotion
               ? { opacity: 0 }
+              : quickMotion
+                ? { transform: 'translate3d(0, 4px, 0) scale(0.995)' }
               : draggable
                 ? { opacity: 0, scale: 0.96 }
                 : { opacity: 0, scale: 0.96, y: 10 }}
-            transition={reduceMotion ? fadeNormal : springSmooth}
+            transition={reduceMotion || quickMotion ? fadeFast : springSmooth}
             drag={draggable}
             dragControls={dragControls}
             dragListener={false}
