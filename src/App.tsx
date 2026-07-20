@@ -291,7 +291,7 @@ export default function App() {
               {updating ? (
                 <PacmanMascot />
               ) : (
-                <Mascot loading={mascotLoading} />
+                <Mascot loading={mascotLoading} theme={effectiveTheme} />
               )}
             </Suspense>
           </motion.div>

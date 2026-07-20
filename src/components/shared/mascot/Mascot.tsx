@@ -23,7 +23,7 @@ import {
   DirectionalLight,
   AmbientLight,
   Group,
-  MeshStandardMaterial,
+  MeshPhysicalMaterial,
   Color,
   Mesh,
   SphereGeometry,
@@ -54,6 +54,49 @@ const FADE_START = 0.45; // 自转接近完成后才开始淡出/炸裂（回程
 const TARGET_FPS = 60;
 const FRAME_INTERVAL = 1000 / TARGET_FPS;
 
+type MascotTheme = 'dark' | 'light';
+
+const MASCOT_PALETTE: Record<MascotTheme, {
+  body: number;
+  eyes: number;
+  emissive: number;
+  roughness: number;
+  metalness: number;
+  clearcoat: number;
+  clearcoatRoughness: number;
+  opacity: number;
+  rimLightIntensity: number;
+  hoverEmissiveIntensity: number;
+  hoverKeyLightIntensity: number;
+}> = {
+  dark: {
+    body: 0xe9eaee,
+    eyes: 0x1a1a1f,
+    emissive: 0x8a93ff,
+    roughness: 0.62,
+    metalness: 0,
+    clearcoat: 0,
+    clearcoatRoughness: 0.5,
+    opacity: 1,
+    rimLightIntensity: 0,
+    hoverEmissiveIntensity: 0.32,
+    hoverKeyLightIntensity: 1.9,
+  },
+  light: {
+    body: 0x48536a,
+    eyes: 0xf7f3ed,
+    emissive: 0x8793b2,
+    roughness: 0.48,
+    metalness: 0.06,
+    clearcoat: 0.62,
+    clearcoatRoughness: 0.25,
+    opacity: 0.94,
+    rimLightIntensity: 0.55,
+    hoverEmissiveIntensity: 0.08,
+    hoverKeyLightIntensity: 1.55,
+  },
+};
+
 /** 生成竖直胶囊（圆角矩形）形状，用作眼睛 */
 function makeEyeShape(width: number, height: number): Shape {
   const w = width / 2;
@@ -75,15 +118,21 @@ function makeEyeShape(width: number, height: number): Shape {
 interface MascotProps {
   /** 请求模型中 → 球体炸裂成粒子云 */
   loading?: boolean;
+  /** 根据界面主题切换球体明暗，保证背景对比度 */
+  theme?: MascotTheme;
 }
 
-export default function Mascot({ loading = false }: MascotProps) {
+export default function Mascot({ loading = false, theme = 'dark' }: MascotProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // 把最新 loading 放进 ref，供常驻渲染循环读取（避免重建场景）
   const loadingRef = useRef(loading);
+  const themeRef = useRef(theme);
   useEffect(() => {
     loadingRef.current = loading;
   }, [loading]);
+  useEffect(() => {
+    themeRef.current = theme;
+  }, [theme]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -103,6 +152,9 @@ export default function Mascot({ loading = false }: MascotProps) {
     renderer.setSize(width, height);
     container.appendChild(renderer.domElement);
 
+    let appliedTheme = themeRef.current;
+    const initialPalette = MASCOT_PALETTE[appliedTheme];
+
     /* ── 灯光：半球光给出柔和的上亮下暗过渡，方向光给出高光 ── */
     const hemiLight = new HemisphereLight(0xffffff, 0x202028, 1.05);
     scene.add(hemiLight);
@@ -111,6 +163,11 @@ export default function Mascot({ loading = false }: MascotProps) {
     keyLight.position.set(-1.4, 2.2, 2.5);
     scene.add(keyLight);
 
+    // 浅色主题用冷色侧光勾出烟熏玻璃边缘；暗色主题下强度为 0。
+    const rimLight = new DirectionalLight(0xa8b3ff, initialPalette.rimLightIntensity);
+    rimLight.position.set(2.4, 0.8, 3);
+    scene.add(rimLight);
+
     const ambient = new AmbientLight(0xffffff, 0.18);
     scene.add(ambient);
 
@@ -118,14 +175,17 @@ export default function Mascot({ loading = false }: MascotProps) {
     const head = new Group();
     scene.add(head);
 
-    /* ── 球体：哑光白，roughness 高，得到平滑明暗过渡 ── */
-    const sphereMat = new MeshStandardMaterial({
-      color: 0xe9eaee,
-      roughness: 0.62,
-      metalness: 0.0,
-      emissive: new Color(0x8a93ff),
+    /* ── 球体：暗色主题为哑光陶瓷，浅色主题为烟熏玻璃拟态 ── */
+    const sphereMat = new MeshPhysicalMaterial({
+      color: initialPalette.body,
+      roughness: initialPalette.roughness,
+      metalness: initialPalette.metalness,
+      clearcoat: initialPalette.clearcoat,
+      clearcoatRoughness: initialPalette.clearcoatRoughness,
+      emissive: new Color(initialPalette.emissive),
       emissiveIntensity: 0, // 悬浮时提升
       transparent: true, // 切换 LOADING 时淡出
+      opacity: initialPalette.opacity,
     });
     const sphere = new Mesh(
       new SphereGeometry(SPHERE_RADIUS, 96, 96),
@@ -138,7 +198,7 @@ export default function Mascot({ loading = false }: MascotProps) {
     head.add(eyeGroup);
 
     const eyeMat = new MeshBasicMaterial({
-      color: 0x1a1a1f,
+      color: initialPalette.eyes,
       side: DoubleSide,
       transparent: true,
       // transparent + DoubleSide 默认走双 pass 渲染，每 pass 强制 material.needsUpdate，
@@ -226,6 +286,21 @@ export default function Mascot({ loading = false }: MascotProps) {
       clock.update(); // Timer 必须每帧 update，否则 getElapsed 恒为 0
       const t = clock.getElapsed();
 
+      const nextTheme = themeRef.current;
+      if (nextTheme !== appliedTheme) {
+        appliedTheme = nextTheme;
+        const palette = MASCOT_PALETTE[appliedTheme];
+        sphereMat.color.setHex(palette.body);
+        sphereMat.emissive.setHex(palette.emissive);
+        sphereMat.roughness = palette.roughness;
+        sphereMat.metalness = palette.metalness;
+        sphereMat.clearcoat = palette.clearcoat;
+        sphereMat.clearcoatRoughness = palette.clearcoatRoughness;
+        sphereMat.needsUpdate = true;
+        eyeMat.color.setHex(palette.eyes);
+        rimLight.intensity = palette.rimLightIntensity;
+      }
+
       // 目标偏转：始终看向光标（look 已归一化并夹紧）
       const px = look.x;
       const py = look.y;
@@ -265,7 +340,8 @@ export default function Mascot({ loading = false }: MascotProps) {
       for (const eye of eyes) eye.scale.y = Math.max(blink, 0.06);
 
       // 悬浮高亮：球体发光 + 灯光增强，平滑过渡
-      const targetEmissive = hovering ? 0.32 : 0;
+      const activePalette = MASCOT_PALETTE[appliedTheme];
+      const targetEmissive = hovering ? activePalette.hoverEmissiveIntensity : 0;
       sphereMat.emissiveIntensity = MathUtils.lerp(
         sphereMat.emissiveIntensity,
         targetEmissive,
@@ -273,7 +349,7 @@ export default function Mascot({ loading = false }: MascotProps) {
       );
       keyLight.intensity = MathUtils.lerp(
         keyLight.intensity,
-        hovering ? 1.9 : 1.4,
+        hovering ? activePalette.hoverKeyLightIntensity : 1.4,
         0.1,
       );
       hoverScale = MathUtils.lerp(hoverScale, hovering ? 1.04 : 1, 0.1);
@@ -316,7 +392,7 @@ export default function Mascot({ loading = false }: MascotProps) {
 
       // 头部：跟随偏航 + 过渡自转（自转靠眼睛体现，故转的是头部而非粒子球）
       head.rotation.y = headYaw + spinAngle;
-      sphereMat.opacity = 1 - fade;
+      sphereMat.opacity = activePalette.opacity * (1 - fade);
       eyeMat.opacity = 1 - fade;
       head.visible = fade < 0.995;
       head.scale.setScalar(hoverScale * (1 - fade * 0.5));
