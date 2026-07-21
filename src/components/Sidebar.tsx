@@ -5,7 +5,7 @@ import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore, computeImageNodeDimensions } from '../store/useAppStore';
+import { useAppStore, computeImageNodeDimensions, generateId } from '../store/useAppStore';
 import { countUnreadDramaAssets } from '../store/store.dramaAssets';
 import ModalOverlay from './shared/ModalOverlay';
 import type { NodeType } from '../types';
@@ -99,7 +99,7 @@ const HELP_CATEGORIES = [
     items: [
       {
         title: '创建内容节点',
-        description: '点击左侧加号选择文本、图像、视频、音频、全景或动画节点。也可以直接按数字键 1-6 快速创建对应的生成节点。',
+        description: '点击左侧加号选择文本、图像、视频、音频、全景、动画或 3D 导演台节点。也可以直接按数字键 1-7 快速创建对应节点。',
       },
       {
         title: '补充输入与模型',
@@ -173,8 +173,8 @@ const HELP_CATEGORIES = [
       },
       {
         title: '在鼠标位置创建节点',
-        description: '按 1-6 创建文本、图像、视频、音频、全景和动画生成节点；按 Alt + 1-5 创建文本、图像、视频、音频和 Markdown 源节点。',
-        shortcut: '1-6 / Alt + 1-5',
+        description: '按 1-7 创建文本、图像、视频、音频、全景、动画和 3D 导演台节点；按 Alt + 1-5 创建文本、图像、视频、音频和 Markdown 源节点。',
+        shortcut: '1-7 / Alt + 1-5',
       },
       {
         title: '快速创建文本节点',
@@ -526,7 +526,7 @@ function NodePicker({
     } catch { /* ignore */ }
     const pos = getCanvasPointerPosition();
     addNode({
-      id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: `node-${generateId()}`,
       type,
       position: pos,
       data: nodeData,

@@ -241,7 +241,7 @@
   background:
     linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
     var(--glass-bevel-border) border-box;
-  backdrop-filter: blur(var(--glass-blur-lg));
+  backdrop-filter: blur(var(--glass-blur-md));
   border: 1px solid transparent;
   border-radius: 12px;
   padding: 5px;

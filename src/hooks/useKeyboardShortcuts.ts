@@ -25,6 +25,7 @@ const GENERATOR_NODE_SHORTCUTS: NodeShortcutDefinition[] = [
   { type: 'ai-audio', label: '生成音频' },
   { type: 'ai-panorama', label: '生成360全景' },
   { type: 'ai-animation', label: '生成动画' },
+  { type: 'ai-director', label: '3D 导演台' },
 ];
 
 const SOURCE_NODE_SHORTCUTS: NodeShortcutDefinition[] = [
@@ -60,9 +61,11 @@ function createNodeFromNumberShortcut(shortcutIndex: number, isSource: boolean) 
   const isAudio = type === 'ai-audio';
   const isPanorama = type === 'ai-panorama';
   const isAnimation = type === 'ai-animation';
-  const nodeWidth = isAnimation ? 320 : isAudio ? 260 : isPanorama ? 300 : 280;
-  const nodeHeight = isAnimation ? 358 : isAudio ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
-  const defaultModel = isSource ? null : loadDefaultModel(type);
+  const isDirector = type === 'ai-director';
+  const nodeRole = isSource || isDirector ? 'source' : 'generator';
+  const nodeWidth = isAnimation || isDirector ? 320 : isAudio ? 260 : isPanorama ? 300 : 280;
+  const nodeHeight = isDirector ? 240 : isAnimation ? 358 : isAudio ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
+  const defaultModel = nodeRole === 'source' ? null : loadDefaultModel(type);
   const state = useAppStore.getState();
   const position = getCanvasPointerPosition();
 
@@ -73,7 +76,7 @@ function createNodeFromNumberShortcut(shortcutIndex: number, isSource: boolean) 
     data: {
       label,
       type,
-      role: isSource ? 'source' : 'generator',
+      role: nodeRole,
       prompt: '',
       status: 'idle',
       nodeWidth,
@@ -87,6 +90,10 @@ function createNodeFromNumberShortcut(shortcutIndex: number, isSource: boolean) 
         animationPreviewMode: 'playing' as const,
         aspectRatio: '1:1',
         imageSize: '2K',
+      } : {}),
+      ...(isDirector ? {
+        directorStatus: 'idle' as const,
+        directorCaptureUrls: [] as string[],
       } : {}),
       ...(defaultModel ?? {}),
     },
@@ -165,8 +172,8 @@ export function useKeyboardShortcuts() {
 
       if (isEditing) return;
 
-      // 1–6: 创建生成节点；Alt+1–5: 创建源节点。节点左上角落在当前鼠标位置。
-      const digitMatch = /^(?:Digit|Numpad)([1-6])$/.exec(e.code);
+      // 1–7: 创建内容节点；Alt+1–5: 创建源节点。节点左上角落在当前鼠标位置。
+      const digitMatch = /^(?:Digit|Numpad)([1-7])$/.exec(e.code);
       if (digitMatch && !e.repeat && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         const handled = createNodeFromNumberShortcut(Number(digitMatch[1]) - 1, e.altKey);
         if (handled) {

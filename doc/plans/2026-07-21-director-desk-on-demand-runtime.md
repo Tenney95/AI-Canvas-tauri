@@ -4,7 +4,7 @@
 
 **Goal:** 从 AI Canvas 安装包移除 3D 导演台静态资源，在用户首次创建导演台节点时提示下载，并在 Windows 卸载时清理下载内容。
 
-**Architecture:** Rust 后端从固定 GitHub Release 下载版本化 `tar.gz`，在 `appLocalDataDir/director-desk/<version>` 中校验 SHA-256、限制归档路径并分阶段安装。Tauri 注册仅服务该固定目录的 `director-desk://` 本地协议；开发模式继续连接 5178。前端使用 Zustand UI 状态统一承接所有节点创建入口的下载提示，并提供取消、重试和应用内清理。
+**Architecture:** Rust 后端从固定 GitHub Release 下载版本化 `tar.gz`，在 `appLocalDataDir/director-desk/<version>` 中校验 SHA-256、限制归档路径并分阶段安装。Tauri 注册仅服务该固定目录的 `director-desk://` 本地协议；开发与正式环境使用同一固定构建产物。前端使用 Zustand UI 状态统一承接所有节点创建入口的下载提示，并提供取消、重试和应用内清理。
 
 **Tech Stack:** Tauri 2、Rust、reqwest、sha2、flate2、tar、React 19、Zustand、Vitest。
 
@@ -110,6 +110,39 @@
 3. 运行 `cargo test director_desk_runtime::tests --lib`、`cargo test file_transfer::tests --lib` 和 `cargo check --lib`。
 4. 运行生产 Vite 构建、`git diff --check` 与严格 UTF-8 扫描。
 5. 在 Tauri 开发环境验证提示、取消、重试、下载完成打开、离线复用和应用内删除。
+
+### Task 5：统一开发与正式运行路径
+
+**状态：已完成并通过自动化验证。**
+
+**验证记录（2026-07-21）：**
+
+- `npm run typecheck`、`npm run test:typecheck` 和改动文件定向 ESLint 通过。
+- 导演台 3 个定向测试文件共 12 个测试通过；全量 36 个测试文件、200 个测试通过。
+- `npm run build` 与 `cargo check --lib` 通过，构建产物仍不包含 `dist/director-desk/index.html`。
+- Tauri debug 构建通过前端构建和 capability 配置解析；最终替换 debug 可执行文件时因当前 AI Canvas 进程占用而停止（Windows `os error 5`），不是代码或权限配置错误。
+- 已确认默认脚本为 `dev: vite`、`tauri: tauri`，源代码和 capability 中不存在 5178 运行引用。
+
+**Files:**
+
+- Modify: `package.json`
+- Delete: `scripts/dev-with-director.mjs`
+- Delete: `scripts/tauri-with-director.mjs`
+- Delete: `scripts/ensure-director-desk.mjs`
+- Delete: `scripts/start-director-desk.sh`
+- Modify: `src/services/directorDeskService.ts`
+- Modify: `src/services/directorDeskRuntimeService.ts`
+- Modify: `src-tauri/capabilities/director-desk.json`
+- Test: `tests/services/directorDeskRuntimeService.test.ts`
+- Test: `tests/services/directorDeskWindowService.test.ts`
+
+**Steps:**
+
+1. 默认开发命令不再启动导演台源码服务。
+2. Tauri 开发环境与正式环境统一检查、下载并加载固定构建产物。
+3. Web-only 模式不触发下载，继续提示独立窗口只支持 Tauri。
+4. 删除 5178 远程 capability 和废弃脚本，更新测试与文档。
+5. 运行前端检查、生产构建和 Tauri 配置验证。
 
 ## 回滚
 

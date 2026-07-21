@@ -1,13 +1,12 @@
 {
     "name": "ai-canvas-tauri",
     "private": true,
-    "version": "0.5.6",
+    "version": "0.6.0",
     "type": "module",
     "scripts": {
         "postinstall": "node scripts/setup-hooks.js",
-        "dev": "node scripts/dev-with-director.mjs",
+        "dev": "vite",
         "dev:web-only": "vite",
-        "director": "node scripts/ensure-director-desk.mjs",
         "lint": "eslint .",
         "typecheck": "tsc -b",
         "test:typecheck": "tsc -p tsconfig.test.json --noEmit",
@@ -17,9 +16,10 @@
         "ci": "npm run check && npm run build",
         "build": "tsc -b && vite build",
         "preview": "vite preview",
-        "tauri": "node scripts/tauri-with-director.mjs",
+        "tauri": "tauri",
         "tauri:raw": "tauri",
-        "sync-version": "node scripts/sync-version.js"
+        "sync-version": "node scripts/sync-version.js",
+        "director:update": "node scripts/update-director-desk-release.mjs"
     },
     "dependencies": {
         "@crabnebula/tauri-plugin-drag": "^2.1.0",

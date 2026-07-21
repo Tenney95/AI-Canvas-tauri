@@ -13,6 +13,7 @@ import {
   cancelDirectorDeskInstall,
   getDirectorDeskRuntimeStatus,
   installDirectorDeskRuntime,
+  requiresDirectorDeskRuntime,
   removeDirectorDeskRuntime,
   subscribeDirectorDeskInstallProgress,
 } from '../../src/services/directorDeskRuntimeService';
@@ -21,6 +22,14 @@ describe('directorDeskRuntimeService', () => {
   beforeEach(() => {
     mocks.invoke.mockReset();
     mocks.listen.mockReset();
+  });
+
+  it('requires the downloaded runtime in Tauri development and production webviews', () => {
+    vi.stubGlobal('window', {});
+    expect(requiresDirectorDeskRuntime()).toBe(false);
+
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    expect(requiresDirectorDeskRuntime()).toBe(true);
   });
 
   it('maps runtime lifecycle operations to Tauri commands', async () => {

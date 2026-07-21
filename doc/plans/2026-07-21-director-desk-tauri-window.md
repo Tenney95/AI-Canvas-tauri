@@ -1,5 +1,7 @@
 # 3D 导演台 Tauri 独立窗口实施计划
 
+> **状态：历史记录。** 独立窗口通信仍在使用，但 5178 远程开发地址已由统一的 `director-desk://` 按需运行时取代。
+
 > **For Claude:** REQUIRED SUB-SKILL: Use executing-plans to implement this plan task-by-task.
 
 **Goal:** 将 3D 导演台从画布内 iframe 改为可复用、可聚焦的 Tauri 独立窗口，并完整保留截图、当前帧和参考视频回写能力。

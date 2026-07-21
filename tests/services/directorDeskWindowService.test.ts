@@ -73,13 +73,15 @@ describe('directorDeskWindowService', () => {
 
     expect(tauriMocks.created).toHaveLength(1);
     expect(tauriMocks.created[0]?.label).toBe(DIRECTOR_DESK_WINDOW_LABEL);
-    expect(String(tauriMocks.created[0]?.options.url)).toContain('http://127.0.0.1:5178/');
+    expect(String(tauriMocks.created[0]?.options.url)).toContain(
+      'director-desk://localhost/index.html',
+    );
     expect(String(tauriMocks.created[0]?.options.url)).toContain('instanceId=node-14');
     expect(String(tauriMocks.created[0]?.options.url)).toContain('transport=tauri');
   });
 
-  it('uses the installed runtime protocol in production', () => {
-    const url = buildDirectorDeskWindowUrl('node-14', 'light', 'production');
+  it('always uses the installed runtime protocol', () => {
+    const url = buildDirectorDeskWindowUrl('node-14', 'light');
 
     expect(url).toBe(
       'director-desk://localhost/index.html?instanceId=node-14&theme=light&transport=tauri&hostWindowLabel=main',

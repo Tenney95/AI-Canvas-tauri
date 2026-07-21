@@ -24,7 +24,7 @@ export interface DirectorDeskInstallProgress {
 }
 
 export function requiresDirectorDeskRuntime(): boolean {
-  return !import.meta.env.DEV;
+  return isDirectorDeskRuntimeAvailable();
 }
 
 export function isDirectorDeskRuntimeAvailable(): boolean {
