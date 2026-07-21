@@ -299,7 +299,6 @@ function buildDramaChipEl(dramaId: string, name: string, kind: string, thumbUrl?
   nameSpan.className = 'prompt-chip-id';
   nameSpan.textContent = name.length > 16 ? `${name.slice(0, 14)}…` : name;
   span.appendChild(nameSpan);
-  appendChipRemoveBtn(span, `移除短剧资产 ${name}`);
   return span;
 }
 
