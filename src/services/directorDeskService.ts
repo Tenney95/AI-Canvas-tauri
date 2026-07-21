@@ -1,13 +1,13 @@
 /**
  * 3D 导演台（Tenney95/3d-director-desk）宿主通信
  * - 开发环境：http://127.0.0.1:5178
- * - 生产环境：应用内置 director-desk/index.html
+ * - 生产环境：按需安装后通过 director-desk:// 本地协议加载
  * - 通过 Tauri 独立窗口对接，截图/导出回写画布节点
  */
 
 export const DIRECTOR_DESK_ORIGIN_KEY = 'canvas-director-desk-origin';
 export const DEFAULT_DIRECTOR_DESK_ORIGIN = 'http://127.0.0.1:5178';
-export const BUNDLED_DIRECTOR_DESK_ENTRY = 'director-desk/index.html';
+export const DIRECTOR_DESK_RUNTIME_ENTRY = 'director-desk://localhost/index.html';
 
 export type DirectorDeskRuntimeMode = 'development' | 'production';
 
@@ -56,7 +56,7 @@ export function buildDirectorDeskWindowUrl(
     hostWindowLabel: 'main',
   });
   if (runtimeMode === 'production') {
-    return `${BUNDLED_DIRECTOR_DESK_ENTRY}?${params.toString()}`;
+    return `${DIRECTOR_DESK_RUNTIME_ENTRY}?${params.toString()}`;
   }
 
   const url = new URL(`${getDirectorDeskOrigin()}/`);

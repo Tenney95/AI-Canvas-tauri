@@ -23,6 +23,10 @@ import {
   subscribeDirectorDeskWindow,
   type DirectorDeskProtocolMessage,
 } from '../../services/directorDeskWindowService';
+import {
+  getDirectorDeskRuntimeStatus,
+  requiresDirectorDeskRuntime,
+} from '../../services/directorDeskRuntimeService';
 
 const DEFAULT_W = 320;
 const DEFAULT_H = 240;
@@ -168,6 +172,14 @@ function DirectorDeskNode({
     setReady(false);
     updateNodeDataTransient(id, { directorStatus: 'open' });
     try {
+      if (requiresDirectorDeskRuntime()) {
+        const runtime = await getDirectorDeskRuntimeStatus();
+        if (!runtime.installed) {
+          updateNodeDataTransient(id, { directorStatus: 'idle', error: undefined });
+          useAppStore.getState().requestDirectorDeskRuntime(instanceId, true);
+          return;
+        }
+      }
       await openDirectorDeskWindow({ instanceId, theme: deskTheme });
     } catch (error) {
       const message = error instanceof Error ? error.message : '打开 3D 导演台失败';

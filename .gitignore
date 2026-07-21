@@ -12,12 +12,6 @@ dist
 dist-ssr
 *.local
 
-# Versioned 3D director desk artifacts prepared before production builds
-/.cache/director-desk/
-public/director-desk/
-public/.director-desk-staging-*/
-
-
 .agents/*
 .codebuddy/
 .codegraph/

@@ -15,6 +15,7 @@ use url::Url;
 mod clipboard;
 mod comfyui;
 mod dreamina;
+mod director_desk_runtime;
 mod file_transfer;
 mod provider_docs;
 pub mod onnx;
@@ -646,6 +647,7 @@ pub fn run() {
     );
 
     tauri::Builder::default()
+        .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -660,6 +662,10 @@ pub fn run() {
             file_transfer::copy_file_streamed,
             file_transfer::download_file_streamed,
             file_transfer::cancel_file_transfer,
+            director_desk_runtime::director_desk_runtime_status,
+            director_desk_runtime::install_director_desk_runtime,
+            director_desk_runtime::cancel_director_desk_install,
+            director_desk_runtime::remove_director_desk_runtime,
             move_to_trash,
             clipboard::copy_files_to_clipboard,
             dreamina_login,

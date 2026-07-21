@@ -21,9 +21,23 @@ import { playNodeExit } from '../utils/nodeAnimations';
 import { cancelNodePolling } from '../services/pollManager';
 import { applyProjectDefaultsToNodeData } from '../services/projectSettingsService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
+import { requiresDirectorDeskRuntime } from '../services/directorDeskRuntimeService';
 
 interface GroupNodeDataAccess {
   groupId: string;
+}
+
+function requestDirectorDeskRuntimeForNodes(
+  nodes: Node<BaseNodeData>[],
+  get: () => AppState,
+) {
+  if (!requiresDirectorDeskRuntime()) return;
+  const directorNode = nodes.find((node) => node.type === 'ai-director');
+  if (!directorNode) return;
+  const instanceId = typeof directorNode.data.directorInstanceId === 'string'
+    ? directorNode.data.directorInstanceId.trim()
+    : '';
+  get().requestDirectorDeskRuntime(instanceId || directorNode.id, true);
 }
 
 export interface NodeSlice {
@@ -92,6 +106,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         nodes: [...state.nodes, { ...node, data: { ...data, displayId } } as Node<BaseNodeData>],
       };
     });
+    requestDirectorDeskRuntimeForNodes([node], get);
   },
 
   addNodeWithEdge: (node, edge) => {
@@ -105,6 +120,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         edges: [...state.edges, edge],
       };
     });
+    requestDirectorDeskRuntimeForNodes([node], get);
   },
 
   addNodesWithEdges: (nodes, edges) => {
@@ -123,6 +139,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         edges: [...state.edges, ...edges],
       };
     });
+    requestDirectorDeskRuntimeForNodes(nodes, get);
   },
 
   addNodes: (nodes) => {
@@ -143,6 +160,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       }
       return { nodes: nextNodes };
     });
+    requestDirectorDeskRuntimeForNodes(nodes, get);
   },
 
   createMediaPlaceholder: (intent, requestedPosition) => {

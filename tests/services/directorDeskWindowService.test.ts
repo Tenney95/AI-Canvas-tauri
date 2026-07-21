@@ -78,11 +78,11 @@ describe('directorDeskWindowService', () => {
     expect(String(tauriMocks.created[0]?.options.url)).toContain('transport=tauri');
   });
 
-  it('uses the bundled application entry in production', () => {
+  it('uses the installed runtime protocol in production', () => {
     const url = buildDirectorDeskWindowUrl('node-14', 'light', 'production');
 
     expect(url).toBe(
-      'director-desk/index.html?instanceId=node-14&theme=light&transport=tauri&hostWindowLabel=main',
+      'director-desk://localhost/index.html?instanceId=node-14&theme=light&transport=tauri&hostWindowLabel=main',
     );
     expect(url).not.toContain('127.0.0.1');
   });
