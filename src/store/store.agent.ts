@@ -8,11 +8,14 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import {
   DEFAULT_AGENT_TASK_BUDGET,
+  DEFAULT_AGENT_TASK_METRICS,
   type AgentMode,
+  type AgentExpertRole,
   type AgentTask,
   type AgentTaskBudget,
 } from '../types/agent';
 import * as agentTaskService from '../services/chat/agentTaskService';
+import { emitAgentLifecycleEvent } from '../services/chat/agentLifecycle';
 
 export interface CreateAgentTaskInput {
   projectId: string;
@@ -21,6 +24,10 @@ export interface CreateAgentTaskInput {
   mode: AgentMode;
   goal: string;
   budget?: Partial<AgentTaskBudget>;
+  toolAllowlist?: string[];
+  parentTaskId?: string;
+  expertRole?: AgentExpertRole;
+  expertDepth?: 1;
 }
 
 export interface AgentSlice {
@@ -67,11 +74,32 @@ export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set
         ...DEFAULT_AGENT_TASK_BUDGET,
         ...input.budget,
       },
+      toolAllowlist: input.toolAllowlist
+        ? [...new Set(input.toolAllowlist)]
+        : undefined,
+      parentTaskId: input.parentTaskId,
+      expertRole: input.expertRole,
+      expertDepth: input.expertDepth,
+      events: [{
+        id: `${taskId}-event-0`,
+        taskId,
+        sequence: 0,
+        type: 'task_queued',
+        timestamp: now,
+      }],
+      metrics: { ...DEFAULT_AGENT_TASK_METRICS },
       createdAt: now,
       updatedAt: now,
     };
     set((state) => ({ agentTasks: [...state.agentTasks, task] }));
     persistTask(task);
+    emitAgentLifecycleEvent({
+      type: 'task.status',
+      taskId: task.id,
+      projectId: task.projectId,
+      conversationId: task.conversationId,
+      status: task.status,
+    });
     return task;
   },
 

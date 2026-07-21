@@ -26,6 +26,8 @@ interface ChatHeaderProps {
   agentModeDisabled?: boolean;
   /** 打开项目记忆管理面板；不提供时不显示入口（如独立窗口） */
   onOpenMemory?: () => void;
+  onOpenTasks?: () => void;
+  activeTaskCount?: number;
   /** 分离模式下由外部传入的 header 操作按钮 */
   detachedHeaderActions?: ReactNode;
 }
@@ -42,6 +44,8 @@ export default function ChatHeader({
   onAgentModeChange,
   agentModeDisabled,
   onOpenMemory,
+  onOpenTasks,
+  activeTaskCount = 0,
   detachedHeaderActions,
 }: ChatHeaderProps) {
   return (
@@ -86,6 +90,23 @@ export default function ChatHeader({
         />
 
         <span className="mx-0.5 h-4 w-px bg-canvas-border" aria-hidden="true" />
+
+        {onOpenTasks && (
+          <button
+            type="button"
+            className="relative flex h-8 w-8 items-center justify-center rounded-lg text-canvas-text-muted
+                       transition-[color,background-color,box-shadow,transform] duration-150 hover:bg-canvas-hover hover:text-canvas-text
+                       active:scale-95 motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+            onClick={onOpenTasks}
+            data-tooltip="任务中心"
+            aria-label={`任务中心${activeTaskCount > 0 ? `，${activeTaskCount} 个进行中` : ''}`}
+          >
+            <Icon icon="mdi:progress-wrench" width="16" height="16" />
+            {activeTaskCount > 0 && (
+              <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
+            )}
+          </button>
+        )}
 
         {onOpenMemory && (
           <button

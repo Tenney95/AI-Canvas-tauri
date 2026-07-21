@@ -18,6 +18,7 @@ import { getSlashCommands, fillTemplate } from './slashCommands';
 import type { SlashCommandItem } from './slashCommands';
 import { calcFixedPosition, calcSubmenuPosition } from '../../../utils/popupPosition';
 import { isAdvancedPreset } from '../../../services/presetSequenceService';
+import { isSkillUserInvocable } from '../../../services/skillPromptService';
 
 const SKILL_PARENT_ID = '__skills__';
 
@@ -50,6 +51,10 @@ export default function SlashCommandMenu({
   onClose,
   onManagePresets,
 }: SlashCommandMenuProps) {
+  const invocableSkills = useMemo(
+    () => userSkills.filter(isSkillUserInvocable),
+    [userSkills],
+  );
   const [activeParentId, setActiveParentId] = useState<string | null>(null);
   const [hoveredItemId, setHoveredItemId] = useState<string | null>(null);
   const [submenuPos, setSubmenuPos] = useState<{ left: number; top: number; direction: 'left' | 'right' }>({ left: 0, top: 0, direction: 'right' });
@@ -172,8 +177,8 @@ export default function SlashCommandMenu({
   const handleSkillHover = useCallback(() => {
     setActiveParentId(SKILL_PARENT_ID);
     setHoveredItemId(SKILL_PARENT_ID);
-    updateSubmenuPositionByCount(userSkills.length + 3);
-  }, [updateSubmenuPositionByCount, userSkills.length]);
+    updateSubmenuPositionByCount(invocableSkills.length + 3);
+  }, [invocableSkills.length, updateSubmenuPositionByCount]);
 
   return createPortal(
     <>
@@ -317,7 +322,7 @@ export default function SlashCommandMenu({
             top: submenuPos.top,
           }}
         >
-          {userSkills.map((skill) => (
+          {invocableSkills.map((skill) => (
             <div
               key={skill.id}
               className={`slash-command-item has-trigger${hoveredItemId === skill.id ? ' active' : ''}`}
@@ -331,7 +336,7 @@ export default function SlashCommandMenu({
               <span className="slash-command-badge">调用</span>
             </div>
           ))}
-          {userSkills.length > 0 && <div className="slash-command-divider" />}
+          {invocableSkills.length > 0 && <div className="slash-command-divider" />}
           <div
             className="slash-command-item has-trigger"
             onClick={() => {

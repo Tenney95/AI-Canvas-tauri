@@ -28,6 +28,7 @@ export interface AgentTaskControls {
   onStop: (taskId: string) => void;
   onSkip: (taskId: string, stepId: string) => void;
   onReplan: (taskId: string) => void;
+  onRewind: (taskId: string) => void;
 }
 
 interface AgentTaskTimelineProps extends AgentTaskControls {
@@ -97,8 +98,10 @@ export default function AgentTaskTimeline({
   onStop,
   onSkip,
   onReplan,
+  onRewind,
 }: AgentTaskTimelineProps) {
   const isTerminal = AGENT_TERMINAL_STATUSES.has(task.status);
+  const isExpertTask = !!task.parentTaskId;
   const [expanded, setExpanded] = useState(!isTerminal);
 
   const meta = STATUS_META[task.status];
@@ -110,6 +113,9 @@ export default function AgentTaskTimeline({
   const recoveryHint = (task.status === 'paused' || task.status === 'failed')
     ? getAgentRecoveryHint(task.errorCode)
     : undefined;
+  const hasCanvasCheckpoint = task.steps.some((step) =>
+    step.status === 'succeeded' && !!step.toolCall?.canvasCheckpoint);
+  const metrics = task.metrics;
 
   return (
     <div className="agent-task-timeline mt-2 border-l border-canvas-border/80 pl-2.5 pr-1 py-1">
@@ -136,6 +142,15 @@ export default function AgentTaskTimeline({
           <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width="16" />
         </span>
       </button>
+
+      {metrics && (metrics.inputTokens > 0 || metrics.outputTokens > 0 || metrics.toolDurationMs > 0) && (
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] tabular-nums text-canvas-text-muted">
+          <span>{(metrics.inputTokens + metrics.outputTokens).toLocaleString()} token</span>
+          <span>模型 {(metrics.modelDurationMs / 1000).toFixed(1)}s</span>
+          <span>工具 {(metrics.toolDurationMs / 1000).toFixed(1)}s</span>
+          {metrics.policyDenied > 0 && <span>{metrics.policyDenied} 次拒绝</span>}
+        </div>
+      )}
 
       {task.status === 'paused' && task.pausedReason && (
         <p className="mt-1.5 text-[11px] leading-[17px] text-amber-300/90">
@@ -173,7 +188,7 @@ export default function AgentTaskTimeline({
           )}
 
           {/* 控制操作 */}
-          {!isTerminal && (
+          {!isTerminal && !isExpertTask && (
             <div className="mt-2.5 flex flex-wrap items-center gap-1 border-t border-canvas-border/60 pt-2">
               {isActive && task.status !== 'waiting_approval' && (
                 <ControlButton icon="mdi:pause" label="暂停" onClick={() => onPause(task.id)} />
@@ -193,9 +208,18 @@ export default function AgentTaskTimeline({
             </div>
           )}
 
-          {task.status === 'failed' && (
+          {task.status === 'failed' && !isExpertTask && (
             <div className="mt-2.5 flex items-center gap-1 border-t border-canvas-border/60 pt-2">
               <ControlButton icon="mdi:play" label="继续" tone="primary" onClick={() => onResume(task.id)} />
+            </div>
+          )}
+          {!isExpertTask && !isActive && hasCanvasCheckpoint && (
+            <div className="mt-2.5 flex items-center gap-1 border-t border-canvas-border/60 pt-2">
+              <ControlButton
+                icon="mdi:backup-restore"
+                label="回退任务画布修改"
+                onClick={() => onRewind(task.id)}
+              />
             </div>
           )}
         </>

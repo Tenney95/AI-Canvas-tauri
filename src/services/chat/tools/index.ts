@@ -3,6 +3,7 @@ import { registerMediaAgentTools } from './mediaTools';
 import { registerFileAgentTools } from './fileTools';
 import { registerMemoryAgentTools } from './memoryTools';
 import { registerPresetAgentTools } from './presetTools';
+import { registerExpertAgentTools } from './expertTools';
 
 let registered = false;
 
@@ -16,5 +17,6 @@ export function ensureAgentToolsRegistered(): void {
   registerFileAgentTools();
   registerMemoryAgentTools();
   registerPresetAgentTools();
+  registerExpertAgentTools();
   registered = true;
 }

@@ -54,7 +54,12 @@ export interface ChatStateSnapshot {
 // ============================================
 
 export type ChatAction =
-  | { type: 'send_message'; content: string; conversationId: string }
+  | {
+      type: 'send_message';
+      content: string;
+      conversationId: string;
+      dispatchMode?: 'queue' | 'interject';
+    }
   | { type: 'switch_conversation'; conversationId: string }
   | { type: 'create_conversation'; projectId: string; title?: string }
   | { type: 'rename_conversation'; conversationId: string; title: string }
@@ -72,6 +77,7 @@ export type ChatAction =
   | { type: 'stop_agent_task'; taskId: string }
   | { type: 'skip_agent_step'; taskId: string; stepId: string }
   | { type: 'replan_agent_task'; taskId: string }
+  | { type: 'rewind_agent_task'; taskId: string }
   | { type: 'authorize_local_files'; conversationId: string }
   | { type: 'revoke_local_file'; conversationId: string; grantId: string }
   | { type: 'select_model'; modelId?: string; category?: 'text' | 'image' | 'video' }

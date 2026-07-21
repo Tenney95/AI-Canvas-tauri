@@ -15,6 +15,7 @@ import {
 import {
   AGENT_RESTART_PAUSE_STATUSES,
   DEFAULT_AGENT_TASK_BUDGET,
+  DEFAULT_AGENT_TASK_METRICS,
   type AgentStep,
   type AgentTask,
 } from '../../types/agent';
@@ -28,6 +29,11 @@ function normalizeTask(task: AgentTask): AgentTask {
     budget: {
       ...DEFAULT_AGENT_TASK_BUDGET,
       ...task.budget,
+    },
+    events: task.events ?? [],
+    metrics: {
+      ...DEFAULT_AGENT_TASK_METRICS,
+      ...task.metrics,
     },
   };
 }

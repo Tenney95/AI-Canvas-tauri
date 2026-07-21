@@ -227,6 +227,8 @@ export interface ConversationContextSummary {
   /** 摘要自身的估算 token 数 */
   estimatedTokens: number;
   updatedAt: number;
+  /** P4 结构化摘要格式版本；旧摘要缺省时按 v1 读取。 */
+  formatVersion?: 2;
 }
 
 export interface ChatConversation {

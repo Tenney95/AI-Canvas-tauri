@@ -4,7 +4,15 @@
  * 本文件只描述可持久化的任务状态，不包含 AbortController、窗口句柄等运行时对象。
  */
 
-export type AgentMode = 'collaborative' | 'autonomous';
+export type AgentMode = 'collaborative' | 'autonomous' | 'plan';
+
+export const AGENT_EXPERT_ROLES = [
+  'canvas_structure',
+  'workflow_risk',
+  'asset_reuse',
+] as const;
+
+export type AgentExpertRole = typeof AGENT_EXPERT_ROLES[number];
 
 export type AgentTaskStatus =
   | 'queued'
@@ -53,6 +61,79 @@ export interface AgentTaskBudget {
   maxReadRetries: number;
 }
 
+export interface AgentTaskMetrics {
+  inputTokens: number;
+  outputTokens: number;
+  modelDurationMs: number;
+  toolDurationMs: number;
+  policyAllowed: number;
+  policyDenied: number;
+  approvalCount: number;
+  retryCount: number;
+  interjectionCount: number;
+}
+
+export const DEFAULT_AGENT_TASK_METRICS: AgentTaskMetrics = {
+  inputTokens: 0,
+  outputTokens: 0,
+  modelDurationMs: 0,
+  toolDurationMs: 0,
+  policyAllowed: 0,
+  policyDenied: 0,
+  approvalCount: 0,
+  retryCount: 0,
+  interjectionCount: 0,
+};
+
+export type AgentEventType =
+  | 'task_queued'
+  | 'task_status'
+  | 'model_round_start'
+  | 'model_round_end'
+  | 'interjection_applied'
+  | 'tool_proposed'
+  | 'policy_decision'
+  | 'approval_resolved'
+  | 'tool_start'
+  | 'tool_end'
+  | 'canvas_checkpoint'
+  | 'canvas_rewind';
+
+export interface AgentEventData {
+  status?: AgentTaskStatus | AgentStepStatus;
+  toolId?: string;
+  callId?: string;
+  effect?: AgentApprovalKind | 'read';
+  decision?: 'allow' | 'deny' | 'require_approval';
+  approved?: boolean;
+  errorCode?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  durationMs?: number;
+  retryCount?: number;
+  revisionBefore?: number;
+  revisionAfter?: number;
+  historyIndexBefore?: number;
+  historyIndexAfter?: number;
+  interjectionId?: string;
+}
+
+export interface AgentEvent {
+  id: string;
+  taskId: string;
+  sequence: number;
+  type: AgentEventType;
+  timestamp: number;
+  data?: AgentEventData;
+}
+
+export interface AgentCanvasCheckpoint {
+  revisionBefore: number;
+  revisionAfter: number;
+  historyIndexBefore: number;
+  historyIndexAfter: number;
+}
+
 export const DEFAULT_AGENT_TASK_BUDGET: AgentTaskBudget = {
   maxModelRounds: 12,
   maxToolCalls: 24,
@@ -69,6 +150,9 @@ export interface AgentToolCallSnapshot {
   finishedAt?: number;
   resultSummary?: string;
   errorCode?: string;
+  effect?: AgentApprovalKind | 'read';
+  inputFingerprint?: string;
+  canvasCheckpoint?: AgentCanvasCheckpoint;
 }
 
 export interface AgentApprovalInputRequest {
@@ -125,6 +209,15 @@ export interface AgentTask {
   modelRounds: number;
   toolCallCount: number;
   budget: AgentTaskBudget;
+  /** 任务创建时由用户显式引用的 Skill 计算，只能缩小 Registry 可见集合。 */
+  toolAllowlist?: string[];
+  /** 只读专家任务的父任务；存在时嵌套深度固定为 1。 */
+  parentTaskId?: string;
+  expertRole?: AgentExpertRole;
+  expertDepth?: 1;
+  resultSummary?: string;
+  events?: AgentEvent[];
+  metrics?: AgentTaskMetrics;
   createdAt: number;
   updatedAt: number;
   startedAt?: number;

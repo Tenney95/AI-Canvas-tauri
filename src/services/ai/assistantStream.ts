@@ -320,7 +320,7 @@ export function buildAssistantSystemPrompt(
         `使用本地提供的函数工具完成画布查询和操作。`,
         `- 不要输出 intent JSON 代码块；需要操作时直接调用对应工具`,
         `- 工具返回的是可信 Observation；根据结果决定继续调用工具或回复用户`,
-        `- B 协作模式的画布写操作会由本地策略请求确认，C 自主模式会自动执行`,
+        `- Plan 模式只允许只读工具；B 协作模式的画布写操作会请求确认，C 自主模式会自动执行`,
         `- 删除节点属于可撤销的画布修改；永久删除文件是另一类操作`,
         `- 新建媒体节点与生成媒体内容是两种状态：canvas_create_nodes 只建节点，media_generate 会实际调用生成模型`,
         `- 用户可用 @{nodeId:label} 引用当前画布节点；不得编造、改写或删除其中的 nodeId`,
@@ -332,6 +332,7 @@ export function buildAssistantSystemPrompt(
         `- 用户表达稳定偏好、确定事实、明确约束或做出决定时，可用 memory_suggest 提议保存项目记忆，由用户确认后写入`,
         `- memory_suggest 内容必须精简成一句话，不能包含文件全文、密钥或本地路径；普通问答不要调用`,
         `- 已确认的项目记忆会作为可信上下文自动提供，不需要重复提议已存在的记忆`,
+        `- 需要独立复核画布结构、工作流风险或资产复用时，可调用 agent_run_expert_review；每个主任务最多 3 次，专家只读且不能嵌套`,
         ``,
         buildMediaPrompt(),
       ]

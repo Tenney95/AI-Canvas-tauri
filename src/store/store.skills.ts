@@ -7,6 +7,7 @@ import type { UserSkill } from '../types';
 import { generateId } from './store.utils';
 import * as fileService from '../services/fileService';
 import type { SkillUploadSource } from '../services/fileService';
+import { parseSkillDocument } from '../services/chat/skillManifest';
 
 function getSkillName(fileName: string): string {
   const base = fileName.replace(/\.[^.]+$/, '').trim();
@@ -35,16 +36,20 @@ export const createSkillSlice: StateCreator<AppState, [], [], SkillSlice> = (set
   uploadSkill: async (source = 'folder') => {
     const uploaded = await fileService.uploadSkillFile(source);
     if (!uploaded) return null;
+    const parsed = parseSkillDocument(uploaded.content);
 
     const skill: UserSkill = {
       id: generateId(),
-      name: getSkillName(uploaded.fileName),
-      description: getSkillDescription(uploaded.content),
+      name: parsed.manifest?.name || getSkillName(uploaded.fileName),
+      description: parsed.manifest?.description
+        || parsed.manifest?.whenToUse
+        || getSkillDescription(parsed.content),
       fileName: uploaded.fileName,
       content: uploaded.content,
       sourceType: uploaded.sourceType,
       storagePath: uploaded.storagePath,
       entryFileName: uploaded.entryFileName,
+      manifest: parsed.manifest,
       createdAt: Date.now(),
     };
 
@@ -65,17 +70,28 @@ export const createSkillSlice: StateCreator<AppState, [], [], SkillSlice> = (set
     const records = await fileService.loadSkills();
     if (records.length > 0) {
       set({
-        userSkills: records.map((r) => ({
-          id: r.id,
-          name: r.name,
-          description: r.description,
-          fileName: r.fileName,
-          content: r.content,
-          sourceType: r.sourceType === 'folder' ? 'folder' : 'file',
-          storagePath: r.storagePath,
-          entryFileName: r.entryFileName,
-          createdAt: r.createdAt,
-        })),
+        userSkills: records.map((r) => {
+          let manifest = r.manifest;
+          if (!manifest) {
+            try {
+              manifest = parseSkillDocument(r.content).manifest;
+            } catch (error) {
+              console.warn(`[加载 Skill] Manifest 解析失败: ${r.id}`, error);
+            }
+          }
+          return {
+            id: r.id,
+            name: manifest?.name || r.name,
+            description: manifest?.description || manifest?.whenToUse || r.description,
+            fileName: r.fileName,
+            content: r.content,
+            sourceType: r.sourceType === 'folder' ? 'folder' : 'file',
+            storagePath: r.storagePath,
+            entryFileName: r.entryFileName,
+            manifest,
+            createdAt: r.createdAt,
+          };
+        }),
       });
     }
   },

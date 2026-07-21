@@ -18,6 +18,8 @@ export interface AgentToolContext {
   projectId: string;
   conversationId: string;
   mode: AgentMode;
+  /** 任务级工具上限；缺省表示不额外限制，空数组表示无工具。 */
+  toolAllowlist?: string[];
   /** 工具提案时的画布修订号；写工具执行前必须复核。 */
   baseRevision?: number;
   signal: AbortSignal;
@@ -85,9 +87,14 @@ export function getAgentTool(toolId: string): AgentToolDefinition | undefined {
 export function getAvailableAgentTools(
   context: Omit<AgentToolContext, 'signal'>,
 ): AgentToolDefinition[] {
-  return [...registry.values()].filter((definition) =>
-    definition.isAvailable ? definition.isAvailable(context) : true,
-  );
+  return [...registry.values()].filter((definition) => {
+    if (context.mode === 'plan' && definition.effect !== 'read') return false;
+    if (
+      context.toolAllowlist !== undefined
+      && !context.toolAllowlist.includes(definition.id)
+    ) return false;
+    return definition.isAvailable ? definition.isAvailable(context) : true;
+  });
 }
 
 export function buildAssistantFunctionTools(
@@ -108,7 +115,14 @@ export function prepareAgentToolCall(
   context: Omit<AgentToolContext, 'signal'>,
 ): PrepareAgentToolCallResult {
   const definition = registry.get(call.toolId);
-  if (!definition || (definition.isAvailable && !definition.isAvailable(context))) {
+  const unavailable = !definition
+    || (context.mode === 'plan' && definition.effect !== 'read')
+    || (
+      context.toolAllowlist !== undefined
+      && !context.toolAllowlist.includes(call.toolId)
+    )
+    || (definition.isAvailable && !definition.isAvailable(context));
+  if (unavailable) {
     return {
       ok: false,
       result: {
