@@ -11,6 +11,7 @@ const EXPECTED_STORES = [
   'chatMessages',
   'config',
   'history',
+  'metadata',
   'presets',
   'projectMemories',
   'projects',
@@ -39,7 +40,7 @@ beforeEach(() => {
 });
 
 describe('indexedDbService schema', () => {
-  it('creates the complete v13 schema for a fresh database', async () => {
+  it('creates the complete v14 schema for a fresh database', async () => {
     const service = await import('../../src/services/indexedDbService');
     await service.saveProjectToDb({
       id: 'project-fresh',
@@ -51,7 +52,7 @@ describe('indexedDbService schema', () => {
     });
 
     const db = await openDatabase(DB_NAME);
-    expect(db.version).toBe(13);
+    expect(db.version).toBe(14);
     expect([...db.objectStoreNames]).toEqual(EXPECTED_STORES);
 
     const taskStore = db.transaction('agentTasks', 'readonly').objectStore('agentTasks');
@@ -62,6 +63,8 @@ describe('indexedDbService schema', () => {
     ]);
     const memoryStore = db.transaction('projectMemories', 'readonly').objectStore('projectMemories');
     expect([...memoryStore.indexNames]).toEqual(['conversationId', 'projectId_updatedAt']);
+    const historyStore = db.transaction('history', 'readonly').objectStore('history');
+    expect([...historyStore.indexNames]).toEqual(['nodeId', 'timestamp_id']);
     db.close();
   });
 
@@ -100,7 +103,7 @@ describe('indexedDbService schema', () => {
       }),
     ]);
     const upgradedDb = await openDatabase(DB_NAME);
-    expect(upgradedDb.version).toBe(13);
+    expect(upgradedDb.version).toBe(14);
     expect([...upgradedDb.objectStoreNames]).toEqual(EXPECTED_STORES);
     upgradedDb.close();
   });

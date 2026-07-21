@@ -10,6 +10,7 @@ import { loadConfig } from '../../services/fileService';
 import type { AppConfig } from '../../types';
 import ChatPanel from './ChatPanel';
 import {
+  applyChatStatePatch,
   emitAction,
   emitCloseRequest,
   initChatWindowListener,
@@ -31,6 +32,8 @@ export default function ChatWindow() {
   const [initialized, setInitialized] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const isLockedRef = useRef(false);
+  const syncRevisionRef = useRef(0);
+  const resyncRequestedRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
@@ -83,8 +86,18 @@ export default function ChatWindow() {
     let cleanup: (() => void) | undefined;
 
     void initChatWindowListener(
-      (nextSnapshot) => {
-        setSnapshot(nextSnapshot);
+      (sync) => {
+        if (sync.type === 'snapshot') {
+          syncRevisionRef.current = sync.revision;
+          resyncRequestedRef.current = false;
+          setSnapshot(sync.snapshot);
+        } else if (sync.baseRevision === syncRevisionRef.current) {
+          syncRevisionRef.current = sync.revision;
+          setSnapshot((current) => applyChatStatePatch(current, sync.patch));
+        } else if (!resyncRequestedRef.current) {
+          resyncRequestedRef.current = true;
+          void emitAction({ type: 'request_sync' });
+        }
         setInitialized(true);
         clearTimeout(fallbackTimer);
       },

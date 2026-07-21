@@ -31,6 +31,8 @@ import {
   emitAction,
   emitSyncState,
   emitCloseChatWindow,
+  createChatStatePatch,
+  hasChatStatePatchChanges,
   type ChatAction,
   type ChatStateSnapshot,
 } from '../../services/chat/chatWindowService';
@@ -171,6 +173,33 @@ function getMediaModelAvailability(
 
 function sanitizeGeneralModels(models: GeneralModelConfig[]): GeneralModelConfig[] {
   return models.map((model) => ({ ...model, apiKey: '' }));
+}
+
+function buildDetachedChatSnapshot(
+  state: ReturnType<typeof useAppStore.getState>,
+): ChatStateSnapshot {
+  const project = state.projects.find((item) => item.id === state.currentProjectId);
+  return {
+    conversations: state.conversations,
+    activeConversationId: state.activeConversationId,
+    messages: state.messages,
+    agentTasks: state.agentTasks,
+    projectId: state.currentProjectId,
+    projectName: project?.name,
+    generalModels: sanitizeGeneralModels(state.config.generalModels ?? []),
+    assistantModelId: state.config.assistantModelId,
+    assistantImageModelId: state.config.assistantImageModelId,
+    assistantVideoModelId: state.config.assistantVideoModelId,
+    mediaModelAvailability: getMediaModelAvailability(
+      getMediaModelOptions(state.config.generalModels ?? [], state.config),
+      state.config.generalModels ?? [],
+      state.config.providers,
+      !!state.config.dreaminaAuth?.loggedIn,
+    ),
+    localFileGrants: state.activeConversationId
+      ? listConversationFileGrants(state.activeConversationId)
+      : [],
+  };
 }
 
 interface ChatPanelProps {
@@ -703,6 +732,9 @@ export default function ChatPanel({
   const chatSyncImmediateRef = useRef(false);
   const chatSyncDisposedRef = useRef(false);
   const chatSyncLastStartedAtRef = useRef(0);
+  const chatSyncLastSnapshotRef = useRef<ChatStateSnapshot | null>(null);
+  const chatSyncRevisionRef = useRef(0);
+  const chatSyncForceSnapshotRef = useRef(false);
 
   const emitLatestChatWindowSnapshot = useCallback(async function emitLatestSnapshot() {
     chatSyncTimerRef.current = null;
@@ -720,29 +752,28 @@ export default function ChatPanel({
     chatSyncInFlightRef.current = true;
     chatSyncLastStartedAtRef.current = performance.now();
 
-    const project = state.projects.find((item) => item.id === state.currentProjectId);
     try {
-      await emitSyncState({
-        conversations: state.conversations,
-        activeConversationId: state.activeConversationId,
-        messages: state.messages,
-        agentTasks: state.agentTasks,
-        projectId: state.currentProjectId,
-        projectName: project?.name,
-        generalModels: sanitizeGeneralModels(state.config.generalModels ?? []),
-        assistantModelId: state.config.assistantModelId,
-        assistantImageModelId: state.config.assistantImageModelId,
-        assistantVideoModelId: state.config.assistantVideoModelId,
-        mediaModelAvailability: getMediaModelAvailability(
-          getMediaModelOptions(state.config.generalModels ?? [], state.config),
-          state.config.generalModels ?? [],
-          state.config.providers,
-          !!state.config.dreaminaAuth?.loggedIn,
-        ),
-        localFileGrants: state.activeConversationId
-          ? listConversationFileGrants(state.activeConversationId)
-          : [],
-      });
+      const nextSnapshot = buildDetachedChatSnapshot(state);
+      const previousSnapshot = chatSyncLastSnapshotRef.current;
+      const forceSnapshot = chatSyncForceSnapshotRef.current || !previousSnapshot;
+
+      if (!forceSnapshot) {
+        const patch = createChatStatePatch(previousSnapshot, nextSnapshot);
+        chatSyncLastSnapshotRef.current = nextSnapshot;
+        if (!hasChatStatePatchChanges(patch)) return;
+
+        const baseRevision = chatSyncRevisionRef.current;
+        const revision = baseRevision + 1;
+        chatSyncRevisionRef.current = revision;
+        await emitSyncState({ type: 'patch', baseRevision, revision, patch });
+        return;
+      }
+
+      chatSyncForceSnapshotRef.current = false;
+      chatSyncLastSnapshotRef.current = nextSnapshot;
+      const revision = chatSyncRevisionRef.current + 1;
+      chatSyncRevisionRef.current = revision;
+      await emitSyncState({ type: 'snapshot', revision, snapshot: nextSnapshot });
     } finally {
       chatSyncInFlightRef.current = false;
       if (!chatSyncDisposedRef.current && chatSyncPendingRef.current) {
@@ -757,13 +788,14 @@ export default function ChatPanel({
     }
   }, []);
 
-  const syncToChatWindow = useCallback((immediate = false) => {
+  const syncToChatWindow = useCallback((immediate = false, forceSnapshot = false) => {
     if (!isTauri) return;
     const state = useAppStore.getState();
     if (!state.chatPanelDetached) return;
 
     chatSyncPendingRef.current = true;
     if (immediate) chatSyncImmediateRef.current = true;
+    if (forceSnapshot) chatSyncForceSnapshotRef.current = true;
 
     if (chatSyncTimerRef.current) {
       if (!immediate) return;
@@ -789,6 +821,9 @@ export default function ChatPanel({
       chatSyncDisposedRef.current = true;
       chatSyncPendingRef.current = false;
       chatSyncImmediateRef.current = false;
+      chatSyncForceSnapshotRef.current = false;
+      chatSyncLastSnapshotRef.current = null;
+      chatSyncRevisionRef.current = 0;
       if (chatSyncTimerRef.current) clearTimeout(chatSyncTimerRef.current);
       chatSyncTimerRef.current = null;
     };
@@ -979,7 +1014,7 @@ export default function ChatPanel({
               break;
 
             case 'request_sync':
-              syncToChatWindow(true);
+              syncToChatWindow(true, true);
               break;
           }
         },
@@ -1000,11 +1035,14 @@ export default function ChatPanel({
     const wasDetached = chatWindowWasDetachedRef.current;
     chatWindowWasDetachedRef.current = !detached && chatPanelDetached;
     if (!detached && chatPanelDetached) {
-      syncToChatWindow(!wasDetached);
+      syncToChatWindow(!wasDetached, !wasDetached);
       return;
     }
     chatSyncPendingRef.current = false;
     chatSyncImmediateRef.current = false;
+    chatSyncForceSnapshotRef.current = false;
+    chatSyncLastSnapshotRef.current = null;
+    chatSyncRevisionRef.current = 0;
     if (chatSyncTimerRef.current) clearTimeout(chatSyncTimerRef.current);
     chatSyncTimerRef.current = null;
   }, [

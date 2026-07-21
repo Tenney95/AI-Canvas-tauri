@@ -201,6 +201,7 @@ function SnapLinesOverlay({ lines }: { lines: SnapLine[] }) {
 function CanvasInner() {
   const nodes = useAppStore((s) => s.nodes);
   const edges = useAppStore((s) => s.edges);
+  const selectedNodeIds = useAppStore((s) => s.selectedNodeIds);
   const onConnect = useAppStore((s) => s.onConnect);
   const setEdges = useAppStore((s) => s.setEdges);
   const setSelectedNodeIds = useAppStore((s) => s.setSelectedNodeIds);
@@ -661,6 +662,20 @@ function CanvasInner() {
     [smoothLine],
   );
 
+  // 仅派生渲染状态，不把节点选中效果写回可持久化的边数据。
+  const renderedEdges = useMemo(() => {
+    if (selectedNodeIds.length === 0) return edges;
+
+    const selectedIds = new Set(selectedNodeIds);
+    return edges.map((edge) => {
+      if (!selectedIds.has(edge.source) && !selectedIds.has(edge.target)) return edge;
+      return {
+        ...edge,
+        className: [edge.className, 'edge-connected-to-selected-node'].filter(Boolean).join(' '),
+      };
+    });
+  }, [edges, selectedNodeIds]);
+
   // ── Node change handler ──
   const handleNodesChange = useCallback(
     (changes: NodeChange<RFNode<BaseNodeData>>[]) => {
@@ -809,7 +824,7 @@ function CanvasInner() {
     <div className="absolute inset-0">
       <ReactFlow
         nodes={nodes}
-        edges={edges}
+        edges={renderedEdges}
         onConnect={onConnect}
         onConnectEnd={handleConnectEnd}
         isValidConnection={isValidConnection}

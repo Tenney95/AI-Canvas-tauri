@@ -357,7 +357,8 @@ export default function OverlayScrollbarLayer() {
 
   useEffect(() => {
     const knownTargets = knownTargetsRef.current;
-    const pendingRoots = new Set<Node>();
+    const pendingRoots = new Set<HTMLElement>();
+    let shouldPublishTargets = false;
     let scanFrame = 0;
 
     const getTargetEntries = () => Array.from(
@@ -377,56 +378,80 @@ export default function OverlayScrollbarLayer() {
     };
 
     const registerTarget = (element: HTMLElement) => {
-      if (element.closest('[data-overlay-scrollbar="off"]')) return;
-      if (!hasScrollableAxis(getPotentialScrollAxes(element)) || knownTargets.has(element)) return;
+      if (knownTargets.has(element) || element.closest('[data-overlay-scrollbar="off"]')) return;
+      if (!hasScrollableAxis(getPotentialScrollAxes(element))) return;
 
       knownTargets.set(element, nextTargetIdRef.current++);
       element.setAttribute('data-overlay-scrollbar', 'managed');
       setTargets(getTargetEntries());
     };
 
-    const scanNode = (node: Node) => {
-      const candidates = new Set<HTMLElement>();
-      const rootElement = node instanceof HTMLElement ? node : node.parentElement;
-      if (rootElement) {
-        candidates.add(rootElement);
-        rootElement.querySelectorAll<HTMLElement>('*').forEach((element) => candidates.add(element));
-        let ancestor = rootElement.parentElement;
-        while (ancestor) {
-          candidates.add(ancestor);
-          ancestor = ancestor.parentElement;
-        }
+    const registerTargetAndAncestors = (element: HTMLElement) => {
+      let candidate: HTMLElement | null = element;
+      while (candidate) {
+        registerTarget(candidate);
+        candidate = candidate.parentElement;
       }
-      candidates.forEach(registerTarget);
+    };
+
+    const scanAddedSubtree = (root: HTMLElement) => {
+      registerTargetAndAncestors(root);
+      root.querySelectorAll<HTMLElement>('*').forEach(registerTarget);
+    };
+
+    const getClosestHtmlElement = (target: EventTarget | null): HTMLElement | null => {
+      let element = target instanceof Element ? target : null;
+      while (element && !(element instanceof HTMLElement)) element = element.parentElement;
+      return element instanceof HTMLElement ? element : null;
     };
 
     const flushScans = () => {
       scanFrame = 0;
-      pendingRoots.forEach(scanNode);
+      pendingRoots.forEach(scanAddedSubtree);
       pendingRoots.clear();
-      publishTargets();
+      if (shouldPublishTargets) {
+        shouldPublishTargets = false;
+        publishTargets();
+      }
     };
 
-    const scheduleScan = (node: Node) => {
-      pendingRoots.add(node);
+    const scheduleFlush = () => {
       if (!scanFrame) scanFrame = requestAnimationFrame(flushScans);
     };
 
-    const handlePotentialScrollArea = (event: Event) => {
-      if (event.target instanceof Node) scheduleScan(event.target);
+    const scheduleAddedSubtreeScan = (element: HTMLElement) => {
+      for (const root of pendingRoots) {
+        if (root.contains(element)) return;
+        if (element.contains(root)) pendingRoots.delete(root);
+      }
+      pendingRoots.add(element);
+      scheduleFlush();
     };
-    const handleWindowResize = () => scheduleScan(document.documentElement);
+
+    const schedulePublishTargets = () => {
+      shouldPublishTargets = true;
+      scheduleFlush();
+    };
+
+    const handlePotentialScrollArea = (event: Event) => {
+      const target = getClosestHtmlElement(event.target);
+      if (target) registerTargetAndAncestors(target);
+    };
     const handleScrollCapture = (event: Event) => {
       const target = event.target instanceof Document ? document.scrollingElement : event.target;
       if (target instanceof HTMLElement) registerTarget(target);
     };
     const mutationObserver = new MutationObserver((records) => {
-      records.forEach((record) => scheduleScan(record.target));
+      records.forEach((record) => {
+        record.addedNodes.forEach((node) => {
+          if (node instanceof HTMLElement) scheduleAddedSubtreeScan(node);
+        });
+        if (record.removedNodes.length > 0) schedulePublishTargets();
+      });
     });
 
     mutationObserver.observe(document.documentElement, {
       childList: true,
-      characterData: true,
       subtree: true,
     });
     document.addEventListener('scroll', handleScrollCapture, true);
@@ -435,8 +460,7 @@ export default function OverlayScrollbarLayer() {
     document.addEventListener('input', handlePotentialScrollArea, true);
     document.addEventListener('load', handlePotentialScrollArea, true);
     document.addEventListener('transitionend', handlePotentialScrollArea, true);
-    window.addEventListener('resize', handleWindowResize, { passive: true });
-    scheduleScan(document.documentElement);
+    scheduleAddedSubtreeScan(document.documentElement);
 
     return () => {
       mutationObserver.disconnect();
@@ -446,7 +470,6 @@ export default function OverlayScrollbarLayer() {
       document.removeEventListener('input', handlePotentialScrollArea, true);
       document.removeEventListener('load', handlePotentialScrollArea, true);
       document.removeEventListener('transitionend', handlePotentialScrollArea, true);
-      window.removeEventListener('resize', handleWindowResize);
       if (scanFrame) cancelAnimationFrame(scanFrame);
       knownTargets.forEach((_, target) => target.removeAttribute('data-overlay-scrollbar'));
       knownTargets.clear();

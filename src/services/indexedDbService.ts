@@ -7,7 +7,7 @@ import type { ProjectMemory } from '../types/memory';
 import type { PresetAdvancedConfig, SkillManifest, UserPresetMode } from '../types';
 
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 13; // v13: user-confirmed project memory
+const DB_VERSION = 14; // v14: paged output history and migration metadata
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
@@ -23,6 +23,7 @@ const STORE_CHAT_MESSAGES = 'chatMessages';
 const STORE_AGENT_TASKS = 'agentTasks';
 const STORE_PROJECT_MEMORIES = 'projectMemories';
 const STORE_TOOLBAR_LAYOUTS = 'toolbarLayouts';
+const STORE_METADATA = 'metadata';
 
 const CONFIG_KEY = 'app-config';
 
@@ -65,8 +66,14 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_PRESETS)) {
         db.createObjectStore(STORE_PRESETS, { keyPath: 'id' });
       }
-      if (!db.objectStoreNames.contains(STORE_HISTORY)) {
-        db.createObjectStore(STORE_HISTORY, { keyPath: 'id' });
+      const historyStore = db.objectStoreNames.contains(STORE_HISTORY)
+        ? request.transaction!.objectStore(STORE_HISTORY)
+        : db.createObjectStore(STORE_HISTORY, { keyPath: 'id' });
+      if (!historyStore.indexNames.contains('timestamp_id')) {
+        historyStore.createIndex('timestamp_id', ['timestamp', 'id'], { unique: false });
+      }
+      if (!historyStore.indexNames.contains('nodeId')) {
+        historyStore.createIndex('nodeId', 'nodeId', { unique: false });
       }
       if (!db.objectStoreNames.contains(STORE_ASSET_META)) {
         db.createObjectStore(STORE_ASSET_META, { keyPath: 'path' });
@@ -113,6 +120,10 @@ function openDB(): Promise<IDBDatabase> {
         const memStore = db.createObjectStore(STORE_PROJECT_MEMORIES, { keyPath: 'id' });
         memStore.createIndex('projectId_updatedAt', ['projectId', 'updatedAt'], { unique: false });
         memStore.createIndex('conversationId', 'source.conversationId', { unique: false });
+      }
+      // v14: lightweight one-time migration markers.
+      if (!db.objectStoreNames.contains(STORE_METADATA)) {
+        db.createObjectStore(STORE_METADATA, { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -413,6 +424,32 @@ export interface HistoryRecord {
   params?: Record<string, unknown>;
 }
 
+export interface HistoryPageCursor {
+  timestamp: number;
+  id: string;
+}
+
+export interface HistoryQuery {
+  nodeType?: string;
+  search?: string;
+}
+
+export interface HistoryPage {
+  records: HistoryRecord[];
+  nextCursor: HistoryPageCursor | null;
+  hasMore: boolean;
+}
+
+const HISTORY_MIGRATION_PREFIX = 'output-history-v1:';
+
+function matchesHistoryQuery(record: HistoryRecord, query: HistoryQuery): boolean {
+  if (query.nodeType && record.nodeType !== query.nodeType) return false;
+  const search = query.search?.trim().toLowerCase();
+  if (!search) return true;
+  return [record.prompt, record.output, record.model, record.nodeLabel]
+    .some((value) => value.toLowerCase().includes(search));
+}
+
 /** 保存单条历史记录 */
 export async function putHistoryEntry(record: HistoryRecord): Promise<void> {
   const db = await openDB();
@@ -420,6 +457,19 @@ export async function putHistoryEntry(record: HistoryRecord): Promise<void> {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');
     const store = tx.objectStore(STORE_HISTORY);
     store.put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** 在同一事务内写入旧节点中的历史记录。 */
+export async function putHistoryEntries(records: HistoryRecord[]): Promise<void> {
+  if (records.length === 0) return;
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_HISTORY, 'readwrite');
+    const store = tx.objectStore(STORE_HISTORY);
+    for (const record of records) store.put(record);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -437,15 +487,96 @@ export async function deleteHistoryEntryFromDb(id: string): Promise<void> {
   });
 }
 
-/** 获取全部历史记录 */
-export async function getAllHistoryEntries(): Promise<HistoryRecord[]> {
+/** 按时间倒序读取一页历史；筛选在游标扫描期间完成，不保留未命中记录。 */
+export async function getHistoryEntriesPage(
+  limit: number,
+  cursor: HistoryPageCursor | null = null,
+  query: HistoryQuery = {},
+): Promise<HistoryPage> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readonly');
-    const store = tx.objectStore(STORE_HISTORY);
-    const request = store.getAll();
+    const index = tx.objectStore(STORE_HISTORY).index('timestamp_id');
+    const range = cursor
+      ? IDBKeyRange.upperBound([cursor.timestamp, cursor.id], true)
+      : undefined;
+    const request = index.openCursor(range, 'prev');
+    const records: HistoryRecord[] = [];
+    let nextCursor: HistoryPageCursor | null = null;
+
+    request.onsuccess = () => {
+      const current = request.result;
+      if (!current) {
+        resolve({ records, nextCursor: null, hasMore: false });
+        return;
+      }
+      if (records.length >= limit) {
+        resolve({ records, nextCursor, hasMore: true });
+        return;
+      }
+
+      const record = current.value as HistoryRecord;
+      if (matchesHistoryQuery(record, query)) {
+        records.push(record);
+        nextCursor = { timestamp: record.timestamp, id: record.id };
+      }
+      current.continue();
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/** 仅在用户显式导出时扫描并返回全部匹配记录。 */
+export async function getHistoryEntriesForExport(query: HistoryQuery = {}): Promise<HistoryRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_HISTORY, 'readonly');
+    const request = tx.objectStore(STORE_HISTORY).index('timestamp_id').openCursor(null, 'prev');
+    const records: HistoryRecord[] = [];
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve(records);
+        return;
+      }
+      const record = cursor.value as HistoryRecord;
+      if (matchesHistoryQuery(record, query)) records.push(record);
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function getHistoryEntryCount(): Promise<number> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(STORE_HISTORY, 'readonly').objectStore(STORE_HISTORY).count();
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
+  });
+}
+
+export async function hasCompletedHistoryMigration(projectId: string): Promise<boolean> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(STORE_METADATA, 'readonly')
+      .objectStore(STORE_METADATA)
+      .get(`${HISTORY_MIGRATION_PREFIX}${projectId}`);
+    request.onsuccess = () => resolve(Boolean(request.result));
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function markHistoryMigrationCompleted(projectId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_METADATA, 'readwrite');
+    tx.objectStore(STORE_METADATA).put({
+      id: `${HISTORY_MIGRATION_PREFIX}${projectId}`,
+      completedAt: Date.now(),
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }
 
@@ -461,17 +592,19 @@ export async function clearAllHistoryEntries(): Promise<void> {
   });
 }
 
-/** 批量删除指定节点的历史记录（先全取，过滤后全量覆写） */
+/** 使用 nodeId 索引批量删除指定节点的历史记录。 */
 export async function deleteNodeHistoryEntries(nodeId: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');
-    const store = tx.objectStore(STORE_HISTORY);
-    const getAll = store.getAll();
-    getAll.onsuccess = () => {
-      const toDelete = getAll.result.filter((r: HistoryRecord) => r.nodeId === nodeId);
-      for (const r of toDelete) store.delete(r.id);
+    const request = tx.objectStore(STORE_HISTORY).index('nodeId').openCursor(IDBKeyRange.only(nodeId));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
     };
+    request.onerror = () => reject(request.error);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

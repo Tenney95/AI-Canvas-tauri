@@ -4,7 +4,9 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { WatchEvent } from '@tauri-apps/plugin-fs';
+import type { Node } from '@xyflow/react';
 import { useAppStore } from '../store/useAppStore';
+import type { BaseNodeData, StoryboardCellOverride } from '../types';
 
 export const REFERENCED_IMAGE_CHANGED_EVENT = 'referenced-image-changed';
 
@@ -80,14 +82,9 @@ function parentDirectory(path: string): string {
   return normalized.slice(0, slash) || '/';
 }
 
-function referencedImagePaths(): string[] {
-  const paths = useAppStore.getState().nodes.flatMap((node) => {
-    const data = node.data as {
-      filePath?: string;
-      imageUrl?: string;
-      thumbnailUrl?: string;
-      storyboardOverrides?: ({ url?: string; filePath?: string } | null)[];
-    };
+export function collectReferencedImagePaths(nodes: readonly Node<BaseNodeData>[]): string[] {
+  const paths = nodes.flatMap((node) => {
+    const data = node.data;
     const nodePaths: string[] = [];
     if (data.filePath && (data.imageUrl || data.thumbnailUrl)) nodePaths.push(data.filePath);
     for (const override of data.storyboardOverrides ?? []) {
@@ -96,6 +93,75 @@ function referencedImagePaths(): string[] {
     return nodePaths;
   });
   return [...new Set(paths)].sort();
+}
+
+function effectiveMainImagePath(data: BaseNodeData): string | undefined {
+  return data.imageUrl || data.thumbnailUrl ? data.filePath : undefined;
+}
+
+function effectiveOverridePath(override: StoryboardCellOverride | null | undefined): string | undefined {
+  return override?.url ? override.filePath : undefined;
+}
+
+function referencedImageFieldsEqual(current: BaseNodeData, previous: BaseNodeData): boolean {
+  if (current === previous) return true;
+  if (effectiveMainImagePath(current) !== effectiveMainImagePath(previous)) return false;
+
+  const currentOverrides = current.storyboardOverrides;
+  const previousOverrides = previous.storyboardOverrides;
+  if (currentOverrides === previousOverrides) return true;
+  if (!currentOverrides?.length && !previousOverrides?.length) return true;
+  if (!currentOverrides || !previousOverrides) return false;
+  if (currentOverrides.length !== previousOverrides.length) return false;
+  return currentOverrides.every(
+    (override, index) => effectiveOverridePath(override) === effectiveOverridePath(previousOverrides[index]),
+  );
+}
+
+function hasReferencedImage(data: BaseNodeData): boolean {
+  if (effectiveMainImagePath(data)) return true;
+  return data.storyboardOverrides?.some((override) => !!effectiveOverridePath(override)) ?? false;
+}
+
+/**
+ * 利用 React Flow 更新时保留 data 引用的特性，让位置和选中变化走零分配快速路径。
+ * 节点增删或重排较少发生，只有这些场景才建立 id 索引继续比较有效图片引用。
+ */
+export function haveReferencedImageFieldsChanged(
+  current: readonly Node<BaseNodeData>[],
+  previous: readonly Node<BaseNodeData>[],
+): boolean {
+  if (current === previous) return false;
+
+  if (current.length === previous.length) {
+    let sameOrder = true;
+    for (let index = 0; index < current.length; index++) {
+      const currentNode = current[index];
+      const previousNode = previous[index];
+      if (currentNode === previousNode) continue;
+      if (currentNode.id !== previousNode.id) {
+        sameOrder = false;
+        break;
+      }
+      if (!referencedImageFieldsEqual(currentNode.data, previousNode.data)) return true;
+    }
+    if (sameOrder) return false;
+  }
+
+  const previousById = new Map(previous.map((node) => [node.id, node]));
+  for (const node of current) {
+    const previousNode = previousById.get(node.id);
+    if (!previousNode) {
+      if (hasReferencedImage(node.data)) return true;
+      continue;
+    }
+    previousById.delete(node.id);
+    if (!referencedImageFieldsEqual(node.data, previousNode.data)) return true;
+  }
+  for (const node of previousById.values()) {
+    if (hasReferencedImage(node.data)) return true;
+  }
+  return false;
 }
 
 function isAccessEvent(event: WatchEvent): boolean {
@@ -110,6 +176,7 @@ export function useReferencedImageWatcher(): void {
     let generation = 0;
     let unwatch: (() => void) | undefined;
     let signature = '';
+    let syncFrame: number | undefined;
 
     const rebuildWatcher = async (paths: string[]) => {
       const currentGeneration = ++generation;
@@ -156,21 +223,30 @@ export function useReferencedImageWatcher(): void {
     };
 
     const syncWatcher = () => {
-      const paths = referencedImagePaths();
+      const paths = collectReferencedImagePaths(useAppStore.getState().nodes);
       const nextSignature = paths.map(normalizeWatchedPath).join('\n');
       if (nextSignature === signature) return;
       signature = nextSignature;
       void rebuildWatcher(paths);
     };
 
+    const scheduleSync = () => {
+      if (syncFrame !== undefined) return;
+      syncFrame = window.requestAnimationFrame(() => {
+        syncFrame = undefined;
+        if (!disposed) syncWatcher();
+      });
+    };
+
     syncWatcher();
     const unsubscribe = useAppStore.subscribe((state, previousState) => {
-      if (state.nodes !== previousState.nodes) syncWatcher();
+      if (haveReferencedImageFieldsChanged(state.nodes, previousState.nodes)) scheduleSync();
     });
     return () => {
       disposed = true;
       generation++;
       unsubscribe();
+      if (syncFrame !== undefined) window.cancelAnimationFrame(syncFrame);
       unwatch?.();
     };
   }, []);

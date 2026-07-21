@@ -2,7 +2,7 @@
  * OutputHistoryPanel — AI 输出历史记录底部抽屉面板
  * 从屏幕底部抬起，统一查看所有节点的生成历史
  */
-import { startTransition, useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
@@ -14,8 +14,6 @@ import PopupCloseButton from './shared/PopupCloseButton';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
 const EASE = [0.16, 1, 0.3, 1] as const;
-const HISTORY_PAGE_SIZE = 16;
-
 type FilterType = 'all' | 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio';
 
 const FILTER_OPTIONS: { key: FilterType; label: string }[] = [
@@ -86,16 +84,28 @@ function HistoryThumbnail({ mediaUrl, filePath }: { mediaUrl?: string; filePath?
 export default function OutputHistoryPanel() {
   const {
     outputHistoryRecords,
+    historyTotalCount,
+    historyHasMore,
+    historyLoading,
     historyPanelOpen,
     setHistoryPanelOpen,
+    loadHistoryFromDb,
+    loadMoreHistoryFromDb,
+    getHistoryForExport,
     deleteHistoryEntry,
     clearAllHistory,
     showToast,
   } = useAppStore(
     useShallow((s) => ({
       outputHistoryRecords: s.outputHistoryRecords,
+      historyTotalCount: s.historyTotalCount,
+      historyHasMore: s.historyHasMore,
+      historyLoading: s.historyLoading,
       historyPanelOpen: s.historyPanelOpen,
       setHistoryPanelOpen: s.setHistoryPanelOpen,
+      loadHistoryFromDb: s.loadHistoryFromDb,
+      loadMoreHistoryFromDb: s.loadMoreHistoryFromDb,
+      getHistoryForExport: s.getHistoryForExport,
       deleteHistoryEntry: s.deleteHistoryEntry,
       clearAllHistory: s.clearAllHistory,
       showToast: s.showToast,
@@ -106,7 +116,6 @@ export default function OutputHistoryPanel() {
   const [search, setSearch] = useState('');
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [confirmClear, setConfirmClear] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(HISTORY_PAGE_SIZE);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -130,16 +139,22 @@ export default function OutputHistoryPanel() {
     }
   }, [historyPanelOpen]);
 
+  const historyQuery = useMemo(() => ({
+    nodeType: filter === 'all' ? undefined : filter,
+    search: search.trim() || undefined,
+  }), [filter, search]);
+
   useEffect(() => {
-    if (historyPanelOpen) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset while rows are unmounted
-    setVisibleCount(HISTORY_PAGE_SIZE);
-  }, [historyPanelOpen]);
+    if (!historyPanelOpen) return;
+    const timer = window.setTimeout(() => {
+      void loadHistoryFromDb(historyQuery);
+      listRef.current?.scrollTo({ top: 0 });
+    }, search.trim() ? 200 : 0);
+    return () => window.clearTimeout(timer);
+  }, [historyPanelOpen, historyQuery, loadHistoryFromDb, search]);
 
   // History entries stored independently from nodes — deleting a node won't lose records
-  const allEntries = useMemo(() => {
-    return [...outputHistoryRecords].sort((a, b) => b.timestamp - a.timestamp);
-  }, [outputHistoryRecords]);
+  const allEntries = outputHistoryRecords;
 
   // Filter + search
   const filteredEntries = useMemo(() => {
@@ -160,36 +175,20 @@ export default function OutputHistoryPanel() {
     return list;
   }, [allEntries, filter, search]);
 
-  const visibleEntries = useMemo(
-    () => filteredEntries.slice(0, visibleCount),
-    [filteredEntries, visibleCount],
-  );
-  const hasMoreEntries = visibleEntries.length < filteredEntries.length;
-
   useEffect(() => {
     const sentinel = sentinelRef.current;
-    if (!historyPanelOpen || !hasMoreEntries || !sentinel) return;
+    if (!historyPanelOpen || !historyHasMore || historyLoading || !sentinel) return;
 
     const observer = new IntersectionObserver((entries) => {
       if (!entries[0]?.isIntersecting) return;
-      startTransition(() => {
-        setVisibleCount((current) => Math.min(
-          current + HISTORY_PAGE_SIZE,
-          filteredEntries.length,
-        ));
-      });
+      void loadMoreHistoryFromDb(historyQuery);
     }, {
       root: listRef.current,
       rootMargin: '300px 0px',
     });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [filteredEntries.length, hasMoreEntries, historyPanelOpen, visibleEntries.length]);
-
-  const resetVisibleEntries = useCallback(() => {
-    setVisibleCount(HISTORY_PAGE_SIZE);
-    listRef.current?.scrollTo({ top: 0 });
-  }, []);
+  }, [historyHasMore, historyLoading, historyPanelOpen, historyQuery, loadMoreHistoryFromDb]);
 
   const toggleExpand = useCallback((id: string) => {
     setExpandedIds((prev) => {
@@ -245,27 +244,32 @@ export default function OutputHistoryPanel() {
     [showToast],
   );
 
-  const handleExport = useCallback(() => {
-    const data = filteredEntries.map((e) => ({
-      time: new Date(e.timestamp).toISOString(),
-      node: e.nodeLabel,
-      type: e.nodeType,
-      model: `${e.provider}/${e.model}`,
-      status: e.status,
-      prompt: e.prompt,
-      output: e.output,
-      error: e.error,
-    }));
-    const json = JSON.stringify(data, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ai-output-history-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('已导出历史记录');
-  }, [filteredEntries, showToast]);
+  const handleExport = useCallback(async () => {
+    try {
+      const entries = await getHistoryForExport(historyQuery);
+      const data = entries.map((e) => ({
+        time: new Date(e.timestamp).toISOString(),
+        node: e.nodeLabel,
+        type: e.nodeType,
+        model: `${e.provider}/${e.model}`,
+        status: e.status,
+        prompt: e.prompt,
+        output: e.output,
+        error: e.error,
+      }));
+      const json = JSON.stringify(data, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ai-output-history-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('已导出历史记录');
+    } catch {
+      showToast('导出历史记录失败', 'error');
+    }
+  }, [getHistoryForExport, historyQuery, showToast]);
 
   // Check if node still exists
   const nodeExists = useCallback(
@@ -305,7 +309,7 @@ export default function OutputHistoryPanel() {
                   <polyline points="12 6 12 12 16 14" />
                 </svg>
                 <h2 className="text-sm font-semibold text-canvas-text">输出历史</h2>
-                <span className="text-[11px] text-canvas-text-muted">共 {allEntries.length} 条</span>
+                <span className="text-[11px] text-canvas-text-muted">共 {historyTotalCount} 条</span>
               </div>
               <PopupCloseButton onClick={() => setHistoryPanelOpen(false)} />
             </div>
@@ -323,7 +327,7 @@ export default function OutputHistoryPanel() {
                   }`}
                   onClick={() => {
                     setFilter(key);
-                    resetVisibleEntries();
+                    listRef.current?.scrollTo({ top: 0 });
                   }}
                 >
                   {label}
@@ -348,7 +352,7 @@ export default function OutputHistoryPanel() {
                   value={search}
                   onChange={(e) => {
                     setSearch(e.target.value);
-                    resetVisibleEntries();
+                    listRef.current?.scrollTo({ top: 0 });
                   }}
                   placeholder="搜索提示词、输出内容或模型..."
                   className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-canvas-bg border border-canvas-border
@@ -361,7 +365,7 @@ export default function OutputHistoryPanel() {
                     className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center text-canvas-text-muted hover:text-canvas-text"
                     onClick={() => {
                       setSearch('');
-                      resetVisibleEntries();
+                      listRef.current?.scrollTo({ top: 0 });
                     }}
                   >
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -383,12 +387,16 @@ export default function OutputHistoryPanel() {
                     <line x1="12" y1="16" x2="12.01" y2="16" />
                   </svg>
                   <p className="text-[12px]">
-                    {allEntries.length === 0 ? '暂无生成记录，开始第一次生成后会自动记录' : '没有匹配的记录'}
+                    {historyLoading
+                      ? '正在加载历史记录...'
+                      : historyTotalCount === 0
+                        ? '暂无生成记录，开始第一次生成后会自动记录'
+                        : '没有匹配的记录'}
                   </p>
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {visibleEntries.map((entry) => {
+                  {filteredEntries.map((entry) => {
                     const isExpanded = expandedIds.has(entry.id);
                     const exists = nodeExists(entry.nodeId);
                     const isText = entry.nodeType === 'ai-text';
@@ -584,7 +592,7 @@ export default function OutputHistoryPanel() {
                       </motion.div>
                     );
                   })}
-                  {hasMoreEntries && (
+                  {historyHasMore && (
                     <div ref={sentinelRef} className="h-1 w-full" aria-hidden="true" />
                   )}
                 </div>
@@ -592,7 +600,7 @@ export default function OutputHistoryPanel() {
             </div>
 
             {/* Footer */}
-            {allEntries.length > 0 && (
+            {historyTotalCount > 0 && (
               <div className="flex items-center justify-between px-3 py-3 border-t border-canvas-border shrink-0 bg-canvas-surface/80">
                 {confirmClear ? (
                   <div className="flex items-center gap-2">

@@ -37,6 +37,39 @@
   fill: var(--brand) !important;
 }
 
+/* Flowing glow for every edge connected to the current node selection. */
+.react-flow__edge.edge-connected-to-selected-node .react-flow__edge-path {
+  stroke: var(--brand-pale) !important;
+  stroke-width: 2.5 !important;
+  stroke-linecap: round;
+  stroke-dasharray: 12 7;
+  filter:
+    drop-shadow(0 0 2px color-mix(in srgb, var(--brand-light) 90%, transparent))
+    drop-shadow(0 0 7px color-mix(in srgb, var(--brand) 65%, transparent));
+  animation: selected-node-edge-flow 900ms linear infinite;
+}
+
+[data-theme='light'] .react-flow__edge.edge-connected-to-selected-node .react-flow__edge-path {
+  stroke: var(--brand) !important;
+  stroke-width: 2.25 !important;
+  filter:
+    drop-shadow(0 0 1px color-mix(in srgb, var(--brand) 70%, transparent))
+    drop-shadow(0 0 4px color-mix(in srgb, var(--brand) 35%, transparent));
+}
+
+@keyframes selected-node-edge-flow {
+  to {
+    stroke-dashoffset: -38;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__edge.edge-connected-to-selected-node .react-flow__edge-path {
+    animation: none;
+    stroke-dasharray: none;
+  }
+}
+
 .react-flow__handle {
   transition:
     transform var(--transition-base),
