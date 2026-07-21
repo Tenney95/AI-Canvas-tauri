@@ -262,7 +262,7 @@ export async function executeGeneration(
         const kindLabel =
           processed.kind === 'character' ? '人物' : processed.kind === 'scene' ? '场景' : '道具';
         if (processed.ok) {
-          store.showToast(`${kindLabel}简介已提取并入库 · 侧栏「短剧资产」可查看`);
+          store.showToast(`${kindLabel}简介已提取并入库 · 「资产管理 > 短剧资产」可查看`);
         } else {
           store.showToast('已提取，但 JSON 未完全规范化，请检查输出', 'error');
         }

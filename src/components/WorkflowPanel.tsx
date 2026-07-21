@@ -487,6 +487,7 @@ export default function WorkflowPanel() {
                           className="wf-item-del"
                           onClick={(e) => handleDelete(wf.id, e)}
                           data-tooltip="删除工作流"
+                          data-tooltip-pos="left"
                           whileHover={{ scale: 1.1 }}
                           whileTap={{ scale: 0.9 }}
                         >

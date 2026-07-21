@@ -1,34 +1,14 @@
 /**
- * 为默认显示在上方的 data-tooltip 提供窗口边界兜底：
- * 当上方空间不足时临时翻转到触发元素下方。
+ * 将 data-tooltip 渲染到 body 下，避免被面板的 overflow 或 clip-path 截断。
+ * 保留现有声明式 API，并统一处理四个方向的窗口边界碰撞。
  */
 import { useEffect } from 'react';
 
-const TOOLTIP_HEIGHT = 28;
+type TooltipPosition = 'top' | 'bottom' | 'left' | 'right';
+
 const TOOLTIP_GAP = 6;
 const VIEWPORT_MARGIN = 8;
-const AUTO_POSITION_ATTRIBUTE = 'data-tooltip-auto-pos';
-
-function isTopTooltip(element: HTMLElement) {
-  const position = element.dataset.tooltipPos;
-  return !position || position === 'top';
-}
-
-function updatePlacement(element: HTMLElement) {
-  if (!isTopTooltip(element)) {
-    element.removeAttribute(AUTO_POSITION_ATTRIBUTE);
-    return;
-  }
-
-  const wouldOverflowTop = element.getBoundingClientRect().top
-    < TOOLTIP_HEIGHT + TOOLTIP_GAP + VIEWPORT_MARGIN;
-
-  if (wouldOverflowTop) {
-    element.setAttribute(AUTO_POSITION_ATTRIBUTE, 'bottom');
-  } else {
-    element.removeAttribute(AUTO_POSITION_ATTRIBUTE);
-  }
-}
+const SHOW_DELAY = 800;
 
 function findTooltipTarget(target: EventTarget | null): HTMLElement | null {
   return target instanceof Element
@@ -36,47 +16,211 @@ function findTooltipTarget(target: EventTarget | null): HTMLElement | null {
     : null;
 }
 
+function getPreferredPosition(element: HTMLElement): TooltipPosition {
+  const position = element.dataset.tooltipPos;
+  return position === 'bottom' || position === 'left' || position === 'right'
+    ? position
+    : 'top';
+}
+
+function getOppositePosition(position: TooltipPosition): TooltipPosition {
+  switch (position) {
+    case 'top': return 'bottom';
+    case 'bottom': return 'top';
+    case 'left': return 'right';
+    case 'right': return 'left';
+  }
+}
+
+function getAvailableSpace(position: TooltipPosition, targetRect: DOMRect): number {
+  switch (position) {
+    case 'top': return targetRect.top - VIEWPORT_MARGIN - TOOLTIP_GAP;
+    case 'bottom': return window.innerHeight - targetRect.bottom - VIEWPORT_MARGIN - TOOLTIP_GAP;
+    case 'left': return targetRect.left - VIEWPORT_MARGIN - TOOLTIP_GAP;
+    case 'right': return window.innerWidth - targetRect.right - VIEWPORT_MARGIN - TOOLTIP_GAP;
+  }
+}
+
+function resolvePosition(
+  preferred: TooltipPosition,
+  targetRect: DOMRect,
+  tooltipRect: DOMRect,
+): TooltipPosition {
+  const opposite = getOppositePosition(preferred);
+  const requiredSpace = preferred === 'top' || preferred === 'bottom'
+    ? tooltipRect.height
+    : tooltipRect.width;
+  const preferredSpace = getAvailableSpace(preferred, targetRect);
+  const oppositeSpace = getAvailableSpace(opposite, targetRect);
+
+  return preferredSpace >= requiredSpace || preferredSpace >= oppositeSpace
+    ? preferred
+    : opposite;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+function positionTooltip(tooltip: HTMLDivElement, target: HTMLElement) {
+  const targetRect = target.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const position = resolvePosition(
+    getPreferredPosition(target),
+    targetRect,
+    tooltipRect,
+  );
+
+  let left: number;
+  let top: number;
+
+  if (position === 'top' || position === 'bottom') {
+    left = targetRect.left + (targetRect.width - tooltipRect.width) / 2;
+    top = position === 'top'
+      ? targetRect.top - tooltipRect.height - TOOLTIP_GAP
+      : targetRect.bottom + TOOLTIP_GAP;
+  } else {
+    left = position === 'left'
+      ? targetRect.left - tooltipRect.width - TOOLTIP_GAP
+      : targetRect.right + TOOLTIP_GAP;
+    top = targetRect.top + (targetRect.height - tooltipRect.height) / 2;
+  }
+
+  tooltip.style.left = `${Math.round(clamp(
+    left,
+    VIEWPORT_MARGIN,
+    window.innerWidth - tooltipRect.width - VIEWPORT_MARGIN,
+  ))}px`;
+  tooltip.style.top = `${Math.round(clamp(
+    top,
+    VIEWPORT_MARGIN,
+    window.innerHeight - tooltipRect.height - VIEWPORT_MARGIN,
+  ))}px`;
+  tooltip.dataset.position = position;
+}
+
 export function useTooltipAutoPlacement() {
   useEffect(() => {
-    let activeTooltip: HTMLElement | null = null;
+    const tooltip = document.createElement('div');
+    tooltip.className = 'app-tooltip';
+    tooltip.setAttribute('role', 'tooltip');
+    tooltip.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(tooltip);
+
+    let hoveredTarget: HTMLElement | null = null;
+    let focusedTarget: HTMLElement | null = null;
+    let activeTarget: HTMLElement | null = null;
+    let showTimer: number | null = null;
+    const activeTargetObserver = new MutationObserver(() => {
+      if (!activeTarget) return;
+      const content = activeTarget.dataset.tooltip?.trim();
+      if (!content) {
+        hideTooltip();
+        return;
+      }
+      tooltip.textContent = content;
+      if (tooltip.dataset.open === 'true') positionTooltip(tooltip, activeTarget);
+    });
+
+    const clearShowTimer = () => {
+      if (showTimer === null) return;
+      window.clearTimeout(showTimer);
+      showTimer = null;
+    };
+
+    function hideTooltip() {
+      clearShowTimer();
+      tooltip.removeAttribute('data-open');
+      tooltip.setAttribute('aria-hidden', 'true');
+    }
+
+    const showTooltip = () => {
+      showTimer = null;
+      if (!activeTarget?.isConnected) {
+        hideTooltip();
+        return;
+      }
+
+      const content = activeTarget.dataset.tooltip?.trim();
+      if (!content) {
+        hideTooltip();
+        return;
+      }
+
+      tooltip.textContent = content;
+      tooltip.setAttribute('data-open', 'true');
+      tooltip.setAttribute('aria-hidden', 'false');
+      positionTooltip(tooltip, activeTarget);
+    };
+
+    const activateTarget = (nextTarget: HTMLElement | null) => {
+      if (nextTarget === activeTarget) return;
+
+      hideTooltip();
+      activeTargetObserver.disconnect();
+      activeTarget = nextTarget;
+      if (!activeTarget) return;
+
+      activeTargetObserver.observe(activeTarget, {
+        attributes: true,
+        attributeFilter: ['data-tooltip', 'data-tooltip-pos'],
+      });
+      showTimer = window.setTimeout(showTooltip, SHOW_DELAY);
+    };
+
+    const syncActiveTarget = () => {
+      activateTarget(hoveredTarget ?? focusedTarget);
+    };
 
     const handlePointerOver = (event: PointerEvent) => {
-      const nextTooltip = findTooltipTarget(event.target);
-      if (!nextTooltip || nextTooltip === activeTooltip) return;
-
-      activeTooltip?.removeAttribute(AUTO_POSITION_ATTRIBUTE);
-      activeTooltip = nextTooltip;
-      updatePlacement(nextTooltip);
+      hoveredTarget = findTooltipTarget(event.target);
+      syncActiveTarget();
     };
 
     const handlePointerOut = (event: PointerEvent) => {
-      if (!activeTooltip) return;
-      const nextTooltip = findTooltipTarget(event.relatedTarget);
-      if (nextTooltip === activeTooltip) return;
+      const nextTarget = findTooltipTarget(event.relatedTarget);
+      if (nextTarget === hoveredTarget) return;
+      hoveredTarget = nextTarget;
+      syncActiveTarget();
+    };
 
-      activeTooltip.removeAttribute(AUTO_POSITION_ATTRIBUTE);
-      activeTooltip = null;
+    const handleFocusIn = (event: FocusEvent) => {
+      focusedTarget = findTooltipTarget(event.target);
+      syncActiveTarget();
+    };
+
+    const handleFocusOut = (event: FocusEvent) => {
+      focusedTarget = findTooltipTarget(event.relatedTarget);
+      syncActiveTarget();
     };
 
     const refreshActiveTooltip = () => {
-      if (activeTooltip?.isConnected) {
-        updatePlacement(activeTooltip);
-      } else {
-        activeTooltip = null;
+      if (!activeTarget?.isConnected) {
+        hoveredTarget = null;
+        focusedTarget = null;
+        activateTarget(null);
+        return;
       }
+      if (tooltip.dataset.open === 'true') positionTooltip(tooltip, activeTarget);
     };
 
     document.addEventListener('pointerover', handlePointerOver);
     document.addEventListener('pointerout', handlePointerOut);
+    document.addEventListener('focusin', handleFocusIn);
+    document.addEventListener('focusout', handleFocusOut);
     window.addEventListener('resize', refreshActiveTooltip);
     window.addEventListener('scroll', refreshActiveTooltip, true);
 
     return () => {
-      activeTooltip?.removeAttribute(AUTO_POSITION_ATTRIBUTE);
+      clearShowTimer();
+      activeTargetObserver.disconnect();
       document.removeEventListener('pointerover', handlePointerOver);
       document.removeEventListener('pointerout', handlePointerOut);
+      document.removeEventListener('focusin', handleFocusIn);
+      document.removeEventListener('focusout', handleFocusOut);
       window.removeEventListener('resize', refreshActiveTooltip);
       window.removeEventListener('scroll', refreshActiveTooltip, true);
+      tooltip.remove();
     };
   }, []);
 }

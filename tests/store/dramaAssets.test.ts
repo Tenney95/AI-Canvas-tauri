@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAppStore } from '../../src/store/useAppStore';
+import { countUnreadDramaAssets } from '../../src/store/store.dramaAssets';
 import type { DramaCharacter } from '../../src/types/dramaAssets';
 import { emptyDramaAssetLibrary } from '../../src/types/dramaAssets';
 
@@ -32,6 +33,20 @@ function sampleCharacter(overrides: Partial<DramaCharacter> = {}): DramaCharacte
 }
 
 describe('dramaAssets store', () => {
+  it('counts only assets created after the library was viewed', () => {
+    const library = {
+      ...emptyDramaAssetLibrary(),
+      lastViewedAt: 10,
+      characters: [
+        sampleCharacter({ id: 'old', createdAt: 10 }),
+        sampleCharacter({ id: 'new', createdAt: 11 }),
+      ],
+    };
+
+    expect(countUnreadDramaAssets(library)).toBe(1);
+    expect(countUnreadDramaAssets({ ...library, lastViewedAt: undefined })).toBe(0);
+  });
+
   it('merges extract into library and silent-saves', () => {
     const save = useAppStore.getState().saveCurrentProjectSilent as ReturnType<typeof vi.fn>;
     useAppStore.getState().mergeDramaExtract({
@@ -43,6 +58,25 @@ describe('dramaAssets store', () => {
     const lib = useAppStore.getState().dramaAssets;
     expect(lib.characters).toHaveLength(1);
     expect(lib.characters[0].name).toBe('主角');
+    expect(countUnreadDramaAssets(lib)).toBe(1);
+    expect(useAppStore.getState().assetsPanelOpen).toBe(true);
+    expect(useAppStore.getState().dramaAssetsPanelOpen).toBe(true);
+    expect(save).toHaveBeenCalled();
+  });
+
+  it('marks drama assets as viewed and silent-saves', () => {
+    const save = useAppStore.getState().saveCurrentProjectSilent as ReturnType<typeof vi.fn>;
+    useAppStore.setState({
+      dramaAssets: {
+        ...emptyDramaAssetLibrary(),
+        characters: [sampleCharacter({ createdAt: Date.now() })],
+      },
+    });
+
+    useAppStore.getState().markDramaAssetsViewed();
+
+    expect(useAppStore.getState().dramaAssets.lastViewedAt).toEqual(expect.any(Number));
+    expect(countUnreadDramaAssets(useAppStore.getState().dramaAssets)).toBe(0);
     expect(save).toHaveBeenCalled();
   });
 

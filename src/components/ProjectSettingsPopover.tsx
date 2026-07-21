@@ -465,7 +465,7 @@ export default function ProjectSettingsPopover({
                 </div>
 
                 {/* 风格母图：上传后本项目图像生成自动跟随，无需每次 @ */}
-                <div className="grid gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
+                <div className="grid gap-2 rounded-lg border border-canvas-border bg-canvas-card p-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <span className="text-[11px] font-medium text-canvas-text">风格母图</span>
@@ -543,7 +543,7 @@ export default function ProjectSettingsPopover({
                       disabled={styleRefBusy || !project}
                       onClick={() => { void handleUploadStyleReference(); }}
                       className="flex h-11 items-center justify-center gap-2 rounded-md border border-dashed
-                                 border-white/[0.12] text-[12px] text-canvas-text-secondary
+                                 border-border-secondary bg-canvas-surface text-[12px] text-canvas-text-secondary
                                  transition-colors hover:border-indigo-500/40 hover:bg-indigo-500/5
                                  hover:text-indigo-300 disabled:cursor-not-allowed disabled:opacity-50"
                     >

@@ -6,7 +6,7 @@
  * 性能：useDeferredValue 搜索 + useMemo 过滤 + 增量渲染（IntersectionObserver）+ 图片懒加载，
  *       并移除了大列表下昂贵的逐项 layout 动画。
  */
-import { useState, useEffect, useCallback, useMemo, useRef, useDeferredValue, type DragEvent } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback, useMemo, useRef, useDeferredValue, type DragEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
@@ -29,13 +29,17 @@ import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetF
 import AssetThumb from './shared/AssetThumb';
 import PopupCloseButton from './shared/PopupCloseButton';
 import { springSmooth, fadeFast } from '../utils/motion';
+import { countUnreadDramaAssets } from '../store/store.dramaAssets';
+
+const DramaAssetsPanel = lazy(() => import('./DramaAssetsPanel'));
 
 /** 仅磁盘真实文件可拖拽（排除节点引用的 node:// / virtual:// 虚拟路径）*/
 function isDraggableEntry(file: AssetFileEntry): boolean {
   return !!file.path && !file.path.startsWith('node://') && !file.path.startsWith('virtual://');
 }
 
-type TabKey = 'project' | 'permanent';
+type FileTabKey = 'project' | 'permanent';
+type TabKey = FileTabKey | 'drama';
 
 /** 单页渲染数量（增量加载步长）— 限制 DOM 规模 */
 const PAGE_SIZE = 48;
@@ -54,11 +58,32 @@ const panelVariants = {
 };
 
 export default function AssetsPanel() {
-  const { assetsPanelOpen, setAssetsPanelOpen, currentProjectId, projects, assetFolders, updateConfig, saveConfig } =
+  const {
+    assetsPanelOpen,
+    setAssetsPanelOpen,
+    dramaAssetsPanelOpen,
+    setDramaAssetsPanelOpen,
+    markDramaAssetsViewed,
+    unreadDramaAssetCount,
+    dramaAssetCount,
+    currentProjectId,
+    projects,
+    assetFolders,
+    updateConfig,
+    saveConfig,
+  } =
     useAppStore(
       useShallow((s) => ({
         assetsPanelOpen: s.assetsPanelOpen,
         setAssetsPanelOpen: s.setAssetsPanelOpen,
+        dramaAssetsPanelOpen: s.dramaAssetsPanelOpen,
+        setDramaAssetsPanelOpen: s.setDramaAssetsPanelOpen,
+        markDramaAssetsViewed: s.markDramaAssetsViewed,
+        unreadDramaAssetCount: countUnreadDramaAssets(s.dramaAssets),
+        dramaAssetCount:
+          s.dramaAssets.characters.length
+          + s.dramaAssets.scenes.length
+          + s.dramaAssets.props.length,
         currentProjectId: s.currentProjectId,
         projects: s.projects,
         assetFolders: s.config.assetFolders,
@@ -67,7 +92,8 @@ export default function AssetsPanel() {
       })),
     );
 
-  const [activeTab, setActiveTab] = useState<TabKey>('project');
+  const [activeTab, setActiveTab] = useState<FileTabKey>('project');
+  const visibleTab: TabKey = dramaAssetsPanelOpen ? 'drama' : activeTab;
   // 项目文件 Tab 查看的项目；null 表示「跟随当前项目」（关闭时复位，故每次打开默认当前项目）
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<FileCategory | null>(null);
@@ -152,6 +178,13 @@ export default function AssetsPanel() {
       void prepareDragIcon();
     }
   }, [assetsPanelOpen, loadFiles, loadTags]);
+
+  useEffect(() => {
+    if (!assetsPanelOpen || visibleTab !== 'drama') return;
+    if (unreadDramaAssetCount > 0 || useAppStore.getState().dramaAssets.lastViewedAt === undefined) {
+      markDramaAssetsViewed();
+    }
+  }, [assetsPanelOpen, markDramaAssetsViewed, unreadDramaAssetCount, visibleTab]);
 
   const handleClose = useCallback(() => {
     setSelectedProjectId(null); // 复位项目选择，下次打开默认当前项目
@@ -310,12 +343,17 @@ export default function AssetsPanel() {
   }, [tagMap, persistTags]);
 
   const switchTab = useCallback((tab: TabKey) => {
-    setActiveTab(tab);
+    if (tab === 'drama') {
+      setDramaAssetsPanelOpen(true);
+    } else {
+      setActiveTab(tab);
+      setDramaAssetsPanelOpen(false);
+    }
     setActiveCategory(null);
     setActiveTag(null);
     setEditingPath(null);
     setVisibleCount(PAGE_SIZE);
-  }, []);
+  }, [setDramaAssetsPanelOpen]);
 
   if (!assetsPanelOpen) return null;
 
@@ -339,26 +377,33 @@ export default function AssetsPanel() {
             >
               {/* Header */}
               <div className="assets-panel-header">
-                <h2 className="assets-panel-title">资产管理<span className="assets-panel-subtitle">拖拽卡片到画布即可添加节点</span></h2>
+                <h2 className="assets-panel-title">
+                  资产管理
+                  <span className="assets-panel-subtitle">
+                    {visibleTab === 'drama' ? '管理人物、场景和道具简介与绑图' : '拖拽卡片到画布即可添加节点'}
+                  </span>
+                </h2>
                 <PopupCloseButton onClick={handleClose} />
               </div>
 
               {/* Tabs */}
               <div className="assets-tabs">
-                {(['project', 'permanent'] as TabKey[]).map((tab) => (
+                {(['project', 'permanent', 'drama'] as TabKey[]).map((tab) => (
                   <motion.button
                     key={tab} type="button"
-                    className={`assets-tab ${activeTab === tab ? 'active' : ''}`}
+                    className={`assets-tab ${visibleTab === tab ? 'active' : ''}`}
                     onClick={() => switchTab(tab)}
-                    whileHover={{ scale: activeTab === tab ? 1 : 1.03 }} whileTap={{ scale: 0.97 }}
+                    whileHover={{ scale: visibleTab === tab ? 1 : 1.03 }} whileTap={{ scale: 0.97 }}
                   >
-                    {tab === 'project' ? '项目文件' : '永久保存'}
-                    <span className="assets-tab-count">{tab === 'project' ? projectFiles.length : permanentFiles.length}</span>
+                    {tab === 'project' ? '项目文件' : tab === 'permanent' ? '永久保存' : '短剧资产'}
+                    <span className="assets-tab-count">
+                      {tab === 'project' ? projectFiles.length : tab === 'permanent' ? permanentFiles.length : dramaAssetCount}
+                    </span>
                   </motion.button>
                 ))}
 
                 {/* Toolbar: 搜索 + 添加 */}
-              <div className="assets-toolbar ml-auto">
+              {visibleTab !== 'drama' ? <div className="assets-toolbar ml-auto">
                 {activeTab === 'project' && (
                   <select
                     className="assets-project-select"
@@ -416,9 +461,21 @@ export default function AssetsPanel() {
                     </AnimatePresence>
                   </div>
                 )}
-              </div>
+              </div> : null}
               </div>
 
+              {visibleTab === 'drama' ? (
+                <Suspense
+                  fallback={(
+                    <div className="flex flex-1 items-center justify-center text-xs text-canvas-text-muted">
+                      正在加载短剧资产...
+                    </div>
+                  )}
+                >
+                  <DramaAssetsPanel />
+                </Suspense>
+              ) : (
+                <>
               {/* 已添加的外部文件夹 */}
               {activeTab === 'permanent' && folders.length > 0 && (
                 <div className="assets-folder-row">
@@ -503,6 +560,8 @@ export default function AssetsPanel() {
                   )}
                 </div>
               </div>
+                </>
+              )}
 
               {/* Toast */}
               <AnimatePresence>

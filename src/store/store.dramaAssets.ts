@@ -26,6 +26,7 @@ export interface DramaAssetsSlice {
   dramaAssets: DramaAssetLibrary;
   dramaAssetsPanelOpen: boolean;
   setDramaAssetsPanelOpen: (open: boolean) => void;
+  markDramaAssetsViewed: () => void;
   setDramaAssets: (library: DramaAssetLibrary) => void;
   resetDramaAssets: () => void;
   /** 提取成功后合并入库 */
@@ -56,6 +57,13 @@ export interface DramaAssetsSlice {
    * 返回新节点 id；失败返回 null。
    */
   createImageNodeFromDramaAsset: (kind: DramaAssetKind, id: string) => string | null;
+}
+
+export function countUnreadDramaAssets(library: DramaAssetLibrary): number {
+  if (library.lastViewedAt === undefined) return 0;
+  const { lastViewedAt } = library;
+  return [...library.characters, ...library.scenes, ...library.props]
+    .filter((asset) => asset.createdAt > lastViewedAt).length;
 }
 
 function patchList<T extends { id: string; updatedAt: number }>(
@@ -108,19 +116,39 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
   setDramaAssetsPanelOpen: (open) => set(open
     ? {
         dramaAssetsPanelOpen: true,
-        assetsPanelOpen: false,
+        assetsPanelOpen: true,
         historyPanelOpen: false,
         settingsOpen: false,
         chatOpen: false,
       }
     : { dramaAssetsPanelOpen: false }),
 
+  markDramaAssetsViewed: () => {
+    set((state) => ({
+      dramaAssets: { ...state.dramaAssets, lastViewedAt: Date.now() },
+    }));
+    silentSave(get);
+  },
+
   setDramaAssets: (library) => set({ dramaAssets: library ?? emptyDramaAssetLibrary() }),
 
   resetDramaAssets: () => set({ dramaAssets: emptyDramaAssetLibrary() }),
 
   mergeDramaExtract: (parsed, meta) => {
-    const next = mergeDramaExtractIntoLibrary(get().dramaAssets, parsed, meta);
+    const previous = get().dramaAssets;
+    const existingAssets = [
+      ...previous.characters,
+      ...previous.scenes,
+      ...previous.props,
+    ];
+    const legacyBaseline = existingAssets.reduce(
+      (latest, asset) => Math.max(latest, asset.createdAt),
+      0,
+    );
+    const next = {
+      ...mergeDramaExtractIntoLibrary(previous, parsed, meta),
+      lastViewedAt: previous.lastViewedAt ?? legacyBaseline,
+    };
     set({ dramaAssets: next });
     silentSave(get);
     // 提取成功后自动打开面板，避免用户找不到入口
@@ -314,7 +342,7 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
 
     get().addNode(newNode);
     get().bindDramaAssetImage(kind, id, nodeId);
-    get().setDramaAssetsPanelOpen(false);
+    get().setAssetsPanelOpen(false);
     get().setSelectedNodeIds([nodeId]);
     get().showToast(`已创建「${label}」图像节点，可直接生成`);
 

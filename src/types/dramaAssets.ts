@@ -71,6 +71,8 @@ export interface DramaExtractMeta {
 export interface DramaAssetLibrary {
   version: 1;
   lastExtract?: DramaExtractMeta;
+  /** 用户最近一次打开资产管理「短剧资产」页签的时间。 */
+  lastViewedAt?: number;
   characters: DramaCharacter[];
   scenes: DramaScene[];
   props: DramaProp[];

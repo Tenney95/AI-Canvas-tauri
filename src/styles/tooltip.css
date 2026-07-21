@@ -1,5 +1,5 @@
 /* ============================================
-   自定义 Tooltip — CSS ::after 伪元素方案
+   自定义 Tooltip — body 单例浮层
    用法：<div data-tooltip="提示文字">
    可选位置：data-tooltip-pos="top" | "bottom" | "left" | "right"，默认 top
    ============================================ */
@@ -8,64 +8,29 @@
   position: relative;
 }
 
-[data-tooltip]::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 6px);
-  transform: translateX(-50%);
+.app-tooltip {
+  position: fixed;
+  z-index: 2147483647;
+  max-width: min(240px, calc(100vw - 16px));
+  overflow: hidden;
   padding: 4px 10px;
+  border: 1px solid var(--theme-border, #2a2a3a);
   border-radius: 6px;
   background: var(--theme-surface, #14141c);
-  color: var(--theme-text, #e8e8ed);
-  border: 1px solid var(--theme-border, #2a2a3a);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  color: var(--theme-text, #e8e8ed);
   font-size: 12px;
   line-height: 1.5;
-  white-space: nowrap;
-  max-width: 240px;
-  overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.15s ease;
-  z-index: 9999;
+  visibility: hidden;
+  transition: opacity 0.15s ease, visibility 0s linear 0.15s;
 }
 
-[data-tooltip]:hover::after {
+.app-tooltip[data-open="true"] {
   opacity: 1;
-  transition-delay: .8s;
-}
-
-/* 下方 */
-[data-tooltip-pos="bottom"]::after {
-  top: calc(100% + 6px);
-  bottom: auto;
-  transform: translateX(-50%);
-}
-
-/* 左侧 */
-[data-tooltip-pos="left"]::after {
-  right: calc(100% + 6px);
-  left: auto;
-  bottom: auto;
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-/* 右侧 */
-[data-tooltip-pos="right"]::after {
-  left: calc(100% + 6px);
-  right: auto;
-  bottom: auto;
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-/* 默认/顶部气泡即将越过窗口上边界时，由全局边界检测临时翻转到下方。 */
-[data-tooltip]:not([data-tooltip-pos])[data-tooltip-auto-pos="bottom"]::after,
-[data-tooltip-pos="top"][data-tooltip-auto-pos="bottom"]::after {
-  top: calc(100% + 6px);
-  bottom: auto;
-  transform: translateX(-50%);
+  visibility: visible;
+  transition-delay: 0s;
 }

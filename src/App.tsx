@@ -34,7 +34,6 @@ const SettingsPanel = lazy(() => import('./components/SettingsPanel'));
 const AINodeDialog = lazy(() => import('./components/nodes/AINodeDialog'));
 const WorkflowPanel = lazy(() => import('./components/WorkflowPanel'));
 const AssetsPanel = lazy(() => import('./components/AssetsPanel'));
-const DramaAssetsPanel = lazy(() => import('./components/DramaAssetsPanel'));
 const OutputHistoryPanel = lazy(() => import('./components/OutputHistoryPanel'));
 const ChatPanel = lazy(() => import('./components/chat/ChatPanel'));
 const PresetRunnerDialog = lazy(() => import('./components/nodes/shared/PresetRunnerDialog'));
@@ -71,7 +70,6 @@ export default function App() {
       nodeDialog: state.activeNodeId !== null,
       workflows: state.workflowPanelOpen,
       assets: state.assetsPanelOpen,
-      dramaAssets: state.dramaAssetsPanelOpen,
       history: state.historyPanelOpen,
       chat: state.chatOpen || state.chatPanelDetached,
       presetRunner: state.presetRunRequest !== null,
@@ -81,7 +79,6 @@ export default function App() {
   const mountNodeDialog = useFeatureMount(featureVisibility.nodeDialog);
   const mountWorkflows = useFeatureMount(featureVisibility.workflows);
   const mountAssets = useFeatureMount(featureVisibility.assets);
-  const mountDramaAssets = useFeatureMount(featureVisibility.dramaAssets);
   const mountHistory = useFeatureMount(featureVisibility.history);
   const mountChat = useFeatureMount(featureVisibility.chat);
   const mountPresetRunner = useFeatureMount(featureVisibility.presetRunner);
@@ -95,10 +92,11 @@ export default function App() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateBubbleVisible, setUpdateBubbleVisible] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const configHydrated = useAppStore((state) => state.configHydrated);
 
   // 开屏动画结束后后台静默检查更新
   useEffect(() => {
-    if (!splashDone || !isTauri) return;
+    if (!splashDone || !isTauri || !configHydrated) return;
     const run = async () => {
       const result = await checkForUpdate();
       if (result.available) {
@@ -113,7 +111,7 @@ export default function App() {
       }
     };
     run();
-  }, [splashDone]);
+  }, [configHydrated, splashDone]);
 
   // 监听下载事件 → 控制吉祥物缩小动画
   useEffect(() => {
@@ -247,11 +245,6 @@ export default function App() {
         <LazyLoadBoundary label="资产面板">
           <Suspense fallback={<LazyLoadFallback label="资产面板" />}>
             {mountAssets && <AssetsPanel />}
-          </Suspense>
-        </LazyLoadBoundary>
-        <LazyLoadBoundary label="短剧资产">
-          <Suspense fallback={<LazyLoadFallback label="短剧资产" />}>
-            {mountDramaAssets && <DramaAssetsPanel />}
           </Suspense>
         </LazyLoadBoundary>
         <LazyLoadBoundary label="输出历史">

@@ -20,6 +20,8 @@ const defaultConfig: AppConfig = {
 
 export interface ConfigSlice {
   config: AppConfig;
+  /** IndexedDB 配置已成功读取；为 false 时禁止持久化默认配置。 */
+  configHydrated: boolean;
   updateConfig: (config: Partial<AppConfig>) => void;
   setProviderKey: (providerName: string, key: string) => void;
   setProviderUrl: (providerName: string, url: string) => void;
@@ -128,6 +130,7 @@ function migrateLegacyGeneralModels(config: AppConfig): AppConfig {
 
 export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (set, get) => ({
   config: { ...defaultConfig },
+  configHydrated: false,
 
   updateConfig: (partial) => {
     set((state) => ({ config: { ...state.config, ...partial } }));
@@ -236,7 +239,11 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
     })),
 
   saveConfig: async () => {
-    const { config, showToast } = get();
+    const { config, configHydrated, showToast } = get();
+    if (!configHydrated) {
+      console.warn('[设置] 配置尚未完成加载，已阻止默认值覆盖持久化配置');
+      return;
+    }
     try {
       await fileService.saveConfig(config);
       // 同步 baseDataDir 到 fileService
@@ -249,16 +256,27 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
   },
 
   loadConfig: async () => {
+    let saved: unknown | null;
     try {
-      const saved = await fileService.loadConfig();
-      if (saved) {
-        const cfg = migrateLegacyGeneralModels({ ...defaultConfig, ...(saved as AppConfig) });
-        set({ config: cfg });
-        setBaseDataDir(cfg.baseDataDir);
-        await syncAuthorizedDirectories(cfg);
-      }
+      saved = await fileService.loadConfig();
     } catch {
-      // Use default config if load fails
+      set({ configHydrated: false });
+      console.warn('[设置] 配置加载失败，已阻止默认值覆盖持久化配置');
+      return;
+    }
+
+    if (!saved) {
+      set({ configHydrated: true });
+      return;
+    }
+
+    const cfg = migrateLegacyGeneralModels({ ...defaultConfig, ...(saved as AppConfig) });
+    set({ config: cfg, configHydrated: true });
+    try {
+      setBaseDataDir(cfg.baseDataDir);
+      await syncAuthorizedDirectories(cfg);
+    } catch {
+      console.warn('[设置] 配置已加载，但文件目录授权同步失败');
     }
   },
 });

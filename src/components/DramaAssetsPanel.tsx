@@ -1,17 +1,14 @@
 /**
  * DramaAssetsPanel — 项目级短剧资产库（人物 / 场景 / 道具）
- * 仅管理：查看 / 编辑 / 确认 / 删除 / 绑图。
+ * 仅管理：查看 / 编辑 / 删除 / 绑图。
  * 生图在画布图像节点完成：@ 资产（无图=简介，有图=参考图）+ slash 人设参考等。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { useCallback, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import type { DramaAsset, DramaAssetKind } from '../types/dramaAssets';
 import { DRAMA_ASSET_KIND_LABEL } from '../types/dramaAssets';
 import { formatDramaAssetTextBrief } from '../services/dramaAssetPrompt';
-
-const EASE = [0.22, 1, 0.36, 1] as const;
 
 const KIND_TABS: Array<{ key: DramaAssetKind | 'all'; label: string }> = [
   { key: 'all', label: '全部' },
@@ -56,7 +53,6 @@ function DramaAssetCard({
   imageNodes,
   editing,
   onToggleEdit,
-  onConfirm,
   onDelete,
   onSaveFields,
   onBindImage,
@@ -68,7 +64,6 @@ function DramaAssetCard({
   imageNodes: Array<{ id: string; label: string }>;
   editing: boolean;
   onToggleEdit: () => void;
-  onConfirm: () => void;
   onDelete: () => void;
   onSaveFields: (patch: { name: string; summary: string; visualNotes: string; storyRole: string }) => void;
   onBindImage: (nodeId: string) => void;
@@ -81,31 +76,35 @@ function DramaAssetCard({
   const [storyRole, setStoryRole] = useState(asset.storyRole ?? '');
   const [bindOpen, setBindOpen] = useState(false);
 
-  useEffect(() => {
-    if (editing) {
+  const handleToggleEdit = useCallback(() => {
+    if (!editing) {
       setName(asset.name);
       setSummary(asset.summary);
       setVisualNotes(asset.visualNotes);
       setStoryRole(asset.storyRole ?? '');
     }
-  }, [editing, asset]);
+    onToggleEdit();
+  }, [asset, editing, onToggleEdit]);
 
   return (
-    <div className="rounded-xl border border-canvas-border bg-canvas-bg/60 p-3 hover:border-indigo-500/30 transition-colors">
-      <div className="flex items-start gap-2.5">
+    <div
+      className="drama-asset-card rounded-xl border border-canvas-border bg-canvas-bg/60 p-3 hover:border-indigo-500/30 transition-colors"
+      data-asset-kind={asset.kind}
+    >
+      <div className="drama-asset-card-layout flex items-start gap-3">
         {/* Thumb */}
-        <div className="w-12 h-12 rounded-lg overflow-hidden shrink-0 bg-canvas-hover border border-canvas-border flex items-center justify-center">
+        <div className="drama-asset-thumbnail w-20 h-20 rounded-lg overflow-hidden shrink-0 bg-canvas-hover border border-canvas-border flex items-center justify-center">
           {thumb ? (
-            <img src={thumb} alt="" className="w-full h-full object-cover" />
+            <img src={thumb} alt="" className="drama-asset-thumbnail-image w-full h-full object-cover" />
           ) : (
-            <span className="text-[11px] text-canvas-text-muted">
+            <span className="drama-asset-thumbnail-placeholder text-[12px] text-canvas-text-muted">
               {DRAMA_ASSET_KIND_LABEL[asset.kind][0]}
             </span>
           )}
         </div>
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="drama-asset-card-body flex-1 min-w-0">
+          <div className="drama-asset-meta flex items-center gap-1.5 flex-wrap">
             <span className="text-[13px] font-semibold text-canvas-text truncate">{asset.name}</span>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-canvas-hover text-canvas-text-muted shrink-0">
               {DRAMA_ASSET_KIND_LABEL[asset.kind]}
@@ -113,15 +112,6 @@ function DramaAssetCard({
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-canvas-hover text-canvas-text-muted shrink-0">
               {IMPORTANCE_LABEL[asset.importance] ?? asset.importance}
             </span>
-            {asset.confirmed ? (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 shrink-0">
-                已确认
-              </span>
-            ) : (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 shrink-0">
-                待确认
-              </span>
-            )}
             {asset.imageNodeId || asset.imageUrl ? (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-400 shrink-0">
                 已绑图
@@ -132,17 +122,17 @@ function DramaAssetCard({
           {!editing && (
             <>
               {asset.summary ? (
-                <p className="mt-1 text-[12px] text-canvas-text-secondary leading-relaxed line-clamp-2">
+                <p className="drama-asset-summary mt-1 text-[12px] text-canvas-text-secondary leading-relaxed line-clamp-2">
                   {asset.summary}
                 </p>
               ) : null}
               {asset.visualNotes ? (
-                <p className="mt-0.5 text-[11px] text-canvas-text-muted leading-relaxed line-clamp-2">
+                <p className="drama-asset-visual-notes mt-0.5 text-[11px] text-canvas-text-muted leading-relaxed line-clamp-2">
                   外形：{asset.visualNotes}
                 </p>
               ) : null}
               {assetExtraLine(asset) ? (
-                <p className="mt-0.5 text-[11px] text-canvas-text-muted/80 line-clamp-1">
+                <p className="drama-asset-extra mt-0.5 text-[11px] text-canvas-text-muted/80 line-clamp-1">
                   {assetExtraLine(asset)}
                 </p>
               ) : null}
@@ -150,7 +140,7 @@ function DramaAssetCard({
           )}
 
           {editing && (
-            <div className="mt-2 space-y-1.5">
+            <div className="drama-asset-editor mt-2 space-y-1.5">
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -205,7 +195,7 @@ function DramaAssetCard({
 
           {/* Bind image picker */}
           {bindOpen && (
-            <div className="mt-2 p-2 rounded-lg border border-canvas-border bg-canvas-bg/80 max-h-32 overflow-y-auto space-y-1">
+            <div className="drama-asset-bind-picker mt-2 p-2 rounded-lg border border-canvas-border bg-canvas-surface/80 max-h-32 overflow-y-auto space-y-1">
               {imageNodes.length === 0 ? (
                 <p className="text-[11px] text-canvas-text-muted px-1">画布上暂无图像节点</p>
               ) : (
@@ -235,10 +225,10 @@ function DramaAssetCard({
         </div>
 
         {/* Actions — 仅管理，生图请在画布图像节点 @ + slash */}
-        <div className="flex flex-col gap-1 shrink-0 items-stretch min-w-[72px]">
+        <div className="drama-asset-actions flex flex-col gap-1 shrink-0 items-stretch min-w-[72px]">
           <button
             type="button"
-            className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
+            className="drama-asset-action-copy px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
             onClick={onCopyBrief}
             title="复制本条简介（可粘到图像节点 prompt）"
           >
@@ -246,32 +236,15 @@ function DramaAssetCard({
           </button>
           <button
             type="button"
-            className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
-            onClick={onToggleEdit}
+            className="drama-asset-action-edit px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
+            onClick={handleToggleEdit}
           >
             {editing ? '收起' : '编辑'}
           </button>
-          {!asset.confirmed ? (
-            <button
-              type="button"
-              className="px-2 py-1 rounded-lg text-[11px] font-medium bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors"
-              onClick={onConfirm}
-            >
-              确认
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
-              onClick={onConfirm}
-            >
-              撤销
-            </button>
-          )}
           {asset.imageNodeId ? (
             <button
               type="button"
-              className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
+              className="drama-asset-action-unbind px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
               onClick={onUnbindImage}
             >
               解绑图
@@ -279,7 +252,7 @@ function DramaAssetCard({
           ) : (
             <button
               type="button"
-              className="px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
+              className="drama-asset-action-bind px-2 py-1 rounded-lg text-[11px] text-canvas-text-muted hover:bg-canvas-hover transition-colors"
               onClick={() => setBindOpen((v) => !v)}
             >
               绑图
@@ -287,7 +260,7 @@ function DramaAssetCard({
           )}
           <button
             type="button"
-            className="px-2 py-1 rounded-lg text-[11px] font-medium text-red-400/80 hover:bg-red-500/10 transition-colors"
+            className="drama-asset-action-delete px-2 py-1 rounded-lg text-[11px] font-medium text-red-400/80 hover:bg-red-500/10 transition-colors"
             onClick={onDelete}
           >
             删除
@@ -300,11 +273,8 @@ function DramaAssetCard({
 
 export default function DramaAssetsPanel() {
   const {
-    dramaAssetsPanelOpen,
-    setDramaAssetsPanelOpen,
     dramaAssets,
     nodes,
-    confirmDramaAsset,
     deleteDramaAsset,
     updateDramaAssetFields,
     clearDramaAssetsByKind,
@@ -313,11 +283,8 @@ export default function DramaAssetsPanel() {
     showToast,
   } = useAppStore(
     useShallow((s) => ({
-      dramaAssetsPanelOpen: s.dramaAssetsPanelOpen,
-      setDramaAssetsPanelOpen: s.setDramaAssetsPanelOpen,
       dramaAssets: s.dramaAssets,
       nodes: s.nodes,
-      confirmDramaAsset: s.confirmDramaAsset,
       deleteDramaAsset: s.deleteDramaAsset,
       updateDramaAssetFields: s.updateDramaAssetFields,
       clearDramaAssetsByKind: s.clearDramaAssetsByKind,
@@ -330,17 +297,6 @@ export default function DramaAssetsPanel() {
   const [tab, setTab] = useState<DramaAssetKind | 'all'>('all');
   const [search, setSearch] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
-
-  const close = useCallback(() => setDramaAssetsPanelOpen(false), [setDramaAssetsPanelOpen]);
-
-  useEffect(() => {
-    if (!dramaAssetsPanelOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [dramaAssetsPanelOpen, close]);
 
   const imageNodes = useMemo(
     () =>
@@ -390,10 +346,7 @@ export default function DramaAssetsPanel() {
           (a.storyRole ?? '').toLowerCase().includes(q),
       );
     }
-    return list.sort((a, b) => {
-      if (a.confirmed !== b.confirmed) return a.confirmed ? 1 : -1;
-      return b.updatedAt - a.updatedAt;
-    });
+    return list.sort((a, b) => b.updatedAt - a.updatedAt);
   }, [dramaAssets, tab, search]);
 
   const lastExtractLabel = useMemo(() => {
@@ -426,64 +379,8 @@ export default function DramaAssetsPanel() {
   );
 
   return (
-    <AnimatePresence>
-      {dramaAssetsPanelOpen && (
-        <>
-          <motion.div
-            className="fixed inset-0 z-[240] bg-black/50 backdrop-blur-sm"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            onClick={close}
-          />
-
-          <motion.div
-            className="fixed inset-x-0 bottom-0 z-[250] mx-auto w-full max-w-[780px] max-h-[80vh] flex flex-col
-                       glass-panel border border-b-0 rounded-t-2xl shadow-2xl overflow-hidden"
-            initial={{ y: '100%' }}
-            animate={{ y: 0 }}
-            exit={{ y: '100%' }}
-            transition={{ duration: 0.3, ease: EASE }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between px-3 py-2 border-b border-canvas-border shrink-0">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  className="text-canvas-text-secondary shrink-0"
-                >
-                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-                  <path d="M8 7h8M8 11h5" />
-                </svg>
-                <h2 className="text-sm font-semibold text-canvas-text shrink-0">短剧资产</h2>
-                <span className="text-[11px] text-canvas-text-muted shrink-0">共 {totals.all} 条</span>
-                {lastExtractLabel ? (
-                  <span className="text-[10px] text-canvas-text-muted/70 truncate hidden sm:inline">
-                    {lastExtractLabel}
-                  </span>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                className="w-7 h-7 rounded-lg hover:bg-canvas-hover flex items-center justify-center text-canvas-text-secondary hover:text-canvas-text transition-colors"
-                onClick={close}
-                aria-label="关闭"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2 px-3 pt-3 pb-2 shrink-0">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center gap-2 px-3 pt-3 pb-2 shrink-0">
               {KIND_TABS.map(({ key, label }) => {
                 const count = key === 'all' ? totals.all : totals[key];
                 return (
@@ -502,6 +399,11 @@ export default function DramaAssetsPanel() {
                   </button>
                 );
               })}
+              {lastExtractLabel ? (
+                <span className="ml-1 hidden min-w-0 truncate text-[10px] text-canvas-text-muted/70 md:block">
+                  {lastExtractLabel}
+                </span>
+              ) : null}
               <div className="relative w-[180px] ml-auto shrink-0">
                 <svg
                   className="absolute left-2.5 top-1/2 -translate-y-1/2 text-canvas-text-muted"
@@ -525,10 +427,10 @@ export default function DramaAssetsPanel() {
                              focus:outline-none focus:border-indigo-500/50 transition-colors"
                 />
               </div>
-            </div>
+      </div>
 
-            {tab !== 'all' && totals[tab] > 0 ? (
-              <div className="flex justify-end px-3 pb-1 shrink-0">
+      {tab !== 'all' && totals[tab] > 0 ? (
+        <div className="flex justify-end px-3 pb-1 shrink-0">
                 <button
                   type="button"
                   className="text-[11px] text-canvas-text-muted hover:text-red-400 transition-colors"
@@ -536,10 +438,10 @@ export default function DramaAssetsPanel() {
                 >
                   清空本类
                 </button>
-              </div>
-            ) : null}
+        </div>
+      ) : null}
 
-            <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-2">
+      <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-2">
               {items.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-10 text-canvas-text-muted">
                   <svg
@@ -576,9 +478,6 @@ export default function DramaAssetsPanel() {
                     onToggleEdit={() =>
                       setEditingId((cur) => (cur === asset.id ? null : asset.id))
                     }
-                    onConfirm={() =>
-                      confirmDramaAsset(asset.kind, asset.id, !asset.confirmed)
-                    }
                     onDelete={() => {
                       if (window.confirm(`删除「${asset.name}」？`)) {
                         deleteDramaAsset(asset.kind, asset.id);
@@ -606,10 +505,7 @@ export default function DramaAssetsPanel() {
                   />
                 ))
               )}
-            </div>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>
+      </div>
+    </div>
   );
 }
