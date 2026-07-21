@@ -66,6 +66,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
         settingsOpen: true,
         assetsPanelOpen: false,
         historyPanelOpen: false,
+        dramaAssetsPanelOpen: false,
         chatOpen: false,
       }
     : { settingsOpen: false }),
@@ -83,14 +84,16 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
         settingsOpen: false,
         assetsPanelOpen: true,
         historyPanelOpen: false,
+        dramaAssetsPanelOpen: false,
         chatOpen: false,
       }
-    : { assetsPanelOpen: false }),
+    : { assetsPanelOpen: false, dramaAssetsPanelOpen: false }),
   setHistoryPanelOpen: (open) => set(open
     ? {
         settingsOpen: false,
         assetsPanelOpen: false,
         historyPanelOpen: true,
+        dramaAssetsPanelOpen: false,
         chatOpen: false,
       }
     : { historyPanelOpen: false }),

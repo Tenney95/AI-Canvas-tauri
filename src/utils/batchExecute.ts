@@ -30,18 +30,27 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
   try {
     if (nt === 'ai-text') {
       const result = await generateText({ prompt, model: d.model!, provider: d.provider! });
-      ctx.updateNodeData(node.id, { output: result, status: 'success' });
+      const { postProcessDramaExtractOutput } = await import('../services/dramaAssetExtract');
+      const processed = postProcessDramaExtractOutput(prompt, result);
+      ctx.updateNodeData(node.id, { output: processed.output, status: 'success' });
       ctx.recordOutputHistory(node.id, {
         nodeId: node.id,
         nodeLabel: d.label,
         timestamp: Date.now(),
         prompt,
-        output: result,
+        output: processed.output,
         nodeType: 'ai-text',
         model: d.model!,
         provider: d.provider!,
         status: 'success',
       });
+      if (processed.ok && processed.parsed) {
+        const { useAppStore } = await import('../store/useAppStore');
+        useAppStore.getState().mergeDramaExtract(processed.parsed, {
+          sourceNodeId: node.id,
+          modelId: d.model,
+        });
+      }
     } else if (nt === 'ai-image') {
       const result = await generateImage({
         prompt,
@@ -67,6 +76,10 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         imageWidth: result.width,
         imageHeight: result.height,
       });
+      {
+        const { useAppStore } = await import('../store/useAppStore');
+        useAppStore.getState().syncDramaAssetImageFromNode?.(node.id, mediaUrl);
+      }
       ctx.recordOutputHistory(node.id, {
         nodeId: node.id,
         nodeLabel: d.label,

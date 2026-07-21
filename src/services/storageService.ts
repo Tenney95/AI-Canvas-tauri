@@ -152,6 +152,8 @@ export interface ProjectSaveData {
   /** 本地媒体文件夹名（形如「项目名-短ID」），创建时确定后保持稳定 */
   dataFolder?: string;
   settings?: ProjectSettings;
+  /** 短剧资产库（人物/场景/道具简介） */
+  dramaAssets?: import('../types/dramaAssets').DramaAssetLibrary;
 }
 
 /** 保存项目到 IndexedDB */

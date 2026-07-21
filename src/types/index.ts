@@ -74,7 +74,12 @@ export interface BaseNodeData {
   assetId?: string;           // 稳定资产身份；filePath 仅表示当前位置
   relativePath?: string;      // 项目目录内相对路径，保存时优先于绝对路径
   artifactId?: string;        // 对话媒体 Artifact ID（聊天与节点共享同一产物）
-  thumbnailUrl?: string;      // 缩略图
+  thumbnailUrl?: string;      // 缩略图（应与 imageUrl 同步；全屏/预览统一读 resolveNodeImageDisplaySrc）
+  /** 每次生成成功写入的单调版本号，用于绕过 WebView 图片缓存 */
+  mediaVersion?: number;
+  /** 由短剧资产一键创建的图像节点：反查绑定 */
+  dramaAssetId?: string;
+  dramaAssetKind?: import('./dramaAssets').DramaAssetKind;
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
   annotation?: string;        // 标注编辑器涂写数据（data URL，透明 PNG）
   imageWidth?: number;        // 生成图片实际宽度
@@ -154,12 +159,29 @@ export interface CanvasProject {
 
 export type ProjectModelKind = 'text' | 'image' | 'video' | 'audio';
 
+/** 项目级风格母图：生图时自动作为风格参考注入，无需每次 @ */
+export interface ProjectStyleReference {
+  /** 项目 data 目录下的本地路径 */
+  filePath?: string;
+  /** 展示/生成用 URL（asset:// 或 data:） */
+  imageUrl?: string;
+  /** 文件名（展示用） */
+  fileName?: string;
+  /**
+   * 是否启用自动注入。
+   * 有 imageUrl 时默认 true；关闭后仅保留母图文件，不参与生成。
+   */
+  enabled?: boolean;
+}
+
 export interface ProjectVisualStyleSettings {
   styleId?: string;
   styleName?: string;
   /** 保存选择时的提示词快照，避免自定义画风被删除后项目失去基线。 */
   prompt?: string;
   locked?: boolean;
+  /** 上传的风格母图（卡通/电影截图等），整项目图像生成自动跟随 */
+  styleReference?: ProjectStyleReference;
 }
 
 export interface ProjectGenerationDefaults {

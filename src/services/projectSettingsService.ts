@@ -68,12 +68,31 @@ function clean(value: string | undefined): string | undefined {
 
 export function normalizeProjectSettings(settings: ProjectSettings): ProjectSettings {
   const styleId = clean(settings.visualStyle?.styleId);
-  const visualStyle = styleId
+  const rawRef = settings.visualStyle?.styleReference;
+  const refUrl = clean(rawRef?.imageUrl);
+  const refPath = clean(rawRef?.filePath);
+  const styleReference = (refUrl || refPath)
     ? {
-        styleId,
-        styleName: clean(settings.visualStyle?.styleName),
-        prompt: clean(settings.visualStyle?.prompt),
-        locked: settings.visualStyle?.locked === true,
+        imageUrl: refUrl,
+        filePath: refPath,
+        fileName: clean(rawRef?.fileName),
+        // 有图时默认启用；显式 false 才关闭
+        enabled: rawRef?.enabled !== false,
+      }
+    : undefined;
+  const visualStyle = (styleId || styleReference)
+    ? {
+        ...(styleId
+          ? {
+              styleId,
+              styleName: clean(settings.visualStyle?.styleName),
+              prompt: clean(settings.visualStyle?.prompt),
+              locked: settings.visualStyle?.locked === true,
+            }
+          : {
+              locked: settings.visualStyle?.locked === true,
+            }),
+        ...(styleReference ? { styleReference } : {}),
       }
     : undefined;
 
@@ -210,3 +229,24 @@ export function resolveProjectGenerationPrompt({
   if (promptSuffix?.trim()) parts.push(promptSuffix.trim());
   return [...new Set(parts.filter(Boolean))].join('\n\n');
 }
+
+/**
+ * 读取当前项目启用的风格母图 URL（无则 null）。
+ * 仅返回可用于 image 输入的 URL，不负责上传。
+ */
+export function getEnabledProjectStyleReferenceUrl(
+  settings: ProjectSettings | undefined,
+): string | null {
+  const ref = settings?.visualStyle?.styleReference;
+  if (!ref || ref.enabled === false) return null;
+  const url = clean(ref.imageUrl);
+  return url || null;
+}
+
+/** 风格母图注入时的固定说明（只迁风格，不抄母图主体） */
+export const PROJECT_STYLE_REFERENCE_HINT = [
+  '【项目风格母图】图片1 为当前项目统一风格参考。',
+  '请严格遵循其画风、色彩、材质、光影与整体气质；',
+  '不要复制母图中的具体人物、场景内容或构图，只迁移视觉风格。',
+  '后续图片序号为内容参考（角色/场景等）时，以内容参考为准保持主体一致，风格仍服从母图。',
+].join('');

@@ -92,10 +92,11 @@ export default function App() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateBubbleVisible, setUpdateBubbleVisible] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const configHydrated = useAppStore((state) => state.configHydrated);
 
   // 开屏动画结束后后台静默检查更新
   useEffect(() => {
-    if (!splashDone || !isTauri) return;
+    if (!splashDone || !isTauri || !configHydrated) return;
     const run = async () => {
       const result = await checkForUpdate();
       if (result.available) {
@@ -110,7 +111,7 @@ export default function App() {
       }
     };
     run();
-  }, [splashDone]);
+  }, [configHydrated, splashDone]);
 
   // 监听下载事件 → 控制吉祥物缩小动画
   useEffect(() => {

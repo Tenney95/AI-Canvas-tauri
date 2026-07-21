@@ -81,6 +81,38 @@
   color: rgba(136, 136, 160, 0.5);
 }
 
+/* Flex spacer pushes task center to bottom */
+.sidebar-flex-spacer {
+  flex: 1;
+  min-height: 6px;
+}
+
+/* 短剧资产：数量角标 */
+.drama-assets-btn {
+  position: relative;
+  color: rgba(167, 139, 250, 0.75);
+}
+.drama-assets-btn:hover {
+  color: #c4b5fd;
+  background: rgba(139, 92, 246, 0.12);
+}
+.sidebar-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: #7c3aed;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
 /* Task center button */
 .task-center-btn {
   position: relative;
