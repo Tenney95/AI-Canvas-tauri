@@ -4,6 +4,7 @@ import { registerFileAgentTools } from './fileTools';
 import { registerMemoryAgentTools } from './memoryTools';
 import { registerPresetAgentTools } from './presetTools';
 import { registerExpertAgentTools } from './expertTools';
+import { registerProviderConfigAgentTools } from './providerConfigTools';
 
 let registered = false;
 
@@ -18,5 +19,6 @@ export function ensureAgentToolsRegistered(): void {
   registerMemoryAgentTools();
   registerPresetAgentTools();
   registerExpertAgentTools();
+  registerProviderConfigAgentTools();
   registered = true;
 }

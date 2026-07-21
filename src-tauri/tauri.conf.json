@@ -6,7 +6,7 @@
         "frontendDist": "../dist"
     },
     "productName": "AI Canvas",
-    "version": "0.5.6",
+    "version": "0.6.0",
     "identifier": "com.aicanvas.app",
     "plugins": {
         "shell": {
@@ -37,6 +37,7 @@
             "nsis": {
                 "installerIcon": "icons/icon.ico",
                 "installMode": "currentUser",
+                "installerHooks": "windows/nsis-hooks.nsh",
                 "languages": ["English", "SimpChinese"]
             }
         }

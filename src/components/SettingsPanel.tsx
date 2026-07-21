@@ -20,6 +20,7 @@ import AnimatedButton from './shared/AnimatedButton';
 import PopupCloseButton from './shared/PopupCloseButton';
 import ApiKeySettings from './settings/ApiKeySettings';
 import StorageHealthCenter from './settings/StorageHealthCenter';
+import DirectorDeskStorageManager from './settings/DirectorDeskStorageManager';
 import { BACKGROUND_OPTIONS } from './backgrounds/CanvasBackground';
 import { detectBackgroundBrightness, compressImageLossless } from '../services/backgroundService';
 import type { CanvasBackground as CanvasBg, InteractionMode } from '../types';
@@ -1102,7 +1103,10 @@ export default function SettingsPanel() {
             )}
 
             {activeTab === 'storage' && (
-              <StorageHealthCenter />
+              <>
+                <StorageHealthCenter />
+                <DirectorDeskStorageManager />
+              </>
             )}
           </div>
         </div>

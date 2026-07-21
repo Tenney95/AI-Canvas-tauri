@@ -5,7 +5,7 @@ import type { JSX } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore, computeImageNodeDimensions } from '../store/useAppStore';
+import { useAppStore, computeImageNodeDimensions, generateId } from '../store/useAppStore';
 import { countUnreadDramaAssets } from '../store/store.dramaAssets';
 import ModalOverlay from './shared/ModalOverlay';
 import type { NodeType } from '../types';
@@ -26,7 +26,7 @@ import ProjectLibraryModal from './ProjectLibraryModal';
    Node picker menu items
    ============================================ */
 const generationItems: {
-  type: NodeType | '3d-director';
+  type: NodeType;
   label: string;
   sub: string;
   icon: JSX.Element;
@@ -67,6 +67,12 @@ const generationItems: {
     sub: '2D 角色逐帧动画',
     icon: <Icon icon={NODE_TYPE_CONFIG['ai-animation'].icon} width="18" height="18" />,
   },
+  {
+    type: 'ai-director',
+    label: '3D 导演台',
+    sub: '运镜预演 · 截图供生视频',
+    icon: <Icon icon={NODE_TYPE_CONFIG['ai-director'].icon} width="18" height="18" />,
+  },
 ];
 
 const resourceItems = [
@@ -93,7 +99,7 @@ const HELP_CATEGORIES = [
     items: [
       {
         title: '创建内容节点',
-        description: '点击左侧加号选择文本、图像、视频、音频、全景或动画节点。也可以直接按数字键 1-6 快速创建对应的生成节点。',
+        description: '点击左侧加号选择文本、图像、视频、音频、全景、动画或 3D 导演台节点。也可以直接按数字键 1-7 快速创建对应节点。',
       },
       {
         title: '补充输入与模型',
@@ -167,8 +173,8 @@ const HELP_CATEGORIES = [
       },
       {
         title: '在鼠标位置创建节点',
-        description: '按 1-6 创建文本、图像、视频、音频、全景和动画生成节点；按 Alt + 1-5 创建文本、图像、视频、音频和 Markdown 源节点。',
-        shortcut: '1-6 / Alt + 1-5',
+        description: '按 1-7 创建文本、图像、视频、音频、全景、动画和 3D 导演台节点；按 Alt + 1-5 创建文本、图像、视频、音频和 Markdown 源节点。',
+        shortcut: '1-7 / Alt + 1-5',
       },
       {
         title: '快速创建文本节点',
@@ -469,13 +475,14 @@ function NodePicker({
     const isImage = type === 'ai-image';
     const isPanorama = type === 'ai-panorama';
     const isAnimation = type === 'ai-animation';
+    const isDirector = type === 'ai-director';
     const nodeData: Record<string, unknown> = {
       label: NODE_TYPE_CONFIG[type]?.label || generationItems.find((m) => m.type === type)?.label || '节点',
       type,
       prompt: '',
       status: 'idle' as const,
-      nodeWidth: isAnimation ? 320 : isPanorama ? 300 : 280,
-      nodeHeight: isImage ? 158 : isAnimation ? 358 : isPanorama ? 200 : 160,
+      nodeWidth: isAnimation || isDirector ? 320 : isPanorama ? 300 : 280,
+      nodeHeight: isDirector ? 240 : isImage ? 158 : isAnimation ? 358 : isPanorama ? 200 : 160,
     };
     if (isImage) {
       nodeData.aspectRatio = '16:9';
@@ -491,6 +498,11 @@ function NodePicker({
       nodeData.animationPreviewMode = 'playing';
       nodeData.aspectRatio = '1:1';
       nodeData.imageSize = '2K';
+    }
+    if (isDirector) {
+      nodeData.role = 'source';
+      nodeData.directorStatus = 'idle';
+      nodeData.directorCaptureUrls = [];
     }
     // Auto-fill default model from localStorage preference
     // 全景图节点回退到生图节点偏好
@@ -514,7 +526,7 @@ function NodePicker({
     } catch { /* ignore */ }
     const pos = getCanvasPointerPosition();
     addNode({
-      id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: `node-${generateId()}`,
       type,
       position: pos,
       data: nodeData,
@@ -600,8 +612,7 @@ function NodePicker({
           scale={1.02}
           className="menu-row has-desc"
           onClick={() => {
-            if (type === '3d-director') return; // placeholder
-            handleAddNode(type as NodeType);
+            handleAddNode(type);
           }}
         >
           <div className="menu-ico">{icon}</div>

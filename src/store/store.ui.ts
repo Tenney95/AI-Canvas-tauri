@@ -15,6 +15,10 @@ export interface UISlice {
   assetsPanelOpen: boolean;
   historyPanelOpen: boolean;
   minimapVisible: boolean;
+  directorDeskRuntimeRequest: {
+    instanceId: string;
+    openAfterInstall: boolean;
+  } | null;
   /** 当前在 prompt 里被 hover 的 @引用节点 id — 用于联动 connected-nodes-float 高亮 */
   hoveredMentionNodeId: string | null;
   /** 从 Toolbar 点击快捷指令后，需要 PromptPanel 自动执行的 preset 操作 */
@@ -43,6 +47,8 @@ export interface UISlice {
   setAssetsPanelOpen: (open: boolean) => void;
   setHistoryPanelOpen: (open: boolean) => void;
   toggleMinimap: () => void;
+  requestDirectorDeskRuntime: (instanceId: string, openAfterInstall?: boolean) => void;
+  clearDirectorDeskRuntimeRequest: () => void;
   setHoveredMentionNodeId: (id: string | null) => void;
   setPendingPresetAction: (action: UISlice['pendingPresetAction']) => void;
 }
@@ -58,6 +64,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   assetsPanelOpen: false,
   historyPanelOpen: false,
   minimapVisible: true,
+  directorDeskRuntimeRequest: null,
   hoveredMentionNodeId: null,
   pendingPresetAction: null,
 
@@ -98,6 +105,12 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
       }
     : { historyPanelOpen: false }),
   toggleMinimap: () => set((s) => ({ minimapVisible: !s.minimapVisible })),
+  requestDirectorDeskRuntime: (instanceId, openAfterInstall = true) => set((state) => {
+    const normalized = instanceId.trim();
+    if (!normalized || state.directorDeskRuntimeRequest) return {};
+    return { directorDeskRuntimeRequest: { instanceId: normalized, openAfterInstall } };
+  }),
+  clearDirectorDeskRuntimeRequest: () => set({ directorDeskRuntimeRequest: null }),
   setHoveredMentionNodeId: (id) => set({ hoveredMentionNodeId: id }),
   setPendingPresetAction: (action) => set({ pendingPresetAction: action }),
 });

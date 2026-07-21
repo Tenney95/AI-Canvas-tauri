@@ -1,0 +1,10 @@
+{
+  "identifier": "director-desk-capability",
+  "description": "Allow the installed local 3D director desk window to exchange scoped host messages",
+  "windows": ["director-desk"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit"
+  ]
+}

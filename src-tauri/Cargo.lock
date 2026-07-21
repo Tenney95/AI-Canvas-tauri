@@ -19,15 +19,18 @@ dependencies = [
 
 [[package]]
 name = "ai-canvas-tauri"
-version = "0.5.6"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "fs2",
  "image",
  "ort",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

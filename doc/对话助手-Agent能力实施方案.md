@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3、P4 阶段已完成；P4 Agent 运行时演进已按方案 A 交付
+> 文档状态：P3、P4 阶段已完成；P5-A/P5-B 已完成，P5-C 待实施
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -54,6 +54,9 @@
 | P4-B | `[x]` | 脱敏事件日志、安全恢复、任务回退、指标与任务中心 | 2026-07-21 | 2026-07-21 |
 | P4-C | `[x]` | 相关性记忆、可靠压缩、Skill Manifest 和只规划模式 | 2026-07-21 | 2026-07-21 |
 | P4-D | `[x]` | 内部生命周期事件和受限只读专家 Agent | 2026-07-21 | 2026-07-21 |
+| P5-A | `[x]` | 用户授权的厂商文档读取与同站链接导航 | 2026-07-21 | 2026-07-21 |
+| P5-B | `[x]` | 厂商配置草稿与确认写入 | 2026-07-21 | 2026-07-21 |
+| P5-C | `[ ]` | 端到端安全回归与验收 |  |  |
 
 ## 3. 已确认的产品决策
 
@@ -1150,6 +1153,94 @@ type PolicyDecision =
 - Plan 降级：无文本模型时返回“未执行任何写操作”，任务正常结束，未进入旧命令执行管线。
 - 剩余手测：三类专家的真实模型输出质量、专家父子任务实际运行态布局和独立 Tauri 窗口联动需要配置兼容文本模型后验证。
 
+### P5-A：用户授权的厂商文档读取与同站链接导航
+
+**状态：** `[x]`
+
+### 目标
+
+允许 Agent 读取用户当前任务中明确提供的厂商 HTTPS 文档，并根据页面实际发现的同站链接按需继续查找模型目录、请求示例、响应示例和异步轮询说明；不恢复通用搜索或无限制网页读取。
+
+### 实际文件
+
+- 新增：`src-tauri/src/provider_docs.rs`
+- 新增：`src/services/providerDocsService.ts`
+- 新增：`src/services/chat/providerDocsGrantService.ts`
+- 新增：`src/services/chat/tools/providerConfigTools.ts`
+- 新增：`tests/services/chat/providerDocsGrantService.test.ts`
+- 修改：`src-tauri/src/lib.rs`
+- 修改：`src/services/chat/tools/index.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 新增：`doc/plans/2026-07-21-agent-provider-config-import.md`
+
+### 实施结果
+
+- [x] 起始 URL 只能来自当前 Agent 任务目标中的显式 HTTPS URL；HTTP、凭据 URL、非 443 端口、本机和常见私网地址在前端先行拒绝。
+- [x] 已读页面只能授权同源 HTTPS 链接，Agent 按需逐页调用，不自动爬取全站；最大深度 2、最多 8 页、累计向模型提供正文 80,000 字符。
+- [x] 专用 Rust reader 逐跳校验 URL、DNS 和全部解析 IP，固定已校验地址，禁用代理和自动重定向；跨站重定向、私网、特殊地址和非文本响应均拒绝。
+- [x] 单页原始响应限制 1 MB；前端保留标题、段落和代码块结构，向模型提供最多 10,000 字正文与 24 条优先文档链接。
+- [x] `provider_docs_read` 注册为 `read` 工具，只返回带不可信边界的正文和已授权链接；不调用通用 `proxy_fetch`，不接收认证 Header、Cookie 或 API Key。
+- [x] URL 授权、页面计数、读取占用和正文预算只保存在任务级内存中；读取失败释放占用，Agent 循环结束统一清理，不写入 IndexedDB、消息、任务摘要或长期记忆。
+
+### 回滚
+
+从工具注册入口移除 `registerProviderConfigAgentTools()`，移除 `provider_docs` Tauri 命令和 Agent Runtime 的任务清理调用即可关闭本能力。无数据库迁移、配置迁移或 Tauri capability 变更。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- URL 授权测试：`npx vitest run tests/services/chat/providerDocsGrantService.test.ts`，1 个文件、5 个测试通过。
+- Rust 安全测试：`cargo test provider_docs::tests --lib`，2 个测试通过；`rustfmt --edition 2021 --check src/provider_docs.rs` 通过。
+- 类型与 Lint：`npm run typecheck`、`npm run test:typecheck` 通过；阶段 TypeScript 文件定向 ESLint 通过。
+- 构建与编译：`npx vite build --outDir <系统临时目录>`、`cargo check --lib` 通过；仅保留仓库既有动态导入和 chunk 体积警告。
+- 差异检查：`git diff --check` 通过，仅输出工作区既有 CRLF 提示。
+- 剩余手测：尚未在打包后的 Tauri 环境向真实厂商文档发起请求；真实站点的 HTML 结构、限流和动态渲染兼容性留到 P5-C 验收。
+
+### P5-B：厂商配置草稿与确认写入
+
+**状态：** `[x]`
+
+### 目标
+
+把 Agent 从受限厂商文档中整理出的多模型请求、响应和轮询示例转换成不含凭据的任务级配置草稿，并通过固定的 `config_write` 审批后写入 `config.providers`。
+
+### 实际文件
+
+- 新增：`src/services/chat/providerConfigDraftService.ts`
+- 新增：`tests/services/chat/providerConfigDraftService.test.ts`
+- 新增：`tests/services/chat/providerConfigTools.test.ts`
+- 修改：`src/services/chat/tools/providerConfigTools.ts`
+- 修改：`src/services/chat/toolRegistry.ts`
+- 修改：`src/services/chat/policyEngine.ts`
+- 修改：`src/types/agent.ts`
+- 修改：`src/components/chat/AgentApprovalCard.tsx`
+- 修改：`tests/services/chat/policyEngine.test.ts`
+- 修改：`AGENTS.md`
+- 修改：`doc/plans/2026-07-21-agent-provider-config-import.md`
+
+### 实施结果
+
+- [x] `provider_config_preview` 接收一个连接下最多 16 个模型的提交/响应示例，逐项复用 `analyzeModelProtocolExamples()`，只保存规范化 Base URL、模型分类、模型选择和声明式 `executionProfile`。
+- [x] 多模型必须解析到同一个无凭据 HTTPS Base URL；缺失模型 ID、无有效结果路径、轮询示例不完整、协议校验失败和重复模型 ID 均拒绝。
+- [x] 工具 schema 与草稿服务双层拒绝 API Key、Authorization、Token、Secret 等凭据字段；任务级草稿不保存网页正文、请求/响应原文或 API Key，30 分钟后失效并禁止跨任务复用。
+- [x] 新增 `config_write` effect；Plan 模式不可见且固定拒绝，B/C 模式始终要求用户确认，自动重试次数沿用非只读工具规则为 0。
+- [x] `provider_config_apply` 只接受不透明 `draftId`；审批后再次复核任务归属、过期状态、配置加载状态和目标连接类型，只允许新建或更新 `custom-*` 自定义连接。
+- [x] 新建连接写入空 API Key，编辑连接保留原 API Key；配置通过 `saveProviderConfig()` 更新 Store，再通过 `saveConfig()` 持久化，同步生成节点和对话可用的 `generalModels`。
+- [x] 审批卡新增“API 配置”类别、安全摘要和“不会写入 API Key”提示，不展示请求正文或凭据。
+
+### 回滚
+
+注销 `provider_config_preview` 和 `provider_config_apply`，移除 `config_write` effect 与审批卡映射，并删除任务级草稿服务即可关闭本能力。写入结果仍是普通 `config.providers` 项，无数据库迁移。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- 草稿、工具和权限测试：`npx vitest run tests/services/chat/providerConfigDraftService.test.ts tests/services/chat/providerConfigTools.test.ts tests/services/chat/policyEngine.test.ts`，3 个文件、26 个测试通过。
+- 类型检查：`npm run typecheck`、`npm run test:typecheck` 通过。
+- Lint：9 个阶段 TypeScript/TSX 文件定向 ESLint 通过。
+- 生产构建：`npx vite build --outDir <系统临时目录> --emptyOutDir` 通过；仅保留仓库既有动态导入和 chunk 体积警告。
+- 视觉检查：按用户明确要求，本阶段未执行视觉验证；审批卡改动的桌面/独立窗口实际呈现留到 P5-C 验收。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1268,3 +1359,5 @@ type PolicyDecision =
 | 2026-07-21 | P4-B | 完成脱敏事件与指标、恢复步骤摘要、重复写抑制、连续尾部检查点回退，以及跨会话任务中心。 |
 | 2026-07-21 | P4-C | 完成相关性记忆、结构化摘要校验、Skill Manifest 工具上限，以及 Registry + Policy 双层保护的 Plan 模式。 |
 | 2026-07-21 | P4-D | 完成隔离的进程内生命周期事件、三类无工具只读专家、父子任务预算和任务中心关系展示。 |
+| 2026-07-21 | P5-A | 完成用户显式 HTTPS 厂商文档授权、同源链接逐页导航、Rust SSRF 防护、不可信正文边界和任务级读取预算。 |
+| 2026-07-21 | P5-B | 完成多模型声明式协议草稿、任务隔离与过期、`config_write` 固定审批，以及不写入或泄露 API Key 的配置保存。 |

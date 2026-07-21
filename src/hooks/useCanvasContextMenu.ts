@@ -93,9 +93,10 @@ export function useCanvasContextMenu() {
       const isImage = type === 'ai-image';
       const isPanorama = type === 'ai-panorama';
       const isAnimation = type === 'ai-animation';
+      const isDirector = type === 'ai-director';
       const isSource = role === 'source';
-      const newWidth = isAnimation ? 320 : type === 'ai-audio' ? 260 : isPanorama ? 300 : 280;
-      const newHeight = isAnimation ? 358 : type === 'ai-audio' ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
+      const newWidth = isAnimation || isDirector ? 320 : type === 'ai-audio' ? 260 : isPanorama ? 300 : 280;
+      const newHeight = isDirector ? 240 : isAnimation ? 358 : type === 'ai-audio' ? 140 : isImage ? 158 : isPanorama ? 200 : type === 'ai-markdown' ? 200 : 160;
       const defaultModel = !isSource ? loadDefaultModel(type) : null;
       const newNode: RFNode<BaseNodeData> = {
         id: `node-${generateId()}`,
@@ -117,6 +118,10 @@ export function useCanvasContextMenu() {
             animationPreviewMode: 'playing' as const,
             aspectRatio: '1:1',
             imageSize: '2K',
+          } : {}),
+          ...(isDirector ? {
+            directorStatus: 'idle' as const,
+            directorCaptureUrls: [] as string[],
           } : {}),
           ...(defaultModel ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
         },

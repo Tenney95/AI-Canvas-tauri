@@ -78,5 +78,11 @@ export function evaluateAgentToolPolicy(
         reason: '项目记忆必须由用户确认后保存',
         approvalKind: 'memory_write',
       };
+    case 'config_write':
+      return {
+        outcome: 'require_approval',
+        reason: 'API 厂商配置必须由用户确认后保存',
+        approvalKind: 'config_write',
+      };
   }
 }

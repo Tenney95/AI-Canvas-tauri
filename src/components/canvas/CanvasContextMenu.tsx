@@ -21,6 +21,7 @@ const NODE_ITEMS: MergedNodeItem[] = [
   { label: '生成音频', type: 'ai-audio', role: 'generator', shortcut: '4' },
   { label: '生成360全景', type: 'ai-panorama', role: 'generator', shortcut: '5' },
   { label: '生成动画', type: 'ai-animation', role: 'generator', shortcut: '6' },
+  { label: '3D 导演台', type: 'ai-director', role: 'source', shortcut: '7' },
   // ── 源节点 ──
   { label: '文本', type: 'ai-text', role: 'source', shortcut: 'Alt 1' },
   { label: '图像', type: 'ai-image', role: 'source', shortcut: 'Alt 2' },
@@ -38,8 +39,8 @@ const MENU_PADDING = 10;
  *  以选中态最大项数估算高度，避免溢出。 */
 const L1_ITEM_COUNT = 8;
 const L1_SEP_COUNT = 3;
-/** 子菜单项数（6 个生成节点 + 1 条分割线 + 5 个源节点 = 11 个 .menu-row + 1 个 .menu-sep） */
-const SUB_ITEM_COUNT = 11;
+/** 子菜单项数（7 个内容节点 + 1 条分割线 + 5 个源节点 = 12 个 .menu-row + 1 个 .menu-sep） */
+const SUB_ITEM_COUNT = 12;
 const SUB_SEP_COUNT = 1;
 
 /** 估算菜单高度 */
@@ -181,8 +182,8 @@ function CanvasContextMenu({
         >
           {NODE_ITEMS.map((item, i) => (
             <div key={`${item.role}-${item.type}`}>
-              {/* 第 6 项前插入分割线（生成节点 → 源节点） */}
-              {i === 6 && <div className="menu-sep" />}
+              {/* 第 7 项后插入分割线（内容节点 → 源节点） */}
+              {i === 7 && <div className="menu-sep" />}
               <div
                 className="menu-row menu-row-split"
                 onClick={() => onAddNode(item.type, item.label, item.role)}

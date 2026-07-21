@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "repository": "Tenney95/3d-director-desk",
+  "version": "0.3.1",
+  "artifact": "director-desk-v0.3.1.tar.gz",
+  "url": "https://github.com/Tenney95/3d-director-desk/releases/download/v0.3.1/director-desk-v0.3.1.tar.gz",
+  "sha256": "05cbc43afcd23a17f350560969925d3c5b54a294506636c19fd078aa837aae75",
+  "protocol": "tauri-event-v1",
+  "downloadBytes": 54443224,
+  "expandedBytes": 81580320
+}

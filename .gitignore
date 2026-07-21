@@ -12,7 +12,6 @@ dist
 dist-ssr
 *.local
 
-
 .agents/*
 .codebuddy/
 .codegraph/

@@ -38,6 +38,7 @@ const AssetsPanel = lazy(() => import('./components/AssetsPanel'));
 const OutputHistoryPanel = lazy(() => import('./components/OutputHistoryPanel'));
 const ChatPanel = lazy(() => import('./components/chat/ChatPanel'));
 const PresetRunnerDialog = lazy(() => import('./components/nodes/shared/PresetRunnerDialog'));
+const DirectorDeskRuntimeManager = lazy(() => import('./components/director/DirectorDeskRuntimeManager'));
 
 let cachedMascotNodes: AppState['nodes'] | undefined;
 let cachedMascotLoading = false;
@@ -374,6 +375,10 @@ export default function App() {
           updating={updating}
         />
       )}
+
+      <Suspense fallback={null}>
+        <DirectorDeskRuntimeManager />
+      </Suspense>
 
     </div>
   );

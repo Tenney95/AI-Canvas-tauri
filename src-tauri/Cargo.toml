@@ -1,6 +1,6 @@
 [package]
 name = "ai-canvas-tauri"
-version = "0.5.6"
+version = "0.6.0"
 edition = "2021"
 
 [lib]
@@ -27,6 +27,9 @@ url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 base64 = "0.22"
 fs2 = "0.4"
+flate2 = "1"
+sha2 = "0.10"
+tar = "0.4"
 # 默认 features = download-binaries（CPU 版 onnxruntime，构建时自动下载并静态链接）。
 # directml feature 启用 DirectML EP（仅 Worker 子进程使用，主进程永不初始化 DirectML）。
 ort = { version = "2.0.0-rc.12", features = ["download-binaries", "directml"] }
