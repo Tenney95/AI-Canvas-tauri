@@ -63,7 +63,27 @@ interface ViewportBounds {
 
 const NO_AXES: ScrollAxes = { vertical: false, horizontal: false };
 
-function getScrollAxes(target: HTMLElement): ScrollAxes {
+function isVisiblyActive(target: HTMLElement): boolean {
+  if (!target.isConnected || target.getClientRects().length === 0) return false;
+
+  let current: HTMLElement | null = target;
+  while (current) {
+    if (current.hidden || current.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(current);
+    if (
+      style.display === 'none'
+      || style.visibility === 'hidden'
+      || style.visibility === 'collapse'
+      || style.contentVisibility === 'hidden'
+      || Number(style.opacity) <= 0.01
+    ) return false;
+    current = current.parentElement;
+  }
+
+  return true;
+}
+
+function getPotentialScrollAxes(target: HTMLElement): ScrollAxes {
   if (!target.isConnected || target.clientWidth <= 0 || target.clientHeight <= 0) return NO_AXES;
 
   const style = window.getComputedStyle(target);
@@ -74,6 +94,10 @@ function getScrollAxes(target: HTMLElement): ScrollAxes {
     vertical: allowsVerticalScroll && target.scrollHeight > target.clientHeight + 1,
     horizontal: allowsHorizontalScroll && target.scrollWidth > target.clientWidth + 1,
   };
+}
+
+function getScrollAxes(target: HTMLElement): ScrollAxes {
+  return isVisiblyActive(target) ? getPotentialScrollAxes(target) : NO_AXES;
 }
 
 function hasScrollableAxis(axes: ScrollAxes): boolean {
@@ -354,7 +378,7 @@ export default function OverlayScrollbarLayer() {
 
     const registerTarget = (element: HTMLElement) => {
       if (element.closest('[data-overlay-scrollbar="off"]')) return;
-      if (!hasScrollableAxis(getScrollAxes(element)) || knownTargets.has(element)) return;
+      if (!hasScrollableAxis(getPotentialScrollAxes(element)) || knownTargets.has(element)) return;
 
       knownTargets.set(element, nextTargetIdRef.current++);
       element.setAttribute('data-overlay-scrollbar', 'managed');

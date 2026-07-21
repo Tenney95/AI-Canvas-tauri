@@ -108,10 +108,6 @@ const MASCOT_PALETTE: Record<MascotTheme, {
   rimLightIntensity: number;
   hoverEmissiveIntensity: number;
   hoverKeyLightIntensity: number;
-  innerCore: number;
-  innerOpacity: number;
-  highlight: number;
-  highlightOpacity: number;
   shadow: number;
   shadowOpacity: number;
   statusEmissiveIntensity: number;
@@ -129,33 +125,25 @@ const MASCOT_PALETTE: Record<MascotTheme, {
     rimLightIntensity: 0,
     hoverEmissiveIntensity: 0.32,
     hoverKeyLightIntensity: 1.9,
-    innerCore: 0xd8dbe5,
-    innerOpacity: 0,
-    highlight: 0xffffff,
-    highlightOpacity: 0.07,
     shadow: 0x000000,
     shadowOpacity: 0.08,
     statusEmissiveIntensity: 0.12,
     statusRimBoost: 0.16,
   },
   light: {
-    body: 0x48536a,
-    eyes: 0xf7f3ed,
-    emissive: 0x8793b2,
-    roughness: 0.48,
-    metalness: 0.06,
-    clearcoat: 0.72,
-    clearcoatRoughness: 0.25,
-    opacity: 0.88,
-    rimLightIntensity: 0.55,
-    hoverEmissiveIntensity: 0.08,
-    hoverKeyLightIntensity: 1.55,
-    innerCore: 0x182235,
-    innerOpacity: 0.24,
-    highlight: 0xf8fbff,
-    highlightOpacity: 0.26,
-    shadow: 0x172033,
-    shadowOpacity: 0.14,
+    body: 0x858c98,
+    eyes: 0xf7f9fc,
+    emissive: 0xaab4c6,
+    roughness: 0.55,
+    metalness: 0.12,
+    clearcoat: 0.08,
+    clearcoatRoughness: 0.62,
+    opacity: 1,
+    rimLightIntensity: 0.35,
+    hoverEmissiveIntensity: 0.06,
+    hoverKeyLightIntensity: 1.6,
+    shadow: 0x596271,
+    shadowOpacity: 0.12,
     statusEmissiveIntensity: 0.09,
     statusRimBoost: 0.1,
   },
@@ -248,7 +236,7 @@ export default function Mascot({
     keyLight.position.set(-1.4, 2.2, 2.5);
     scene.add(keyLight);
 
-    // 浅色主题用冷色侧光勾出烟熏玻璃边缘；暗色主题下强度为 0。
+    // 浅色主题用冷色侧光勾出珍珠烟灰轮廓；暗色主题下强度为 0。
     const rimLight = new DirectionalLight(DEFAULT_RIM_COLOR, initialPalette.rimLightIntensity);
     rimLight.position.set(2.4, 0.8, 3);
     scene.add(rimLight);
@@ -260,15 +248,14 @@ export default function Mascot({
     const head = new Group();
     scene.add(head);
 
-    /* ── 球体：暗色主题为哑光陶瓷，浅色主题为烟熏玻璃拟态 ── */
+    /* ── 球体：暗色主题为哑光陶瓷，浅色主题为珍珠烟灰缎面 ── */
     const sphereMat = new MeshPhysicalMaterial({
       color: initialPalette.body,
       roughness: initialPalette.roughness,
       metalness: initialPalette.metalness,
       clearcoat: initialPalette.clearcoat,
       clearcoatRoughness: initialPalette.clearcoatRoughness,
-      ior: 1.46,
-      specularIntensity: 0.78,
+      specularIntensity: 0.62,
       emissive: new Color(initialPalette.emissive),
       emissiveIntensity: 0, // 悬浮时提升
       transparent: true, // 切换 LOADING 时淡出
@@ -281,32 +268,6 @@ export default function Mascot({
     );
     sphere.renderOrder = 1;
     head.add(sphere);
-
-    // 内核透过半透明外壳形成烟熏深度，暗色主题下保持隐藏以延续原有陶瓷观感。
-    const innerCoreGeo = new SphereGeometry(SPHERE_RADIUS * 0.88, 48, 48);
-    const innerCoreMat = new MeshBasicMaterial({
-      color: initialPalette.innerCore,
-      transparent: true,
-      opacity: initialPalette.innerOpacity,
-      depthWrite: false,
-    });
-    const innerCore = new Mesh(innerCoreGeo, innerCoreMat);
-    innerCore.renderOrder = 0;
-    head.add(innerCore);
-
-    // 一条窄高光比额外动态更稳定，也能在浅色背景上交代玻璃曲率。
-    const highlightGeo = new ShapeGeometry(makeEyeShape(0.055, 0.34));
-    const highlightMat = new MeshBasicMaterial({
-      color: initialPalette.highlight,
-      transparent: true,
-      opacity: initialPalette.highlightOpacity,
-      depthWrite: false,
-    });
-    const highlight = new Mesh(highlightGeo, highlightMat);
-    highlight.position.set(-0.42, 0.34, 0.94);
-    highlight.rotation.z = -0.38;
-    highlight.renderOrder = 3;
-    head.add(highlight);
 
     const shadowShape = new Shape();
     shadowShape.absellipse(0, 0, 0.58, 0.11, 0, Math.PI * 2, false, 0);
@@ -459,8 +420,6 @@ export default function Mascot({
         sphereMat.clearcoatRoughness = palette.clearcoatRoughness;
         sphereMat.needsUpdate = true;
         eyeMat.color.setHex(palette.eyes);
-        innerCoreMat.color.setHex(palette.innerCore);
-        highlightMat.color.setHex(palette.highlight);
         shadowMat.color.setHex(palette.shadow);
         rimLight.intensity = palette.rimLightIntensity;
       }
@@ -602,8 +561,6 @@ export default function Mascot({
       head.rotation.y = headYaw + spinAngle;
       sphereMat.opacity = activePalette.opacity * (1 - fade);
       eyeMat.opacity = 1 - fade;
-      innerCoreMat.opacity = activePalette.innerOpacity * (1 - fade);
-      highlightMat.opacity = activePalette.highlightOpacity * (1 - fade);
       shadowMat.opacity = activePalette.shadowOpacity * (1 - fade);
       head.visible = fade < 0.995;
       head.scale.setScalar(hoverScale * (1 - fade * 0.5));
@@ -647,10 +604,6 @@ export default function Mascot({
       window.removeEventListener('blur', handleWindowLeave);
       sphere.geometry.dispose();
       sphereMat.dispose();
-      innerCoreGeo.dispose();
-      innerCoreMat.dispose();
-      highlightGeo.dispose();
-      highlightMat.dispose();
       shadowGeo.dispose();
       shadowMat.dispose();
       eyeGeo.dispose();
