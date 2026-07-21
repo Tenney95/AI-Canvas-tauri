@@ -49,6 +49,7 @@ import {
   fingerprintToolInput,
 } from './agentCheckpointService';
 import { emitAgentLifecycleEvent } from './agentLifecycle';
+import { clearProviderDocsTask } from './providerDocsGrantService';
 
 export type AgentExecutionOutcome =
   | 'completed'
@@ -1252,5 +1253,6 @@ export async function runAgentLoop({
     throw new DOMException('Aborted', 'AbortError');
   } finally {
     closeAgentInterjectionBuffer(taskId);
+    clearProviderDocsTask(taskId);
   }
 }
