@@ -12,6 +12,7 @@
 @import './styles/nodes-animation.css';
 @import './styles/nodes-panorama.css';
 @import './styles/nodes-storyboard.css';
+@import './styles/nodes-director.css';
 @import './styles/nodes-group.css';
 @import './styles/prompt.css';
 @import './styles/preset-manager.css';

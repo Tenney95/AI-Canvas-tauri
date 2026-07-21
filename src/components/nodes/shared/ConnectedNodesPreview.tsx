@@ -77,10 +77,15 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
       .filter((n) => n.id !== nodeId && n.type !== 'group' && sourceIds.has(n.id))
       .map((n) => {
         const data = n.data as BaseNodeData;
-        const outputType = data.imageUrl
+        const isDirector = data.type === 'ai-director' || n.type === 'ai-director';
+        const directorThumb = isDirector
+          ? ((data.imageUrl as string | undefined)
+            || (Array.isArray(data.directorCaptureUrls) ? (data.directorCaptureUrls as string[])[0] : undefined))
+          : undefined;
+        const outputType = (data.imageUrl || directorThumb)
           ? 'image' : data.videoUrl ? 'video' : data.audioUrl ? 'audio' : 'text';
         const thumbnailUrl = outputType === 'image'
-          ? (localAssetUrl(data.filePath as string | undefined) || (data.thumbnailUrl as string) || data.imageUrl || undefined)
+          ? (localAssetUrl(data.filePath as string | undefined) || (data.thumbnailUrl as string) || data.imageUrl || directorThumb || undefined)
           : outputType === 'video'
           ? ((data.thumbnailUrl as string) || undefined) : undefined;
         const textSnippet = outputType === 'text' && data.output

@@ -15,6 +15,43 @@ import { pollTask } from '../pollTask';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 import { normalizeFrames8n1 } from './modelProtocol';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
+import { collectDirectorImageUrls } from '../directorDeskService';
+import type { BaseNodeData } from '../../types';
+
+/** 收集连入当前视频节点的参考图（含 3D 导演台截图） */
+function collectConnectedReferenceImages(nodeId: string | undefined): string[] {
+  if (!nodeId) return [];
+  const { nodes, edges } = useAppStore.getState();
+  const sourceIds = edges.filter((e) => e.target === nodeId).map((e) => e.source);
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  const push = (url: unknown) => {
+    if (typeof url !== 'string') return;
+    const u = url.trim();
+    if (!u || seen.has(u)) return;
+    seen.add(u);
+    urls.push(u);
+  };
+  for (const sid of sourceIds) {
+    const node = nodes.find((n) => n.id === sid);
+    if (!node) continue;
+    const data = node.data as BaseNodeData;
+    const type = (data.type as string) || node.type || '';
+    if (type === 'ai-director') {
+      for (const u of collectDirectorImageUrls(data)) push(u);
+      continue;
+    }
+    if (
+      type === 'ai-image'
+      || type === 'source-image'
+      || type === 'ai-panorama'
+      || type === 'ai-storyboard'
+    ) {
+      push(data.imageUrl || data.thumbnailUrl);
+    }
+  }
+  return urls;
+}
 
 export async function generateVideo(params: AIVideoGenParams): Promise<{ url: string }> {
   const { prompt: rawPrompt, model, provider } = params;
@@ -30,11 +67,16 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
   // 即梦视频：无参考图 → text2video；有参考图 → image2video
   if (provider === 'dreamina') {
     const { prompt: dreaminaPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
+    const connected = collectConnectedReferenceImages(params.nodeId);
+    const merged = [...imageUrls];
+    for (const u of connected) {
+      if (!merged.includes(u)) merged.push(u);
+    }
     if (!dreaminaPrompt.trim()) throw new Error('提示词不能为空');
     return generateDreaminaVideo({
       prompt: dreaminaPrompt,
       model,
-      imageUrls,
+      imageUrls: merged,
       nodeId: params.nodeId,
       ratio: params.seedanceRatio,
       duration: params.seedanceDuration,
@@ -57,7 +99,12 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
     const modelName = extractModelName(model, provider);
     if (isApimartSeedanceModel(modelName)) {
       const { prompt: resolvedPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
-      if (!resolvedPrompt.trim() && imageUrls.length === 0) {
+      const connected = collectConnectedReferenceImages(params.nodeId);
+      const merged = [...imageUrls];
+      for (const u of connected) {
+        if (!merged.includes(u)) merged.push(u);
+      }
+      if (!resolvedPrompt.trim() && merged.length === 0) {
         throw new Error('提示词不能为空');
       }
       return generateApimartVideo(apiKey, baseUrl, modelName, resolvedPrompt, params.nodeId, {
@@ -65,7 +112,7 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
         ratio: params.seedanceRatio,
         duration: params.seedanceDuration,
         generateAudio: params.generateAudio,
-        imageUrls,
+        imageUrls: merged,
       });
     }
     return generateApimartVideo(apiKey, baseUrl, modelName, prompt, params.nodeId);

@@ -65,6 +65,10 @@ const CONNECTION_MENU_MAP: Record<string, ConnectionMenuOption[]> = {
     { label: '生成动画', type: 'ai-animation' },
     { label: '生成360全景图', type: 'ai-panorama' },
   ],
+  'ai-director': [
+    { label: '生成图像', type: 'ai-image' },
+    { label: '生成视频', type: 'ai-video' },
+  ],
   'ai-video': [],
   'ai-audio': [
     { label: '生成文本', type: 'ai-text' },
@@ -146,8 +150,21 @@ export function useConnectionDropMenu(smoothLine: boolean) {
       const srcRight = srcX + srcWidth;
 
       const isAnimation = option.type === 'ai-animation';
-      const newWidth = isAnimation ? 320 : option.type === 'ai-audio' ? 260 : option.type === 'ai-panorama' ? 300 : 280;
-      const newHeight = isAnimation ? 358 : option.type === 'ai-audio' ? 140 : option.type === 'ai-image' ? 158 : option.type === 'ai-panorama' ? 200 : option.type === 'ai-markdown' ? 200 : 160;
+      const isDirector = option.type === 'ai-director';
+      const newWidth = isAnimation || isDirector ? 320 : option.type === 'ai-audio' ? 260 : option.type === 'ai-panorama' ? 300 : 280;
+      const newHeight = isDirector
+        ? 240
+        : isAnimation
+          ? 358
+          : option.type === 'ai-audio'
+            ? 140
+            : option.type === 'ai-image'
+              ? 158
+              : option.type === 'ai-panorama'
+                ? 200
+                : option.type === 'ai-markdown'
+                  ? 200
+                  : 160;
 
       // Determine handle direction based on position relative to source
       const releasedRight = flowPos.x >= srcRight + 10;
@@ -207,7 +224,12 @@ export function useConnectionDropMenu(smoothLine: boolean) {
             aspectRatio: '1:1',
             imageSize: '2K',
           } : {}),
-          ...(defaultModel ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
+          ...(isDirector ? {
+            role: 'source' as const,
+            directorStatus: 'idle' as const,
+            directorCaptureUrls: [] as string[],
+          } : {}),
+          ...(defaultModel && !isDirector ? { model: defaultModel.model, provider: defaultModel.provider } : {}),
         },
       };
       const edge: Edge = {

@@ -14,6 +14,7 @@ export type NodeType =
   | 'ai-panorama'
   | 'ai-markdown'
   | 'ai-storyboard'
+  | 'ai-director'
   | 'source-image'
   | 'source-video'
   | 'source-audio'
@@ -121,6 +122,11 @@ export interface BaseNodeData {
   storyboardColPositions?: number[];    // 自定义竖线位置百分比（有序，不含 0/100），非均匀裁切时使用
   storyboardExtracted?: boolean[];      // 各格是否已被拖出提取（行优先），已提取的格显示空占位
   storyboardOverrides?: (StoryboardCellOverride | null)[]; // 各格被拖入的图片（覆盖源图裁片显示）
+  // ── 3D 导演台（ai-director）──
+  directorInstanceId?: string;           // 导演台 localStorage 隔离实例 ID
+  directorStatus?: 'idle' | 'open' | 'ready';
+  directorCaptureUrls?: string[];        // 从导演台同步的截图 URL 列表
+  directorCaptureFilePaths?: string[];   // 对应本地路径
   [key: string]: unknown;
 }
 
@@ -447,6 +453,7 @@ export const NODE_TYPE_CONFIG: Record<string, NodeTypeVisualConfig> = {
   'ai-panorama': { icon: 'mdi:panorama',                  color: 'text-cyan-400',    bg: 'bg-cyan-500/15',    label: '生成360全景' },
   'ai-markdown': { icon: 'mdi:language-markdown-outline', color: 'text-purple-400',  bg: 'bg-purple-500/15',  label: 'Markdown' },
   'ai-storyboard': { icon: 'mdi:grid',                    color: 'text-pink-400',    bg: 'bg-pink-500/15',    label: '宫格分镜' },
+  'ai-director':   { icon: 'mdi:video-3d',                color: 'text-violet-400',  bg: 'bg-violet-500/15',  label: '3D 导演台' },
 };
 
 /** 获取节点类型视觉配置，未匹配时返回灰色兜底 */

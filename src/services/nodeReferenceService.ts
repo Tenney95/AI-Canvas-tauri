@@ -41,9 +41,13 @@ export function resolveNodeReferences(value: string): string {
     // 文本节点的输出在 data.output 中
     const output = node.data.output as string | undefined;
     if (typeof output === 'string' && output.trim()) return output;
-    // 图片节点的输出在 data.imageUrl 中
+    // 图片 / 导演台节点的输出在 data.imageUrl 或 directorCaptureUrls 中
     const imageUrl = node.data.imageUrl as string | undefined;
     if (typeof imageUrl === 'string' && imageUrl.trim()) return imageUrl;
+    if (Array.isArray(node.data.directorCaptureUrls)) {
+      const first = (node.data.directorCaptureUrls as string[]).find((u) => typeof u === 'string' && u.trim());
+      if (first) return first;
+    }
     // 视频 / 音频同理
     const videoUrl = node.data.videoUrl as string | undefined;
     if (typeof videoUrl === 'string' && videoUrl.trim()) return videoUrl;
