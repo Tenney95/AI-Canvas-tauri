@@ -3,7 +3,7 @@
  * Tauri 环境下启用自定义窗口装饰和透明圆角窗口
  */
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import Header from './components/Header';
 import Titlebar from './components/Titlebar';
 import SessionProjectTabs from './components/SessionProjectTabs';
@@ -24,6 +24,7 @@ import { checkForUpdate, downloadAndInstallUpdate, type UpdateInfo } from './ser
 import { DOWNLOAD_MASCOT_EVENT } from './components/shared/ModelDownloadDialog';
 import UpdateBubble from './components/shared/mascot/UpdateBubble';
 import LazyLoadBoundary, { LazyLoadFallback } from './components/shared/LazyLoadBoundary';
+import { useMascotStatus } from './hooks/useMascotStatus';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -59,6 +60,7 @@ function useFeatureMount(active: boolean) {
 }
 
 export default function App() {
+  const reduceMotion = useReducedMotion();
   useKeyboardShortcuts();
   useAutoSave();
   useReferencedImageWatcher();
@@ -156,6 +158,29 @@ export default function App() {
   const handleDismissUpdate = () => {
     setUpdateBubbleVisible(false);
   };
+  const handleMascotActivate = async () => {
+    const store = useAppStore.getState();
+    if (!store.chatPanelDetached) {
+      store.openChat();
+      return;
+    }
+
+    if (isTauri) {
+      try {
+        const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+        const chatWindow = await WebviewWindow.getByLabel('chat-assistant');
+        if (chatWindow) {
+          await chatWindow.show();
+          await chatWindow.unminimize();
+          await chatWindow.setFocus();
+          return;
+        }
+      } catch { /* fall back to the embedded panel */ }
+    }
+
+    store.setChatPanelDetached(false);
+    store.openChat();
+  };
 
   // 同步主题到 document.documentElement，供 CSS [data-theme] 选择器生效
   // 米白色背景时自动切换为 light，其余背景使用用户手动设置的主题
@@ -164,6 +189,7 @@ export default function App() {
   const mascotVisible = useAppStore((s) => s.config.mascotVisible);
   // 任意节点处于生成中 → 吉祥物切换为 LOADING 形态
   const mascotLoading = useAppStore(selectMascotLoading);
+  const mascotStatus = useMascotStatus();
   const effectiveTheme = canvasBackground === 'off-white' ? 'light' : configTheme;
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', effectiveTheme);
@@ -272,29 +298,57 @@ export default function App() {
         <LazyLoadBoundary label="吉祥物">
           <motion.div
             className="fixed bottom-40 right-5 z-50 h-[100px] w-[100px] pointer-events-auto"
-            animate={mascotShrink ? { scale: 0, opacity: 0 } : { scale: 1, opacity: 1 }}
-            transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+            animate={mascotShrink
+              ? { transform: reduceMotion ? 'scale(1)' : 'scale(0.94)', opacity: 0 }
+              : { transform: 'scale(1)', opacity: 1 }}
+            transition={{ duration: reduceMotion ? 0.12 : 0.18, ease: [0.23, 1, 0.32, 1] }}
           >
-            <Suspense
-              fallback={(
-                <div
-                  className="flex h-full w-full items-center justify-center"
-                  role="status"
-                  aria-label="正在加载吉祥物"
-                >
-                  <span
-                    className="h-5 w-5 animate-spin rounded-full border-2 border-canvas-border border-t-canvas-text-secondary"
-                    aria-hidden="true"
-                  />
-                </div>
-              )}
+            <button
+              type="button"
+              className="h-full w-full rounded-full border-0 bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+              onClick={() => { void handleMascotActivate(); }}
+              disabled={mascotShrink}
+              aria-label={mascotStatus === 'thinking'
+                ? '打开画布助手，正在思考'
+                : mascotStatus === 'success'
+                  ? '打开画布助手，任务已完成'
+                  : mascotStatus === 'error'
+                    ? '打开画布助手，任务失败'
+                    : '打开画布助手'}
+              data-tooltip={mascotStatus === 'thinking'
+                ? '画布助手：思考中'
+                : mascotStatus === 'success'
+                  ? '画布助手：已完成'
+                  : mascotStatus === 'error'
+                    ? '画布助手：任务失败'
+                    : '打开画布助手'}
             >
-              {updating ? (
-                <PacmanMascot />
-              ) : (
-                <Mascot loading={mascotLoading} theme={effectiveTheme} />
-              )}
-            </Suspense>
+              <Suspense
+                fallback={(
+                  <div
+                    className="flex h-full w-full items-center justify-center"
+                    role="status"
+                    aria-label="正在加载吉祥物"
+                  >
+                    <span
+                      className="h-5 w-5 animate-spin rounded-full border-2 border-canvas-border border-t-canvas-text-secondary motion-reduce:animate-none"
+                      aria-hidden="true"
+                    />
+                  </div>
+                )}
+              >
+                {updating ? (
+                  <PacmanMascot />
+                ) : (
+                  <Mascot
+                    loading={mascotLoading}
+                    status={mascotStatus}
+                    theme={effectiveTheme}
+                    reduceMotion={Boolean(reduceMotion)}
+                  />
+                )}
+              </Suspense>
+            </button>
           </motion.div>
         </LazyLoadBoundary>
       )}
