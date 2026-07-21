@@ -36,6 +36,12 @@ import {
   resolveAssistantContextSpec,
   ContextBudgetError,
 } from './contextManager';
+import {
+  closeAgentInterjectionBuffer,
+  drainAgentInterjections,
+  openAgentInterjectionBuffer,
+} from './agentInterjection';
+import { cancelConversationAgentExecutions } from './agentScheduler';
 
 export type AgentExecutionOutcome =
   | 'completed'
@@ -183,6 +189,7 @@ export function stopAgentTask(taskId: string): AgentTask {
  * 删除会话时调用，避免后台任务继续在已删除会话上产生副作用。
  */
 export function stopConversationAgentTasks(conversationId: string): void {
+  cancelConversationAgentExecutions(conversationId);
   const tasks = useAppStore.getState().agentTasks.filter(
     (task) => task.conversationId === conversationId
       && !AGENT_TERMINAL_STATUSES.has(task.status),
@@ -649,7 +656,9 @@ export async function runAgentLoop({
   let fullText = '';
   let totalToolResultChars = 0;
 
-  while (!signal.aborted) {
+  openAgentInterjectionBuffer(taskId);
+  try {
+    while (!signal.aborted) {
     const task = getTask(taskId);
     const currentMode = useAppStore.getState().conversations.find(
       (conversation) => conversation.id === task.conversationId,
@@ -659,6 +668,16 @@ export async function runAgentLoop({
       mode: currentMode,
       baseRevision: useAppStore.getState().getCurrentRevision(),
     };
+    const interjections = drainAgentInterjections(taskId);
+    for (const interjection of interjections) {
+      messages.push({
+        role: 'user',
+        content: [
+          '用户在任务执行期间补充了以下要求。请结合当前进度处理，不要重复已经成功的写操作：',
+          interjection.text,
+        ].join('\n'),
+      });
+    }
     if (task.modelRounds >= task.budget.maxModelRounds) {
       transitionAgentTask(taskId, 'paused', { pausedReason: 'model_round_budget_exhausted' });
       callbacks.onError?.('已达到模型规划轮次上限，任务已暂停');
@@ -987,7 +1006,10 @@ export async function runAgentLoop({
         }),
       });
     }
-  }
+    }
 
-  throw new DOMException('Aborted', 'AbortError');
+    throw new DOMException('Aborted', 'AbortError');
+  } finally {
+    closeAgentInterjectionBuffer(taskId);
+  }
 }

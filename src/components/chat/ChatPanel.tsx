@@ -50,9 +50,16 @@ import {
   stopAgentTask,
   skipAgentStep,
   requestAgentReplan,
+  prepareAgentTaskResume,
   validateTaskResumable,
   type AgentResumeValidation,
 } from '../../services/chat/agentRuntime';
+import {
+  cancelScheduledAgentExecution,
+  getActiveConversationAgentTaskId,
+  scheduleConversationAgentExecution,
+} from '../../services/chat/agentScheduler';
+import { enqueueAgentInterjection } from '../../services/chat/agentInterjection';
 import { getAvailableAgentTools } from '../../services/chat/toolRegistry';
 import { ensureAgentToolsRegistered } from '../../services/chat/tools';
 import { estimateConversationUsage } from '../../services/chat/contextManager';
@@ -304,6 +311,10 @@ export default function ChatPanel({
     (conversation) => conversation.id === effectiveActiveConversationId,
   );
   const effectiveAgentMode = effectiveActiveConversation?.agentMode ?? 'collaborative';
+  const hasActiveConversationTask = effectiveAgentTasks.some(
+    (task) => task.conversationId === effectiveActiveConversationId
+      && ['planning', 'running', 'waiting_tool', 'waiting_approval'].includes(task.status),
+  );
 
   const [inputValue, setInputValue] = useState('');
   const conversationDraftsRef = useRef(new Map<string, string>());
@@ -487,6 +498,7 @@ export default function ChatPanel({
     mediaModelAvailability: effectiveMediaModelAvailability,
     onPause: (taskId: string) => {
       if (detached) { void emitAction({ type: 'pause_agent_task', taskId }); return; }
+      cancelScheduledAgentExecution(taskId);
       pauseAgentTask(taskId);
       showToast('已暂停任务', 'info');
     },
@@ -497,6 +509,7 @@ export default function ChatPanel({
     },
     onStop: (taskId: string) => {
       if (detached) { void emitAction({ type: 'stop_agent_task', taskId }); return; }
+      cancelScheduledAgentExecution(taskId);
       stopAgentTask(taskId);
       showToast('已停止任务', 'info');
     },
@@ -560,7 +573,7 @@ export default function ChatPanel({
   }, [detached, effectiveActiveConversationId]);
 
   // ── 发送消息 ──
-  const sendMessageText = useCallback((content: string) => {
+  const sendMessageText = useCallback((content: string, dispatchMode: 'queue' | 'interject' = 'queue') => {
     const text = content.trim();
     if (!text || !effectiveActiveConversationId) return;
 
@@ -569,8 +582,18 @@ export default function ChatPanel({
         type: 'send_message',
         content: text,
         conversationId: effectiveActiveConversationId,
+        dispatchMode,
       });
       updateInputDraft('');
+      return;
+    }
+
+    if (
+      dispatchMode === 'interject'
+      && tryInterjectConversationMessage(effectiveActiveConversationId, text)
+    ) {
+      updateInputDraft('');
+      scrollToBottom();
       return;
     }
 
@@ -623,6 +646,10 @@ export default function ChatPanel({
 
   const handleSend = useCallback(() => {
     sendMessageText(inputValue);
+  }, [inputValue, sendMessageText]);
+
+  const handleInterject = useCallback(() => {
+    sendMessageText(inputValue, 'interject');
   }, [inputValue, sendMessageText]);
 
   const handleEditMessage = useCallback((content: string) => {
@@ -775,6 +802,12 @@ export default function ChatPanel({
               if (action.conversationId !== store.activeConversationId) {
                 store.setActiveConversation(action.conversationId);
               }
+              if (
+                action.dispatchMode === 'interject'
+                && tryInterjectConversationMessage(action.conversationId, action.content)
+              ) {
+                break;
+              }
               const userMsg: ChatMessage = {
                 id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
                 conversationId: action.conversationId,
@@ -882,6 +915,7 @@ export default function ChatPanel({
               break;
 
             case 'pause_agent_task':
+              cancelScheduledAgentExecution(action.taskId);
               pauseAgentTask(action.taskId);
               break;
 
@@ -892,6 +926,7 @@ export default function ChatPanel({
             }
 
             case 'stop_agent_task':
+              cancelScheduledAgentExecution(action.taskId);
               stopAgentTask(action.taskId);
               break;
 
@@ -1126,6 +1161,8 @@ export default function ChatPanel({
                       inputValue={inputValue}
                       onInputChange={updateInputDraft}
                       onSend={handleSend}
+                      hasActiveTask={hasActiveConversationTask}
+                      onInterject={handleInterject}
                       localFileGrants={effectiveLocalFileGrants}
                       onAuthorizeLocalFiles={handleAuthorizeLocalFiles}
                       onRevokeLocalFile={handleRevokeLocalFile}
@@ -1180,7 +1217,38 @@ function startAgentMessageExecution({
     goal: text,
   });
   store.updateMessage(assistantMessageId, { agentTaskId: task.id });
-  driveAgentTask(task.id, assistantMessageId, onProgress);
+  scheduleAgentTaskExecution(task.id, assistantMessageId, onProgress);
+}
+
+function scheduleAgentTaskExecution(
+  taskId: string,
+  assistantMessageId: string,
+  onProgress?: () => void,
+  resume = false,
+): void {
+  const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
+  if (!task) return;
+  const scheduled = scheduleConversationAgentExecution({
+    taskId,
+    conversationId: task.conversationId,
+    onStart: () => {
+      const store = useAppStore.getState();
+      if (resume) prepareAgentTaskResume(taskId);
+      const message = store.messages.find((item) => item.id === assistantMessageId);
+      if (message && message.status === 'queued') {
+        store.updateMessage(assistantMessageId, {
+          status: resolveAssistantModel() ? 'streaming' : 'parsing',
+        });
+      }
+    },
+    run: () => driveAgentTask(taskId, assistantMessageId, onProgress),
+    onError: (error) => {
+      console.error('[AgentScheduler] failed to execute chat task:', error);
+    },
+  });
+  if (scheduled.state === 'queued') {
+    useAppStore.getState().updateMessage(assistantMessageId, { status: 'queued' });
+  }
 }
 
 /**
@@ -1210,7 +1278,7 @@ function resumeAgentTaskExecution(taskId: string, onProgress?: () => void): Agen
     nextBudget.maxToolCalls = task.toolCallCount + DEFAULT_AGENT_TASK_BUDGET.maxToolCalls;
   }
   store.updateAgentTask(taskId, { budget: nextBudget });
-  driveAgentTask(taskId, message.id, onProgress);
+  scheduleAgentTaskExecution(taskId, message.id, onProgress, true);
   return { ok: true };
 }
 
@@ -1222,15 +1290,15 @@ function driveAgentTask(
   taskId: string,
   assistantMessageId: string,
   onProgress?: () => void,
-): void {
+): Promise<void> {
   const store = useAppStore.getState();
   ensureAgentToolsRegistered();
   const task = store.agentTasks.find((item) => item.id === taskId);
-  if (!task) return;
+  if (!task) return Promise.resolve();
   const { projectId, conversationId, userMessageId, goal: text } = task;
   const mode = store.conversations.find((c) => c.id === conversationId)?.agentMode ?? task.mode;
 
-  void runAgentTask(taskId, async (signal) => {
+  return runAgentTask(taskId, async (signal) => {
     let failed = false;
 
     if (resolveAssistantModel()) {
@@ -1327,9 +1395,24 @@ function driveAgentTask(
       });
       return 'failed';
     }
-  }).catch((error) => {
+  }).then(() => undefined).catch((error) => {
     console.error('[AgentRuntime] failed to execute chat task:', error);
   });
+}
+
+function tryInterjectConversationMessage(conversationId: string, content: string): boolean {
+  const taskId = getActiveConversationAgentTaskId(conversationId);
+  if (!taskId || !enqueueAgentInterjection(taskId, content)) return false;
+  useAppStore.getState().addMessage({
+    id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    conversationId,
+    role: 'user',
+    content,
+    timestamp: Date.now(),
+    status: 'done',
+    agentTaskId: taskId,
+  });
+  return true;
 }
 
 async function triggerMediaGeneration(

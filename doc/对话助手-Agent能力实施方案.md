@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：全部阶段（P3-0 ~ P3-E2）已完成
+> 文档状态：P3 阶段已完成；P4 Agent 运行时演进按方案 A 实施中
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -50,6 +50,10 @@
 | P3-D2 | `[x]` | 用户确认的项目记忆 | 2026-07-16 | 2026-07-16 |
 | P3-E1 | `[x]` | Agent 任务时间线和后台控制 | 2026-07-16 | 2026-07-16 |
 | P3-E2 | `[x]` | 重启恢复、安全加固和端到端验收 | 2026-07-16 | 2026-07-16 |
+| P4-A | `[x]` | 同会话消息队列、运行中插话和串行调度 | 2026-07-21 | 2026-07-21 |
+| P4-B | `[~]` | 脱敏事件日志、安全恢复、任务回退、指标与任务中心 | 2026-07-21 |  |
+| P4-C | `[ ]` | 相关性记忆、可靠压缩、Skill Manifest 和只规划模式 |  |  |
+| P4-D | `[ ]` | 内部生命周期事件和受限只读专家 Agent |  |  |
 
 ## 3. 已确认的产品决策
 
@@ -919,6 +923,50 @@ type PolicyDecision =
 - 实际检查：`npm run typecheck`、改动 TypeScript 文件定向 ESLint、`npm run build`、`git diff --check` 和 UTF-8 严格解码均通过；全量 `npm run lint` 被仓库当前 ESLint 10/scope manager 兼容错误 `scopeManager.addGlobals is not a function` 中断
 - 交互限制：真实文本/付费媒体模型下的多轮步骤推进和逐次审批需要在 Tauri 配置模型与 Key 后手测
 
+### P4-A：同会话消息调度与运行中插话
+
+**状态：** `[x]`
+
+### 目标
+
+保证同一会话最多只有一个执行中的主 Agent 任务。活跃任务期间的新消息默认进入 FIFO，用户可显式选择在下一安全边界调整当前任务；不同会话仍可并行后台运行。
+
+### 实际文件
+
+- 新增：`src/services/chat/agentScheduler.ts`
+- 新增：`src/services/chat/agentInterjection.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/chat/chatWindowService.ts`
+- 修改：`src/components/chat/ChatPanel.tsx`
+- 修改：`src/components/chat/ChatInput.tsx`
+- 新增：`tests/services/chat/agentScheduler.test.ts`
+- 新增：`tests/services/chat/agentInterjection.test.ts`
+- 新增：`doc/plans/2026-07-21-agent-runtime-evolution-design.md`
+- 新增：`doc/plans/2026-07-21-agent-runtime-evolution.md`
+
+### 实施结果
+
+- [x] 调度器按 `conversationId` 隔离队列；同会话串行，不同会话并行。
+- [x] 排队任务保留 `AgentTask.queued`，助手消息显示 `queued`，不新增 IndexedDB store。
+- [x] 暂停、停止和删除会话会清理未启动的运行时队列。
+- [x] 恢复和重新规划只在调度器真正启动任务时切换为 `queued`，避免旧控制器覆盖新状态。
+- [x] 插话缓冲只在活跃 Agent 循环中开放，按 FIFO 在模型轮次开始前消费。
+- [x] 写工具执行期间不消费插话；本地降级管线不支持插话时自动回退为普通排队。
+- [x] 主窗口与独立窗口使用同一 `dispatchMode` 协议。
+- [x] 输入区在有活跃任务时提供“排队发送”和“调整当前任务”两个可访问图标操作。
+
+### 回滚
+
+移除 `agentScheduler` / `agentInterjection` 装配并恢复 `ChatPanel` 直接调用 `driveAgentTask()` 即可。未修改数据库版本和持久化记录；已有 queued/paused 任务继续按 P3-E2 恢复规则读取。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- 定向测试：`npm run test -- tests/services/chat/agentScheduler.test.ts tests/services/chat/agentInterjection.test.ts tests/services/chat/agentApproval.test.ts`，3 个文件、8 个测试通过
+- 类型检查：`npm run typecheck`、`npm run test:typecheck` 通过
+- Lint：8 个阶段改动文件定向 ESLint 通过
+- 差异检查：`git diff --check` 通过
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -927,11 +975,13 @@ type PolicyDecision =
 
 - `npm run typecheck`
 - `npm run lint`
+- `npm run test:typecheck`
+- `npm run test`
 - `npm run check`
 - `npm run build`
 - `cargo check`（在 `src-tauri/` 运行）
 
-当前未发现已配置的前端单元测试脚本。若要引入 Vitest 或其他测试依赖，必须单独说明新增原因、替代方案和体积影响，并等待确认，不能在阶段实施中静默新增。
+当前仓库已配置 Vitest、`fake-indexeddb`、`tests/setup.ts` 和独立 `tsconfig.test.json`。Agent 演进阶段优先增加纯服务和 Store 定向测试，不新增测试依赖。
 
 ### 9.2 每阶段最低检查
 
@@ -1026,3 +1076,4 @@ type PolicyDecision =
 | 2026-07-16 | P3-C1 移除 | 按用户决定整体移除联网搜索/网页读取/来源引用：删除 `assistant_web.rs`、`webSearchService`、`webPageService`、`webTools`、`SourceList`，退掉 `web_search`/`web_read_page` 工具、Tavily 设置与连接测试、消息 `sources` 与 `WebSource` 类型；保留通用 `proxy_fetch`。typecheck / 定向 ESLint / `cargo check --lib` / 生产构建均通过。 |
 | 2026-07-19 | P3-F1 | 新增 Agent 快捷指令查询、创建、修改和分步调用工具；定义写入与画布操作沿用既有审批，媒体步骤逐次确认，运行节点校验 task 归属、顺序和 revision。 |
 | 2026-07-19 | 平台补充 | 通用模型增加声明式执行协议：文本节点可配置端点、鉴权、请求/响应和同步/异步轮询；对话助手与 Agent 仅接受显式 `openai-sse` 兼容协议，未扩大工具、确认或付费媒体权限。 |
+| 2026-07-21 | P4-A | 完成同会话 FIFO、跨会话并行、排队取消、安全边界插话、恢复延迟接管和独立窗口 `dispatchMode` 同步。 |

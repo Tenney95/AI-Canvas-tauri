@@ -54,7 +54,12 @@ export interface ChatStateSnapshot {
 // ============================================
 
 export type ChatAction =
-  | { type: 'send_message'; content: string; conversationId: string }
+  | {
+      type: 'send_message';
+      content: string;
+      conversationId: string;
+      dispatchMode?: 'queue' | 'interject';
+    }
   | { type: 'switch_conversation'; conversationId: string }
   | { type: 'create_conversation'; projectId: string; title?: string }
   | { type: 'rename_conversation'; conversationId: string; title: string }
