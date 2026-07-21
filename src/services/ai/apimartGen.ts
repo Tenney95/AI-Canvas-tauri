@@ -14,10 +14,31 @@ import {
 /* ── APIMart 任务轮询共享类型 ── */
 export interface ApimartTaskResult<TResult = Record<string, unknown>> {
   code: number;
-  data?: { status: string; progress?: number; result?: TResult };
+  data?: {
+    status: string;
+    progress?: number;
+    result?: TResult;
+    error?: ApimartTaskError;
+  };
   status?: string;
   progress?: number;
   result?: TResult;
+  error?: ApimartTaskError;
+}
+
+type ApimartTaskError = string | {
+  code?: string;
+  message?: string;
+  type?: string;
+};
+
+function getApimartFailureMessage(
+  task: ApimartTaskResult,
+  label: string,
+): string | null {
+  if (task.status !== 'failed' && task.status !== 'error') return null;
+  const detail = typeof task.error === 'string' ? task.error : task.error?.message;
+  return detail?.trim() ? `${label}: ${detail}` : `${label}: ${task.status}`;
 }
 /**
  * 通用异步任务执行器 — 提交 + 轮询，兼容支持 task_id 模式的 OpenAI 兼容接口
@@ -231,16 +252,16 @@ export async function generateApimartImagesBatch(
       }
       return null;
     },
+    isFailed: (task) => getApimartFailureMessage(task, 'APIMart 图片生成失败'),
     interval: 2000,
     signal,
   });
-  pollPromise.finally(() => {
+  return pollPromise.finally(() => {
     if (nodeId) {
       cleanupNodePolling(nodeId);
       removePendingTask(nodeId);
     }
   });
-  return pollPromise;
 }
 /** 获取单次 APIMart 轮询数据并标准化为 task 对象 */
 export async function fetchApimartTask<TResult = Record<string, unknown>>(
@@ -264,6 +285,7 @@ export async function fetchApimartTask<TResult = Record<string, unknown>>(
       status: (d.status ?? raw.status) as string | undefined,
       progress: (d.progress ?? raw.progress) as number | undefined,
       result: d.result as TResult | undefined,
+      error: (d.error ?? raw.error) as ApimartTaskError | undefined,
     };
   }
   return raw as unknown as ApimartTaskResult<TResult>;
