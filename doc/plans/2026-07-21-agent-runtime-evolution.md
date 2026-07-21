@@ -156,4 +156,3 @@
 4. 运行 `npx vite build --outDir <系统临时目录>`、`git diff --check` 和 UTF-8 严格解码检查。
 5. 检查 `git status --short` 无意外变更。
 6. 按阶段使用中文 Conventional Commit 提交。
-

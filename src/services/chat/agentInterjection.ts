@@ -41,4 +41,3 @@ export function hasAgentInterjectionBuffer(taskId: string): boolean {
 export function resetAgentInterjectionsForTests(): void {
   activeBuffers.clear();
 }
-

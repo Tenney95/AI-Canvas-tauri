@@ -85,4 +85,3 @@ flowchart LR
 - 记忆排序与输入主题相关，压缩摘要锚点不丢失。
 - `plan` 模式无法获得写工具；Skill allowlist 不能扩大权限。
 - 专家任务无工具、无嵌套、无画布副作用，结果只作为父任务 Observation。
-

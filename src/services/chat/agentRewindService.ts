@@ -31,4 +31,3 @@ export async function rewindAgentTaskCanvas(taskId: string): Promise<AgentRewind
   });
   return validation;
 }
-

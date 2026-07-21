@@ -28,4 +28,3 @@ describe('agent interjection buffer', () => {
     expect(drainAgentInterjections('task-1')).toEqual([]);
   });
 });
-

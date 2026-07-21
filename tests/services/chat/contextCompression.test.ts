@@ -26,4 +26,3 @@ describe('conversation context compression validation', () => {
     expect(result.missingAnchors).toEqual(['#8']);
   });
 });
-

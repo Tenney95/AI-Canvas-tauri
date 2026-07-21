@@ -35,4 +35,3 @@ describe('project memory retrieval', () => {
     expect(rankProjectMemories([disabled, other, enabled], 'project-1', '目标')).toEqual([enabled]);
   });
 });
-
