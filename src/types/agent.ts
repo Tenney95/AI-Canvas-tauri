@@ -46,7 +46,8 @@ export type AgentApprovalKind =
   | 'file_write'
   | 'permanent_delete'
   | 'media_generation'
-  | 'memory_write';
+  | 'memory_write'
+  | 'config_write';
 
 export type AgentApprovalStatus =
   | 'pending'

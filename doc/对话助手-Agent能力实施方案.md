@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3、P4 阶段已完成；P5-A 厂商文档受限读取已完成，P5-B/P5-C 待实施
+> 文档状态：P3、P4 阶段已完成；P5-A/P5-B 已完成，P5-C 待实施
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -55,7 +55,7 @@
 | P4-C | `[x]` | 相关性记忆、可靠压缩、Skill Manifest 和只规划模式 | 2026-07-21 | 2026-07-21 |
 | P4-D | `[x]` | 内部生命周期事件和受限只读专家 Agent | 2026-07-21 | 2026-07-21 |
 | P5-A | `[x]` | 用户授权的厂商文档读取与同站链接导航 | 2026-07-21 | 2026-07-21 |
-| P5-B | `[ ]` | 厂商配置草稿与确认写入 |  |  |
+| P5-B | `[x]` | 厂商配置草稿与确认写入 | 2026-07-21 | 2026-07-21 |
 | P5-C | `[ ]` | 端到端安全回归与验收 |  |  |
 
 ## 3. 已确认的产品决策
@@ -1196,6 +1196,51 @@ type PolicyDecision =
 - 差异检查：`git diff --check` 通过，仅输出工作区既有 CRLF 提示。
 - 剩余手测：尚未在打包后的 Tauri 环境向真实厂商文档发起请求；真实站点的 HTML 结构、限流和动态渲染兼容性留到 P5-C 验收。
 
+### P5-B：厂商配置草稿与确认写入
+
+**状态：** `[x]`
+
+### 目标
+
+把 Agent 从受限厂商文档中整理出的多模型请求、响应和轮询示例转换成不含凭据的任务级配置草稿，并通过固定的 `config_write` 审批后写入 `config.providers`。
+
+### 实际文件
+
+- 新增：`src/services/chat/providerConfigDraftService.ts`
+- 新增：`tests/services/chat/providerConfigDraftService.test.ts`
+- 新增：`tests/services/chat/providerConfigTools.test.ts`
+- 修改：`src/services/chat/tools/providerConfigTools.ts`
+- 修改：`src/services/chat/toolRegistry.ts`
+- 修改：`src/services/chat/policyEngine.ts`
+- 修改：`src/types/agent.ts`
+- 修改：`src/components/chat/AgentApprovalCard.tsx`
+- 修改：`tests/services/chat/policyEngine.test.ts`
+- 修改：`AGENTS.md`
+- 修改：`doc/plans/2026-07-21-agent-provider-config-import.md`
+
+### 实施结果
+
+- [x] `provider_config_preview` 接收一个连接下最多 16 个模型的提交/响应示例，逐项复用 `analyzeModelProtocolExamples()`，只保存规范化 Base URL、模型分类、模型选择和声明式 `executionProfile`。
+- [x] 多模型必须解析到同一个无凭据 HTTPS Base URL；缺失模型 ID、无有效结果路径、轮询示例不完整、协议校验失败和重复模型 ID 均拒绝。
+- [x] 工具 schema 与草稿服务双层拒绝 API Key、Authorization、Token、Secret 等凭据字段；任务级草稿不保存网页正文、请求/响应原文或 API Key，30 分钟后失效并禁止跨任务复用。
+- [x] 新增 `config_write` effect；Plan 模式不可见且固定拒绝，B/C 模式始终要求用户确认，自动重试次数沿用非只读工具规则为 0。
+- [x] `provider_config_apply` 只接受不透明 `draftId`；审批后再次复核任务归属、过期状态、配置加载状态和目标连接类型，只允许新建或更新 `custom-*` 自定义连接。
+- [x] 新建连接写入空 API Key，编辑连接保留原 API Key；配置通过 `saveProviderConfig()` 更新 Store，再通过 `saveConfig()` 持久化，同步生成节点和对话可用的 `generalModels`。
+- [x] 审批卡新增“API 配置”类别、安全摘要和“不会写入 API Key”提示，不展示请求正文或凭据。
+
+### 回滚
+
+注销 `provider_config_preview` 和 `provider_config_apply`，移除 `config_write` effect 与审批卡映射，并删除任务级草稿服务即可关闭本能力。写入结果仍是普通 `config.providers` 项，无数据库迁移。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- 草稿、工具和权限测试：`npx vitest run tests/services/chat/providerConfigDraftService.test.ts tests/services/chat/providerConfigTools.test.ts tests/services/chat/policyEngine.test.ts`，3 个文件、26 个测试通过。
+- 类型检查：`npm run typecheck`、`npm run test:typecheck` 通过。
+- Lint：9 个阶段 TypeScript/TSX 文件定向 ESLint 通过。
+- 生产构建：`npx vite build --outDir <系统临时目录> --emptyOutDir` 通过；仅保留仓库既有动态导入和 chunk 体积警告。
+- 视觉检查：按用户明确要求，本阶段未执行视觉验证；审批卡改动的桌面/独立窗口实际呈现留到 P5-C 验收。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1315,3 +1360,4 @@ type PolicyDecision =
 | 2026-07-21 | P4-C | 完成相关性记忆、结构化摘要校验、Skill Manifest 工具上限，以及 Registry + Policy 双层保护的 Plan 模式。 |
 | 2026-07-21 | P4-D | 完成隔离的进程内生命周期事件、三类无工具只读专家、父子任务预算和任务中心关系展示。 |
 | 2026-07-21 | P5-A | 完成用户显式 HTTPS 厂商文档授权、同源链接逐页导航、Rust SSRF 防护、不可信正文边界和任务级读取预算。 |
+| 2026-07-21 | P5-B | 完成多模型声明式协议草稿、任务隔离与过期、`config_write` 固定审批，以及不写入或泄露 API Key 的配置保存。 |

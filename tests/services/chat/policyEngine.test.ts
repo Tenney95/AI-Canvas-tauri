@@ -66,6 +66,7 @@ describe('evaluateAgentToolPolicy', () => {
     'permanent_delete',
     'media_generation',
     'memory_write',
+    'config_write',
   ])('denies %s independently in plan mode', (effect) => {
     expect(evaluateAgentToolPolicy(createTool(effect), {}, context('plan'))).toEqual({
       outcome: 'deny',
@@ -79,6 +80,7 @@ describe('evaluateAgentToolPolicy', () => {
     'permanent_delete',
     'media_generation',
     'memory_write',
+    'config_write',
   ])('always requires approval for %s', (effect) => {
     for (const mode of ['collaborative', 'autonomous'] as const) {
       expect(evaluateAgentToolPolicy(createTool(effect), {}, context(mode))).toEqual(

@@ -11,7 +11,8 @@ export type AgentToolEffect =
   | 'file_write'
   | 'permanent_delete'
   | 'media_generation'
-  | 'memory_write';
+  | 'memory_write'
+  | 'config_write';
 
 export interface AgentToolContext {
   taskId: string;

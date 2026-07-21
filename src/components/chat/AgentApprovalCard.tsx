@@ -1,7 +1,7 @@
 /**
  * AgentApprovalCard — Agent 步骤审批卡（P3-E1）。
  *
- * 展示等待确认的工具操作（画布写入、文件写入、媒体生成、永久删除、项目记忆），
+ * 展示等待确认的工具操作（画布写入、文件写入、媒体生成、永久删除、项目记忆、API 配置），
  * 提供确认 / 拒绝。键盘可操作，类别用文字标签而非仅颜色表达。
  */
 import { useMemo, useState } from 'react';
@@ -26,6 +26,7 @@ const KIND_META: Record<AgentApprovalKind, { label: string; icon: string }> = {
   permanent_delete: { label: '永久删除', icon: 'mdi:delete-alert-outline' },
   media_generation: { label: '生成媒体', icon: 'mdi:image-plus-outline' },
   memory_write: { label: '保存记忆', icon: 'mdi:brain' },
+  config_write: { label: 'API 配置', icon: 'mdi:api' },
 };
 
 const MEDIA_KIND_LABELS = {
@@ -91,6 +92,12 @@ export default function AgentApprovalCard({
           </p>
         </div>
       </div>
+      {approval.kind === 'config_write' && (
+        <div className="mt-2 flex items-start gap-1.5 border-t border-amber-300/15 pt-2 text-xs leading-[18px] text-canvas-text-secondary">
+          <Icon icon="mdi:shield-key-outline" width="14" className="mt-0.5 shrink-0 text-amber-400" />
+          <span>不会写入 API Key；新连接保持空白，已有连接保留原值。</span>
+        </div>
+      )}
       {inputRequest && (
         <div className="mt-3 border-t border-amber-300/15 pt-2.5">
           <p className="mb-2 text-[11px] font-medium text-canvas-text">
