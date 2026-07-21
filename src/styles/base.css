@@ -472,6 +472,125 @@ body {
   -webkit-overflow-scrolling: auto;
 }
 
+/* 主窗口玻璃外框：真实留出 5px 透明带，内外高光分别勾勒窗口与内容边缘。 */
+.app-shell {
+  --app-shell-inset: 0px;
+  --app-shell-content-radius: 16px;
+  isolation: isolate;
+}
+
+.app-shell::before,
+.app-shell::after {
+  position: absolute;
+  pointer-events: none;
+  content: '';
+  opacity: 0;
+  transition: opacity var(--transition-smooth);
+}
+
+.app-shell::before {
+  z-index: 0;
+  inset: 0;
+  border: 1px solid var(--glass-ring);
+  border-radius: 16px;
+  background:
+    linear-gradient(
+      145deg,
+      var(--glass-ring) 0%,
+      var(--white-alpha-04) 34%,
+      color-mix(in srgb, var(--brand) 18%, transparent) 68%,
+      var(--white-alpha-08) 100%
+    ),
+    var(--floating-surface-bg);
+  box-shadow:
+    inset 0 0 0 1px var(--white-alpha-08),
+    inset 0 0 0 4px var(--white-alpha-03),
+    0 18px 48px var(--black-alpha-30);
+  backdrop-filter: blur(var(--glass-blur-md)) saturate(145%);
+}
+
+.app-shell::after {
+  z-index: 2;
+  inset: 4px;
+  border: 1px solid var(--glass-ring-strong);
+  border-radius: 12px;
+  box-shadow:
+    inset 0 1px 0 var(--white-alpha-10),
+    0 0 10px var(--white-alpha-06);
+}
+
+.app-shell--glass-frame {
+  --app-shell-inset: 5px;
+  --app-shell-content-radius: 12px;
+}
+
+.app-shell--glass-frame::before,
+.app-shell--glass-frame::after {
+  opacity: 1;
+}
+
+.app-shell__content {
+  z-index: 1;
+  inset: var(--app-shell-inset);
+  border-radius: var(--app-shell-content-radius);
+  clip-path: inset(0 round var(--app-shell-content-radius));
+  transition:
+    inset var(--transition-smooth),
+    border-radius var(--transition-smooth),
+    clip-path var(--transition-smooth);
+}
+
+/* React Flow 使用独立 GPU 合成层，直接裁切其绘制容器以防节点越过窗口圆角。 */
+.app-canvas-viewport {
+  border-radius: inherit;
+  overflow: hidden;
+  clip-path: inset(0 round var(--app-shell-content-radius));
+  contain: paint;
+}
+
+/* Portal 全屏蒙层与主内容边界保持一致，避免覆盖玻璃带或露出直角。 */
+body[data-tauri-window] {
+  --window-overlay-top: 0px;
+  --window-overlay-right: 0px;
+  --window-overlay-bottom: 0px;
+  --window-overlay-left: 0px;
+  --window-overlay-radius: 16px;
+}
+
+body[data-tauri-window][data-window-glass-frame] {
+  --window-overlay-top: 5px;
+  --window-overlay-right: 5px;
+  --window-overlay-bottom: 5px;
+  --window-overlay-left: 5px;
+  --window-overlay-radius: 12px;
+}
+
+body[data-tauri-window][data-sidebar-floating] {
+  --window-overlay-left: 30px;
+}
+
+body[data-tauri-window][data-sidebar-floating][data-window-glass-frame] {
+  --window-overlay-left: 35px;
+}
+
+body[data-tauri-window] > :is(
+  .fixed.inset-0,
+  .matting-overlay,
+  .annotate-overlay,
+  .text-fullscreen-overlay,
+  .fullscreen-overlay,
+  .preset-modal-overlay,
+  .dreamina-login-overlay,
+  .asset-picker-backdrop
+) {
+  top: var(--window-overlay-top);
+  right: var(--window-overlay-right);
+  bottom: var(--window-overlay-bottom);
+  left: var(--window-overlay-left);
+  border-radius: var(--window-overlay-radius);
+  overflow: hidden;
+}
+
 /* Global Scrollbar / 全局滚动条 ── */
 * {
   scrollbar-width: thin;

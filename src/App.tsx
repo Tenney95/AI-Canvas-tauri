@@ -186,6 +186,7 @@ export default function App() {
   // 米白色背景时自动切换为 light，其余背景使用用户手动设置的主题
   const configTheme = useAppStore((s) => s.config.theme);
   const canvasBackground = useAppStore((s) => s.config.canvasBackground);
+  const windowGlassFrame = useAppStore((s) => s.config.windowGlassFrame);
   const mascotVisible = useAppStore((s) => s.config.mascotVisible);
   // 任意节点处于生成中 → 吉祥物切换为 LOADING 形态
   const mascotLoading = useAppStore(selectMascotLoading);
@@ -225,6 +226,12 @@ export default function App() {
   // 同步到 body 属性，供 CSS 切换侧边栏停靠/悬浮位置 + 弹窗蒙层的左偏移
   const sidebarFloatingCfg = useAppStore((s) => s.config.sidebarFloating);
   const effectiveFloating = sidebarFloatingCfg !== false && !isMaximized;
+  const showWindowGlassFrame = windowGlassFrame !== false && !isMaximized;
+  useEffect(() => {
+    if (!isTauri) return;
+    document.body.toggleAttribute('data-window-glass-frame', showWindowGlassFrame);
+    return () => document.body.removeAttribute('data-window-glass-frame');
+  }, [showWindowGlassFrame]);
   useEffect(() => {
     if (effectiveFloating) {
       document.body.setAttribute('data-sidebar-floating', '');
@@ -235,7 +242,9 @@ export default function App() {
 
   const appContent = (
     <div
-      className={`h-screen relative text-canvas-text font-sans  ${
+      className={`app-shell h-screen relative text-canvas-text font-sans ${
+        showWindowGlassFrame ? 'app-shell--glass-frame ' : ''
+      }${
         isTauri && effectiveFloating ? 'ml-[30px] w-[calc(100vw-30px)]' : 'w-screen'
       }`}
       style={{
@@ -244,11 +253,13 @@ export default function App() {
       }}
     >
       {/* Content area — clip-path clips ALL descendants including fixed-position backdrops */}
-      <div className="app-box absolute inset-0 rounded-[16px] bg-canvas-bg/[0.988] shadow-2xl overflow-hidden [clip-path:inset(0_round_16px)]">
-        <CanvasBackground/>
+      <div className="app-box app-shell__content absolute bg-canvas-bg/[0.988] shadow-2xl overflow-hidden">
+        <div className="app-canvas-viewport absolute inset-0">
+          <CanvasBackground />
+          <Canvas />
+        </div>
         {/* Top drag region */}
         <div data-tauri-drag-region className="fixed top-0 left-0 right-0 h-8 z-10" />
-        <Canvas />
         <Header />
         <Titlebar />
         <SessionProjectTabs />

@@ -116,6 +116,7 @@ export default function SettingsPanel() {
       })),
     );
   const sidebarFloating = config.sidebarFloating !== false; // 默认开启
+  const windowGlassFrame = config.windowGlassFrame !== false; // 默认开启
   const interactionMode = config.interactionMode ?? 'default';
   const activeInteractionMode = INTERACTION_MODE_OPTIONS.find((option) => option.id === interactionMode)
     ?? INTERACTION_MODE_OPTIONS[0];
@@ -860,6 +861,47 @@ export default function SettingsPanel() {
                   </div>
                 </section>
                 )}
+
+                {/* 主窗口玻璃外框 */}
+                <div>
+                  <h3 className="text-sm font-medium text-canvas-text mb-3">窗口外观</h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateConfig({ windowGlassFrame: !windowGlassFrame });
+                      saveConfig();
+                    }}
+                    aria-pressed={windowGlassFrame}
+                    className={`sidebar-pref-card${windowGlassFrame ? ' is-floating' : ''}`}
+                  >
+                    <div
+                      className={`sidebar-pref-window overflow-hidden${windowGlassFrame ? ' glass-bevel' : ''}`}
+                      aria-hidden="true"
+                    >
+                      <div
+                        className={`absolute flex items-center gap-2 overflow-hidden border border-canvas-border bg-canvas-bg px-2 transition-[inset,border-radius] duration-200 ${
+                          windowGlassFrame ? 'inset-[5px] rounded-[5px]' : 'inset-0 rounded-[8px]'
+                        }`}
+                      >
+                        <span className="h-8 w-2 shrink-0 rounded-sm bg-indigo-400/35" />
+                        <span className="h-1 flex-1 rounded-full bg-canvas-border" />
+                      </div>
+                    </div>
+
+                    <div className="sidebar-pref-text">
+                      <div className="sidebar-pref-title">玻璃外框</div>
+                      <div className="sidebar-pref-desc">
+                        {windowGlassFrame
+                          ? '显示 5px 玻璃带与双层边缘高光'
+                          : '内容贴合窗口边缘，不显示外框'}
+                      </div>
+                    </div>
+
+                    <div className="sidebar-pref-switch" aria-hidden="true">
+                      <span />
+                    </div>
+                  </button>
+                </div>
 
                 {/* 侧边栏是否悬浮显示 */}
                 <div>

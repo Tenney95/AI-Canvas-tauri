@@ -810,30 +810,6 @@
 }
 
 /* ════════════════════════════════════════════
-   Tauri: portaled fullscreen overlays
-   In Tauri mode, the app-box has a 30px left margin,
-   so portaled-to-body overlays (position:fixed;inset:0)
-   must be confined to the same area to avoid bleeding
-   past the rounded corners.
-   ════════════════════════════════════════════ */
-[data-tauri-window] .matting-overlay,
-[data-tauri-window] .annotate-overlay,
-[data-tauri-window] .text-fullscreen-overlay,
-[data-tauri-window] .fullscreen-overlay {
-  right: 0;
-  border-radius: 16px;
-  overflow: hidden;
-}
-/* 悬浮态：让出左侧 30px 透明边条；非悬浮（含最大化）时蒙层铺满 */
-[data-tauri-window][data-sidebar-floating] .matting-overlay,
-[data-tauri-window][data-sidebar-floating] .annotate-overlay,
-[data-tauri-window][data-sidebar-floating] .text-fullscreen-overlay,
-[data-tauri-window][data-sidebar-floating] .fullscreen-overlay,
-[data-tauri-window][data-sidebar-floating] .asset-picker-backdrop {
-  left: 30px;
-}
-
-/* ════════════════════════════════════════════
    Shared Fullscreen Overlay (framer-motion)
    ════════════════════════════════════════════ */
 
