@@ -27,3 +27,107 @@
 @import './styles/backgrounds.css';
 @import './styles/toolbar-editor.css';
 @import './styles/separators.css';
+
+/* Global overlay scrollbars are managed by OverlayScrollbarLayer. */
+* {
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar,
+[data-overlay-scrollbar][data-overlay-scrollbar]::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+[data-overlay-scrollbar][data-overlay-scrollbar] {
+  scrollbar-width: none;
+}
+
+.overlay-scrollbar-layer {
+  position: fixed;
+  z-index: 2147483646;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.overlay-scrollbar-thumb {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(
+    var(--overlay-scrollbar-x, -100px),
+    var(--overlay-scrollbar-y, -100px),
+    0
+  );
+  transition: opacity 160ms ease;
+  cursor: grab;
+  touch-action: none;
+}
+
+.overlay-scrollbar-thumb::before {
+  position: absolute;
+  border-radius: 9999px;
+  background: var(--scrollbar-thumb);
+  content: '';
+  transition: width 120ms ease, height 120ms ease, background 120ms ease;
+}
+
+.overlay-scrollbar-thumb.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.overlay-scrollbar-thumb:hover::before {
+  background: var(--scrollbar-thumb-hover);
+}
+
+.overlay-scrollbar-thumb:active {
+  cursor: grabbing;
+}
+
+.overlay-scrollbar-thumb:active::before {
+  background: var(--scrollbar-thumb-active);
+}
+
+.overlay-scrollbar-thumb--vertical {
+  width: 8px;
+  height: var(--overlay-scrollbar-size, 36px);
+}
+
+.overlay-scrollbar-thumb--vertical::before {
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 100%;
+}
+
+.overlay-scrollbar-thumb--vertical:hover::before,
+.overlay-scrollbar-thumb--vertical:active::before {
+  width: 6px;
+}
+
+.overlay-scrollbar-thumb--horizontal {
+  width: var(--overlay-scrollbar-size, 36px);
+  height: 8px;
+}
+
+.overlay-scrollbar-thumb--horizontal::before {
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 4px;
+}
+
+.overlay-scrollbar-thumb--horizontal:hover::before,
+.overlay-scrollbar-thumb--horizontal:active::before {
+  height: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay-scrollbar-thumb,
+  .overlay-scrollbar-thumb::before {
+    transition: none;
+  }
+}

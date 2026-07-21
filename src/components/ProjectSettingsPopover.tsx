@@ -404,7 +404,7 @@ export default function ProjectSettingsPopover({
           transition={reduceMotion
             ? { duration: 0.12 }
             : { type: 'spring', bounce: 0, duration: 0.32 }}
-          className="fixed z-[200] flex max-h-[min(78vh,680px)] w-[min(420px,calc(100vw-24px))]
+          className="glass-bevel glass-bevel--panel fixed z-[200] flex max-h-[min(78vh,680px)] w-[min(420px,calc(100vw-24px))]
                      origin-top-right flex-col overflow-hidden rounded-lg border border-[var(--glass-ring)]
                      bg-[var(--glass-bg)] text-canvas-text shadow-2xl shadow-black/40
                      outline-none backdrop-blur-2xl backdrop-saturate-150"

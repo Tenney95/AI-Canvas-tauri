@@ -8,6 +8,11 @@ interface AgentModeSelectorProps {
 
 const MODES: Array<{ value: AgentMode; label: string; tooltip: string }> = [
   {
+    value: 'plan',
+    label: '规划',
+    tooltip: 'Plan 模式：仅分析与规划，只能使用只读工具',
+  },
+  {
     value: 'collaborative',
     label: '协作',
     tooltip: 'B 协作模式：画布写操作先预览确认',
@@ -39,7 +44,9 @@ export default function AgentModeSelector({
                       ${mode === item.value
                         ? item.value === 'autonomous'
                           ? 'bg-amber-400/15 text-amber-300'
-                          : 'bg-indigo-500/20 text-indigo-300'
+                          : item.value === 'plan'
+                            ? 'bg-emerald-400/15 text-emerald-300'
+                            : 'bg-indigo-500/20 text-indigo-300'
                         : 'text-canvas-text-muted hover:bg-canvas-hover hover:text-canvas-text'
                       } disabled:cursor-not-allowed disabled:opacity-40`}
           aria-pressed={mode === item.value}

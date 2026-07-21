@@ -14,6 +14,7 @@ import ChatComposerEditor, { type ChatComposerEditorHandle } from './ChatCompose
 import type { BaseNodeData, GeneralModelConfig, ModelOption } from '../../types';
 import type { ContextUsageStat } from '../../services/chat/contextManager';
 import { useAppStore } from '../../store/useAppStore';
+import { isSkillUserInvocable } from '../../services/skillPromptService';
 import {
   type MediaModelOption,
 } from '../nodes/shared/defaultModels';
@@ -113,6 +114,8 @@ interface ChatInputProps {
   inputValue: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
+  hasActiveTask?: boolean;
+  onInterject?: () => void;
   localFileGrants?: LocalFileGrantSummary[];
   onAuthorizeLocalFiles?: () => void;
   onRevokeLocalFile?: (grantId: string) => void;
@@ -130,6 +133,8 @@ export default function ChatInput({
   inputValue,
   onInputChange,
   onSend,
+  hasActiveTask = false,
+  onInterject,
   localFileGrants = [],
   onAuthorizeLocalFiles,
   onRevokeLocalFile,
@@ -174,12 +179,14 @@ export default function ChatInput({
       node.data.type,
       node.id,
     )), [canvasNodes, modelQuery]);
-  const filteredSkills = useMemo(() => userSkills.filter((skill) => fuzzyMatchText(
-    skillQuery,
-    skill.name,
-    skill.description,
-    skill.fileName,
-  )), [skillQuery, userSkills]);
+  const filteredSkills = useMemo(() => userSkills
+    .filter(isSkillUserInvocable)
+    .filter((skill) => fuzzyMatchText(
+      skillQuery,
+      skill.name,
+      skill.description,
+      skill.fileName,
+    )), [skillQuery, userSkills]);
   const nodeDisplayIds = useMemo(
     () => new Map(canvasNodes.map((node) => [node.id, node.data.displayId])),
     [canvasNodes],
@@ -692,11 +699,27 @@ export default function ChatInput({
             <div className="flex h-7 w-7 items-center justify-center">
               <ContextUsageIndicator usage={contextUsage ?? null} />
             </div>
-            
+
+            {hasActiveTask && onInterject && inputValue.trim() && !disabled && (
+              <button
+                type="button"
+                onClick={onInterject}
+                aria-label="调整当前任务"
+                title="在下一个安全步骤调整当前任务"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-canvas-border
+                           bg-canvas-surface text-canvas-text-secondary transition-[color,background-color,border-color]
+                           hover:border-brand/40 hover:bg-brand/10 hover:text-brand-light
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300/70"
+              >
+                <Icon icon="mdi:source-branch-sync" width="16" height="16" />
+              </button>
+            )}
+
             <AnimatedButton
               scale={1.05}
               disabled={!inputValue.trim() || disabled}
-              aria-label="发送消息"
+              aria-label={hasActiveTask ? '将消息加入队列' : '发送消息'}
+              title={hasActiveTask ? '当前任务完成后发送' : '发送消息'}
               className={`chat-panel-send-btn flex shrink-0 items-center justify-center h-8 w-8 rounded-full
                           transition-[color,background-color,box-shadow,opacity,transform] duration-200 active:scale-95
                           motion-reduce:transform-none
@@ -707,7 +730,7 @@ export default function ChatInput({
                           }`}
               onClick={onSend}
             >
-              <Icon icon="mdi:arrow-up" width="18" height="18" />
+              <Icon icon={hasActiveTask ? 'mdi:playlist-plus' : 'mdi:arrow-up'} width="18" height="18" />
             </AnimatedButton>
           </div>
         </div>

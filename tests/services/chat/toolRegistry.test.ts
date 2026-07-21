@@ -111,4 +111,32 @@ describe('Agent tool registry', () => {
 
     expect(() => registerAgentTool(createTool())).toThrow('Agent 工具已注册');
   });
+
+  it('applies a task tool allowlist as a visibility ceiling', () => {
+    registerAgentTool(createTool());
+    registerAgentTool(createTool({ id: 'preset_list' }));
+
+    const restricted = { ...context, toolAllowlist: ['preset_list'] };
+    expect(buildAssistantFunctionTools(restricted).map((tool) => tool.function.name))
+      .toEqual(['preset_list']);
+    expect(prepareAgentToolCall({
+      callId: 'call-1',
+      toolId: 'canvas_query_test',
+      input: { query: 'failed nodes' },
+    }, restricted)).toMatchObject({ ok: false, result: { status: 'denied' } });
+  });
+
+  it('only exposes read tools in plan mode', () => {
+    registerAgentTool(createTool());
+    registerAgentTool(createTool({ id: 'canvas_update_test', effect: 'canvas_write' }));
+
+    const planContext = { ...context, mode: 'plan' as const };
+    expect(buildAssistantFunctionTools(planContext).map((tool) => tool.function.name))
+      .toEqual(['canvas_query_test']);
+    expect(prepareAgentToolCall({
+      callId: 'call-1',
+      toolId: 'canvas_update_test',
+      input: { query: 'update node' },
+    }, planContext)).toMatchObject({ ok: false, result: { status: 'denied' } });
+  });
 });

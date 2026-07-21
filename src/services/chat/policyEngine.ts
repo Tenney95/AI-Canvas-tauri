@@ -26,6 +26,14 @@ export function evaluateAgentToolPolicy(
   input: unknown,
   context: AgentPolicyContext,
 ): AgentPolicyDecision {
+  if (context.mode === 'plan' && definition.effect !== 'read') {
+    return {
+      outcome: 'deny',
+      reason: 'Plan 模式只允许使用只读工具',
+      errorCode: 'AGENT_PLAN_MODE_READ_ONLY',
+    };
+  }
+
   const authorization = definition.authorize?.(context, input);
   if (authorization && !authorization.allowed) {
     return {

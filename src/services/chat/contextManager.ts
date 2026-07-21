@@ -22,9 +22,9 @@ import type {
 import type { GeneralModelConfig } from '../../types';
 import {
   PROJECT_MEMORY_KIND_LABELS,
-  PROJECT_MEMORY_KIND_PRIORITY,
   type ProjectMemory,
 } from '../../types/memory';
+import { rankProjectMemories } from './memoryRetrieval';
 
 // ============================================
 // 阈值
@@ -172,14 +172,9 @@ const MEMORY_BLOCK_TOKEN_BUDGET = 1_500;
 export function selectProjectMemoriesForContext(
   memories: ProjectMemory[],
   projectId: string,
+  query = '',
 ): ProjectMemory[] {
-  const enabled = memories
-    .filter((memory) => memory.projectId === projectId && memory.enabled)
-    .sort((a, b) => {
-      const priorityDelta =
-        PROJECT_MEMORY_KIND_PRIORITY[a.kind] - PROJECT_MEMORY_KIND_PRIORITY[b.kind];
-      return priorityDelta !== 0 ? priorityDelta : b.updatedAt - a.updatedAt;
-    });
+  const enabled = rankProjectMemories(memories, projectId, query);
 
   const selected: ProjectMemory[] = [];
   let tokens = 0;
@@ -193,10 +188,11 @@ export function selectProjectMemoriesForContext(
 }
 
 /** 构建项目记忆系统消息；无启用记忆时返回空字符串。 */
-function buildMemoryBlock(projectId: string): string {
+function buildMemoryBlock(projectId: string, query: string): string {
   const memories = selectProjectMemoriesForContext(
     useAppStore.getState().projectMemories,
     projectId,
+    query,
   );
   if (memories.length === 0) return '';
   const lines = memories.map(
@@ -327,7 +323,7 @@ export async function assembleAgentContext(
   const { conversationId, projectId, systemPrompt, userMessage, signal } = options;
   const excludeIds = new Set(options.excludeMessageIds ?? []);
   const spec = resolveAssistantContextSpec();
-  const memoryBlock = projectId ? buildMemoryBlock(projectId) : '';
+  const memoryBlock = projectId ? buildMemoryBlock(projectId, userMessage) : '';
 
   const { messages: persisted } = await loadMessages(conversationId, 0, 200);
   let summary = getConversationSummary(conversationId);

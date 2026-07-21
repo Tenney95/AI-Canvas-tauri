@@ -21,16 +21,18 @@
 }
 
 .preset-modal {
-  background: var(--glass-panel-bg);
+  background:
+    linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  border: 1px solid transparent;
   border-radius: 14px;
   width: 760px;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 20px 60px var(--black-alpha-50);
+  box-shadow: var(--glass-shadow-panel);
 }
 
 .preset-modal--manager {

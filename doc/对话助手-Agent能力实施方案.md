@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：全部阶段（P3-0 ~ P3-E2）已完成
+> 文档状态：P3、P4 阶段已完成；P4 Agent 运行时演进已按方案 A 交付
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -50,12 +50,22 @@
 | P3-D2 | `[x]` | 用户确认的项目记忆 | 2026-07-16 | 2026-07-16 |
 | P3-E1 | `[x]` | Agent 任务时间线和后台控制 | 2026-07-16 | 2026-07-16 |
 | P3-E2 | `[x]` | 重启恢复、安全加固和端到端验收 | 2026-07-16 | 2026-07-16 |
+| P4-A | `[x]` | 同会话消息队列、运行中插话和串行调度 | 2026-07-21 | 2026-07-21 |
+| P4-B | `[x]` | 脱敏事件日志、安全恢复、任务回退、指标与任务中心 | 2026-07-21 | 2026-07-21 |
+| P4-C | `[x]` | 相关性记忆、可靠压缩、Skill Manifest 和只规划模式 | 2026-07-21 | 2026-07-21 |
+| P4-D | `[x]` | 内部生命周期事件和受限只读专家 Agent | 2026-07-21 | 2026-07-21 |
 
 ## 3. 已确认的产品决策
 
 ### 3.1 会话级 Agent 模式
 
-每个对话独立保存 Agent 模式，新对话默认使用 B，可随时切换 C。
+每个对话独立保存 Agent 模式，新对话默认使用 B，可随时切换 Plan、B 或 C。
+
+#### Plan：只规划模式
+
+- 只进行分析、规划和只读查询。
+- Tool Registry 不向模型暴露非 `read` 工具。
+- Policy Engine 对所有非 `read` effect 固定拒绝，Skill 和模型输出不能修改此边界。
 
 #### B：协作模式
 
@@ -919,6 +929,227 @@ type PolicyDecision =
 - 实际检查：`npm run typecheck`、改动 TypeScript 文件定向 ESLint、`npm run build`、`git diff --check` 和 UTF-8 严格解码均通过；全量 `npm run lint` 被仓库当前 ESLint 10/scope manager 兼容错误 `scopeManager.addGlobals is not a function` 中断
 - 交互限制：真实文本/付费媒体模型下的多轮步骤推进和逐次审批需要在 Tauri 配置模型与 Key 后手测
 
+### P4-A：同会话消息调度与运行中插话
+
+**状态：** `[x]`
+
+### 目标
+
+保证同一会话最多只有一个执行中的主 Agent 任务。活跃任务期间的新消息默认进入 FIFO，用户可显式选择在下一安全边界调整当前任务；不同会话仍可并行后台运行。
+
+### 实际文件
+
+- 新增：`src/services/chat/agentScheduler.ts`
+- 新增：`src/services/chat/agentInterjection.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/chat/chatWindowService.ts`
+- 修改：`src/components/chat/ChatPanel.tsx`
+- 修改：`src/components/chat/ChatInput.tsx`
+- 新增：`tests/services/chat/agentScheduler.test.ts`
+- 新增：`tests/services/chat/agentInterjection.test.ts`
+- 新增：`doc/plans/2026-07-21-agent-runtime-evolution-design.md`
+- 新增：`doc/plans/2026-07-21-agent-runtime-evolution.md`
+
+### 实施结果
+
+- [x] 调度器按 `conversationId` 隔离队列；同会话串行，不同会话并行。
+- [x] 排队任务保留 `AgentTask.queued`，助手消息显示 `queued`，不新增 IndexedDB store。
+- [x] 暂停、停止和删除会话会清理未启动的运行时队列。
+- [x] 恢复和重新规划只在调度器真正启动任务时切换为 `queued`，避免旧控制器覆盖新状态。
+- [x] 插话缓冲只在活跃 Agent 循环中开放，按 FIFO 在模型轮次开始前消费。
+- [x] 写工具执行期间不消费插话；本地降级管线不支持插话时自动回退为普通排队。
+- [x] 主窗口与独立窗口使用同一 `dispatchMode` 协议。
+- [x] 输入区在有活跃任务时提供“排队发送”和“调整当前任务”两个可访问图标操作。
+
+### 回滚
+
+移除 `agentScheduler` / `agentInterjection` 装配并恢复 `ChatPanel` 直接调用 `driveAgentTask()` 即可。未修改数据库版本和持久化记录；已有 queued/paused 任务继续按 P3-E2 恢复规则读取。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- 定向测试：`npm run test -- tests/services/chat/agentScheduler.test.ts tests/services/chat/agentInterjection.test.ts tests/services/chat/agentApproval.test.ts`，3 个文件、8 个测试通过
+- 类型检查：`npm run typecheck`、`npm run test:typecheck` 通过
+- Lint：8 个阶段改动文件定向 ESLint 通过
+- 差异检查：`git diff --check` 通过
+
+### P4-B：诊断、安全恢复、任务回退与任务中心
+
+**状态：** `[x]`
+
+### 目标
+
+为长任务提供脱敏、可恢复、可观测的执行快照；成功写操作恢复后不重放，任务画布修改仅在无交错历史时整体回退，并在主/独立聊天窗口统一展示跨会话任务。
+
+### 实际文件
+
+- 修改：`src/types/agent.ts`
+- 修改：`src/store/store.agent.ts`
+- 修改：`src/services/chat/agentTaskService.ts`
+- 新增：`src/services/chat/agentJournal.ts`
+- 新增：`src/services/chat/agentCheckpointService.ts`
+- 新增：`src/services/chat/agentRewindService.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/chat/chatWindowService.ts`
+- 新增：`src/components/chat/AgentTaskCenter.tsx`
+- 修改：`src/components/chat/AgentTaskTimeline.tsx`
+- 修改：`src/components/chat/ChatHeader.tsx`
+- 修改：`src/components/chat/ChatPanel.tsx`
+- 新增：`tests/services/chat/agentJournal.test.ts`
+- 新增：`tests/services/chat/agentCheckpointService.test.ts`
+- 新增：`tests/services/chat/agentRewindService.test.ts`
+- 新增：`tests/services/chat/agentRuntimeDiagnostics.test.ts`
+- 修改：`tests/services/chat/agentTaskService.test.ts`
+- 新增：`doc/adr/0002-agent-runtime-evolution.md`
+
+### 实施结果
+
+- [x] AgentTask 兼容新增最多 200 条的脱敏事件和累计指标；旧记录读取时补零值。
+- [x] 事件数据使用固定字段白名单，只保存工具 ID、状态、Policy 结果、token、耗时、错误码、revision 和历史索引。
+- [x] Runtime 记录模型轮次、usage、Policy、审批、工具、重试和终态；任务时间线展示 token 与模型/工具耗时。
+- [x] 恢复上下文注入既有步骤摘要，并用稳定输入哈希抑制相同成功写调用。
+- [x] canvas 写成功后记录执行前后 historyIndex 与 revision。
+- [x] 整体回退校验 projectId、连续检查点链、当前历史尾部和 revision；回退后 revision 单调递增。
+- [x] 任务中心聚合当前项目跨会话任务，支持进行中/全部视图并复用审批和任务控制。
+- [x] 主窗口与独立窗口新增同一 `rewind_agent_task` Action，不引入第二写入源。
+- [x] 未新增 object store，IndexedDB 仍为 v13；未新增依赖或 Tauri 权限。
+
+### 回滚
+
+退掉任务中心和回退 Action，移除 Runtime 的 journal/checkpoint 装配即可。`AgentTask.events`、`metrics` 和工具检查点字段均可选，旧版本会忽略；不需要数据库降级或数据删除。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- Runtime 定向测试：诊断、审批、Journal、Checkpoint、Rewind、Task Service、Tool Registry 和 History 测试通过
+- 类型检查：`npm run typecheck`、`npm run test:typecheck` 通过
+- Lint：17 个阶段改动文件定向 ESLint 通过
+- 差异检查：`git diff --check` 通过
+- 交互限制：真实模型 usage 事件与独立窗口任务中心仍需最终 Tauri 手测；纯逻辑、协议和渲染类型已由测试与编译覆盖
+
+### P4-C：相关性记忆、可靠压缩、Skill Manifest 与 Plan 模式
+
+**状态：** `[x]`
+
+### 目标
+
+提升长对话的上下文质量，为上传 Skill 增加只会收窄权限的轻量声明，并提供只能分析、规划和读取的 Plan 模式。
+
+### 实际文件
+
+- 新增：`src/services/chat/memoryRetrieval.ts`
+- 新增：`src/services/chat/skillManifest.ts`
+- 修改：`src/services/chat/contextManager.ts`
+- 修改：`src/services/chat/contextCompressionService.ts`
+- 修改：`src/services/chat/toolRegistry.ts`
+- 修改：`src/services/chat/policyEngine.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/skillPromptService.ts`
+- 修改：`src/services/indexedDbService.ts`
+- 修改：`src/store/store.skills.ts`
+- 修改：`src/store/store.agent.ts`
+- 修改：`src/types/index.ts`
+- 修改：`src/types/chat.ts`
+- 修改：`src/types/agent.ts`
+- 修改：`src/services/ai/assistantStream.ts`
+- 修改：`src/components/chat/ChatPanel.tsx`
+- 修改：`src/components/chat/ChatInput.tsx`
+- 修改：`src/components/chat/AgentModeSelector.tsx`
+- 修改：`src/components/nodes/shared/SlashCommandMenu.tsx`
+- 新增：`tests/services/chat/memoryRetrieval.test.ts`
+- 新增：`tests/services/chat/contextCompression.test.ts`
+- 新增：`tests/services/chat/skillManifest.test.ts`
+- 修改：`tests/services/chat/toolRegistry.test.ts`
+- 修改：`tests/services/chat/policyEngine.test.ts`
+
+### 实施结果
+
+- [x] 项目记忆按当前用户消息计算中英文词项相关性、类别权重、30 天时间衰减和 MMR 去重，继续受 1500 token 预算约束。
+- [x] 压缩摘要使用六个固定区段，纳入最近任务/步骤状态，并校验节点引用、模型引用、来源编号和 URL 锚点；无效摘要不覆盖旧摘要。
+- [x] Skill 入口文件支持无依赖轻量 frontmatter：`name`、`description`、`when-to-use`、`allowed-tools`、`user-invocable`、`disable-model-invocation` 和 `version`。
+- [x] Skill 原文继续只读保存，展开给模型前移除 frontmatter；`user-invocable: false` 不进入手动调用菜单，也不展开伪造引用。
+- [x] 显式引用 Skill 的 `allowed-tools` 在任务创建时快照化；多个声明取并集，但结果始终只是 Registry 全集的上限，空数组表示无工具。
+- [x] Tool Registry 在工具契约和工具准备两个入口应用任务上限，任务恢复不会因 Skill 后续变化扩大权限。
+- [x] Plan 模式只向模型暴露 `read` 工具；Policy 对所有非 `read` effect 返回 `AGENT_PLAN_MODE_READ_ONLY`，形成独立双层拒绝。
+- [x] Plan 或受限 Skill 在无工具/无模型时不会进入旧命令执行降级管线；未配置文本模型时只返回未执行提示。
+- [x] 新持久化字段均可选，IndexedDB 保持 v13；未新增依赖、Tauri 权限或安全配置。
+
+### 回滚
+
+移除 Plan 模式入口和 Registry 过滤、恢复旧记忆排序与摘要提示即可回滚运行行为。`UserSkill.manifest`、`AgentTask.toolAllowlist` 和摘要 `formatVersion` 均为可选字段，旧版本可忽略；Skill 原始正文仍完整保存，不需要数据库降级或数据删除。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- 定向测试：`npm run test -- tests/services/chat/skillManifest.test.ts tests/services/chat/toolRegistry.test.ts tests/services/chat/policyEngine.test.ts tests/services/chat/contextCompression.test.ts tests/services/chat/memoryRetrieval.test.ts tests/services/chat/agentRuntimeDiagnostics.test.ts`，6 个文件、35 个测试通过
+- 类型检查：`npm run typecheck`、`npm run test:typecheck` 通过
+- Lint：24 个阶段改动 TypeScript/TSX 文件定向 ESLint 通过
+- 生产构建：`npx vite build --outDir <系统临时目录>` 通过；保留既有动态导入和 chunk 体积警告
+- 差异与编码：`git diff --check` 和阶段改动文本 UTF-8 严格解码通过
+- 交互限制：真实文本模型下的 Plan 对话、Skill 组合调用和压缩模型输出仍需最终 Tauri 手测；纯逻辑、权限边界和编译已覆盖
+
+### P4-D：内部生命周期事件与受限只读专家 Agent
+
+**状态：** `[x]`
+
+### 目标
+
+为内部诊断和后续界面扩展提供不会影响 Runtime/Policy 的类型化事件，同时允许主 Agent 请求独立、无工具、无副作用的结构审阅。
+
+### 实际文件
+
+- 新增：`src/services/chat/agentLifecycle.ts`
+- 新增：`src/services/chat/expertTaskService.ts`
+- 新增：`src/services/chat/tools/expertTools.ts`
+- 修改：`src/services/chat/tools/index.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/chat/contextCompressionService.ts`
+- 修改：`src/services/ai/assistantStream.ts`
+- 修改：`src/store/store.agent.ts`
+- 修改：`src/types/agent.ts`
+- 修改：`src/components/chat/AgentTaskCenter.tsx`
+- 修改：`src/components/chat/AgentTaskTimeline.tsx`
+- 新增：`tests/services/chat/agentLifecycle.test.ts`
+- 新增：`tests/services/chat/expertTools.test.ts`
+- 修改：`tests/services/chat/agentRuntimeDiagnostics.test.ts`
+
+### 实施结果
+
+- [x] 新增进程内类型化生命周期总线，覆盖任务状态、模型轮次、Policy、工具、审批、上下文压缩和专家任务。
+- [x] 事件只包含 ID、状态、effect、计数、耗时和稳定错误码等白名单元数据，不包含提示词、工具正文、异常正文、绝对路径或密钥。
+- [x] 同步监听器异常和异步监听器拒绝均被隔离，监听器返回值不会进入 Runtime 或改变 Policy 决策。
+- [x] 注册 `agent_run_expert_review` 只读工具，角色固定为画布结构、工作流风险和资产复用审阅。
+- [x] 专家输入只包含节点 ID、展示编号、类型、脱敏标签、状态和边关系，并限制为 500 个节点、1000 条边。
+- [x] 专家使用独立模型请求、独立系统提示和 `tools: []`，不接收会话历史、节点正文、模型配置、文件名、资产 ID、路径或外部网页。
+- [x] 专家子任务以 `AgentTask` 可选父子字段持久化，深度固定为 1，每个父任务最多 3 个；结果作为父工具 Observation 返回。
+- [x] 子任务固定 1 个模型轮次、0 次工具调用，不能独立恢复；任务中心显示角色、上级任务和子任务数量，并隐藏主任务控制。
+- [x] 未提供外部 Hook、Shell、HTTP、MCP 或插件监听器；未新增依赖、数据库 store、Tauri 权限或安全配置。
+
+### 回滚
+
+从工具注册入口移除 `registerExpertAgentTools()` 并移除生命周期 emit 装配即可关闭新行为。`AgentTask.parentTaskId`、`expertRole`、`expertDepth` 和 `resultSummary` 均为可选字段，旧版本可忽略；无需数据库降级或删除专家任务记录。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- 定向测试：`npm run test -- tests/services/chat/agentLifecycle.test.ts tests/services/chat/expertTools.test.ts tests/services/chat/agentRuntimeDiagnostics.test.ts tests/services/chat/agentApproval.test.ts tests/services/chat/contextCompression.test.ts tests/services/chat/policyEngine.test.ts tests/services/chat/toolRegistry.test.ts tests/services/chat/agentTaskService.test.ts`，8 个文件、40 个测试通过
+- 类型检查：`npm run typecheck`、`npm run test:typecheck` 通过
+- Lint：14 个阶段改动 TypeScript/TSX 文件定向 ESLint 通过
+- 生产构建：`npx vite build --outDir <系统临时目录>` 通过；保留既有动态导入和 chunk 体积警告
+- 差异与编码：`git diff --check` 和阶段改动文本 UTF-8 严格解码通过
+- 交互限制：真实文本模型下的三类专家输出质量与任务中心父子布局仍需最终 Tauri 手测；输入白名单、调用边界、预算和持久化已由测试覆盖
+
+### P4 全量验收记录
+
+- 全量测试：`npm run test`，30 个测试文件、172 个测试通过。
+- 全量类型：`npm run typecheck`、`npm run test:typecheck` 通过。
+- 分支 Lint：对 `5304871..HEAD` 全部改动的 TypeScript/TSX 文件运行定向 ESLint，通过。
+- 最终构建：`npx vite build --outDir <系统临时目录>` 通过；仅保留仓库既有动态导入和 chunk 体积警告。
+- 分支质量：`git diff --check 5304871..HEAD`、全部变更文本严格 UTF-8 解码和敏感内容扫描通过。
+- 浏览器验收：默认桌面视口与 `430×800` 窄视口下，Plan/B/C 选择器、输入区和任务中心均无横向溢出或控件遮挡；页面控制台无 warning/error。
+- Plan 降级：无文本模型时返回“未执行任何写操作”，任务正常结束，未进入旧命令执行管线。
+- 剩余手测：三类专家的真实模型输出质量、专家父子任务实际运行态布局和独立 Tauri 窗口联动需要配置兼容文本模型后验证。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -927,11 +1158,13 @@ type PolicyDecision =
 
 - `npm run typecheck`
 - `npm run lint`
+- `npm run test:typecheck`
+- `npm run test`
 - `npm run check`
 - `npm run build`
 - `cargo check`（在 `src-tauri/` 运行）
 
-当前未发现已配置的前端单元测试脚本。若要引入 Vitest 或其他测试依赖，必须单独说明新增原因、替代方案和体积影响，并等待确认，不能在阶段实施中静默新增。
+当前仓库已配置 Vitest、`fake-indexeddb`、`tests/setup.ts` 和独立 `tsconfig.test.json`。Agent 演进阶段优先增加纯服务和 Store 定向测试，不新增测试依赖。
 
 ### 9.2 每阶段最低检查
 
@@ -950,7 +1183,7 @@ type PolicyDecision =
 | 类别 | 必测内容 |
 |---|---|
 | 状态机 | 合法迁移、非法迁移、暂停、继续、停止、重启恢复 |
-| 模式 | B/C 权限差异、会话隔离、模式切换 |
+| 模式 | Plan/B/C 权限差异、会话隔离、模式切换 |
 | 工具 | schema、未知工具、未知字段、预算和中止 |
 | 画布 | revision、批量事务、一次撤销、项目切换 |
 | 媒体 | 逐次确认、重新生成确认、不自动重试、取消语义 |
@@ -959,6 +1192,7 @@ type PolicyDecision =
 | 上下文 | 模型上限、压缩阈值、模型切换、摘要完整性 |
 | 记忆 | 候选、确认、来源、项目隔离、删除失效 |
 | 多会话 | 后台运行、状态徽标、任务不串用 |
+| 专家任务 | 角色白名单、输入脱敏、无工具、深度 1、每父任务最多 3 个 |
 
 ## 10. 依赖和安全检查点
 
@@ -1008,6 +1242,10 @@ type PolicyDecision =
 - [x] 模型不能访问未注册工具、任意路径、通用 Shell 或无限制网络。
 - [x] 日志不包含 API Key、绝对路径和完整敏感正文。
 - [x] 本文档所有阶段均填写真实完成记录和验证结果。
+- [x] 同会话任务串行，安全边界支持插话，成功写操作恢复后不重放。
+- [x] Plan 模式由 Registry 和 Policy 双层限制为只读。
+- [x] Skill Manifest 只能缩小任务工具集合，不能扩大权限。
+- [x] 只读专家任务无工具、无嵌套、无画布副作用，并在任务中心显示父子关系。
 
 ## 13. 变更日志
 
@@ -1026,3 +1264,7 @@ type PolicyDecision =
 | 2026-07-16 | P3-C1 移除 | 按用户决定整体移除联网搜索/网页读取/来源引用：删除 `assistant_web.rs`、`webSearchService`、`webPageService`、`webTools`、`SourceList`，退掉 `web_search`/`web_read_page` 工具、Tavily 设置与连接测试、消息 `sources` 与 `WebSource` 类型；保留通用 `proxy_fetch`。typecheck / 定向 ESLint / `cargo check --lib` / 生产构建均通过。 |
 | 2026-07-19 | P3-F1 | 新增 Agent 快捷指令查询、创建、修改和分步调用工具；定义写入与画布操作沿用既有审批，媒体步骤逐次确认，运行节点校验 task 归属、顺序和 revision。 |
 | 2026-07-19 | 平台补充 | 通用模型增加声明式执行协议：文本节点可配置端点、鉴权、请求/响应和同步/异步轮询；对话助手与 Agent 仅接受显式 `openai-sse` 兼容协议，未扩大工具、确认或付费媒体权限。 |
+| 2026-07-21 | P4-A | 完成同会话 FIFO、跨会话并行、排队取消、安全边界插话、恢复延迟接管和独立窗口 `dispatchMode` 同步。 |
+| 2026-07-21 | P4-B | 完成脱敏事件与指标、恢复步骤摘要、重复写抑制、连续尾部检查点回退，以及跨会话任务中心。 |
+| 2026-07-21 | P4-C | 完成相关性记忆、结构化摘要校验、Skill Manifest 工具上限，以及 Registry + Policy 双层保护的 Plan 模式。 |
+| 2026-07-21 | P4-D | 完成隔离的进程内生命周期事件、三类无工具只读专家、父子任务预算和任务中心关系展示。 |

@@ -141,6 +141,28 @@
   --glass-blur-md: 16px;
   --glass-blur-lg: 24px;
   --floating-surface-bg: color-mix(in srgb, var(--theme-surface) 60%, transparent);
+  --glass-bevel-border: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.18) 0%,
+    rgba(255, 255, 255, 0.09) 36%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  --glass-bevel-inset:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+  --glass-shadow-floating:
+    0 1px 2px rgba(0, 0, 0, 0.42),
+    0 12px 32px rgba(0, 0, 0, 0.38),
+    var(--glass-bevel-inset);
+  --glass-shadow-menu:
+    0 2px 8px rgba(0, 0, 0, 0.28),
+    0 12px 40px rgba(0, 0, 0, 0.48),
+    var(--glass-bevel-inset);
+  --glass-shadow-panel:
+    0 8px 24px rgba(0, 0, 0, 0.32),
+    0 24px 64px rgba(0, 0, 0, 0.48),
+    var(--glass-bevel-inset);
+  --floating-surface-shadow: var(--glass-shadow-floating);
   --minimap-mask: rgba(10, 10, 15, 0.75);
 }
 
@@ -214,10 +236,28 @@
   --glass-ring: rgba(0, 0, 0, 0.10);
   --glass-ring-strong: rgba(0, 0, 0, 0.06);
   --minimap-mask: color-mix(in srgb, var(--theme-text) 14%, transparent);
-  --floating-surface-shadow:
+  --glass-bevel-border: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.98) 0%,
+    color-mix(in srgb, var(--theme-text) 7%, transparent) 42%,
+    color-mix(in srgb, var(--theme-text) 14%, transparent) 100%
+  );
+  --glass-bevel-inset:
+    inset 0 1px 0 color-mix(in srgb, var(--theme-surface) 82%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--theme-surface) 38%, transparent);
+  --glass-shadow-floating:
     0 1px 2px color-mix(in srgb, var(--theme-text) 7%, transparent),
-    0 10px 30px color-mix(in srgb, var(--theme-text) 10%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--theme-surface) 78%, transparent);
+    0 12px 32px color-mix(in srgb, var(--theme-text) 10%, transparent),
+    var(--glass-bevel-inset);
+  --glass-shadow-menu:
+    0 2px 8px color-mix(in srgb, var(--theme-text) 6%, transparent),
+    0 12px 40px color-mix(in srgb, var(--theme-text) 11%, transparent),
+    var(--glass-bevel-inset);
+  --glass-shadow-panel:
+    0 8px 24px color-mix(in srgb, var(--theme-text) 8%, transparent),
+    0 24px 64px color-mix(in srgb, var(--theme-text) 12%, transparent),
+    var(--glass-bevel-inset);
+  --floating-surface-shadow: var(--glass-shadow-floating);
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -275,14 +315,40 @@
    Unified Glass Utility / 统一毛玻璃工具类
    ════════════════════════════════════════════════════════════════════════ */
 .glass-surface {
-  background: var(--glass-bg);
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
+  box-shadow: var(--glass-shadow-menu);
   backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
 }
 .glass-surface--light {
-  background: var(--glass-bg-light);
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--glass-bg-light), var(--glass-bg-light)) padding-box,
+    var(--glass-bevel-border) border-box;
+  box-shadow: var(--glass-shadow-floating);
   backdrop-filter: blur(var(--glass-blur-md));
-  border: 1px solid var(--glass-ring);
+}
+.glass-bevel {
+  --glass-bevel-bg: var(--glass-bg);
+  border-color: transparent;
+  background:
+    linear-gradient(var(--glass-bevel-bg), var(--glass-bevel-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
+  box-shadow: var(--glass-shadow-menu);
+}
+.glass-bevel--floating {
+  --glass-bevel-bg: var(--floating-surface-bg);
+  box-shadow: var(--glass-shadow-floating);
+}
+.glass-bevel--panel {
+  --glass-bevel-bg: var(--glass-panel-bg);
+  box-shadow: var(--glass-shadow-panel);
+}
+.glass-bevel--card {
+  --glass-bevel-bg: color-mix(in srgb, var(--theme-card) 95%, transparent);
+  box-shadow: var(--glass-shadow-floating);
 }
 
 /* Global toast: neutral glass surface with restrained semantic accents. */
@@ -574,13 +640,13 @@ textarea:focus {
   }
 }
 
-.app-header {
-  background-color: var(--floating-surface-bg);
-  box-shadow: var(--floating-surface-shadow, var(--tw-shadow));
-}
+.app-header,
 .footer-toolbar {
-  background-color: var(--floating-surface-bg);
-  box-shadow: var(--floating-surface-shadow, var(--tw-shadow));
+  border-color: transparent;
+  background:
+    linear-gradient(var(--floating-surface-bg), var(--floating-surface-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
+  box-shadow: var(--glass-shadow-floating, var(--tw-shadow));
 }
 
 .canvas-zoom-slider {

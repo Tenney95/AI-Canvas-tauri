@@ -165,10 +165,13 @@
   width: 280px;
   max-height: 360px;
   overflow-y: auto;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-ring);
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid transparent;
   border-radius: 10px;
-  box-shadow: 0 12px 40px var(--black-alpha-50);
+  box-shadow: var(--glass-shadow-menu);
   z-index: 100;
   padding: 4px;
   transform-origin: bottom left;

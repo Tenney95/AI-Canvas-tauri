@@ -285,7 +285,7 @@ function MultiSelectToolbar() {
     <>
       {distributionAxis && <DistributionGapHandles axis={distributionAxis} />}
       <div
-      className="fixed z-[9999] pointer-events-auto flex items-center gap-1 bg-canvas-card/95 border border-canvas-border backdrop-blur-xl rounded-lg px-2 py-1 shadow-xl"
+      className="glass-bevel glass-bevel--card fixed z-[9999] pointer-events-auto flex items-center gap-1 bg-canvas-card/95 border border-canvas-border backdrop-blur-xl rounded-lg px-2 py-1 shadow-xl"
       style={{
         left: toolbarScreenPos.x,
         top: toolbarScreenPos.y - 52,

@@ -83,4 +83,22 @@ describe('repairInterruptedAgentTasks', () => {
       steps: [{ status: 'waiting_approval', approval: { status: 'pending' } }],
     });
   });
+
+  it('normalizes diagnostics added after older task records were written', async () => {
+    const service = await import('../../../src/services/chat/agentTaskService');
+    const legacy = createInterruptedTask();
+    delete legacy.events;
+    delete legacy.metrics;
+    await service.saveAgentTask(legacy);
+
+    expect(await service.loadAgentTask(legacy.id)).toMatchObject({
+      events: [],
+      metrics: {
+        inputTokens: 0,
+        outputTokens: 0,
+        modelDurationMs: 0,
+        toolDurationMs: 0,
+      },
+    });
+  });
 });
