@@ -10,6 +10,7 @@ import { streamAssistantReply, resolveAssistantModel } from '../ai/assistantStre
 import { loadMessages } from './chatHistoryService';
 import { estimateTokens } from './contextManager';
 import type { ChatMessage, ConversationContextSummary } from '../../types/chat';
+import { emitAgentLifecycleEvent } from './agentLifecycle';
 
 /** 压缩时保留原文、不进入摘要的最近消息条数 */
 export const RECENT_KEEP_COUNT = 8;
@@ -158,9 +159,37 @@ export function compressConversationContext(
 ): Promise<ConversationContextSummary | null> {
   const existing = inFlight.get(conversationId);
   if (existing) return existing;
-  const task = doCompress(conversationId, options).finally(() => {
-    inFlight.delete(conversationId);
+  const previousUpdatedAt = useAppStore.getState().conversations.find(
+    (conversation) => conversation.id === conversationId,
+  )?.contextSummary?.updatedAt;
+  emitAgentLifecycleEvent({
+    type: 'context.compression',
+    conversationId,
+    phase: 'start',
   });
+  const task = doCompress(conversationId, options)
+    .then((summary) => {
+      emitAgentLifecycleEvent({
+        type: 'context.compression',
+        conversationId,
+        phase: 'end',
+        outcome: summary?.updatedAt !== previousUpdatedAt ? 'succeeded' : 'skipped',
+      });
+      return summary;
+    })
+    .catch((error) => {
+      emitAgentLifecycleEvent({
+        type: 'context.compression',
+        conversationId,
+        phase: 'end',
+        outcome: 'failed',
+        errorCode: 'CONTEXT_COMPRESSION_FAILED',
+      });
+      throw error;
+    })
+    .finally(() => {
+      inFlight.delete(conversationId);
+    });
   inFlight.set(conversationId, task);
   return task;
 }

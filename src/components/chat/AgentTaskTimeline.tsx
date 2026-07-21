@@ -101,6 +101,7 @@ export default function AgentTaskTimeline({
   onRewind,
 }: AgentTaskTimelineProps) {
   const isTerminal = AGENT_TERMINAL_STATUSES.has(task.status);
+  const isExpertTask = !!task.parentTaskId;
   const [expanded, setExpanded] = useState(!isTerminal);
 
   const meta = STATUS_META[task.status];
@@ -187,7 +188,7 @@ export default function AgentTaskTimeline({
           )}
 
           {/* 控制操作 */}
-          {!isTerminal && (
+          {!isTerminal && !isExpertTask && (
             <div className="mt-2.5 flex flex-wrap items-center gap-1 border-t border-canvas-border/60 pt-2">
               {isActive && task.status !== 'waiting_approval' && (
                 <ControlButton icon="mdi:pause" label="暂停" onClick={() => onPause(task.id)} />
@@ -207,12 +208,12 @@ export default function AgentTaskTimeline({
             </div>
           )}
 
-          {task.status === 'failed' && (
+          {task.status === 'failed' && !isExpertTask && (
             <div className="mt-2.5 flex items-center gap-1 border-t border-canvas-border/60 pt-2">
               <ControlButton icon="mdi:play" label="继续" tone="primary" onClick={() => onResume(task.id)} />
             </div>
           )}
-          {!isActive && hasCanvasCheckpoint && (
+          {!isExpertTask && !isActive && hasCanvasCheckpoint && (
             <div className="mt-2.5 flex items-center gap-1 border-t border-canvas-border/60 pt-2">
               <ControlButton
                 icon="mdi:backup-restore"

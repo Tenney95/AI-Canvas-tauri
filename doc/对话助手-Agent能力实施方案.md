@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3 阶段已完成；P4 Agent 运行时演进按方案 A 实施中
+> 文档状态：P3、P4 阶段已完成；P4 Agent 运行时演进已按方案 A 交付
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -53,13 +53,19 @@
 | P4-A | `[x]` | 同会话消息队列、运行中插话和串行调度 | 2026-07-21 | 2026-07-21 |
 | P4-B | `[x]` | 脱敏事件日志、安全恢复、任务回退、指标与任务中心 | 2026-07-21 | 2026-07-21 |
 | P4-C | `[x]` | 相关性记忆、可靠压缩、Skill Manifest 和只规划模式 | 2026-07-21 | 2026-07-21 |
-| P4-D | `[ ]` | 内部生命周期事件和受限只读专家 Agent |  |  |
+| P4-D | `[x]` | 内部生命周期事件和受限只读专家 Agent | 2026-07-21 | 2026-07-21 |
 
 ## 3. 已确认的产品决策
 
 ### 3.1 会话级 Agent 模式
 
-每个对话独立保存 Agent 模式，新对话默认使用 B，可随时切换 C。
+每个对话独立保存 Agent 模式，新对话默认使用 B，可随时切换 Plan、B 或 C。
+
+#### Plan：只规划模式
+
+- 只进行分析、规划和只读查询。
+- Tool Registry 不向模型暴露非 `read` 工具。
+- Policy Engine 对所有非 `read` effect 固定拒绝，Skill 和模型输出不能修改此边界。
 
 #### B：协作模式
 
@@ -1082,6 +1088,57 @@ type PolicyDecision =
 - 差异与编码：`git diff --check` 和阶段改动文本 UTF-8 严格解码通过
 - 交互限制：真实文本模型下的 Plan 对话、Skill 组合调用和压缩模型输出仍需最终 Tauri 手测；纯逻辑、权限边界和编译已覆盖
 
+### P4-D：内部生命周期事件与受限只读专家 Agent
+
+**状态：** `[x]`
+
+### 目标
+
+为内部诊断和后续界面扩展提供不会影响 Runtime/Policy 的类型化事件，同时允许主 Agent 请求独立、无工具、无副作用的结构审阅。
+
+### 实际文件
+
+- 新增：`src/services/chat/agentLifecycle.ts`
+- 新增：`src/services/chat/expertTaskService.ts`
+- 新增：`src/services/chat/tools/expertTools.ts`
+- 修改：`src/services/chat/tools/index.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/chat/contextCompressionService.ts`
+- 修改：`src/services/ai/assistantStream.ts`
+- 修改：`src/store/store.agent.ts`
+- 修改：`src/types/agent.ts`
+- 修改：`src/components/chat/AgentTaskCenter.tsx`
+- 修改：`src/components/chat/AgentTaskTimeline.tsx`
+- 新增：`tests/services/chat/agentLifecycle.test.ts`
+- 新增：`tests/services/chat/expertTools.test.ts`
+- 修改：`tests/services/chat/agentRuntimeDiagnostics.test.ts`
+
+### 实施结果
+
+- [x] 新增进程内类型化生命周期总线，覆盖任务状态、模型轮次、Policy、工具、审批、上下文压缩和专家任务。
+- [x] 事件只包含 ID、状态、effect、计数、耗时和稳定错误码等白名单元数据，不包含提示词、工具正文、异常正文、绝对路径或密钥。
+- [x] 同步监听器异常和异步监听器拒绝均被隔离，监听器返回值不会进入 Runtime 或改变 Policy 决策。
+- [x] 注册 `agent_run_expert_review` 只读工具，角色固定为画布结构、工作流风险和资产复用审阅。
+- [x] 专家输入只包含节点 ID、展示编号、类型、脱敏标签、状态和边关系，并限制为 500 个节点、1000 条边。
+- [x] 专家使用独立模型请求、独立系统提示和 `tools: []`，不接收会话历史、节点正文、模型配置、文件名、资产 ID、路径或外部网页。
+- [x] 专家子任务以 `AgentTask` 可选父子字段持久化，深度固定为 1，每个父任务最多 3 个；结果作为父工具 Observation 返回。
+- [x] 子任务固定 1 个模型轮次、0 次工具调用，不能独立恢复；任务中心显示角色、上级任务和子任务数量，并隐藏主任务控制。
+- [x] 未提供外部 Hook、Shell、HTTP、MCP 或插件监听器；未新增依赖、数据库 store、Tauri 权限或安全配置。
+
+### 回滚
+
+从工具注册入口移除 `registerExpertAgentTools()` 并移除生命周期 emit 装配即可关闭新行为。`AgentTask.parentTaskId`、`expertRole`、`expertDepth` 和 `resultSummary` 均为可选字段，旧版本可忽略；无需数据库降级或删除专家任务记录。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- 定向测试：`npm run test -- tests/services/chat/agentLifecycle.test.ts tests/services/chat/expertTools.test.ts tests/services/chat/agentRuntimeDiagnostics.test.ts tests/services/chat/agentApproval.test.ts tests/services/chat/contextCompression.test.ts tests/services/chat/policyEngine.test.ts tests/services/chat/toolRegistry.test.ts tests/services/chat/agentTaskService.test.ts`，8 个文件、40 个测试通过
+- 类型检查：`npm run typecheck`、`npm run test:typecheck` 通过
+- Lint：14 个阶段改动 TypeScript/TSX 文件定向 ESLint 通过
+- 生产构建：`npx vite build --outDir <系统临时目录>` 通过；保留既有动态导入和 chunk 体积警告
+- 差异与编码：`git diff --check` 和阶段改动文本 UTF-8 严格解码通过
+- 交互限制：真实文本模型下的三类专家输出质量与任务中心父子布局仍需最终 Tauri 手测；输入白名单、调用边界、预算和持久化已由测试覆盖
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1115,7 +1172,7 @@ type PolicyDecision =
 | 类别 | 必测内容 |
 |---|---|
 | 状态机 | 合法迁移、非法迁移、暂停、继续、停止、重启恢复 |
-| 模式 | B/C 权限差异、会话隔离、模式切换 |
+| 模式 | Plan/B/C 权限差异、会话隔离、模式切换 |
 | 工具 | schema、未知工具、未知字段、预算和中止 |
 | 画布 | revision、批量事务、一次撤销、项目切换 |
 | 媒体 | 逐次确认、重新生成确认、不自动重试、取消语义 |
@@ -1124,6 +1181,7 @@ type PolicyDecision =
 | 上下文 | 模型上限、压缩阈值、模型切换、摘要完整性 |
 | 记忆 | 候选、确认、来源、项目隔离、删除失效 |
 | 多会话 | 后台运行、状态徽标、任务不串用 |
+| 专家任务 | 角色白名单、输入脱敏、无工具、深度 1、每父任务最多 3 个 |
 
 ## 10. 依赖和安全检查点
 
@@ -1173,6 +1231,10 @@ type PolicyDecision =
 - [x] 模型不能访问未注册工具、任意路径、通用 Shell 或无限制网络。
 - [x] 日志不包含 API Key、绝对路径和完整敏感正文。
 - [x] 本文档所有阶段均填写真实完成记录和验证结果。
+- [x] 同会话任务串行，安全边界支持插话，成功写操作恢复后不重放。
+- [x] Plan 模式由 Registry 和 Policy 双层限制为只读。
+- [x] Skill Manifest 只能缩小任务工具集合，不能扩大权限。
+- [x] 只读专家任务无工具、无嵌套、无画布副作用，并在任务中心显示父子关系。
 
 ## 13. 变更日志
 
@@ -1194,3 +1256,4 @@ type PolicyDecision =
 | 2026-07-21 | P4-A | 完成同会话 FIFO、跨会话并行、排队取消、安全边界插话、恢复延迟接管和独立窗口 `dispatchMode` 同步。 |
 | 2026-07-21 | P4-B | 完成脱敏事件与指标、恢复步骤摘要、重复写抑制、连续尾部检查点回退，以及跨会话任务中心。 |
 | 2026-07-21 | P4-C | 完成相关性记忆、结构化摘要校验、Skill Manifest 工具上限，以及 Registry + Policy 双层保护的 Plan 模式。 |
+| 2026-07-21 | P4-D | 完成隔离的进程内生命周期事件、三类无工具只读专家、父子任务预算和任务中心关系展示。 |

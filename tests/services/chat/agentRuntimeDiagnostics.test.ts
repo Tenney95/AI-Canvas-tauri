@@ -20,6 +20,10 @@ vi.mock('../../../src/services/chat/contextManager', () => ({
 import { runAgentLoop } from '../../../src/services/chat/agentRuntime';
 import { fingerprintToolInput } from '../../../src/services/chat/agentCheckpointService';
 import {
+  clearAgentLifecycleListenersForTests,
+  subscribeAgentLifecycle,
+} from '../../../src/services/chat/agentLifecycle';
+import {
   clearAgentToolRegistryForTests,
   registerAgentTool,
 } from '../../../src/services/chat/toolRegistry';
@@ -81,7 +85,10 @@ beforeEach(() => {
   streamAssistantReplyMock.mockReset();
 });
 
-afterEach(() => clearAgentToolRegistryForTests());
+afterEach(() => {
+  clearAgentToolRegistryForTests();
+  clearAgentLifecycleListenersForTests();
+});
 
 function arrangeStream() {
   let round = 0;
@@ -99,6 +106,10 @@ function arrangeStream() {
 
 describe('agent runtime diagnostics', () => {
   it('records usage, lifecycle events, and a canvas checkpoint', async () => {
+    const lifecycleTypes: string[] = [];
+    const unsubscribe = subscribeAgentLifecycle((event) => {
+      lifecycleTypes.push(event.type);
+    });
     arrangeStream();
     registerAgentTool({
       id: 'canvas_write_test',
@@ -128,6 +139,12 @@ describe('agent runtime diagnostics', () => {
       revisionAfter: 1,
     });
     expect(task.events?.map((event) => event.type)).toContain('canvas_checkpoint');
+    expect(lifecycleTypes).toEqual(expect.arrayContaining([
+      'model.round',
+      'policy.decision',
+      'tool.execution',
+    ]));
+    unsubscribe();
   });
 
   it('does not re-execute an identical succeeded write after resume', async () => {
@@ -157,4 +174,3 @@ describe('agent runtime diagnostics', () => {
     });
   });
 });
-

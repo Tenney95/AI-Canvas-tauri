@@ -48,6 +48,7 @@ import {
   findSucceededDuplicateWrite,
   fingerprintToolInput,
 } from './agentCheckpointService';
+import { emitAgentLifecycleEvent } from './agentLifecycle';
 
 export type AgentExecutionOutcome =
   | 'completed'
@@ -128,6 +129,13 @@ export function transitionAgentTask(
   store.upsertAgentTask(nextTask);
   if (task.status !== nextStatus) {
     appendAgentEvent(taskId, 'task_status', { status: nextStatus });
+    emitAgentLifecycleEvent({
+      type: 'task.status',
+      taskId,
+      projectId: nextTask.projectId,
+      conversationId: nextTask.conversationId,
+      status: nextStatus,
+    });
   }
   return nextTask;
 }
@@ -237,6 +245,13 @@ export function validateTaskResumable(taskId: string): AgentResumeValidation {
   }
   if (!['paused', 'failed'].includes(task.status)) {
     return { ok: false, errorCode: 'AGENT_RESUME_NOT_RESUMABLE', message: '任务当前状态不支持继续' };
+  }
+  if (task.parentTaskId) {
+    return {
+      ok: false,
+      errorCode: 'AGENT_EXPERT_CHILD_NOT_RESUMABLE',
+      message: '专家子任务不能单独继续，请从上级任务重新规划',
+    };
   }
   if (store.currentProjectId !== task.projectId) {
     return {
@@ -449,6 +464,12 @@ async function executePreparedToolCall(
     callId: call.callId,
     effect: prepared.definition.effect,
   });
+  emitAgentLifecycleEvent({
+    type: 'tool.execution',
+    taskId,
+    toolId: call.toolId,
+    phase: 'start',
+  });
   const maxRetries = maxAutoRetriesForEffect(
     prepared.definition.effect,
     getTask(taskId).budget,
@@ -519,6 +540,15 @@ async function executePreparedToolCall(
         durationMs,
         retryCount,
       });
+      emitAgentLifecycleEvent({
+        type: 'tool.execution',
+        taskId,
+        toolId: call.toolId,
+        phase: 'end',
+        status,
+        durationMs,
+        errorCode: result.errorCode,
+      });
       if (canvasCheckpoint) {
         appendAgentEvent(taskId, 'canvas_checkpoint', {
           toolId: call.toolId,
@@ -539,7 +569,18 @@ async function executePreparedToolCall(
         modelContent,
       };
     } catch (error) {
-      if (context.signal.aborted) throw error;
+      if (context.signal.aborted) {
+        emitAgentLifecycleEvent({
+          type: 'tool.execution',
+          taskId,
+          toolId: call.toolId,
+          phase: 'end',
+          status: 'stopped',
+          durationMs: Date.now() - startedAt,
+          errorCode: 'AGENT_STOPPED',
+        });
+        throw error;
+      }
       if (prepared.definition.effect === 'read' && retryCount < maxRetries) {
         retryCount += 1;
         addAgentTaskMetrics(taskId, { retryCount: 1 });
@@ -583,6 +624,15 @@ async function executePreparedToolCall(
         errorCode: 'AGENT_TOOL_EXCEPTION',
         durationMs,
         retryCount,
+      });
+      emitAgentLifecycleEvent({
+        type: 'tool.execution',
+        taskId,
+        toolId: call.toolId,
+        phase: 'end',
+        status: 'failed',
+        durationMs,
+        errorCode: 'AGENT_TOOL_EXCEPTION',
       });
       return {
         summary: {
@@ -793,6 +843,12 @@ export async function runAgentLoop({
     let roundInputTokens = 0;
     let roundOutputTokens = 0;
     appendAgentEvent(taskId, 'model_round_start');
+    emitAgentLifecycleEvent({
+      type: 'model.round',
+      taskId,
+      phase: 'start',
+      round: task.modelRounds + 1,
+    });
     try {
       await streamAssistantReply({
         systemPrompt: '',
@@ -823,6 +879,15 @@ export async function runAgentLoop({
         modelDurationMs: durationMs,
       });
       appendAgentEvent(taskId, 'model_round_end', {
+        inputTokens: roundInputTokens,
+        outputTokens: roundOutputTokens,
+        durationMs,
+      });
+      emitAgentLifecycleEvent({
+        type: 'model.round',
+        taskId,
+        phase: 'end',
+        round: task.modelRounds + 1,
         inputTokens: roundInputTokens,
         outputTokens: roundOutputTokens,
         durationMs,
@@ -897,6 +962,13 @@ export async function runAgentLoop({
         callId: call.callId,
         effect: prepared.definition.effect,
         decision: policy.outcome === 'require_approval' ? 'require_approval' : policy.outcome,
+      });
+      emitAgentLifecycleEvent({
+        type: 'policy.decision',
+        taskId,
+        toolId: call.toolId,
+        effect: prepared.definition.effect,
+        outcome: policy.outcome,
       });
       if (policy.outcome === 'deny') {
         addAgentTaskMetrics(taskId, { policyDenied: 1 });
@@ -1008,6 +1080,12 @@ export async function runAgentLoop({
         appendAgentEvent(taskId, 'approval_resolved', {
           toolId: call.toolId,
           callId: call.callId,
+          approved: resolution.approved,
+        });
+        emitAgentLifecycleEvent({
+          type: 'approval.resolved',
+          taskId,
+          approvalId,
           approved: resolution.approved,
         });
         const resolvedAt = Date.now();

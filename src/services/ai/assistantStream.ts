@@ -332,6 +332,7 @@ export function buildAssistantSystemPrompt(
         `- 用户表达稳定偏好、确定事实、明确约束或做出决定时，可用 memory_suggest 提议保存项目记忆，由用户确认后写入`,
         `- memory_suggest 内容必须精简成一句话，不能包含文件全文、密钥或本地路径；普通问答不要调用`,
         `- 已确认的项目记忆会作为可信上下文自动提供，不需要重复提议已存在的记忆`,
+        `- 需要独立复核画布结构、工作流风险或资产复用时，可调用 agent_run_expert_review；每个主任务最多 3 次，专家只读且不能嵌套`,
         ``,
         buildMediaPrompt(),
       ]

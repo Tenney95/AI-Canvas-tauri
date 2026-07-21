@@ -6,6 +6,14 @@
 
 export type AgentMode = 'collaborative' | 'autonomous' | 'plan';
 
+export const AGENT_EXPERT_ROLES = [
+  'canvas_structure',
+  'workflow_risk',
+  'asset_reuse',
+] as const;
+
+export type AgentExpertRole = typeof AGENT_EXPERT_ROLES[number];
+
 export type AgentTaskStatus =
   | 'queued'
   | 'planning'
@@ -203,6 +211,11 @@ export interface AgentTask {
   budget: AgentTaskBudget;
   /** 任务创建时由用户显式引用的 Skill 计算，只能缩小 Registry 可见集合。 */
   toolAllowlist?: string[];
+  /** 只读专家任务的父任务；存在时嵌套深度固定为 1。 */
+  parentTaskId?: string;
+  expertRole?: AgentExpertRole;
+  expertDepth?: 1;
+  resultSummary?: string;
   events?: AgentEvent[];
   metrics?: AgentTaskMetrics;
   createdAt: number;
