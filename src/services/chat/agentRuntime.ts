@@ -42,6 +42,12 @@ import {
   openAgentInterjectionBuffer,
 } from './agentInterjection';
 import { cancelConversationAgentExecutions } from './agentScheduler';
+import { addAgentTaskMetrics, appendAgentEvent } from './agentJournal';
+import {
+  buildAgentResumeContext,
+  findSucceededDuplicateWrite,
+  fingerprintToolInput,
+} from './agentCheckpointService';
 
 export type AgentExecutionOutcome =
   | 'completed'
@@ -120,6 +126,9 @@ export function transitionAgentTask(
     completedAt: nextStatus === 'completed' ? now : partial.completedAt ?? task.completedAt,
   };
   store.upsertAgentTask(nextTask);
+  if (task.status !== nextStatus) {
+    appendAgentEvent(taskId, 'task_status', { status: nextStatus });
+  }
   return nextTask;
 }
 
@@ -428,6 +437,18 @@ async function executePreparedToolCall(
   context: AgentToolContext,
   step: AgentStep,
 ): Promise<ExecutedToolCall> {
+  const startedAt = Date.now();
+  const checkpointBefore = prepared.definition.effect === 'canvas_write'
+    ? {
+        historyIndex: useAppStore.getState().historyIndex,
+        revision: useAppStore.getState().getCurrentRevision(),
+      }
+    : undefined;
+  appendAgentEvent(taskId, 'tool_start', {
+    toolId: call.toolId,
+    callId: call.callId,
+    effect: prepared.definition.effect,
+  });
   const maxRetries = maxAutoRetriesForEffect(
     prepared.definition.effect,
     getTask(taskId).budget,
@@ -439,6 +460,7 @@ async function executePreparedToolCall(
       const result = await prepared.definition.execute(context, prepared.input);
       if (result.status === 'error' && result.retryable && retryCount < maxRetries) {
         retryCount += 1;
+        addAgentTaskMetrics(taskId, { retryCount: 1 });
         updateStep(taskId, step.id, {
           toolCall: {
             ...step.toolCall!,
@@ -453,18 +475,57 @@ async function executePreparedToolCall(
 
       const status = result.status === 'success' ? 'succeeded' : 'failed';
       const persistentSummary = sanitizePersistentSummary(result.summary);
+      const checkpointAfter = checkpointBefore && result.status === 'success'
+        ? {
+            historyIndex: useAppStore.getState().historyIndex,
+            revision: useAppStore.getState().getCurrentRevision(),
+          }
+        : undefined;
+      const canvasCheckpoint = checkpointBefore && checkpointAfter
+        && (
+          checkpointBefore.historyIndex !== checkpointAfter.historyIndex
+          || checkpointBefore.revision !== checkpointAfter.revision
+        )
+        ? {
+            historyIndexBefore: checkpointBefore.historyIndex,
+            historyIndexAfter: checkpointAfter.historyIndex,
+            revisionBefore: checkpointBefore.revision,
+            revisionAfter: checkpointAfter.revision,
+          }
+        : undefined;
+      const currentToolCall = getTask(taskId).steps.find((item) => item.id === step.id)?.toolCall
+        ?? step.toolCall!;
       updateStep(taskId, step.id, {
         status,
         outputSummary: persistentSummary,
         errorCode: result.errorCode,
         toolCall: {
-          ...step.toolCall!,
+          ...currentToolCall,
           retryCount,
           finishedAt: Date.now(),
           resultSummary: persistentSummary,
           errorCode: result.errorCode,
+          canvasCheckpoint,
         },
       });
+      const durationMs = Date.now() - startedAt;
+      addAgentTaskMetrics(taskId, { toolDurationMs: durationMs });
+      appendAgentEvent(taskId, 'tool_end', {
+        toolId: call.toolId,
+        callId: call.callId,
+        effect: prepared.definition.effect,
+        status,
+        errorCode: result.errorCode,
+        durationMs,
+        retryCount,
+      });
+      if (canvasCheckpoint) {
+        appendAgentEvent(taskId, 'canvas_checkpoint', {
+          toolId: call.toolId,
+          callId: call.callId,
+          ...canvasCheckpoint,
+        });
+      }
       const modelContentLimit = 20_000;
       const modelContent = result.modelContent.slice(0, modelContentLimit);
       return {
@@ -481,6 +542,7 @@ async function executePreparedToolCall(
       if (context.signal.aborted) throw error;
       if (prepared.definition.effect === 'read' && retryCount < maxRetries) {
         retryCount += 1;
+        addAgentTaskMetrics(taskId, { retryCount: 1 });
         const retryMessage = sanitizePersistentSummary(
           error instanceof Error ? error.message : '只读工具执行失败',
         );
@@ -510,6 +572,17 @@ async function executePreparedToolCall(
           errorCode: 'AGENT_TOOL_EXCEPTION',
           resultSummary: message,
         },
+      });
+      const durationMs = Date.now() - startedAt;
+      addAgentTaskMetrics(taskId, { toolDurationMs: durationMs });
+      appendAgentEvent(taskId, 'tool_end', {
+        toolId: call.toolId,
+        callId: call.callId,
+        effect: prepared.definition.effect,
+        status: 'failed',
+        errorCode: 'AGENT_TOOL_EXCEPTION',
+        durationMs,
+        retryCount,
       });
       return {
         summary: {
@@ -641,6 +714,13 @@ export async function runAgentLoop({
       signal,
     });
     messages = assembled.messages;
+    const resumeContext = buildAgentResumeContext(initialTask);
+    if (resumeContext) {
+      messages.splice(Math.min(1, messages.length), 0, {
+        role: 'system',
+        content: resumeContext,
+      });
+    }
   } catch (error) {
     if (signal.aborted) throw error;
     if (error instanceof ContextBudgetError) {
@@ -670,6 +750,10 @@ export async function runAgentLoop({
     };
     const interjections = drainAgentInterjections(taskId);
     for (const interjection of interjections) {
+      addAgentTaskMetrics(taskId, { interjectionCount: 1 });
+      appendAgentEvent(taskId, 'interjection_applied', {
+        interjectionId: interjection.id,
+      });
       messages.push({
         role: 'user',
         content: [
@@ -704,24 +788,45 @@ export async function runAgentLoop({
     const proposedCalls: ProposedToolCall[] = [];
     let roundText = '';
     const tools = buildAssistantFunctionTools(roundContext);
-    await streamAssistantReply({
-      systemPrompt: '',
-      userMessage: '',
-      messages,
-      tools,
-      signal,
-      onEvent: (event: AssistantStreamEvent) => {
-        if (event.type === 'text.delta') {
-          roundText += event.delta;
-          fullText += event.delta;
-          callbacks.onTextDelta?.(event.delta);
-        } else if (event.type === 'tool.call.final') {
-          proposedCalls.push(event.call);
-        } else if (event.type === 'error') {
-          callbacks.onError?.(event.message);
-        }
-      },
-    });
+    const modelStartedAt = Date.now();
+    let roundInputTokens = 0;
+    let roundOutputTokens = 0;
+    appendAgentEvent(taskId, 'model_round_start');
+    try {
+      await streamAssistantReply({
+        systemPrompt: '',
+        userMessage: '',
+        messages,
+        tools,
+        signal,
+        onEvent: (event: AssistantStreamEvent) => {
+          if (event.type === 'text.delta') {
+            roundText += event.delta;
+            fullText += event.delta;
+            callbacks.onTextDelta?.(event.delta);
+          } else if (event.type === 'tool.call.final') {
+            proposedCalls.push(event.call);
+          } else if (event.type === 'error') {
+            callbacks.onError?.(event.message);
+          } else if (event.type === 'usage') {
+            roundInputTokens += event.inputTokens ?? 0;
+            roundOutputTokens += event.outputTokens ?? 0;
+          }
+        },
+      });
+    } finally {
+      const durationMs = Date.now() - modelStartedAt;
+      addAgentTaskMetrics(taskId, {
+        inputTokens: roundInputTokens,
+        outputTokens: roundOutputTokens,
+        modelDurationMs: durationMs,
+      });
+      appendAgentEvent(taskId, 'model_round_end', {
+        inputTokens: roundInputTokens,
+        outputTokens: roundOutputTokens,
+        durationMs,
+      });
+    }
 
     if (proposedCalls.length === 0) {
       callbacks.onComplete?.(fullText);
@@ -761,6 +866,10 @@ export async function runAgentLoop({
     }> = [];
 
     for (const call of proposedCalls) {
+      appendAgentEvent(taskId, 'tool_proposed', {
+        toolId: call.toolId,
+        callId: call.callId,
+      });
       const preparedResult = prepareAgentToolCall(call, roundContext);
       if (!preparedResult.ok) {
         results.set(call.callId, {
@@ -782,7 +891,14 @@ export async function runAgentLoop({
         prepared.input,
         roundContext,
       );
+      appendAgentEvent(taskId, 'policy_decision', {
+        toolId: call.toolId,
+        callId: call.callId,
+        effect: prepared.definition.effect,
+        decision: policy.outcome === 'require_approval' ? 'require_approval' : policy.outcome,
+      });
       if (policy.outcome === 'deny') {
+        addAgentTaskMetrics(taskId, { policyDenied: 1 });
         const denied: ToolResultSummary = {
           callId: call.callId,
           toolId: call.toolId,
@@ -794,6 +910,10 @@ export async function runAgentLoop({
         callbacks.onToolResult?.(denied);
         continue;
       }
+      addAgentTaskMetrics(taskId, {
+        policyAllowed: policy.outcome === 'allow' ? 1 : 0,
+        approvalCount: policy.outcome === 'require_approval' ? 1 : 0,
+      });
 
       const now = Date.now();
       const stepIndex = getTask(taskId).steps.length;
@@ -819,6 +939,8 @@ export async function runAgentLoop({
           ).slice(0, 500),
           retryCount: 0,
           startedAt: now,
+          effect: prepared.definition.effect,
+          inputFingerprint: fingerprintToolInput(call.toolId, prepared.input),
         },
         ...(policy.outcome === 'require_approval'
           ? {
@@ -882,6 +1004,11 @@ export async function runAgentLoop({
           }
         }
         const canExecute = resolution.approved && !approvalError;
+        appendAgentEvent(taskId, 'approval_resolved', {
+          toolId: call.toolId,
+          callId: call.callId,
+          approved: resolution.approved,
+        });
         const resolvedAt = Date.now();
         updateTaskSnapshot(taskId, (current) => ({
           ...current,
@@ -944,6 +1071,41 @@ export async function runAgentLoop({
           continue;
         }
         transitionAgentTask(taskId, 'running');
+      }
+
+      const inputFingerprint = fingerprintToolInput(call.toolId, prepared.input);
+      updateStep(taskId, step.id, {
+        toolCall: {
+          ...(getTask(taskId).steps.find((item) => item.id === step.id)?.toolCall ?? step.toolCall!),
+          inputFingerprint,
+        },
+      });
+      const duplicate = prepared.definition.effect !== 'read'
+        ? findSucceededDuplicateWrite(getTask(taskId), call.toolId, inputFingerprint, step.id)
+        : undefined;
+      if (duplicate) {
+        const summary = duplicate.outputSummary
+          || duplicate.toolCall?.resultSummary
+          || '该写操作已成功执行';
+        const reused: ToolResultSummary = {
+          callId: call.callId,
+          toolId: call.toolId,
+          status: 'success',
+          summary: `已复用先前成功结果：${summary}`,
+          truncated: false,
+        };
+        updateStep(taskId, step.id, {
+          status: 'succeeded',
+          outputSummary: reused.summary,
+          toolCall: {
+            ...(getTask(taskId).steps.find((item) => item.id === step.id)?.toolCall ?? step.toolCall!),
+            finishedAt: Date.now(),
+            resultSummary: reused.summary,
+          },
+        });
+        results.set(call.callId, { summary: reused, modelContent: reused.summary });
+        callbacks.onToolResult?.(reused);
+        continue;
       }
 
       allowedCalls.push({

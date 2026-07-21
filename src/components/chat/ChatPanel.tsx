@@ -25,6 +25,7 @@ import ChatHeader from './ChatHeader';
 import ChatMessages from './ChatMessages';
 import ChatInput from './ChatInput';
 import ProjectMemoryPanel from './ProjectMemoryPanel';
+import AgentTaskCenter from './AgentTaskCenter';
 import {
   initMainWindowListener,
   emitAction,
@@ -60,6 +61,7 @@ import {
   scheduleConversationAgentExecution,
 } from '../../services/chat/agentScheduler';
 import { enqueueAgentInterjection } from '../../services/chat/agentInterjection';
+import { rewindAgentTaskCanvas } from '../../services/chat/agentRewindService';
 import { getAvailableAgentTools } from '../../services/chat/toolRegistry';
 import { ensureAgentToolsRegistered } from '../../services/chat/tools';
 import { estimateConversationUsage } from '../../services/chat/contextManager';
@@ -321,6 +323,7 @@ export default function ChatPanel({
   const pendingConversationDraftRef = useRef<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'chat'>('chat');
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
+  const [showTaskCenter, setShowTaskCenter] = useState(false);
   const currentProjectMemories = effectiveProjectId
     ? projectMemories.filter((memory) => memory.projectId === effectiveProjectId)
     : [];
@@ -527,6 +530,12 @@ export default function ChatPanel({
       requestAgentReplan(taskId);
       resumeAgentTaskExecution(taskId, scrollToBottom);
       showToast('正在重新规划任务', 'info');
+    },
+    onRewind: (taskId: string) => {
+      if (detached) { void emitAction({ type: 'rewind_agent_task', taskId }); return; }
+      void rewindAgentTaskCanvas(taskId).then((result) => {
+        showToast(result.ok ? '已回退该任务的画布修改' : (result.message ?? '无法回退任务'), result.ok ? 'info' : 'error');
+      });
     },
   }), [
     detached,
@@ -943,6 +952,12 @@ export default function ChatPanel({
               resumeAgentTaskExecution(action.taskId);
               break;
 
+            case 'rewind_agent_task':
+              void rewindAgentTaskCanvas(action.taskId).then((result) => {
+                store.showToast(result.ok ? '已回退该任务的画布修改' : (result.message ?? '无法回退任务'), result.ok ? 'info' : 'error');
+              });
+              break;
+
             case 'select_model': {
               const cfg: Record<string, string | undefined> = {};
               const c = action.category || 'text';
@@ -1078,6 +1093,9 @@ export default function ChatPanel({
               onOpenMemory={!detached && effectiveProjectId
                 ? () => setShowMemoryPanel(true)
                 : undefined}
+              onOpenTasks={() => setShowTaskCenter(true)}
+              activeTaskCount={effectiveAgentTasks.filter((task) =>
+                !['completed', 'failed', 'stopped'].includes(task.status)).length}
               showBackButton={viewMode === 'chat' && !!effectiveActiveConversationId}
               onBack={handleShowList}
               onDetachToggle={handleDetachToggle}
@@ -1087,6 +1105,15 @@ export default function ChatPanel({
 
             {/* Body: dual-pane layout */}
             <div className="chat-panel-body flex flex-1 min-h-0">
+              {showTaskCenter ? (
+                <AgentTaskCenter
+                  tasks={effectiveAgentTasks.filter((task) => task.projectId === effectiveProjectId)}
+                  conversations={effectiveConversations}
+                  onClose={() => setShowTaskCenter(false)}
+                  {...agentControls}
+                />
+              ) : (
+                <>
               {/* Conversation list pane */}
               {viewMode === 'list' && (
                 <motion.div
@@ -1170,6 +1197,8 @@ export default function ChatPanel({
                     />
                   )}
                 </motion.div>
+              )}
+                </>
               )}
             </div>
 

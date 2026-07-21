@@ -8,6 +8,7 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import {
   DEFAULT_AGENT_TASK_BUDGET,
+  DEFAULT_AGENT_TASK_METRICS,
   type AgentMode,
   type AgentTask,
   type AgentTaskBudget,
@@ -67,6 +68,14 @@ export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set
         ...DEFAULT_AGENT_TASK_BUDGET,
         ...input.budget,
       },
+      events: [{
+        id: `${taskId}-event-0`,
+        taskId,
+        sequence: 0,
+        type: 'task_queued',
+        timestamp: now,
+      }],
+      metrics: { ...DEFAULT_AGENT_TASK_METRICS },
       createdAt: now,
       updatedAt: now,
     };

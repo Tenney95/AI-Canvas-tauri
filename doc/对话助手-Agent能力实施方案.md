@@ -51,8 +51,8 @@
 | P3-E1 | `[x]` | Agent 任务时间线和后台控制 | 2026-07-16 | 2026-07-16 |
 | P3-E2 | `[x]` | 重启恢复、安全加固和端到端验收 | 2026-07-16 | 2026-07-16 |
 | P4-A | `[x]` | 同会话消息队列、运行中插话和串行调度 | 2026-07-21 | 2026-07-21 |
-| P4-B | `[~]` | 脱敏事件日志、安全恢复、任务回退、指标与任务中心 | 2026-07-21 |  |
-| P4-C | `[ ]` | 相关性记忆、可靠压缩、Skill Manifest 和只规划模式 |  |  |
+| P4-B | `[x]` | 脱敏事件日志、安全恢复、任务回退、指标与任务中心 | 2026-07-21 | 2026-07-21 |
+| P4-C | `[~]` | 相关性记忆、可靠压缩、Skill Manifest 和只规划模式 | 2026-07-21 |  |
 | P4-D | `[ ]` | 内部生命周期事件和受限只读专家 Agent |  |  |
 
 ## 3. 已确认的产品决策
@@ -967,6 +967,60 @@ type PolicyDecision =
 - Lint：8 个阶段改动文件定向 ESLint 通过
 - 差异检查：`git diff --check` 通过
 
+### P4-B：诊断、安全恢复、任务回退与任务中心
+
+**状态：** `[x]`
+
+### 目标
+
+为长任务提供脱敏、可恢复、可观测的执行快照；成功写操作恢复后不重放，任务画布修改仅在无交错历史时整体回退，并在主/独立聊天窗口统一展示跨会话任务。
+
+### 实际文件
+
+- 修改：`src/types/agent.ts`
+- 修改：`src/store/store.agent.ts`
+- 修改：`src/services/chat/agentTaskService.ts`
+- 新增：`src/services/chat/agentJournal.ts`
+- 新增：`src/services/chat/agentCheckpointService.ts`
+- 新增：`src/services/chat/agentRewindService.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/chat/chatWindowService.ts`
+- 新增：`src/components/chat/AgentTaskCenter.tsx`
+- 修改：`src/components/chat/AgentTaskTimeline.tsx`
+- 修改：`src/components/chat/ChatHeader.tsx`
+- 修改：`src/components/chat/ChatPanel.tsx`
+- 新增：`tests/services/chat/agentJournal.test.ts`
+- 新增：`tests/services/chat/agentCheckpointService.test.ts`
+- 新增：`tests/services/chat/agentRewindService.test.ts`
+- 新增：`tests/services/chat/agentRuntimeDiagnostics.test.ts`
+- 修改：`tests/services/chat/agentTaskService.test.ts`
+- 新增：`doc/adr/0002-agent-runtime-evolution.md`
+
+### 实施结果
+
+- [x] AgentTask 兼容新增最多 200 条的脱敏事件和累计指标；旧记录读取时补零值。
+- [x] 事件数据使用固定字段白名单，只保存工具 ID、状态、Policy 结果、token、耗时、错误码、revision 和历史索引。
+- [x] Runtime 记录模型轮次、usage、Policy、审批、工具、重试和终态；任务时间线展示 token 与模型/工具耗时。
+- [x] 恢复上下文注入既有步骤摘要，并用稳定输入哈希抑制相同成功写调用。
+- [x] canvas 写成功后记录执行前后 historyIndex 与 revision。
+- [x] 整体回退校验 projectId、连续检查点链、当前历史尾部和 revision；回退后 revision 单调递增。
+- [x] 任务中心聚合当前项目跨会话任务，支持进行中/全部视图并复用审批和任务控制。
+- [x] 主窗口与独立窗口新增同一 `rewind_agent_task` Action，不引入第二写入源。
+- [x] 未新增 object store，IndexedDB 仍为 v13；未新增依赖或 Tauri 权限。
+
+### 回滚
+
+退掉任务中心和回退 Action，移除 Runtime 的 journal/checkpoint 装配即可。`AgentTask.events`、`metrics` 和工具检查点字段均可选，旧版本会忽略；不需要数据库降级或数据删除。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- Runtime 定向测试：诊断、审批、Journal、Checkpoint、Rewind、Task Service、Tool Registry 和 History 测试通过
+- 类型检查：`npm run typecheck`、`npm run test:typecheck` 通过
+- Lint：17 个阶段改动文件定向 ESLint 通过
+- 差异检查：`git diff --check` 通过
+- 交互限制：真实模型 usage 事件与独立窗口任务中心仍需最终 Tauri 手测；纯逻辑、协议和渲染类型已由测试与编译覆盖
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1077,3 +1131,4 @@ type PolicyDecision =
 | 2026-07-19 | P3-F1 | 新增 Agent 快捷指令查询、创建、修改和分步调用工具；定义写入与画布操作沿用既有审批，媒体步骤逐次确认，运行节点校验 task 归属、顺序和 revision。 |
 | 2026-07-19 | 平台补充 | 通用模型增加声明式执行协议：文本节点可配置端点、鉴权、请求/响应和同步/异步轮询；对话助手与 Agent 仅接受显式 `openai-sse` 兼容协议，未扩大工具、确认或付费媒体权限。 |
 | 2026-07-21 | P4-A | 完成同会话 FIFO、跨会话并行、排队取消、安全边界插话、恢复延迟接管和独立窗口 `dispatchMode` 同步。 |
+| 2026-07-21 | P4-B | 完成脱敏事件与指标、恢复步骤摘要、重复写抑制、连续尾部检查点回退，以及跨会话任务中心。 |
