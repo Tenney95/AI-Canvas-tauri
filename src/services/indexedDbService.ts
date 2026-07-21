@@ -4,7 +4,7 @@
 import type { AgentMode, AgentTask } from '../types/agent';
 import type { ConversationContextSummary } from '../types/chat';
 import type { ProjectMemory } from '../types/memory';
-import type { PresetAdvancedConfig, UserPresetMode } from '../types';
+import type { PresetAdvancedConfig, SkillManifest, UserPresetMode } from '../types';
 
 const DB_NAME = 'ai-canvas-db';
 const DB_VERSION = 13; // v13: user-confirmed project memory
@@ -309,6 +309,7 @@ export interface SkillRecord {
   sourceType: string;
   storagePath?: string;
   entryFileName?: string;
+  manifest?: SkillManifest;
   createdAt: number;
 }
 

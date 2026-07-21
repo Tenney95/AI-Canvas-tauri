@@ -65,6 +65,10 @@ import { rewindAgentTaskCanvas } from '../../services/chat/agentRewindService';
 import { getAvailableAgentTools } from '../../services/chat/toolRegistry';
 import { ensureAgentToolsRegistered } from '../../services/chat/tools';
 import { estimateConversationUsage } from '../../services/chat/contextManager';
+import {
+  expandSkillReferences,
+  resolveSkillToolAllowlist,
+} from '../../services/skillPromptService';
 import type { ChatMessage } from '../../types/chat';
 import {
   DEFAULT_AGENT_TASK_BUDGET,
@@ -376,12 +380,7 @@ export default function ChatPanel({
       return;
     }
     updateConversation(effectiveActiveConversationId, { agentMode: mode });
-    showToast(
-      mode === 'autonomous'
-        ? '已切换到 C 自主模式：画布操作可自动执行，付费媒体和文件写入仍需确认'
-        : '已切换到 B 协作模式：画布写操作将先预览确认',
-      'info',
-    );
+    showToast(getAgentModeToast(mode), 'info');
   }, [
     detached,
     effectiveActiveConversationId,
@@ -907,12 +906,7 @@ export default function ChatPanel({
 
             case 'set_agent_mode':
               store.updateConversation(action.conversationId, { agentMode: action.mode });
-              store.showToast(
-                action.mode === 'autonomous'
-                  ? '已切换到 C 自主模式：画布操作可自动执行，付费媒体和文件写入仍需确认'
-                  : '已切换到 B 协作模式：画布写操作将先预览确认',
-                'info',
-              );
+              store.showToast(getAgentModeToast(action.mode), 'info');
               break;
 
             case 'resolve_agent_approval':
@@ -1227,6 +1221,14 @@ interface StartAgentMessageExecutionOptions {
   onProgress?: () => void;
 }
 
+function getAgentModeToast(mode: AgentMode): string {
+  if (mode === 'plan') return '已切换到 Plan 模式：仅分析与规划，不执行任何写操作';
+  if (mode === 'autonomous') {
+    return '已切换到 C 自主模式：画布操作可自动执行，付费媒体和文件写入仍需确认';
+  }
+  return '已切换到 B 协作模式：画布写操作将先预览确认';
+}
+
 function startAgentMessageExecution({
   text,
   projectId,
@@ -1244,6 +1246,7 @@ function startAgentMessageExecution({
     userMessageId,
     mode,
     goal: text,
+    toolAllowlist: resolveSkillToolAllowlist(text, store.userSkills),
   });
   store.updateMessage(assistantMessageId, { agentTaskId: task.id });
   scheduleAgentTaskExecution(task.id, assistantMessageId, onProgress);
@@ -1337,12 +1340,17 @@ function driveAgentTask(
         projectId,
         conversationId,
         mode,
+        toolAllowlist: task.toolAllowlist,
       });
-      if (availableTools.length > 0) {
+      if (
+        availableTools.length > 0
+        || mode === 'plan'
+        || task.toolAllowlist !== undefined
+      ) {
         return runAgentLoop({
           taskId,
           systemPrompt: buildAssistantSystemPrompt({ agentTools: true }),
-          userMessage: text,
+          userMessage: expandSkillReferences(text, store.userSkills),
           excludeMessageIds: [userMessageId, assistantMessageId],
           signal,
           callbacks: {
@@ -1405,6 +1413,17 @@ function driveAgentTask(
         signal,
       });
       return failed ? 'failed' : 'completed';
+    }
+
+    if (mode === 'plan' || task.toolAllowlist !== undefined) {
+      useAppStore.getState().updateMessage(assistantMessageId, {
+        content: mode === 'plan'
+          ? 'Plan 模式需要配置文本模型后才能生成分析与规划；未执行任何写操作。'
+          : '该 Skill 声明了工具限制，需要配置文本模型后才能安全执行；未执行任何操作。',
+        status: 'done',
+      });
+      onProgress?.();
+      return 'completed';
     }
 
     try {

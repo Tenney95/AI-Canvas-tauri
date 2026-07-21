@@ -36,7 +36,7 @@ function context(mode: AgentMode) {
 }
 
 describe('evaluateAgentToolPolicy', () => {
-  it.each<AgentMode>(['collaborative', 'autonomous'])(
+  it.each<AgentMode>(['collaborative', 'autonomous', 'plan'])(
     'allows read tools automatically in %s mode',
     (mode) => {
       expect(evaluateAgentToolPolicy(createTool('read'), {}, context(mode))).toMatchObject({
@@ -58,6 +58,20 @@ describe('evaluateAgentToolPolicy', () => {
     expect(
       evaluateAgentToolPolicy(createTool('canvas_write'), {}, context('autonomous')),
     ).toMatchObject({ outcome: 'allow' });
+  });
+
+  it.each<Exclude<AgentToolEffect, 'read'>>([
+    'canvas_write',
+    'file_write',
+    'permanent_delete',
+    'media_generation',
+    'memory_write',
+  ])('denies %s independently in plan mode', (effect) => {
+    expect(evaluateAgentToolPolicy(createTool(effect), {}, context('plan'))).toEqual({
+      outcome: 'deny',
+      reason: 'Plan 模式只允许使用只读工具',
+      errorCode: 'AGENT_PLAN_MODE_READ_ONLY',
+    });
   });
 
   it.each<AgentToolEffect>([

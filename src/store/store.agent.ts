@@ -22,6 +22,7 @@ export interface CreateAgentTaskInput {
   mode: AgentMode;
   goal: string;
   budget?: Partial<AgentTaskBudget>;
+  toolAllowlist?: string[];
 }
 
 export interface AgentSlice {
@@ -68,6 +69,9 @@ export const createAgentSlice: StateCreator<AppState, [], [], AgentSlice> = (set
         ...DEFAULT_AGENT_TASK_BUDGET,
         ...input.budget,
       },
+      toolAllowlist: input.toolAllowlist
+        ? [...new Set(input.toolAllowlist)]
+        : undefined,
       events: [{
         id: `${taskId}-event-0`,
         taskId,

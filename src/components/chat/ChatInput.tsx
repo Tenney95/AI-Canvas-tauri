@@ -14,6 +14,7 @@ import ChatComposerEditor, { type ChatComposerEditorHandle } from './ChatCompose
 import type { BaseNodeData, GeneralModelConfig, ModelOption } from '../../types';
 import type { ContextUsageStat } from '../../services/chat/contextManager';
 import { useAppStore } from '../../store/useAppStore';
+import { isSkillUserInvocable } from '../../services/skillPromptService';
 import {
   type MediaModelOption,
 } from '../nodes/shared/defaultModels';
@@ -178,12 +179,14 @@ export default function ChatInput({
       node.data.type,
       node.id,
     )), [canvasNodes, modelQuery]);
-  const filteredSkills = useMemo(() => userSkills.filter((skill) => fuzzyMatchText(
-    skillQuery,
-    skill.name,
-    skill.description,
-    skill.fileName,
-  )), [skillQuery, userSkills]);
+  const filteredSkills = useMemo(() => userSkills
+    .filter(isSkillUserInvocable)
+    .filter((skill) => fuzzyMatchText(
+      skillQuery,
+      skill.name,
+      skill.description,
+      skill.fileName,
+    )), [skillQuery, userSkills]);
   const nodeDisplayIds = useMemo(
     () => new Map(canvasNodes.map((node) => [node.id, node.data.displayId])),
     [canvasNodes],

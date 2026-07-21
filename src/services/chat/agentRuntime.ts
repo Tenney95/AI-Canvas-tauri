@@ -700,6 +700,7 @@ export async function runAgentLoop({
     projectId: initialTask.projectId,
     conversationId: initialTask.conversationId,
     mode: initialTask.mode,
+    toolAllowlist: initialTask.toolAllowlist,
   };
 
   // 按当前模型上下文预算组装历史；接近上限时自动压缩，压缩失败不发送超限请求

@@ -52,7 +52,7 @@
 | P3-E2 | `[x]` | 重启恢复、安全加固和端到端验收 | 2026-07-16 | 2026-07-16 |
 | P4-A | `[x]` | 同会话消息队列、运行中插话和串行调度 | 2026-07-21 | 2026-07-21 |
 | P4-B | `[x]` | 脱敏事件日志、安全恢复、任务回退、指标与任务中心 | 2026-07-21 | 2026-07-21 |
-| P4-C | `[~]` | 相关性记忆、可靠压缩、Skill Manifest 和只规划模式 | 2026-07-21 |  |
+| P4-C | `[x]` | 相关性记忆、可靠压缩、Skill Manifest 和只规划模式 | 2026-07-21 | 2026-07-21 |
 | P4-D | `[ ]` | 内部生命周期事件和受限只读专家 Agent |  |  |
 
 ## 3. 已确认的产品决策
@@ -1021,6 +1021,67 @@ type PolicyDecision =
 - 差异检查：`git diff --check` 通过
 - 交互限制：真实模型 usage 事件与独立窗口任务中心仍需最终 Tauri 手测；纯逻辑、协议和渲染类型已由测试与编译覆盖
 
+### P4-C：相关性记忆、可靠压缩、Skill Manifest 与 Plan 模式
+
+**状态：** `[x]`
+
+### 目标
+
+提升长对话的上下文质量，为上传 Skill 增加只会收窄权限的轻量声明，并提供只能分析、规划和读取的 Plan 模式。
+
+### 实际文件
+
+- 新增：`src/services/chat/memoryRetrieval.ts`
+- 新增：`src/services/chat/skillManifest.ts`
+- 修改：`src/services/chat/contextManager.ts`
+- 修改：`src/services/chat/contextCompressionService.ts`
+- 修改：`src/services/chat/toolRegistry.ts`
+- 修改：`src/services/chat/policyEngine.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/skillPromptService.ts`
+- 修改：`src/services/indexedDbService.ts`
+- 修改：`src/store/store.skills.ts`
+- 修改：`src/store/store.agent.ts`
+- 修改：`src/types/index.ts`
+- 修改：`src/types/chat.ts`
+- 修改：`src/types/agent.ts`
+- 修改：`src/services/ai/assistantStream.ts`
+- 修改：`src/components/chat/ChatPanel.tsx`
+- 修改：`src/components/chat/ChatInput.tsx`
+- 修改：`src/components/chat/AgentModeSelector.tsx`
+- 修改：`src/components/nodes/shared/SlashCommandMenu.tsx`
+- 新增：`tests/services/chat/memoryRetrieval.test.ts`
+- 新增：`tests/services/chat/contextCompression.test.ts`
+- 新增：`tests/services/chat/skillManifest.test.ts`
+- 修改：`tests/services/chat/toolRegistry.test.ts`
+- 修改：`tests/services/chat/policyEngine.test.ts`
+
+### 实施结果
+
+- [x] 项目记忆按当前用户消息计算中英文词项相关性、类别权重、30 天时间衰减和 MMR 去重，继续受 1500 token 预算约束。
+- [x] 压缩摘要使用六个固定区段，纳入最近任务/步骤状态，并校验节点引用、模型引用、来源编号和 URL 锚点；无效摘要不覆盖旧摘要。
+- [x] Skill 入口文件支持无依赖轻量 frontmatter：`name`、`description`、`when-to-use`、`allowed-tools`、`user-invocable`、`disable-model-invocation` 和 `version`。
+- [x] Skill 原文继续只读保存，展开给模型前移除 frontmatter；`user-invocable: false` 不进入手动调用菜单，也不展开伪造引用。
+- [x] 显式引用 Skill 的 `allowed-tools` 在任务创建时快照化；多个声明取并集，但结果始终只是 Registry 全集的上限，空数组表示无工具。
+- [x] Tool Registry 在工具契约和工具准备两个入口应用任务上限，任务恢复不会因 Skill 后续变化扩大权限。
+- [x] Plan 模式只向模型暴露 `read` 工具；Policy 对所有非 `read` effect 返回 `AGENT_PLAN_MODE_READ_ONLY`，形成独立双层拒绝。
+- [x] Plan 或受限 Skill 在无工具/无模型时不会进入旧命令执行降级管线；未配置文本模型时只返回未执行提示。
+- [x] 新持久化字段均可选，IndexedDB 保持 v13；未新增依赖、Tauri 权限或安全配置。
+
+### 回滚
+
+移除 Plan 模式入口和 Registry 过滤、恢复旧记忆排序与摘要提示即可回滚运行行为。`UserSkill.manifest`、`AgentTask.toolAllowlist` 和摘要 `formatVersion` 均为可选字段，旧版本可忽略；Skill 原始正文仍完整保存，不需要数据库降级或数据删除。
+
+### 完成记录
+
+- 完成日期：2026-07-21
+- 定向测试：`npm run test -- tests/services/chat/skillManifest.test.ts tests/services/chat/toolRegistry.test.ts tests/services/chat/policyEngine.test.ts tests/services/chat/contextCompression.test.ts tests/services/chat/memoryRetrieval.test.ts tests/services/chat/agentRuntimeDiagnostics.test.ts`，6 个文件、35 个测试通过
+- 类型检查：`npm run typecheck`、`npm run test:typecheck` 通过
+- Lint：24 个阶段改动 TypeScript/TSX 文件定向 ESLint 通过
+- 生产构建：`npx vite build --outDir <系统临时目录>` 通过；保留既有动态导入和 chunk 体积警告
+- 差异与编码：`git diff --check` 和阶段改动文本 UTF-8 严格解码通过
+- 交互限制：真实文本模型下的 Plan 对话、Skill 组合调用和压缩模型输出仍需最终 Tauri 手测；纯逻辑、权限边界和编译已覆盖
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1132,3 +1193,4 @@ type PolicyDecision =
 | 2026-07-19 | 平台补充 | 通用模型增加声明式执行协议：文本节点可配置端点、鉴权、请求/响应和同步/异步轮询；对话助手与 Agent 仅接受显式 `openai-sse` 兼容协议，未扩大工具、确认或付费媒体权限。 |
 | 2026-07-21 | P4-A | 完成同会话 FIFO、跨会话并行、排队取消、安全边界插话、恢复延迟接管和独立窗口 `dispatchMode` 同步。 |
 | 2026-07-21 | P4-B | 完成脱敏事件与指标、恢复步骤摘要、重复写抑制、连续尾部检查点回退，以及跨会话任务中心。 |
+| 2026-07-21 | P4-C | 完成相关性记忆、结构化摘要校验、Skill Manifest 工具上限，以及 Registry + Policy 双层保护的 Plan 模式。 |

@@ -4,7 +4,7 @@
  * 本文件只描述可持久化的任务状态，不包含 AbortController、窗口句柄等运行时对象。
  */
 
-export type AgentMode = 'collaborative' | 'autonomous';
+export type AgentMode = 'collaborative' | 'autonomous' | 'plan';
 
 export type AgentTaskStatus =
   | 'queued'
@@ -201,6 +201,8 @@ export interface AgentTask {
   modelRounds: number;
   toolCallCount: number;
   budget: AgentTaskBudget;
+  /** 任务创建时由用户显式引用的 Skill 计算，只能缩小 Registry 可见集合。 */
+  toolAllowlist?: string[];
   events?: AgentEvent[];
   metrics?: AgentTaskMetrics;
   createdAt: number;

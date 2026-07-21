@@ -526,6 +526,17 @@ export interface UserPreset {
 // 用户 Skill — 只读上传与调用，不提供内置编辑
 // ============================================
 
+export interface SkillManifest {
+  name?: string;
+  description?: string;
+  whenToUse?: string;
+  /** 缺省表示不额外限制；空数组表示该 Skill 不需要任何 Agent 工具。 */
+  allowedTools?: string[];
+  userInvocable?: boolean;
+  disableModelInvocation?: boolean;
+  version?: string;
+}
+
 export interface UserSkill {
   id: string;
   name: string;
@@ -535,6 +546,8 @@ export interface UserSkill {
   sourceType: 'file' | 'folder';
   storagePath?: string;
   entryFileName?: string;
+  /** 从入口文件 frontmatter 解析的非执行型声明。 */
+  manifest?: SkillManifest;
   createdAt: number;
 }
 
