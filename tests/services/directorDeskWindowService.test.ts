@@ -47,6 +47,7 @@ import {
   requestDirectorWindowAction,
   subscribeDirectorDeskWindow,
 } from '../../src/services/directorDeskWindowService';
+import { buildDirectorDeskWindowUrl } from '../../src/services/directorDeskService';
 
 describe('directorDeskWindowService', () => {
   beforeEach(() => {
@@ -75,6 +76,15 @@ describe('directorDeskWindowService', () => {
     expect(String(tauriMocks.created[0]?.options.url)).toContain('http://127.0.0.1:5178/');
     expect(String(tauriMocks.created[0]?.options.url)).toContain('instanceId=node-14');
     expect(String(tauriMocks.created[0]?.options.url)).toContain('transport=tauri');
+  });
+
+  it('uses the bundled application entry in production', () => {
+    const url = buildDirectorDeskWindowUrl('node-14', 'light', 'production');
+
+    expect(url).toBe(
+      'director-desk/index.html?instanceId=node-14&theme=light&transport=tauri&hostWindowLabel=main',
+    );
+    expect(url).not.toContain('127.0.0.1');
   });
 
   it('focuses an existing window and switches its scoped session', async () => {

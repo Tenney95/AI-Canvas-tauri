@@ -1,11 +1,15 @@
 /**
  * 3D 导演台（Tenney95/3d-director-desk）宿主通信
- * - 本地默认：http://127.0.0.1:5178
+ * - 开发环境：http://127.0.0.1:5178
+ * - 生产环境：应用内置 director-desk/index.html
  * - 通过 Tauri 独立窗口对接，截图/导出回写画布节点
  */
 
 export const DIRECTOR_DESK_ORIGIN_KEY = 'canvas-director-desk-origin';
 export const DEFAULT_DIRECTOR_DESK_ORIGIN = 'http://127.0.0.1:5178';
+export const BUNDLED_DIRECTOR_DESK_ENTRY = 'director-desk/index.html';
+
+export type DirectorDeskRuntimeMode = 'development' | 'production';
 
 export type DirectorCaptureItem = {
   dataUrl: string;
@@ -43,12 +47,20 @@ export function setDirectorDeskOrigin(origin: string) {
 export function buildDirectorDeskWindowUrl(
   instanceId: string,
   theme: 'dark' | 'light' = 'dark',
+  runtimeMode: DirectorDeskRuntimeMode = import.meta.env.DEV ? 'development' : 'production',
 ): string {
+  const params = new URLSearchParams({
+    instanceId,
+    theme,
+    transport: 'tauri',
+    hostWindowLabel: 'main',
+  });
+  if (runtimeMode === 'production') {
+    return `${BUNDLED_DIRECTOR_DESK_ENTRY}?${params.toString()}`;
+  }
+
   const url = new URL(`${getDirectorDeskOrigin()}/`);
-  url.searchParams.set('instanceId', instanceId);
-  url.searchParams.set('theme', theme);
-  url.searchParams.set('transport', 'tauri');
-  url.searchParams.set('hostWindowLabel', 'main');
+  url.search = params.toString();
   return url.toString();
 }
 
