@@ -11,14 +11,13 @@
   z-index: 200;
   width: 540px;
   max-width: calc(100vw - 32px);
-  background: var(--glass-bg-light);
+  background:
+    linear-gradient(var(--glass-bg-light), var(--glass-bg-light)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-md));
-  border: 1px solid var(--glass-ring);
+  border: 1px solid transparent;
   border-radius: 14px;
-  box-shadow:
-    0 0 0 1px var(--white-alpha-03),
-    0 8px 40px var(--black-alpha-50),
-    0 2px 8px var(--black-alpha-30);
+  box-shadow: var(--glass-shadow-panel);
   animation: floatIn var(--dur-normal) var(--ease-out-expo);
   transition: left 0.28s var(--ease-spring), top 0.28s var(--ease-spring);
 }
@@ -47,9 +46,12 @@
    Shared glass-panel — 弹出面板统一玻璃态背景
    ============================================ */
 .glass-panel {
-  background: var(--glass-panel-bg);
+  background:
+    linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
-  border-color: var(--glass-ring);
+  border-color: transparent;
+  box-shadow: var(--glass-shadow-panel);
   will-change: transform;
 }
 
@@ -78,11 +80,13 @@
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px);
   overflow-y: auto;
-  background: var(--glass-panel-bg);
+  background:
+    linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  border: 1px solid transparent;
   border-radius: 14px;
-  box-shadow: 0 10px 48px var(--black-alpha-50), 0 0 0 1px var(--white-alpha-03);
+  box-shadow: var(--glass-shadow-panel);
   pointer-events: auto;
   /* animation handled by framer-motion */
 }
@@ -477,11 +481,13 @@
   width: 220px;
   max-height: 200px;
   overflow-y: auto;
-  background: var(--glass-panel-bg);
+  background:
+    linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  border: 1px solid transparent;
   border-radius: 10px;
-  box-shadow: 0 12px 40px var(--black-alpha-50);
+  box-shadow: var(--glass-shadow-menu);
   z-index: 100;
   padding: 4px;
 }
@@ -550,11 +556,13 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: var(--glass-bg);
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  border: 1px solid transparent;
   border-radius: 14px;
-  box-shadow: 0 10px 48px var(--black-alpha-50), 0 0 0 1px var(--white-alpha-03);
+  box-shadow: var(--glass-shadow-panel);
   pointer-events: auto;
   padding-bottom: 10px;
   /* animation handled by framer-motion */
@@ -959,11 +967,13 @@
   z-index: 20;
   min-width: 148px;
   padding: 5px;
-  background: var(--glass-bg);
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  border: 1px solid transparent;
   border-radius: 10px;
-  box-shadow: 0 12px 32px var(--black-alpha-50);
+  box-shadow: var(--glass-shadow-menu);
   transform-origin: top right;
 }
 .assets-add-menu button {
@@ -1232,18 +1242,25 @@
   width: 400px;
   max-width: calc(100vw - 64px);
   height: calc(100vh - 40px);
-  background: var(--glass-panel-bg);
+  background:
+    linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
   -webkit-backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
-  box-shadow:
-    0 24px 64px var(--black-alpha-50),
-    0 8px 24px rgba(0, 0, 0, 0.32),
-    0 0 0 1px var(--white-alpha-03);
+  border: 1px solid transparent;
+  box-shadow: var(--glass-shadow-panel);
   font-family: inherit;
   border-radius: 16px;
   overflow: hidden;
   isolation: isolate;
+}
+
+.chat-panel-detached {
+  border-color: transparent;
+  background:
+    linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
+  box-shadow: var(--glass-bevel-inset);
 }
 
 .chat-panel-header,

@@ -115,7 +115,7 @@ export default function SessionProjectTabs() {
       />
       <nav
         aria-label="最近打开的项目"
-        className={`max-w-full rounded-lg border border-canvas-border bg-[var(--floating-surface-bg)] p-1
+        className={`glass-bevel glass-bevel--floating max-w-full rounded-lg border border-canvas-border bg-[var(--floating-surface-bg)] p-1
                     shadow-xl shadow-black/30 backdrop-blur-xl backdrop-saturate-150
                     transition-[transform,opacity] duration-200 ease-out will-change-transform
                     motion-reduce:transition-opacity ${

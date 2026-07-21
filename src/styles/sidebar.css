@@ -11,11 +11,13 @@
   align-items: center;
   gap: 2px;
   padding: 5px;
-  background: var(--floating-surface-bg);
+  background:
+    linear-gradient(var(--floating-surface-bg), var(--floating-surface-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  border: 1px solid transparent;
   border-radius: 14px;
-  box-shadow: var(--floating-surface-shadow, 8px 0 32px var(--black-alpha-40));
+  box-shadow: var(--glass-shadow-floating);
   /* 切换悬浮/停靠时平滑滑动 */
   transition: left 0.42s var(--ease-spring);
 }
@@ -187,12 +189,14 @@
   bottom: 0;
   min-width: 160px;
   max-width: calc(100vw - 100px);
-  background: var(--glass-bg);
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  border: 1px solid transparent;
   border-radius: 10px;
   padding: 4px;
-  box-shadow: 0 12px 40px var(--black-alpha-50);
+  box-shadow: var(--glass-shadow-menu);
   z-index: 100;
   animation: menuSlideIn var(--dur-normal) var(--ease-out-expo);
   transform-origin: right bottom;
@@ -234,11 +238,14 @@
   top: 0;
   width: 260px;
   max-width: calc(100vw - 100px);
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-ring);
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid transparent;
   border-radius: 12px;
   padding: 5px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--glass-shadow-menu);
   z-index: 100;
   animation: pickerSlideIn var(--dur-normal) var(--ease-out-expo);
   pointer-events: auto;
@@ -389,12 +396,14 @@
 .delete-confirm-dialog {
   width: 260px;
   max-width: 90vw;
-  background: var(--glass-bg);
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  border: 1px solid transparent;
   border-radius: 10px;
   padding: 12px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65);
+  box-shadow: var(--glass-shadow-menu);
   animation: confirmSlideIn var(--dur-normal) var(--ease-out-expo);
   z-index: 201;
 }

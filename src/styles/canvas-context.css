@@ -7,13 +7,13 @@
   z-index: 300;
   min-width: 176px;
   padding: 4px;
-  background: var(--glass-bg);
+  background:
+    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
   backdrop-filter: blur(var(--glass-blur-md));
-  border: 1px solid var(--glass-ring);
+  border: 1px solid transparent;
   border-radius: 10px;
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.03),
-    0 8px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--glass-shadow-menu);
   transform-origin: top left;
   animation: ctxFadeIn var(--dur-normal) var(--ease-spring);
 }
