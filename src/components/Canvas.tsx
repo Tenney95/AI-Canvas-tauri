@@ -57,7 +57,7 @@ function PanoramaNode(props: { id: string; data: BaseNodeData; selected?: boolea
   return <Suspense fallback={null}><PanoramaNodeLazy {...props} /></Suspense>;
 }
 
-// 懒加载：3D 导演台节点以 iframe 嵌入本地导演台
+// 懒加载：3D 导演台节点按需连接本地 Tauri 独立窗口
 const DirectorDeskNodeLazy = lazy(() => import('./nodes/DirectorDeskNode'));
 function DirectorDeskNode(props: { id: string; data: BaseNodeData; selected?: boolean }) {
   return <Suspense fallback={null}><DirectorDeskNodeLazy {...props} /></Suspense>;

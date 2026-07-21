@@ -1,9 +1,5 @@
 /* ── 3D 导演台节点 ── */
 
-.director-node {
-  overflow: hidden;
-}
-
 .director-preview {
   position: relative;
   flex: 1;
@@ -74,73 +70,6 @@
   font-size: 11px;
   color: var(--theme-text-secondary);
   white-space: nowrap;
-}
-
-.director-overlay-body {
-  padding: 0 !important;
-  display: flex;
-  flex-direction: column;
-  min-height: min(82vh, 820px);
-}
-
-.director-overlay-root {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: min(82vh, 820px);
-  background: #0b0b12;
-}
-
-.director-overlay-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  color: #e8e8f0;
-  font-size: 12px;
-  background: rgba(20, 20, 32, 0.96);
-}
-
-.director-overlay-hint {
-  flex: 1;
-  min-width: 180px;
-  color: rgba(232, 232, 240, 0.65);
-}
-
-.director-overlay-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.director-ready-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #f59e0b;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2);
-}
-
-.director-ready-dot.is-ready {
-  background: #22c55e;
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2);
-}
-
-.director-overlay-busy {
-  padding: 6px 12px;
-  font-size: 12px;
-  color: #fde68a;
-  background: rgba(120, 53, 15, 0.45);
-}
-
-.director-overlay-iframe {
-  flex: 1;
-  width: 100%;
-  min-height: 0;
-  border: 0;
-  background: #000;
 }
 
 .handle-director {
