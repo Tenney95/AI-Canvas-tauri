@@ -186,6 +186,10 @@ async function applyNodeResult(
   }
 
   store.updateNodeDataTransient(nodeId, updateData);
+  // 异步轮询完成的生图也要回写短剧资产绑图
+  if (nodeType === 'ai-image' || nodeType === 'ai-panorama') {
+    store.syncDramaAssetImageFromNode?.(nodeId, mediaUrl);
+  }
   store.recordOutputHistory(nodeId, {
     nodeId,
     nodeLabel,

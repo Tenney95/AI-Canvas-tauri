@@ -16,6 +16,7 @@ import {
   parseProjectModelRef,
   resolveProjectGenerationPrompt,
 } from './projectSettingsService';
+import { postProcessDramaExtractOutput } from './dramaAssetExtract';
 
 export interface GenerationResult {
   success: boolean;
@@ -108,6 +109,7 @@ export async function executeGeneration(
         thumbnailUrl: result.url, output: result.url, status: 'success',
         imageWidth: result.width, imageHeight: result.height,
       });
+      store.syncDramaAssetImageFromNode?.(nodeId, mediaUrl);
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
         output: result.url, nodeType: 'ai-image', model: nodeModel, provider: nodeProvider,
@@ -244,11 +246,27 @@ export async function executeGeneration(
     } else {
       const result = await generateText({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
-      store.updateNodeData(nodeId, { output: result, status: 'success' });
+      const processed = postProcessDramaExtractOutput(effectivePrompt, result);
+      store.updateNodeData(nodeId, { output: processed.output, status: 'success' });
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
-        output: result, nodeType: 'ai-text', model: nodeModel, provider: nodeProvider, status: 'success',
+        output: processed.output, nodeType: 'ai-text', model: nodeModel, provider: nodeProvider, status: 'success',
       });
+      if (processed.kind) {
+        if (processed.ok && processed.parsed) {
+          store.mergeDramaExtract(processed.parsed, {
+            sourceNodeId: nodeId,
+            modelId: nodeModel,
+          });
+        }
+        const kindLabel =
+          processed.kind === 'character' ? '人物' : processed.kind === 'scene' ? '场景' : '道具';
+        if (processed.ok) {
+          store.showToast(`${kindLabel}简介已提取并入库 · 侧栏「短剧资产」可查看`);
+        } else {
+          store.showToast('已提取，但 JSON 未完全规范化，请检查输出', 'error');
+        }
+      }
     }
     return { success: true };
   } catch (err) {

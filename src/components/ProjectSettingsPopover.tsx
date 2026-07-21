@@ -37,6 +37,7 @@ import {
   PROJECT_VIDEO_DURATIONS,
   PROJECT_VIDEO_RESOLUTIONS,
 } from '../services/projectSettingsService';
+import { uploadSourceFileToProject } from '../services/fileService';
 
 interface ProjectSettingsPopoverProps {
   isOpen: boolean;
@@ -85,8 +86,14 @@ const MODEL_ROWS: ModelRowDefinition[] = [
 
 function cloneSettings(settings: ProjectSettings | undefined): ProjectSettings {
   const legacyPromptSuffix = settings?.promptSuffix ?? '';
+  const vs = settings?.visualStyle;
   return {
-    visualStyle: settings?.visualStyle ? { ...settings.visualStyle } : undefined,
+    visualStyle: vs
+      ? {
+          ...vs,
+          styleReference: vs.styleReference ? { ...vs.styleReference } : undefined,
+        }
+      : undefined,
     promptSuffixes: Object.fromEntries(MODEL_ROWS.map((row) => [
       row.kind,
       settings?.promptSuffixes?.[row.kind] ?? legacyPromptSuffix,
@@ -277,9 +284,80 @@ export default function ProjectSettingsPopover({
             styleName: style.name,
             prompt: style.prompt,
             locked: current.visualStyle?.locked ?? false,
+            // 保留已上传的风格母图
+            styleReference: current.visualStyle?.styleReference,
           }
-        : undefined,
+        : current.visualStyle?.styleReference
+          ? {
+              styleReference: current.visualStyle.styleReference,
+              locked: current.visualStyle.locked,
+            }
+          : undefined,
     }));
+  };
+
+  const [styleRefBusy, setStyleRefBusy] = useState(false);
+
+  const handleUploadStyleReference = async () => {
+    if (!project || styleRefBusy) return;
+    setStyleRefBusy(true);
+    try {
+      const uploaded = await uploadSourceFileToProject(
+        'png,jpg,jpeg,webp,gif,bmp',
+        project.id,
+      );
+      if (!uploaded) return;
+      setDraft((current) => ({
+        ...current,
+        visualStyle: {
+          ...current.visualStyle,
+          styleReference: {
+            imageUrl: uploaded.dataUrl,
+            filePath: uploaded.filePath,
+            fileName: uploaded.fileName,
+            enabled: true,
+          },
+        },
+      }));
+    } catch (err) {
+      console.error('[项目设置] 上传风格母图失败:', err);
+      useAppStore.getState().showToast?.(
+        err instanceof Error ? err.message : '上传风格母图失败',
+        'error',
+      );
+    } finally {
+      setStyleRefBusy(false);
+    }
+  };
+
+  const handleClearStyleReference = () => {
+    setDraft((current) => {
+      if (!current.visualStyle) return current;
+      const { styleReference: _r, ...rest } = current.visualStyle;
+      const nextVs = { ...rest };
+      // 若既无枚举画风也无母图，清空 visualStyle
+      if (!nextVs.styleId && !nextVs.prompt) {
+        return { ...current, visualStyle: undefined };
+      }
+      return { ...current, visualStyle: nextVs };
+    });
+  };
+
+  const handleToggleStyleReference = () => {
+    setDraft((current) => {
+      const ref = current.visualStyle?.styleReference;
+      if (!ref?.imageUrl && !ref?.filePath) return current;
+      return {
+        ...current,
+        visualStyle: {
+          ...current.visualStyle,
+          styleReference: {
+            ...ref,
+            enabled: ref.enabled === false,
+          },
+        },
+      };
+    });
   };
 
   const handleModelChange = (kind: ProjectModelKind, model: string) => {
@@ -348,7 +426,7 @@ export default function ProjectSettingsPopover({
                 <SectionTitle icon="lucide:palette">创作基线</SectionTitle>
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
                   <div className="grid gap-1.5">
-                    <span className="text-[11px] font-medium text-canvas-text-muted">整体画风</span>
+                    <span className="text-[11px] font-medium text-canvas-text-muted">整体画风（文字预设）</span>
                     <StyleSelector
                       nodeType="ai-image"
                       selectedStyle={draft.visualStyle?.styleId}
@@ -384,6 +462,95 @@ export default function ProjectSettingsPopover({
                       />
                     </button>
                   </div>
+                </div>
+
+                {/* 风格母图：上传后本项目图像生成自动跟随，无需每次 @ */}
+                <div className="grid gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="text-[11px] font-medium text-canvas-text">风格母图</span>
+                      <p className="mt-0.5 text-[10px] leading-relaxed text-canvas-text-muted">
+                        上传卡通/电影截图等。本项目所有图像生成会自动参考此风格，无需每次 @。
+                      </p>
+                    </div>
+                    {draft.visualStyle?.styleReference?.imageUrl ? (
+                      <div className="grid h-9 shrink-0 grid-cols-[auto_auto] items-center gap-2 text-[11px] text-canvas-text-secondary">
+                        <span>启用</span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={draft.visualStyle.styleReference.enabled !== false}
+                          onClick={handleToggleStyleReference}
+                          className={`relative h-5 w-9 rounded-full transition-colors ${
+                            draft.visualStyle.styleReference.enabled !== false
+                              ? 'bg-indigo-500'
+                              : 'bg-canvas-border'
+                          }`}
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                              draft.visualStyle.styleReference.enabled !== false
+                                ? 'translate-x-[18px]'
+                                : 'translate-x-0.5'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {draft.visualStyle?.styleReference?.imageUrl ? (
+                    <div className="flex items-center gap-3">
+                      <div className="h-16 w-16 shrink-0 overflow-hidden rounded-md border border-canvas-border bg-canvas-bg">
+                        <img
+                          src={draft.visualStyle.styleReference.imageUrl}
+                          alt="风格母图"
+                          className="h-full w-full object-cover"
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[11px] text-canvas-text-secondary">
+                          {draft.visualStyle.styleReference.fileName || '已设置风格母图'}
+                        </p>
+                        <p className="mt-0.5 text-[10px] text-canvas-text-muted">
+                          {draft.visualStyle.styleReference.enabled === false
+                            ? '已关闭：生成时不注入'
+                            : '已启用：生图自动带上'}
+                        </p>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            disabled={styleRefBusy}
+                            onClick={() => { void handleUploadStyleReference(); }}
+                            className="rounded-md px-2 py-1 text-[11px] text-indigo-300 hover:bg-indigo-500/15 disabled:opacity-50"
+                          >
+                            更换
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleClearStyleReference}
+                            className="rounded-md px-2 py-1 text-[11px] text-red-400/80 hover:bg-red-500/10"
+                          >
+                            清除
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={styleRefBusy || !project}
+                      onClick={() => { void handleUploadStyleReference(); }}
+                      className="flex h-11 items-center justify-center gap-2 rounded-md border border-dashed
+                                 border-white/[0.12] text-[12px] text-canvas-text-secondary
+                                 transition-colors hover:border-indigo-500/40 hover:bg-indigo-500/5
+                                 hover:text-indigo-300 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Icon icon="lucide:image-plus" className="h-4 w-4" />
+                      {styleRefBusy ? '上传中…' : '上传风格母图'}
+                    </button>
+                  )}
                 </div>
                 <div className="grid gap-1.5">
                   <span className="flex items-center justify-between gap-3">

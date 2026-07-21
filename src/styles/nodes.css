@@ -918,7 +918,7 @@
   height: 72vh;
   font-size: 14px;
   line-height: 1.75;
-  color: #d0d0e0;
+  color: var(--theme-text);
   background: transparent;
   border: none;
   outline: none;

@@ -1046,15 +1046,28 @@ function LogoMenu() {
    Main Sidebar
    ============================================ */
 export default function Sidebar() {
-  const { openNodePicker, closeNodePicker, toggleAvatarMenu, nodePickerOpen, setAssetsPanelOpen, setHistoryPanelOpen } =
-    useAppStore(
+  const {
+    openNodePicker,
+    closeNodePicker,
+    toggleAvatarMenu,
+    nodePickerOpen,
+    setAssetsPanelOpen,
+    setDramaAssetsPanelOpen,
+    setHistoryPanelOpen,
+    dramaAssetCount,
+  } = useAppStore(
       useShallow((s) => ({
         openNodePicker: s.openNodePicker,
         closeNodePicker: s.closeNodePicker,
         toggleAvatarMenu: s.toggleAvatarMenu,
         nodePickerOpen: s.nodePickerOpen,
         setAssetsPanelOpen: s.setAssetsPanelOpen,
+        setDramaAssetsPanelOpen: s.setDramaAssetsPanelOpen,
         setHistoryPanelOpen: s.setHistoryPanelOpen,
+        dramaAssetCount:
+          s.dramaAssets.characters.length
+          + s.dramaAssets.scenes.length
+          + s.dramaAssets.props.length,
       })),
     );
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1105,6 +1118,21 @@ export default function Sidebar() {
       {/* Assets */}
       <button type="button" className="sidebar-btn-v3" data-tooltip="资产" onClick={() => setAssetsPanelOpen(true)}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"><path strokeDasharray="64" strokeDashoffset="64" d="M12 7h8c0.55 0 1 0.45 1 1v10c0 0.55 -0.45 1 -1 1h-16c-0.55 0 -1 -0.45 -1 -1v-11Z"><animate fill="freeze" attributeName="stroke-dashoffset" dur="0.6s" values="64;0"/></path><path d="M12 7h-9v0c0 0 0.45 0 1 0h6z" opacity="0"><animate fill="freeze" attributeName="d" begin="0.6s" dur="0.2s" values="M12 7h-9v0c0 0 0.45 0 1 0h6z;M12 7h-9v-1c0 -0.55 0.45 -1 1 -1h6z"/><set fill="freeze" attributeName="opacity" begin="0.6s" to="1"/></path></g></svg>
+      </button>
+
+      {/* Drama assets library — 人物/场景/道具简介库（与上方「文件资产」不同） */}
+      <button
+        type="button"
+        className="sidebar-btn-v3 drama-assets-btn"
+        data-tooltip={dramaAssetCount > 0 ? `短剧资产 (${dramaAssetCount})` : '短剧资产 · 人物/场景/道具'}
+        data-tooltip-pos="right"
+        aria-label="短剧资产"
+        onClick={() => setDramaAssetsPanelOpen(true)}
+      >
+        <Icon icon="mdi:account-box-multiple-outline" width="20" height="20" />
+        {dramaAssetCount > 0 ? (
+          <span className="sidebar-badge">{dramaAssetCount > 99 ? '99+' : dramaAssetCount}</span>
+        ) : null}
       </button>
 
       {/* History */}

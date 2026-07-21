@@ -504,6 +504,7 @@ function AINodeDialog() {
           imageHeight: result.height,
           ...(isAnimation ? { aspectRatio } : {}),
         });
+        useAppStore.getState().syncDramaAssetImageFromNode?.(activeNodeId!, mediaUrl);
         recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
           nodeLabel: nodeLabel,
@@ -744,18 +745,35 @@ function AINodeDialog() {
           model: nodeModel,
           provider: nodeProvider,
         });
-        updateNodeData(activeNodeId!, { output: result, status: 'success' });
+        const { postProcessDramaExtractOutput } = await import('../../services/dramaAssetExtract');
+        const processed = postProcessDramaExtractOutput(effectivePrompt, result);
+        updateNodeData(activeNodeId!, { output: processed.output, status: 'success' });
         recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
           nodeLabel: nodeLabel,
           timestamp: Date.now(),
           prompt: effectivePrompt,
-          output: result,
+          output: processed.output,
           nodeType: 'ai-text',
           model: nodeModel,
           provider: nodeProvider,
           status: 'success',
         });
+        if (processed.kind) {
+          if (processed.ok && processed.parsed) {
+            useAppStore.getState().mergeDramaExtract(processed.parsed, {
+              sourceNodeId: activeNodeId!,
+              modelId: nodeModel,
+            });
+          }
+          const kindLabel =
+            processed.kind === 'character' ? '人物' : processed.kind === 'scene' ? '场景' : '道具';
+          if (processed.ok) {
+            showToast(`${kindLabel}简介已提取并入库 · 侧栏「短剧资产」可查看`);
+          } else {
+            showToast('已提取，但 JSON 未完全规范化，请检查输出', 'error');
+          }
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');

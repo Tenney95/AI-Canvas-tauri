@@ -41,6 +41,59 @@ function singleResult(result: ImageGenerationResult): BatchImageResult {
   return { requestedCount: 1, results: [result], failedCount: 0 };
 }
 
+function mergeImageUrls(primary: string[], extra: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const url of [...primary, ...extra]) {
+    const u = (url || '').trim();
+    if (!u || seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  return out;
+}
+
+/**
+ * 参考图前缀说明。
+ * styleAsFirst=true 时图片1 为项目风格母图（只迁风格）；其余为内容参考。
+ */
+function enrichPromptWithReferenceHints(
+  prompt: string,
+  totalRefCount: number,
+  styleAsFirst: boolean,
+): string {
+  if (totalRefCount <= 0) return prompt;
+  const lines: string[] = [];
+  if (styleAsFirst) {
+    lines.push(
+      '【项目风格母图】图片1 为当前项目统一风格参考。',
+      '请严格遵循其画风、色彩、材质、光影与整体气质；不要复制母图中的具体人物、场景或构图，只迁移视觉风格。',
+    );
+    if (totalRefCount > 1) {
+      lines.push(
+        `【内容参考图】图片2…图片${totalRefCount} 为角色/场景等内容参考，请保持主体与设定一致，风格仍服从母图。`,
+      );
+    }
+  } else {
+    lines.push(
+      `【参考图输入】本次请求附带 ${totalRefCount} 张参考图（按顺序为 图片1…图片${totalRefCount}）。`,
+      '请严格依据参考图进行图生/参考编辑：复制版式、构图与设计语言时以对应参考图为准，不要忽略参考图只按文字自由发挥。',
+    );
+  }
+  lines.push('', prompt);
+  return lines.join('\n');
+}
+
+/** 当前项目启用的风格母图 URL */
+function getProjectStyleMasterUrl(): string | null {
+  const { currentProjectId, projects } = useAppStore.getState();
+  const project = projects.find((p) => p.id === currentProjectId);
+  const ref = project?.settings?.visualStyle?.styleReference;
+  if (!ref || ref.enabled === false) return null;
+  const url = (ref.imageUrl || '').trim();
+  return url || null;
+}
+
 export async function generateImagesBatch(
   params: AIImageGenParams,
   count: number,
@@ -49,10 +102,26 @@ export async function generateImagesBatch(
   const { prompt: rawPrompt, model, provider, imageSize = '2K', aspectRatio = '1:1' } = params;
 
   // 解析 @{nodeId:label} 引用：图片 URL 提取到 image_urls，文本内联替换到 prompt
-  const { prompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
+  const { prompt: resolvedPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
 
   // 合并调用方传入的 image_urls 与从 prompt 中解析出的 imageUrls
-  let allImageUrls = [...(params.image_urls || []), ...imageUrls];
+  let contentImageUrls = mergeImageUrls([...(params.image_urls || [])], imageUrls);
+
+  // 项目风格母图：自动插到最前，无需用户每次 @
+  const styleMasterUrl = getProjectStyleMasterUrl();
+  let allImageUrls = contentImageUrls;
+  let styleAsFirst = false;
+  if (styleMasterUrl) {
+    contentImageUrls = contentImageUrls.filter((u) => u !== styleMasterUrl);
+    allImageUrls = mergeImageUrls([styleMasterUrl], contentImageUrls);
+    styleAsFirst = true;
+  }
+
+  const prompt = enrichPromptWithReferenceHints(
+    resolvedPrompt,
+    allImageUrls.length,
+    styleAsFirst,
+  );
 
   // Dreamina：CLI 端本地化图片，不走图床上传
   if (provider === 'dreamina') {
