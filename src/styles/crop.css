@@ -24,6 +24,31 @@
   height: 100%;
 }
 
+/* 裁切工具 dock：主工具栏与缩放组并排悬浮。 */
+.crop-toolbar-dock {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  transform: translateX(-50%);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.crop-toolbar-dock .crop-aspect-bar {
+  position: relative;
+  bottom: auto;
+  left: auto;
+  max-width: calc(100vw - 166px);
+  transform: none;
+}
+
 /* 宽高比快捷按钮栏 — 固定底部浮动，与图片编辑工具统一 */
 .crop-aspect-bar {
   position: fixed;
@@ -34,13 +59,13 @@
   z-index: 10001;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  gap: 1px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--theme-surface) 95%, transparent);
+  backdrop-filter: blur(24px);
+  border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
   border-radius: 16px;
-  box-shadow: var(--glass-shadow-floating);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
   max-width: calc(100vw - 24px);
   overflow-x: auto;
   overflow-y: hidden;
@@ -53,9 +78,10 @@
 }
 
 .crop-aspect-btn {
+  height: 32px;
   min-height: 32px;
   padding: 0 10px;
-  border-radius: 6px;
+  border-radius: 12px;
   background: transparent;
   color: var(--theme-text-secondary);
   font-size: 12px;
@@ -83,19 +109,13 @@
 
 .crop-aspect-btn:hover {
   color: var(--theme-text);
-  background: var(--theme-hover);
+  background: color-mix(in srgb, var(--theme-text) 8%, transparent);
 }
 
 .crop-aspect-btn.active {
-  color: var(--brand);
-  background: var(--brand-alpha-10);
-  border-color: var(--brand-alpha-30);
-}
-
-/* 浅色主题：玻璃栏背景偏亮，次级灰字对比不足。仅在栏内重定义次级色为主文本色，
-   不动 active(品牌)/hover/关闭(危险) 等状态色 */
-[data-theme='light'] .crop-aspect-bar {
-  --theme-text-secondary: var(--theme-text);
+  color: var(--brand-light);
+  background: color-mix(in srgb, var(--theme-text) 8%, transparent);
+  border-color: transparent;
 }
 
 .crop-aspect-spacer {
@@ -111,7 +131,7 @@
   height: 32px;
   padding: 0 12px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -123,7 +143,7 @@
 
 .crop-action-btn:hover {
   color: var(--theme-text);
-  background: var(--theme-hover);
+  background: color-mix(in srgb, var(--theme-text) 8%, transparent);
 }
 
 .crop-action-btn.confirm {
@@ -204,26 +224,26 @@
   -webkit-user-drag: none;
 }
 
+/* 扩图复用裁切舞台，此徽标只显示输出分辨率，不属于视口缩放控件。 */
+.crop-zoom-indicator {
+  position: absolute;
+  right: 16px;
+  bottom: 84px;
+  z-index: 10;
+  padding: 3px 10px;
+  color: var(--theme-text-secondary);
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
 @media (max-width: 720px), (max-height: 560px) {
   .crop-stage {
     --crop-stage-inline-gutter: 24px;
     --crop-stage-block-gutter: 128px;
   }
-}
-
-/* 缩放指示器 */
-.crop-zoom-indicator {
-  position: absolute;
-  bottom: 84px;
-  right: 16px;
-  padding: 3px 10px;
-  background: rgba(0, 0, 0, 0.55);
-  border-radius: 6px;
-  color: var(--theme-text-secondary);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-  z-index: 10;
 }
 
 /* ============================================
@@ -233,10 +253,9 @@
 /* 模式切换组 */
 .crop-mode-toggle {
   display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 8px;
-  background: var(--theme-hover, rgba(255, 255, 255, 0.05));
+  gap: 1px;
+  padding: 0;
+  background: transparent;
 }
 
 /* 工具栏分隔线 */
@@ -461,9 +480,15 @@
 }
 
 @media (max-width: 720px), (max-height: 560px) {
+  .crop-toolbar-dock,
   .crop-aspect-bar {
     bottom: 12px;
     max-width: calc(100vw - 16px);
+  }
+
+  .crop-toolbar-dock .crop-aspect-bar {
+    bottom: auto;
+    max-width: calc(100vw - 158px);
   }
 
   .crop-zoom-indicator {

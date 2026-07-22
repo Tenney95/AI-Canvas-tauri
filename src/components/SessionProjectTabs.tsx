@@ -101,7 +101,7 @@ export default function SessionProjectTabs() {
 
   return (
     <div
-      className="group/session fixed left-1/2 top-0 z-[150] max-w-[min(72vw,640px)]
+      className="group/session fixed left-1/2 top-3 z-[150] max-w-[min(72vw,640px)]
                  -translate-x-1/2 select-none sm:max-w-[min(52vw,640px)]"
     >
       <span
@@ -115,8 +115,8 @@ export default function SessionProjectTabs() {
       />
       <nav
         aria-label="最近打开的项目"
-        className={`glass-bevel glass-bevel--floating max-w-full rounded-lg border border-canvas-border bg-[var(--floating-surface-bg)] p-1
-                    shadow-xl shadow-black/30 backdrop-blur-xl backdrop-saturate-150
+        className={`app-header max-w-full rounded-2xl border border-canvas-border bg-canvas-surface/60 p-1
+                    shadow-lg shadow-black/30 backdrop-blur-xl
                     transition-[transform,opacity] duration-200 ease-out will-change-transform
                     motion-reduce:transition-opacity ${
                       settingsOpen
@@ -140,14 +140,14 @@ export default function SessionProjectTabs() {
                 layout="position"
                 role="presentation"
                 transition={{ layout: layoutTransition }}
-                className="relative flex min-w-0 shrink-0 items-center overflow-hidden rounded-md"
+                className="relative flex min-w-0 shrink-0 items-center overflow-hidden rounded-xl"
               >
                 {isActive ? (
                   <motion.span
                     layoutId="session-project-active-tab"
                     aria-hidden="true"
                     transition={layoutTransition}
-                    className="absolute inset-0 rounded-md bg-[var(--white-alpha-06)] shadow-sm shadow-black/20
+                    className="absolute inset-0 rounded-xl bg-[var(--white-alpha-06)] shadow-sm shadow-black/20
                                ring-1 ring-inset ring-[var(--border-subtle)]"
                   />
                 ) : null}
@@ -163,7 +163,7 @@ export default function SessionProjectTabs() {
                   disabled={switchingProjectId !== null}
                   onClick={() => { void handleSwitch(project.id); }}
                   className={`group relative z-10 flex h-8 min-w-0 max-w-40 shrink-0 items-center gap-2
-                              rounded-md px-3 text-xs font-medium leading-none
+                              rounded-lg px-3 text-xs font-medium leading-none
                               transition-[color,background-color,opacity] duration-150 disabled:cursor-wait ${
                                 isActive
                                   ? 'text-canvas-text'
@@ -206,8 +206,8 @@ export default function SessionProjectTabs() {
                     onClick={() => setSettingsProjectId((openProjectId) => (
                       openProjectId === currentProjectId ? null : currentProjectId
                     ))}
-                    className={`relative z-10 grid h-8 w-8 shrink-0 place-items-center border-l
-                                border-canvas-border transition-colors disabled:cursor-wait ${
+                    className={`relative z-10 grid h-8 w-8 shrink-0 place-items-center rounded-r-xl border-l
+                                border-[var(--separator-color)] transition-colors disabled:cursor-wait ${
                                   settingsOpen
                                     ? 'bg-indigo-500/15 text-indigo-400'
                                     : 'text-canvas-text-muted hover:bg-canvas-hover hover:text-canvas-text-secondary'

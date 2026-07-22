@@ -194,6 +194,10 @@ export function useTooltipAutoPlacement() {
       syncActiveTarget();
     };
 
+    const handleClick = () => {
+      hideTooltip();
+    };
+
     const refreshActiveTooltip = () => {
       if (!activeTarget?.isConnected) {
         hoveredTarget = null;
@@ -208,6 +212,7 @@ export function useTooltipAutoPlacement() {
     document.addEventListener('pointerout', handlePointerOut);
     document.addEventListener('focusin', handleFocusIn);
     document.addEventListener('focusout', handleFocusOut);
+    document.addEventListener('click', handleClick, true);
     window.addEventListener('resize', refreshActiveTooltip);
     window.addEventListener('scroll', refreshActiveTooltip, true);
 
@@ -218,6 +223,7 @@ export function useTooltipAutoPlacement() {
       document.removeEventListener('pointerout', handlePointerOut);
       document.removeEventListener('focusin', handleFocusIn);
       document.removeEventListener('focusout', handleFocusOut);
+      document.removeEventListener('click', handleClick, true);
       window.removeEventListener('resize', refreshActiveTooltip);
       window.removeEventListener('scroll', refreshActiveTooltip, true);
       tooltip.remove();

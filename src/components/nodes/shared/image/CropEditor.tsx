@@ -16,6 +16,7 @@ import AnimatedButton from '../../../shared/AnimatedButton';
 import { springGentle } from '../../../../utils/motion';
 import { fetchImageForCrop } from '../../../../services/fileService';
 import { useImageViewportGesture } from '../../../../hooks/useImageViewportGesture';
+import ImageEditorZoomControls from './ImageEditorZoomControls';
 import PenCropLayer, { type PenCropHandle, type Anchor } from './PenCropLayer';
 
 /* ── 类型 ── */
@@ -108,6 +109,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     gesturing,
     onPointerDown: onStagePan,
     reset: resetViewport,
+    zoomTo,
   } = useImageViewportGesture({
     initialScale: 1,
     minScale: 0.1,
@@ -313,7 +315,6 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     <FullscreenOverlay
       isOpen={isOpen}
       onClose={handleClose}
-      data-tooltip="裁切"
       hidePanel
       className="crop-overlay"
     >
@@ -325,7 +326,8 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
         onClick={(e) => e.stopPropagation()}
       >
       {/* ── 裁切工具栏（模式 + 宽高比/钢笔 + 确认按钮）── */}
-      <div className="crop-aspect-bar">
+      <div className="crop-toolbar-dock">
+        <div className="crop-aspect-bar">
         <AnimatedButton
           type="button"
           className="crop-aspect-btn crop-aspect-close act-cancel"
@@ -394,6 +396,14 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
           </svg>
           <span>确认</span>
         </AnimatedButton>
+        </div>
+        <ImageEditorZoomControls
+          scale={scale}
+          minScale={0.1}
+          maxScale={5}
+          onZoomChange={zoomTo}
+          onReset={resetViewport}
+        />
       </div>
       <div
         className={`crop-stage${mode === 'pen' ? ' pen-mode' : ''}`}
@@ -438,9 +448,6 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
             onReadyChange={setPenReady}
           />
         </div>
-        {scale !== 1 && (
-          <span className="crop-zoom-indicator">{Math.round(scale * 100)}%</span>
-        )}
       </div>
       </motion.div>
     </FullscreenOverlay>

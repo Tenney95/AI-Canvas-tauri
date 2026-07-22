@@ -183,7 +183,7 @@
   background: var(--glass-bg-light);
   backdrop-filter: blur(var(--glass-blur-md));
   border: 1px solid var(--glass-ring);
-  border-radius: 7px;
+  border-radius: 10px;
 }
 
 .node-toolbar-shell.is-visible .node-floating-toolbar,

@@ -6,6 +6,9 @@
   display: flex;
   flex-direction: column;
   padding: 0;
+  border-radius: var(--window-overlay-radius, 16px);
+  overflow: hidden;
+  clip-path: inset(0 round var(--window-overlay-radius, 16px));
 }
 
 .composer-root {
@@ -20,24 +23,37 @@
 }
 
 /* ── 底部命令栏 ── */
-.composer-toolbar {
+.composer-toolbar-dock {
   position: fixed;
   bottom: 24px;
   left: calc(50% - 122px);
   translate: -50% 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: max-content;
+  max-width: min(calc(100vw - 292px), 1062px);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.composer-toolbar {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 32px;
   align-items: center;
-  gap: 4px;
+  gap: 1px;
   width: max-content;
-  max-width: min(calc(100vw - 292px), 920px);
-  padding: 4px 6px;
-  z-index: 40;
-  background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  max-width: min(calc(100vw - 434px), 920px);
+  padding: 6px;
+  pointer-events: auto;
+  background: color-mix(in srgb, var(--theme-surface) 95%, transparent);
+  backdrop-filter: blur(24px);
+  border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
   border-radius: 16px;
-  box-shadow: var(--glass-shadow-floating);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
   animation: composerToolsReveal 1000ms var(--ease-out-expo) 320ms both;
 }
 
@@ -48,7 +64,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 1px;
   flex-wrap: nowrap;
 }
 
@@ -74,26 +90,23 @@
   height: 32px;
   min-height: 32px;
   padding: 0 8px;
-  border-radius: 6px;
+  border-radius: 12px;
 }
 .composer-toolbar .crop-aspect-btn.icon-only { width: 32px; padding: 0; }
 .composer-toolbar .crop-aspect-btn svg { display: block; }
 .composer-toolbar .img-pill-btn {
   height: 32px;
   padding-block: 0;
-  border-radius: 6px;
+  border-radius: 12px;
 }
 
-.composer-zoom-text {
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: var(--theme-text-secondary);
-  min-width: 44px;
-  text-align: center;
+.composer-toolbar .img-pill-btn:hover {
+  background: color-mix(in srgb, var(--theme-text) 8%, transparent);
 }
 
 /* ── 主体：舞台 + 右侧面板 ── */
 .composer-body {
+  position: relative;
   flex: 1;
   display: flex;
   min-height: 0;
@@ -106,13 +119,7 @@
   overflow: hidden;
   transform-origin: center center;
   animation: composerStageBloom 1000ms var(--ease-out-expo) 120ms both;
-  /* 棋盘格表示透明区 */
-  background-color: #15151c;
-  background-image:
-    linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
-    linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.05) 75%);
-  background-size: 22px 22px;
-  background-position: 0 0, 11px 11px;
+  background: transparent;
 }
 
 /* 拖入图片高亮 */
@@ -138,19 +145,6 @@
   pointer-events: none;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4), 0 10px 40px rgba(0, 0, 0, 0.5);
   animation: composerPageFocus 1000ms var(--ease-out-expo) 260ms both;
-}
-
-.composer-zoom-indicator {
-  position: absolute;
-  bottom: 84px;
-  right: 16px;
-  padding: 3px 10px;
-  background: rgba(0, 0, 0, 0.55);
-  border-radius: 6px;
-  color: var(--theme-text-secondary);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
 }
 
 .composer-text-edit {
@@ -258,16 +252,23 @@
 
 /* ── 右侧面板 ── */
 .composer-side {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  bottom: 24px;
+  z-index: 35;
   width: 244px;
-  flex-shrink: 0;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 12px;
   overflow-y: auto;
-  background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-md));
-  border-left: 1px solid var(--glass-ring);
+  background: color-mix(in srgb, var(--theme-surface) 95%, transparent);
+  backdrop-filter: blur(24px);
+  border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
+  border-radius: 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
   animation: composerSideReveal 1000ms var(--ease-out-expo) 380ms both;
 }
 
@@ -486,26 +487,30 @@
     flex-wrap: wrap;
   }
 
-  .composer-zoom-text {
-    display: none;
-  }
 }
 
 @media (max-width: 760px) {
   .composer-side {
+    top: 12px;
+    right: 12px;
+    bottom: 12px;
     width: 210px;
     padding: 10px;
   }
 
-  .composer-toolbar {
+  .composer-toolbar-dock {
     bottom: 12px;
     left: 8px;
     width: calc(100vw - 226px);
     max-width: none;
     translate: none;
+    justify-content: flex-start;
+    gap: 8px;
   }
 
-  .composer-zoom-indicator {
-    bottom: 72px;
+  .composer-toolbar {
+    flex: 1 1 auto;
+    width: auto;
+    max-width: calc(100% - 138px);
   }
 }

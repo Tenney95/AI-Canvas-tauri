@@ -11,7 +11,6 @@ import type { ComposerApi } from './useComposer';
 
 interface Props {
   composer: ComposerApi;
-  camScale: number;
   canExport: boolean;
   onFit: () => void;
   onExport: () => void;
@@ -56,7 +55,7 @@ const BG_PRESETS: { label: string; value: CanvasBg }[] = [
   { label: '黑', value: '#000000' },
 ];
 
-export default function ComposerToolbar({ composer, camScale, canExport, onFit, onExport, onClose }: Props) {
+export default function ComposerToolbar({ composer, canExport, onFit, onExport, onClose }: Props) {
   const { canvas, setCanvas, addImageLayer, addText, addShape } = composer;
   const fileRef = useRef<HTMLInputElement>(null);
   const [menu, setMenu] = useState<'canvas' | 'bg' | null>(null);
@@ -195,7 +194,6 @@ export default function ComposerToolbar({ composer, camScale, canExport, onFit, 
           <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
         </svg>
       </AnimatedButton>
-      <span className="composer-zoom-text">{Math.round(camScale * 100)}%</span>
       <AnimatedButton className="crop-action-btn confirm" data-tooltip="合成为新节点" aria-label="导出" disabled={!canExport} onClick={onExport}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
           <path d="M3 17l5-5 3 3 8-8" />

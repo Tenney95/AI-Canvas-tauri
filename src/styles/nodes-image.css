@@ -3,22 +3,20 @@
    ============================================ */
 
 /* ============================================
-   Image Toolbar — below selected ImageNode
+   Image Toolbar — above selected ImageNode
    ============================================ */
 .img-toolbar {
   --toolbar-offset-x: -50%;
-  top: auto;
-  bottom: -50px;
-  left: 50%;
+  top: -54px !important;
+  bottom: auto !important;
+  left: 50% !important;
   gap: 0;
   padding: 4px 6px;
-  max-width: min(calc(100vw - 24px), 760px);
   white-space: nowrap;
-  border-radius: 16px;
-  background: var(--glass-bg-light);
-  box-shadow: var(--glass-shadow-floating);
-  backdrop-filter: blur(var(--glass-blur-lg));
-  transform-origin: center top;
+}
+
+[data-theme='dark'] .img-toolbar {
+  background: var(--glass-bg-node);
 }
 
 .img-toolbar-main {
@@ -34,9 +32,9 @@
 }
 
 .img-toolbar .ftb-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
 }
 
 .img-toolbar-main-divider {
@@ -61,11 +59,10 @@
   z-index: 10002;
   min-width: 150px;
   padding: 6px;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-ring);
-  border-radius: 10px;
-  box-shadow: var(--glass-shadow-menu);
-  backdrop-filter: blur(var(--glass-blur-lg));
+  background: var(--theme-surface);
+  border: 1px solid var(--theme-border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   animation: fadeIn var(--dur-fast, 0.14s) var(--ease-out-expo, ease-out);
 }
 
@@ -77,7 +74,7 @@
   left: 50%;
   transform: translateX(-50%);
   border: 6px solid transparent;
-  border-top-color: var(--glass-bg);
+  border-top-color: var(--theme-surface);
 }
 
 /* ── 向下弹出（上方空间不足时）── */
@@ -90,7 +87,7 @@
   top: auto;
   bottom: 100%;
   border-top-color: transparent;
-  border-bottom-color: var(--glass-bg);
+  border-bottom-color: var(--theme-surface);
 }
 
 .multigrid-menu-title {
@@ -137,6 +134,66 @@
 /* ============================================
    Matting Overlay — fullscreen mask editor
    ============================================ */
+
+/* 图片编辑器共用缩放组：与 PointEdit 的独立缩放控件保持一致。 */
+.image-editor-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 46px;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  flex: 0 0 auto;
+  color: var(--theme-text-secondary);
+  background: color-mix(in srgb, var(--theme-surface) 95%, transparent);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
+  border-radius: 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  pointer-events: auto;
+}
+
+.image-editor-zoom-btn,
+.image-editor-zoom-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.image-editor-zoom-btn {
+  width: 28px;
+}
+
+.image-editor-zoom-value {
+  min-width: 38px;
+  padding-inline: 2px;
+  color: var(--theme-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.image-editor-zoom-btn:hover,
+.image-editor-zoom-value:hover {
+  color: var(--theme-text);
+  background: color-mix(in srgb, var(--theme-text) 8%, transparent);
+}
+
+.image-editor-zoom-btn:disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
 .matting-overlay {
   position: fixed;
   inset: 0;
@@ -151,23 +208,35 @@
 }
 
 /* Matting toolbar */
-.matting-toolbar {
+.matting-toolbar-dock {
   position: fixed;
-  top: auto;
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 10001;
   display: flex;
   align-items: center;
-  gap: 0;
-  padding: 4px 8px;
-  background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
-  border-radius: 16px;
-  box-shadow: var(--glass-shadow-floating);
+  justify-content: center;
+  gap: 12px;
+  width: max-content;
   max-width: calc(100vw - 24px);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.matting-toolbar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--theme-surface) 95%, transparent);
+  backdrop-filter: blur(24px);
+  border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
+  border-radius: 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  max-width: calc(100vw - 166px);
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -176,12 +245,6 @@
 
 .matting-toolbar::-webkit-scrollbar {
   display: none;
-}
-
-/* 浅色主题：玻璃栏背景偏亮，次级灰字对比不足。仅在栏内重定义次级色为主文本色，
-   不动 active/保存(绿)/取消(红) 等状态色 */
-[data-theme='light'] .matting-toolbar {
-  --theme-text-secondary: var(--theme-text);
 }
 
 .matting-btn,
@@ -193,7 +256,7 @@
   background: transparent;
   color: var(--theme-text-secondary);
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: 12px;
   transition: var(--transition-colors);
   flex-shrink: 0;
 }
@@ -207,7 +270,7 @@
 .matting-btn:hover,
 .customgrid-btn:hover {
   color: var(--theme-text);
-  background: var(--white-alpha-08);
+  background: color-mix(in srgb, var(--theme-text) 8%, transparent);
 }
 
 .matting-btn.active {
@@ -226,7 +289,7 @@
 .matting-btn.act-cancel:hover,
 .customgrid-btn.act-cancel:hover {
   color: var(--danger);
-  background: var(--danger-bg);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 /* Save button */
@@ -237,7 +300,7 @@
   height: 32px;
   color: var(--success);
   border: 1px solid rgba(34, 197, 94, 0.3);
-  border-radius: 6px;
+  border-radius: 12px;
   font-size: 13px;
   font-weight: 500;
   margin-left: 2px;
@@ -333,29 +396,6 @@
   will-change: transform;
 }
 
-/* 缩放指示器 / 重置按钮 */
-.matting-zoom-indicator {
-  position: absolute;
-  bottom: 18px;
-  right: 24px;
-  z-index: 10001;
-  padding: 5px 12px;
-  background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-md));
-  border: 1px solid var(--theme-border);
-  border-radius: 8px;
-  color: var(--theme-text-secondary);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
-}
-
-.matting-zoom-indicator:hover {
-  color: var(--theme-text);
-  background: var(--white-alpha-08);
-}
-
 /* Viewport — relative wrapper so canvas overlays image exactly */
 .matting-viewport {
   position: relative;
@@ -428,20 +468,16 @@
   z-index: 10001;
   display: flex;
   align-items: center;
-  gap: 0;
-  padding: 4px 8px;
-  background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
+  gap: 1px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--theme-surface) 95%, transparent);
+  backdrop-filter: blur(24px);
+  border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
   border-radius: 16px;
-  box-shadow: var(--glass-shadow-floating);
-  width: min(calc(100vw - 32px), 760px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  width: 580px;
   white-space: nowrap;
   pointer-events: auto;
-}
-
-[data-theme='light'] .customgrid-toolbar {
-  --theme-text-secondary: var(--theme-text);
 }
 
 .customgrid-btn {
@@ -453,9 +489,14 @@
   white-space: nowrap;
 }
 
+.customgrid-btn.act-cancel {
+  width: 32px;
+  padding: 0;
+}
+
 .customgrid-btn.active {
-  color: var(--brand, #8a93ff);
-  background: rgba(138, 147, 255, 0.12);
+  color: var(--brand-light);
+  background: color-mix(in srgb, var(--theme-text) 8%, transparent);
 }
 
 .customgrid-btn.act-confirm {
@@ -467,7 +508,7 @@
 .customgrid-mode-toggle {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   margin: 0 2px;
 }
 
@@ -497,10 +538,14 @@
 }
 
 @media (max-width: 680px), (max-height: 560px) {
-  .matting-toolbar,
+  .matting-toolbar-dock,
   .customgrid-toolbar {
     bottom: 12px;
     max-width: calc(100vw - 16px);
+  }
+
+  .matting-toolbar {
+    max-width: calc(100vw - 158px);
   }
 
   .customgrid-toolbar {

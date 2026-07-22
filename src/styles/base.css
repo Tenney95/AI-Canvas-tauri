@@ -576,6 +576,7 @@ body[data-tauri-window][data-sidebar-floating][data-window-glass-frame] {
 body[data-tauri-window] > :is(
   .fixed.inset-0,
   .matting-overlay,
+  .point-edit-overlay,
   .text-fullscreen-overlay,
   .fullscreen-overlay,
   .preset-modal-overlay,
@@ -588,6 +589,13 @@ body[data-tauri-window] > :is(
   left: var(--window-overlay-left);
   border-radius: var(--window-overlay-radius);
   overflow: hidden;
+}
+
+/* PointEdit 通过 portal 挂载到 body，蒙层视觉与项目内置图片工具保持一致。 */
+body > .point-edit-overlay {
+  background: color-mix(in srgb, var(--black-alpha-30) 50%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 
 /* Global Scrollbar / 全局滚动条 ── */

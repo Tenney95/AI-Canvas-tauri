@@ -16,6 +16,7 @@ import { saveDataUrlToProjectData } from '../../../../../services/fileService';
 import { subjectMatting, checkModelExists, downloadModel } from '../../../../../services/onnxService';
 import { loadSafeImage } from '../imageUtils';
 import { clamp } from '../../../../../utils/num';
+import ImageEditorZoomControls from '../ImageEditorZoomControls';
 import { useComposer } from './useComposer';
 import ComposerToolbar from './ComposerToolbar';
 import ComposerSidePanel from './ComposerSidePanel';
@@ -65,6 +66,22 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
     setCamScale(scale);
     setCamPos({ x: (sw - pageW * scale) / 2, y: (sh - pageH * scale) / 2 });
   }, []);
+
+  const handleZoomChange = useCallback((nextScale: number) => {
+    const next = clamp(nextScale, 0.05, 8);
+    const center = { x: stageSize.w / 2, y: stageSize.h / 2 };
+    const worldCenter = {
+      x: (center.x - camPos.x) / camScale,
+      y: (center.y - camPos.y) / camScale,
+    };
+    setCamScale(next);
+    setCamPos({
+      x: center.x - worldCenter.x * next,
+      y: center.y - worldCenter.y * next,
+    });
+  }, [camPos.x, camPos.y, camScale, stageSize.h, stageSize.w]);
+
+  const resetZoom = useCallback(() => handleZoomChange(1), [handleZoomChange]);
 
   /* ── 容器尺寸跟踪 ── */
   useEffect(() => {
@@ -418,14 +435,22 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
   return (
     <FullscreenOverlay isOpen={isOpen} onClose={handleClose} title="多图编辑" hidePanel className="composer-overlay">
       <div className="composer-root" onClick={(e) => e.stopPropagation()}>
-        <ComposerToolbar
-          composer={cmp}
-          camScale={camScale}
-          canExport={layers.length > 0}
-          onFit={() => fitToView(canvas.width, canvas.height, stageSize.w, stageSize.h)}
-          onExport={handleExport}
-          onClose={handleClose}
-        />
+        <div className="composer-toolbar-dock">
+          <ComposerToolbar
+            composer={cmp}
+            canExport={layers.length > 0}
+            onFit={() => fitToView(canvas.width, canvas.height, stageSize.w, stageSize.h)}
+            onExport={handleExport}
+            onClose={handleClose}
+          />
+          <ImageEditorZoomControls
+            scale={camScale}
+            minScale={0.05}
+            maxScale={8}
+            onZoomChange={handleZoomChange}
+            onReset={resetZoom}
+          />
+        </div>
 
         <div className="composer-body">
           <div
@@ -504,7 +529,6 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
               />
             )}
 
-            <span className="composer-zoom-indicator">{Math.round(camScale * 100)}%</span>
           </div>
 
           <ComposerSidePanel

@@ -95,12 +95,16 @@
 /* Selected-node floating toolbar. */
 .pano-toolbar {
   --toolbar-offset-x: -50%;
-  top: -40px;
+  top: -54px;
   bottom: auto;
   left: 50%;
   gap: 0;
   padding: 4px 6px;
   white-space: nowrap;
+}
+
+[data-theme='dark'] .pano-toolbar {
+  background: var(--glass-bg-node);
 }
 
 .pano-toolbar-main {

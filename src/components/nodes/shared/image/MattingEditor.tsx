@@ -4,6 +4,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import ImageEditorZoomControls from './ImageEditorZoomControls';
 import MattingToolbar from './MattingToolbar';
 
 /* ── Types ── */
@@ -122,6 +123,12 @@ export default function MattingEditor({
   const resetView = useCallback(() => {
     setScale(1);
     setOffset({ x: 0, y: 0 });
+  }, []);
+
+  const handleZoomChange = useCallback((nextScale: number) => {
+    const next = Math.max(0.5, Math.min(6, nextScale));
+    setScale(next);
+    if (next <= 1) setOffset({ x: 0, y: 0 });
   }, []);
 
   // ── Initialize canvas ──
@@ -490,18 +497,27 @@ export default function MattingEditor({
 
   return createPortal(
     <div className="matting-overlay">
-      <MattingToolbar
-        onCancel={onClose}
-        onSave={handleSave}
-        onToolChange={setTool}
-        onBrushSizeChange={setBrushSize}
-        onBrushModeChange={setBrushMode}
-        onUndo={handleUndo}
-        onRedo={handleRedo}
-        onClear={handleClear}
-        canUndo={historyIdx > 0}
-        canRedo={historyIdx < historyRef.current.length - 1}
-      />
+      <div className="matting-toolbar-dock">
+        <MattingToolbar
+          onCancel={onClose}
+          onSave={handleSave}
+          onToolChange={setTool}
+          onBrushSizeChange={setBrushSize}
+          onBrushModeChange={setBrushMode}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          onClear={handleClear}
+          canUndo={historyIdx > 0}
+          canRedo={historyIdx < historyRef.current.length - 1}
+        />
+        <ImageEditorZoomControls
+          scale={scale}
+          minScale={0.5}
+          maxScale={6}
+          onZoomChange={handleZoomChange}
+          onReset={resetView}
+        />
+      </div>
 
       <div className="matting-stage" ref={stageRef}>
         <div
@@ -537,17 +553,6 @@ export default function MattingEditor({
           </div>
         </div>
 
-        {/* 缩放指示器 + 重置（仅缩放或平移后显示）*/}
-        {(scale !== 1 || offset.x !== 0 || offset.y !== 0) && (
-          <button
-            type="button"
-            className="matting-zoom-indicator"
-            onClick={resetView}
-            data-tooltip="重置视图"
-          >
-            {Math.round(scale * 100)}% · 重置
-          </button>
-        )}
       </div>
     </div>,
     document.body,
