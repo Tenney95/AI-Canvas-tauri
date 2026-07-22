@@ -3,7 +3,18 @@
  * 环境探测、路径/MIME 工具、asset 协议、数据根目录与「项目名-短ID」目录映射、
  * 同名加序号、文件分类与目录列举。被 fs 下其它模块及 fileService 共用。
  */
-import { exists, mkdir, rename, stat, readDir } from '@tauri-apps/plugin-fs';
+import {
+  exists,
+  mkdir,
+  readDir,
+  readFile,
+  rename,
+  stat,
+  watch,
+  writeFile,
+  type DebouncedWatchOptions,
+  type WatchEvent,
+} from '@tauri-apps/plugin-fs';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { appDataDir, executableDir } from '@tauri-apps/api/path';
 
@@ -51,6 +62,33 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
+}
+
+export type FileWatchEvent = WatchEvent;
+
+/** 通过文件服务边界读取 Tauri 已授权的本地二进制文件。 */
+export async function readBinaryFile(filePath: string): Promise<Uint8Array<ArrayBuffer>> {
+  return readFile(filePath);
+}
+
+/** 确保二进制文件存在；已存在时不覆盖。 */
+export async function ensureBinaryFile(filePath: string, data: Uint8Array): Promise<void> {
+  if (await exists(filePath)) return;
+
+  const parentDir = filePath.replace(/[/\\][^/\\]+$/, '');
+  if (parentDir && !(await exists(parentDir))) {
+    await mkdir(parentDir, { recursive: true });
+  }
+  await writeFile(filePath, data);
+}
+
+/** 通过文件服务边界监听 Tauri 已授权的文件或目录。 */
+export async function watchFilePaths(
+  paths: string | string[],
+  callback: (event: FileWatchEvent) => void,
+  options?: DebouncedWatchOptions,
+): Promise<() => void> {
+  return watch(paths, callback, options);
 }
 
 // ============================================

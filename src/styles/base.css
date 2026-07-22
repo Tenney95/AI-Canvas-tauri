@@ -506,7 +506,7 @@ body {
     inset 0 0 0 1px var(--white-alpha-08),
     inset 0 0 0 4px var(--white-alpha-03),
     0 18px 48px var(--black-alpha-30);
-  backdrop-filter: blur(var(--glass-blur-md)) saturate(145%);
+  /* 避免画布变化时对整窗执行背景模糊；5px 色带仍由渐变和双层高光塑造。 */
 }
 
 .app-shell::after {

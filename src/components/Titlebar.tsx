@@ -88,13 +88,13 @@ function TitlebarInner({
   return (
     <div
       data-tauri-drag-region
-      className="fixed top-0 right-0 z-[200] flex items-center h-9 select-none"
+      className="fixed top-[var(--app-shell-inset)] right-[var(--app-shell-inset)] z-[200] flex items-center h-9 select-none"
     >
       {/* Minimize */}
       <AnimatedButton
         onClick={() => appWindow.minimize()}
         className="w-10 h-9 flex items-center justify-center text-canvas-text-muted
-                   hover:bg-white/[0.06] hover:text-canvas-text-secondary transition-colors"
+                   hover:bg-canvas-hover hover:text-canvas-text-secondary transition-colors"
         aria-label="最小化"
       >
         <svg width="10" height="10" viewBox="0 0 10 10">
@@ -106,7 +106,7 @@ function TitlebarInner({
       <AnimatedButton
         onClick={() => appWindow.toggleMaximize()}
         className="w-10 h-9 flex items-center justify-center text-canvas-text-muted
-                   hover:bg-white/[0.06] hover:text-canvas-text-secondary transition-colors"
+                   hover:bg-canvas-hover hover:text-canvas-text-secondary transition-colors"
         aria-label={isMaximized ? '还原' : '最大化'}
       >
         {isMaximized ? (

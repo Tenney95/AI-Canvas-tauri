@@ -3,9 +3,9 @@
  * 监听父目录而不是单个文件，以兼容 Photoshop 等工具通过临时文件替换原文件的保存方式。
  */
 import { useCallback, useEffect, useState } from 'react';
-import type { WatchEvent } from '@tauri-apps/plugin-fs';
 import type { Node } from '@xyflow/react';
 import { useAppStore } from '../store/useAppStore';
+import { watchFilePaths, type FileWatchEvent } from '../services/fileService';
 import type { BaseNodeData, StoryboardCellOverride } from '../types';
 
 export const REFERENCED_IMAGE_CHANGED_EVENT = 'referenced-image-changed';
@@ -164,7 +164,7 @@ export function haveReferencedImageFieldsChanged(
   return false;
 }
 
-function isAccessEvent(event: WatchEvent): boolean {
+function isAccessEvent(event: FileWatchEvent): boolean {
   return typeof event.type === 'object' && event.type !== null && 'access' in event.type;
 }
 
@@ -188,8 +188,7 @@ export function useReferencedImageWatcher(): void {
       if (directories.length === 0) return;
 
       try {
-        const { watch } = await import('@tauri-apps/plugin-fs');
-        const stop = await watch(
+        const stop = await watchFilePaths(
           directories,
           (event) => {
             if (disposed || currentGeneration !== generation || isAccessEvent(event)) return;

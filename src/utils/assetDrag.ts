@@ -10,7 +10,7 @@
  * 因此占位预览图需提前用 prepareDragIcon() 创建好缓存，拖拽时同步可用。
  */
 import { startDrag } from '@crabnebula/tauri-plugin-drag';
-import { joinPath, type AssetFileEntry } from '../services/fileService';
+import { ensureBinaryFile, joinPath, type AssetFileEntry } from '../services/fileService';
 
 /** 1x1 透明 PNG —— 非图片文件拖拽时的占位预览图（startDrag 的 icon 必填） */
 const FALLBACK_ICON_B64 =
@@ -23,16 +23,12 @@ export async function prepareDragIcon(): Promise<void> {
   if (_fallbackIconPath) return;
   try {
     const { appDataDir } = await import('@tauri-apps/api/path');
-    const { writeFile, exists, mkdir } = await import('@tauri-apps/plugin-fs');
     const dir = joinPath(await appDataDir(), '.cache');
     const path = joinPath(dir, 'drag-icon.png');
-    if (!(await exists(path))) {
-      if (!(await exists(dir))) await mkdir(dir, { recursive: true });
-      const bin = atob(FALLBACK_ICON_B64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      await writeFile(path, bytes);
-    }
+    const bin = atob(FALLBACK_ICON_B64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    await ensureBinaryFile(path, bytes);
     _fallbackIconPath = path;
   } catch {
     /* ignore */

@@ -6,8 +6,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import type { Node as RFNode } from '@xyflow/react';
 import { useAppStore, generateId, computeImageNodeDimensions } from '../store/useAppStore';
-import { arrayBufferToBase64, copyFileToProjectData } from '../services/fileService';
-import { readFile } from '@tauri-apps/plugin-fs';
+import { arrayBufferToBase64, copyFileToProjectData, readBinaryFile } from '../services/fileService';
 import type { BaseNodeData } from '../types';
 import { isExternalDropCaptured } from '../utils/dropCapture';
 import { textNodeHeight } from '../utils/num';
@@ -314,7 +313,7 @@ export function useNodeCreation() {
                         const dims = await computeImageNodeDimensions(result.assetUrl);
                         store.updateNodeDataTransient(nodeId, { label: result.fileName, imageUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success', ...dims });
                       } else {
-                        const content = await readFile(fp);
+                        const content = await readBinaryFile(fp);
                         const base64 = arrayBufferToBase64(content.buffer);
                         const mime = MIME_MAP[ext] || 'application/octet-stream';
                         const dataUrl = `data:${mime};base64,${base64}`;
@@ -341,7 +340,7 @@ export function useNodeCreation() {
                       if (result && result.assetUrl) {
                         store.updateNodeDataTransient(nodeId, { label: result.fileName, videoUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success' });
                       } else {
-                        const content = await readFile(fp);
+                        const content = await readBinaryFile(fp);
                         const base64 = arrayBufferToBase64(content.buffer);
                         const mime = MIME_MAP[ext] || 'application/octet-stream';
                         const dataUrl = `data:${mime};base64,${base64}`;
@@ -367,7 +366,7 @@ export function useNodeCreation() {
                       if (result && result.assetUrl) {
                         store.updateNodeDataTransient(nodeId, { label: result.fileName, audioUrl: result.assetUrl, filePath: result.filePath, fileName: result.fileName, status: 'success' });
                       } else {
-                        const content = await readFile(fp);
+                        const content = await readBinaryFile(fp);
                         const base64 = arrayBufferToBase64(content.buffer);
                         const mime = MIME_MAP[ext] || 'application/octet-stream';
                         const dataUrl = `data:${mime};base64,${base64}`;
@@ -383,7 +382,7 @@ export function useNodeCreation() {
               }
 
               // Fallback: read into memory (browser mode or copy failed)
-              const content = await readFile(fp);
+              const content = await readBinaryFile(fp);
               const base64 = arrayBufferToBase64(content.buffer);
               const mime = MIME_MAP[ext] || 'application/octet-stream';
               const dataUrl = `data:${mime};base64,${base64}`;
@@ -413,7 +412,7 @@ export function useNodeCreation() {
               }
             } else {
               // Text file
-              const content = await readFile(fp);
+              const content = await readBinaryFile(fp);
               const text = new TextDecoder('utf-8').decode(content);
               if (!text.trim()) continue;
               const lines = text.split('\n').length;
