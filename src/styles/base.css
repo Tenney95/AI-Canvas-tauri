@@ -576,7 +576,6 @@ body[data-tauri-window][data-sidebar-floating][data-window-glass-frame] {
 body[data-tauri-window] > :is(
   .fixed.inset-0,
   .matting-overlay,
-  .annotate-overlay,
   .text-fullscreen-overlay,
   .fullscreen-overlay,
   .preset-modal-overlay,

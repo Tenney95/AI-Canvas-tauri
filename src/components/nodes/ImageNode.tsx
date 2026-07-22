@@ -4,13 +4,18 @@
 import { memo, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
-import type { BaseNodeData } from '../../types';
+import {
+  AnnotationLayer,
+  PointEditEditor,
+  isImageAnnotationLayer,
+} from '@tenney95/xiaoluo-image-editor';
+import '@tenney95/xiaoluo-image-editor/style.css';
+import type { BaseNodeData, ImageAnnotationLayer as ImageAnnotationLayerData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import GooeyBtn from './shared/GooeyBtn';
 import ImageNodeToolbar from './shared/image/ImageNodeToolbar';
 import FreeAnglePanel from './shared/image/FreeAnglePanel';
 import MattingEditor from './shared/image/MattingEditor';
-import AnnotateEditor from './shared/image/AnnotateEditor';
 import CropEditor from './shared/image/CropEditor';
 import CustomGridEditor from './shared/image/CustomGridEditor';
 import ExpandEditor from './shared/image/ExpandEditor';
@@ -79,6 +84,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         nodeHeight: newHeight,
         imageWidth: img.naturalWidth,
         imageHeight: img.naturalHeight,
+        annotation: undefined,
+        annotationLayer: undefined,
       } as Partial<BaseNodeData>);
     };
     img.src = result.dataUrl;
@@ -101,6 +108,9 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const previewRevision = revisionFor(data.filePath);
   const rawDisplaySrc = (data.imageUrl || data.thumbnailUrl) as string | undefined;
   const displaySrc = withPreviewRevision(rawDisplaySrc, previewRevision);
+  const annotationLayer = isImageAnnotationLayer(data.annotationLayer)
+    ? data.annotationLayer
+    : undefined;
 
   // 当 imageUrl 或外部文件版本变化时重置加载错误状态
   useEffect(() => {
@@ -581,8 +591,11 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const handleCloseAnnotate = useCallback(() => setIsAnnotate(false), []);
 
   const handleAnnotateSave = useCallback(
-    (annotationUrl: string) => {
-      updateNodeData(id, { annotation: annotationUrl } as Partial<BaseNodeData>);
+    (layer: ImageAnnotationLayerData) => {
+      updateNodeData(id, {
+        annotation: undefined,
+        annotationLayer: layer,
+      } as Partial<BaseNodeData>);
       setIsAnnotate(false);
     },
     [id, updateNodeData],
@@ -914,14 +927,20 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                     onError={() => setMattingError(true)}
                   />
                 )}
-                {data.annotation && !annotateError && (
+                {annotationLayer ? (
+                  <AnnotationLayer
+                    layer={annotationLayer}
+                    className="image-annotation-layer"
+                    fit="cover"
+                  />
+                ) : data.annotation && !annotateError ? (
                   <img
                     src={data.annotation as string}
                     alt="Annotation"
                     className="image-preview-mask"
                     onError={() => setAnnotateError(true)}
                   />
-                )}
+                ) : null}
                 {/* 超分加载动画：光晕流动 + 扫描光带 */}
                 {isUpscaling && (
                   <div className="upscale-glow" aria-hidden="true">
@@ -1046,10 +1065,10 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
       {/* Annotate Editor Overlay */}
       {isAnnotate && (
-        <AnnotateEditor
+        <PointEditEditor
           isOpen={isAnnotate}
           imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-          initialAnnotation={data.annotation as string | undefined}
+          initialAnnotationLayer={annotationLayer}
           onClose={handleCloseAnnotate}
           onSave={handleAnnotateSave}
         />

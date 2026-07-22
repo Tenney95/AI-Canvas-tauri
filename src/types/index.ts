@@ -3,6 +3,21 @@
  */
 import type { AudioOutputFormat, AudioTtsVoice, ModelExecutionProfile } from './aiTypes';
 import type { AudioGenerationPurpose } from './media';
+import type { ImageAnnotationLayer } from '@tenney95/xiaoluo-image-editor';
+
+export type {
+  AnnotationPoint,
+  ArrowImageAnnotation,
+  BaseImageAnnotation,
+  BrushImageAnnotation,
+  ImageAnnotation,
+  ImageAnnotationLayer,
+  ImageAnnotationTool,
+  ImageAnnotationType,
+  MarkerImageAnnotation,
+  RectangleImageAnnotation,
+  TextImageAnnotation,
+} from '@tenney95/xiaoluo-image-editor';
 
 // 节点类型定义
 export type NodeType =
@@ -82,7 +97,8 @@ export interface BaseNodeData {
   dramaAssetId?: string;
   dramaAssetKind?: import('./dramaAssets').DramaAssetKind;
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
-  annotation?: string;        // 标注编辑器涂写数据（data URL，透明 PNG）
+  annotation?: string;        // 旧版标注数据（data URL，透明 PNG；仅用于兼容读取）
+  annotationLayer?: ImageAnnotationLayer; // 可编辑矢量标注层，独立于原图存储
   imageWidth?: number;        // 生成图片实际宽度
   imageHeight?: number;       // 生成图片实际高度
   videoWidth?: number;        // 视频原始宽度（用于节点等比布局）

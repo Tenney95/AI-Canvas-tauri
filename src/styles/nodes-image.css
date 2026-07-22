@@ -169,7 +169,6 @@
 }
 
 .matting-btn,
-.annotate-btn,
 .customgrid-btn {
   display: inline-flex;
   align-items: center;
@@ -183,15 +182,13 @@
   flex-shrink: 0;
 }
 
-.matting-btn,
-.annotate-btn {
+.matting-btn {
   width: 36px;
   height: 36px;
   padding: 0;
 }
 
 .matting-btn:hover,
-.annotate-btn:hover,
 .customgrid-btn:hover {
   color: var(--theme-text);
   background: var(--white-alpha-08);
@@ -203,7 +200,6 @@
 }
 
 .matting-btn:disabled,
-.annotate-btn:disabled,
 .customgrid-btn:disabled {
   opacity: 0.3;
   cursor: default;
@@ -212,15 +208,13 @@
 
 /* Cancel button hover red */
 .matting-btn.act-cancel:hover,
-.annotate-btn.act-cancel:hover,
 .customgrid-btn.act-cancel:hover {
   color: var(--danger);
   background: var(--danger-bg);
 }
 
 /* Save button */
-.matting-save,
-.annotate-save {
+.matting-save {
   gap: 6px;
   padding: 0 12px;
   width: auto;
@@ -233,20 +227,17 @@
 }
 
 .matting-save:hover,
-.annotate-save:hover,
 .customgrid-btn.act-confirm:hover {
   background: rgba(34, 197, 94, 0.1);
   color: var(--success-light);
   border-color: rgba(34, 197, 94, 0.5);
 }
 
-.matting-save span,
-.annotate-save span {
+.matting-save span {
   white-space: nowrap;
 }
 
 .matting-divider,
-.annotate-divider,
 .customgrid-bar-divider {
   width: 1px;
   height: 22px;
@@ -256,8 +247,7 @@
 }
 
 /* Brush size */
-.matting-size,
-.annotate-size {
+.matting-size {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -272,8 +262,7 @@
   text-align: center;
 }
 
-.matting-size-range,
-.annotate-size-range {
+.matting-size-range {
   width: 80px;
   height: 4px;
   -webkit-appearance: none;
@@ -284,8 +273,7 @@
   cursor: pointer;
 }
 
-.matting-size-range::-webkit-slider-thumb,
-.annotate-size-range::-webkit-slider-thumb {
+.matting-size-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 14px;
@@ -295,8 +283,7 @@
   cursor: pointer;
 }
 
-.matting-size-range::-moz-range-thumb,
-.annotate-size-range::-moz-range-thumb {
+.matting-size-range::-moz-range-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
@@ -307,11 +294,6 @@
 .matting-size-range::-webkit-slider-thumb,
 .matting-size-range::-moz-range-thumb {
   background: var(--success);
-}
-
-.annotate-size-range::-webkit-slider-thumb,
-.annotate-size-range::-moz-range-thumb {
-  background: var(--theme-text);
 }
 
 /* Stage — centers the image */
@@ -395,207 +377,14 @@
   cursor: crosshair;
 }
 
-/* ============================================
-   Annotate Overlay — fullscreen draw editor
-   ============================================ */
-.annotate-overlay {
-  position: fixed;
+.image-annotation-layer {
+  position: absolute;
   inset: 0;
-  z-index: 10000;
-  display: flex;
-  flex-direction: column;
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(8px);
-  animation: fadeIn var(--dur-normal) var(--ease-out-expo);
-}
-
-/* Annotate toolbar */
-.annotate-toolbar {
-  position: fixed;
-  top: 26px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 10001;
-  display: flex;
-  align-items: center;
-  gap: 0;
-  padding: 4px 8px;
-  background: var(--glass-panel-bg);
-  backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid var(--glass-ring);
-  border-radius: 10px;
-  box-shadow: 0 4px 24px var(--black-alpha-40);
-  white-space: nowrap;
-}
-
-.annotate-btn.active {
-  color: var(--success);
-  background: rgba(34, 197, 94, 0.12);
-}
-
-/* Color swatches */
-.annotate-colors {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 2px;
-}
-
-.annotate-color-swatch {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: 1.5px solid transparent;
-  cursor: pointer;
-  transition: transform 0.15s, border-color 0.15s;
-  flex-shrink: 0;
-}
-
-.annotate-color-swatch:hover {
-  transform: scale(1.2);
-}
-
-.annotate-color-swatch.active {
-  border-color: var(--theme-text);
-  transform: scale(1.15);
-}
-
-/* Brush size */
-.annotate-size-value {
-  font-size: 12px;
-  color: var(--theme-text);
-  font-variant-numeric: tabular-nums;
-  min-width: 20px;
-  text-align: center;
-}
-
-.annotate-size-label {
-  font-size: 11px;
-  color: var(--theme-text-muted);
-  white-space: nowrap;
-}
-
-/* Stage — centers the image */
-.annotate-stage {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  z-index: 2;
   width: 100%;
   height: 100%;
-  padding: 80px 40px 40px;
-  box-sizing: border-box;
+  pointer-events: none;
 }
-
-/* Viewport — relative wrapper so canvas overlays image exactly */
-.annotate-viewport {
-  position: relative;
-  display: inline-block;
-  line-height: 0;
-  transform-origin: center;
-  animation: stageZoomIn 0.5s var(--ease-out-expo) both;
-}
-
-.annotate-image {
-  display: block;
-  max-width: 85vw;
-  max-height: 80vh;
-  object-fit: contain;
-  border-radius: 4px;
-  user-select: none;
-  -webkit-user-drag: none;
-}
-
-.annotate-canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: auto;
-}
-
-/* Text input overlay */
-.annotate-text-input {
-  position: absolute;
-  z-index: 10;
-  background: rgba(0, 0, 0, 0.65);
-  border: 1px dashed var(--theme-border);
-  border-radius: 4px;
-  color: inherit;
-  outline: none;
-  padding: 2px 6px;
-  min-width: 80px;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-weight: bold;
-  line-height: 1.4;
-  caret-color: var(--theme-text);
-}
-
-.annotate-text-input::placeholder {
-  color: var(--theme-text-muted);
-  font-weight: 400;
-}
-
-/* Draggable text annotation labels */
-.annotate-text-label {
-  position: absolute;
-  z-index: 5;
-  pointer-events: auto;
-  cursor: move;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-weight: bold;
-  line-height: 1.2;
-  white-space: pre-wrap;
-  user-select: none;
-  -webkit-user-drag: none;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
-  border: 1px solid transparent;
-  border-radius: 3px;
-  padding: 1px 3px;
-  transition: border-color 0.15s;
-}
-
-.annotate-text-label:hover {
-  border-color: var(--theme-border);
-  background: rgba(0, 0, 0, 0.25);
-}
-
-.annotate-text-label.selected {
-  border-color: var(--theme-text);
-  background: rgba(0, 0, 0, 0.3);
-}
-
-.annotate-text-label:hover .annotate-text-delete,
-.annotate-text-label.selected .annotate-text-delete {
-  opacity: 1;
-}
-
-.annotate-text-delete {
-  position: absolute;
-  top: -8px;
-  right: -8px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, 0.8);
-  border: 1px solid var(--theme-border);
-  color: var(--theme-text-secondary);
-  font-size: 11px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-  padding: 0;
-}
-
-.annotate-text-delete:hover {
-  color: var(--danger);
-  background: rgba(0, 0, 0, 0.9);
-}
-
 /* ============================================
    CustomGridEditor — 自定义宫格裁切
    ============================================ */

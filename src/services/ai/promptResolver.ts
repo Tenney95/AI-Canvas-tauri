@@ -5,7 +5,27 @@ import { useAppStore } from '../../store/useAppStore';
 import { readFileToDataUrl, getFileCategory } from '../fileService';
 import { resolveNodeImageUrl, mergeImageWithOverlays } from './imageUtils';
 import { cropImageCell, cropImageByRanges } from '../../components/nodes/shared/image/imageUtils';
-import type { BaseNodeData, StoryboardCellOverride } from '../../types';
+import {
+  isImageAnnotationLayer,
+  renderImageAnnotationLayerToDataUrl,
+} from '@tenney95/xiaoluo-image-editor';
+import type { BaseNodeData, ImageAnnotationLayer, StoryboardCellOverride } from '../../types';
+
+interface PromptImageEntry {
+  url: string;
+  mattingMask?: string;
+  annotation?: string;
+  annotationLayer?: ImageAnnotationLayer;
+  filePath?: string;
+}
+
+async function mergePromptImageOverlays(url: string, entry: PromptImageEntry): Promise<string> {
+  const annotation = entry.annotationLayer?.annotations.length
+    ? renderImageAnnotationLayerToDataUrl(entry.annotationLayer)
+    : entry.annotation;
+  if (!entry.mattingMask && !annotation) return url;
+  return mergeImageWithOverlays(url, entry.mattingMask, annotation);
+}
 
 /**
  * 解析宫格分镜虚拟 ID：从 {storyboardNodeId}/cell/{idx} 中提取真实 nodeId 和格下标。
@@ -74,7 +94,7 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
   const { nodes } = store;
   // groups: 1=@asset  2,3=@drama  4,5=@node
   const chipRegex = /@asset\{([^}]+)\}|@drama\{([^:]+):([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
-  const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string; filePath?: string }> = [];
+  const imageEntries: PromptImageEntry[] = [];
   const imageKeyToIndex = new Map<string, number>();
   const parts: string[] = [];
   let lastIndex = 0;
@@ -132,6 +152,9 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
               url: imgRef.imageUrl,
               mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
               annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
+              annotationLayer: isImageAnnotationLayer(imgNode?.data?.annotationLayer)
+                ? imgNode.data.annotationLayer
+                : undefined,
               filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
             });
           }
@@ -189,6 +212,9 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
               url: imageUrl,
               mattingMask: (node.data.mattingMask as string | undefined) || undefined,
               annotation: (node.data.annotation as string | undefined) || undefined,
+              annotationLayer: isImageAnnotationLayer(node.data.annotationLayer)
+                ? node.data.annotationLayer
+                : undefined,
               filePath: (node.data.filePath as string | undefined) || undefined,
             });
           }
@@ -240,9 +266,8 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
   const imageUrls = await Promise.all(
     imageEntries.map(async (entry) => {
       const url = await resolveNodeImageUrl(entry.url, entry.filePath);
-      if (!entry.mattingMask && !entry.annotation) return url;
       try {
-        return await mergeImageWithOverlays(url, entry.mattingMask, entry.annotation);
+        return await mergePromptImageOverlays(url, entry);
       } catch (err) {
         console.error('[aiService] Failed to merge overlays:', err);
         return url;
@@ -266,7 +291,7 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
 export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ prompt: string; imageUrls: string[] }> {
   const store = useAppStore.getState();
   const { nodes } = store;
-  const imageEntries: Array<{ url: string; mattingMask?: string; annotation?: string; filePath?: string }> = [];
+  const imageEntries: PromptImageEntry[] = [];
   // groups: 1=@asset  2,3=@drama  4,5=@node
   const chipRegex = /@asset\{([^}]+)\}|@drama\{([^:]+):([^}]+)\}|@\{([^:]+):([^}]+)\}/g;
 
@@ -344,6 +369,9 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
               url: imgRef.imageUrl,
               mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
               annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
+              annotationLayer: isImageAnnotationLayer(imgNode?.data?.annotationLayer)
+                ? imgNode.data.annotationLayer
+                : undefined,
               filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
             });
           }
@@ -412,6 +440,9 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
           url: imageUrl,
           mattingMask: (node.data.mattingMask as string | undefined) || undefined,
           annotation: (node.data.annotation as string | undefined) || undefined,
+          annotationLayer: isImageAnnotationLayer(node.data.annotationLayer)
+            ? node.data.annotationLayer
+            : undefined,
           filePath: (node.data.filePath as string | undefined) || undefined,
         });
       }
@@ -445,9 +476,8 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
   const imageUrls = await Promise.all(
     imageEntries.map(async (entry) => {
       const url = await resolveNodeImageUrl(entry.url, entry.filePath);
-      if (!entry.mattingMask && !entry.annotation) return url;
       try {
-        return await mergeImageWithOverlays(url, entry.mattingMask, entry.annotation);
+        return await mergePromptImageOverlays(url, entry);
       } catch (err) {
         console.error('[aiService] Failed to merge overlays:', err);
         return url;
