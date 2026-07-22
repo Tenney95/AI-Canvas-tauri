@@ -15,7 +15,7 @@
 Completed on 2026-07-22.
 
 - XiaoLuo-Panorama now exposes the host-neutral `PanoramaCore` and independent `./core` package entry.
-- AI Canvas consumes the upstream HTTPS Git dependency pinned to commit `bec213ff594d8b3353ca2204929654980fe5da1c`.
+- AI Canvas consumes the upstream HTTPS Git dependency pinned to commit `c743a39041b8049e1edfa3041311ab996aa1ff8f`.
 - Compact rendering uses `PanoramaCore`; fullscreen rendering lazy-loads the original upstream `PanoramaViewer` with host theme, close, direct-image loading, corner radius, and capture-delivery adapters.
 - Multi-instance isolation, screenshot node creation, original fullscreen controls, light/dark themes, Escape close, and narrow viewport layout were verified in the running application.
 - AI Canvas type checks, targeted ESLint, 217 tests, production build, strict UTF-8 scan, and `git diff --check` passed.
@@ -23,6 +23,7 @@ Completed on 2026-07-22.
 - Follow-up compact styling uses the existing `className` host adapter, reducing fullscreen typography, controls, and radii without changing the upstream default appearance. The dark-theme range track now uses `#20202b`, the AI Canvas viewer radius is `6px`, and the toolbar and parameter panel use scoped translucent glass surfaces.
 - Ratio capture is opt-in through `captureMode="ratio"`; it provides 13 crop presets, a live thirds frame, responsive glass controls, and capture metadata while preserving the upstream one-click screenshot default. Desktop and `390x844` layouts plus a generated `16:9` image node were verified.
 - The compact fullscreen controls now follow XiaoLuo-PointEdit's dock system: the main actions and zoom percentage are separate, equal-height `16px` glass surfaces, zoom uses magnifier controls with click-to-reset percentage, and selected walking/correction actions use a subtle brand state without shadows. The viewer and inner controls keep AI Canvas's smaller radii.
+- The compact light-theme camera panel now uses explicit semantic color tiers for titles, labels, descriptions, values, range tracks, dividers, and the primary capture action. Browser verification confirmed the light theme applies `#1f2937`, `#475569`, `#64748b`, `#4f46e5`, and `#e2e8f0` as intended while preserving white capture-button text and leaving the upstream default and compact dark theme unchanged.
 
 Follow-up adjustment approved on 2026-07-22: keep the compact node on `PanoramaCore`, but replace the AI Canvas-owned immersive controls with the original upstream `PanoramaViewer`. The upstream component will expose only the host integration props needed for capture delivery, direct URL loading, light/dark theme mapping, and a smaller host radius. AI Canvas will consume the resulting Git commit through npm and lazy-load the full viewer only when fullscreen opens.
 
