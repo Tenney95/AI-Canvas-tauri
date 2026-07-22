@@ -72,11 +72,33 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'AI Canvas v__VERSION__'
+          releaseName: 'AI Canvas v__VERSION__ - 全景与图片编辑体验升级'
           releaseBody: |
-            See the assets to download and install this version.
+            ## 版本摘要
 
-            [自动化发布] 由 GitHub Actions 构建。
+            AI Canvas v0.6.1 聚焦全景节点、图片编辑和画布操作可靠性，并统一了顶部浮层与各类图片工具栏的交互样式。
+
+            ## 全景与图片编辑
+
+            - 全景节点接入小洛全景查看器，支持独立全屏查看与比例截图。
+            - 图片标注迁移至 PointEdit，统一标注层能力与交互边界。
+            - 统一裁剪、抠图、合成器等图片编辑器的底部工具栏、缩放控件和紧凑布局。
+
+            ## 画布与项目体验
+
+            - 修复删除节点后的撤销与重做，恢复节点、边和相关状态时更加可靠。
+            - 新增选中节点的流动边反馈，提升复杂画布中的定位感。
+            - 优化项目切换与设置浮条的位置、毛玻璃背景、圆角层级和提示布局。
+            - 统一标题栏和文件操作边界，减少不同运行环境下的界面差异。
+
+            ## 配置与稳定性
+
+            - 修复 Agent 自定义连接待填写密钥时未显示的问题。
+            - 完善图片引用监听、节点创建与提示位置等细节。
+
+            ## 下载
+
+            请在下方 Assets 中选择对应平台的安装包：Windows 使用 `.exe` 或 `.msi`，macOS Apple Silicon 使用 `.dmg`，Linux 使用 `.AppImage`、`.deb` 或 `.rpm`。
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
