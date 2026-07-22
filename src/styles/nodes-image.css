@@ -3,16 +3,22 @@
    ============================================ */
 
 /* ============================================
-   Image Toolbar — above selected ImageNode
+   Image Toolbar — below selected ImageNode
    ============================================ */
 .img-toolbar {
   --toolbar-offset-x: -50%;
-  top: -54px !important;
-  bottom: auto !important;
-  left: 50% !important;
+  top: auto;
+  bottom: -50px;
+  left: 50%;
   gap: 0;
   padding: 4px 6px;
+  max-width: min(calc(100vw - 24px), 760px);
   white-space: nowrap;
+  border-radius: 16px;
+  background: var(--glass-bg-light);
+  box-shadow: var(--glass-shadow-floating);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  transform-origin: center top;
 }
 
 .img-toolbar-main {
@@ -28,9 +34,9 @@
 }
 
 .img-toolbar .ftb-btn {
-  width: 28px;
-  height: 28px;
-  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
 }
 
 .img-toolbar-main-divider {
@@ -55,10 +61,11 @@
   z-index: 10002;
   min-width: 150px;
   padding: 6px;
-  background: var(--theme-surface);
-  border: 1px solid var(--theme-border);
-  border-radius: 12px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-ring);
+  border-radius: 10px;
+  box-shadow: var(--glass-shadow-menu);
+  backdrop-filter: blur(var(--glass-blur-lg));
   animation: fadeIn var(--dur-fast, 0.14s) var(--ease-out-expo, ease-out);
 }
 
@@ -70,7 +77,7 @@
   left: 50%;
   transform: translateX(-50%);
   border: 6px solid transparent;
-  border-top-color: var(--theme-surface);
+  border-top-color: var(--glass-bg);
 }
 
 /* ── 向下弹出（上方空间不足时）── */
@@ -83,7 +90,7 @@
   top: auto;
   bottom: 100%;
   border-top-color: transparent;
-  border-bottom-color: var(--theme-surface);
+  border-bottom-color: var(--glass-bg);
 }
 
 .multigrid-menu-title {
@@ -146,7 +153,8 @@
 /* Matting toolbar */
 .matting-toolbar {
   position: fixed;
-  top: 26px;
+  top: auto;
+  bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 10001;
@@ -155,11 +163,19 @@
   gap: 0;
   padding: 4px 8px;
   background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-md));
-  border: 1px solid var(--theme-border);
-  border-radius: 10px;
-  box-shadow: 0 4px 24px var(--black-alpha-40);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow-floating);
+  max-width: calc(100vw - 24px);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   white-space: nowrap;
+}
+
+.matting-toolbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* 浅色主题：玻璃栏背景偏亮，次级灰字对比不足。仅在栏内重定义次级色为主文本色，
@@ -183,8 +199,8 @@
 }
 
 .matting-btn {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   padding: 0;
 }
 
@@ -218,6 +234,7 @@
   gap: 6px;
   padding: 0 12px;
   width: auto;
+  height: 32px;
   color: var(--success);
   border: 1px solid rgba(34, 197, 94, 0.3);
   border-radius: 6px;
@@ -240,7 +257,7 @@
 .matting-divider,
 .customgrid-bar-divider {
   width: 1px;
-  height: 22px;
+  height: 18px;
   background: var(--theme-border);
   margin: 0 6px;
   flex-shrink: 0;
@@ -303,7 +320,7 @@
   justify-content: center;
   width: 100%;
   height: 100%;
-  padding: 80px 40px 40px;
+  padding: 40px 40px 88px;
   box-sizing: border-box;
   overflow: hidden;
   position: relative;
@@ -397,10 +414,15 @@
   pointer-events: none;
 }
 
+.customgrid-overlay > .fullscreen-close--absolute {
+  display: none;
+}
+
 /* ── 工具栏（与 CropEditor 的 crop-aspect-bar 统一）── */
 .customgrid-toolbar {
   position: fixed;
-  top: 26px;
+  top: auto;
+  bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 10001;
@@ -409,12 +431,17 @@
   gap: 0;
   padding: 4px 8px;
   background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-md));
-  border: 1px solid var(--theme-border);
-  border-radius: 10px;
-  box-shadow: 0 4px 24px var(--black-alpha-40);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow-floating);
+  width: min(calc(100vw - 32px), 760px);
   white-space: nowrap;
   pointer-events: auto;
+}
+
+[data-theme='light'] .customgrid-toolbar {
+  --theme-text-secondary: var(--theme-text);
 }
 
 .customgrid-btn {
@@ -462,11 +489,37 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 80px 40px 40px;
+  padding: 40px 40px 88px;
   box-sizing: border-box;
   overflow: auto;
   pointer-events: auto;
   cursor: crosshair;
+}
+
+@media (max-width: 680px), (max-height: 560px) {
+  .matting-toolbar,
+  .customgrid-toolbar {
+    bottom: 12px;
+    max-width: calc(100vw - 16px);
+  }
+
+  .customgrid-toolbar {
+    width: auto;
+  }
+
+  .customgrid-hint {
+    display: none;
+  }
+
+  .matting-stage,
+  .customgrid-stage {
+    padding: 20px 20px 76px;
+  }
+
+  .matting-image,
+  .customgrid-image {
+    max-height: calc(100dvh - 112px);
+  }
 }
 
 .customgrid-image-wrap {

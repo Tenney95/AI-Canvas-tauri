@@ -10,6 +10,10 @@
   padding: 0;
 }
 
+.crop-overlay > .fullscreen-close--absolute {
+  display: none;
+}
+
 /* 内容容器：spring 入场动画，阻止冒泡 */
 .crop-content {
   display: flex;
@@ -20,10 +24,11 @@
   height: 100%;
 }
 
-/* 宽高比快捷按钮栏 — 固定顶部浮动，类似 MattingToolbar */
+/* 宽高比快捷按钮栏 — 固定底部浮动，与图片编辑工具统一 */
 .crop-aspect-bar {
   position: fixed;
-  top: 26px;
+  top: auto;
+  bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 10001;
@@ -32,14 +37,24 @@
   gap: 4px;
   padding: 4px 8px;
   background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-md));
+  backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
-  border-radius: 10px;
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow-floating);
+  max-width: calc(100vw - 24px);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   flex-shrink: 0;
 }
 
+.crop-aspect-bar::-webkit-scrollbar {
+  display: none;
+}
+
 .crop-aspect-btn {
-  padding: 3px 10px;
+  min-height: 32px;
+  padding: 0 10px;
   border-radius: 6px;
   background: transparent;
   color: var(--theme-text-secondary);
@@ -54,7 +69,8 @@
 }
 
 .crop-aspect-btn.crop-aspect-close {
-  padding: 3px 6px;
+  width: 32px;
+  padding: 0;
   border-color: transparent;
   margin-right: 4px;
 }
@@ -92,7 +108,8 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 12px;
+  height: 32px;
+  padding: 0 12px;
   border: 1px solid transparent;
   border-radius: 6px;
   font-size: 12px;
@@ -197,7 +214,7 @@
 /* 缩放指示器 */
 .crop-zoom-indicator {
   position: absolute;
-  bottom: 12px;
+  bottom: 84px;
   right: 16px;
   padding: 3px 10px;
   background: rgba(0, 0, 0, 0.55);
@@ -304,9 +321,12 @@
    复用 crop-overlay / crop-aspect-bar / crop-stage
    ============================================ */
 
-/* 预览舞台：底部留出控制区空间 */
+/* 预览舞台：桌面端为右侧参数面板留出独立空间 */
 .expand-stage {
-  padding-bottom: 132px;
+  width: calc(100% - 340px);
+  margin-right: 340px;
+  padding: 32px 24px 88px;
+  box-sizing: border-box;
 }
 
 /* 目标画布外框 — 棋盘格表示待 AI 补全的留白区 */
@@ -336,22 +356,29 @@
   cursor: grabbing;
 }
 
-/* 底部控制区 — 固定浮动 */
+/* 参数控制区 — 与底部命令栏分离，固定于右侧 */
 .expand-controls {
   position: fixed;
-  bottom: 22px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 50%;
+  right: 24px;
+  bottom: auto;
+  left: auto;
+  transform: translateY(-50%);
   z-index: 10001;
-  width: min(92vw, 440px);
+  width: 292px;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 12px 14px;
   background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-md));
+  backdrop-filter: blur(var(--glass-blur-lg));
   border: 1px solid var(--glass-ring);
-  border-radius: 12px;
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow-floating);
+}
+
+[data-theme='light'] .expand-controls {
+  --theme-text-secondary: var(--theme-text);
 }
 
 .expand-control-row {
@@ -416,6 +443,42 @@
 
 .expand-prompt-input::placeholder {
   color: var(--theme-text-muted, rgba(255, 255, 255, 0.35));
+}
+
+@media (max-width: 900px) {
+  .expand-stage {
+    width: 100%;
+    margin-right: 0;
+    padding: 176px 24px 88px;
+  }
+
+  .expand-controls {
+    top: 16px;
+    right: 16px;
+    transform: none;
+    width: min(calc(100vw - 32px), 360px);
+  }
+}
+
+@media (max-width: 720px), (max-height: 560px) {
+  .crop-aspect-bar {
+    bottom: 12px;
+    max-width: calc(100vw - 16px);
+  }
+
+  .crop-zoom-indicator {
+    bottom: 72px;
+  }
+
+  .expand-stage {
+    padding: 164px 16px 76px;
+  }
+
+  .expand-controls {
+    top: 12px;
+    right: 8px;
+    width: calc(100vw - 16px);
+  }
 }
 
 /* ============================================

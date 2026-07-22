@@ -19,34 +19,41 @@
   animation: composerRootBloom 1000ms var(--ease-out-expo) both;
 }
 
-/* ── 顶栏 ── */
+/* ── 底部命令栏 ── */
 .composer-toolbar {
-  position: relative;
+  position: fixed;
+  bottom: 24px;
+  left: calc(50% - 122px);
+  translate: -50% 0;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr) 32px;
   align-items: center;
   gap: 4px;
-  padding: 8px;
-  z-index: 10;
+  width: max-content;
+  max-width: min(calc(100vw - 292px), 920px);
+  padding: 4px 6px;
+  z-index: 40;
   background: var(--glass-bg-light);
-  backdrop-filter: blur(var(--glass-blur-md));
-  border-bottom: 1px solid var(--glass-ring);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid var(--glass-ring);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow-floating);
   animation: composerToolsReveal 1000ms var(--ease-out-expo) 320ms both;
 }
 
 .composer-toolbar-main {
-  grid-column: 2;
+  grid-column: 1;
   justify-self: center;
   min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .composer-toolbar-close {
-  grid-column: 3;
+  grid-column: 2;
   justify-self: end;
   margin-right: 0;
 }
@@ -62,9 +69,20 @@
 }
 
 /* 图标按钮：方形内边距；带文字的（如尺寸）图标与文字留间距 */
-.composer-toolbar .crop-aspect-btn { gap: 5px; }
-.composer-toolbar .crop-aspect-btn.icon-only { padding: 5px; }
+.composer-toolbar .crop-aspect-btn {
+  gap: 5px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+}
+.composer-toolbar .crop-aspect-btn.icon-only { width: 32px; padding: 0; }
 .composer-toolbar .crop-aspect-btn svg { display: block; }
+.composer-toolbar .img-pill-btn {
+  height: 32px;
+  padding-block: 0;
+  border-radius: 6px;
+}
 
 .composer-zoom-text {
   font-size: 12px;
@@ -124,7 +142,7 @@
 
 .composer-zoom-indicator {
   position: absolute;
-  bottom: 12px;
+  bottom: 84px;
   right: 16px;
   padding: 3px 10px;
   background: rgba(0, 0, 0, 0.55);
@@ -157,17 +175,32 @@
 
 .composer-menu {
   position: absolute;
-  top: calc(100% + 6px);
+  top: auto;
+  bottom: calc(100% + 8px);
   left: 0;
   z-index: 30;
   min-width: 180px;
   max-height: 320px;
   overflow-y: auto;
   padding: 6px;
-  background: var(--theme-surface, #15151c);
+  background: var(--glass-bg);
   border: 1px solid var(--glass-ring);
   border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--glass-shadow-menu);
+  backdrop-filter: blur(var(--glass-blur-lg));
+  transform-origin: bottom left;
+}
+
+.composer-toolbar .img-ratio-popup.img-ratio-popup--down {
+  top: auto;
+  bottom: 100%;
+  margin-top: 0;
+  margin-bottom: 8px;
+  transform-origin: bottom right;
+}
+
+.composer-toolbar .img-rp-quality-item.active {
+  box-shadow: none;
 }
 
 .composer-menu-empty {
@@ -279,7 +312,7 @@
 @keyframes composerToolsReveal {
   from {
     opacity: 0;
-    transform: translateY(-10px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
@@ -446,3 +479,33 @@
 .composer-side-actions { display: flex; gap: 6px; margin-top: 10px; }
 .composer-side-actions .crop-aspect-btn { flex: 1; }
 .crop-aspect-btn.danger:hover { color: var(--danger); background: var(--danger-bg); }
+
+@media (max-width: 1040px) {
+  .composer-toolbar-main {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .composer-zoom-text {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .composer-side {
+    width: 210px;
+    padding: 10px;
+  }
+
+  .composer-toolbar {
+    bottom: 12px;
+    left: 8px;
+    width: calc(100vw - 226px);
+    max-width: none;
+    translate: none;
+  }
+
+  .composer-zoom-indicator {
+    bottom: 72px;
+  }
+}
