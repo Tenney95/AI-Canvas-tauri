@@ -36,13 +36,15 @@
         "gsap": "^3.15.0",
         "html-to-image": "^1.11.13",
         "konva": "^10.3.0",
+        "lucide-react": "^0.546.0",
+        "motion": "^12.42.2",
         "postprocessing": "^6.39.1",
         "react": "^19.2.6",
         "react-dom": "^19.2.6",
         "react-image-crop": "^11.0.10",
         "react-konva": "^19.2.5",
         "three": "^0.184.0",
-        "xiaoluo-vr-panorama": "git+https://github.com/Tenney95/XiaoLuo-Panorama.git#00c7b4952c534d181de53c774170aa0a546031a9",
+        "xiaoluo-vr-panorama": "git+https://github.com/Tenney95/XiaoLuo-Panorama.git#ac2f465ae68b1d6cfba4d47091c16b69cf1c3076",
         "zustand": "^5.0.5"
     },
     "devDependencies": {

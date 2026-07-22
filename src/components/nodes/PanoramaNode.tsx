@@ -3,8 +3,9 @@
  * 使用 XiaoLuo-Panorama 的嵌入式核心，支持节点内预览、全屏漫游与截图。
  */
 import { Icon } from '@iconify/react';
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useRef } from 'react';
 import { Handle, Position } from '@xyflow/react';
+import type { PanoramaCaptureResult } from 'xiaoluo-vr-panorama';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
@@ -12,8 +13,6 @@ import GooeyBtn from './shared/GooeyBtn';
 import ResizeHandle from './shared/ResizeHandle';
 import PanoramaNodeToolbar from './shared/PanoramaNodeToolbar';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
-import AnimatedButton from '../shared/AnimatedButton';
-import QualityRatioSelector from './shared/QualityRatioSelector';
 import XiaoLuoPanoramaViewer, {
   type XiaoLuoPanoramaViewerHandle,
 } from './panorama/XiaoLuoPanoramaViewer';
@@ -23,11 +22,23 @@ import { useAppStore, generateId } from '../../store/useAppStore';
 import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 
-function ratioToNumber(ratio: string): number | null {
-  if (!ratio || ratio === '自适应') return null;
-  const [width, height] = ratio.split(':').map(Number);
-  if (!width || !height) return null;
-  return width / height;
+const XiaoLuoPanoramaFullscreen = lazy(
+  () => import('./panorama/XiaoLuoPanoramaFullscreen'),
+);
+
+function readScreenshotAspect(dataUrl: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      if (!image.naturalWidth || !image.naturalHeight) {
+        resolve(null);
+        return;
+      }
+      resolve(image.naturalWidth / image.naturalHeight);
+    };
+    image.onerror = () => resolve(null);
+    image.src = dataUrl;
+  });
 }
 
 function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
@@ -35,18 +46,14 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
   const updateNodeData = useAppStore((state) => state.updateNodeData);
   const updateNodeDataTransient = useAppStore((state) => state.updateNodeDataTransient);
   const commitToHistory = useAppStore((state) => state.commitToHistory);
+  const theme = useAppStore((state) => state.config.theme);
   const nodeWidth = (data.nodeWidth as number) || 280;
   const nodeHeight = (data.nodeHeight as number) || 200;
 
   const compactViewerRef = useRef<XiaoLuoPanoramaViewerHandle>(null);
-  const fullscreenViewerRef = useRef<XiaoLuoPanoramaViewerHandle>(null);
-  const [captureRatio, setCaptureRatio] = useState('自适应');
-  const fsStageRef = useRef<HTMLDivElement>(null);
-  const [stageBox, setStageBox] = useState({ w: 0, h: 0 });
 
   const previewMode = (data.previewMode as 'image' | '360') || 'image';
   const isFullscreen = (data.panoFullscreen as boolean) || false;
-  const captureAspect = ratioToNumber(captureRatio);
   const panoramaUrl = data.imageUrl || data.thumbnailUrl || '';
 
   const handleResize = useCallback(
@@ -55,36 +62,6 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
     },
     [id, updateNodeDataTransient],
   );
-
-  useEffect(() => {
-    if (!isFullscreen) return;
-    const element = fsStageRef.current;
-    if (!element) return;
-    const updateStageBox = () => setStageBox({ w: element.clientWidth, h: element.clientHeight });
-    const resizeObserver = new ResizeObserver(updateStageBox);
-    resizeObserver.observe(element);
-    updateStageBox();
-    return () => resizeObserver.disconnect();
-  }, [isFullscreen]);
-
-  const captureFrame = (() => {
-    if (!captureAspect || !stageBox.w || !stageBox.h) return null;
-    let width: number;
-    let height: number;
-    if (stageBox.w / stageBox.h > captureAspect) {
-      height = stageBox.h;
-      width = height * captureAspect;
-    } else {
-      width = stageBox.w;
-      height = width / captureAspect;
-    }
-    return {
-      x: (stageBox.w - width) / 2,
-      y: (stageBox.h - height) / 2,
-      w: width,
-      h: height,
-    };
-  })();
 
   const toggleMode = useCallback(() => {
     updateNodeDataTransient(id, {
@@ -96,20 +73,13 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
     updateNodeDataTransient(id, { panoFullscreen: !isFullscreen } as Partial<BaseNodeData>);
   }, [id, isFullscreen, updateNodeDataTransient]);
 
-  const handleScreenshot = useCallback(async () => {
-    const aspect = isFullscreen ? ratioToNumber(captureRatio) : null;
-    const activeViewer = isFullscreen ? fullscreenViewerRef.current : compactViewerRef.current;
-    const dataUrl = await activeViewer?.captureScreenshot(aspect);
-    if (!dataUrl) {
-      useAppStore.getState().showToast('截图失败', 'error');
-      return;
-    }
-
+  const createScreenshotNode = useCallback(async (dataUrl: string) => {
     const store = useAppStore.getState();
     const panoramaNode = store.nodes.find((node) => node.id === id);
     const position = panoramaNode?.position ?? { x: 0, y: 0 };
     const imageLabel = `全景截图-${Date.now()}`;
     const fileName = buildNodeFileName(imageLabel, 'png', 'panorama-screenshot');
+    const aspect = await readScreenshotAspect(dataUrl);
 
     let imageUrl = dataUrl;
     let filePath: string | undefined;
@@ -150,7 +120,20 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
       },
     } as Parameters<typeof store.addNode>[0]);
     store.showToast('截图已创建为图片节点', 'success');
-  }, [captureRatio, id, isFullscreen, nodeHeight, nodeWidth]);
+  }, [id, nodeHeight, nodeWidth]);
+
+  const handleScreenshot = useCallback(async () => {
+    const dataUrl = await compactViewerRef.current?.captureScreenshot();
+    if (!dataUrl) {
+      useAppStore.getState().showToast('截图失败', 'error');
+      return;
+    }
+    await createScreenshotNode(dataUrl);
+  }, [createScreenshotNode]);
+
+  const handleFullscreenCapture = useCallback(async ({ dataUrl }: PanoramaCaptureResult) => {
+    await createScreenshotNode(dataUrl);
+  }, [createScreenshotNode]);
 
   const { isUploading, handleUpload: uploadSourceFile } = useSourceFileUpload('.png,.jpg,.jpeg,.webp');
   const handleUpload = useCallback(async () => {
@@ -296,43 +279,19 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
         isOpen={isFullscreen && hasImage}
         onClose={toggleFullscreen}
         title={(data.label as string) || '360全景图'}
-        panelWidth="min(92vw, 1400px)"
+        panelWidth="calc(100vw - 24px)"
+        className="pano-original-overlay"
         hideHeader
         bodyClassName="fullscreen-body--pano"
       >
-        <div className="pano-fs-stage" ref={fsStageRef}>
-          <XiaoLuoPanoramaViewer
-            ref={fullscreenViewerRef}
+        <Suspense fallback={<div className="pano-fullscreen-loading"><span className="spinner" /></div>}>
+          <XiaoLuoPanoramaFullscreen
             imageUrl={panoramaUrl}
-            immersive
+            theme={theme === 'light' ? 'light' : 'dark'}
+            onClose={toggleFullscreen}
+            onCapture={handleFullscreenCapture}
           />
-          {captureFrame && (
-            <div
-              className="pano-capture-frame"
-              style={{
-                left: captureFrame.x,
-                top: captureFrame.y,
-                width: captureFrame.w,
-                height: captureFrame.h,
-              }}
-            />
-          )}
-        </div>
-        <div className="fullscreen-pano-toolbar">
-          <QualityRatioSelector
-            aspectRatio={captureRatio}
-            onChangeAspectRatio={setCaptureRatio}
-            showImageSize={false}
-          />
-          <AnimatedButton
-            className="pano-fs-btn"
-            onClick={handleScreenshot}
-            data-tooltip="截图并创建图片节点"
-          >
-            <Icon icon="mdi:camera-outline" width="16" height="16" />
-            <span>截图</span>
-          </AnimatedButton>
-        </div>
+        </Suspense>
       </FullscreenOverlay>
     </>
   );

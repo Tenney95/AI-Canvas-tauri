@@ -15,10 +15,13 @@
 Completed on 2026-07-22.
 
 - XiaoLuo-Panorama now exposes the host-neutral `PanoramaCore` and independent `./core` package entry.
-- AI Canvas consumes the upstream HTTPS Git dependency pinned to commit `00c7b4952c534d181de53c774170aa0a546031a9`.
-- Compact rendering, multi-instance isolation, immersive walking and correction controls, screenshot node creation, Escape close, and narrow viewport layout were verified in the running application.
+- AI Canvas consumes the upstream HTTPS Git dependency pinned to commit `ac2f465ae68b1d6cfba4d47091c16b69cf1c3076`.
+- Compact rendering uses `PanoramaCore`; fullscreen rendering lazy-loads the original upstream `PanoramaViewer` with host theme, close, direct-image loading, corner radius, and capture-delivery adapters.
+- Multi-instance isolation, screenshot node creation, original fullscreen controls, light/dark themes, Escape close, and narrow viewport layout were verified in the running application.
 - AI Canvas type checks, targeted ESLint, 217 tests, production build, strict UTF-8 scan, and `git diff --check` passed.
 - Upstream pull request: https://github.com/Tenney95/XiaoLuo-Panorama/pull/1
+
+Follow-up adjustment approved on 2026-07-22: keep the compact node on `PanoramaCore`, but replace the AI Canvas-owned immersive controls with the original upstream `PanoramaViewer`. The upstream component will expose only the host integration props needed for capture delivery, direct URL loading, light/dark theme mapping, and a smaller host radius. AI Canvas will consume the resulting Git commit through npm and lazy-load the full viewer only when fullscreen opens.
 
 ---
 
@@ -96,3 +99,29 @@ Completed on 2026-07-22.
 **Step 5:** Run strict UTF-8 checks and `git diff --check` in both repositories.
 
 **Step 6:** Prepare the upstream pull request and report the pinned commit used by AI Canvas.
+
+### Task 5: Reuse the upstream full-viewer interface
+
+**Files:**
+- Modify: `D:/www/project/XiaoLuo-Panorama/src/components/PanoramaViewer.tsx`
+- Modify: `D:/www/project/XiaoLuo-Panorama/src/index.css`
+- Modify: `src/components/nodes/PanoramaNode.tsx`
+- Modify: `src/components/nodes/panorama/XiaoLuoPanoramaViewer.tsx`
+- Create: `src/components/nodes/panorama/XiaoLuoPanoramaFullscreen.tsx`
+- Modify: `src/styles/nodes-panorama.css`
+- Modify: `package.json`
+- Modify: `package-lock.json`
+
+**Step 1:** Extend `PanoramaViewerProps` with backward-compatible `theme`, `cornerRadius`, `imageLoadStrategy`, and `onCapture` props. Keep existing standalone defaults so current consumers still download captures and resolve remote URLs as before.
+
+**Step 2:** Route viewport and architectural captures to `onCapture` when supplied, while retaining the existing download behavior when it is absent. Add semantic root classes and scoped dark-theme variables without replacing the original component layout.
+
+**Step 3:** Run `npm run lint`, `npm run build:lib`, and `npm pack --dry-run` in XiaoLuo-Panorama. Commit and push the result to the existing pull-request branch.
+
+**Step 4:** Pin AI Canvas to the new upstream commit with npm. Add the upstream full-viewer peer runtimes required by the root package.
+
+**Step 5:** Keep `XiaoLuoPanoramaViewer` as the compact core adapter. Add a separately imported `XiaoLuoPanoramaFullscreen` adapter that maps the canvas theme, close action, and capture callback to the upstream component.
+
+**Step 6:** Remove the duplicated immersive controls and their CSS from AI Canvas. Preserve node upload, image/360 switching, compact screenshot, fullscreen state, file persistence, image-node creation, and history behavior.
+
+**Step 7:** Run AI Canvas type checks, targeted ESLint, tests, production build, strict UTF-8 validation, and `git diff --check`. Verify light and dark fullscreen styles plus narrow viewport behavior in the running application.

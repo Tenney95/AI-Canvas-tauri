@@ -31,29 +31,14 @@
   overflow: hidden;
   border-radius: 8px;
   background: var(--theme-bg);
-  perspective: 1000px;
 }
 
 .xiaoluo-pano-shell.is-compact {
   cursor: grab;
 }
 
-.xiaoluo-pano-shell.is-compact:active,
-.xiaoluo-pano-shell.is-walking {
+.xiaoluo-pano-shell.is-compact:active {
   cursor: grabbing;
-}
-
-.xiaoluo-pano-transform {
-  width: 100%;
-  height: 100%;
-  transform: translate3d(var(--pano-offset-x), var(--pano-offset-y), 0)
-    rotateX(var(--pano-perspective)) scale(var(--pano-walk-scale));
-  transform-origin: center;
-  transition: transform 220ms ease;
-}
-
-.xiaoluo-pano-shell.is-walking .xiaoluo-pano-transform {
-  transition: none;
 }
 
 .xiaoluo-pano-shell .xiaoluo-panorama-core,
@@ -106,164 +91,6 @@
   background: var(--theme-hover);
 }
 
-.xiaoluo-pano-controls {
-  position: absolute;
-  left: 50%;
-  bottom: 18px;
-  z-index: 8;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 42px;
-  padding: 5px 7px;
-  border: 1px solid var(--glass-ring);
-  border-radius: 8px;
-  background: var(--glass-bg);
-  box-shadow: var(--glass-shadow-floating);
-  backdrop-filter: blur(var(--glass-blur-md));
-  transform: translateX(-50%);
-}
-
-.xiaoluo-pano-controls button,
-.xiaoluo-pano-corrections-header button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  height: 32px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--theme-text-secondary);
-  cursor: pointer;
-}
-
-.xiaoluo-pano-controls button:hover,
-.xiaoluo-pano-corrections-header button:hover {
-  background: var(--theme-hover);
-  color: var(--theme-text);
-}
-
-.xiaoluo-pano-controls button.is-active {
-  background: var(--node-panorama-bg);
-  color: var(--node-panorama-light);
-}
-
-.xiaoluo-pano-controls button.icon-only {
-  width: 32px;
-  padding: 0;
-}
-
-.xiaoluo-pano-control-divider {
-  width: 1px;
-  height: 20px;
-  margin: 0 2px;
-  background: var(--theme-border);
-}
-
-.xiaoluo-pano-zoom {
-  width: 44px;
-  color: var(--theme-text);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-
-.xiaoluo-pano-corrections {
-  position: absolute;
-  top: 54px;
-  right: 14px;
-  z-index: 9;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  width: min(270px, calc(100% - 28px));
-  padding: 14px;
-  border: 1px solid var(--glass-ring);
-  border-radius: 8px;
-  background: var(--glass-bg);
-  box-shadow: var(--glass-shadow-panel);
-  color: var(--theme-text);
-  backdrop-filter: blur(var(--glass-blur-md));
-}
-
-.xiaoluo-pano-corrections-header,
-.xiaoluo-pano-toggle-row,
-.xiaoluo-pano-corrections label > span {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.xiaoluo-pano-corrections-header {
-  min-height: 28px;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.xiaoluo-pano-corrections-header button {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-}
-
-.xiaoluo-pano-corrections label {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  color: var(--theme-text-secondary);
-  font-size: 11px;
-}
-
-.xiaoluo-pano-corrections output {
-  color: var(--theme-text);
-  font-variant-numeric: tabular-nums;
-}
-
-.xiaoluo-pano-corrections input[type='range'] {
-  width: 100%;
-  accent-color: var(--node-panorama);
-}
-
-.xiaoluo-pano-toggle-row {
-  flex-direction: row;
-}
-
-.xiaoluo-pano-toggle-row input[type='checkbox'] {
-  position: relative;
-  width: 34px;
-  height: 18px;
-  margin: 0;
-  border: 1px solid var(--theme-border);
-  border-radius: 10px;
-  appearance: none;
-  background: var(--theme-hover);
-  cursor: pointer;
-}
-
-.xiaoluo-pano-toggle-row input[type='checkbox']::after {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--theme-text-secondary);
-  content: '';
-  transition: transform 160ms ease, background 160ms ease;
-}
-
-.xiaoluo-pano-toggle-row input[type='checkbox']:checked {
-  border-color: var(--node-panorama);
-  background: var(--node-panorama-bg);
-}
-
-.xiaoluo-pano-toggle-row input[type='checkbox']:checked::after {
-  background: var(--node-panorama-light);
-  transform: translateX(16px);
-}
 
 /* Selected-node floating toolbar. */
 .pano-toolbar {
@@ -296,49 +123,28 @@
   background: var(--theme-border);
 }
 
-.fullscreen-body--pano .xiaoluo-pano-shell {
-  flex: 1;
-  border-radius: 0;
+.pano-original-overlay .fullscreen-panel {
+  height: calc(100vh - 24px);
+  max-height: none;
+  border-radius: 12px;
 }
 
-.fullscreen-pano-toolbar .pano-fs-btn {
-  display: inline-flex;
+.pano-original-overlay .fullscreen-close--absolute {
+  display: none;
+}
+
+.pano-original-overlay .fullscreen-body--pano {
+  position: relative;
+  display: block;
+  min-height: 0;
+  height: 100%;
+}
+
+.pano-fullscreen-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 6px 12px;
-  border: 1px solid var(--theme-border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--theme-text-secondary);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.fullscreen-pano-toolbar .pano-fs-btn:hover {
-  border-color: var(--glass-ring);
-  background: var(--theme-hover);
-  color: var(--theme-text);
-}
-
-@media (max-width: 720px) {
-  .xiaoluo-pano-controls {
-    bottom: 10px;
-    max-width: calc(100% - 20px);
-  }
-
-  .xiaoluo-pano-controls button span {
-    display: none;
-  }
-
-  .xiaoluo-pano-controls button {
-    width: 32px;
-    padding: 0;
-  }
-
-  .xiaoluo-pano-corrections {
-    top: 46px;
-    right: 10px;
-    width: min(250px, calc(100% - 20px));
-  }
+  justify-content: center;
+  background: var(--theme-bg);
 }
