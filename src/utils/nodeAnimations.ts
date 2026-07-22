@@ -8,6 +8,7 @@
 
 /** 节点退场动画时长（ms），需与 CSS .node-exiting 过渡一致。偏短以保持删除手感跟手 */
 const NODE_EXIT_MS = 130;
+const pendingNodeExits = new Set<Promise<void>>();
 
 function prefersReducedMotion(): boolean {
   return (
@@ -36,5 +37,17 @@ export function playNodeExit(ids: string[]): Promise<void> {
   if (inners.length === 0) return Promise.resolve();
 
   inners.forEach((el) => el.classList.add('node-exiting'));
-  return new Promise((resolve) => setTimeout(resolve, NODE_EXIT_MS));
+  const exit = new Promise<void>((resolve) => setTimeout(resolve, NODE_EXIT_MS));
+  pendingNodeExits.add(exit);
+  void exit.then(() => pendingNodeExits.delete(exit));
+  return exit;
+}
+
+/** 等待所有已开始的节点退场动画及其删除回调完成。 */
+export async function waitForPendingNodeExits(): Promise<void> {
+  while (pendingNodeExits.size > 0) {
+    await Promise.allSettled([...pendingNodeExits]);
+  }
+  // playNodeExit 的调用方通过 .then() 落删除状态，让这些回调先完成。
+  await Promise.resolve();
 }

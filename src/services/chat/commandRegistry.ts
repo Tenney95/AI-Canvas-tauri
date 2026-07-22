@@ -202,7 +202,8 @@ registry.set('deleteNodes', async (plan) => {
 // ── undo ──
 registry.set('undo', async (plan) => {
   const store = useAppStore.getState();
-  if (store.historyIndex < 0) {
+  const changed = await store.undo();
+  if (!changed) {
     return {
       planId: plan.id,
       status: 'partial',
@@ -210,20 +211,20 @@ registry.set('undo', async (plan) => {
       message: '没有可撤销的操作',
     };
   }
-  store.undo();
   return {
     planId: plan.id,
     status: 'success',
     affectedNodeIds: [],
     message: '已撤销上一步操作',
-    historyIndex: store.historyIndex,
+    historyIndex: useAppStore.getState().historyIndex,
   };
 });
 
 // ── redo ──
 registry.set('redo', async (plan) => {
   const store = useAppStore.getState();
-  if (store.historyIndex >= store.history.length - 1) {
+  const changed = await store.redo();
+  if (!changed) {
     return {
       planId: plan.id,
       status: 'partial',
@@ -231,13 +232,12 @@ registry.set('redo', async (plan) => {
       message: '没有可重做的操作',
     };
   }
-  store.redo();
   return {
     planId: plan.id,
     status: 'success',
     affectedNodeIds: [],
     message: '已重做',
-    historyIndex: store.historyIndex,
+    historyIndex: useAppStore.getState().historyIndex,
   };
 });
 
