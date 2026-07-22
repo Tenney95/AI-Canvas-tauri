@@ -1,15 +1,13 @@
-﻿/* ============================================
-   Panorama Node — Three.js WebGL Viewer
-   ============================================ */
+/* Panorama node and XiaoLuo-Panorama host styles. */
 
 .pano-node {
-  overflow: visible !important;
+  overflow: visible;
 }
 
 .pano-node .node-preview.compact {
-  padding: 4px;
   position: relative;
   min-height: 0;
+  padding: 4px;
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
@@ -23,143 +21,83 @@
   min-height: 0;
 }
 
-/* ══ Panorama Scene Shell — Three.js viewer wrapper ══ */
-.panorama-scene-shell {
+.xiaoluo-pano-shell {
   position: relative;
-  flex: 1;
+  isolation: isolate;
   width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
-  border-radius: 12px;
   overflow: hidden;
+  border-radius: 8px;
   background: var(--theme-bg);
+}
+
+.xiaoluo-pano-shell.is-compact {
   cursor: grab;
 }
 
-.panorama-scene-shell:active {
+.xiaoluo-pano-shell.is-compact:active {
   cursor: grabbing;
 }
 
-.panorama-scene-viewport {
+.xiaoluo-pano-shell .xiaoluo-panorama-core,
+.xiaoluo-pano-shell .pnlm-render-container,
+.xiaoluo-pano-shell .pnlm-ui,
+.xiaoluo-pano-shell canvas {
   width: 100%;
   height: 100%;
-  position: relative;
+  border-radius: inherit;
 }
 
-.panorama-scene-webgl {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: 12px;
+.xiaoluo-pano-shell .pnlm-load-box,
+.xiaoluo-pano-shell .pnlm-error-msg,
+.xiaoluo-pano-shell .pnlm-controls-container {
+  display: none;
 }
 
-/* ══ Floating Toolbar (panorama v2) ══ */
-.panorama-viewer-wrapper .node-floating-toolbar {
+.xiaoluo-pano-status {
   position: absolute;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 6px;
-  background: rgba(26, 26, 38, 0.6);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-  pointer-events: auto;
-}
-
-/* Toolbar — positioned above the viewer, outside the node */
-.panorama-viewer-wrapper .v2-panorama-mode-toolbar {
-  top: -38px;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-/* Panorama viewer wrapper — provides positioning anchor for floating toolbar */
-.panorama-viewer-wrapper {
-  position: relative;
-  flex: 1;
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-/* ══ Panorama toolbar buttons ══ */
-.panorama-viewer-wrapper .ftb-btn {
+  inset: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: none;
-  background: transparent;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--theme-bg) 82%, transparent);
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  font-size: 12px;
+  text-align: center;
+  backdrop-filter: blur(var(--glass-blur-sm));
+}
+
+.xiaoluo-pano-status.is-error {
+  color: var(--theme-text);
+}
+
+.xiaoluo-pano-retry {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-border);
   border-radius: 6px;
-  transition: color 0.15s, background 0.15s;
-  flex-shrink: 0;
-  padding: 0;
-}
-
-.panorama-viewer-wrapper .ftb-btn:hover {
+  background: var(--theme-card);
   color: var(--theme-text);
-  background: var(--white-alpha-08);
-}
-
-.panorama-viewer-wrapper .ftb-btn.icon-only {
-  width: 30px;
-  height: 30px;
-}
-
-.panorama-viewer-wrapper .ftb-divider {
-  width: 1px;
-  height: 18px;
-  background: rgba(255, 255, 255, 0.1);
-  margin: 0 4px;
-  flex-shrink: 0;
-}
-
-/* ══ Fullscreen toolbar buttons ══ */
-
-.fullscreen-pano-toolbar .pano-fs-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border: 1px solid var(--white-alpha-10);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--theme-text-secondary);
-  font-size: 13px;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.fullscreen-pano-toolbar .pano-fs-btn:hover {
-  background: var(--white-alpha-08);
-  color: var(--theme-text);
-  border-color: var(--white-alpha-20);
+.xiaoluo-pano-retry:hover {
+  background: var(--theme-hover);
 }
 
-/* ══ Panorama fullscreen backdrop (legacy — kept for compatibility) ══ */
-.panorama-fullscreen-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 9998;
-  background: rgba(0, 0, 0, 0.85);
-  backdrop-filter: blur(4px);
-  border-radius: 16px;
-}
 
-/* ══ Pano Node Toolbar — above selected PanoramaNode ══ */
+/* Selected-node floating toolbar. */
 .pano-toolbar {
   --toolbar-offset-x: -50%;
-  top: -40px !important;
-  bottom: auto !important;
-  left: 50% !important;
+  top: -40px;
+  bottom: auto;
+  left: 50%;
   gap: 0;
   padding: 4px 6px;
   white-space: nowrap;
@@ -180,16 +118,33 @@
 .pano-toolbar-divider {
   width: 1px;
   height: 18px;
-  background: var(--theme-border);
   margin: 0 4px;
   flex-shrink: 0;
+  background: var(--theme-border);
 }
 
+.pano-original-overlay .fullscreen-panel {
+  height: calc(100vh - 24px);
+  max-height: none;
+  border-radius: 12px;
+}
 
-/* ══ Handle for panorama nodes ══ */
-/* .handle-panorama {
-  background: #06b6d4 !important;
-  border-color: #22d3ee !important;
-  pointer-events: auto !important;
-  z-index: 4 !important;
-} */
+.pano-original-overlay .fullscreen-close--absolute {
+  display: none;
+}
+
+.pano-original-overlay .fullscreen-body--pano {
+  position: relative;
+  display: block;
+  min-height: 0;
+  height: 100%;
+}
+
+.pano-fullscreen-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--theme-bg);
+}
