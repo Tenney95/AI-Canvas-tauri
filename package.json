@@ -42,6 +42,7 @@
         "react-image-crop": "^11.0.10",
         "react-konva": "^19.2.5",
         "three": "^0.184.0",
+        "xiaoluo-vr-panorama": "git+https://github.com/Tenney95/XiaoLuo-Panorama.git#00c7b4952c534d181de53c774170aa0a546031a9",
         "zustand": "^5.0.5"
     },
     "devDependencies": {

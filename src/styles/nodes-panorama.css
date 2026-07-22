@@ -1,15 +1,13 @@
-﻿/* ============================================
-   Panorama Node — Three.js WebGL Viewer
-   ============================================ */
+/* Panorama node and XiaoLuo-Panorama host styles. */
 
 .pano-node {
-  overflow: visible !important;
+  overflow: visible;
 }
 
 .pano-node .node-preview.compact {
-  padding: 4px;
   position: relative;
   min-height: 0;
+  padding: 4px;
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
@@ -23,143 +21,256 @@
   min-height: 0;
 }
 
-/* ══ Panorama Scene Shell — Three.js viewer wrapper ══ */
-.panorama-scene-shell {
+.xiaoluo-pano-shell {
   position: relative;
-  flex: 1;
+  isolation: isolate;
   width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
-  border-radius: 12px;
   overflow: hidden;
+  border-radius: 8px;
   background: var(--theme-bg);
+  perspective: 1000px;
+}
+
+.xiaoluo-pano-shell.is-compact {
   cursor: grab;
 }
 
-.panorama-scene-shell:active {
+.xiaoluo-pano-shell.is-compact:active,
+.xiaoluo-pano-shell.is-walking {
   cursor: grabbing;
 }
 
-.panorama-scene-viewport {
+.xiaoluo-pano-transform {
   width: 100%;
   height: 100%;
-  position: relative;
+  transform: translate3d(var(--pano-offset-x), var(--pano-offset-y), 0)
+    rotateX(var(--pano-perspective)) scale(var(--pano-walk-scale));
+  transform-origin: center;
+  transition: transform 220ms ease;
 }
 
-.panorama-scene-webgl {
-  display: block;
+.xiaoluo-pano-shell.is-walking .xiaoluo-pano-transform {
+  transition: none;
+}
+
+.xiaoluo-pano-shell .xiaoluo-panorama-core,
+.xiaoluo-pano-shell .pnlm-render-container,
+.xiaoluo-pano-shell .pnlm-ui,
+.xiaoluo-pano-shell canvas {
   width: 100%;
   height: 100%;
-  border-radius: 12px;
+  border-radius: inherit;
 }
 
-/* ══ Floating Toolbar (panorama v2) ══ */
-.panorama-viewer-wrapper .node-floating-toolbar {
+.xiaoluo-pano-shell .pnlm-load-box,
+.xiaoluo-pano-shell .pnlm-error-msg,
+.xiaoluo-pano-shell .pnlm-controls-container {
+  display: none;
+}
+
+.xiaoluo-pano-status {
   position: absolute;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 6px;
-  background: rgba(26, 26, 38, 0.6);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-  pointer-events: auto;
-}
-
-/* Toolbar — positioned above the viewer, outside the node */
-.panorama-viewer-wrapper .v2-panorama-mode-toolbar {
-  top: -38px;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-/* Panorama viewer wrapper — provides positioning anchor for floating toolbar */
-.panorama-viewer-wrapper {
-  position: relative;
-  flex: 1;
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-/* ══ Panorama toolbar buttons ══ */
-.panorama-viewer-wrapper .ftb-btn {
+  inset: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: none;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--theme-bg) 82%, transparent);
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  text-align: center;
+  backdrop-filter: blur(var(--glass-blur-sm));
+}
+
+.xiaoluo-pano-status.is-error {
+  color: var(--theme-text);
+}
+
+.xiaoluo-pano-retry {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  background: var(--theme-card);
+  color: var(--theme-text);
+  cursor: pointer;
+}
+
+.xiaoluo-pano-retry:hover {
+  background: var(--theme-hover);
+}
+
+.xiaoluo-pano-controls {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 42px;
+  padding: 5px 7px;
+  border: 1px solid var(--glass-ring);
+  border-radius: 8px;
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow-floating);
+  backdrop-filter: blur(var(--glass-blur-md));
+  transform: translateX(-50%);
+}
+
+.xiaoluo-pano-controls button,
+.xiaoluo-pano-corrections-header button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--theme-text-secondary);
   cursor: pointer;
-  border-radius: 6px;
-  transition: color 0.15s, background 0.15s;
-  flex-shrink: 0;
+}
+
+.xiaoluo-pano-controls button:hover,
+.xiaoluo-pano-corrections-header button:hover {
+  background: var(--theme-hover);
+  color: var(--theme-text);
+}
+
+.xiaoluo-pano-controls button.is-active {
+  background: var(--node-panorama-bg);
+  color: var(--node-panorama-light);
+}
+
+.xiaoluo-pano-controls button.icon-only {
+  width: 32px;
   padding: 0;
 }
 
-.panorama-viewer-wrapper .ftb-btn:hover {
-  color: var(--theme-text);
-  background: var(--white-alpha-08);
-}
-
-.panorama-viewer-wrapper .ftb-btn.icon-only {
-  width: 30px;
-  height: 30px;
-}
-
-.panorama-viewer-wrapper .ftb-divider {
+.xiaoluo-pano-control-divider {
   width: 1px;
-  height: 18px;
-  background: rgba(255, 255, 255, 0.1);
-  margin: 0 4px;
-  flex-shrink: 0;
+  height: 20px;
+  margin: 0 2px;
+  background: var(--theme-border);
 }
 
-/* ══ Fullscreen toolbar buttons ══ */
-
-.fullscreen-pano-toolbar .pano-fs-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border: 1px solid var(--white-alpha-10);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--theme-text-secondary);
-  font-size: 13px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-
-.fullscreen-pano-toolbar .pano-fs-btn:hover {
-  background: var(--white-alpha-08);
+.xiaoluo-pano-zoom {
+  width: 44px;
   color: var(--theme-text);
-  border-color: var(--white-alpha-20);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
-/* ══ Panorama fullscreen backdrop (legacy — kept for compatibility) ══ */
-.panorama-fullscreen-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 9998;
-  background: rgba(0, 0, 0, 0.85);
-  backdrop-filter: blur(4px);
-  border-radius: 16px;
+.xiaoluo-pano-corrections {
+  position: absolute;
+  top: 54px;
+  right: 14px;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(270px, calc(100% - 28px));
+  padding: 14px;
+  border: 1px solid var(--glass-ring);
+  border-radius: 8px;
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow-panel);
+  color: var(--theme-text);
+  backdrop-filter: blur(var(--glass-blur-md));
 }
 
-/* ══ Pano Node Toolbar — above selected PanoramaNode ══ */
+.xiaoluo-pano-corrections-header,
+.xiaoluo-pano-toggle-row,
+.xiaoluo-pano-corrections label > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.xiaoluo-pano-corrections-header {
+  min-height: 28px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.xiaoluo-pano-corrections-header button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.xiaoluo-pano-corrections label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+}
+
+.xiaoluo-pano-corrections output {
+  color: var(--theme-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.xiaoluo-pano-corrections input[type='range'] {
+  width: 100%;
+  accent-color: var(--node-panorama);
+}
+
+.xiaoluo-pano-toggle-row {
+  flex-direction: row;
+}
+
+.xiaoluo-pano-toggle-row input[type='checkbox'] {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  margin: 0;
+  border: 1px solid var(--theme-border);
+  border-radius: 10px;
+  appearance: none;
+  background: var(--theme-hover);
+  cursor: pointer;
+}
+
+.xiaoluo-pano-toggle-row input[type='checkbox']::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--theme-text-secondary);
+  content: '';
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+.xiaoluo-pano-toggle-row input[type='checkbox']:checked {
+  border-color: var(--node-panorama);
+  background: var(--node-panorama-bg);
+}
+
+.xiaoluo-pano-toggle-row input[type='checkbox']:checked::after {
+  background: var(--node-panorama-light);
+  transform: translateX(16px);
+}
+
+/* Selected-node floating toolbar. */
 .pano-toolbar {
   --toolbar-offset-x: -50%;
-  top: -40px !important;
-  bottom: auto !important;
-  left: 50% !important;
+  top: -40px;
+  bottom: auto;
+  left: 50%;
   gap: 0;
   padding: 4px 6px;
   white-space: nowrap;
@@ -180,16 +291,54 @@
 .pano-toolbar-divider {
   width: 1px;
   height: 18px;
-  background: var(--theme-border);
   margin: 0 4px;
   flex-shrink: 0;
+  background: var(--theme-border);
 }
 
+.fullscreen-body--pano .xiaoluo-pano-shell {
+  flex: 1;
+  border-radius: 0;
+}
 
-/* ══ Handle for panorama nodes ══ */
-/* .handle-panorama {
-  background: #06b6d4 !important;
-  border-color: #22d3ee !important;
-  pointer-events: auto !important;
-  z-index: 4 !important;
-} */
+.fullscreen-pano-toolbar .pano-fs-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.fullscreen-pano-toolbar .pano-fs-btn:hover {
+  border-color: var(--glass-ring);
+  background: var(--theme-hover);
+  color: var(--theme-text);
+}
+
+@media (max-width: 720px) {
+  .xiaoluo-pano-controls {
+    bottom: 10px;
+    max-width: calc(100% - 20px);
+  }
+
+  .xiaoluo-pano-controls button span {
+    display: none;
+  }
+
+  .xiaoluo-pano-controls button {
+    width: 32px;
+    padding: 0;
+  }
+
+  .xiaoluo-pano-corrections {
+    top: 46px;
+    right: 10px;
+    width: min(250px, calc(100% - 20px));
+  }
+}
