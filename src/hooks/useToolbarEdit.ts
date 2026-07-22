@@ -10,7 +10,7 @@
 import { useState, useCallback, useRef, useMemo } from 'react';
 import type { ToolbarLayout, ToolbarButtonDef } from '../types';
 import { useAppStore } from '../store/useAppStore';
-import { getButtonRegistry, getDefaultLayout } from '../components/nodes/shared/toolbar/toolbarRegistry';
+import { getButtonRegistry, getDefaultLayout, migrateToolbarLayout } from '../components/nodes/shared/toolbar/toolbarRegistry';
 
 const LONG_PRESS_MS = 600;
 
@@ -65,11 +65,15 @@ export function useToolbarEdit({ nodeType }: UseToolbarEditOptions): UseToolbarE
 
   const [isEditing, setIsEditing] = useState(false);
   const [dirtyLayout, setDirtyLayout] = useState<ToolbarLayout | null>(null);
+  const resolvedLayout = useMemo(
+    () => migrateToolbarLayout(nodeType, savedLayout ?? getDefaultLayout(nodeType)),
+    [nodeType, savedLayout],
+  );
 
   // 有效布局：编辑态用本地缓冲，正常态用 Store
   const layout = isEditing && dirtyLayout
     ? dirtyLayout
-    : savedLayout ?? getDefaultLayout(nodeType);
+    : resolvedLayout;
 
   // ── 长按检测 ──
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,20 +86,19 @@ export function useToolbarEdit({ nodeType }: UseToolbarEditOptions): UseToolbarE
     }
   }, []);
 
-  const handlePressStart = useCallback((_e: React.MouseEvent | React.TouchEvent) => {
+  const handlePressStart = useCallback(() => {
     pressHandled.current = false;
     pressTimer.current = setTimeout(() => {
       pressHandled.current = true;
       setIsEditing((v) => {
         if (!v) {
           // 进入编辑态：初始化本地缓冲
-          const current = savedLayout ?? getDefaultLayout(nodeType);
-          setDirtyLayout(structuredClone(current));
+          setDirtyLayout(structuredClone(resolvedLayout));
         }
         return !v;
       });
     }, LONG_PRESS_MS);
-  }, [savedLayout, nodeType]);
+  }, [resolvedLayout]);
 
   const handlePressEnd = useCallback(() => {
     clearPressTimer();

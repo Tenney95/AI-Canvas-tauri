@@ -20,7 +20,7 @@ interface ImageNodeToolbarProps {
   onUpload?: () => void;
   onMatting?: () => void;
   onSubjectMatting?: () => void;
-  onMultiAngle?: () => void;
+  onCameraStudio?: () => void;
   onExpand?: () => void;
   onMultiGrid?: (side: number) => void;
   onCustomGrid?: () => void;
@@ -39,7 +39,7 @@ const GRID_PRESETS = [2, 3, 4, 5];
 
 function ImageNodeToolbar({
   nodeId: _nodeId,
-  onUpload, onMatting, onSubjectMatting, onMultiAngle, onExpand,
+  onUpload, onMatting, onSubjectMatting, onCameraStudio, onExpand,
   onMultiGrid, onCustomGrid, onCompose, onFullscreen, onCrop,
   onAnnotate, onUpscale, onRepaint, onCopyFile, isUpscaling, isSubjectMattingRunning,
 }: ImageNodeToolbarProps) {
@@ -98,7 +98,7 @@ function ImageNodeToolbar({
     matting:        (e) => { e.stopPropagation(); onMatting?.(); },
     expand:         (e) => { e.stopPropagation(); onExpand?.(); },
     multiGrid:      toggleGridMenu,
-    multiAngle:     (e) => { e.stopPropagation(); onMultiAngle?.(); },
+    cameraStudio:   (e) => { e.stopPropagation(); onCameraStudio?.(); },
     repaint:        (e) => { e.stopPropagation(); onRepaint?.(); },
     upscale:        (e) => { e.stopPropagation(); if (!isUpscaling) onUpscale?.(); },
     subjectMatting: (e) => { e.stopPropagation(); if (!isSubjectMattingRunning) onSubjectMatting?.(); },

@@ -1,0 +1,515 @@
+.camera-studio-overlay {
+  --cs-camera-accent: var(--node-panorama-light);
+  --cs-light-accent: var(--warning-light);
+  --cs-grid-color: var(--theme-text-muted);
+}
+
+.camera-studio-overlay .fullscreen-panel {
+  max-height: calc(100vh - 24px);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.camera-studio-overlay .fullscreen-header {
+  position: relative;
+  min-height: 48px;
+  padding: 8px 12px 8px 16px;
+}
+
+.camera-studio-overlay .fullscreen-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.camera-studio-overlay .fullscreen-header-extra {
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+.camera-studio-body {
+  padding: 0;
+  overflow: hidden;
+}
+
+.camera-studio-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(340px, 0.7fr);
+  height: min(74vh, 680px);
+  min-height: 560px;
+  background: var(--theme-bg);
+}
+
+.camera-studio-stage {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--theme-border);
+  background: var(--theme-bg);
+  overflow: hidden;
+}
+
+.camera-studio-viewport {
+  position: relative;
+  min-height: 0;
+  touch-action: none;
+  cursor: grab;
+  overflow: hidden;
+  background-color: var(--theme-bg);
+  background-image:
+    linear-gradient(var(--border-subtle) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.camera-studio-viewport:active {
+  cursor: grabbing;
+}
+
+.camera-studio-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.camera-studio-axis,
+.camera-studio-readout {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  color: var(--theme-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0;
+}
+
+.camera-studio-axis--yaw {
+  left: 12px;
+  bottom: 12px;
+}
+
+.camera-studio-axis--pitch {
+  top: 12px;
+  right: 12px;
+  writing-mode: vertical-rl;
+}
+
+.camera-studio-readout {
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--theme-surface) 82%, transparent);
+}
+
+.camera-studio-readout span {
+  color: var(--cs-camera-accent);
+}
+
+.camera-studio-readout strong {
+  color: var(--theme-text);
+  font-weight: 600;
+}
+
+.camera-studio-focus-switch,
+.camera-studio-mode,
+.camera-studio-temperature {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  background: var(--theme-card);
+}
+
+.camera-studio-focus-switch {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 3;
+  transform: translateX(-50%);
+}
+
+.camera-studio-mode button,
+.camera-studio-focus-switch button,
+.camera-studio-temperature button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: color var(--transition-base), background var(--transition-base);
+}
+
+.camera-studio-mode button:hover,
+.camera-studio-focus-switch button:hover,
+.camera-studio-temperature button:hover {
+  color: var(--theme-text);
+}
+
+.camera-studio-mode button.is-active,
+.camera-studio-focus-switch button.is-active,
+.camera-studio-temperature button.is-active {
+  color: var(--cs-camera-accent);
+  background: var(--node-panorama-bg);
+}
+
+.camera-studio-mode button.is-light,
+.camera-studio-focus-switch button.is-light {
+  color: var(--cs-light-accent);
+  background: var(--warning-bg);
+}
+
+.camera-studio-prompt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 6px 10px;
+  min-height: 98px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--theme-border);
+  background: var(--theme-surface);
+}
+
+.camera-studio-prompt > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--theme-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.camera-studio-prompt > div svg {
+  color: var(--cs-camera-accent);
+}
+
+.camera-studio-prompt > div b {
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--node-panorama-bg);
+  color: var(--cs-camera-accent);
+  font-size: 9px;
+}
+
+.camera-studio-prompt > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--theme-border);
+  border-radius: 5px;
+  background: var(--theme-card);
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+}
+
+.camera-studio-prompt > button:hover {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+
+.camera-studio-prompt p {
+  grid-column: 1 / -1;
+  max-height: 46px;
+  margin: 0;
+  overflow-y: auto;
+  color: var(--theme-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.camera-studio-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--theme-surface);
+}
+
+.camera-studio-section-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--theme-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.camera-studio-section-title svg {
+  color: var(--cs-camera-accent);
+}
+
+.camera-studio-section-title.is-light svg {
+  color: var(--cs-light-accent);
+}
+
+.camera-studio-presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.camera-studio-presets button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 4px;
+  border: 1px solid var(--theme-border);
+  border-radius: 5px;
+  background: var(--theme-card);
+  color: var(--theme-text-secondary);
+  font-size: 10px;
+  white-space: normal;
+  cursor: pointer;
+  transition: border-color var(--transition-base), color var(--transition-base), background var(--transition-base);
+}
+
+.camera-studio-presets button:hover {
+  border-color: var(--cs-camera-accent);
+  color: var(--theme-text);
+  background: var(--node-panorama-bg);
+}
+
+.camera-studio-presets.is-light button:hover {
+  border-color: var(--cs-light-accent);
+  background: var(--warning-bg);
+}
+
+.camera-studio-range-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.camera-studio-range {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px;
+  align-items: center;
+  gap: 7px;
+}
+
+.camera-studio-range > span,
+.camera-studio-select-grid label > span {
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+}
+
+.camera-studio-range output {
+  color: var(--theme-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-align: right;
+}
+
+.camera-studio-range input {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 4px;
+  margin: 0;
+  appearance: none;
+  border-radius: 2px;
+  outline: 0;
+  background: var(--theme-border);
+  cursor: pointer;
+}
+
+.camera-studio-range input::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  appearance: none;
+  border: 2px solid var(--theme-surface);
+  border-radius: 50%;
+  background: var(--cs-camera-accent);
+  box-shadow: 0 0 0 1px var(--theme-border);
+}
+
+.camera-studio-range input::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--theme-surface);
+  border-radius: 50%;
+  background: var(--cs-camera-accent);
+}
+
+.camera-studio-select-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.camera-studio-select-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.camera-studio-select-grid select {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--theme-border);
+  border-radius: 5px;
+  outline: 0;
+  background: var(--theme-card);
+  color: var(--theme-text);
+  font-size: 11px;
+}
+
+.camera-studio-select-grid select:focus {
+  border-color: var(--cs-camera-accent);
+}
+
+.camera-studio-temperature {
+  align-self: flex-start;
+}
+
+.camera-studio-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.camera-studio-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.camera-studio-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--cs-camera-accent);
+}
+
+.camera-studio-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--theme-border);
+}
+
+.camera-studio-reset,
+.camera-studio-generate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.camera-studio-reset {
+  width: 34px;
+  border: 1px solid var(--theme-border);
+  background: var(--theme-card);
+  color: var(--theme-text-secondary);
+}
+
+.camera-studio-reset:hover {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+
+.camera-studio-generate {
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid var(--node-image-light);
+  background: var(--node-image-bg);
+  color: var(--node-image-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.camera-studio-generate:hover {
+  background: color-mix(in srgb, var(--node-image-bg) 65%, var(--theme-hover));
+}
+
+@media (max-width: 820px) {
+  .camera-studio-overlay .fullscreen-panel {
+    width: calc(100vw - 16px) !important;
+    max-height: calc(100vh - 16px);
+  }
+
+  .camera-studio-overlay .fullscreen-header {
+    align-items: flex-start;
+    min-height: 76px;
+    padding-right: 48px;
+  }
+
+  .camera-studio-overlay .fullscreen-header-extra {
+    position: absolute;
+    left: 10px;
+    bottom: 7px;
+    margin: 0;
+  }
+
+  .camera-studio-shell {
+    display: block;
+    height: calc(100vh - 92px);
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .camera-studio-stage {
+    grid-template-rows: 320px auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--theme-border);
+  }
+
+  .camera-studio-controls {
+    min-height: 430px;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 480px) {
+  .camera-studio-mode button {
+    padding: 0 7px;
+  }
+
+  .camera-studio-stage {
+    grid-template-rows: 270px auto;
+  }
+
+  .camera-studio-prompt {
+    min-height: 112px;
+  }
+
+  .camera-studio-presets {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .camera-studio-controls {
+    padding: 14px 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .camera-studio-mode button,
+  .camera-studio-focus-switch button,
+  .camera-studio-presets button {
+    transition: none;
+  }
+}

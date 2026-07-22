@@ -33,7 +33,7 @@ export const IMAGE_BUTTONS: ToolbarButtonDef[] = [
   { key: 'matting',        label: '遮罩编辑器',  icon: 'mdi:circle-edit-outline',       defaultZone: 'Primary' },
   { key: 'expand',         label: '扩图',        icon: 'mdi:arrow-expand-all',           defaultZone: 'Primary' },
   { key: 'multiGrid',      label: '宫格裁切',    icon: 'mdi:grid',                       defaultZone: 'Primary' },
-  { key: 'multiAngle',     label: '控制角度',    icon: 'mdi:cube-outline',               defaultZone: 'Primary' },
+  { key: 'cameraStudio',   label: '小洛摄影棚',  icon: 'mdi:camera-control',              defaultZone: 'Primary' },
   { key: 'repaint',        label: '重绘',        icon: 'mdi:draw',                       defaultZone: 'Primary' },
   { key: 'upscale',        label: '高清超分',    icon: 'mdi:image-auto-adjust',          defaultZone: 'Primary' },
   { key: 'subjectMatting', label: '自动识别主体',icon: 'mdi:hexagon-outline',             defaultZone: 'Primary' },
@@ -56,7 +56,7 @@ export const AUDIO_BUTTONS: ToolbarButtonDef[] = [
 
 // ── 默认布局 ──
 
-function buildLayout(buttons: ToolbarButtonDef[]): ToolbarLayout {
+function buildLayout(buttons: ToolbarButtonDef[], version = 1): ToolbarLayout {
   const zoneMap = new Map<string, string[]>();
   for (const btn of buttons) {
     const keys = zoneMap.get(btn.defaultZone) || [];
@@ -68,14 +68,46 @@ function buildLayout(buttons: ToolbarButtonDef[]): ToolbarLayout {
   for (const [name, buttonKeys] of zoneMap) {
     zones.push({ id: `zone-${idx++}`, name, buttonKeys });
   }
-  return { zones, version: 1 };
+  return { zones, version };
 }
 
 export const DEFAULT_TEXT_LAYOUT      = buildLayout(TEXT_BUTTONS);
 export const DEFAULT_VIDEO_LAYOUT     = buildLayout(VIDEO_BUTTONS);
 export const DEFAULT_PANORAMA_LAYOUT  = buildLayout(PANORAMA_BUTTONS);
-export const DEFAULT_IMAGE_LAYOUT     = buildLayout(IMAGE_BUTTONS);
+export const DEFAULT_IMAGE_LAYOUT     = buildLayout(IMAGE_BUTTONS, 3);
 export const DEFAULT_AUDIO_LAYOUT     = buildLayout(AUDIO_BUTTONS);
+
+/** 用小洛摄影棚替换旧角度工具，同时保留用户已有分区、排序和删减。 */
+export function migrateToolbarLayout(nodeType: string, layout: ToolbarLayout): ToolbarLayout {
+  if (nodeType !== 'ai-image' || layout.version >= 3) return layout;
+
+  let inserted = layout.zones.some((zone) => zone.buttonKeys.includes('cameraStudio'));
+
+  const zones = layout.zones.map((zone) => {
+    const buttonKeys: string[] = [];
+    for (const key of zone.buttonKeys) {
+      if (key === 'multiAngle') {
+        if (!inserted) {
+          buttonKeys.push('cameraStudio');
+          inserted = true;
+        }
+        continue;
+      }
+      buttonKeys.push(key);
+    }
+    return { ...zone, buttonKeys };
+  });
+
+  if (!inserted) {
+    const targetIndex = zones.findIndex((zone) => zone.name === 'Primary');
+    if (targetIndex >= 0) {
+      zones[targetIndex] = { ...zones[targetIndex], buttonKeys: [...zones[targetIndex].buttonKeys, 'cameraStudio'] };
+    } else {
+      zones.push({ id: 'zone-camera-studio', name: 'Primary', buttonKeys: ['cameraStudio'] });
+    }
+  }
+  return { ...layout, zones, version: 3 };
+}
 
 /** 根据 nodeType 获取按钮注册表 */
 export function getButtonRegistry(nodeType: string): ToolbarButtonDef[] {

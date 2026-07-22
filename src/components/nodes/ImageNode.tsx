@@ -14,7 +14,6 @@ import type { BaseNodeData, ImageAnnotationLayer as ImageAnnotationLayerData } f
 import NodeLabel from './shared/NodeLabel';
 import GooeyBtn from './shared/GooeyBtn';
 import ImageNodeToolbar from './shared/image/ImageNodeToolbar';
-import FreeAnglePanel from './shared/image/FreeAnglePanel';
 import MattingEditor from './shared/image/MattingEditor';
 import CropEditor from './shared/image/CropEditor';
 import CustomGridEditor from './shared/image/CustomGridEditor';
@@ -31,9 +30,12 @@ import { useAppStore, generateId } from '../../store/useAppStore';
 import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { copyImage as copyImageToClipboard } from '../../services/clipboardService';
 import { blobToDataUrl } from '../../store/store.utils';
-import { generateAngleImage, generateOutpaintImage } from '../../services/apimartService';
+import { generateOutpaintImage } from '../../services/apimartService';
 import { imageUpscale, subjectMatting, checkModelExists, downloadModel } from '../../services/onnxService';
+import { executeGeneration } from '../../services/generationService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
+import { createPresetNode } from './shared/toolbar/presetAction';
+import type { CameraStudioResult } from './shared/image/cameraStudio';
 import {
   useReferencedImageRevisions,
   withPreviewRevision,
@@ -41,6 +43,7 @@ import {
 
 // 懒加载：ImageComposerEditor 引入 konva + react-konva（体积大户），仅在打开合成编辑时才加载
 const ImageComposerEditor = lazy(() => import('./shared/image/composer/ImageComposerEditor'));
+const CameraStudioPanel = lazy(() => import('./shared/image/CameraStudioPanel'));
 
 /* ════════════════════════════════════════════
    AIImageNode
@@ -91,10 +94,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     img.src = result.dataUrl;
   }, [doUpload, id, nodeWidth, updateNodeData]);
 
-  /* ════════════════════════════════════════════
-     Free Angle State
-     ════════════════════════════════════════════ */
-  const [isFreeAngle, setIsFreeAngle] = useState(false);
+  const [isCameraStudio, setIsCameraStudio] = useState(false);
   const [imgLoadError, setImgLoadError] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
   const [mattingError, setMattingError] = useState(false);
@@ -125,98 +125,33 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     setAnnotateError(false);
   }, [data.annotation]);
 
-  const handleOpenFreeAngle = useCallback(() => setIsFreeAngle(true), []);
-  const handleCloseFreeAngle = useCallback(() => setIsFreeAngle(false), []);
+  const handleOpenCameraStudio = useCallback(() => setIsCameraStudio(true), []);
+  const handleCloseCameraStudio = useCallback(() => setIsCameraStudio(false), []);
 
-  const handleFreeAngleGenerate = useCallback(
-    async (params: { rotation: number; pitch: number; scale: number; model: string; provider: string }) => {
-      const store = useAppStore.getState();
-      const imageUrl = (data.imageUrl || data.thumbnailUrl) as string | undefined;
-      if (!imageUrl) {
-        store.showToast('没有可用的图片', 'error');
-        return;
-      }
+  const handleCameraStudioGenerate = useCallback((result: CameraStudioResult) => {
+    const store = useAppStore.getState();
+    const sourceNode = store.nodes.find((node) => node.id === id) as Node<BaseNodeData> | undefined;
+    if (!sourceNode) {
+      store.showToast('图片节点不存在', 'error');
+      return;
+    }
 
-      setIsFreeAngle(false);
+    const modeLabel = result.mode === 'camera'
+      ? '摄影机视角'
+      : result.mode === 'lighting'
+        ? '摄影棚打光'
+        : '视角与打光';
+    const { node, edge } = createPresetNode(sourceNode, {
+      label: modeLabel,
+      icon: 'mdi:camera-control',
+      filledPrompt: result.prompt,
+      shouldTrigger: true,
+    });
 
-      if (params.provider !== 'apimart') {
-        store.showToast(`${params.provider} 角度控制暂未实现`, 'error');
-        return;
-      }
-
-      const apiKey = store.config.providers.apimart?.apiKey;
-      if (!apiKey) {
-        store.showToast('请先在设置中配置 APIMart API Key', 'error');
-        return;
-      }
-
-      const model = params.model.startsWith('apimart/')
-        ? params.model.slice('apimart/'.length)
-        : params.model;
-
-      updateNodeDataTransient(id, { status: 'loading', output: undefined, error: undefined });
-
-      try {
-        const result = await generateAngleImage(
-          { apiKey, model, imageUrl, rotation: params.rotation, pitch: params.pitch },
-          (progress) => {
-            updateNodeDataTransient(id, { output: `生成中 ${progress}%...` });
-          },
-        );
-
-        const currentNodes = store.nodes;
-        const currentPos = currentNodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
-
-        for (let i = 0; i < result.imageUrls.length; i++) {
-          const genUrl = result.imageUrls[i];
-          const resp = await fetch(genUrl);
-          const blob = await resp.blob();
-          let dataUrl = await blobToDataUrl(blob);
-
-          let filePath: string | undefined;
-          let assetUrl = dataUrl;
-          const projectId = store.currentProjectId;
-          if (projectId && projectId !== 'default') {
-            const ext = blob.type.split('/').pop() || 'png';
-            const savedName = buildNodeFileName(`角度视图 ${params.rotation.toFixed(0)}°`, ext, `angle_${params.rotation.toFixed(0)}`);
-            const saved = await saveDataUrlToProjectData(dataUrl, projectId, savedName);
-            if (saved && saved.assetUrl) {
-              assetUrl = saved.assetUrl;
-              filePath = saved.filePath;
-            }
-          }
-
-          const dims = await computeImageNodeDimensions(assetUrl);
-          const newNode: Node<BaseNodeData> = {
-            id: `node-${generateId()}`,
-            type: 'ai-image',
-            position: { x: currentPos.x + nodeWidth + 40 + i * 40, y: currentPos.y },
-            data: {
-              label: `角度视图 ${params.rotation.toFixed(0)}°`,
-              type: 'ai-image',
-              role: 'source',
-              imageUrl: assetUrl,
-              filePath,
-              status: 'success',
-              imageWidth: dims.nodeWidth,
-              imageHeight: dims.nodeHeight,
-              nodeWidth: dims.nodeWidth,
-              nodeHeight: dims.nodeHeight,
-            } as BaseNodeData,
-          };
-          store.addNode(newNode);
-        }
-
-        updateNodeDataTransient(id, { status: 'success' });
-        store.showToast(`已生成 ${result.imageUrls.length} 张角度图片`);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : '生成失败';
-        updateNodeDataTransient(id, { status: 'error', error: message });
-        store.showToast(message, 'error');
-      }
-    },
-    [id, data.imageUrl, data.thumbnailUrl, updateNodeDataTransient],
-  );
+    store.addNodeWithEdge(node, edge);
+    setIsCameraStudio(false);
+    void executeGeneration(node.id, node.data.prompt, undefined, node.data);
+  }, [id]);
 
   /* ════════════════════════════════════════════
      Crop State
@@ -1032,7 +967,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               onUpload={handleUpload}
               onMatting={handleOpenMatting}
               onSubjectMatting={handleSubjectMatting}
-              onMultiAngle={handleOpenFreeAngle}
+              onCameraStudio={handleOpenCameraStudio}
               onExpand={handleOpenExpand}
               onMultiGrid={handleMultiGrid}
               onCustomGrid={handleOpenCustomGrid}
@@ -1074,14 +1009,15 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         />
       )}
 
-      {/* Free Angle Panel */}
-      {isFreeAngle && (
-        <FreeAnglePanel
-          isOpen={isFreeAngle}
-          imageUrl={(data.imageUrl || data.thumbnailUrl) as string | undefined}
-          onClose={handleCloseFreeAngle}
-          onGenerate={handleFreeAngleGenerate}
-        />
+      {isCameraStudio && (
+        <Suspense fallback={null}>
+          <CameraStudioPanel
+            isOpen={isCameraStudio}
+            imageUrl={(data.imageUrl || data.thumbnailUrl) as string | undefined}
+            onClose={handleCloseCameraStudio}
+            onGenerate={handleCameraStudioGenerate}
+          />
+        </Suspense>
       )}
 
       {/* Expand Editor — 扩图 */}
