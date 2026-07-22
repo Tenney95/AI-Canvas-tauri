@@ -22,12 +22,13 @@ function XiaoLuoPanoramaFullscreen({
     <PanoramaViewer
       imageUrl={imageUrl}
       imageLoadStrategy="direct"
+      captureMode="ratio"
       theme={theme}
-      cornerRadius="10px"
+      cornerRadius="6px"
       closeText="退出"
       onClose={onClose}
       onCapture={onCapture}
-      className="nodrag nowheel"
+      className="xiaoluo-panorama-compact nodrag nowheel"
     />
   );
 }

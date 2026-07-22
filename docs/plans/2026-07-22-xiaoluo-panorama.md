@@ -15,11 +15,14 @@
 Completed on 2026-07-22.
 
 - XiaoLuo-Panorama now exposes the host-neutral `PanoramaCore` and independent `./core` package entry.
-- AI Canvas consumes the upstream HTTPS Git dependency pinned to commit `ac2f465ae68b1d6cfba4d47091c16b69cf1c3076`.
+- AI Canvas consumes the upstream HTTPS Git dependency pinned to commit `9d3c102620deee7389864bd1e58abce0193cb46d`.
 - Compact rendering uses `PanoramaCore`; fullscreen rendering lazy-loads the original upstream `PanoramaViewer` with host theme, close, direct-image loading, corner radius, and capture-delivery adapters.
 - Multi-instance isolation, screenshot node creation, original fullscreen controls, light/dark themes, Escape close, and narrow viewport layout were verified in the running application.
 - AI Canvas type checks, targeted ESLint, 217 tests, production build, strict UTF-8 scan, and `git diff --check` passed.
 - Upstream pull request: https://github.com/Tenney95/XiaoLuo-Panorama/pull/1
+- Follow-up compact styling uses the existing `className` host adapter, reducing fullscreen typography, controls, and radii without changing the upstream default appearance. The dark-theme range track now uses `#20202b`, the AI Canvas viewer radius is `6px`, and the toolbar and parameter panel use scoped translucent glass surfaces.
+- Ratio capture is opt-in through `captureMode="ratio"`; it provides 13 crop presets, a live thirds frame, responsive glass controls, and capture metadata while preserving the upstream one-click screenshot default. Desktop and `390x844` layouts plus a generated `16:9` image node were verified.
+- The compact fullscreen controls now follow XiaoLuo-PointEdit's dock system: the main actions and zoom percentage are separate glass surfaces, zoom uses magnifier controls with click-to-reset percentage, and selected walking/correction actions use a subtle brand state without shadows. AI Canvas keeps its smaller `8px/6px` radii.
 
 Follow-up adjustment approved on 2026-07-22: keep the compact node on `PanoramaCore`, but replace the AI Canvas-owned immersive controls with the original upstream `PanoramaViewer`. The upstream component will expose only the host integration props needed for capture delivery, direct URL loading, light/dark theme mapping, and a smaller host radius. AI Canvas will consume the resulting Git commit through npm and lazy-load the full viewer only when fullscreen opens.
 
@@ -125,3 +128,22 @@ Follow-up adjustment approved on 2026-07-22: keep the compact node on `PanoramaC
 **Step 6:** Remove the duplicated immersive controls and their CSS from AI Canvas. Preserve node upload, image/360 switching, compact screenshot, fullscreen state, file persistence, image-node creation, and history behavior.
 
 **Step 7:** Run AI Canvas type checks, targeted ESLint, tests, production build, strict UTF-8 validation, and `git diff --check`. Verify light and dark fullscreen styles plus narrow viewport behavior in the running application.
+
+### Task 6: Add ratio-based viewport capture
+
+**Files:**
+- Modify: `D:/www/project/XiaoLuo-Panorama/src/components/PanoramaViewer.tsx`
+- Modify: `D:/www/project/XiaoLuo-Panorama/src/viewer.css`
+- Modify: `src/components/nodes/panorama/XiaoLuoPanoramaFullscreen.tsx`
+- Modify: `package.json`
+- Modify: `package-lock.json`
+
+**Step 1:** Add the backward-compatible `captureMode` prop and ratio metadata while keeping the existing instant-download behavior as the default.
+
+**Step 2:** Add centered canvas cropping, 13 ratio presets, a live crop frame, and a responsive glass ratio panel to the upstream viewer.
+
+**Step 3:** Enable ratio capture only in the AI Canvas fullscreen adapter and keep screenshot-node persistence in the existing canvas callback.
+
+**Step 4:** Verify desktop and `390x844` layouts, compact typography and radii, dark range tracks, glass surfaces, crop-frame ratios, and a generated `16:9` image node.
+
+**Step 5:** Run upstream and AI Canvas checks, push the upstream commit to pull request #1, pin the final HTTPS Git commit, and commit the AI Canvas integration.
