@@ -9,6 +9,7 @@ import { getProviderDefinition } from '../../services/ai/providerCatalogService'
 import type { ApiProviderConfig, DreaminaRuntime, ProviderModelSelection } from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
 import { defaultModelGroups } from '../nodes/shared/defaultModels';
+import { shouldListProviderConnection } from './apiKeySettingsUtils';
 import DreaminaLoginModal from './DreaminaLoginModal';
 import ProviderConnectionDialog from './ProviderConnectionDialog';
 
@@ -98,7 +99,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       if (id === 'runninghub') continue;
       const definition = getProviderDefinition(id, providerConfig);
       if (!definition) continue;
-      if (definition.authType !== 'oauth' && !providerConfig.apiKey.trim()) continue;
+      if (!shouldListProviderConnection(providerConfig, definition.authType)) continue;
       items.push({ id, config: providerConfig });
     }
     if (config.providers.runninghub?.apiKey && !config.providers['runninghub-model']) {
@@ -323,6 +324,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
               const summaryUrl = providerSummaryUrl(item.config, definition.defaultBaseUrl);
               const isDreamina = definition.id === 'dreamina';
               const isRunningHub = definition.id === 'runninghub-model';
+              const isPendingApiKey = definition.authType !== 'oauth' && !item.config.apiKey.trim();
               const hasRunningHubModelKey = isRunningHub && !!item.config.apiKey.trim();
               const hasRunningHubWorkflowKey = isRunningHub
                 && !!config.providers.runninghub?.apiKey.trim();
@@ -335,14 +337,16 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                 ? 'OAuth 已连接'
                 : isRunningHub
                   ? `${runningHubKeyCount}/2 密钥已配置`
-                  : '已连接';
+                  : isPendingApiKey
+                    ? '待填写 API Key'
+                    : '已连接';
               return (
                 <div key={item.id} className="provider-connection-card">
                   <div className={`provider-badge provider-badge--${definition.id}`}>{definition.badgeText}</div>
                   <div className="provider-connection-copy">
                     <div className="provider-connection-title-row">
                       <strong>{displayName}</strong>
-                      <span className={`provider-list-status${isRunningHub && runningHubKeyCount < 2 ? ' is-limited' : ''}`}>
+                      <span className={`provider-list-status${isPendingApiKey || (isRunningHub && runningHubKeyCount < 2) ? ' is-limited' : ''}`}>
                         {statusLabel}
                       </span>
                     </div>
