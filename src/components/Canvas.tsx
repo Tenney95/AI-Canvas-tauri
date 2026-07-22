@@ -19,6 +19,7 @@ import { ReactFlow,
   applyNodeChanges,
   type OnSelectionChangeParams,
   type NodeChange,
+  type EdgeTypes,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import TextNode from './nodes/TextNode';
@@ -36,6 +37,7 @@ import CanvasToolbar from './canvas/CanvasToolbar';
 import RoundedMiniMapMask from './canvas/RoundedMiniMapMask';
 import MultiSelectToolbar from './canvas/MultiSelectToolbar';
 import CanvasEmptyState from './canvas/CanvasEmptyState';
+import SelectedNodeFlowEdge from './canvas/SelectedNodeFlowEdge';
 import { useConnectionDropMenu } from '../hooks/useConnectionDropMenu';
 import { useCanvasContextMenu } from '../hooks/useCanvasContextMenu';
 import { useNodeContextMenu } from '../hooks/useNodeContextMenu';
@@ -75,6 +77,10 @@ const nodeTypes: NodeTypes = {
   'ai-storyboard': StoryboardNode,
   'ai-director': DirectorDeskNode,
   group: GroupNode,
+};
+
+const edgeTypes: EdgeTypes = {
+  'selected-node-flow': SelectedNodeFlowEdge,
 };
 
 // ── Stable ReactFlow props (hoisted to avoid new identities every render,
@@ -671,10 +677,16 @@ function CanvasInner() {
       if (!selectedIds.has(edge.source) && !selectedIds.has(edge.target)) return edge;
       return {
         ...edge,
-        className: [edge.className, 'edge-connected-to-selected-node'].filter(Boolean).join(' '),
+        type: 'selected-node-flow',
+        data: {
+          ...edge.data,
+          selectedNodeFlowBaseType: edge.type === 'smoothstep' || (!edge.type && smoothLine)
+            ? 'smoothstep'
+            : 'default',
+        },
       };
     });
-  }, [edges, selectedNodeIds]);
+  }, [edges, selectedNodeIds, smoothLine]);
 
   // ── Node change handler ──
   const handleNodesChange = useCallback(
@@ -838,6 +850,7 @@ function CanvasInner() {
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose}
         onlyRenderVisibleElements
         fitView

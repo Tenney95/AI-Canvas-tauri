@@ -37,36 +37,50 @@
   fill: var(--brand) !important;
 }
 
-/* Flowing glow for every edge connected to the current node selection. */
-.react-flow__edge.edge-connected-to-selected-node .react-flow__edge-path {
-  stroke: var(--brand-pale) !important;
-  stroke-width: 2.5 !important;
-  stroke-linecap: round;
-  stroke-dasharray: 12 7;
-  filter:
-    drop-shadow(0 0 2px color-mix(in srgb, var(--brand-light) 90%, transparent))
-    drop-shadow(0 0 7px color-mix(in srgb, var(--brand) 65%, transparent));
-  animation: selected-node-edge-flow 900ms linear infinite;
+/* The original edge stays solid; a moving mask reveals a gradient on its path. */
+.selected-node-edge-flow {
+  fill: none;
+  pointer-events: none;
+  stroke: var(--brand-pale);
+  stroke-width: 2.25;
+  vector-effect: non-scaling-stroke;
 }
 
-[data-theme='light'] .react-flow__edge.edge-connected-to-selected-node .react-flow__edge-path {
-  stroke: var(--brand) !important;
-  stroke-width: 2.25 !important;
-  filter:
-    drop-shadow(0 0 1px color-mix(in srgb, var(--brand) 70%, transparent))
-    drop-shadow(0 0 4px color-mix(in srgb, var(--brand) 35%, transparent));
+.selected-node-edge-flow-mask {
+  mask-type: alpha;
 }
 
-@keyframes selected-node-edge-flow {
-  to {
-    stroke-dashoffset: -38;
-  }
+.selected-node-edge-flow-stop {
+  stop-color: var(--theme-text);
+}
+
+.selected-node-edge-flow-stop--edge {
+  stop-opacity: 0;
+}
+
+.selected-node-edge-flow-stop--shoulder {
+  stop-opacity: 0.12;
+}
+
+.selected-node-edge-flow-stop--center {
+  stop-opacity: 0.82;
+}
+
+[data-theme='light'] .selected-node-edge-flow {
+  stroke: color-mix(in srgb, var(--brand) 82%, black);
+}
+
+[data-theme='light'] .selected-node-edge-flow-stop--shoulder {
+  stop-opacity: 0.1;
+}
+
+[data-theme='light'] .selected-node-edge-flow-stop--center {
+  stop-opacity: 0.68;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .react-flow__edge.edge-connected-to-selected-node .react-flow__edge-path {
-    animation: none;
-    stroke-dasharray: none;
+  .selected-node-edge-flow {
+    display: none;
   }
 }
 
