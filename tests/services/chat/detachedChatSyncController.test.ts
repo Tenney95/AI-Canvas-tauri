@@ -140,4 +140,32 @@ describe('detached chat sync controller', () => {
     controller.dispose();
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
+
+  it('retries a failed emission with the same revision as a full snapshot', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const emitSync = vi.fn()
+      .mockRejectedValueOnce(new Error('event bus unavailable'))
+      .mockResolvedValue(undefined);
+    const controller = createDetachedChatSyncController({
+      enabled: true,
+      syncIntervalMs: 0,
+      emitSync,
+      initListener: vi.fn(async () => () => undefined),
+      now: () => 1,
+    });
+
+    await controller.start();
+    await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(2));
+    expect(emitSync).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      type: 'snapshot',
+      revision: 1,
+    }));
+    expect(emitSync).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      type: 'snapshot',
+      revision: 1,
+    }));
+
+    controller.dispose();
+    warning.mockRestore();
+  });
 });

@@ -1,6 +1,8 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessageRecord } from '../../src/services/indexedDbService';
+import type { AgentTask } from '../../src/types/agent';
+import type { ProjectMemory } from '../../src/types/memory';
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'indexedDB', {
@@ -61,5 +63,81 @@ describe('putChatMessageWithSequence', () => {
       svc.putChatMessageWithSequence(record('assistant')),
     ]);
     expect([...seqs].sort()).toEqual([0, 1]);
+  });
+});
+
+describe('deleteProjectFromDb', () => {
+  it('atomically removes conversations, messages, tasks, and memories for the project', async () => {
+    const svc = await import('../../src/services/indexedDbService');
+    for (const projectId of ['p1', 'p2']) {
+      await svc.saveProjectToDb({
+        id: projectId,
+        name: projectId,
+        createdAt: 1,
+        updatedAt: 1,
+        nodes: [],
+        edges: [],
+      });
+      await svc.putChatConversation({
+        id: `c-${projectId}`,
+        projectId,
+        title: projectId,
+        titleSource: 'auto',
+        pinned: false,
+        archived: false,
+        agentMode: 'collaborative',
+        createdAt: 1,
+        updatedAt: 1,
+        messageCount: 1,
+      });
+      await svc.putChatMessageWithSequence(record(`m-${projectId}`, {
+        projectId,
+        conversationId: `c-${projectId}`,
+      }));
+      await svc.putAgentTask({
+        id: `task-${projectId}`,
+        projectId,
+        conversationId: `c-${projectId}`,
+        userMessageId: `m-${projectId}`,
+        mode: 'collaborative',
+        goal: projectId,
+        status: 'completed',
+        steps: [],
+        budget: {
+          maxModelRounds: 12,
+          maxToolCalls: 24,
+          maxParallelReadTools: 3,
+          maxReadRetries: 3,
+        },
+        modelRounds: 0,
+        toolCallCount: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      } as AgentTask);
+      await svc.putProjectMemory({
+        id: `memory-${projectId}`,
+        projectId,
+        kind: 'decision',
+        content: projectId,
+        enabled: true,
+        source: { conversationId: `c-${projectId}`, messageId: `m-${projectId}` },
+        createdAt: 1,
+        updatedAt: 1,
+      } as ProjectMemory);
+    }
+
+    await svc.deleteProjectFromDb('p1');
+
+    expect(await svc.getProjectById('p1')).toBeUndefined();
+    expect(await svc.getProjectConversations('p1')).toEqual([]);
+    expect((await svc.getConversationMessages('c-p1', 0, 20)).messages).toEqual([]);
+    expect(await svc.getProjectAgentTasks('p1')).toEqual([]);
+    expect(await svc.getProjectMemories('p1')).toEqual([]);
+
+    expect(await svc.getProjectById('p2')).toBeDefined();
+    expect(await svc.getProjectConversations('p2')).toHaveLength(1);
+    expect((await svc.getConversationMessages('c-p2', 0, 20)).messages).toHaveLength(1);
+    expect(await svc.getProjectAgentTasks('p2')).toHaveLength(1);
+    expect(await svc.getProjectMemories('p2')).toHaveLength(1);
   });
 });

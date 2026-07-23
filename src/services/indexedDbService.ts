@@ -144,15 +144,67 @@ export async function saveProjectToDb(record: ProjectRecord): Promise<void> {
   });
 }
 
-/** 删除项目 */
+/** 原子删除项目及其项目域持久化数据。 */
 export async function deleteProjectFromDb(id: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_PROJECTS, 'readwrite');
-    const store = tx.objectStore(STORE_PROJECTS);
-    store.delete(id);
+    const tx = db.transaction([
+      STORE_PROJECTS,
+      STORE_CHAT_CONVERSATIONS,
+      STORE_CHAT_MESSAGES,
+      STORE_AGENT_TASKS,
+      STORE_PROJECT_MEMORIES,
+    ], 'readwrite');
+
+    tx.objectStore(STORE_PROJECTS).delete(id);
+
+    const conversationStore = tx.objectStore(STORE_CHAT_CONVERSATIONS);
+    const conversationRange = IDBKeyRange.bound([id, 0], [id, Infinity]);
+    const conversationCursor = conversationStore
+      .index('projectId_updatedAt')
+      .openCursor(conversationRange);
+    conversationCursor.onsuccess = () => {
+      const cursor = conversationCursor.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
+
+    // chatMessages 没有 projectId 索引；项目删除是低频操作，事务内全表扫描
+    // 可以清理会话记录已损坏时留下的孤儿消息，同时避免为此升级 schema。
+    const messageCursor = tx.objectStore(STORE_CHAT_MESSAGES).openCursor();
+    messageCursor.onsuccess = () => {
+      const cursor = messageCursor.result;
+      if (!cursor) return;
+      if ((cursor.value as ChatMessageRecord).projectId === id) cursor.delete();
+      cursor.continue();
+    };
+
+    const taskRange = IDBKeyRange.bound([id, 0], [id, Infinity]);
+    const taskCursor = tx.objectStore(STORE_AGENT_TASKS)
+      .index('projectId_updatedAt')
+      .openCursor(taskRange);
+    taskCursor.onsuccess = () => {
+      const cursor = taskCursor.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
+
+    const memoryRange = IDBKeyRange.bound([id, 0], [id, Infinity]);
+    const memoryCursor = tx.objectStore(STORE_PROJECT_MEMORIES)
+      .index('projectId_updatedAt')
+      .openCursor(memoryRange);
+    memoryCursor.onsuccess = () => {
+      const cursor = memoryCursor.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
+
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error(`删除项目 ${id} 的持久化数据失败`));
   });
 }
 

@@ -16,6 +16,13 @@ import {
   registerAgentTool,
   type AgentToolExecutionResult,
 } from '../toolRegistry';
+import {
+  failMediaPlaceholderLifecycle,
+  MEDIA_PLACEHOLDER_STALE_ERROR,
+  registerMediaPlaceholderLifecycle,
+  settleMediaPlaceholderLifecycle,
+  type MediaPlaceholderLifecycle,
+} from '../mediaPlaceholderLifecycle';
 
 interface GenerateMediaInput {
   kind: MediaKind;
@@ -174,7 +181,11 @@ export function registerMediaAgentTools(): Array<() => void> {
         };
         const needsCanvas = input.deliveryMode === 'canvas' || input.deliveryMode === 'both';
         let targetNodeId: string | undefined;
-        if (needsCanvas) targetNodeId = store.createMediaPlaceholder(intent);
+        let placeholderLifecycle: MediaPlaceholderLifecycle | null = null;
+        if (needsCanvas) {
+          targetNodeId = store.createMediaPlaceholder(intent);
+          placeholderLifecycle = registerMediaPlaceholderLifecycle(targetNodeId);
+        }
         store.updateMessage(assistantMessageId, {
           mediaStatus: 'queued',
           mediaError: undefined,
@@ -196,9 +207,9 @@ export function registerMediaAgentTools(): Array<() => void> {
             throw new DOMException('请求已取消', 'AbortError');
           }
           const currentStore = useAppStore.getState();
-          const nodeCreated = targetNodeId
-            ? currentStore.settleMediaPlaceholder(targetNodeId, result)
-            : false;
+          const nodeCreated = placeholderLifecycle
+            ? settleMediaPlaceholderLifecycle(placeholderLifecycle, result)
+            : targetNodeId ? currentStore.settleMediaPlaceholder(targetNodeId, result) : false;
           currentStore.updateMessage(assistantMessageId, {
             mediaResult: result,
             mediaStatus: 'succeeded',
@@ -206,10 +217,9 @@ export function registerMediaAgentTools(): Array<() => void> {
             canvasStatus: targetNodeId ? (nodeCreated ? 'created' : 'failed') : 'none',
             canvasNodeId: targetNodeId,
             canvasError: targetNodeId && !nodeCreated
-              ? '生成期间占位节点已被删除'
+              ? MEDIA_PLACEHOLDER_STALE_ERROR
               : undefined,
           });
-          if (targetNodeId) currentStore.incrementRevision();
           return {
             status: 'success',
             summary: '媒体内容已生成',
@@ -228,7 +238,8 @@ export function registerMediaAgentTools(): Array<() => void> {
             ? '已停止本地跟踪；供应商未确认远端取消，任务可能继续并产生费用'
             : error instanceof Error ? error.message : '未知错误';
           const currentStore = useAppStore.getState();
-          if (targetNodeId) currentStore.failMediaPlaceholder(targetNodeId, message);
+          if (placeholderLifecycle) failMediaPlaceholderLifecycle(placeholderLifecycle, message);
+          else if (targetNodeId) currentStore.failMediaPlaceholder(targetNodeId, message);
           currentStore.updateMessage(assistantMessageId, {
             mediaStatus: 'failed',
             mediaError: message,

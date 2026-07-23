@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseNodeData } from '../../src/types';
 
 const fileMocks = vi.hoisted(() => ({
+  deleteProjectData: vi.fn(async () => undefined),
+  deleteProjectDataDir: vi.fn(async () => undefined),
   flushUndoTrashDirs: vi.fn(async () => undefined),
   ensureProjectDataDir: vi.fn(async () => 'project-dir'),
   loadProjectData: vi.fn(),
@@ -42,6 +44,8 @@ beforeEach(() => {
   });
   useAppStore.setState(useAppStore.getInitialState(), true);
   fileMocks.loadProjectData.mockReset();
+  fileMocks.deleteProjectData.mockClear();
+  fileMocks.deleteProjectDataDir.mockClear();
   fileMocks.saveProject.mockClear();
   pollMocks.resumePendingTasks.mockClear();
   snapshotMocks.captureCurrentCanvasSnapshot.mockReset();
@@ -278,5 +282,161 @@ describe('project switching', () => {
     expect(useAppStore.getState().currentProjectId).toBe('project-old');
     expect(fileMocks.loadProjectData).not.toHaveBeenCalled();
     expect(pollMocks.resumePendingTasks).not.toHaveBeenCalled();
+  });
+
+  it('keeps the latest project selection when an earlier load finishes last', async () => {
+    const pendingLoads = new Map<string, (value: unknown) => void>();
+    fileMocks.loadProjectData.mockImplementation((projectId: string) => new Promise((resolve) => {
+      pendingLoads.set(projectId, resolve);
+    }));
+    useAppStore.setState({
+      projects: [
+        { id: 'project-old', name: 'Old project', createdAt: 1, updatedAt: 1 },
+        { id: 'project-b', name: 'Project B', createdAt: 2, updatedAt: 2 },
+        { id: 'project-c', name: 'Project C', createdAt: 3, updatedAt: 3 },
+      ],
+      currentProjectId: 'project-old',
+      projectName: 'Old project',
+      saveCurrentProject: vi.fn(async () => 'project-old'),
+    });
+
+    const switchToB = useAppStore.getState().switchProject('project-b');
+    await vi.waitFor(() => expect(pendingLoads.has('project-b')).toBe(true));
+    const switchToC = useAppStore.getState().switchProject('project-c');
+    await vi.waitFor(() => expect(pendingLoads.has('project-c')).toBe(true));
+
+    pendingLoads.get('project-c')?.({
+      id: 'project-c',
+      name: 'Project C',
+      createdAt: 3,
+      updatedAt: 3,
+      nodes: [{
+        id: 'node-c',
+        type: 'ai-text',
+        position: { x: 0, y: 0 },
+        data: { label: 'Node C', type: 'ai-text' },
+      }],
+      edges: [],
+      groups: [],
+    });
+    await switchToC;
+
+    pendingLoads.get('project-b')?.({
+      id: 'project-b',
+      name: 'Project B',
+      createdAt: 2,
+      updatedAt: 2,
+      nodes: [{
+        id: 'node-b',
+        type: 'ai-text',
+        position: { x: 0, y: 0 },
+        data: { label: 'Node B', type: 'ai-text' },
+      }],
+      edges: [],
+      groups: [],
+    });
+    await switchToB;
+
+    expect(useAppStore.getState().currentProjectId).toBe('project-c');
+    expect(useAppStore.getState().nodes.map((node) => node.id)).toEqual(['node-c']);
+  });
+
+  it('removes deleted project chat state and loads conversations for the replacement project', async () => {
+    const loadConversationsForProject = vi.fn(async () => undefined);
+    const repairInterruptedForProject = vi.fn(async () => undefined);
+    const loadAgentTasksForProject = vi.fn(async () => undefined);
+    const loadProjectMemoriesForProject = vi.fn(async () => undefined);
+    fileMocks.loadProjectData.mockResolvedValue({
+      id: 'project-next',
+      name: 'Next project',
+      createdAt: 2,
+      updatedAt: 2,
+      nodes: [],
+      edges: [],
+      groups: [],
+    });
+    useAppStore.setState({
+      projects: [
+        { id: 'project-old', name: 'Old project', createdAt: 1, updatedAt: 1 },
+        { id: 'project-next', name: 'Next project', createdAt: 2, updatedAt: 2 },
+      ],
+      currentProjectId: 'project-old',
+      conversations: [
+        {
+          id: 'conversation-old',
+          projectId: 'project-old',
+          title: 'Old conversation',
+          titleSource: 'auto',
+          pinned: false,
+          archived: false,
+          agentMode: 'collaborative',
+          createdAt: 1,
+          updatedAt: 1,
+          messageCount: 1,
+        },
+        {
+          id: 'conversation-next',
+          projectId: 'project-next',
+          title: 'Next conversation',
+          titleSource: 'auto',
+          pinned: false,
+          archived: false,
+          agentMode: 'collaborative',
+          createdAt: 1,
+          updatedAt: 1,
+          messageCount: 1,
+        },
+      ],
+      activeConversationId: 'conversation-old',
+      messages: [
+        {
+          id: 'message-old',
+          conversationId: 'conversation-old',
+          role: 'user',
+          content: 'old',
+          timestamp: 1,
+          status: 'done',
+        },
+        {
+          id: 'message-next',
+          conversationId: 'conversation-next',
+          role: 'user',
+          content: 'next',
+          timestamp: 1,
+          status: 'done',
+        },
+      ],
+      loadConversationsForProject,
+      repairInterruptedForProject,
+      loadAgentTasksForProject,
+      loadProjectMemoriesForProject,
+      removeProjectAgentTasks: vi.fn(),
+      removeProjectMemories: vi.fn(),
+    });
+
+    await useAppStore.getState().deleteProject('project-old');
+
+    expect(useAppStore.getState().conversations.map((conversation) => conversation.id))
+      .toEqual(['conversation-next']);
+    expect(useAppStore.getState().messages.map((message) => message.id)).toEqual(['message-next']);
+    expect(useAppStore.getState().activeConversationId).toBeNull();
+    expect(loadConversationsForProject).toHaveBeenCalledWith('project-next');
+    expect(fileMocks.deleteProjectData).toHaveBeenCalledWith('project-old');
+  });
+
+  it('keeps the project visible when persistent cascade deletion fails', async () => {
+    const showToast = vi.fn();
+    fileMocks.deleteProjectData.mockRejectedValueOnce(new Error('indexeddb unavailable'));
+    useAppStore.setState({
+      projects: [{ id: 'project-old', name: 'Old project', createdAt: 1, updatedAt: 1 }],
+      currentProjectId: 'project-old',
+      showToast,
+    });
+
+    await useAppStore.getState().deleteProject('project-old');
+
+    expect(useAppStore.getState().projects.map((project) => project.id)).toEqual(['project-old']);
+    expect(fileMocks.deleteProjectDataDir).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith('项目删除失败，本地数据未清理', 'error');
   });
 });

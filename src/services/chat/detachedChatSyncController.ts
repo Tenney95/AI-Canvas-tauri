@@ -40,6 +40,7 @@ import {
 } from './chatWindowService';
 
 const DEFAULT_SYNC_INTERVAL_MS = 150;
+const MAX_SYNC_RETRY_DELAY_MS = 5_000;
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 type AppState = ReturnType<typeof useAppStore.getState>;
@@ -317,6 +318,7 @@ export function createDetachedChatSyncController(
   let lastSnapshot: ChatStateSnapshot | null = null;
   let revision = 0;
   let forceSnapshotPending = false;
+  let consecutiveFailures = 0;
   let cleanupListener: (() => void) | undefined;
   let unsubscribeStore: (() => void) | undefined;
   let unsubscribeFileGrants: (() => void) | undefined;
@@ -327,6 +329,7 @@ export function createDetachedChatSyncController(
     forceSnapshotPending = false;
     lastSnapshot = null;
     revision = 0;
+    consecutiveFailures = 0;
     if (timer) clearTimeout(timer);
     timer = null;
   };
@@ -353,24 +356,45 @@ export function createDetachedChatSyncController(
 
       if (!forceSnapshot) {
         const patch = createChatStatePatch(previousSnapshot, nextSnapshot);
-        lastSnapshot = nextSnapshot;
-        if (!hasChatStatePatchChanges(patch)) return;
+        if (!hasChatStatePatchChanges(patch)) {
+          lastSnapshot = nextSnapshot;
+          consecutiveFailures = 0;
+          return;
+        }
 
         const baseRevision = revision;
-        revision += 1;
-        await emitSync({ type: 'patch', baseRevision, revision, patch });
+        const nextRevision = revision + 1;
+        await emitSync({ type: 'patch', baseRevision, revision: nextRevision, patch });
+        lastSnapshot = nextSnapshot;
+        revision = nextRevision;
+        consecutiveFailures = 0;
         return;
       }
 
+      const nextRevision = revision + 1;
       forceSnapshotPending = false;
+      await emitSync({ type: 'snapshot', revision: nextRevision, snapshot: nextSnapshot });
       lastSnapshot = nextSnapshot;
-      revision += 1;
-      await emitSync({ type: 'snapshot', revision, snapshot: nextSnapshot });
+      revision = nextRevision;
+      consecutiveFailures = 0;
+    } catch (error) {
+      consecutiveFailures += 1;
+      pending = true;
+      forceSnapshotPending = true;
+      console.warn('[chatWindow] failed to sync detached window state:', error);
     } finally {
       inFlight = false;
       if (!disposed && pending) {
         const elapsed = now() - lastStartedAt;
-        const delay = immediatePending ? 0 : Math.max(0, syncIntervalMs - elapsed);
+        const retryDelay = consecutiveFailures > 0
+          ? Math.min(
+              MAX_SYNC_RETRY_DELAY_MS,
+              Math.max(1, syncIntervalMs) * (2 ** Math.min(consecutiveFailures - 1, 5)),
+            )
+          : 0;
+        const delay = retryDelay > 0
+          ? retryDelay
+          : immediatePending ? 0 : Math.max(0, syncIntervalMs - elapsed);
         timer = setTimeout(() => {
           void emitLatestSnapshot();
         }, delay);

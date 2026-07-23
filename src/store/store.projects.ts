@@ -13,6 +13,7 @@ import { normalizeProjectSettings } from '../services/projectSettingsService';
 import { captureCurrentCanvasSnapshot } from '../services/projectSnapshotService';
 import { stopProjectAgentTasks } from '../services/chat/agentRuntime';
 import { cancelProjectCanvasDerivations } from '../services/canvasDerivationGuard';
+import { clearConversationFileGrants } from '../services/chat/fileGrantService';
 
 function getProjectGroups(data: { groups?: unknown } | null | undefined): NodeGroup[] {
   return Array.isArray(data?.groups) ? (data.groups as NodeGroup[]) : [];
@@ -83,6 +84,7 @@ interface ProjectSaveQueue {
 }
 
 const projectSaveQueues = new Map<string, ProjectSaveQueue>();
+let projectSwitchSequence = 0;
 
 interface CapturedCanvasState {
   projectId: string;
@@ -371,6 +373,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   createProject: (name) => {
+    projectSwitchSequence += 1;
     const id = generateProjectId();
     let defaultName: string;
     if (name) {
@@ -409,9 +412,41 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   deleteProject: async (id) => {
+    projectSwitchSequence += 1;
     const state = get();
+    if (!state.projects.some((project) => project.id === id)) return;
     const filtered = state.projects.filter((p) => p.id !== id);
     const isCurrent = state.currentProjectId === id;
+    cancelProjectCanvasDerivations(id);
+    clearProjectTasks(id);
+    // 先中止仍在运行的 Agent，再做最终级联删除，避免事务完成后再次写入项目任务。
+    stopProjectAgentTasks(id);
+    try {
+      await fileService.deleteProjectData(id);
+    } catch (error) {
+      console.warn('[删除项目] 清理持久化数据失败:', error);
+      get().showToast('项目删除失败，本地数据未清理', 'error');
+      return;
+    }
+    const deletedConversationIds = new Set([
+      ...state.conversations
+        .filter((conversation) => conversation.projectId === id)
+        .map((conversation) => conversation.id),
+      ...state.agentTasks
+        .filter((task) => task.projectId === id)
+        .map((task) => task.conversationId),
+    ]);
+    for (const conversationId of deletedConversationIds) {
+      clearConversationFileGrants(conversationId);
+    }
+    const retainedChatState = {
+      conversations: state.conversations.filter((conversation) => conversation.projectId !== id),
+      messages: state.messages.filter((message) => !deletedConversationIds.has(message.conversationId)),
+      activeConversationId: state.activeConversationId
+        && deletedConversationIds.has(state.activeConversationId)
+        ? null
+        : state.activeConversationId,
+    };
 
     if (isCurrent && filtered.length === 1 && filtered[0]?.id === 'default') {
       const newId = generateProjectId();
@@ -427,6 +462,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
         history: [],
         historyIndex: -1,
         dramaAssets: { version: 1 as const, characters: [], scenes: [], props: [] },
+        operationLogs: [],
+        ...retainedChatState,
       });
       fileService.saveProject({ id: newId, name: '默认画布', createdAt: now, updatedAt: now, dataFolder: newFolder, nodes: [], edges: [] }).catch((e) => console.warn('[重建默认项目] 保存失败:', e));
       fileService.ensureProjectDataDir(newId).catch((e) => console.warn('[重建默认项目] 数据目录初始化失败:', e));
@@ -438,6 +475,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       set({
         projects: filtered,
         currentProjectId: nextId,
+        ...retainedChatState,
         ...(isCurrent
           ? {
               projectName: nextName,
@@ -446,6 +484,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
               history: [],
               historyIndex: -1,
               dramaAssets: { version: 1 as const, characters: [], scenes: [], props: [] },
+              operationLogs: [],
             }
           : {}),
       });
@@ -465,21 +504,23 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
             set({ dramaAssets: emptyDramaAssetLibrary() });
           }
           setTimeout(() => window.dispatchEvent(new CustomEvent('canvas-fit-view')), 0);
+          get().loadConversationsForProject(nextId).catch((e) => console.warn('[删除项目] 加载会话失败:', e));
+          get().repairInterruptedForProject(nextId).catch((e) => console.warn('[删除项目] 修复中断消息失败:', e));
+          get().loadAgentTasksForProject(nextId).catch((e) => console.warn('[删除项目] 加载 Agent 任务失败:', e));
+          get().loadProjectMemoriesForProject(nextId).catch((e) => console.warn('[删除项目] 加载项目记忆失败:', e));
         } catch { /* Keep empty canvas */ }
       }
     }
 
-    clearProjectTasks(id);
-    // 先中止仍在运行的 Agent，再移除任务快照，避免后台请求在项目删除后继续产生副作用
-    stopProjectAgentTasks(id);
     get().removeProjectAgentTasks(id);
     get().removeProjectMemories(id);
-    fileService.deleteProjectData(id).catch((e) => console.warn('[删除项目] 清理数据失败:', e));
     fileService.deleteProjectDataDir(id).catch((e) => console.warn('[删除项目] 清理目录失败:', e));
   },
 
   switchProject: async (id) => {
     if (!get().projects.some((project) => project.id === id)) return;
+    const switchSequence = ++projectSwitchSequence;
+    const isLatestSwitch = () => switchSequence === projectSwitchSequence;
     const currentProjectId = get().currentProjectId;
     if (currentProjectId && currentProjectId !== id) {
       cancelProjectCanvasDerivations(currentProjectId);
@@ -490,8 +531,10 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       persistRecord: snapshotRecord,
     });
     await get().saveCurrentProject();
+    if (!isLatestSwitch()) return;
     // Clean up undo-trash dirs from the old project before switching
     await fileService.flushUndoTrashDirs();
+    if (!isLatestSwitch()) return;
 
     const project = get().projects.find((p) => p.id === id);
     if (!project) return;
@@ -499,7 +542,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     fileService.ensureProjectDataDir(id).catch((e) => console.warn('[切换项目] 数据目录初始化失败:', e));
 
     const data = await fileService.loadProjectData(id);
+    if (!isLatestSwitch()) return;
     const { emptyDramaAssetLibrary } = await import('../types/dramaAssets');
+    if (!isLatestSwitch()) return;
     if (data?.nodes) {
       set({
         currentProjectId: id,

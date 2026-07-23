@@ -290,12 +290,8 @@ export async function initMainWindowListener(
 
 /** 主窗口广播首次快照或后续增量补丁（独立窗口 listen 此事件） */
 export async function emitSyncState(sync: ChatStateSync): Promise<void> {
-  try {
-    const { emit } = await import('@tauri-apps/api/event');
-    await emit(CHAT_SYNC_EVENT, sync);
-  } catch {
-    // 非 Tauri 环境静默失败
-  }
+  const { emit } = await import('@tauri-apps/api/event');
+  await emit(CHAT_SYNC_EVENT, sync);
 }
 
 /** 主窗口要求独立窗口关闭 */

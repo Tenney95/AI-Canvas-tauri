@@ -35,6 +35,13 @@ import {
   type AgentMode,
 } from '../../types/agent';
 import type { MediaGenerationIntent } from '../../types/media';
+import {
+  failMediaPlaceholderLifecycle,
+  MEDIA_PLACEHOLDER_STALE_ERROR,
+  registerMediaPlaceholderLifecycle,
+  settleMediaPlaceholderLifecycle,
+  type MediaPlaceholderLifecycle,
+} from './mediaPlaceholderLifecycle';
 
 const STREAMING_UI_FLUSH_INTERVAL_MS = 50;
 
@@ -496,8 +503,12 @@ async function triggerMediaGeneration(
   const store = useAppStore.getState();
   const needsCanvas = intent.deliveryMode === 'canvas' || intent.deliveryMode === 'both';
   let targetNodeId: string | undefined;
+  let placeholderLifecycle: MediaPlaceholderLifecycle | null = null;
 
-  if (needsCanvas) targetNodeId = store.createMediaPlaceholder(intent);
+  if (needsCanvas) {
+    targetNodeId = store.createMediaPlaceholder(intent);
+    placeholderLifecycle = registerMediaPlaceholderLifecycle(targetNodeId);
+  }
   store.updateMessage(messageId, {
     mediaStatus: 'queued',
     mediaError: undefined,
@@ -508,20 +519,21 @@ async function triggerMediaGeneration(
   try {
     store.updateMessage(messageId, { mediaStatus: 'generating' });
     const result = await runMediaGeneration(intent, store.currentProjectId);
-    const nodeCreated = targetNodeId
-      ? store.settleMediaPlaceholder(targetNodeId, result)
-      : false;
+    const nodeCreated = placeholderLifecycle
+      ? settleMediaPlaceholderLifecycle(placeholderLifecycle, result)
+      : targetNodeId ? useAppStore.getState().settleMediaPlaceholder(targetNodeId, result) : false;
     store.updateMessage(messageId, {
       mediaResult: result,
       mediaStatus: 'succeeded',
       mediaError: undefined,
       canvasStatus: targetNodeId ? (nodeCreated ? 'created' : 'failed') : 'none',
       canvasNodeId: targetNodeId,
-      canvasError: targetNodeId && !nodeCreated ? '生成期间占位节点已被删除' : undefined,
+      canvasError: targetNodeId && !nodeCreated ? MEDIA_PLACEHOLDER_STALE_ERROR : undefined,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : '未知错误';
-    if (targetNodeId) store.failMediaPlaceholder(targetNodeId, message);
+    if (placeholderLifecycle) failMediaPlaceholderLifecycle(placeholderLifecycle, message);
+    else if (targetNodeId) useAppStore.getState().failMediaPlaceholder(targetNodeId, message);
     store.updateMessage(messageId, {
       mediaStatus: 'failed',
       mediaError: message,
