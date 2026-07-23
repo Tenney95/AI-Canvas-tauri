@@ -16,6 +16,7 @@ import { generateAudio, persistAudioGenerationResult } from './generateAudio';
 import { findMediaModelOption } from '../../components/nodes/shared/defaultModels';
 import { resolveProjectGenerationPrompt } from '../projectSettingsService';
 import type { BaseNodeData, NodeType } from '../../types';
+import { tagGeneratedProjectAssetSafely } from '../fs/generatedAssetTags';
 
 const MODEL_MENTION_RE = /@model\{([^|}\s]+)(?:\|[^}]*)?\}/i;
 
@@ -101,6 +102,15 @@ async function saveGeneratedMedia(
   );
 }
 
+async function tagSavedGeneratedMedia(
+  filePath: string | undefined,
+  projectId: string | null | undefined,
+  prompt: string,
+): Promise<void> {
+  if (!filePath || !projectId) return;
+  await tagGeneratedProjectAssetSafely({ filePath, projectId, prompt });
+}
+
 export async function runMediaGeneration(
   intent: MediaGenerationIntent,
   projectId?: string | null,
@@ -148,6 +158,7 @@ export async function runMediaGeneration(
     }, signal);
     throwIfAborted(signal);
     const saved = await saveGeneratedMedia(result.url, projectId, intent.kind, id).catch(() => null);
+    await tagSavedGeneratedMedia(saved?.filePath, projectId, effectivePrompt);
     throwIfAborted(signal);
     return {
       id,
@@ -175,6 +186,7 @@ export async function runMediaGeneration(
     }, signal);
     throwIfAborted(signal);
     const saved = await saveGeneratedMedia(result.url, projectId, intent.kind, id).catch(() => null);
+    await tagSavedGeneratedMedia(saved?.filePath, projectId, effectivePrompt);
     throwIfAborted(signal);
     return {
       id,
@@ -201,6 +213,7 @@ export async function runMediaGeneration(
     projectId,
     `对话音频-${id}`,
   );
+  await tagSavedGeneratedMedia(persisted.filePath, projectId, effectivePrompt);
   throwIfAborted(signal);
   return {
     id,

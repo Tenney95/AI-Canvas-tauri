@@ -19,6 +19,7 @@ import {
   deleteNodeHistoryEntries,
 } from '../services/indexedDbService';
 import type { HistoryPageCursor, HistoryQuery } from '../services/indexedDbService';
+import { tagGeneratedProjectAssetSafely } from '../services/fs/generatedAssetTags';
 
 const HISTORY_PAGE_SIZE = 16;
 
@@ -165,10 +166,18 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
   },
 
   recordOutputHistory: async (_nodeId, entry) => {
+    const projectId = get().currentProjectId;
     const id = `hist-${generateId()}`;
     const record: OutputHistoryEntry = { ...entry, id };
     // Persist to IndexedDB first, then update store
     await putHistoryEntry(record).catch((e) => console.warn('Failed to persist history entry:', e));
+    if (projectId && entry.status === 'success' && entry.filePath && entry.prompt.trim()) {
+      await tagGeneratedProjectAssetSafely({
+        filePath: entry.filePath,
+        projectId,
+        prompt: entry.prompt,
+      });
+    }
     set((state) => ({
       outputHistoryRecords: matchesHistoryQuery(record, activeHistoryQuery)
         ? [record, ...state.outputHistoryRecords]
