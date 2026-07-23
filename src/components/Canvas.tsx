@@ -158,6 +158,111 @@ const minimapNodeColor = (node: RFNode) => {
 };
 
 // ── Snap lines overlay ──
+type SpacingSnapLine = Extract<SnapLine, { kind: 'spacing' }>;
+
+function formatSpacingDistance(distance: number): string {
+  return Number.isInteger(distance) ? String(distance) : distance.toFixed(1);
+}
+
+function SpacingGuideMarks({ line, index }: { line: SpacingSnapLine; index: number }) {
+  const label = formatSpacingDistance(line.distance);
+  return (
+    <g key={`spacing-${line.type}-${index}`}>
+      {line.segments.map((segment, segmentIndex) => {
+        const middle = (segment.start + segment.end) / 2;
+        return line.type === 'horizontal' ? (
+          <g key={`horizontal-gap-${segmentIndex}`}>
+            <line
+              x1={segment.start}
+              y1={line.crossPosition}
+              x2={segment.end}
+              y2={line.crossPosition}
+              stroke="var(--brand)"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+            <line
+              x1={segment.start}
+              y1={line.crossPosition - 4}
+              x2={segment.start}
+              y2={line.crossPosition + 4}
+              stroke="var(--brand)"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+            <line
+              x1={segment.end}
+              y1={line.crossPosition - 4}
+              x2={segment.end}
+              y2={line.crossPosition + 4}
+              stroke="var(--brand)"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+            <text
+              x={middle}
+              y={line.crossPosition - 6}
+              fill="var(--brand)"
+              stroke="var(--theme-bg)"
+              strokeWidth={3}
+              paintOrder="stroke"
+              fontSize={11}
+              fontWeight={600}
+              textAnchor="middle"
+            >
+              {label}
+            </text>
+          </g>
+        ) : (
+          <g key={`vertical-gap-${segmentIndex}`}>
+            <line
+              x1={line.crossPosition}
+              y1={segment.start}
+              x2={line.crossPosition}
+              y2={segment.end}
+              stroke="var(--brand)"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+            <line
+              x1={line.crossPosition - 4}
+              y1={segment.start}
+              x2={line.crossPosition + 4}
+              y2={segment.start}
+              stroke="var(--brand)"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+            <line
+              x1={line.crossPosition - 4}
+              y1={segment.end}
+              x2={line.crossPosition + 4}
+              y2={segment.end}
+              stroke="var(--brand)"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+            <text
+              x={line.crossPosition - 6}
+              y={middle}
+              fill="var(--brand)"
+              stroke="var(--theme-bg)"
+              strokeWidth={3}
+              paintOrder="stroke"
+              fontSize={11}
+              fontWeight={600}
+              textAnchor="end"
+              dominantBaseline="middle"
+            >
+              {label}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 function SnapLinesOverlay({ lines }: { lines: SnapLine[] }) {
   const { x, y, zoom } = useViewport();
   if (lines.length === 0) return null;
@@ -182,8 +287,11 @@ function SnapLinesOverlay({ lines }: { lines: SnapLine[] }) {
           overflow: 'visible',
         }}
       >
-        {lines.map((line, i) =>
-          line.type === 'horizontal' ? (
+        {lines.map((line, i) => {
+          if (line.kind === 'spacing') {
+            return <SpacingGuideMarks key={`spacing-${line.type}-${i}`} line={line} index={i} />;
+          }
+          return line.type === 'horizontal' ? (
             <line
               key={`h-${i}`}
               x1={-99999}
@@ -207,8 +315,8 @@ function SnapLinesOverlay({ lines }: { lines: SnapLine[] }) {
               strokeDasharray="4 4"
               opacity={0.7}
             />
-          )
-        )}
+          );
+        })}
       </svg>
     </div>
   );

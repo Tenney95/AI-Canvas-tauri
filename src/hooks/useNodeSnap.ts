@@ -1,5 +1,5 @@
 /**
- * useNodeSnap 节点对齐吸附 Hook — 拖拽节点时自动吸附对齐到其他节点的边缘/中心，绘制辅助线
+ * useNodeSnap 节点吸附 Hook — 拖拽节点时自动吸附到其他节点的边缘、中心或等间距位置
  */
 import { createContext, useCallback, useRef, useState } from 'react';
 import { useReactFlow } from '@xyflow/react';
@@ -9,19 +9,25 @@ import { useAppStore } from '../store/useAppStore';
 
 /** 视口外保留的 margin（流坐标），略大于一个节点高度，避免边缘节点被误裁 */
 const VIEWPORT_CULL_MARGIN = 400;
+const SNAP_THRESHOLD = 8;
+const MIN_SPACING_GAP = 2;
+const SPACING_GUIDE_OFFSET = 12;
 
-export interface SnapLine {
-  type: 'horizontal' | 'vertical';
-  position: number;
-}
+export type SnapLine =
+  | {
+      kind: 'alignment';
+      type: 'horizontal' | 'vertical';
+      position: number;
+    }
+  | {
+      kind: 'spacing';
+      type: 'horizontal' | 'vertical';
+      distance: number;
+      crossPosition: number;
+      segments: Array<{ start: number; end: number }>;
+    };
 
-interface SnapResult {
-  snapX: number | null;
-  snapY: number | null;
-  lines: SnapLine[];
-}
-
-interface NodeBounds {
+export interface NodeBounds {
   x: number;
   y: number;
   width: number;
@@ -131,6 +137,238 @@ interface SnapPoint {
   diff: number;
 }
 
+type SpacingAxis = 'horizontal' | 'vertical';
+type CrossAlignmentMode = 'start' | 'center' | 'end';
+type SpacingPlacement = 'before' | 'between' | 'after';
+
+export interface EqualSpacingCandidate {
+  axis: SpacingAxis;
+  targetStart: number;
+  distance: number;
+  placement: SpacingPlacement;
+  first: NodeBounds;
+  second: NodeBounds;
+  crossAlignmentModes: CrossAlignmentMode[];
+}
+
+export interface EqualSpacingSnap {
+  targetStart: number;
+  diff: number;
+  guide: Extract<SnapLine, { kind: 'spacing' }>;
+}
+
+const CROSS_ALIGNMENT_MODES: CrossAlignmentMode[] = ['start', 'center', 'end'];
+
+function getAxisStart(bounds: NodeBounds, axis: SpacingAxis): number {
+  return axis === 'horizontal' ? bounds.left : bounds.top;
+}
+
+function getAxisEnd(bounds: NodeBounds, axis: SpacingAxis): number {
+  return axis === 'horizontal' ? bounds.right : bounds.bottom;
+}
+
+function getCrossStart(bounds: NodeBounds, axis: SpacingAxis): number {
+  return axis === 'horizontal' ? bounds.top : bounds.left;
+}
+
+function getCrossCoordinate(
+  bounds: NodeBounds,
+  axis: SpacingAxis,
+  mode: CrossAlignmentMode,
+): number {
+  if (axis === 'horizontal') {
+    if (mode === 'start') return bounds.top;
+    if (mode === 'center') return bounds.centerY;
+    return bounds.bottom;
+  }
+  if (mode === 'start') return bounds.left;
+  if (mode === 'center') return bounds.centerX;
+  return bounds.right;
+}
+
+function getSharedCrossAlignmentModes(
+  first: NodeBounds,
+  second: NodeBounds,
+  axis: SpacingAxis,
+): CrossAlignmentMode[] {
+  return CROSS_ALIGNMENT_MODES.filter((mode) => (
+    Math.abs(getCrossCoordinate(first, axis, mode) - getCrossCoordinate(second, axis, mode))
+      <= SNAP_THRESHOLD
+  ));
+}
+
+/**
+ * 拖拽开始时预计算等间距落点。间距按节点相邻边缘之间的空白计算，
+ * 而不是按中心点计算，因此不同尺寸节点也能得到一致的视觉间距。
+ */
+export function buildEqualSpacingCandidates(
+  otherBounds: NodeBounds[],
+  draggedSize: number,
+  axis: SpacingAxis,
+): EqualSpacingCandidate[] {
+  const candidates: EqualSpacingCandidate[] = [];
+  const adjacentPairs = new Map<string, [NodeBounds, NodeBounds]>();
+
+  for (let i = 0; i < otherBounds.length; i += 1) {
+    const first = otherBounds[i];
+    for (const mode of CROSS_ALIGNMENT_MODES) {
+      let nearestIndex = -1;
+      let nearestStart = Infinity;
+
+      for (let j = 0; j < otherBounds.length; j += 1) {
+        if (i === j) continue;
+        const second = otherBounds[j];
+        const secondStart = getAxisStart(second, axis);
+        const gap = secondStart - getAxisEnd(first, axis);
+        if (gap < MIN_SPACING_GAP || secondStart >= nearestStart) continue;
+        if (Math.abs(getCrossCoordinate(first, axis, mode) - getCrossCoordinate(second, axis, mode))
+          > SNAP_THRESHOLD) continue;
+
+        nearestIndex = j;
+        nearestStart = secondStart;
+      }
+
+      if (nearestIndex >= 0) {
+        adjacentPairs.set(`${i}:${nearestIndex}`, [first, otherBounds[nearestIndex]]);
+      }
+    }
+  }
+
+  for (const [first, second] of adjacentPairs.values()) {
+    const crossAlignmentModes = getSharedCrossAlignmentModes(first, second, axis);
+    const availableGap = getAxisStart(second, axis) - getAxisEnd(first, axis);
+
+    candidates.push({
+      axis,
+      targetStart: getAxisStart(first, axis) - availableGap - draggedSize,
+      distance: availableGap,
+      placement: 'before',
+      first,
+      second,
+      crossAlignmentModes,
+    });
+    candidates.push({
+      axis,
+      targetStart: getAxisEnd(second, axis) + availableGap,
+      distance: availableGap,
+      placement: 'after',
+      first,
+      second,
+      crossAlignmentModes,
+    });
+
+    const equalInnerGap = (availableGap - draggedSize) / 2;
+    if (equalInnerGap >= MIN_SPACING_GAP) {
+      candidates.push({
+        axis,
+        targetStart: getAxisEnd(first, axis) + equalInnerGap,
+        distance: equalInnerGap,
+        placement: 'between',
+        first,
+        second,
+        crossAlignmentModes,
+      });
+    }
+  }
+
+  return candidates;
+}
+
+function moveBoundsToAxisStart(
+  bounds: NodeBounds,
+  axis: SpacingAxis,
+  targetStart: number,
+): NodeBounds {
+  const delta = targetStart - getAxisStart(bounds, axis);
+  if (axis === 'horizontal') {
+    return {
+      ...bounds,
+      x: bounds.x + delta,
+      left: bounds.left + delta,
+      centerX: bounds.centerX + delta,
+      right: bounds.right + delta,
+    };
+  }
+  return {
+    ...bounds,
+    y: bounds.y + delta,
+    top: bounds.top + delta,
+    centerY: bounds.centerY + delta,
+    bottom: bounds.bottom + delta,
+  };
+}
+
+function createSpacingGuide(
+  candidate: EqualSpacingCandidate,
+  draggedBounds: NodeBounds,
+): Extract<SnapLine, { kind: 'spacing' }> {
+  const snappedBounds = moveBoundsToAxisStart(
+    draggedBounds,
+    candidate.axis,
+    candidate.targetStart,
+  );
+  const { first, second } = candidate;
+  let segments: Array<{ start: number; end: number }>;
+
+  if (candidate.placement === 'before') {
+    segments = [
+      { start: getAxisEnd(snappedBounds, candidate.axis), end: getAxisStart(first, candidate.axis) },
+      { start: getAxisEnd(first, candidate.axis), end: getAxisStart(second, candidate.axis) },
+    ];
+  } else if (candidate.placement === 'between') {
+    segments = [
+      { start: getAxisEnd(first, candidate.axis), end: getAxisStart(snappedBounds, candidate.axis) },
+      { start: getAxisEnd(snappedBounds, candidate.axis), end: getAxisStart(second, candidate.axis) },
+    ];
+  } else {
+    segments = [
+      { start: getAxisEnd(first, candidate.axis), end: getAxisStart(second, candidate.axis) },
+      { start: getAxisEnd(second, candidate.axis), end: getAxisStart(snappedBounds, candidate.axis) },
+    ];
+  }
+
+  return {
+    kind: 'spacing',
+    type: candidate.axis,
+    distance: candidate.distance,
+    crossPosition: Math.min(
+      getCrossStart(first, candidate.axis),
+      getCrossStart(second, candidate.axis),
+      getCrossStart(snappedBounds, candidate.axis),
+    ) - SPACING_GUIDE_OFFSET,
+    segments,
+  };
+}
+
+export function findBestEqualSpacingSnap(
+  draggedBounds: NodeBounds,
+  candidates: EqualSpacingCandidate[],
+  axis: SpacingAxis,
+): EqualSpacingSnap | null {
+  const draggedStart = getAxisStart(draggedBounds, axis);
+  let best: EqualSpacingSnap | null = null;
+
+  for (const candidate of candidates) {
+    const diff = Math.abs(draggedStart - candidate.targetStart);
+    if (diff > SNAP_THRESHOLD || (best && diff >= best.diff)) continue;
+
+    const crossAligned = candidate.crossAlignmentModes.some((mode) => {
+      const draggedCross = getCrossCoordinate(draggedBounds, axis, mode);
+      return Math.abs(draggedCross - getCrossCoordinate(candidate.first, axis, mode)) <= SNAP_THRESHOLD
+        && Math.abs(draggedCross - getCrossCoordinate(candidate.second, axis, mode)) <= SNAP_THRESHOLD;
+    });
+    if (!crossAligned) continue;
+
+    best = {
+      targetStart: candidate.targetStart,
+      diff,
+      guide: createSpacingGuide(candidate, draggedBounds),
+    };
+  }
+
+  return best;
+}
+
 function findBestSnap(
   draggedPoints: number[],
   otherPoints: number[]
@@ -139,7 +377,7 @@ function findBestSnap(
   for (const dp of draggedPoints) {
     for (const op of otherPoints) {
       const diff = Math.abs(dp - op);
-      if (diff <= 8) {
+      if (diff <= SNAP_THRESHOLD) {
         if (!best || diff < best.diff) {
           best = { value: dp, targetValue: op, diff };
         }
@@ -182,6 +420,8 @@ export function useNodeSnap() {
     otherXCenters: number[];
     otherYEdges: number[];
     otherYCenters: number[];
+    horizontalSpacingCandidates: EqualSpacingCandidate[];
+    verticalSpacingCandidates: EqualSpacingCandidate[];
   } | null>(null);
   // 缩放期间不变的数据：被缩放节点固定的左/上边，以及其他节点的 X/Y 候选线
   const resizeCtx = useRef<{
@@ -225,6 +465,7 @@ export function useNodeSnap() {
       const otherXCenters: number[] = [];
       const otherYEdges: number[] = [];
       const otherYCenters: number[] = [];
+      const otherBounds: NodeBounds[] = [];
       for (const other of nodes) {
         if (other.id === excludeId || draggedNodeIds?.has(other.id) || other.selected === true) continue;
         const b = getNodeBounds(other, nodeMap);
@@ -236,8 +477,9 @@ export function useNodeSnap() {
         otherXCenters.push(b.centerX);
         otherYEdges.push(b.top, b.bottom);
         otherYCenters.push(b.centerY);
+        otherBounds.push(b);
       }
-      return { nodeMap, otherXEdges, otherXCenters, otherYEdges, otherYCenters };
+      return { nodeMap, otherXEdges, otherXCenters, otherYEdges, otherYCenters, otherBounds };
     },
     [screenToFlowPosition]
   );
@@ -253,7 +495,20 @@ export function useNodeSnap() {
       const draggedNodeIds = new Set(draggedNodes.map((candidate) => candidate.id));
       const candidates = buildCandidates(node.id, draggedNodeIds);
       const draggedBounds = getNodesBounds(draggedNodes, candidates.nodeMap);
-      dragCtx.current = draggedBounds ? { ...candidates, draggedBounds } : null;
+      dragCtx.current = draggedBounds ? {
+        ...candidates,
+        draggedBounds,
+        horizontalSpacingCandidates: buildEqualSpacingCandidates(
+          candidates.otherBounds,
+          draggedBounds.width,
+          'horizontal',
+        ),
+        verticalSpacingCandidates: buildEqualSpacingCandidates(
+          candidates.otherBounds,
+          draggedBounds.height,
+          'vertical',
+        ),
+      } : null;
     },
     [buildCandidates]
   );
@@ -267,7 +522,16 @@ export function useNodeSnap() {
     (nodeId: string, proposedPosition: { x: number; y: number }): { x: number; y: number } => {
       const ctx = dragCtx.current;
       if (!ctx) return proposedPosition;
-      const { nodeMap, draggedBounds: startDraggedBounds, otherXEdges, otherXCenters, otherYEdges, otherYCenters } = ctx;
+      const {
+        nodeMap,
+        draggedBounds: startDraggedBounds,
+        otherXEdges,
+        otherXCenters,
+        otherYEdges,
+        otherYCenters,
+        horizontalSpacingCandidates,
+        verticalSpacingCandidates,
+      } = ctx;
       const baseNode = nodeMap.get(nodeId);
       if (!baseNode) return proposedPosition;
 
@@ -290,23 +554,26 @@ export function useNodeSnap() {
         bottom: startDraggedBounds.bottom + deltaY,
       };
 
-      const snapResult: SnapResult = { snapX: null, snapY: null, lines: [] };
+      const lines: SnapLine[] = [];
+      let correctionX = 0;
+      let correctionY = 0;
 
       // Find best horizontal snap (Y axis alignment) —— 边吸边、中线吸中线
       const bestYSnap = pickCloser(
         findBestSnap([draggedBounds.top, draggedBounds.bottom], otherYEdges),
         findBestSnap([draggedBounds.centerY], otherYCenters),
       );
-      if (bestYSnap) {
-        snapResult.snapY = bestYSnap.targetValue;
-        const snappedEdgeY = bestYSnap.value;
-        if (Math.abs(snappedEdgeY - draggedBounds.top) < 0.5) {
-          snapResult.lines.push({ type: 'horizontal', position: bestYSnap.targetValue });
-        } else if (Math.abs(snappedEdgeY - draggedBounds.centerY) < 0.5) {
-          snapResult.lines.push({ type: 'horizontal', position: bestYSnap.targetValue });
-        } else {
-          snapResult.lines.push({ type: 'horizontal', position: bestYSnap.targetValue });
-        }
+      const bestVerticalSpacing = findBestEqualSpacingSnap(
+        draggedBounds,
+        verticalSpacingCandidates,
+        'vertical',
+      );
+      if (bestVerticalSpacing && (!bestYSnap || bestVerticalSpacing.diff <= bestYSnap.diff)) {
+        correctionY = bestVerticalSpacing.targetStart - draggedBounds.top;
+        lines.push(bestVerticalSpacing.guide);
+      } else if (bestYSnap) {
+        correctionY = bestYSnap.targetValue - bestYSnap.value;
+        lines.push({ kind: 'alignment', type: 'horizontal', position: bestYSnap.targetValue });
       }
 
       // Find best vertical snap (X axis alignment) —— 边吸边、中线吸中线
@@ -314,30 +581,26 @@ export function useNodeSnap() {
         findBestSnap([draggedBounds.left, draggedBounds.right], otherXEdges),
         findBestSnap([draggedBounds.centerX], otherXCenters),
       );
-      if (bestXSnap) {
-        snapResult.snapX = bestXSnap.targetValue;
-        const snappedEdgeX = bestXSnap.value;
-        if (Math.abs(snappedEdgeX - draggedBounds.left) < 0.5) {
-          snapResult.lines.push({ type: 'vertical', position: bestXSnap.targetValue });
-        } else if (Math.abs(snappedEdgeX - draggedBounds.centerX) < 0.5) {
-          snapResult.lines.push({ type: 'vertical', position: bestXSnap.targetValue });
-        } else {
-          snapResult.lines.push({ type: 'vertical', position: bestXSnap.targetValue });
-        }
+      const bestHorizontalSpacing = findBestEqualSpacingSnap(
+        draggedBounds,
+        horizontalSpacingCandidates,
+        'horizontal',
+      );
+      if (bestHorizontalSpacing && (!bestXSnap || bestHorizontalSpacing.diff <= bestXSnap.diff)) {
+        correctionX = bestHorizontalSpacing.targetStart - draggedBounds.left;
+        lines.push(bestHorizontalSpacing.guide);
+      } else if (bestXSnap) {
+        correctionX = bestXSnap.targetValue - bestXSnap.value;
+        lines.push({ kind: 'alignment', type: 'vertical', position: bestXSnap.targetValue });
       }
 
-      setSnapLines(snapResult.lines);
+      setSnapLines(lines);
 
       // 把选区吸附修正量加回主节点；Canvas 会把同一修正量应用到其它选中节点。
-      let newX = proposedPosition.x;
-      let newY = proposedPosition.y;
-      if (snapResult.snapY !== null) {
-        newY += snapResult.snapY - bestYSnap!.value;
-      }
-      if (snapResult.snapX !== null) {
-        newX += snapResult.snapX - bestXSnap!.value;
-      }
-      return { x: newX, y: newY };
+      return {
+        x: proposedPosition.x + correctionX,
+        y: proposedPosition.y + correctionY,
+      };
     },
     []
   );
@@ -378,12 +641,12 @@ export function useNodeSnap() {
       const bestX = findBestSnap([left + width], otherX);
       if (bestX) {
         snappedWidth = bestX.targetValue - left;
-        lines.push({ type: 'vertical', position: bestX.targetValue });
+        lines.push({ kind: 'alignment', type: 'vertical', position: bestX.targetValue });
       }
       const bestY = findBestSnap([top + height], otherY);
       if (bestY) {
         snappedHeight = bestY.targetValue - top;
-        lines.push({ type: 'horizontal', position: bestY.targetValue });
+        lines.push({ kind: 'alignment', type: 'horizontal', position: bestY.targetValue });
       }
 
       setSnapLines(lines);
