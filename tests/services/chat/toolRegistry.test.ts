@@ -123,6 +123,8 @@ describe('Agent tool registry', () => {
     const firstDefinition = getAgentTool('canvas_query');
 
     expect(firstDefinition).toBeDefined();
+    expect(() => ensureAgentToolsRegistered()).not.toThrow();
+    expect(getAgentTool('canvas_query')).toBe(firstDefinition);
     resetAgentToolsRegistrationForTests();
     expect(getAgentTool('canvas_query')).toBeUndefined();
 

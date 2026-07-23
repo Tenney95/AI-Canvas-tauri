@@ -12,6 +12,7 @@ import { validateModelExecutionProtocol } from '../ai/modelProtocol';
 
 const PROVIDER_CONFIG_DRAFT_TTL_MS = 30 * 60 * 1_000;
 const MAX_PROVIDER_CONFIG_DRAFTS = 32;
+const DOCUMENTATION_HOST_LABELS = new Set(['doc', 'docs', 'documentation', 'developer']);
 const CREDENTIAL_FIELD_NAMES = new Set([
   'apikey',
   'authorization',
@@ -23,6 +24,7 @@ const CREDENTIAL_FIELD_NAMES = new Set([
 ]);
 
 export interface ProviderConfigModelExamples extends ModelProtocolExamples {
+  modelId?: string;
   name?: string;
   category?: GeneralModelCategory;
 }
@@ -30,6 +32,7 @@ export interface ProviderConfigModelExamples extends ModelProtocolExamples {
 export interface ProviderConfigDraftInput {
   connectionId?: string;
   connectionName: string;
+  baseUrl?: string;
   models: ProviderConfigModelExamples[];
 }
 
@@ -89,6 +92,10 @@ function normalizeBaseUrl(value: string): string {
   if (url.port && url.port !== '443') {
     throw new Error('厂商 Base URL 只允许使用 HTTPS 默认端口');
   }
+  const firstHostLabel = url.hostname.toLowerCase().split('.')[0];
+  if (DOCUMENTATION_HOST_LABELS.has(firstHostLabel)) {
+    throw new Error('厂商 Base URL 不能使用文档站地址，请提供实际 API 网关地址');
+  }
   url.hash = '';
   url.search = '';
   url.pathname = url.pathname.replace(/\/$/, '');
@@ -109,13 +116,23 @@ function pruneExpiredDrafts(now: number): void {
 function createModelSelection(
   connectionId: string,
   examples: ProviderConfigModelExamples,
+  declaredBaseUrl?: string,
 ): { selection: ProviderModelSelection; baseUrl: string } {
-  const result = analyzeModelProtocolExamples(examples, { category: examples.category });
-  const displayName = examples.name?.trim() || result.modelId;
-  if (!result.baseUrl) throw new Error(`模型“${displayName || '未命名模型'}”未识别到 Base URL`);
+  const explicitModelId = examples.modelId?.trim()
+    || (examples.name && !/\s/.test(examples.name.trim()) ? examples.name.trim() : undefined);
+  const result = analyzeModelProtocolExamples(examples, {
+    category: examples.category,
+    modelId: explicitModelId,
+    baseUrl: declaredBaseUrl,
+  });
+  const displayName = examples.name?.trim() || explicitModelId || result.modelId;
+  const diagnostic = result.warnings[0] ? `：${result.warnings[0]}` : '';
+  if (!result.baseUrl) {
+    throw new Error(`模型“${displayName || '未命名模型'}”未识别到 Base URL${diagnostic}`);
+  }
   if (!result.modelId) throw new Error(`模型“${displayName || '未命名模型'}”未识别到模型 ID`);
   if (!result.protocol) {
-    throw new Error(`模型“${displayName || result.modelId}”无法生成有效调用协议`);
+    throw new Error(`模型“${displayName || result.modelId}”无法生成有效调用协议${diagnostic}`);
   }
   const protocolErrors = validateModelExecutionProtocol(result.protocol);
   if (protocolErrors.length > 0) {
@@ -170,7 +187,10 @@ export function createProviderConfigDraft(
   }
 
   const connectionId = normalizeConnectionId(input.connectionId);
-  const analyzed = input.models.map((examples) => createModelSelection(connectionId, examples));
+  const declaredBaseUrl = input.baseUrl?.trim() ? normalizeBaseUrl(input.baseUrl) : undefined;
+  const analyzed = input.models.map((examples) => (
+    createModelSelection(connectionId, examples, declaredBaseUrl)
+  ));
   const baseUrl = analyzed[0].baseUrl;
   if (analyzed.some((item) => item.baseUrl !== baseUrl)) {
     throw new Error('同一个厂商配置中的模型必须使用同一个 Base URL');

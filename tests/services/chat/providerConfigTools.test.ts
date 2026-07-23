@@ -10,7 +10,10 @@ const fileMocks = vi.hoisted(() => ({
 vi.mock('../../../src/services/fileService', () => fileMocks);
 
 import { useAppStore } from '../../../src/store/useAppStore';
-import { clearProviderConfigDraftsForTests } from '../../../src/services/chat/providerConfigDraftService';
+import {
+  clearProviderConfigDraftsForTests,
+  getProviderConfigDraft,
+} from '../../../src/services/chat/providerConfigDraftService';
 import { registerProviderConfigAgentTools } from '../../../src/services/chat/tools/providerConfigTools';
 import {
   clearAgentToolRegistryForTests,
@@ -32,6 +35,7 @@ function previewInput(connectionId?: string) {
     ...(connectionId ? { connectionId } : {}),
     connectionName: 'Example AI',
     models: [{
+      modelId: 'image-pro',
       name: 'Image Pro',
       category: 'image',
       submitRequest: `
@@ -49,6 +53,40 @@ function readDraftId(modelContent: string): string {
   if (!match) throw new Error('preview result did not include draftId');
   return match[1];
 }
+
+const GEMINI_USER_EXAMPLE = `
+const body = JSON.stringify({
+  "contents": [{}],
+  "generationConfig": {
+    "responseModalities": ["string"],
+    "imageConfig": {
+      "aspectRatio": "string",
+      "imageSize": "string"
+    }
+  }
+})
+
+fetch("https://docs.newapi.pro/v1beta/models/string:generateContent/", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer "
+  },
+  body
+})
+
+{
+  "candidates": [{
+    "content": { "role": "string", "parts": [{}] },
+    "finishReason": "string",
+    "safetyRatings": [{}]
+  }],
+  "usageMetadata": {
+    "promptTokenCount": 0,
+    "candidatesTokenCount": 0,
+    "totalTokenCount": 0
+  }
+}`;
 
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
@@ -84,6 +122,66 @@ describe('provider config agent tools', () => {
     expect(result.modelContent).toContain('draftId: provider-draft-');
     expect(result.modelContent).toContain('不会写入 API Key');
     expect(result.modelContent).not.toContain('<token>');
+  });
+
+  it('falls back to a recent user example when a retry omits the Fetch request', async () => {
+    useAppStore.setState({
+      messages: [{
+        id: 'message-gemini-example',
+        conversationId: context.conversationId,
+        role: 'user',
+        content: GEMINI_USER_EXAMPLE,
+        timestamp: 1,
+        status: 'done',
+      }, {
+        id: 'message-retry',
+        conversationId: context.conversationId,
+        role: 'user',
+        content: '再次尝试一下',
+        timestamp: 2,
+        status: 'done',
+      }],
+    });
+    const task = useAppStore.getState().createAgentTask({
+      projectId: context.projectId,
+      conversationId: context.conversationId,
+      userMessageId: 'message-retry',
+      mode: context.mode,
+      goal: '再次尝试一下',
+    });
+    const result = await getAgentTool('provider_config_preview')!.execute(
+      { ...context, taskId: task.id },
+      {
+        connectionName: 'NewAPI Gemini图像生成',
+        baseUrl: 'https://gateway.newapi.example',
+        models: [{
+          modelId: 'gemini-image',
+          category: 'image',
+          submitRequest: '{ "contents": [{}], "generationConfig": {} }',
+          submitResponse: '{ "candidates": [{ "content": { "parts": [{}] } }] }',
+        }],
+      },
+    );
+
+    expect(result).toMatchObject({ status: 'success' });
+    const draft = getProviderConfigDraft(task.id, readDraftId(result.modelContent));
+    expect(draft.config.selectedModels?.[0]?.executionProfile).toMatchObject({
+      preset: 'custom',
+      protocol: {
+        submit: {
+          path: '/v1beta/models/{{model}}:generateContent/',
+          body: {
+            contents: [{ role: 'user', parts: [{ text: '{{prompt}}' }] }],
+            generationConfig: { responseModalities: ['IMAGE'] },
+          },
+        },
+        response: {
+          result: {
+            base64Path: 'candidates.*.content.parts.*.inlineData.data',
+          },
+        },
+      },
+    });
   });
 
   it('applies an approved draft while preserving an existing API Key', async () => {

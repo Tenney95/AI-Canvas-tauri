@@ -31,6 +31,8 @@ export interface ModelProtocolImportResult {
 
 export interface ModelProtocolImportOptions {
   category?: GeneralModelCategory;
+  modelId?: string;
+  baseUrl?: string;
 }
 
 export interface ModelProtocolExamples {
@@ -83,6 +85,7 @@ const AUTH_VALUE_RE = /(?:bearer\s+)?(?:<[^>]+>|\{\{[^}]+}}|\$\{[^}]+}|YOUR_[A-Z
 const API_PREFIX_SEGMENT_RE = /^(?:api|openai|anthropic|v\d+(?:\.\d+)?)$/i;
 const TASK_CONTAINER_RE = /^(?:tasks?|jobs?|predictions?|requests?|operations?)$/i;
 const URL_VALUE_RE = /^(?:https?:\/\/|data:[^;,]+;base64,)/i;
+const GENERATE_CONTENT_PATH_RE = /\/models\/[^/]+:generateContent\/?$/i;
 
 class LooseLiteralParser {
   private index = 0;
@@ -278,10 +281,34 @@ function findAssignedLiteral(
   if (!assignment) return {};
   let start = assignment.index + assignment[0].length;
   while (/\s/.test(source[start] || '')) start += 1;
+  const jsonStringify = /^JSON\.stringify\s*\(\s*/i.exec(source.slice(start));
+  if (jsonStringify) start += jsonStringify[0].length;
   if (source[start] !== '{' && source[start] !== '[') return {};
   const range = extractBalanced(source, start);
   if (!range) return {};
   return { value: parseLooseLiteral(source.slice(range.start, range.end)), range };
+}
+
+function findLastAssignedLiteral(
+  source: string,
+  names: string[],
+): { value?: ProtocolJsonValue; range?: SourceRange } {
+  let offset = 0;
+  let last: { value?: ProtocolJsonValue; range?: SourceRange } = {};
+  while (offset < source.length) {
+    const found = findAssignedLiteral(source.slice(offset), names);
+    if (!found.range) break;
+    const adjustedRange = {
+      start: offset + found.range.start,
+      end: offset + found.range.end,
+    };
+    last = {
+      value: found.value,
+      range: adjustedRange,
+    };
+    offset = adjustedRange.end;
+  }
+  return last;
 }
 
 function isExcluded(index: number, ranges: SourceRange[]): boolean {
@@ -365,14 +392,19 @@ function parseCodeRequests(source: string): ParsedRequest[] {
   const anchors = collectCodeRequestAnchors(source);
   return anchors.map((anchor, index) => {
     const segment = source.slice(anchor.start, anchors[index + 1]?.start ?? source.length);
-    const bodyLiteral = findAssignedLiteral(segment, ['payload', 'body', 'data', 'json']);
+    const localBodyLiteral = findAssignedLiteral(segment, ['payload', 'body', 'data', 'json']);
+    const precedingBodyLiteral = !localBodyLiteral.range && /\bbody\b/i.test(segment)
+      ? findLastAssignedLiteral(source.slice(0, anchor.start), ['payload', 'body', 'data', 'json'])
+      : {};
+    const bodyLiteral = localBodyLiteral.range ? localBodyLiteral : precedingBodyLiteral;
     const headerLiteral = findAssignedLiteral(segment, ['headers', 'header']);
     const methodMatch = HTTP_METHOD_RE.exec(segment)
       ?? /\b(?:axios|requests|httpx)\.(get|post)\s*\(/i.exec(segment);
     const methodText = methodMatch?.[2] ?? methodMatch?.[1];
     const method = String(methodText || (bodyLiteral.value === undefined ? 'GET' : 'POST')).toUpperCase() as ModelProtocolHttpMethod;
     const headers = parseHeaderObject(headerLiteral.value);
-    const excluded = [bodyLiteral.range, headerLiteral.range].filter((range): range is SourceRange => !!range);
+    const excluded = [localBodyLiteral.range, headerLiteral.range]
+      .filter((range): range is SourceRange => !!range);
     const responses = findStrictJsonValues(segment, excluded);
     return {
       start: anchor.start,
@@ -570,6 +602,22 @@ function inferBaseUrl(urls: URL[]): BaseUrlResolution | undefined {
   return { baseUrl: `${urls[0].origin}${prefix}`, prefix };
 }
 
+function resolveExplicitBaseUrl(rawBaseUrl: string | undefined): BaseUrlResolution | undefined {
+  const candidate = rawBaseUrl?.trim();
+  if (!candidate) return undefined;
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) {
+      return undefined;
+    }
+    const pathname = url.pathname.replace(/\/+$/, '');
+    const prefix = pathname === '/' ? '' : pathname;
+    return { baseUrl: `${url.origin}${prefix}`, prefix };
+  } catch {
+    return undefined;
+  }
+}
+
 function relativeRequestPath(url: URL, prefix: string): string {
   return relativePathname(url.pathname, prefix);
 }
@@ -635,6 +683,43 @@ function mapRequestBody(body: ProtocolJsonValue | undefined, category: GeneralMo
   return Object.fromEntries(Object.entries(body)
     .filter(([key]) => !isCredentialKey(key))
     .map(([key, value]) => [key, mapBodyValue(key, value, category)]));
+}
+
+function normalizeGenerateContentImageBody(
+  body: ProtocolJsonValue | undefined,
+  category: GeneralModelCategory,
+): ProtocolJsonValue | undefined {
+  if (category !== 'image' || !isRecord(body)) return body;
+
+  const contents = Array.isArray(body.contents) ? body.contents : [];
+  const normalizedContents = (contents.length > 0 ? contents : [{}]).map((content) => {
+    const record = isRecord(content) ? content : {};
+    const parts = Array.isArray(record.parts) ? record.parts : [];
+    const normalizedParts = parts.map((part) => {
+      if (!isRecord(part) || !Object.hasOwn(part, 'text')) return part;
+      return { ...part, text: '{{prompt}}' };
+    });
+    if (!normalizedParts.some((part) => isRecord(part) && Object.hasOwn(part, 'text'))) {
+      normalizedParts.unshift({ text: '{{prompt}}' });
+    }
+    return {
+      ...record,
+      role: typeof record.role === 'string' && record.role !== 'string' ? record.role : 'user',
+      parts: normalizedParts,
+    };
+  });
+  const generationConfig = isRecord(body.generationConfig) ? body.generationConfig : {};
+  const bodyWithoutTopLevelModelAndPrompt = Object.fromEntries(
+    Object.entries(body).filter(([key]) => !['model', 'prompt'].includes(normalizedKey(key))),
+  );
+  return {
+    ...bodyWithoutTopLevelModelAndPrompt,
+    contents: normalizedContents,
+    generationConfig: {
+      ...generationConfig,
+      responseModalities: ['IMAGE'],
+    },
+  };
 }
 
 function isCredentialKey(key: string): boolean {
@@ -705,6 +790,17 @@ function inferAuthentication(requests: ParsedRequest[]): ModelProtocolAuthConfig
     if (authQuery) return { type: 'query', name: authQuery };
   }
   return { type: 'none' };
+}
+
+function inferDocumentAuthentication(
+  requests: ParsedRequest[],
+  source: string,
+): ModelProtocolAuthConfig {
+  const inferred = inferAuthentication(requests);
+  if (inferred.type !== 'none') return inferred;
+  return /(?:["']Authorization["']|Authorization)\s*:?\s*["']?Bearer(?:\s|["'<]|$)/i.test(source)
+    ? { type: 'bearer' }
+    : inferred;
 }
 
 function safeHeaders(headers: Record<string, string>): Record<string, string> | undefined {
@@ -794,6 +890,30 @@ function inferBase64Path(response: ProtocolJsonValue | undefined): string | unde
   return leaf ? wildcardArrayPath(leaf.path) : undefined;
 }
 
+function inferGenerateContentBase64Path(response: ProtocolJsonValue | undefined): string | undefined {
+  if (!isRecord(response) || !Array.isArray(response.candidates)) return undefined;
+  let hasPartsArray = false;
+  for (const candidate of response.candidates) {
+    if (!isRecord(candidate) || !isRecord(candidate.content) || !Array.isArray(candidate.content.parts)) continue;
+    hasPartsArray = true;
+    for (const part of candidate.content.parts) {
+      if (!isRecord(part)) continue;
+      if (isRecord(part.inlineData) && typeof part.inlineData.data === 'string') {
+        return 'candidates.*.content.parts.*.inlineData.data';
+      }
+      if (isRecord(part.inline_data) && typeof part.inline_data.data === 'string') {
+        return 'candidates.*.content.parts.*.inline_data.data';
+      }
+    }
+  }
+  return hasPartsArray ? 'candidates.*.content.parts.*.inlineData.data' : undefined;
+}
+
+function withGenerateContentModelPath(path: string, modelId: string | undefined): string {
+  if (!modelId || !GENERATE_CONTENT_PATH_RE.test(path)) return path;
+  return path.replace(/(\/models\/)[^/]+(:generateContent\/?$)/i, '$1{{model}}$2');
+}
+
 function withTaskPlaceholder(
   pollUrl: URL,
   query: Record<string, ProtocolJsonValue>,
@@ -881,15 +1001,24 @@ export function analyzeModelProtocolDocument(
     ...(requests.some((request) => request.response !== undefined) ? ['json' as const] : []),
   ]);
   const urls = requests.map(parseUrl);
-  const baseResolution = inferBaseUrl(urls);
-  if (!baseResolution) warnings.push('检测到多个不同域名，请确认提交和查询接口是否属于同一连接。');
+  const explicitBaseResolution = resolveExplicitBaseUrl(options.baseUrl);
+  const usesPlaceholderOrigin = urls.some((url) => url.hostname.toLowerCase() === 'loading');
+  const baseResolution = explicitBaseResolution
+    ?? (usesPlaceholderOrigin ? undefined : inferBaseUrl(urls));
+  if (options.baseUrl && !explicitBaseResolution) {
+    warnings.push('显式 Base URL 无效，必须是无凭据的标准 HTTPS 地址。');
+  } else if (!baseResolution && usesPlaceholderOrigin) {
+    warnings.push('请求示例使用 https://loading 占位地址，需要提供实际 Base URL。');
+  } else if (!baseResolution) {
+    warnings.push('检测到多个不同域名，请确认提交和查询接口是否属于同一连接。');
+  }
 
   const submitRequest = requests[0];
   const pollRequest = requests[1];
   const submitResponse = submitRequest.response;
   const pollResponse = pollRequest?.response;
   const category = options.category ?? inferCategory(submitRequest, pollResponse ?? submitResponse);
-  const modelId = findModelId(submitRequest.body);
+  const modelId = options.modelId?.trim() || findModelId(submitRequest.body);
   if (!modelId) warnings.push('未从请求体识别到模型 ID，需要手动填写模型。');
   if (!submitResponse) warnings.push('未识别到提交响应示例，无法可靠推断返回值路径。');
   if (isRecord(submitRequest.body) && Object.keys(submitRequest.body).some((key) => CALLBACK_KEY_RE.test(key))) {
@@ -901,18 +1030,26 @@ export function analyzeModelProtocolDocument(
     warnings.push('检测到请求体鉴权字段；当前协议只支持 Header、Bearer 或 Query 鉴权，已移除密钥且禁止直接应用。');
   }
 
-  const auth = inferAuthentication(requests);
+  const auth = inferDocumentAuthentication(requests, normalizedSource);
   const prefix = baseResolution?.prefix ?? '';
   const submitUrl = urls[0];
   const submitQuery = { ...submitRequest.query };
   if (auth.type === 'query' && auth.name) delete submitQuery[auth.name];
+  const relativeSubmitPath = relativeRequestPath(submitUrl, prefix);
+  const mappedSubmitBody = mapRequestBody(submitRequest.body, category);
   const submit = {
     method: submitRequest.method,
-    path: relativeRequestPath(submitUrl, prefix),
+    path: withGenerateContentModelPath(relativeSubmitPath, modelId),
     ...(safeHeaders(submitRequest.headers) ? { headers: safeHeaders(submitRequest.headers) } : {}),
     ...(omitEmptyRecord(submitQuery) ? { query: omitEmptyRecord(submitQuery) } : {}),
     ...(submitRequest.bodyEncoding ? { bodyEncoding: submitRequest.bodyEncoding } : {}),
-    ...(submitRequest.body !== undefined ? { body: mapRequestBody(submitRequest.body, category) } : {}),
+    ...(submitRequest.body !== undefined
+      ? {
+          body: GENERATE_CONTENT_PATH_RE.test(submitUrl.pathname)
+            ? normalizeGenerateContentImageBody(mappedSubmitBody, category)
+            : mappedSubmitBody,
+        }
+      : {}),
   };
 
   const preferredTaskKey = inferPreferredTaskKey(pollRequest);
@@ -971,7 +1108,11 @@ export function analyzeModelProtocolDocument(
     } else {
       const urlPath = inferUrlPath(submitResponse);
       const textPath = category === 'text' ? inferTextPath(submitResponse) : undefined;
-      const base64Path = inferBase64Path(submitResponse);
+      const isGenerateContentImage = category === 'image'
+        && GENERATE_CONTENT_PATH_RE.test(submitUrl.pathname);
+      const base64Path = isGenerateContentImage
+        ? inferGenerateContentBase64Path(submitResponse)
+        : inferBase64Path(submitResponse);
       if (!urlPath && !textPath && !base64Path) warnings.push('未从同步响应识别到结果 URL、文本或 Base64 路径。');
       if (urlPath || textPath || base64Path) {
         protocol = {

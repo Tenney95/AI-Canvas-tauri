@@ -15,7 +15,10 @@ import {
   isProviderDocUrlGranted,
   releaseProviderDocRead,
 } from '../providerDocsGrantService';
-import { registerAgentTool } from '../toolRegistry';
+import {
+  registerAgentTool,
+  type AgentToolContext,
+} from '../toolRegistry';
 
 interface ProviderDocsReadInput {
   url: string;
@@ -54,6 +57,59 @@ function providerConfigError(error: unknown) {
     retryable: false,
     errorCode: 'PROVIDER_CONFIG_DRAFT_REJECTED',
   };
+}
+
+function getProviderConfigFallbackDocuments(context: AgentToolContext): string[] {
+  const store = useAppStore.getState();
+  const task = store.agentTasks.find((item) => item.id === context.taskId);
+  const currentMessageIndex = task
+    ? store.messages.findIndex((message) => message.id === task.userMessageId)
+    : -1;
+  const visibleMessages = currentMessageIndex >= 0
+    ? store.messages.slice(0, currentMessageIndex + 1)
+    : store.messages;
+  const recentUserMessages = visibleMessages
+    .filter((message) => (
+      message.conversationId === context.conversationId
+      && message.role === 'user'
+    ))
+    .slice(-8)
+    .reverse()
+    .map((message) => message.content.trim());
+  return [...new Set([task?.goal.trim() ?? '', ...recentUserMessages])]
+    .filter(Boolean);
+}
+
+function createProviderConfigDraftWithConversationFallback(
+  context: AgentToolContext,
+  input: ProviderConfigDraftInput,
+) {
+  try {
+    return createProviderConfigDraft(context.taskId, input);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (
+      !/没有识别到请求示例|无法生成有效调用协议|未识别到 Base URL/.test(message)
+      || input.models.length !== 1
+    ) {
+      throw error;
+    }
+
+    const [model] = input.models;
+    const originalRequest = model.submitRequest.trim();
+    for (const document of getProviderConfigFallbackDocuments(context)) {
+      if (document === originalRequest) continue;
+      try {
+        return createProviderConfigDraft(context.taskId, {
+          ...input,
+          models: [{ ...model, submitRequest: document }],
+        });
+      } catch {
+        // Continue with the next user-authored example; return the original error if none work.
+      }
+    }
+    throw error;
+  }
 }
 
 export function registerProviderConfigAgentTools(): Array<() => void> {
@@ -142,6 +198,9 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
       description: [
         '把已读取厂商文档中的请求和响应示例分析为配置草稿。',
         '每个模型必须提供准确的 modelId、提交请求和提交响应；异步接口还要同时提供轮询请求和轮询响应。',
+        'OpenAPI 文档中的 string、0、空对象和空数组是有效的结构占位符，不要因此拒绝调用。',
+        'Gemini 图片 generateContent 会自动规范化 IMAGE、contents 和 inlineData.data，不要求真实 Base64 响应样例。',
+        'docs、developer 等文档站地址不能作为 baseUrl；必须使用用户实际调用模型的 API 网关地址。',
         '当文档示例使用 loading、example 等占位主机时，通过 baseUrl 提供文档或用户明确声明的实际接口地址。',
         '所有模型必须属于同一个 HTTPS Base URL。不得传入 API Key、Token、Authorization 值或其他真实凭据。',
         '该工具只生成任务级临时草稿，不写入设置；成功后使用返回的 draftId 调用 provider_config_apply。',
@@ -181,7 +240,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
       ),
       execute: async (context, input) => {
         try {
-          const draft = createProviderConfigDraft(context.taskId, input);
+          const draft = createProviderConfigDraftWithConversationFallback(context, input);
           return {
             status: 'success' as const,
             summary: `已生成“${draft.connectionName}”配置草稿，包含 ${draft.config.selectedModels?.length ?? 0} 个模型`,
