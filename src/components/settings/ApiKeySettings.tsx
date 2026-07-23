@@ -303,7 +303,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         apiKey: related.runninghubWorkflowApiKey,
       });
     } else if (related && config.providers.runninghub) {
-      removeProviderConfig('runninghub');
+      await removeProviderConfig('runninghub');
     }
     await saveConfig();
     closeConnectionDialog();
@@ -315,13 +315,13 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     if (connectionId === 'dreamina') await handleDreaminaLogout();
     if (definition?.kind === 'web-search') {
       for (const searchDefinition of getWebSearchProviderDefinitions()) {
-        removeProviderConfig(searchDefinition.id);
+        await removeProviderConfig(searchDefinition.id);
       }
       updateConfig({ webSearchProviderId: undefined });
     } else {
-      removeProviderConfig(connectionId);
+      await removeProviderConfig(connectionId);
     }
-    if (connectionId === 'runninghub-model') removeProviderConfig('runninghub');
+    if (connectionId === 'runninghub-model') await removeProviderConfig('runninghub');
     setPendingDeleteId(undefined);
     await saveConfig();
   };

@@ -50,6 +50,17 @@
   border-radius: inherit;
 }
 
+.xiaoluo-pano-shell .xiaoluo-panorama-core,
+.xiaoluo-pano-shell .pnlm-dragfix {
+  border: 0 solid transparent;
+  outline: 0;
+  box-shadow: none;
+}
+
+.xiaoluo-pano-shell .xiaoluo-panorama-core {
+  background: transparent;
+}
+
 .xiaoluo-pano-shell .pnlm-load-box,
 .xiaoluo-pano-shell .pnlm-error-msg,
 .xiaoluo-pano-shell .pnlm-controls-container {
