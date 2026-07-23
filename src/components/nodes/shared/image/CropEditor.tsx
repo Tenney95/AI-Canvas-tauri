@@ -2,13 +2,12 @@
  * CropEditor — 图像裁切全屏编辑器
  * 基于 react-image-crop，提供自由裁切 + 预设宽高比
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import ReactCrop, {
   type Crop,
   type PixelCrop,
-  centerCrop,
-  makeAspectCrop,
+  convertToPixelCrop,
 } from 'react-image-crop';
 import 'react-image-crop/dist/ReactCrop.css';
 import FullscreenOverlay from '../../../shared/FullscreenOverlay';
@@ -18,6 +17,7 @@ import { fetchImageForCrop } from '../../../../services/fileService';
 import { useImageViewportGesture } from '../../../../hooks/useImageViewportGesture';
 import ImageEditorZoomControls from './ImageEditorZoomControls';
 import PenCropLayer, { type PenCropHandle, type Anchor } from './PenCropLayer';
+import { makeContainedCenteredCrop } from './cropUtils';
 
 /* ── 类型 ── */
 type AspectPreset = 'free' | '1:1' | '4:3' | '16:9' | '3:4' | '9:16';
@@ -41,6 +41,10 @@ const ASPECT_OPTIONS: { key: AspectPreset; label: string; ratio?: number }[] = [
   { key: '3:4', label: '3:4', ratio: 3 / 4 },
   { key: '9:16', label: '9:16', ratio: 9 / 16 },
 ];
+
+function toDisplayedPixelCrop(percentCrop: Crop, img: HTMLImageElement, scale: number): PixelCrop {
+  return convertToPixelCrop(percentCrop, img.clientWidth * scale, img.clientHeight * scale);
+}
 
 /**
  * 取得可安全绘制到 canvas 的自然分辨率图源。
@@ -92,6 +96,9 @@ function tracePenPath(ctx: CanvasRenderingContext2D, anchors: Anchor[]) {
    ════════════════════════════════════════════ */
 export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave }: CropEditorProps) {
   const imgRef = useRef<HTMLImageElement>(null);
+  const cropFrameRef = useRef<number | null>(null);
+  const pendingCropRef = useRef<Crop | undefined>(undefined);
+  const latestPixelCropRef = useRef<PixelCrop | undefined>(undefined);
 
   const [aspect, setAspect] = useState<AspectPreset>('free');
   const [crop, setCrop] = useState<Crop>();
@@ -121,6 +128,23 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
 
   const aspectRatio = ASPECT_OPTIONS.find((o) => o.key === aspect)?.ratio;
 
+  const cancelPendingCrop = useCallback(() => {
+    if (cropFrameRef.current !== null) cancelAnimationFrame(cropFrameRef.current);
+    cropFrameRef.current = null;
+    pendingCropRef.current = undefined;
+    latestPixelCropRef.current = undefined;
+  }, []);
+
+  const flushPendingCrop = useCallback(() => {
+    if (cropFrameRef.current !== null) cancelAnimationFrame(cropFrameRef.current);
+    cropFrameRef.current = null;
+    const nextCrop = pendingCropRef.current;
+    pendingCropRef.current = undefined;
+    if (nextCrop) setCrop(nextCrop);
+  }, []);
+
+  useEffect(() => cancelPendingCrop, [cancelPendingCrop]);
+
   /* ── 双击重置缩放 ── */
   const handleDoubleClick = useCallback(() => resetViewport(), [resetViewport]);
 
@@ -139,6 +163,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
 
   /* ── 关闭：重置所有状态 ── */
   const handleClose = useCallback(() => {
+    cancelPendingCrop();
     setCrop(undefined);
     setCompletedCrop(undefined);
     setAspect('free');
@@ -147,7 +172,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     setPenReady(false);
     resetViewport();
     onClose();
-  }, [onClose, resetViewport]);
+  }, [cancelPendingCrop, onClose, resetViewport]);
 
   /* ── 图片加载：初始化居中裁切框 ── */
   const onImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -157,32 +182,38 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     setImgSize({ natW: w, natH: h, clientW: clientWidth || w });
 
     const ratio = aspectRatio ?? w / h;
-    const initial = centerCrop(
-      makeAspectCrop({ unit: '%', width: 80 }, ratio, w, h),
-      w,
-      h,
-    );
+    const initial = makeContainedCenteredCrop(ratio, w, h);
     setCrop(initial);
-    // react-image-crop 初次 onComplete 由组件内部触发，这里还需手动设置初始完成值
-  }, [aspectRatio]);
+    setCompletedCrop(toDisplayedPixelCrop(initial, e.currentTarget, scale));
+  }, [aspectRatio, scale]);
 
   /* ── 裁切变更 ── */
   const handleChange = useCallback(
-    (_pixelCrop: PixelCrop, percentCrop: Crop) => {
-      setCrop(percentCrop);
+    (pixelCrop: PixelCrop, percentCrop: Crop) => {
+      latestPixelCropRef.current = pixelCrop;
+      pendingCropRef.current = percentCrop;
+      if (cropFrameRef.current !== null) return;
+      cropFrameRef.current = requestAnimationFrame(() => {
+        cropFrameRef.current = null;
+        const nextCrop = pendingCropRef.current;
+        pendingCropRef.current = undefined;
+        if (nextCrop) setCrop(nextCrop);
+      });
     },
     [],
   );
 
   const handleComplete = useCallback(
     (pixelCrop: PixelCrop) => {
-      setCompletedCrop(pixelCrop);
+      setCompletedCrop(latestPixelCropRef.current ?? pixelCrop);
+      latestPixelCropRef.current = undefined;
     },
     [],
   );
 
   /* ── 重置本地状态（确认/关闭后复用）── */
   const resetLocal = useCallback(() => {
+    cancelPendingCrop();
     setCrop(undefined);
     setCompletedCrop(undefined);
     setAspect('free');
@@ -190,7 +221,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     penRef.current?.reset();
     setPenReady(false);
     resetViewport();
-  }, [resetViewport]);
+  }, [cancelPendingCrop, resetViewport]);
 
   /* ── 钢笔裁切：沿贝塞尔路径裁切为透明 PNG ── */
   const confirmPen = useCallback(async () => {
@@ -295,16 +326,13 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
       const { naturalWidth: w, naturalHeight: h } = img;
       const ratio = ASPECT_OPTIONS.find((o) => o.key === preset)?.ratio;
       if (ratio) {
-        // 基于当前裁切框中心，调整为新宽高比
-        const baseCrop = completedCrop
-          ? { unit: '%' as const, x: ((completedCrop.x + completedCrop.width / 2) / w) * 100 - 40, y: ((completedCrop.y + completedCrop.height / 2) / h) * 100 - (40 / ratio) * (h / w) * 100, width: 80, height: (80 / ratio) * (h / w) }
-          : { unit: '%' as const, width: 80 };
-        const newCrop = makeAspectCrop(baseCrop, ratio, w, h);
-        const centered = centerCrop(newCrop, w, h);
-        setCrop(centered);
+        cancelPendingCrop();
+        const nextCrop = makeContainedCenteredCrop(ratio, w, h);
+        setCrop(nextCrop);
+        setCompletedCrop(toDisplayedPixelCrop(nextCrop, img, scale));
       }
     },
-    [completedCrop],
+    [cancelPendingCrop, scale],
   );
 
   /* ── 宽高比变化后重新计算初始裁切 ── */
@@ -424,6 +452,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
             crop={crop}
             onChange={handleChange}
             onComplete={handleComplete}
+            onDragEnd={flushPendingCrop}
             aspect={aspectRatio}
             minWidth={40}
             minHeight={40}

@@ -41,6 +41,10 @@
   white-space: nowrap;
 }
 
+.crop-toolbar-dock > * {
+  pointer-events: auto;
+}
+
 .crop-toolbar-dock .crop-aspect-bar {
   position: relative;
   bottom: auto;
@@ -518,7 +522,12 @@
 /* 裁切选中区域边框 — 白色强调 */
 .ReactCrop .ReactCrop__crop-selection {
   border: 1px solid rgba(255, 255, 255, 0.5);
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+}
+
+/* 拖拽时停止虚线动画，避免选区尺寸变化与背景动画同时触发重绘。 */
+.ReactCrop.ReactCrop--active .ReactCrop__crop-selection {
+  animation: none;
+  will-change: top, left, width, height;
 }
 
 /* 拖拽手柄 — 白色圆点 */
