@@ -6,7 +6,6 @@
 
 .camera-studio-overlay .fullscreen-panel {
   max-height: calc(100vh - 24px);
-  border-radius: 8px;
   overflow: hidden;
 }
 
