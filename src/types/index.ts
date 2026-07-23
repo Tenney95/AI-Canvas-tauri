@@ -311,6 +311,7 @@ export interface AppConfig {
   titlebarFloating?: boolean; // 标题栏是否悬浮显示（macOS 红绿灯内移并带毛玻璃胶囊），默认 true
   mascotVisible?: boolean;   // 是否显示吉祥物，默认 false
   assetFolders?: string[];    // 资产管理中登记的外部本地文件夹路径（引用不拷贝）
+  assetWaterfallColumns?: number; // 资产管理瀑布流列数，默认 3，范围 2-6
   photoshopPath?: string;    // Photoshop 安装路径，自动检测失败时手动配置
   jianyingPath?: string;     // 剪映专业版安装路径，自动检测失败时手动配置
   premierePath?: string;     // Adobe Premiere Pro 安装路径，自动检测失败时手动配置

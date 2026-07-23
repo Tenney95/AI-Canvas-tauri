@@ -17,6 +17,7 @@ import {
   useDeferredValue,
   type DragEvent,
 } from 'react';
+import { Icon } from '@iconify/react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
@@ -55,6 +56,14 @@ type TabKey = FileTabKey | 'drama';
 const PAGE_SIZE = 48;
 /** 标签筛选行最多展示的标签数 */
 const MAX_TAG_CHIPS = 24;
+const MIN_WATERFALL_COLUMNS = 2;
+const MAX_WATERFALL_COLUMNS = 6;
+const DEFAULT_WATERFALL_COLUMNS = 3;
+
+function normalizeWaterfallColumns(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_WATERFALL_COLUMNS;
+  return Math.min(MAX_WATERFALL_COLUMNS, Math.max(MIN_WATERFALL_COLUMNS, Math.round(value)));
+}
 
 function assetKey(file: AssetFileEntry): string {
   return file.assetId ?? file.path;
@@ -79,6 +88,7 @@ export default function AssetsPanel() {
     currentProjectId,
     projects,
     assetFolders,
+    assetWaterfallColumns,
     updateConfig,
     saveConfig,
   } =
@@ -97,6 +107,7 @@ export default function AssetsPanel() {
         currentProjectId: s.currentProjectId,
         projects: s.projects,
         assetFolders: s.config.assetFolders,
+        assetWaterfallColumns: s.config.assetWaterfallColumns,
         updateConfig: s.updateConfig,
         saveConfig: s.saveConfig,
       })),
@@ -110,6 +121,7 @@ export default function AssetsPanel() {
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const deferredSearch = useDeferredValue(search);
+  const waterfallColumns = normalizeWaterfallColumns(assetWaterfallColumns);
 
   const [projectFiles, setProjectFiles] = useState<AssetFileEntry[]>([]);
   const [permanentFiles, setPermanentFiles] = useState<AssetFileEntry[]>([]);
@@ -130,6 +142,14 @@ export default function AssetsPanel() {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 2000);
   }, []);
+
+  const adjustWaterfallColumns = useCallback((delta: number) => {
+    const current = normalizeWaterfallColumns(useAppStore.getState().config.assetWaterfallColumns);
+    const next = normalizeWaterfallColumns(current + delta);
+    if (next === current) return;
+    updateConfig({ assetWaterfallColumns: next });
+    void saveConfig({ silent: true }).catch(() => toast('列数设置保存失败'));
+  }, [saveConfig, toast, updateConfig]);
 
   // 载入标签元数据 → Map
   const loadTags = useCallback(async () => {
@@ -444,6 +464,26 @@ export default function AssetsPanel() {
                     </button>
                   )}
                 </div>
+                <div className="assets-column-stepper" role="group" aria-label="瀑布流列数">
+                  <Icon icon="lucide:columns-3" className="assets-column-stepper-icon" aria-hidden="true" />
+                  <button
+                    type="button"
+                    aria-label="减少瀑布流列数"
+                    disabled={waterfallColumns <= MIN_WATERFALL_COLUMNS}
+                    onClick={() => adjustWaterfallColumns(-1)}
+                  >
+                    <Icon icon="lucide:minus" aria-hidden="true" />
+                  </button>
+                  <output aria-label={`当前 ${waterfallColumns} 列`}>{waterfallColumns}</output>
+                  <button
+                    type="button"
+                    aria-label="增加瀑布流列数"
+                    disabled={waterfallColumns >= MAX_WATERFALL_COLUMNS}
+                    onClick={() => adjustWaterfallColumns(1)}
+                  >
+                    <Icon icon="lucide:plus" aria-hidden="true" />
+                  </button>
+                </div>
                 {activeTab === 'permanent' && (
                   <div className="assets-add-wrap" ref={addWrapRef}>
                     <motion.button
@@ -532,7 +572,7 @@ export default function AssetsPanel() {
               {/* 文件瀑布流 */}
               <div className="assets-file-scroll-shell">
                 <div className="assets-file-scroll">
-                  <div className="assets-file-waterfall">
+                  <div className="assets-file-waterfall" data-columns={waterfallColumns}>
                     {loading ? (
                       <div className="assets-empty">
                         <motion.div className="assets-spinner" animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.6, ease: 'linear' }} />
