@@ -68,26 +68,6 @@
   color: var(--theme-text-secondary);
 }
 
-.preset-manager-close-btn {
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  border: none;
-  background: transparent;
-  color: var(--theme-text-secondary);
-  font-size: 20px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: var(--transition-colors);
-}
-
-.preset-manager-close-btn:hover {
-  background: var(--theme-hover);
-  color: var(--theme-text);
-}
-
 /* ── Tabs ── */
 .preset-manager-tabs {
   display: flex;
@@ -490,10 +470,6 @@
   cursor: pointer;
 }
 
-.slash-command-thumb {
-  border-radius: 4px;
-}
-
 .slash-command-manage {
   cursor: pointer;
   opacity: 0.8;
@@ -533,12 +509,6 @@
   font-size: 11px;
   color: var(--theme-text-muted);
   margin-bottom: 2px;
-}
-
-.preset-manager-section-placeholder {
-  font-size: 12px;
-  color: var(--theme-text-muted);
-  padding: 6px 0;
 }
 
 .preset-manager-section-toggle {

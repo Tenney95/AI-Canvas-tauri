@@ -216,11 +216,6 @@
   margin-left: 1px;
 }
 
-.prompt-chip-wf-icon {
-  font-size: 10px;
-  opacity: 0.6;
-}
-
 .prompt-chip-wf-id {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
   font-size: 11px;
@@ -568,23 +563,6 @@
   margin: 4px 8px;
 }
 
-.slash-command-custom {
-  opacity: 0.65;
-}
-
-.slash-command-custom-title {
-  color: var(--theme-text-secondary);
-}
-
-.slash-command-custom-badge {
-  font-size: 10px;
-  color: #f59e0b;
-  background: rgba(245, 158, 11, 0.1);
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-weight: 500;
-}
-
 /* Submenu */
 .slash-command-submenu {
   position: fixed;
@@ -649,21 +627,6 @@
   font-weight: 600;
   color: var(--theme-text);
 }
-.asset-picker-close {
-  display: flex;
-  width: 28px;
-  height: 28px;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--theme-text-secondary);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background var(--transition-base), color var(--transition-base);
-}
-.asset-picker-close:hover { background: var(--theme-hover); color: var(--theme-text); }
-
 .asset-picker-search {
   display: flex;
   align-items: center;

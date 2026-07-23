@@ -266,13 +266,6 @@
   min-height: 0;
 }
 
-.text-preview {
-  padding: 12px;
-  min-height: 80px;
-  max-height: 180px;
-  overflow-y: auto;
-}
-
 .image-preview {
   position: relative;
   aspect-ratio: 1;
@@ -289,17 +282,6 @@
   margin: 8px;
   border-radius: 8px;
   overflow: hidden;
-}
-
-.audio-preview {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  min-height: 70px;
-  background: var(--theme-surface);
-  margin: 8px;
-  border-radius: 8px;
 }
 
 .text-output-content {
@@ -448,19 +430,6 @@
    节点拖拽期间暂时让视频退出命中测试，松手后由 .dragging 消失自动恢复。 */
 .react-flow:has(.react-flow__node.dragging) .video-preview-player {
   pointer-events: none;
-}
-
-.audio-player {
-  max-width: 100%;
-}
-
-.image-preview-overlay {
-  position: absolute;
-  inset: 0;
-  background: var(--black-alpha-50);
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 /* Preview Placeholder / Loading */
@@ -979,50 +948,6 @@
   min-height: 80vh;
 }
 
-.fullscreen-body--pano .panorama-viewer-wrapper {
-  min-height: 0;
-  overflow: hidden;
-}
-
-.fullscreen-body--pano .panorama-scene-shell {
-  border-radius: 0;
-}
-
-.fullscreen-body--pano .panorama-scene-webgl {
-  border-radius: 0;
-}
-
-/* 全屏全景舞台（容纳查看器 + 截图比例蒙版），占满网格第一行 */
-.pano-fs-stage {
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-/* 截图比例蒙版框：用超大 box-shadow 暗化框外区域 + 白色描边 */
-.pano-capture-frame {
-  position: absolute;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
-  outline: 1.5px solid rgba(255, 255, 255, 0.85);
-  border-radius: 2px;
-  pointer-events: none;
-  z-index: 6;
-}
-
-/* Bottom toolbar inside panorama fullscreen */
-.fullscreen-pano-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 8px 14px;
-  flex-shrink: 0;
-  border-top: 1px solid var(--glass-ring);
-  background: var(--glass-bg);
-}
-
 /* ============ Fullscreen image preview (hidePanel 模式) ============ */
 
 .fullscreen-img-view {
@@ -1359,18 +1284,6 @@
 
 .markdown-rendered strong { font-weight: 600; color: var(--theme-text); }
 .markdown-rendered em { font-style: italic; }
-
-.markdown-node-statusbar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
-  border-top: 1px solid var(--theme-border);
-  font-size: 10px;
-  color: var(--theme-text-muted);
-  background: rgba(26, 26, 38, 0.4);
-  flex-shrink: 0;
-}
 
 .text-node-wordcount {
   position: absolute;

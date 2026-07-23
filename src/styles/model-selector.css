@@ -360,7 +360,7 @@
    不影响节点对话框中的 ModelSelector 样式。
    ============================================ */
 
-/* 外层容器：由 ChatModelSelector wrapper 包裹 */
+/* 外层容器：聊天输入栏直接复用 ModelSelector */
 .chat-panel-input-toolbar .model-selector {
   flex-shrink: 0;
   min-width: 0;

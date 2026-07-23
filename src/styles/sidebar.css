@@ -83,21 +83,6 @@
   color: rgba(136, 136, 160, 0.5);
 }
 
-/* Flex spacer pushes task center to bottom */
-.sidebar-flex-spacer {
-  flex: 1;
-  min-height: 6px;
-}
-
-/* 短剧资产：数量角标 */
-.drama-assets-btn {
-  position: relative;
-  color: rgba(167, 139, 250, 0.75);
-}
-.drama-assets-btn:hover {
-  color: #c4b5fd;
-  background: rgba(139, 92, 246, 0.12);
-}
 .sidebar-badge {
   position: absolute;
   top: 2px;
@@ -292,16 +277,6 @@
 .menu-row:hover {
   background: var(--theme-hover);
 }
-/* Active project row (replaces inline style) */
-.menu-row--active {
-  background: var(--brand-alpha-12);
-}
-.menu-row--active .menu-ico {
-  color: var(--brand-hover);
-}
-.menu-row--active .menu-lbl {
-  color: var(--brand-hover);
-}
 .menu-ico {
   width: 34px;
   height: 34px;
@@ -313,9 +288,6 @@
   color: var(--theme-text-muted);
   flex-shrink: 0;
   transition: color var(--transition-base), background var(--transition-base);
-}
-.menu-ico--brand {
-  color: var(--brand-light);
 }
 .menu-row:hover .menu-ico {
   color: var(--theme-text);
@@ -334,201 +306,4 @@
   font-size: 11px;
   color: var(--theme-text-muted);
   margin-top: 1px;
-}
-
-/* Current project display row (non-interactive) */
-.menu-row-current {
-  cursor: default;
-  pointer-events: none;
-}
-.menu-row-current:hover {
-  background: transparent;
-}
-
-/* Project list scrollable area */
-.project-list-scroll {
-  max-height: 200px;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-/* Project delete inline button */
-.project-delete-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  margin-left: auto;
-  flex-shrink: 0;
-  border: none;
-  background: transparent;
-  color: var(--theme-text-muted);
-  border-radius: 5px;
-  cursor: pointer;
-  transition: color var(--transition-base), background var(--transition-base);
-  padding: 0;
-}
-.project-delete-btn:hover {
-  color: var(--danger-light);
-  background: var(--danger-bg);
-}
-
-/* ============================================
-   Delete Project Confirm Dialog
-   ============================================ */
-.delete-confirm-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  display: flex;
-  align-items: flex-start;
-  justify-content: left;
-  padding-top: 120px;
-  background: transparent;
-  animation: confirmFadeIn 0.15s ease;
-}
-@keyframes confirmFadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-.delete-confirm-dialog {
-  width: 260px;
-  max-width: 90vw;
-  background:
-    linear-gradient(var(--glass-bg), var(--glass-bg)) padding-box,
-    var(--glass-bevel-border) border-box;
-  backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid transparent;
-  border-radius: 10px;
-  padding: 12px;
-  box-shadow: var(--glass-shadow-menu);
-  animation: confirmSlideIn var(--dur-normal) var(--ease-out-expo);
-  z-index: 201;
-}
-/* Arrow pointing down to the delete button */
-.delete-confirm-dialog::after {
-  content: '';
-  position: absolute;
-  bottom: -7px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 0;
-  height: 0;
-  border-left: 7px solid transparent;
-  border-right: 7px solid transparent;
-  border-top: 7px solid var(--theme-card);
-}
-.delete-confirm-dialog::before {
-  content: '';
-  position: absolute;
-  bottom: -9px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 0;
-  height: 0;
-  border-left: 8px solid transparent;
-  border-right: 8px solid transparent;
-  border-top: 8px solid var(--theme-border);
-}
-
-/* Arrow pointing up (when dialog is below the trigger) */
-.delete-confirm-dialog.delete-confirm-above::after {
-  bottom: auto;
-  top: -7px;
-  border-top: none;
-  border-bottom: 7px solid var(--theme-card);
-}
-.delete-confirm-dialog.delete-confirm-above::before {
-  bottom: auto;
-  top: -9px;
-  border-top: none;
-  border-bottom: 8px solid var(--theme-border);
-}
-@keyframes confirmSlideIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.94); }
-  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
-}
-
-.delete-confirm-icon {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--danger-bg);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  border-radius: 8px;
-  color: var(--danger-light);
-  margin-bottom: 10px;
-}
-
-.delete-confirm-text {
-  margin-bottom: 12px;
-}
-.delete-confirm-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--theme-text);
-  margin: 0 0 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.delete-confirm-name {
-  font-size: 13px;
-  color: var(--brand-light);
-  margin: 0 0 8px;
-  word-break: break-all;
-}
-.delete-confirm-hint {
-  font-size: 11px;
-  color: var(--theme-text-muted);
-  margin: 0;
-  line-height: 1.4;
-}
-
-.delete-confirm-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-.delete-confirm-btn {
-  padding: 5px 12px;
-  border: none;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background var(--transition-base), color var(--transition-base);
-}
-.delete-confirm-btn.cancel {
-  background: var(--white-alpha-06);
-  color: var(--theme-text-secondary);
-}
-.delete-confirm-btn.cancel:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--theme-text);
-}
-.delete-confirm-btn.confirm {
-  background: var(--danger-bg);
-  color: var(--danger-light);
-  border: 1px solid rgba(239, 68, 68, 0.25);
-}
-.delete-confirm-btn.confirm:hover {
-  background: rgba(239, 68, 68, 0.25);
-  color: var(--danger-pale);
-}
-
-/* ============================================
-   Chat Assistant sidebar button
-   ============================================ */
-.chat-btn-v3 {
-  color: rgba(192, 132, 252, 0.7); /* purple tone */
-}
-.chat-btn-v3:hover,
-.chat-btn-v3.active {
-  color: #c084fc;
-  background: rgba(192, 132, 252, 0.12);
 }
