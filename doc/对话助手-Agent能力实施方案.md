@@ -1381,6 +1381,40 @@ type PolicyDecision =
 
 可回退媒体生成入口的独立 `AbortSignal` 参数、Provider 传递与 Tauri Channel 传输命令，并恢复原 `proxy_fetch` 整体响应。回滚不涉及 IndexedDB schema 或持久化数据迁移，但会恢复“取消只停止本地状态、原生请求继续执行”的风险。
 
+### 8.9 P5-F：核心编排职责收敛
+
+**任务类型：架构收敛**
+
+**状态：实施中**
+
+#### 目标与边界
+
+- 降低 `ChatPanel.tsx` 同时承担 UI、消息创建、Agent 调度、审批、文件授权、媒体生成和独立窗口同步造成的修改风险。
+- 降低 `agentRuntime.ts` 主循环同时处理模型流、预算、策略、审批、重试、并发执行、持久化和指标造成的安全回归风险。
+- 只迁移既有职责，不改变公开协议、Tool Registry、Policy 权限矩阵、AgentTask 状态、IndexedDB schema 或 Tauri 安全配置。
+- 保持主窗口 Store 为唯一写入源；独立窗口只发送 `ChatAction` 并接收 `ChatStateSnapshot` / patch。
+
+#### 分阶段计划
+
+- [x] P5-F1：新增 `conversationExecutionController.ts`，收口消息创建、插话、任务启动/恢复/调度、流式消息更新和媒体交付；`ChatPanel` 只调用控制器命令。
+- [ ] P5-F2：新增 `detachedChatSyncController.ts`，收口独立窗口快照/patch、限频单飞、监听生命周期和主窗口 Action 路由。
+- [ ] P5-F3：新增 `agentRoundExecutor.ts`，收口单轮模型请求、Policy 判定、审批、工具执行和 Observation 组装；`agentRuntime` 只保留上下文初始化、循环推进、预算终止和资源清理。
+
+#### 阶段完成记录
+
+- P5-F1（2026-07-23）：主窗口与独立窗口改为共用 `submitConversationMessage()`；消息对、AgentTask、排队状态、插话、流式缓冲、恢复预算和媒体交付迁入对话执行控制器。`ChatPanel.tsx` 从 1584 行降至 1105 行。
+- P5-F1 验证：`npm run typecheck`、`npm run test:typecheck`、3 个改动文件定向 ESLint、4 个相关测试文件 10 项测试及 `git diff --check` 通过。
+
+#### 影响面与验证
+
+- 重点回归同会话 FIFO、跨会话并行、排队取消、插话、暂停/恢复、审批、重复写抑制、来源合并、媒体交付和独立窗口增量同步。
+- 每阶段运行改动文件定向 ESLint、相关 Vitest、`npm run typecheck`、`npm run test:typecheck`、`git diff --check` 和严格 UTF-8 检查。
+- 全部阶段完成后运行全量测试及临时目录生产构建；独立窗口真实开关、操作转发和审批仍需在 Tauri 运行时手测。
+
+#### 回滚
+
+三个阶段分别提交，可按阶段逆序回退。新增控制器不持久化新数据，不改变数据库版本；回滚时恢复原调用位置即可，不需要数据迁移或配置修复。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
