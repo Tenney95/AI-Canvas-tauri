@@ -61,16 +61,12 @@
    生成中 → 完成 状态过渡 / Generating → Done
    ════════════════════════════════════════════ */
 
-/* 生成中：预览区呼吸辉光 + 流光扫过（传达「正在工作」）*/
+/* 生成中：静态内辉光 + 合成层流光，避免逐帧重绘 box-shadow。 */
 .node.loading .node-preview {
   position: relative;
   overflow: hidden;
-  animation: previewThinking 1.9s var(--ease-in-out) infinite;
-}
-
-@keyframes previewThinking {
-  0%, 100% { box-shadow: inset 0 0 22px var(--brand-alpha-06); }
-  50% { box-shadow: inset 0 0 40px 4px var(--brand-alpha-15); }
+  box-shadow: inset 0 0 28px 2px var(--brand-alpha-12);
+  contain: paint;
 }
 
 /* 流光扫过 */
@@ -87,6 +83,7 @@
   );
   transform: translateX(-120%);
   animation: shimmerSweep 1.9s var(--ease-in-out) infinite;
+  will-change: transform;
   pointer-events: none;
   z-index: 1;
 }
@@ -471,6 +468,12 @@
   width: 32px;
   height: 32px;
   border-width: 3px;
+}
+
+/* 交互期间冻结装饰动画，把合成与绘制预算留给 React Flow。 */
+.canvas-interacting .node.loading .node-preview::after,
+.canvas-interacting .node.loading .spinner {
+  animation-play-state: paused;
 }
 
 /* Node Error */

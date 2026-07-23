@@ -407,6 +407,8 @@ export default function Mascot({
     const render = (now: number) => {
       raf = requestAnimationFrame(render);
       if (document.hidden) return; // 窗口不可见时不渲染
+      // React Flow 交互期间冻结装饰性 WebGL，优先保证节点拖拽与画布缩放帧率。
+      if (document.documentElement.classList.contains('canvas-interacting')) return;
       const motionEnabled = !reduceMotionRef.current;
       const visualStatus = statusRef.current;
       const isHovering = motionEnabled && finePointerQuery.matches && hovering;

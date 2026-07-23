@@ -100,6 +100,7 @@ const isMacOS = typeof navigator !== 'undefined'
   && /Macintosh|Mac OS X/.test(navigator.userAgent);
 const shouldUseMacTrackpadPan = isTauri && isMacOS;
 const easeOutCubic = (progress: number) => 1 - (1 - progress) ** 3;
+const CANVAS_INTERACTING_CLASS = 'canvas-interacting';
 
 // ── 交互模式预设（冻结对象，避免每次 render 产生新身份，导致 React Flow 内部 effect 重跑、拖拽掉帧）──
 const DEFAULT_INTERACTION = Object.freeze({
@@ -349,6 +350,28 @@ function CanvasInner() {
     startY: number;
     detail: CanvasPanByDetail;
   } | null>(null);
+  const activeInteractionsRef = useRef(new Set<'node' | 'viewport'>());
+
+  const setCanvasInteraction = useCallback((kind: 'node' | 'viewport', active: boolean) => {
+    if (active) activeInteractionsRef.current.add(kind);
+    else activeInteractionsRef.current.delete(kind);
+    document.documentElement.classList.toggle(
+      CANVAS_INTERACTING_CLASS,
+      activeInteractionsRef.current.size > 0,
+    );
+  }, []);
+
+  useEffect(() => () => {
+    document.documentElement.classList.remove(CANVAS_INTERACTING_CLASS);
+  }, []);
+
+  const handleCanvasViewportMoveStart = useCallback<OnMove>(() => {
+    setCanvasInteraction('viewport', true);
+  }, [setCanvasInteraction]);
+
+  const handleCanvasViewportMoveEnd = useCallback<OnMove>(() => {
+    setCanvasInteraction('viewport', false);
+  }, [setCanvasInteraction]);
 
   const handleCanvasViewportMove = useCallback<OnMove>((_, viewport) => {
     const activePan = activeCanvasPanRef.current;
@@ -768,12 +791,13 @@ function CanvasInner() {
   // 按住 Ctrl/⌘ 开始拖拽 → 在原位复制一个节点（拖动的仍是原节点，等于"拖出一个副本"）
   const handleNodeDragStart = useCallback(
     (evt: React.MouseEvent, node: RFNode<BaseNodeData>) => {
+      setCanvasInteraction('node', true);
       if ((evt.ctrlKey || evt.metaKey) && node.type !== 'group') {
         duplicateNode(node.id);
       }
       onNodeDragStart(evt, node);
     },
-    [duplicateNode, onNodeDragStart],
+    [duplicateNode, onNodeDragStart, setCanvasInteraction],
   );
 
   // 仅在线型切换时重建，避免每帧新对象触发 React Flow 内部更新
@@ -930,6 +954,7 @@ function CanvasInner() {
   // ── Auto group/ungroup on drag stop ──
   const handleNodeDragStop = useCallback(
     (event: React.MouseEvent, node: RFNode) => {
+      setCanvasInteraction('node', false);
       const cell = findStoryboardDropHit(node, event.clientX, event.clientY)?.emptyCell ?? null;
       clearSbDropTarget();
       setDropGhost(null);
@@ -946,7 +971,7 @@ function CanvasInner() {
       settleNodeGroupingOnDragStop(node as RFNode<BaseNodeData>);
       onNodeDragStop();
     },
-    [onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden],
+    [onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, setCanvasInteraction],
   );
 
   return (
@@ -980,6 +1005,8 @@ function CanvasInner() {
         {...interaction}
         onContextMenu={(e) => e.preventDefault()}
         onMove={handleCanvasViewportMove}
+        onMoveStart={handleCanvasViewportMoveStart}
+        onMoveEnd={handleCanvasViewportMoveEnd}
         onMouseMove={handleCanvasPointer}
         onMouseUp={handleCanvasPointer}
         onDragEnter={onDragEnter}
