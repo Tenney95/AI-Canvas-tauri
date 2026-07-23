@@ -5,15 +5,21 @@
  */
 import {
   APIMART_BASE_URL,
+  BOCHA_SEARCH_BASE_URL,
+  EXA_SEARCH_BASE_URL,
   GRSAI_BASE_URL,
   RUNNINGHUB_MODEL_BASE_URL,
+  TAVILY_BASE_URL,
   VOLCENGINE_BASE_URL,
+  ZHIPU_SEARCH_BASE_URL,
 } from '../../constants/api';
 import type {
   ApiProviderConfig,
+  AppConfig,
   GeneralModelCategory,
   ProviderCatalogAdapter,
   ProviderModelSelection,
+  WebSearchProviderId,
 } from '../../types';
 import { corsSafeFetch } from './httpTransport';
 
@@ -39,6 +45,8 @@ export interface ProviderDefinition {
   modelsPath?: string;
   allowCustomBaseUrl?: boolean;
   credentials: ProviderCredentialField[];
+  /** web-search connections provide Agent capabilities and do not expose models. */
+  kind?: 'model' | 'web-search';
 }
 
 export interface ProviderCatalogResult {
@@ -60,6 +68,13 @@ const API_KEY_FIELD: ProviderCredentialField = {
   required: true,
   secret: true,
 };
+
+export const WEB_SEARCH_PROVIDER_IDS: readonly WebSearchProviderId[] = [
+  'tavily',
+  'bocha',
+  'zhipu-search',
+  'exa',
+];
 
 const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
   {
@@ -130,6 +145,50 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
     credentials: [],
   },
   {
+    id: 'tavily',
+    name: 'Tavily',
+    description: '面向 AI Agent 的搜索与来源服务',
+    badgeText: 'TV',
+    authType: 'api-key',
+    catalogAdapter: 'local-manifest',
+    defaultBaseUrl: TAVILY_BASE_URL,
+    credentials: [{ ...API_KEY_FIELD, placeholder: 'tvly-...' }],
+    kind: 'web-search',
+  },
+  {
+    id: 'bocha',
+    name: '博查 Web Search',
+    description: '国内网络环境友好的结构化搜索服务',
+    badgeText: 'BC',
+    authType: 'api-key',
+    catalogAdapter: 'local-manifest',
+    defaultBaseUrl: BOCHA_SEARCH_BASE_URL,
+    credentials: [{ ...API_KEY_FIELD, placeholder: 'sk-...' }],
+    kind: 'web-search',
+  },
+  {
+    id: 'zhipu-search',
+    name: '智谱联网搜索',
+    description: '智谱开放平台提供的 Web Search API',
+    badgeText: 'ZP',
+    authType: 'api-key',
+    catalogAdapter: 'local-manifest',
+    defaultBaseUrl: ZHIPU_SEARCH_BASE_URL,
+    credentials: [{ ...API_KEY_FIELD, placeholder: '智谱 API Key' }],
+    kind: 'web-search',
+  },
+  {
+    id: 'exa',
+    name: 'Exa',
+    description: '支持语义检索与网页摘要的搜索服务',
+    badgeText: 'EX',
+    authType: 'api-key',
+    catalogAdapter: 'local-manifest',
+    defaultBaseUrl: EXA_SEARCH_BASE_URL,
+    credentials: [{ ...API_KEY_FIELD, placeholder: 'Exa API Key' }],
+    kind: 'web-search',
+  },
+  {
     id: 'custom-openai',
     name: '自定义接口',
     description: 'OpenAI 或 Anthropic 兼容接口',
@@ -152,6 +211,26 @@ const PROVIDER_DEFINITION_MAP = new Map(
 
 export function getProviderDefinitions(): readonly ProviderDefinition[] {
   return BUILT_IN_PROVIDER_DEFINITIONS;
+}
+
+export function isWebSearchProviderId(value: string | undefined): value is WebSearchProviderId {
+  return WEB_SEARCH_PROVIDER_IDS.includes(value as WebSearchProviderId);
+}
+
+export function getWebSearchProviderDefinitions(): readonly ProviderDefinition[] {
+  return BUILT_IN_PROVIDER_DEFINITIONS.filter((definition) => definition.kind === 'web-search');
+}
+
+export function resolveWebSearchProviderId(
+  config: Pick<AppConfig, 'providers' | 'webSearchProviderId'>,
+): WebSearchProviderId | undefined {
+  const configured = (providerId: WebSearchProviderId) =>
+    Boolean(config.providers[providerId]?.apiKey?.trim());
+  if (isWebSearchProviderId(config.webSearchProviderId) && configured(config.webSearchProviderId)) {
+    return config.webSearchProviderId;
+  }
+  if (configured('tavily')) return 'tavily';
+  return WEB_SEARCH_PROVIDER_IDS.find(configured);
 }
 
 export function getProviderDefinition(

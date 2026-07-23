@@ -2,11 +2,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAssistantFunctionTools,
   clearAgentToolRegistryForTests,
+  getAgentTool,
   prepareAgentToolCall,
   registerAgentTool,
   type AgentToolContext,
   type AgentToolDefinition,
 } from '../../../src/services/chat/toolRegistry';
+import {
+  ensureAgentToolsRegistered,
+  resetAgentToolsRegistrationForTests,
+} from '../../../src/services/chat/tools';
 
 const context: Omit<AgentToolContext, 'signal'> = {
   taskId: 'task-1',
@@ -38,6 +43,7 @@ function createTool(partial: Partial<AgentToolDefinition> = {}): AgentToolDefini
 }
 
 afterEach(() => {
+  resetAgentToolsRegistrationForTests();
   clearAgentToolRegistryForTests();
 });
 
@@ -110,6 +116,30 @@ describe('Agent tool registry', () => {
     registerAgentTool(createTool());
 
     expect(() => registerAgentTool(createTool())).toThrow('Agent 工具已注册');
+  });
+
+  it('can dispose and re-register built-in tools during hot reload', () => {
+    ensureAgentToolsRegistered();
+    const firstDefinition = getAgentTool('canvas_query');
+
+    expect(firstDefinition).toBeDefined();
+    resetAgentToolsRegistrationForTests();
+    expect(getAgentTool('canvas_query')).toBeUndefined();
+
+    ensureAgentToolsRegistered();
+    expect(getAgentTool('canvas_query')).toBeDefined();
+    expect(getAgentTool('canvas_query')).not.toBe(firstDefinition);
+  });
+
+  it('rolls back completed tool groups after a later registration error', () => {
+    const unregisterConflict = registerAgentTool(createTool({ id: 'media_generate' }));
+
+    expect(() => ensureAgentToolsRegistered()).toThrow('Agent 工具已注册: media_generate');
+    expect(getAgentTool('canvas_query')).toBeUndefined();
+
+    unregisterConflict();
+    expect(() => ensureAgentToolsRegistered()).not.toThrow();
+    expect(getAgentTool('canvas_query')).toBeDefined();
   });
 
   it('applies a task tool allowlist as a visibility ceiling', () => {

@@ -55,6 +55,18 @@ const IDLE_FPS = 30;
 const ACTIVE_FPS = 60;
 const POINTER_ACTIVITY_MS = 250;
 const STATUS_TRANSITION_ACTIVE_MS = 320;
+const THINKING_POINTER_PRIORITY_MS = 900;
+const THINKING_GAZE_LERP = 0.2;
+const THINKING_GAZE_MIN_INTERVAL = 0.8;
+const THINKING_GAZE_MAX_INTERVAL = 1.4;
+
+const THINKING_GAZE_POINTS = [
+  [-0.34, 0.2],
+  [0.28, 0.3],
+  [0.16, -0.04],
+  [-0.16, 0.34],
+  [0.04, 0.1],
+] as const;
 
 type MascotTheme = 'dark' | 'light';
 export type MascotStatus = 'idle' | 'thinking' | 'success' | 'error';
@@ -72,9 +84,9 @@ const EYE_POSES: Record<MascotStatus, EyePose> = {
     offsetY: [0, 0],
   },
   thinking: {
-    scaleY: [0.72, 0.48],
-    rotationZ: [-0.08, 0.08],
-    offsetY: [0, 0.045],
+    scaleY: [0.72, 0.62],
+    rotationZ: [-0.04, 0.04],
+    offsetY: [0, 0.02],
   },
   success: {
     scaleY: [0.34, 0.34],
@@ -308,12 +320,17 @@ export default function Mascot({
     }
 
     /* ── 鼠标 / 悬浮状态 ──
-     * 监听整个窗口：眼睛始终看向光标。look 为相对吉祥物中心的方向 [-1,1]，
-     * 以半个窗口尺寸为参考归一化，光标越靠近屏幕边缘越接近最大眼动幅度。 */
+     * 默认监听整个窗口跟随光标；思考态在光标静止后切换为自主微扫视。
+     * look 为相对吉祥物中心的方向 [-1,1]，以半个窗口尺寸为参考归一化。 */
     const look = new Vector2(0, 0); // 全局视线方向（目标）
     const localPointer = new Vector2(0, 0); // 画布内 NDC，仅用于悬浮检测
+    const thinkingLook = new Vector2(0, 0);
+    const thinkingLookTarget = new Vector2(0, 0);
     let hovering = false;
     let lastPointerMoveAt = 0;
+    let nextThinkingGazeAt = 0;
+    let thinkingGazeIndex = -1;
+    let previousVisualStatus = statusRef.current;
 
     const raycaster = new Raycaster();
     const finePointerQuery = window.matchMedia('(hover: hover) and (pointer: fine)');
@@ -408,6 +425,33 @@ export default function Mascot({
       clock.update(); // Timer 必须每帧 update，否则 getElapsed 恒为 0
       const t = clock.getElapsed();
 
+      if (visualStatus !== previousVisualStatus) {
+        if (visualStatus === 'thinking') {
+          thinkingLook.set(0, 0);
+          thinkingLookTarget.set(0, 0);
+          thinkingGazeIndex = -1;
+          nextThinkingGazeAt = t;
+        }
+        previousVisualStatus = visualStatus;
+      }
+
+      if (motionEnabled && visualStatus === 'thinking') {
+        if (t >= nextThinkingGazeAt) {
+          let nextIndex = Math.floor(Math.random() * THINKING_GAZE_POINTS.length);
+          if (nextIndex === thinkingGazeIndex) {
+            nextIndex = (nextIndex + 1) % THINKING_GAZE_POINTS.length;
+          }
+          thinkingGazeIndex = nextIndex;
+          const [gazeX, gazeY] = THINKING_GAZE_POINTS[nextIndex];
+          thinkingLookTarget.set(gazeX, gazeY);
+          nextThinkingGazeAt = t + MathUtils.randFloat(
+            THINKING_GAZE_MIN_INTERVAL,
+            THINKING_GAZE_MAX_INTERVAL,
+          );
+        }
+        thinkingLook.lerp(thinkingLookTarget, THINKING_GAZE_LERP);
+      }
+
       const nextTheme = themeRef.current;
       if (nextTheme !== appliedTheme) {
         appliedTheme = nextTheme;
@@ -424,10 +468,15 @@ export default function Mascot({
         rimLight.intensity = palette.rimLightIntensity;
       }
 
-      // 成功和失败表情保持正视，避免状态眼神被鼠标偏转破坏。
+      // 思考态在鼠标静止后进行低频微扫视；鼠标刚移动时仍优先跟随用户。
       const allowGaze = visualStatus === 'idle' || visualStatus === 'thinking';
-      const px = motionEnabled && allowGaze ? look.x : 0;
-      const py = motionEnabled && allowGaze ? look.y : 0;
+      const useThinkingGaze = visualStatus === 'thinking'
+        && now - lastPointerMoveAt >= THINKING_POINTER_PRIORITY_MS;
+      const gazeTarget = useThinkingGaze ? thinkingLook : look;
+      const px = motionEnabled && allowGaze ? gazeTarget.x : 0;
+      const py = motionEnabled && allowGaze ? gazeTarget.y : 0;
+      const headPx = motionEnabled && visualStatus === 'idle' ? look.x : 0;
+      const headPy = motionEnabled && visualStatus === 'idle' ? look.y : 0;
 
       if (motionEnabled) {
         eyeGroup.rotation.y = MathUtils.lerp(
@@ -441,10 +490,10 @@ export default function Mascot({
           FOLLOW_LERP,
         );
         // 偏航只更新「跟随分量」，过渡自转在 loadAmount 算出后再叠加到 head.rotation.y
-        headYaw = MathUtils.lerp(headYaw, px * HEAD_MAX_ANGLE, FOLLOW_LERP);
+        headYaw = MathUtils.lerp(headYaw, headPx * HEAD_MAX_ANGLE, FOLLOW_LERP);
         head.rotation.x = MathUtils.lerp(
           head.rotation.x,
-          -py * HEAD_MAX_ANGLE,
+          -headPy * HEAD_MAX_ANGLE,
           FOLLOW_LERP,
         );
       } else {

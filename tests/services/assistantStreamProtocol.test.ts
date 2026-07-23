@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { streamAssistantReply } from '../../src/services/ai/assistantStream';
+import {
+  resolveAssistantModel,
+  streamAssistantReply,
+} from '../../src/services/ai/assistantStream';
+import { runAssistantPipeline } from '../../src/services/chat/assistantService';
 import { useAppStore } from '../../src/store/useAppStore';
 import type { ModelExecutionProfile } from '../../src/types/aiTypes';
 
@@ -28,6 +32,43 @@ beforeEach(() => {
 });
 
 describe('assistant custom protocol boundary', () => {
+  it('resolves a configured built-in provider text model selected by model value', () => {
+    useAppStore.setState((state) => ({
+      config: {
+        ...state.config,
+        assistantModelId: 'apimart/gpt-5.4',
+        providers: {
+          ...state.config.providers,
+          apimart: {
+            name: 'APIMart',
+            apiKey: 'secret',
+            catalogId: 'apimart',
+            selectedModels: [{
+              id: 'gpt-5.4',
+              name: 'GPT-5.4',
+              category: 'text',
+              provider: 'apimart',
+            }],
+          },
+        },
+      },
+    }));
+
+    expect(resolveAssistantModel()).toMatchObject({
+      baseUrl: 'https://api.apib.ai/v1',
+      apiKey: 'secret',
+      modelName: 'gpt-5.4',
+      protocol: { streamFormat: 'openai-sse' },
+    });
+  });
+
+  it('returns an explicit model-selection message instead of generic canvas help', async () => {
+    const result = await runAssistantPipeline('帮我分析这个接口文档', 'conversation-1');
+
+    expect(result.reply).toContain('未选择可用的对话文本模型');
+    expect(result.reply).not.toContain('当前画布共有');
+  });
+
   it('uses an explicitly OpenAI SSE compatible custom endpoint', async () => {
     configureAssistant({
       preset: 'custom',

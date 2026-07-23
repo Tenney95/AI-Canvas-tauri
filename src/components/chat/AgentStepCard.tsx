@@ -11,14 +11,14 @@ interface AgentStepCardProps {
   step: AgentStep;
 }
 
-const STATUS_META: Record<AgentStepStatus, { icon: string; label: string; className: string; spin?: boolean }> = {
-  pending: { icon: 'mdi:clock-outline', label: '等待', className: 'text-slate-400' },
-  running: { icon: 'mdi:loading', label: '执行中', className: 'text-emerald-400', spin: true },
-  waiting_approval: { icon: 'mdi:shield-alert-outline', label: '待确认', className: 'text-amber-400' },
-  succeeded: { icon: 'mdi:check-circle-outline', label: '完成', className: 'text-emerald-400' },
-  failed: { icon: 'mdi:alert-circle-outline', label: '失败', className: 'text-red-400' },
-  skipped: { icon: 'mdi:debug-step-over', label: '跳过', className: 'text-slate-400' },
-  stopped: { icon: 'mdi:stop-circle-outline', label: '停止', className: 'text-slate-400' },
+const STATUS_META: Record<AgentStepStatus, { icon: string; label: string; className: string; iconBg: string; spin?: boolean }> = {
+  pending: { icon: 'mdi:clock-outline', label: '等待', className: 'text-canvas-text-muted', iconBg: 'bg-canvas-hover/60' },
+  running: { icon: 'mdi:loading', label: '执行中', className: 'text-indigo-400', iconBg: 'bg-indigo-500/10', spin: true },
+  waiting_approval: { icon: 'mdi:shield-alert-outline', label: '待确认', className: 'text-amber-400', iconBg: 'bg-amber-500/10' },
+  succeeded: { icon: 'mdi:check', label: '完成', className: 'text-emerald-400', iconBg: 'bg-emerald-500/10' },
+  failed: { icon: 'mdi:alert-outline', label: '失败', className: 'text-red-400', iconBg: 'bg-red-500/10' },
+  skipped: { icon: 'mdi:debug-step-over', label: '跳过', className: 'text-canvas-text-muted', iconBg: 'bg-canvas-hover/60' },
+  stopped: { icon: 'mdi:stop', label: '停止', className: 'text-canvas-text-muted', iconBg: 'bg-canvas-hover/60' },
 };
 
 function formatDuration(step: AgentStep): string | null {
@@ -37,30 +37,32 @@ export default function AgentStepCard({ step }: AgentStepCardProps) {
   const detail = step.errorMessage || step.outputSummary || step.toolCall?.resultSummary;
 
   return (
-    <div className="flex gap-2 py-1.5">
-      <Icon
-        icon={meta.icon}
-        width="14"
-        className={`mt-0.5 shrink-0 ${meta.className} ${meta.spin ? 'animate-spin' : ''}`}
-      />
+    <div className="flex gap-2 rounded-md px-0.5 py-1.5 transition-colors hover:bg-canvas-hover/25">
+      <span className={`mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${meta.iconBg}`}>
+        <Icon
+          icon={meta.icon}
+          width="12"
+          className={`${meta.className} ${meta.spin ? 'animate-spin motion-reduce:animate-none' : ''}`}
+        />
+      </span>
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[17px]">
-          <span className="font-medium text-canvas-text truncate">{step.title}</span>
-          <span className={`shrink-0 ${meta.className}`}>· {meta.label}</span>
+        <div className="flex min-h-5 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-[17px]">
+          <span className="truncate text-[12px] text-canvas-text-secondary">{step.title}</span>
+          <span className={`shrink-0 text-[10px] ${meta.className}`}>{meta.label}</span>
           {retryCount > 0 && (
-            <span className="shrink-0 text-canvas-text-muted">· 重试 {retryCount}</span>
+            <span className="shrink-0 text-[10px] text-canvas-text-muted">· 重试 {retryCount}</span>
           )}
           {duration && (
-            <span className="shrink-0 text-canvas-text-muted">· {duration}</span>
+            <span className="ml-auto shrink-0 text-[10px] tabular-nums text-canvas-text-muted">{duration}</span>
           )}
         </div>
         {step.toolCall?.inputSummary && (
-          <p className="mt-0.5 break-words text-[11px] leading-[17px] text-canvas-text-muted">
+          <p className="break-words text-[11px] leading-[17px] text-canvas-text-muted">
             {step.toolCall.inputSummary}
           </p>
         )}
         {detail && detail !== step.toolCall?.inputSummary && (
-          <p className={`mt-0.5 break-words text-[11px] leading-[17px] ${step.status === 'failed' ? 'text-red-400/80' : 'text-canvas-text-secondary'}`}>
+          <p className={`break-words text-[11px] leading-[17px] ${step.status === 'failed' ? 'text-red-400/85' : 'text-canvas-text-secondary'}`}>
             {detail}
           </p>
         )}

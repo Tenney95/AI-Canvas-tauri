@@ -125,7 +125,27 @@ export interface ContextUsageStat {
 /** 系统规则 + 画布引用的固定开销估算值（UI 指示器用，实际组装时按真实文本计算） */
 const SYSTEM_PROMPT_OVERHEAD_ESTIMATE = 1_200;
 
-type UsageMessage = Pick<ChatMessage, 'role' | 'content' | 'status' | 'timestamp'>;
+type UsageMessage = Pick<ChatMessage, 'role' | 'content' | 'status' | 'timestamp' | 'sources'>;
+
+/**
+ * 将消息携带的来源元数据补充到模型上下文。
+ * 只保留引用编号、标题和 URL，避免跨轮重复注入搜索摘要或网页正文。
+ */
+export function messageContentWithSources(
+  message: Pick<ChatMessage, 'content' | 'sources'>,
+): string {
+  if (!message.sources?.length) return message.content;
+  const sourceLines = message.sources.map((source) => [
+    `[${source.citationId ?? 'S?'}] ${source.title}`,
+    source.url,
+  ].join('\n'));
+  return [
+    message.content,
+    '',
+    '可追溯来源：',
+    ...sourceLines,
+  ].join('\n');
+}
 
 /**
  * 估算会话上下文占用（用于头部指示器）。
@@ -143,7 +163,7 @@ export function estimateConversationUsage(
     if (message.role !== 'user' && message.role !== 'assistant') continue;
     if (!message.content) continue;
     if (contextSummary && message.timestamp <= contextSummary.coveredUntilTimestamp) continue;
-    estimatedTokens += PER_MESSAGE_OVERHEAD + estimateTokens(message.content);
+    estimatedTokens += PER_MESSAGE_OVERHEAD + estimateTokens(messageContentWithSources(message));
   }
   return {
     estimatedTokens,
@@ -282,7 +302,7 @@ function buildMessages(
   let historyTokens = 0;
   let rawHistoryTokens = 0;
   for (let i = history.length - 1; i >= 0; i--) {
-    const tokens = PER_MESSAGE_OVERHEAD + estimateTokens(history[i].content);
+    const tokens = PER_MESSAGE_OVERHEAD + estimateTokens(messageContentWithSources(history[i]));
     rawHistoryTokens += tokens;
     if (fixedTokens + historyTokens + tokens <= inputBudget) {
       included.unshift(history[i]);
@@ -296,7 +316,7 @@ function buildMessages(
     ...(summaryContent ? [{ role: 'system' as const, content: summaryContent }] : []),
     ...included.map((message) => ({
       role: message.role as 'user' | 'assistant',
-      content: message.content,
+      content: messageContentWithSources(message),
     })),
     { role: 'user' as const, content: userMessage },
   ];

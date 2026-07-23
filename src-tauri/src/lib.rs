@@ -13,6 +13,7 @@ use tauri_plugin_fs::FsExt;
 use url::Url;
 
 mod clipboard;
+mod assistant_web;
 mod comfyui;
 mod dreamina;
 mod director_desk_runtime;
@@ -658,6 +659,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fetch_image_data_url,
             proxy_fetch,
+            assistant_web::assistant_web_search,
+            assistant_web::assistant_web_extract,
             provider_docs::provider_docs_read,
             file_transfer::copy_file_streamed,
             file_transfer::download_file_streamed,

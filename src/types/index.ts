@@ -227,6 +227,8 @@ export type GeneralModelCategory = 'text' | 'image' | 'audio' | 'video';
 
 export type ProviderCatalogAdapter = 'openai-compatible' | 'local-manifest';
 
+export type WebSearchProviderId = 'tavily' | 'bocha' | 'zhipu-search' | 'exa';
+
 /** 用户在厂商目录中明确启用的模型，不包含凭据。 */
 export interface ProviderModelSelection {
   id: string;
@@ -291,6 +293,8 @@ export type InteractionMode = 'default' | 'classic';
 
 export interface AppConfig {
   providers: Record<string, ApiProviderConfig>;
+  /** 当前用于 Agent 联网搜索的厂商；旧配置未设置时优先沿用 Tavily。 */
+  webSearchProviderId?: WebSearchProviderId;
   theme: 'dark' | 'light';
   canvasBackground?: CanvasBackground; // 画布背景主题
   interactionMode?: InteractionMode; // 画布交互模式，默认 'default'

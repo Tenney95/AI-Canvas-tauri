@@ -256,6 +256,7 @@ export default function ChatPanel({
     providers,
     dreaminaLoggedIn,
     updateConfig,
+    saveConfig,
     projectMemories,
     updateProjectMemory,
     removeProjectMemory,
@@ -284,6 +285,7 @@ export default function ChatPanel({
       providers: s.config.providers,
       dreaminaLoggedIn: !!s.config.dreaminaAuth?.loggedIn,
       updateConfig: s.updateConfig,
+      saveConfig: s.saveConfig,
       projectMemories: s.projectMemories,
       updateProjectMemory: s.updateProjectMemory,
       removeProjectMemory: s.removeProjectMemory,
@@ -395,8 +397,9 @@ export default function ChatPanel({
       void emitAction({ type: 'select_model', modelId, category: 'text' });
     } else {
       updateConfig({ assistantModelId: modelId });
+      void saveConfig({ silent: true });
     }
-  }, [detached, updateConfig]);
+  }, [detached, saveConfig, updateConfig]);
 
   const handleAgentModeChange = useCallback((mode: AgentMode) => {
     if (!effectiveActiveConversationId || mode === effectiveAgentMode) return;
@@ -994,6 +997,7 @@ export default function ChatPanel({
               else if (c === 'video') cfg.assistantVideoModelId = action.modelId;
               else cfg.assistantModelId = action.modelId;
               store.updateConfig(cfg);
+              void store.saveConfig({ silent: true });
               break;
             }
 
@@ -1277,17 +1281,42 @@ function startAgentMessageExecution({
   onProgress,
 }: StartAgentMessageExecutionOptions): void {
   const store = useAppStore.getState();
-  ensureAgentToolsRegistered();
-  const task = store.createAgentTask({
-    projectId,
-    conversationId,
-    userMessageId,
-    mode,
-    goal: text,
-    toolAllowlist: resolveSkillToolAllowlist(text, store.userSkills),
-  });
-  store.updateMessage(assistantMessageId, { agentTaskId: task.id });
-  scheduleAgentTaskExecution(task.id, assistantMessageId, onProgress);
+  let taskId: string | undefined;
+
+  try {
+    ensureAgentToolsRegistered();
+    const task = store.createAgentTask({
+      projectId,
+      conversationId,
+      userMessageId,
+      mode,
+      goal: text,
+      toolAllowlist: resolveSkillToolAllowlist(text, store.userSkills),
+    });
+    taskId = task.id;
+    store.updateMessage(assistantMessageId, { agentTaskId: task.id });
+    scheduleAgentTaskExecution(task.id, assistantMessageId, onProgress);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : '未知错误';
+    if (taskId) {
+      try {
+        stopAgentTask(taskId);
+        store.updateAgentTask(taskId, {
+          errorCode: 'AGENT_START_FAILED',
+          errorMessage,
+        });
+      } catch (stopError) {
+        console.error('[AgentBootstrap] failed to stop incomplete task:', stopError);
+      }
+    }
+    store.updateMessage(assistantMessageId, {
+      content: `处理失败: ${errorMessage}`,
+      status: 'error',
+      finishReason: 'error',
+    });
+    onProgress?.();
+    console.error('[AgentBootstrap] failed to start chat task:', error);
+  }
 }
 
 function scheduleAgentTaskExecution(
@@ -1411,6 +1440,17 @@ function driveAgentTask(
                 content: message?.content || `等待确认：${step.title}`,
                 status: 'preview',
               });
+            },
+            onToolResult: (result) => {
+              if (!result.sources?.length) return;
+              const currentStore = useAppStore.getState();
+              const message = currentStore.messages.find((item) => item.id === assistantMessageId);
+              const sources = [...(message?.sources ?? [])];
+              for (const source of result.sources) {
+                if (!sources.some((item) => item.url === source.url)) sources.push(source);
+              }
+              currentStore.updateMessage(assistantMessageId, { sources });
+              onProgress?.();
             },
             onError: (error) => {
               streamingMessage.cancel();

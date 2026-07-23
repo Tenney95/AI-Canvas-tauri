@@ -33,7 +33,7 @@ export const IMAGE_BUTTONS: ToolbarButtonDef[] = [
   { key: 'matting',        label: '遮罩编辑器',  icon: 'mdi:circle-edit-outline',       defaultZone: 'Primary' },
   { key: 'expand',         label: '扩图',        icon: 'mdi:arrow-expand-all',           defaultZone: 'Primary' },
   { key: 'multiGrid',      label: '宫格裁切',    icon: 'mdi:grid',                       defaultZone: 'Primary' },
-  { key: 'cameraStudio',   label: '小洛摄影棚',  icon: 'mdi:camera-control',              defaultZone: 'Primary' },
+  { key: 'cameraStudio',   label: '小逻摄影棚',  icon: 'mdi:camera-control',              defaultZone: 'Primary' },
   { key: 'repaint',        label: '重绘',        icon: 'mdi:draw',                       defaultZone: 'Primary' },
   { key: 'upscale',        label: '高清超分',    icon: 'mdi:image-auto-adjust',          defaultZone: 'Primary' },
   { key: 'subjectMatting', label: '自动识别主体',icon: 'mdi:hexagon-outline',             defaultZone: 'Primary' },
@@ -77,7 +77,7 @@ export const DEFAULT_PANORAMA_LAYOUT  = buildLayout(PANORAMA_BUTTONS);
 export const DEFAULT_IMAGE_LAYOUT     = buildLayout(IMAGE_BUTTONS, 3);
 export const DEFAULT_AUDIO_LAYOUT     = buildLayout(AUDIO_BUTTONS);
 
-/** 用小洛摄影棚替换旧角度工具，同时保留用户已有分区、排序和删减。 */
+/** 用小逻摄影棚替换旧角度工具，同时保留用户已有分区、排序和删减。 */
 export function migrateToolbarLayout(nodeType: string, layout: ToolbarLayout): ToolbarLayout {
   if (nodeType !== 'ai-image' || layout.version >= 3) return layout;
 

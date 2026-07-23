@@ -50,6 +50,7 @@ import {
 } from './agentCheckpointService';
 import { emitAgentLifecycleEvent } from './agentLifecycle';
 import { clearProviderDocsTask } from './providerDocsGrantService';
+import { clearWebAccessTask } from './webAccessGrantService';
 
 export type AgentExecutionOutcome =
   | 'completed'
@@ -566,6 +567,7 @@ async function executePreparedToolCall(
           status: result.status,
           summary: persistentSummary,
           truncated: (result.truncated ?? false) || result.modelContent.length > modelContentLimit,
+          sources: result.sources,
         },
         modelContent,
       };
@@ -1254,5 +1256,6 @@ export async function runAgentLoop({
   } finally {
     closeAgentInterjectionBuffer(taskId);
     clearProviderDocsTask(taskId);
+    clearWebAccessTask(taskId);
   }
 }

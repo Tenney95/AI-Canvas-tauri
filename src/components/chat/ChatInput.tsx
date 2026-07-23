@@ -398,7 +398,7 @@ export default function ChatInput({
         className="chat-panel-input-box relative flex flex-col bg-canvas-card border border-canvas-border
                     rounded-[14px] transition-[border-color,box-shadow] duration-200
                     focus-within:border-brand-light focus-within:ring-2 focus-within:ring-brand/15
-                    px-2 py-2 shadow-lg shadow-black/20"
+                    px-2 py-2"
       >
         {localFileGrants.length > 0 && (
           <div className="mb-2 flex max-h-16 flex-wrap gap-1.5 overflow-y-auto">

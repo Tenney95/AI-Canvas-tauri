@@ -367,7 +367,7 @@ function CameraStudioPanel({ isOpen, imageUrl, onClose, onGenerate }: CameraStud
     <FullscreenOverlay
       isOpen={isOpen}
       onClose={onClose}
-      title="小洛摄影棚"
+      title="小逻摄影棚"
       panelWidth="min(96vw, 1180px)"
       className="camera-studio-overlay"
       bodyClassName="camera-studio-body"

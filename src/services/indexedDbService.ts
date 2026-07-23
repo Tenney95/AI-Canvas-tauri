@@ -760,6 +760,7 @@ export interface ChatMessageRecord {
   canvasStatus?: string;
   canvasNodeId?: string;
   canvasError?: string;
+  sources?: unknown;
 }
 
 export interface LegacyAssetMetaRecord {

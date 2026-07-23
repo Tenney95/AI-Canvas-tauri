@@ -31,7 +31,7 @@ export default function AgentModeSelector({
 }: AgentModeSelectorProps) {
   return (
     <div
-      className="pointer-events-auto flex items-center rounded-lg border border-canvas-border bg-canvas-bg/60 p-0.5"
+      className="pointer-events-auto flex items-center rounded-md border border-canvas-border bg-canvas-bg/60 p-px"
       role="group"
       aria-label="Agent 模式"
     >
@@ -39,7 +39,7 @@ export default function AgentModeSelector({
         <button
           key={item.value}
           type="button"
-          className={`flex h-7 min-w-10 items-center justify-center rounded-md px-2 text-[11px] font-medium transition-colors
+          className={`flex h-6 min-w-9 items-center justify-center rounded px-1.5 text-[10px] font-medium transition-colors
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50
                       ${mode === item.value
                         ? item.value === 'autonomous'

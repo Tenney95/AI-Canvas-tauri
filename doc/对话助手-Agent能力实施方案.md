@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3、P4 阶段已完成；P5-A/P5-B 已完成，P5-C 待实施
+> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -57,6 +57,7 @@
 | P5-A | `[x]` | 用户授权的厂商文档读取与同站链接导航 | 2026-07-21 | 2026-07-21 |
 | P5-B | `[x]` | 厂商配置草稿与确认写入 | 2026-07-21 | 2026-07-21 |
 | P5-C | `[ ]` | 端到端安全回归与验收 |  |  |
+| P5-D | `[x]` | 通用联网搜索、受控网页提取和来源引用 | 2026-07-22 | 2026-07-22 |
 
 ## 3. 已确认的产品决策
 
@@ -1241,6 +1242,89 @@ type PolicyDecision =
 - 生产构建：`npx vite build --outDir <系统临时目录> --emptyOutDir` 通过；仅保留仓库既有动态导入和 chunk 体积警告。
 - 视觉检查：按用户明确要求，本阶段未执行视觉验证；审批卡改动的桌面/独立窗口实际呈现留到 P5-C 验收。
 
+### P5-D：通用联网搜索、受控网页提取和来源引用
+
+**状态：** `[x]`
+
+### 目标
+
+在不放宽 `provider_docs_read` 同站文档边界、不暴露通用 HTTP 代理的前提下，恢复 Agent 的通用联网检索能力。搜索支持 Tavily、博查、智谱和 Exa 四个固定端点；搜索只返回来源元数据，模型按需调用独立网页提取工具，并在消息中持久化可追溯的 `[S1]` 来源。
+
+### 计划文件
+
+- 新增：`doc/plans/2026-07-23-read-only-web-research.md`
+- 新增：`src-tauri/src/assistant_web.rs`
+- 新增：`src/services/webSearchService.ts`
+- 新增：`src/services/webPageService.ts`
+- 新增：`src/services/chat/webAccessGrantService.ts`
+- 新增：`src/services/chat/tools/webTools.ts`
+- 新增：`src/components/chat/SourceList.tsx`
+- 新增：`tests/services/chat/webAccessGrantService.test.ts`
+- 新增：`tests/services/chat/webTools.test.ts`
+- 新增：`tests/services/chat/contextManagerSources.test.ts`
+- 新增：`tests/services/chat/chatHistorySources.test.ts`
+- 新增：`tests/services/webSearchService.test.ts`
+- 修改：`src-tauri/src/lib.rs`
+- 修改：`src/constants/api.ts`
+- 修改：`src/services/ai/providerCatalogService.ts`
+- 修改：`src/services/testConnection.ts`
+- 修改：`src/components/settings/ProviderConnectionDialog.tsx`
+- 修改：`src/components/settings/ApiKeySettings.tsx`
+- 修改：`src/types/index.ts`
+- 修改：`src/types/chat.ts`
+- 修改：`src/services/indexedDbService.ts`
+- 修改：`src/services/chat/chatHistoryService.ts`
+- 修改：`src/services/chat/contextManager.ts`
+- 修改：`src/services/chat/toolRegistry.ts`
+- 修改：`src/services/chat/agentRuntime.ts`
+- 修改：`src/services/chat/tools/index.ts`
+- 修改：`src/services/ai/assistantStream.ts`
+- 修改：`src/components/chat/ChatPanel.tsx`
+- 修改：`src/components/chat/MessageBubble.tsx`
+- 修改：`doc/对话助手-Agent能力实施方案.md`
+
+### 实施任务
+
+- [x] 增加统一“联网搜索”配置，支持 Tavily、博查、智谱和 Exa；搜索服务不进入模型目录，也不要求用户选择模型。
+- [x] 多家密钥分别保存在本地，用户只选择一个当前厂商；旧 Tavily 配置未保存当前厂商字段时继续自动沿用。
+- [x] 注册 `web_search` 与 `web_extract` 两个 `read` 工具，搜索结果与网页正文始终标记为不可信外部内容。
+- [x] 未配置搜索 API Key 时，`web_extract` 仍可从模型已知的公开 HTTPS 页面开始只读研究，并返回最多 30 个经过本地初筛的页面链接供后续导航。
+- [x] 搜索结果只返回标题、URL 和摘要；网页正文按模型上下文预算裁剪，不自动抓取整站。
+- [x] 公开 HTTPS 可作为只读初始入口；HTTP 只允许来自用户本轮 URL、当前任务搜索结果或已读取页面中的链接，任务级临时授权在任务结束时清理。
+- [x] Rust 读取器逐跳执行协议、端口、DNS/IP、敏感查询参数、重定向、响应类型与 1 MB 体积校验，不复用 `proxy_fetch`。
+- [x] 只读网页工具不携带 Cookie、自定义 Header 或请求体，不执行脚本、登录、表单提交、上传、下载、Shell、Python、`curl`、本地文件或系统命令。
+- [x] 来源按任务分配 `[S1]` 编号，消息只持久化来源元数据，不持久化网页正文或搜索响应原文。
+- [x] 保留现有只读工具最多 3 次瞬时错误重试；429/5xx 不静默切换 Provider。
+- [x] 增加 URL 授权、来源规范化、结果裁剪、持久化和 Rust 安全边界测试。
+
+### 验收
+
+- [x] 配置并选择任一搜索厂商后，Plan/B/C 模式均可自动调用 `web_search` 和经授权的 `web_extract`。
+- [x] 当前厂商未配置有效 Key 时不向模型暴露 `web_search`，但仍暴露受控 `web_extract`，允许 Agent 从已知公开 HTTPS 来源开始研究。
+- [x] 搜索结果和页面链接可以授权后续 HTTP 网页提取；模型生成的 HTTPS URL仍需通过前端 URL 规则和 Rust DNS/IP、重定向双层校验，私网、凭据和敏感查询参数均被拒绝。
+- [x] 助手消息展示并持久化去重后的来源，网页正文不进入 IndexedDB、任务摘要或长期记忆。
+- [x] 厂商文档配置流程继续使用更严格的 `provider_docs_read`，不被通用网页工具替代或放宽。
+
+### 完成记录
+
+- 完成日期：2026-07-22
+- Web 服务与工具测试：`npx vitest run tests/services/chat/webAccessGrantService.test.ts tests/services/webSearchService.test.ts tests/services/chat/webTools.test.ts tests/services/chat/contextManagerSources.test.ts tests/services/chat/chatHistorySources.test.ts`，5 个文件、24 个测试通过。
+- Agent 相关回归：`npx vitest run tests/services/chat tests/services/assistantStreamProtocol.test.ts`，24 个文件、108 个测试通过。
+- 类型与 Lint：`npm run typecheck`、`npm run test:typecheck` 和阶段 TypeScript/TSX 文件定向 ESLint 通过。
+- Rust：`cargo check --lib`、`cargo test assistant_web::tests --lib`（4 个测试）、`rustfmt --edition 2021 --check src/assistant_web.rs` 通过。
+- 生产构建：`npx vite build --outDir <系统临时目录>` 通过；仅保留仓库既有动态导入和 chunk 体积警告。
+- 多厂商补充测试：`npx vitest run tests/services/webSearchService.test.ts tests/services/chat/webTools.test.ts`，2 个文件、10 个测试通过；覆盖四家响应归一化、旧 Tavily 回退和显式厂商选择。
+- 安全与数据边界：固定 Tavily、博查、智谱和 Exa 搜索端点；网页读取逐跳校验并禁用代理；任务结束清理 URL grant；跨轮只注入引用编号、标题和 URL。
+- 真实厂商请求：未配置可用于测试的四家 API Key，因此未发送真实搜索请求；设置页为每家提供独立“验证连接”按钮供用户手测。
+- 视觉检查：按用户此前明确要求，本阶段未执行视觉验证。
+- 2026-07-23 免 Key 只读研究补充：允许 `web_extract` 从安全公网 HTTPS 初始页面开始读取，提取并临时授权最多 30 个页面链接；HTTP 仍需来自用户、搜索结果或已读取页面。
+- 补充验证：改动文件定向 ESLint、`npm run typecheck`、`npm run test:typecheck`、4 个相关测试文件 31 项测试、全量 48 个测试文件 264 项测试、`cargo check --lib`、4 项 `assistant_web` Rust 测试、Rust 格式和生产构建均通过。
+- 补充安全边界：未注册 Shell、Python、`curl`、本地文件或系统命令类 Agent 工具；网页读取继续只使用无 Cookie、无模型自定义 Header、无请求体的 GET，并保留逐跳 SSRF 与响应限制。
+
+### 回滚
+
+从工具注册入口移除 `registerWebAgentTools()`，移除 `assistant_web` Tauri 命令与四家搜索能力定义即可关闭联网能力。消息来源字段均为可选字段，无数据库版本迁移；旧消息和现有厂商文档读取不受影响。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1322,7 +1406,7 @@ type PolicyDecision =
 - [x] 时间线支持暂停、继续、跳过、重新规划和停止。
 - [x] 应用运行期间任务可后台执行。
 - [x] 重启后未完成任务只恢复为暂停。
-- [-] 联网搜索自动执行并展示来源（已按用户决定整体移除，不再是产品能力）。
+- [x] 联网搜索自动执行并展示来源，支持用户选择当前搜索厂商。
 - [x] 本地文件使用可撤销的会话级授权。
 - [x] 所有媒体生成和重新生成逐次确认。
 - [x] 所有画布自动写入支持一次撤销。
@@ -1361,3 +1445,5 @@ type PolicyDecision =
 | 2026-07-21 | P4-D | 完成隔离的进程内生命周期事件、三类无工具只读专家、父子任务预算和任务中心关系展示。 |
 | 2026-07-21 | P5-A | 完成用户显式 HTTPS 厂商文档授权、同源链接逐页导航、Rust SSRF 防护、不可信正文边界和任务级读取预算。 |
 | 2026-07-21 | P5-B | 完成多模型声明式协议草稿、任务隔离与过期、`config_write` 固定审批，以及不写入或泄露 API Key 的配置保存。 |
+| 2026-07-22 | P5-D | 恢复通用联网搜索和任务级网页提取，支持 Tavily、博查、智谱、Exa 当前厂商选择，并完成逐跳 SSRF 防护、来源引用持久化、跨轮元数据注入和正文不落库边界。 |
+| 2026-07-23 | P5-D 补充 | 增加免 Key 的纯只读网页研究：安全 HTTPS 初始导航、页面链接提取和任务级跟链；不开放 Shell、本地文件、系统命令或通用 HTTP 请求。 |

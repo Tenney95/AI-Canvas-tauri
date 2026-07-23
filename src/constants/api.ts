@@ -21,6 +21,18 @@ export const RUNNINGHUB_BASE_URL = 'https://api.runninghub.cn';
 /** RunningHUB 标准模型 API（异步任务协议） */
 export const RUNNINGHUB_MODEL_BASE_URL = 'https://www.runninghub.cn/openapi/v2';
 
+/** Tavily 联网搜索 */
+export const TAVILY_BASE_URL = 'https://api.tavily.com';
+
+/** 博查 Web Search */
+export const BOCHA_SEARCH_BASE_URL = 'https://api.bocha.cn';
+
+/** 智谱 Web Search */
+export const ZHIPU_SEARCH_BASE_URL = 'https://open.bigmodel.cn/api';
+
+/** Exa Search */
+export const EXA_SEARCH_BASE_URL = 'https://api.exa.ai';
+
 /** 默认供应商 base URL 映射（用于 aiService 的 fallback） */
 export const DEFAULT_BASE_URLS: Record<string, string> = {
   apimart: APIMART_BASE_URL,

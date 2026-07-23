@@ -8,11 +8,13 @@ import type {
   ApiProviderConfig,
   GeneralModelCategory,
   ProviderModelSelection,
+  WebSearchProviderId,
 } from '../../types';
 import {
   fetchProviderModelCatalog,
   getProviderDefinition,
   getProviderDefinitions,
+  getWebSearchProviderDefinitions,
   type ProviderDefinition,
 } from '../../services/ai/providerCatalogService';
 import type { ModelProtocolImportResult } from '../../services/ai/modelProtocolImport';
@@ -37,6 +39,10 @@ const PROVIDER_LINKS: Record<string, string> = {
   'runninghub-model': 'https://www.runninghub.cn?inviteCode=iadc40jt',
   grsai: 'https://grsai.com/zh/dashboard/user-info',
   dreamina: 'https://www.dreamina.com',
+  tavily: 'https://app.tavily.com',
+  bocha: 'https://open.bochaai.com/dashboard',
+  'zhipu-search': 'https://open.bigmodel.cn/usercenter/apikeys',
+  exa: 'https://dashboard.exa.ai/api-keys',
 };
 
 type CatalogStatus = 'idle' | 'loading' | 'ready' | 'warning' | 'error';
@@ -57,6 +63,7 @@ interface ProviderConnectionDialogProps {
   isOpen: boolean;
   connectionId?: string;
   initialConfig?: ApiProviderConfig;
+  providerConfigs: Record<string, ApiProviderConfig>;
   connectedProviderIds: string[];
   fallbackModels: Record<string, ProviderModelSelection[]>;
   dreaminaLoggedIn: boolean;
@@ -112,6 +119,7 @@ export default function ProviderConnectionDialog({
   isOpen,
   connectionId,
   initialConfig,
+  providerConfigs,
   connectedProviderIds,
   fallbackModels,
   dreaminaLoggedIn,
@@ -159,19 +167,24 @@ export default function ProviderConnectionDialog({
   const [protocolImportSnapshot, setProtocolImportSnapshot] = useState<ProtocolImportSnapshot | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const definition = getProviderDefinition(definitionId, initialConfig);
+  const definition = getProviderDefinition(definitionId);
   const definitions = getProviderDefinitions();
+  const webSearchDefinitions = getWebSearchProviderDefinitions();
+  const isWebSearchProvider = definition?.kind === 'web-search';
+  const hasWebSearchConnection = webSearchDefinitions.some((item) =>
+    Boolean(providerConfigs[item.id]?.apiKey?.trim()),
+  );
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const availableDefinitions = useMemo(
-    () => definitions.filter((item) =>
-      item.id === 'custom-openai'
+  const availableDefinitions = definitions.filter((item) => {
+    if (item.kind === 'web-search') {
+      return item.id === 'tavily' && (!hasWebSearchConnection || isWebSearchProvider);
+    }
+    return item.id === 'custom-openai'
       || item.id === initialDefinitionId
-      || !connectedProviderIds.includes(item.id),
-    ),
-    [connectedProviderIds, definitions, initialDefinitionId],
-  );
+      || !connectedProviderIds.includes(item.id);
+  });
 
   const filteredModels = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -205,11 +218,14 @@ export default function ProviderConnectionDialog({
   }, [anthropicUrl, apiKey, baseUrl, definition, dreaminaLoggedIn]);
 
   const chooseDefinition = (nextDefinition: ProviderDefinition) => {
+    const savedConfig = nextDefinition.kind === 'web-search'
+      ? providerConfigs[nextDefinition.id]
+      : undefined;
     setDefinitionId(nextDefinition.id);
-    setConnectionName(nextDefinition.name);
-    setApiKey('');
-    setBaseUrl(nextDefinition.defaultBaseUrl || '');
-    setAnthropicUrl('');
+    setConnectionName(savedConfig?.name || nextDefinition.name);
+    setApiKey(savedConfig?.apiKey || '');
+    setBaseUrl(savedConfig?.baseUrl || nextDefinition.defaultBaseUrl || '');
+    setAnthropicUrl(savedConfig?.anthropicUrl || '');
     setWorkflowApiKey('');
     const localModels = fallbackModels[nextDefinition.id] || [];
     setModels(localModels);
@@ -260,6 +276,23 @@ export default function ProviderConnectionDialog({
       setCatalogStatus('error');
       setCatalogMessage(error instanceof Error ? error.message : '模型列表拉取失败');
     }
+  };
+
+  const handleTestWebSearchConnection = async () => {
+    if (!isWebSearchProvider || !definition || missingCredentials) return;
+    setCatalogStatus('loading');
+    setCatalogMessage(`正在验证 ${definition.name} 连接...`);
+    const result = await testProviderConnection(
+      definition.id as WebSearchProviderId,
+      apiKey.trim(),
+    );
+    if (result.success) {
+      setCatalogStatus('ready');
+      setCatalogMessage(`${definition.name} 连接验证成功`);
+      return;
+    }
+    setCatalogStatus('error');
+    setCatalogMessage(result.error || `${definition.name} 连接验证失败`);
   };
 
   const toggleModel = (modelId: string) => {
@@ -409,8 +442,23 @@ export default function ProviderConnectionDialog({
   };
 
   const handleSave = async () => {
-    if (!definition || missingCredentials || selectedModels.length === 0 || !protocolValid) return;
-    const nextConnectionId = connectionId || createConnectionId(definition.id);
+    if (
+      !definition
+      || missingCredentials
+      || (!isWebSearchProvider && selectedModels.length === 0)
+      || !protocolValid
+    ) return;
+    const nextConnectionId = isWebSearchProvider
+      ? definition.id
+      : connectionId || createConnectionId(definition.id);
+    const modelConfig = isWebSearchProvider
+      ? {}
+      : {
+          selectedModels: selectedModels.map((model) => ({ ...model, provider: nextConnectionId })),
+          catalogModels: models.map((model) => ({ ...model, provider: nextConnectionId })),
+          visibleModelCategories: CATEGORY_ORDER.filter((item) => visibleModelCategories.has(item)),
+          catalogUpdatedAt: Date.now(),
+        };
     await onSave(
       nextConnectionId,
       {
@@ -419,10 +467,7 @@ export default function ProviderConnectionDialog({
         baseUrl: baseUrl.trim() || undefined,
         anthropicUrl: anthropicUrl.trim() || undefined,
         catalogId: definition.id,
-        selectedModels: selectedModels.map((model) => ({ ...model, provider: nextConnectionId })),
-        catalogModels: models.map((model) => ({ ...model, provider: nextConnectionId })),
-        visibleModelCategories: CATEGORY_ORDER.filter((item) => visibleModelCategories.has(item)),
-        catalogUpdatedAt: Date.now(),
+        ...modelConfig,
       },
       definition.id === 'runninghub-model'
         ? { runninghubWorkflowApiKey: workflowApiKey.trim() }
@@ -445,7 +490,7 @@ export default function ProviderConnectionDialog({
       >
         <div>
           <span className="provider-dialog-kicker">{editing ? '编辑连接' : '新建连接'}</span>
-          <h3>{definition ? definition.name : '选择 API 厂商'}</h3>
+          <h3>{isWebSearchProvider ? '联网搜索' : definition ? definition.name : '选择 API 厂商'}</h3>
         </div>
         <PopupCloseButton onClick={closeDialog} />
       </header>
@@ -462,8 +507,8 @@ export default function ProviderConnectionDialog({
               >
                 <span className={`provider-badge provider-badge--${item.id}`}>{item.badgeText}</span>
                 <span className="provider-picker-copy">
-                  <strong>{item.name}</strong>
-                  <small>{item.description}</small>
+                  <strong>{item.kind === 'web-search' ? '联网搜索' : item.name}</strong>
+                  <small>{item.kind === 'web-search' ? 'Tavily、博查、智谱与 Exa' : item.description}</small>
                 </span>
                 <Icon icon="mdi:chevron-right" width="18" />
               </button>
@@ -479,7 +524,7 @@ export default function ProviderConnectionDialog({
                   <h4>连接信息</h4>
                   <p>{definition.description}</p>
                 </div>
-                {!editing && (
+                {!editing && !isWebSearchProvider && (
                   <AnimatedButton
                     type="button"
                     className="provider-text-btn"
@@ -566,9 +611,69 @@ export default function ProviderConnectionDialog({
                   前往厂商控制台
                 </button>
               )}
+
+              {isWebSearchProvider && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <AnimatedButton
+                    type="button"
+                    className="provider-secondary-btn"
+                    disabled={missingCredentials || catalogStatus === 'loading'}
+                    onClick={() => void handleTestWebSearchConnection()}
+                  >
+                    <Icon
+                      icon={catalogStatus === 'loading' ? 'mdi:loading' : 'mdi:connection'}
+                      className={catalogStatus === 'loading' ? 'settings-spin' : undefined}
+                      width="15"
+                    />
+                    {catalogStatus === 'loading' ? '验证中' : '验证连接'}
+                  </AnimatedButton>
+                  {catalogMessage && (
+                    <div className={`provider-catalog-message is-${catalogStatus} m-0 flex-1`}>
+                      <Icon
+                        icon={catalogStatus === 'error' ? 'mdi:alert-circle-outline' : 'mdi:information-outline'}
+                        width="14"
+                      />
+                      <span>{catalogMessage}</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </section>
 
-            <section className="provider-model-section">
+            {isWebSearchProvider && (
+              <section className="provider-model-section">
+                <div className="provider-section-heading">
+                  <div>
+                    <h4>搜索厂商</h4>
+                    <p>选择当前使用的服务，其他厂商密钥会保留在本地</p>
+                  </div>
+                </div>
+                <div className="provider-picker-grid">
+                  {webSearchDefinitions.map((item) => {
+                    const selected = item.id === definition.id;
+                    const configured = Boolean(providerConfigs[item.id]?.apiKey?.trim());
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        aria-pressed={selected}
+                        className={`provider-picker-item ${selected ? 'ring-1 ring-indigo-400/60 bg-indigo-500/10' : ''}`}
+                        onClick={() => chooseDefinition(item)}
+                      >
+                        <span className={`provider-badge provider-badge--${item.id}`}>{item.badgeText}</span>
+                        <span className="provider-picker-copy">
+                          <strong>{item.name}</strong>
+                          <small>{configured ? 'API Key 已配置' : item.description}</small>
+                        </span>
+                        <Icon icon={selected ? 'mdi:check-circle' : 'mdi:chevron-right'} width="18" />
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
+            {!isWebSearchProvider && <section className="provider-model-section">
               <div className="provider-section-heading provider-model-heading">
                 <div>
                   <h4>启用模型</h4>
@@ -796,11 +901,17 @@ export default function ProviderConnectionDialog({
                   </div>
                 </div>
               )}
-            </section>
+            </section>}
           </div>
 
           <footer className="provider-dialog-footer">
-            <span>{selectedModels.length > 0 ? `将启用 ${selectedModels.length} 个模型` : '至少选择一个模型'}</span>
+            <span>
+              {isWebSearchProvider
+                ? `当前使用 ${definition.name}`
+                : selectedModels.length > 0
+                  ? `将启用 ${selectedModels.length} 个模型`
+                  : '至少选择一个模型'}
+            </span>
             <div>
               <AnimatedButton type="button" className="provider-secondary-btn" onClick={closeDialog}>
                 取消
@@ -808,7 +919,11 @@ export default function ProviderConnectionDialog({
               <AnimatedButton
                 type="button"
                 className="provider-primary-btn"
-                disabled={missingCredentials || selectedModels.length === 0 || !protocolValid}
+                disabled={
+                  missingCredentials
+                  || (!isWebSearchProvider && selectedModels.length === 0)
+                  || !protocolValid
+                }
                 onClick={() => void handleSave()}
               >
                 {editing ? '保存更改' : '添加厂商'}

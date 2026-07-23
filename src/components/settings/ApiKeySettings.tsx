@@ -5,8 +5,17 @@ import { Icon } from '@iconify/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
-import { getProviderDefinition } from '../../services/ai/providerCatalogService';
-import type { ApiProviderConfig, DreaminaRuntime, ProviderModelSelection } from '../../types';
+import {
+  getProviderDefinition,
+  getWebSearchProviderDefinitions,
+  resolveWebSearchProviderId,
+} from '../../services/ai/providerCatalogService';
+import type {
+  ApiProviderConfig,
+  DreaminaRuntime,
+  ProviderModelSelection,
+  WebSearchProviderId,
+} from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
 import { defaultModelGroups } from '../nodes/shared/defaultModels';
 import { shouldListProviderConnection } from './apiKeySettingsUtils';
@@ -70,6 +79,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const [dreaminaRuntime, setDreaminaRuntime] = useState<DreaminaRuntime | null>(null);
   const dreaminaDoneRef = useRef(false);
   const dreaminaAuth = config.dreaminaAuth;
+  const activeWebSearchProviderId = resolveWebSearchProviderId(config);
 
   const fallbackModels = useMemo(() => {
     const catalog: Record<string, ProviderModelSelection[]> = {};
@@ -99,6 +109,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       if (id === 'runninghub') continue;
       const definition = getProviderDefinition(id, providerConfig);
       if (!definition) continue;
+      if (definition.kind === 'web-search' && id !== activeWebSearchProviderId) continue;
       if (!shouldListProviderConnection(providerConfig, definition.authType)) continue;
       items.push({ id, config: providerConfig });
     }
@@ -114,14 +125,27 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         config: { name: '即梦', apiKey: '', catalogId: 'dreamina' },
       });
     }
-    const order = ['apimart', 'volcengine', 'runninghub-model', 'grsai', 'dreamina', 'custom-openai'];
+    const order = [
+      'apimart',
+      'volcengine',
+      'runninghub-model',
+      'grsai',
+      'dreamina',
+      'web-search',
+      'custom-openai',
+    ];
     return items.sort((left, right) => {
       const leftDefinition = getProviderDefinition(left.id, left.config);
       const rightDefinition = getProviderDefinition(right.id, right.config);
-      return order.indexOf(leftDefinition?.id || 'custom-openai')
-        - order.indexOf(rightDefinition?.id || 'custom-openai');
+      const leftOrderId = leftDefinition?.kind === 'web-search'
+        ? 'web-search'
+        : leftDefinition?.id || 'custom-openai';
+      const rightOrderId = rightDefinition?.kind === 'web-search'
+        ? 'web-search'
+        : rightDefinition?.id || 'custom-openai';
+      return order.indexOf(leftOrderId) - order.indexOf(rightOrderId);
     });
-  }, [config.providers, dreaminaAuth?.loggedIn]);
+  }, [activeWebSearchProviderId, config.providers, dreaminaAuth?.loggedIn]);
 
   const connectedProviderIds = useMemo(
     () => providerItems.map((item) => getProviderDefinition(item.id, item.config)?.id || item.id),
@@ -270,7 +294,10 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     related?: { runninghubWorkflowApiKey?: string },
   ) => {
     saveProviderConfig(connectionId, providerConfig);
-    if (related?.runninghubWorkflowApiKey) {
+    const definition = getProviderDefinition(connectionId, providerConfig);
+    if (definition?.kind === 'web-search') {
+      updateConfig({ webSearchProviderId: definition.id as WebSearchProviderId });
+    } else if (related?.runninghubWorkflowApiKey) {
       setProviderConfig('runninghub', {
         name: 'RunningHub 工作流',
         apiKey: related.runninghubWorkflowApiKey,
@@ -283,8 +310,17 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   };
 
   const handleRemoveConnection = async (connectionId: string) => {
+    const providerConfig = config.providers[connectionId];
+    const definition = getProviderDefinition(connectionId, providerConfig);
     if (connectionId === 'dreamina') await handleDreaminaLogout();
-    removeProviderConfig(connectionId);
+    if (definition?.kind === 'web-search') {
+      for (const searchDefinition of getWebSearchProviderDefinitions()) {
+        removeProviderConfig(searchDefinition.id);
+      }
+      updateConfig({ webSearchProviderId: undefined });
+    } else {
+      removeProviderConfig(connectionId);
+    }
     if (connectionId === 'runninghub-model') removeProviderConfig('runninghub');
     setPendingDeleteId(undefined);
     await saveConfig();
@@ -324,15 +360,18 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
               const summaryUrl = providerSummaryUrl(item.config, definition.defaultBaseUrl);
               const isDreamina = definition.id === 'dreamina';
               const isRunningHub = definition.id === 'runninghub-model';
+              const isWebSearchProvider = definition.kind === 'web-search';
               const isPendingApiKey = definition.authType !== 'oauth' && !item.config.apiKey.trim();
               const hasRunningHubModelKey = isRunningHub && !!item.config.apiKey.trim();
               const hasRunningHubWorkflowKey = isRunningHub
                 && !!config.providers.runninghub?.apiKey.trim();
               const runningHubKeyCount = Number(hasRunningHubModelKey)
                 + Number(hasRunningHubWorkflowKey);
-              const displayName = definition.id === 'custom-openai'
-                ? item.config.name.trim() || definition.name
-                : definition.name;
+              const displayName = isWebSearchProvider
+                ? '联网搜索'
+                : definition.id === 'custom-openai'
+                  ? item.config.name.trim() || definition.name
+                  : definition.name;
               const statusLabel = isDreamina
                 ? 'OAuth 已连接'
                 : isRunningHub
@@ -362,6 +401,11 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                                 : `${selectedCount} 个模型`}
                             </span>
                           )}
+                        </>
+                      ) : isWebSearchProvider ? (
+                        <>
+                          <span>当前厂商：{definition.name}</span>
+                          {summaryUrl && <span>{summaryUrl}</span>}
                         </>
                       ) : (
                         <>
@@ -445,6 +489,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         isOpen={connectionDialogOpen}
         connectionId={editingConnectionId}
         initialConfig={editingConfig}
+        providerConfigs={config.providers}
         connectedProviderIds={connectedProviderIds}
         fallbackModels={fallbackModels}
         dreaminaLoggedIn={!!dreaminaAuth?.loggedIn}

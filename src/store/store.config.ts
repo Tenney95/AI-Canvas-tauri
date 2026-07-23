@@ -31,7 +31,7 @@ export interface ConfigSlice {
   addGeneralModel: (model: Omit<GeneralModelConfig, 'id'>) => void;
   updateGeneralModel: (id: string, model: Partial<GeneralModelConfig>) => void;
   removeGeneralModel: (id: string) => void;
-  saveConfig: () => Promise<void>;
+  saveConfig: (options?: { silent?: boolean }) => Promise<void>;
   loadConfig: () => Promise<void>;
 }
 
@@ -238,7 +238,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
       },
     })),
 
-  saveConfig: async () => {
+  saveConfig: async (options) => {
     const { config, configHydrated, showToast } = get();
     if (!configHydrated) {
       console.warn('[设置] 配置尚未完成加载，已阻止默认值覆盖持久化配置');
@@ -249,7 +249,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
       // 同步 baseDataDir 到 fileService
       setBaseDataDir(config.baseDataDir);
       await syncAuthorizedDirectories(config);
-      showToast('设置已保存');
+      if (!options?.silent) showToast('设置已保存');
     } catch {
       showToast('设置保存失败', 'error');
     }

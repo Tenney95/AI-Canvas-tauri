@@ -164,6 +164,18 @@ export async function runAssistantPipeline(
     };
   }
 
+  if (!resolveAssistantModel()) {
+    return {
+      reply: [
+        '未选择可用的对话文本模型。',
+        '请在输入框下方的模型选择器中选择一个已配置的文本模型后重试。',
+      ].join('\n'),
+      commandExecuted: false,
+      commandResults: [],
+      parseSource: 'help',
+    };
+  }
+
   // 纯聊天 → 返回画布概况
   return {
     reply: [

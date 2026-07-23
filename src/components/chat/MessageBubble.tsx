@@ -11,6 +11,7 @@ import MascotAvatar from './MascotAvatar';
 import AgentTaskTimeline, { type AgentTaskControls } from './AgentTaskTimeline';
 import ChatReferenceText, { type ChatReferenceHandlers } from './ChatReferenceText';
 import ChatMarkdown from './ChatMarkdown';
+import SourceList from './SourceList';
 
 interface MessageBubbleProps extends ChatReferenceHandlers {
   message: ChatMessage;
@@ -63,7 +64,7 @@ function MessageBubble({
   const showTimeline = !!agentTask
     && !!agentControls
     && (agentTask.steps.length > 0 || agentTask.status !== 'completed');
-  // 助手正在响应但还没有任何内容 → 三点思考动画
+  // 助手正在响应但任务时间线尚未建立时，先给出明确的活动状态。
   const isThinking = !isUser
     && !message.content
     && !showTimeline
@@ -107,14 +108,18 @@ function MessageBubble({
                     }`}
       >
         {isThinking && (
-          <span
-            className="flex w-fit items-center gap-1 rounded-2xl rounded-bl-sm border border-canvas-border/80 bg-canvas-card/80 px-3.5 py-2.5 shadow-sm shadow-black/10 backdrop-blur-sm"
-            aria-label="助手正在思考"
+          <div
+            className="flex min-h-8 w-fit items-center gap-2 px-1 py-1.5 text-[12px] text-canvas-text-secondary"
+            role="status"
+            aria-live="polite"
           >
-            <span className="chat-typing-dot" />
-            <span className="chat-typing-dot" />
-            <span className="chat-typing-dot" />
-          </span>
+            <Icon
+              icon="mdi:loading"
+              width="15"
+              className="shrink-0 animate-spin text-canvas-text-muted motion-reduce:animate-none"
+            />
+            <span>正在分析请求</span>
+          </div>
         )}
         {message.content && (isUser ? (
           <div className="whitespace-pre-wrap break-words">
@@ -226,6 +231,9 @@ function MessageBubble({
             <Icon icon="mdi:vector-square-remove" width="13" className="mt-0.5 shrink-0" />
             <span>节点创建失败：{message.canvasError || '未知错误'}</span>
           </div>
+        )}
+        {!isUser && message.sources && message.sources.length > 0 && (
+          <SourceList sources={message.sources} />
         )}
         {mediaResult && mediaResult.deliveryMode === 'chat' && message.canvasStatus !== 'created' && onAddToCanvas && (
           <button

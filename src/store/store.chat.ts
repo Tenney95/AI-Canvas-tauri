@@ -24,7 +24,42 @@ export const BATCH_NODE_LIMIT = 50;
 const INITIAL_REVISION = 0;
 /** 流式消息持续输出时的持久化节流间隔。 */
 const STREAMING_MESSAGE_PERSIST_INTERVAL_MS = 500;
+const ACTIVE_CONVERSATION_STORAGE_PREFIX = 'ai-canvas.chat.active-conversation';
 const scheduledMessagePersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function getActiveConversationStorageKey(projectId: string): string {
+  return `${ACTIVE_CONVERSATION_STORAGE_PREFIX}:${projectId}`;
+}
+
+function readPersistedActiveConversation(projectId: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(getActiveConversationStorageKey(projectId)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function persistActiveConversation(projectId: string, conversationId: string): void {
+  try {
+    globalThis.localStorage?.setItem(
+      getActiveConversationStorageKey(projectId),
+      conversationId,
+    );
+  } catch {
+    // localStorage 不可用时退化为本次运行内的 Store 状态。
+  }
+}
+
+function clearPersistedActiveConversation(projectId: string, conversationId: string): void {
+  try {
+    const key = getActiveConversationStorageKey(projectId);
+    if (globalThis.localStorage?.getItem(key) === conversationId) {
+      globalThis.localStorage.removeItem(key);
+    }
+  } catch {
+    // 清理失败不影响会话删除流程。
+  }
+}
 
 // ============================================
 // Slice interface
@@ -255,6 +290,10 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     stopConversationAgentTasks(id);
     // 删除来源对话不删除已确认记忆，只标记来源不可用
     get().markConversationMemorySourceUnavailable(id);
+    const removedConversation = get().conversations.find((conversation) => conversation.id === id);
+    if (removedConversation) {
+      clearPersistedActiveConversation(removedConversation.projectId, id);
+    }
     set((s) => {
       const conv = s.conversations.find((c) => c.id === id);
       if (conv) {
@@ -271,10 +310,19 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
     });
   },
 
-  setActiveConversation: (id) => set({ activeConversationId: id }),
+  setActiveConversation: (id) => {
+    if (id) {
+      const state = get();
+      const projectId = state.conversations.find((conversation) => conversation.id === id)?.projectId
+        ?? state.currentProjectId;
+      if (projectId) persistActiveConversation(projectId, id);
+    }
+    set({ activeConversationId: id });
+  },
 
   createConversation: (projectId, title) => {
     const id = `conv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const now = Date.now();
     const conversation: ChatConversation = {
       id,
       projectId,
@@ -283,14 +331,15 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
       pinned: false,
       archived: false,
       agentMode: 'collaborative',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
       messageCount: 0,
     };
     set((s) => ({
       conversations: [...s.conversations, conversation],
       activeConversationId: id,
     }));
+    persistActiveConversation(projectId, id);
     persistConv(conversation);
     return id;
   },
@@ -302,15 +351,19 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
   loadConversationsForProject: async (projectId) => {
     try {
       const conversations = await chatHistoryService.loadProjectConversations(projectId);
+      if (get().currentProjectId !== projectId) return;
+      const persistedId = readPersistedActiveConversation(projectId);
+      const restoredConversation = conversations.find((conversation) =>
+        conversation.id === persistedId) ?? conversations[0];
       set((state) => ({
         conversations,
-        activeConversationId: null,
+        activeConversationId: restoredConversation?.id ?? null,
         messages: retainBackgroundTaskMessages(state),
         operationLogs: [],
       }));
-      // 有会话时自动激活最近一个
-      if (conversations.length > 0) {
-        set({ activeConversationId: conversations[0].id });
+      if (restoredConversation) {
+        persistActiveConversation(projectId, restoredConversation.id);
+        await get().loadConversationMessages(restoredConversation.id);
       }
     } catch (e) {
       console.warn('[chat] 加载会话列表失败:', e);

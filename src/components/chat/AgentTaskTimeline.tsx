@@ -6,11 +6,12 @@
  * 只展示计划、工具调用、结果和错误摘要，不展示模型隐藏推理过程。
  * 控制均为可键盘操作的按钮，状态用图标 + 文字表达。
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Icon } from '@iconify/react';
 import {
   AGENT_TERMINAL_STATUSES,
   type AgentApprovalResolution,
+  type AgentStep,
   type AgentTask,
   type AgentTaskStatus,
 } from '../../types/agent';
@@ -61,6 +62,72 @@ const PAUSE_REASON_LABELS: Record<string, string> = {
 
 const ACTIVE_STATUSES: AgentTaskStatus[] = ['queued', 'planning', 'running', 'waiting_tool', 'waiting_approval'];
 
+const TOOL_ACTIVITY_LABELS: Record<string, string> = {
+  web_search: '正在搜索网页',
+  web_extract: '正在浏览网页',
+  file_list_grants: '正在查看已授权文件',
+  file_read_text: '正在读取文件',
+  provider_docs_read: '正在读取接口文档',
+};
+
+function findActiveStep(task: AgentTask): AgentStep | undefined {
+  const selected = task.currentStepId
+    ? task.steps.find((step) => step.id === task.currentStepId)
+    : undefined;
+  if (selected && ['pending', 'running', 'waiting_approval'].includes(selected.status)) {
+    return selected;
+  }
+  for (let index = task.steps.length - 1; index >= 0; index -= 1) {
+    const step = task.steps[index];
+    if (['pending', 'running', 'waiting_approval'].includes(step.status)) return step;
+  }
+  return undefined;
+}
+
+function getActivityLabel(task: AgentTask, step?: AgentStep): string {
+  if (task.status === 'waiting_approval' || step?.status === 'waiting_approval') {
+    return step ? `等待确认：${step.title}` : '等待用户确认';
+  }
+  if (step?.status === 'pending') return `准备${step.title}`;
+  if (step?.status === 'running') {
+    return TOOL_ACTIVITY_LABELS[step.toolCall?.toolId ?? ''] ?? `正在${step.title}`;
+  }
+  if (task.status === 'queued') return '正在等待执行';
+  if (task.status === 'planning') {
+    return task.steps.some((item) => item.status === 'succeeded')
+      ? '正在分析工具结果'
+      : '正在分析请求';
+  }
+  if (task.status === 'waiting_tool') return '正在调用工具';
+  if (task.status === 'running') return '正在整理结果';
+  return STATUS_META[task.status].label;
+}
+
+function getActivityStartedAt(task: AgentTask, step?: AgentStep): number {
+  if (step?.toolCall?.startedAt) return step.toolCall.startedAt;
+  const eventType = task.status === 'planning' ? 'model_round_start' : 'tool_start';
+  for (let index = (task.events?.length ?? 0) - 1; index >= 0; index -= 1) {
+    const event = task.events?.[index];
+    if (event?.type === eventType) return event.timestamp;
+  }
+  return task.startedAt ?? task.createdAt;
+}
+
+function formatElapsed(startedAt: number, now: number): string {
+  const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  return `${minutes}m ${totalSeconds % 60}s`;
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1000) return `${Math.max(0, Math.round(durationMs))}ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(durationMs / 60_000);
+  const seconds = Math.floor((durationMs % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
 interface ControlButtonProps {
   icon: string;
   label: string;
@@ -106,6 +173,16 @@ export default function AgentTaskTimeline({
 
   const meta = STATUS_META[task.status];
   const isActive = ACTIVE_STATUSES.includes(task.status);
+  const activeStep = findActiveStep(task);
+  const activityLabel = getActivityLabel(task, activeStep);
+  const activityDetail = activeStep?.toolCall?.inputSummary ?? activeStep?.approval?.summary;
+  const activityStartedAt = getActivityStartedAt(task, activeStep);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isActive || task.status === 'waiting_approval') return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [activeStep?.id, activeStep?.status, isActive, task.status]);
   const doneSteps = task.steps.filter((step) =>
     ['succeeded', 'failed', 'skipped', 'stopped'].includes(step.status),
   ).length;
@@ -116,39 +193,54 @@ export default function AgentTaskTimeline({
   const hasCanvasCheckpoint = task.steps.some((step) =>
     step.status === 'succeeded' && !!step.toolCall?.canvasCheckpoint);
   const metrics = task.metrics;
+  const totalTokens = metrics ? metrics.inputTokens + metrics.outputTokens : 0;
+  const taskDuration = task.startedAt
+    ? Math.max(0, (task.completedAt ?? task.updatedAt) - task.startedAt)
+    : 0;
+  const terminalLabel = task.status === 'completed' ? '运行记录' : meta.label;
 
   return (
-    <div className="agent-task-timeline mt-2 border-l border-canvas-border/80 pl-2.5 pr-1 py-1">
-      {/* Header：状态 + 进度 + 折叠 */}
+    <div className="agent-task-timeline mt-2 max-w-full py-0.5">
+      {/* 当前活动：只展示可验证的任务和工具状态，不展示模型隐藏推理。 */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex min-h-8 w-full items-center gap-2 rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40"
+        className="flex min-h-7 w-full items-center gap-1.5 rounded-md px-0.5 text-left transition-colors hover:bg-canvas-hover/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40"
       >
         <Icon
           icon={meta.icon}
-          width="15"
-          className={`shrink-0 ${meta.className} ${meta.spin ? 'animate-spin' : ''}`}
+          width="14"
+          className={`shrink-0 ${isActive ? 'text-canvas-text-muted' : meta.className} ${meta.spin ? 'animate-spin motion-reduce:animate-none' : ''}`}
         />
-        <span className={`text-xs font-medium ${meta.className}`}>{meta.label}</span>
-        {task.steps.length > 0 && (
-          <span className="text-[11px] text-canvas-text-muted">
-            {doneSteps}/{task.steps.length} 步
+        <span className="min-w-0 truncate text-[12px] font-medium text-canvas-text-secondary">
+          {isActive ? activityLabel : terminalLabel}
+        </span>
+        {isActive && task.status !== 'waiting_approval' && (
+          <span className="shrink-0 text-[10px] tabular-nums text-canvas-text-muted">
+            {formatElapsed(activityStartedAt, now)}
           </span>
         )}
-        <span className="ml-auto flex items-center gap-2 text-[11px] text-canvas-text-muted">
-          <span>轮 {task.modelRounds}/{task.budget.maxModelRounds}</span>
-          <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width="16" />
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[10px] tabular-nums text-canvas-text-muted">
+          {task.steps.length > 0 && (
+            <span>{isTerminal ? task.steps.length : `${doneSteps}/${task.steps.length}`} 步</span>
+          )}
+          {!isActive && taskDuration > 0 && <span>· {formatDuration(taskDuration)}</span>}
+          <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width="15" />
         </span>
       </button>
 
-      {metrics && (metrics.inputTokens > 0 || metrics.outputTokens > 0 || metrics.toolDurationMs > 0) && (
-        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] tabular-nums text-canvas-text-muted">
-          <span>{(metrics.inputTokens + metrics.outputTokens).toLocaleString()} token</span>
-          <span>模型 {(metrics.modelDurationMs / 1000).toFixed(1)}s</span>
-          <span>工具 {(metrics.toolDurationMs / 1000).toFixed(1)}s</span>
+      {isActive && activityDetail && (
+        <p className="break-words pl-5 text-[11px] leading-[17px] text-canvas-text-muted">
+          {activityDetail}
+        </p>
+      )}
+
+      {expanded && metrics && (metrics.inputTokens > 0 || metrics.outputTokens > 0 || metrics.policyDenied > 0 || metrics.retryCount > 0) && (
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 pl-5 text-[10px] tabular-nums text-canvas-text-muted">
+          {totalTokens > 0 && <span>{totalTokens.toLocaleString()} token</span>}
           {metrics.policyDenied > 0 && <span>{metrics.policyDenied} 次拒绝</span>}
+          {metrics.retryCount > 0 && <span>{metrics.retryCount} 次重试</span>}
         </div>
       )}
 
@@ -170,7 +262,7 @@ export default function AgentTaskTimeline({
       {expanded && (
         <>
           {task.steps.length > 0 && (
-            <div className="mt-2 divide-y divide-canvas-border/60 border-t border-canvas-border/60 pt-1">
+            <div className="mt-1 space-y-0.5">
               {task.steps.map((step) => (
                 <AgentStepCard key={step.id} step={step} />
               ))}

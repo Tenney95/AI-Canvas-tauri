@@ -2,6 +2,7 @@
  * testConnection 连接测试服务 — 按厂商调用对应 API 端点验证密钥有效性和余额（APIMart/GRSAI/OpenAI/火山方舟/RunningHUB
  */
 import { APIMART_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
+import type { WebSearchProviderId } from '../types';
 
 export interface TestResult {
   success: boolean;
@@ -93,17 +94,42 @@ async function testGRSAI(apiKey: string, baseUrl?: string): Promise<TestResult> 
   return { success: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
 }
 
+async function testWebSearch(
+  provider: WebSearchProviderId,
+  apiKey: string,
+): Promise<TestResult> {
+  if (typeof window === 'undefined' || !('__TAURI__' in window || '__TAURI_INTERNALS__' in window)) {
+    return { success: false, error: '联网搜索连接测试仅在 Tauri 桌面环境可用' };
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('assistant_web_search', {
+    request: {
+      provider,
+      apiKey,
+      query: 'AI Canvas connection test',
+      maxResults: 1,
+      topic: 'general',
+    },
+  });
+  return { success: true };
+}
+
 export type ProviderTestKey =
   | 'apimart'
   | 'volcengine'
   | 'runninghub-model'
-  | 'grsai';
+  | 'grsai'
+  | WebSearchProviderId;
 
 const testFns: Record<ProviderTestKey, (apiKey: string, baseUrl?: string) => Promise<TestResult>> = {
   apimart: testAPIMart,
   volcengine: testVolcengine,
   'runninghub-model': testRunninghubModel,
   grsai: testGRSAI,
+  tavily: (apiKey) => testWebSearch('tavily', apiKey),
+  bocha: (apiKey) => testWebSearch('bocha', apiKey),
+  'zhipu-search': (apiKey) => testWebSearch('zhipu-search', apiKey),
+  exa: (apiKey) => testWebSearch('exa', apiKey),
 };
 
 export async function testProviderConnection(

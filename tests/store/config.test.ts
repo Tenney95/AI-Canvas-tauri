@@ -51,6 +51,19 @@ describe('config hydration guard', () => {
     }));
   });
 
+  it('silently persists the selected assistant model without a success toast', async () => {
+    fileMocks.loadConfig.mockResolvedValue({ providers: {}, theme: 'dark' });
+    await useAppStore.getState().loadConfig();
+    useAppStore.getState().updateConfig({ assistantModelId: 'volcengine/doubao-seed' });
+
+    await useAppStore.getState().saveConfig({ silent: true });
+
+    expect(fileMocks.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+      assistantModelId: 'volcengine/doubao-seed',
+    }));
+    expect(useAppStore.getState().toast.visible).toBe(false);
+  });
+
   it('keeps persistence blocked when loading the saved config fails', async () => {
     fileMocks.loadConfig.mockRejectedValue(new Error('read failed'));
 
