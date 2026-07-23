@@ -42,7 +42,7 @@
 | 文件系统 | @tauri-apps/plugin-fs | 读写本地文件 |
 | 对话框 | @tauri-apps/plugin-dialog | 打开/保存文件对话框 |
 | 对话 Agent | 会话级 B/C 模式 + Tool Registry + Policy Engine | 多轮规划、工具调用、确认、后台任务、上下文与项目记忆 |
-| 本地持久化 | IndexedDB v13 | 项目、对话、消息、AgentTask、项目记忆等 |
+| 本地持久化 | IndexedDB v14 | 项目、对话、消息、AgentTask、项目记忆等 |
 | 包管理 | npm | 版本以 `package.json` 和 `src-tauri/Cargo.toml` 为准，禁止在规则中写死 |
 
 ## 项目目录结构
@@ -192,7 +192,7 @@ AI-Canvas-tauri/
 
 ### IndexedDB 与持久化
 
-- `indexedDbService.ts` 当前 schema 版本为 13
+- `indexedDbService.ts` 当前 schema 版本为 14
 - 已持久化项目、工作流、配置、对话、消息、AgentTask、项目记忆、资产索引等
 - 新 object store 或索引必须提升 `DB_VERSION`，并保持旧数据可升级读取
 - 删除会话时同步清理消息和 AgentTask；删除项目时同步清理项目域数据
