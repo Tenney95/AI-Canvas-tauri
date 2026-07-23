@@ -27,17 +27,11 @@ import ChatInput from './ChatInput';
 import ProjectMemoryPanel from './ProjectMemoryPanel';
 import AgentTaskCenter from './AgentTaskCenter';
 import {
-  initMainWindowListener,
   emitAction,
-  emitSyncState,
   emitCloseChatWindow,
-  createChatStatePatch,
-  hasChatStatePatchChanges,
-  type ChatAction,
   type ChatStateSnapshot,
 } from '../../services/chat/chatWindowService';
 import {
-  resolveAgentApproval,
   pauseAgentTask,
   stopAgentTask,
   skipAgentStep,
@@ -50,98 +44,32 @@ import { rewindAgentTaskCanvas } from '../../services/chat/agentRewindService';
 import { estimateConversationUsage } from '../../services/chat/contextManager';
 import {
   getAgentModeToast,
+  resolveConversationAgentApproval,
   resumeAgentTaskExecution,
   submitConversationMessage,
 } from '../../services/chat/conversationExecutionController';
+import {
+  createDetachedChatSyncController,
+  getMediaModelAvailability,
+} from '../../services/chat/detachedChatSyncController';
 import type { AgentApprovalResolution, AgentMode } from '../../types/agent';
-import type { ApiProviderConfig, GeneralModelConfig } from '../../types';
 import {
   getMediaModelOptions,
-  type MediaModelOption,
 } from '../nodes/shared/defaultModels';
 import {
   authorizeConversationFiles,
-  clearConversationFileGrants,
   listConversationFileGrants,
   revokeFileGrant,
   subscribeFileGrants,
 } from '../../services/chat/fileGrantService';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
-const DETACHED_CHAT_SYNC_INTERVAL_MS = 150;
-
-function getMediaModelAvailability(
-  options: MediaModelOption[],
-  generalModels: GeneralModelConfig[],
-  providers: Record<string, ApiProviderConfig>,
-  dreaminaLoggedIn: boolean,
-): Record<string, boolean> {
-  return Object.fromEntries(options.map((option) => {
-    if (option.provider === 'general') {
-      const generalModel = generalModels.find(
-        (model) => `general/${model.id}` === option.value,
-      );
-      const provider = generalModel ? providers[generalModel.providerConfigId] : undefined;
-      return [option.value, !!provider?.baseUrl && !!generalModel?.modelId];
-    }
-    if (option.provider === 'dreamina') {
-      return [option.value, dreaminaLoggedIn];
-    }
-    const providerConfigId = option.groupId === 'runninghub'
-      ? 'runninghub-model'
-      : option.groupId;
-    return [option.value, !!providers[providerConfigId]?.apiKey];
-  }));
-}
-
-function buildDetachedChatSnapshot(
-  state: ReturnType<typeof useAppStore.getState>,
-): ChatStateSnapshot {
-  const project = state.projects.find((item) => item.id === state.currentProjectId);
-  return {
-    conversations: state.conversations,
-    activeConversationId: state.activeConversationId,
-    messages: state.messages,
-    agentTasks: state.agentTasks,
-    projectId: state.currentProjectId,
-    projectName: project?.name,
-    generalModels: state.config.generalModels ?? [],
-    assistantModelId: state.config.assistantModelId,
-    assistantImageModelId: state.config.assistantImageModelId,
-    assistantVideoModelId: state.config.assistantVideoModelId,
-    mediaModelAvailability: getMediaModelAvailability(
-      getMediaModelOptions(state.config.generalModels ?? [], state.config),
-      state.config.generalModels ?? [],
-      state.config.providers,
-      !!state.config.dreaminaAuth?.loggedIn,
-    ),
-    localFileGrants: state.activeConversationId
-      ? listConversationFileGrants(state.activeConversationId)
-      : [],
-  };
-}
 
 interface ChatPanelProps {
   detached?: boolean;
   detachedSnapshot?: ChatStateSnapshot;
   detachedInitialized?: boolean;
   detachedHeaderActions?: ReactNode;
-}
-
-function markApprovalMessageExecuting(approvalId: string): void {
-  const store = useAppStore.getState();
-  const task = store.agentTasks.find((item) =>
-    item.steps.some((step) => step.approval?.id === approvalId),
-  );
-  if (!task) return;
-  const step = task.steps.find((item) => item.approval?.id === approvalId);
-  const message = store.messages.find((item) => item.agentTaskId === task.id);
-  if (!message || !step) return;
-  const placeholder = `等待确认：${step.title}`;
-  store.updateMessage(message.id, {
-    content: message.content === placeholder ? '' : message.content,
-    status: 'executing',
-  });
 }
 
 export default function ChatPanel({
@@ -161,15 +89,12 @@ export default function ChatPanel({
     messages,
     agentTasks,
     currentProjectId,
-    currentProjectName,
     createConversation,
     setActiveConversation,
     updateConversation,
     loadConversationMessages,
     showToast,
     assistantModelId,
-    assistantImageModelId,
-    assistantVideoModelId,
     generalModels,
     providers,
     dreaminaLoggedIn,
@@ -189,15 +114,12 @@ export default function ChatPanel({
       messages: s.messages,
       agentTasks: s.agentTasks,
       currentProjectId: s.currentProjectId,
-      currentProjectName: s.projects.find((project) => project.id === s.currentProjectId)?.name,
       createConversation: s.createConversation,
       setActiveConversation: s.setActiveConversation,
       updateConversation: s.updateConversation,
       loadConversationMessages: s.loadConversationMessages,
       showToast: s.showToast,
       assistantModelId: s.config.assistantModelId,
-      assistantImageModelId: s.config.assistantImageModelId,
-      assistantVideoModelId: s.config.assistantVideoModelId,
       generalModels: s.config.generalModels ?? [],
       providers: s.config.providers,
       dreaminaLoggedIn: !!s.config.dreaminaAuth?.loggedIn,
@@ -279,7 +201,7 @@ export default function ChatPanel({
   const currentProjectMemories = effectiveProjectId
     ? projectMemories.filter((memory) => memory.projectId === effectiveProjectId)
     : [];
-  const [fileGrantVersion, setFileGrantVersion] = useState(0);
+  const [, setFileGrantVersion] = useState(0);
   useEffect(() => subscribeFileGrants(
     () => setFileGrantVersion((version) => version + 1),
   ), []);
@@ -430,11 +352,9 @@ export default function ChatPanel({
       void emitAction({ type: 'resolve_agent_approval', approvalId, resolution });
       return;
     }
-    if (!resolveAgentApproval(approvalId, resolution)) {
+    if (!resolveConversationAgentApproval(approvalId, resolution)) {
       showToast('该确认已过期，请重新发起操作', 'info');
-      return;
     }
-    markApprovalMessageExecuting(approvalId);
   }, [detached, showToast]);
 
   const scrollToBottom = useCallback(() => {
@@ -608,316 +528,12 @@ export default function ChatPanel({
     }));
   }, []);
 
-  // ── 状态同步到独立窗口：限频 + 单飞 + 最新状态合并 ──
-  const chatSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const chatSyncInFlightRef = useRef(false);
-  const chatSyncPendingRef = useRef(false);
-  const chatSyncImmediateRef = useRef(false);
-  const chatSyncDisposedRef = useRef(false);
-  const chatSyncLastStartedAtRef = useRef(0);
-  const chatSyncLastSnapshotRef = useRef<ChatStateSnapshot | null>(null);
-  const chatSyncRevisionRef = useRef(0);
-  const chatSyncForceSnapshotRef = useRef(false);
-
-  const emitLatestChatWindowSnapshot = useCallback(async function emitLatestSnapshot() {
-    chatSyncTimerRef.current = null;
-    if (chatSyncDisposedRef.current || chatSyncInFlightRef.current || !chatSyncPendingRef.current) return;
-
-    const state = useAppStore.getState();
-    if (!state.chatPanelDetached) {
-      chatSyncPendingRef.current = false;
-      chatSyncImmediateRef.current = false;
-      return;
-    }
-
-    chatSyncPendingRef.current = false;
-    chatSyncImmediateRef.current = false;
-    chatSyncInFlightRef.current = true;
-    chatSyncLastStartedAtRef.current = performance.now();
-
-    try {
-      const nextSnapshot = buildDetachedChatSnapshot(state);
-      const previousSnapshot = chatSyncLastSnapshotRef.current;
-      const forceSnapshot = chatSyncForceSnapshotRef.current || !previousSnapshot;
-
-      if (!forceSnapshot) {
-        const patch = createChatStatePatch(previousSnapshot, nextSnapshot);
-        chatSyncLastSnapshotRef.current = nextSnapshot;
-        if (!hasChatStatePatchChanges(patch)) return;
-
-        const baseRevision = chatSyncRevisionRef.current;
-        const revision = baseRevision + 1;
-        chatSyncRevisionRef.current = revision;
-        await emitSyncState({ type: 'patch', baseRevision, revision, patch });
-        return;
-      }
-
-      chatSyncForceSnapshotRef.current = false;
-      chatSyncLastSnapshotRef.current = nextSnapshot;
-      const revision = chatSyncRevisionRef.current + 1;
-      chatSyncRevisionRef.current = revision;
-      await emitSyncState({ type: 'snapshot', revision, snapshot: nextSnapshot });
-    } finally {
-      chatSyncInFlightRef.current = false;
-      if (!chatSyncDisposedRef.current && chatSyncPendingRef.current) {
-        const elapsed = performance.now() - chatSyncLastStartedAtRef.current;
-        const delay = chatSyncImmediateRef.current
-          ? 0
-          : Math.max(0, DETACHED_CHAT_SYNC_INTERVAL_MS - elapsed);
-        chatSyncTimerRef.current = setTimeout(() => {
-          void emitLatestSnapshot();
-        }, delay);
-      }
-    }
-  }, []);
-
-  const syncToChatWindow = useCallback((immediate = false, forceSnapshot = false) => {
-    if (!isTauri) return;
-    const state = useAppStore.getState();
-    if (!state.chatPanelDetached) return;
-
-    chatSyncPendingRef.current = true;
-    if (immediate) chatSyncImmediateRef.current = true;
-    if (forceSnapshot) chatSyncForceSnapshotRef.current = true;
-
-    if (chatSyncTimerRef.current) {
-      if (!immediate) return;
-      clearTimeout(chatSyncTimerRef.current);
-      chatSyncTimerRef.current = null;
-    }
-    if (chatSyncInFlightRef.current) return;
-
-    const elapsed = performance.now() - chatSyncLastStartedAtRef.current;
-    const delay = immediate ? 0 : Math.max(0, DETACHED_CHAT_SYNC_INTERVAL_MS - elapsed);
-    if (delay === 0) {
-      void emitLatestChatWindowSnapshot();
-      return;
-    }
-    chatSyncTimerRef.current = setTimeout(() => {
-      void emitLatestChatWindowSnapshot();
-    }, delay);
-  }, [emitLatestChatWindowSnapshot]);
-
   useEffect(() => {
-    chatSyncDisposedRef.current = false;
-    return () => {
-      chatSyncDisposedRef.current = true;
-      chatSyncPendingRef.current = false;
-      chatSyncImmediateRef.current = false;
-      chatSyncForceSnapshotRef.current = false;
-      chatSyncLastSnapshotRef.current = null;
-      chatSyncRevisionRef.current = 0;
-      if (chatSyncTimerRef.current) clearTimeout(chatSyncTimerRef.current);
-      chatSyncTimerRef.current = null;
-    };
-  }, []);
-
-  // ── 独立窗口通信 ──
-  useEffect(() => {
-    if (!isTauri || detached) return;
-
-    let cleanup: (() => void) | undefined;
-
-    (async () => {
-      cleanup = await initMainWindowListener(
-        (action: ChatAction) => {
-          const store = useAppStore.getState();
-
-          switch (action.type) {
-            case 'send_message': {
-              if (action.conversationId !== store.activeConversationId) {
-                store.setActiveConversation(action.conversationId);
-              }
-              const conversation = store.conversations.find(
-                (item) => item.id === action.conversationId,
-              );
-              submitConversationMessage({
-                content: action.content,
-                projectId: conversation?.projectId ?? store.currentProjectId ?? '',
-                conversationId: action.conversationId,
-                mode: conversation?.agentMode ?? 'collaborative',
-                dispatchMode: action.dispatchMode,
-              });
-              break;
-            }
-
-            case 'switch_conversation':
-              store.setActiveConversation(action.conversationId);
-              void store.loadConversationMessages(action.conversationId);
-              break;
-
-            case 'create_conversation':
-              store.createConversation(action.projectId, action.title);
-              break;
-
-            case 'rename_conversation':
-              store.updateConversation(action.conversationId, {
-                title: action.title,
-                titleSource: 'user',
-              });
-              break;
-
-            case 'toggle_pin': {
-              const conv = store.conversations.find((c) => c.id === action.conversationId);
-              if (conv) {
-                store.updateConversation(action.conversationId, { pinned: !conv.pinned });
-              }
-              break;
-            }
-
-            case 'archive_conversation':
-              store.updateConversation(action.conversationId, { archived: true });
-              break;
-
-            case 'delete_conversation':
-              clearConversationFileGrants(action.conversationId);
-              store.updateConversation(action.conversationId, { deletedAt: Date.now() });
-              store.removeConversation(action.conversationId);
-              break;
-
-            case 'authorize_local_files':
-              void authorizeConversationFiles(action.conversationId)
-                .then((created) => {
-                  store.showToast(
-                    created.length > 0 ? `已授权 ${created.length} 个文件` : '未新增文件授权',
-                    'info',
-                  );
-                })
-                .catch((error) => store.showToast(
-                  error instanceof Error ? error.message : '文件授权失败',
-                  'error',
-                ));
-              break;
-
-            case 'revoke_local_file':
-              revokeFileGrant(action.conversationId, action.grantId);
-              break;
-
-            case 'set_agent_mode':
-              store.updateConversation(action.conversationId, { agentMode: action.mode });
-              store.showToast(getAgentModeToast(action.mode), 'info');
-              break;
-
-            case 'resolve_agent_approval':
-              if (!resolveAgentApproval(action.approvalId, action.resolution)) {
-                store.showToast('该确认已过期，请重新发起操作', 'info');
-                break;
-              }
-              markApprovalMessageExecuting(action.approvalId);
-              break;
-
-            case 'pause_agent_task':
-              cancelScheduledAgentExecution(action.taskId);
-              pauseAgentTask(action.taskId);
-              break;
-
-            case 'resume_agent_task': {
-              const result = resumeAgentTaskExecution(action.taskId);
-              if (!result.ok) store.showToast(result.message ?? '无法继续该任务', 'error');
-              break;
-            }
-
-            case 'stop_agent_task':
-              cancelScheduledAgentExecution(action.taskId);
-              stopAgentTask(action.taskId);
-              break;
-
-            case 'skip_agent_step':
-              try {
-                skipAgentStep(action.taskId, action.stepId);
-              } catch {
-                store.showToast('该步骤已无法跳过', 'error');
-              }
-              break;
-
-            case 'replan_agent_task':
-              requestAgentReplan(action.taskId);
-              resumeAgentTaskExecution(action.taskId);
-              break;
-
-            case 'rewind_agent_task':
-              void rewindAgentTaskCanvas(action.taskId).then((result) => {
-                store.showToast(result.ok ? '已回退该任务的画布修改' : (result.message ?? '无法回退任务'), result.ok ? 'info' : 'error');
-              });
-              break;
-
-            case 'select_model': {
-              const cfg: Record<string, string | undefined> = {};
-              const c = action.category || 'text';
-              if (c === 'image') cfg.assistantImageModelId = action.modelId;
-              else if (c === 'video') cfg.assistantVideoModelId = action.modelId;
-              else cfg.assistantModelId = action.modelId;
-              store.updateConfig(cfg);
-              void store.saveConfig({ silent: true });
-              break;
-            }
-
-            case 'focus_node': {
-              const nodeExists = store.nodes.some((node) => node.id === action.nodeId);
-              if (!nodeExists) {
-                store.showToast('引用的节点已不存在', 'error');
-                break;
-              }
-              window.dispatchEvent(new CustomEvent('canvas-focus-node', {
-                detail: { nodeId: action.nodeId },
-              }));
-              break;
-            }
-
-            case 'set_hovered_node':
-              store.setHoveredMentionNodeId(action.nodeId);
-              break;
-
-            case 'request_sync':
-              syncToChatWindow(true, true);
-              break;
-          }
-        },
-        () => {
-          const store = useAppStore.getState();
-          store.setHoveredMentionNodeId(null);
-          store.setChatPanelDetached(false);
-          store.openChat();
-        },
-      );
-    })();
-
-    return () => { cleanup?.(); };
-  }, [detached, syncToChatWindow]);
-
-  const chatWindowWasDetachedRef = useRef(false);
-  useEffect(() => {
-    const wasDetached = chatWindowWasDetachedRef.current;
-    chatWindowWasDetachedRef.current = !detached && chatPanelDetached;
-    if (!detached && chatPanelDetached) {
-      syncToChatWindow(!wasDetached, !wasDetached);
-      return;
-    }
-    chatSyncPendingRef.current = false;
-    chatSyncImmediateRef.current = false;
-    chatSyncForceSnapshotRef.current = false;
-    chatSyncLastSnapshotRef.current = null;
-    chatSyncRevisionRef.current = 0;
-    if (chatSyncTimerRef.current) clearTimeout(chatSyncTimerRef.current);
-    chatSyncTimerRef.current = null;
-  }, [
-    detached,
-    messages,
-    conversations,
-    agentTasks,
-    activeConversationId,
-    chatPanelDetached,
-    currentProjectId,
-    currentProjectName,
-    generalModels,
-    providers,
-    dreaminaLoggedIn,
-    assistantModelId,
-    assistantImageModelId,
-    assistantVideoModelId,
-    fileGrantVersion,
-    syncToChatWindow,
-  ]);
+    if (detached) return;
+    const controller = createDetachedChatSyncController();
+    void controller.start();
+    return () => controller.dispose();
+  }, [detached]);
 
   // ── 分离 / 附着 ──
   const handleDetachToggle = useCallback(async () => {

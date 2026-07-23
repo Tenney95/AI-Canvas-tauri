@@ -9,6 +9,7 @@ import {
 } from './assistantService';
 import {
   prepareAgentTaskResume,
+  resolveAgentApproval,
   runAgentLoop,
   runAgentTask,
   stopAgentTask,
@@ -30,6 +31,7 @@ import { useAppStore } from '../../store/useAppStore';
 import type { ChatMessage } from '../../types/chat';
 import {
   DEFAULT_AGENT_TASK_BUDGET,
+  type AgentApprovalResolution,
   type AgentMode,
 } from '../../types/agent';
 import type { MediaGenerationIntent } from '../../types/media';
@@ -128,6 +130,28 @@ export function getAgentModeToast(mode: AgentMode): string {
     return '已切换到 C 自主模式：画布操作可自动执行，付费媒体和文件写入仍需确认';
   }
   return '已切换到 B 协作模式：画布写操作将先预览确认';
+}
+
+export function resolveConversationAgentApproval(
+  approvalId: string,
+  resolution: AgentApprovalResolution,
+): boolean {
+  if (!resolveAgentApproval(approvalId, resolution)) return false;
+
+  const store = useAppStore.getState();
+  const task = store.agentTasks.find((item) =>
+    item.steps.some((step) => step.approval?.id === approvalId),
+  );
+  if (!task) return true;
+  const step = task.steps.find((item) => item.approval?.id === approvalId);
+  const message = store.messages.find((item) => item.agentTaskId === task.id);
+  if (!message || !step) return true;
+  const placeholder = `等待确认：${step.title}`;
+  store.updateMessage(message.id, {
+    content: message.content === placeholder ? '' : message.content,
+    status: 'executing',
+  });
+  return true;
 }
 
 export function submitConversationMessage({
