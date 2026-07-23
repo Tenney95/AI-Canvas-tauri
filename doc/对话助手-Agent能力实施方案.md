@@ -1385,7 +1385,7 @@ type PolicyDecision =
 
 **任务类型：架构收敛**
 
-**状态：实施中**
+**状态：已完成**
 
 #### 目标与边界
 
@@ -1398,7 +1398,7 @@ type PolicyDecision =
 
 - [x] P5-F1：新增 `conversationExecutionController.ts`，收口消息创建、插话、任务启动/恢复/调度、流式消息更新和媒体交付；`ChatPanel` 只调用控制器命令。
 - [x] P5-F2：新增 `detachedChatSyncController.ts`，收口独立窗口快照/patch、限频单飞、监听生命周期和主窗口 Action 路由。
-- [ ] P5-F3：新增 `agentRoundExecutor.ts`，收口单轮模型请求、Policy 判定、审批、工具执行和 Observation 组装；`agentRuntime` 只保留上下文初始化、循环推进、预算终止和资源清理。
+- [x] P5-F3：新增 `agentRoundExecutor.ts`，收口单轮模型请求、Policy 判定、审批、工具执行和 Observation 组装；`agentRuntime` 只保留上下文初始化、循环推进、预算终止和资源清理。
 
 #### 阶段完成记录
 
@@ -1406,6 +1406,9 @@ type PolicyDecision =
 - P5-F1 验证：`npm run typecheck`、`npm run test:typecheck`、3 个改动文件定向 ESLint、4 个相关测试文件 10 项测试及 `git diff --check` 通过。
 - P5-F2（2026-07-23）：独立窗口快照构建、增量 patch、revision、限频单飞、Store/文件授权订阅和全部 `ChatAction` 主窗口路由迁入同步控制器；异步监听初始化后卸载时会立即执行迟到的 cleanup。`ChatPanel.tsx` 降至 721 行。
 - P5-F2 验证：`npm run typecheck`、`npm run test:typecheck`、4 个相关文件定向 ESLint、4 个相关测试文件 10 项测试及 `git diff --check` 通过。
+- P5-F3（2026-07-23）：单轮模型流、动态模式复核、预算守卫、Policy、审批输入、重复写抑制、只读并发、写入串行、重试、指标和 Observation 迁入 `agentRoundExecutor.ts`；`agentRuntime.ts` 从 1332 行降至 460 行，只保留任务状态机、审批 resolver、初始上下文、循环和资源清理。
+- P5-F3 验证：`npm run typecheck`、`npm run test:typecheck`、3 个相关文件定向 ESLint 和 9 个相关测试文件 45 项测试通过。首次与生产构建并行的全量测试有 1 项既有 ImageNode 测试超过 5 秒；隔离重跑 5 项通过，随后单独全量运行 62 个文件 343 项全部通过。
+- 整体构建：`npx vite build --outDir <系统临时目录>` 通过，仅保留既有 dynamic import 和 chunk 体积警告；未修改 IndexedDB、Tauri 配置、Policy 矩阵或工具协议。
 
 #### 影响面与验证
 
@@ -1578,4 +1581,5 @@ type PolicyDecision =
 | 2026-07-23 | P5-E | 收敛 API 连接为 `config.providers` 单一权威源，通用模型和异步待续任务只保存 `providerConfigId`，并清洗旧配置与 localStorage 中的密钥副本。 |
 | 2026-07-23 | 平台补充 | 统一普通文本、标准图片和助手流式请求的 AI HTTP 传输：Web 模式沿用浏览器 `fetch`，Tauri 模式通过 Channel 分块转发响应并支持连接期、传输期和消费期取消，避免模型目录可用但实际请求被 WebView CORS 拦截。 |
 | 2026-07-23 | 平台补充 | 修复付费媒体生成取消链路：信号贯通图片、视频、音频、声明式协议与 Tauri 原生请求，并对不支持远程取消的已提交任务显示准确计费风险。 |
+| 2026-07-23 | P5-F | 抽取对话执行控制器、独立窗口同步控制器和 Agent 单轮执行器，保持协议与安全矩阵不变，降低 ChatPanel 与 Agent Runtime 编排修改风险。 |
 | 2026-07-23 | 平台补充 | 建立媒体 Provider Registry，并将 APIMart 图片、视频、语音和音乐执行收口到单一 adapter；其他 Provider 保留兼容分支以便渐进迁移。 |
