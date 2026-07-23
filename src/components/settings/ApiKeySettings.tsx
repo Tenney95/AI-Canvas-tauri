@@ -57,6 +57,8 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     saveProviderConfig,
     removeProviderConfig,
     saveConfig,
+    pendingApiKeyConnectionId,
+    setPendingApiKeyConnectionId,
   } = useAppStore(
     useShallow((state) => ({
       config: state.config,
@@ -65,6 +67,8 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       saveProviderConfig: state.saveProviderConfig,
       removeProviderConfig: state.removeProviderConfig,
       saveConfig: state.saveConfig,
+      pendingApiKeyConnectionId: state.pendingApiKeyConnectionId,
+      setPendingApiKeyConnectionId: state.setPendingApiKeyConnectionId,
     })),
   );
 
@@ -270,6 +274,17 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     // Validate the persisted OAuth mirror only when the settings view mounts.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Agent 保存厂商配置后请求补填密钥：自动打开对应连接的编辑框，消费后清空
+  useEffect(() => {
+    if (!pendingApiKeyConnectionId) return;
+    if (config.providers[pendingApiKeyConnectionId]) {
+      setEditingConnectionId(pendingApiKeyConnectionId);
+      setConnectionDialogRevision((revision) => revision + 1);
+      setConnectionDialogOpen(true);
+    }
+    setPendingApiKeyConnectionId(null);
+  }, [pendingApiKeyConnectionId, config.providers, setPendingApiKeyConnectionId]);
 
   const openAddDialog = () => {
     setEditingConnectionId(undefined);

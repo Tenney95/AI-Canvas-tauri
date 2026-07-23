@@ -248,12 +248,16 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
           });
           await useAppStore.getState().saveConfig();
           deleteProviderConfigDraft(context.taskId, input.draftId);
+          // 保存成功后打开设置的 API Key 页并弹出该连接编辑框，方便用户立即补填密钥
+          useAppStore.getState().openApiKeySettings(draft.connectionId);
           return {
             status: 'success' as const,
             summary: `已保存“${draft.connectionName}”API 厂商配置，API Key 未被修改`,
             modelContent: [
               `已保存连接“${draft.connectionName}”，包含 ${draft.config.selectedModels?.length ?? 0} 个模型。`,
-              existing ? '已保留该连接原有 API Key。' : '新连接的 API Key 保持空白，请用户在设置页填写。',
+              existing
+                ? '已保留该连接原有 API Key。'
+                : '新连接的 API Key 保持空白，已自动打开设置的 API Key 页并弹出该连接编辑框，请用户在其中填写密钥。',
             ].join('\n'),
           };
         } catch (error) {

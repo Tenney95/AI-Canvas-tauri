@@ -26,7 +26,7 @@ import { detectBackgroundBrightness, compressImageLossless } from '../services/b
 import type { CanvasBackground as CanvasBg, InteractionMode } from '../types';
 import type { BackgroundDetection } from '../services/backgroundService';
 
-type SettingsTab = 'general' | 'files' | 'api' | 'shortcuts' | 'comfyui' | 'storage';
+import type { SettingsTab } from '../store/store.ui';
 
 const INTERACTION_MODE_OPTIONS: {
   id: InteractionMode;
@@ -102,11 +102,13 @@ function formatBytes(bytes: number): string {
 }
 
 export default function SettingsPanel() {
-  const { settingsOpen, setSettingsOpen, config, updateConfig, saveConfig, currentProjectId, workflows, setWorkflowPanelOpen, showToast } =
+  const { settingsOpen, setSettingsOpen, settingsInitialTab, setSettingsInitialTab, config, updateConfig, saveConfig, currentProjectId, workflows, setWorkflowPanelOpen, showToast } =
     useAppStore(
       useShallow((s) => ({
         settingsOpen: s.settingsOpen,
         setSettingsOpen: s.setSettingsOpen,
+        settingsInitialTab: s.settingsInitialTab,
+        setSettingsInitialTab: s.setSettingsInitialTab,
         config: s.config,
         updateConfig: s.updateConfig,
         saveConfig: s.saveConfig,
@@ -132,6 +134,13 @@ export default function SettingsPanel() {
   const [bgUploading, setBgUploading] = useState(false);
   const [bgDetection, setBgDetection] = useState<BackgroundDetection | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 外部（如 Agent 保存厂商配置后）请求打开指定标签页时切换过去，消费后清空
+  useEffect(() => {
+    if (!settingsOpen || !settingsInitialTab) return;
+    setActiveTab(settingsInitialTab);
+    setSettingsInitialTab(null);
+  }, [settingsOpen, settingsInitialTab, setSettingsInitialTab]);
 
   // 加载应用、默认存储和当前项目目录
   useEffect(() => {
