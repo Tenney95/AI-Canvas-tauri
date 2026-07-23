@@ -28,7 +28,13 @@ interface ProviderConfigApplyInput {
 const MODEL_CATEGORIES: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
 
 function providerDocsError(error: unknown) {
-  const message = error instanceof Error ? error.message : '厂商文档读取失败';
+  // Tauri invoke 的拒绝是纯字符串而非 Error，直接丢弃会把真实原因（如域名解析、
+  // 大小超限、内容类型）都吞成无意义的通用文案，这里保留原始 native 错误信息。
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'string' && error.trim()
+      ? error
+      : '厂商文档读取失败';
   const retryable = /请求失败|网络错误|域名解析失败|HTTP 429|HTTP 5\d\d|timed? out|timeout/i.test(message);
   return {
     status: 'error' as const,
@@ -135,7 +141,8 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
       title: '生成 API 厂商配置草稿',
       description: [
         '把已读取厂商文档中的请求和响应示例分析为配置草稿。',
-        '每个模型提供提交请求、提交响应；异步接口还要同时提供轮询请求和轮询响应。',
+        '每个模型必须提供准确的 modelId、提交请求和提交响应；异步接口还要同时提供轮询请求和轮询响应。',
+        '当文档示例使用 loading、example 等占位主机时，通过 baseUrl 提供文档或用户明确声明的实际接口地址。',
         '所有模型必须属于同一个 HTTPS Base URL。不得传入 API Key、Token、Authorization 值或其他真实凭据。',
         '该工具只生成任务级临时草稿，不写入设置；成功后使用返回的 draftId 调用 provider_config_apply。',
       ].join(''),
@@ -146,15 +153,17 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
         properties: {
           connectionId: { type: 'string', minLength: 8, maxLength: 64 },
           connectionName: { type: 'string', minLength: 1, maxLength: 80 },
+          baseUrl: { type: 'string', minLength: 8, maxLength: 2048 },
           models: {
             type: 'array',
             minItems: 1,
             maxItems: 16,
             items: {
               type: 'object',
-              required: ['submitRequest', 'submitResponse'],
+              required: ['modelId', 'submitRequest', 'submitResponse'],
               additionalProperties: false,
               properties: {
+                modelId: { type: 'string', minLength: 1, maxLength: 160 },
                 name: { type: 'string', minLength: 1, maxLength: 120 },
                 category: { type: 'string', enum: MODEL_CATEGORIES },
                 submitRequest: { type: 'string', minLength: 1, maxLength: 20_000 },

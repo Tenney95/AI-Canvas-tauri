@@ -1,15 +1,17 @@
 use reqwest::blocking::{Client, ClientBuilder};
-use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, LOCATION, USER_AGENT};
+use reqwest::header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, LOCATION, USER_AGENT};
 use reqwest::redirect::Policy;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Read;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::{Host, Url};
 
-const MAX_PAGE_BYTES: usize = 1_000_000;
+const MAX_PAGE_BYTES: usize = 3_000_000;
+const MAX_DOH_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_REDIRECTS: usize = 5;
 const MAX_URL_CHARS: usize = 2_048;
+const CLOUDFLARE_DOH_ENDPOINT: &str = "https://1.1.1.1/dns-query";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,11 +23,31 @@ pub struct ProviderDocsReadResponse {
     fetched_at: u64,
 }
 
+#[derive(Deserialize)]
+struct DnsJsonResponse {
+    #[serde(rename = "Status")]
+    status: u32,
+    #[serde(rename = "Answer", default)]
+    answers: Vec<DnsJsonAnswer>,
+}
+
+#[derive(Deserialize)]
+struct DnsJsonAnswer {
+    #[serde(rename = "type")]
+    record_type: u16,
+    data: String,
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn is_fake_proxy_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 198 && (18..=19).contains(&octets[1])
 }
 
 fn is_disallowed_ipv4(ip: std::net::Ipv4Addr) -> bool {
@@ -41,7 +63,7 @@ fn is_disallowed_ipv4(ip: std::net::Ipv4Addr) -> bool {
         || (octets[0] == 100 && (64..=127).contains(&octets[1]))
         || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
         || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
-        || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+        || is_fake_proxy_ipv4(ip)
         || octets[0] >= 240
 }
 
@@ -63,6 +85,13 @@ fn is_disallowed_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(value) => is_disallowed_ipv4(value),
         IpAddr::V6(value) => is_disallowed_ipv6(value),
+    }
+}
+
+fn is_fake_proxy_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(value) => is_fake_proxy_ipv4(value),
+        IpAddr::V6(value) => value.to_ipv4_mapped().is_some_and(is_fake_proxy_ipv4),
     }
 }
 
@@ -107,6 +136,82 @@ fn validate_url_shape(raw_url: &str) -> Result<Url, String> {
     Ok(url)
 }
 
+fn parse_doh_public_a_records(body: &[u8]) -> Result<Vec<Ipv4Addr>, String> {
+    let response: DnsJsonResponse =
+        serde_json::from_slice(body).map_err(|_| "安全 DNS 响应格式无效".to_string())?;
+    if response.status != 0 {
+        return Err(format!("安全 DNS 查询失败，状态码 {}", response.status));
+    }
+
+    let addresses = response
+        .answers
+        .into_iter()
+        .filter(|answer| answer.record_type == 1)
+        .map(|answer| {
+            answer
+                .data
+                .parse::<Ipv4Addr>()
+                .map_err(|_| "安全 DNS 返回了无效 IPv4 地址".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if addresses.is_empty() {
+        return Err("安全 DNS 未返回可用的公网 IPv4 地址".to_string());
+    }
+    if addresses.iter().copied().any(is_disallowed_ipv4) {
+        return Err("安全 DNS 返回了非公网 IPv4 地址".to_string());
+    }
+    Ok(addresses)
+}
+
+fn resolve_public_addresses_with_doh(host: &str) -> Result<Vec<SocketAddr>, String> {
+    let mut endpoint =
+        Url::parse(CLOUDFLARE_DOH_ENDPOINT).map_err(|_| "安全 DNS 端点无效".to_string())?;
+    endpoint
+        .query_pairs_mut()
+        .append_pair("name", host)
+        .append_pair("type", "A");
+    let response = ClientBuilder::new()
+        .redirect(Policy::none())
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| format!("创建安全 DNS 客户端失败: {error}"))?
+        .get(endpoint)
+        .header(ACCEPT, "application/dns-json")
+        .header(USER_AGENT, "AI-Canvas-ProviderDocs/0.5")
+        .send()
+        .map_err(|error| format!("安全 DNS 查询失败: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("安全 DNS 返回 HTTP {}", response.status().as_u16()));
+    }
+    if response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > MAX_DOH_RESPONSE_BYTES)
+    {
+        return Err("安全 DNS 响应超过大小限制".to_string());
+    }
+
+    let mut body = Vec::new();
+    response
+        .take((MAX_DOH_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut body)
+        .map_err(|error| format!("读取安全 DNS 响应失败: {error}"))?;
+    if body.len() > MAX_DOH_RESPONSE_BYTES {
+        return Err("安全 DNS 响应超过大小限制".to_string());
+    }
+
+    parse_doh_public_a_records(&body).map(|addresses| {
+        addresses
+            .into_iter()
+            .map(|address| SocketAddr::new(IpAddr::V4(address), 443))
+            .collect()
+    })
+}
+
 fn resolve_public_addresses(url: &Url) -> Result<Vec<SocketAddr>, String> {
     let host = url
         .host_str()
@@ -120,11 +225,20 @@ fn resolve_public_addresses(url: &Url) -> Result<Vec<SocketAddr>, String> {
     }
     if addresses
         .iter()
-        .any(|address| is_disallowed_ip(address.ip()))
+        .all(|address| is_fake_proxy_ip(address.ip()))
     {
+        return resolve_public_addresses_with_doh(host);
+    }
+    // 过滤掉非公网地址，只保留可安全连接的公网地址；一条杂散记录（如同时返回的
+    // 私网 IPv6 或 CGNAT 地址）不应连累同一域名下正常的公网地址导致整页读取失败。
+    let public_addresses = addresses
+        .into_iter()
+        .filter(|address| !is_disallowed_ip(address.ip()))
+        .collect::<Vec<_>>();
+    if public_addresses.is_empty() {
         return Err("厂商文档域名解析到了非公网地址".to_string());
     }
-    Ok(addresses)
+    Ok(public_addresses)
 }
 
 fn pinned_client(host: &str, address: SocketAddr) -> Result<Client, String> {
@@ -261,5 +375,48 @@ mod tests {
         let other_site = validate_url_shape("https://example.com/models").unwrap();
         assert!(same_origin(&start, &same_site));
         assert!(!same_origin(&start, &other_site));
+    }
+
+    #[test]
+    fn recognizes_only_the_proxy_fake_ipv4_range() {
+        assert!(is_fake_proxy_ipv4(Ipv4Addr::new(198, 18, 0, 1)));
+        assert!(is_fake_proxy_ipv4(Ipv4Addr::new(198, 19, 255, 254)));
+        assert!(!is_fake_proxy_ipv4(Ipv4Addr::new(198, 17, 255, 255)));
+        assert!(!is_fake_proxy_ipv4(Ipv4Addr::new(198, 20, 0, 0)));
+    }
+
+    #[test]
+    fn parses_public_a_records_from_doh_json() {
+        let body = br#"{
+            "Status": 0,
+            "Answer": [
+                {"name": "docs.example.com", "type": 5, "TTL": 60, "data": "cdn.example.com"},
+                {"name": "cdn.example.com", "type": 1, "TTL": 60, "data": "203.0.113.10"},
+                {"name": "cdn.example.com", "type": 1, "TTL": 60, "data": "8.8.8.8"}
+            ]
+        }"#;
+
+        assert!(parse_doh_public_a_records(body).is_err());
+
+        let public_body = br#"{
+            "Status": 0,
+            "Answer": [
+                {"name": "docs.example.com", "type": 5, "TTL": 60, "data": "cdn.example.com"},
+                {"name": "cdn.example.com", "type": 1, "TTL": 60, "data": "8.8.8.8"}
+            ]
+        }"#;
+        assert_eq!(
+            parse_doh_public_a_records(public_body).unwrap(),
+            vec![Ipv4Addr::new(8, 8, 8, 8)]
+        );
+    }
+
+    #[test]
+    fn rejects_private_or_unsuccessful_doh_answers() {
+        let private_body = br#"{"Status":0,"Answer":[{"type":1,"data":"192.168.1.20"}]}"#;
+        let failed_body = br#"{"Status":3,"Answer":[]}"#;
+
+        assert!(parse_doh_public_a_records(private_body).is_err());
+        assert!(parse_doh_public_a_records(failed_body).is_err());
     }
 }
