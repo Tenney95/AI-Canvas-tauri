@@ -264,6 +264,7 @@ export default function WorkflowPanel() {
         <>
           {/* Backdrop */}
           <motion.div
+            data-tauri-drag-region
             className="wf-panel-backdrop"
             variants={backdropVariants}
             initial="hidden"

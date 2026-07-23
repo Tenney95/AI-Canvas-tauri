@@ -90,6 +90,7 @@ export default function FullscreenOverlay({
     <AnimatePresence>
       {isOpen && (
         <motion.div
+          data-tauri-drag-region
           className={`fullscreen-overlay${hidePanel ? ' fullscreen-overlay--transparent' : ''} ${className}`}
           variants={hidePanel ? backdropVariantsInstant : backdropVariants}
           initial="hidden"

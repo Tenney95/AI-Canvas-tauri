@@ -372,6 +372,7 @@ export default function AssetsPanel() {
       {assetsPanelOpen && (
         <>
           <motion.div
+            data-tauri-drag-region
             className="assets-panel-backdrop"
             variants={backdropVariants}
             initial="hidden" animate="visible" exit="hidden"

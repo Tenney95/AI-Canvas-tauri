@@ -381,6 +381,7 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
 
         {deleteTarget ? (
           <div
+            data-tauri-drag-region
             className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 p-3 backdrop-blur-sm"
             onMouseDown={(event) => {
               if (event.target === event.currentTarget && !isDeleting) setDeleteTarget(null);

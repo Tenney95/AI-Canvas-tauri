@@ -345,6 +345,7 @@ export default function PresetManager() {
         <>
           {/* Backdrop */}
           <motion.div
+            data-tauri-drag-region
             className="preset-modal-overlay"
             variants={backdropVariants}
             initial="hidden"

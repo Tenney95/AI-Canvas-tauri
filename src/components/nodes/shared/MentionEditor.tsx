@@ -1656,6 +1656,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         <AnimatePresence>
           {showAssetPicker && (
             <motion.div
+              data-tauri-drag-region
               className="asset-picker-backdrop"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.18 }}

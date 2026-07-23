@@ -135,6 +135,7 @@ function PresetRunnerContent({
   return (
     <>
       <motion.div
+        data-tauri-drag-region
         className="preset-modal-overlay"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}

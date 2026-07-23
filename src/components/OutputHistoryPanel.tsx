@@ -283,6 +283,7 @@ export default function OutputHistoryPanel() {
         <>
           {/* Backdrop */}
           <motion.div
+            data-tauri-drag-region
             className="fixed inset-0 z-[240] bg-black/50 backdrop-blur-sm"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}

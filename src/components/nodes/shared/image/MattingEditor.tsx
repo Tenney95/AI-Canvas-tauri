@@ -496,7 +496,7 @@ export default function MattingEditor({
   const cursorD = Math.max(6, Math.round(brushSize * dispScale));
 
   return createPortal(
-    <div className="matting-overlay">
+    <div data-tauri-drag-region className="matting-overlay">
       <div className="matting-toolbar-dock">
         <MattingToolbar
           onCancel={onClose}

@@ -67,7 +67,7 @@ export default function ModelDownloadDialog({
     <>
       {/* ── 下载确认弹窗 ── */}
       {showPrompt && (
-        <div className="fullscreen-overlay fixed inset-0 flex items-center justify-center bg-black/60" style={{ zIndex: 15 }} onClick={onCancel}>
+        <div data-tauri-drag-region className="fullscreen-overlay fixed inset-0 flex items-center justify-center bg-black/60" style={{ zIndex: 15 }} onClick={onCancel}>
           <div
             className="bg-canvas-card border border-canvas-border rounded-xl p-4 max-w-sm mx-4 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
@@ -106,6 +106,7 @@ export default function ModelDownloadDialog({
       {/* ── 下载中遮罩 ── */}
       {showDownloading && (
         <motion.div
+          data-tauri-drag-region
           className="fullscreen-overlay fixed inset-0 flex items-center justify-center bg-black/60 rounded-xl"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
