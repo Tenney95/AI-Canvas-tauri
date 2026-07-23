@@ -19,6 +19,7 @@ const NODE_TYPES: NodeType[] = [
   'ai-panorama',
   'ai-markdown',
   'ai-storyboard',
+  'ai-director',
   'source-image',
   'source-video',
   'source-audio',
@@ -351,6 +352,8 @@ function createCanvasNode(
 ): Node<BaseNodeData> {
   const id = `node-agent-${Date.now().toString(36)}-${index}-${Math.random().toString(36).slice(2, 7)}`;
   const type = input.type;
+  const isSource = type.startsWith('source-') || type === 'comment';
+  const content = input.prompt?.trim();
   return {
     id,
     type,
@@ -358,8 +361,8 @@ function createCanvasNode(
     data: {
       label: input.label.trim(),
       type,
-      role: type.startsWith('source-') ? 'source' : 'generator',
-      prompt: input.prompt?.trim(),
+      role: isSource ? 'source' : 'generator',
+      ...(isSource ? { output: content } : { prompt: content }),
       status: 'idle',
       nodeWidth: DEFAULT_NODE_WIDTH,
       nodeHeight: type === 'comment' ? COMMENT_NODE_HEIGHT : DEFAULT_NODE_HEIGHT,

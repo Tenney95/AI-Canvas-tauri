@@ -47,6 +47,22 @@ function node(id: string, data: Partial<BaseNodeData> = {}): Node<BaseNodeData> 
   };
 }
 
+function groupNode(id: string): Node<BaseNodeData> {
+  return {
+    id,
+    type: 'group',
+    position: { x: 40, y: 60 },
+    data: {
+      label: 'Group',
+      type: 'comment',
+      status: 'success',
+      groupId: id,
+      color: '#6366f1',
+    } as unknown as BaseNodeData,
+    style: { width: 400, height: 300 },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   nodeExitMocks.pending.clear();
@@ -93,7 +109,7 @@ describe('batch canvas history', () => {
     expect(useAppStore.getState()).toMatchObject({ historyIndex: 0 });
     expect(useAppStore.getState().history).toHaveLength(1);
     expect(useAppStore.getState().edges).toEqual([]);
-    expect(useAppStore.getState().groups).toEqual([{ ...groups[0], nodeIds: [] }]);
+    expect(useAppStore.getState().groups).toEqual([]);
 
     await expect(useAppStore.getState().undo()).resolves.toBe(true);
 
@@ -116,6 +132,69 @@ describe('batch canvas history', () => {
     expect(useAppStore.getState()).toMatchObject({ historyIndex: 0 });
     expect(fileMocks.moveToUndoTrash).toHaveBeenCalledWith('project/node-a.png');
     await expect(useAppStore.getState().redo()).resolves.toBe(false);
+  });
+
+  it('removes an empty group with its last child and restores both through history', async () => {
+    const group = groupNode('group-1');
+    const child = { ...node('node-a'), parentId: group.id };
+    const groups: NodeGroup[] = [{
+      id: group.id,
+      name: 'Group',
+      nodeIds: [child.id],
+      color: '#6366f1',
+      createdAt: 1,
+    }];
+    useAppStore.setState({
+      nodes: [group, child, node('node-b')],
+      edges: [{ id: 'edge-group', source: group.id, target: 'node-b' }],
+      groups,
+      history: [],
+      historyIndex: -1,
+    });
+
+    useAppStore.getState().deleteNode(child.id);
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['node-b']);
+    });
+    expect(useAppStore.getState().groups).toEqual([]);
+    expect(useAppStore.getState().edges).toEqual([]);
+
+    await expect(useAppStore.getState().undo()).resolves.toBe(true);
+    expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual([
+      group.id,
+      child.id,
+      'node-b',
+    ]);
+    expect(useAppStore.getState().nodes[0].style).toEqual({ width: 400, height: 300 });
+    expect(useAppStore.getState().groups).toEqual(groups);
+
+    await expect(useAppStore.getState().redo()).resolves.toBe(true);
+    expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['node-b']);
+    expect(useAppStore.getState().groups).toEqual([]);
+  });
+
+  it('removes an empty group when React Flow removes its last child', () => {
+    const group = groupNode('group-1');
+    const child = { ...node('node-a'), parentId: group.id };
+    useAppStore.setState({
+      nodes: [group, child],
+      groups: [{
+        id: group.id,
+        name: 'Group',
+        nodeIds: [child.id],
+        color: '#6366f1',
+        createdAt: 1,
+      }],
+      history: [],
+      historyIndex: -1,
+    });
+
+    useAppStore.getState().onNodesChange([{ type: 'remove', id: child.id }]);
+
+    expect(useAppStore.getState().nodes).toEqual([]);
+    expect(useAppStore.getState().groups).toEqual([]);
+    expect(useAppStore.getState().history).toHaveLength(1);
   });
 
   it('waits for a pending exit before restoring a quickly undone deletion', async () => {

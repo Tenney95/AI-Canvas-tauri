@@ -12,7 +12,7 @@ import {
 } from '@xyflow/react';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { BaseNodeData, StoryboardCellOverride } from '../types';
+import type { BaseNodeData, NodeGroup, StoryboardCellOverride } from '../types';
 import type { MediaGenerationIntent, MediaGenerationResult } from '../types/media';
 import { generateId, getNextDisplayId } from './store.utils';
 import { BATCH_NODE_LIMIT } from './store.chat';
@@ -25,6 +25,85 @@ import { requiresDirectorDeskRuntime } from '../services/directorDeskRuntimeServ
 
 interface GroupNodeDataAccess {
   groupId: string;
+}
+
+function hasMaterializedNodeOutput(data: BaseNodeData, nodeType: string | undefined): boolean {
+  const hasValue = (value: unknown) => typeof value === 'string' && value.trim().length > 0;
+  if (['ai-image', 'source-image', 'ai-animation', 'ai-panorama', 'ai-storyboard'].includes(nodeType ?? '')) {
+    return hasValue(data.imageUrl) || hasValue(data.thumbnailUrl);
+  }
+  if (['ai-video', 'source-video'].includes(nodeType ?? '')) return hasValue(data.videoUrl);
+  if (['ai-audio', 'source-audio'].includes(nodeType ?? '')) return hasValue(data.audioUrl);
+  return hasValue(data.output);
+}
+
+function prepareDuplicateNodeData(
+  data: BaseNodeData,
+  nodeType: string | undefined,
+  cloneId: string,
+): BaseNodeData {
+  const duplicate = structuredClone(data);
+
+  if (duplicate.status === 'loading') {
+    duplicate.status = hasMaterializedNodeOutput(duplicate, nodeType) ? 'success' : 'idle';
+    delete duplicate.error;
+  }
+
+  if (nodeType === 'ai-director') {
+    duplicate.directorInstanceId = cloneId;
+    duplicate.directorStatus = 'idle';
+    delete duplicate.error;
+  }
+
+  if (nodeType === 'ai-markdown') {
+    delete duplicate.fileName;
+    delete duplicate.filePath;
+    delete duplicate.assetId;
+    delete duplicate.relativePath;
+  }
+
+  return duplicate;
+}
+
+function pruneDeletedNodesAndEmptyGroups(
+  nodes: Node<BaseNodeData>[],
+  edges: Edge[],
+  groups: NodeGroup[],
+  deletedNodeIds: Set<string>,
+) {
+  const deletedGroupDataIds = new Set(
+    nodes
+      .filter((node) => deletedNodeIds.has(node.id) && node.type === 'group')
+      .map((node) => (node.data as unknown as GroupNodeDataAccess).groupId)
+      .filter(Boolean),
+  );
+  const prunedGroups = groups
+    .filter((group) => !deletedNodeIds.has(group.id) && !deletedGroupDataIds.has(group.id))
+    .map((group) => ({
+      ...group,
+      nodeIds: group.nodeIds.filter((nodeId) => !deletedNodeIds.has(nodeId)),
+    }));
+  const emptyGroupIds = new Set(
+    prunedGroups.filter((group) => group.nodeIds.length === 0).map((group) => group.id),
+  );
+  const allDeletedNodeIds = new Set(deletedNodeIds);
+  for (const groupId of emptyGroupIds) allDeletedNodeIds.add(groupId);
+  for (const node of nodes) {
+    if (
+      node.type === 'group'
+      && emptyGroupIds.has((node.data as unknown as GroupNodeDataAccess).groupId)
+    ) {
+      allDeletedNodeIds.add(node.id);
+    }
+  }
+
+  return {
+    nodes: nodes.filter((node) => !allDeletedNodeIds.has(node.id)),
+    edges: edges.filter(
+      (edge) => !allDeletedNodeIds.has(edge.source) && !allDeletedNodeIds.has(edge.target),
+    ),
+    groups: prunedGroups.filter((group) => !emptyGroupIds.has(group.id)),
+  };
 }
 
 function requestDirectorDeskRuntimeForNodes(
@@ -340,6 +419,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         ...src,
         id: cloneId,
         position: { ...src.position },
+        data: prepareDuplicateNodeData(src.data, src.type, cloneId),
         selected: false,
         dragging: false,
       } as Node<BaseNodeData>;
@@ -397,13 +477,12 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
 
     // 先播放退场动画，结束后再真正从状态中移除（动画期间历史已提交，撤销仍指向删除前状态）
     playNodeExit([...idsToDelete]).then(() => {
-      set((state) => ({
-        nodes: state.nodes.filter((n) => !idsToDelete.has(n.id)),
-        edges: state.edges.filter((e) => !idsToDelete.has(e.source) && !idsToDelete.has(e.target)),
-        groups: state.groups
-          .filter((g) => !idsToDelete.has(g.id))
-          .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !idsToDelete.has(nid)) })),
-      }));
+      set((state) => pruneDeletedNodesAndEmptyGroups(
+        state.nodes,
+        state.edges,
+        state.groups,
+        idsToDelete,
+      ));
     });
   },
 
@@ -449,13 +528,12 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
 
     // 统一播放退场动画后移除
     playNodeExit([...idsToDelete]).then(() => {
-      set((state) => ({
-        nodes: state.nodes.filter((n) => !idsToDelete.has(n.id)),
-        edges: state.edges.filter((e) => !idsToDelete.has(e.source) && !idsToDelete.has(e.target)),
-        groups: state.groups
-          .filter((g) => !idsToDelete.has(g.id))
-          .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => !idsToDelete.has(nid)) })),
-      }));
+      set((state) => pruneDeletedNodesAndEmptyGroups(
+        state.nodes,
+        state.edges,
+        state.groups,
+        idsToDelete,
+      ));
     });
   },
 
@@ -581,12 +659,13 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     }
 
     state.commitToHistory();
-    set((s) => ({
-      nodes: applyNodeChanges(changes, s.nodes) as Node<BaseNodeData>[],
-      edges: s.edges.filter(
-        (e) => !removedIds.includes(e.source) && !removedIds.includes(e.target),
-      ),
-    }));
+    const removedIdSet = new Set(removedIds);
+    set((s) => pruneDeletedNodesAndEmptyGroups(
+      applyNodeChanges(changes, s.nodes) as Node<BaseNodeData>[],
+      s.edges,
+      s.groups,
+      removedIdSet,
+    ));
   },
 
   onEdgesChange: (changes) => {

@@ -21,6 +21,13 @@ import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
 import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
+import {
+  cancelCanvasDerivation,
+  completeCanvasDerivation,
+  isCanvasDerivationFresh,
+  registerCanvasDerivation,
+  type CanvasDerivationGuard,
+} from '../../services/canvasDerivationGuard';
 
 const XiaoLuoPanoramaFullscreen = lazy(
   () => import('./panorama/XiaoLuoPanoramaFullscreen'),
@@ -73,24 +80,23 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
     updateNodeDataTransient(id, { panoFullscreen: !isFullscreen } as Partial<BaseNodeData>);
   }, [id, isFullscreen, updateNodeDataTransient]);
 
-  const createScreenshotNode = useCallback(async (dataUrl: string) => {
-    const store = useAppStore.getState();
-    const panoramaNode = store.nodes.find((node) => node.id === id);
-    const position = panoramaNode?.position ?? { x: 0, y: 0 };
+  const createScreenshotNode = useCallback(async (dataUrl: string, derivation: CanvasDerivationGuard) => {
+    const ensureFresh = () => {
+      const fresh = isCanvasDerivationFresh(derivation, useAppStore.getState());
+      if (!fresh) cancelCanvasDerivation(derivation);
+      return fresh;
+    };
     const imageLabel = `全景截图-${Date.now()}`;
     const fileName = buildNodeFileName(imageLabel, 'png', 'panorama-screenshot');
     const aspect = await readScreenshotAspect(dataUrl);
+    if (!ensureFresh()) return false;
 
     let imageUrl = dataUrl;
     let filePath: string | undefined;
     try {
-      if (!store.currentProjectId) {
-        store.showToast('请先打开项目再保存截图', 'error');
-        return;
-      }
       const saved = await saveDataUrlToProjectData(
         dataUrl,
-        store.currentProjectId,
+        derivation.projectId,
         fileName,
       );
       if (saved) {
@@ -100,10 +106,14 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
     } catch {
       // Web 模式或文件系统不可用时保留 Data URL。
     }
+    if (!ensureFresh()) return false;
 
+    const liveStore = useAppStore.getState();
+    const panoramaNode = liveStore.nodes.find((node) => node.id === id);
+    const position = panoramaNode?.position ?? { x: 0, y: 0 };
     const imageNodeWidth = nodeWidth;
     const imageNodeHeight = aspect ? Math.round(imageNodeWidth / aspect) : nodeHeight;
-    store.addNode({
+    liveStore.addNode({
       id: `node-${generateId()}`,
       type: 'ai-image',
       position: { x: position.x + imageNodeWidth + 60, y: position.y },
@@ -118,22 +128,45 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
         nodeWidth: imageNodeWidth,
         nodeHeight: imageNodeHeight,
       },
-    } as Parameters<typeof store.addNode>[0]);
-    store.showToast('截图已创建为图片节点', 'success');
+    } as Parameters<typeof liveStore.addNode>[0]);
+    completeCanvasDerivation(derivation);
+    liveStore.showToast('截图已创建为图片节点', 'success');
+    return true;
   }, [id, nodeHeight, nodeWidth]);
 
   const handleScreenshot = useCallback(async () => {
-    const dataUrl = await compactViewerRef.current?.captureScreenshot();
-    if (!dataUrl) {
-      useAppStore.getState().showToast('截图失败', 'error');
+    const store = useAppStore.getState();
+    const derivation = registerCanvasDerivation(store, id);
+    if (!derivation) {
+      store.showToast('全景节点已失效，请重试', 'error');
       return;
     }
-    await createScreenshotNode(dataUrl);
-  }, [createScreenshotNode]);
+
+    let dataUrl: string | null | undefined;
+    try {
+      dataUrl = await compactViewerRef.current?.captureScreenshot();
+    } catch {
+      cancelCanvasDerivation(derivation);
+      if (useAppStore.getState().currentProjectId === derivation.projectId) {
+        useAppStore.getState().showToast('截图失败', 'error');
+      }
+      return;
+    }
+    if (!dataUrl) {
+      const shouldNotify = isCanvasDerivationFresh(derivation, useAppStore.getState());
+      cancelCanvasDerivation(derivation);
+      if (shouldNotify) useAppStore.getState().showToast('截图失败', 'error');
+      return;
+    }
+    await createScreenshotNode(dataUrl, derivation);
+  }, [createScreenshotNode, id]);
 
   const handleFullscreenCapture = useCallback(async ({ dataUrl }: PanoramaCaptureResult) => {
-    await createScreenshotNode(dataUrl);
-  }, [createScreenshotNode]);
+    const store = useAppStore.getState();
+    const derivation = registerCanvasDerivation(store, id);
+    if (!derivation) return;
+    await createScreenshotNode(dataUrl, derivation);
+  }, [createScreenshotNode, id]);
 
   const { isUploading, handleUpload: uploadSourceFile } = useSourceFileUpload('.png,.jpg,.jpeg,.webp');
   const handleUpload = useCallback(async () => {

@@ -76,6 +76,11 @@ const nodeTypes: NodeTypes = {
   'ai-markdown': MarkdownNode,
   'ai-storyboard': StoryboardNode,
   'ai-director': DirectorDeskNode,
+  'source-text': TextNode,
+  'source-image': ImageNode,
+  'source-video': VideoNode,
+  'source-audio': AudioNode,
+  comment: TextNode,
   group: GroupNode,
 };
 
@@ -133,11 +138,16 @@ const INLINE_EDIT_DOUBLE_CLICK_DELAY_MS = 280;
 const isValidConnection = (conn: Connection | Edge) => conn.source !== conn.target;
 const minimapNodeColor = (node: RFNode) => {
   switch (node.type) {
-    case 'ai-text': return 'color-mix(in srgb, var(--node-text-light) 50%, transparent)';
+    case 'ai-text':
+    case 'source-text':
+    case 'comment': return 'color-mix(in srgb, var(--node-text-light) 50%, transparent)';
     case 'ai-image':
+    case 'source-image':
     case 'ai-storyboard': return 'color-mix(in srgb, var(--node-image-light) 50%, transparent)';
-    case 'ai-video': return 'color-mix(in srgb, var(--node-video-light) 50%, transparent)';
-    case 'ai-audio': return 'color-mix(in srgb, var(--node-audio-light) 50%, transparent)';
+    case 'ai-video':
+    case 'source-video': return 'color-mix(in srgb, var(--node-video-light) 50%, transparent)';
+    case 'ai-audio':
+    case 'source-audio': return 'color-mix(in srgb, var(--node-audio-light) 50%, transparent)';
     case 'ai-animation': return 'color-mix(in srgb, var(--brand) 50%, transparent)';
     case 'ai-panorama': return 'color-mix(in srgb, var(--node-panorama) 50%, transparent)';
     case 'ai-markdown': return 'color-mix(in srgb, var(--node-markdown-light) 50%, transparent)';

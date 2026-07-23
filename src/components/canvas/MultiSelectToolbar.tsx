@@ -10,7 +10,11 @@ import { getNodeBounds, getParentOffset } from '../../utils/nodeBounds.js';
 import type { Node as RFNode } from '@xyflow/react';
 import type { BaseNodeData } from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
-import { batchExecuteNodes, type BatchContext } from '../../utils/batchExecute';
+import {
+  batchExecuteNodes,
+  hasBatchExecutableNodes,
+  type BatchContext,
+} from '../../utils/batchExecute';
 import DistributionGapHandles from './DistributionGapHandles';
 import {
   distributeNodesWithEqualGap,
@@ -241,20 +245,15 @@ function MultiSelectToolbar() {
     const currentNodes = state.nodes;
     const currentEdges = state.edges;
     const currentIds = state.selectedNodeIds;
-    const { updateNodeData, showToast: toast, currentProjectId } = state;
+    const {
+      commitToHistory,
+      updateNodeDataTransient,
+      showToast: toast,
+      currentProjectId,
+    } = state;
 
     // 前置检查：是否有可执行节点
-    const hasExecutable = currentNodes.some(
-      (n) =>
-        currentIds.includes(n.id) &&
-        n.type !== 'group' &&
-        n.data?.type &&
-        ['ai-text', 'ai-image', 'ai-video', 'ai-audio'].includes(n.data.type) &&
-        n.data?.model &&
-        n.data?.provider &&
-        (n.data?.prompt || '').trim() &&
-        n.data?.status !== 'loading',
-    );
+    const hasExecutable = hasBatchExecutableNodes(currentIds, currentNodes);
 
     if (!hasExecutable) {
       toast('选中的节点中没有可执行的（需要配置模型且有 prompt）', 'error');
@@ -263,7 +262,12 @@ function MultiSelectToolbar() {
 
     setBatchRunning(true);
 
-    const ctx: BatchContext = { updateNodeData, recordOutputHistory, currentProjectId };
+    const ctx: BatchContext = {
+      commitToHistory,
+      updateNodeDataTransient,
+      recordOutputHistory,
+      currentProjectId,
+    };
     const { ok, fail } = await batchExecuteNodes(currentIds, currentNodes, currentEdges, ctx);
 
     setBatchRunning(false);

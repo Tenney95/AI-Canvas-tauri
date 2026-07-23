@@ -92,23 +92,35 @@ export async function cropImageByRanges(
   return { dataUrl: canvas.toDataURL('image/png'), width: w, height: h };
 }
 
-/** 根据 data URL 计算图像节点的建议尺寸 */
+/** 读取图片真实像素尺寸，并计算图像节点的建议展示尺寸。 */
 export function computeImageNodeDimensions(
   dataUrl: string,
-): Promise<{ nodeWidth: number; nodeHeight: number }> {
+): Promise<{
+  imageWidth?: number;
+  imageHeight?: number;
+  nodeWidth: number;
+  nodeHeight: number;
+}> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      const naturalRatio = img.naturalWidth / img.naturalHeight;
+      const imageWidth = img.naturalWidth;
+      const imageHeight = img.naturalHeight;
+      if (imageWidth <= 0 || imageHeight <= 0) {
+        resolve({ nodeWidth: 280, nodeHeight: 158 });
+        return;
+      }
+
+      const naturalRatio = imageWidth / imageHeight;
       const maxWidth = 280;
       const minWidth = 160;
-      let nodeWidth = img.naturalWidth;
+      let nodeWidth = imageWidth;
       if (nodeWidth > maxWidth) nodeWidth = maxWidth;
       if (nodeWidth < minWidth) nodeWidth = minWidth;
       const contentWidth = nodeWidth - 4;
       const previewHeight = Math.round(contentWidth / naturalRatio);
       const nodeHeight = Math.max(120, previewHeight + 4);
-      resolve({ nodeWidth, nodeHeight });
+      resolve({ imageWidth, imageHeight, nodeWidth, nodeHeight });
     };
     img.onerror = () => resolve({ nodeWidth: 280, nodeHeight: 158 });
     img.src = dataUrl;

@@ -17,6 +17,12 @@ import { computeImageNodeDimensions, generateId, useAppStore } from '../../store
 import { downloadUrlAndSave, saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { copyFile as copyFileToClipboard } from '../../services/clipboardService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
+import {
+  cancelCanvasDerivation,
+  completeCanvasDerivation,
+  isCanvasDerivationFresh,
+  registerCanvasDerivation,
+} from '../../services/canvasDerivationGuard';
 
 const DEFAULT_VIDEO_NODE_WIDTH = 280;
 const DEFAULT_VIDEO_NODE_HEIGHT = 158;
@@ -209,18 +215,35 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       return;
     }
 
-    const createFrameNode = async (frame: { dataUrl: string; width: number; height: number }) => {
+    const derivation = registerCanvasDerivation(store, id);
+    if (!derivation) {
+      store.showToast('视频节点已失效，请重试', 'error');
+      return;
+    }
+    const captureTime = video.currentTime;
+    const ensureFresh = () => {
+      const fresh = isCanvasDerivationFresh(derivation, useAppStore.getState());
+      if (!fresh) cancelCanvasDerivation(derivation);
+      return fresh;
+    };
+
+    const createFrameNode = async (frame: { dataUrl: string; width: number; height: number }): Promise<boolean> => {
       const dims = await computeImageNodeDimensions(frame.dataUrl);
-      const currentNode = store.nodes.find((node) => node.id === id);
+      if (!ensureFresh()) return false;
+
+      let liveStore = useAppStore.getState();
+      const currentNode = liveStore.nodes.find((node) => node.id === id);
       const currentPosition = currentNode?.position ?? { x: 0, y: 0 };
       const frameFileName = buildNodeFileName(`${displayLabel} 当前帧`, 'png', `video-frame-${Date.now()}`);
-      const projectId = store.currentProjectId;
-      const savedFrame = projectId && projectId !== 'default'
-        ? await saveDataUrlToProjectData(frame.dataUrl, projectId, frameFileName)
+      const savedFrame = derivation.projectId !== 'default'
+        ? await saveDataUrlToProjectData(frame.dataUrl, derivation.projectId, frameFileName)
         : null;
+      if (!ensureFresh()) return false;
+
+      liveStore = useAppStore.getState();
       const imageUrl = savedFrame?.assetUrl || frame.dataUrl;
 
-      store.addNode({
+      liveStore.addNode({
         id: `node-${generateId()}`,
         type: 'ai-image',
         position: {
@@ -239,45 +262,56 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           imageHeight: frame.height,
           ...dims,
         },
-      } as Parameters<typeof store.addNode>[0]);
+      } as Parameters<typeof liveStore.addNode>[0]);
+      completeCanvasDerivation(derivation);
+      return true;
     };
 
     try {
-      await createFrameNode(captureVideoFrame(video));
-      store.showToast('已截取当前帧为图像节点', 'success');
+      const created = await createFrameNode(captureVideoFrame(video));
+      if (created) useAppStore.getState().showToast('已截取当前帧为图像节点', 'success');
     } catch (error) {
       if (!isTaintedCanvasError(error)) {
+        cancelCanvasDerivation(derivation);
         const message = error instanceof Error ? error.message : '截取当前帧失败';
-        store.showToast(`截取当前帧失败：${message}`, 'error');
+        if (useAppStore.getState().currentProjectId === derivation.projectId) {
+          useAppStore.getState().showToast(`截取当前帧失败：${message}`, 'error');
+        }
         return;
       }
 
       const remoteUrl = typeof data.sourceUrl === 'string' ? data.sourceUrl : data.videoUrl;
-      const projectId = store.currentProjectId;
-      if (!remoteUrl?.startsWith('http') || !projectId || projectId === 'default') {
-        store.showToast('该视频来源禁止导出当前帧，请先上传为本地视频后再截帧', 'error');
+      if (!remoteUrl?.startsWith('http') || derivation.projectId === 'default') {
+        cancelCanvasDerivation(derivation);
+        useAppStore.getState().showToast('该视频来源禁止导出当前帧，请先上传为本地视频后再截帧', 'error');
         return;
       }
+      if (!ensureFresh()) return;
 
-      store.showToast('远程视频受跨域限制，正在转为本地资源后重试...', 'success');
-      const saved = await downloadUrlAndSave(remoteUrl, projectId, 'video-source');
+      useAppStore.getState().showToast('远程视频受跨域限制，正在转为本地资源后重试...', 'success');
+      const saved = await downloadUrlAndSave(remoteUrl, derivation.projectId, 'video-source');
+      if (!ensureFresh()) return;
       if (!saved?.assetUrl) {
-        store.showToast('远程视频本地化失败，无法截取当前帧', 'error');
+        cancelCanvasDerivation(derivation);
+        useAppStore.getState().showToast('远程视频本地化失败，无法截取当前帧', 'error');
         return;
       }
 
       try {
-        store.updateNodeData(id, {
+        useAppStore.getState().updateNodeData(id, {
           videoUrl: saved.assetUrl,
           filePath: saved.filePath,
           sourceUrl: remoteUrl,
         } as Partial<BaseNodeData>);
 
-        await createFrameNode(await captureFrameFromVideoUrl(saved.assetUrl, video.currentTime));
-        store.showToast('已截取当前帧为图像节点', 'success');
+        const created = await createFrameNode(await captureFrameFromVideoUrl(saved.assetUrl, captureTime));
+        if (created) useAppStore.getState().showToast('已截取当前帧为图像节点', 'success');
       } catch (fallbackError) {
+        cancelCanvasDerivation(derivation);
         const message = fallbackError instanceof Error ? fallbackError.message : '本地资源截帧失败';
-        store.showToast(`截取当前帧失败：${message}`, 'error');
+        if (useAppStore.getState().currentProjectId === derivation.projectId) {
+          useAppStore.getState().showToast(`截取当前帧失败：${message}`, 'error');
+        }
       }
     }
   }, [data.sourceUrl, data.videoUrl, displayLabel, id, nodeWidth]);

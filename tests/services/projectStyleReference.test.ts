@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   getEnabledProjectStyleReferenceUrl,
   normalizeProjectSettings,
+  resolveProjectGenerationPrompt,
 } from '../../src/services/projectSettingsService';
-import type { ProjectSettings } from '../../src/types';
+import type { BaseNodeData, ProjectSettings } from '../../src/types';
 
 describe('project style reference (风格母图)', () => {
   it('normalizes style reference with default enabled', () => {
@@ -62,5 +63,39 @@ describe('project style reference (风格母图)', () => {
     const next = normalizeProjectSettings(settings);
     expect(next.visualStyle?.styleId).toBe('cinematic');
     expect(next.visualStyle?.styleReference?.imageUrl).toBe('asset://ref.png');
+  });
+
+  it('adds the node-selected style and media prompt suffix to generation prompts', () => {
+    const data: BaseNodeData = {
+      label: '视频生成',
+      type: 'ai-video',
+      style: 'paper-cut',
+    };
+    const settings: ProjectSettings = {
+      visualStyle: {
+        styleId: 'cinematic',
+        prompt: '电影级画面',
+      },
+      promptSuffixes: {
+        video: '镜头稳定，运动连贯',
+      },
+    };
+
+    expect(resolveProjectGenerationPrompt({
+      prompt: '一艘飞船穿过云层',
+      data,
+      settings,
+      customStyles: [{
+        id: 'paper-cut',
+        nodeType: 'ai-video',
+        name: '剪纸',
+        prompt: '中国剪纸艺术风格，层次分明',
+        createdAt: 1,
+      }],
+    })).toBe([
+      '一艘飞船穿过云层',
+      '中国剪纸艺术风格，层次分明',
+      '镜头稳定，运动连贯',
+    ].join('\n\n'));
   });
 });

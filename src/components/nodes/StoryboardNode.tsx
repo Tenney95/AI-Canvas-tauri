@@ -19,6 +19,12 @@ import { useAppStore, generateId } from '../../store/useAppStore';
 import { cropImageCell, cropImageByRanges, computeImageNodeDimensions } from './shared/image/imageUtils';
 import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { useReferencedImageRevisions, withPreviewRevision } from '../../hooks/useReferencedImageWatcher';
+import {
+  cancelCanvasDerivation,
+  completeCanvasDerivation,
+  isCanvasDerivationFresh,
+  registerCanvasDerivation,
+} from '../../services/canvasDerivationGuard';
 
 /** 拖出判定阈值（像素）：小于此位移视为误触，不提取 */
 const DRAG_THRESHOLD = 8;
@@ -144,13 +150,21 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
       const flowPos = screenToFlowPosition({ x: clientX, y: clientY });
       const label = `提取分镜${r + 1}-${c + 1}`;
       const override = overrides[idx];
-      store.commitToHistory();
 
       // 被拖入的图：直接用它建节点（无需裁切），原格清空
       if (override) {
+        const derivation = registerCanvasDerivation(store, id);
+        if (!derivation) return;
         const overrideUrl = withPreviewRevision(override.url, revisionFor(override.filePath)) ?? override.url;
         const dims = await computeImageNodeDimensions(overrideUrl).catch(() => ({ nodeWidth: 200, nodeHeight: 200 }));
-        store.addNodeTransient({
+        const liveStore = useAppStore.getState();
+        if (!isCanvasDerivationFresh(derivation, liveStore)) {
+          cancelCanvasDerivation(derivation);
+          return;
+        }
+
+        liveStore.commitToHistory();
+        liveStore.addNodeTransient({
           id: `node-${generateId()}`,
           type: 'ai-image',
           position: { x: flowPos.x - 100, y: flowPos.y - 100 },
@@ -158,13 +172,15 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
         } as Node<BaseNodeData>);
         const nextOv = [...overrides]; nextOv[idx] = null;
         const nextEx = [...extracted]; nextEx[idx] = true;
-        store.updateNodeDataTransient(id, { storyboardOverrides: nextOv, storyboardExtracted: nextEx } as Partial<BaseNodeData>);
-        store.commitToHistory();
+        liveStore.updateNodeDataTransient(id, { storyboardOverrides: nextOv, storyboardExtracted: nextEx } as Partial<BaseNodeData>);
+        liveStore.commitToHistory();
+        completeCanvasDerivation(derivation);
         return;
       }
 
       // 立即建 loading 节点 + 标记原格已提取
       const newId = `node-${generateId()}`;
+      store.commitToHistory();
       store.addNodeTransient({
         id: newId,
         type: 'ai-image',
@@ -174,34 +190,66 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
       const nextExtracted = [...extracted];
       nextExtracted[idx] = true;
       store.updateNodeDataTransient(id, { storyboardExtracted: nextExtracted } as Partial<BaseNodeData>);
+      const projectId = store.currentProjectId;
+      const rollbackExtraction = () => {
+        const liveStore = useAppStore.getState();
+        if (liveStore.currentProjectId !== projectId) return;
+        liveStore.setNodes(liveStore.nodes
+          .filter((node) => node.id !== newId)
+          .map((node) => {
+            if (node.id !== id) return node;
+            const rollback = [...((node.data.storyboardExtracted as boolean[] | undefined) ?? [])];
+            rollback[idx] = extracted[idx] ?? false;
+            return {
+              ...node,
+              data: { ...node.data, storyboardExtracted: rollback } as BaseNodeData,
+            };
+          }));
+      };
+      const derivation = registerCanvasDerivation(store, id, {
+        placeholderNodeId: newId,
+        onCancel: rollbackExtraction,
+      });
+      if (!derivation) {
+        rollbackExtraction();
+        return;
+      }
+      const ensureFresh = () => {
+        const fresh = isCanvasDerivationFresh(derivation, useAppStore.getState());
+        if (!fresh) cancelCanvasDerivation(derivation);
+        return fresh;
+      };
 
       try {
         const cell = isCustomGrid
           ? await cropImageByRanges(displayImageUrl, hRanges, vRanges, r, c)
           : await cropImageCell(displayImageUrl, c, r, cols, rows);
+        if (!ensureFresh()) return;
+
         let assetUrl = cell.dataUrl;
         let filePath: string | undefined;
-        const projectId = store.currentProjectId;
-        if (projectId && projectId !== 'default') {
-          const saved = await saveDataUrlToProjectData(cell.dataUrl, projectId, buildNodeFileName(label, 'png', 'grid'));
+        if (derivation.projectId !== 'default') {
+          const saved = await saveDataUrlToProjectData(cell.dataUrl, derivation.projectId, buildNodeFileName(label, 'png', 'grid'));
           if (saved?.assetUrl) { assetUrl = saved.assetUrl; filePath = saved.filePath; }
         }
+        if (!ensureFresh()) return;
+
         const dims = await computeImageNodeDimensions(assetUrl);
-        store.updateNodeDataTransient(newId, {
+        if (!ensureFresh()) return;
+
+        const liveStore = useAppStore.getState();
+        liveStore.updateNodeDataTransient(newId, {
           imageUrl: assetUrl, filePath, status: 'success',
           imageWidth: cell.width, imageHeight: cell.height,
           nodeWidth: dims.nodeWidth, nodeHeight: dims.nodeHeight,
         } as Partial<BaseNodeData>);
-        store.commitToHistory();
+        liveStore.commitToHistory();
+        completeCanvasDerivation(derivation);
       } catch (err) {
         console.error('[Storyboard] 提取失败:', err);
-        const latestStore = useAppStore.getState();
-        latestStore.setNodes(latestStore.nodes.filter((node) => node.id !== newId));
-        store.showToast('提取分镜失败，请重试', 'error');
-        // 回滚提取标记
-        const rollback = [...(useAppStore.getState().nodes.find((n) => n.id === id)?.data.storyboardExtracted as boolean[] ?? [])];
-        rollback[idx] = false;
-        store.updateNodeDataTransient(id, { storyboardExtracted: rollback } as Partial<BaseNodeData>);
+        const shouldNotify = isCanvasDerivationFresh(derivation, useAppStore.getState());
+        cancelCanvasDerivation(derivation);
+        if (shouldNotify) useAppStore.getState().showToast('提取分镜失败，请重试', 'error');
       }
     },
     [id, displayImageUrl, cols, rows, isCustomGrid, hRanges, vRanges, extracted, overrides, revisionFor, screenToFlowPosition],

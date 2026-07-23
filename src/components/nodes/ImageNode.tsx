@@ -40,6 +40,13 @@ import {
   useReferencedImageRevisions,
   withPreviewRevision,
 } from '../../hooks/useReferencedImageWatcher';
+import {
+  cancelCanvasDerivation,
+  completeCanvasDerivation,
+  isCanvasDerivationFresh,
+  registerCanvasDerivation,
+  type CanvasDerivationGuard,
+} from '../../services/canvasDerivationGuard';
 
 // 懒加载：ImageComposerEditor 引入 konva + react-konva（体积大户），仅在打开合成编辑时才加载
 const ImageComposerEditor = lazy(() => import('./shared/image/composer/ImageComposerEditor'));
@@ -157,12 +164,17 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
      Crop State
      ════════════════════════════════════════════ */
   const [isCrop, setIsCrop] = useState(false);
-  const pendingCropNodeId = useRef<string | null>(null);
+  const pendingCropDerivation = useRef<CanvasDerivationGuard | null>(null);
 
-  const handleOpenCrop = useCallback(() => setIsCrop(true), []);
+  const handleOpenCrop = useCallback(() => {
+    if (pendingCropDerivation.current) {
+      useAppStore.getState().showToast('已有裁切任务正在处理，请稍候');
+      return;
+    }
+    setIsCrop(true);
+  }, []);
   const handleCloseCrop = useCallback(() => {
     setIsCrop(false);
-    pendingCropNodeId.current = null;
   }, []);
 
   /** 确认裁切时立即调用：创建 loading 状态的新节点并关闭弹窗 */
@@ -172,7 +184,20 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     const currentPos = currentNodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
 
     const newNodeId = `node-${generateId()}`;
-    pendingCropNodeId.current = newNodeId;
+    const projectId = store.currentProjectId;
+    const derivation = registerCanvasDerivation(store, id, {
+      placeholderNodeId: newNodeId,
+      onCancel: () => {
+        const liveStore = useAppStore.getState();
+        if (liveStore.currentProjectId !== projectId) return;
+        liveStore.setNodes(liveStore.nodes.filter((node) => node.id !== newNodeId));
+      },
+    });
+    if (!derivation) {
+      store.showToast('图片节点已失效，请重试', 'error');
+      return;
+    }
+    pendingCropDerivation.current = derivation;
 
     const newNode: Node<BaseNodeData> = {
       id: newNodeId,
@@ -194,44 +219,69 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   /** 后台裁切完成后调用：更新节点数据 */
   const handleCropSave = useCallback(
     async (croppedDataUrl: string, metadata?: { width: number; height: number }) => {
-      const store = useAppStore.getState();
-      const nodeId = pendingCropNodeId.current;
-      pendingCropNodeId.current = null;
+      const derivation = pendingCropDerivation.current;
+      const nodeId = derivation?.placeholderNodeId;
+      const clearPending = () => {
+        if (pendingCropDerivation.current === derivation) pendingCropDerivation.current = null;
+      };
 
-      if (!croppedDataUrl || !nodeId) {
-        if (nodeId) store.deleteNode(nodeId);
-        store.showToast('裁切失败，请重试', 'error');
+      if (!derivation || !croppedDataUrl || !nodeId) {
+        if (derivation) cancelCanvasDerivation(derivation);
+        clearPending();
+        const store = useAppStore.getState();
+        if (!derivation || store.currentProjectId === derivation.projectId) {
+          store.showToast('裁切失败，请重试', 'error');
+        }
         return;
       }
-
-      // Save to project data if applicable
-      let assetUrl = croppedDataUrl;
-      let filePath: string | undefined;
-      const projectId = store.currentProjectId;
-      if (projectId && projectId !== 'default') {
-        const savedName = buildNodeFileName(`${(data.label as string) || '图像'} 裁切`, 'png', 'cropped');
-        const saved = await saveDataUrlToProjectData(croppedDataUrl, projectId, savedName);
-        if (saved && saved.assetUrl) {
-          assetUrl = saved.assetUrl;
-          filePath = saved.filePath;
+      const ensureFresh = () => {
+        const fresh = isCanvasDerivationFresh(derivation, useAppStore.getState());
+        if (!fresh) {
+          cancelCanvasDerivation(derivation);
+          clearPending();
         }
+        return fresh;
+      };
+      if (!ensureFresh()) return;
+
+      try {
+        let assetUrl = croppedDataUrl;
+        let filePath: string | undefined;
+        if (derivation.projectId !== 'default') {
+          const savedName = buildNodeFileName(`${(data.label as string) || '图像'} 裁切`, 'png', 'cropped');
+          const saved = await saveDataUrlToProjectData(croppedDataUrl, derivation.projectId, savedName);
+          if (saved?.assetUrl) {
+            assetUrl = saved.assetUrl;
+            filePath = saved.filePath;
+          }
+        }
+        if (!ensureFresh()) return;
+
+        const dims = await computeImageNodeDimensions(assetUrl);
+        if (!ensureFresh()) return;
+
+        const liveStore = useAppStore.getState();
+        liveStore.updateNodeDataTransient(nodeId, {
+          imageUrl: assetUrl,
+          filePath,
+          status: 'success',
+          imageWidth: metadata?.width ?? dims.imageWidth,
+          imageHeight: metadata?.height ?? dims.imageHeight,
+          nodeWidth: dims.nodeWidth,
+          nodeHeight: dims.nodeHeight,
+        } as Partial<BaseNodeData>);
+        liveStore.commitToHistory();
+        completeCanvasDerivation(derivation);
+        clearPending();
+        liveStore.showToast('裁切完成，已创建新节点');
+      } catch {
+        const shouldNotify = isCanvasDerivationFresh(derivation, useAppStore.getState());
+        cancelCanvasDerivation(derivation);
+        clearPending();
+        if (shouldNotify) useAppStore.getState().showToast('裁切失败，请重试', 'error');
       }
-
-      const dims = await computeImageNodeDimensions(assetUrl);
-      store.updateNodeDataTransient(nodeId, {
-        imageUrl: assetUrl,
-        filePath,
-        status: 'success',
-        imageWidth: metadata?.width || dims.nodeWidth,
-        imageHeight: metadata?.height || dims.nodeHeight,
-        nodeWidth: dims.nodeWidth,
-        nodeHeight: dims.nodeHeight,
-      } as Partial<BaseNodeData>);
-      store.commitToHistory();
-
-      store.showToast('裁切完成，已创建新节点');
     },
-    [updateNodeData],
+    [data.label],
   );
 
   /* ════════════════════════════════════════════
@@ -329,12 +379,17 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
      Compose (多图自由编辑) State
      ════════════════════════════════════════════ */
   const [isCompose, setIsCompose] = useState(false);
-  const pendingComposeNodeId = useRef<string | null>(null);
+  const pendingComposeDerivation = useRef<CanvasDerivationGuard | null>(null);
 
-  const handleOpenCompose = useCallback(() => setIsCompose(true), []);
+  const handleOpenCompose = useCallback(() => {
+    if (pendingComposeDerivation.current) {
+      useAppStore.getState().showToast('已有合成任务正在处理，请稍候');
+      return;
+    }
+    setIsCompose(true);
+  }, []);
   const handleCloseCompose = useCallback(() => {
     setIsCompose(false);
-    pendingComposeNodeId.current = null;
   }, []);
 
   /** 确认合成：立即创建 loading 新节点并关闭弹窗 */
@@ -343,7 +398,20 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     const currentPos = store.nodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
 
     const newNodeId = `node-${generateId()}`;
-    pendingComposeNodeId.current = newNodeId;
+    const projectId = store.currentProjectId;
+    const derivation = registerCanvasDerivation(store, id, {
+      placeholderNodeId: newNodeId,
+      onCancel: () => {
+        const liveStore = useAppStore.getState();
+        if (liveStore.currentProjectId !== projectId) return;
+        liveStore.setNodes(liveStore.nodes.filter((node) => node.id !== newNodeId));
+      },
+    });
+    if (!derivation) {
+      store.showToast('图片节点已失效，请重试', 'error');
+      return;
+    }
+    pendingComposeDerivation.current = derivation;
 
     const newNode: Node<BaseNodeData> = {
       id: newNodeId,
@@ -365,41 +433,67 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   /** 合成完成后回填节点数据 */
   const handleComposeSave = useCallback(
     async (composedDataUrl: string, metadata?: { width: number; height: number }) => {
-      const store = useAppStore.getState();
-      const nodeId = pendingComposeNodeId.current;
-      pendingComposeNodeId.current = null;
+      const derivation = pendingComposeDerivation.current;
+      const nodeId = derivation?.placeholderNodeId;
+      const clearPending = () => {
+        if (pendingComposeDerivation.current === derivation) pendingComposeDerivation.current = null;
+      };
 
-      if (!composedDataUrl || !nodeId) {
-        if (nodeId) store.deleteNode(nodeId);
-        store.showToast('合成失败，请重试', 'error');
+      if (!derivation || !composedDataUrl || !nodeId) {
+        if (derivation) cancelCanvasDerivation(derivation);
+        clearPending();
+        const store = useAppStore.getState();
+        if (!derivation || store.currentProjectId === derivation.projectId) {
+          store.showToast('合成失败，请重试', 'error');
+        }
         return;
       }
-
-      let assetUrl = composedDataUrl;
-      let filePath: string | undefined;
-      const projectId = store.currentProjectId;
-      if (projectId && projectId !== 'default') {
-        const savedName = buildNodeFileName(`${(data.label as string) || '图像'} 合成`, 'png', 'composed');
-        const saved = await saveDataUrlToProjectData(composedDataUrl, projectId, savedName);
-        if (saved && saved.assetUrl) {
-          assetUrl = saved.assetUrl;
-          filePath = saved.filePath;
+      const ensureFresh = () => {
+        const fresh = isCanvasDerivationFresh(derivation, useAppStore.getState());
+        if (!fresh) {
+          cancelCanvasDerivation(derivation);
+          clearPending();
         }
+        return fresh;
+      };
+      if (!ensureFresh()) return;
+
+      try {
+        let assetUrl = composedDataUrl;
+        let filePath: string | undefined;
+        if (derivation.projectId !== 'default') {
+          const savedName = buildNodeFileName(`${(data.label as string) || '图像'} 合成`, 'png', 'composed');
+          const saved = await saveDataUrlToProjectData(composedDataUrl, derivation.projectId, savedName);
+          if (saved?.assetUrl) {
+            assetUrl = saved.assetUrl;
+            filePath = saved.filePath;
+          }
+        }
+        if (!ensureFresh()) return;
+
+        const dims = await computeImageNodeDimensions(assetUrl);
+        if (!ensureFresh()) return;
+
+        const liveStore = useAppStore.getState();
+        liveStore.updateNodeDataTransient(nodeId, {
+          imageUrl: assetUrl,
+          filePath,
+          status: 'success',
+          imageWidth: metadata?.width ?? dims.imageWidth,
+          imageHeight: metadata?.height ?? dims.imageHeight,
+          nodeWidth: dims.nodeWidth,
+          nodeHeight: dims.nodeHeight,
+        } as Partial<BaseNodeData>);
+        liveStore.commitToHistory();
+        completeCanvasDerivation(derivation);
+        clearPending();
+        liveStore.showToast('合成完成，已创建新节点');
+      } catch {
+        const shouldNotify = isCanvasDerivationFresh(derivation, useAppStore.getState());
+        cancelCanvasDerivation(derivation);
+        clearPending();
+        if (shouldNotify) useAppStore.getState().showToast('合成失败，请重试', 'error');
       }
-
-      const dims = await computeImageNodeDimensions(assetUrl);
-      store.updateNodeDataTransient(nodeId, {
-        imageUrl: assetUrl,
-        filePath,
-        status: 'success',
-        imageWidth: metadata?.width || dims.nodeWidth,
-        imageHeight: metadata?.height || dims.nodeHeight,
-        nodeWidth: dims.nodeWidth,
-        nodeHeight: dims.nodeHeight,
-      } as Partial<BaseNodeData>);
-      store.commitToHistory();
-
-      store.showToast('合成完成，已创建新节点');
     },
     [data.label],
   );
@@ -437,6 +531,19 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       // 1. 立即创建 loading 节点（与裁切/超分一致的即时反馈）
       const currentPos = store.nodes.find((n) => n.id === id)?.position || { x: 0, y: 0 };
       const newNodeId = `node-${generateId()}`;
+      const projectId = store.currentProjectId;
+      const derivation = registerCanvasDerivation(store, id, {
+        placeholderNodeId: newNodeId,
+        onCancel: () => {
+          const liveStore = useAppStore.getState();
+          if (liveStore.currentProjectId !== projectId) return;
+          liveStore.setNodes(liveStore.nodes.filter((node) => node.id !== newNodeId));
+        },
+      });
+      if (!derivation) {
+        store.showToast('图片节点已失效，请重试', 'error');
+        return;
+      }
       const newNode: Node<BaseNodeData> = {
         id: newNodeId,
         type: 'ai-image',
@@ -451,51 +558,66 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         } as BaseNodeData,
       };
       store.addNode(newNode);
+      const ensureFresh = () => {
+        const fresh = isCanvasDerivationFresh(derivation, useAppStore.getState());
+        if (!fresh) cancelCanvasDerivation(derivation);
+        return fresh;
+      };
 
       // 2. 后台生成
       try {
         const result = await generateOutpaintImage(
           { apiKey, model, imageUrl: compositeDataUrl, size: meta.size, prompt: meta.prompt },
           (progress) => {
-            store.updateNodeDataTransient(newNodeId, { output: `扩图中 ${progress}%...` });
+            if (!ensureFresh()) return;
+            useAppStore.getState().updateNodeDataTransient(newNodeId, { output: `扩图中 ${progress}%...` });
           },
         );
+        if (!ensureFresh()) return;
 
         const genUrl = result.imageUrls[0];
         const resp = await fetch(genUrl);
+        if (!ensureFresh()) return;
         const blob = await resp.blob();
+        if (!ensureFresh()) return;
         const dataUrl = await blobToDataUrl(blob);
+        if (!ensureFresh()) return;
 
         let assetUrl = dataUrl;
         let filePath: string | undefined;
-        const projectId = store.currentProjectId;
-        if (projectId && projectId !== 'default') {
+        if (derivation.projectId !== 'default') {
           const ext = blob.type.split('/').pop() || 'png';
           const savedName = buildNodeFileName(`${(data.label as string) || '图像'} 扩图`, ext, 'expand');
-          const saved = await saveDataUrlToProjectData(dataUrl, projectId, savedName);
-          if (saved && saved.assetUrl) {
+          const saved = await saveDataUrlToProjectData(dataUrl, derivation.projectId, savedName);
+          if (saved?.assetUrl) {
             assetUrl = saved.assetUrl;
             filePath = saved.filePath;
           }
         }
+        if (!ensureFresh()) return;
 
         const dims = await computeImageNodeDimensions(assetUrl);
-        store.updateNodeDataTransient(newNodeId, {
+        if (!ensureFresh()) return;
+
+        const liveStore = useAppStore.getState();
+        liveStore.updateNodeDataTransient(newNodeId, {
           imageUrl: assetUrl,
           filePath,
           status: 'success',
           output: undefined,
-          imageWidth: dims.nodeWidth,
-          imageHeight: dims.nodeHeight,
+          imageWidth: dims.imageWidth,
+          imageHeight: dims.imageHeight,
           nodeWidth: dims.nodeWidth,
           nodeHeight: dims.nodeHeight,
         } as Partial<BaseNodeData>);
-        store.commitToHistory();
-        store.showToast('扩图完成，已创建新节点');
+        liveStore.commitToHistory();
+        completeCanvasDerivation(derivation);
+        liveStore.showToast('扩图完成，已创建新节点');
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : '扩图失败';
-        store.deleteNode(newNodeId);
-        store.showToast(message, 'error');
+        const shouldNotify = isCanvasDerivationFresh(derivation, useAppStore.getState());
+        cancelCanvasDerivation(derivation);
+        if (shouldNotify) useAppStore.getState().showToast(message, 'error');
       }
     },
     [id, data.label, nodeWidth],
@@ -674,8 +796,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           imageUrl: assetUrl,
           filePath: result.output_path,
           status: 'success',
-          imageWidth: dims.nodeWidth,
-          imageHeight: dims.nodeHeight,
+          imageWidth: dims.imageWidth,
+          imageHeight: dims.imageHeight,
           nodeWidth: dims.nodeWidth,
           nodeHeight: dims.nodeHeight,
         } as BaseNodeData,
@@ -784,8 +906,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           imageUrl: assetUrl,
           filePath: result.subject_path,
           status: 'success',
-          imageWidth: dims.nodeWidth,
-          imageHeight: dims.nodeHeight,
+          imageWidth: dims.imageWidth,
+          imageHeight: dims.imageHeight,
           nodeWidth: dims.nodeWidth,
           nodeHeight: dims.nodeHeight,
         } as BaseNodeData,

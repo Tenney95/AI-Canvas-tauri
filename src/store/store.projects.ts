@@ -12,6 +12,7 @@ import { resumePendingTasks, clearProjectTasks } from '../services/pollManager';
 import { normalizeProjectSettings } from '../services/projectSettingsService';
 import { captureCurrentCanvasSnapshot } from '../services/projectSnapshotService';
 import { stopProjectAgentTasks } from '../services/chat/agentRuntime';
+import { cancelProjectCanvasDerivations } from '../services/canvasDerivationGuard';
 
 function getProjectGroups(data: { groups?: unknown } | null | undefined): NodeGroup[] {
   return Array.isArray(data?.groups) ? (data.groups as NodeGroup[]) : [];
@@ -478,6 +479,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   },
 
   switchProject: async (id) => {
+    if (!get().projects.some((project) => project.id === id)) return;
+    const currentProjectId = get().currentProjectId;
+    if (currentProjectId && currentProjectId !== id) {
+      cancelProjectCanvasDerivations(currentProjectId);
+    }
     const snapshotRecord = createCurrentProjectSaveRecord(get());
     void get().captureCurrentProjectSnapshot({
       allowProjectChange: true,

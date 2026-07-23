@@ -37,6 +37,7 @@ function getGroupChildCount(nodes: AppState['nodes'], groupId: string) {
 export default function GroupNode({ id, data, selected }: NodeProps) {
   const { groupId, color, label } = data as unknown as GroupNodeData;
   const renameGroup = useAppStore((s) => s.renameGroup);
+  const commitToHistory = useAppStore((s) => s.commitToHistory);
   const childCount = useAppStore((s) => getGroupChildCount(s.nodes, id));
   const editingRef = useRef(false);
   const [batchRunning, setBatchRunning] = useState(false);
@@ -45,14 +46,25 @@ export default function GroupNode({ id, data, selected }: NodeProps) {
     const state = useAppStore.getState();
     const allNodes = state.nodes;
     const allEdges = state.edges;
-    const { updateNodeData, recordOutputHistory, showToast, currentProjectId } = state;
+    const {
+      commitToHistory: commitBatchToHistory,
+      updateNodeDataTransient,
+      recordOutputHistory,
+      showToast,
+      currentProjectId,
+    } = state;
 
     // 收集该分组下的所有子节点 ID
     const childIds = allNodes.filter((n) => n.parentId === id).map((n) => n.id);
     if (childIds.length === 0) return;
 
     setBatchRunning(true);
-    const ctx: BatchContext = { updateNodeData, recordOutputHistory, currentProjectId };
+    const ctx: BatchContext = {
+      commitToHistory: commitBatchToHistory,
+      updateNodeDataTransient,
+      recordOutputHistory,
+      currentProjectId,
+    };
     const { ok, fail } = await batchExecuteNodes(childIds, allNodes, allEdges, ctx);
     setBatchRunning(false);
 
@@ -64,13 +76,13 @@ export default function GroupNode({ id, data, selected }: NodeProps) {
     }
   }, [id]);
 
-  if (childCount === 0) return null;
-
   return (
     <>
       <NodeResizer
         minWidth={200}
         minHeight={120}
+        onResizeStart={commitToHistory}
+        onResizeEnd={commitToHistory}
         handleStyle={{
           width: 10,
           height: 10,
