@@ -45,11 +45,15 @@
 }
 
 .overlay-scrollbar-layer {
-  position: fixed;
-  z-index: 2147483646;
+  position: absolute;
+  z-index: 1;
   inset: 0;
   overflow: hidden;
   pointer-events: none;
+}
+
+.overlay-scrollbar-layer--root {
+  position: fixed;
 }
 
 .overlay-scrollbar-thumb {

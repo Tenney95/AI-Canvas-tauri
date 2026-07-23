@@ -258,6 +258,19 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         : intent.audioPurpose === 'music'
           ? '对话生成音乐'
           : '对话生成语音';
+    const settings = state.projects.find(
+      (project) => project.id === state.currentProjectId,
+    )?.settings;
+    const nodeData = applyProjectDefaultsToNodeData({
+      label,
+      type,
+      role: 'generator',
+      prompt: intent.prompt,
+      model: intent.modelRef,
+      status: 'loading',
+      nodeWidth: 280,
+      nodeHeight: intent.kind === 'image' ? 158 : 160,
+    }, settings);
     state.commitToHistory();
     set((current) => ({
       nodes: [...current.nodes, {
@@ -265,15 +278,8 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         type,
         position,
         data: {
-          label,
-          type,
+          ...nodeData,
           role: 'source',
-          prompt: intent.prompt,
-          model: intent.modelRef,
-          status: 'loading',
-          nodeWidth: 280,
-          nodeHeight: intent.kind === 'image' ? 158 : 160,
-          ...(intent.kind === 'image' ? { aspectRatio: '1:1', imageSize: '2K' } : {}),
           displayId: getNextDisplayId(current.nodes),
         },
       } as Node<BaseNodeData>],
@@ -345,6 +351,20 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         : artifact.audioPurpose === 'music'
           ? '对话生成音乐'
           : '对话生成语音';
+    const settings = state.projects.find(
+      (project) => project.id === state.currentProjectId,
+    )?.settings;
+    const nodeData = applyProjectDefaultsToNodeData({
+      label,
+      type,
+      role: 'generator',
+      prompt: artifact.prompt,
+      model: artifact.modelId,
+      provider: artifact.provider,
+      status: 'success',
+      nodeWidth: 280,
+      nodeHeight: artifact.kind === 'image' ? 158 : 160,
+    }, settings);
     state.commitToHistory();
     set((current) => ({
       nodes: [...current.nodes, {
@@ -352,20 +372,13 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         type,
         position,
         data: {
-          label,
-          type,
+          ...nodeData,
           role: 'source',
           artifactId: artifact.id,
-          prompt: artifact.prompt,
-          model: artifact.modelId,
-          provider: artifact.provider,
           output: artifact.sourceUrl,
           sourceUrl: artifact.sourceUrl,
           filePath: artifact.filePath,
           thumbnailUrl: artifact.kind === 'image' ? artifact.url : undefined,
-          status: 'success',
-          nodeWidth: 280,
-          nodeHeight: artifact.kind === 'image' ? 158 : 160,
           ...mediaField,
           displayId: getNextDisplayId(current.nodes),
         },

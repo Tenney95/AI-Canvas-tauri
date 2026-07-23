@@ -14,8 +14,16 @@ import { generateImage } from './generateImage';
 import { generateVideo } from './generateVideo';
 import { generateAudio, persistAudioGenerationResult } from './generateAudio';
 import { findMediaModelOption } from '../../components/nodes/shared/defaultModels';
+import { resolveProjectGenerationPrompt } from '../projectSettingsService';
+import type { BaseNodeData, NodeType } from '../../types';
 
 const MODEL_MENTION_RE = /@model\{([^|}\s]+)(?:\|[^}]*)?\}/i;
+
+const MEDIA_NODE_TYPES: Record<MediaKind, NodeType> = {
+  image: 'ai-image',
+  video: 'ai-video',
+  audio: 'ai-audio',
+};
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
@@ -103,6 +111,22 @@ export async function runMediaGeneration(
   const prompt = stripModelMentions(intent.prompt);
   if (!prompt) throw new Error('媒体生成提示词不能为空');
 
+  const store = useAppStore.getState();
+  const targetProjectId = projectId ?? store.currentProjectId;
+  const projectSettings = store.projects.find(
+    (project) => project.id === targetProjectId,
+  )?.settings;
+  const effectivePrompt = resolveProjectGenerationPrompt({
+    prompt,
+    data: {
+      label: '对话媒体生成',
+      type: MEDIA_NODE_TYPES[intent.kind],
+      role: 'generator',
+    } as BaseNodeData,
+    settings: projectSettings,
+    customStyles: store.customStyles,
+  });
+
   const model = resolveMediaModel(intent.kind, intent.modelRef);
   if (
     intent.kind === 'audio'
@@ -116,11 +140,11 @@ export async function runMediaGeneration(
 
   if (intent.kind === 'image') {
     const result = await generateImage({
-      prompt,
+      prompt: effectivePrompt,
       model: model.requestModel,
       provider: model.provider,
-      imageSize: '2K',
-      aspectRatio: '1:1',
+      imageSize: projectSettings?.generation?.imageSize || '2K',
+      aspectRatio: projectSettings?.generation?.imageAspectRatio || '1:1',
     }, signal);
     throwIfAborted(signal);
     const saved = await saveGeneratedMedia(result.url, projectId, intent.kind, id).catch(() => null);
@@ -143,9 +167,11 @@ export async function runMediaGeneration(
 
   if (intent.kind === 'video') {
     const result = await generateVideo({
-      prompt,
+      prompt: effectivePrompt,
       model: model.requestModel,
       provider: model.provider,
+      seedanceResolution: projectSettings?.generation?.videoResolution,
+      seedanceDuration: projectSettings?.generation?.videoDuration,
     }, signal);
     throwIfAborted(signal);
     const saved = await saveGeneratedMedia(result.url, projectId, intent.kind, id).catch(() => null);
@@ -165,7 +191,7 @@ export async function runMediaGeneration(
   }
 
   const result = await generateAudio({
-    prompt,
+    prompt: effectivePrompt,
     model: model.requestModel,
     provider: model.provider,
   }, signal);

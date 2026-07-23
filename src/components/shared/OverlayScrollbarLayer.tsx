@@ -61,7 +61,41 @@ interface ViewportBounds {
   width: number;
 }
 
+interface OverlayHost {
+  element: HTMLElement;
+  isRoot: boolean;
+}
+
 const NO_AXES: ScrollAxes = { vertical: false, horizontal: false };
+
+function createsOverlayContainingBlock(element: HTMLElement): boolean {
+  const style = window.getComputedStyle(element);
+  const overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
+  const isScrollingContainer = /\b(auto|scroll|overlay)\b/.test(overflow);
+  if (isScrollingContainer) return false;
+
+  const isPositionedStackingContext = style.position !== 'static' && style.zIndex !== 'auto';
+  const hasContainingBlockEffect = style.transform !== 'none'
+    || style.perspective !== 'none'
+    || style.filter !== 'none'
+    || style.backdropFilter !== 'none'
+    || /\b(paint|layout|strict|content)\b/.test(style.contain)
+    || /\b(transform|perspective|filter)\b/.test(style.willChange);
+
+  return isPositionedStackingContext || hasContainingBlockEffect;
+}
+
+function getOverlayHost(target: HTMLElement): OverlayHost {
+  let candidate = target.parentElement;
+  while (candidate && candidate !== document.body && candidate !== document.documentElement) {
+    if (createsOverlayContainingBlock(candidate)) {
+      return { element: candidate, isRoot: false };
+    }
+    candidate = candidate.parentElement;
+  }
+
+  return { element: document.body, isRoot: true };
+}
 
 function isVisiblyActive(target: HTMLElement): boolean {
   if (!target.isConnected || target.getClientRects().length === 0) return false;
@@ -133,6 +167,7 @@ function getVisibleViewportBounds(target: HTMLElement): ViewportBounds {
 
 function ScrollbarOverlay({ target }: ScrollbarOverlayProps) {
   const targetRef = useRef(target);
+  const layerRef = useRef<HTMLDivElement>(null);
   const verticalThumbRef = useRef<HTMLDivElement>(null);
   const horizontalThumbRef = useRef<HTMLDivElement>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -143,6 +178,7 @@ function ScrollbarOverlay({ target }: ScrollbarOverlayProps) {
   const lastScrollPositionRef = useRef({ left: target.scrollLeft, top: target.scrollTop });
   const [axes, setAxes] = useState<ScrollAxes>(NO_AXES);
   const [isVisible, setIsVisible] = useState(false);
+  const overlayHost = getOverlayHost(target);
 
   const clearHideTimer = useCallback(() => {
     if (!hideTimerRef.current) return;
@@ -170,6 +206,13 @@ function ScrollbarOverlay({ target }: ScrollbarOverlayProps) {
     }
 
     const viewport = getVisibleViewportBounds(target);
+    const layer = layerRef.current;
+    if (!layer) return nextAxes;
+    const layerRect = layer.getBoundingClientRect();
+    const layerScaleX = layer.offsetWidth > 0 ? layerRect.width / layer.offsetWidth : 1;
+    const layerScaleY = layer.offsetHeight > 0 ? layerRect.height / layer.offsetHeight : 1;
+    const toLayerX = (viewportX: number) => (viewportX - layerRect.left) / layerScaleX;
+    const toLayerY = (viewportY: number) => (viewportY - layerRect.top) / layerScaleY;
     const crossAxisGap = nextAxes.vertical && nextAxes.horizontal ? HIT_SIZE : 0;
 
     if (nextAxes.vertical && verticalThumbRef.current) {
@@ -182,9 +225,9 @@ function ScrollbarOverlay({ target }: ScrollbarOverlayProps) {
       const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
       const thumbTop = maxThumbTop * (target.scrollTop / maxScrollTop);
       const thumb = verticalThumbRef.current;
-      thumb.style.setProperty('--overlay-scrollbar-x', `${viewport.right - EDGE_INSET - HIT_SIZE}px`);
-      thumb.style.setProperty('--overlay-scrollbar-y', `${viewport.top + TRACK_INSET + thumbTop}px`);
-      thumb.style.setProperty('--overlay-scrollbar-size', `${thumbHeight}px`);
+      thumb.style.setProperty('--overlay-scrollbar-x', `${toLayerX(viewport.right - EDGE_INSET - HIT_SIZE)}px`);
+      thumb.style.setProperty('--overlay-scrollbar-y', `${toLayerY(viewport.top + TRACK_INSET + thumbTop)}px`);
+      thumb.style.setProperty('--overlay-scrollbar-size', `${thumbHeight / layerScaleY}px`);
     }
 
     if (nextAxes.horizontal && horizontalThumbRef.current) {
@@ -197,9 +240,9 @@ function ScrollbarOverlay({ target }: ScrollbarOverlayProps) {
       const maxThumbLeft = Math.max(0, trackWidth - thumbWidth);
       const thumbLeft = maxThumbLeft * (target.scrollLeft / maxScrollLeft);
       const thumb = horizontalThumbRef.current;
-      thumb.style.setProperty('--overlay-scrollbar-x', `${viewport.left + TRACK_INSET + thumbLeft}px`);
-      thumb.style.setProperty('--overlay-scrollbar-y', `${viewport.bottom - EDGE_INSET - HIT_SIZE}px`);
-      thumb.style.setProperty('--overlay-scrollbar-size', `${thumbWidth}px`);
+      thumb.style.setProperty('--overlay-scrollbar-x', `${toLayerX(viewport.left + TRACK_INSET + thumbLeft)}px`);
+      thumb.style.setProperty('--overlay-scrollbar-y', `${toLayerY(viewport.bottom - EDGE_INSET - HIT_SIZE)}px`);
+      thumb.style.setProperty('--overlay-scrollbar-size', `${thumbWidth / layerScaleX}px`);
     }
 
     if (!hasShownInitialRef.current) {
@@ -328,8 +371,13 @@ function ScrollbarOverlay({ target }: ScrollbarOverlayProps) {
     reveal(ACTIVE_VISIBILITY_MS);
   }, [reveal]);
 
-  return (
-    <>
+  return createPortal(
+    <div
+      ref={layerRef}
+      className={`overlay-scrollbar-layer${overlayHost.isRoot ? ' overlay-scrollbar-layer--root' : ''}`}
+      data-overlay-scrollbar="off"
+      aria-hidden="true"
+    >
       <div
         ref={verticalThumbRef}
         className={`overlay-scrollbar-thumb overlay-scrollbar-thumb--vertical${axes.vertical && isVisible ? ' is-visible' : ''}`}
@@ -346,7 +394,8 @@ function ScrollbarOverlay({ target }: ScrollbarOverlayProps) {
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
       />
-    </>
+    </div>,
+    overlayHost.element,
   );
 }
 
@@ -476,15 +525,11 @@ export default function OverlayScrollbarLayer() {
     };
   }, []);
 
-  return createPortal(
-    <div className="overlay-scrollbar-layer" aria-hidden="true">
+  return (
+    <>
       {targets.map(({ id, target }) => (
-        <ScrollbarOverlay
-          key={id}
-          target={target}
-        />
+        <ScrollbarOverlay key={id} target={target} />
       ))}
-    </div>,
-    document.body,
+    </>
   );
 }
