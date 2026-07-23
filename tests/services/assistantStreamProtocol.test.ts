@@ -12,14 +12,21 @@ const configureAssistant = (executionProfile: ModelExecutionProfile) => {
     config: {
       ...state.config,
       assistantModelId: 'assistant-model',
+      providers: {
+        ...state.config.providers,
+        'custom-assistant': {
+          name: '自定义助手连接',
+          apiKey: 'secret',
+          baseUrl: 'https://gateway.example/v1',
+          catalogId: 'custom-openai',
+        },
+      },
       generalModels: [{
         id: 'assistant-model',
         name: '自定义助手',
-        openaiUrl: 'https://gateway.example/v1',
-        anthropicUrl: '',
         modelId: 'vendor-chat',
-        apiKey: 'secret',
         category: 'text',
+        providerConfigId: 'custom-assistant',
         executionProfile,
       }],
     },
@@ -111,6 +118,17 @@ describe('assistant custom protocol boundary', () => {
         { role: 'user', content: '你好' },
       ],
       stream: false,
+    });
+  });
+
+  it('uses the current provider credential after key rotation', () => {
+    configureAssistant({ preset: 'openai-chat' });
+    useAppStore.getState().setProviderKey('custom-assistant', 'rotated-secret');
+
+    expect(resolveAssistantModel()).toMatchObject({
+      apiKey: 'rotated-secret',
+      baseUrl: 'https://gateway.example/v1',
+      modelName: 'vendor-chat',
     });
   });
 

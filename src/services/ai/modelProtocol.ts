@@ -85,6 +85,7 @@ export interface SubmitModelProtocolOptions {
   baseUrl: string;
   protocol: ModelExecutionProtocol;
   variables: ModelProtocolVariables;
+  signal?: AbortSignal;
 }
 
 export interface SubmittedModelProtocol {
@@ -1385,7 +1386,10 @@ export async function pollResolvedModelProtocol(
       try {
         const response = await corsSafeFetch(
           applyQueryAuthentication(poll.url, poll.auth, apiKey),
-          buildResolvedRequestInit(poll, apiKey),
+          {
+            ...buildResolvedRequestInit(poll, apiKey),
+            signal,
+          },
         );
         const payload = await readJsonResponse(response, '模型任务查询失败', poll.errorPath);
         consecutiveErrors = 0;

@@ -20,6 +20,7 @@ interface RunConfiguredModelProtocolOptions {
   variables: ModelProtocolVariables;
   nodeId?: string;
   category: Exclude<GeneralModelCategory, 'text'>;
+  signal?: AbortSignal;
 }
 
 const NODE_TYPE_BY_CATEGORY: Record<Exclude<GeneralModelCategory, 'text'>, NodeType> = {
@@ -39,40 +40,48 @@ export async function runConfiguredModelProtocol(
 ): Promise<string[]> {
   const protocol = resolveModelExecutionProfile(options.model.executionProfile);
   if (!protocol) throw new Error(`模型“${options.model.name}”未配置调用协议`);
+  const provider = useAppStore.getState().config.providers[options.model.providerConfigId];
+  if (!provider) throw new Error(`模型“${options.model.name}”的连接配置不存在`);
+  const baseUrl = provider.baseUrl?.trim() || '';
+  if (!baseUrl) throw new Error(`模型“${options.model.name}”未配置接口地址`);
 
-  const submitted = await submitModelProtocol({
-    apiKey: options.model.apiKey || '',
-    baseUrl: options.model.openaiUrl,
-    protocol,
-    variables: options.variables,
-  });
-  if (submitted.urls) return submitted.urls;
-  if (!submitted.poll || !submitted.taskId) throw new Error('异步调用协议未返回轮询配置');
-
-  const projectId = useAppStore.getState().currentProjectId;
-  const canPersist = !!options.nodeId && !!projectId && !!options.model.providerConfigId;
-  if (canPersist) {
-    savePendingTask({
-      nodeId: options.nodeId!,
-      projectId,
-      nodeType: NODE_TYPE_BY_CATEGORY[options.category],
-      provider: 'general',
-      providerConfigId: options.model.providerConfigId,
-      taskId: submitted.taskId,
-      taskType: 'custom-protocol',
-      protocolPoll: submitted.poll,
-      batchCount: readBatchCount(options.variables.n),
-      submitted: true,
-    });
-  }
-
-  const signal = options.nodeId ? registerNodePolling(options.nodeId) : undefined;
+  const nodeSignal = options.nodeId ? registerNodePolling(options.nodeId) : undefined;
+  const signal = nodeSignal && options.signal
+    ? AbortSignal.any([nodeSignal, options.signal])
+    : nodeSignal ?? options.signal;
   try {
+    const submitted = await submitModelProtocol({
+      apiKey: provider.apiKey || '',
+      baseUrl,
+      protocol,
+      variables: options.variables,
+      signal,
+    });
+    if (submitted.urls) return submitted.urls;
+    if (!submitted.poll || !submitted.taskId) throw new Error('异步调用协议未返回轮询配置');
+
+    const projectId = useAppStore.getState().currentProjectId;
+    const canPersist = !!options.nodeId && !!projectId;
+    if (canPersist) {
+      savePendingTask({
+        nodeId: options.nodeId!,
+        projectId,
+        nodeType: NODE_TYPE_BY_CATEGORY[options.category],
+        provider: 'general',
+        providerConfigId: options.model.providerConfigId,
+        taskId: submitted.taskId,
+        taskType: 'custom-protocol',
+        protocolPoll: submitted.poll,
+        batchCount: readBatchCount(options.variables.n),
+        submitted: true,
+      });
+    }
+
     const result = await pollResolvedModelProtocol(
       submitted.poll,
-      options.model.apiKey || '',
+      provider.apiKey || '',
       signal,
-      options.model.openaiUrl,
+      baseUrl,
     );
     if (!result.urls) throw new Error('媒体模型任务完成但未返回结果 URL');
     return result.urls;

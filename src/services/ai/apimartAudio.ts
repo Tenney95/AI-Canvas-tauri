@@ -78,11 +78,13 @@ async function submitFlowMusicTask(
   path: string,
   body: Record<string, unknown>,
   errorLabel: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const response = await fetch(endpoint(baseUrl, path), {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify(body),
+    signal,
   });
   if (!response.ok) {
     await parseResponseError(response, `${errorLabel} (${response.status})`);
@@ -102,6 +104,7 @@ export async function generateApimartSpeech(
     format: AudioOutputFormat;
     speed: number;
   },
+  signal?: AbortSignal,
 ): Promise<AudioGenerationResult> {
   if (!params.input.trim()) throw new Error('TTS 文本不能为空');
   if (params.input.length > 4096) throw new Error('TTS 文本不能超过 4096 个字符');
@@ -117,6 +120,7 @@ export async function generateApimartSpeech(
       response_format: params.format,
       speed: params.speed,
     }),
+    signal,
   });
   if (!response.ok) {
     await parseResponseError(response, `APIMart TTS 生成失败 (${response.status})`);
@@ -175,6 +179,7 @@ export function submitFlowMusicLyrics(
   apiKey: string,
   baseUrl: string,
   prompt: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (!prompt.trim()) throw new Error('歌词生成提示词不能为空');
   if (prompt.length > 3000) throw new Error('歌词生成提示词不能超过 3000 个字符');
@@ -184,6 +189,7 @@ export function submitFlowMusicLyrics(
     '/music/generations/lyricsFlowMusic',
     { model: 'flowmusic', prompt },
     'APIMart 歌词任务提交失败',
+    signal,
   );
 }
 
@@ -191,6 +197,7 @@ export function submitFlowMusicGeneration(
   apiKey: string,
   baseUrl: string,
   request: FlowMusicGenerationRequest,
+  signal?: AbortSignal,
 ): Promise<string> {
   const soundPrompt = request.soundPrompt?.trim();
   const lyrics = request.lyrics?.trim();
@@ -216,6 +223,7 @@ export function submitFlowMusicGeneration(
     '/music/generations',
     body,
     'APIMart 音乐任务提交失败',
+    signal,
   );
 }
 
@@ -223,9 +231,11 @@ export async function fetchFlowMusicTask(
   apiKey: string,
   baseUrl: string,
   taskId: string,
+  signal?: AbortSignal,
 ): Promise<FlowMusicTaskState> {
   const response = await fetch(endpoint(baseUrl, `/music/tasks/${encodeURIComponent(taskId)}?language=zh`), {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal,
   });
   if (!response.ok) {
     await parseResponseError(response, `APIMart 音乐任务查询失败 (${response.status})`);

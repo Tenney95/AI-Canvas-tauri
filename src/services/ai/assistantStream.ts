@@ -17,6 +17,7 @@ import {
 } from '../../components/nodes/shared/defaultModels';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { extractModelName } from './helpers';
+import { corsSafeFetch } from './httpTransport';
 import {
   buildModelProtocolRequest,
   getModelProtocolPreset,
@@ -50,7 +51,9 @@ export function resolveAssistantModel(): ResolvedModelConfig | null {
   );
 
   if (gm) {
-    if (!gm.openaiUrl || !gm.modelId) return null;
+    const provider = config.providers[gm.providerConfigId];
+    const baseUrl = provider?.baseUrl?.trim() || '';
+    if (!provider || !baseUrl || !gm.modelId) return null;
 
     let protocol: ModelExecutionProtocol;
     try {
@@ -62,8 +65,8 @@ export function resolveAssistantModel(): ResolvedModelConfig | null {
     }
 
     return {
-      baseUrl: gm.openaiUrl.replace(/\/+$/, ''),
-      apiKey: gm.apiKey || '',
+      baseUrl: baseUrl.replace(/\/+$/, ''),
+      apiKey: provider.apiKey || '',
       modelName: gm.modelId,
       protocol,
     };
@@ -142,7 +145,7 @@ function buildAssistantTools(userMessage: string): AssistantToolDefinition[] {
   const config = useAppStore.getState().config;
   const mentionedModelId = /@model\{([^|}\s]+)/i.exec(userMessage)?.[1];
   if (!mentionedModelId) return [];
-  const mentionedModel = findMediaModelOption(mentionedModelId, config.generalModels ?? []);
+  const mentionedModel = findMediaModelOption(mentionedModelId, config.generalModels ?? [], config);
   if (!mentionedModel) return [];
   const providerAvailable = mentionedModel.provider === 'general'
     || (mentionedModel.provider === 'dreamina'
@@ -250,7 +253,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
         toolChoice: tools.length > 0 ? 'auto' : undefined,
       },
     });
-    const response = await fetch(builtRequest.url, builtRequest.init);
+    const response = await corsSafeFetch(builtRequest.url, builtRequest.init);
 
     if (nonStream) {
       return await parseNonStream(response, { onEvent });

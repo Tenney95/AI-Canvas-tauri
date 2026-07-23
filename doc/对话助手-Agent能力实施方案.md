@@ -1325,6 +1325,62 @@ type PolicyDecision =
 
 从工具注册入口移除 `registerWebAgentTools()`，移除 `assistant_web` Tauri 命令与四家搜索能力定义即可关闭联网能力。消息来源字段均为可选字段，无数据库版本迁移；旧消息和现有厂商文档读取不受影响。
 
+### 8.7 P5-E：API 连接单一权威源与异步任务脱敏
+
+**状态：已完成**
+
+#### 实施结果
+
+- [x] `GeneralModelConfig` 仅保留模型元数据、声明式协议和必填 `providerConfigId`，不再包含 API Key、OpenAI 地址或 Anthropic 地址。
+- [x] 自定义连接保存时只把模型元数据同步到 `generalModels`；密钥和地址只保存在 `config.providers`。
+- [x] 旧配置加载时按原密钥和地址匹配或创建自定义连接，随后显式重建无凭据的模型记录；保存前再次执行规范化，避免旧字段重新落库。
+- [x] 文本、图片、视频、音频、对话助手、Agent 媒体检查和声明式协议运行时均通过 `providerConfigId` 读取当前 provider 配置，密钥轮换后不再使用模型副本中的旧值。
+- [x] APIMart 图片/视频、Flow Music、火山视频、RunningHub 和通用异步任务只持久化 `providerConfigId`，不再把厂商密钥或地址写入 `localStorage`。
+- [x] 读取旧待续任务时先匹配当前连接，再立即清除遗留 `apiKey/baseUrl`；无法解析连接的任务按缺少配置失败，不回退使用旧密钥。本地 ComfyUI 地址继续作为非凭据恢复信息保留。
+- [x] 增加旧配置迁移、模型同步脱敏、密钥轮换和旧待续任务清洗回归测试。
+
+#### 完成记录
+
+- 完成日期：2026-07-23。
+- 类型与 Lint：`npm run typecheck`、`npm run test:typecheck` 和本阶段相关 TypeScript/TSX 文件定向 ESLint 通过；并行媒体取消信号改动的 `SubmitModelProtocolOptions.signal` 类型契约已同步补齐。
+- 定向测试：配置迁移、待续任务、助手协议、文本协议和 Agent 厂商配置共 10 个测试文件、40 项测试通过。
+- 全量测试：`npm test` 共 102 个测试文件、568 项测试全部通过，包含并行新增的媒体取消信号回归。
+- 生产构建：`npx vite build --outDir <系统临时目录>` 通过；仅保留既有动态导入和 chunk 体积警告。
+- 本阶段无 UI 布局或交互改动，未执行视觉回归；未发送真实厂商请求。
+
+#### 回滚
+
+代码可回退到 P5-E 前版本。数据迁移只移除 `generalModels` 和厂商待续任务中的冗余连接副本，`config.providers` 权威配置不删除；已经清除的冗余密钥和地址不会恢复。旧待续任务若无法匹配现有连接会要求用户重新生成，不会继续使用持久化旧密钥。
+
+### 8.8 平台补充：付费媒体生成取消链路
+
+**任务类型：一次性修复**
+
+**状态：已完成**
+
+#### 实施结果
+
+- [x] `runMediaGeneration()` 把任务 `AbortSignal` 作为独立运行时参数传给图片、视频和音频生成入口，不写入可持久化的生成参数。
+- [x] APIMart、火山方舟、RunningHub、ComfyUI、Dreamina、通用异步任务和声明式协议的提交与轮询请求均传递取消信号。
+- [x] 节点取消控制器在远程提交前注册，清理边界覆盖整个“预存待续任务 → 提交 → 解析任务 ID → 轮询”周期，提交阶段取消不再遗留 pending 记录或运行时控制器。
+- [x] Tauri AI HTTP 传输使用 Channel 分块返回响应，`cancel_proxy_fetch` 通过 request ID 触发 Rust `tokio::select!` 取消，覆盖连接期、响应传输期和前端消费期。
+- [x] 对已被供应商受理且没有官方取消端点的异步任务，不伪造远程取消；用户界面明确提示“已停止本地跟踪，任务可能继续并产生费用”。
+- [x] 增加媒体入口信号传递、声明式协议轮询、Tauri 原生请求取消和提交阶段清理回归测试。
+
+#### 完成记录
+
+- 完成日期：2026-07-23。
+- 类型检查：`npm run typecheck` 和 `npm run test:typecheck` 通过。
+- 测试：取消链路定向测试共 8 个文件、90 项通过；`npm test` 全量 102 个文件、569 项全部通过。
+- Rust 检查：`cargo check --lib` 通过；`cargo test --lib` 共 18 项通过。
+- 定向 ESLint 仅被 `dreaminaService.ts:76` 的既有 `preserve-caught-error` 报错阻断，本次未扩大到无关异常包装重构。
+- 生产构建：`npx vite build --outDir <系统临时目录>` 通过；仅保留既有动态导入和 chunk 体积警告。
+- 未发送真实厂商付费请求；远程任务取消能力仍取决于各供应商是否提供官方 cancel API。
+
+#### 回滚
+
+可回退媒体生成入口的独立 `AbortSignal` 参数、Provider 传递与 Tauri Channel 传输命令，并恢复原 `proxy_fetch` 整体响应。回滚不涉及 IndexedDB schema 或持久化数据迁移，但会恢复“取消只停止本地状态、原生请求继续执行”的风险。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1447,3 +1503,6 @@ type PolicyDecision =
 | 2026-07-21 | P5-B | 完成多模型声明式协议草稿、任务隔离与过期、`config_write` 固定审批，以及不写入或泄露 API Key 的配置保存。 |
 | 2026-07-22 | P5-D | 恢复通用联网搜索和任务级网页提取，支持 Tavily、博查、智谱、Exa 当前厂商选择，并完成逐跳 SSRF 防护、来源引用持久化、跨轮元数据注入和正文不落库边界。 |
 | 2026-07-23 | P5-D 补充 | 增加免 Key 的纯只读网页研究：安全 HTTPS 初始导航、页面链接提取和任务级跟链；不开放 Shell、本地文件、系统命令或通用 HTTP 请求。 |
+| 2026-07-23 | P5-E | 收敛 API 连接为 `config.providers` 单一权威源，通用模型和异步待续任务只保存 `providerConfigId`，并清洗旧配置与 localStorage 中的密钥副本。 |
+| 2026-07-23 | 平台补充 | 统一普通文本、标准图片和助手流式请求的 AI HTTP 传输：Web 模式沿用浏览器 `fetch`，Tauri 模式通过 Channel 分块转发响应并支持连接期、传输期和消费期取消，避免模型目录可用但实际请求被 WebView CORS 拦截。 |
+| 2026-07-23 | 平台补充 | 修复付费媒体生成取消链路：信号贯通图片、视频、音频、声明式协议与 Tauri 原生请求，并对不支持远程取消的已提交任务显示准确计费风险。 |

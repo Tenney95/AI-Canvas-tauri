@@ -196,22 +196,30 @@ async function submitTask(
   baseUrl: string,
   endpoint: string,
   body: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<string> {
   const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/${endpoint}`, {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify(body),
+    signal,
   });
   const task = await parseTaskResponse(response, 'RunningHub 任务提交失败');
   if (!task.taskId) throw new Error(task.errorMessage || 'RunningHub 任务提交失败：未返回 taskId');
   return task.taskId;
 }
 
-async function queryTask(apiKey: string, baseUrl: string, taskId: string): Promise<RunningHubTaskResult> {
+async function queryTask(
+  apiKey: string,
+  baseUrl: string,
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<RunningHubTaskResult> {
   const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/query`, {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify({ taskId }),
+    signal,
   });
   return parseTaskResponse(response, 'RunningHub 任务查询失败');
 }
@@ -223,7 +231,7 @@ async function waitForTask(
   signal?: AbortSignal,
 ): Promise<string[]> {
   return pollTask<RunningHubTaskResult, string[]>({
-    fetchState: () => queryTask(apiKey, baseUrl, taskId),
+    fetchState: () => queryTask(apiKey, baseUrl, taskId, signal),
     isComplete: (task) => {
       if (task.status?.toUpperCase() !== 'SUCCESS') return null;
       const urls = task.results?.flatMap((result) => result.url ? [result.url] : []) ?? [];
@@ -241,6 +249,7 @@ async function waitForTask(
 export async function generateRunningHubImagesBatch(
   params: RunningHubImageParams,
   count: number,
+  externalSignal?: AbortSignal,
 ): Promise<BatchImageResult> {
   const requestedCount = Math.max(1, Math.floor(count));
   const modelName = normalizeModelName(params.model);
@@ -248,6 +257,10 @@ export async function generateRunningHubImagesBatch(
   if (!model) throw new Error(`RunningHub 模型 "${modelName}" 未配置官方端点`);
 
   const { endpoint, body } = buildRequest(model, params);
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
+  const signal = nodeSignal && externalSignal
+    ? AbortSignal.any([nodeSignal, externalSignal])
+    : nodeSignal ?? externalSignal;
   if (params.nodeId) {
     const projectId = useAppStore.getState().currentProjectId;
     if (projectId) {
@@ -256,10 +269,10 @@ export async function generateRunningHubImagesBatch(
         projectId,
         nodeType: 'ai-image',
         provider: 'runninghub',
+        providerConfigId: 'runninghub-model',
         taskId: '',
         taskIds: [],
         taskType: 'runninghub',
-        baseUrl: params.baseUrl,
         batchCount: requestedCount,
         submitted: false,
       });
@@ -270,7 +283,7 @@ export async function generateRunningHubImagesBatch(
   try {
     const submitted = await runBatchTasks(requestedCount, 3, async () => {
       try {
-        return await submitTask(params.apiKey, params.baseUrl, endpoint, body);
+        return await submitTask(params.apiKey, params.baseUrl, endpoint, body, signal);
       } catch (error) {
         firstError ??= error;
         throw error;
@@ -287,7 +300,6 @@ export async function generateRunningHubImagesBatch(
       });
     }
 
-    const signal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
     const completed = await runBatchTasks(taskIds.length, 3, async (index) => {
       try {
         return await waitForTask(params.apiKey, params.baseUrl, taskIds[index], signal);

@@ -1,29 +1,34 @@
 use base64::Engine;
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Mutex,
+    Mutex, OnceLock,
 };
 use std::{path::PathBuf, time::Duration};
+use tauri::window::{Color, Effect, EffectState, EffectsBuilder};
 use tauri::{
-    Listener, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    ipc::Channel, Listener, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
-use tauri::window::{Color, Effect, EffectState, EffectsBuilder};
 use tauri_plugin_fs::FsExt;
 use url::Url;
 
-mod clipboard;
 mod assistant_web;
+mod clipboard;
 mod comfyui;
-mod dreamina;
 mod director_desk_runtime;
+mod dreamina;
 mod file_transfer;
-mod provider_docs;
 pub mod onnx;
+mod provider_docs;
 
 static CHAT_WINDOW_LOCKED: AtomicBool = AtomicBool::new(false);
 static CHAT_WINDOW_LOCK_OFFSET: Mutex<(i32, i32)> = Mutex::new((0, 0));
 static CHAT_WINDOW_SIZE_SAVE_VERSION: AtomicU64 = AtomicU64::new(0);
+static PROXY_FETCH_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+static PROXY_FETCH_CANCELLATIONS: OnceLock<
+    Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+> = OnceLock::new();
 
 const CHAT_WINDOW_DEFAULT_SIZE: (f64, f64) = (480.0, 720.0);
 const CHAT_WINDOW_MIN_SIZE: (f64, f64) = (360.0, 480.0);
@@ -113,9 +118,7 @@ fn load_chat_window_size(
 fn apply_chat_window_rounded_corners(window: &WebviewWindow) {
     use windows::Win32::{
         Foundation::HWND,
-        Graphics::Dwm::{
-            DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-        },
+        Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND},
     };
 
     let Ok(hwnd) = window.hwnd() else {
@@ -225,11 +228,30 @@ const DREAMINA_LOGIN_WATCHER: &str = r#"
 /// 通用 HTTP 代理：前端通过 invoke 调用，由 Rust 端发起 HTTP 请求，彻底绕过浏览器 CORS 限制。
 /// 请求体和响应体均使用 base64 编码传输，支持 GET/POST 等任意方法。
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProxyFetchRequest {
+    request_id: Option<String>,
     url: String,
     method: String,
     headers: Vec<(String, String)>,
     body: Option<String>, // base64 编码的请求体
+}
+
+fn proxy_fetch_cancellations() -> &'static Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>
+{
+    PROXY_FETCH_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+fn cancel_proxy_fetch(request_id: String) -> Result<(), String> {
+    let cancellation = proxy_fetch_cancellations()
+        .lock()
+        .map_err(|_| "读取 HTTP 请求取消状态失败".to_string())?
+        .remove(&request_id);
+    if let Some(sender) = cancellation {
+        let _ = sender.send(());
+    }
+    Ok(())
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -239,21 +261,30 @@ struct ProxyFetchResponse {
     headers: Vec<(String, String)>,
 }
 
-#[tauri::command]
-async fn proxy_fetch(req: ProxyFetchRequest) -> Result<ProxyFetchResponse, String> {
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum ProxyFetchStreamEvent {
+    Meta {
+        status: u16,
+        headers: Vec<(String, String)>,
+    },
+    Chunk {
+        body: String,
+    },
+    Done,
+}
+
+async fn send_proxy_request(req: &ProxyFetchRequest) -> Result<reqwest::Response, String> {
     let client = reqwest::Client::builder()
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
     let method = reqwest::Method::from_bytes(req.method.as_bytes())
         .map_err(|e| format!("无效的 HTTP 方法: {e}"))?;
-
     let mut request = client.request(method, &req.url);
-
     for (key, value) in &req.headers {
         request = request.header(key.as_str(), value.as_str());
     }
-
     if let Some(body) = &req.body {
         if !body.is_empty() {
             let bytes = base64::engine::general_purpose::STANDARD
@@ -263,26 +294,107 @@ async fn proxy_fetch(req: ProxyFetchRequest) -> Result<ProxyFetchResponse, Strin
         }
     }
 
-    let response = request.send().await.map_err(|e| format!("请求失败: {e}"))?;
+    request.send().await.map_err(|e| format!("请求失败: {e}"))
+}
 
-    let status = response.status().as_u16();
-    let res_headers: Vec<(String, String)> = response
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+#[tauri::command]
+async fn proxy_fetch(req: ProxyFetchRequest) -> Result<ProxyFetchResponse, String> {
+    let request_id = req.request_id.clone().unwrap_or_else(|| {
+        format!(
+            "legacy-proxy-{}",
+            PROXY_FETCH_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    let (cancel_sender, cancel_receiver) = tokio::sync::oneshot::channel();
+    proxy_fetch_cancellations()
+        .lock()
+        .map_err(|_| "注册 HTTP 请求取消状态失败".to_string())?
+        .insert(request_id.clone(), cancel_sender);
 
-    let res_bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("读取响应失败: {e}"))?;
-    let body_b64 = base64::engine::general_purpose::STANDARD.encode(&res_bytes);
+    let request = async move {
+        let response = send_proxy_request(&req).await?;
 
-    Ok(ProxyFetchResponse {
-        status,
-        body: body_b64,
-        headers: res_headers,
-    })
+        let status = response.status().as_u16();
+        let res_headers: Vec<(String, String)> = response
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+
+        let res_bytes = response
+            .bytes()
+            .await
+            .map_err(|e| format!("读取响应失败: {e}"))?;
+        let body_b64 = base64::engine::general_purpose::STANDARD.encode(&res_bytes);
+
+        Ok(ProxyFetchResponse {
+            status,
+            body: body_b64,
+            headers: res_headers,
+        })
+    };
+
+    let result = tokio::select! {
+        result = request => result,
+        _ = cancel_receiver => Err("请求已取消".to_string()),
+    };
+    if let Ok(mut cancellations) = proxy_fetch_cancellations().lock() {
+        cancellations.remove(&request_id);
+    }
+    result
+}
+
+#[tauri::command]
+async fn proxy_stream_fetch(
+    req: ProxyFetchRequest,
+    on_event: Channel<ProxyFetchStreamEvent>,
+) -> Result<(), String> {
+    let request_id = req
+        .request_id
+        .clone()
+        .ok_or_else(|| "流式 HTTP 请求缺少 requestId".to_string())?;
+    let (cancel_sender, cancel_receiver) = tokio::sync::oneshot::channel();
+    proxy_fetch_cancellations()
+        .lock()
+        .map_err(|_| "注册 HTTP 请求取消状态失败".to_string())?
+        .insert(request_id.clone(), cancel_sender);
+
+    let request = async move {
+        let mut response = send_proxy_request(&req).await?;
+        let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_str().unwrap_or("").to_string()))
+            .collect();
+        on_event
+            .send(ProxyFetchStreamEvent::Meta { status, headers })
+            .map_err(|e| format!("发送 HTTP 响应状态失败: {e}"))?;
+
+        while let Some(bytes) = response
+            .chunk()
+            .await
+            .map_err(|error| format!("读取响应失败: {error}"))?
+        {
+            let body = base64::engine::general_purpose::STANDARD.encode(bytes);
+            on_event
+                .send(ProxyFetchStreamEvent::Chunk { body })
+                .map_err(|e| format!("发送 HTTP 响应数据失败: {e}"))?;
+        }
+        on_event
+            .send(ProxyFetchStreamEvent::Done)
+            .map_err(|e| format!("结束 HTTP 响应流失败: {e}"))?;
+        Ok(())
+    };
+
+    let result = tokio::select! {
+        result = request => result,
+        _ = cancel_receiver => Err("请求已取消".to_string()),
+    };
+    if let Ok(mut cancellations) = proxy_fetch_cancellations().lock() {
+        cancellations.remove(&request_id);
+    }
+    result
 }
 
 /// 使用原生 HTTP 客户端下载远程图片并返回 base64 data URL（绕过 WebView CORS 限制）
@@ -347,8 +459,7 @@ async fn fetch_image_data_url(url: String) -> Result<String, String> {
 /// 将文件或目录移动到系统回收站/废纸篓
 #[tauri::command]
 async fn move_to_trash(path: String) -> Result<(), String> {
-    trash::delete(std::path::Path::new(&path))
-        .map_err(|e| format!("移动文件到回收站失败: {}", e))
+    trash::delete(std::path::Path::new(&path)).map_err(|e| format!("移动文件到回收站失败: {}", e))
 }
 
 /// 使用指定应用打开文件（直接调用系统进程 API，绕过 shell 插件权限限制）
@@ -659,6 +770,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fetch_image_data_url,
             proxy_fetch,
+            proxy_stream_fetch,
+            cancel_proxy_fetch,
             assistant_web::assistant_web_search,
             assistant_web::assistant_web_extract,
             provider_docs::provider_docs_read,

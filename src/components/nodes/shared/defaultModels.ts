@@ -8,7 +8,9 @@ import type {
   ModelGroup,
   ModelOption,
   NodeType,
+  ProviderModelSelection,
 } from '../../../types';
+import { CATEGORY_TO_NODE_TYPES } from '../../../types';
 
 export type MediaModelKind = 'image' | 'video' | 'audio';
 
@@ -809,14 +811,34 @@ function modelCategoryForNodeType(nodeType: NodeType): GeneralModelCategory | nu
   return null;
 }
 
-function normalizedCatalogModelId(value: string): string {
-  const separator = value.indexOf('/');
-  const modelId = separator >= 0 ? value.slice(separator + 1) : value;
+function normalizedCatalogModelId(value: string, provider: string): string {
+  const providerPrefix = `${provider}/`;
+  const modelId = value.startsWith(providerPrefix) ? value.slice(providerPrefix.length) : value;
   return modelId.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function providerConfigIdForGroup(groupId: string): string {
   return groupId === 'runninghub' ? 'runninghub-model' : groupId;
+}
+
+function createConfiguredModelOption(
+  group: ModelGroup,
+  model: ProviderModelSelection,
+): ModelOption {
+  const provider = group.models[0]?.provider || group.id;
+  const value = model.id.startsWith(`${provider}/`)
+    ? model.id
+    : `${provider}/${model.id}`;
+  return {
+    value,
+    provider,
+    label: model.name,
+    description: model.description || `ID: ${model.id}`,
+    icon: group.icon,
+    iconType: group.iconType,
+    badgeText: group.badgeText,
+    nodeTypes: CATEGORY_TO_NODE_TYPES[model.category],
+  };
 }
 
 export function isProviderCategoryVisible(
@@ -867,14 +889,27 @@ export function getConfiguredModelGroups(
     if (group.id !== 'dreamina' && !provider?.apiKey) return [];
     if (provider && !isProviderCategoryVisible(config, providerConfigId, category)) return [];
 
-    const selectedIds = provider?.selectedModels === undefined
+    const modelProvider = group.models[0]?.provider || group.id;
+    const selectedModels = provider?.selectedModels;
+    const selectedIds = selectedModels === undefined
       ? null
-      : new Set(provider.selectedModels.map((model) => normalizedCatalogModelId(model.id)));
+      : new Set(selectedModels.map((model) => normalizedCatalogModelId(model.id, modelProvider)));
     const models = group.models.filter((model) => {
       if (!model.nodeTypes.includes(modelNodeType)) return false;
       if (!filterSelectedModels || selectedIds === null) return true;
-      return selectedIds.has(normalizedCatalogModelId(model.value));
+      return selectedIds.has(normalizedCatalogModelId(model.value, modelProvider));
     });
+    if (filterSelectedModels && selectedModels) {
+      const configuredIds = new Set(
+        models.map((model) => normalizedCatalogModelId(model.value, modelProvider)),
+      );
+      for (const selectedModel of selectedModels) {
+        const normalizedId = normalizedCatalogModelId(selectedModel.id, modelProvider);
+        if (selectedModel.category !== category || configuredIds.has(normalizedId)) continue;
+        models.push(createConfiguredModelOption(group, selectedModel));
+        configuredIds.add(normalizedId);
+      }
+    }
     return models.length > 0 ? [{ ...group, models }] : [];
   });
 }

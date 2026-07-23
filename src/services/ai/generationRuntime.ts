@@ -17,6 +17,10 @@ import { findMediaModelOption } from '../../components/nodes/shared/defaultModel
 
 const MODEL_MENTION_RE = /@model\{([^|}\s]+)(?:\|[^}]*)?\}/i;
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+}
+
 export function extractModelMention(input: string): string | undefined {
   return MODEL_MENTION_RE.exec(input)?.[1]?.trim() || undefined;
 }
@@ -32,7 +36,7 @@ export function resolveMediaModel(kind: MediaKind, modelRef?: string): ResolvedM
     throw new Error(`请先通过 @ 选择${label}模型`);
   }
 
-  const option = findMediaModelOption(modelRef, config.generalModels ?? []);
+  const option = findMediaModelOption(modelRef, config.generalModels ?? [], config);
   if (!option) throw new Error('未找到 @ 引用的媒体模型');
   if (option.mediaKind !== kind) {
     const label = kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频';
@@ -43,7 +47,8 @@ export function resolveMediaModel(kind: MediaKind, modelRef?: string): ResolvedM
     const generalId = option.value.slice('general/'.length);
     const generalModel = (config.generalModels ?? []).find((model) => model.id === generalId);
     if (!generalModel) throw new Error('未找到 @ 引用的通用模型配置');
-    if (!generalModel.openaiUrl || !generalModel.modelId) {
+    const provider = config.providers[generalModel.providerConfigId];
+    if (!provider?.baseUrl || !generalModel.modelId) {
       throw new Error(`模型“${generalModel.name}”的接口配置不完整`);
     }
     return {
@@ -93,7 +98,7 @@ export async function runMediaGeneration(
   projectId?: string | null,
   signal?: AbortSignal,
 ): Promise<MediaGenerationResult> {
-  if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+  throwIfAborted(signal);
 
   const prompt = stripModelMentions(intent.prompt);
   if (!prompt) throw new Error('媒体生成提示词不能为空');
@@ -116,8 +121,10 @@ export async function runMediaGeneration(
       provider: model.provider,
       imageSize: '2K',
       aspectRatio: '1:1',
-    });
+    }, signal);
+    throwIfAborted(signal);
     const saved = await saveGeneratedMedia(result.url, projectId, intent.kind, id).catch(() => null);
+    throwIfAborted(signal);
     return {
       id,
       kind: intent.kind,
@@ -139,8 +146,10 @@ export async function runMediaGeneration(
       prompt,
       model: model.requestModel,
       provider: model.provider,
-    });
+    }, signal);
+    throwIfAborted(signal);
     const saved = await saveGeneratedMedia(result.url, projectId, intent.kind, id).catch(() => null);
+    throwIfAborted(signal);
     return {
       id,
       kind: intent.kind,
@@ -159,12 +168,14 @@ export async function runMediaGeneration(
     prompt,
     model: model.requestModel,
     provider: model.provider,
-  });
+  }, signal);
+  throwIfAborted(signal);
   const persisted = await persistAudioGenerationResult(
     result,
     projectId,
     `对话音频-${id}`,
   );
+  throwIfAborted(signal);
   return {
     id,
     kind: intent.kind,

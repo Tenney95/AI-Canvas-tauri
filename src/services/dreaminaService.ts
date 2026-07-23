@@ -43,10 +43,33 @@ interface DreaminaQuery {
   failReason: string;
 }
 
-async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+async function invokeTauri<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core');
   try {
-    return await invoke<T>(cmd, args);
+    if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+    const invokePromise = invoke<T>(cmd, args);
+    if (!signal) return await invokePromise;
+    return await new Promise<T>((resolve, reject) => {
+      const handleAbort = () => {
+        signal.removeEventListener('abort', handleAbort);
+        reject(new DOMException('请求已取消', 'AbortError'));
+      };
+      signal.addEventListener('abort', handleAbort, { once: true });
+      invokePromise.then(
+        (result) => {
+          signal.removeEventListener('abort', handleAbort);
+          resolve(result);
+        },
+        (error) => {
+          signal.removeEventListener('abort', handleAbort);
+          reject(error);
+        },
+      );
+    });
   } catch (e) {
     // Tauri 命令拒绝时抛出的是字符串，转成 Error 以便上层正确展示信息
     if (e instanceof Error) throw e;
@@ -67,7 +90,7 @@ const MAX_POLL_MS = 60 * 60 * 1000; // 1 小时上限（视频可能较久）
 
 async function pollResult(submitId: string, signal?: AbortSignal): Promise<DreaminaOutput> {
   return pollTask<DreaminaQuery, DreaminaOutput>({
-    fetchState: () => invokeTauri<DreaminaQuery>('dreamina_query_result', { submitId }),
+    fetchState: () => invokeTauri<DreaminaQuery>('dreamina_query_result', { submitId }, signal),
     isComplete: (r) => r.status === 'success' && r.outputs.length > 0 ? r.outputs[0] : null,
     isFailed: (r) => r.status === 'failed' ? (r.failReason || '即梦生成失败') : null,
     interval: POLL_INTERVAL_MS,
@@ -86,45 +109,48 @@ export async function generateDreaminaImage(opts: {
   aspectRatio?: string;
   imageUrls: string[];
   nodeId?: string;
-}): Promise<{ url: string; width: number; height: number }> {
+}, externalSignal?: AbortSignal): Promise<{ url: string; width: number; height: number }> {
   const dims = mapImageDimensions(opts.imageSize || '2K', opts.aspectRatio || '1:1');
   const modelVersion = modelVersionOf(opts.model);
   const kind = opts.imageUrls.length > 0 ? 'image2image' : 'text2image';
-  const params: Record<string, unknown> = {
-    kind,
-    prompt: opts.prompt,
-    ratio: mapRatio(opts.aspectRatio),
-    resolutionType: mapResolution(opts.imageSize, modelVersion),
-  };
-  // image2image 不支持 1k；model_version 为版本号时透传
-  if (modelVersion && /^\d/.test(modelVersion)) params.modelVersion = modelVersion;
-  if (kind === 'image2image') params.images = opts.imageUrls;
-
-  // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
-  if (opts.nodeId) {
-    const projectId = useAppStore.getState().currentProjectId;
-    if (projectId) {
-      savePendingTask({
-        nodeId: opts.nodeId,
-        projectId,
-        nodeType: 'ai-image',
-        provider: 'dreamina',
-        taskId: '',
-        taskType: 'dreamina',
-        submitted: false,
-      });
-    }
-  }
-
-  const { submitId } = await invokeTauri<{ submitId: string }>('dreamina_generate', { params });
-
-  // 回填 submitId，标记为已提交
-  if (opts.nodeId) {
-    updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
-  }
-
-  const signal = opts.nodeId ? registerNodePolling(opts.nodeId) : undefined;
+  const nodeSignal = opts.nodeId ? registerNodePolling(opts.nodeId) : undefined;
+  const signal = nodeSignal && externalSignal
+    ? AbortSignal.any([nodeSignal, externalSignal])
+    : nodeSignal ?? externalSignal;
   try {
+    const params: Record<string, unknown> = {
+      kind,
+      prompt: opts.prompt,
+      ratio: mapRatio(opts.aspectRatio),
+      resolutionType: mapResolution(opts.imageSize, modelVersion),
+    };
+    // image2image 不支持 1k；model_version 为版本号时透传
+    if (modelVersion && /^\d/.test(modelVersion)) params.modelVersion = modelVersion;
+    if (kind === 'image2image') params.images = opts.imageUrls;
+
+    // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
+    if (opts.nodeId) {
+      const projectId = useAppStore.getState().currentProjectId;
+      if (projectId) {
+        savePendingTask({
+          nodeId: opts.nodeId,
+          projectId,
+          nodeType: 'ai-image',
+          provider: 'dreamina',
+          taskId: '',
+          taskType: 'dreamina',
+          submitted: false,
+        });
+      }
+    }
+
+    const { submitId } = await invokeTauri<{ submitId: string }>('dreamina_generate', { params }, signal);
+
+    // 回填 submitId，标记为已提交
+    if (opts.nodeId) {
+      updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
+    }
+
     const out = await pollResult(submitId, signal);
     const url = await resolveOutputUrl(out);
     if (!url) throw new Error('即梦未返回生成结果');
@@ -146,54 +172,57 @@ export async function generateDreaminaVideo(opts: {
   ratio?: string;
   duration?: number;
   resolution?: string;
-}): Promise<{ url: string }> {
+}, externalSignal?: AbortSignal): Promise<{ url: string }> {
   const modelVersion = modelVersionOf(opts.model);
   const hasImage = opts.imageUrls.length > 0;
-  const params: Record<string, unknown> = {
-    kind: hasImage ? 'image2video' : 'text2video',
-    prompt: opts.prompt,
-  };
-  // 仅透传 seedance* 系列视频模型版本，其余用 CLI 默认，避免无效组合
-  if (modelVersion.startsWith('seedance')) params.modelVersion = modelVersion;
-  if (hasImage) params.image = opts.imageUrls[0];
-
-  // Seedance 视频参数 — 与火山方舟共用同一套参数
-  if (opts.ratio && !hasImage) {
-    // image2video 时比例由参考图决定，不传 --ratio
-    params.ratio = opts.ratio;
-  }
-  if (opts.duration != null && opts.duration >= 2 && opts.duration <= 15) {
-    params.duration = opts.duration;
-  }
-  if (opts.resolution) {
-    params.videoResolution = opts.resolution;
-  }
-
-  // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
-  if (opts.nodeId) {
-    const projectId = useAppStore.getState().currentProjectId;
-    if (projectId) {
-      savePendingTask({
-        nodeId: opts.nodeId,
-        projectId,
-        nodeType: 'ai-video',
-        provider: 'dreamina',
-        taskId: '',
-        taskType: 'dreamina',
-        submitted: false,
-      });
-    }
-  }
-
-  const { submitId } = await invokeTauri<{ submitId: string }>('dreamina_generate', { params });
-
-  // 回填 submitId，标记为已提交
-  if (opts.nodeId) {
-    updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
-  }
-
-  const signal = opts.nodeId ? registerNodePolling(opts.nodeId) : undefined;
+  const nodeSignal = opts.nodeId ? registerNodePolling(opts.nodeId) : undefined;
+  const signal = nodeSignal && externalSignal
+    ? AbortSignal.any([nodeSignal, externalSignal])
+    : nodeSignal ?? externalSignal;
   try {
+    const params: Record<string, unknown> = {
+      kind: hasImage ? 'image2video' : 'text2video',
+      prompt: opts.prompt,
+    };
+    // 仅透传 seedance* 系列视频模型版本，其余用 CLI 默认，避免无效组合
+    if (modelVersion.startsWith('seedance')) params.modelVersion = modelVersion;
+    if (hasImage) params.image = opts.imageUrls[0];
+
+    // Seedance 视频参数 — 与火山方舟共用同一套参数
+    if (opts.ratio && !hasImage) {
+      // image2video 时比例由参考图决定，不传 --ratio
+      params.ratio = opts.ratio;
+    }
+    if (opts.duration != null && opts.duration >= 2 && opts.duration <= 15) {
+      params.duration = opts.duration;
+    }
+    if (opts.resolution) {
+      params.videoResolution = opts.resolution;
+    }
+
+    // 预存待续任务（在 invoke 之前），确保关窗重启后能恢复
+    if (opts.nodeId) {
+      const projectId = useAppStore.getState().currentProjectId;
+      if (projectId) {
+        savePendingTask({
+          nodeId: opts.nodeId,
+          projectId,
+          nodeType: 'ai-video',
+          provider: 'dreamina',
+          taskId: '',
+          taskType: 'dreamina',
+          submitted: false,
+        });
+      }
+    }
+
+    const { submitId } = await invokeTauri<{ submitId: string }>('dreamina_generate', { params }, signal);
+
+    // 回填 submitId，标记为已提交
+    if (opts.nodeId) {
+      updatePendingTask(opts.nodeId, { taskId: submitId, submitted: true });
+    }
+
     const out = await pollResult(submitId, signal);
     const url = await resolveOutputUrl(out);
     if (!url) throw new Error('即梦未返回生成结果');

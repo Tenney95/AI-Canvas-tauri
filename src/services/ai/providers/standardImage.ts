@@ -5,6 +5,7 @@
  * 统一 POST /images/generations + 标准 data[0].url / b64_json 响应解析。
  */
 import { parseResponseError, buildAuthHeaders } from '../httpUtils';
+import { corsSafeFetch } from '../httpTransport';
 import {
   isOpenAIGptImageModel,
   formatImageSizeForModel,
@@ -24,8 +25,9 @@ export interface StandardImageParams {
 
 export async function generateImageStandard(
   params: StandardImageParams,
+  signal?: AbortSignal,
 ): Promise<{ url: string; width: number; height: number }> {
-  const batch = await generateImageStandardBatch(params, 1);
+  const batch = await generateImageStandardBatch(params, 1, signal);
   const result = batch.results[0];
   if (!result) throw new Error('图片生成返回结果为空');
   return result;
@@ -34,6 +36,7 @@ export async function generateImageStandard(
 async function requestStandardImages(
   params: StandardImageParams,
   count: number,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const { apiKey, baseUrl, modelName, prompt, dimensions, imageUrls = [] } = params;
 
@@ -53,10 +56,11 @@ async function requestStandardImages(
     requestBody.image_urls = imageUrls;
   }
 
-  return fetch(apiUrl, {
+  return corsSafeFetch(apiUrl, {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify(requestBody),
+    signal,
   });
 
 }
@@ -75,14 +79,15 @@ async function parseStandardResponse(
 export async function generateImageStandardBatch(
   params: StandardImageParams,
   count: number,
+  signal?: AbortSignal,
 ): Promise<BatchImageResult> {
   const requestedCount = Math.max(1, Math.floor(count));
-  const initialResponse = await requestStandardImages(params, requestedCount);
+  const initialResponse = await requestStandardImages(params, requestedCount, signal);
 
   // User-configured OpenAI-compatible endpoints do not always implement n.
   if (!initialResponse.ok && requestedCount > 1 && [400, 422].includes(initialResponse.status)) {
     const fallback = await runBatchTasks(requestedCount, 3, async () => {
-      const response = await requestStandardImages(params, 1);
+      const response = await requestStandardImages(params, 1, signal);
       const results = await parseStandardResponse(response, params.dimensions);
       const result = results[0];
       if (!result) throw new Error('图片生成返回结果为空');
@@ -102,7 +107,7 @@ export async function generateImageStandardBatch(
 
   const missingCount = requestedCount - initialResults.length;
   const supplement = await runBatchTasks(missingCount, 3, async () => {
-    const response = await requestStandardImages(params, 1);
+    const response = await requestStandardImages(params, 1, signal);
     const results = await parseStandardResponse(response, params.dimensions);
     const result = results[0];
     if (!result) throw new Error('图片生成返回结果为空');

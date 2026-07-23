@@ -324,14 +324,11 @@ export interface AppConfig {
 export interface GeneralModelConfig {
   id: string;
   name: string;               // 名称
-  openaiUrl: string;          // OpenAI 接口地址
-  anthropicUrl: string;       // Anthropic 接口地址
   modelId: string;            // 模型 ID
-  apiKey: string;             // API 密钥
   category: GeneralModelCategory; // 模型种类
   contextWindow?: number;     // 文本模型上下文窗口（token）；未声明时按模型 ID 目录推断
-  /** 对应 config.providers 中的连接 ID；旧配置可能缺失。 */
-  providerConfigId?: string;
+  /** 对应 config.providers 中的连接 ID，凭据和地址仅从该连接读取。 */
+  providerConfigId: string;
   executionProfile?: ModelExecutionProfile;
 }
 

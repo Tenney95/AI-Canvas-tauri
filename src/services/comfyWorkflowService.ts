@@ -10,6 +10,7 @@ import { mapImageDimensions } from './aiDimensions';
 import { resolveNodeReferences } from './nodeReferenceService';
 import { pollTask } from './pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from './pollManager';
+import { corsSafeFetch } from './ai/httpTransport';
 
 // ── 跨域安全的 fetch 包装 ──
 
@@ -72,61 +73,16 @@ async function comfyFetch(url: string, options: RequestInit = {}): Promise<Respo
     return fetch(resolvedUrl, options);
   }
 
-  // Tauri 模式：通过 invoke proxy_fetch 发起请求
-  const { invoke } = await import('@tauri-apps/api/core');
-
-  const headers: [string, string][] = [];
-  let bodyBase64: string | null = null;
-
-  if (options.headers) {
-    for (const [k, v] of Object.entries(options.headers as Record<string, string>)) {
-      if (k.toLowerCase() === 'content-type') continue; // 后面统一设置
-      headers.push([k, v]);
-    }
+  const headers = new Headers(options.headers);
+  let body = options.body;
+  if (body instanceof FormData) {
+    const encoded = await formDataToBase64(body);
+    const binary = atob(encoded.body);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    headers.set('Content-Type', encoded.contentType);
+    body = bytes.buffer;
   }
-
-  if (options.body) {
-    if (options.body instanceof FormData) {
-      const { body, contentType } = await formDataToBase64(options.body);
-      bodyBase64 = body;
-      headers.push(['Content-Type', contentType]);
-    } else if (typeof options.body === 'string') {
-      bodyBase64 = btoa(unescape(encodeURIComponent(options.body)));
-    } else {
-      // ArrayBuffer / Blob / Uint8Array
-      let buf: ArrayBuffer;
-      if (options.body instanceof ArrayBuffer) {
-        buf = options.body;
-      } else if (options.body instanceof Uint8Array) {
-        buf = options.body.buffer.slice(options.body.byteOffset, options.body.byteOffset + options.body.byteLength) as ArrayBuffer;
-      } else {
-        buf = await (options.body as Blob).arrayBuffer();
-      }
-      const bytes = new Uint8Array(buf);
-      let binary = '';
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-      bodyBase64 = btoa(binary);
-    }
-  }
-
-  const result = await invoke<{ status: number; body: string; headers: [string, string][] }>('proxy_fetch', {
-    req: {
-      url: resolvedUrl,
-      method: options.method || 'GET',
-      headers,
-      body: bodyBase64,
-    },
-  });
-
-  // 解码 base64 响应体
-  const binaryStr = atob(result.body);
-  const resBytes = new Uint8Array(binaryStr.length);
-  for (let i = 0; i < binaryStr.length; i++) resBytes[i] = binaryStr.charCodeAt(i);
-
-  return new Response(resBytes, {
-    status: result.status,
-    headers: new Headers(result.headers),
-  });
+  return corsSafeFetch(resolvedUrl, { ...options, headers, body });
 }
 
 /** 从 Store 获取 ComfyUI 配置并校验 */
@@ -189,6 +145,7 @@ function injectPromptsIntoWorkflow(
 async function uploadImageToComfyUI(
   baseUrl: string,
   imageUrl: string,
+  signal?: AbortSignal,
 ): Promise<{ name: string; subfolder?: string; type?: string }> {
   // 1. 获取图片 Blob（支持 data URL 和远程 URL）
   let blob: Blob;
@@ -209,7 +166,7 @@ async function uploadImageToComfyUI(
     ext = mimeType.split('/')[1] || 'png';
   } else {
     // 远程 URL → fetch 获取
-    const response = await fetch(imageUrl);
+    const response = await fetch(imageUrl, { signal });
     if (!response.ok) {
       throw new Error(`下载图片失败 (${response.status})`);
     }
@@ -228,6 +185,7 @@ async function uploadImageToComfyUI(
   const uploadRes = await comfyFetch(`${baseUrl}/upload/image`, {
     method: 'POST',
     body: formData,
+    signal,
   });
 
   if (!uploadRes.ok) {
@@ -249,6 +207,7 @@ async function injectImagesIntoWorkflow(
   workflowInputs: Record<string, string> | undefined,
   ioNodes: WorkflowIONode[],
   baseUrl: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (!workflowInputs || Object.keys(workflowInputs).length === 0) return;
 
@@ -271,7 +230,7 @@ async function injectImagesIntoWorkflow(
     if (imageUrl.startsWith('@{')) continue;
 
     // 上传图片到 ComfyUI
-    const uploadResult = await uploadImageToComfyUI(baseUrl, imageUrl);
+    const uploadResult = await uploadImageToComfyUI(baseUrl, imageUrl, signal);
 
     // 写入工作流 JSON：LoadImage 节点的 inputs.image 为上传后的文件名
     const jsonNode = workflowObj[ioNodeId];
@@ -356,6 +315,7 @@ async function submitComfyUIWorkflow(
   workflowId: string,
   workflowInputs: Record<string, string> | undefined,
   prompt: string,
+  signal?: AbortSignal,
 ): Promise<{ baseUrl: string; promptId: string; workflowObj: Record<string, Record<string, unknown>> }> {
   const baseUrl = getComfyUIConfig();
 
@@ -382,7 +342,7 @@ async function submitComfyUIWorkflow(
   injectPromptsIntoWorkflow(workflowObj, workflowInputs, prompt, ioNodeIds);
 
   // 注入图片到 image 类型 IO 节点（上传 → 替换文件名）
-  await injectImagesIntoWorkflow(workflowObj, workflowInputs, ioNodes, baseUrl);
+  await injectImagesIntoWorkflow(workflowObj, workflowInputs, ioNodes, baseUrl, signal);
 
   // 返回 workflowObj 让调用方注入尺寸/视频参数后再提交
   return { baseUrl, promptId: '', workflowObj };
@@ -392,11 +352,13 @@ async function submitComfyUIWorkflow(
 async function promptComfyUIWorkflow(
   baseUrl: string,
   workflowObj: Record<string, Record<string, unknown>>,
+  signal?: AbortSignal,
 ): Promise<string> {
   const promptRes = await comfyFetch(`${baseUrl}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt: workflowObj }),
+    signal,
   });
 
   if (!promptRes.ok) {
@@ -451,7 +413,7 @@ async function pollComfyHistory<T>(
 ): Promise<T> {
   return pollTask<ComfyOutputs | undefined, T>({
     fetchState: async () => {
-      const res = await comfyFetch(`${baseUrl}/history/${promptId}`);
+      const res = await comfyFetch(`${baseUrl}/history/${promptId}`, { signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const history = (await res.json()) as Record<string, unknown>;
       const entry = history[promptId] as Record<string, unknown> | undefined;
@@ -485,51 +447,57 @@ async function pollComfyUIHistory(
 }
 
 /** 通过 ComfyUI 工作流执行图片生成 */
-export async function executeComfyUIGenerate(params: AIImageGenParams): Promise<{ url: string; width: number; height: number }> {
+export async function executeComfyUIGenerate(
+  params: AIImageGenParams,
+  externalSignal?: AbortSignal,
+): Promise<{ url: string; width: number; height: number }> {
   const { workflowId, workflowInputs, prompt, imageSize = '2K', aspectRatio = '1:1' } = params;
   const comfyUrl = useAppStore.getState().config.comfyUIUrl?.trim() || '';
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
+  const signal = nodeSignal && externalSignal
+    ? AbortSignal.any([nodeSignal, externalSignal])
+    : nodeSignal ?? externalSignal;
 
-  // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
-  if (params.nodeId) {
-    const projectId = useAppStore.getState().currentProjectId;
-    if (projectId) {
-      savePendingTask({
-        nodeId: params.nodeId,
-        projectId,
-        nodeType: 'ai-image',
-        provider: 'comfyui',
-        taskId: '',
-        taskType: 'comfyui',
-        baseUrl: comfyUrl,
-        submitted: false,
-      });
-    }
-  }
-
-  const { baseUrl, workflowObj } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt);
-
-  // 注入画布选择的尺寸（仅对 @提及的节点）
-  injectDimensionsIntoWorkflow(
-    workflowObj,
-    imageSize,
-    aspectRatio,
-    workflowInputs ? Object.keys(workflowInputs) : undefined,
-  );
-
-  // 提交工作流
-  const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj);
-
-  // 回填 promptId，标记为已提交
-  if (params.nodeId) {
-    updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
-  }
-
-  // 计算最终输出尺寸（用于节点显示）
-  const dims = mapImageDimensions(imageSize, aspectRatio);
-
-  // 轮询等待结果
-  const signal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   try {
+    // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
+    if (params.nodeId) {
+      const projectId = useAppStore.getState().currentProjectId;
+      if (projectId) {
+        savePendingTask({
+          nodeId: params.nodeId,
+          projectId,
+          nodeType: 'ai-image',
+          provider: 'comfyui',
+          taskId: '',
+          taskType: 'comfyui',
+          baseUrl: comfyUrl,
+          submitted: false,
+        });
+      }
+    }
+
+    const { baseUrl, workflowObj } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt, signal);
+
+    // 注入画布选择的尺寸（仅对 @提及的节点）
+    injectDimensionsIntoWorkflow(
+      workflowObj,
+      imageSize,
+      aspectRatio,
+      workflowInputs ? Object.keys(workflowInputs) : undefined,
+    );
+
+    // 提交工作流
+    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal);
+
+    // 回填 promptId，标记为已提交
+    if (params.nodeId) {
+      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
+    }
+
+    // 计算最终输出尺寸（用于节点显示）
+    const dims = mapImageDimensions(imageSize, aspectRatio);
+
+    // 轮询等待结果
     return await pollComfyUIHistory(baseUrl, promptId, dims, signal);
   } finally {
     if (params.nodeId) {
@@ -556,49 +524,55 @@ async function pollComfyUIHistoryForVideo(
 }
 
 /** 通过 ComfyUI 工作流执行视频生成 */
-export async function executeComfyUIVideoGenerate(params: AIVideoGenParams): Promise<{ url: string }> {
+export async function executeComfyUIVideoGenerate(
+  params: AIVideoGenParams,
+  externalSignal?: AbortSignal,
+): Promise<{ url: string }> {
   const { workflowId, workflowInputs, prompt, videoResolution = 832, videoFps = 24, videoFrames = 77 } = params;
   const comfyUrl = useAppStore.getState().config.comfyUIUrl?.trim() || '';
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
+  const signal = nodeSignal && externalSignal
+    ? AbortSignal.any([nodeSignal, externalSignal])
+    : nodeSignal ?? externalSignal;
 
-  // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
-  if (params.nodeId) {
-    const projectId = useAppStore.getState().currentProjectId;
-    if (projectId) {
-      savePendingTask({
-        nodeId: params.nodeId,
-        projectId,
-        nodeType: 'ai-video',
-        provider: 'comfyui',
-        taskId: '',
-        taskType: 'comfyui',
-        baseUrl: comfyUrl,
-        submitted: false,
-      });
-    }
-  }
-
-  const { baseUrl, workflowObj } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt);
-
-  // 注入视频参数（仅对 @提及的节点）
-  injectVideoParamsIntoWorkflow(
-    workflowObj,
-    videoResolution,
-    videoFps,
-    videoFrames,
-    workflowInputs ? Object.keys(workflowInputs) : undefined,
-  );
-
-  // 提交工作流
-  const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj);
-
-  // 回填 promptId，标记为已提交
-  if (params.nodeId) {
-    updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
-  }
-
-  // 轮询等待结果
-  const signal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   try {
+    // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
+    if (params.nodeId) {
+      const projectId = useAppStore.getState().currentProjectId;
+      if (projectId) {
+        savePendingTask({
+          nodeId: params.nodeId,
+          projectId,
+          nodeType: 'ai-video',
+          provider: 'comfyui',
+          taskId: '',
+          taskType: 'comfyui',
+          baseUrl: comfyUrl,
+          submitted: false,
+        });
+      }
+    }
+
+    const { baseUrl, workflowObj } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt, signal);
+
+    // 注入视频参数（仅对 @提及的节点）
+    injectVideoParamsIntoWorkflow(
+      workflowObj,
+      videoResolution,
+      videoFps,
+      videoFrames,
+      workflowInputs ? Object.keys(workflowInputs) : undefined,
+    );
+
+    // 提交工作流
+    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal);
+
+    // 回填 promptId，标记为已提交
+    if (params.nodeId) {
+      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
+    }
+
+    // 轮询等待结果
     return await pollComfyUIHistoryForVideo(baseUrl, promptId, signal);
   } finally {
     if (params.nodeId) {
@@ -625,40 +599,46 @@ async function pollComfyUIHistoryForAudio(
 }
 
 /** 通过 ComfyUI 工作流执行音频生成 */
-export async function executeComfyUIAudioGenerate(params: AIAudioGenParams): Promise<{ url: string }> {
+export async function executeComfyUIAudioGenerate(
+  params: AIAudioGenParams,
+  externalSignal?: AbortSignal,
+): Promise<{ url: string }> {
   const { workflowId, workflowInputs, prompt } = params;
   const comfyUrl = useAppStore.getState().config.comfyUIUrl?.trim() || '';
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
+  const signal = nodeSignal && externalSignal
+    ? AbortSignal.any([nodeSignal, externalSignal])
+    : nodeSignal ?? externalSignal;
 
-  // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
-  if (params.nodeId) {
-    const projectId = useAppStore.getState().currentProjectId;
-    if (projectId) {
-      savePendingTask({
-        nodeId: params.nodeId,
-        projectId,
-        nodeType: 'ai-audio',
-        provider: 'comfyui',
-        taskId: '',
-        taskType: 'comfyui',
-        baseUrl: comfyUrl,
-        submitted: false,
-      });
-    }
-  }
-
-  const { baseUrl, workflowObj } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt);
-
-  // 提交工作流
-  const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj);
-
-  // 回填 promptId，标记为已提交
-  if (params.nodeId) {
-    updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
-  }
-
-  // 轮询等待结果
-  const signal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   try {
+    // 预存待续任务（在 submit 之前），确保关窗重启后能恢复
+    if (params.nodeId) {
+      const projectId = useAppStore.getState().currentProjectId;
+      if (projectId) {
+        savePendingTask({
+          nodeId: params.nodeId,
+          projectId,
+          nodeType: 'ai-audio',
+          provider: 'comfyui',
+          taskId: '',
+          taskType: 'comfyui',
+          baseUrl: comfyUrl,
+          submitted: false,
+        });
+      }
+    }
+
+    const { baseUrl, workflowObj } = await submitComfyUIWorkflow(workflowId!, workflowInputs, prompt, signal);
+
+    // 提交工作流
+    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal);
+
+    // 回填 promptId，标记为已提交
+    if (params.nodeId) {
+      updatePendingTask(params.nodeId, { taskId: promptId, submitted: true, baseUrl });
+    }
+
+    // 轮询等待结果
     return await pollComfyUIHistoryForAudio(baseUrl, promptId, signal);
   } finally {
     if (params.nodeId) {

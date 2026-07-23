@@ -23,6 +23,11 @@ import {
 } from './ai/apimartAudio';
 import type { BaseNodeData, NodeType } from '../types';
 import type { ResolvedModelProtocolPoll } from '../types/aiTypes';
+import {
+  APIMART_BASE_URL,
+  RUNNINGHUB_MODEL_BASE_URL,
+  VOLCENGINE_BASE_URL,
+} from '../constants/api';
 
 // ═══════════════════════════════════════════
 // AbortController 注册表 — 节点删除时取消轮询
@@ -71,9 +76,7 @@ export interface PendingTask {
   taskType: 'apimart' | 'apimart-flow-music' | 'dreamina' | 'comfyui' | 'general' | 'custom-protocol' | 'volcengine' | 'runninghub';
   /** Flow Music 当前远端任务阶段。 */
   audioTaskStage?: 'lyrics' | 'music';
-  /** 恢复轮询用：API Key */
-  apiKey?: string;
-  /** 恢复轮询用：服务地址 */
+  /** 本地 ComfyUI 恢复轮询用地址；厂商地址统一从 providerConfigId 解析。 */
   baseUrl?: string;
   /** APIMart 原生批量图片任务请求数量；旧记录缺省为 1。 */
   batchCount?: number;
@@ -92,17 +95,79 @@ export interface PendingTask {
 
 const STORAGE_KEY = 'ai_canvas_pending_tasks';
 
+interface LegacyPendingTask extends PendingTask {
+  apiKey?: string;
+}
+
+const PROVIDER_CONFIG_ID_BY_TASK_TYPE: Partial<Record<PendingTask['taskType'], string>> = {
+  apimart: 'apimart',
+  'apimart-flow-music': 'apimart',
+  volcengine: 'volcengine',
+  runninghub: 'runninghub-model',
+};
+
+function normalizeUrl(value?: string): string {
+  return value?.trim().replace(/\/+$/, '') || '';
+}
+
+function inferLegacyProviderConfigId(task: LegacyPendingTask): string | undefined {
+  if (task.providerConfigId) return task.providerConfigId;
+  const knownProviderConfigId = PROVIDER_CONFIG_ID_BY_TASK_TYPE[task.taskType];
+  if (knownProviderConfigId) return knownProviderConfigId;
+  if (task.taskType !== 'general') return undefined;
+
+  const legacyBaseUrl = normalizeUrl(task.baseUrl);
+  const legacyApiKey = task.apiKey || '';
+  return Object.entries(useAppStore.getState().config.providers).find(([, provider]) => (
+    normalizeUrl(provider.baseUrl) === legacyBaseUrl
+    && (legacyApiKey === '' || provider.apiKey === legacyApiKey)
+  ))?.[0];
+}
+
+function sanitizePendingTask(task: LegacyPendingTask): PendingTask {
+  const { baseUrl: legacyBaseUrl, ...safeTask } = task;
+  delete safeTask.apiKey;
+  const providerConfigId = inferLegacyProviderConfigId(task);
+  return {
+    ...safeTask,
+    providerConfigId,
+    ...(task.taskType === 'comfyui' && legacyBaseUrl ? { baseUrl: legacyBaseUrl } : {}),
+  };
+}
+
 function loadAll(): PendingTask[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const tasks = parsed
+      .filter((item): item is LegacyPendingTask => !!item && typeof item === 'object')
+      .map(sanitizePendingTask);
+    const serialized = JSON.stringify(tasks);
+    if (serialized !== raw) localStorage.setItem(STORAGE_KEY, serialized);
+    return tasks;
   } catch {
     return [];
   }
 }
 
 function saveAll(tasks: PendingTask[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks.map(sanitizePendingTask)));
+}
+
+function resolveProviderTaskConfig(
+  task: PendingTask,
+  fallbackProviderConfigId?: string,
+  fallbackBaseUrl = '',
+): { apiKey: string; baseUrl: string } | undefined {
+  const providerConfigId = task.providerConfigId || fallbackProviderConfigId;
+  if (!providerConfigId) return undefined;
+  const provider = useAppStore.getState().config.providers[providerConfigId];
+  if (!provider?.apiKey) return undefined;
+  const baseUrl = normalizeUrl(provider.baseUrl || fallbackBaseUrl);
+  if (!baseUrl) return undefined;
+  return { apiKey: provider.apiKey, baseUrl };
 }
 
 /** 保存一条待续任务（同一 nodeId 会覆盖旧记录） */
@@ -269,12 +334,14 @@ function extractApimartUrls(
 }
 
 async function resumeApimart(task: PendingTask): Promise<void> {
-  const { nodeId, taskId, apiKey, baseUrl, nodeType } = task;
-  if (!apiKey || !baseUrl) {
+  const { nodeId, taskId, nodeType } = task;
+  const providerConfig = resolveProviderTaskConfig(task, 'apimart', APIMART_BASE_URL);
+  if (!providerConfig) {
     useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: '任务恢复失败：缺少 API 配置' });
     removePendingTask(nodeId);
     return;
   }
+  const { apiKey, baseUrl } = providerConfig;
   const node = useAppStore.getState().nodes.find((n) => n.id === nodeId);
   const nodeData = node?.data as BaseNodeData | undefined;
   const label = nodeData?.label || '';
@@ -384,10 +451,14 @@ async function pollRunningHubTask(
 }
 
 async function resumeRunningHub(task: PendingTask): Promise<void> {
-  const { nodeId, baseUrl } = task;
-  const apiKey = useAppStore.getState().config.providers['runninghub-model']?.apiKey || '';
+  const { nodeId } = task;
+  const providerConfig = resolveProviderTaskConfig(
+    task,
+    'runninghub-model',
+    RUNNINGHUB_MODEL_BASE_URL,
+  );
   const taskIds = (task.taskIds?.length ? task.taskIds : [task.taskId]).filter(Boolean);
-  if (!apiKey || !baseUrl || taskIds.length === 0) {
+  if (!providerConfig || taskIds.length === 0) {
     useAppStore.getState().updateNodeDataTransient(nodeId, {
       status: 'error',
       error: '任务恢复失败：缺少 RunningHub 模型 API 配置',
@@ -395,6 +466,7 @@ async function resumeRunningHub(task: PendingTask): Promise<void> {
     removePendingTask(nodeId);
     return;
   }
+  const { apiKey, baseUrl } = providerConfig;
 
   const node = useAppStore.getState().nodes.find((item) => item.id === nodeId);
   const nodeData = node?.data as BaseNodeData | undefined;
@@ -464,12 +536,14 @@ async function pollFlowMusicTask(
 
 /** Flow Music 使用独立查询端点，并支持歌词完成后继续提交音乐阶段。 */
 async function resumeApimartFlowMusic(task: PendingTask): Promise<void> {
-  const { nodeId, apiKey, baseUrl } = task;
-  if (!apiKey || !baseUrl) {
+  const { nodeId } = task;
+  const providerConfig = resolveProviderTaskConfig(task, 'apimart', APIMART_BASE_URL);
+  if (!providerConfig) {
     useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: '任务恢复失败：缺少 API 配置' });
     removePendingTask(nodeId);
     return;
   }
+  const { apiKey, baseUrl } = providerConfig;
 
   const node = useAppStore.getState().nodes.find((item) => item.id === nodeId);
   const data = node?.data as BaseNodeData | undefined;
@@ -683,8 +757,9 @@ function parseMultiPathResponse(
 }
 
 async function resumeGeneral(task: PendingTask): Promise<void> {
-  const { nodeId, taskId, apiKey, baseUrl, nodeType } = task;
-  if (!apiKey || !baseUrl) {
+  const { nodeId, taskId, nodeType } = task;
+  const providerConfig = resolveProviderTaskConfig(task);
+  if (!providerConfig) {
     useAppStore.getState().updateNodeDataTransient(nodeId, {
       status: 'error',
       error: '任务恢复失败：缺少 API 配置',
@@ -692,6 +767,7 @@ async function resumeGeneral(task: PendingTask): Promise<void> {
     removePendingTask(nodeId);
     return;
   }
+  const { apiKey, baseUrl } = providerConfig;
   const node = useAppStore.getState().nodes.find((n) => n.id === nodeId);
   const label = (node?.data as BaseNodeData | undefined)?.label || '';
   const resultField =
@@ -804,8 +880,9 @@ async function resumeCustomProtocol(task: PendingTask): Promise<void> {
 /* ── 火山方舟 Seedance ── */
 
 async function resumeVolcengine(task: PendingTask): Promise<void> {
-  const { nodeId, taskId, apiKey, baseUrl } = task;
-  if (!apiKey || !baseUrl) {
+  const { nodeId, taskId } = task;
+  const providerConfig = resolveProviderTaskConfig(task, 'volcengine', VOLCENGINE_BASE_URL);
+  if (!providerConfig) {
     useAppStore.getState().updateNodeDataTransient(nodeId, {
       status: 'error',
       error: '任务恢复失败：缺少 API 配置',
@@ -813,6 +890,7 @@ async function resumeVolcengine(task: PendingTask): Promise<void> {
     removePendingTask(nodeId);
     return;
   }
+  const { apiKey, baseUrl } = providerConfig;
   const node = useAppStore.getState().nodes.find((n) => n.id === nodeId);
   const label = (node?.data as BaseNodeData | undefined)?.label || '';
 

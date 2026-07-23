@@ -27,6 +27,7 @@ export interface VolcengineImageParams {
 
 export async function generateVolcengineImage(
   params: VolcengineImageParams,
+  signal?: AbortSignal,
 ): Promise<{ url: string; width: number; height: number }> {
   const { apiKey, baseUrl, model, provider, prompt, imageSize, aspectRatio, imageUrls = [] } = params;
 
@@ -57,6 +58,7 @@ export async function generateVolcengineImage(
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify(requestBody),
+    signal,
   });
 
   if (!response.ok) {
@@ -73,12 +75,13 @@ export async function generateVolcengineImage(
 export async function generateVolcengineImagesBatch(
   params: VolcengineImageParams,
   count: number,
+  signal?: AbortSignal,
 ): Promise<BatchImageResult> {
   const requestedCount = Math.max(1, Math.floor(count));
   const settled = await runBatchTasks(
     requestedCount,
     3,
-    () => generateVolcengineImage(params),
+    () => generateVolcengineImage(params, signal),
   );
   if (settled.results.length === 0) {
     throw new Error('批量图片生成失败：所有火山方舟请求均失败');

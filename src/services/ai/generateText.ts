@@ -4,8 +4,14 @@
 import { useAppStore } from '../../store/useAppStore';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
 import type { AIGenerateParams, ProtocolJsonValue } from '../../types/aiTypes';
-import { extractModelName, resolveGeneralModel, parseGeneralTextResponse } from './helpers';
+import {
+  extractModelName,
+  parseGeneralTextResponse,
+  resolveGeneralModel,
+  resolveGeneralModelConnection,
+} from './helpers';
 import { parseResponseError, buildAuthHeaders } from './httpUtils';
+import { corsSafeFetch } from './httpTransport';
 import { resolvePromptToChatContent } from './promptResolver';
 import { resolveContentImageUrls } from './imageUtils';
 import { executeModelProtocol, resolveModelExecutionProfile } from './modelProtocol';
@@ -27,9 +33,11 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   if (provider === 'general') {
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
-    if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
-    apiKey = gm.apiKey || '';
-    baseUrl = gm.openaiUrl;
+    const connection = resolveGeneralModelConnection(model);
+    if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
+    if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+    apiKey = connection.apiKey;
+    baseUrl = connection.baseUrl;
     modelName = gm.modelId;
     generalModel = gm;
   } else if (provider === 'localllm') {
@@ -88,7 +96,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   const headers = buildAuthHeaders(apiKey);
 
   // 不设超时（仅 ComfyUI 才设超时）
-  const response = await fetch(apiUrl, {
+  const response = await corsSafeFetch(apiUrl, {
     method: 'POST',
     headers,
     body: JSON.stringify({

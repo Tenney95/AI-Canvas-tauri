@@ -1,8 +1,9 @@
 /**
- * testConnection 连接测试服务 — 按厂商调用对应 API 端点验证密钥有效性和余额（APIMart/GRSAI/OpenAI/火山方舟/RunningHUB
+ * testConnection 连接测试服务 — 只调用无生成副作用的目录、鉴权或账户端点。
  */
 import { APIMART_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
 import type { WebSearchProviderId } from '../types';
+import { corsSafeFetch } from './ai/httpTransport';
 
 export interface TestResult {
   success: boolean;
@@ -10,52 +11,44 @@ export interface TestResult {
   balance?: string;
   /** 失败原因 */
   error?: string;
+  /** 厂商没有已知的无计费验证端点，本次未发送网络请求。 */
+  unsupported?: boolean;
 }
 
-/** APIMart — OpenAI 兼容接口，ping 测试，无余额 */
-async function testAPIMart(apiKey: string, baseUrl?: string): Promise<TestResult> {
-  const url = `${baseUrl || APIMART_BASE_URL}/chat/completions`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: 'kimi-k2-instruct',
-      messages: [{ role: 'user', content: 'ping' }],
-      max_tokens: 1,
-      stream: false,
-    }),
+function readErrorMessage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.message === 'string') return record.message;
+  if (typeof record.errorMessage === 'string') return record.errorMessage;
+  if (typeof record.error === 'string') return record.error;
+  if (record.error && typeof record.error === 'object') {
+    const error = record.error as Record<string, unknown>;
+    if (typeof error.message === 'string') return error.message;
+  }
+  return undefined;
+}
+
+/** OpenAI 兼容厂商 — GET /models 只验证目录可达与凭据，不调用任何模型。 */
+async function testModelCatalog(
+  apiKey: string,
+  baseUrl: string,
+): Promise<TestResult> {
+  const url = `${baseUrl.trim().replace(/\/+$/, '')}/models`;
+  const response = await corsSafeFetch(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${apiKey}` },
   });
-  const data = await res.json().catch(() => ({}));
-  if (data.error) {
-    return { success: false, error: data.error.message || JSON.stringify(data.error) };
-  }
-  if (data.choices) {
-    return { success: true };
-  }
-  return { success: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
-}
+  if (response.ok) return { success: true };
 
-/** 火山方舟 — 简单 ping */
-async function testVolcengine(apiKey: string, baseUrl?: string): Promise<TestResult> {
-  try {
-    const url = new URL('/ping', baseUrl || VOLCENGINE_BASE_URL).toString();
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    const data = await res.json().catch(() => ({}));
-    if (data.message === 'pong') {
-      return { success: true };
-    }
-    return { success: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
-  } catch (e) {
-    return { success: false, error: String(e) };
-  }
+  const payload: unknown = await response.json().catch(() => null);
+  const message = readErrorMessage(payload);
+  return { success: false, error: message ? `HTTP ${response.status}: ${message}` : `HTTP ${response.status}` };
 }
 
 /** RunningHUB — 模型 API 密钥，有余额 */
 async function testRunninghubModel(apiKey: string): Promise<TestResult> {
   const url = 'https://www.runninghub.cn/uc/openapi/accountStatus';
-  const res = await fetch(url, {
+  const res = await corsSafeFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ apikey: apiKey }),
@@ -73,25 +66,13 @@ async function testRunninghubModel(apiKey: string): Promise<TestResult> {
   return { success: false, error: data.msg || data.errorMessage || `code=${data.code}` };
 }
 
-/** GRSAI — OpenAI 兼容接口，ping 测试，无余额 */
-async function testGRSAI(apiKey: string, baseUrl?: string): Promise<TestResult> {
-  const url = `${baseUrl || 'https://grsai.dakka.com.cn/v1'}/chat/completions`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: 'gemini-3.1-pro',
-      messages: [{ role: 'user', content: '你好' }],
-    }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (data.error) {
-    return { success: false, error: data.error.message || JSON.stringify(data.error) };
-  }
-  if (data.choices) {
-    return { success: true };
-  }
-  return { success: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
+/** GRSAI 当前仅有本地模型 manifest，不自动发送可能计费的真实生成请求。 */
+async function testGRSAI(): Promise<TestResult> {
+  return {
+    success: false,
+    unsupported: true,
+    error: 'GRSAI 未提供已确认无计费的目录或鉴权端点，本次未发送网络请求',
+  };
 }
 
 async function testWebSearch(
@@ -122,8 +103,8 @@ export type ProviderTestKey =
   | WebSearchProviderId;
 
 const testFns: Record<ProviderTestKey, (apiKey: string, baseUrl?: string) => Promise<TestResult>> = {
-  apimart: testAPIMart,
-  volcengine: testVolcengine,
+  apimart: (apiKey, baseUrl) => testModelCatalog(apiKey, baseUrl || APIMART_BASE_URL),
+  volcengine: (apiKey, baseUrl) => testModelCatalog(apiKey, baseUrl || VOLCENGINE_BASE_URL),
   'runninghub-model': testRunninghubModel,
   grsai: testGRSAI,
   tavily: (apiKey) => testWebSearch('tavily', apiKey),

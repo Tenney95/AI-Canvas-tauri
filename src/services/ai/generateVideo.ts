@@ -7,7 +7,7 @@ import { resolveNodeReferences } from '../nodeReferenceService';
 import { generateDreaminaVideo } from '../dreaminaService';
 import { executeComfyUIVideoGenerate } from '../comfyWorkflowService';
 import type { AIVideoGenParams } from '../../types/aiTypes';
-import { extractModelName, resolveGeneralModel } from './helpers';
+import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
 import { resolvePromptWithImageRefs } from './promptResolver';
 import { executeGeneralAsyncTask, generateApimartVideo } from './apimartGen';
 import { isApimartSeedanceModel } from './apimartVideoModels';
@@ -53,7 +53,10 @@ function collectConnectedReferenceImages(nodeId: string | undefined): string[] {
   return urls;
 }
 
-export async function generateVideo(params: AIVideoGenParams): Promise<{ url: string }> {
+export async function generateVideo(
+  params: AIVideoGenParams,
+  signal?: AbortSignal,
+): Promise<{ url: string }> {
   const { prompt: rawPrompt, model, provider } = params;
 
   // 解析 @{nodeId:label} 引用为对应节点的实际输出内容
@@ -61,7 +64,7 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
 
   // ComfyUI 工作流执行路径
   if (params.workflowId) {
-    return executeComfyUIVideoGenerate({ ...params, prompt });
+    return executeComfyUIVideoGenerate({ ...params, prompt }, signal);
   }
 
   // 即梦视频：无参考图 → text2video；有参考图 → image2video
@@ -81,7 +84,7 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
       ratio: params.seedanceRatio,
       duration: params.seedanceDuration,
       resolution: params.seedanceResolution,
-    });
+    }, signal);
   }
 
   // APIMart 视频生成 — 异步提交 + 轮询
@@ -113,9 +116,9 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
         duration: params.seedanceDuration,
         generateAudio: params.generateAudio,
         imageUrls: merged,
-      });
+      }, signal);
     }
-    return generateApimartVideo(apiKey, baseUrl, modelName, prompt, params.nodeId);
+    return generateApimartVideo(apiKey, baseUrl, modelName, prompt, params.nodeId, {}, signal);
   }
 
   // ── 火山方舟 Seedance 视频生成 ──
@@ -135,14 +138,16 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
     if (!resolvedPrompt.trim() && imageUrls.length === 0) {
       throw new Error('提示词不能为空');
     }
-    return generateVolcengineVideo(apiKey, baseUrl, modelName, resolvedPrompt, imageUrls, params);
+    return generateVolcengineVideo(apiKey, baseUrl, modelName, resolvedPrompt, imageUrls, params, signal);
   }
 
   // ── 通用模型视频生成 ──
   if (provider === 'general') {
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
-    if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+    const connection = resolveGeneralModelConnection(model);
+    if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
+    if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
     if (gm.executionProfile) {
       const frames = params.videoFrames ?? 121;
       const width = params.videoResolution ?? 1152;
@@ -153,6 +158,7 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
         model: gm,
         category: 'video',
         nodeId: params.nodeId,
+        signal,
         variables: {
           model: gm.modelId,
           prompt,
@@ -179,7 +185,16 @@ export async function generateVideo(params: AIVideoGenParams): Promise<{ url: st
       if (!url) throw new Error('视频生成完成但未返回结果');
       return { url };
     }
-    return executeGeneralAsyncTask(gm.apiKey || '', gm.openaiUrl, gm.modelId, prompt, 'videos', params.nodeId);
+    return executeGeneralAsyncTask(
+      connection.apiKey,
+      connection.baseUrl,
+      gm.modelId,
+      prompt,
+      'videos',
+      connection.providerConfigId,
+      params.nodeId,
+      signal,
+    );
   }
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置
@@ -194,129 +209,132 @@ async function generateVolcengineVideo(
   prompt: string,
   imageUrls: string[],
   params: AIVideoGenParams,
+  externalSignal?: AbortSignal,
 ): Promise<{ url: string }> {
   const nodeId = params.nodeId;
+  const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
+  const signal = nodeSignal && externalSignal
+    ? AbortSignal.any([nodeSignal, externalSignal])
+    : nodeSignal ?? externalSignal;
 
-  // 预存待续任务
-  if (nodeId) {
-    const projectId = useAppStore.getState().currentProjectId;
-    if (projectId) {
-      savePendingTask({
-        nodeId,
-        projectId,
-        nodeType: 'ai-video',
-        provider: 'volcengine',
-        taskId: '',
-        taskType: 'volcengine',
-        apiKey,
-        baseUrl,
-        submitted: false,
+  try {
+    // 预存待续任务
+    if (nodeId) {
+      const projectId = useAppStore.getState().currentProjectId;
+      if (projectId) {
+        savePendingTask({
+          nodeId,
+          projectId,
+          nodeType: 'ai-video',
+          provider: 'volcengine',
+          providerConfigId: 'volcengine',
+          taskId: '',
+          taskType: 'volcengine',
+          submitted: false,
+        });
+      }
+    }
+
+    // 构建 content 数组
+    const content: Array<Record<string, unknown>> = [];
+    if (prompt.trim()) {
+      content.push({ type: 'text', text: prompt.trim() });
+    }
+    for (const url of imageUrls) {
+      content.push({
+        type: 'image_url',
+        image_url: { url },
       });
     }
-  }
 
-  // 构建 content 数组
-  const content: Array<Record<string, unknown>> = [];
-  if (prompt.trim()) {
-    content.push({ type: 'text', text: prompt.trim() });
-  }
-  for (const url of imageUrls) {
-    content.push({
-      type: 'image_url',
-      image_url: { url },
+    // 构建请求体 — 直接使用 Seedance 原生参数
+    const ratio = params.seedanceRatio || '16:9';
+    const duration = params.seedanceDuration ?? 5;
+    const resolution = params.seedanceResolution || '720p';
+    const requestBody: Record<string, unknown> = {
+      model: modelName,
+      content,
+      ratio,
+      duration,
+      resolution,
+      watermark: true,
+    };
+    if (params.generateAudio) {
+      requestBody.generate_audio = true;
+    }
+
+    // 提交任务
+    const apiUrl = `${baseUrl}/contents/generations/tasks`;
+    const submitResp = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+      signal,
     });
-  }
 
-  // 构建请求体 — 直接使用 Seedance 原生参数
-  const ratio = params.seedanceRatio || '16:9';
-  const duration = params.seedanceDuration ?? 5;
-  const resolution = params.seedanceResolution || '720p';
-  const requestBody: Record<string, unknown> = {
-    model: modelName,
-    content,
-    ratio,
-    duration,
-    resolution,
-    watermark: true,
-  };
-  if (params.generateAudio) {
-    requestBody.generate_audio = true;
-  }
-
-  // 提交任务
-  const apiUrl = `${baseUrl}/contents/generations/tasks`;
-  const submitResp = await fetch(apiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
-
-  if (!submitResp.ok) {
-    const errBody = await submitResp.text().catch(() => '');
-    if (nodeId) removePendingTask(nodeId);
-    let errorMsg = `提交失败 (${submitResp.status})`;
-    try {
-      const err = JSON.parse(errBody);
-      errorMsg = err.error?.message || errorMsg;
-    } catch {
-      if (errBody) errorMsg += `: ${errBody.slice(0, 200)}`;
+    if (!submitResp.ok) {
+      const errBody = await submitResp.text().catch(() => '');
+      let errorMsg = `提交失败 (${submitResp.status})`;
+      try {
+        const err = JSON.parse(errBody);
+        errorMsg = err.error?.message || errorMsg;
+      } catch {
+        if (errBody) errorMsg += `: ${errBody.slice(0, 200)}`;
+      }
+      throw new Error(errorMsg);
     }
-    throw new Error(errorMsg);
-  }
 
-  const submitResult = await submitResp.json() as { id?: string };
-  const taskId = submitResult.id;
-  if (!taskId) {
-    if (nodeId) removePendingTask(nodeId);
-    throw new Error('火山方舟视频生成提交失败: 未返回任务 ID');
-  }
+    const submitResult = await submitResp.json() as { id?: string };
+    const taskId = submitResult.id;
+    if (!taskId) {
+      throw new Error('火山方舟视频生成提交失败: 未返回任务 ID');
+    }
 
-  // 回填 taskId
-  if (nodeId) {
-    updatePendingTask(nodeId, { taskId, submitted: true });
-  }
+    // 回填 taskId
+    if (nodeId) {
+      updatePendingTask(nodeId, { taskId, submitted: true });
+    }
 
-  // 轮询
-  const signal = nodeId ? registerNodePolling(nodeId) : undefined;
-  const pollPromise = pollTask<Record<string, unknown>, { url: string }>({
-    fetchState: async () => {
-      const pollResp = await fetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
-      if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
-      return (await pollResp.json()) as Record<string, unknown>;
-    },
-    isComplete: (raw) => {
-      const status = raw.status as string;
-      if (status === 'succeeded') {
-        const c = raw.content as Record<string, unknown> | undefined;
-        const videoUrl = c?.video_url as string | undefined;
-        if (videoUrl) return { url: videoUrl };
-        throw new Error('任务完成但未返回视频地址');
-      }
-      return null;
-    },
-    isFailed: (raw) => {
-      const status = raw.status as string;
-      if (status === 'failed') {
-        const err = raw.error as { message?: string } | undefined;
-        return `任务失败: ${err?.message || status}`;
-      }
-      return null;
-    },
-    interval: 3000,
-    onFetchError: 'continue',
-    signal,
-  });
+    // 轮询
+    return await pollTask<Record<string, unknown>, { url: string }>({
+      fetchState: async () => {
+        const pollResp = await fetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal,
+        });
+        if (!pollResp.ok) throw new Error(`HTTP ${pollResp.status}`);
+        return (await pollResp.json()) as Record<string, unknown>;
+      },
+      isComplete: (raw) => {
+        const status = raw.status as string;
+        if (status === 'succeeded') {
+          const c = raw.content as Record<string, unknown> | undefined;
+          const videoUrl = c?.video_url as string | undefined;
+          if (videoUrl) return { url: videoUrl };
+          throw new Error('任务完成但未返回视频地址');
+        }
+        return null;
+      },
+      isFailed: (raw) => {
+        const status = raw.status as string;
+        if (status === 'failed') {
+          const err = raw.error as { message?: string } | undefined;
+          return `任务失败: ${err?.message || status}`;
+        }
+        return null;
+      },
+      interval: 3000,
+      onFetchError: 'continue',
+      signal,
+    });
 
-  pollPromise.finally(() => {
+  } finally {
     if (nodeId) {
       cleanupNodePolling(nodeId);
       removePendingTask(nodeId);
     }
-  });
-  return pollPromise;
+  }
 }

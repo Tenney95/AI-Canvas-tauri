@@ -949,6 +949,26 @@ describe('declarative model execution protocol', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('passes the cancellation signal to every polling request', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn().mockRejectedValueOnce(new DOMException('Aborted', 'AbortError'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(pollResolvedModelProtocol({
+      method: 'GET',
+      url: 'https://api.example/tasks/video-1',
+      statusPath: 'status',
+      successValues: ['completed'],
+      failureValues: ['failed'],
+      resultUrlPath: 'url',
+      intervalMs: 1,
+    }, 'secret', controller.signal, 'https://api.example/v1')).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+  });
+
   it('uses the configured consecutive query retry limit', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({
       message: 'video status query rate limit exceeded',

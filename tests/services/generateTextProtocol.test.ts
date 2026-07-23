@@ -36,14 +36,21 @@ describe('custom text model protocol', () => {
     useAppStore.setState((state) => ({
       config: {
         ...state.config,
+        providers: {
+          ...state.config.providers,
+          'custom-text-provider': {
+            name: '自定义文本连接',
+            apiKey: 'secret',
+            baseUrl: 'https://gateway.example',
+            catalogId: 'custom-openai',
+          },
+        },
         generalModels: [{
           id: 'custom-text',
           name: '自定义文本',
-          openaiUrl: 'https://gateway.example',
-          anthropicUrl: '',
           modelId: 'vendor-chat',
-          apiKey: 'secret',
           category: 'text',
+          providerConfigId: 'custom-text-provider',
           executionProfile,
         }],
       },

@@ -2,6 +2,7 @@
  * ai/helpers — 模型解析、尺寸格式化、响应解析
  */
 import { useAppStore } from '../../store/useAppStore';
+import type { ApiProviderConfig, GeneralModelConfig } from '../../types';
 
 /** 去掉 model value 中的 provider/ 前缀，得到实际的模型名 */
 export function extractModelName(modelValue: string, provider: string): string {
@@ -74,6 +75,35 @@ export function resolveGeneralModel(modelValue: string) {
   const config = useAppStore.getState().config;
   const gmId = modelValue.replace(/^general\//, '');
   return config.generalModels?.find((m) => m.id === gmId);
+}
+
+export interface ResolvedGeneralModelConnection {
+  model: GeneralModelConfig;
+  providerConfigId: string;
+  provider: ApiProviderConfig;
+  apiKey: string;
+  baseUrl: string;
+  anthropicUrl: string;
+}
+
+/** 通过模型引用解析当前连接，密钥和地址始终以 config.providers 为准。 */
+export function resolveGeneralModelConnection(
+  modelValue: string,
+): ResolvedGeneralModelConnection | undefined {
+  const config = useAppStore.getState().config;
+  const gmId = modelValue.replace(/^general\//, '');
+  const model = config.generalModels?.find((item) => item.id === gmId);
+  if (!model?.providerConfigId) return undefined;
+  const provider = config.providers[model.providerConfigId];
+  if (!provider) return undefined;
+  return {
+    model,
+    providerConfigId: model.providerConfigId,
+    provider,
+    apiKey: provider.apiKey || '',
+    baseUrl: provider.baseUrl?.trim() || '',
+    anthropicUrl: provider.anthropicUrl?.trim() || '',
+  };
 }
 
 /**

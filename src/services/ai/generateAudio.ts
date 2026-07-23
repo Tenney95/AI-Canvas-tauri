@@ -15,7 +15,7 @@ import {
   updatePendingTask,
 } from '../pollManager';
 import type { AIAudioGenParams, AudioGenerationResult } from '../../types/aiTypes';
-import { extractModelName, resolveGeneralModel } from './helpers';
+import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
 import { executeGeneralAsyncTask } from './apimartGen';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 import {
@@ -96,7 +96,7 @@ function waitForFlowMusicTask(
   signal?: AbortSignal,
 ): Promise<FlowMusicTaskState> {
   return pollTask<FlowMusicTaskState, FlowMusicTaskState>({
-    fetchState: () => fetchFlowMusicTask(apiKey, baseUrl, taskId),
+    fetchState: () => fetchFlowMusicTask(apiKey, baseUrl, taskId, signal),
     isComplete: (task) => task.status === 'completed' ? task : null,
     isFailed: (task) =>
       task.status === 'failed' || task.status === 'error'
@@ -113,10 +113,15 @@ async function generateFlowMusic(
   baseUrl: string,
   params: AIAudioGenParams,
   prompt: string,
+  externalSignal?: AbortSignal,
 ): Promise<AudioGenerationResult> {
   const shouldGenerateLyrics = params.autoGenerateLyrics === true;
   const initialStage = shouldGenerateLyrics ? 'lyrics' : 'music';
   const projectId = useAppStore.getState().currentProjectId;
+  const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
+  const signal = nodeSignal && externalSignal
+    ? AbortSignal.any([nodeSignal, externalSignal])
+    : nodeSignal ?? externalSignal;
 
   if (params.nodeId && projectId) {
     savePendingTask({
@@ -124,20 +129,18 @@ async function generateFlowMusic(
       projectId,
       nodeType: 'ai-audio',
       provider: 'apimart',
+      providerConfigId: 'apimart',
       taskId: '',
       taskType: 'apimart-flow-music',
       audioTaskStage: initialStage,
-      apiKey,
-      baseUrl,
       submitted: false,
     });
   }
 
-  const signal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   try {
     let generatedLyrics: { title: string; lyrics: string } | undefined;
     if (shouldGenerateLyrics) {
-      const lyricsTaskId = await submitFlowMusicLyrics(apiKey, baseUrl, prompt);
+      const lyricsTaskId = await submitFlowMusicLyrics(apiKey, baseUrl, prompt, signal);
       if (params.nodeId) {
         updatePendingTask(params.nodeId, { taskId: lyricsTaskId, submitted: true });
       }
@@ -168,6 +171,7 @@ async function generateFlowMusic(
       apiKey,
       baseUrl,
       buildFlowMusicRequest(params, prompt, generatedLyrics),
+      signal,
     );
     if (params.nodeId) {
       updatePendingTask(params.nodeId, {
@@ -187,7 +191,10 @@ async function generateFlowMusic(
   }
 }
 
-export async function generateAudio(params: AIAudioGenParams): Promise<AudioGenerationResult> {
+export async function generateAudio(
+  params: AIAudioGenParams,
+  signal?: AbortSignal,
+): Promise<AudioGenerationResult> {
   const { prompt: rawPrompt, model, provider } = params;
 
   // 解析 @{nodeId:label} 引用为对应节点的实际输出内容
@@ -195,7 +202,7 @@ export async function generateAudio(params: AIAudioGenParams): Promise<AudioGene
 
   // ComfyUI 工作流执行路径
   if (params.workflowId) {
-    return executeComfyUIAudioGenerate({ ...params, prompt });
+    return executeComfyUIAudioGenerate({ ...params, prompt }, signal);
   }
 
   // APIMart 音频能力按模型 capability 路由，避免把 TTS/音乐误发到图片端点。
@@ -219,10 +226,10 @@ export async function generateAudio(params: AIAudioGenParams): Promise<AudioGene
         voice: params.audioVoice ?? 'alloy',
         format: params.audioFormat ?? 'wav',
         speed: params.audioSpeed ?? 1,
-      });
+      }, signal);
     }
     if (capability === 'music') {
-      return generateFlowMusic(apiKey, baseUrl, params, prompt);
+      return generateFlowMusic(apiKey, baseUrl, params, prompt, signal);
     }
     throw new Error(`APIMart 音频模型 "${modelName}" 暂不支持音频生成`);
   }
@@ -231,12 +238,15 @@ export async function generateAudio(params: AIAudioGenParams): Promise<AudioGene
   if (provider === 'general') {
     const gm = resolveGeneralModel(model);
     if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
-    if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+    const connection = resolveGeneralModelConnection(model);
+    if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
+    if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
     if (gm.executionProfile) {
       const urls = await runConfiguredModelProtocol({
         model: gm,
         category: 'audio',
         nodeId: params.nodeId,
+        signal,
         variables: {
           model: gm.modelId,
           prompt,
@@ -255,7 +265,16 @@ export async function generateAudio(params: AIAudioGenParams): Promise<AudioGene
       if (!url) throw new Error('音频生成完成但未返回结果');
       return { url };
     }
-    return executeGeneralAsyncTask(gm.apiKey || '', gm.openaiUrl, gm.modelId, prompt, 'audios', params.nodeId);
+    return executeGeneralAsyncTask(
+      connection.apiKey,
+      connection.baseUrl,
+      gm.modelId,
+      prompt,
+      'audios',
+      connection.providerConfigId,
+      params.nodeId,
+      signal,
+    );
   }
 
   // 无 workflowId 时暂不支持直接调用 API，提示配置

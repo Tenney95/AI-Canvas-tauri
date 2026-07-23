@@ -72,7 +72,11 @@ export function registerMediaAgentTools(): Array<() => void> {
           };
         }
         if (input.modelRef) {
-          const option = findMediaModelOption(input.modelRef, store.config.generalModels ?? []);
+          const option = findMediaModelOption(
+            input.modelRef,
+            store.config.generalModels ?? [],
+            store.config,
+          );
           if (!option || option.mediaKind !== input.kind) {
             return { allowed: false, reason: '所选模型与本次媒体类型不兼容' };
           }
@@ -80,7 +84,10 @@ export function registerMediaAgentTools(): Array<() => void> {
             const generalModel = (store.config.generalModels ?? []).find(
               (model) => `general/${model.id}` === option.value,
             );
-            if (!generalModel?.openaiUrl || !generalModel.modelId) {
+            const provider = generalModel
+              ? store.config.providers[generalModel.providerConfigId]
+              : undefined;
+            if (!generalModel?.modelId || !provider?.baseUrl) {
               return { allowed: false, reason: `模型“${option.label}”的接口配置不完整` };
             }
           } else if (option.provider === 'dreamina') {
@@ -215,7 +222,11 @@ export function registerMediaAgentTools(): Array<() => void> {
             }),
           };
         } catch (error) {
-          const message = error instanceof Error ? error.message : '未知错误';
+          const stopped = context.signal.aborted
+            || (error instanceof DOMException && error.name === 'AbortError');
+          const message = stopped
+            ? '已停止本地跟踪；供应商未确认远端取消，任务可能继续并产生费用'
+            : error instanceof Error ? error.message : '未知错误';
           const currentStore = useAppStore.getState();
           if (targetNodeId) currentStore.failMediaPlaceholder(targetNodeId, message);
           currentStore.updateMessage(assistantMessageId, {
@@ -227,9 +238,11 @@ export function registerMediaAgentTools(): Array<() => void> {
           });
           return {
             status: 'error',
-            summary: `媒体生成失败：${message}`,
-            modelContent: `媒体生成失败：${message}`,
-            errorCode: 'AGENT_MEDIA_GENERATION_FAILED',
+            summary: stopped ? message : `媒体生成失败：${message}`,
+            modelContent: stopped ? message : `媒体生成失败：${message}`,
+            errorCode: stopped
+              ? 'AGENT_MEDIA_TRACKING_STOPPED'
+              : 'AGENT_MEDIA_GENERATION_FAILED',
           };
         }
       },

@@ -63,10 +63,7 @@ function syncCustomProviderModels(
     return {
       id: existing?.id || createGeneralModelId(providerConfigId, model.id),
       name: model.name,
-      openaiUrl: config.baseUrl || '',
-      anthropicUrl: config.anthropicUrl || '',
       modelId: model.id,
-      apiKey: config.apiKey,
       category: model.category,
       contextWindow: existing?.contextWindow,
       providerConfigId,
@@ -76,9 +73,31 @@ function syncCustomProviderModels(
   return [...otherModels, ...selectedModels];
 }
 
+interface LegacyGeneralModelConfig extends Omit<GeneralModelConfig, 'providerConfigId'> {
+  providerConfigId?: string;
+  openaiUrl?: string;
+  anthropicUrl?: string;
+  apiKey?: string;
+}
+
+function sanitizeGeneralModel(
+  model: LegacyGeneralModelConfig,
+  providerConfigId: string,
+): GeneralModelConfig {
+  return {
+    id: model.id,
+    name: model.name,
+    modelId: model.modelId,
+    category: model.category,
+    contextWindow: model.contextWindow,
+    providerConfigId,
+    executionProfile: model.executionProfile,
+  };
+}
+
 function migrateLegacyGeneralModels(config: AppConfig): AppConfig {
-  const generalModels = config.generalModels ?? [];
-  if (generalModels.length === 0 || generalModels.every((model) => model.providerConfigId)) return config;
+  const generalModels = (config.generalModels ?? []) as LegacyGeneralModelConfig[];
+  if (generalModels.length === 0) return config;
 
   const providers = { ...config.providers };
   const connectionBySignature = new Map<string, string>();
@@ -92,8 +111,8 @@ function migrateLegacyGeneralModels(config: AppConfig): AppConfig {
 
   let nextCustomIndex = 1;
   const migratedModels = generalModels.map((model) => {
-    if (model.providerConfigId) return model;
-    const signature = `${model.openaiUrl}\u0000${model.anthropicUrl}\u0000${model.apiKey}`;
+    if (model.providerConfigId) return sanitizeGeneralModel(model, model.providerConfigId);
+    const signature = `${model.openaiUrl || ''}\u0000${model.anthropicUrl || ''}\u0000${model.apiKey || ''}`;
     let providerConfigId = connectionBySignature.get(signature);
     if (!providerConfigId) {
       do {
@@ -102,9 +121,9 @@ function migrateLegacyGeneralModels(config: AppConfig): AppConfig {
       } while (providers[providerConfigId]);
       providers[providerConfigId] = {
         name: model.name || '自定义接口',
-        apiKey: model.apiKey,
-        baseUrl: model.openaiUrl,
-        anthropicUrl: model.anthropicUrl,
+        apiKey: model.apiKey || '',
+        baseUrl: model.openaiUrl || '',
+        anthropicUrl: model.anthropicUrl || '',
         catalogId: 'custom-openai',
         selectedModels: [],
       };
@@ -122,7 +141,7 @@ function migrateLegacyGeneralModels(config: AppConfig): AppConfig {
         },
       ];
     }
-    return { ...model, providerConfigId };
+    return sanitizeGeneralModel(model, providerConfigId);
   });
 
   return { ...config, providers, generalModels: migratedModels };
@@ -245,10 +264,12 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
       return;
     }
     try {
-      await fileService.saveConfig(config);
+      const normalizedConfig = migrateLegacyGeneralModels(config);
+      await fileService.saveConfig(normalizedConfig);
+      if (normalizedConfig !== config) set({ config: normalizedConfig });
       // 同步 baseDataDir 到 fileService
-      setBaseDataDir(config.baseDataDir);
-      await syncAuthorizedDirectories(config);
+      setBaseDataDir(normalizedConfig.baseDataDir);
+      await syncAuthorizedDirectories(normalizedConfig);
       if (!options?.silent) showToast('设置已保存');
     } catch {
       showToast('设置保存失败', 'error');

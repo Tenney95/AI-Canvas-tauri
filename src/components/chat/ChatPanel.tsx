@@ -159,7 +159,8 @@ function getMediaModelAvailability(
       const generalModel = generalModels.find(
         (model) => `general/${model.id}` === option.value,
       );
-      return [option.value, !!generalModel?.openaiUrl && !!generalModel.modelId];
+      const provider = generalModel ? providers[generalModel.providerConfigId] : undefined;
+      return [option.value, !!provider?.baseUrl && !!generalModel?.modelId];
     }
     if (option.provider === 'dreamina') {
       return [option.value, dreaminaLoggedIn];
@@ -169,10 +170,6 @@ function getMediaModelAvailability(
       : option.groupId;
     return [option.value, !!providers[providerConfigId]?.apiKey];
   }));
-}
-
-function sanitizeGeneralModels(models: GeneralModelConfig[]): GeneralModelConfig[] {
-  return models.map((model) => ({ ...model, apiKey: '' }));
 }
 
 function buildDetachedChatSnapshot(
@@ -186,7 +183,7 @@ function buildDetachedChatSnapshot(
     agentTasks: state.agentTasks,
     projectId: state.currentProjectId,
     projectName: project?.name,
-    generalModels: sanitizeGeneralModels(state.config.generalModels ?? []),
+    generalModels: state.config.generalModels ?? [],
     assistantModelId: state.config.assistantModelId,
     assistantImageModelId: state.config.assistantImageModelId,
     assistantVideoModelId: state.config.assistantVideoModelId,

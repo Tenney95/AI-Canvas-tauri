@@ -19,7 +19,7 @@ import { generateDreaminaImage } from '../dreaminaService';
 import { executeComfyUIGenerate } from '../comfyWorkflowService';
 import type { AIImageGenParams, BatchImageResult, ImageGenerationResult } from '../../types/aiTypes';
 import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
-import { extractModelName, resolveGeneralModel } from './helpers';
+import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
 import { resolvePromptWithImageRefs } from './promptResolver';
 import { resolveImageUrlArray } from './imageUtils';
 import { generateApimartImagesBatch } from './apimartGen';
@@ -30,8 +30,9 @@ import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 
 export async function generateImage(
   params: AIImageGenParams,
+  signal?: AbortSignal,
 ): Promise<ImageGenerationResult> {
-  const batch = await generateImagesBatch(params, 1);
+  const batch = await generateImagesBatch(params, 1, signal);
   const result = batch.results[0];
   if (!result) throw new Error('图片生成返回结果为空');
   return result;
@@ -97,12 +98,14 @@ function getProjectStyleMasterUrl(): string | null {
 export async function generateImagesBatch(
   params: AIImageGenParams,
   count: number,
+  signal?: AbortSignal,
 ): Promise<BatchImageResult> {
   const requestedCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(count)));
   const { prompt: rawPrompt, model, provider, imageSize = '2K', aspectRatio = '1:1' } = params;
 
   // 解析 @{nodeId:label} 引用：图片 URL 提取到 image_urls，文本内联替换到 prompt
   const { prompt: resolvedPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
+  if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   // 合并调用方传入的 image_urls 与从 prompt 中解析出的 imageUrls
   let contentImageUrls = mergeImageUrls([...(params.image_urls || [])], imageUrls);
@@ -127,16 +130,17 @@ export async function generateImagesBatch(
   if (provider === 'dreamina') {
     if (!prompt.trim()) throw new Error('提示词不能为空');
     if (requestedCount > 1) throw new Error('即梦暂不支持批量生成，请将数量设为 1');
-    return singleResult(await generateDreaminaImage({ prompt, model, imageSize, aspectRatio, imageUrls: allImageUrls, nodeId: params.nodeId }));
+    return singleResult(await generateDreaminaImage({ prompt, model, imageSize, aspectRatio, imageUrls: allImageUrls, nodeId: params.nodeId }, signal));
   }
 
   // 将本地图片 URL 上传到远端图床，转为公网 URL（apimart 走 apimart 图床，其他走 uguu.se）
   allImageUrls = await resolveImageUrlArray(allImageUrls, provider);
+  if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   // ComfyUI 工作流执行路径
   if (params.workflowId) {
     if (requestedCount > 1) throw new Error('工作流暂不支持批量生成，请将数量设为 1');
-    return singleResult(await executeComfyUIGenerate({ ...params, prompt }));
+    return singleResult(await executeComfyUIGenerate({ ...params, prompt }, signal));
   }
 
   if (!prompt.trim()) throw new Error('提示词不能为空');
@@ -156,19 +160,23 @@ export async function generateImagesBatch(
       return generateApimartImagesBatch(
         apiKey, baseUrl, modelName, prompt, imageSize, aspectRatio,
         dimensions, allImageUrls, requestedCount, params.nodeId,
+        signal,
       );
     }
 
     case 'general': {
       const gm = resolveGeneralModel(model);
       if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');
-      if (!gm.openaiUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
+      const connection = resolveGeneralModelConnection(model);
+      if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
+      if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
       const dimensions = mapImageDimensions(imageSize, aspectRatio);
       if (gm.executionProfile) {
         const urls = await runConfiguredModelProtocol({
           model: gm,
           category: 'image',
           nodeId: params.nodeId,
+          signal,
           variables: {
             model: gm.modelId,
             prompt,
@@ -191,13 +199,13 @@ export async function generateImagesBatch(
         };
       }
       return generateImageStandardBatch({
-        apiKey: gm.apiKey || '',
-        baseUrl: gm.openaiUrl,
+        apiKey: connection.apiKey,
+        baseUrl: connection.baseUrl,
         modelName: gm.modelId,
         prompt,
         dimensions,
         imageUrls: allImageUrls,
-      }, requestedCount);
+      }, requestedCount, signal);
     }
 
     case 'volcengine': {
@@ -215,7 +223,7 @@ export async function generateImagesBatch(
         imageSize,
         aspectRatio,
         imageUrls: allImageUrls,
-      }, requestedCount);
+      }, requestedCount, signal);
     }
 
     case 'runninghub': {
@@ -237,7 +245,7 @@ export async function generateImagesBatch(
         dimensions,
         imageUrls: allImageUrls,
         nodeId: params.nodeId,
-      }, requestedCount);
+      }, requestedCount, signal);
     }
 
     case 'localllm':
@@ -260,7 +268,7 @@ export async function generateImagesBatch(
         prompt,
         dimensions,
         imageUrls: allImageUrls,
-      }, requestedCount);
+      }, requestedCount, signal);
     }
   }
 }

@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AppConfig } from '../../src/types';
 
 const fileMocks = vi.hoisted(() => ({
   loadConfig: vi.fn(),
-  saveConfig: vi.fn(async () => undefined),
+  saveConfig: vi.fn<(config: unknown) => Promise<void>>(async () => undefined),
   setBaseDataDir: vi.fn(),
   syncAuthorizedDirectories: vi.fn(async () => undefined),
 }));
@@ -83,5 +84,63 @@ describe('config hydration guard', () => {
 
     expect(useAppStore.getState().configHydrated).toBe(true);
     expect(fileMocks.saveConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('migrates legacy model connection fields and persists only provider references', async () => {
+    fileMocks.loadConfig.mockResolvedValue({
+      providers: {},
+      theme: 'dark',
+      generalModels: [{
+        id: 'legacy-model',
+        name: '旧模型',
+        openaiUrl: 'https://legacy.example/v1',
+        anthropicUrl: '',
+        modelId: 'legacy-chat',
+        apiKey: 'legacy-secret',
+        category: 'text',
+      }],
+    });
+
+    await useAppStore.getState().loadConfig();
+    const migrated = useAppStore.getState().config;
+    const model = migrated.generalModels?.[0];
+    expect(model?.providerConfigId).toMatch(/^custom-/);
+    expect(model).not.toHaveProperty('apiKey');
+    expect(model).not.toHaveProperty('openaiUrl');
+    expect(model).not.toHaveProperty('anthropicUrl');
+    expect(migrated.providers[model!.providerConfigId]).toMatchObject({
+      apiKey: 'legacy-secret',
+      baseUrl: 'https://legacy.example/v1',
+    });
+
+    await useAppStore.getState().saveConfig();
+    const saved = fileMocks.saveConfig.mock.calls[0]?.[0] as AppConfig | undefined;
+    expect(JSON.stringify(saved?.generalModels)).not.toContain('legacy-secret');
+    expect(saved?.generalModels?.[0]).toEqual(model);
+  });
+
+  it('syncs custom provider models without copying credentials or addresses', () => {
+    useAppStore.getState().saveProviderConfig('custom-current', {
+      name: '当前连接',
+      apiKey: 'provider-only-secret',
+      baseUrl: 'https://current.example/v1',
+      anthropicUrl: 'https://current.example/anthropic',
+      catalogId: 'custom-openai',
+      selectedModels: [{
+        id: 'current-chat',
+        name: '当前模型',
+        category: 'text',
+        provider: 'custom-current',
+      }],
+    });
+
+    const model = useAppStore.getState().config.generalModels?.[0];
+    expect(model).toMatchObject({
+      modelId: 'current-chat',
+      providerConfigId: 'custom-current',
+    });
+    expect(model).not.toHaveProperty('apiKey');
+    expect(model).not.toHaveProperty('openaiUrl');
+    expect(model).not.toHaveProperty('anthropicUrl');
   });
 });

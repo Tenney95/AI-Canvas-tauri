@@ -8,6 +8,7 @@ import {
 import { useAppStore } from '../../src/store/useAppStore';
 
 beforeEach(() => {
+  localStorage.clear();
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({ currentProjectId: 'project-1' });
 });
@@ -85,6 +86,42 @@ describe('pending generation task recovery', () => {
 
     expect(getPendingTasksForProject('project-1').map((task) => task.nodeId)).toEqual(['node-1']);
     expect(getPendingTasksForProject('project-2').map((task) => task.nodeId)).toEqual(['node-2']);
+  });
+
+  it('scrubs credentials and provider URLs from legacy pending task records', () => {
+    useAppStore.setState((state) => ({
+      config: {
+        ...state.config,
+        providers: {
+          ...state.config.providers,
+          apimart: {
+            name: 'APIMart',
+            apiKey: 'rotated-secret',
+            baseUrl: 'https://current.example/v1',
+          },
+        },
+      },
+    }));
+    localStorage.setItem('ai_canvas_pending_tasks', JSON.stringify([{
+      nodeId: 'legacy-node',
+      projectId: 'project-1',
+      nodeType: 'ai-video',
+      provider: 'apimart',
+      taskId: 'task-legacy',
+      taskType: 'apimart',
+      apiKey: 'stale-secret',
+      baseUrl: 'https://stale.example/v1',
+      submitted: true,
+    }]));
+
+    expect(getPendingTasksForProject('project-1')[0]).toMatchObject({
+      nodeId: 'legacy-node',
+      providerConfigId: 'apimart',
+    });
+    const persisted = localStorage.getItem('ai_canvas_pending_tasks') || '';
+    expect(persisted).not.toContain('stale-secret');
+    expect(persisted).not.toContain('stale.example');
+    expect(persisted).not.toContain('apiKey');
   });
 
   it('resumes declarative protocol tasks with credentials from the provider connection', async () => {
