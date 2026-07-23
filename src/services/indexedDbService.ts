@@ -892,20 +892,46 @@ export async function getConversationMessages(
   });
 }
 
-/** 获取会话中下一条消息的 sequence */
-export async function getNextMessageSequence(conversationId: string): Promise<number> {
+/**
+ * 保存单条消息，并在同一读写事务内分配 sequence：
+ * - 已存在的消息（同 id）保留原 sequence，避免更新时被重排到末尾；
+ * - 新消息取当前会话最大 sequence + 1。
+ *
+ * 事务内读改写让 IndexedDB 串行化并发调用（如用户消息与助手占位同时落盘），
+ * 从而不会分配到重复 sequence。返回最终写入的 sequence。
+ */
+export async function putChatMessageWithSequence(
+  record: ChatMessageRecord,
+): Promise<number> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_CHAT_MESSAGES, 'readonly');
+    const tx = db.transaction(STORE_CHAT_MESSAGES, 'readwrite');
     const store = tx.objectStore(STORE_CHAT_MESSAGES);
-    const index = store.index('conversationId_sequence');
-    const range = IDBKeyRange.bound(
-      [conversationId, 0],
-      [conversationId, Infinity],
-    );
-    const countReq = index.count(range);
-    countReq.onsuccess = () => resolve(countReq.result);
-    countReq.onerror = () => reject(countReq.error);
+    let sequence = record.sequence;
+    const existingReq = store.get(record.id);
+    existingReq.onsuccess = () => {
+      const existing = existingReq.result as ChatMessageRecord | undefined;
+      if (existing) {
+        sequence = existing.sequence;
+        store.put({ ...record, sequence });
+        return;
+      }
+      const index = store.index('conversationId_sequence');
+      const range = IDBKeyRange.bound(
+        [record.conversationId, 0],
+        [record.conversationId, Infinity],
+      );
+      const cursorReq = index.openCursor(range, 'prev');
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result;
+        sequence = cursor ? (cursor.value as ChatMessageRecord).sequence + 1 : 0;
+        store.put({ ...record, sequence });
+      };
+      cursorReq.onerror = () => reject(cursorReq.error);
+    };
+    existingReq.onerror = () => reject(existingReq.error);
+    tx.oncomplete = () => resolve(sequence);
+    tx.onerror = () => reject(tx.error);
   });
 }
 

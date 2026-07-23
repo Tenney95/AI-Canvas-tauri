@@ -6,9 +6,8 @@ import {
   putChatConversation,
   getProjectConversations,
   getTrashConversations,
-  putChatMessage,
+  putChatMessageWithSequence,
   getConversationMessages,
-  getNextMessageSequence,
   deleteConversationMessages,
   permanentlyDeleteConversation,
   type ChatConversationRecord,
@@ -164,30 +163,15 @@ export async function hardDeleteConversation(convId: string): Promise<void> {
 
 /**
  * 保存单条消息到 IndexedDB。
- * 自动计算下一个 sequence（在 save 之前应先查当前最大值）。
+ * sequence 在写入事务内分配：已存在的消息保留原序号（更新不重排），
+ * 新消息取当前最大序号 +1（并发落盘不重复）。
  */
 export async function persistMessage(
   message: ChatMessage,
   projectId: string,
   conversationId: string,
 ): Promise<void> {
-  const nextSeq = await getNextMessageSequence(conversationId);
-  await putChatMessage(toMessageRecord(message, projectId, conversationId, nextSeq));
-}
-
-/**
- * 批量持久化消息（用于流结束后的落盘）。
- * 序列号从当前最大 sequence 开始递增。
- */
-export async function persistMessages(
-  messages: ChatMessage[],
-  projectId: string,
-  conversationId: string,
-): Promise<void> {
-  const baseSeq = await getNextMessageSequence(conversationId);
-  for (let i = 0; i < messages.length; i++) {
-    await putChatMessage(toMessageRecord(messages[i], projectId, conversationId, baseSeq + i));
-  }
+  await putChatMessageWithSequence(toMessageRecord(message, projectId, conversationId, 0));
 }
 
 /** 按分页加载消息（倒序：最新的先返回） */

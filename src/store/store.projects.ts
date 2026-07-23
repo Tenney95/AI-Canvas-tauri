@@ -11,6 +11,7 @@ import * as fileService from '../services/fileService';
 import { resumePendingTasks, clearProjectTasks } from '../services/pollManager';
 import { normalizeProjectSettings } from '../services/projectSettingsService';
 import { captureCurrentCanvasSnapshot } from '../services/projectSnapshotService';
+import { stopProjectAgentTasks } from '../services/chat/agentRuntime';
 
 function getProjectGroups(data: { groups?: unknown } | null | undefined): NodeGroup[] {
   return Array.isArray(data?.groups) ? (data.groups as NodeGroup[]) : [];
@@ -468,6 +469,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     }
 
     clearProjectTasks(id);
+    // 先中止仍在运行的 Agent，再移除任务快照，避免后台请求在项目删除后继续产生副作用
+    stopProjectAgentTasks(id);
     get().removeProjectAgentTasks(id);
     get().removeProjectMemories(id);
     fileService.deleteProjectData(id).catch((e) => console.warn('[删除项目] 清理数据失败:', e));

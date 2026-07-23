@@ -226,6 +226,31 @@ export function stopConversationAgentTasks(conversationId: string): void {
   }
 }
 
+/**
+ * 中止并停止某项目下的全部未完成任务。
+ * 删除项目时调用，避免后台任务在项目消失后继续消耗模型 / 网页 / 付费媒体请求。
+ */
+export function stopProjectAgentTasks(projectId: string): void {
+  const tasks = useAppStore.getState().agentTasks.filter(
+    (task) => task.projectId === projectId
+      && !AGENT_TERMINAL_STATUSES.has(task.status),
+  );
+  for (const conversationId of new Set(tasks.map((task) => task.conversationId))) {
+    cancelConversationAgentExecutions(conversationId);
+  }
+  for (const task of tasks) {
+    activeControllers.get(task.id)?.abort();
+    try {
+      transitionAgentTask(task.id, 'stopped', {
+        pausedReason: undefined,
+        errorCode: 'AGENT_STOPPED',
+      });
+    } catch {
+      /* 非法迁移（如已终态）忽略 */
+    }
+  }
+}
+
 export interface AgentResumeValidation {
   ok: boolean;
   errorCode?: string;
@@ -455,6 +480,48 @@ async function executePreparedToolCall(
   step: AgentStep,
 ): Promise<ExecutedToolCall> {
   const startedAt = Date.now();
+  // 执行前统一重验：审批等待与并发读取期间用户可能切换项目或撤销授权。
+  // revision 相同不能证明项目相同，故此处再次确认项目与工具授权后才真正执行，
+  // 避免文件导入 / 媒体回填 / 画布命令把结果写进已切换的当前项目。
+  const authorization = prepared.definition.authorize?.(context, prepared.input);
+  const reverifyReason = useAppStore.getState().currentProjectId !== context.projectId
+    ? '目标项目已切换，已取消该工具执行'
+    : authorization && !authorization.allowed
+      ? authorization.reason || '当前会话没有执行该工具的授权'
+      : undefined;
+  if (reverifyReason) {
+    const message = sanitizePersistentSummary(reverifyReason);
+    updateStep(taskId, step.id, {
+      status: 'failed',
+      errorCode: 'AGENT_TOOL_REVERIFY_FAILED',
+      errorMessage: message,
+      toolCall: {
+        ...step.toolCall!,
+        finishedAt: Date.now(),
+        errorCode: 'AGENT_TOOL_REVERIFY_FAILED',
+        resultSummary: message,
+      },
+    });
+    appendAgentEvent(taskId, 'tool_end', {
+      toolId: call.toolId,
+      callId: call.callId,
+      effect: prepared.definition.effect,
+      status: 'failed',
+      errorCode: 'AGENT_TOOL_REVERIFY_FAILED',
+      durationMs: Date.now() - startedAt,
+      retryCount: 0,
+    });
+    return {
+      summary: {
+        callId: call.callId,
+        toolId: call.toolId,
+        status: 'denied',
+        summary: message,
+        truncated: false,
+      },
+      modelContent: message,
+    };
+  }
   const checkpointBefore = prepared.definition.effect === 'canvas_write'
     ? {
         historyIndex: useAppStore.getState().historyIndex,
@@ -794,12 +861,14 @@ export async function runAgentLoop({
   try {
     while (!signal.aborted) {
     const task = getTask(taskId);
-    const currentMode = useAppStore.getState().conversations.find(
+    // 模型流式返回和逐个工具审批都可能耗时较久，其间用户可能下调模式；
+    // 每次策略判定前重新读取当前会话模式，确保降级（如切到 B / Plan）立即生效。
+    const readCurrentMode = () => useAppStore.getState().conversations.find(
       (conversation) => conversation.id === task.conversationId,
     )?.agentMode ?? task.mode;
     const roundContext = {
       ...contextBase,
-      mode: currentMode,
+      mode: readCurrentMode(),
       baseRevision: useAppStore.getState().getCurrentRevision(),
     };
     const interjections = drainAgentInterjections(taskId);
@@ -935,6 +1004,8 @@ export async function runAgentLoop({
     }> = [];
 
     for (const call of proposedCalls) {
+      // 逐个工具判定前刷新模式：前一个工具的审批等待期间用户下调模式也应生效。
+      roundContext.mode = readCurrentMode();
       appendAgentEvent(taskId, 'tool_proposed', {
         toolId: call.toolId,
         callId: call.callId,
