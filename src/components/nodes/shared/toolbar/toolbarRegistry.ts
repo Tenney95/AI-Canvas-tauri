@@ -43,6 +43,7 @@ export const IMAGE_BUTTONS: ToolbarButtonDef[] = [
   { key: 'upload',         label: '上传图片',    icon: 'mdi:upload',                     defaultZone: 'Secondary' },
   { key: 'copyFile',      label: '复制图像',    icon: 'mdi:content-copy',             defaultZone: 'Secondary' },
   { key: 'fullscreen',     label: '全屏显示',    icon: 'mdi:fullscreen',                defaultZone: 'Secondary' },
+  { key: 'history',        label: '生成历史',    icon: 'mdi:history',                  defaultZone: 'Secondary' },
 ];
 
 /** 音频节点按钮 */
@@ -74,22 +75,22 @@ function buildLayout(buttons: ToolbarButtonDef[], version = 1): ToolbarLayout {
 export const DEFAULT_TEXT_LAYOUT      = buildLayout(TEXT_BUTTONS);
 export const DEFAULT_VIDEO_LAYOUT     = buildLayout(VIDEO_BUTTONS);
 export const DEFAULT_PANORAMA_LAYOUT  = buildLayout(PANORAMA_BUTTONS);
-export const DEFAULT_IMAGE_LAYOUT     = buildLayout(IMAGE_BUTTONS, 3);
+export const DEFAULT_IMAGE_LAYOUT     = buildLayout(IMAGE_BUTTONS, 5);
 export const DEFAULT_AUDIO_LAYOUT     = buildLayout(AUDIO_BUTTONS);
 
-/** 用小逻摄影棚替换旧角度工具，同时保留用户已有分区、排序和删减。 */
+/** 迁移图像工具栏的新内置能力，同时保留用户已有分区、排序和删减。 */
 export function migrateToolbarLayout(nodeType: string, layout: ToolbarLayout): ToolbarLayout {
-  if (nodeType !== 'ai-image' || layout.version >= 3) return layout;
+  if (nodeType !== 'ai-image' || layout.version >= 5) return layout;
 
-  let inserted = layout.zones.some((zone) => zone.buttonKeys.includes('cameraStudio'));
+  let cameraStudioInserted = layout.zones.some((zone) => zone.buttonKeys.includes('cameraStudio'));
 
-  const zones = layout.zones.map((zone) => {
+  let zones = layout.zones.map((zone) => {
     const buttonKeys: string[] = [];
     for (const key of zone.buttonKeys) {
       if (key === 'multiAngle') {
-        if (!inserted) {
+        if (!cameraStudioInserted) {
           buttonKeys.push('cameraStudio');
-          inserted = true;
+          cameraStudioInserted = true;
         }
         continue;
       }
@@ -98,7 +99,7 @@ export function migrateToolbarLayout(nodeType: string, layout: ToolbarLayout): T
     return { ...zone, buttonKeys };
   });
 
-  if (!inserted) {
+  if (!cameraStudioInserted && layout.version < 3) {
     const targetIndex = zones.findIndex((zone) => zone.name === 'Primary');
     if (targetIndex >= 0) {
       zones[targetIndex] = { ...zones[targetIndex], buttonKeys: [...zones[targetIndex].buttonKeys, 'cameraStudio'] };
@@ -106,7 +107,34 @@ export function migrateToolbarLayout(nodeType: string, layout: ToolbarLayout): T
       zones.push({ id: 'zone-camera-studio', name: 'Primary', buttonKeys: ['cameraStudio'] });
     }
   }
-  return { ...layout, zones, version: 3 };
+
+  if (!zones.some((zone) => zone.buttonKeys.includes('history'))) {
+    const targetIndex = zones.findIndex((zone) => zone.name === 'Secondary');
+    if (targetIndex >= 0) {
+      zones[targetIndex] = { ...zones[targetIndex], buttonKeys: [...zones[targetIndex].buttonKeys, 'history'] };
+    } else if (zones.length > 0) {
+      const lastIndex = zones.length - 1;
+      zones[lastIndex] = { ...zones[lastIndex], buttonKeys: [...zones[lastIndex].buttonKeys, 'history'] };
+    } else {
+      zones = [{ id: 'zone-image-history', name: 'Secondary', buttonKeys: ['history'] }];
+    }
+  }
+
+  if (layout.version === 4) {
+    zones = zones.map((zone) => {
+      const historyIndex = zone.buttonKeys.indexOf('history');
+      const fullscreenIndex = zone.buttonKeys.indexOf('fullscreen');
+      if (historyIndex < 0 || fullscreenIndex !== historyIndex + 1) return zone;
+      const buttonKeys = [...zone.buttonKeys];
+      [buttonKeys[historyIndex], buttonKeys[fullscreenIndex]] = [
+        buttonKeys[fullscreenIndex],
+        buttonKeys[historyIndex],
+      ];
+      return { ...zone, buttonKeys };
+    });
+  }
+
+  return { ...layout, zones, version: 5 };
 }
 
 /** 根据 nodeType 获取按钮注册表 */

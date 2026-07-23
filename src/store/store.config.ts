@@ -82,6 +82,8 @@ function syncCustomProviderModels(
       contextWindow: existing?.contextWindow,
       providerConfigId,
       executionProfile: model.executionProfile,
+      imageReferenceRequestMode: model.imageReferenceRequestMode
+        ?? existing?.imageReferenceRequestMode,
     } satisfies GeneralModelConfig;
   });
   return [...otherModels, ...selectedModels];
@@ -212,6 +214,7 @@ function sanitizeGeneralModel(
     contextWindow: model.contextWindow,
     providerConfigId,
     executionProfile: model.executionProfile,
+    imageReferenceRequestMode: model.imageReferenceRequestMode,
   };
 }
 
@@ -258,6 +261,7 @@ function migrateLegacyGeneralModels(config: AppConfig): AppConfig {
           name: model.name,
           category: model.category,
           provider: providerConfigId,
+          imageReferenceRequestMode: model.imageReferenceRequestMode,
         },
       ];
     }

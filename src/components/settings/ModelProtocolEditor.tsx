@@ -1,6 +1,10 @@
 import { Icon } from '@iconify/react';
 import { useId, useMemo, useRef, useState } from 'react';
-import type { GeneralModelCategory, ProviderModelSelection } from '../../types';
+import type {
+  GeneralModelCategory,
+  ImageReferenceRequestMode,
+  ProviderModelSelection,
+} from '../../types';
 import type {
   ModelExecutionProfile,
   ModelExecutionProtocol,
@@ -37,6 +41,7 @@ type JsonFieldKind = 'object' | 'value';
 interface ModelProtocolEditorProps {
   model: ProviderModelSelection;
   onChange: (profile: ModelExecutionProfile | undefined) => void;
+  onImageReferenceRequestModeChange: (mode: ImageReferenceRequestMode) => void;
   onValidityChange: (valid: boolean) => void;
   onClose: () => void;
 }
@@ -249,6 +254,7 @@ function createDefaultPoll(category: GeneralModelCategory): ModelProtocolPollTem
 export default function ModelProtocolEditor({
   model,
   onChange,
+  onImageReferenceRequestModeChange,
   onValidityChange,
   onClose,
 }: ModelProtocolEditorProps) {
@@ -542,7 +548,7 @@ export default function ModelProtocolEditor({
         <PopupCloseButton ariaLabel="关闭协议设置" onClick={onClose} />
       </div>
 
-      <div className="provider-protocol-topbar">
+      <div className={`provider-protocol-topbar ${model.category === 'image' ? 'has-reference-mode' : ''}`}>
         <label className="provider-protocol-field">
           <span>协议预设</span>
           <select value={preset} onChange={(event) => changePreset(event.target.value as ProtocolChoice)}>
@@ -551,6 +557,20 @@ export default function ModelProtocolEditor({
             ))}
           </select>
         </label>
+        {model.category === 'image' ? (
+          <label className="provider-protocol-field">
+            <span>参考图请求</span>
+            <select
+              value={model.imageReferenceRequestMode ?? 'generation-json-image-urls'}
+              onChange={(event) => onImageReferenceRequestModeChange(
+                event.target.value as ImageReferenceRequestMode,
+              )}
+            >
+              <option value="generation-json-image-urls">生成接口 JSON（image_urls）</option>
+              <option value="edits-multipart">编辑接口 Multipart（图片文件）</option>
+            </select>
+          </label>
+        ) : null}
         {preset === 'custom' ? (
           <div className="provider-protocol-view-tabs" role="tablist" aria-label="协议编辑方式">
             <button type="button" role="tab" aria-selected={view === 'form'} className={view === 'form' ? 'is-active' : ''} onClick={() => changeView('form')}>

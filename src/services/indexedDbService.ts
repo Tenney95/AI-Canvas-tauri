@@ -599,6 +599,24 @@ export async function getHistoryEntriesForExport(query: HistoryQuery = {}): Prom
   });
 }
 
+/** 使用 nodeId 索引读取指定节点的全部历史记录，按生成时间倒序返回。 */
+export async function getNodeHistoryEntries(nodeId: string): Promise<HistoryRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(STORE_HISTORY, 'readonly')
+      .objectStore(STORE_HISTORY)
+      .index('nodeId')
+      .getAll(IDBKeyRange.only(nodeId));
+    request.onsuccess = () => {
+      const records = (request.result as HistoryRecord[]).sort((left, right) => (
+        right.timestamp - left.timestamp || right.id.localeCompare(left.id)
+      ));
+      resolve(records);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
 export async function getHistoryEntryCount(): Promise<number> {
   const db = await openDB();
   return new Promise((resolve, reject) => {

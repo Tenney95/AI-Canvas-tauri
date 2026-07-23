@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 import type {
   ApiProviderConfig,
   GeneralModelCategory,
+  ImageReferenceRequestMode,
   ProviderModelSelection,
   WebSearchProviderId,
 } from '../../types';
@@ -361,6 +362,15 @@ export default function ProviderConnectionDialog({
   ) => {
     setModels((current) => current.map((model) =>
       model.id === modelId ? { ...model, executionProfile } : model,
+    ));
+  };
+
+  const updateImageReferenceRequestMode = (
+    modelId: string,
+    imageReferenceRequestMode: ImageReferenceRequestMode,
+  ) => {
+    setModels((current) => current.map((model) =>
+      model.id === modelId ? { ...model, imageReferenceRequestMode } : model,
     ));
   };
 
@@ -859,6 +869,9 @@ export default function ProviderConnectionDialog({
                         key={protocolModel.id}
                         model={protocolModel}
                         onChange={(profile) => updateModelProtocol(protocolModel.id, profile)}
+                        onImageReferenceRequestModeChange={(mode) => (
+                          updateImageReferenceRequestMode(protocolModel.id, mode)
+                        )}
                         onValidityChange={setProtocolValid}
                         onClose={closeProtocolEditor}
                       />

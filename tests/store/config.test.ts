@@ -132,17 +132,19 @@ describe('config hydration guard', () => {
       anthropicUrl: 'https://current.example/anthropic',
       catalogId: 'custom-openai',
       selectedModels: [{
-        id: 'current-chat',
-        name: '当前模型',
-        category: 'text',
+        id: 'current-image',
+        name: '当前图片模型',
+        category: 'image',
         provider: 'custom-current',
+        imageReferenceRequestMode: 'edits-multipart',
       }],
     });
 
     const model = useAppStore.getState().config.generalModels?.[0];
     expect(model).toMatchObject({
-      modelId: 'current-chat',
+      modelId: 'current-image',
       providerConfigId: 'custom-current',
+      imageReferenceRequestMode: 'edits-multipart',
     });
     expect(model).not.toHaveProperty('apiKey');
     expect(model).not.toHaveProperty('openaiUrl');

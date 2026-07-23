@@ -21,25 +21,38 @@ function encodeBytesBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-async function encodeRequestBody(body: BodyInit | null | undefined): Promise<string | null> {
-  if (body === undefined || body === null) return null;
+interface EncodedRequestBody {
+  body: string | null;
+  contentType?: string;
+}
+
+async function encodeRequestBody(
+  body: BodyInit | null | undefined,
+): Promise<EncodedRequestBody> {
+  if (body === undefined || body === null) return { body: null };
   if (typeof body === 'string') {
-    return encodeBytesBase64(new TextEncoder().encode(body));
+    return { body: encodeBytesBase64(new TextEncoder().encode(body)) };
   }
   if (body instanceof URLSearchParams) {
-    return encodeBytesBase64(new TextEncoder().encode(body.toString()));
+    return { body: encodeBytesBase64(new TextEncoder().encode(body.toString())) };
   }
   if (body instanceof Blob) {
-    return encodeBytesBase64(new Uint8Array(await body.arrayBuffer()));
+    return { body: encodeBytesBase64(new Uint8Array(await body.arrayBuffer())) };
   }
   if (body instanceof ArrayBuffer) {
-    return encodeBytesBase64(new Uint8Array(body));
+    return { body: encodeBytesBase64(new Uint8Array(body)) };
   }
   if (ArrayBuffer.isView(body)) {
-    return encodeBytesBase64(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+    return {
+      body: encodeBytesBase64(new Uint8Array(body.buffer, body.byteOffset, body.byteLength)),
+    };
   }
   if (body instanceof FormData) {
-    throw new Error('原生协议传输需要先序列化 multipart 请求体');
+    const request = new Request('http://localhost', { method: 'POST', body });
+    return {
+      body: encodeBytesBase64(new Uint8Array(await request.arrayBuffer())),
+      contentType: request.headers.get('Content-Type') || undefined,
+    };
   }
   throw new Error('原生协议传输不支持流式请求体');
 }
@@ -61,8 +74,12 @@ export async function corsSafeFetch(url: string, init: RequestInit = {}): Promis
   }
   if (signal?.aborted) throw createAbortError();
 
-  const headers = Array.from(new Headers(init.headers).entries());
-  const body = await encodeRequestBody(init.body);
+  const requestHeaders = new Headers(init.headers);
+  const encodedBody = await encodeRequestBody(init.body);
+  if (encodedBody.contentType && !requestHeaders.has('Content-Type')) {
+    requestHeaders.set('Content-Type', encodedBody.contentType);
+  }
+  const headers = Array.from(requestHeaders.entries());
   if (signal?.aborted) throw createAbortError();
   const { Channel, invoke } = await import('@tauri-apps/api/core');
   const requestId = createRequestId();
@@ -155,7 +172,7 @@ export async function corsSafeFetch(url: string, init: RequestInit = {}): Promis
         url,
         method: init.method || 'GET',
         headers,
-        body,
+        body: encodedBody.body,
       },
       onEvent: channel,
     }).catch((error) => fail(normalizeTransportError(error)));

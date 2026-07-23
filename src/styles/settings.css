@@ -1317,6 +1317,9 @@
   align-items: end;
   gap: 10px;
 }
+.provider-protocol-topbar.has-reference-mode {
+  grid-template-columns: minmax(150px, 0.8fr) minmax(230px, 1.2fr) auto;
+}
 .provider-protocol-view-tabs {
   display: flex;
   height: 32px;
@@ -1744,7 +1747,8 @@
   .provider-protocol-path-field {
     grid-column: auto;
   }
-  .provider-protocol-topbar {
+  .provider-protocol-topbar,
+  .provider-protocol-topbar.has-reference-mode {
     grid-template-columns: minmax(0, 1fr);
   }
   .provider-protocol-view-tabs,

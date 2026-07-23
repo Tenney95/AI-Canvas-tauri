@@ -167,7 +167,9 @@ export async function generateImagesBatch(
       if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
       if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
       const dimensions = mapImageDimensions(imageSize, aspectRatio);
-      if (gm.executionProfile) {
+      const hasExplicitReferenceRequestMode = allImageUrls.length > 0
+        && gm.imageReferenceRequestMode !== undefined;
+      if (gm.executionProfile && !hasExplicitReferenceRequestMode) {
         const urls = await runConfiguredModelProtocol({
           model: gm,
           category: 'image',
@@ -201,6 +203,7 @@ export async function generateImagesBatch(
         prompt,
         dimensions,
         imageUrls: allImageUrls,
+        imageReferenceRequestMode: gm.imageReferenceRequestMode,
       }, requestedCount, signal);
     }
 

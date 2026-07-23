@@ -108,6 +108,37 @@ describe('CORS-safe AI HTTP transport', () => {
     expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([0, 255, 10, 20]);
   });
 
+  it('serializes FormData with its multipart boundary for the native proxy', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    mockNativeStream([Buffer.from('{}', 'utf8')], {
+      headers: [['content-type', 'application/json']],
+    });
+    const formData = new FormData();
+    formData.append('prompt', '参考图编辑');
+    formData.append(
+      'image',
+      new Blob([Uint8Array.from([0, 255, 10])], { type: 'image/png' }),
+      'reference.png',
+    );
+
+    await corsSafeFetch('https://gateway.example/v1/images/edits', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer secret' },
+      body: formData,
+    });
+
+    const requestCall = invokeMock.mock.calls.find(([command]) => command === 'proxy_stream_fetch');
+    const request = requestCall?.[1]?.req as { body: string; headers: [string, string][] };
+    const contentType = request.headers.find(([name]) => name === 'content-type')?.[1];
+    expect(contentType).toMatch(/^multipart\/form-data; boundary=/);
+    expect(request.headers).toContainEqual(['authorization', 'Bearer secret']);
+    const multipartBody = Buffer.from(request.body, 'base64').toString('latin1');
+    expect(multipartBody).toContain('name="prompt"');
+    expect(Buffer.from(multipartBody, 'latin1').toString('utf8')).toContain('参考图编辑');
+    expect(multipartBody).toContain('name="image"; filename="reference.png"');
+    expect(multipartBody).toContain('Content-Type: image/png');
+  });
+
   it('exposes native response chunks before the Tauri command completes', async () => {
     vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
     let streamChannel: { onmessage: (message: unknown) => void } | undefined;

@@ -641,6 +641,21 @@ textarea:focus {
   outline: none;
 }
 
+/* WebView2 may render the native option popup outside the themed select surface. */
+select {
+  color-scheme: inherit;
+}
+
+select option,
+select optgroup {
+  color: var(--theme-text);
+  background-color: var(--theme-card);
+}
+
+select option:disabled {
+  color: var(--theme-text-muted);
+}
+
 :where(
   button,
   input,

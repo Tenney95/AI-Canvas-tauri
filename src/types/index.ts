@@ -225,6 +225,10 @@ export interface ProjectSettings {
 // API 配置
 export type GeneralModelCategory = 'text' | 'image' | 'audio' | 'video';
 
+export type ImageReferenceRequestMode =
+  | 'generation-json-image-urls'
+  | 'edits-multipart';
+
 export type ProviderCatalogAdapter = 'openai-compatible' | 'local-manifest';
 
 export type WebSearchProviderId = 'tavily' | 'bocha' | 'zhipu-search' | 'exa';
@@ -238,6 +242,8 @@ export interface ProviderModelSelection {
   description?: string;
   /** 自定义媒体模型的提交、轮询与结果解析规则。 */
   executionProfile?: ModelExecutionProfile;
+  /** 图片模型存在参考图时使用的请求协议；缺省保持 generations JSON 兼容方式。 */
+  imageReferenceRequestMode?: ImageReferenceRequestMode;
 }
 
 export interface ApiProviderConfig {
@@ -331,6 +337,8 @@ export interface GeneralModelConfig {
   /** 对应 config.providers 中的连接 ID，凭据和地址仅从该连接读取。 */
   providerConfigId: string;
   executionProfile?: ModelExecutionProfile;
+  /** 图片模型存在参考图时使用的请求协议；缺省保持 generations JSON 兼容方式。 */
+  imageReferenceRequestMode?: ImageReferenceRequestMode;
 }
 
 export const GENERAL_MODEL_CATEGORY_LABELS: Record<GeneralModelCategory, string> = {

@@ -1,7 +1,7 @@
 ﻿/**
  * ImageNodeToolbar 图像节点浮动工具栏 + 编辑态支持
  */
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { NodeType, BaseNodeData } from '../../../../types';
 import AnimatedButton from '../../../shared/AnimatedButton';
@@ -14,6 +14,8 @@ import { executeGeneration } from '../../../../services/generationService';
 import { requestPresetSequence } from '../../../../services/presetSequenceService';
 import { useAppStore } from '../../../../store/useAppStore';
 import type { Node } from '@xyflow/react';
+
+const ImageGenerationHistoryDialog = lazy(() => import('./ImageGenerationHistoryDialog'));
 
 interface ImageNodeToolbarProps {
   nodeId: string;
@@ -46,6 +48,7 @@ function ImageNodeToolbar({
   const nodeType = 'ai-image';
   const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // ── 宫格子菜单 ──
   const [gridMenuOpen, setGridMenuOpen] = useState(false);
@@ -59,7 +62,7 @@ function ImageNodeToolbar({
   }, []);
 
   useEffect(() => {
-    if (!gridMenuOpen) { setGridMenuBelow(false); return; }
+    if (!gridMenuOpen) return;
     const raf = requestAnimationFrame(() => {
       const btn = gridWrapRef.current;
       const menu = gridMenuRef.current;
@@ -94,7 +97,7 @@ function ImageNodeToolbar({
     return () => document.removeEventListener('mousedown', onDown, true);
   }, [gridMenuOpen]);
 
-  const actionMap: Record<string, (e: React.MouseEvent) => void> = {
+  const actionMap = useMemo<Record<string, (e: React.MouseEvent) => void>>(() => ({
     matting:        (e) => { e.stopPropagation(); onMatting?.(); },
     expand:         (e) => { e.stopPropagation(); onExpand?.(); },
     multiGrid:      toggleGridMenu,
@@ -107,8 +110,25 @@ function ImageNodeToolbar({
     compose:        (e) => { e.stopPropagation(); onCompose?.(); },
     upload:         (e) => { e.stopPropagation(); onUpload?.(); },
     copyFile:       (e) => { e.stopPropagation(); onCopyFile?.(); },
+    history:        (e) => { e.stopPropagation(); setHistoryOpen(true); },
     fullscreen:     (e) => { e.stopPropagation(); onFullscreen?.(); },
-  };
+  }), [
+    isSubjectMattingRunning,
+    isUpscaling,
+    onAnnotate,
+    onCameraStudio,
+    onCompose,
+    onCopyFile,
+    onCrop,
+    onExpand,
+    onFullscreen,
+    onMatting,
+    onRepaint,
+    onSubjectMatting,
+    onUpload,
+    onUpscale,
+    toggleGridMenu,
+  ]);
 
   const userPresets = useAppStore((s) => s.userPresets);
   const addNodeWithEdge = useAppStore((s) => s.addNodeWithEdge);
@@ -283,7 +303,7 @@ function ImageNodeToolbar({
         <Icon icon={def.icon} width={14} height={14} />
       </AnimatedButton>
     );
-  }, [registry, actionMap, isUpscaling, isSubjectMattingRunning, toggleGridMenu, gridMenuOpen, gridMenuBelow, pickGrid, pickCustom]);
+  }, [registry, actionMap, isUpscaling, isSubjectMattingRunning, toggleGridMenu, gridMenuOpen, gridMenuBelow, pickGrid, pickCustom, handlePresetClick, userPresets]);
 
   // ── 编辑态 ──
   if (edit.isEditing) {
@@ -298,6 +318,15 @@ function ImageNodeToolbar({
             onConfirm={handleMattingModelConfirm}
             onCancel={handleMattingModelCancel}
           />
+        )}
+        {historyOpen && (
+          <Suspense fallback={null}>
+            <ImageGenerationHistoryDialog
+              isOpen
+              nodeId={_nodeId}
+              onClose={() => setHistoryOpen(false)}
+            />
+          </Suspense>
         )}
       </>
     );
@@ -329,6 +358,15 @@ function ImageNodeToolbar({
           onConfirm={handleMattingModelConfirm}
           onCancel={handleMattingModelCancel}
         />
+      )}
+      {historyOpen && (
+        <Suspense fallback={null}>
+          <ImageGenerationHistoryDialog
+            isOpen
+            nodeId={_nodeId}
+            onClose={() => setHistoryOpen(false)}
+          />
+        </Suspense>
       )}
     </>
   );
