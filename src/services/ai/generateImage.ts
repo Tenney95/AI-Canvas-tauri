@@ -3,7 +3,7 @@
  *
  * 按 provider 分流到对应 adapter：
  *   dreamina   → dreaminaService（CLI 本地化图片，不走图床上传）
- *   apimart    → apimartGen（异步任务轮询）
+ *   apimart    → Media Provider Registry → APIMart adapter
  *   general    → providers/standardImage（通用模型，OpenAI 兼容）
  *   volcengine → providers/volcengineImage（Seedream 专属请求格式）
  *   runninghub → providers/runninghubImage（标准模型异步任务协议）
@@ -22,11 +22,11 @@ import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
 import { resolvePromptWithImageRefs } from './promptResolver';
 import { resolveImageUrlArray } from './imageUtils';
-import { generateApimartImagesBatch } from './apimartGen';
 import { generateImageStandardBatch } from './providers/standardImage';
 import { generateVolcengineImagesBatch } from './providers/volcengineImage';
 import { generateRunningHubImagesBatch } from './providers/runninghubImage';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
+import { mediaProviderRegistry } from './mediaProviderRegistry';
 
 export async function generateImage(
   params: AIImageGenParams,
@@ -145,25 +145,21 @@ export async function generateImagesBatch(
 
   if (!prompt.trim()) throw new Error('提示词不能为空');
 
+  const registeredAdapter = mediaProviderRegistry.getImageAdapter(provider);
+  if (registeredAdapter) {
+    return registeredAdapter.generateImage({
+      params,
+      prompt,
+      imageUrls: allImageUrls,
+      requestedCount,
+      signal,
+    });
+  }
+
   const config = useAppStore.getState().config;
 
-  // ── 按 provider 分流 ──
+  // 尚未迁移的 Provider 继续走兼容分支。
   switch (provider) {
-    case 'apimart': {
-      const pc = config.providers.apimart;
-      const apiKey = pc?.apiKey || '';
-      if (!apiKey) throw new Error('未配置 apimart 的 API Key\n请在「设置 → API Key」中配置');
-      const baseUrl = (pc?.baseUrl || DEFAULT_BASE_URLS.apimart || '').replace(/\/+$/, '');
-      if (!baseUrl) throw new Error('未配置 apimart 的服务地址\n请在「设置 → API Key」中添加');
-      const modelName = extractModelName(model, provider);
-      const dimensions = mapImageDimensions(imageSize, aspectRatio);
-      return generateApimartImagesBatch(
-        apiKey, baseUrl, modelName, prompt, imageSize, aspectRatio,
-        dimensions, allImageUrls, requestedCount, params.nodeId,
-        signal,
-      );
-    }
-
     case 'general': {
       const gm = resolveGeneralModel(model);
       if (!gm) throw new Error('未找到该通用模型配置\n请在「设置 → API Key」中检查');

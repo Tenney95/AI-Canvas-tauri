@@ -9,11 +9,11 @@ import { executeComfyUIVideoGenerate } from '../comfyWorkflowService';
 import type { AIVideoGenParams } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
 import { resolvePromptWithImageRefs } from './promptResolver';
-import { executeGeneralAsyncTask, generateApimartVideo } from './apimartGen';
-import { isApimartSeedanceModel } from './apimartVideoModels';
+import { executeGeneralAsyncTask } from './apimartGen';
 import { pollTask } from '../pollTask';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 import { normalizeFrames8n1 } from './modelProtocol';
+import { mediaProviderRegistry } from './mediaProviderRegistry';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
 import { collectDirectorImageUrls } from '../directorDeskService';
 import type { BaseNodeData } from '../../types';
@@ -67,6 +67,23 @@ export async function generateVideo(
     return executeComfyUIVideoGenerate({ ...params, prompt }, signal);
   }
 
+  const registeredAdapter = mediaProviderRegistry.getVideoAdapter(provider);
+  if (registeredAdapter) {
+    return registeredAdapter.generateVideo({
+      params,
+      prompt,
+      resolveReferenceInput: async () => {
+        const referenceInput = await resolvePromptWithImageRefs(rawPrompt);
+        const imageUrls = [...referenceInput.imageUrls];
+        for (const url of collectConnectedReferenceImages(params.nodeId)) {
+          if (!imageUrls.includes(url)) imageUrls.push(url);
+        }
+        return { prompt: referenceInput.prompt, imageUrls };
+      },
+      signal,
+    });
+  }
+
   // 即梦视频：无参考图 → text2video；有参考图 → image2video
   if (provider === 'dreamina') {
     const { prompt: dreaminaPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
@@ -85,40 +102,6 @@ export async function generateVideo(
       duration: params.seedanceDuration,
       resolution: params.seedanceResolution,
     }, signal);
-  }
-
-  // APIMart 视频生成 — 异步提交 + 轮询
-  if (provider === 'apimart') {
-    const config = useAppStore.getState().config;
-    const providerConfig = config.providers.apimart;
-    const apiKey = providerConfig?.apiKey || '';
-    if (!apiKey) {
-      throw new Error('未配置 apimart 的 API Key\n请在「设置 → API Key」中配置');
-    }
-    const baseUrl = (providerConfig?.baseUrl || DEFAULT_BASE_URLS.apimart || '').replace(/\/+$/, '');
-    if (!baseUrl) {
-      throw new Error('未配置 apimart 的服务地址\n请在「设置 → API Key」中添加');
-    }
-    const modelName = extractModelName(model, provider);
-    if (isApimartSeedanceModel(modelName)) {
-      const { prompt: resolvedPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
-      const connected = collectConnectedReferenceImages(params.nodeId);
-      const merged = [...imageUrls];
-      for (const u of connected) {
-        if (!merged.includes(u)) merged.push(u);
-      }
-      if (!resolvedPrompt.trim() && merged.length === 0) {
-        throw new Error('提示词不能为空');
-      }
-      return generateApimartVideo(apiKey, baseUrl, modelName, resolvedPrompt, params.nodeId, {
-        resolution: params.seedanceResolution,
-        ratio: params.seedanceRatio,
-        duration: params.seedanceDuration,
-        generateAudio: params.generateAudio,
-        imageUrls: merged,
-      }, signal);
-    }
-    return generateApimartVideo(apiKey, baseUrl, modelName, prompt, params.nodeId, {}, signal);
   }
 
   // ── 火山方舟 Seedance 视频生成 ──

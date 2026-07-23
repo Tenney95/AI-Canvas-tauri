@@ -1417,6 +1417,42 @@ type PolicyDecision =
 
 三个阶段分别提交，可按阶段逆序回退。新增控制器不持久化新数据，不改变数据库版本；回滚时恢复原调用位置即可，不需要数据迁移或配置修复。
 
+### 8.10 平台补充：媒体 Provider Registry 第一阶段
+
+**任务类型：架构收敛**
+
+**状态：已完成**
+
+#### 目标与边界
+
+- 建立按 `image`、`video`、`audio` capability 注册的媒体 Provider Registry，避免新增跨媒体厂商时继续修改三个生成入口。
+- 第一阶段只迁移 APIMart；Dreamina、火山方舟、RunningHub、通用模型和 ComfyUI 工作流保持既有执行路径。
+- 不调整模型目录、参数 UI、Agent Policy、媒体逐次确认、自动重试策略、IndexedDB schema 或 Tauri 安全配置。
+
+#### 实施结果
+
+- [x] 新增 `MediaProviderRegistry`，注册时校验 Provider ID、重复注册以及 capability/handler 一致性。
+- [x] 新增 APIMart 单一媒体 adapter，集中读取 `config.providers.apimart`，统一校验 API Key 与 Base URL。
+- [x] 图片入口通过 Registry 转发批量数量、尺寸、参考图、节点 ID 与取消信号。
+- [x] 视频入口通过 Registry 转发普通视频与 Seedance 参数；参考图和连接节点保持惰性解析，旧视频模型不新增读取路径。
+- [x] 音频入口通过 Registry 按模型 capability 分发 TTS 或 Flow Music，并保持两阶段歌词/音乐任务、待续任务与取消清理语义。
+- [x] 未注册 Provider 继续使用既有兼容分支，为后续逐个迁移保留回滚边界。
+
+#### 完成记录
+
+- 完成日期：2026-07-23。
+- 设计记录：`doc/plans/2026-07-23-media-provider-registry.md`。
+- 类型与 Lint：`npm run typecheck`、`npm run test:typecheck` 和本阶段 6 个 TypeScript 文件定向 ESLint 通过。
+- 定向测试：Registry 与媒体 Runtime 共 2 个测试文件、15 项测试通过。
+- 全量测试：`npm test -- --run` 共 61 个测试文件、342 项测试通过；npm 同时提示 `--run` 将不再作为未来主版本的 CLI 配置，本次 Vitest 实际已完整运行。
+- 生产构建：系统临时目录 Vite 构建通过，仅有既有动态导入和 chunk 体积警告。
+- 差异与编码：`git diff --check` 通过；本阶段 8 个文本文件严格 UTF-8 解码和常见乱码扫描通过。
+- 本阶段无 UI、持久化或 Rust 改动，未发送真实厂商付费请求。
+
+#### 回滚
+
+恢复三个生成入口内原 APIMart 分支，移除 Registry、APIMart adapter 和对应测试即可。没有配置或数据库迁移，既有媒体、待续任务和本地文件无需修复。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1542,3 +1578,4 @@ type PolicyDecision =
 | 2026-07-23 | P5-E | 收敛 API 连接为 `config.providers` 单一权威源，通用模型和异步待续任务只保存 `providerConfigId`，并清洗旧配置与 localStorage 中的密钥副本。 |
 | 2026-07-23 | 平台补充 | 统一普通文本、标准图片和助手流式请求的 AI HTTP 传输：Web 模式沿用浏览器 `fetch`，Tauri 模式通过 Channel 分块转发响应并支持连接期、传输期和消费期取消，避免模型目录可用但实际请求被 WebView CORS 拦截。 |
 | 2026-07-23 | 平台补充 | 修复付费媒体生成取消链路：信号贯通图片、视频、音频、声明式协议与 Tauri 原生请求，并对不支持远程取消的已提交任务显示准确计费风险。 |
+| 2026-07-23 | 平台补充 | 建立媒体 Provider Registry，并将 APIMart 图片、视频、语音和音乐执行收口到单一 adapter；其他 Provider 保留兼容分支以便渐进迁移。 |
