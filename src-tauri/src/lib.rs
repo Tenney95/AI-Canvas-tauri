@@ -750,13 +750,19 @@ async fn dreamina_login(app: tauri::AppHandle) -> Result<DreaminaLoginPayload, S
 pub fn run() {
     // Windows WebView2/Chromium 渲染优化：
     // - CalculateNativeWinOcclusion：原生窗口遮挡检测。在虚拟显示适配器 / 远程桌面
-    //   工具（MuMu、向日葵、Virtual Display 等）环境下常误判窗口被遮挡，从而节流甚至
-    // - 其余 flag 强制 GPU 光栅化 / 忽略黑名单 / 解除帧率上限。
+    //   工具（MuMu、向日葵、Virtual Display 等）环境下常误判窗口被遮挡，从而错误节流。
+    // - 其余生产参数强制 GPU 光栅化并忽略黑名单，但保留 Chromium 默认帧率限制。
+    // - 仅诊断时可设置 AI_CANVAS_DISABLE_FRAME_RATE_LIMIT=1 临时解除帧率限制。
     #[cfg(target_os = "windows")]
-    std::env::set_var(
-        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-features=CalculateNativeWinOcclusion --enable-gpu-rasterization --ignore-gpu-blocklist --enable-zero-copy --disable-frame-rate-limit",
-    );
+    {
+        let mut browser_arguments = String::from(
+            "--disable-features=CalculateNativeWinOcclusion --enable-gpu-rasterization --ignore-gpu-blocklist --enable-zero-copy",
+        );
+        if std::env::var("AI_CANVAS_DISABLE_FRAME_RATE_LIMIT").as_deref() == Ok("1") {
+            browser_arguments.push_str(" --disable-frame-rate-limit");
+        }
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_arguments);
+    }
 
     tauri::Builder::default()
         .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)

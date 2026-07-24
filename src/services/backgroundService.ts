@@ -122,32 +122,45 @@ export function compressImageLossless(file: File): Promise<CompressionResult> {
 
   return new Promise((resolve, reject) => {
     const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    let objectUrlRevoked = false;
+
+    const revokeObjectUrl = () => {
+      if (objectUrlRevoked) return;
+      URL.revokeObjectURL(objectUrl);
+      objectUrlRevoked = true;
+    };
 
     img.onload = () => {
-      const { naturalWidth: w, naturalHeight: h } = img;
+      revokeObjectUrl();
 
-      // 过大的像素面积可能导致浏览器 blob 编码超时或 OOM，加保护
-      const MAX_PIXELS = 4096 * 4096;
-      if (w * h > MAX_PIXELS) {
-        return reject(new Error(`图片分辨率过高（${w}×${h}），请使用 ≤4096×4096 的图片`));
-      }
+      void (async () => {
+        let canvas: HTMLCanvasElement | null = null;
 
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return reject(new Error('无法创建 canvas 上下文'));
+        try {
+          const { naturalWidth: w, naturalHeight: h } = img;
 
-      // 绘制原图（保持原始尺寸，像素级无损）
-      ctx.drawImage(img, 0, 0);
+          // 过大的像素面积可能导致浏览器 blob 编码超时或 OOM，加保护
+          const MAX_PIXELS = 4096 * 4096;
+          if (w * h > MAX_PIXELS) {
+            throw new Error(`图片分辨率过高（${w}×${h}），请使用 ≤4096×4096 的图片`);
+          }
 
-      // 并行编码 PNG 和无损 WebP，选更小的
-      Promise.all([
-        blobFromCanvas(canvas, 'image/png'),
-        blobFromCanvas(canvas, 'image/webp', 1.0), // quality=1.0 = 无损 WebP
-      ])
-        .then(([pngBlob, webpBlob]) => {
-          if (!pngBlob) return reject(new Error('PNG 编码失败'));
+          canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) throw new Error('无法创建 canvas 上下文');
+
+          // 绘制原图（保持原始尺寸，像素级无损）
+          ctx.drawImage(img, 0, 0);
+
+          // 并行编码 PNG 和无损 WebP，选更小的
+          const [pngBlob, webpBlob] = await Promise.all([
+            blobFromCanvas(canvas, 'image/png'),
+            blobFromCanvas(canvas, 'image/webp', 1.0), // quality=1.0 = 无损 WebP
+          ]);
+          if (!pngBlob) throw new Error('PNG 编码失败');
 
           const useWebP = webpBlob && webpBlob.size < pngBlob.size;
           const compressedBlob = useWebP ? webpBlob : pngBlob;
@@ -155,35 +168,44 @@ export function compressImageLossless(file: File): Promise<CompressionResult> {
 
           // 重编码后反而更大 → 退回原始文件
           if (compressedBlob.size >= originalSize) {
-            fileToDataUrl(file).then((dataUrl) => {
-              resolve({
-                dataUrl,
-                originalSize,
-                compressedSize: originalSize,
-                compressionRatio: 0,
-                format: origExt,
-                keptOriginal: true,
-              });
-            }).catch(reject);
-            return;
-          }
-
-          blobToDataUrl(compressedBlob).then((dataUrl) => {
+            const dataUrl = await fileToDataUrl(file);
             resolve({
               dataUrl,
               originalSize,
-              compressedSize: compressedBlob.size,
-              compressionRatio: Math.round((1 - compressedBlob.size / originalSize) * 100),
-              format: compressedFormat,
-              keptOriginal: false,
+              compressedSize: originalSize,
+              compressionRatio: 0,
+              format: origExt,
+              keptOriginal: true,
             });
-          }).catch(reject);
-        })
-        .catch(reject);
+            return;
+          }
+
+          const dataUrl = await blobToDataUrl(compressedBlob);
+          resolve({
+            dataUrl,
+            originalSize,
+            compressedSize: compressedBlob.size,
+            compressionRatio: Math.round((1 - compressedBlob.size / originalSize) * 100),
+            format: compressedFormat,
+            keptOriginal: false,
+          });
+        } catch (error) {
+          reject(error);
+        } finally {
+          if (canvas) {
+            canvas.width = 0;
+            canvas.height = 0;
+          }
+          revokeObjectUrl();
+        }
+      })();
     };
 
-    img.onerror = () => reject(new Error('图片加载失败'));
-    img.src = URL.createObjectURL(file);
+    img.onerror = () => {
+      revokeObjectUrl();
+      reject(new Error('图片加载失败'));
+    };
+    img.src = objectUrl;
   });
 }
 
