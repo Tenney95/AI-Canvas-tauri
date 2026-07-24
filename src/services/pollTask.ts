@@ -44,6 +44,28 @@ export interface PollTaskOptions<TRaw, TResult> {
   timeoutMsg?: string;
 }
 
+function waitForPollInterval(interval: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new Error('任务已被取消'));
+
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
+    const finish = () => {
+      cleanup();
+      resolve();
+    };
+    const timer = setTimeout(finish, interval);
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(new Error('任务已被取消'));
+    };
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+    // 覆盖前置检查与监听器注册之间发生取消的竞态。
+    if (signal?.aborted) onAbort();
+  });
+}
+
 /**
  * 轮询异步任务直到完成、失败或超时。
  *
@@ -84,16 +106,7 @@ export async function pollTask<TRaw = unknown, TResult = unknown>(
 
     // 等待间隔（第一轮立即执行，之后等待）
     if (attempt > 0) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, interval);
-        if (signal) {
-          const onAbort = () => {
-            clearTimeout(timer);
-            reject(new Error('任务已被取消'));
-          };
-          signal.addEventListener('abort', onAbort, { once: true });
-        }
-      });
+      await waitForPollInterval(interval, signal);
     }
 
     // 检查时长限制

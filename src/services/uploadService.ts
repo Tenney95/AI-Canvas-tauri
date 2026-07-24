@@ -72,8 +72,14 @@ function cacheKey(url: string): string {
   return 'data:' + Math.abs(hash).toString(36);
 }
 
-/** 内存缓存：本地 URL → 公网 URL，避免同一进程重复上传 */
-const memCache = new Map<string, string>();
+/** 内存缓存使用短 key，避免把大型 data URL 持有到进程退出。 */
+const memCache = new Map<string, CacheEntry>();
+
+function pruneExpiredMemoryCache(now = Date.now()) {
+  for (const [key, entry] of memCache) {
+    if (now - entry.uploadedAt > UPLOAD_TTL_MS) memCache.delete(key);
+  }
+}
 
 /** 判断是否为本地图片 URL（需上传后才能发给远程 AI） */
 export function isLocalImageUrl(url: string): boolean {
@@ -250,16 +256,18 @@ async function uploadToUguu(url: string): Promise<string> {
 
 /** 查缓存：先内存后 localStorage，命中且未过期则返回，过期则清除 */
 function getCachedUrl(url: string): string | null {
+  const key = cacheKey(url);
+
   // 内存缓存（最快）
-  const mem = memCache.get(url);
-  if (mem) return mem;
+  const mem = memCache.get(key);
+  if (mem && Date.now() - mem.uploadedAt < UPLOAD_TTL_MS) return mem.remoteUrl;
+  if (mem) memCache.delete(key);
 
   // localStorage 持久化缓存
-  const key = cacheKey(url);
   const persistent = loadPersistentCache();
   const entry = persistent[key];
   if (entry && Date.now() - entry.uploadedAt < UPLOAD_TTL_MS) {
-    memCache.set(url, entry.remoteUrl);
+    memCache.set(key, entry);
     return entry.remoteUrl;
   }
 
@@ -274,11 +282,13 @@ function getCachedUrl(url: string): string | null {
 
 /** 写缓存：同时写内存和 localStorage */
 function setCachedUrl(url: string, remoteUrl: string) {
-  memCache.set(url, remoteUrl);
-
   const key = cacheKey(url);
+  const entry = { remoteUrl, uploadedAt: Date.now() };
+  pruneExpiredMemoryCache(entry.uploadedAt);
+  memCache.set(key, entry);
+
   const persistent = loadPersistentCache();
-  persistent[key] = { remoteUrl, uploadedAt: Date.now() };
+  persistent[key] = entry;
   savePersistentCache(persistent);
 }
 
@@ -304,7 +314,8 @@ export async function uploadToRemote(url: string, provider = ''): Promise<string
     setCachedUrl(url, publicUrl);
     return publicUrl;
   } catch (err) {
-    console.error('[uploadService] Upload failed:', url, provider, err);
+    const sourceType = url.startsWith('data:') ? 'data' : url.split(':', 1)[0] || 'unknown';
+    console.error('[uploadService] Upload failed:', { sourceType, sourceLength: url.length, provider }, err);
     throw err;
   }
 }
