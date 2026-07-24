@@ -1597,6 +1597,41 @@ type PolicyDecision =
 
 把 `agentTaskControl.ts` 的控制逻辑恢复到 `agentRuntime.ts`，恢复两个 Store 对 `agentRuntime.ts` 的导入并删除新增控制层和回归测试即可。回滚不涉及数据、配置或数据库迁移。
 
+### 8.15 本地 MCP 控制桥
+
+**任务类型：架构收敛**
+
+**状态：实施中（文档与依赖阶段已完成）**
+
+#### 目标与边界
+
+- 为 Codex 等客户端提供稳定的 stdio MCP 接口，替代依赖窗口坐标、焦点和缩放的桌面自动化。
+- Tauri 只在用户手动开启的会话内监听随机 loopback 端口；一次性令牌只保存在内存中，停止、退出或重新开启后立即失效。
+- MCP 工具继续使用现有 Tool Registry、Policy Engine、AgentTask、审批、画布 revision 和 checkpoint；MCP 不得审批自己的调用。
+- 主窗口 Store 保持唯一业务写入源，不开放任意 Shell、任意文件路径、通用 HTTP、直接 IndexedDB、API Key 或 Provider 凭据。
+- 不修改 `tauri.conf.json`、capability、IndexedDB schema、既有 Agent 权限矩阵或媒体逐次确认规则。
+
+#### 分阶段进度
+
+- [x] 通过 `doc/adr/0004-local-mcp-control-bridge.md` 固定架构、安全、失败与回滚边界。
+- [x] 通过 `doc/plans/2026-07-24-local-mcp-control-bridge.md` 固定真实文件范围、定向测试和本机验收步骤。
+- [x] 经用户单独确认后增加官方 `@modelcontextprotocol/sdk@1.29.0`；未新增 Cargo crate。
+- [ ] 实现 stdio 适配器与带鉴权、限长、超时和会话失效的 Rust loopback 桥。
+- [ ] 抽取 Agent 共享工具执行器并接入专用“`MCP 控制`”审计会话。
+- [ ] 增加默认关闭的设置入口、一次性连接配置和主窗口生命周期清理。
+- [ ] 完成定向、全量、Rust、生产构建、UTF-8 和真实连接验收。
+
+#### 当前完成记录
+
+- 开始日期：2026-07-24。
+- 文档与依赖文件：`doc/adr/0004-local-mcp-control-bridge.md`、`doc/plans/2026-07-24-local-mcp-control-bridge.md`、`package.json`、`package-lock.json`。
+- 依赖验证：`npm ls @modelcontextprotocol/sdk --depth=0` 解析为 `@modelcontextprotocol/sdk@1.29.0`。
+- 编码与差异：新增文档严格 UTF-8 解码通过，`git diff --check` 通过。
+
+#### 回滚
+
+在设置页停止 MCP 会话后，可按 ADR 的分层顺序移除 stdio 适配器、前端控制服务和 Rust bridge。文档与 npm 依赖可独立回滚；不涉及数据库、项目、配置或密钥迁移。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
