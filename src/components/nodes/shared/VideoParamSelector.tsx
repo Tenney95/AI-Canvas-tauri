@@ -58,7 +58,7 @@ export default function VideoParamSelector({
   videoResolution = 832, videoFps = 24, videoFrames = 77,
   onChangeResolution, onChangeFps, onChangeFrames,
   seedanceResolution = '720p', seedanceRatio = '16:9',
-  seedanceDuration = 5, generateAudio = false,
+  seedanceDuration = 5, generateAudio,
   onChangeSeedanceResolution, onChangeSeedanceRatio,
   onChangeSeedanceDuration, onChangeGenerateAudio, onContinuousEditEnd,
 }: VideoParamSelectorProps) {
@@ -91,6 +91,7 @@ export default function VideoParamSelector({
     .filter((value) => value >= minDuration && value <= maxDuration)
     .sort((a, b) => a - b);
   const supportsAudio = isVolcengine || Boolean(apimartCapability?.audioField);
+  const displayedGenerateAudio = generateAudio ?? apimartCapability?.defaultAudio ?? false;
 
   useEffect(() => {
     if (!apimartCapability) return;
@@ -103,16 +104,11 @@ export default function VideoParamSelector({
     if (displayedDuration !== seedanceDuration) {
       onChangeSeedanceDuration?.(displayedDuration);
     }
-    if (!apimartCapability.audioField && generateAudio) {
-      onChangeGenerateAudio?.(false);
-    }
   }, [
     apimartCapability,
     displayedDuration,
     displayedRatio,
     displayedResolution,
-    generateAudio,
-    onChangeGenerateAudio,
     onChangeSeedanceDuration,
     onChangeSeedanceRatio,
     onChangeSeedanceResolution,
@@ -264,7 +260,7 @@ export default function VideoParamSelector({
                       <label className="rh-toggle-switch">
                         <input
                           type="checkbox"
-                          checked={generateAudio}
+                          checked={displayedGenerateAudio}
                           onChange={(e) => onChangeGenerateAudio?.(e.target.checked)}
                         />
                         <span className="rh-toggle-track">

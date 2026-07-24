@@ -179,7 +179,7 @@ export async function executeGeneration(
       const seedanceResolution = (data.seedanceResolution as string) || '720p';
       const seedanceRatio = (data.seedanceRatio as string) || '16:9';
       const seedanceDuration = (data.seedanceDuration as number) || 5;
-      const genAudio = (data.generateAudio as boolean) || false;
+      const genAudio = data.generateAudio as boolean | undefined;
       const result = await generateVideo({
         prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
         videoResolution, videoFps, videoFrames, seedanceResolution, seedanceRatio,

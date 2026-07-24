@@ -36,6 +36,7 @@ import {
   executeGeneralAsyncTask,
   generateApimartImagesBatch,
 } from '../../src/services/ai/apimartGen';
+import { buildApimartSeedanceRequest } from '../../src/services/ai/apimartVideoModels';
 import { apimartMediaProviderAdapter } from '../../src/services/ai/providers/apimartMedia';
 
 function jsonResponse(body: unknown): Response {
@@ -130,6 +131,30 @@ describe('APIMart video polling', () => {
     vi.unstubAllGlobals();
     pollingMocks.registerNodePolling.mockReturnValue(new AbortController().signal);
     serviceMocks.uploadToRemote.mockResolvedValue('https://upload.example/reference.png');
+  });
+
+  it('uses the documented Seedance 2.0 defaults while preserving an explicit audio opt-out', () => {
+    expect(buildApimartSeedanceRequest(
+      'apimart/doubao-seedance-2.0-fast',
+      'prompt',
+      { ratio: 'adaptive' },
+    )).toEqual({
+      model: 'doubao-seedance-2.0-fast',
+      prompt: 'prompt',
+      duration: 5,
+      resolution: '720p',
+      size: 'adaptive',
+      generate_audio: true,
+    });
+
+    expect(buildApimartSeedanceRequest(
+      'doubao-seedance-2.0-fast',
+      'prompt',
+      { resolution: '1080p', generateAudio: false },
+    )).toMatchObject({
+      resolution: '720p',
+      generate_audio: false,
+    });
   });
 
   it('uploads local references and stops polling immediately when the task fails', async () => {

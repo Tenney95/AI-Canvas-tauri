@@ -587,7 +587,7 @@ function AINodeDialog() {
         const seedanceResolution = (latestData.seedanceResolution as string) || '720p';
         const seedanceRatio = (latestData.seedanceRatio as string) || '16:9';
         const seedanceDuration = (latestData.seedanceDuration as number) || 5;
-        const generateAudio = (latestData.generateAudio as boolean) || false;
+        const generateAudio = latestData.generateAudio as boolean | undefined;
         const result = await generateVideo({
           prompt: effectivePrompt,
           model: nodeModel,
@@ -1000,7 +1000,7 @@ function AINodeDialog() {
           seedanceResolution={(data.seedanceResolution as string) || '720p'}
           seedanceRatio={(data.seedanceRatio as string) || '16:9'}
           seedanceDuration={(data.seedanceDuration as number) || 5}
-          generateAudio={(data.generateAudio as boolean) || false}
+          generateAudio={data.generateAudio as boolean | undefined}
           onChangeSeedanceResolution={onChangeSeedanceResolution}
           onChangeSeedanceRatio={onChangeSeedanceRatio}
           onChangeSeedanceDuration={onChangeSeedanceDuration}

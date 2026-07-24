@@ -200,7 +200,7 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         seedanceResolution: (d.seedanceResolution as string) || '720p',
         seedanceRatio: (d.seedanceRatio as string) || '16:9',
         seedanceDuration: (d.seedanceDuration as number) || 5,
-        generateAudio: (d.generateAudio as boolean) || false,
+        generateAudio: d.generateAudio as boolean | undefined,
         workflowId: d.workflowId,
         workflowInputs: d.workflowInputs,
         nodeId: node.id,

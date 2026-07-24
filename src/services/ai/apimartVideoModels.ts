@@ -24,7 +24,7 @@ export interface ApimartSeedanceRequestParams {
   imageUrls?: string[];
 }
 
-const COMMON_RATIOS = ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9'] as const;
+const COMMON_RATIOS = ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9', 'adaptive'] as const;
 const SD_1_RESOLUTIONS = ['480p', '720p', '1080p'] as const;
 const SD_2_RESOLUTIONS = ['480p', '720p'] as const;
 
