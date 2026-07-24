@@ -8,7 +8,7 @@
 
 AI Canvas Tauri 将文本、图像、视频、音频、逐帧动画、Markdown、分镜和 360° 全景组织成可连接的画布节点。你可以在同一个项目中编排生成链路、管理本地素材与 ComfyUI 工作流，也可以通过对话助手查询或修改画布、生成媒体、读取授权文件并沉淀项目记忆。
 
-![Version](https://img.shields.io/badge/version-0.6.3-6366f1)
+![Version](https://img.shields.io/badge/version-0.6.4-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)

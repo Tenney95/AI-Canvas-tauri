@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-canvas-tauri"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "base64 0.22.1",
  "flate2",
