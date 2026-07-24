@@ -1492,6 +1492,42 @@ type PolicyDecision =
 
 恢复 ONNX 命令内原下载实现和 Worker 直接调用，移除共享下载限制参数、前端下载选项及对应测试即可。没有配置、数据库或模型文件格式迁移；已下载的有效 `.onnx` 文件可继续使用。
 
+### 8.12 性能补充：长聊天与独立窗口
+
+**任务类型：一次性修复**
+
+**状态：已完成**
+
+#### 目标与边界
+
+- 优先降低长聊天中屏外消息的布局和绘制成本，并移除流式更新期间 regenerate prompt 的额外全表扫描。
+- 保持 `MessageBubble` memo、现有稳定回调、消息顺序、重新生成语义和独立窗口同步协议不变。
+- 只有 200 条复杂消息仍出现超过 50ms 的可归因长任务时才申请动态高度虚拟列表依赖；只有单次 patch 计算超过 5ms 时才申请 dirty entity Store 架构调整。
+
+#### 实施结果
+
+- [x] `.chat-message-bubble` 增加 `content-visibility: auto` 和稳定的 `contain-intrinsic-size: auto 160px`，不增加消息行 DOM 包装。
+- [x] `ChatMessages.tsx` 使用单遍 helper 在生成消息元素时同步关联最近的用户 prompt，移除独立 `regeneratePrompts` Map 和第二次消息准备扫描。
+- [x] `MessageBubble` 继续使用 `memo`；`ChatPanel` 传入的编辑、重新生成、节点引用和 Agent 控制回调保持稳定。
+- [x] 新增 regenerate 关联回归测试，覆盖无前置用户消息、system 消息、连续助手消息、切换用户 prompt，并断言消息集合只迭代一次。
+- [x] Web 模式使用 200 条交替用户/助手的长 Markdown、表格和代码块消息进行临时内存样本验证；确认 200 个消息 DOM、目标 CSS 规则、快速滚动布局和控制台无错误，采样后移除临时代码且未写入 IndexedDB。
+- [x] 当前浏览器控制接口不能导出 DevTools Performance trace，因此未把选择器响应时间冒充为 50ms 长任务证据；本阶段没有证据触发虚拟列表，不新增依赖。
+- [x] 使用 200 条复杂消息、20 个会话和 24 个任务快照对 `createChatStatePatch()` 预热后采样 1000 次：中位数 0.0449ms、P95 0.1136ms、最大 0.5404ms，超过 5ms 为 0 次；不修改 Store 或 patch 协议。
+
+#### 完成记录
+
+- 完成日期：2026-07-24。
+- 定向测试：消息映射与独立窗口同步共 2 个测试文件、4 项测试通过；`ChatMessages.tsx` 和新增测试定向 ESLint 通过。
+- 类型检查：`npm run typecheck` 和 `npm run test:typecheck` 通过。
+- 生产构建：系统临时目录 Vite 构建通过；仅保留既有动态导入、外部临时目录不清空和大 chunk 警告。
+- Rust 验证：`cargo test` 共 30 项通过、1 项手动压力测试默认忽略；`cargo check --lib` 通过。
+- 差异与编码：`git diff --check` 通过，仅报告工作区既有 LF/CRLF 提示；本阶段 4 个文本文件严格 UTF-8 解码和常见乱码扫描通过，临时性能样本标识无残留。
+- 未新增 npm/Cargo 依赖，未修改 IndexedDB schema、Tauri 安全配置、Agent Policy 或独立窗口公开协议。
+
+#### 回滚
+
+移除消息行的两项 CSS containment 声明，并恢复 `regeneratePrompts` Map 与原消息渲染循环即可。回滚不涉及持久化数据、Store、独立窗口 revision 或配置迁移。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1620,3 +1656,4 @@ type PolicyDecision =
 | 2026-07-23 | P5-F | 抽取对话执行控制器、独立窗口同步控制器和 Agent 单轮执行器，保持协议与安全矩阵不变，降低 ChatPanel 与 Agent Runtime 编排修改风险。 |
 | 2026-07-23 | 平台补充 | 建立媒体 Provider Registry，并将 APIMart 图片、视频、语音和音乐执行收口到单一 adapter；其他 Provider 保留兼容分支以便渐进迁移。 |
 | 2026-07-24 | 平台补充 | ONNX 模型下载复用 1 MiB 原生流式传输、`.part` 原子落盘、长度和 2 GiB 上限校验及取消清理；Worker 完整生命周期迁入阻塞线程池，并完成三类各 20 次无残留回收验收。 |
+| 2026-07-24 | 性能补充 | 长聊天消息行增加浏览器内容跳过，regenerate prompt 改为单遍关联；200 条复杂消息与独立窗口 patch 采样均未触发虚拟化或 dirty entity 改造阈值。 |

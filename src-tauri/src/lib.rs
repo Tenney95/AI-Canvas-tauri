@@ -2,7 +2,7 @@ use base64::Engine;
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Mutex, OnceLock,
+    Mutex,
 };
 use std::{path::PathBuf, time::Duration};
 use tauri::window::{Color, Effect, EffectState, EffectsBuilder};
@@ -26,13 +26,15 @@ static CHAT_WINDOW_LOCKED: AtomicBool = AtomicBool::new(false);
 static CHAT_WINDOW_LOCK_OFFSET: Mutex<(i32, i32)> = Mutex::new((0, 0));
 static CHAT_WINDOW_SIZE_SAVE_VERSION: AtomicU64 = AtomicU64::new(0);
 static PROXY_FETCH_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
-static PROXY_FETCH_CANCELLATIONS: OnceLock<
-    Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
-> = OnceLock::new();
 
 const CHAT_WINDOW_DEFAULT_SIZE: (f64, f64) = (480.0, 720.0);
 const CHAT_WINDOW_MIN_SIZE: (f64, f64) = (360.0, 480.0);
 const CHAT_WINDOW_SIZE_FILE: &str = "chat-window-size.json";
+const PROXY_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const PROXY_HTTP_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+const PROXY_HTTP_MAX_IDLE_PER_HOST: usize = 8;
+const PROXY_RESPONSE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const REMOTE_IMAGE_MAX_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ChatWindowSizeState {
@@ -237,17 +239,75 @@ struct ProxyFetchRequest {
     body: Option<String>, // base64 编码的请求体
 }
 
-fn proxy_fetch_cancellations() -> &'static Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>
-{
-    PROXY_FETCH_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+type ProxyFetchCancellations = Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>;
+
+struct ProxyHttpState {
+    client: reqwest::Client,
+    cancellations: ProxyFetchCancellations,
+}
+
+impl ProxyHttpState {
+    fn new() -> Result<Self, String> {
+        let client = reqwest::Client::builder()
+            .user_agent("AI-Canvas/0.1")
+            .connect_timeout(PROXY_HTTP_CONNECT_TIMEOUT)
+            .pool_idle_timeout(PROXY_HTTP_POOL_IDLE_TIMEOUT)
+            .pool_max_idle_per_host(PROXY_HTTP_MAX_IDLE_PER_HOST)
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+        Ok(Self {
+            client,
+            cancellations: Mutex::new(HashMap::new()),
+        })
+    }
+}
+
+fn lock_proxy_fetch_cancellations(
+    cancellations: &ProxyFetchCancellations,
+) -> std::sync::MutexGuard<'_, HashMap<String, tokio::sync::oneshot::Sender<()>>> {
+    cancellations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct ProxyFetchCancellationRegistration<'a> {
+    request_id: String,
+    cancellations: &'a ProxyFetchCancellations,
+}
+
+impl<'a> ProxyFetchCancellationRegistration<'a> {
+    fn register(
+        cancellations: &'a ProxyFetchCancellations,
+        request_id: String,
+        sender: tokio::sync::oneshot::Sender<()>,
+    ) -> Result<Self, String> {
+        let mut items = lock_proxy_fetch_cancellations(cancellations);
+        if items.contains_key(&request_id) {
+            return Err(format!("HTTP 请求 ID 重复: {request_id}"));
+        }
+        items.insert(request_id.clone(), sender);
+        drop(items);
+
+        Ok(Self {
+            request_id,
+            cancellations,
+        })
+    }
+}
+
+impl Drop for ProxyFetchCancellationRegistration<'_> {
+    fn drop(&mut self) {
+        lock_proxy_fetch_cancellations(self.cancellations).remove(&self.request_id);
+    }
 }
 
 #[tauri::command]
-fn cancel_proxy_fetch(request_id: String) -> Result<(), String> {
-    let cancellation = proxy_fetch_cancellations()
-        .lock()
-        .map_err(|_| "读取 HTTP 请求取消状态失败".to_string())?
-        .remove(&request_id);
+fn cancel_proxy_fetch(
+    state: tauri::State<'_, ProxyHttpState>,
+    request_id: String,
+) -> Result<(), String> {
+    let cancellation = lock_proxy_fetch_cancellations(&state.cancellations).remove(&request_id);
     if let Some(sender) = cancellation {
         let _ = sender.send(());
     }
@@ -274,11 +334,10 @@ enum ProxyFetchStreamEvent {
     Done,
 }
 
-async fn send_proxy_request(req: &ProxyFetchRequest) -> Result<reqwest::Response, String> {
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-
+async fn send_proxy_request(
+    client: &reqwest::Client,
+    req: &ProxyFetchRequest,
+) -> Result<reqwest::Response, String> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes())
         .map_err(|e| format!("无效的 HTTP 方法: {e}"))?;
     let mut request = client.request(method, &req.url);
@@ -297,8 +356,68 @@ async fn send_proxy_request(req: &ProxyFetchRequest) -> Result<reqwest::Response
     request.send().await.map_err(|e| format!("请求失败: {e}"))
 }
 
+fn ensure_content_length_within_limit(
+    response: &reqwest::Response,
+    max_bytes: usize,
+    resource_name: &str,
+) -> Result<(), String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(format!(
+            "{resource_name}超过 Rust 端大小限制（最大 {} MiB）",
+            max_bytes / 1024 / 1024
+        ));
+    }
+    Ok(())
+}
+
+fn checked_response_size(
+    current_bytes: usize,
+    chunk_bytes: usize,
+    max_bytes: usize,
+    resource_name: &str,
+) -> Result<usize, String> {
+    let next_bytes = current_bytes
+        .checked_add(chunk_bytes)
+        .ok_or_else(|| format!("{resource_name}大小计算溢出"))?;
+    if next_bytes > max_bytes {
+        return Err(format!(
+            "{resource_name}超过 Rust 端大小限制（最大 {} MiB）",
+            max_bytes / 1024 / 1024
+        ));
+    }
+    Ok(next_bytes)
+}
+
+async fn read_response_bytes_limited(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    resource_name: &str,
+) -> Result<Vec<u8>, String> {
+    ensure_content_length_within_limit(&response, max_bytes, resource_name)?;
+    let initial_capacity = response.content_length().unwrap_or(0).min(max_bytes as u64) as usize;
+    let mut body = Vec::with_capacity(initial_capacity);
+    let mut total_bytes = 0;
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("读取响应失败: {error}"))?
+    {
+        total_bytes = checked_response_size(total_bytes, chunk.len(), max_bytes, resource_name)?;
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
 #[tauri::command]
-async fn proxy_fetch(req: ProxyFetchRequest) -> Result<ProxyFetchResponse, String> {
+async fn proxy_fetch(
+    state: tauri::State<'_, ProxyHttpState>,
+    req: ProxyFetchRequest,
+) -> Result<ProxyFetchResponse, String> {
     let request_id = req.request_id.clone().unwrap_or_else(|| {
         format!(
             "legacy-proxy-{}",
@@ -306,13 +425,14 @@ async fn proxy_fetch(req: ProxyFetchRequest) -> Result<ProxyFetchResponse, Strin
         )
     });
     let (cancel_sender, cancel_receiver) = tokio::sync::oneshot::channel();
-    proxy_fetch_cancellations()
-        .lock()
-        .map_err(|_| "注册 HTTP 请求取消状态失败".to_string())?
-        .insert(request_id.clone(), cancel_sender);
+    let _cancellation = ProxyFetchCancellationRegistration::register(
+        &state.cancellations,
+        request_id,
+        cancel_sender,
+    )?;
 
-    let request = async move {
-        let response = send_proxy_request(&req).await?;
+    let request = async {
+        let response = send_proxy_request(&state.client, &req).await?;
 
         let status = response.status().as_u16();
         let res_headers: Vec<(String, String)> = response
@@ -321,10 +441,8 @@ async fn proxy_fetch(req: ProxyFetchRequest) -> Result<ProxyFetchResponse, Strin
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
 
-        let res_bytes = response
-            .bytes()
-            .await
-            .map_err(|e| format!("读取响应失败: {e}"))?;
+        let res_bytes =
+            read_response_bytes_limited(response, PROXY_RESPONSE_MAX_BYTES, "代理响应体").await?;
         let body_b64 = base64::engine::general_purpose::STANDARD.encode(&res_bytes);
 
         Ok(ProxyFetchResponse {
@@ -334,18 +452,15 @@ async fn proxy_fetch(req: ProxyFetchRequest) -> Result<ProxyFetchResponse, Strin
         })
     };
 
-    let result = tokio::select! {
+    tokio::select! {
         result = request => result,
         _ = cancel_receiver => Err("请求已取消".to_string()),
-    };
-    if let Ok(mut cancellations) = proxy_fetch_cancellations().lock() {
-        cancellations.remove(&request_id);
     }
-    result
 }
 
 #[tauri::command]
 async fn proxy_stream_fetch(
+    state: tauri::State<'_, ProxyHttpState>,
     req: ProxyFetchRequest,
     on_event: Channel<ProxyFetchStreamEvent>,
 ) -> Result<(), String> {
@@ -354,13 +469,15 @@ async fn proxy_stream_fetch(
         .clone()
         .ok_or_else(|| "流式 HTTP 请求缺少 requestId".to_string())?;
     let (cancel_sender, cancel_receiver) = tokio::sync::oneshot::channel();
-    proxy_fetch_cancellations()
-        .lock()
-        .map_err(|_| "注册 HTTP 请求取消状态失败".to_string())?
-        .insert(request_id.clone(), cancel_sender);
+    let _cancellation = ProxyFetchCancellationRegistration::register(
+        &state.cancellations,
+        request_id,
+        cancel_sender,
+    )?;
 
-    let request = async move {
-        let mut response = send_proxy_request(&req).await?;
+    let request = async {
+        let mut response = send_proxy_request(&state.client, &req).await?;
+        ensure_content_length_within_limit(&response, PROXY_RESPONSE_MAX_BYTES, "代理响应体")?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
@@ -371,11 +488,18 @@ async fn proxy_stream_fetch(
             .send(ProxyFetchStreamEvent::Meta { status, headers })
             .map_err(|e| format!("发送 HTTP 响应状态失败: {e}"))?;
 
+        let mut total_bytes = 0;
         while let Some(bytes) = response
             .chunk()
             .await
             .map_err(|error| format!("读取响应失败: {error}"))?
         {
+            total_bytes = checked_response_size(
+                total_bytes,
+                bytes.len(),
+                PROXY_RESPONSE_MAX_BYTES,
+                "代理响应体",
+            )?;
             let body = base64::engine::general_purpose::STANDARD.encode(bytes);
             on_event
                 .send(ProxyFetchStreamEvent::Chunk { body })
@@ -387,25 +511,20 @@ async fn proxy_stream_fetch(
         Ok(())
     };
 
-    let result = tokio::select! {
+    tokio::select! {
         result = request => result,
         _ = cancel_receiver => Err("请求已取消".to_string()),
-    };
-    if let Ok(mut cancellations) = proxy_fetch_cancellations().lock() {
-        cancellations.remove(&request_id);
     }
-    result
 }
 
 /// 使用原生 HTTP 客户端下载远程图片并返回 base64 data URL（绕过 WebView CORS 限制）
 #[tauri::command]
-async fn fetch_image_data_url(url: String) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("AI-Canvas/0.1")
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-
-    let response = client
+async fn fetch_image_data_url(
+    state: tauri::State<'_, ProxyHttpState>,
+    url: String,
+) -> Result<String, String> {
+    let response = state
+        .client
         .get(&url)
         .send()
         .await
@@ -447,13 +566,40 @@ async fn fetch_image_data_url(url: String) -> Result<String, String> {
         }
     };
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("读取响应失败: {e}"))?;
+    let bytes = read_response_bytes_limited(response, REMOTE_IMAGE_MAX_BYTES, "远程图片").await?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(format!("data:{mime};base64,{b64}"))
+}
+
+#[cfg(test)]
+mod proxy_http_tests {
+    use super::*;
+
+    #[test]
+    fn response_size_limit_accepts_exact_limit_and_rejects_overflow() {
+        assert_eq!(checked_response_size(60, 4, 64, "测试响应"), Ok(64));
+        assert!(checked_response_size(60, 5, 64, "测试响应").is_err());
+        assert!(checked_response_size(usize::MAX, 1, usize::MAX, "测试响应").is_err());
+    }
+
+    #[test]
+    fn cancellation_registration_cleans_up_when_dropped() {
+        let cancellations = Mutex::new(HashMap::new());
+        let (sender, _receiver) = tokio::sync::oneshot::channel();
+
+        {
+            let _registration = ProxyFetchCancellationRegistration::register(
+                &cancellations,
+                "request-1".to_string(),
+                sender,
+            )
+            .expect("应成功注册取消句柄");
+            assert!(lock_proxy_fetch_cancellations(&cancellations).contains_key("request-1"));
+        }
+
+        assert!(lock_proxy_fetch_cancellations(&cancellations).is_empty());
+    }
 }
 
 /// 将文件或目录移动到系统回收站/废纸篓
@@ -764,7 +910,10 @@ pub fn run() {
         std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_arguments);
     }
 
+    let proxy_http_state = ProxyHttpState::new().expect("初始化代理 HTTP 客户端失败");
+
     tauri::Builder::default()
+        .manage(proxy_http_state)
         .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())

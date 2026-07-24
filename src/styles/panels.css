@@ -1286,6 +1286,8 @@
 
 /* 消息入场微动画（仅挂载时执行一次） */
 .chat-message-bubble {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 160px;
   animation: chat-msg-in 0.22s var(--ease-out-expo);
 }
 @keyframes chat-msg-in {

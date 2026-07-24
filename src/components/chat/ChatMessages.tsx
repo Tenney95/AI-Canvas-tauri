@@ -32,6 +32,29 @@ interface ChatMessagesProps extends ChatReferenceHandlers {
 const START_EXAMPLES = ['现在有几个失败节点？', '选中 3 号节点', '删除失败节点'];
 const EMPTY_AGENT_TASKS: AgentTask[] = [];
 
+function mapChatMessageRows<T>(
+  messages: ChatMessage[],
+  renderRow: (message: ChatMessage, regeneratePrompt?: string) => T,
+): T[] {
+  const rows: T[] = [];
+  let latestUserContent = '';
+
+  for (const message of messages) {
+    if (message.role === 'user') {
+      latestUserContent = message.content;
+      rows.push(renderRow(message));
+      continue;
+    }
+
+    const regeneratePrompt = message.role === 'assistant' && latestUserContent
+      ? latestUserContent
+      : undefined;
+    rows.push(renderRow(message, regeneratePrompt));
+  }
+
+  return rows;
+}
+
 export default function ChatMessages({
   messages,
   agentTasks = EMPTY_AGENT_TASKS,
@@ -59,15 +82,34 @@ export default function ChatMessages({
     () => new Map(agentTasks.map((task) => [task.id, task])),
     [agentTasks],
   );
-  const regeneratePrompts = useMemo(() => {
-    const prompts = new Map<string, string>();
-    let latestUserContent = '';
-    for (const message of messages) {
-      if (message.role === 'user') latestUserContent = message.content;
-      else if (message.role === 'assistant' && latestUserContent) prompts.set(message.id, latestUserContent);
-    }
-    return prompts;
-  }, [messages]);
+  const messageRows = useMemo(
+    () => mapChatMessageRows(messages, (message, regeneratePrompt) => (
+      <MessageBubble
+        key={message.id}
+        message={message}
+        agentTask={message.agentTaskId ? agentTaskById.get(message.agentTaskId) : undefined}
+        onAddToCanvas={onAddMediaToCanvas}
+        onEditMessage={onEditMessage}
+        regeneratePrompt={regeneratePrompt}
+        onRegenerate={onRegenerateMessage}
+        onNodeActivate={onNodeActivate}
+        onNodeHover={onNodeHover}
+        onModelActivate={onModelActivate}
+        agentControls={agentControls}
+      />
+    )),
+    [
+      agentControls,
+      agentTaskById,
+      messages,
+      onAddMediaToCanvas,
+      onEditMessage,
+      onModelActivate,
+      onNodeActivate,
+      onNodeHover,
+      onRegenerateMessage,
+    ],
+  );
 
   const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     const container = event.currentTarget;
@@ -166,24 +208,7 @@ export default function ChatMessages({
           </div>
         )}
 
-        {messages.map((msg) => {
-          const regeneratePrompt = regeneratePrompts.get(msg.id);
-          return (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              agentTask={msg.agentTaskId ? agentTaskById.get(msg.agentTaskId) : undefined}
-              onAddToCanvas={onAddMediaToCanvas}
-              onEditMessage={onEditMessage}
-              regeneratePrompt={regeneratePrompt}
-              onRegenerate={onRegenerateMessage}
-              onNodeActivate={onNodeActivate}
-              onNodeHover={onNodeHover}
-              onModelActivate={onModelActivate}
-              agentControls={agentControls}
-            />
-          );
-        })}
+        {messageRows}
 
         <div ref={messagesEndRef} />
       </div>
