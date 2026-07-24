@@ -19,6 +19,7 @@ mod comfyui;
 mod director_desk_runtime;
 mod dreamina;
 mod file_transfer;
+mod mcp_bridge;
 pub mod onnx;
 mod provider_docs;
 
@@ -914,6 +915,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(proxy_http_state)
+        .manage(mcp_bridge::McpBridgeState::default())
         .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -961,6 +963,10 @@ pub fn run() {
             onnx::character_direction_grid,
             onnx::download_onnx_model,
             onnx::get_onnx_gpu_status,
+            mcp_bridge::mcp_bridge_start,
+            mcp_bridge::mcp_bridge_stop,
+            mcp_bridge::mcp_bridge_status,
+            mcp_bridge::mcp_bridge_respond,
         ])
         .on_window_event(|window, event| {
             if window.label() == "chat-assistant" {

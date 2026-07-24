@@ -1616,7 +1616,7 @@ type PolicyDecision =
 - [x] 通过 `doc/adr/0004-local-mcp-control-bridge.md` 固定架构、安全、失败与回滚边界。
 - [x] 通过 `doc/plans/2026-07-24-local-mcp-control-bridge.md` 固定真实文件范围、定向测试和本机验收步骤。
 - [x] 经用户单独确认后增加官方 `@modelcontextprotocol/sdk@1.29.0`；未新增 Cargo crate。
-- [ ] 实现 stdio 适配器与带鉴权、限长、超时和会话失效的 Rust loopback 桥。
+- [x] 实现 stdio 适配器与带鉴权、限长、超时和会话失效的 Rust loopback 桥。
 - [ ] 抽取 Agent 共享工具执行器并接入专用“`MCP 控制`”审计会话。
 - [ ] 增加默认关闭的设置入口、一次性连接配置和主窗口生命周期清理。
 - [ ] 完成定向、全量、Rust、生产构建、UTF-8 和真实连接验收。
@@ -1626,6 +1626,9 @@ type PolicyDecision =
 - 开始日期：2026-07-24。
 - 文档与依赖文件：`doc/adr/0004-local-mcp-control-bridge.md`、`doc/plans/2026-07-24-local-mcp-control-bridge.md`、`package.json`、`package-lock.json`。
 - 依赖验证：`npm ls @modelcontextprotocol/sdk --depth=0` 解析为 `@modelcontextprotocol/sdk@1.29.0`。
+- 传输实现：`scripts/ai-canvas-mcp.mjs` 使用官方 stdio transport；`src-tauri/src/mcp_bridge.rs` 只监听 `127.0.0.1:0`，逐帧验证 256 位令牌、1 MiB 上限、协议版本和固定方法白名单。
+- 传输测试：Node 适配器 1 个文件、3 项通过；Rust bridge 3 项通过；`cargo check --lib` 通过。
+- Rust 依赖：使用标准库阻塞 TCP 线程和 channel，没有增加 Cargo crate、Tokio feature、capability 或安全配置。
 - 编码与差异：新增文档严格 UTF-8 解码通过，`git diff --check` 通过。
 
 #### 回滚
