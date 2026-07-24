@@ -4,20 +4,16 @@
 import { memo, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
-import {
-  AnnotationLayer,
-  PointEditEditor,
-  isImageAnnotationLayer,
+import type {
+  AnnotationLayerProps,
+  PointEditEditorProps,
 } from '@tenney95/xiaoluo-image-editor';
 import '@tenney95/xiaoluo-image-editor/style.css';
 import type { BaseNodeData, ImageAnnotationLayer as ImageAnnotationLayerData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import GooeyBtn from './shared/GooeyBtn';
 import ImageNodeToolbar from './shared/image/ImageNodeToolbar';
-import MattingEditor from './shared/image/MattingEditor';
 import CropEditor from './shared/image/CropEditor';
-import CustomGridEditor from './shared/image/CustomGridEditor';
-import ExpandEditor from './shared/image/ExpandEditor';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import ZoomableImage from '../shared/ZoomableImage';
@@ -48,9 +44,68 @@ import {
   type CanvasDerivationGuard,
 } from '../../services/canvasDerivationGuard';
 
-// 懒加载：ImageComposerEditor 引入 konva + react-konva（体积大户），仅在打开合成编辑时才加载
+const MattingEditor = lazy(() => import('./shared/image/MattingEditor'));
+const CustomGridEditor = lazy(() => import('./shared/image/CustomGridEditor'));
+const ExpandEditor = lazy(() => import('./shared/image/ExpandEditor'));
 const ImageComposerEditor = lazy(() => import('./shared/image/composer/ImageComposerEditor'));
 const CameraStudioPanel = lazy(() => import('./shared/image/CameraStudioPanel'));
+
+const loadImageEditorRuntime = () => import('@tenney95/xiaoluo-image-editor');
+
+type DeferredAnnotationLayerProps = Omit<AnnotationLayerProps, 'layer'> & {
+  layer: unknown;
+  legacyUrl?: string;
+  onLegacyError?: () => void;
+};
+
+const AnnotationLayer = lazy(async () => {
+  const runtime = await loadImageEditorRuntime();
+  const RuntimeAnnotationLayer = runtime.AnnotationLayer;
+  return {
+    default: function DeferredAnnotationLayer({
+      layer,
+      legacyUrl,
+      onLegacyError,
+      ...props
+    }: DeferredAnnotationLayerProps) {
+      if (runtime.isImageAnnotationLayer(layer)) {
+        return <RuntimeAnnotationLayer {...props} layer={layer} />;
+      }
+      return legacyUrl ? (
+        <img
+          src={legacyUrl}
+          alt="Annotation"
+          className="image-preview-mask"
+          onError={onLegacyError}
+        />
+      ) : null;
+    },
+  };
+});
+
+type DeferredPointEditEditorProps = Omit<PointEditEditorProps, 'initialAnnotationLayer'> & {
+  initialAnnotationLayer?: unknown;
+};
+
+const PointEditEditor = lazy(async () => {
+  const runtime = await loadImageEditorRuntime();
+  const RuntimePointEditEditor = runtime.PointEditEditor;
+  return {
+    default: function DeferredPointEditEditor({
+      initialAnnotationLayer,
+      ...props
+    }: DeferredPointEditEditorProps) {
+      return (
+        <RuntimePointEditEditor
+          {...props}
+          initialAnnotationLayer={runtime.isImageAnnotationLayer(initialAnnotationLayer)
+            ? initialAnnotationLayer
+            : undefined}
+        />
+      );
+    },
+  };
+});
 
 /* ════════════════════════════════════════════
    AIImageNode
@@ -115,9 +170,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const previewRevision = revisionFor(data.filePath);
   const rawDisplaySrc = (data.imageUrl || data.thumbnailUrl) as string | undefined;
   const displaySrc = withPreviewRevision(rawDisplaySrc, previewRevision);
-  const annotationLayer = isImageAnnotationLayer(data.annotationLayer)
-    ? data.annotationLayer
-    : undefined;
+  const annotationLayer = data.annotationLayer;
 
   // 当 imageUrl 或外部文件版本变化时重置加载错误状态
   useEffect(() => {
@@ -985,11 +1038,22 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                   />
                 )}
                 {annotationLayer ? (
-                  <AnnotationLayer
-                    layer={annotationLayer}
-                    className="image-annotation-layer"
-                    fit="cover"
-                  />
+                  <Suspense fallback={data.annotation && !annotateError ? (
+                    <img
+                      src={data.annotation as string}
+                      alt="Annotation"
+                      className="image-preview-mask"
+                      onError={() => setAnnotateError(true)}
+                    />
+                  ) : null}>
+                    <AnnotationLayer
+                      layer={annotationLayer}
+                      legacyUrl={data.annotation as string | undefined}
+                      onLegacyError={() => setAnnotateError(true)}
+                      className="image-annotation-layer"
+                      fit="cover"
+                    />
+                  </Suspense>
                 ) : data.annotation && !annotateError ? (
                   <img
                     src={data.annotation as string}
@@ -1109,27 +1173,60 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
       {/* 编辑器覆盖层：条件挂载 —— 关闭时不实例化组件（每个 ImageNode 少跑 6 套 hooks） */}
 
-      {/* Matting Editor Overlay */}
-      {isMatting && (
-        <MattingEditor
-          isOpen={isMatting}
-          imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-          initialMask={data.mattingMask as string | undefined}
-          onClose={handleCloseMatting}
-          onSave={handleMattingSave}
-        />
-      )}
+      <Suspense fallback={null}>
+        {/* Matting Editor Overlay */}
+        {isMatting && (
+          <MattingEditor
+            isOpen={isMatting}
+            imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+            initialMask={data.mattingMask as string | undefined}
+            onClose={handleCloseMatting}
+            onSave={handleMattingSave}
+          />
+        )}
 
-      {/* Annotate Editor Overlay */}
-      {isAnnotate && (
-        <PointEditEditor
-          isOpen={isAnnotate}
-          imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-          initialAnnotationLayer={annotationLayer}
-          onClose={handleCloseAnnotate}
-          onSave={handleAnnotateSave}
-        />
-      )}
+        {/* Annotate Editor Overlay */}
+        {isAnnotate && (
+          <PointEditEditor
+            isOpen={isAnnotate}
+            imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+            initialAnnotationLayer={annotationLayer}
+            onClose={handleCloseAnnotate}
+            onSave={handleAnnotateSave}
+          />
+        )}
+
+        {/* Expand Editor — 扩图 */}
+        {isExpand && (
+          <ExpandEditor
+            isOpen={isExpand}
+            imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+            onClose={handleCloseExpand}
+            onGenerate={handleExpandGenerate}
+          />
+        )}
+
+        {/* Crop Editor */}
+        {isCrop && (
+          <CropEditor
+            isOpen={isCrop}
+            imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+            onClose={handleCloseCrop}
+            onStart={handleCropStart}
+            onSave={handleCropSave}
+          />
+        )}
+
+        {/* CustomGrid Editor */}
+        {isCustomGrid && (
+          <CustomGridEditor
+            isOpen={isCustomGrid}
+            imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+            onClose={handleCloseCustomGrid}
+            onConfirm={handleCustomGridConfirm}
+          />
+        )}
+      </Suspense>
 
       {isCameraStudio && (
         <Suspense fallback={null}>
@@ -1140,37 +1237,6 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             onGenerate={handleCameraStudioGenerate}
           />
         </Suspense>
-      )}
-
-      {/* Expand Editor — 扩图 */}
-      {isExpand && (
-        <ExpandEditor
-          isOpen={isExpand}
-          imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-          onClose={handleCloseExpand}
-          onGenerate={handleExpandGenerate}
-        />
-      )}
-
-      {/* Crop Editor */}
-      {isCrop && (
-        <CropEditor
-          isOpen={isCrop}
-          imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-          onClose={handleCloseCrop}
-          onStart={handleCropStart}
-          onSave={handleCropSave}
-        />
-      )}
-
-      {/* CustomGrid Editor */}
-      {isCustomGrid && (
-        <CustomGridEditor
-          isOpen={isCustomGrid}
-          imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
-          onClose={handleCloseCustomGrid}
-          onConfirm={handleCustomGridConfirm}
-        />
       )}
 
       {/* 多图自由编辑 / 合成（konva 懒加载，首次打开时才拉取 chunk） */}

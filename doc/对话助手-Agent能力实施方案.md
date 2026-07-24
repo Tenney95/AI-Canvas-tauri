@@ -1528,6 +1528,40 @@ type PolicyDecision =
 
 移除消息行的两项 CSS containment 声明，并恢复 `regeneratePrompts` Map 与原消息渲染循环即可。回滚不涉及持久化数据、Store、独立窗口 revision 或配置迁移。
 
+### 8.13 性能补充：画布拖拽与图片编辑运行时拆包
+
+**任务类型：一次性修复**
+
+**状态：已完成**
+
+#### 目标与边界
+
+- 阻止画布拖拽、选择和普通节点内容更新放大为长聊天中所有节点引用文本的重新渲染。
+- 将图片标注、抠图、扩图和自定义宫格编辑运行时移出主应用启动链；裁切编辑器保留同步加载，以维持既有关键交互测试和当前同步打开语义。
+- 不修改 Store 架构、聊天协议、节点持久化结构、图片标注 schema 或编辑器数据校验规则。
+
+#### 基线与实施结果
+
+- [x] `ChatReferenceText` 从订阅完整 `nodes` 改为订阅稳定的“节点 ID → displayId”派生快照；位置、选中和普通节点内容变化保持同一 Map 引用，仅节点增删或 displayId 变化时失效。
+- [x] 500 个节点、200 个引用实例、300 次位置更新的纯计算样本中，重复 Map 构建为 979.33ms，稳定 selector 为 5.34ms，计算量比值约 183.4 倍；该结果仅作为定向微基准，不替代 DevTools UI Performance Trace。
+- [x] `ImageNode` 按需加载矢量标注、PointEdit、抠图、扩图和自定义宫格编辑器；旧版 PNG 标注保留加载期与非法矢量数据回退，矢量数据仍由图片编辑库完整校验。
+- [x] `promptResolver` 仅在引用图片包含非空矢量标注时动态加载标注渲染器；无标注和旧版 PNG 标注路径不加载该运行时。
+- [x] 生产构建中 `App` chunk 从 332.22 KiB / 93.55 KiB gzip 降至 310.61 KiB / 88.11 KiB gzip，共享启动 chunk 从 582.86 KiB / 187.38 KiB gzip 降至 547.25 KiB / 175.43 KiB gzip，启动静态链合计减少约 17.39 KiB gzip。
+- [x] 图片编辑运行时形成独立 55.85 KiB / 17.15 KiB gzip chunk；源码图确认 `App` 和共享启动 chunk 均不再包含 `xiaoluo-image-editor` 运行时代码。
+
+#### 完成记录
+
+- 完成日期：2026-07-24。
+- 回归测试：`npm run test` 共 72 个文件、388 项通过；其中聊天 selector、标注层、节点关键交互和裁切定向测试共 4 个文件、14 项通过。
+- 类型检查：`npm run typecheck` 和 `npm run test:typecheck` 通过。
+- 定向 ESLint：`ChatReferenceText.tsx`、新增测试和 `promptResolver.ts` 通过；`ImageNode.tsx` 与 `HEAD` 基线相同，仍有既存的 5 个 effect/声明顺序错误和 4 个 Hook 依赖警告，关闭这三类既存规则后的本次修改检查通过。
+- 生产构建：系统临时目录 Vite source-map 构建通过；保留既有 Tauri core、剧集资产动态导入和大 chunk 警告。
+- 未新增 npm/Cargo 依赖，未修改 Rust、IndexedDB schema、Tauri 安全配置、Agent Policy 或独立窗口协议。
+
+#### 回滚
+
+恢复 `ChatReferenceText` 对 `nodes` 的直接订阅与本地 Map 派生，恢复 `ImageNode` 编辑器和 `promptResolver` 标注运行时的静态导入，并删除 selector 回归测试即可。回滚不涉及数据迁移；已保存的矢量标注与旧版 PNG 标注格式均不变。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1657,3 +1691,4 @@ type PolicyDecision =
 | 2026-07-23 | 平台补充 | 建立媒体 Provider Registry，并将 APIMart 图片、视频、语音和音乐执行收口到单一 adapter；其他 Provider 保留兼容分支以便渐进迁移。 |
 | 2026-07-24 | 平台补充 | ONNX 模型下载复用 1 MiB 原生流式传输、`.part` 原子落盘、长度和 2 GiB 上限校验及取消清理；Worker 完整生命周期迁入阻塞线程池，并完成三类各 20 次无残留回收验收。 |
 | 2026-07-24 | 性能补充 | 长聊天消息行增加浏览器内容跳过，regenerate prompt 改为单遍关联；200 条复杂消息与独立窗口 patch 采样均未触发虚拟化或 dirty entity 改造阈值。 |
+| 2026-07-24 | 性能补充 | 长聊天节点引用改为稳定 displayId 派生订阅，图片标注与非首屏编辑器改为按需加载；启动静态链减少约 17.39 KiB gzip，完整前端测试 388 项通过。 |

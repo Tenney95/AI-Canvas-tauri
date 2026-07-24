@@ -1,6 +1,5 @@
-import { useMemo } from 'react';
 import { Icon } from '@iconify/react';
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore, type AppState } from '../../store/useAppStore';
 
 type ReferenceTokenKind = 'node' | 'model' | 'skill' | 'slash';
 
@@ -28,6 +27,38 @@ export interface ChatReferenceHandlers {
 type InteractiveChatReferenceTextProps = ChatReferenceTextProps & ChatReferenceHandlers;
 
 const TOKEN_PATTERN = /@\{([^:}\r\n]+):([^}\r\n]+)\}|@model\{([^|}\r\n]+)\|([^}\r\n]*)\}|@skill\{([^|}\r\n]+)\|([^}\r\n]*)\}|\/[^\s/]*/g;
+
+type NodeDisplayIdMap = ReadonlyMap<string, number | undefined>;
+
+let cachedNodeDisplayIdSource: AppState['nodes'] | undefined;
+let cachedNodeDisplayIds: NodeDisplayIdMap = new Map();
+
+/**
+ * Canvas drag and selection updates replace the nodes array on every frame while
+ * node ids and display ids usually remain unchanged. Keep this derived snapshot
+ * stable so every rendered chat reference does not subscribe to transient canvas state.
+ */
+// Exported for the selector regression test; it has no module initialization side effects.
+// eslint-disable-next-line react-refresh/only-export-components
+export function selectNodeDisplayIds(state: Pick<AppState, 'nodes'>): NodeDisplayIdMap {
+  if (state.nodes === cachedNodeDisplayIdSource) return cachedNodeDisplayIds;
+
+  let changed = state.nodes.length !== cachedNodeDisplayIds.size;
+  if (!changed) {
+    changed = state.nodes.some((node) => (
+      !cachedNodeDisplayIds.has(node.id)
+      || cachedNodeDisplayIds.get(node.id) !== node.data.displayId
+    ));
+  }
+
+  cachedNodeDisplayIdSource = state.nodes;
+  if (changed) {
+    cachedNodeDisplayIds = new Map(
+      state.nodes.map((node) => [node.id, node.data.displayId]),
+    );
+  }
+  return cachedNodeDisplayIds;
+}
 
 function decodeLabel(value: string): string {
   try {
@@ -184,14 +215,10 @@ export default function ChatReferenceText({
   onNodeHover,
   onModelActivate,
 }: InteractiveChatReferenceTextProps) {
-  const nodes = useAppStore((state) => state.nodes);
+  const nodeDisplayIds = useAppStore(selectNodeDisplayIds);
   const currentProjectId = useAppStore((state) => state.currentProjectId);
   const showToast = useAppStore((state) => state.showToast);
   const setHoveredMentionNodeId = useAppStore((state) => state.setHoveredMentionNodeId);
-  const nodeDisplayIds = useMemo(
-    () => new Map(nodes.map((node) => [node.id, node.data.displayId])),
-    [nodes],
-  );
   const tokens = parseReferenceTokens(value, nodeDisplayIds);
   if (tokens.length === 0) return <>{value}</>;
 

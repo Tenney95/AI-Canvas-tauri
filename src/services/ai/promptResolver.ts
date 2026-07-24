@@ -5,10 +5,6 @@ import { useAppStore } from '../../store/useAppStore';
 import { readFileToDataUrl, getFileCategory } from '../fileService';
 import { resolveNodeImageUrl, mergeImageWithOverlays } from './imageUtils';
 import { cropImageCell, cropImageByRanges } from '../../components/nodes/shared/image/imageUtils';
-import {
-  isImageAnnotationLayer,
-  renderImageAnnotationLayerToDataUrl,
-} from '@tenney95/xiaoluo-image-editor';
 import type { BaseNodeData, ImageAnnotationLayer, StoryboardCellOverride } from '../../types';
 
 interface PromptImageEntry {
@@ -20,9 +16,14 @@ interface PromptImageEntry {
 }
 
 async function mergePromptImageOverlays(url: string, entry: PromptImageEntry): Promise<string> {
-  const annotation = entry.annotationLayer?.annotations.length
-    ? renderImageAnnotationLayerToDataUrl(entry.annotationLayer)
-    : entry.annotation;
+  let annotation = entry.annotation;
+  const annotations = (entry.annotationLayer as { annotations?: unknown } | undefined)?.annotations;
+  if (Array.isArray(annotations) && annotations.length > 0) {
+    const runtime = await import('@tenney95/xiaoluo-image-editor');
+    if (runtime.isImageAnnotationLayer(entry.annotationLayer)) {
+      annotation = runtime.renderImageAnnotationLayerToDataUrl(entry.annotationLayer);
+    }
+  }
   if (!entry.mattingMask && !annotation) return url;
   return mergeImageWithOverlays(url, entry.mattingMask, annotation);
 }
@@ -152,9 +153,7 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
               url: imgRef.imageUrl,
               mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
               annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
-              annotationLayer: isImageAnnotationLayer(imgNode?.data?.annotationLayer)
-                ? imgNode.data.annotationLayer
-                : undefined,
+              annotationLayer: imgNode?.data?.annotationLayer,
               filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
             });
           }
@@ -212,9 +211,7 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
               url: imageUrl,
               mattingMask: (node.data.mattingMask as string | undefined) || undefined,
               annotation: (node.data.annotation as string | undefined) || undefined,
-              annotationLayer: isImageAnnotationLayer(node.data.annotationLayer)
-                ? node.data.annotationLayer
-                : undefined,
+              annotationLayer: node.data.annotationLayer,
               filePath: (node.data.filePath as string | undefined) || undefined,
             });
           }
@@ -369,9 +366,7 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
               url: imgRef.imageUrl,
               mattingMask: (imgNode?.data?.mattingMask as string | undefined) || undefined,
               annotation: (imgNode?.data?.annotation as string | undefined) || undefined,
-              annotationLayer: isImageAnnotationLayer(imgNode?.data?.annotationLayer)
-                ? imgNode.data.annotationLayer
-                : undefined,
+              annotationLayer: imgNode?.data?.annotationLayer,
               filePath: (imgNode?.data?.filePath as string | undefined) || undefined,
             });
           }
@@ -440,9 +435,7 @@ export async function resolvePromptWithImageRefs(rawPrompt: string): Promise<{ p
           url: imageUrl,
           mattingMask: (node.data.mattingMask as string | undefined) || undefined,
           annotation: (node.data.annotation as string | undefined) || undefined,
-          annotationLayer: isImageAnnotationLayer(node.data.annotationLayer)
-            ? node.data.annotationLayer
-            : undefined,
+          annotationLayer: node.data.annotationLayer,
           filePath: (node.data.filePath as string | undefined) || undefined,
         });
       }
