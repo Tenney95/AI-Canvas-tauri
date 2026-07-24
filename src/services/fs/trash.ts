@@ -2,7 +2,7 @@
  * fs/trash — 文件/目录删除域
  * 系统回收站、项目级 .trash 暂存（支持撤销）、项目数据目录删除、节点文件删除。
  */
-import { writeFile, readFile as tauriReadFile, mkdir, exists, remove } from '@tauri-apps/plugin-fs';
+import { mkdir, exists, remove, rename } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv, joinPath, notifyProjectDiskChanged, getProjectDataDir } from './core';
 
@@ -41,10 +41,9 @@ export async function moveToUndoTrash(filePath: string): Promise<void> {
     await mkdir(trashDir, { recursive: true });
     const fileName = filePath.split(/[/\\]/).pop() || 'file';
     const trashPath = joinPath(trashDir, `${Date.now()}-${fileName}`);
-    // copy + delete (rename may fail across filesystems)
-    const content = await tauriReadFile(filePath);
-    await writeFile(trashPath, new Uint8Array(content));
-    await remove(filePath);
+    // .trash is a sibling of the source file, so this stays on one filesystem and avoids
+    // transferring large media buffers through the WebView just to support undo.
+    await rename(filePath, trashPath);
     undoTrashMap.set(filePath, trashPath);
     notifyProjectDiskChanged();
     console.log('[fileService] Staged in undo-trash:', filePath, '→', trashPath);
@@ -63,9 +62,7 @@ export async function restoreFromUndoTrash(filePath: string): Promise<boolean> {
   try {
     const trashExists = await exists(trashPath);
     if (!trashExists) { undoTrashMap.delete(filePath); return false; }
-    const content = await tauriReadFile(trashPath);
-    await writeFile(filePath, new Uint8Array(content));
-    await remove(trashPath);
+    await rename(trashPath, filePath);
     undoTrashMap.delete(filePath);
     notifyProjectDiskChanged();
     console.log('[fileService] Restored from undo-trash:', filePath);
