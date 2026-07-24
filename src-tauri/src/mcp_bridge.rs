@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -420,20 +421,31 @@ pub fn mcp_bridge_start(
 }
 
 fn resolve_adapter_path(app: &AppHandle) -> Option<String> {
-    let candidates = [
-        std::env::current_dir()
+    let roots = [
+        std::env::current_dir().ok(),
+        std::env::current_exe()
             .ok()
-            .map(|directory| directory.join("scripts").join("ai-canvas-mcp.mjs")),
-        app.path()
-            .resource_dir()
-            .ok()
-            .map(|directory| directory.join("scripts").join("ai-canvas-mcp.mjs")),
-    ];
-    candidates
+            .and_then(|path| path.parent().map(Path::to_path_buf)),
+        app.path().resource_dir().ok(),
+    ]
+    .into_iter()
+    .flatten();
+    adapter_candidates(roots)
         .into_iter()
-        .flatten()
         .find(|path| path.is_file())
         .map(|path| path.to_string_lossy().into_owned())
+}
+
+fn adapter_candidates(roots: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    roots
+        .into_iter()
+        .flat_map(|root| {
+            root.ancestors()
+                .take(6)
+                .map(|directory| directory.join("scripts").join("ai-canvas-mcp.mjs"))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -573,5 +585,15 @@ mod tests {
         let response = receiver.recv_timeout(Duration::from_millis(50)).unwrap();
         assert!(!response.ok);
         assert_eq!(response.error.as_deref(), Some("AI Canvas MCP 会话已停止"));
+    }
+
+    #[test]
+    fn adapter_lookup_walks_up_from_tauri_build_directories() {
+        let candidates = adapter_candidates([PathBuf::from(
+            "D:/workspace/AI-Canvas-tauri/src-tauri/target/debug",
+        )]);
+        assert!(candidates.contains(&PathBuf::from(
+            "D:/workspace/AI-Canvas-tauri/scripts/ai-canvas-mcp.mjs",
+        )));
     }
 }

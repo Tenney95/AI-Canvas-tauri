@@ -1601,7 +1601,7 @@ type PolicyDecision =
 
 **任务类型：架构收敛**
 
-**状态：实施中（文档与依赖阶段已完成）**
+**状态：已完成**
 
 #### 目标与边界
 
@@ -1619,7 +1619,7 @@ type PolicyDecision =
 - [x] 实现 stdio 适配器与带鉴权、限长、超时和会话失效的 Rust loopback 桥。
 - [x] 抽取 Agent 共享工具执行器并接入专用“`MCP 控制`”审计会话。
 - [x] 增加默认关闭的设置入口、一次性连接配置和主窗口生命周期清理。
-- [ ] 完成定向、全量、Rust、生产构建、UTF-8 和真实连接验收。
+- [x] 完成定向、全量、Rust、生产构建、UTF-8 和真实连接验收。
 
 #### 当前完成记录
 
@@ -1627,14 +1627,18 @@ type PolicyDecision =
 - 文档与依赖文件：`doc/adr/0004-local-mcp-control-bridge.md`、`doc/plans/2026-07-24-local-mcp-control-bridge.md`、`package.json`、`package-lock.json`。
 - 依赖验证：`npm ls @modelcontextprotocol/sdk --depth=0` 解析为 `@modelcontextprotocol/sdk@1.29.0`。
 - 传输实现：`scripts/ai-canvas-mcp.mjs` 使用官方 stdio transport；`src-tauri/src/mcp_bridge.rs` 只监听 `127.0.0.1:0`，逐帧验证 256 位令牌、1 MiB 上限、协议版本和固定方法白名单。
-- 传输测试：Node 适配器 1 个文件、3 项通过；Rust bridge 3 项通过；`cargo check --lib` 通过。
+- 传输测试：Node 适配器 1 个文件、3 项通过；Rust bridge 5 项通过；`cargo check --lib` 通过。
 - Rust 依赖：使用标准库阻塞 TCP 线程和 channel，没有增加 Cargo crate、Tokio feature、capability 或安全配置。
 - 控制与审计：MCP 工具发现只读取当前上下文可用 Registry；调用动态复用 round executor 的 schema、Policy、审批、重试和 checkpoint 执行链，每次创建专用对话下的 AgentTask 与脱敏消息摘要。
 - 应用状态：新增 `app_get_state` 只读工具，只返回项目、revision、节点/连线数量、对话、任务和无凭据模型摘要。
-- 设置与生命周期：设置页默认显示关闭，手动开启时用 Web Crypto 生成 256 位令牌；命令只保存在组件状态，主窗口关闭前停止 bridge。Rust 运行时动态解析适配器路径，没有硬编码本机目录。
-- 定向验证：MCP 设置、控制服务、共享执行器、现有 round 与审批共 5 个测试文件、12 项通过；Rust bridge 4 项通过；生产与测试 TypeScript 类型检查通过。
+- 设置与生命周期：设置页默认显示关闭，手动开启时用 Web Crypto 生成 256 位令牌；命令只保存在组件状态，主窗口关闭前停止 bridge。Rust 运行时从当前目录、可执行文件目录和资源目录向上有限查找适配器，没有硬编码本机目录。
+- 定向验证：MCP 设置、控制服务、共享执行器、现有 round 与审批共 5 个测试文件、12 项通过；Rust bridge 5 项通过；生产与测试 TypeScript 类型检查通过。
 - 定向 Lint：新增和修改的 MCP/Agent/App 文件通过；`SettingsPanel.tsx` 仍有 HEAD 既存的 `react-hooks/set-state-in-effect` 错误，关闭该既存规则后本次修改检查通过。
-- 编码与差异：新增文档严格 UTF-8 解码通过，`git diff --check` 通过。
+- 全量验证：`npm test` 共 77 个文件、401 项通过；`cargo test --lib` 共 34 项通过、1 项既有压力测试忽略；系统临时目录 Vite 生产构建通过，仅保留既有动态导入和大 chunk 警告。
+- 真实连接：官方 SDK `Client` 通过 stdio 适配器连接成功，发现 29 个工具并调用 `app_get_state`；应用内生成专用“`MCP 控制`”对话、脱敏摘要和 1 步 AgentTask 运行记录。
+- 会话失效：在设置页停止本地控制会话后，使用原端口和原令牌重新连接立即失败；设置状态恢复为默认关闭。
+- 编码与差异：17 个相关文本文件严格 UTF-8 解码和常见乱码扫描通过，`git diff --check` 通过。
+- 完成日期：2026-07-24。
 
 #### 回滚
 
@@ -1771,3 +1775,4 @@ type PolicyDecision =
 | 2026-07-24 | 性能补充 | 长聊天消息行增加浏览器内容跳过，regenerate prompt 改为单遍关联；200 条复杂消息与独立窗口 patch 采样均未触发虚拟化或 dirty entity 改造阈值。 |
 | 2026-07-24 | 性能补充 | 长聊天节点引用改为稳定 displayId 派生订阅，图片标注与非首屏编辑器改为按需加载；启动静态链减少约 17.39 KiB gzip，完整前端测试 388 项通过。 |
 | 2026-07-24 | 性能补充 | Agent 同步控制层与重型模型/工具执行链拆分；共享启动 chunk 减少 17.18 KiB gzip，会话和项目删除继续同步中止后台任务。 |
+| 2026-07-24 | 8.15 | 完成本地 MCP 控制桥、loopback 一次性鉴权、Tool Registry 与 Policy 复用、专用审计任务、默认关闭设置入口，以及官方 SDK 真实连接和会话失效验收。 |
