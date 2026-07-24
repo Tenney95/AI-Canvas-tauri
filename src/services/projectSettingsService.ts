@@ -151,6 +151,27 @@ export function resolveStylePrompt(
   return PROJECT_STYLE_OPTIONS.find((style) => style.id === styleId)?.prompt;
 }
 
+export function getImageNodeDimensionsForAspectRatio(
+  aspectRatio: string,
+): { nodeWidth: number; nodeHeight: number } | null {
+  const maxDimension = 280;
+  if (aspectRatio === '自适应') {
+    return { nodeWidth: maxDimension, nodeHeight: maxDimension };
+  }
+
+  const parts = aspectRatio.split(':');
+  if (parts.length !== 2) return null;
+  const width = Number(parts[0]);
+  const height = Number(parts[1]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+
+  return width >= height
+    ? { nodeWidth: maxDimension, nodeHeight: Math.round(maxDimension * (height / width)) }
+    : { nodeWidth: Math.round(maxDimension * (width / height)), nodeHeight: maxDimension };
+}
+
 export function applyProjectDefaultsToNodeData(
   data: BaseNodeData,
   settings: ProjectSettings | undefined,
@@ -181,6 +202,8 @@ export function applyProjectDefaultsToNodeData(
   if (data.type === 'ai-image') {
     if (settings.generation?.imageAspectRatio && (!hasPrompt || !data.aspectRatio)) {
       next.aspectRatio = settings.generation.imageAspectRatio;
+      const dimensions = getImageNodeDimensionsForAspectRatio(next.aspectRatio);
+      if (dimensions) Object.assign(next, dimensions);
     }
     if (settings.generation?.imageSize && (!hasPrompt || !data.imageSize)) {
       next.imageSize = settings.generation.imageSize;

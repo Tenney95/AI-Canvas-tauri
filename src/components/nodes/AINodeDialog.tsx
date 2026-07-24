@@ -22,7 +22,10 @@ import {
   CANVAS_PAN_DURATION_MS,
   requestCanvasPanBy,
 } from '../../services/canvasViewportService';
-import { resolveProjectGenerationPrompt } from '../../services/projectSettingsService';
+import {
+  getImageNodeDimensionsForAspectRatio,
+  resolveProjectGenerationPrompt,
+} from '../../services/projectSettingsService';
 import {
   buildAnimationSpritePrompt,
   resolveAnimationSheetAspectRatio,
@@ -795,27 +798,8 @@ function AINodeDialog() {
   const onChangeAspectRatio = useCallback(
     (value: string) => {
       const updateData: Partial<BaseNodeData> = { aspectRatio: value };
-
-      if (value === '自适应') {
-        updateData.nodeWidth = 280;
-        updateData.nodeHeight = 280; // Adaptive default for image nodes
-      } else {
-        const parts = value.split(':');
-        if (parts.length === 2) {
-          const w = parseFloat(parts[0]);
-          const h = parseFloat(parts[1]);
-          if (!isNaN(w) && !isNaN(h) && w > 0 && h > 0) {
-            const maxDimension = 280; // Bounding box base size
-            if (w >= h) {
-              updateData.nodeWidth = maxDimension;
-              updateData.nodeHeight = Math.round(maxDimension * (h / w));
-            } else {
-              updateData.nodeHeight = maxDimension;
-              updateData.nodeWidth = Math.round(maxDimension * (w / h));
-            }
-          }
-        }
-      }
+      const dimensions = getImageNodeDimensionsForAspectRatio(value);
+      if (dimensions) Object.assign(updateData, dimensions);
 
       updateNodeData(activeNodeId!, updateData);
     },

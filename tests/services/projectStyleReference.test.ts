@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyProjectDefaultsToNodeData,
   getEnabledProjectStyleReferenceUrl,
   normalizeProjectSettings,
   resolveProjectGenerationPrompt,
@@ -63,6 +64,26 @@ describe('project style reference (风格母图)', () => {
     const next = normalizeProjectSettings(settings);
     expect(next.visualStyle?.styleId).toBe('cinematic');
     expect(next.visualStyle?.styleReference?.imageUrl).toBe('asset://ref.png');
+  });
+
+  it('syncs a new image node size to the project aspect ratio', () => {
+    const next = applyProjectDefaultsToNodeData({
+      label: '生成图像',
+      type: 'ai-image',
+      role: 'generator',
+      prompt: '',
+      aspectRatio: '16:9',
+      nodeWidth: 280,
+      nodeHeight: 158,
+    }, {
+      generation: { imageAspectRatio: '2:3' },
+    });
+
+    expect(next).toMatchObject({
+      aspectRatio: '2:3',
+      nodeWidth: 187,
+      nodeHeight: 280,
+    });
   });
 
   it('adds the node-selected style and media prompt suffix to generation prompts', () => {
