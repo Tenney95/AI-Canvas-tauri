@@ -11,7 +11,7 @@ import * as fileService from '../services/fileService';
 import { resumePendingTasks, clearProjectTasks } from '../services/pollManager';
 import { normalizeProjectSettings } from '../services/projectSettingsService';
 import { captureCurrentCanvasSnapshot } from '../services/projectSnapshotService';
-import { stopProjectAgentTasks } from '../services/chat/agentRuntime';
+import { stopProjectAgentTasks } from '../services/chat/agentTaskControl';
 import { cancelProjectCanvasDerivations } from '../services/canvasDerivationGuard';
 import { clearConversationFileGrants } from '../services/chat/fileGrantService';
 

@@ -1562,6 +1562,41 @@ type PolicyDecision =
 
 恢复 `ChatReferenceText` 对 `nodes` 的直接订阅与本地 Map 派生，恢复 `ImageNode` 编辑器和 `promptResolver` 标注运行时的静态导入，并删除 selector 回归测试即可。回滚不涉及数据迁移；已保存的矢量标注与旧版 PNG 标注格式均不变。
 
+### 8.14 性能补充：Agent 控制层与重型执行链拆分
+
+**任务类型：架构收敛**
+
+**状态：已完成**
+
+#### 目标与边界
+
+- 将全局 Zustand Store 启动时只需要的 Agent 同步控制能力，与聊天面板打开后才需要的模型上下文、工具轮次和流式协议执行链分离。
+- 保持任务控制器注册表唯一，保持任务启动、暂停、停止、继续、重新规划、审批等待和状态迁移的原同步语义。
+- 删除会话和删除项目必须在原调用位置同步中止运行中任务并清空未启动队列；不得使用异步动态导入制造删除后的写回窗口。
+- 不修改 Store Action 签名、Agent Policy、独立窗口协议、IndexedDB schema、任务持久化结构或 Tauri 配置。
+
+#### 实施结果
+
+- [x] 新增 `agentTaskControl.ts`，收口任务状态迁移、活动 `AbortController`、审批 resolver、调度队列取消、暂停/停止/继续/重规划等轻量控制能力。
+- [x] `agentRuntime.ts` 保持原公开导出兼容，只保留上下文组装、模型轮次、工具执行和运行时资源清理；聊天侧既有导入无需迁移。
+- [x] `store.chat.ts` 和 `store.projects.ts` 直接依赖轻量控制层，会话/项目删除的同步中止顺序和返回契约不变。
+- [x] 新增控制层回归测试，覆盖运行中任务同步 abort、同会话未启动队列清理、旧执行器不得覆盖停止状态，以及项目级停止不影响其他项目或终态任务。
+- [x] 生产构建共享启动 chunk 从 547.25 KiB / 175.43 KiB gzip 降至 499.57 KiB / 158.25 KiB gzip，启动静态链减少 47.68 KiB / 17.18 KiB gzip；`App` chunk 基本不变。
+- [x] sourcemap 源码图确认 `agentRuntime.ts`、`agentRoundExecutor.ts`、`contextManager.ts` 和 `assistantStream.ts` 只进入按需 ChatPanel chunk，`agentTaskControl.ts` 保留在共享启动 chunk。
+
+#### 完成记录
+
+- 完成日期：2026-07-24。
+- 实际文件：`src/services/chat/agentTaskControl.ts`、`src/services/chat/agentRuntime.ts`、`src/store/store.chat.ts`、`src/store/store.projects.ts`、`tests/services/chat/agentTaskControl.test.ts`、`doc/对话助手-Agent能力实施方案.md`。
+- 回归测试：`npm run test` 共 73 个文件、390 项通过；聊天、项目和 Agent 控制定向 4 个测试文件、15 项通过。
+- 类型与 Lint：`npm run typecheck`、`npm run test:typecheck` 和本阶段 5 个 TypeScript 文件定向 ESLint 通过。
+- 生产构建：系统临时目录 Vite sourcemap 构建通过；仅保留既有 Tauri core、剧集资产动态导入、chunk 体积和插件耗时提示。
+- 未新增依赖，未修改 UI、Rust、IndexedDB schema、Agent Policy、文件授权或独立窗口协议。
+
+#### 回滚
+
+把 `agentTaskControl.ts` 的控制逻辑恢复到 `agentRuntime.ts`，恢复两个 Store 对 `agentRuntime.ts` 的导入并删除新增控制层和回归测试即可。回滚不涉及数据、配置或数据库迁移。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1692,3 +1727,4 @@ type PolicyDecision =
 | 2026-07-24 | 平台补充 | ONNX 模型下载复用 1 MiB 原生流式传输、`.part` 原子落盘、长度和 2 GiB 上限校验及取消清理；Worker 完整生命周期迁入阻塞线程池，并完成三类各 20 次无残留回收验收。 |
 | 2026-07-24 | 性能补充 | 长聊天消息行增加浏览器内容跳过，regenerate prompt 改为单遍关联；200 条复杂消息与独立窗口 patch 采样均未触发虚拟化或 dirty entity 改造阈值。 |
 | 2026-07-24 | 性能补充 | 长聊天节点引用改为稳定 displayId 派生订阅，图片标注与非首屏编辑器改为按需加载；启动静态链减少约 17.39 KiB gzip，完整前端测试 388 项通过。 |
+| 2026-07-24 | 性能补充 | Agent 同步控制层与重型模型/工具执行链拆分；共享启动 chunk 减少 17.18 KiB gzip，会话和项目删除继续同步中止后台任务。 |

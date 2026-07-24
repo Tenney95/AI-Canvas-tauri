@@ -11,7 +11,7 @@ import type {
 } from '../types/chat';
 import { AGENT_TERMINAL_STATUSES } from '../types/agent';
 import { clearConversationFileGrants } from '../services/chat/fileGrantService';
-import { stopConversationAgentTasks } from '../services/chat/agentRuntime';
+import { stopConversationAgentTasks } from '../services/chat/agentTaskControl';
 import * as chatHistoryService from '../services/chat/chatHistoryService';
 
 // ============================================
