@@ -24,6 +24,7 @@ import {
 import { generateApimartImagesBatch, generateApimartVideo } from '../apimartGen';
 import { isApimartSeedanceModel } from '../apimartVideoModels';
 import { extractModelName } from '../helpers';
+import { resolveImageUrlArray } from '../imageUtils';
 import type { MediaProviderAdapter } from '../mediaProviderRegistry';
 
 function resolveApimartConnection(): { apiKey: string; baseUrl: string } {
@@ -63,11 +64,10 @@ function waitForFlowMusicTask(
     fetchState: () => fetchFlowMusicTask(apiKey, baseUrl, taskId, signal),
     isComplete: (task) => task.status === 'completed' ? task : null,
     isFailed: (task) =>
-      task.status === 'failed' || task.status === 'error'
+      task.status === 'failed' || task.status === 'error' || task.status === 'cancelled'
         ? `APIMart 音乐任务失败: ${task.status}`
         : null,
     interval: 3000,
-    onFetchError: 'continue',
     signal,
   });
 }
@@ -188,12 +188,14 @@ export const apimartMediaProviderAdapter: MediaProviderAdapter = {
     if (!referenceInput.prompt.trim() && referenceInput.imageUrls.length === 0) {
       throw new Error('提示词不能为空');
     }
+    const imageUrls = await resolveImageUrlArray(referenceInput.imageUrls, 'apimart');
+    if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
     return generateApimartVideo(apiKey, baseUrl, modelName, referenceInput.prompt, params.nodeId, {
       resolution: params.seedanceResolution,
       ratio: params.seedanceRatio,
       duration: params.seedanceDuration,
       generateAudio: params.generateAudio,
-      imageUrls: referenceInput.imageUrls,
+      imageUrls,
     }, signal);
   },
 

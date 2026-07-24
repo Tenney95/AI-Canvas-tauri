@@ -5,6 +5,7 @@ import type {
   AudioTtsVoice,
 } from '../../types/aiTypes';
 import { buildAuthHeaders, parseResponseError } from './httpUtils';
+import { corsSafeFetch } from './httpTransport';
 
 export type ApimartAudioCapability = 'speech' | 'music';
 
@@ -80,7 +81,7 @@ async function submitFlowMusicTask(
   errorLabel: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const response = await fetch(endpoint(baseUrl, path), {
+  const response = await corsSafeFetch(endpoint(baseUrl, path), {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify(body),
@@ -110,7 +111,7 @@ export async function generateApimartSpeech(
   if (params.input.length > 4096) throw new Error('TTS 文本不能超过 4096 个字符');
   if (params.speed < 0.25 || params.speed > 4) throw new Error('TTS 语速必须在 0.25 到 4 之间');
 
-  const response = await fetch(endpoint(baseUrl, '/audio/speech'), {
+  const response = await corsSafeFetch(endpoint(baseUrl, '/audio/speech'), {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify({
@@ -154,7 +155,7 @@ export async function transcribeApimartAudio(
     formData.append('temperature', String(request.temperature));
   }
 
-  const response = await fetch(endpoint(baseUrl, '/audio/transcriptions'), {
+  const response = await corsSafeFetch(endpoint(baseUrl, '/audio/transcriptions'), {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
     body: formData,
@@ -233,7 +234,7 @@ export async function fetchFlowMusicTask(
   taskId: string,
   signal?: AbortSignal,
 ): Promise<FlowMusicTaskState> {
-  const response = await fetch(endpoint(baseUrl, `/music/tasks/${encodeURIComponent(taskId)}?language=zh`), {
+  const response = await corsSafeFetch(endpoint(baseUrl, `/music/tasks/${encodeURIComponent(taskId)}?language=zh`), {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal,
   });

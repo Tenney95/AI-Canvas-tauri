@@ -10,6 +10,7 @@ import {
   buildApimartSeedanceRequest,
   type ApimartSeedanceRequestParams,
 } from './apimartVideoModels';
+import { corsSafeFetch } from './httpTransport';
 
 /* ── APIMart 任务轮询共享类型 ── */
 export interface ApimartTaskResult<TResult = Record<string, unknown>> {
@@ -36,7 +37,7 @@ function getApimartFailureMessage(
   task: ApimartTaskResult,
   label: string,
 ): string | null {
-  if (task.status !== 'failed' && task.status !== 'error') return null;
+  if (task.status !== 'failed' && task.status !== 'error' && task.status !== 'cancelled') return null;
   const detail = typeof task.error === 'string' ? task.error : task.error?.message;
   return detail?.trim() ? `${label}: ${detail}` : `${label}: ${task.status}`;
 }
@@ -75,8 +76,9 @@ export async function executeGeneralAsyncTask(
       }
     }
 
-    const apiUrl = baseUrl.replace(/\/+$/, '') + '/images/generations';
-    const submitResp = await fetch(apiUrl, {
+    const resource = resultField === 'audios' ? 'audio' : resultField;
+    const apiUrl = `${baseUrl.replace(/\/+$/, '')}/${resource}/generations`;
+    const submitResp = await corsSafeFetch(apiUrl, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: modelName, prompt, n: 1 }),
@@ -110,7 +112,7 @@ export async function executeGeneralAsyncTask(
     // 轮询直到任务完成/失败（不设超时，仅 ComfyUI 才设超时）
     return await pollTask<Record<string, unknown>, { url: string }>({
       fetchState: async () => {
-        const pollResp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+        const pollResp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
           headers: { Authorization: `Bearer ${apiKey}` },
           signal,
         });
@@ -128,11 +130,10 @@ export async function executeGeneralAsyncTask(
       },
       isFailed: (raw) => {
         const task = (raw.data ?? raw) as Record<string, unknown>;
-        return task.status === 'failed' || task.status === 'error'
+        return task.status === 'failed' || task.status === 'error' || task.status === 'cancelled'
           ? `任务失败: ${task.status}` : null;
       },
       interval: 3000,
-      onFetchError: 'continue',
       signal,
     });
   } finally {
@@ -212,7 +213,7 @@ export async function generateApimartImagesBatch(
     if (imageUrls.length > 0) {
       submitBody.image_urls = imageUrls;
     }
-    const submitResp = await fetch(`${baseUrl}/images/generations`, {
+    const submitResp = await corsSafeFetch(`${baseUrl}/images/generations`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -276,7 +277,7 @@ export async function fetchApimartTask<TResult = Record<string, unknown>>(
   taskId: string,
   signal?: AbortSignal,
 ): Promise<ApimartTaskResult<TResult>> {
-  const resp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
+  const resp = await corsSafeFetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal,
   });
@@ -336,7 +337,7 @@ export async function generateApimartVideo(
     const requestBody = seedanceRequest ?? { model, prompt, n: 1 };
 
     // 步骤 1: 提交视频生成任务
-    const submitResp = await fetch(`${baseUrl}${submitPath}`, {
+    const submitResp = await corsSafeFetch(`${baseUrl}${submitPath}`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -378,6 +379,7 @@ export async function generateApimartVideo(
         }
         return null;
       },
+      isFailed: (task) => getApimartFailureMessage(task, 'APIMart 视频生成失败'),
       interval: 3000,
       signal,
     });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { corsSafeFetch } from '../../src/services/ai/httpTransport';
+import { corsSafeFetch, logAiRequest } from '../../src/services/ai/httpTransport';
 
 const invokeMock = vi.hoisted(() => vi.fn());
 
@@ -42,11 +42,70 @@ function mockNativeStream(
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   invokeMock.mockReset();
   vi.unstubAllGlobals();
 });
 
 describe('CORS-safe AI HTTP transport', () => {
+  it('logs readable request parameters without exposing credentials or local media', () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const formData = new FormData();
+    formData.append('prompt', '生成一段月球列车视频');
+    formData.append('api_key', 'form-secret');
+    formData.append('image', new Blob([Uint8Array.from([1, 2, 3])], { type: 'image/png' }), 'C:\\private\\reference.png');
+
+    logAiRequest('https://gateway.example/v1/videos?task_id=task-1&signature=signed-secret', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer secret',
+        'Content-Type': 'multipart/form-data',
+      },
+      body: formData,
+    }, 'test-provider');
+
+    expect(infoSpy).toHaveBeenCalledWith('[AI Request]', {
+      source: 'test-provider',
+      method: 'POST',
+      url: 'https://gateway.example/v1/videos?task_id=task-1&signature=%5BREDACTED%5D',
+      headers: {
+        authorization: '[REDACTED]',
+        'content-type': 'multipart/form-data',
+      },
+      body: {
+        prompt: '生成一段月球列车视频',
+        api_key: '[REDACTED]',
+        image: {
+          type: 'file',
+          mimeType: 'image/png',
+          size: 3,
+          name: '[REDACTED_TEXT_WITH_LOCAL_PATH]',
+        },
+      },
+    });
+  });
+
+  it('summarizes inline media and redacts absolute paths in JSON bodies', () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    logAiRequest('tauri://dreamina_generate', {
+      method: 'INVOKE',
+      body: JSON.stringify({
+        image: 'asset://localhost/reference.png',
+        mask: 'data:image/png;base64,AAAA',
+        outputPath: 'C:\\Users\\tester\\output.mp4',
+      }),
+    }, 'dreamina');
+
+    expect(infoSpy).toHaveBeenCalledWith('[AI Request]', expect.objectContaining({
+      body: {
+        image: { type: 'local-media', scheme: 'asset', length: 31 },
+        mask: { type: 'local-media', scheme: 'data', length: 26 },
+        outputPath: '[REDACTED_TEXT_WITH_LOCAL_PATH]',
+      },
+    }));
+  });
+
   it('uses browser fetch outside Tauri', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);

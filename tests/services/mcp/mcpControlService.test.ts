@@ -88,6 +88,137 @@ describe('MCP control service', () => {
     ]));
   });
 
+  it('returns configured built-in, custom and workflow models without private config', async () => {
+    useAppStore.setState((state) => ({
+      config: {
+        ...state.config,
+        providers: {
+          apimart: {
+            name: 'APIMart',
+            apiKey: 'secret-api-key',
+            baseUrl: 'https://private.example.com/v1',
+            selectedModels: [{
+              id: 'gpt-image-2',
+              name: 'GPT Image 2',
+              category: 'image',
+              provider: 'apimart',
+            }, {
+              id: 'doubao-seedance-2.0-fast',
+              name: '豆包视频 2.0 Fast',
+              category: 'video',
+              provider: 'apimart',
+            }],
+          },
+          'custom-text': {
+            name: 'Custom Text',
+            apiKey: 'custom-secret',
+            baseUrl: 'https://custom.private.example.com/v1',
+          },
+        },
+        generalModels: [{
+          id: 'custom-text-model',
+          name: 'Custom Writer',
+          modelId: 'writer-v1',
+          category: 'text',
+          providerConfigId: 'custom-text',
+        }],
+      },
+      workflows: [{
+        id: 'workflow-video',
+        name: 'LTX23-单图生视频流',
+        category: 'ai-video',
+        fileName: 'private-workflow.json',
+        fileContent: '{"private":true}',
+        ioNodes: [{ nodeId: '1', title: 'Input Image', type: 'image' }],
+        createdAt: 1,
+      }],
+    }));
+
+    const result = await handleMcpBridgeRequest({
+      sessionId: 'session-models',
+      requestId: 'session-models:call-1',
+      method: 'tools/call',
+      params: { name: 'app_get_state', arguments: {} },
+    });
+
+    const response = result as {
+      isError: boolean;
+      content: Array<{ type: 'text'; text: string }>;
+    };
+    expect(response.isError).toBe(false);
+    const state = JSON.parse(response.content[0].text) as {
+      models: Array<Record<string, unknown>>;
+      workflows: Array<Record<string, unknown>>;
+    };
+    expect(state.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'apimart/gpt-image-2',
+        category: 'image',
+        provider: 'apimart',
+      }),
+      expect.objectContaining({
+        id: 'apimart/doubao-seedance-2.0-fast',
+        category: 'video',
+        provider: 'apimart',
+      }),
+      expect.objectContaining({
+        id: 'general/custom-text-model',
+        category: 'text',
+        provider: 'general',
+      }),
+    ]));
+    expect(state.workflows).toEqual([{
+      id: 'workflow-video',
+      name: 'LTX23-单图生视频流',
+      category: 'ai-video',
+      ioNodeCount: 1,
+    }]);
+    expect(response.content[0].text).not.toContain('secret-api-key');
+    expect(response.content[0].text).not.toContain('private.example.com');
+    expect(response.content[0].text).not.toContain('private-workflow.json');
+    expect(response.content[0].text).not.toContain('{"private":true}');
+  });
+
+  it('connects the right output handle to the left input handle', async () => {
+    const createResult = await handleMcpBridgeRequest({
+      sessionId: 'session-connect',
+      requestId: 'session-connect:create',
+      method: 'tools/call',
+      params: {
+        name: 'canvas_create_nodes',
+        arguments: {
+          nodes: [{ type: 'ai-text', label: 'Script' }, {
+            type: 'ai-image',
+            label: 'Storyboard',
+          }],
+        },
+      },
+    }) as { content: Array<{ type: 'text'; text: string }> };
+    const created = JSON.parse(createResult.content[0].text) as {
+      nodes: Array<{ id: string }>;
+    };
+
+    await handleMcpBridgeRequest({
+      sessionId: 'session-connect',
+      requestId: 'session-connect:connect',
+      method: 'tools/call',
+      params: {
+        name: 'canvas_connect_nodes',
+        arguments: {
+          sourceId: created.nodes[0].id,
+          targetId: created.nodes[1].id,
+        },
+      },
+    });
+
+    expect(useAppStore.getState().edges).toContainEqual(expect.objectContaining({
+      source: created.nodes[0].id,
+      target: created.nodes[1].id,
+      sourceHandle: 'right',
+      targetHandle: 'left',
+    }));
+  });
+
   it('does not create a task when no project is active', async () => {
     useAppStore.setState({ currentProjectId: null });
     const result = await handleMcpBridgeRequest({

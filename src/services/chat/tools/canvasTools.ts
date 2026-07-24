@@ -544,8 +544,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
         store.onConnect({
           source: input.sourceId,
           target: input.targetId,
-          sourceHandle: null,
-          targetHandle: null,
+          sourceHandle: 'right',
+          targetHandle: 'left',
         });
         useAppStore.getState().incrementRevision();
         return {

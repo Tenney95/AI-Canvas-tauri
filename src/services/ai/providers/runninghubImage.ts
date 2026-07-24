@@ -16,6 +16,7 @@ import {
 import { pollTask } from '../../pollTask';
 import { runBatchTasks } from '../batchUtils';
 import { buildAuthHeaders } from '../httpUtils';
+import { corsSafeFetch } from '../httpTransport';
 
 type RunningHubImageFamily = 'v1' | 'pro' | 'v2' | 'g2' | 'youchuan-v81' | 'youchuan-v7' | 'youchuan-v6';
 
@@ -198,7 +199,7 @@ async function submitTask(
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<string> {
-  const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/${endpoint}`, {
+  const response = await corsSafeFetch(`${baseUrl.replace(/\/+$/, '')}/${endpoint}`, {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify(body),
@@ -215,7 +216,7 @@ async function queryTask(
   taskId: string,
   signal?: AbortSignal,
 ): Promise<RunningHubTaskResult> {
-  const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/query`, {
+  const response = await corsSafeFetch(`${baseUrl.replace(/\/+$/, '')}/query`, {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify({ taskId }),

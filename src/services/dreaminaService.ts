@@ -9,6 +9,7 @@ import { mapImageDimensions } from './aiDimensions';
 import { pollTask } from './pollTask';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from './pollManager';
 import { useAppStore } from '../store/useAppStore';
+import { logAiRequest } from './ai/httpTransport';
 
 const DREAMINA_RATIOS = ['21:9', '16:9', '3:2', '4:3', '1:1', '3:4', '2:3', '9:16'];
 
@@ -51,6 +52,11 @@ async function invokeTauri<T>(
   const { invoke } = await import('@tauri-apps/api/core');
   try {
     if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+    logAiRequest(`tauri://${cmd}`, {
+      method: 'INVOKE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(args ?? {}),
+    }, 'Dreamina');
     const invokePromise = invoke<T>(cmd, args);
     if (!signal) return await invokePromise;
     return await new Promise<T>((resolve, reject) => {
@@ -73,7 +79,7 @@ async function invokeTauri<T>(
   } catch (e) {
     // Tauri 命令拒绝时抛出的是字符串，转成 Error 以便上层正确展示信息
     if (e instanceof Error) throw e;
-    throw new Error(typeof e === 'string' ? e : JSON.stringify(e));
+    throw new Error(typeof e === 'string' ? e : JSON.stringify(e), { cause: e });
   }
 }
 

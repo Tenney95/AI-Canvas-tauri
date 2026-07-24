@@ -1,11 +1,51 @@
 import { useAppStore } from '../../../store/useAppStore';
+import {
+  getConfiguredModelGroups,
+  getMediaModelOptions,
+  isProviderCategoryVisible,
+} from '../../../components/nodes/shared/defaultModels';
 import { registerAgentTool } from '../toolRegistry';
+
+function listConfiguredModels(store: ReturnType<typeof useAppStore.getState>) {
+  const textModels = getConfiguredModelGroups(store.config, 'ai-text')
+    .flatMap((group) => group.models.map((model) => ({
+      id: model.value,
+      name: model.label,
+      category: 'text' as const,
+      provider: model.provider,
+      groupName: group.name,
+    })));
+  const customTextModels = (store.config.generalModels ?? [])
+    .filter((model) => (
+      model.category === 'text'
+      && isProviderCategoryVisible(store.config, model.providerConfigId, model.category)
+    ))
+    .map((model) => ({
+      id: `general/${model.id}`,
+      name: model.name,
+      category: 'text' as const,
+      provider: 'general',
+      groupName: '通用模型',
+    }));
+  const mediaModels = getMediaModelOptions(
+    store.config.generalModels ?? [],
+    store.config,
+  ).map((model) => ({
+    id: model.value,
+    name: model.label,
+    category: model.mediaKind,
+    provider: model.provider,
+    groupName: model.groupName,
+  }));
+
+  return [...textModels, ...customTextModels, ...mediaModels];
+}
 
 export function registerAppAgentTools(): Array<() => void> {
   return [registerAgentTool<Record<string, never>>({
     id: 'app_get_state',
     title: '读取应用状态',
-    description: '读取当前项目、画布 revision、节点数量、对话与 Agent 任务摘要。不会返回 API Key、本地绝对路径或消息正文。',
+    description: '读取当前项目、画布 revision、节点数量、可用模型、工作流、对话与 Agent 任务摘要。不会返回 API Key、本地绝对路径、工作流正文或消息正文。',
     effect: 'read',
     inputSchema: {
       type: 'object',
@@ -48,10 +88,12 @@ export function registerAppAgentTools(): Array<() => void> {
           updatedAt: conversation.updatedAt,
         })),
         tasks,
-        models: (store.config.generalModels ?? []).map((model) => ({
-          id: model.id,
-          name: model.name,
-          category: model.category,
+        models: listConfiguredModels(store),
+        workflows: store.workflows.map((workflow) => ({
+          id: workflow.id,
+          name: workflow.name,
+          category: workflow.category,
+          ioNodeCount: workflow.ioNodes?.length ?? 0,
         })),
       };
       const content = JSON.stringify(state);

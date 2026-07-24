@@ -11,6 +11,7 @@ import { extractModelName, normalizeSeedreamSize, parseGeneralImageResponse } fr
 import { mapImageDimensions } from '../../aiDimensions';
 import { runBatchTasks } from '../batchUtils';
 import type { BatchImageResult } from '../../../types/aiTypes';
+import { corsSafeFetch } from '../httpTransport';
 
 export interface VolcengineImageParams {
   apiKey: string;
@@ -54,7 +55,7 @@ export async function generateVolcengineImage(
     requestBody.image = imageUrls;
   }
 
-  const response = await fetch(apiUrl, {
+  const response = await corsSafeFetch(apiUrl, {
     method: 'POST',
     headers: buildAuthHeaders(apiKey),
     body: JSON.stringify(requestBody),

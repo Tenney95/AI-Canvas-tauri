@@ -70,7 +70,7 @@ async function comfyFetch(url: string, options: RequestInit = {}): Promise<Respo
   const resolvedUrl = normalizeComfyUrl(url);
 
   if (!isTauri) {
-    return fetch(resolvedUrl, options);
+    return corsSafeFetch(resolvedUrl, options);
   }
 
   const headers = new Headers(options.headers);
@@ -393,6 +393,30 @@ interface ComfyOutputNode {
 
 type ComfyOutputs = Record<string, ComfyOutputNode>;
 
+interface ComfyHistoryEntry {
+  outputs?: ComfyOutputs;
+  status?: {
+    status_str?: string;
+    completed?: boolean;
+    messages?: unknown[];
+  };
+}
+
+function readComfyFailureMessage(entry: ComfyHistoryEntry): string | null {
+  const status = entry.status;
+  if (!status) return null;
+  if (status.status_str?.toLowerCase() === 'error') {
+    for (const message of [...(status.messages ?? [])].reverse()) {
+      if (!Array.isArray(message) || typeof message[1] !== 'object' || message[1] === null) continue;
+      const detail = message[1] as Record<string, unknown>;
+      const text = detail.exception_message ?? detail.error ?? detail.message;
+      if (typeof text === 'string' && text.trim()) return `ComfyUI 执行失败：${text.trim()}`;
+    }
+    return 'ComfyUI 执行失败';
+  }
+  return null;
+}
+
 /** 构造 ComfyUI 文件访问 URL */
 function buildComfyFileUrl(baseUrl: string, file: ComfyOutputFile): string {
   const subfolder = file.subfolder ? `&subfolder=${encodeURIComponent(file.subfolder)}` : '';
@@ -411,19 +435,26 @@ async function pollComfyHistory<T>(
   extract: (outputs: ComfyOutputs) => T | null,
   signal?: AbortSignal,
 ): Promise<T> {
-  return pollTask<ComfyOutputs | undefined, T>({
+  return pollTask<ComfyHistoryEntry | undefined, T>({
     fetchState: async () => {
       const res = await comfyFetch(`${baseUrl}/history/${promptId}`, { signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const history = (await res.json()) as Record<string, unknown>;
-      const entry = history[promptId] as Record<string, unknown> | undefined;
-      return entry?.outputs as ComfyOutputs | undefined;
+      return history[promptId] as ComfyHistoryEntry | undefined;
     },
-    isComplete: (outputs) => (outputs ? extract(outputs) : null),
-    isFailed: undefined,
+    isComplete: (entry) => (entry?.outputs ? extract(entry.outputs) : null),
+    isFailed: (entry) => {
+      if (!entry) return null;
+      const failure = readComfyFailureMessage(entry);
+      if (failure) return failure;
+      if (entry.status?.completed === true) {
+        const result = entry.outputs ? extract(entry.outputs) : null;
+        if (result === null) return 'ComfyUI 执行完成但未返回目标媒体';
+      }
+      return null;
+    },
     interval: 3000,
     maxAttempts: 1200,
-    onFetchError: 'continue',
     timeoutMsg,
     signal,
   });

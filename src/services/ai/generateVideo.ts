@@ -17,6 +17,8 @@ import { mediaProviderRegistry } from './mediaProviderRegistry';
 import { savePendingTask, updatePendingTask, removePendingTask, registerNodePolling, cleanupNodePolling } from '../pollManager';
 import { collectDirectorImageUrls } from '../directorDeskService';
 import type { BaseNodeData } from '../../types';
+import { corsSafeFetch } from './httpTransport';
+import { resolveImageUrlArray } from './imageUtils';
 
 /** 收集连入当前视频节点的参考图（含 3D 导演台截图） */
 function collectConnectedReferenceImages(nodeId: string | undefined): string[] {
@@ -118,10 +120,23 @@ export async function generateVideo(
     }
     const modelName = extractModelName(model, provider);
     const { prompt: resolvedPrompt, imageUrls } = await resolvePromptWithImageRefs(rawPrompt);
-    if (!resolvedPrompt.trim() && imageUrls.length === 0) {
+    const mergedImageUrls = [...imageUrls];
+    for (const url of collectConnectedReferenceImages(params.nodeId)) {
+      if (!mergedImageUrls.includes(url)) mergedImageUrls.push(url);
+    }
+    if (!resolvedPrompt.trim() && mergedImageUrls.length === 0) {
       throw new Error('提示词不能为空');
     }
-    return generateVolcengineVideo(apiKey, baseUrl, modelName, resolvedPrompt, imageUrls, params, signal);
+    const remoteImageUrls = await resolveImageUrlArray(mergedImageUrls, 'volcengine');
+    return generateVolcengineVideo(
+      apiKey,
+      baseUrl,
+      modelName,
+      resolvedPrompt,
+      remoteImageUrls,
+      params,
+      signal,
+    );
   }
 
   // ── 通用模型视频生成 ──
@@ -248,7 +263,7 @@ async function generateVolcengineVideo(
 
     // 提交任务
     const apiUrl = `${baseUrl}/contents/generations/tasks`;
-    const submitResp = await fetch(apiUrl, {
+    const submitResp = await corsSafeFetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -284,7 +299,7 @@ async function generateVolcengineVideo(
     // 轮询
     return await pollTask<Record<string, unknown>, { url: string }>({
       fetchState: async () => {
-        const pollResp = await fetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
+        const pollResp = await corsSafeFetch(`${baseUrl}/contents/generations/tasks/${taskId}`, {
           headers: { Authorization: `Bearer ${apiKey}` },
           signal,
         });
@@ -303,14 +318,13 @@ async function generateVolcengineVideo(
       },
       isFailed: (raw) => {
         const status = raw.status as string;
-        if (status === 'failed') {
+        if (status === 'failed' || status === 'cancelled') {
           const err = raw.error as { message?: string } | undefined;
           return `任务失败: ${err?.message || status}`;
         }
         return null;
       },
       interval: 3000,
-      onFetchError: 'continue',
       signal,
     });
 
