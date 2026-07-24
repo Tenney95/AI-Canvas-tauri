@@ -1456,6 +1456,42 @@ type PolicyDecision =
 
 恢复三个生成入口内原 APIMart 分支，移除 Registry、APIMart adapter 和对应测试即可。没有配置或数据库迁移，既有媒体、待续任务和本地文件无需修复。
 
+### 8.11 平台补充：ONNX 模型流式下载与 Worker 回收
+
+**任务类型：平台能力（含原生执行边界调整）**
+
+**状态：已完成**
+
+#### 目标与边界
+
+- 复用原生文件传输的固定 1 MiB 缓冲和取消注册表，避免 ONNX 模型下载通过 `response.bytes()` 在主进程整包驻留。
+- 模型下载使用同目录 `.part`、`sync_all` 和原子重命名，失败、取消、长度异常、体积超限或格式异常时不留下正式文件或 `.part`。
+- Worker 的启动、阻塞接收、退出宽限和强制回收整体进入 `spawn_blocking`；不修改 ONNX Worker 推理协议、DirectML 隔离、Tauri 安全配置或模型 Provider。
+- ONNX 模型体积上限固定为 2 GiB；模型名只接受单个 `.onnx` 文件名，并拒绝空文件和 HTML 伪模型。
+
+#### 实施结果
+
+- [x] `file_transfer.rs` 抽取 crate 内部 `download_to_file`，统一 HTTP 状态、磁盘余量、Content-Length、实际下载长度、运行时体积上限、进度事件、取消检查和临时文件清理。
+- [x] ONNX 下载命令只负责模型目录、缓存和格式校验，下载落盘委托共享传输层，不再调用 `response.bytes()`。
+- [x] 前端模型下载生成独立 `taskId`，支持可选进度回调、外部 `taskId` 和 `AbortSignal`，取消时复用 `cancel_file_transfer`。
+- [x] Worker 正常完成后发送 `quit` 并以 10ms 间隔 `try_wait`；500ms 内退出即结束，超时才终止进程树并 `wait`。部分启动失败、发送失败、接收断开和超时均进入同一回收路径。
+- [x] 首次 GPU 探针也在阻塞线程池执行，避免首次推理仍在 async command 路径执行阻塞进程操作。
+
+#### 完成记录
+
+- 完成日期：2026-07-24。
+- 流式传输定向测试 6 项通过，覆盖成功落盘、长度不符、超限、取消和两类磁盘余量计算；取消、长度异常和超限均断言正式文件与 `.part` 不存在。
+- 176 MiB 忽略式压力用例实际执行通过；数据按需生成、不预分配模型正文，测试进程工作集从 2.43 MiB 到 10.89 MiB，增量 8.46 MiB，低于 64 MiB 目标。
+- Worker 回收定向测试覆盖正常退出、非零退出和超时各 20 次；调试桌面可执行文件的 `--onnx-worker` 另执行正常协议、失败协议和强制超时各 20 次，失败 0 次，结束后残留 Worker 0 个。
+- async runtime 响应性测试通过：阻塞线程执行 500ms Worker 回收期间，20ms async 计时任务在 300ms 阈值内返回。
+- Rust 全量 lib 测试 30 项通过、1 项手动压力测试默认忽略且已单独执行；`cargo check --lib` 通过。
+- `npm run typecheck`、`npm run test:typecheck`、`src/services/onnxService.ts` 定向 ESLint 及系统临时目录生产构建通过；构建仅保留既有动态导入和 chunk 体积警告。
+- `git diff --check`、4 个阶段文本文件严格 UTF-8 解码和常见乱码扫描通过；未新增依赖，未修改 Tauri 安全配置或 IndexedDB。
+
+#### 回滚
+
+恢复 ONNX 命令内原下载实现和 Worker 直接调用，移除共享下载限制参数、前端下载选项及对应测试即可。没有配置、数据库或模型文件格式迁移；已下载的有效 `.onnx` 文件可继续使用。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -1583,3 +1619,4 @@ type PolicyDecision =
 | 2026-07-23 | 平台补充 | 修复付费媒体生成取消链路：信号贯通图片、视频、音频、声明式协议与 Tauri 原生请求，并对不支持远程取消的已提交任务显示准确计费风险。 |
 | 2026-07-23 | P5-F | 抽取对话执行控制器、独立窗口同步控制器和 Agent 单轮执行器，保持协议与安全矩阵不变，降低 ChatPanel 与 Agent Runtime 编排修改风险。 |
 | 2026-07-23 | 平台补充 | 建立媒体 Provider Registry，并将 APIMart 图片、视频、语音和音乐执行收口到单一 adapter；其他 Provider 保留兼容分支以便渐进迁移。 |
+| 2026-07-24 | 平台补充 | ONNX 模型下载复用 1 MiB 原生流式传输、`.part` 原子落盘、长度和 2 GiB 上限校验及取消清理；Worker 完整生命周期迁入阻塞线程池，并完成三类各 20 次无残留回收验收。 |

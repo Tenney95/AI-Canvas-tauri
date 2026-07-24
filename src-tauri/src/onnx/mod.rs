@@ -17,12 +17,16 @@ mod config;
 
 use config::OnnxGpuConfig;
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::Emitter;
+
+const MAX_ONNX_MODEL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const WORKER_EXIT_GRACE: Duration = Duration::from_millis(500);
+const WORKER_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 // ── 模型目录解析 ──
 
@@ -72,10 +76,54 @@ fn is_dir_writable(dir: &Path) -> bool {
 
 // ── Tauri 命令：查询 / 下载 ──
 
+fn validate_model_name(model_name: &str) -> Result<(), String> {
+    let mut components = Path::new(model_name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+        || !model_name.to_ascii_lowercase().ends_with(".onnx")
+    {
+        return Err("模型文件名必须是单个 .onnx 文件名".to_string());
+    }
+    Ok(())
+}
+
+fn validate_onnx_file(path: &Path, content_type: Option<&str>) -> Result<u64, String> {
+    if content_type.is_some_and(|value| value.eq_ignore_ascii_case("text/html")) {
+        return Err("下载失败: 服务器返回 HTML 页面而非 ONNX 模型".to_string());
+    }
+
+    let size = std::fs::metadata(path)
+        .map_err(|e| format!("读取模型文件信息失败: {e}"))?
+        .len();
+    if size == 0 {
+        return Err("ONNX 模型文件为空".to_string());
+    }
+    if size > MAX_ONNX_MODEL_BYTES {
+        return Err(format!(
+            "ONNX 模型超过允许的体积上限 {MAX_ONNX_MODEL_BYTES} 字节"
+        ));
+    }
+
+    let mut prefix = [0_u8; 256];
+    let mut file = std::fs::File::open(path).map_err(|e| format!("打开模型文件失败: {e}"))?;
+    let read = file
+        .read(&mut prefix)
+        .map_err(|e| format!("读取模型文件头失败: {e}"))?;
+    let trimmed = String::from_utf8_lossy(&prefix[..read])
+        .trim_start()
+        .to_ascii_lowercase();
+    if trimmed.starts_with("<!doctype html") || trimmed.starts_with("<html") {
+        return Err("下载失败: 文件内容是 HTML 页面而非 ONNX 模型".to_string());
+    }
+    Ok(size)
+}
+
 #[tauri::command]
 pub fn check_model_exists(model_name: String) -> Result<bool, String> {
+    validate_model_name(&model_name)?;
     let models = models_dir()?;
-    Ok(models.join(&model_name).is_file())
+    let model_path = models.join(&model_name);
+    Ok(model_path.is_file() && validate_onnx_file(&model_path, None).is_ok())
 }
 
 #[tauri::command]
@@ -85,71 +133,52 @@ pub fn get_models_dir() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn download_onnx_model(model_name: String, url: String) -> Result<String, String> {
+pub async fn download_onnx_model(
+    app: tauri::AppHandle,
+    model_name: String,
+    url: String,
+    task_id: String,
+) -> Result<String, String> {
+    validate_model_name(&model_name)?;
     let models = models_dir()?;
     std::fs::create_dir_all(&models)
         .map_err(|e| format!("创建模型目录失败: {e}"))?;
 
     let dest = models.join(&model_name);
 
-    if let Ok(meta) = std::fs::metadata(&dest) {
-        if meta.len() > 0 {
-            let j = json!({
-                "path": dest.to_string_lossy(),
-                "size_bytes": meta.len(),
-                "cached": true,
-            });
-            return Ok(j.to_string());
+    if dest.is_file() {
+        match validate_onnx_file(&dest, None) {
+            Ok(size) => {
+                let j = json!({
+                    "path": dest.to_string_lossy(),
+                    "size_bytes": size,
+                    "cached": true,
+                });
+                return Ok(j.to_string());
+            }
+            Err(_) => std::fs::remove_file(&dest)
+                .map_err(|e| format!("清理无效模型缓存失败: {e}"))?,
         }
     }
 
-    let client = reqwest::Client::builder()
-        .user_agent("AI-Canvas/0.1")
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("下载请求失败: {e}"))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("下载失败: HTTP {status}"));
-    }
-
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if content_type.contains("text/html") {
-        return Err(format!(
-            "下载失败: 服务器返回 HTML 页面而非模型文件（URL 可能已失效）\nURL: {url}"
-        ));
-    }
-
-    let content_length = response.content_length().unwrap_or(0);
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("读取下载数据失败: {e}"))?;
-
-    if content_length > 0 && bytes.len() as u64 != content_length {
-        return Err(format!(
-            "下载不完整: 期望 {} 字节，实际 {} 字节",
-            content_length,
-            bytes.len()
-        ));
-    }
-
-    std::fs::write(&dest, &bytes)
-        .map_err(|e| format!("保存模型文件失败: {e}"))?;
+    let download = tauri::async_runtime::spawn_blocking(move || {
+        crate::file_transfer::download_to_file(
+            &app,
+            &task_id,
+            &url,
+            &dest,
+            Some(MAX_ONNX_MODEL_BYTES),
+            |temp_path, metadata| {
+                validate_onnx_file(temp_path, metadata.content_type.as_deref()).map(|_| ())
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("模型下载任务执行失败: {e}"))??;
 
     let j = json!({
-        "path": dest.to_string_lossy(),
-        "size_bytes": bytes.len(),
+        "path": download.path,
+        "size_bytes": download.total_bytes,
         "cached": false,
     });
     Ok(j.to_string())
@@ -174,9 +203,10 @@ pub fn get_onnx_gpu_status() -> Result<String, String> {
 
 struct WorkerSession {
     child: Child,
-    stdin: std::process::ChildStdin,
+    stdin: Option<std::process::ChildStdin>,
     rx: mpsc::Receiver<Value>,
     timeout: Duration,
+    stdout_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WorkerSession {
@@ -191,17 +221,24 @@ impl WorkerSession {
             .spawn()
             .map_err(|e| format!("启动 ONNX worker 失败: {e}"))?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or("无法获取 worker stdin".to_string())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("无法获取 worker stdout".to_string())?;
+        let stdin = match child.stdin.take() {
+            Some(stdin) => stdin,
+            None => {
+                reap_child(&mut child, Duration::ZERO);
+                return Err("无法获取 worker stdin".to_string());
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                drop(stdin);
+                reap_child(&mut child, Duration::ZERO);
+                return Err("无法获取 worker stdout".to_string());
+            }
+        };
 
         let (tx, rx) = mpsc::channel::<Value>();
-        std::thread::spawn(move || {
+        let stdout_thread = std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 let line = match line {
@@ -218,9 +255,10 @@ impl WorkerSession {
 
         let mut session = Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             rx,
             timeout: Duration::from_secs(timeout_secs),
+            stdout_thread: Some(stdout_thread),
         };
 
         session.send(request)?;
@@ -229,8 +267,12 @@ impl WorkerSession {
 
     fn send(&mut self, request: &Value) -> Result<(), String> {
         let s = serde_json::to_string(request).map_err(|e| format!("JSON 序列化失败: {e}"))?;
-        writeln!(self.stdin, "{}", s).map_err(|e| format!("写入 worker stdin 失败: {e}"))?;
-        self.stdin
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "worker stdin 已关闭".to_string())?;
+        writeln!(stdin, "{}", s).map_err(|e| format!("写入 worker stdin 失败: {e}"))?;
+        stdin
             .flush()
             .map_err(|e| format!("flush worker stdin 失败: {e}"))?;
         Ok(())
@@ -238,16 +280,15 @@ impl WorkerSession {
 
     fn read_one_skip_ready(&self) -> Result<Value, String> {
         loop {
-            let v = self
-                .rx
-                .recv_timeout(self.timeout)
-                .map_err(|_| {
-                    let _ = kill_child(&self.child);
-                    format!(
-                        "ONNX worker 无响应（{} 秒超时），进程可能已崩溃",
-                        self.timeout.as_secs()
-                    )
-                })?;
+            let v = self.rx.recv_timeout(self.timeout).map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => format!(
+                    "ONNX worker 无响应（{} 秒超时），进程可能已崩溃",
+                    self.timeout.as_secs()
+                ),
+                mpsc::RecvTimeoutError::Disconnected => {
+                    "ONNX worker 输出通道已关闭，进程可能已退出".to_string()
+                }
+            })?;
 
             if v.get("type").and_then(|t| t.as_str()) == Some("ready") {
                 continue;
@@ -279,12 +320,33 @@ impl WorkerSession {
 
 impl Drop for WorkerSession {
     fn drop(&mut self) {
-        let _ = writeln!(self.stdin, r#"{{"type":"quit"}}"#);
-        let _ = self.stdin.flush();
-        std::thread::sleep(Duration::from_millis(500));
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(stdin) = self.stdin.as_mut() {
+            let _ = writeln!(stdin, r#"{{"type":"quit"}}"#);
+            let _ = stdin.flush();
+        }
+        self.stdin.take();
+        reap_child(&mut self.child, WORKER_EXIT_GRACE);
+        if let Some(stdout_thread) = self.stdout_thread.take() {
+            let _ = stdout_thread.join();
+        }
     }
+}
+
+fn reap_child(child: &mut Child, grace: Duration) {
+    let deadline = Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(WORKER_EXIT_POLL_INTERVAL);
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+
+    kill_child(child);
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn kill_child(child: &Child) {
@@ -317,8 +379,13 @@ async fn probe_gpu(model_path: &Path) -> Result<OnnxGpuConfig, String> {
         "model_path": model_path.to_string_lossy()
     });
 
-    let session = WorkerSession::start(&request, 60)?;
-    let resp = match session.read_one_skip_ready() {
+    let worker_result = tauri::async_runtime::spawn_blocking(move || {
+        let session = WorkerSession::start(&request, 60)?;
+        session.read_one_skip_ready()
+    })
+    .await
+    .map_err(|e| format!("GPU 探针任务执行失败: {e}"))?;
+    let resp = match worker_result {
         Ok(v) => v,
         Err(e) => {
             // 保存 CPU 配置避免下次再探
@@ -479,24 +546,33 @@ async fn run_in_worker(
         config.ep, config.device_id
     );
 
-    let session = match WorkerSession::start(&request, timeout_secs) {
-        Ok(s) => s,
-        Err(e) => return Err((false, e)),
-    };
-
     let app_handle = app.clone();
     let tid = task_id.to_string();
     let evt = progress_event.map(|s| s.to_string());
+    let request_type_for_worker = request_type.to_string();
 
-    let resp = session.read_until_done(move |done, total| {
-        let percent = if total > 0 { done * 100 / total } else { 0 };
-        if let Some(ref evt_name) = evt {
-            let _ = app_handle.emit(
-                evt_name,
-                json!({"taskId": tid, "done": done, "total": total, "percent": percent}),
-            );
-        }
-    });
+    let resp = tauri::async_runtime::spawn_blocking(move || {
+        let session = WorkerSession::start(&request, timeout_secs)
+            .map_err(|error| (false, error))?;
+        session
+            .read_until_done(move |done, total| {
+                let percent = if total > 0 { done * 100 / total } else { 0 };
+                if let Some(ref evt_name) = evt {
+                    let _ = app_handle.emit(
+                        evt_name,
+                        json!({"taskId": tid, "done": done, "total": total, "percent": percent}),
+                    );
+                }
+            })
+            .map_err(|error| (true, error))
+    })
+    .await
+    .map_err(|error| {
+        (
+            false,
+            format!("{request_type_for_worker} Worker 任务执行失败: {error}"),
+        )
+    })?;
 
     match resp {
         Ok(v) => {
@@ -510,7 +586,7 @@ async fn run_in_worker(
                 _ => Err((false, format!("Worker 返回意外响应类型: {t}"))),
             }
         }
-        Err(e) => Err((true, e)),
+        Err(e) => Err(e),
     }
 }
 
@@ -925,6 +1001,64 @@ pub async fn character_direction_grid(
 mod direction_grid_tests {
     use super::*;
 
+    fn test_directory(name: &str) -> PathBuf {
+        let unique = format!(
+            "ai-canvas-onnx-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("系统时间应晚于 UNIX epoch")
+                .as_nanos()
+        );
+        let directory = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&directory).expect("应创建测试目录");
+        directory
+    }
+
+    #[cfg(windows)]
+    fn spawn_exit_process(exit_code: i32) -> Child {
+        Command::new("cmd")
+            .args(["/C", &format!("exit {exit_code}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("应启动退出测试进程")
+    }
+
+    #[cfg(not(windows))]
+    fn spawn_exit_process(exit_code: i32) -> Child {
+        Command::new("sh")
+            .args(["-c", &format!("exit {exit_code}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("应启动退出测试进程")
+    }
+
+    #[cfg(windows)]
+    fn spawn_stalled_process() -> Child {
+        Command::new("cmd")
+            .args(["/C", "ping 127.0.0.1 -n 30 >NUL"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("应启动超时测试进程")
+    }
+
+    #[cfg(not(windows))]
+    fn spawn_stalled_process() -> Child {
+        Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("应启动超时测试进程")
+    }
+
     #[test]
     fn direction_mapping_matches_confirmed_layout() {
         let source_indices = DIRECTION_PLACEMENTS.map(|placement| placement.source_index);
@@ -935,6 +1069,57 @@ mod direction_grid_tests {
             mirror_flags,
             [false, false, true, true, false, false, false, false, true]
         );
+    }
+
+    #[test]
+    fn validates_model_name_and_rejects_html_payload() {
+        assert!(validate_model_name("rmbg-1.4.onnx").is_ok());
+        assert!(validate_model_name("../rmbg-1.4.onnx").is_err());
+        assert!(validate_model_name("rmbg-1.4.bin").is_err());
+
+        let directory = test_directory("validation");
+        let model_path = directory.join("model.onnx");
+        std::fs::write(&model_path, b"<!doctype html><html>not a model</html>")
+            .expect("应写入测试文件");
+        assert!(validate_onnx_file(&model_path, None)
+            .expect_err("HTML 内容应被拒绝")
+            .contains("HTML"));
+        std::fs::remove_dir_all(directory).expect("应清理测试目录");
+    }
+
+    #[test]
+    fn reaps_normal_failed_and_timed_out_children_twenty_times_each() {
+        for exit_code in [0, 7] {
+            for _ in 0..20 {
+                let mut child = spawn_exit_process(exit_code);
+                reap_child(&mut child, WORKER_EXIT_GRACE);
+                assert!(child.try_wait().expect("应读取退出状态").is_some());
+            }
+        }
+
+        for _ in 0..20 {
+            let mut child = spawn_stalled_process();
+            reap_child(&mut child, Duration::from_millis(20));
+            assert!(child.try_wait().expect("应读取退出状态").is_some());
+        }
+    }
+
+    #[test]
+    fn worker_cleanup_does_not_block_async_runtime() {
+        tauri::async_runtime::block_on(async {
+            let cleanup = tauri::async_runtime::spawn_blocking(|| {
+                let mut child = spawn_stalled_process();
+                reap_child(&mut child, Duration::from_millis(500));
+            });
+
+            let started = Instant::now();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(
+                started.elapsed() < Duration::from_millis(300),
+                "阻塞回收不应占用 async runtime"
+            );
+            cleanup.await.expect("阻塞回收任务应完成");
+        });
     }
 
     #[test]

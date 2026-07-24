@@ -3,6 +3,7 @@
  * 封装 Tauri invoke 调用，含模型下载管理
  */
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 /** 图像超分结果 */
 export interface UpscaleResult {
@@ -24,6 +25,18 @@ export interface MattingResult {
   input_size: string;
 }
 
+export interface ModelDownloadProgress {
+  taskId: string;
+  transferredBytes: number;
+  totalBytes: number | null;
+}
+
+export interface ModelDownloadOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: ModelDownloadProgress) => void;
+  taskId?: string;
+}
+
 /** 角色 8 向宫格结果 */
 export interface CharacterDirectionGridResult {
   grid_path: string;
@@ -38,6 +51,11 @@ const MODEL_REGISTRY: Record<string, string> = {
   'rmbg-1.4.onnx':
     'https://huggingface.co/briaai/RMBG-1.4/resolve/main/onnx/model.onnx',
 };
+
+function createModelDownloadTaskId(): string {
+  return globalThis.crypto?.randomUUID?.()
+    ?? `onnx-download-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 /** 判断是否运行在 Tauri 桌面环境中 */
 function isTauriEnv(): boolean {
@@ -84,15 +102,55 @@ export async function checkModelExists(modelName: string): Promise<string | null
  * @param modelName 模型文件名（如 "realesrgan-x4.onnx"）
  * @returns 下载结果，含 path / size_bytes / cached
  */
-export async function downloadModel(modelName: string): Promise<DownloadResult> {
+export async function downloadModel(
+  modelName: string,
+  options?: ModelDownloadOptions,
+): Promise<DownloadResult> {
   const url = MODEL_REGISTRY[modelName];
   if (!url) throw new Error(`未知模型: ${modelName}，请联系开发者添加下载地址`);
+  if (options?.signal?.aborted) {
+    throw new DOMException('Model download aborted', 'AbortError');
+  }
 
-  const json: string = await invoke('download_onnx_model', {
-    modelName,
-    url,
-  });
-  return JSON.parse(json) as DownloadResult;
+  const taskId = options?.taskId ?? createModelDownloadTaskId();
+  let unlisten: UnlistenFn | undefined;
+  let cancelRequested = false;
+  const cancel = () => {
+    if (cancelRequested) return;
+    cancelRequested = true;
+    void invoke('cancel_file_transfer', { taskId }).catch((error) => {
+      console.warn('[onnxService] cancel_file_transfer failed:', error);
+    });
+  };
+
+  try {
+    if (options?.onProgress) {
+      unlisten = await listen<ModelDownloadProgress>('file-transfer-progress', ({ payload }) => {
+        if (payload.taskId === taskId) options.onProgress?.(payload);
+      });
+    }
+    if (options?.signal?.aborted) {
+      throw new DOMException('Model download aborted', 'AbortError');
+    }
+    options?.signal?.addEventListener('abort', cancel, { once: true });
+    const json: string = await invoke('download_onnx_model', {
+      modelName,
+      url,
+      taskId,
+    });
+    if (options?.signal?.aborted) {
+      throw new DOMException('Model download aborted', 'AbortError');
+    }
+    return JSON.parse(json) as DownloadResult;
+  } catch (error) {
+    if (options?.signal?.aborted) {
+      throw new DOMException('Model download aborted', 'AbortError');
+    }
+    throw error;
+  } finally {
+    options?.signal?.removeEventListener('abort', cancel);
+    unlisten?.();
+  }
 }
 
 /**
