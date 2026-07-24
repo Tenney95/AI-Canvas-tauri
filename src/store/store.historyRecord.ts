@@ -15,6 +15,7 @@ import {
   getHistoryEntryCount,
   hasCompletedHistoryMigration,
   markHistoryMigrationCompleted,
+  claimLegacyHistoryEntries,
   clearAllHistoryEntries,
   deleteNodeHistoryEntries,
 } from '../services/indexedDbService';
@@ -40,8 +41,9 @@ function matchesHistoryQuery(record: OutputHistoryEntry, query: HistoryQuery): b
 }
 
 export interface HistoryRecordSlice {
-  /** 全局输出历史记录（独立于节点，节点删除后记录不丢失） */
+  /** 当前项目的输出历史记录（独立于节点，节点删除后记录不丢失） */
   outputHistoryRecords: OutputHistoryEntry[];
+  historyProjectId: string | null;
   historyTotalCount: number;
   historyHasMore: boolean;
   historyLoading: boolean;
@@ -54,7 +56,10 @@ export interface HistoryRecordSlice {
   /** 迁移旧 node.data.outputHistory → IndexedDB 并加载 */
   migrateHistoryAndLoad: () => Promise<void>;
   /** 追加一条输出历史（同步写 IndexedDB） */
-  recordOutputHistory: (nodeId: string, entry: Omit<OutputHistoryEntry, 'id'>) => Promise<void>;
+  recordOutputHistory: (
+    nodeId: string,
+    entry: Omit<OutputHistoryEntry, 'id' | 'projectId'>,
+  ) => Promise<void>;
   /** 删除某条历史 */
   deleteHistoryEntry: (nodeId: string, entryId: string) => Promise<void>;
   /** 清空指定节点的全部历史 */
@@ -65,24 +70,43 @@ export interface HistoryRecordSlice {
 
 export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRecordSlice> = (set, get) => ({
   outputHistoryRecords: [],
+  historyProjectId: null,
   historyTotalCount: 0,
   historyHasMore: false,
   historyLoading: false,
 
   loadHistoryFromDb: async (query = {}) => {
+    const projectId = get().currentProjectId;
     const requestId = ++historyLoadRequestId;
     activeHistoryQuery = query;
     historyCursor = null;
-    set({ outputHistoryRecords: [], historyHasMore: false, historyLoading: true });
+    if (!projectId) {
+      set({
+        outputHistoryRecords: [],
+        historyProjectId: null,
+        historyTotalCount: 0,
+        historyHasMore: false,
+        historyLoading: false,
+      });
+      return;
+    }
+    set({
+      outputHistoryRecords: [],
+      historyProjectId: projectId,
+      historyHasMore: false,
+      historyLoading: true,
+    });
     try {
+      await claimLegacyHistoryEntries(projectId, get().nodes.map((node) => node.id));
       const [page, totalCount] = await Promise.all([
-        getHistoryEntriesPage(HISTORY_PAGE_SIZE, null, query),
-        getHistoryEntryCount(),
+        getHistoryEntriesPage(projectId, HISTORY_PAGE_SIZE, null, query),
+        getHistoryEntryCount(projectId),
       ]);
-      if (requestId !== historyLoadRequestId) return;
+      if (requestId !== historyLoadRequestId || get().currentProjectId !== projectId) return;
       historyCursor = page.nextCursor;
       set({
         outputHistoryRecords: page.records as OutputHistoryEntry[],
+        historyProjectId: projectId,
         historyTotalCount: totalCount,
         historyHasMore: page.hasMore,
         historyLoading: false,
@@ -94,8 +118,13 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
   },
 
   loadMoreHistoryFromDb: async (query = {}) => {
+    const projectId = get().currentProjectId;
+    if (!projectId) return;
     const queryKey = getHistoryQueryKey(query);
-    if (queryKey !== getHistoryQueryKey(activeHistoryQuery)) {
+    if (
+      get().historyProjectId !== projectId
+      || queryKey !== getHistoryQueryKey(activeHistoryQuery)
+    ) {
       await get().loadHistoryFromDb(query);
       return;
     }
@@ -104,8 +133,8 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
     const requestId = ++historyLoadRequestId;
     set({ historyLoading: true });
     try {
-      const page = await getHistoryEntriesPage(HISTORY_PAGE_SIZE, historyCursor, query);
-      if (requestId !== historyLoadRequestId) return;
+      const page = await getHistoryEntriesPage(projectId, HISTORY_PAGE_SIZE, historyCursor, query);
+      if (requestId !== historyLoadRequestId || get().currentProjectId !== projectId) return;
       historyCursor = page.nextCursor;
       set((state) => ({
         outputHistoryRecords: [...state.outputHistoryRecords, ...page.records] as OutputHistoryEntry[],
@@ -118,9 +147,12 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
     }
   },
 
-  getHistoryForExport: async (query = {}) => (
-    getHistoryEntriesForExport(query) as Promise<OutputHistoryEntry[]>
-  ),
+  getHistoryForExport: async (query = {}) => {
+    const projectId = get().currentProjectId;
+    return projectId
+      ? getHistoryEntriesForExport(projectId, query) as Promise<OutputHistoryEntry[]>
+      : [];
+  },
 
   migrateHistoryAndLoad: async () => {
     const { currentProjectId, nodes } = get();
@@ -136,7 +168,10 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
             'outputHistory' in (node.data as Record<string, unknown>)
           ));
 
-          await putHistoryEntries(legacyRecords);
+          await putHistoryEntries(legacyRecords.map((record) => ({
+            ...record,
+            projectId: currentProjectId,
+          })));
           if (get().currentProjectId !== currentProjectId) {
             await get().loadHistoryFromDb();
             return;
@@ -167,43 +202,67 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
 
   recordOutputHistory: async (_nodeId, entry) => {
     const projectId = get().currentProjectId;
+    if (!projectId) return;
     const id = `hist-${generateId()}`;
-    const record: OutputHistoryEntry = { ...entry, id };
+    const record: OutputHistoryEntry = { ...entry, id, projectId };
     // Persist to IndexedDB first, then update store
     await putHistoryEntry(record).catch((e) => console.warn('Failed to persist history entry:', e));
-    if (projectId && entry.status === 'success' && entry.filePath && entry.prompt.trim()) {
+    if (entry.status === 'success' && entry.filePath && entry.prompt.trim()) {
       await tagGeneratedProjectAssetSafely({
         filePath: entry.filePath,
         projectId,
         prompt: entry.prompt,
       });
     }
-    set((state) => ({
-      outputHistoryRecords: matchesHistoryQuery(record, activeHistoryQuery)
-        ? [record, ...state.outputHistoryRecords]
-        : state.outputHistoryRecords,
-      historyTotalCount: state.historyTotalCount + 1,
-    }));
+    set((state) => {
+      if (state.currentProjectId !== projectId) return {};
+      const sameProject = state.historyProjectId === projectId;
+      const records = sameProject ? state.outputHistoryRecords : [];
+      return {
+        outputHistoryRecords: matchesHistoryQuery(record, activeHistoryQuery)
+          ? [record, ...records].slice(0, HISTORY_PAGE_SIZE)
+          : records,
+        historyProjectId: projectId,
+        historyTotalCount: Math.min(
+          HISTORY_PAGE_SIZE,
+          sameProject ? state.historyTotalCount + 1 : 1,
+        ),
+        historyHasMore: false,
+      };
+    });
   },
 
   deleteHistoryEntry: async (_nodeId, entryId) => {
-    await deleteHistoryEntryFromDb(entryId).catch(() => {});
-    set((state) => ({
-      outputHistoryRecords: state.outputHistoryRecords.filter((e) => e.id !== entryId),
-      historyTotalCount: Math.max(0, state.historyTotalCount - 1),
-    }));
+    const projectId = get().currentProjectId;
+    if (!projectId) return;
+    await deleteHistoryEntryFromDb(projectId, entryId).catch(() => {});
+    set((state) => (
+      state.currentProjectId === projectId && state.historyProjectId === projectId
+        ? {
+            outputHistoryRecords: state.outputHistoryRecords.filter((e) => e.id !== entryId),
+            historyTotalCount: Math.max(0, state.historyTotalCount - 1),
+          }
+        : {}
+    ));
   },
 
   clearNodeHistory: async (nodeId) => {
-    await deleteNodeHistoryEntries(nodeId).catch(() => {});
+    const projectId = get().currentProjectId;
+    if (!projectId) return;
+    await deleteNodeHistoryEntries(projectId, nodeId).catch(() => {});
+    if (get().currentProjectId !== projectId) return;
     await get().loadHistoryFromDb(activeHistoryQuery);
   },
 
   clearAllHistory: async () => {
-    await clearAllHistoryEntries().catch(() => {});
+    const projectId = get().currentProjectId;
+    if (!projectId) return;
+    await clearAllHistoryEntries(projectId).catch(() => {});
+    if (get().currentProjectId !== projectId) return;
     historyCursor = null;
     set({
       outputHistoryRecords: [],
+      historyProjectId: projectId,
       historyTotalCount: 0,
       historyHasMore: false,
       historyLoading: false,

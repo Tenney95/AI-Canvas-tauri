@@ -87,6 +87,8 @@ export default function OutputHistoryPanel() {
     historyTotalCount,
     historyHasMore,
     historyLoading,
+    historyProjectId,
+    currentProjectId,
     historyPanelOpen,
     setHistoryPanelOpen,
     loadHistoryFromDb,
@@ -101,6 +103,8 @@ export default function OutputHistoryPanel() {
       historyTotalCount: s.historyTotalCount,
       historyHasMore: s.historyHasMore,
       historyLoading: s.historyLoading,
+      historyProjectId: s.historyProjectId,
+      currentProjectId: s.currentProjectId,
       historyPanelOpen: s.historyPanelOpen,
       setHistoryPanelOpen: s.setHistoryPanelOpen,
       loadHistoryFromDb: s.loadHistoryFromDb,
@@ -151,14 +155,11 @@ export default function OutputHistoryPanel() {
       listRef.current?.scrollTo({ top: 0 });
     }, search.trim() ? 200 : 0);
     return () => window.clearTimeout(timer);
-  }, [historyPanelOpen, historyQuery, loadHistoryFromDb, search]);
-
-  // History entries stored independently from nodes — deleting a node won't lose records
-  const allEntries = outputHistoryRecords;
+  }, [currentProjectId, historyPanelOpen, historyQuery, loadHistoryFromDb, search]);
 
   // Filter + search
   const filteredEntries = useMemo(() => {
-    let list = allEntries;
+    let list = historyProjectId === currentProjectId ? outputHistoryRecords : [];
     if (filter !== 'all') {
       list = list.filter((e) => e.nodeType === filter);
     }
@@ -173,7 +174,7 @@ export default function OutputHistoryPanel() {
       );
     }
     return list;
-  }, [allEntries, filter, search]);
+  }, [currentProjectId, filter, historyProjectId, outputHistoryRecords, search]);
 
   useEffect(() => {
     const sentinel = sentinelRef.current;

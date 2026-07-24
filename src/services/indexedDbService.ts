@@ -7,7 +7,7 @@ import type { ProjectMemory } from '../types/memory';
 import type { PresetAdvancedConfig, SkillManifest, UserPresetMode } from '../types';
 
 const DB_NAME = 'ai-canvas-db';
-const DB_VERSION = 14; // v14: paged output history and migration metadata
+const DB_VERSION = 15; // v15: project-scoped output history with bounded retention
 const STORE_PROJECTS = 'projects';
 const STORE_WORKFLOWS = 'workflows';
 const STORE_CONFIG = 'config';
@@ -74,6 +74,12 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!historyStore.indexNames.contains('nodeId')) {
         historyStore.createIndex('nodeId', 'nodeId', { unique: false });
+      }
+      if (!historyStore.indexNames.contains('projectId_timestamp_id')) {
+        historyStore.createIndex('projectId_timestamp_id', ['projectId', 'timestamp', 'id'], { unique: false });
+      }
+      if (!historyStore.indexNames.contains('projectId_nodeId')) {
+        historyStore.createIndex('projectId_nodeId', ['projectId', 'nodeId'], { unique: false });
       }
       if (!db.objectStoreNames.contains(STORE_ASSET_META)) {
         db.createObjectStore(STORE_ASSET_META, { keyPath: 'path' });
@@ -154,6 +160,7 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
       STORE_CHAT_MESSAGES,
       STORE_AGENT_TASKS,
       STORE_PROJECT_MEMORIES,
+      STORE_HISTORY,
     ], 'readwrite');
 
     tx.objectStore(STORE_PROJECTS).delete(id);
@@ -197,6 +204,16 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
       .openCursor(memoryRange);
     memoryCursor.onsuccess = () => {
       const cursor = memoryCursor.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
+
+    const historyCursor = tx.objectStore(STORE_HISTORY)
+      .index('projectId_timestamp_id')
+      .openCursor(projectHistoryRange(id));
+    historyCursor.onsuccess = () => {
+      const cursor = historyCursor.result;
       if (!cursor) return;
       cursor.delete();
       cursor.continue();
@@ -461,6 +478,7 @@ export async function deleteStyleFromDb(id: string): Promise<void> {
 
 export interface HistoryRecord {
   id: string;
+  projectId: string;
   nodeId: string;
   nodeLabel: string;
   timestamp: number;
@@ -493,6 +511,43 @@ export interface HistoryPage {
 }
 
 const HISTORY_MIGRATION_PREFIX = 'output-history-v1:';
+const MAX_PROJECT_HISTORY = 16;
+
+function projectHistoryRange(
+  projectId: string,
+  cursor?: HistoryPageCursor | null,
+): IDBKeyRange {
+  const lower: [string, number, string] = [projectId, 0, ''];
+  const upper: [string, number, string] = cursor
+    ? [projectId, cursor.timestamp, cursor.id]
+    : [projectId, Number.MAX_SAFE_INTEGER, '\uffff'];
+  return IDBKeyRange.bound(lower, upper, false, Boolean(cursor));
+}
+
+function pruneProjectHistory(store: IDBObjectStore, projectId: string): void {
+  const request = store.index('projectId_timestamp_id').openCursor(
+    projectHistoryRange(projectId),
+    'prev',
+  );
+  let retained = 0;
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (!cursor) return;
+    if (retained >= MAX_PROJECT_HISTORY) cursor.delete();
+    else retained += 1;
+    cursor.continue();
+  };
+}
+
+async function trimProjectHistory(projectId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_HISTORY, 'readwrite');
+    pruneProjectHistory(tx.objectStore(STORE_HISTORY), projectId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
 
 function matchesHistoryQuery(record: HistoryRecord, query: HistoryQuery): boolean {
   if (query.nodeType && record.nodeType !== query.nodeType) return false;
@@ -509,6 +564,7 @@ export async function putHistoryEntry(record: HistoryRecord): Promise<void> {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');
     const store = tx.objectStore(STORE_HISTORY);
     store.put(record);
+    pruneProjectHistory(store, record.projectId);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -522,18 +578,25 @@ export async function putHistoryEntries(records: HistoryRecord[]): Promise<void>
     const tx = db.transaction(STORE_HISTORY, 'readwrite');
     const store = tx.objectStore(STORE_HISTORY);
     for (const record of records) store.put(record);
+    for (const projectId of new Set(records.map((record) => record.projectId))) {
+      pruneProjectHistory(store, projectId);
+    }
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
 /** 删除单条历史记录 */
-export async function deleteHistoryEntryFromDb(id: string): Promise<void> {
+export async function deleteHistoryEntryFromDb(projectId: string, id: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');
     const store = tx.objectStore(STORE_HISTORY);
-    store.delete(id);
+    const request = store.get(id);
+    request.onsuccess = () => {
+      const record = request.result as HistoryRecord | undefined;
+      if (record?.projectId === projectId) store.delete(id);
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -541,6 +604,7 @@ export async function deleteHistoryEntryFromDb(id: string): Promise<void> {
 
 /** 按时间倒序读取一页历史；筛选在游标扫描期间完成，不保留未命中记录。 */
 export async function getHistoryEntriesPage(
+  projectId: string,
   limit: number,
   cursor: HistoryPageCursor | null = null,
   query: HistoryQuery = {},
@@ -548,11 +612,8 @@ export async function getHistoryEntriesPage(
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readonly');
-    const index = tx.objectStore(STORE_HISTORY).index('timestamp_id');
-    const range = cursor
-      ? IDBKeyRange.upperBound([cursor.timestamp, cursor.id], true)
-      : undefined;
-    const request = index.openCursor(range, 'prev');
+    const index = tx.objectStore(STORE_HISTORY).index('projectId_timestamp_id');
+    const request = index.openCursor(projectHistoryRange(projectId, cursor), 'prev');
     const records: HistoryRecord[] = [];
     let nextCursor: HistoryPageCursor | null = null;
 
@@ -579,11 +640,16 @@ export async function getHistoryEntriesPage(
 }
 
 /** 仅在用户显式导出时扫描并返回全部匹配记录。 */
-export async function getHistoryEntriesForExport(query: HistoryQuery = {}): Promise<HistoryRecord[]> {
+export async function getHistoryEntriesForExport(
+  projectId: string,
+  query: HistoryQuery = {},
+): Promise<HistoryRecord[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readonly');
-    const request = tx.objectStore(STORE_HISTORY).index('timestamp_id').openCursor(null, 'prev');
+    const request = tx.objectStore(STORE_HISTORY)
+      .index('projectId_timestamp_id')
+      .openCursor(projectHistoryRange(projectId), 'prev');
     const records: HistoryRecord[] = [];
     request.onsuccess = () => {
       const cursor = request.result;
@@ -600,13 +666,13 @@ export async function getHistoryEntriesForExport(query: HistoryQuery = {}): Prom
 }
 
 /** 使用 nodeId 索引读取指定节点的全部历史记录，按生成时间倒序返回。 */
-export async function getNodeHistoryEntries(nodeId: string): Promise<HistoryRecord[]> {
+export async function getNodeHistoryEntries(projectId: string, nodeId: string): Promise<HistoryRecord[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const request = db.transaction(STORE_HISTORY, 'readonly')
       .objectStore(STORE_HISTORY)
-      .index('nodeId')
-      .getAll(IDBKeyRange.only(nodeId));
+      .index('projectId_nodeId')
+      .getAll(IDBKeyRange.only([projectId, nodeId]));
     request.onsuccess = () => {
       const records = (request.result as HistoryRecord[]).sort((left, right) => (
         right.timestamp - left.timestamp || right.id.localeCompare(left.id)
@@ -617,10 +683,13 @@ export async function getNodeHistoryEntries(nodeId: string): Promise<HistoryReco
   });
 }
 
-export async function getHistoryEntryCount(): Promise<number> {
+export async function getHistoryEntryCount(projectId: string): Promise<number> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const request = db.transaction(STORE_HISTORY, 'readonly').objectStore(STORE_HISTORY).count();
+    const request = db.transaction(STORE_HISTORY, 'readonly')
+      .objectStore(STORE_HISTORY)
+      .index('projectId_timestamp_id')
+      .count(projectHistoryRange(projectId));
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
@@ -650,24 +719,60 @@ export async function markHistoryMigrationCompleted(projectId: string): Promise<
   });
 }
 
-/** 清空所有历史记录 */
-export async function clearAllHistoryEntries(): Promise<void> {
+/** 把 v14 及更早版本中可由节点 ID 确定归属的历史记录认领到当前项目。 */
+export async function claimLegacyHistoryEntries(
+  projectId: string,
+  nodeIds: readonly string[],
+): Promise<void> {
+  const uniqueNodeIds = [...new Set(nodeIds)];
+  if (uniqueNodeIds.length === 0) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_HISTORY, 'readwrite');
+    const nodeIndex = tx.objectStore(STORE_HISTORY).index('nodeId');
+    for (const nodeId of uniqueNodeIds) {
+      const request = nodeIndex.openCursor(IDBKeyRange.only(nodeId));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const record = cursor.value as HistoryRecord & { projectId?: string };
+        if (!record.projectId) cursor.update({ ...record, projectId });
+        cursor.continue();
+      };
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  await trimProjectHistory(projectId);
+}
+
+/** 清空指定项目的全部历史记录 */
+export async function clearAllHistoryEntries(projectId: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');
-    const store = tx.objectStore(STORE_HISTORY);
-    store.clear();
+    const request = tx.objectStore(STORE_HISTORY)
+      .index('projectId_timestamp_id')
+      .openCursor(projectHistoryRange(projectId));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
 /** 使用 nodeId 索引批量删除指定节点的历史记录。 */
-export async function deleteNodeHistoryEntries(nodeId: string): Promise<void> {
+export async function deleteNodeHistoryEntries(projectId: string, nodeId: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_HISTORY, 'readwrite');
-    const request = tx.objectStore(STORE_HISTORY).index('nodeId').openCursor(IDBKeyRange.only(nodeId));
+    const request = tx.objectStore(STORE_HISTORY)
+      .index('projectId_nodeId')
+      .openCursor(IDBKeyRange.only([projectId, nodeId]));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) return;

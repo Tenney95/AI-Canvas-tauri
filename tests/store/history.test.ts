@@ -222,33 +222,97 @@ describe('batch canvas history', () => {
     expect(useAppStore.getState()).toMatchObject({ historyIndex: -1 });
   });
 
-  it('serializes rapid history commands without skipping states', async () => {
-    useAppStore.setState({ nodes: [node('node-a', { label: 'A' })], history: [], historyIndex: -1 });
-    useAppStore.getState().updateNodeData('node-a', { label: 'B' });
-    useAppStore.getState().updateNodeData('node-a', { label: 'C' });
+  it('does not create undo steps for position, size, or ordinary data changes', async () => {
+    useAppStore.setState({ nodes: [node('node-a', { label: 'A', nodeWidth: 280, nodeHeight: 160 })], history: [], historyIndex: -1 });
+    useAppStore.getState().commitToHistory();
+    useAppStore.setState({
+      nodes: [{
+        ...useAppStore.getState().nodes[0],
+        position: { x: 120, y: 80 },
+        data: { ...useAppStore.getState().nodes[0].data, label: 'B', nodeWidth: 420, nodeHeight: 260 },
+      }],
+    });
+    useAppStore.getState().commitToHistory();
 
-    await expect(Promise.all([
-      useAppStore.getState().undo(),
-      useAppStore.getState().undo(),
-    ])).resolves.toEqual([true, true]);
-    expect(useAppStore.getState().nodes[0].data.label).toBe('A');
-
-    await expect(Promise.all([
-      useAppStore.getState().redo(),
-      useAppStore.getState().redo(),
-    ])).resolves.toEqual([true, true]);
-    expect(useAppStore.getState().nodes[0].data.label).toBe('C');
+    await expect(useAppStore.getState().undo()).resolves.toBe(false);
+    expect(useAppStore.getState().nodes[0]).toMatchObject({
+      position: { x: 120, y: 80 },
+      data: { label: 'B', nodeWidth: 420, nodeHeight: 260 },
+    });
   });
 
-  it('skips duplicate end-of-operation snapshots instead of creating a no-op undo', async () => {
-    useAppStore.setState({ nodes: [node('node-a', { label: 'A' })], history: [], historyIndex: -1 });
+  it('undoes node creation without reverting existing node layout or data', async () => {
+    useAppStore.setState({ nodes: [node('node-a', { label: 'A', nodeWidth: 280 })], history: [], historyIndex: -1 });
+    useAppStore.getState().addNode(node('node-b'));
+    useAppStore.setState({
+      nodes: useAppStore.getState().nodes.map((item) => item.id === 'node-a'
+        ? { ...item, position: { x: 75, y: 90 }, data: { ...item.data, label: 'Current', nodeWidth: 440 } }
+        : item),
+    });
+
+    await expect(useAppStore.getState().undo()).resolves.toBe(true);
+
+    expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['node-a']);
+    expect(useAppStore.getState().nodes[0]).toMatchObject({
+      position: { x: 75, y: 90 },
+      data: { label: 'Current', nodeWidth: 440 },
+    });
+    expect(useAppStore.getState().historyIndex).toBe(-1);
+  });
+
+  it('undoes an edge creation while keeping current node data', async () => {
+    useAppStore.setState({
+      nodes: [node('node-a', { label: 'A' }), node('node-b')],
+      edges: [],
+      history: [],
+      historyIndex: -1,
+    });
+    useAppStore.getState().onConnect({
+      source: 'node-a',
+      target: 'node-b',
+      sourceHandle: null,
+      targetHandle: null,
+    });
+    useAppStore.setState({
+      nodes: useAppStore.getState().nodes.map((item) => item.id === 'node-a'
+        ? { ...item, data: { ...item.data, label: 'Current' } }
+        : item),
+    });
+
+    await expect(useAppStore.getState().undo()).resolves.toBe(true);
+
+    expect(useAppStore.getState().edges).toEqual([]);
+    expect(useAppStore.getState().nodes[0].data.label).toBe('Current');
+  });
+
+  it('treats storyboard cell state as structural history', async () => {
+    useAppStore.setState({
+      nodes: [node('storyboard', {
+        type: 'ai-storyboard',
+        label: 'Before',
+        storyboardExtracted: [false],
+      })],
+      history: [],
+      historyIndex: -1,
+    });
     useAppStore.getState().commitToHistory();
-    useAppStore.setState({ nodes: [node('node-a', { label: 'B' })] });
+    useAppStore.setState({
+      nodes: [{
+        ...useAppStore.getState().nodes[0],
+        data: {
+          ...useAppStore.getState().nodes[0].data,
+          label: 'Current',
+          storyboardExtracted: [true],
+        },
+      }],
+    });
     useAppStore.getState().commitToHistory();
 
     await expect(useAppStore.getState().undo()).resolves.toBe(true);
 
-    expect(useAppStore.getState().nodes[0].data.label).toBe('A');
-    expect(useAppStore.getState().historyIndex).toBe(-1);
+    expect(useAppStore.getState().nodes[0].data).toMatchObject({
+      label: 'Current',
+      storyboardExtracted: [false],
+    });
   });
 });

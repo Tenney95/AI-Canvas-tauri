@@ -15,6 +15,15 @@ export interface HistoryEntry {
 }
 
 const MAX_HISTORY = 50;
+const STRUCTURAL_NODE_DATA_KEYS = [
+  'groupId',
+  'storyboardCols',
+  'storyboardRows',
+  'storyboardRowPositions',
+  'storyboardColPositions',
+  'storyboardExtracted',
+  'storyboardOverrides',
+] as const satisfies readonly (keyof BaseNodeData)[];
 
 function createSnapshot(
   nodes: Node<BaseNodeData>[],
@@ -66,8 +75,91 @@ function isDeepEqual(
   ));
 }
 
-function isSameSnapshot(left: HistoryEntry, right: HistoryEntry): boolean {
-  return isDeepEqual(left, right);
+function getStructuralNodeData(data: BaseNodeData): Partial<BaseNodeData> {
+  const structuralData: Partial<BaseNodeData> = {};
+  for (const key of STRUCTURAL_NODE_DATA_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(data, key)) {
+      structuralData[key] = data[key] as never;
+    }
+  }
+  return structuralData;
+}
+
+function getStructuralSnapshot(entry: HistoryEntry): unknown {
+  return {
+    nodes: entry.nodes.map((node) => ({
+      id: node.id,
+      type: node.type,
+      parentId: node.parentId,
+      extent: node.extent,
+      expandParent: node.expandParent,
+      data: getStructuralNodeData(node.data),
+    })),
+    edges: entry.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle,
+      targetHandle: edge.targetHandle,
+      type: edge.type,
+    })),
+    groups: entry.groups,
+  };
+}
+
+function isSameStructure(left: HistoryEntry, right: HistoryEntry): boolean {
+  return isDeepEqual(getStructuralSnapshot(left), getStructuralSnapshot(right));
+}
+
+function restoreStructuralNode(
+  target: Node<BaseNodeData>,
+  current: Node<BaseNodeData> | undefined,
+): Node<BaseNodeData> {
+  if (!current) return createSnapshot([target], [], []).nodes[0];
+
+  const data = { ...current.data };
+  for (const key of STRUCTURAL_NODE_DATA_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(target.data, key)) {
+      data[key] = target.data[key] as never;
+    } else {
+      delete data[key];
+    }
+  }
+  const parentChanged = current.parentId !== target.parentId;
+  return {
+    ...current,
+    type: target.type,
+    parentId: target.parentId,
+    extent: target.extent,
+    expandParent: target.expandParent,
+    position: parentChanged ? { ...target.position } : { ...current.position },
+    data,
+  };
+}
+
+function restoreStructuralSnapshot(
+  target: HistoryEntry,
+  current: HistoryEntry,
+): HistoryEntry {
+  const currentNodes = new Map(current.nodes.map((node) => [node.id, node]));
+  const currentEdges = new Map(current.edges.map((edge) => [edge.id, edge]));
+  return {
+    nodes: target.nodes.map((node) => restoreStructuralNode(node, currentNodes.get(node.id))),
+    edges: target.edges.map((edge) => {
+      const currentEdge = currentEdges.get(edge.id);
+      return currentEdge
+        ? {
+            ...currentEdge,
+            source: edge.source,
+            target: edge.target,
+            sourceHandle: edge.sourceHandle,
+            targetHandle: edge.targetHandle,
+            type: edge.type,
+          }
+        : createSnapshot([], [edge], []).edges[0];
+    }),
+    groups: target.groups.map((group) => ({ ...group, nodeIds: [...group.nodeIds] })),
+  };
 }
 
 let historyTransitionQueue: Promise<void> = Promise.resolve();
@@ -100,27 +192,31 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     const current = createSnapshot(nodes, edges, groups);
     let checkpointIndex = Math.min(historyIndex, history.length - 1);
     // 兼容少数在操作结束后额外提交的快照，撤销时跳过与当前画布完全相同的记录。
-    while (checkpointIndex >= 0 && isSameSnapshot(history[checkpointIndex], current)) {
+    while (checkpointIndex >= 0 && isSameStructure(history[checkpointIndex], current)) {
       checkpointIndex -= 1;
     }
     if (checkpointIndex < 0) {
-      // Agent 检查点允许连续快照内容相同；即使画布无视觉变化，也要保持游标可逐步回退。
-      set({ historyIndex: historyIndex - 1 });
-      return true;
+      // Agent checkpoints may intentionally contain byte-for-byte identical snapshots.
+      if (historyIndex >= 0 && isDeepEqual(history[historyIndex], current)) {
+        set({ historyIndex: historyIndex - 1 });
+        return true;
+      }
+      set({ historyIndex: -1 });
+      return false;
     }
 
     const entry = history[checkpointIndex];
     const nextHistory = [...history];
     const redoEntryIndex = checkpointIndex + 1;
-    if (!nextHistory[redoEntryIndex] || !isSameSnapshot(nextHistory[redoEntryIndex], current)) {
+    if (!nextHistory[redoEntryIndex] || !isSameStructure(nextHistory[redoEntryIndex], current)) {
       nextHistory.splice(redoEntryIndex, nextHistory.length - redoEntryIndex, current);
     }
 
     // Restore files BEFORE updating state so React renders with files already on disk.
-    const currentPaths = new Map(nodes.map((node) => [node.id, node.data.filePath]));
+    const currentNodeIds = new Set(nodes.map((node) => node.id));
     const restorePromises = entry.nodes.flatMap((node) => {
       const filePath = node.data.filePath;
-      return filePath && currentPaths.get(node.id) !== filePath
+      return filePath && !currentNodeIds.has(node.id)
         ? [fileService.restoreFromUndoTrash(filePath)]
         : [];
     });
@@ -128,9 +224,9 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
 
     const latest = get();
     const latestSnapshot = createSnapshot(latest.nodes, latest.edges, latest.groups);
-    if (latest.historyIndex !== historyIndex || !isSameSnapshot(latestSnapshot, current)) return false;
+    if (latest.historyIndex !== historyIndex || !isSameStructure(latestSnapshot, current)) return false;
 
-    const restored = createSnapshot(entry.nodes, entry.edges, entry.groups);
+    const restored = restoreStructuralSnapshot(entry, latestSnapshot);
     set({
       nodes: restored.nodes,
       edges: restored.edges,
@@ -147,16 +243,16 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     const { historyIndex, history, nodes, edges, groups } = get();
     const current = createSnapshot(nodes, edges, groups);
     let targetIndex = historyIndex + 2;
-    while (targetIndex < history.length && isSameSnapshot(history[targetIndex], current)) {
+    while (targetIndex < history.length && isSameStructure(history[targetIndex], current)) {
       targetIndex += 1;
     }
     if (targetIndex >= history.length) return false;
 
     const entry = history[targetIndex];
-    const targetPaths = new Map(entry.nodes.map((node) => [node.id, node.data.filePath]));
+    const targetNodeIds = new Set(entry.nodes.map((node) => node.id));
     const trashPromises = nodes.flatMap((node) => {
       const filePath = node.data.filePath;
-      return filePath && targetPaths.get(node.id) !== filePath
+      return filePath && !targetNodeIds.has(node.id)
         ? [fileService.moveToUndoTrash(filePath)]
         : [];
     });
@@ -164,9 +260,9 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
 
     const latest = get();
     const latestSnapshot = createSnapshot(latest.nodes, latest.edges, latest.groups);
-    if (latest.historyIndex !== historyIndex || !isSameSnapshot(latestSnapshot, current)) return false;
+    if (latest.historyIndex !== historyIndex || !isSameStructure(latestSnapshot, current)) return false;
 
-    const restored = createSnapshot(entry.nodes, entry.edges, entry.groups);
+    const restored = restoreStructuralSnapshot(entry, latestSnapshot);
     set({
       nodes: restored.nodes,
       edges: restored.edges,
@@ -180,6 +276,9 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     const { nodes, edges, groups, history, historyIndex } = get();
     const snapshot = createSnapshot(nodes, edges, groups);
     const newHistory = history.slice(0, historyIndex + 1);
+    if (newHistory.length > 0 && isSameStructure(newHistory[newHistory.length - 1], snapshot)) {
+      return;
+    }
     newHistory.push(snapshot);
     if (newHistory.length > MAX_HISTORY) newHistory.shift();
     set({ history: newHistory, historyIndex: newHistory.length - 1 });

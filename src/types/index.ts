@@ -149,6 +149,7 @@ export interface BaseNodeData {
 // ── AI 输出历史记录 ──
 export interface OutputHistoryEntry {
   id: string;                    // 唯一 ID
+  projectId: string;             // 所属项目 ID
   nodeId: string;                // 来源节点 ID
   nodeLabel: string;             // 来源节点名称
   timestamp: number;             // 生成时间戳

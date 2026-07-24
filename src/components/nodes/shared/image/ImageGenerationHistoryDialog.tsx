@@ -4,6 +4,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { Icon } from '@iconify/react';
 import type { HistoryRecord } from '../../../../services/indexedDbService';
 import { getNodeHistoryEntries } from '../../../../services/indexedDbService';
+import { useAppStore } from '../../../../store/useAppStore';
 import ModalOverlay from '../../../shared/ModalOverlay';
 import PopupCloseButton from '../../../shared/PopupCloseButton';
 import FullscreenOverlay from '../../../shared/FullscreenOverlay';
@@ -98,14 +99,16 @@ export default function ImageGenerationHistoryDialog({
   nodeId,
   onClose,
 }: ImageGenerationHistoryDialogProps) {
+  const currentProjectId = useAppStore((state) => state.currentProjectId);
   const [records, setRecords] = useState<HistoryRecord[]>([]);
+  const [recordsProjectId, setRecordsProjectId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [loadRevision, setLoadRevision] = useState(0);
   const [preview, setPreview] = useState<PreviewImage | null>(null);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !currentProjectId) return;
     let active = true;
 
     void Promise.resolve().then(async () => {
@@ -113,11 +116,15 @@ export default function ImageGenerationHistoryDialog({
       setLoading(true);
       setError('');
       try {
-        const nextRecords = await getNodeHistoryEntries(nodeId);
-        if (active) setRecords(nextRecords);
+        const nextRecords = await getNodeHistoryEntries(currentProjectId, nodeId);
+        if (active) {
+          setRecords(nextRecords);
+          setRecordsProjectId(currentProjectId);
+        }
       } catch {
         if (active) {
           setRecords([]);
+          setRecordsProjectId(currentProjectId);
           setError('生成历史加载失败');
         }
       } finally {
@@ -128,13 +135,17 @@ export default function ImageGenerationHistoryDialog({
     return () => {
       active = false;
     };
-  }, [isOpen, loadRevision, nodeId]);
+  }, [currentProjectId, isOpen, loadRevision, nodeId]);
 
-  const imageRecords = useMemo(() => records.filter((entry) => (
-    entry.nodeType === 'ai-image'
-    && entry.status === 'success'
-    && Boolean(entry.filePath || entry.mediaUrl || entry.output)
-  )), [records]);
+  const imageRecords = useMemo(() => (
+    recordsProjectId === currentProjectId
+      ? records.filter((entry) => (
+          entry.nodeType === 'ai-image'
+          && entry.status === 'success'
+          && Boolean(entry.filePath || entry.mediaUrl || entry.output)
+        ))
+      : []
+  ), [currentProjectId, records, recordsProjectId]);
 
   const handleClose = useCallback(() => {
     setPreview(null);

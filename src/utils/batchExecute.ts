@@ -26,7 +26,10 @@ import { downloadUrlAndSave } from '../services/fileService';
 export interface BatchContext {
   commitToHistory: () => void;
   updateNodeDataTransient: (nodeId: string, data: Partial<BaseNodeData>) => void;
-  recordOutputHistory: (nodeId: string, entry: Omit<OutputHistoryEntry, 'id'>) => Promise<void>;
+  recordOutputHistory: (
+    nodeId: string,
+    entry: Omit<OutputHistoryEntry, 'id' | 'projectId'>,
+  ) => Promise<void>;
   currentProjectId: string | null;
 }
 
