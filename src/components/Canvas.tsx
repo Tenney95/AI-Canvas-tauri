@@ -336,6 +336,7 @@ function CanvasInner() {
   const settleNodeGroupingOnDragStop = useAppStore((s) => s.settleNodeGroupingOnDragStop);
   const duplicateNode = useAppStore((s) => s.duplicateNode);
   const minimapVisible = useAppStore((s) => s.minimapVisible);
+  const closeNodeDialog = useAppStore((s) => s.closeNodeDialog);
   const interactionMode = useAppStore((s) => s.config.interactionMode ?? 'default');
   const interaction = interactionMode === 'classic' ? CLASSIC_INTERACTION : DEFAULT_INTERACTION;
   // 右键 effect 用 ref 读取模式，避免把 interactionMode 加进 effect 依赖而导致监听器重挂
@@ -425,6 +426,10 @@ function CanvasInner() {
     },
     [reactFlowInstance],
   );
+
+  const handleCanvasPaneClick = useCallback(() => {
+    closeNodeDialog();
+  }, [closeNodeDialog]);
 
   const toggleGrid = useCallback(() => setShowGrid((v) => !v), []);
 
@@ -1007,6 +1012,7 @@ function CanvasInner() {
         onMove={handleCanvasViewportMove}
         onMoveStart={handleCanvasViewportMoveStart}
         onMoveEnd={handleCanvasViewportMoveEnd}
+        onPaneClick={handleCanvasPaneClick}
         onMouseMove={handleCanvasPointer}
         onMouseUp={handleCanvasPointer}
         onDragEnter={onDragEnter}

@@ -28,14 +28,12 @@ import {
   getConfiguredModelGroups,
   isProviderCategoryVisible,
 } from './nodes/shared/defaultModels';
+import QualityRatioSelector from './nodes/shared/QualityRatioSelector';
 import StyleSelector from './nodes/shared/StyleSelector';
+import VideoParamSelector from './nodes/shared/VideoParamSelector';
 import PopupCloseButton from './shared/PopupCloseButton';
 import {
-  PROJECT_IMAGE_ASPECT_RATIOS,
-  PROJECT_IMAGE_SIZES,
   PROJECT_STYLE_OPTIONS,
-  PROJECT_VIDEO_DURATIONS,
-  PROJECT_VIDEO_RESOLUTIONS,
 } from '../services/projectSettingsService';
 import { uploadSourceFileToProject } from '../services/fileService';
 
@@ -143,41 +141,6 @@ function SectionTitle({ icon, children }: { icon: string; children: ReactNode })
       <Icon icon={icon} className="h-3.5 w-3.5" />
       <span>{children}</span>
     </div>
-  );
-}
-
-function SelectField({
-  label,
-  value,
-  onChange,
-  children,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  children: ReactNode;
-}) {
-  return (
-    <label className="grid gap-1.5">
-      <span className="text-[11px] font-medium text-canvas-text-muted">{label}</span>
-      <span className="relative">
-        <select
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="h-9 w-full appearance-none rounded-md border border-canvas-border bg-canvas-card
-                     px-3 pr-8 text-xs text-canvas-text outline-none transition-colors
-                     hover:border-border-secondary focus:border-indigo-500"
-        >
-          {children}
-        </select>
-        <Icon
-          icon="lucide:chevron-down"
-          aria-hidden="true"
-          className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5
-                     -translate-y-1/2 text-canvas-text-muted"
-        />
-      </span>
-    </label>
   );
 }
 
@@ -333,8 +296,8 @@ export default function ProjectSettingsPopover({
   const handleClearStyleReference = () => {
     setDraft((current) => {
       if (!current.visualStyle) return current;
-      const { styleReference: _r, ...rest } = current.visualStyle;
-      const nextVs = { ...rest };
+      const nextVs = { ...current.visualStyle };
+      delete nextVs.styleReference;
       // 若既无枚举画风也无母图，清空 visualStyle
       if (!nextVs.styleId && !nextVs.prompt) {
         return { ...current, visualStyle: undefined };
@@ -376,6 +339,34 @@ export default function ProjectSettingsPopover({
       generation: { ...current.generation, [key]: value },
     }));
   };
+
+  const handleGenerationDefaultsToggle = (kind: 'image' | 'video', enabled: boolean) => {
+    setDraft((current) => ({
+      ...current,
+      generation: kind === 'image'
+        ? {
+            ...current.generation,
+            imageAspectRatio: enabled
+              ? current.generation?.imageAspectRatio ?? '16:9'
+              : undefined,
+            imageSize: enabled ? current.generation?.imageSize ?? '1K' : undefined,
+          }
+        : {
+            ...current.generation,
+            videoResolution: enabled
+              ? current.generation?.videoResolution ?? '720p'
+              : undefined,
+            videoDuration: enabled ? current.generation?.videoDuration ?? 5 : undefined,
+          },
+    }));
+  };
+
+  const imageDefaultsEnabled = Boolean(
+    draft.generation?.imageAspectRatio || draft.generation?.imageSize,
+  );
+  const videoDefaultsEnabled = Boolean(
+    draft.generation?.videoResolution || draft.generation?.videoDuration,
+  );
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -649,50 +640,68 @@ export default function ProjectSettingsPopover({
 
               <section className="grid gap-3 border-t border-border-subtle px-4 py-4">
                 <SectionTitle icon="lucide:scan">输出默认</SectionTitle>
-                <div className="grid grid-cols-2 gap-3">
-                  <SelectField
-                    label="图片比例"
-                    value={draft.generation?.imageAspectRatio ?? ''}
-                    onChange={(value) => handleGenerationChange('imageAspectRatio', value || undefined)}
-                  >
-                    <option value="">跟随节点</option>
-                    {PROJECT_IMAGE_ASPECT_RATIOS.map((ratio) => (
-                      <option key={ratio} value={ratio}>{ratio}</option>
-                    ))}
-                  </SelectField>
-                  <SelectField
-                    label="图片画质"
-                    value={draft.generation?.imageSize ?? ''}
-                    onChange={(value) => handleGenerationChange('imageSize', value || undefined)}
-                  >
-                    <option value="">跟随节点</option>
-                    {PROJECT_IMAGE_SIZES.map((size) => (
-                      <option key={size} value={size}>{size}</option>
-                    ))}
-                  </SelectField>
-                  <SelectField
-                    label="视频分辨率"
-                    value={draft.generation?.videoResolution ?? ''}
-                    onChange={(value) => handleGenerationChange('videoResolution', value || undefined)}
-                  >
-                    <option value="">跟随节点</option>
-                    {PROJECT_VIDEO_RESOLUTIONS.map((resolution) => (
-                      <option key={resolution} value={resolution}>{resolution}</option>
-                    ))}
-                  </SelectField>
-                  <SelectField
-                    label="视频时长"
-                    value={draft.generation?.videoDuration?.toString() ?? ''}
-                    onChange={(value) => handleGenerationChange(
-                      'videoDuration',
-                      value ? Number(value) : undefined,
-                    )}
-                  >
-                    <option value="">跟随节点</option>
-                    {PROJECT_VIDEO_DURATIONS.map((duration) => (
-                      <option key={duration} value={duration}>{duration} 秒</option>
-                    ))}
-                  </SelectField>
+                <div className="grid gap-2">
+                  <div className="grid min-h-[68px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md border border-canvas-border bg-canvas-card px-3 py-2.5">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-canvas-text">图片输出</div>
+                      <div className="mt-0.5 text-[11px] text-canvas-text-muted">比例与画质</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {imageDefaultsEnabled ? (
+                        <QualityRatioSelector
+                          imageSize={draft.generation?.imageSize ?? '1K'}
+                          aspectRatio={draft.generation?.imageAspectRatio ?? '16:9'}
+                          onChangeImageSize={(value) => handleGenerationChange('imageSize', value)}
+                          onChangeAspectRatio={(value) => handleGenerationChange('imageAspectRatio', value)}
+                          placement="top"
+                        />
+                      ) : (
+                        <span className="text-xs text-canvas-text-muted">跟随节点</span>
+                      )}
+                      <label className="relative inline-flex shrink-0 cursor-pointer items-center" title="切换图片项目默认">
+                        <input
+                          type="checkbox"
+                          aria-label="启用图片项目默认"
+                          className="peer sr-only"
+                          checked={imageDefaultsEnabled}
+                          onChange={(event) => handleGenerationDefaultsToggle('image', event.target.checked)}
+                        />
+                        <span className="h-5 w-9 rounded-full bg-canvas-border transition-colors peer-checked:bg-indigo-500 peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-400/60 after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform peer-checked:after:translate-x-4" />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="grid min-h-[68px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md border border-canvas-border bg-canvas-card px-3 py-2.5">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-canvas-text">视频输出</div>
+                      <div className="mt-0.5 text-[11px] text-canvas-text-muted">分辨率与时长</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {videoDefaultsEnabled ? (
+                        <VideoParamSelector
+                          provider="dreamina"
+                          seedanceResolution={draft.generation?.videoResolution ?? '720p'}
+                          seedanceDuration={draft.generation?.videoDuration ?? 5}
+                          onChangeSeedanceResolution={(value) => handleGenerationChange('videoResolution', value)}
+                          onChangeSeedanceDuration={(value) => handleGenerationChange('videoDuration', value)}
+                          showSeedanceRatio={false}
+                          showGenerateAudio={false}
+                        />
+                      ) : (
+                        <span className="text-xs text-canvas-text-muted">跟随节点</span>
+                      )}
+                      <label className="relative inline-flex shrink-0 cursor-pointer items-center" title="切换视频项目默认">
+                        <input
+                          type="checkbox"
+                          aria-label="启用视频项目默认"
+                          className="peer sr-only"
+                          checked={videoDefaultsEnabled}
+                          onChange={(event) => handleGenerationDefaultsToggle('video', event.target.checked)}
+                        />
+                        <span className="h-5 w-9 rounded-full bg-canvas-border transition-colors peer-checked:bg-indigo-500 peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-400/60 after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform peer-checked:after:translate-x-4" />
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </section>
             </div>

@@ -196,6 +196,15 @@
   opacity: 1;
   color: var(--brand-hover);
 }
+[data-theme='light'] .img-rp-ratio-item.active,
+[data-theme='light'] .img-rp-large-adaptive.active {
+  color: color-mix(in srgb, var(--brand) 78%, var(--theme-text));
+  background: var(--brand-alpha-20);
+}
+[data-theme='light'] .img-rp-ratio-item.active .img-rp-icon,
+[data-theme='light'] .img-rp-large-adaptive.active svg {
+  color: inherit;
+}
 .img-rp-sq { width: 12px; height: 12px; }
 .img-rp-tall { width: 8px; height: 14px; }
 .img-rp-wide { width: 14px; height: 8px; }

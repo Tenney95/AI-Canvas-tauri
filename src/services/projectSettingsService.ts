@@ -32,10 +32,12 @@ export const PROJECT_STYLE_OPTIONS: ProjectStyleOption[] = [
   { id: 'vintage', name: '复古胶片', description: '胶片颗粒与怀旧影调', prompt: '复古胶片风格，自然颗粒，柔和色偏，怀旧影调' },
 ];
 
-export const PROJECT_IMAGE_ASPECT_RATIOS = ['1:1', '4:3', '3:4', '16:9', '9:16', '21:9'] as const;
-export const PROJECT_IMAGE_SIZES = ['1K', '2K', '4K'] as const;
-export const PROJECT_VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'] as const;
-export const PROJECT_VIDEO_DURATIONS = [3, 5, 8, 10, 15] as const;
+export const PROJECT_IMAGE_ASPECT_RATIOS = [
+  '自适应', '1:1', '9:16', '16:9', '3:4', '4:3', '3:2', '2:3', '5:4', '4:5',
+  '21:9', '1:4', '4:1', '1:6', '6:1', '1:8', '8:1',
+] as const;
+export const PROJECT_IMAGE_SIZES = ['720p', '1K', '2K', '4K'] as const;
+export const PROJECT_VIDEO_RESOLUTIONS = ['480p', '720p', '1080p', '4k'] as const;
 
 const NODE_MODEL_KIND: Partial<Record<NodeType, ProjectModelKind>> = {
   'ai-text': 'text',
@@ -118,9 +120,11 @@ export function normalizeProjectSettings(settings: ProjectSettings): ProjectSett
   const videoResolution = PROJECT_VIDEO_RESOLUTIONS.includes(
     generation?.videoResolution as (typeof PROJECT_VIDEO_RESOLUTIONS)[number],
   ) ? generation?.videoResolution : undefined;
-  const videoDuration = PROJECT_VIDEO_DURATIONS.includes(
-    generation?.videoDuration as (typeof PROJECT_VIDEO_DURATIONS)[number],
-  ) ? generation?.videoDuration : undefined;
+  const videoDuration = Number.isInteger(generation?.videoDuration)
+    && (generation?.videoDuration ?? 0) >= 2
+    && (generation?.videoDuration ?? 0) <= 15
+    ? generation?.videoDuration
+    : undefined;
 
   return {
     ...(visualStyle ? { visualStyle } : {}),

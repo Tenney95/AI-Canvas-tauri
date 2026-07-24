@@ -1,11 +1,6 @@
 ﻿/* ============================================
    AI Node Dialog — floating frosted-glass prompt
    ============================================ */
-.ai-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 1;
-}
 .ai-dialog-float {
   position: fixed;
   z-index: 200;
@@ -25,7 +20,7 @@
   from { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.97); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
-/* Connected nodes preview — sits between backdrop and dialog */
+/* Connected nodes preview — sits below the dialog */
 .ai-dialog-preview-float {
   position: fixed;
   z-index: 100;

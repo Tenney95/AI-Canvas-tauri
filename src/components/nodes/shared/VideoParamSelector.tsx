@@ -26,6 +26,8 @@ interface VideoParamSelectorProps {
   onChangeSeedanceRatio?: (value: string) => void;
   onChangeSeedanceDuration?: (value: number) => void;
   onChangeGenerateAudio?: (value: boolean) => void;
+  showSeedanceRatio?: boolean;
+  showGenerateAudio?: boolean;
   onContinuousEditEnd?: () => void;
 }
 
@@ -60,7 +62,8 @@ export default function VideoParamSelector({
   seedanceResolution = '720p', seedanceRatio = '16:9',
   seedanceDuration = 5, generateAudio,
   onChangeSeedanceResolution, onChangeSeedanceRatio,
-  onChangeSeedanceDuration, onChangeGenerateAudio, onContinuousEditEnd,
+  onChangeSeedanceDuration, onChangeGenerateAudio,
+  showSeedanceRatio = true, showGenerateAudio = true, onContinuousEditEnd,
 }: VideoParamSelectorProps) {
   const [open, setOpen] = useState(false);
   const [editingFrames, setEditingFrames] = useState<string | null>(null);
@@ -152,7 +155,9 @@ export default function VideoParamSelector({
 
   // ── 触发按钮文案 ──
   const triggerLabel = isSeedance
-    ? `时长${displayedDuration}s · ${displayedRatio}`
+    ? showSeedanceRatio
+      ? `时长${displayedDuration}s · ${displayedRatio}`
+      : `${displayedResolution} · 时长${displayedDuration}s`
     : `帧数${videoFrames} · 帧率${videoFps} · 分辨率${videoResolution}`;
 
   return (
@@ -194,25 +199,26 @@ export default function VideoParamSelector({
                   </div>
                 </div>
 
-                {/* Seedance 宽高比 */}
-                <div className="img-rp-quality-area mb-2">
-                  <div className="img-rp-section-label">
-                    宽高比
-                    <span className="rh-tip" data-tooltip="决定输出视频的画面比例。自适应 = 由模型智能决定。">!</span>
+                {showSeedanceRatio && (
+                  <div className="img-rp-quality-area mb-2">
+                    <div className="img-rp-section-label">
+                      宽高比
+                      <span className="rh-tip" data-tooltip="决定输出视频的画面比例。自适应 = 由模型智能决定。">!</span>
+                    </div>
+                    <div className="img-rp-quality-segmented rh-video-resolution-seg">
+                      {seedanceRatios.map((opt) => (
+                        <AnimatedButton
+                          key={opt.value}
+                          type="button"
+                          className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${displayedRatio === opt.value ? 'active' : ''}`}
+                          onClick={() => onChangeSeedanceRatio?.(opt.value)}
+                        >
+                          {opt.label}
+                        </AnimatedButton>
+                      ))}
+                    </div>
                   </div>
-                  <div className="img-rp-quality-segmented rh-video-resolution-seg">
-                    {seedanceRatios.map((opt) => (
-                      <AnimatedButton
-                        key={opt.value}
-                        type="button"
-                        className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${displayedRatio === opt.value ? 'active' : ''}`}
-                        onClick={() => onChangeSeedanceRatio?.(opt.value)}
-                      >
-                        {opt.label}
-                      </AnimatedButton>
-                    ))}
-                  </div>
-                </div>
+                )}
 
                 {/* Seedance 时长 */}
                 <div className="rh-v5-meta-panel">
@@ -250,7 +256,7 @@ export default function VideoParamSelector({
 
 
                   {/* 有声视频开关 — 仅支持音频参数的 Seedance 模型显示 */}
-                  {supportsAudio && (
+                  {showGenerateAudio && supportsAudio && (
                   <div className="rh-vram-adv-row">
                     <div className="rh-vram-adv-label" style={{ justifyContent: 'space-between', width: '100%' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

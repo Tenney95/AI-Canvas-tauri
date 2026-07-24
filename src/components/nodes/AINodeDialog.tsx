@@ -939,10 +939,7 @@ function AINodeDialog() {
 
   return (
     <>
-      {/* Transparent overlay — captures clicks outside to close */}
-      <div data-tauri-drag-region className="ai-dialog-backdrop" onMouseDown={handleCloseNodeDialog} />
-
-      {/* Connected nodes preview — above backdrop, below dialog (model-dropdown covers it) */}
+      {/* Connected nodes preview — below dialog (model-dropdown covers it) */}
       <div
         ref={previewRef}
         className="ai-dialog-preview-float"

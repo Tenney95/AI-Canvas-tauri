@@ -210,7 +210,7 @@ export interface ProjectVisualStyleSettings {
 export interface ProjectGenerationDefaults {
   imageAspectRatio?: string;
   imageSize?: string;
-  videoResolution?: '480p' | '720p' | '1080p';
+  videoResolution?: '480p' | '720p' | '1080p' | '4k';
   videoDuration?: number;
 }
 
