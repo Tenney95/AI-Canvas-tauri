@@ -6,6 +6,7 @@ import { registerPresetAgentTools } from './presetTools';
 import { registerExpertAgentTools } from './expertTools';
 import { registerProviderConfigAgentTools } from './providerConfigTools';
 import { registerWebAgentTools } from './webTools';
+import { registerAppAgentTools } from './appTools';
 
 type AgentToolRegistrationFactory = () => Array<() => void>;
 
@@ -34,6 +35,7 @@ function getRegistrationFactories(): AgentToolRegistrationFactory[] {
     registerExpertAgentTools,
     registerProviderConfigAgentTools,
     registerWebAgentTools,
+    registerAppAgentTools,
   ];
 }
 

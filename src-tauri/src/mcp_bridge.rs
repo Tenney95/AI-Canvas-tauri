@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub const MCP_REQUEST_EVENT: &str = "mcp:request";
 const PROTOCOL_VERSION: u8 = 1;
@@ -23,6 +23,8 @@ static SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct McpBridgeSessionInfo {
     pub session_id: String,
     pub port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapter_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -152,9 +154,19 @@ fn write_response(stream: &mut TcpStream, response: &OutgoingResponse) -> std::i
     stream.flush()
 }
 
+fn write_shared_response(
+    writer: &Arc<Mutex<TcpStream>>,
+    response: &OutgoingResponse,
+) -> std::io::Result<()> {
+    let mut stream = writer
+        .lock()
+        .map_err(|_| std::io::Error::other("MCP bridge 响应锁不可用"))?;
+    write_response(&mut stream, response)
+}
+
 fn handle_connection(
     app: AppHandle,
-    mut stream: TcpStream,
+    stream: TcpStream,
     info: McpBridgeSessionInfo,
     token: String,
     active: Arc<AtomicBool>,
@@ -165,6 +177,7 @@ fn handle_connection(
     let Ok(read_stream) = stream.try_clone() else {
         return;
     };
+    let writer = Arc::new(Mutex::new(stream));
     let _ = read_stream.set_read_timeout(Some(READ_POLL_TIMEOUT));
     let mut reader = BufReader::new(read_stream);
 
@@ -188,8 +201,8 @@ fn handle_connection(
             Err(_) => break,
         };
         if bytes_read > MAX_FRAME_BYTES || !line.ends_with('\n') {
-            let _ = write_response(
-                &mut stream,
+            let _ = write_shared_response(
+                &writer,
                 &response_error("invalid", "MCP_FRAME_TOO_LARGE", "MCP bridge 请求超过 1 MiB 上限"),
             );
             break;
@@ -207,7 +220,7 @@ fn handle_connection(
                 } else {
                     "MCP_REQUEST_INVALID"
                 };
-                let _ = write_response(&mut stream, &response_error(raw_id, code, message));
+                let _ = write_shared_response(&writer, &response_error(raw_id, code, message));
                 if code == "MCP_AUTH_FAILED" {
                     break;
                 }
@@ -222,8 +235,8 @@ fn handle_connection(
             .map(|mut requests| requests.insert(request_id.clone(), sender).is_none())
             .unwrap_or(false);
         if !inserted {
-            let _ = write_response(
-                &mut stream,
+            let _ = write_shared_response(
+                &writer,
                 &response_error(request.id, "MCP_DUPLICATE_ID", "MCP bridge 请求 ID 重复"),
             );
             continue;
@@ -243,44 +256,47 @@ fn handle_connection(
             if let Ok(mut requests) = pending.lock() {
                 requests.remove(&request_id);
             }
-            let _ = write_response(
-                &mut stream,
+            let _ = write_shared_response(
+                &writer,
                 &response_error(request.id, "MCP_FRONTEND_UNAVAILABLE", "AI Canvas 主窗口尚未就绪"),
             );
             continue;
         }
-
-        let frontend_response = receiver.recv_timeout(RESPONSE_TIMEOUT);
-        if let Ok(mut requests) = pending.lock() {
-            requests.remove(&request_id);
-        }
-        let response = match frontend_response {
-            Ok(frontend) if frontend.ok => OutgoingResponse {
-                version: PROTOCOL_VERSION,
-                id: request.id,
-                ok: true,
-                result: frontend.result.or(Some(Value::Null)),
-                error: None,
-            },
-            Ok(frontend) => response_error(
-                request.id,
-                "MCP_FRONTEND_ERROR",
-                frontend.error.unwrap_or_else(|| "AI Canvas MCP 请求失败".to_string()),
-            ),
-            Err(mpsc::RecvTimeoutError::Timeout) => response_error(
-                request.id,
-                "MCP_RESPONSE_TIMEOUT",
-                "AI Canvas MCP 请求等待超时",
-            ),
-            Err(mpsc::RecvTimeoutError::Disconnected) => response_error(
-                request.id,
-                "MCP_SESSION_STOPPED",
-                "AI Canvas MCP 会话已停止",
-            ),
-        };
-        if write_response(&mut stream, &response).is_err() {
-            break;
-        }
+        let response_writer = Arc::clone(&writer);
+        let response_pending = Arc::clone(&pending);
+        let _ = thread::Builder::new()
+            .name("ai-canvas-mcp-response".to_string())
+            .spawn(move || {
+                let frontend_response = receiver.recv_timeout(RESPONSE_TIMEOUT);
+                if let Ok(mut requests) = response_pending.lock() {
+                    requests.remove(&request_id);
+                }
+                let response = match frontend_response {
+                    Ok(frontend) if frontend.ok => OutgoingResponse {
+                        version: PROTOCOL_VERSION,
+                        id: request.id,
+                        ok: true,
+                        result: frontend.result.or(Some(Value::Null)),
+                        error: None,
+                    },
+                    Ok(frontend) => response_error(
+                        request.id,
+                        "MCP_FRONTEND_ERROR",
+                        frontend.error.unwrap_or_else(|| "AI Canvas MCP 请求失败".to_string()),
+                    ),
+                    Err(mpsc::RecvTimeoutError::Timeout) => response_error(
+                        request.id,
+                        "MCP_RESPONSE_TIMEOUT",
+                        "AI Canvas MCP 请求等待超时",
+                    ),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => response_error(
+                        request.id,
+                        "MCP_SESSION_STOPPED",
+                        "AI Canvas MCP 会话已停止",
+                    ),
+                };
+                let _ = write_shared_response(&response_writer, &response);
+            });
     }
 }
 
@@ -329,6 +345,7 @@ pub fn mcp_bridge_start(
     let info = McpBridgeSessionInfo {
         session_id: format!("mcp-{epoch_ms:x}-{sequence:x}"),
         port,
+        adapter_path: resolve_adapter_path(&app),
     };
     let active = Arc::new(AtomicBool::new(true));
     let client_connected = Arc::new(AtomicBool::new(false));
@@ -400,6 +417,23 @@ pub fn mcp_bridge_start(
         .map_err(|error| format!("无法启动 MCP bridge 线程: {error}"))?;
 
     Ok(info)
+}
+
+fn resolve_adapter_path(app: &AppHandle) -> Option<String> {
+    let candidates = [
+        std::env::current_dir()
+            .ok()
+            .map(|directory| directory.join("scripts").join("ai-canvas-mcp.mjs")),
+        app.path()
+            .resource_dir()
+            .ok()
+            .map(|directory| directory.join("scripts").join("ai-canvas-mcp.mjs")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -515,5 +549,29 @@ mod tests {
         assert!(parse_request(&invalid_id, TOKEN)
             .unwrap_err()
             .contains("请求 ID 无效"));
+    }
+
+    #[test]
+    fn stopping_a_session_releases_pending_requests() {
+        let active = Arc::new(AtomicBool::new(true));
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut requests = HashMap::new();
+        requests.insert("session:request".to_string(), sender);
+        let session = BridgeSession {
+            info: McpBridgeSessionInfo {
+                session_id: "session".to_string(),
+                port: 43123,
+                adapter_path: None,
+            },
+            active: Arc::clone(&active),
+            pending: Arc::new(Mutex::new(requests)),
+        };
+
+        stop_session(session);
+
+        assert!(!active.load(Ordering::Acquire));
+        let response = receiver.recv_timeout(Duration::from_millis(50)).unwrap();
+        assert!(!response.ok);
+        assert_eq!(response.error.as_deref(), Some("AI Canvas MCP 会话已停止"));
     }
 }

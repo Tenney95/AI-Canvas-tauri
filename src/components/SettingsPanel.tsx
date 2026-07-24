@@ -21,6 +21,7 @@ import PopupCloseButton from './shared/PopupCloseButton';
 import ApiKeySettings from './settings/ApiKeySettings';
 import StorageHealthCenter from './settings/StorageHealthCenter';
 import DirectorDeskStorageManager from './settings/DirectorDeskStorageManager';
+import McpControlSettings from './settings/McpControlSettings';
 import { BACKGROUND_OPTIONS } from './backgrounds/CanvasBackground';
 import { detectBackgroundBrightness, compressImageLossless } from '../services/backgroundService';
 import type { CanvasBackground as CanvasBg, InteractionMode } from '../types';
@@ -412,6 +413,7 @@ export default function SettingsPanel() {
               { id: 'storage', label: '存储健康' },
               { id: 'comfyui', label: 'ComfyUI' },
               { id: 'shortcuts', label: '快捷键' },
+              { id: 'mcp', label: 'MCP 控制' },
             ].map(({ id, label }) => (
               <AnimatedButton
                 key={id}
@@ -463,6 +465,9 @@ export default function SettingsPanel() {
                       <line x1="8" y1="12" x2="8.01" y2="12" /><line x1="12" y1="12" x2="12.01" y2="12" />
                       <line x1="16" y1="12" x2="16.01" y2="12" /><line x1="7" y1="16" x2="17" y2="16" />
                     </>
+                  )}
+                  {id === 'mcp' && (
+                    <Icon icon="lucide:plug-zap" width="14" height="14" />
                   )}
                 </svg>
                 {label}
@@ -1117,6 +1122,8 @@ export default function SettingsPanel() {
                 <DirectorDeskStorageManager />
               </>
             )}
+
+            {activeTab === 'mcp' && <McpControlSettings />}
           </div>
         </div>
     </ModalOverlay>

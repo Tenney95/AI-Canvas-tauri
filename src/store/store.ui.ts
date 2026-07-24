@@ -4,7 +4,7 @@
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 
-export type SettingsTab = 'general' | 'files' | 'api' | 'shortcuts' | 'comfyui' | 'storage';
+export type SettingsTab = 'general' | 'files' | 'api' | 'shortcuts' | 'comfyui' | 'storage' | 'mcp';
 
 export interface UISlice {
   settingsOpen: boolean;

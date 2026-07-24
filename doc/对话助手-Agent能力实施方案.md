@@ -1617,8 +1617,8 @@ type PolicyDecision =
 - [x] 通过 `doc/plans/2026-07-24-local-mcp-control-bridge.md` 固定真实文件范围、定向测试和本机验收步骤。
 - [x] 经用户单独确认后增加官方 `@modelcontextprotocol/sdk@1.29.0`；未新增 Cargo crate。
 - [x] 实现 stdio 适配器与带鉴权、限长、超时和会话失效的 Rust loopback 桥。
-- [ ] 抽取 Agent 共享工具执行器并接入专用“`MCP 控制`”审计会话。
-- [ ] 增加默认关闭的设置入口、一次性连接配置和主窗口生命周期清理。
+- [x] 抽取 Agent 共享工具执行器并接入专用“`MCP 控制`”审计会话。
+- [x] 增加默认关闭的设置入口、一次性连接配置和主窗口生命周期清理。
 - [ ] 完成定向、全量、Rust、生产构建、UTF-8 和真实连接验收。
 
 #### 当前完成记录
@@ -1629,6 +1629,11 @@ type PolicyDecision =
 - 传输实现：`scripts/ai-canvas-mcp.mjs` 使用官方 stdio transport；`src-tauri/src/mcp_bridge.rs` 只监听 `127.0.0.1:0`，逐帧验证 256 位令牌、1 MiB 上限、协议版本和固定方法白名单。
 - 传输测试：Node 适配器 1 个文件、3 项通过；Rust bridge 3 项通过；`cargo check --lib` 通过。
 - Rust 依赖：使用标准库阻塞 TCP 线程和 channel，没有增加 Cargo crate、Tokio feature、capability 或安全配置。
+- 控制与审计：MCP 工具发现只读取当前上下文可用 Registry；调用动态复用 round executor 的 schema、Policy、审批、重试和 checkpoint 执行链，每次创建专用对话下的 AgentTask 与脱敏消息摘要。
+- 应用状态：新增 `app_get_state` 只读工具，只返回项目、revision、节点/连线数量、对话、任务和无凭据模型摘要。
+- 设置与生命周期：设置页默认显示关闭，手动开启时用 Web Crypto 生成 256 位令牌；命令只保存在组件状态，主窗口关闭前停止 bridge。Rust 运行时动态解析适配器路径，没有硬编码本机目录。
+- 定向验证：MCP 设置、控制服务、共享执行器、现有 round 与审批共 5 个测试文件、12 项通过；Rust bridge 4 项通过；生产与测试 TypeScript 类型检查通过。
+- 定向 Lint：新增和修改的 MCP/Agent/App 文件通过；`SettingsPanel.tsx` 仍有 HEAD 既存的 `react-hooks/set-state-in-effect` 错误，关闭该既存规则后本次修改检查通过。
 - 编码与差异：新增文档严格 UTF-8 解码通过，`git diff --check` 通过。
 
 #### 回滚

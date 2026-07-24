@@ -143,11 +143,30 @@ export default function App() {
           await store.captureCurrentProjectSnapshot();
           await store.saveCurrentProjectSilent();
           await fileService.flushUndoTrashDirs();
+          const { stopMcpBridge } = await import('./services/mcp/mcpBridgeService');
+          await stopMcpBridge().catch(() => {});
           win.destroy();
         });
       } catch { /* non-Tauri env */ }
     })();
     return () => { unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    import('./services/mcp/mcpControlService')
+      .then(({ initMcpControlService }) => initMcpControlService())
+      .then((cleanup) => {
+        if (cancelled) cleanup();
+        else dispose = cleanup;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
   }, []);
 
   // ── 更新相关操作 ──

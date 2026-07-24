@@ -68,18 +68,18 @@ export interface AgentRoundResult {
   totalToolResultChars: number;
 }
 
-interface ExecutedToolCall {
+export interface ExecutedToolCall {
   summary: ToolResultSummary;
   modelContent: string;
 }
 
-function getTask(taskId: string): AgentTask {
+export function getTask(taskId: string): AgentTask {
   const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
   if (!task) throw new Error(`未找到 Agent 任务: ${taskId}`);
   return task;
 }
 
-function updateTaskSnapshot(
+export function updateTaskSnapshot(
   taskId: string,
   updater: (task: AgentTask) => AgentTask,
 ): AgentTask {
@@ -88,7 +88,7 @@ function updateTaskSnapshot(
   return next;
 }
 
-function appendStep(taskId: string, step: AgentStep): AgentStep {
+export function appendStep(taskId: string, step: AgentStep): AgentStep {
   updateTaskSnapshot(taskId, (task) => ({
     ...task,
     steps: [...task.steps, step],
@@ -97,7 +97,7 @@ function appendStep(taskId: string, step: AgentStep): AgentStep {
   return step;
 }
 
-function updateStep(
+export function updateStep(
   taskId: string,
   stepId: string,
   partial: Partial<AgentStep>,
@@ -114,7 +114,7 @@ function updateStep(
   return changed;
 }
 
-function createStepId(taskId: string, index: number): string {
+export function createStepId(taskId: string, index: number): string {
   return `${taskId}-step-${index}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
@@ -156,7 +156,7 @@ export function maxAutoRetriesForEffect(
   return effect === 'read' ? budget.maxReadRetries : 0;
 }
 
-async function executePreparedToolCall(
+export async function executePreparedToolCall(
   taskId: string,
   call: ProposedToolCall,
   prepared: PreparedAgentToolCall,
@@ -421,7 +421,7 @@ async function runWithConcurrency<T>(
   await Promise.all(workers);
 }
 
-function prepareApprovalInput(
+export function prepareApprovalInput(
   prepared: PreparedAgentToolCall,
   taskGoal: string,
 ): {
