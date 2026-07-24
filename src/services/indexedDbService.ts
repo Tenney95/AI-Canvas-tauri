@@ -144,9 +144,21 @@ export async function saveProjectToDb(record: ProjectRecord): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_PROJECTS, 'readwrite');
     const store = tx.objectStore(STORE_PROJECTS);
-    store.put(record);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    const request = store.put(record);
+    let settled = false;
+    const fail = (error: DOMException | null) => {
+      if (settled) return;
+      settled = true;
+      reject(error ?? new Error(`项目 ${record.id} 的 IndexedDB 写入失败`));
+    };
+    request.onerror = () => fail(request.error);
+    tx.oncomplete = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    tx.onerror = () => fail(tx.error);
+    tx.onabort = () => fail(tx.error);
   });
 }
 

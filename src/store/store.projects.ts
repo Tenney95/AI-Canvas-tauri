@@ -279,13 +279,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
     }));
 
     try {
-      await fileService.saveProject({
-        ...nextProject,
-        name: state.projectName,
-        nodes: state.nodes,
-        edges: state.edges,
-        groups: state.groups,
-      });
+      const record = createCurrentProjectSaveRecord(get());
+      if (!record || record.id !== projectId) throw new Error('当前项目已切换，无法保存项目设置');
+      await enqueueProjectSave({ ...record, updatedAt: nextProject.updatedAt });
       get().showToast('项目设置已保存');
       return true;
     } catch (error) {

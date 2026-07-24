@@ -37,6 +37,8 @@ jobs:
             os: windows-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
 
@@ -102,7 +104,7 @@ jobs:
 
             ## 下载
 
-            请在下方 Assets 中选择对应平台的安装包：Windows 使用 `.exe` 或 `.msi`，macOS Apple Silicon 使用 `.dmg`，Linux 使用 `.AppImage`、`.deb` 或 `.rpm`。
+            请在下方 Assets 中选择对应平台的安装包：Windows 使用 `.exe` 或 `.msi`，macOS Apple Silicon（arm64）与 Intel（x64）分别使用对应架构的 `.dmg`，Linux 使用 `.AppImage`、`.deb` 或 `.rpm`。
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

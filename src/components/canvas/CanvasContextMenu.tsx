@@ -91,7 +91,8 @@ function CanvasContextMenu({
   onShowSubmenu,
   onHideSubmenu,
 }: CanvasContextMenuProps) {
-  // 动态计算子菜单位置，使用 state 触发重渲染。初始值用 CPU 从位置估算，useLayoutEffect 中根据实际 DOM 修正。
+  // 估算值仅用于首次布局；挂载后使用真实 DOM 尺寸修正，避免菜单项变化或界面缩放导致底部被裁切。
+  const [l1Pos, setL1Pos] = useState<{ left: number; top: number } | null>(null);
   const [subPos, setSubPos] = useState<{ left: number; top: number } | null>(null);
 
   const l1Height = estMenuHeight(L1_ITEM_COUNT, L1_SEP_COUNT);
@@ -100,18 +101,44 @@ function CanvasContextMenu({
   // 计算 Level 1 菜单的安全位置
   const safeL1 = calcFixedPosition(position.x, position.y, l1Width, l1Height);
 
-  // 当 L1 渲染后，测量实际尺寸并计算子菜单位置
+  // 当 L1 渲染后，先按真实尺寸修正根菜单，再计算子菜单位置。
   useLayoutEffect(() => {
     if (!visible) return;
     const l1El = menuRef.current;
     if (!l1El) return;
 
+    const safeViewportPos = calcFixedPosition(
+      position.x,
+      position.y,
+      l1El.offsetWidth,
+      l1El.offsetHeight,
+    );
+    // contain: paint 会让画布视口成为 fixed 定位容器，样式坐标需换算到该容器内。
+    const fixedContainer = l1El.closest<HTMLElement>('.app-canvas-viewport');
+    const fixedContainerRect = fixedContainer?.getBoundingClientRect();
+    const nextL1 = {
+      left: safeViewportPos.left - (fixedContainerRect?.left ?? 0),
+      top: safeViewportPos.top - (fixedContainerRect?.top ?? 0),
+    };
+    setL1Pos((current) => (
+      current?.left === nextL1.left && current.top === nextL1.top ? current : nextL1
+    ));
+
     const l1Rect = l1El.getBoundingClientRect();
-    const subH = estMenuHeight(SUB_ITEM_COUNT, SUB_SEP_COUNT);
-    const subW = estMenuWidth(SUB_ITEM_COUNT);
+    const subEl = submenuRef.current;
+    const subH = subEl?.offsetHeight ?? estMenuHeight(SUB_ITEM_COUNT, SUB_SEP_COUNT);
+    const subW = subEl?.offsetWidth ?? estMenuWidth(SUB_ITEM_COUNT);
     const sub = calcSubmenuPosition(l1Rect, subW, subH, 'right');
-    setSubPos({ left: sub.left, top: sub.top });
-  }, [visible, position.x, position.y, menuRef]);
+    const nextSubPos = {
+      left: sub.left - (fixedContainerRect?.left ?? 0),
+      top: sub.top - (fixedContainerRect?.top ?? 0),
+    };
+    setSubPos((current) => (
+      current?.left === nextSubPos.left && current.top === nextSubPos.top
+        ? current
+        : nextSubPos
+    ));
+  }, [visible, position.x, position.y, hoverMenu, hasSelection, l1Pos, menuRef, submenuRef]);
 
   if (!visible) return null;
 
@@ -121,7 +148,7 @@ function CanvasContextMenu({
       <div
         ref={menuRef}
         className="canvas-ctx-menu"
-        style={{ left: safeL1.left, top: safeL1.top }}
+        style={{ left: l1Pos?.left ?? safeL1.left, top: l1Pos?.top ?? safeL1.top }}
       >
         <div
           className={`menu-row menu-row-split${hoverMenu === 'addNode' ? ' highlight' : ''}`}

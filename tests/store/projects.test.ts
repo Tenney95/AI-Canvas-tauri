@@ -220,6 +220,49 @@ describe('project switching', () => {
     }));
   });
 
+  it('serializes project settings behind an in-flight save and preserves project data', async () => {
+    let finishFirstSave: (() => void) | undefined;
+    fileMocks.saveProject.mockImplementationOnce((record: { id: string }) => (
+      new Promise<string>((resolve) => {
+        finishFirstSave = () => resolve(record.id);
+      })
+    ));
+    const dramaAssets = { version: 1 as const, characters: [], scenes: [], props: [] };
+    useAppStore.setState({
+      projects: [{ id: 'project-settings', name: 'Settings', createdAt: 1, updatedAt: 1 }],
+      currentProjectId: 'project-settings',
+      projectName: 'Settings',
+      nodes: [{
+        id: 'settings-node',
+        type: 'ai-image',
+        position: { x: 0, y: 0 },
+        data: { label: 'Settings node', type: 'ai-image' },
+      }],
+      edges: [],
+      groups: [],
+      dramaAssets,
+    });
+
+    const firstSave = useAppStore.getState().saveCurrentProjectSilent();
+    expect(fileMocks.saveProject).toHaveBeenCalledTimes(1);
+
+    const settingsSave = useAppStore.getState().updateProjectSettings({
+      promptSuffixes: { image: '统一像素画风' },
+    });
+    expect(fileMocks.saveProject).toHaveBeenCalledTimes(1);
+
+    finishFirstSave?.();
+    await expect(firstSave).resolves.toBe('project-settings');
+    await expect(settingsSave).resolves.toBe(true);
+
+    expect(fileMocks.saveProject).toHaveBeenCalledTimes(2);
+    expect(fileMocks.saveProject).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      id: 'project-settings',
+      settings: { promptSuffixes: { image: '统一像素画风' } },
+      dramaAssets,
+    }));
+  });
+
   it('does not block project switching while a complex snapshot is still encoding', async () => {
     let resolveSnapshot: ((snapshot: string) => void) | undefined;
     snapshotMocks.captureCurrentCanvasSnapshot.mockReturnValue(new Promise((resolve) => {
