@@ -11,9 +11,44 @@
 /// - `gpu`   — DXGI 适配器枚举 + DirectML 探针
 /// - `config` — GPU 配置缓存（ep / device_id / device_name）
 
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 pub mod worker;
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 mod gpu;
 mod config;
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub mod worker {
+    use serde_json::{json, Value};
+    use std::io::{BufRead, Write};
+
+    const UNSUPPORTED_MESSAGE: &str = "Intel macOS 版本不支持本地 ONNX Runtime";
+
+    pub fn run() {
+        println!(
+            "{}",
+            json!({"type":"ready","version":env!("CARGO_PKG_VERSION")})
+        );
+
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            let Ok(request) = serde_json::from_str::<Value>(&line) else {
+                println!("{}", json!({"type":"error","error":"无效 JSON"}));
+                continue;
+            };
+            let id = request.get("id").cloned().unwrap_or(Value::Null);
+            if request.get("type").and_then(Value::as_str) == Some("quit") {
+                println!("{}", json!({"id":id,"type":"ok","result":"bye"}));
+                break;
+            }
+            println!(
+                "{}",
+                json!({"id":id,"type":"error","error":UNSUPPORTED_MESSAGE})
+            );
+            let _ = std::io::stdout().flush();
+        }
+    }
+}
 
 use config::OnnxGpuConfig;
 use serde_json::{json, Value};

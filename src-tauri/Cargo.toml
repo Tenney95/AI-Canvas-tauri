@@ -30,10 +30,12 @@ fs2 = "0.4"
 flate2 = "1"
 sha2 = "0.10"
 tar = "0.4"
-# 默认 features = download-binaries（CPU 版 onnxruntime，构建时自动下载并静态链接）。
-# directml feature 启用 DirectML EP（仅 Worker 子进程使用，主进程永不初始化 DirectML）。
-ort = { version = "2.0.0-rc.12", features = ["download-binaries", "directml"] }
 image = "0.25"
+
+# Intel macOS 没有 ort 2.0.0-rc.12 的预编译 ONNX Runtime，因此该目标不编译 ONNX Worker。
+# 其他平台继续使用当前版本；DirectML EP 仅由 Windows Worker 初始化。
+[target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["download-binaries", "directml"] }
 
 # Windows: DXGI 适配器枚举（GPU 探测用）+ 剪贴板 CF_HDROP 文件写入
 [target.'cfg(windows)'.dependencies]

@@ -74,37 +74,33 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'AI Canvas v__VERSION__ - 图片生成与画布体验升级'
+          releaseName: 'AI Canvas v__VERSION__ - 设置交互与 Intel Mac 支持'
           releaseBody: |
-            ## 版本摘要
+            ## ✨ 版本摘要
 
-            AI Canvas v0.6.3 聚焦图片生成兼容性、生成历史与画布操作体验，并进一步提升素材管理、模型调用和对话 Agent 的稳定性。
+            AI Canvas v0.6.5 聚焦设置交互体验、节点尺寸一致性与发布稳定性，并新增 Intel Mac 安装包。
 
-            ## 图片生成与参考图
+            ## 🔧 设置与交互优化
 
-            - 图片节点新增生成历史，可按节点查看历次成功结果并全屏预览，本地文件不可用时自动回退到远程结果。
-            - 自定义图片模型新增参考图请求方式：默认兼容 `/images/generations` JSON `image_urls`，也可选择 `/images/edits` Multipart `image[]` 文件上传。
-            - 原生 Tauri 请求传输支持 FormData 序列化和 multipart boundary，单张、多张参考图均可正确发送。
-            - 图片接口返回 HTML 或非 JSON 内容时提供明确诊断，便于发现连接地址缺少 `/v1` 等配置问题。
-            - 生成素材会从提示词中提取并持久化标签，方便后续整理和检索。
+            - 项目设置中的比例与分辨率改用节点选择器，补全可选项并统一交互。
+            - 修复项目设置保存时的 IndexedDB 竞态条件与保存串行化问题。
+            - 修复画布右键菜单定位偏差、浅色主题选中态文字对比度等界面问题。
 
-            ## 画布与素材体验
+            ## 🧩 节点与画布
 
-            - 节点拖拽新增等间距吸附，并优化图片生成期间的画布交互性能。
-            - 修复裁切比例越界与缩放交互，提升图片编辑的稳定性。
-            - 素材瀑布流新增列数设置，并修复开关、下拉菜单和主题样式适配。
-            - 修复浮层滚动条定位偏移，为弹窗补充窗口拖拽区域。
+            - 提取宽高比尺寸计算逻辑并统一应用到节点创建流程。
+            - 修复新建节点尺寸与所选比例、分辨率不一致的问题。
 
-            ## 模型与 Agent 稳定性
+            ## 🍎 macOS 发布
 
-            - 收敛媒体 Provider 注册与 APIMart 适配，统一图片、视频和音频的模型调用边界。
-            - 拆分对话执行、单轮 Agent 执行与独立窗口同步控制器，降低长会话和多窗口状态串扰。
-            - 修复项目切换、对话消息序号和异步持久化的一致性问题。
-            - IndexedDB schema 升级至 v14，完善项目生成设置和历史数据持久化。
+            - 新增 Intel Mac（x64）安装包，同时继续提供 Apple Silicon（arm64）安装包。
+            - Intel Mac 版本不包含本地 ONNX Runtime，本地 ONNX 图像处理能力不可用；其他画布与 AI 模型功能不受影响。
 
-            ## 下载
+            ## 📦 下载
 
-            请在下方 Assets 中选择对应平台的安装包：Windows 使用 `.exe` 或 `.msi`，macOS Apple Silicon（arm64）与 Intel（x64）分别使用对应架构的 `.dmg`，Linux 使用 `.AppImage`、`.deb` 或 `.rpm`。
+            - 🪟 Windows：使用 `.exe` 或 `.msi`。
+            - 🍎 macOS：Apple Silicon 使用 `aarch64.dmg`，Intel 使用 `x64.dmg`。
+            - 🐧 Linux：使用 `.AppImage`、`.deb` 或 `.rpm`。
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
