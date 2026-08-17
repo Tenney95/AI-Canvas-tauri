@@ -100,9 +100,10 @@ export async function executeGeneration(
       const result = await generateImage({
         prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
         imageSize, aspectRatio, nodeId,
-        // 透传工作流与参考图：executeGeneration 由 Toolbar / 小洛摄影棚等快捷入口触发，
-        // 此前未透传 workflowId / workflowInputs / image_urls，导致 ComfyUI 工作流
-        // 无法执行（误报「未配置 comfyui 的 API Key」）且 img2img 参考图丢失。
+        // 透传工作流：executeGeneration 由 Toolbar / 小洛摄影棚等快捷入口触发，
+        // 此前未透传 workflowId / workflowInputs，导致 ComfyUI 工作流
+        // 无法执行（误报「未配置 comfyui 的 API Key」）。
+        // 参考图仍按既有约定由 prompt 中 @{节点} 引用显式传入，不自动携带节点旧图。
         workflowId: data.workflowId,
         workflowInputs: data.workflowInputs,
       });
