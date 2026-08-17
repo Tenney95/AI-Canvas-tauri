@@ -961,7 +961,9 @@ async function submitComfyUIWorkflow(
   // 没 @ 图片/视频节点时，把提示词框里引用的同类媒体送进默认节点
   const hasPromptMedia = Boolean(promptMedia.imageUrls?.length || promptMedia.videoUrls?.length);
   for (const kind of ['image', 'video'] as const) {
-    const defaultNodeId = defaultNodeFor(kind);
+    // 工作流未配置默认 IO 节点时，兜底取第一个同类型节点，
+    // 避免 prompt 里 @ 的参考图因找不到注入目标而静默丢弃（LoadImage 沿用示例文件名）。
+    const defaultNodeId = defaultNodeFor(kind) ?? ioNodes.find((io) => io.type === kind)?.nodeId;
     if (!defaultNodeId) continue;
     const urls = kind === 'image' ? promptMedia.imageUrls : promptMedia.videoUrls;
     await injectDefaultMediaIntoWorkflow(
