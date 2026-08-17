@@ -84,6 +84,7 @@ export async function executeGeneration(
         const batch = await generateImagesBatch({
           prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
           imageSize, aspectRatio, nodeId,
+          workflowId: data.workflowId,
         }, batchCount);
         if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
         await applyImageBatchResults({
@@ -104,9 +105,6 @@ export async function executeGeneration(
         // 无法执行（误报「未配置 comfyui 的 API Key」）且 img2img 参考图丢失。
         workflowId: data.workflowId,
         workflowInputs: data.workflowInputs,
-        image_urls: (data.imageUrl || data.thumbnailUrl)
-          ? [(data.imageUrl || data.thumbnailUrl) as string]
-          : undefined,
       });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
 
