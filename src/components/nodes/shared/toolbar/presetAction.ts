@@ -202,6 +202,11 @@ export function createPresetNode(
     status: 'idle',
     model: (resolved.override?.model || effectiveModel?.model || sourceNode.data.model) as string,
     provider: (resolved.override?.provider || effectiveModel?.provider || sourceNode.data.provider) as string,
+    // ComfyUI 工作流节点必须带上 workflowId / workflowInputs，
+    // 否则派生节点（如小洛摄影棚生成的「摄影机视角」）会丢失工作流，
+    // 在 generateImage 中误入通用模型分支并报「未配置 comfyui 的 API Key」。
+    workflowId: sourceNode.data.workflowId,
+    workflowInputs: sourceNode.data.workflowInputs,
     imageSize: resolved.override?.imageSize ?? sourceNode.data.imageSize,
     aspectRatio: resolved.override?.aspectRatio ?? sourceNode.data.aspectRatio,
     nodeWidth,
