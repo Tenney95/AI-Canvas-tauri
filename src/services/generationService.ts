@@ -99,6 +99,14 @@ export async function executeGeneration(
       const result = await generateImage({
         prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
         imageSize, aspectRatio, nodeId,
+        // 透传工作流与参考图：executeGeneration 由 Toolbar / 小洛摄影棚等快捷入口触发，
+        // 此前未透传 workflowId / workflowInputs / image_urls，导致 ComfyUI 工作流
+        // 无法执行（误报「未配置 comfyui 的 API Key」）且 img2img 参考图丢失。
+        workflowId: data.workflowId,
+        workflowInputs: data.workflowInputs,
+        image_urls: (data.imageUrl || data.thumbnailUrl)
+          ? [(data.imageUrl || data.thumbnailUrl) as string]
+          : undefined,
       });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
 
