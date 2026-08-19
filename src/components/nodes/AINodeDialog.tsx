@@ -40,7 +40,7 @@ import { cancelComfyUINodeTask } from '../../services/comfyWorkflowService';
 const DIALOG_VIEWPORT_MARGIN = 16;
 
 function AINodeDialog() {
-  const { activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, updateNodeDataTransient, commitToHistory, recordOutputHistory, showToast, workflows, currentProjectId } = useAppStore(
+  const { activeNodeId, dialogPosition, closeNodeDialog, updateNodeData, updateNodeDataTransient, commitToHistory, recordOutputHistory, showToast, workflows, currentProjectId, addNodesWithEdges } = useAppStore(
     useShallow((s) => ({
       activeNodeId: s.activeNodeId,
       dialogPosition: s.dialogPosition,
@@ -52,6 +52,7 @@ function AINodeDialog() {
       showToast: s.showToast,
       workflows: s.workflows,
       currentProjectId: s.currentProjectId,
+      addNodesWithEdges: s.addNodesWithEdges,
     })),
   );
 
@@ -234,6 +235,21 @@ function AINodeDialog() {
     }
     updateNodeDataTransient(activeNodeId, patch);
   }, [activeNodeId, commitToHistory, updateNodeDataTransient]);
+
+  // 视频节点「在此节点生成」与数量：与时长滑块同一套连续写入（transient，拖动不卡）
+  const generateInPlace = data?.generateInPlace !== false;
+  const generateCount = (() => {
+    const raw = Number(data?.generateCount);
+    return Number.isFinite(raw) && raw >= 1 && raw <= 4 ? Math.floor(raw) : 1;
+  })();
+  const onChangeGenerateInPlace = useCallback(
+    (value: boolean) => updateContinuousNodeData({ generateInPlace: value }),
+    [updateContinuousNodeData],
+  );
+  const onChangeGenerateCount = useCallback(
+    (value: number) => updateContinuousNodeData({ generateCount: Math.min(4, Math.max(1, Math.floor(value))) }),
+    [updateContinuousNodeData],
+  );
   const handleCloseNodeDialog = useCallback(() => {
     finishContinuousEdit();
     closeNodeDialog();
@@ -271,6 +287,145 @@ function AINodeDialog() {
     },
     [updateContinuousNodeData]
   );
+
+  /**
+   * 不勾选「在此节点生成」：立即构建 count 个空白视频节点（占位，显示生成中），
+   * 并行向模型提交 count 个生成请求，各自完成后把结果填入对应空白节点。
+   * 节点与连线一次 addNodesWithEdges 提交（单个历史快照）。
+   */
+  const runVideoToNewNodes = useCallback(async (count: number) => {
+    const store = useAppStore.getState();
+    const submittingNodeId = activeNodeId;
+    const submittingProjectId = currentProjectId;
+    if (!submittingNodeId || !submittingProjectId) return;
+    const sourceNode = store.nodes.find((n) => n.id === submittingNodeId);
+    if (!sourceNode) return;
+    const latestData = sourceNode.data as BaseNodeData;
+    const rawPrompt = latestData.prompt ?? '';
+    const nodeModel = latestData.model;
+    const nodeProvider = latestData.provider;
+    const nodeLabel = latestData.label ?? '视频';
+    if (!nodeModel || !nodeProvider) {
+      showToast('请先在底部模型选择器中选择一个模型', 'error');
+      return;
+    }
+    const projectSettings = store.projects.find((p) => p.id === submittingProjectId)?.settings;
+    const projectPrompt = resolveProjectGenerationPrompt({
+      prompt: rawPrompt,
+      data: latestData,
+      settings: projectSettings,
+      customStyles: store.customStyles,
+    });
+    const cameraPrompt = buildGenerationCameraPrompt(latestData.cameraSettings);
+    const effectivePrompt = cameraPrompt
+      ? `${projectPrompt}\n\nCamera settings: ${cameraPrompt}.`
+      : projectPrompt;
+    const videoFps = Number(latestData.videoFps) || 24;
+    const seedanceDuration = resolveVideoDurationSeconds(
+      latestData.seedanceDuration,
+      latestData.videoFrames,
+      videoFps,
+    );
+    const videoFrames = videoFramesFromDuration(seedanceDuration, videoFps);
+    const baseParams = {
+      prompt: effectivePrompt,
+      model: nodeModel,
+      provider: nodeProvider,
+      videoResolution: Number(latestData.videoResolution) || 832,
+      videoFps,
+      videoFrames,
+      seedanceResolution: (latestData.seedanceResolution as string) || '720p',
+      seedanceRatio: (latestData.seedanceRatio as string) || '16:9',
+      seedanceDuration,
+      generateAudio: latestData.generateAudio,
+      workflowId: latestData.workflowId,
+      workflowInputs: latestData.workflowInputs,
+    };
+    const isStill = () => {
+      const s = useAppStore.getState();
+      return s.currentProjectId === submittingProjectId
+        && s.nodes.some((n) => n.id === submittingNodeId);
+    };
+
+    // 1. 立即构建 count 个空白节点（status='loading' 占位）+ 连线，一次历史快照
+    const nodeHeight = Number(sourceNode.data?.nodeHeight) || 220;
+    const gap = 40;
+    const newNodes = Array.from({ length: count }, (_, index) => {
+      const placement = derivedNodePlacement(sourceNode, 40);
+      return {
+        id: `node-${generateId()}`,
+        type: sourceNode.type,
+        position: {
+          x: placement.position.x,
+          y: placement.position.y + index * (nodeHeight + gap),
+        },
+        ...(placement.parentId ? { parentId: placement.parentId } : {}),
+        data: {
+          ...latestData,
+          label: `${nodeLabel}-${index + 1}`,
+          videoUrl: undefined,
+          sourceUrl: undefined,
+          filePath: undefined,
+          thumbnailUrl: undefined,
+          output: undefined,
+          status: 'loading',
+          error: undefined,
+          generateInPlace: true,
+        } as BaseNodeData,
+      };
+    });
+    const newEdges = newNodes.map((n) => ({
+      id: `edge-${submittingNodeId}-${n.id}`,
+      source: submittingNodeId,
+      target: n.id,
+      sourceHandle: 'right',
+      targetHandle: 'left',
+    }));
+    addNodesWithEdges(newNodes, newEdges);
+    showToast(`正在并行生成 ${count} 条视频`);
+
+    // 2. 并行提交生成请求，每个结果填入对应空白节点
+    await Promise.all(newNodes.map(async (node, index) => {
+      const nodeParams = { ...baseParams, nodeId: node.id };
+      try {
+        if (!isStill()) return;
+        const result = await generateVideo(nodeParams);
+        if (!isStill()) return;
+        const saved = submittingProjectId
+          ? await downloadUrlAndSave(result.url, submittingProjectId, 'ai-video', `${nodeLabel}-${index + 1}`).catch(() => null)
+          : null;
+        const mediaUrl = saved?.assetUrl || result.url;
+        useAppStore.getState().updateNodeData(node.id, {
+          videoUrl: mediaUrl,
+          sourceUrl: result.url,
+          filePath: saved?.filePath,
+          thumbnailUrl: result.url,
+          output: result.url,
+          status: 'success',
+          error: undefined,
+        });
+        recordOutputHistory(node.id, {
+          nodeId: node.id,
+          nodeLabel: `${nodeLabel}-${index + 1}`,
+          timestamp: Date.now(),
+          prompt: effectivePrompt,
+          output: result.url,
+          nodeType: 'ai-video',
+          model: nodeModel,
+          provider: nodeProvider,
+          status: 'success',
+          mediaUrl: result.url,
+          filePath: saved?.filePath,
+          params: { videoResolution: baseParams.videoResolution, videoFps, videoFrames, seedanceResolution: baseParams.seedanceResolution, seedanceRatio: baseParams.seedanceRatio, seedanceDuration, generateAudio: baseParams.generateAudio },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '视频生成失败');
+        if (isStill()) useAppStore.getState().updateNodeData(node.id, { status: 'error', error: msg });
+      }
+    }));
+
+    if (isStill()) updateNodeDataTransient(submittingNodeId, { status: 'idle' });
+  }, [activeNodeId, currentProjectId, showToast, updateNodeDataTransient, recordOutputHistory, addNodesWithEdges]);
 
   // 调用选中模型生成（文本 or 图片）
   // overridePrompt: / 指令菜单直接触发时传入的整合后模板，不走 store → 对话框不闪烁
@@ -493,6 +648,12 @@ function AINodeDialog() {
         });
         showToast('全景图生成完成');
       } else if (nodeType === 'ai-video') {
+        // 「在此节点生成」取消勾选 → 按 generateCount 生成到右侧新建节点（不在此弹窗）
+        if (latestData.generateInPlace === false) {
+          const count = Math.min(4, Math.max(1, Math.floor(Number(latestData.generateCount) || 1)));
+          await runVideoToNewNodes(count);
+          return;
+        }
         const videoResolution = (latestData.videoResolution as number) || 832;
         const videoFps = (latestData.videoFps as number) || 24;
         const seedanceDuration = resolveVideoDurationSeconds(
@@ -665,7 +826,9 @@ function AINodeDialog() {
       });
       showToast(msg, 'error');
     }
-  }, [activeNodeId, nodeType, currentProjectId, finishContinuousEdit, updateNodeData, updateNodeDataTransient, recordOutputHistory, showToast]);
+  }, [activeNodeId, nodeType, currentProjectId, finishContinuousEdit, updateNodeData, updateNodeDataTransient, recordOutputHistory, showToast, runVideoToNewNodes]);
+
+
 
   const onCancelGeneration = useCallback(async () => {
     if (!activeNodeId || cancellingNodeIdsRef.current.has(activeNodeId)) return;
@@ -925,6 +1088,10 @@ function AINodeDialog() {
           seedanceRatio={(data.seedanceRatio as string) || '16:9'}
           seedanceDuration={data.seedanceDuration as number | undefined}
           generateAudio={data.generateAudio as boolean | undefined}
+          generateInPlace={generateInPlace}
+          generateCount={generateCount}
+          onChangeGenerateInPlace={onChangeGenerateInPlace}
+          onChangeGenerateCount={onChangeGenerateCount}
           videoReferences={data.videoReferences}
           onChangeVideoReferences={onChangeVideoReferences}
           onChangeSeedanceResolution={onChangeSeedanceResolution}

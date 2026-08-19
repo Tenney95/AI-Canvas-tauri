@@ -38,6 +38,12 @@ interface VideoParamSelectorProps {
   seedanceRatio?: string;
   seedanceDuration?: number;
   generateAudio?: boolean;
+  /** 视频节点：在此节点生成并替换旧视频；false 时生成到右侧新建节点。默认 true。 */
+  generateInPlace?: boolean;
+  onChangeGenerateInPlace?: (value: boolean) => void;
+  /** 不在此节点生成时的数量（1-4），默认 1。 */
+  generateCount?: number;
+  onChangeGenerateCount?: (value: number) => void;
   onChangeSeedanceResolution?: (value: string) => void;
   onChangeSeedanceRatio?: (value: string) => void;
   onChangeSeedanceDuration?: (value: number) => void;
@@ -86,9 +92,9 @@ export default function VideoParamSelector({
   videoResolution = 832, videoFps = 24, videoFrames = 77,
   onChangeResolution, onChangeFps,
   seedanceResolution = '720p', seedanceRatio = '16:9',
-  seedanceDuration, generateAudio,
+  seedanceDuration, generateAudio, generateInPlace = true, generateCount = 1,
   onChangeSeedanceResolution, onChangeSeedanceRatio,
-  onChangeSeedanceDuration, onChangeGenerateAudio,
+  onChangeSeedanceDuration, onChangeGenerateAudio, onChangeGenerateInPlace, onChangeGenerateCount,
   showSeedanceRatio = true, showGenerateAudio = true, onContinuousEditEnd,
 }: VideoParamSelectorProps) {
   const [open, setOpen] = useState(false);
@@ -717,6 +723,65 @@ export default function VideoParamSelector({
                   </div>
                 </div>
               </>
+            )}
+
+            {/* 在此节点生成 — 所有视频模型通用：勾选=替换本节点旧视频；不勾选=生成到右侧新建节点 */}
+            <div className="rh-vram-adv-row">
+              <div className="rh-vram-adv-label" style={{ justifyContent: 'space-between', width: '100%' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span>在此节点生成</span>
+                  <span className="rh-tip" data-tooltip="勾选时生成结果直接替换本节点旧视频；取消勾选后，点生成会按下方数量（1-4 条）生成到本节点右侧新建的视频节点并自动连线。">!</span>
+                </div>
+                <label className="rh-toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={generateInPlace}
+                    onChange={(e) => onChangeGenerateInPlace?.(e.target.checked)}
+                  />
+                  <span className="rh-toggle-track">
+                    <span className="rh-toggle-knob" />
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {/* 不在此节点生成时的数量滑块（1-4 条）— 与时长滑块同款 */}
+            {!generateInPlace && (
+              <div className="img-rp-quality-area mb-1">
+                <div className="img-rp-section-label">
+                  生成数量
+                  <span className="rh-tip" data-tooltip="取消「在此节点生成」后，本次生成会在本节点右侧新建 N 个视频节点，每条一条结果并自动连线。">!</span>
+                </div>
+                <div className="rh-duration-slider">
+                  <div className="rh-duration-track">
+                    <div
+                      className="rh-duration-fill"
+                      style={{ width: `${((generateCount - 1) / (4 - 1)) * 100}%` }}
+                    />
+                    <input
+                      type="range"
+                      className="rh-duration-input"
+                      min={1}
+                      max={4}
+                      step={1}
+                      value={generateCount}
+                      onChange={(e) => onChangeGenerateCount?.(Number(e.target.value))}
+                      onBlur={onContinuousEditEnd}
+                    />
+                  </div>
+                  <div className="rh-duration-labels">
+                    {[1, 2, 3, 4].map((value) => (
+                      <span
+                        key={value}
+                        className={`rh-duration-tick ${generateCount >= value ? 'active' : ''}`}
+                        onClick={() => onChangeGenerateCount?.(value)}
+                      >
+                        {`${value}条`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         )}

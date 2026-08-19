@@ -335,6 +335,12 @@ interface PromptPanelProps {
   seedanceRatio?: string;
   seedanceDuration?: number;
   generateAudio?: boolean;
+  /** 视频节点：在此节点生成并替换旧视频；false 时生成到右侧新建节点。默认 true。 */
+  generateInPlace?: boolean;
+  onChangeGenerateInPlace?: (value: boolean) => void;
+  /** 不在此节点生成时的数量（1-4），默认 1。 */
+  generateCount?: number;
+  onChangeGenerateCount?: (value: number) => void;
   videoReferences?: VideoReferenceItem[];
   onChangeVideoReferences?: (value: VideoReferenceItem[]) => void;
   onChangeSeedanceResolution?: (value: string) => void;
@@ -403,6 +409,10 @@ export default function PromptPanel({
   seedanceRatio,
   seedanceDuration,
   generateAudio,
+  generateInPlace,
+  onChangeGenerateInPlace,
+  generateCount,
+  onChangeGenerateCount,
   videoReferences,
   onChangeVideoReferences,
   onChangeSeedanceResolution,
@@ -722,6 +732,10 @@ export default function PromptPanel({
             seedanceRatio={seedanceRatio}
             seedanceDuration={seedanceDuration}
             generateAudio={generateAudio}
+            generateInPlace={generateInPlace}
+            generateCount={generateCount}
+            onChangeGenerateInPlace={onChangeGenerateInPlace}
+            onChangeGenerateCount={onChangeGenerateCount}
             onChangeSeedanceResolution={onChangeSeedanceResolution}
             onChangeSeedanceRatio={onChangeSeedanceRatio}
             onChangeSeedanceDuration={onChangeSeedanceDuration}

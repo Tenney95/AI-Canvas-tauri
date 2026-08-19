@@ -182,6 +182,10 @@ export interface BaseNodeData {
   aspectRatio?: string;       // 图片比例：'1:1' | '16:9' | ...
   batchCount?: number;        // 单次批量生成图片数量，默认 1
   batchGroupId?: string;      // 同一次批量生成的结果分组 ID
+  /** 视频节点：是否在当前节点生成并替换旧视频；false 时生成到右侧新建节点（generateCount 条）。默认 true。 */
+  generateInPlace?: boolean;
+  /** 视频节点：不在此节点生成时的新建数量（1-4），默认 1。 */
+  generateCount?: number;
   cameraSettings?: CameraGenerationSettings; // 生图/生视频摄影参数；字段缺省时由模型自动决定
   videoResolution?: number;   // 视频分辨率：832 | 1024 | 1280 | 1440
   videoFps?: number;          // 视频帧率：16 | 24 | 30
