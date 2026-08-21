@@ -174,18 +174,16 @@ async function completeComfyUIWorkflowSave(
   });
 }
 
+/**
+ * 在 ComfyUI 里打开工作流。缺节点照样打开（ComfyUI 自己会把缺的节点标红），
+ * 只把缺失的类型回传给调用方提示一句 —— 装没装插件由用户判断，不替他拦。
+ * @returns ComfyUI 没注册的节点类型，全都在就是空数组
+ */
 export async function openComfyUIWorkflowEditor(
   comfyUrl: string,
   workflow: WorkflowDefinition,
-): Promise<void> {
-  // 缺节点时 ComfyUI 会中止加载但照样开一个同名标签页，画布上还留着上一个工作流，
-  // 看起来就像「打开了别的工作流」。宁可提前说清楚缺什么。
+): Promise<string[]> {
   const missing = await findMissingNodeClasses(comfyUrl, workflow.fileContent);
-  if (missing.length > 0) {
-    throw new Error(
-      `ComfyUI 缺少这些节点，无法打开该工作流：${missing.join('、')}；请先安装或启用对应插件`,
-    );
-  }
   await invoke<void>('open_comfyui_window', {
     comfyUrl,
     workflowId: workflow.id,
@@ -195,6 +193,7 @@ export async function openComfyUIWorkflowEditor(
     apiJson: workflow.fileContent,
     editableJson: workflow.editableContent ?? null,
   });
+  return missing;
 }
 
 export async function initComfyUIWindowBridge(): Promise<() => void> {

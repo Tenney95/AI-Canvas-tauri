@@ -7,6 +7,7 @@ import type { WorkflowDefinition } from '../types';
 import * as fileService from '../services/fileService';
 import {
   pendingBuiltInWorkflows,
+  resetBuiltInWorkflows,
   withBuiltInEditableContent,
 } from '../services/builtinWorkflows';
 
@@ -17,6 +18,8 @@ export interface WorkflowSlice {
   addWorkflow: (wf: WorkflowDefinition) => Promise<void>;
   updateWorkflow: (id: string, updates: Partial<Omit<WorkflowDefinition, 'id' | 'createdAt'>>) => Promise<void>;
   deleteWorkflow: (id: string) => Promise<void>;
+  /** 内置工作流恢复成随包发布的版本（删掉的补回、改过的覆盖），返回恢复条数。 */
+  resetBuiltInWorkflows: () => Promise<number>;
   loadWorkflows: () => Promise<void>;
 }
 
@@ -64,6 +67,19 @@ export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> 
       workflows: state.workflows.filter((w) => w.id !== id),
     }));
     await fileService.deleteWorkflow(id).catch((e) => console.warn('[删除工作流] 清理失败:', e));
+  },
+
+  resetBuiltInWorkflows: async () => {
+    const builtIns = resetBuiltInWorkflows();
+    await Promise.all(builtIns.map((workflow) => fileService.saveWorkflow(workflow)));
+    const builtInIds = new Set(builtIns.map((workflow) => workflow.id));
+    set((state) => ({
+      workflows: [
+        ...builtIns,
+        ...state.workflows.filter((workflow) => !builtInIds.has(workflow.id)),
+      ],
+    }));
+    return builtIns.length;
   },
 
   loadWorkflows: async () => {

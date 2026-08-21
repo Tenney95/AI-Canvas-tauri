@@ -106,6 +106,17 @@ export function withBuiltInEditableContent(
   return editableContent ? { ...workflow, editableContent } : null;
 }
 
+/**
+ * 重新生成全部内置工作流：删掉的补回来，改过的覆盖成随包发布的那份。
+ * 同时把播种记账刷成「全部已播种」，避免下次启动再补一遍。
+ */
+export function resetBuiltInWorkflows(): WorkflowDefinition[] {
+  const createdAt = Date.now();
+  const workflows = BUILT_IN_SPECS.map((spec) => toWorkflowDefinition(spec, createdAt));
+  localStorage.setItem(SEEDED_IDS_KEY, JSON.stringify(workflows.map((workflow) => workflow.id)));
+  return workflows;
+}
+
 function readSeededIds(): string[] {
   try {
     const raw = JSON.parse(localStorage.getItem(SEEDED_IDS_KEY) ?? '[]') as unknown;

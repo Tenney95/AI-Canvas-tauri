@@ -187,31 +187,18 @@
   justify-content: center;
   pointer-events: none;
 }
+/* 两张独立卡片并排；容器本身不画背景，只负责排版与进出场动画 */
 .wf-panel {
-  width: 480px;
+  display: flex;
+  gap: 14px;
+  width: 880px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px);
-  /* 头部与导入表单固定，只让已导入列表滚动 */
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background:
-    linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
-    var(--glass-bevel-border) border-box;
-  backdrop-filter: blur(var(--glass-blur-lg));
-  border: 1px solid transparent;
-  border-radius: 14px;
-  box-shadow: var(--glass-shadow-panel);
+  background: none;
+  border: none;
+  box-shadow: none;
   pointer-events: auto;
   /* animation handled by framer-motion */
-}
-
-/* Workflow panel header */
-.wf-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
 }
 .wf-panel-title {
   font-size: 15px;
@@ -238,16 +225,39 @@
   background: var(--border-subtle);
 }
 
-/* Panel section */
-.wf-panel-section {
-  padding: 6px 10px 11px;
-  flex: none;
+/* 左卡片上传与添加，右卡片已导入管理；两张卡片各自独立、各自滚动 */
+.wf-panel-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 14px 14px;
+  background:
+    linear-gradient(var(--glass-panel-bg), var(--glass-panel-bg)) padding-box,
+    var(--glass-bevel-border) border-box;
+  backdrop-filter: blur(var(--glass-blur-lg));
+  border: 1px solid transparent;
+  border-radius: 14px;
+  box-shadow: var(--glass-shadow-panel);
+  max-height: 100%;
+  overflow-y: auto;
 }
-/* 已导入列表：panel 内唯一的滚动区 */
+.wf-panel-import {
+  flex: 0 0 320px;
+  /* 上传卡片按内容高度，纵向居中对齐右侧列表卡片 */
+  align-self: center;
+}
 .wf-panel-list {
   flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
+}
+/* 窄窗口放不下两栏就改上下排 */
+@media (max-width: 900px) {
+  .wf-panel {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .wf-panel-import {
+    flex: none;
+  }
 }
 .wf-list-header {
   display: flex;
@@ -256,6 +266,39 @@
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 8px;
+}
+.wf-list-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.wf-list-titlebar .wf-panel-title {
+  margin-right: auto;
+}
+.wf-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--theme-text-secondary);
+  background: var(--white-alpha-04);
+  border: 1px solid var(--white-alpha-08);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+.wf-reset-btn:hover {
+  color: var(--theme-text);
+  border-color: var(--border-secondary);
+}
+.wf-reset-btn.is-armed {
+  color: var(--warning-light);
+  background: var(--warning-bg);
+  border-color: color-mix(in srgb, var(--warning-light) 40%, transparent);
 }
 .wf-list-header .wf-section-title {
   margin-bottom: 0;
@@ -388,49 +431,145 @@
   background: var(--brand-alpha-12);
 }
 
-/* File picker area */
-.wf-file-area {
-  border: 1px dashed var(--separator-color);
-  border-radius: 8px;
-  padding: 7px;
+/* 拖放上传区 */
+.wf-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 14px;
+  text-align: center;
+  border: 1.5px dashed var(--separator-color);
+  border-radius: 14px;
+  background: var(--white-alpha-02);
   cursor: pointer;
   transition: border-color var(--transition-base), background var(--transition-base);
 }
-.wf-file-area:hover {
-  border-color: color-mix(in srgb, var(--brand) 30%, transparent);
+.wf-dropzone:hover,
+.wf-dropzone:focus-visible,
+.wf-dropzone.is-dragover {
+  border-color: color-mix(in srgb, var(--brand) 55%, transparent);
   background: var(--brand-alpha-04);
+  outline: none;
 }
-.wf-file-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--theme-text-muted);
-  font-size: 12px;
-}
-.wf-file-selected {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--success-light);
-  font-size: 13px;
-}
-.wf-file-name {
+.wf-dropzone-title {
+  font-size: 12.5px;
+  font-weight: 600;
   color: var(--theme-text);
-  font-weight: 500;
 }
-.wf-file-size {
+.wf-dropzone-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  color: var(--brand-light);
+  background:
+    radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--brand) 26%, transparent), transparent 70%),
+    var(--white-alpha-04);
+  box-shadow:
+    0 6px 18px color-mix(in srgb, var(--brand) 22%, transparent),
+    inset 0 0 0 1px var(--white-alpha-08);
+  transition: transform var(--transition-base);
+}
+.wf-dropzone:hover .wf-dropzone-icon,
+.wf-dropzone.is-dragover .wf-dropzone-icon {
+  transform: translateY(-2px) scale(1.04);
+}
+.wf-dropzone-hint {
+  max-width: 240px;
+  font-size: 11px;
+  line-height: 1.55;
   color: var(--theme-text-muted);
-  font-size: 12px;
+}
+
+/* 已选文件卡片 */
+.wf-file-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--white-alpha-04);
+}
+.wf-file-card-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: var(--brand-light);
+  background: var(--brand-alpha-12);
+}
+.wf-file-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.wf-file-card-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--theme-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-file-card-meta {
+  font-size: 10.5px;
+  color: var(--theme-text-muted);
+}
+.wf-file-card-clear {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+.wf-file-card-clear:hover {
+  color: var(--theme-text);
+  background: var(--theme-hover);
 }
 
 /* Actions row */
 .wf-actions-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 6px;
+  gap: 8px;
+  margin-top: 10px;
   flex-wrap: wrap;
+}
+.wf-actions-row .wf-btn {
+  flex: 1 1 0;
+  justify-content: center;
+  padding: 7px 10px;
+  border-radius: 9px;
+}
+.wf-btn-ghost {
+  background: var(--white-alpha-04);
+  color: var(--theme-text-secondary);
+}
+.wf-btn-ghost:hover:not(:disabled) {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+.wf-btn-ghost:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.wf-actions-row .wf-msg {
+  flex: 1 1 100%;
 }
 .wf-btn {
   display: inline-flex;
@@ -731,7 +870,7 @@ button.wf-ionode-badge.is-default {
 [data-theme='light'] .wf-panel-backdrop {
   background: color-mix(in srgb, var(--theme-text) 28%, transparent);
 }
-[data-theme='light'] .wf-panel {
+[data-theme='light'] .wf-panel-card {
   background:
     linear-gradient(
       color-mix(in srgb, var(--theme-surface) 96%, transparent),
@@ -740,9 +879,15 @@ button.wf-ionode-badge.is-default {
     var(--glass-bevel-border) border-box;
 }
 [data-theme='light'] .wf-section-title,
-[data-theme='light'] .wf-file-placeholder,
+[data-theme='light'] .wf-dropzone-hint,
+[data-theme='light'] .wf-file-card-meta,
 [data-theme='light'] .wf-empty {
   color: var(--theme-text-secondary);
+}
+[data-theme='light'] .wf-dropzone,
+[data-theme='light'] .wf-file-card {
+  background: var(--theme-surface);
+  border-color: color-mix(in srgb, var(--theme-text-secondary) 44%, var(--theme-surface));
 }
 [data-theme='light'] .wf-input {
   background: var(--theme-card);
@@ -762,11 +907,8 @@ button.wf-ionode-badge.is-default {
   color: color-mix(in srgb, var(--brand) 82%, var(--theme-text));
   border-color: color-mix(in srgb, var(--brand) 68%, var(--theme-surface));
 }
-[data-theme='light'] .wf-file-area {
-  background: var(--white-alpha-03);
-  border-color: color-mix(in srgb, var(--theme-text-secondary) 58%, var(--theme-surface));
-}
-[data-theme='light'] .wf-file-area:hover {
+[data-theme='light'] .wf-dropzone:hover,
+[data-theme='light'] .wf-dropzone.is-dragover {
   border-color: var(--brand);
 }
 [data-theme='light'] .wf-btn-primary {
@@ -778,7 +920,6 @@ button.wf-ionode-badge.is-default {
   border-color: color-mix(in srgb, var(--theme-text-secondary) 36%, var(--theme-surface));
   opacity: 0.72;
 }
-[data-theme='light'] .wf-file-selected,
 [data-theme='light'] .wf-msg-success {
   color: color-mix(in srgb, var(--success) 68%, var(--theme-text));
 }

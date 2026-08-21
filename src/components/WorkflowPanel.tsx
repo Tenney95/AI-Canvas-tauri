@@ -17,25 +17,17 @@ const CATEGORIES: { value: WorkflowCategory; label: string }[] = [
   { value: 'ai-audio', label: '生成音频' },
 ];
 
-/** 浏览器文件选择器：选取 .json 文件并返回内容 */
-function pickJsonFile(): Promise<{ name: string; content: string } | null> {
+/** 浏览器文件选择器：选取 .json 文件（解析与校验交给统一入口） */
+function pickJsonFile(): Promise<File | null> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.json';
     input.style.display = 'none';
     document.body.appendChild(input);
-    input.addEventListener('change', async () => {
+    input.addEventListener('change', () => {
       document.body.removeChild(input);
-      const file = input.files?.[0];
-      if (!file) { resolve(null); return; }
-      try {
-        const text = await file.text();
-        JSON.parse(text); // validate JSON
-        resolve({ name: file.name, content: text });
-      } catch {
-        resolve(null);
-      }
+      resolve(input.files?.[0] ?? null);
     });
     input.addEventListener('cancel', () => {
       document.body.removeChild(input);
@@ -109,6 +101,7 @@ export default function WorkflowPanel() {
     addWorkflow,
     deleteWorkflow,
     updateWorkflow,
+    resetBuiltIns,
     comfyUIUrl,
     showToast,
   } = useAppStore(
@@ -119,6 +112,7 @@ export default function WorkflowPanel() {
       addWorkflow: s.addWorkflow,
       deleteWorkflow: s.deleteWorkflow,
       updateWorkflow: s.updateWorkflow,
+      resetBuiltIns: s.resetBuiltInWorkflows,
       comfyUIUrl: s.config.comfyUIUrl,
       showToast: s.showToast,
     })),
@@ -134,6 +128,9 @@ export default function WorkflowPanel() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [uploadError, setUploadError] = useState('');
   const [uploadSuccess, setUploadSuccess] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  // 重置会覆盖改过的内置工作流，点两下才执行
+  const [resetArmed, setResetArmed] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Close on Escape
@@ -164,33 +161,53 @@ export default function WorkflowPanel() {
     setTimeout(resetForm, 200);
   }, [setWorkflowPanelOpen, resetForm]);
 
-  // Pick file
-  const handlePickFile = useCallback(async () => {
+  // 点击选择与拖放共用的读取入口
+  const acceptFile = useCallback(async (file: File) => {
     setUploadError('');
     setUploadSuccess('');
-    const result = await pickJsonFile();
-    if (!result) return;
+    if (!/\.json$/i.test(file.name)) {
+      setUploadError('请选择 ComfyUI 导出的 .json 文件');
+      return;
+    }
     try {
+      const content = await file.text();
       // Validate it's likely a ComfyUI workflow
-      const parsed = JSON.parse(result.content);
+      const parsed = JSON.parse(content);
       if (!parsed || typeof parsed !== 'object') {
         setUploadError('不是有效的 JSON 文件');
         return;
       }
-      setFileName(result.name);
-      setFileContent(result.content);
+      setFileName(file.name);
+      setFileContent(content);
       // Extract IO nodes
-      const extracted = extractComfyUIIONodes(result.content);
-      setIoNodes(extracted);
+      setIoNodes(extractComfyUIIONodes(content));
       // Auto-fill name from filename
-      if (!name) {
-        const baseName = result.name.replace(/\.json$/i, '');
-        setName(baseName);
-      }
+      setName((current) => current || file.name.replace(/\.json$/i, ''));
     } catch {
       setUploadError('JSON 解析失败，请检查文件格式');
     }
-  }, [name]);
+  }, []);
+
+  const handlePickFile = useCallback(async () => {
+    const file = await pickJsonFile();
+    if (file) await acceptFile(file);
+  }, [acceptFile]);
+
+  const handleDrop = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    setDragOver(false);
+    const file = event.dataTransfer.files?.[0];
+    if (file) void acceptFile(file);
+  }, [acceptFile]);
+
+  // 清掉已选文件，名称与分类留着，方便换个文件继续
+  const handleClearFile = useCallback((event: React.MouseEvent) => {
+    event.stopPropagation();
+    setFileName('');
+    setFileContent('');
+    setIoNodes([]);
+    setUploadError('');
+  }, []);
 
   // Submit
   const handleSubmit = useCallback(async () => {
@@ -266,10 +283,14 @@ export default function WorkflowPanel() {
   const handleEdit = useCallback(async (workflow: WorkflowDefinition, event: React.MouseEvent) => {
     event.stopPropagation();
     try {
-      await openComfyUIWorkflowEditor(
+      const missing = await openComfyUIWorkflowEditor(
         comfyUIUrl?.trim() || 'http://127.0.0.1:8188',
         workflow,
       );
+      // 缺节点不拦，ComfyUI 会把缺的节点标红；这里只提醒一句缺了什么
+      if (missing.length > 0) {
+        showToast(`已打开，但 ComfyUI 缺少这些节点：${missing.join('、')}`, 'error');
+      }
       // 面板保持打开：ComfyUI 那边保存回来后这里会实时刷新，方便接着改默认节点
     } catch (error) {
       const message = typeof error === 'string'
@@ -278,6 +299,18 @@ export default function WorkflowPanel() {
       showToast(message, 'error');
     }
   }, [comfyUIUrl, showToast]);
+
+  const handleResetBuiltIns = useCallback(() => {
+    if (!resetArmed) {
+      setResetArmed(true);
+      setTimeout(() => setResetArmed(false), 4000);
+      return;
+    }
+    setResetArmed(false);
+    resetBuiltIns()
+      .then((count) => showToast(`已恢复 ${count} 个内置工作流`, 'success'))
+      .catch(() => showToast('恢复内置工作流失败', 'error'));
+  }, [resetArmed, resetBuiltIns, showToast]);
 
   // Filter workflows by category for the preview list
   const workflowsByCategory = CATEGORIES
@@ -315,14 +348,8 @@ export default function WorkflowPanel() {
               exit="exit"
               onClick={(e) => e.stopPropagation()}
             >
-        {/* Header */}
-        <div className="wf-panel-header">
-          <h2 className="wf-panel-title">工作流管理</h2>
-          <PopupCloseButton onClick={handleClose} />
-        </div>
-
-        {/* Import section */}
-        <div className="wf-panel-section">
+        {/* 左卡片：上传与添加 */}
+        <div className="wf-panel-card wf-panel-import">
           <span className="wf-section-title">导入 ComfyUI 工作流</span>
           <div className="wf-section-rule" />
 
@@ -361,36 +388,62 @@ export default function WorkflowPanel() {
           <div className="wf-field">
             <label className="wf-label">工作流文件</label>
             <motion.div
-              className="wf-file-area"
+              className={`wf-dropzone${dragOver ? ' is-dragover' : ''}`}
+              role="button"
+              tabIndex={0}
               onClick={handlePickFile}
-              whileHover={{ scale: 1.01 }}
-              whileTap={{ scale: 0.99 }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  void handlePickFile();
+                }
+              }}
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
+              whileTap={{ scale: 0.995 }}
             >
-              {fileContent ? (
-                <div className="wf-file-selected">
+              <span className="wf-dropzone-title">把工作流文件拖到这里</span>
+              <span className="wf-dropzone-icon" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+              </span>
+              <span className="wf-dropzone-hint">
+                支持 ComfyUI 导出的 .json 工作流文件，点击这里也可以选择。
+              </span>
+            </motion.div>
+            {fileContent && (
+              <div className="wf-file-card">
+                <span className="wf-file-card-icon" aria-hidden="true">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                     <polyline points="14 2 14 8 20 8" />
                     <line x1="16" y1="13" x2="8" y2="13" />
                     <line x1="16" y1="17" x2="8" y2="17" />
-                    <polyline points="10 9 9 9 8 9" />
                   </svg>
-                  <span className="wf-file-name">{fileName}</span>
-                  <span className="wf-file-size">
-                    ({Math.round(fileContent.length / 1024)} KB)
+                </span>
+                <span className="wf-file-card-info">
+                  <span className="wf-file-card-name" title={fileName}>{fileName}</span>
+                  <span className="wf-file-card-meta">
+                    JSON · {Math.max(1, Math.round(fileContent.length / 1024))} KB · {ioNodes.length} 个输入输出节点
                   </span>
-                </div>
-              ) : (
-                <div className="wf-file-placeholder">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                    <polyline points="17 8 12 3 7 8" />
-                    <line x1="12" y1="3" x2="12" y2="15" />
+                </span>
+                <button
+                  type="button"
+                  className="wf-file-card-clear"
+                  aria-label="移除已选文件"
+                  onClick={handleClearFile}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
                   </svg>
-                  <span>点击选择 ComfyUI 导出的 .json 文件</span>
-                </div>
-              )}
-            </motion.div>
+                </button>
+              </div>
+            )}
             {/* IO nodes preview */}
             <AnimatePresence>
               {ioNodes.length > 0 && (
@@ -415,7 +468,17 @@ export default function WorkflowPanel() {
           <div className="wf-actions-row">
             <motion.button
               type="button"
-              className="wf-btn wf-btn-primary ml-auto"
+              className="wf-btn wf-btn-ghost"
+              onClick={resetForm}
+              disabled={!fileContent && !name}
+              whileHover={fileContent || name ? { scale: 1.03 } : {}}
+              whileTap={fileContent || name ? { scale: 0.97 } : {}}
+            >
+              取消
+            </motion.button>
+            <motion.button
+              type="button"
+              className="wf-btn wf-btn-primary"
               onClick={() => void handleSubmit()}
               disabled={!fileContent}
               whileHover={fileContent ? { scale: 1.03 } : {}}
@@ -452,8 +515,27 @@ export default function WorkflowPanel() {
           </div>
         </div>
 
-        {/* Existing workflows list */}
-        <div className="wf-panel-section wf-panel-list">
+        {/* 右卡片：已导入工作流管理 */}
+        <div className="wf-panel-card wf-panel-list">
+          <div className="wf-list-titlebar">
+            <h2 className="wf-panel-title">工作流管理</h2>
+            <motion.button
+              type="button"
+              className={`wf-reset-btn${resetArmed ? ' is-armed' : ''}`}
+              onClick={handleResetBuiltIns}
+              data-tooltip="把随包发布的内置工作流恢复回来（删掉的补回，改过的覆盖）"
+              data-tooltip-pos="bottom"
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <polyline points="1 4 1 10 7 10" />
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+              </svg>
+              {resetArmed ? '再点一次确认' : '重置内置工作流'}
+            </motion.button>
+            <PopupCloseButton onClick={handleClose} />
+          </div>
           <div className="wf-list-header">
             <span className="wf-section-title">
               已导入工作流
