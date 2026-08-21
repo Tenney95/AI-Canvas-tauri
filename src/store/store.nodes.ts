@@ -75,6 +75,21 @@ function prepareDuplicateNodeData(
   return duplicate;
 }
 
+function mergeNodeData(previous: BaseNodeData, patch: Partial<BaseNodeData>): BaseNodeData {
+  const next = { ...previous, ...patch } as BaseNodeData;
+  // 节点换了底层文件（重新生成、裁切、重命名…）就必须一并作废旧的资产身份：
+  // 加载时 relativePath 的优先级高于 filePath，留着上一次的身份会把节点解析回上一张图。
+  // 调用方自己带了 assetId / relativePath（移动到分组目录之类）说明身份仍然有效，按它的来。
+  if (
+    'filePath' in patch && patch.filePath !== previous.filePath
+    && !('assetId' in patch) && !('relativePath' in patch)
+  ) {
+    next.assetId = undefined;
+    next.relativePath = undefined;
+  }
+  return next;
+}
+
 function mergeCanvasNotePatch(note: CanvasNoteData, patch: CanvasNotePatch): CanvasNoteData {
   return {
     ...note,
@@ -444,7 +459,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     get().commitToHistory();
     set((state) => ({
       nodes: state.nodes.map((n) =>
-        n.id === nodeId ? { ...n, data: { ...n.data, ...data } as BaseNodeData } : n
+        n.id === nodeId ? { ...n, data: mergeNodeData(n.data, data) } : n
       ),
     }));
   },
@@ -452,7 +467,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
   updateNodeDataTransient: (nodeId, data) => {
     set((state) => ({
       nodes: state.nodes.map((node) =>
-        node.id === nodeId ? { ...node, data: { ...node.data, ...data } as BaseNodeData } : node
+        node.id === nodeId ? { ...node, data: mergeNodeData(node.data, data) } : node
       ),
     }));
   },
@@ -471,7 +486,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     get().commitToHistory();
     set((state) => ({
       nodes: state.nodes.map((node) => targetIds.has(node.id)
-        ? { ...node, data: { ...node.data, ...data } as BaseNodeData }
+        ? { ...node, data: mergeNodeData(node.data, data) }
         : node),
     }));
   },

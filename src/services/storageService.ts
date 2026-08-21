@@ -114,8 +114,22 @@ async function restoreAssetReference<T extends AssetReferenceLike>(
   projectDir: string,
 ): Promise<T> {
   const storedPath = data.filePath ? stripVerbatimPrefix(data.filePath) : undefined;
-  let filePath = data.relativePath ? joinPath(projectDir, data.relativePath) : storedPath;
-  if (filePath && !(await exists(filePath).catch(() => false))) filePath = undefined;
+  const relativeCandidate = data.relativePath ? joinPath(projectDir, data.relativePath) : undefined;
+  // 保存成功的记录不会留 filePath；还留着说明上次保存没能收敛身份，此时 filePath 指的才是最后
+  // 一次生成的文件，relativePath 还停在上一张图上。项目目录被移动/复制时 storedPath 不在本项目
+  // 目录内，仍旧让 relativePath 先来。
+  const asKey = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const storedInsideProject = Boolean(storedPath && asKey(storedPath).startsWith(`${asKey(projectDir)}/`));
+  const candidates = storedInsideProject
+    ? [storedPath, relativeCandidate]
+    : [relativeCandidate, storedPath];
+  let filePath: string | undefined;
+  for (const candidate of candidates) {
+    if (candidate && await exists(candidate).catch(() => false)) {
+      filePath = candidate;
+      break;
+    }
+  }
   if (!filePath && data.assetId) {
     filePath = await resolveIndexedAssetPath(data.assetId).catch(() => null) ?? undefined;
   }
