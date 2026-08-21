@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { modelProtocolUsesVariable } from '../../src/services/ai/modelProtocol';
 import { analyzeModelProtocolExamples } from '../../src/services/ai/modelProtocolImport';
+import { resolveGeneralVideoModel } from '../../src/components/nodes/shared/VideoParamSelector';
 
 describe('VideoParamSelector 自定义协议参数识别', () => {
   it('按协议变量识别任意厂商视频模型的比例、分辨率和秒数控件', () => {
@@ -31,5 +32,23 @@ curl https://api.paipu.net/v1/videos \\
   it('兼容模板变量花括号内的空格', () => {
     expect(modelProtocolUsesVariable('{"resolution":"{{ seedanceResolution }}"}', 'seedanceResolution'))
       .toBe(true);
+  });
+
+  it('兼容节点保存的内部 ID、真实模型 ID 和 Provider 前缀引用', () => {
+    const models = [{
+      id: 'provider-custom-abc123',
+      name: 'H3video 2K',
+      modelId: 'lec-h3video-2k',
+      category: 'video' as const,
+      providerConfigId: 'custom-video',
+      videoCapability: { ratios: ['16:9'], frameRates: [24] },
+    }];
+
+    expect(resolveGeneralVideoModel(models, 'general/provider-custom-abc123', 'general'))
+      .toBe(models[0]);
+    expect(resolveGeneralVideoModel(models, 'lec-h3video-2k', 'custom-video'))
+      .toBe(models[0]);
+    expect(resolveGeneralVideoModel(models, 'custom-video/lec-h3video-2k', 'custom-video'))
+      .toBe(models[0]);
   });
 });

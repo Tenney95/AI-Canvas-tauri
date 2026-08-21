@@ -125,6 +125,7 @@ function syncProviderModels(
       executionProfile: model.executionProfile,
       imageReferenceRequestMode: model.imageReferenceRequestMode
         ?? existing?.imageReferenceRequestMode,
+      videoCapability: model.videoCapability,
     } satisfies GeneralModelConfig;
   });
   return [...otherModels, ...selectedModels];
@@ -259,6 +260,7 @@ function sanitizeGeneralModel(
     providerConfigId,
     executionProfile: model.executionProfile,
     imageReferenceRequestMode: model.imageReferenceRequestMode,
+    videoCapability: model.videoCapability,
   };
 }
 

@@ -238,6 +238,62 @@ describe('config hydration guard', () => {
     expect(model).not.toHaveProperty('anthropicUrl');
   });
 
+  it('syncs editable video capabilities into the unified model runtime', async () => {
+    useAppStore.getState().saveProviderConfig('custom-video', {
+      name: '视频连接',
+      apiKey: 'provider-only-secret',
+      baseUrl: 'https://video.example/v1',
+      catalogId: 'custom-openai',
+      selectedModels: [{
+        id: 'custom-video-model',
+        name: '自定义视频模型',
+        category: 'video',
+        provider: 'custom-video',
+        videoCapability: {
+          ratios: ['16:9', '9:16'],
+          defaultRatio: '16:9',
+          resolutions: ['720p', '1080p'],
+          defaultResolution: '1080p',
+          frameRates: [24, 30],
+          defaultFrameRate: 24,
+          minDuration: 4,
+          maxDuration: 12,
+          defaultDuration: 6,
+        },
+      }],
+    });
+
+    expect(useAppStore.getState().config.generalModels?.[0]?.videoCapability).toEqual({
+      ratios: ['16:9', '9:16'],
+      defaultRatio: '16:9',
+      resolutions: ['720p', '1080p'],
+      defaultResolution: '1080p',
+      frameRates: [24, 30],
+      defaultFrameRate: 24,
+      minDuration: 4,
+      maxDuration: 12,
+      defaultDuration: 6,
+    });
+
+    // 保存/加载都会过 sanitizeGeneralModel，能力声明必须原样留在通用模型上
+    fileMocks.loadConfig.mockResolvedValue(useAppStore.getState().config);
+    await useAppStore.getState().loadConfig();
+    expect(useAppStore.getState().config.generalModels?.[0]?.videoCapability?.frameRates)
+      .toEqual([24, 30]);
+
+    useAppStore.getState().saveProviderConfig('custom-video', {
+      ...useAppStore.getState().config.providers['custom-video'],
+      selectedModels: [{
+        id: 'custom-video-model',
+        name: '自定义视频模型',
+        category: 'video',
+        provider: 'custom-video',
+      }],
+    });
+
+    expect(useAppStore.getState().config.generalModels?.[0]?.videoCapability).toBeUndefined();
+  });
+
   it('defaults performance mode off, migrates the legacy compatibility flag, and applies changes immediately', async () => {
     const rootAttributes = new Set<string>();
     vi.stubGlobal('document', {

@@ -194,6 +194,10 @@ export interface VideoModelCapability {
   ratios?: string[];
   /** 未指定比例时的默认值。 */
   defaultRatio?: string;
+  /** 可选帧率档位，如 [16, 24, 30]。 */
+  frameRates?: number[];
+  /** 未指定帧率时的默认值。 */
+  defaultFrameRate?: number;
   /**
    * 只允许这几个时长（秒）。文档写「仅支持 10 或 15 秒」这类离散取值时用它，
    * min/max 表达不了中间不可取（10~15 会放过 12，接口仍会 400）。

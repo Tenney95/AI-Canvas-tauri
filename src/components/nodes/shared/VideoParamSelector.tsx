@@ -6,7 +6,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import AnimatedButton from '../../shared/AnimatedButton';
-import type { BaseNodeData } from '../../../types';
+import type { BaseNodeData, GeneralModelConfig } from '../../../types';
 import type { VideoReferenceItem } from '../../../types/aiTypes';
 import type { DramaCharacter } from '../../../types/dramaAssets';
 import { resolveDramaAssetImageRef } from '../../../services/dramaAssetPrompt';
@@ -80,6 +80,35 @@ const COMBO_FPS_OPTIONS = [
   { value: 24, label: '24帧' },
   { value: 30, label: '30帧' },
 ];
+
+/**
+ * 兼容新旧节点中的模型引用：优先内部 general ID，其次 Provider 作用域下的真实模型 ID，
+ * 最后才接受全局唯一的真实模型 ID，避免同名模型错误串用能力配置。
+ */
+// 供模型引用兼容测试复用；组件仍是本文件默认导出。
+// eslint-disable-next-line react-refresh/only-export-components
+export function resolveGeneralVideoModel(
+  generalModels: GeneralModelConfig[] | undefined,
+  selectedModel: string | undefined,
+  provider: string | undefined,
+): GeneralModelConfig | undefined {
+  if (!generalModels?.length || !selectedModel) return undefined;
+  const directId = selectedModel.replace(/^general\//, '');
+  const directMatch = generalModels.find((model) => model.id === directId);
+  if (directMatch) return directMatch;
+
+  const modelIds = new Set([selectedModel]);
+  if (provider && selectedModel.startsWith(`${provider}/`)) {
+    modelIds.add(selectedModel.slice(provider.length + 1));
+  }
+  const scopedMatch = generalModels.find((model) => (
+    model.providerConfigId === provider && modelIds.has(model.modelId)
+  ));
+  if (scopedMatch) return scopedMatch;
+
+  const matches = generalModels.filter((model) => modelIds.has(model.modelId));
+  return matches.length === 1 ? matches[0] : undefined;
+}
 
 export default function VideoParamSelector({
   provider, selectedModel,
@@ -161,9 +190,7 @@ export default function VideoParamSelector({
   };
 
   const generalModel = useMemo(() => {
-    if (provider !== 'general' || !selectedModel) return undefined;
-    const generalModelId = selectedModel.replace(/^general\//, '');
-    return generalModels?.find((model) => model.id === generalModelId);
+    return resolveGeneralVideoModel(generalModels, selectedModel, provider);
   }, [generalModels, provider, selectedModel]);
 
   const customProtocolSource = useMemo(() => (
@@ -182,7 +209,7 @@ export default function VideoParamSelector({
     ? getDreaminaVideoCapability(selectedModel)
     : undefined;
   // 通用模型（general）按 videoCapability 声明约束参数；未声明则保持通用兜底
-  const generalCapability = provider === 'general'
+  const generalCapability = generalModel
     ? toSeedanceCapabilityView(generalModel?.videoCapability)
     : undefined;
   // 统一的能力约束：APIMart / 火山方舟 / 即梦 / 通用模型都可能有按模型的档位约束，取命中者
@@ -243,7 +270,9 @@ export default function VideoParamSelector({
   const allowedDurations = seedanceCapability?.durations?.length
     ? [...seedanceCapability.durations].sort((left, right) => left - right)
     : undefined;
-  const resolvedDuration = resolveVideoDurationSeconds(seedanceDuration, videoFrames, videoFps, maxDuration);
+  const resolvedDuration = seedanceDuration === undefined && seedanceCapability
+    ? seedanceCapability.defaultDuration
+    : resolveVideoDurationSeconds(seedanceDuration, videoFrames, videoFps, maxDuration);
   const displayedDuration = allowedDurations
     ? allowedDurations.reduce((best, value) => (
       Math.abs(value - resolvedDuration) < Math.abs(best - resolvedDuration) ? value : best
@@ -255,6 +284,12 @@ export default function VideoParamSelector({
   const displayedRatio = seedanceRatios.some((item) => item.value === seedanceRatio)
     ? seedanceRatio
     : seedanceCapability?.defaultRatio ?? seedanceRatio;
+  const configuredFrameRates = generalModel?.videoCapability?.frameRates?.length
+    ? [...generalModel.videoCapability.frameRates].sort((left, right) => left - right)
+    : undefined;
+  const displayedFrameRate = configuredFrameRates?.includes(videoFps)
+    ? videoFps
+    : generalModel?.videoCapability?.defaultFrameRate ?? configuredFrameRates?.[0] ?? videoFps;
   // 标签按跨度等距抽样，保证数字之间有足够间距不重叠：
   // 跨度 ≤8（如 4~12）每秒都标；≤16（如 4~15/4~20）每 2s 标一个；
   // 更大（如 2.5 的 4~30）每 4s 标一个。端点 min/max 始终标。
@@ -274,6 +309,7 @@ export default function VideoParamSelector({
   const showRatioControl = showSeedanceRatio && (isNativeSeedance || customUsesRatio || !isWorkflowProvider);
   // 所有视频模型都以秒数呈现；协议若需要帧数，由生成入口统一换算。
   const showDurationControl = true;
+  const showFrameRateControl = Boolean(generalModel && configuredFrameRates?.length);
   const supportsAudio = isVolcengine
     || Boolean(seedanceCapability?.audioField)
     || customUsesAudio
@@ -294,17 +330,24 @@ export default function VideoParamSelector({
     if (displayedDuration !== seedanceDuration) {
       onChangeSeedanceDuration?.(displayedDuration);
     }
+    if (showFrameRateControl && displayedFrameRate !== videoFps) {
+      onChangeFps?.(displayedFrameRate);
+    }
   }, [
     seedanceCapability,
     displayedDuration,
     displayedRatio,
     displayedResolution,
+    displayedFrameRate,
     onChangeSeedanceDuration,
     onChangeSeedanceRatio,
     onChangeSeedanceResolution,
+    onChangeFps,
     seedanceDuration,
     seedanceRatio,
     seedanceResolution,
+    showFrameRateControl,
+    videoFps,
   ]);
 
   // 角色库是懒加载的，打开来源选择器时补一次全局角色
@@ -335,6 +378,7 @@ export default function VideoParamSelector({
     showResolutionControl ? displayedResolution : '',
     showDurationControl ? `时长${displayedDuration}s` : '',
     showRatioControl ? displayedRatio : '',
+    showFrameRateControl ? `${displayedFrameRate}帧` : '',
   ].filter(Boolean);
   const durationTriggerLabel = durationLabelParts.length > 0
     ? durationLabelParts.join(' · ')
@@ -500,6 +544,27 @@ export default function VideoParamSelector({
                           onClick={() => onChangeSeedanceRatio?.(opt.value)}
                         >
                           {opt.label}
+                        </AnimatedButton>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {showFrameRateControl && (
+                  <div className="img-rp-quality-area mb-2">
+                    <div className="img-rp-section-label">
+                      帧率
+                      <span className="rh-tip" data-tooltip="仅展示该模型配置中声明支持的帧率；帧率越高运动越顺滑，但生成成本通常也更高。">!</span>
+                    </div>
+                    <div className="img-rp-quality-segmented rh-video-resolution-seg">
+                      {configuredFrameRates?.map((value) => (
+                        <AnimatedButton
+                          key={value}
+                          type="button"
+                          className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${displayedFrameRate === value ? 'active' : ''}`}
+                          onClick={() => onChangeFps?.(value)}
+                        >
+                          {value}帧
                         </AnimatedButton>
                       ))}
                     </div>
