@@ -248,6 +248,16 @@
 }
 .wf-panel-list {
   flex: 1 1 auto;
+  /* 顶栏与筛选固定，滚动交给内部的列表区 */
+  overflow: hidden;
+}
+.wf-list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* 滚动条贴着卡片右缘，内容留出让位 */
+  margin-right: -6px;
+  padding-right: 6px;
 }
 /* 窄窗口放不下两栏就改上下排 */
 @media (max-width: 900px) {
