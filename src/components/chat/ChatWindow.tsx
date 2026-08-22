@@ -104,6 +104,9 @@ export default function ChatWindow() {
   }, []);
 
   useEffect(() => {
+    // initChatWindowListener 是异步的，可能在 cleanup 之后才 resolve；
+    // 不记住这个标记就会漏掉一个永不注销的监听 + 一个还在发 request_sync 的定时器
+    let disposed = false;
     let cleanup: (() => void) | undefined;
     let handshake: ReturnType<typeof setInterval> | undefined;
     const stopHandshake = () => {
@@ -129,6 +132,10 @@ export default function ChatWindow() {
       },
       closeWindow,
     ).then((dispose) => {
+      if (disposed) {
+        dispose();
+        return;
+      }
       cleanup = dispose;
       const startedAt = Date.now();
       void emitAction({ type: 'request_sync' });
@@ -146,6 +153,7 @@ export default function ChatWindow() {
     });
 
     return () => {
+      disposed = true;
       stopHandshake();
       cleanup?.();
     };

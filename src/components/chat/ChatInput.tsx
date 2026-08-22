@@ -119,6 +119,8 @@ interface ChatInputProps {
   /** 当前会话上下文占用（估算）；无会话时为 null */
   contextUsage?: ContextUsageStat | null;
   disabled?: boolean;
+  /** 独立窗口是只读镜像，上传只会写进本窗口 Store 并被下一帧同步覆盖 */
+  allowSkillUpload?: boolean;
 }
 
 export default function ChatInput({
@@ -137,6 +139,7 @@ export default function ChatInput({
   onRevokeLocalFile,
   contextUsage,
   disabled = false,
+  allowSkillUpload = true,
 }: ChatInputProps) {
   const t = useT();
   const inputRef = useRef<ChatComposerEditorHandle>(null);
@@ -630,6 +633,7 @@ export default function ChatInput({
                 <span>Skill</span>
                 <span className="flex items-center gap-2">
                   <span>{filteredSkills.length}</span>
+                  {allowSkillUpload && (
                   <button
                     type="button"
                     disabled={skillUploading}
@@ -644,6 +648,7 @@ export default function ChatInput({
                   >
                     <Icon icon={skillUploading ? 'mdi:loading' : 'mdi:plus'} width="15" className={skillUploading ? 'animate-spin' : ''} />
                   </button>
+                  )}
                 </span>
               </div>
               <div className="px-1 pb-1">

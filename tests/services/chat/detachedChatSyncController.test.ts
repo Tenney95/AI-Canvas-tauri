@@ -17,6 +17,7 @@ vi.mock('../../../src/services/chat/conversationExecutionController', () => ({
 import {
   buildDetachedChatSnapshot,
   createDetachedChatSyncController,
+  projectChatNodes,
 } from '../../../src/services/chat/detachedChatSyncController';
 import { applyChatStatePatch } from '../../../src/services/chat/chatWindowService';
 import { useAppStore } from '../../../src/store/useAppStore';
@@ -192,10 +193,23 @@ describe('detached chat sync controller', () => {
         },
       }],
       chatComposerLiveDraft: '内嵌浮窗里没发出去的草稿',
+      userSkills: [{
+        id: 'skill-1',
+        name: '分镜脚本',
+        description: '把剧本拆成分镜',
+        fileName: 'storyboard.md',
+        content: '技能正文很长，不该跨窗口传',
+        sourceType: 'file',
+        createdAt: 1,
+      }],
     });
 
     const snapshot = buildDetachedChatSnapshot(useAppStore.getState());
     expect(snapshot.composerDraft).toBe('内嵌浮窗里没发出去的草稿');
+    // 独立窗口只用技能做 @ 选择，正文留在主窗口
+    expect(snapshot.userSkills).toEqual([
+      expect.objectContaining({ id: 'skill-1', name: '分镜脚本', content: '' }),
+    ]);
     expect(snapshot.nodes).toEqual([{
       id: 'node-1',
       type: 'image',
@@ -241,6 +255,33 @@ describe('detached chat sync controller', () => {
     expect(useAppStore.getState().chatComposerLiveDraft).toBe('独立窗口里改过的草稿');
 
     controller.dispose();
+  });
+
+  it('keeps the node projection stable across canvas drags', () => {
+    const node = (id: string, label: string, x: number) => ({
+      id,
+      type: 'image',
+      position: { x, y: 0 },
+      data: { label, type: 'image' as const, displayId: 1 },
+    });
+
+    const first = projectChatNodes([node('a', '甲', 0), node('b', '乙', 0)]);
+    // 拖动只换坐标与数组引用，投影必须原样返回，才能让补丁层的 Object.is 短路
+    const dragged = projectChatNodes([node('a', '甲', 120), node('b', '乙', 40)]);
+    expect(dragged).toBe(first);
+
+    const renamed = projectChatNodes([node('a', '甲 v2', 120), node('b', '乙', 40)]);
+    expect(renamed).not.toBe(first);
+    expect(renamed[0].data.label).toBe('甲 v2');
+    expect(renamed[1]).toBe(first[1]);
+
+    // 顺序变化也算变化，否则 @ 列表会停在旧次序
+    const reordered = projectChatNodes([node('b', '乙', 40), node('a', '甲 v2', 120)]);
+    expect(reordered).not.toBe(renamed);
+    expect(reordered.map((item) => item.id)).toEqual(['b', 'a']);
+
+    const removed = projectChatNodes([node('b', '乙', 40)]);
+    expect(removed).toHaveLength(1);
   });
 
   it('retries a failed emission with the same revision as a full snapshot', async () => {

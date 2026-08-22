@@ -3,7 +3,12 @@
  */
 import type { Node } from '@xyflow/react';
 import { useAppStore } from '../../store/useAppStore';
-import type { ApiProviderConfig, BaseNodeData, GeneralModelConfig } from '../../types';
+import type {
+  ApiProviderConfig,
+  BaseNodeData,
+  GeneralModelConfig,
+  UserSkill,
+} from '../../types';
 import type { AgentTask } from '../../types/agent';
 import type { ChatConversation, ChatMessage } from '../../types/chat';
 import {
@@ -111,27 +116,84 @@ export function getMediaModelAvailability(
 const ORIGIN = { x: 0, y: 0 };
 let cachedNodeSource: AppState['nodes'] | null = null;
 let cachedNodeProjection: Node<BaseNodeData>[] = [];
+let cachedNodeById = new Map<string, Node<BaseNodeData>>();
+
+function sameProjection(
+  previous: Node<BaseNodeData> | undefined,
+  node: AppState['nodes'][number],
+): previous is Node<BaseNodeData> {
+  return !!previous
+    && previous.type === node.type
+    && previous.data.label === node.data.label
+    && previous.data.type === node.data.type
+    && previous.data.displayId === node.data.displayId
+    && previous.data.imageUrl === node.data.imageUrl
+    && previous.data.thumbnailUrl === node.data.thumbnailUrl;
+}
 
 /**
  * 独立窗口只用节点做 @ 引用与缩略图，正文（提示词/输出/历史）不跨窗口传。
- * ponytail: 按源数组引用缓存即可，节点拖动时投影值不变，由补丁层的值比较兜底。
+ * 拖动画布每帧都会换一个 nodes 数组，但投影字段没变 —— 逐字段比过之后原样返回
+ * 上一次的数组，让补丁层的 Object.is 直接短路，省掉整棵树的 JSON 比较。
  */
 export function projectChatNodes(nodes: AppState['nodes']): Node<BaseNodeData>[] {
   if (nodes === cachedNodeSource) return cachedNodeProjection;
   cachedNodeSource = nodes;
-  cachedNodeProjection = nodes.map((node) => ({
-    id: node.id,
-    type: node.type,
-    position: ORIGIN,
-    data: {
-      label: node.data.label,
-      type: node.data.type,
-      displayId: node.data.displayId,
-      imageUrl: node.data.imageUrl,
-      thumbnailUrl: node.data.thumbnailUrl,
-    },
-  }));
+
+  let changed = nodes.length !== cachedNodeProjection.length;
+  const nextById = new Map<string, Node<BaseNodeData>>();
+  const next = nodes.map((node, index) => {
+    const previous = cachedNodeById.get(node.id);
+    const projected = sameProjection(previous, node)
+      ? previous
+      : {
+          id: node.id,
+          type: node.type,
+          position: ORIGIN,
+          data: {
+            label: node.data.label,
+            type: node.data.type,
+            displayId: node.data.displayId,
+            imageUrl: node.data.imageUrl,
+            thumbnailUrl: node.data.thumbnailUrl,
+          },
+        };
+    if (projected !== cachedNodeProjection[index]) changed = true;
+    nextById.set(node.id, projected);
+    return projected;
+  });
+
+  if (!changed) return cachedNodeProjection;
+  cachedNodeProjection = next;
+  cachedNodeById = nextById;
   return cachedNodeProjection;
+}
+
+let cachedSkillSource: AppState['userSkills'] | null = null;
+let cachedSkillProjection: UserSkill[] = [];
+
+/** 独立窗口只用技能做 @ 选择，正文由主窗口执行时自己读，不跨窗口传 */
+export function projectChatSkills(skills: AppState['userSkills']): UserSkill[] {
+  if (skills === cachedSkillSource) return cachedSkillProjection;
+  cachedSkillSource = skills;
+  cachedSkillProjection = skills.map((skill) => ({ ...skill, content: '' }));
+  return cachedSkillProjection;
+}
+
+let cachedMediaConfig: AppState['config'] | null = null;
+let cachedMediaAvailability: Record<string, boolean> = {};
+
+/** 媒体模型清单只跟 config 走，别跟着每次消息增量重算 */
+function mediaModelAvailabilityFor(config: AppState['config']): Record<string, boolean> {
+  if (config === cachedMediaConfig) return cachedMediaAvailability;
+  cachedMediaConfig = config;
+  cachedMediaAvailability = getMediaModelAvailability(
+    getMediaModelOptions(config.generalModels ?? [], config),
+    config.generalModels ?? [],
+    config.providers,
+    !!config.dreaminaAuth?.loggedIn,
+  );
+  return cachedMediaAvailability;
 }
 
 export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
@@ -150,18 +212,13 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
     )[0],
     assistantImageModelId: state.config.assistantImageModelId,
     assistantVideoModelId: state.config.assistantVideoModelId,
-    mediaModelAvailability: getMediaModelAvailability(
-      getMediaModelOptions(state.config.generalModels ?? [], state.config),
-      state.config.generalModels ?? [],
-      state.config.providers,
-      !!state.config.dreaminaAuth?.loggedIn,
-    ),
+    mediaModelAvailability: mediaModelAvailabilityFor(state.config),
     localFileGrants: state.activeConversationId
       ? listConversationFileGrants(state.activeConversationId)
       : [],
     nodes: projectChatNodes(state.nodes),
     dramaAssets: state.dramaAssets,
-    userSkills: state.userSkills,
+    userSkills: projectChatSkills(state.userSkills),
     composerDraft: state.chatComposerLiveDraft,
   };
 }
