@@ -61,6 +61,7 @@ function AINodeDialog() {
 
   // 仅订阅当前激活的节点（而非整个 nodes 数组），拖拽其他节点时不会触发本弹窗重渲染
   const node = useAppStore((s) => (s.activeNodeId ? s.nodes.find((n) => n.id === s.activeNodeId) : undefined));
+  const performanceMode = useAppStore((s) => s.config.performanceMode === true);
   const data: BaseNodeData | undefined = node?.data;
   const nodeType = data?.type;
 
@@ -909,7 +910,7 @@ function AINodeDialog() {
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        {data.status === 'loading' && (
+        {data.status === 'loading' && !performanceMode && (
           <Suspense fallback={null}>
             <BorderBeam
               className="ai-dialog-beam"
