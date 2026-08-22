@@ -73,6 +73,8 @@ export interface ChatSlice {
   chatPanelDetached: boolean;
   /** 从应用其他入口请求预填到聊天输入框的一次性草稿。 */
   chatComposerDraft: string | null;
+  /** 输入框当前草稿，内嵌浮窗与独立窗口切换时接力用。 */
+  chatComposerLiveDraft: string;
 
   // ── 会话状态 ──
   conversations: ChatConversation[];
@@ -101,6 +103,7 @@ export interface ChatSlice {
   closeChat: () => void;
   toggleChat: () => void;
   setChatPanelDetached: (detached: boolean) => void;
+  setChatComposerLiveDraft: (draft: string) => void;
 
   // ── Conversation Actions ──
   setConversations: (conversations: ChatConversation[]) => void;
@@ -229,6 +232,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
   chatOpen: false,
   chatPanelDetached: false,
   chatComposerDraft: null,
+  chatComposerLiveDraft: '',
 
   // ── 会话初始状态 ──
   conversations: [],
@@ -281,6 +285,8 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set, 
         dramaAssetsPanelOpen: false,
       })),
   setChatPanelDetached: (detached) => set({ chatPanelDetached: detached }),
+
+  setChatComposerLiveDraft: (draft) => set({ chatComposerLiveDraft: draft }),
 
   // ==========================================
   // Conversation Actions

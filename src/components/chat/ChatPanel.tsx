@@ -244,10 +244,13 @@ export default function ChatPanel({
 
   const updateInputDraft = useCallback((value: string) => {
     setInputValue(value);
+    // 草稿走同一条同步通道，内嵌浮窗与独立窗口互相接力
+    if (detached) void emitAction({ type: 'set_composer_draft', draft: value });
+    else useAppStore.getState().setChatComposerLiveDraft(value);
     if (!effectiveActiveConversationId) return;
     if (value) conversationDraftsRef.current.set(effectiveActiveConversationId, value);
     else conversationDraftsRef.current.delete(effectiveActiveConversationId);
-  }, [effectiveActiveConversationId]);
+  }, [detached, effectiveActiveConversationId]);
 
   useEffect(() => {
     if (effectiveActiveConversationId && pendingConversationDraftRef.current != null) {
@@ -261,6 +264,31 @@ export default function ChatPanel({
       ? (conversationDraftsRef.current.get(effectiveActiveConversationId) ?? '')
       : '');
   }, [effectiveActiveConversationId]);
+
+  // 面板接管时把对方留下的草稿灌一次（独立窗口首帧 / 收回内嵌），之后各自本地编辑
+  const draftHandoffRef = useRef(false);
+  useEffect(() => {
+    const owning = detached ? detachedInitialized : !chatPanelDetached;
+    if (!owning) {
+      draftHandoffRef.current = false;
+      return;
+    }
+    if (draftHandoffRef.current) return;
+    draftHandoffRef.current = true;
+    const draft = detached
+      ? (detachedSnapshot?.composerDraft ?? '')
+      : useAppStore.getState().chatComposerLiveDraft;
+    if (!draft) return;
+    // 灌草稿是一次性跨面板同步，放到下一帧异步执行，避免在 effect 内同步 setState 引发级联渲染
+    const frame = requestAnimationFrame(() => updateInputDraft(draft));
+    return () => cancelAnimationFrame(frame);
+  }, [
+    chatPanelDetached,
+    detached,
+    detachedInitialized,
+    detachedSnapshot?.composerDraft,
+    updateInputDraft,
+  ]);
 
   const handleTextModelChange = useCallback((modelId?: string) => {
     if (detached) {

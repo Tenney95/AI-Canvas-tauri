@@ -7,6 +7,8 @@ import { Icon } from '@iconify/react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTooltipAutoPlacement } from '../../hooks/useTooltipAutoPlacement';
 import { loadConfig } from '../../services/fileService';
+import { useAppStore } from '../../store/useAppStore';
+import { emptyDramaAssetLibrary } from '../../types/dramaAssets';
 import type { AppConfig } from '../../types';
 import { setLocale, useT } from '../../i18n';
 import ChatPanel from './ChatPanel';
@@ -25,6 +27,10 @@ const EMPTY_SNAPSHOT: ChatStateSnapshot = {
   agentTasks: [],
   projectId: null,
   generalModels: [],
+  nodes: [],
+  dramaAssets: emptyDramaAssetLibrary(),
+  userSkills: [],
+  composerDraft: '',
 };
 
 export default function ChatWindow() {
@@ -61,6 +67,16 @@ export default function ChatWindow() {
       document.documentElement.removeAttribute('data-theme');
     };
   }, []);
+
+  // 直接把同步过来的画布切片灌进本窗口 Store，@ 引用 / 调用详情等组件照旧读 Store
+  useEffect(() => {
+    useAppStore.setState({
+      nodes: snapshot.nodes,
+      dramaAssets: snapshot.dramaAssets,
+      userSkills: snapshot.userSkills,
+      currentProjectId: snapshot.projectId,
+    });
+  }, [snapshot.nodes, snapshot.dramaAssets, snapshot.userSkills, snapshot.projectId]);
 
   const closeWindow = useCallback(() => {
     void (async () => {

@@ -1,8 +1,9 @@
 /**
  * 连接独立对话窗口与主窗口 Store，生成只读快照并把窗口操作路由回唯一写入源。
  */
+import type { Node } from '@xyflow/react';
 import { useAppStore } from '../../store/useAppStore';
-import type { ApiProviderConfig, GeneralModelConfig } from '../../types';
+import type { ApiProviderConfig, BaseNodeData, GeneralModelConfig } from '../../types';
 import type { AgentTask } from '../../types/agent';
 import type { ChatConversation, ChatMessage } from '../../types/chat';
 import {
@@ -75,6 +76,10 @@ interface DetachedSnapshotSource {
   projects: AppState['projects'];
   config: AppState['config'];
   chatPanelDetached: boolean;
+  nodes: AppState['nodes'];
+  dramaAssets: AppState['dramaAssets'];
+  userSkills: AppState['userSkills'];
+  chatComposerLiveDraft: string;
 }
 
 export function getMediaModelAvailability(
@@ -103,6 +108,32 @@ export function getMediaModelAvailability(
   }));
 }
 
+const ORIGIN = { x: 0, y: 0 };
+let cachedNodeSource: AppState['nodes'] | null = null;
+let cachedNodeProjection: Node<BaseNodeData>[] = [];
+
+/**
+ * 独立窗口只用节点做 @ 引用与缩略图，正文（提示词/输出/历史）不跨窗口传。
+ * ponytail: 按源数组引用缓存即可，节点拖动时投影值不变，由补丁层的值比较兜底。
+ */
+export function projectChatNodes(nodes: AppState['nodes']): Node<BaseNodeData>[] {
+  if (nodes === cachedNodeSource) return cachedNodeProjection;
+  cachedNodeSource = nodes;
+  cachedNodeProjection = nodes.map((node) => ({
+    id: node.id,
+    type: node.type,
+    position: ORIGIN,
+    data: {
+      label: node.data.label,
+      type: node.data.type,
+      displayId: node.data.displayId,
+      imageUrl: node.data.imageUrl,
+      thumbnailUrl: node.data.thumbnailUrl,
+    },
+  }));
+  return cachedNodeProjection;
+}
+
 export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
   const project = state.projects.find((item) => item.id === state.currentProjectId);
   return {
@@ -128,6 +159,10 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
     localFileGrants: state.activeConversationId
       ? listConversationFileGrants(state.activeConversationId)
       : [],
+    nodes: projectChatNodes(state.nodes),
+    dramaAssets: state.dramaAssets,
+    userSkills: state.userSkills,
+    composerDraft: state.chatComposerLiveDraft,
   };
 }
 
@@ -142,7 +177,11 @@ function detachedSnapshotSourceChanged(
     || current.agentTasks !== previous.agentTasks
     || current.currentProjectId !== previous.currentProjectId
     || current.projects !== previous.projects
-    || current.config !== previous.config;
+    || current.config !== previous.config
+    || current.nodes !== previous.nodes
+    || current.dramaAssets !== previous.dramaAssets
+    || current.userSkills !== previous.userSkills
+    || current.chatComposerLiveDraft !== previous.chatComposerLiveDraft;
 }
 
 export function handleDetachedChatAction(
@@ -319,6 +358,10 @@ export function handleDetachedChatAction(
 
     case 'set_hovered_node':
       store.setHoveredMentionNodeId(action.nodeId);
+      break;
+
+    case 'set_composer_draft':
+      store.setChatComposerLiveDraft(action.draft);
       break;
 
     case 'request_sync':
