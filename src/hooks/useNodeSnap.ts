@@ -74,16 +74,19 @@ function getParentOffset(
 }
 
 /**
- * 真实尺寸优先级：卡片自身宽高 → xyflow 用户尺寸/样式尺寸（分组、文件夹靠这个）
- * → 实测尺寸 → 按类型兜底。少了中间两级，分组一律被当成 280×160，对齐线全是错的。
+ * 实测尺寸优先 —— DOM 才是真相：data.nodeWidth/nodeHeight 只是建节点时写死的估值
+ * （音频节点写 140，实际 88），分组节点更是压根没有这两个字段。
+ * 未实测时才退回卡片估值 → xyflow 用户/样式尺寸 → 按类型兜底。
  */
 function resolveNodeSize(node: Node<BaseNodeData>, axis: 'width' | 'height'): number | undefined {
+  const measured = node.measured?.[axis];
+  if (typeof measured === 'number' && measured > 0) return measured;
   const cardSize = node.data?.[axis === 'width' ? 'nodeWidth' : 'nodeHeight'] as number | undefined;
   if (typeof cardSize === 'number') return cardSize;
   if (typeof node[axis] === 'number') return node[axis];
   const styleSize = Number(node.style?.[axis]);
   if (Number.isFinite(styleSize) && styleSize > 0) return styleSize;
-  return node.measured?.[axis];
+  return undefined;
 }
 
 function getNodeBounds(
