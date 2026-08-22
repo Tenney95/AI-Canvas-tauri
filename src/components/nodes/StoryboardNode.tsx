@@ -5,7 +5,7 @@
  * 双击进入分镜编辑：可拖拽某一格到画布，生成一个「提取分镜r-c」真实裁片图像节点，
  * 原格随即变为空占位（+）。
  */
-import { memo, useCallback, useMemo, useRef, useState, useEffect } from 'react';
+import { memo, lazy, Suspense, useCallback, useMemo, useRef, useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
@@ -17,6 +17,7 @@ import NodeError from './shared/NodeError';
 import { useNodeRename } from './shared/useNodeRename';
 import { useAppStore, generateId } from '../../store/useAppStore';
 import { cropImageCell, cropImageByRanges, computeImageNodeDimensions } from './shared/image/imageUtils';
+import { cellBackgroundStyle, gridBoundaries, remapStoryboardCells } from '../../utils/storyboardGrid';
 import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { useReferencedImageRevisions, withPreviewRevision } from '../../hooks/useReferencedImageWatcher';
 import {
@@ -25,6 +26,8 @@ import {
   isCanvasDerivationFresh,
   registerCanvasDerivation,
 } from '../../services/canvasDerivationGuard';
+
+const CustomGridEditor = lazy(() => import('./shared/image/CustomGridEditor'));
 
 /** 拖出判定阈值（像素）：小于此位移视为误触，不提取 */
 const DRAG_THRESHOLD = 8;
@@ -62,9 +65,9 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
   ]);
   const displayImageUrl = withPreviewRevision(imageUrl, revisionFor(data.filePath));
 
-  // 行/列边界（含 0 和 100）
-  const hRanges = useMemo(() => (isCustomGrid ? [0, ...rowPositions, 100] : []), [isCustomGrid, rowPositions]);
-  const vRanges = useMemo(() => (isCustomGrid ? [0, ...colPositions, 100] : []), [isCustomGrid, colPositions]);
+  // 行/列边界（含 0 和 100）：均分宫格按格数算，自定义宫格按线算
+  const hRanges = useMemo(() => gridBoundaries(rows, rowPositions), [rows, rowPositions]);
+  const vRanges = useMemo(() => gridBoundaries(cols, colPositions), [cols, colPositions]);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [editRequested, setEditRequested] = useState(false);
@@ -77,50 +80,31 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
     [id, updateNodeDataTransient],
   );
 
-  // 计算各格的定位/裁片偏移（百分比）
+  // 计算各格的定位与背景裁片偏移（百分比）
   const cells = useMemo(() => {
-    const arr: { idx: number; r: number; c: number; corner: string; box: React.CSSProperties; img: React.CSSProperties }[] = [];
+    const arr: { idx: number; r: number; c: number; corner: string; box: React.CSSProperties; bg: React.CSSProperties }[] = [];
     const lastRow = rows - 1;
     const lastCol = cols - 1;
 
-    if (isCustomGrid) {
-      // 非均匀宫格：按自定义线位置计算
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const cellTop = hRanges[r];
-          const cellLeft = vRanges[c];
-          const cellH = hRanges[r + 1] - hRanges[r];
-          const cellW = vRanges[c + 1] - vRanges[c];
-          const corner = r === 0 && c === 0 ? 'tl' : r === 0 && c === lastCol ? 'tr' : r === lastRow && c === 0 ? 'bl' : r === lastRow && c === lastCol ? 'br' : '';
-          arr.push({
-            idx: r * cols + c,
-            r, c, corner,
-            box: { left: `${cellLeft}%`, top: `${cellTop}%`, width: `${cellW}%`, height: `${cellH}%` },
-            img: {
-              width: `${(100 / cellW) * 100}%`,
-              height: `${(100 / cellH) * 100}%`,
-              left: `${-(cellLeft / cellW) * 100}%`,
-              top: `${-(cellTop / cellH) * 100}%`,
-            },
-          });
-        }
-      }
-    } else {
-      // 均分宫格：原逻辑
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const corner = r === 0 && c === 0 ? 'tl' : r === 0 && c === lastCol ? 'tr' : r === lastRow && c === 0 ? 'bl' : r === lastRow && c === lastCol ? 'br' : '';
-          arr.push({
-            idx: r * cols + c,
-            r, c, corner,
-            box: { left: `${(c / cols) * 100}%`, top: `${(r / rows) * 100}%`, width: `${(1 / cols) * 100}%`, height: `${(1 / rows) * 100}%` },
-            img: { width: `${cols * 100}%`, height: `${rows * 100}%`, left: `${-c * 100}%`, top: `${-r * 100}%` },
-          });
-        }
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const cellTop = hRanges[r];
+        const cellLeft = vRanges[c];
+        const cellH = hRanges[r + 1] - hRanges[r];
+        const cellW = vRanges[c + 1] - vRanges[c];
+        const corner = r === 0 && c === 0 ? 'tl' : r === 0 && c === lastCol ? 'tr' : r === lastRow && c === 0 ? 'bl' : r === lastRow && c === lastCol ? 'br' : '';
+        arr.push({
+          idx: r * cols + c,
+          r, c, corner,
+          box: { left: `${cellLeft}%`, top: `${cellTop}%`, width: `${cellW}%`, height: `${cellH}%` },
+          bg: cellBackgroundStyle(cellLeft, cellTop, cellW, cellH),
+        });
       }
     }
     return arr;
-  }, [rows, cols, isCustomGrid, hRanges, vRanges]);
+  }, [rows, cols, hRanges, vRanges]);
+
+  const backgroundImage = displayImageUrl ? `url("${displayImageUrl}")` : undefined;
 
   // 取消选中即退出编辑态：派生而非用 effect 回写，避免多一轮渲染
   const editing = editRequested && !!selected;
@@ -130,6 +114,37 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
     e.stopPropagation();
     setEditRequested((v) => !v);
   }, []);
+
+  // ── 调整分割线：把现有的线喂回裁切编辑器，确认后就地改这个节点 ──
+  const [isLineEditor, setIsLineEditor] = useState(false);
+  const openLineEditor = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsLineEditor(true);
+  }, []);
+  const closeLineEditor = useCallback(() => setIsLineEditor(false), []);
+
+  const handleLinesConfirm = useCallback(
+    (hPercentages: number[], vPercentages: number[]) => {
+      setIsLineEditor(false);
+      const next = { rows: hPercentages.length + 1, cols: vPercentages.length + 1 };
+      const map = remapStoryboardCells(
+        { rows, cols, rowPositions, colPositions },
+        { ...next, rowPositions: hPercentages, colPositions: vPercentages },
+      );
+      commitToHistory();
+      updateNodeDataTransient(id, {
+        storyboardRows: next.rows,
+        storyboardCols: next.cols,
+        storyboardRowPositions: hPercentages,
+        storyboardColPositions: vPercentages,
+        // 线的条数变了格子会对不上，按旧格中心搬过去，搬不到的格恢复成源图裁片
+        storyboardOverrides: map.map((from) => (from >= 0 ? overrides[from] ?? null : null)),
+        storyboardExtracted: map.map((from) => (from >= 0 ? extracted[from] ?? false : false)),
+      } as Partial<BaseNodeData>);
+      commitToHistory();
+    },
+    [id, rows, cols, rowPositions, colPositions, overrides, extracted, commitToHistory, updateNodeDataTransient],
+  );
 
   // Esc 退出编辑态
   useEffect(() => {
@@ -323,22 +338,35 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
                   data-sb-cell-idx={cell.idx}
                   {...(cell.corner ? { 'data-sb-corner': cell.corner } : {})}
                   className={`sb-cell${isEmpty ? ' sb-cell--empty' : ''}${override ? ' sb-cell--override' : ''}${draggable ? ' sb-cell--draggable nodrag' : ''}${drag?.idx === cell.idx ? ' sb-cell--dragging' : ''}`}
-                  style={cell.box}
+                  style={override || isEmpty ? cell.box : { ...cell.box, ...cell.bg, backgroundImage }}
                   onPointerDown={draggable ? startCellDrag(cell.idx) : undefined}
                 >
                   {override ? (
                     <img className="sb-cell-fill" src={withPreviewRevision(override.url, revisionFor(override.filePath))} alt="" draggable={false} />
                   ) : isEmpty ? (
                     <span className="sb-cell-plus">+</span>
-                  ) : (
-                    <img className="sb-cell-img" src={displayImageUrl} alt="" draggable={false} style={cell.img} />
-                  )}
+                  ) : null}
                   <span className="sb-cell-overlay" />
                 </div>
               );
             })
           ) : (
             <div className="storyboard-empty">无图像</div>
+          )}
+
+          {editing && displayImageUrl && (
+            <button
+              type="button"
+              className="storyboard-lines-btn nodrag"
+              data-tooltip="调整分割线"
+              onClick={openLineEditor}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M3 10h18M3 14h18M10 3v18M14 3v18" />
+              </svg>
+              调线
+            </button>
           )}
 
           {displayImageUrl && (
@@ -373,6 +401,19 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
         onResize={handleResize}
       />
 
+      {isLineEditor && displayImageUrl && (
+        <Suspense fallback={null}>
+          <CustomGridEditor
+            isOpen
+            imageUrl={displayImageUrl}
+            initialHPercentages={rowPositions.length ? rowPositions : hRanges.slice(1, -1)}
+            initialVPercentages={colPositions.length ? colPositions : vRanges.slice(1, -1)}
+            onClose={closeLineEditor}
+            onConfirm={handleLinesConfirm}
+          />
+        </Suspense>
+      )}
+
       {/* 拖出幽灵预览（portal 到 body，避免被画布 transform 影响定位）*/}
       {drag && dragCell && displayImageUrl &&
         createPortal(
@@ -381,7 +422,7 @@ function StoryboardNode({ id, data, selected }: { id: string; data: BaseNodeData
               {overrides[drag.idx] ? (
                 <img src={withPreviewRevision(overrides[drag.idx]!.url, revisionFor(overrides[drag.idx]!.filePath))} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               ) : (
-                <img src={displayImageUrl} alt="" draggable={false} style={dragCell.img} />
+                <div className="sb-drag-ghost-fill" style={{ ...dragCell.bg, backgroundImage }} />
               )}
             </div>
           </div>,

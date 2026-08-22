@@ -2,7 +2,7 @@
  * CustomGridEditor — 自定义宫格裁切编辑器
  * 在全屏 overlay 上拖拽添加横向/竖向分割线，根据线的分布生成 storyboard 节点
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import FullscreenOverlay from '../../../shared/FullscreenOverlay';
 import AnimatedButton from '../../../shared/AnimatedButton';
@@ -19,6 +19,9 @@ type LineType = 'h' | 'v';
 interface CustomGridEditorProps {
   isOpen: boolean;
   imageUrl: string;
+  /** 已有的分割线位置：编辑现成的宫格节点时带进来，重新裁切时留空 */
+  initialHPercentages?: number[];
+  initialVPercentages?: number[];
   onClose: () => void;
   onConfirm: (hPercentages: number[], vPercentages: number[]) => void;
 }
@@ -26,7 +29,14 @@ interface CustomGridEditorProps {
 let guid = 0;
 const nextId = () => `gl-${++guid}`;
 
-export default function CustomGridEditor({ isOpen, imageUrl, onClose, onConfirm }: CustomGridEditorProps) {
+export default function CustomGridEditor({
+  isOpen,
+  imageUrl,
+  initialHPercentages,
+  initialVPercentages,
+  onClose,
+  onConfirm,
+}: CustomGridEditorProps) {
   const imgRef = useRef<HTMLImageElement>(null);
   /** 标记刚完成一次拖拽，阻止后续 click 意外新建线 */
   const justDraggedRef = useRef(false);
@@ -35,6 +45,17 @@ export default function CustomGridEditor({ isOpen, imageUrl, onClose, onConfirm 
   const [vLines, setVLines] = useState<GuideLine[]>([]);
   const [mode, setMode] = useState<LineType>('h');
   const [dragging, setDragging] = useState<string | null>(null);
+
+  // 只在打开的那一刻按传入的线起步；开着的时候 props 换了新数组也不能推翻用户改到一半的线
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (isOpen && !wasOpen.current) {
+      const toLines = (positions?: number[]) => (positions ?? []).map((pos) => ({ id: nextId(), pos }));
+      setHLines(toLines(initialHPercentages));
+      setVLines(toLines(initialVPercentages));
+    }
+    wasOpen.current = isOpen;
+  }, [isOpen, initialHPercentages, initialVPercentages]);
 
   /* ── 关闭：重置所有状态 ── */
   const handleClose = useCallback(() => {
