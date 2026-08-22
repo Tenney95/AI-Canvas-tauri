@@ -676,10 +676,12 @@ export default function ChatPanel({
       } catch { /* ignore */ }
       setChatPanelDetached(false);
     } else {
+      // 必须先置位：独立窗口一加载就会来要快照，而同步器在 detached 为假时会把请求丢掉
+      setChatPanelDetached(true);
       try {
         await invoke('open_chat_window');
-        setChatPanelDetached(true);
       } catch (e) {
+        setChatPanelDetached(false);
         console.error('[ChatPanel] failed to open chat window:', e);
         showToast(t('打开独立窗口失败'), 'error');
       }

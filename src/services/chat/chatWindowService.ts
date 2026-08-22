@@ -282,16 +282,15 @@ export type ChatAction =
 // 主窗口：发送状态 + 接收 action
 // ============================================
 
-let mainInitDone = false;
-
-/** 启动主窗口监听：接收来自独立窗口的 action */
+/**
+ * 启动主窗口监听：接收来自独立窗口的 action。
+ * 生命周期归调用方（同步控制器）管，这里不做模块级去重 —— StrictMode 下
+ * 第二次挂载会被旧实例的标记挡掉，结果两边都没有监听器，独立窗口永远拿不到快照。
+ */
 export async function initMainWindowListener(
   onAction: (action: ChatAction) => void,
   onDetachClosed: () => void,
 ): Promise<() => void> {
-  if (mainInitDone) return () => {};
-  mainInitDone = true;
-
   const { listen } = await import('@tauri-apps/api/event');
 
   const unlistenAction = await listen<ChatAction>(CHAT_ACTION_EVENT, (event) => {
@@ -303,7 +302,6 @@ export async function initMainWindowListener(
   });
 
   return () => {
-    mainInitDone = false;
     unlistenAction();
     unlistenClose();
   };
@@ -327,16 +325,11 @@ export async function emitCloseChatWindow(): Promise<void> {
 // 独立窗口：接收状态 + 发送 action
 // ============================================
 
-let chatWindowInit = false;
-
-/** 启动独立窗口监听：接收来自主窗口的状态同步 */
+/** 启动独立窗口监听：接收来自主窗口的状态同步（同样由调用方管生命周期） */
 export async function initChatWindowListener(
   onSync: (sync: ChatStateSync) => void,
   onCloseRequest: () => void,
 ): Promise<() => void> {
-  if (chatWindowInit) return () => {};
-  chatWindowInit = true;
-
   const { listen } = await import('@tauri-apps/api/event');
 
   const unlistenSync = await listen<ChatStateSync>(CHAT_SYNC_EVENT, (event) => {
@@ -348,7 +341,6 @@ export async function initChatWindowListener(
   });
 
   return () => {
-    chatWindowInit = false;
     unlistenSync();
     unlistenClose();
   };

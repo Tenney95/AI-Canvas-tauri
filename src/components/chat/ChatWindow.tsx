@@ -33,6 +33,9 @@ const EMPTY_SNAPSHOT: ChatStateSnapshot = {
   composerDraft: '',
 };
 
+const HANDSHAKE_RETRY_MS = 500;
+const HANDSHAKE_TIMEOUT_MS = 8000;
+
 export default function ChatWindow() {
   const t = useT();
   useTooltipAutoPlacement();
@@ -101,8 +104,12 @@ export default function ChatWindow() {
   }, []);
 
   useEffect(() => {
-    const fallbackTimer = setTimeout(() => setInitialized(true), 3000);
     let cleanup: (() => void) | undefined;
+    let handshake: ReturnType<typeof setInterval> | undefined;
+    const stopHandshake = () => {
+      if (handshake) clearInterval(handshake);
+      handshake = undefined;
+    };
 
     void initChatWindowListener(
       (sync) => {
@@ -117,17 +124,29 @@ export default function ChatWindow() {
           resyncRequestedRef.current = true;
           void emitAction({ type: 'request_sync' });
         }
+        stopHandshake();
         setInitialized(true);
-        clearTimeout(fallbackTimer);
       },
       closeWindow,
     ).then((dispose) => {
       cleanup = dispose;
+      const startedAt = Date.now();
       void emitAction({ type: 'request_sync' });
+      // 主窗口可能还没准备好接收，重试到首帧快照到手为止
+      handshake = setInterval(() => {
+        if (Date.now() - startedAt > HANDSHAKE_TIMEOUT_MS) {
+          stopHandshake();
+          // 握手失败不该伪装成「没有对话」，先放行 UI 再把原因留在控制台
+          console.error('[ChatWindow] no snapshot from the main window; sync channel is down');
+          setInitialized(true);
+          return;
+        }
+        void emitAction({ type: 'request_sync' });
+      }, HANDSHAKE_RETRY_MS);
     });
 
     return () => {
-      clearTimeout(fallbackTimer);
+      stopHandshake();
       cleanup?.();
     };
   }, [closeWindow]);
