@@ -384,7 +384,6 @@ export interface ApiProviderConfig {
   baseUrl?: string;
   /** 内置目录定义 ID；自定义连接的配置 key 与目录定义 ID 不同。 */
   catalogId?: string;
-  anthropicUrl?: string;
   /** undefined 表示旧配置尚未选择；空数组表示用户明确未启用任何模型。 */
   selectedModels?: ProviderModelSelection[];
   /** 最近一次拉取并保存在本地的完整模型目录，不包含凭据。 */

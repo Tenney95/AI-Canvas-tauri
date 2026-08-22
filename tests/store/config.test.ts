@@ -142,6 +142,14 @@ describe('config hydration guard', () => {
         modelId: 'legacy-chat',
         apiKey: 'legacy-secret',
         category: 'text',
+      }, {
+        id: 'legacy-model-2',
+        name: '旧模型二',
+        openaiUrl: 'https://legacy.example/v1',
+        anthropicUrl: 'https://legacy.example/anthropic',
+        modelId: 'legacy-chat-2',
+        apiKey: 'legacy-secret',
+        category: 'text',
       }],
     });
 
@@ -156,6 +164,8 @@ describe('config hydration guard', () => {
       apiKey: 'legacy-secret',
       baseUrl: 'https://legacy.example/v1',
     });
+    // anthropicUrl 从未参与请求，只有它不同的旧模型应并进同一条连接而不是各建一条
+    expect(Object.keys(migrated.providers).filter((id) => id.startsWith('custom-'))).toHaveLength(1);
 
     await useAppStore.getState().saveConfig();
     const saved = fileMocks.saveConfig.mock.calls[0]?.[0] as AppConfig | undefined;
@@ -216,7 +226,6 @@ describe('config hydration guard', () => {
       name: '当前连接',
       apiKey: 'provider-only-secret',
       baseUrl: 'https://current.example/v1',
-      anthropicUrl: 'https://current.example/anthropic',
       catalogId: 'custom-openai',
       selectedModels: [{
         id: 'current-image',

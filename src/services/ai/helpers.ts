@@ -83,7 +83,6 @@ export interface ResolvedGeneralModelConnection {
   provider: ApiProviderConfig;
   apiKey: string;
   baseUrl: string;
-  anthropicUrl: string;
 }
 
 /** 通过模型引用解析当前连接，密钥和地址始终以 config.providers 为准。 */
@@ -102,7 +101,6 @@ export function resolveGeneralModelConnection(
     provider,
     apiKey: provider.apiKey || '',
     baseUrl: provider.baseUrl?.trim() || '',
-    anthropicUrl: provider.anthropicUrl?.trim() || '',
   };
 }
 

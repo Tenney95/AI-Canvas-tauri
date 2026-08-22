@@ -1417,6 +1417,10 @@
 .provider-protocol-topbar.has-reference-mode {
   grid-template-columns: minmax(150px, 0.8fr) minmax(230px, 1.2fr) auto;
 }
+.provider-protocol-testrun {
+  padding-top: 10px;
+  border-top: 1px solid var(--theme-border);
+}
 .provider-protocol-view-tabs {
   display: flex;
   height: 32px;

@@ -2,7 +2,7 @@
  * 编辑自定义模型的请求、鉴权、轮询与响应映射协议，并在保存前执行结构校验。
  */
 import { Icon } from '@iconify/react';
-import { useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type {
   GeneralModelCategory,
   ImageReferenceRequestMode,
@@ -17,13 +17,13 @@ import type {
   ModelProtocolPollTemplate,
   ModelProtocolPollRetryConfig,
   ModelProtocolPollResponseConfig,
-  ModelProtocolPresetId,
   ModelProtocolRequestTemplate,
   ModelProtocolResponseType,
   ModelProtocolResultConfig,
   ProtocolJsonValue,
 } from '../../types/aiTypes';
 import {
+  executeModelProtocol,
   getDefaultCustomProtocol,
   getDefaultModelProtocolPollRetryConfig,
   getModelProtocolPreset,
@@ -37,14 +37,17 @@ import {
 } from '../../services/ai/modelProtocol';
 import { getCategoryProtocolVariables } from '../../services/ai/modelProtocolVariables';
 import PopupCloseButton from '../shared/PopupCloseButton';
+import { describeProtocolTestRunBlocker, type ProtocolChoice } from './modelProtocolTestRun';
 import { useT } from '../../i18n';
 
-type ProtocolChoice = ModelProtocolPresetId | 'legacy';
 type EditorView = 'form' | 'json';
 type JsonFieldKind = 'object' | 'value';
 
 interface ModelProtocolEditorProps {
   model: ProviderModelSelection;
+  /** 试跑用的真实凭据与网关地址；缺任意一个就只能做本地预览。 */
+  apiKey: string;
+  baseUrl: string;
   onChange: (profile: ModelExecutionProfile | undefined) => void;
   onImageReferenceRequestModeChange: (mode: ImageReferenceRequestMode) => void;
   onValidityChange: (valid: boolean) => void;
@@ -64,6 +67,13 @@ interface JsonDraftFieldProps {
 interface ProtocolPreviewState {
   preview?: ModelProtocolRequestPreview;
   error?: string;
+}
+
+interface ProtocolTestRunState {
+  status: 'idle' | 'running' | 'success' | 'error';
+  message?: string;
+  /** 成功时的原始返回结构，失败时为空。 */
+  detail?: string;
 }
 
 interface ProtocolResponsePreviewState {
@@ -274,6 +284,8 @@ function createDefaultPoll(category: GeneralModelCategory): ModelProtocolPollTem
 
 export default function ModelProtocolEditor({
   model,
+  apiKey,
+  baseUrl,
   onChange,
   onImageReferenceRequestModeChange,
   onValidityChange,
@@ -303,6 +315,9 @@ export default function ModelProtocolEditor({
   const protocolJsonId = useId();
   const protocolJsonHelpId = `${protocolJsonId}-help`;
   const invalidFormFieldsRef = useRef(new Set<string>());
+  const [testRun, setTestRun] = useState<ProtocolTestRunState>({ status: 'idle' });
+  const testAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => testAbortRef.current?.abort(), []);
 
   const publishProtocol = (nextProtocol: NormalizedModelExecutionProtocol) => {
     setProtocol(nextProtocol);
@@ -601,6 +616,68 @@ export default function ModelProtocolEditor({
     }
   }, [preset, protocol, responseSampleJson, supportsStructuredResponse]);
 
+  /**
+   * 拿真实凭据把当前协议跑一次。
+   *
+   * 本地预览只能证明模板渲染得出来，证明不了厂商认这些字段——中转站最常见的失败
+   * 是 400 unsupported field，只有真发一次请求才看得到。这会产生真实调用与计费，
+   * 所以只在用户点按钮时执行，异步协议会一直轮询到出结果，可随时取消。
+   */
+  const runProtocolTest = async () => {
+    if (describeProtocolTestRunBlocker(preset, apiKey, baseUrl)) return;
+    let variables: ModelProtocolVariables;
+    try {
+      const parsed = JSON.parse(previewVariablesJson) as ProtocolJsonValue;
+      if (!isJsonObject(parsed)) throw new Error('示例变量必须是 JSON 对象');
+      variables = parsed;
+    } catch (parseError) {
+      setTestRun({
+        status: 'error',
+        message: parseError instanceof Error ? parseError.message : '示例变量解析失败',
+      });
+      return;
+    }
+    testAbortRef.current?.abort();
+    const controller = new AbortController();
+    testAbortRef.current = controller;
+    setTestRun({ status: 'running' });
+    try {
+      const result = await executeModelProtocol({ apiKey, baseUrl, protocol, variables, signal: controller.signal });
+      if (controller.signal.aborted) return;
+      const parts = [
+        result.urls?.length ? t('返回 {count} 个结果地址', { count: result.urls.length }) : '',
+        result.text ? t('返回文本 {count} 字', { count: result.text.length }) : '',
+        result.taskId ? t('任务 ID {id}', { id: result.taskId }) : '',
+      ].filter(Boolean);
+      setTestRun({
+        status: 'success',
+        message: parts.join('，') || t('调用成功，但没有解析出结果'),
+        detail: serializeJson(result),
+      });
+    } catch (runError) {
+      if (controller.signal.aborted) return;
+      setTestRun({
+        status: 'error',
+        message: runError instanceof Error ? runError.message : t('试跑失败'),
+      });
+    }
+  };
+
+  const cancelProtocolTest = () => {
+    testAbortRef.current?.abort();
+    testAbortRef.current = null;
+    setTestRun({ status: 'idle' });
+  };
+
+  const testRunBlocker = describeProtocolTestRunBlocker(preset, apiKey, baseUrl);
+  const testRunDisabledReason = testRunBlocker === 'legacy-preset'
+    ? t('「自动兼容」不走声明式协议，无法试跑')
+    : testRunBlocker === 'missing-base-url'
+      ? t('先填写接口地址')
+      : testRunBlocker === 'missing-api-key'
+        ? t('先填写 API Key')
+        : '';
+
   return (
     <section className="provider-protocol-editor is-small"       aria-label={t('{name} 调用协议', { name: model.name })}>
       <div className="provider-protocol-editor-head">
@@ -644,6 +721,48 @@ export default function ModelProtocolEditor({
               JSON
             </button>
           </div>
+        ) : null}
+      </div>
+
+      <div className="provider-protocol-testrun" aria-live="polite">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="provider-secondary-btn h-7"
+            disabled={!!testRunDisabledReason || testRun.status === 'running'}
+            title={testRunDisabledReason || undefined}
+            onClick={() => void runProtocolTest()}
+          >
+            <Icon
+              icon={testRun.status === 'running' ? 'mdi:loading' : 'mdi:play-circle-outline'}
+              className={testRun.status === 'running' ? 'settings-spin' : undefined}
+              width="14"
+            />
+            {testRun.status === 'running' ? t('试跑中') : t('试跑')}
+          </button>
+          {testRun.status === 'running' ? (
+            <button type="button" className="provider-text-btn h-7" onClick={cancelProtocolTest}>
+              {t('取消')}
+            </button>
+          ) : null}
+          <small className="text-[11px] text-canvas-text-muted">
+            {testRunDisabledReason
+              || t('用上面的示例变量真发一次请求，会产生真实调用与计费')}
+          </small>
+        </div>
+        {testRun.message ? (
+          <div className={`provider-catalog-message is-${testRun.status === 'error' ? 'error' : 'ready'} mt-2`}>
+            <Icon
+              icon={testRun.status === 'error' ? 'mdi:alert-circle-outline' : 'mdi:check-circle-outline'}
+              width="14"
+            />
+            <span className="break-all">{testRun.message}</span>
+          </div>
+        ) : null}
+        {testRun.detail ? (
+          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md border border-canvas-border bg-canvas-bg/40 p-2.5 font-mono text-[12px] leading-relaxed text-canvas-text-secondary">
+            {testRun.detail}
+          </pre>
         ) : null}
       </div>
 

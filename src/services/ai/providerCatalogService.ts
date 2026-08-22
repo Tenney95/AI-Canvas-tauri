@@ -30,7 +30,7 @@ import {
 } from './providers/googleModelManifest';
 
 export type ProviderAuthType = 'api-key' | 'oauth';
-export type ProviderCredentialKey = 'apiKey' | 'baseUrl' | 'anthropicUrl';
+export type ProviderCredentialKey = 'apiKey' | 'baseUrl';
 
 export interface ProviderCredentialField {
   key: ProviderCredentialKey;
@@ -227,7 +227,7 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
   {
     id: 'custom-openai',
     name: '自定义接口',
-    description: 'OpenAI 或 Anthropic 兼容接口',
+    description: 'OpenAI 兼容接口；非标准接口用模型的调用协议单独声明',
     badgeText: 'API',
     authType: 'api-key',
     catalogAdapter: 'openai-compatible',
@@ -235,8 +235,7 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
     allowCustomBaseUrl: true,
     credentials: [
       API_KEY_FIELD,
-      { key: 'baseUrl', label: 'OpenAI 接口地址', required: true },
-      { key: 'anthropicUrl', label: 'Anthropic 接口地址', required: false },
+      { key: 'baseUrl', label: '接口地址', required: true },
     ],
   },
 ];

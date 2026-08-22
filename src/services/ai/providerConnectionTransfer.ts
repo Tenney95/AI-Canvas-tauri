@@ -47,7 +47,6 @@ export function serializeConnection(config: ApiProviderConfig): string {
       name: config.name,
       catalogId: config.catalogId,
       baseUrl: config.baseUrl,
-      anthropicUrl: config.anthropicUrl,
       selectedModels: config.selectedModels,
       catalogModels: config.catalogModels,
       visibleModelCategories: config.visibleModelCategories,
@@ -137,7 +136,6 @@ export function parseConnectionShare(text: string): ParsedConnectionShare | null
       // 凭据永远不随配置流转，由用户重新填写
       apiKey: '',
       baseUrl: normalizeBaseUrl(asString(source.baseUrl)) || undefined,
-      anthropicUrl: normalizeBaseUrl(asString(source.anthropicUrl)) || undefined,
       catalogId,
       selectedModels: parseModels(source.selectedModels),
       catalogModels: parseModels(source.catalogModels),

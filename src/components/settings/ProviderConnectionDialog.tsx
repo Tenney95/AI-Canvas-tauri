@@ -517,7 +517,6 @@ export default function ProviderConnectionDialog({
   const [connectionName, setConnectionName] = useState(initialConfig?.name || initialDefinition?.name || '');
   const [apiKey, setApiKey] = useState(initialConfig?.apiKey || '');
   const [baseUrl, setBaseUrl] = useState(initialConfig?.baseUrl || initialDefinition?.defaultBaseUrl || '');
-  const [anthropicUrl, setAnthropicUrl] = useState(initialConfig?.anthropicUrl || '');
   const [workflowApiKey, setWorkflowApiKey] = useState(runninghubWorkflowApiKey);
   const [models, setModels] = useState<ProviderModelSelection[]>(
     mergeModels(mergeModels(initialLocalModels, initialCatalogModels), initialSelectedModels),
@@ -594,12 +593,10 @@ export default function ProviderConnectionDialog({
     if (!definition) return true;
     if (definition.authType === 'oauth') return !dreaminaLoggedIn;
     if (!apiKey.trim()) return true;
-    return definition.credentials.some((field) =>
-      field.required
-      && field.key !== 'apiKey'
-      && !(field.key === 'baseUrl' ? baseUrl : anthropicUrl).trim(),
+    return definition.credentials.some(
+      (field) => field.required && field.key === 'baseUrl' && !baseUrl.trim(),
     );
-  }, [anthropicUrl, apiKey, baseUrl, definition, dreaminaLoggedIn]);
+  }, [apiKey, baseUrl, definition, dreaminaLoggedIn]);
 
   const chooseDefinition = (nextDefinition: ProviderDefinition) => {
     const savedConfig = nextDefinition.kind === 'web-search'
@@ -609,7 +606,6 @@ export default function ProviderConnectionDialog({
     setConnectionName(savedConfig?.name || nextDefinition.name);
     setApiKey(savedConfig?.apiKey || '');
     setBaseUrl(savedConfig?.baseUrl || nextDefinition.defaultBaseUrl || '');
-    setAnthropicUrl(savedConfig?.anthropicUrl || '');
     setWorkflowApiKey('');
     const localModels = fallbackModels[nextDefinition.id] || [];
     setModels(localModels);
@@ -648,7 +644,6 @@ export default function ProviderConnectionDialog({
           name: connectionName.trim() || definition.name,
           apiKey: apiKey.trim(),
           baseUrl: baseUrl.trim() || undefined,
-          anthropicUrl: anthropicUrl.trim() || undefined,
           catalogId: definition.id,
         },
         fallbackModels: fallbackModels[definition.id] || [],
@@ -949,7 +944,6 @@ export default function ProviderConnectionDialog({
         name: connectionName.trim() || definition.name,
         apiKey: definition.authType === 'oauth' ? '' : apiKey.trim(),
         baseUrl: normalizeBaseUrl(baseUrl) || undefined,
-        anthropicUrl: normalizeBaseUrl(anthropicUrl) || undefined,
         catalogId: definition.id,
         ...modelConfig,
       },
@@ -1067,11 +1061,7 @@ export default function ProviderConnectionDialog({
               ) : (
                 <div className="provider-fields-grid">
                   {definition.credentials.map((field) => {
-                    const value = field.key === 'apiKey'
-                      ? apiKey
-                      : field.key === 'baseUrl'
-                        ? baseUrl
-                        : anthropicUrl;
+                    const value = field.key === 'apiKey' ? apiKey : baseUrl;
                     const baseUrlLocked = field.key === 'baseUrl'
                       && definition.allowCustomBaseUrl === false;
                     return (
@@ -1085,16 +1075,12 @@ export default function ProviderConnectionDialog({
                           disabled={baseUrlLocked}
                           onChange={(event) => {
                             if (field.key === 'apiKey') setApiKey(event.target.value);
-                            else if (field.key === 'baseUrl') setBaseUrl(event.target.value);
-                            else setAnthropicUrl(event.target.value);
+                            else setBaseUrl(event.target.value);
                           }}
                           onBlur={(event) => {
                             // 补协议、去尾斜杠、剥掉误贴的 /chat/completions，
                             // 让用户在保存前就看见真正会被请求的地址
-                            if (field.key === 'apiKey') return;
-                            const normalized = normalizeBaseUrl(event.target.value);
-                            if (field.key === 'baseUrl') setBaseUrl(normalized);
-                            else setAnthropicUrl(normalized);
+                            if (field.key === 'baseUrl') setBaseUrl(normalizeBaseUrl(event.target.value));
                           }}
                         />
                       </label>
@@ -1460,6 +1446,8 @@ export default function ProviderConnectionDialog({
                       <ModelProtocolEditor
                         key={protocolModel.id}
                         model={protocolModel}
+                        apiKey={apiKey.trim()}
+                        baseUrl={normalizeBaseUrl(baseUrl) || definition.defaultBaseUrl || ''}
                         onChange={(profile) => updateModelProtocol(protocolModel.id, profile)}
                         onImageReferenceRequestModeChange={(mode) => (
                           updateImageReferenceRequestMode(protocolModel.id, mode)
