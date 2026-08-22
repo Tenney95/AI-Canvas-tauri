@@ -1,7 +1,9 @@
 /**
  * AINodeDialog AI 生成弹窗 — 点击节点后弹出的浮动面板，包含 Prompt 输入、模型选择、参数配置、生成按钮
  */
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+// 生成中的流光边框：仅在生成时按需加载
+const BorderBeam = lazy(() => import('border-beam').then((m) => ({ default: m.BorderBeam })));
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
 import { generateId, useAppStore } from '../../store/useAppStore';
@@ -896,7 +898,7 @@ function AINodeDialog() {
 
       <div
         ref={panelRef}
-        className={`ai-dialog-float${isExpanded ? ' is-expanded' : ''}${data.status === 'loading' ? ' is-generating' : ''}`}
+        className={`ai-dialog-float${isExpanded ? ' is-expanded' : ''}`}
         role={isExpanded ? 'dialog' : undefined}
         aria-modal={isExpanded ? true : undefined}
         aria-label={isExpanded ? t('节点生成对话框') : undefined}
@@ -907,6 +909,16 @@ function AINodeDialog() {
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
+        {data.status === 'loading' && (
+          <Suspense fallback={null}>
+            <BorderBeam
+              className="ai-dialog-beam"
+              size="md"
+              borderRadius={14}
+              theme={document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'}
+            />
+          </Suspense>
+        )}
         {isExpanded && (
           <div className="ai-dialog-preview-float is-expanded">
             <ConnectedNodesPreview nodeId={activeNodeId} onInsertMention={handleInsertMention} />

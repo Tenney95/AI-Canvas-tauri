@@ -16,74 +16,13 @@
   animation: floatIn var(--dur-normal) var(--ease-out-expo);
   transition: left 0.28s var(--ease-spring), top 0.28s var(--ease-spring);
 }
-.ai-dialog-expanded-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 239;
-  width: 100%;
-  height: 100%;
-  padding: 0;
-  border: 0;
-  background: var(--black-alpha-50);
-  backdrop-filter: blur(3px);
-  cursor: default;
-  animation: aiDialogBackdropIn var(--dur-normal) var(--ease-out-expo);
-}
-.ai-dialog-float.is-expanded {
-  z-index: 240;
-  left: 50%;
-  top: 50%;
-  width: min(960px, calc(100vw - 64px));
-  height: min(680px, calc(100vh - 64px));
-  max-width: none;
-  transform: translate(-50%, -50%);
-  overflow: visible;
-  animation: aiDialogExpandIn 0.28s var(--ease-spring);
-  transition: none;
-}
-/* 生成中：彩色光束沿边框流动（静态彩虹底 + 旋转的高光/遮罩窗口，
-   光束行进时自然变色；思路取自 border-beam 库，这里用两层伪元素实现） */
-@property --beam-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-.ai-dialog-float.is-generating::before,
-.ai-dialog-float.is-generating::after {
-  content: '';
+/* 生成中：border-beam 覆盖层（仅描边环，中间透明，不挡内容） */
+.ai-dialog-float .ai-dialog-beam {
   position: absolute;
   inset: 0;
-  border-radius: inherit;
-  padding: 1.5px;
+  z-index: 0;
+  border-radius: 14px;
   pointer-events: none;
-  background:
-    conic-gradient(from var(--beam-angle), transparent 54%, rgba(255, 255, 255, 0.85) 66%, transparent 78%),
-    conic-gradient(#ff3264, #ffa01e, #32c850, #1eb9aa, #288cff, #6446ff, #b428f0, #f032b4, #ff3264);
-  /* 只保留边框环 × 一段圆弧窗口 */
-  -webkit-mask:
-    conic-gradient(from var(--beam-angle), transparent 30%, rgba(0, 0, 0, 0.35) 44%, #000 52%, #000 80%, rgba(0, 0, 0, 0.35) 86%, transparent 95%),
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: source-in, xor;
-  mask:
-    conic-gradient(from var(--beam-angle), transparent 30%, rgba(0, 0, 0, 0.35) 44%, #000 52%, #000 80%, rgba(0, 0, 0, 0.35) 86%, transparent 95%),
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: intersect, exclude;
-  animation: aiDialogBeam 5s linear infinite;
-}
-/* 第二层：模糊出光晕 */
-.ai-dialog-float.is-generating::after {
-  padding: 2px;
-  filter: blur(7px) saturate(1.3);
-  opacity: 0.7;
-}
-@keyframes aiDialogBeam {
-  to { --beam-angle: 1turn; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ai-dialog-float.is-generating::before,
-  .ai-dialog-float.is-generating::after { animation: none; }
 }
 
 .ai-dialog-expanded-backdrop {
@@ -111,88 +50,6 @@
   animation: aiDialogExpandIn 0.28s var(--ease-spring);
   transition: none;
 }
-/* 生成中：彩色柔光沿边框流动 */
-@property --beam-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-.ai-dialog-float.is-generating::before {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  inset: -5px;
-  border-radius: 19px;
-  background: conic-gradient(
-    from var(--beam-angle),
-    #f59e0b, #ec4899, #8b5cf6, #22d3ee, #34d399, #f59e0b
-  );
-  filter: blur(12px);
-  opacity: 0.55;
-  /* 中心透明 → 只在边缘晕开，不糊住面板内容 */
-  mask: radial-gradient(closest-side, transparent 55%, #000 100%);
-  pointer-events: none;
-  animation: aiDialogBeam 6s linear infinite;
-}
-@keyframes aiDialogBeam {
-  to { --beam-angle: 1turn; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ai-dialog-float.is-generating::before { animation: none; }
-}
-
-.ai-dialog-expanded-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 239;
-  width: 100%;
-  height: 100%;
-  padding: 0;
-  border: 0;
-  background: var(--black-alpha-50);
-  backdrop-filter: blur(3px);
-  cursor: default;
-  animation: aiDialogBackdropIn var(--dur-normal) var(--ease-out-expo);
-}
-.ai-dialog-float.is-expanded {
-  z-index: 240;
-  left: 50%;
-  top: 50%;
-  width: min(960px, calc(100vw - 64px));
-  height: min(680px, calc(100vh - 64px));
-  max-width: none;
-  transform: translate(-50%, -50%);
-  overflow: visible;
-  animation: aiDialogExpandIn 0.28s var(--ease-spring);
-  transition: none;
-}
-/* 生成中：彩色光束沿边框流动 */
-@property --beam-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-.ai-dialog-float.is-generating {
-  background:
-    linear-gradient(var(--glass-bg-light), var(--glass-bg-light)) padding-box,
-    conic-gradient(
-      from var(--beam-angle),
-      transparent 0turn,
-      var(--brand) 0.06turn,
-      #ec4899 0.12turn,
-      #22d3ee 0.18turn,
-      transparent 0.26turn,
-      transparent 1turn
-    ) border-box;
-  animation: aiDialogBeam 2.6s linear infinite;
-}
-@keyframes aiDialogBeam {
-  to { --beam-angle: 1turn; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ai-dialog-float.is-generating { animation: none; }
-}
-
 .ai-dialog-float .ai-dialog-expand-btn {
   position: absolute;
   top: -10px;
