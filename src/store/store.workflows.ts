@@ -39,6 +39,7 @@ export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> 
       editableContent: wf.editableContent,
       ioNodes: wf.ioNodes,
       defaultNodes: wf.defaultNodes,
+      serverId: wf.serverId,
       createdAt: wf.createdAt,
       updatedAt: wf.updatedAt,
     });
@@ -93,6 +94,7 @@ export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> 
       editableContent: r.editableContent,
       ioNodes: r.ioNodes as WorkflowDefinition['ioNodes'],
       defaultNodes: r.defaultNodes as WorkflowDefinition['defaultNodes'],
+      serverId: r.serverId,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     }));

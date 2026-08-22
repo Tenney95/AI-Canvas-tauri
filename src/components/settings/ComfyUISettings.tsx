@@ -9,10 +9,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
+import type { ComfyServer } from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
 import { useT } from '../../i18n';
 
 type ComfyStatus = 'idle' | 'starting' | 'ready' | 'failed';
+
+const INPUT_CLASS = 'w-full text-sm bg-canvas-surface border border-canvas-border rounded-md px-3 py-2 text-canvas-text placeholder-canvas-text-muted focus:outline-none focus:border-indigo-500 transition-colors';
 
 export default function ComfyUISettings() {
   const {
@@ -100,6 +103,24 @@ export default function ComfyUISettings() {
     }
   };
 
+  const servers = config.comfyServers ?? [];
+
+  const saveServers = async (next: ComfyServer[]) => {
+    updateConfig({ comfyServers: next });
+    await saveConfig();
+  };
+
+  const addServer = () => saveServers([
+    ...servers,
+    { id: crypto.randomUUID(), name: t('服务端 {index}', { index: servers.length + 1 }), url: '' },
+  ]);
+
+  const patchServer = (id: string, patch: Partial<ComfyServer>) => saveServers(
+    servers.map((server) => (server.id === id ? { ...server, ...patch } : server)),
+  );
+
+  const removeServer = (id: string) => saveServers(servers.filter((server) => server.id !== id));
+
   const openWorkflows = () => {
     setSettingsOpen(false);
     setWorkflowPanelOpen(true);
@@ -167,10 +188,10 @@ export default function ComfyUISettings() {
       <div>
         <h3 className="text-sm font-medium text-canvas-text mb-2">{t('ComfyUI 服务地址')}</h3>
         <div className="bg-canvas-card border border-canvas-border rounded-lg p-2">
-          <div className="text-xs text-canvas-text-muted mb-1.5">{t('后端地址')}</div>
+          <div className="text-xs text-canvas-text-muted mb-1.5">{t('默认地址')}</div>
           <input
             type="text"
-            className="w-full text-sm bg-canvas-surface border border-canvas-border rounded-md px-3 py-2 text-canvas-text placeholder-canvas-text-muted focus:outline-none focus:border-indigo-500 transition-colors"
+            className={INPUT_CLASS}
             placeholder="http://127.0.0.1:8188"
             defaultValue={config.comfyUIUrl || ''}
             onBlur={async (event) => {
@@ -179,6 +200,58 @@ export default function ComfyUISettings() {
             }}
           />
           <p className="text-[11px] text-canvas-text-muted mt-2">{t('ComfyUI 后端服务的地址，用于执行导入的工作流。默认端口为 8188')}</p>
+
+          <div className="mt-3 pt-3 border-t border-canvas-border">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs text-canvas-text-muted">{t('其他服务端')}</span>
+              <button
+                type="button"
+                className="flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                onClick={() => void addServer()}
+              >
+                <Icon icon="lucide:plus" width="13" height="13" />
+                {t('添加服务端')}
+              </button>
+            </div>
+            {servers.length === 0 ? (
+              <p className="text-[11px] text-canvas-text-muted">
+                {t('图片与视频分开部署时，在这里添加另一台服务端，再到「工作流管理」里把工作流绑定过去')}
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {servers.map((server) => (
+                  <div key={server.id} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      className={`${INPUT_CLASS} w-28 shrink-0`}
+                      placeholder={t('服务端名称')}
+                      defaultValue={server.name}
+                      onBlur={(event) => void patchServer(server.id, { name: event.target.value.trim() })}
+                    />
+                    <input
+                      type="text"
+                      className={`${INPUT_CLASS} min-w-0 flex-1`}
+                      placeholder="http://127.0.0.1:8189"
+                      defaultValue={server.url}
+                      onBlur={(event) => void patchServer(server.id, { url: event.target.value.trim() })}
+                    />
+                    <button
+                      type="button"
+                      className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-canvas-text-muted hover:bg-red-500/10 hover:text-red-400 transition-colors"
+                      aria-label={t('删除服务端')}
+                      data-tooltip={t('删除服务端')}
+                      onClick={() => void removeServer(server.id)}
+                    >
+                      <Icon icon="lucide:trash-2" width="14" height="14" />
+                    </button>
+                  </div>
+                ))}
+                <p className="text-[11px] text-canvas-text-muted">
+                  {t('在「工作流管理」里给工作流选择服务端；删掉服务端后，绑过它的工作流回落到默认地址')}
+                </p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

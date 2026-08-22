@@ -18,6 +18,7 @@ import {
   saveBinaryToProjectData,
   saveDataUrlToProjectData,
 } from '../fileService';
+import { comfyBaseUrlFor } from '../comfyServers';
 import type {
   MediaGenerationIntent,
   MediaGenerationResult,
@@ -104,7 +105,7 @@ export function resolveMediaModel(kind: MediaKind, modelRef?: string): ResolvedM
   }
 
   if (option.workflowId) {
-    if (!config.comfyUIUrl?.trim()) {
+    if (!comfyBaseUrlFor(option.workflowId)) {
       throw new Error('未配置 ComfyUI 服务地址\n请在「设置 → ComfyUI」中配置');
     }
     return {

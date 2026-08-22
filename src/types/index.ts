@@ -478,7 +478,8 @@ export interface AppConfig {
   customBackgroundUrl?: string;  // 自定义背景图片 data URL
   customBackgroundIsDark?: boolean; // 自定义背景是否为深色（自动识别）
   customBackgroundOpacity?: number; // 自定义背景透明度 0-1，默认 0.3
-  comfyUIUrl?: string;        // ComfyUI 服务地址
+  comfyUIUrl?: string;        // ComfyUI 默认服务地址（工作流没绑定服务端时用它）
+  comfyServers?: ComfyServer[]; // 额外的 ComfyUI 服务端，供工作流按需绑定
   comfyUIPath?: string;       // ComfyUI 安装目录路径
   dreaminaAuth?: DreaminaAuthData; // 即梦登录态
   baseDataDir?: string;       // 用户自定义文件保存根目录，保存结构为 {baseDataDir}/{projectId}/**
@@ -578,6 +579,13 @@ export interface ModelGroup {
 // 工作流定义 — ComfyUI workflow import
 // ============================================
 
+/** 额外的 ComfyUI 服务端；图片 / 视频分开部署时，工作流各自绑定一台 */
+export interface ComfyServer {
+  id: string;
+  name: string;
+  url: string;
+}
+
 /** 工作流分类 — 对应各节点类型 */
 export type WorkflowCategory = 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio';
 
@@ -602,6 +610,8 @@ export interface WorkflowDefinition {
   ioNodes?: WorkflowIONode[]; // 识别出的输入/输出节点
   /** 各类型的默认 IO 节点（type → nodeId）；用户没 @ 该类型节点时，提示词框里的同类内容自动注入这里 */
   defaultNodes?: Partial<Record<WorkflowIONodeType, string>>;
+  /** 绑定的 ComfyUI 服务端 id；为空或服务端已删除时回落到默认地址 */
+  serverId?: string;
   createdAt: number;
   updatedAt?: number;
 }

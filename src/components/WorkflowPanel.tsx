@@ -8,6 +8,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, generateId } from '../store/useAppStore';
 import type { WorkflowDefinition, WorkflowCategory, WorkflowIONode, WorkflowIONodeType } from '../types';
 import { extractComfyUIIONodes, openComfyUIWorkflowEditor } from '../services/comfyUIWindowService';
+import { comfyBaseUrlFor, DEFAULT_COMFY_URL } from '../services/comfyServers';
 import PopupCloseButton from './shared/PopupCloseButton';
 
 const CATEGORIES: { value: WorkflowCategory; label: string }[] = [
@@ -102,7 +103,7 @@ export default function WorkflowPanel() {
     deleteWorkflow,
     updateWorkflow,
     resetBuiltIns,
-    comfyUIUrl,
+    comfyServers,
     showToast,
   } = useAppStore(
     useShallow((s) => ({
@@ -113,7 +114,7 @@ export default function WorkflowPanel() {
       deleteWorkflow: s.deleteWorkflow,
       updateWorkflow: s.updateWorkflow,
       resetBuiltIns: s.resetBuiltInWorkflows,
-      comfyUIUrl: s.config.comfyUIUrl,
+      comfyServers: s.config.comfyServers,
       showToast: s.showToast,
     })),
   );
@@ -284,7 +285,7 @@ export default function WorkflowPanel() {
     event.stopPropagation();
     try {
       const missing = await openComfyUIWorkflowEditor(
-        comfyUIUrl?.trim() || 'http://127.0.0.1:8188',
+        comfyBaseUrlFor(workflow.id) || DEFAULT_COMFY_URL,
         workflow,
       );
       // 缺节点不拦，ComfyUI 会把缺的节点标红；这里只提醒一句缺了什么
@@ -298,7 +299,7 @@ export default function WorkflowPanel() {
         : error instanceof Error ? error.message : '无法在 ComfyUI 中打开工作流';
       showToast(message, 'error');
     }
-  }, [comfyUIUrl, showToast]);
+  }, [showToast]);
 
   const handleResetBuiltIns = useCallback(() => {
     if (!resetArmed) {
@@ -644,6 +645,25 @@ export default function WorkflowPanel() {
                                   <option key={cat.value} value={cat.value}>{cat.label}</option>
                                 ))}
                               </select>
+                              {/* 只有配了多台服务端才需要选：单台时这一栏是纯噪音 */}
+                              {(comfyServers?.length ?? 0) > 0 && (
+                                <select
+                                  className="wf-item-cat"
+                                  value={wf.serverId ?? ''}
+                                  title="选择执行这个工作流的 ComfyUI 服务端"
+                                  onChange={(e) => {
+                                    updateWorkflow(wf.id, { serverId: e.target.value || undefined })
+                                      .catch(() => showToast('绑定服务端失败', 'error'));
+                                  }}
+                                >
+                                  <option value="">默认服务端</option>
+                                  {(comfyServers ?? []).map((server) => (
+                                    <option key={server.id} value={server.id}>
+                                      {server.name || server.url}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
                             </span>
                           </div>
                           <div className="flex shrink-0 items-center gap-1">

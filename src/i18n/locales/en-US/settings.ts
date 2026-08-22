@@ -147,7 +147,14 @@ const settings = {
   '服务就绪后会自动在软件内打开 ComfyUI 窗口，也可以使用右侧按钮手动打开':
     'Once ready, the ComfyUI window opens automatically; you can also open it manually with the button on the right',
   'ComfyUI 服务地址': 'ComfyUI service URL',
-  '后端地址': 'Backend URL',
+  '默认地址': 'Default URL',
+  '其他服务端': 'Additional servers',
+  '添加服务端': 'Add server',
+  '服务端名称': 'Server name',
+  '删除服务端': 'Remove server',
+  '服务端 {index}': 'Server {index}',
+  '图片与视频分开部署时，在这里添加另一台服务端，再到「工作流管理」里把工作流绑定过去': 'Running image and video on separate machines? Add the other server here, then bind workflows to it in Workflow management',
+  '在「工作流管理」里给工作流选择服务端；删掉服务端后，绑过它的工作流回落到默认地址': 'Pick a server per workflow in Workflow management. Removing a server sends workflows bound to it back to the default URL',
   'ComfyUI 后端服务的地址，用于执行导入的工作流。默认端口为 8188':
     'The ComfyUI backend URL used to run imported workflows. The default port is 8188',
   'ComfyUI 工作流': 'ComfyUI workflows',

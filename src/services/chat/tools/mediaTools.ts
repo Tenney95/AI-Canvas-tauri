@@ -2,6 +2,7 @@
  * 注册图片、视频和音频生成工具；媒体调用沿用项目默认值、统一运行时和固定 Policy 边界。
  */
 import { useAppStore } from '../../../store/useAppStore';
+import { comfyBaseUrlFor } from '../../comfyServers';
 import type {
   AudioGenerationPurpose,
   MediaDeliveryMode,
@@ -229,7 +230,7 @@ export function registerMediaAgentTools(): Array<() => void> {
             return { allowed: false, reason: '所选模型与本次媒体类型不兼容' };
           }
           if (option.workflowId) {
-            if (!store.config.comfyUIUrl?.trim()) {
+            if (!comfyBaseUrlFor(option.workflowId)) {
               return { allowed: false, reason: '请先在设置里配置 ComfyUI 服务地址' };
             }
           } else if (option.provider === 'general') {

@@ -4,6 +4,7 @@
  * Handles workflow JSON mutation, image upload, submission, and result polling.
  */
 import { useAppStore } from '../store/useAppStore';
+import { comfyBaseUrlFor } from './comfyServers';
 import type { WorkflowIONode, WorkflowIONodeType } from '../types';
 import type { AIAudioGenParams, AIImageGenParams, AIVideoGenParams } from '../types/aiTypes';
 import { mapImageDimensions, mapVideoDimensions, resolveVideoDurationSeconds } from './aiDimensions';
@@ -199,10 +200,9 @@ export async function findMissingNodeClasses(
   }
 }
 
-/** 从 Store 获取 ComfyUI 配置并校验 */
-function getComfyUIConfig() {
-  const config = useAppStore.getState().config;
-  const comfyUrl = config.comfyUIUrl?.trim();
+/** 取工作流要提交的服务端地址并校验（绑定了服务端就用绑定的那台） */
+function getComfyUIConfig(workflowId?: string) {
+  const comfyUrl = comfyBaseUrlFor(workflowId);
   if (!comfyUrl) {
     throw new Error('未配置 ComfyUI 服务地址\n请在「设置 → 服务地址」中配置');
   }
@@ -921,7 +921,7 @@ async function submitComfyUIWorkflow(
   /** 提示词框里引用的图片/视频，用于填充工作流指定的默认 IO 节点 */
   promptMedia: { imageUrls?: string[]; videoUrls?: string[] } = {},
 ): Promise<{ baseUrl: string; promptId: string; workflowObj: Record<string, Record<string, unknown>> }> {
-  const baseUrl = getComfyUIConfig();
+  const baseUrl = getComfyUIConfig(workflowId);
 
   // 从 store 中获取工作流定义
   const workflows = useAppStore.getState().workflows;
@@ -1079,7 +1079,7 @@ export async function executeComfyUIGenerate(
   referenceImageUrls: string[] = [],
 ): Promise<{ url: string; width: number; height: number }> {
   const { workflowId, workflowInputs, prompt, imageSize = '2K', aspectRatio = '1:1' } = params;
-  const comfyUrl = useAppStore.getState().config.comfyUIUrl?.trim() || '';
+  const comfyUrl = comfyBaseUrlFor(workflowId);
   const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   const signal = nodeSignal && externalSignal
     ? AbortSignal.any([nodeSignal, externalSignal])
@@ -1163,7 +1163,7 @@ export async function executeComfyUIVideoGenerate(
     // 画面比例决定注入工作流的 width/height；未设置时按 16:9
     seedanceRatio = '16:9',
   } = params;
-  const comfyUrl = useAppStore.getState().config.comfyUIUrl?.trim() || '';
+  const comfyUrl = comfyBaseUrlFor(workflowId);
   const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   const signal = nodeSignal && externalSignal
     ? AbortSignal.any([nodeSignal, externalSignal])
@@ -1244,7 +1244,7 @@ export async function executeComfyUIAudioGenerate(
   referenceAudioUrls: string[] = [],
 ): Promise<{ url: string }> {
   const { workflowId, workflowInputs, prompt } = params;
-  const comfyUrl = useAppStore.getState().config.comfyUIUrl?.trim() || '';
+  const comfyUrl = comfyBaseUrlFor(workflowId);
   const nodeSignal = params.nodeId ? registerNodePolling(params.nodeId) : undefined;
   const signal = nodeSignal && externalSignal
     ? AbortSignal.any([nodeSignal, externalSignal])

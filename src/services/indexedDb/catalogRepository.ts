@@ -24,6 +24,8 @@ export interface WorkflowRecord {
   editableContent?: string;
   ioNodes?: { nodeId: string; title: string; type: string }[];
   defaultNodes?: Record<string, string>;
+  /** 绑定的 ComfyUI 服务端 id */
+  serverId?: string;
   createdAt: number;
   updatedAt?: number;
 }
