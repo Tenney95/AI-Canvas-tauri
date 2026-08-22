@@ -73,13 +73,26 @@ function getParentOffset(
   return { x: offsetX, y: offsetY };
 }
 
+/**
+ * 真实尺寸优先级：卡片自身宽高 → xyflow 用户尺寸/样式尺寸（分组、文件夹靠这个）
+ * → 实测尺寸 → 按类型兜底。少了中间两级，分组一律被当成 280×160，对齐线全是错的。
+ */
+function resolveNodeSize(node: Node<BaseNodeData>, axis: 'width' | 'height'): number | undefined {
+  const cardSize = node.data?.[axis === 'width' ? 'nodeWidth' : 'nodeHeight'] as number | undefined;
+  if (typeof cardSize === 'number') return cardSize;
+  if (typeof node[axis] === 'number') return node[axis];
+  const styleSize = Number(node.style?.[axis]);
+  if (Number.isFinite(styleSize) && styleSize > 0) return styleSize;
+  return node.measured?.[axis];
+}
+
 function getNodeBounds(
   node: Node<BaseNodeData>,
   nodeMap: Map<string, Node<BaseNodeData>>
 ): NodeBounds {
   const defaultSize = getDefaultNodeSize(node.type);
-  const cardWidth = (node.data?.nodeWidth as number | undefined) ?? defaultSize.width;
-  const cardHeight = (node.data?.nodeHeight as number | undefined) ?? defaultSize.height;
+  const cardWidth = resolveNodeSize(node, 'width') ?? defaultSize.width;
+  const cardHeight = resolveNodeSize(node, 'height') ?? defaultSize.height;
   const parentOffset = node.parentId ? getParentOffset(node, nodeMap) : { x: 0, y: 0 };
   const x = node.position.x + parentOffset.x;
   const y = node.position.y + parentOffset.y;
@@ -470,6 +483,11 @@ export function useNodeSnap() {
         };
       }
 
+      // 画布上看不见的节点不能当吸附目标：角色库收纳的、已折叠分组里的
+      const collapsedGroupIds = new Set(
+        nodes.filter((n) => n.data?.groupCollapsed === true).map((n) => n.id),
+      );
+
       const otherXEdges: number[] = [];
       const otherXCenters: number[] = [];
       const otherYEdges: number[] = [];
@@ -477,6 +495,8 @@ export function useNodeSnap() {
       const otherBounds: NodeBounds[] = [];
       for (const other of nodes) {
         if (other.id === excludeId || draggedNodeIds?.has(other.id) || other.selected === true) continue;
+        if (other.data?.hiddenByCharacterLibrary === true) continue;
+        if (other.parentId && collapsedGroupIds.has(other.parentId)) continue;
         const b = getNodeBounds(other, nodeMap);
         // 与可见区域不相交的节点直接跳过
         if (cull && (b.right < cull.minX || b.left > cull.maxX || b.bottom < cull.minY || b.top > cull.maxY)) {
