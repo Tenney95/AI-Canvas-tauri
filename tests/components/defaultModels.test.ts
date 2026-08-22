@@ -3,6 +3,7 @@ import {
   defaultModelGroups,
   findMediaModelOption,
   getConfiguredModelGroups,
+  getMediaModelOptions,
 } from '../../src/components/nodes/shared/defaultModels';
 import type { AppConfig, ProviderModelSelection } from '../../src/types';
 
@@ -178,5 +179,34 @@ describe('内置厂商动态模型目录', () => {
         mediaKind: 'image',
       }),
     );
+  });
+});
+
+describe('自定义连接模型的来源标注', () => {
+  const config: AppConfig = {
+    providers: {
+      'custom-a': { name: '甲中转站', apiKey: 'k', catalogId: 'custom-openai', selectedModels: [] },
+      'custom-b': { name: '乙中转站', apiKey: 'k', catalogId: 'custom-openai', selectedModels: [] },
+    },
+    theme: 'dark',
+  };
+  const generalModels = [
+    { id: 'gm-a', name: 'GPT-4o', modelId: 'gpt-4o', category: 'image' as const, providerConfigId: 'custom-a' },
+    { id: 'gm-b', name: 'GPT-4o', modelId: 'gpt-4o', category: 'image' as const, providerConfigId: 'custom-b' },
+  ];
+
+  it('同名模型按所属连接区分', () => {
+    const options = getMediaModelOptions(generalModels, config);
+    const descriptions = options
+      .filter((option) => option.label === 'GPT-4o')
+      .map((option) => option.description);
+
+    expect(descriptions).toEqual(['甲中转站 · ID: gpt-4o', '乙中转站 · ID: gpt-4o']);
+  });
+
+  it('缺少连接信息时退回原说明', () => {
+    const option = getMediaModelOptions([generalModels[0]])
+      .find((item) => item.value === 'general/gm-a');
+    expect(option?.description).toBe('ID: gpt-4o');
   });
 });

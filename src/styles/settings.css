@@ -1328,6 +1328,23 @@
   color: var(--theme-text-secondary);
 }
 
+.provider-model-context-window {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--theme-text-secondary);
+}
+.provider-model-context-window input {
+  width: 120px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  background: var(--theme-card);
+  padding: 3px 6px;
+  color: var(--theme-text);
+  outline: none;
+}
+
 .provider-model-description-editor {
   display: grid;
   grid-column: 1 / -1;

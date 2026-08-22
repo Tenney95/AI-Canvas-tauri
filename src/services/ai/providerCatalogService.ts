@@ -244,6 +244,24 @@ const PROVIDER_DEFINITION_MAP = new Map(
   BUILT_IN_PROVIDER_DEFINITIONS.map((definition) => [definition.id, definition]),
 );
 
+/**
+ * 落库的目录缓存上限。catalogModels 只是「下次打开对话框免去重新拉取」的缓存，
+ * 而中转站 /models 常返回上千个模型，全量存进 config 会跟着每次 saveConfig
+ * 重新序列化一遍。已勾选的模型是真配置，一个都不能丢，超出部分才截断。
+ */
+export const MAX_CACHED_CATALOG_MODELS = 300;
+
+export function capCatalogModels(
+  models: ProviderModelSelection[],
+  selectedIds: ReadonlySet<string>,
+): ProviderModelSelection[] {
+  if (models.length <= MAX_CACHED_CATALOG_MODELS) return models;
+  const selected = models.filter((model) => selectedIds.has(model.id));
+  const remaining = MAX_CACHED_CATALOG_MODELS - selected.length;
+  if (remaining <= 0) return selected;
+  return [...selected, ...models.filter((model) => !selectedIds.has(model.id)).slice(0, remaining)];
+}
+
 export function getProviderDefinitions(): readonly ProviderDefinition[] {
   return BUILT_IN_PROVIDER_DEFINITIONS;
 }

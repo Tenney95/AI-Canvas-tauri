@@ -72,6 +72,9 @@ function parseModel(value: unknown): ProviderModelSelection | null {
   };
   const description = asString(value.description);
   if (description) model.description = description.slice(0, 500);
+  if (typeof value.contextWindow === 'number' && Number.isFinite(value.contextWindow)) {
+    model.contextWindow = Math.max(0, Math.floor(value.contextWindow));
+  }
   if (Array.isArray(value.inputModalities)) {
     model.inputModalities = value.inputModalities.filter(
       (item): item is 'text' | 'image' => item === 'text' || item === 'image',

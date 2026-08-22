@@ -350,6 +350,31 @@ curl https://gateway.example.com/v1/chat/completions \
     expect(chat).toMatchObject({ inputModalities: ['text', 'image'], inputModalitiesManual: true });
   });
 
+  it('carries the documented context window and rejects it on non-text models', () => {
+    const visionInput: ProviderConfigDraftInput = {
+      connectionName: 'Example AI',
+      models: [{
+        name: 'Example Chat',
+        category: 'text',
+        contextWindow: 262_144,
+        submitRequest: `
+curl https://gateway.example.com/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"chat-pro","messages":[{"role":"user","content":"{{prompt}}"}]}'`,
+        submitResponse: '{"choices":[{"message":{"content":"hello"}}]}',
+      }],
+    };
+    const [chat] = createProviderConfigDraft('task-ctx', visionInput).config.selectedModels ?? [];
+    expect(chat).toMatchObject({ contextWindow: 262_144 });
+
+    const imageInput: ProviderConfigDraftInput = {
+      ...createInput(),
+      models: [{ ...createInput().models[0], contextWindow: 128_000 }],
+    };
+    expect(() => createProviderConfigDraft('task-ctx-bad', imageInput))
+      .toThrow('只有文本分类可以声明 contextWindow');
+  });
+
   it('rejects declaring vision input on a non-text model', () => {
     const input: ProviderConfigDraftInput = {
       ...createInput(),

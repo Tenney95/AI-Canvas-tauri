@@ -12,6 +12,7 @@ import type {
 } from '../../types';
 import { GENERAL_MODEL_CATEGORY_LABELS } from '../../types';
 import {
+  capCatalogModels,
   createConnectionId,
   fetchProviderModelCatalog,
   getProviderDefinition,
@@ -589,6 +590,21 @@ export default function ProviderConnectionDialog({
     [models, videoCapabilityModelId],
   );
 
+  /**
+   * 新建自定义连接时，若接口地址和已有连接重合，多半是忘了自己加过。
+   * Agent 那条路会按 Base URL 并进已有连接，手动添加不便直接改写用户填的模型清单，
+   * 所以只提示，由用户决定是新建还是回去编辑。
+   */
+  const duplicateConnectionName = useMemo(() => {
+    if (editing || definition?.id !== 'custom-openai') return '';
+    const target = normalizeBaseUrl(baseUrl);
+    if (!target) return '';
+    const match = Object.values(providerConfigs).find((item) => (
+      item.catalogId === 'custom-openai' && normalizeBaseUrl(item.baseUrl) === target
+    ));
+    return match?.name?.trim() || '';
+  }, [baseUrl, definition, editing, providerConfigs]);
+
   const missingCredentials = useMemo(() => {
     if (!definition) return true;
     if (definition.authType === 'oauth') return !dreaminaLoggedIn;
@@ -797,6 +813,15 @@ export default function ProviderConnectionDialog({
     setCategoryEditModelId(null);
   };
 
+  /** 0 / 空 表示不声明，交回给按模型 ID 猜目录的兜底逻辑。 */
+  const updateModelContextWindow = (modelId: string, raw: string) => {
+    const parsed = Number.parseInt(raw.replace(/[^\d]/g, ''), 10);
+    const contextWindow = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+    setModels((current) => current.map((model) => (
+      model.id === modelId ? { ...model, contextWindow } : model
+    )));
+  };
+
   const updateModelDescription = (modelId: string, description: string) => {
     setModels((current) => current.map((model) => (
       model.id === modelId
@@ -934,7 +959,8 @@ export default function ProviderConnectionDialog({
       ? {}
       : {
           selectedModels: selectedModels.map((model) => ({ ...model, provider: nextConnectionId })),
-          catalogModels: models.map((model) => ({ ...model, provider: nextConnectionId })),
+          catalogModels: capCatalogModels(models, selectedIds)
+            .map((model) => ({ ...model, provider: nextConnectionId })),
           visibleModelCategories: CATEGORY_ORDER.filter((item) => visibleModelCategories.has(item)),
           catalogUpdatedAt: Date.now(),
         };
@@ -1097,6 +1123,17 @@ export default function ProviderConnectionDialog({
                       />
                     </label>
                   )}
+                </div>
+              )}
+
+              {duplicateConnectionName && (
+                <div className="provider-catalog-message is-warning">
+                  <Icon icon="mdi:content-duplicate" width="14" />
+                  <span>
+                    {t('已有连接「{name}」使用相同接口地址。继续保存会新建第二条同网关连接；如果只是想加模型，建议回列表编辑「{name}」。', {
+                      name: duplicateConnectionName,
+                    })}
+                  </span>
                 </div>
               )}
 
@@ -1395,17 +1432,32 @@ export default function ProviderConnectionDialog({
                               </button>
                             ))}
                             {model.category === 'text' ? (
-                              <label className="provider-model-capability-toggle">
-                                <input
-                                  type="checkbox"
-                                  checked={model.inputModalities?.includes('image') ?? false}
-                                  onChange={(event) => updateModelVisionCapability(
-                                    model.id,
-                                    event.target.checked,
-                                  )}
-                                />
-                                <span>支持图片输入</span>
-                              </label>
+                              <>
+                                <label className="provider-model-capability-toggle">
+                                  <input
+                                    type="checkbox"
+                                    checked={model.inputModalities?.includes('image') ?? false}
+                                    onChange={(event) => updateModelVisionCapability(
+                                      model.id,
+                                      event.target.checked,
+                                    )}
+                                  />
+                                  <span>支持图片输入</span>
+                                </label>
+                                <label className="provider-model-context-window">
+                                  <span>上下文窗口（token）</span>
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={model.contextWindow ?? ''}
+                                    placeholder="留空则按模型 ID 推断"
+                                    onChange={(event) => updateModelContextWindow(
+                                      model.id,
+                                      event.target.value,
+                                    )}
+                                  />
+                                </label>
+                              </>
                             ) : null}
                             <label className="provider-model-description-editor">
                               <span>Agent 选型说明</span>

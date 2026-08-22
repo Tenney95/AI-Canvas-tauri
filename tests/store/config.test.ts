@@ -233,6 +233,12 @@ describe('config hydration guard', () => {
         category: 'image',
         provider: 'custom-current',
         imageReferenceRequestMode: 'edits-multipart',
+      }, {
+        id: 'current-chat',
+        name: '当前文本模型',
+        category: 'text',
+        provider: 'custom-current',
+        contextWindow: 262_144,
       }],
     });
 
@@ -241,6 +247,10 @@ describe('config hydration guard', () => {
       modelId: 'current-image',
       providerConfigId: 'custom-current',
       imageReferenceRequestMode: 'edits-multipart',
+    });
+    expect(useAppStore.getState().config.generalModels?.[1]).toMatchObject({
+      modelId: 'current-chat',
+      contextWindow: 262_144,
     });
     expect(model).not.toHaveProperty('apiKey');
     expect(model).not.toHaveProperty('openaiUrl');

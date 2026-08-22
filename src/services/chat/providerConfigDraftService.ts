@@ -46,6 +46,8 @@ export interface ProviderConfigModelExamples extends ModelProtocolExamples {
   description?: string;
   /** 文档声明的输入模态；含 'image' 表示该文本模型可读图。 */
   inputModalities?: Array<'text' | 'image'>;
+  /** 文档写明的上下文窗口（token），只对文本模型有意义。 */
+  contextWindow?: number;
   imageReferenceRequestMode?: ImageReferenceRequestMode;
   videoCapability?: VideoModelCapability;
 }
@@ -183,6 +185,12 @@ function createModelSelection(
   if (inputModalities && category !== 'text') {
     throw new Error(`模型“${displayName || result.modelId}”只有文本分类可以声明 inputModalities`);
   }
+  const contextWindow = Number.isFinite(examples.contextWindow) && (examples.contextWindow ?? 0) > 0
+    ? Math.floor(examples.contextWindow as number)
+    : undefined;
+  if (contextWindow && category !== 'text') {
+    throw new Error(`模型“${displayName || result.modelId}”只有文本分类可以声明 contextWindow`);
+  }
   return {
     baseUrl: normalizeBaseUrl(result.baseUrl),
     selection: {
@@ -195,6 +203,7 @@ function createModelSelection(
       ...(examples.category ? { categoryManual: true } : {}),
       ...(description ? { description, descriptionManual: true } : {}),
       ...(inputModalities ? { inputModalities, inputModalitiesManual: true } : {}),
+      ...(contextWindow ? { contextWindow } : {}),
       ...(imageReferenceRequestMode ? { imageReferenceRequestMode } : {}),
       ...(examples.videoCapability ? { videoCapability: examples.videoCapability } : {}),
     },

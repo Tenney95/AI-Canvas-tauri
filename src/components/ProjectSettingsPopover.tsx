@@ -58,7 +58,13 @@ interface ModelRowDefinition {
 interface ModelOptionGroup {
   id: string;
   name: string;
-  options: Array<{ value: string; label: string; inputModalities?: Array<'text' | 'image'> }>;
+  options: Array<{
+    value: string;
+    label: string;
+    /** 同名模型的区分信息（自定义连接名）；原生 select 只能拼进选项文字。 */
+    hint?: string;
+    inputModalities?: Array<'text' | 'image'>;
+  }>;
 }
 
 const MODEL_ROWS: ModelRowDefinition[] = [
@@ -131,7 +137,14 @@ function buildModelGroups(
     const value = `general/${model.id}`;
     if (seen.has(value)) return [];
     seen.add(value);
-    return [{ value, label: model.name, inputModalities: model.inputModalities }];
+    // 多个自定义连接的模型同在「通用模型」分组里，用连接名区分同名模型
+    const connectionName = config.providers[model.providerConfigId]?.name?.trim();
+    return [{
+      value,
+      label: model.name,
+      hint: connectionName,
+      inputModalities: model.inputModalities,
+    }];
   });
   if (generalOptions.length > 0) {
     groups.push({ id: 'general-models', name: '通用模型', options: generalOptions });
@@ -652,7 +665,9 @@ export default function ProjectSettingsPopover({
                             {modelGroups[row.kind].map((group) => (
                               <optgroup key={group.id} label={group.name}>
                                 {group.options.map((option) => (
-                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                  <option key={option.value} value={option.value}>
+                                    {option.hint ? `${option.label}（${option.hint}）` : option.label}
+                                  </option>
                                 ))}
                               </optgroup>
                             ))}
@@ -685,7 +700,9 @@ export default function ProjectSettingsPopover({
                         {visionModelGroups.map((group) => (
                           <optgroup key={group.id} label={group.name}>
                             {group.options.map((option) => (
-                              <option key={option.value} value={option.value}>{option.label}</option>
+                              <option key={option.value} value={option.value}>
+                                {option.hint ? `${option.label}（${option.hint}）` : option.label}
+                              </option>
                             ))}
                           </optgroup>
                         ))}

@@ -1108,6 +1108,19 @@ export function getConfiguredModelGroups(
   });
 }
 
+/**
+ * 自定义连接的模型都挤在同一个「通用模型」分组里，只显示模型名的话，
+ * 两个中转站都接了 gpt-4o 就分不出是哪家；把连接名写进说明作为区分依据。
+ */
+function describeGeneralModel(
+  model: GeneralModelConfig,
+  config?: ProviderModelVisibilityConfig,
+): string {
+  const connectionName = config?.providers[model.providerConfigId]?.name?.trim();
+  const detail = model.description?.trim() || `ID: ${model.modelId}`;
+  return connectionName ? `${connectionName} · ${detail}` : detail;
+}
+
 /** 节点与对话共用的图片/视频/音频模型目录；传入 workflows 时把 ComfyUI 工作流一并列为可选模型。 */
 export function getMediaModelOptions(
   generalModels: GeneralModelConfig[] = [],
@@ -1160,7 +1173,7 @@ export function getMediaModelOptions(
         value: `general/${model.id}`,
         provider: 'general',
         label: model.name,
-        description: model.description || `ID: ${model.modelId}`,
+        description: describeGeneralModel(model, config),
         inputModalities: model.inputModalities,
         iconType: 'badge',
         badgeText: mediaKind === 'image' ? '图' : mediaKind === 'video' ? '视' : '音',

@@ -118,7 +118,7 @@ function syncProviderModels(
       name: model.name,
       modelId: model.id,
       category: model.category,
-      contextWindow: existing?.contextWindow,
+      contextWindow: model.contextWindow ?? existing?.contextWindow,
       description: model.description ?? existing?.description,
       inputModalities: model.inputModalities ?? existing?.inputModalities,
       providerConfigId,
