@@ -135,6 +135,8 @@ const canvas = {
   '批量生成完成：{result}': 'Batch generation finished: {result}',
   '已复制 {count} 个节点': 'Copied {count} node(s)',
   '批量生成': 'Batch generate',
+  '创建分组': 'Group selection',
+  '取消分组': 'Ungroup',
   '复制节点': 'Copy nodes',
   '水平居中': 'Align horizontal center',
   '顶对齐': 'Align top',

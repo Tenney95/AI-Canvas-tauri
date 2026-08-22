@@ -279,6 +279,16 @@ function MultiSelectToolbar() {
     toast(t('批量生成完成：{result}', { result: parts.join('，') }), fail > 0 ? 'error' : undefined);
   }, [recordOutputHistory, t]);
 
+  // ── Group / ungroup（选中里有分组成员或分组节点时，store 自己转成解散）──
+  const isGrouped = useMemo(
+    () => nodes.some((node) => selectedNodeIds.includes(node.id) && (node.parentId != null || node.type === 'group')),
+    [nodes, selectedNodeIds],
+  );
+
+  const handleGroupNodes = useCallback(() => {
+    useAppStore.getState().groupSelectedNodes();
+  }, []);
+
   // ── Copy selected nodes to internal clipboard ──
   const handleCopyNodes = useCallback(() => {
     copySelectedNodes();
@@ -291,7 +301,7 @@ function MultiSelectToolbar() {
     <>
       {distributionAxis && <DistributionGapHandles axis={distributionAxis} />}
       <div
-      className="glass-bevel glass-bevel--card fixed z-[9999] pointer-events-auto flex items-center gap-1 bg-canvas-card/95 border border-canvas-border backdrop-blur-xl rounded-lg px-2 py-1 shadow-xl"
+      className="glass-bevel glass-bevel--card fixed z-[9999] pointer-events-auto flex items-center gap-0.5 bg-canvas-card/95 border border-canvas-border backdrop-blur-xl rounded-[10px] px-1.5 py-1 shadow-xl"
       style={{
         left: toolbarScreenPos.x,
         top: toolbarScreenPos.y - 52,
@@ -303,23 +313,32 @@ function MultiSelectToolbar() {
         data-tooltip={t('批量生成')}
         disabled={batchRunning}
         onClick={executeBatch}
-        className="w-8 h-8 rounded flex items-center justify-center transition-colors hover:text-green-300 hover:bg-green-500/15 disabled:opacity-30 disabled:cursor-not-allowed"
+        className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:text-green-300 hover:bg-green-500/15 disabled:opacity-30 disabled:cursor-not-allowed"
       >
-        <Icon icon="material-symbols:play-arrow-rounded" width={28} height={28} />
+        <Icon icon="material-symbols:play-arrow-rounded" width={20} height={20} />
       </AnimatedButton>
 
-      <div className="w-px h-5 bg-canvas-border" />
+      <div className="mx-1 w-px h-[18px] bg-canvas-border" />
 
       {/* Copy nodes */}
       <AnimatedButton
         data-tooltip={t('复制节点')}
         onClick={handleCopyNodes}
-        className="w-8 h-8 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
+        className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
       >
-        <Icon icon="mdi:content-copy" width={18} height={18} />
+        <Icon icon="mdi:content-copy" width={14} height={14} />
       </AnimatedButton>
 
-      <div className="w-px h-5 bg-canvas-border" />
+      {/* 分组：和 Ctrl+G 同一个入口，选中已分组的节点时它就是解散 */}
+      <AnimatedButton
+        data-tooltip={isGrouped ? t('取消分组') : t('创建分组')}
+        onClick={handleGroupNodes}
+        className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
+      >
+        <Icon icon={isGrouped ? 'mdi:ungroup' : 'mdi:group'} width={14} height={14} />
+      </AnimatedButton>
+
+      <div className="mx-1 w-px h-[18px] bg-canvas-border" />
 
       {/* Align buttons */}
       {ALIGN_ACTIONS.map(({ icon, label, key }) => (
@@ -327,24 +346,24 @@ function MultiSelectToolbar() {
           key={key}
           data-tooltip={t(label)}
           onClick={() => doAlign(key as AlignKey)}
-          className="w-8 h-8 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
+          className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
         >
-          <Icon icon={icon} width={18} height={18} />
+          <Icon icon={icon} width={14} height={14} />
         </AnimatedButton>
       ))}
 
       {/* Distribute buttons (need ≥3 nodes) */}
       {selectedCount >= 3 && (
         <>
-          <div className="w-px h-5 bg-canvas-border" />
+          <div className="mx-1 w-px h-[18px] bg-canvas-border" />
           {DISTRIBUTE_ACTIONS.map(({ icon, label, key }) => (
             <AnimatedButton
               key={key}
               data-tooltip={t(label)}
               onClick={() => doDistribute(key as DistributeKey)}
-              className="w-8 h-8 rounded flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
+              className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors text-canvas-text-secondary hover:text-canvas-text hover:bg-canvas-hover"
             >
-              <Icon icon={icon} width={18} height={18} />
+              <Icon icon={icon} width={14} height={14} />
             </AnimatedButton>
           ))}
         </>
