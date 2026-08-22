@@ -169,6 +169,10 @@ export interface BaseNodeData {
   characterLibraryLinks?: CharacterLibraryNodeLink[];
   /** 仅表示该节点当前由角色库收纳隐藏，节点与连线仍保留在项目数据中。 */
   hiddenByCharacterLibrary?: boolean;
+  /** 分组节点：折叠为文件夹卡片，组内节点与其连线暂不渲染 */
+  groupCollapsed?: boolean;
+  /** 分组节点：折叠前的尺寸，展开时还原 */
+  groupExpandedSize?: { width: number; height: number };
   mattingMask?: string;       // 遮罩编辑器蒙版数据（data URL，独立于图片存储）
   annotation?: string;        // 旧版标注数据（data URL，透明 PNG；仅用于兼容读取）
   annotationLayer?: ImageAnnotationLayer; // 可编辑矢量标注层，独立于原图存储

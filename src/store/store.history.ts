@@ -25,6 +25,7 @@ const STRUCTURAL_NODE_DATA_KEYS = [
   'storyboardOverrides',
   'characterLibraryLinks',
   'hiddenByCharacterLibrary',
+  'groupCollapsed',
   'note',
 ] as const satisfies readonly (keyof BaseNodeData)[];
 const LAYOUT_NODE_DATA_KEYS = [

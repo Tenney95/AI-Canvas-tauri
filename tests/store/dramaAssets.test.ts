@@ -6,7 +6,7 @@ import {
   isEligibleCharacterReferenceNode,
   isEligibleCharacterVoiceNode,
 } from '../../src/store/store.dramaAssets';
-import { filterCharacterLibraryCanvasElements } from '../../src/store/store.nodes';
+import { filterHiddenCanvasElements } from '../../src/store/store.nodes';
 import type { DramaCharacter } from '../../src/types/dramaAssets';
 import { emptyDramaAssetLibrary } from '../../src/types/dramaAssets';
 import type { BaseNodeData } from '../../src/types';
@@ -323,7 +323,7 @@ describe('dramaAssets store', () => {
     ];
     const edges: Edge[] = [{ id: 'edge', source: 'hidden', target: 'visible' }];
 
-    const rendered = filterCharacterLibraryCanvasElements(nodes, edges);
+    const rendered = filterHiddenCanvasElements(nodes, edges);
 
     expect(rendered.nodes.map((node) => node.id)).toEqual(['visible']);
     expect(rendered.edges).toEqual([]);

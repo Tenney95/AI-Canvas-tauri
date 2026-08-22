@@ -20,6 +20,11 @@ export interface GroupSlice {
   groupSelectedNodes: () => void;
   ungroupSelectedNodes: () => void;
   renameGroup: (id: string, name: string) => void;
+  /** 在画布上直接创建一个空文件夹（折叠态分组），拖节点进去即入组 */
+  createEmptyGroup: (position: { x: number; y: number }) => void;
+  /** 折叠/展开分组：折叠后收成文件夹卡片，组内节点与其连线不再渲染 */
+  toggleGroupCollapsed: (groupId: string) => void;
+  setGroupColor: (groupId: string, color: string) => void;
   /** 把节点文件搬到所属分组的文件夹（未分组则搬回项目根目录），由自动保存驱动 */
   syncGroupFiles: () => Promise<void>;
 }
@@ -79,6 +84,9 @@ function applyOverrideMove(
   if (override.filePath !== expectedPath) return override;
   return { ...override, filePath: moved.filePath, relativePath: moved.relativePath, url: moved.assetUrl };
 }
+
+/** 折叠后的文件夹卡片尺寸 */
+export const COLLAPSED_GROUP_SIZE = { width: 220, height: 152 };
 
 // 自动保存每 2 秒可能触发一次，重入会让同一个文件被搬两次
 let syncingGroupFiles = false;
@@ -321,6 +329,83 @@ export const createGroupSlice: StateCreator<AppState, [], [], GroupSlice> = (set
 
     const dissolvedGroupNames = groups.filter((g) => affectedGroupIds.has(g.id)).map((g) => g.name);
     get().showToast(`已解散分组「${dissolvedGroupNames.join('、')}」`);
+  },
+
+  createEmptyGroup: (position) => {
+    const { groups } = get();
+    const usedColors = new Set(groups.map((g) => g.color));
+    const color = GROUP_COLOR_PALETTE.find((c) => !usedColors.has(c)) || GROUP_COLOR_PALETTE[0];
+    let groupName = '分组';
+    for (let i = 2; groups.some((g) => g.name === groupName); i++) groupName = `分组 ${i}`;
+    const groupId = `group-${generateId()}`;
+
+    get().commitToHistory();
+    set((state) => ({
+      groups: [...state.groups, { id: groupId, name: groupName, nodeIds: [], color, createdAt: Date.now() }],
+      // 分组节点必须排在子节点之前（xyflow 要求）
+      nodes: [
+        {
+          id: groupId,
+          type: 'group' as const,
+          position,
+          data: { label: groupName, type: 'comment' as const, groupId, color, groupCollapsed: true },
+          style: { ...COLLAPSED_GROUP_SIZE },
+          ...COLLAPSED_GROUP_SIZE,
+        },
+        ...state.nodes,
+      ],
+    }));
+
+    void ensureGroupFolder(get().currentProjectId, groupName);
+    get().showToast(`已创建「${groupName}」`);
+  },
+
+  toggleGroupCollapsed: (groupId) => {
+    const groupNode = get().nodes.find((n) => n.id === groupId && n.type === 'group');
+    if (!groupNode) return;
+    const collapsed = groupNode.data.groupCollapsed === true;
+    const childIds = new Set(get().nodes.filter((n) => n.parentId === groupId).map((n) => n.id));
+    const expanded = groupNode.data.groupExpandedSize;
+    const currentSize = {
+      width: Number(groupNode.width ?? groupNode.style?.width ?? groupNode.measured?.width) || 320,
+      height: Number(groupNode.height ?? groupNode.style?.height ?? groupNode.measured?.height) || 200,
+    };
+    const nextSize = collapsed ? expanded ?? currentSize : COLLAPSED_GROUP_SIZE;
+
+    get().commitToHistory();
+    set((state) => ({
+      nodes: state.nodes.map((n) => {
+        if (n.id !== groupId) {
+          // 折叠后组内节点看不见了，不能继续留在选区里
+          return collapsed || !childIds.has(n.id) || !n.selected ? n : { ...n, selected: false };
+        }
+        return {
+          ...n,
+          width: nextSize.width,
+          height: nextSize.height,
+          style: { ...n.style, ...nextSize },
+          data: {
+            ...n.data,
+            groupCollapsed: collapsed ? undefined : true,
+            groupExpandedSize: collapsed ? expanded : currentSize,
+          },
+        };
+      }),
+      selectedNodeIds: collapsed
+        ? state.selectedNodeIds
+        : state.selectedNodeIds.filter((id) => !childIds.has(id)),
+    }));
+  },
+
+  setGroupColor: (groupId, color) => {
+    if (!get().groups.some((g) => g.id === groupId)) return;
+    get().commitToHistory();
+    set((state) => ({
+      groups: state.groups.map((g) => (g.id === groupId ? { ...g, color } : g)),
+      nodes: state.nodes.map((n) => (n.id === groupId
+        ? { ...n, data: { ...n.data, color } }
+        : n)),
+    }));
   },
 
   renameGroup: (id, name) => {

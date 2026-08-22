@@ -13,6 +13,7 @@ const MENU_ITEMS = [
   { label: '锁定', shortcut: '', action: 'toggleLock' as const, dynamicLockLabel: true },
   { label: '转换图片', shortcut: '', action: 'convertImage' as const, conditional: true, dynamicLabel: true },
   { label: '解除分组', shortcut: '', action: 'ungroup' as const, groupOnly: true },
+  { label: '打开文件夹', shortcut: '', action: 'openGroupFolder' as const, conditional: true },
   { label: '添加到角色库…', shortcut: '', action: 'addToCharacter' as const, conditional: true },
   { label: '复制媒体', shortcut: '', action: 'copyMedia' as const, conditional: true, dynamicLabel: true },
   { label: '在 PS 中打开', shortcut: '', action: 'openInPS' as const, conditional: true },
@@ -44,6 +45,7 @@ interface NodeContextMenuProps {
   imageConversionLabel?: string;
   onAddToCharacter?: () => void;
   onUngroup?: () => void;
+  onOpenGroupFolder?: () => void;
   onDelete: () => void;
   onShowInFolder?: () => void;
   onSaveAs?: () => void;
@@ -71,6 +73,7 @@ export function NodeContextMenu({
   imageConversionLabel,
   onAddToCharacter,
   onUngroup,
+  onOpenGroupFolder,
   onDelete,
   onShowInFolder,
   onSaveAs,
@@ -101,6 +104,7 @@ export function NodeContextMenu({
     addToCharacter: onAddToCharacter || (() => {}),
     delete: onDelete,
     showInFolder: onShowInFolder || (() => {}),
+    openGroupFolder: onOpenGroupFolder || (() => {}),
     saveAs: onSaveAs || (() => {}),
     openInPS: onOpenInPS || (() => {}),
     editVideo: onEditVideo || (() => {}),
@@ -112,6 +116,7 @@ export function NodeContextMenu({
   const items = MENU_ITEMS.filter((item) => {
     if (item.groupOnly && !onUngroup) return false;
     if (item.conditional && item.action === 'showInFolder' && !onShowInFolder) return false;
+    if (item.conditional && item.action === 'openGroupFolder' && !onOpenGroupFolder) return false;
     if (item.conditional && item.action === 'saveAs' && !onSaveAs) return false;
     if (item.conditional && item.action === 'openInPS' && !onOpenInPS) return false;
     if (item.conditional && item.action === 'editVideo' && !onEditVideo) return false;

@@ -25,7 +25,7 @@
   padding: 0;
   border: 0;
   background: var(--black-alpha-50);
-  backdrop-filter: blur(var(--glass-blur-sm));
+  backdrop-filter: blur(3px);
   cursor: default;
   animation: aiDialogBackdropIn var(--dur-normal) var(--ease-out-expo);
 }
@@ -38,7 +38,7 @@
   max-width: none;
   transform: translate(-50%, -50%);
   overflow: visible;
-  animation: aiDialogExpandIn var(--dur-normal) var(--ease-out-expo);
+  animation: aiDialogExpandIn 0.28s var(--ease-spring);
   transition: none;
 }
 .ai-dialog-float .ai-dialog-expand-btn {

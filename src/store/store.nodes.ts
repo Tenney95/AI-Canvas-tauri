@@ -116,8 +116,12 @@ function pruneDeletedNodesAndEmptyGroups(
       ...group,
       nodeIds: group.nodeIds.filter((nodeId) => !deletedNodeIds.has(nodeId)),
     }));
+  // 只清理「因删除而变空」的分组；手动创建的空文件夹要留着
   const emptyGroupIds = new Set(
-    prunedGroups.filter((group) => group.nodeIds.length === 0).map((group) => group.id),
+    prunedGroups
+      .filter((group) => group.nodeIds.length === 0
+        && (groups.find((g) => g.id === group.id)?.nodeIds.length ?? 0) > 0)
+      .map((group) => group.id),
   );
   const allDeletedNodeIds = new Set(deletedNodeIds);
   for (const groupId of emptyGroupIds) allDeletedNodeIds.add(groupId);
@@ -139,11 +143,18 @@ function pruneDeletedNodesAndEmptyGroups(
   };
 }
 
-export function filterCharacterLibraryCanvasElements(
+/** 渲染前剔除隐藏元素：角色库收纳的节点、已折叠分组的子节点，以及它们的连线 */
+export function filterHiddenCanvasElements(
   nodes: Node<BaseNodeData>[],
   edges: Edge[],
 ): { nodes: Node<BaseNodeData>[]; edges: Edge[] } {
-  const visibleNodes = nodes.filter((node) => node.data.hiddenByCharacterLibrary !== true);
+  const collapsedGroupIds = new Set(
+    nodes.filter((node) => node.data.groupCollapsed === true).map((node) => node.id),
+  );
+  const visibleNodes = nodes.filter((node) => (
+    node.data.hiddenByCharacterLibrary !== true
+    && !(node.parentId && collapsedGroupIds.has(node.parentId))
+  ));
   if (visibleNodes.length === nodes.length) return { nodes, edges };
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
   return {

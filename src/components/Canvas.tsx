@@ -51,7 +51,7 @@ import { useNodeContextMenu } from '../hooks/useNodeContextMenu';
 import { useCanvasSecondaryClickMenu } from '../hooks/useCanvasSecondaryClickMenu';
 import { useCanvasLongPressRadialMenu } from '../hooks/useCanvasLongPressRadialMenu';
 import { useAppStore } from '../store/useAppStore';
-import { filterCharacterLibraryCanvasElements } from '../store/store.nodes';
+import { filterHiddenCanvasElements } from '../store/store.nodes';
 import { useNodeCreation } from '../hooks/useNodeCreation';
 import { useCanvasDrawing } from '../hooks/useCanvasDrawing';
 import type { BaseNodeData } from '../types';
@@ -600,6 +600,7 @@ function CanvasInner() {
     showImageConversion,
     imageConversionLabel,
     handleUngroup,
+    handleOpenGroupFolder,
     handleDelete,
     handleShowInFolder,
     showInFolder,
@@ -635,6 +636,7 @@ function CanvasInner() {
     handleUndo: handleCtxUndo,
     handleRedo: handleCtxRedo,
     handlePaste: handleCtxPaste,
+    handleCreateFolder: handleCtxCreateFolder,
     handleDelete: handleCtxDelete,
     handleCopyNodes: handleCtxCopyNodes,
     handleCopyFiles: handleCtxCopyFiles,
@@ -902,7 +904,7 @@ function CanvasInner() {
   );
 
   const renderableGraph = useMemo(
-    () => filterCharacterLibraryCanvasElements(nodes, edges),
+    () => filterHiddenCanvasElements(nodes, edges),
     [edges, nodes],
   );
   const renderedCanvasNodes = useMemo(() => {
@@ -1029,6 +1031,16 @@ function CanvasInner() {
     shotlistDropTarget.current = null;
   }, []);
 
+  // 拖到折叠分组（文件夹）上：文件夹打开，被拖节点缩小并微微倾斜
+  const folderDropTarget = useRef<HTMLElement | null>(null);
+  const folderDropNode = useRef<HTMLElement | null>(null);
+  const clearFolderDropTarget = useCallback(() => {
+    folderDropTarget.current?.classList.remove('is-folder-drop-target');
+    folderDropTarget.current = null;
+    folderDropNode.current?.classList.remove('folder-drop-shrink');
+    folderDropNode.current = null;
+  }, []);
+
   /**
    * 命中分镜表的画面格。
    * 与宫格不同，已绑定的格子也接受放置——直接换绑，比先解绑再拖一次顺手。
@@ -1074,6 +1086,22 @@ function CanvasInner() {
 
   const handleNodeDrag = useCallback(
     (e: React.MouseEvent, node: RFNode) => {
+      const folder = node.type === 'group'
+        ? null
+        : document.elementsFromPoint(e.clientX, e.clientY)
+          .map((el) => el.closest<HTMLElement>('.canvas-group-folder'))
+          .find((el): el is HTMLElement => el != null) ?? null;
+      if (folder !== folderDropTarget.current) {
+        clearFolderDropTarget();
+        if (folder) {
+          folder.classList.add('is-folder-drop-target');
+          folderDropTarget.current = folder;
+          const dragged = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${node.id}"]`);
+          dragged?.classList.add('folder-drop-shrink');
+          folderDropNode.current = dragged;
+        }
+      }
+
       const hit = findStoryboardDropHit(node, e.clientX, e.clientY);
       const cell = hit?.emptyCell ?? null;
       if (cell !== sbDropTarget.current) {
@@ -1104,7 +1132,7 @@ function CanvasInner() {
         }
       }
     },
-    [findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, findShotlistDropHit, clearShotlistDropTarget],
+    [findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, findShotlistDropHit, clearShotlistDropTarget, clearFolderDropTarget],
   );
 
   // ── Auto group/ungroup on drag stop ──
@@ -1115,6 +1143,7 @@ function CanvasInner() {
       const frameCell = findShotlistDropHit(node, event.clientX, event.clientY);
       clearSbDropTarget();
       clearShotlistDropTarget();
+      clearFolderDropTarget();
       setDropGhost(null);
       clearGhostNodeHidden();
       if (frameCell) {
@@ -1138,7 +1167,7 @@ function CanvasInner() {
       settleNodeGroupingOnDragStop(node as RFNode<BaseNodeData>);
       onNodeDragStop();
     },
-    [onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, setCanvasInteraction, findShotlistDropHit, clearShotlistDropTarget],
+    [onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, setCanvasInteraction, findShotlistDropHit, clearShotlistDropTarget, clearFolderDropTarget],
   );
 
   return (
@@ -1315,6 +1344,7 @@ function CanvasInner() {
         onUndo={handleCtxUndo}
         onRedo={handleCtxRedo}
         onPaste={handleCtxPaste}
+        onCreateFolder={handleCtxCreateFolder}
         onDelete={handleCtxDelete}
         onCopyNodes={handleCtxCopyNodes}
         onCopyFiles={handleCtxCopyFiles}
@@ -1341,6 +1371,7 @@ function CanvasInner() {
         imageConversionLabel={imageConversionLabel}
         onAddToCharacter={showAddToCharacter ? handleAddToCharacter : undefined}
         onUngroup={isGroupNode ? handleUngroup : undefined}
+        onOpenGroupFolder={isGroupNode ? handleOpenGroupFolder : undefined}
         onDelete={handleDelete}
         onShowInFolder={showInFolder ? handleShowInFolder : undefined}
         onSaveAs={showSaveAs ? handleSaveAs : undefined}

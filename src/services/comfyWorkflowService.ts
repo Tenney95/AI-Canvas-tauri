@@ -19,6 +19,7 @@ import {
   updatePendingTask,
 } from './pollManager';
 import { comfyFetch, pollComfyHistory } from './comfyPolling';
+import { corsSafeFetch } from './ai/httpTransport';
 import { resolveComfyOutputUrl } from './comfyOutputs';
 
 /** ComfyUI 已注册的节点类型；同一次会话里短暂缓存，装完插件重开也能很快看到变化 */
@@ -387,8 +388,11 @@ async function uploadMediaToComfyUI(
     blob = new Blob([byteArr], { type: mimeType });
     ext = normalizeComfyMediaExtension(kind, match[2].toLowerCase(), undefined);
   } else {
-    // 远程 URL → fetch 获取
-    const response = await fetch(mediaUrl, { signal });
+    // 远程 URL → 取回字节。http(s) 一律走 Rust 通道：WebView 对 ComfyUI /view、
+    // 各家 CDN 这类第三方源没有 CORS 许可，裸 fetch 会直接 Failed to fetch。
+    // asset.localhost / blob: 是 WebView 自己的资源，reqwest 拿不到，仍走原生 fetch。
+    const useNativeChannel = /^https?:\/\//i.test(mediaUrl) && !mediaUrl.includes('asset.localhost');
+    const response = await (useNativeChannel ? corsSafeFetch : fetch)(mediaUrl, { signal });
     if (!response.ok) {
       throw new Error(`下载${label}失败 (${response.status})`);
     }

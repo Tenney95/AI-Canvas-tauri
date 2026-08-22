@@ -33,6 +33,8 @@ interface TestStore {
   recordOutputHistory: ReturnType<typeof vi.fn>;
   showToast: ReturnType<typeof vi.fn>;
   renameGroup: ReturnType<typeof vi.fn>;
+  toggleGroupCollapsed: ReturnType<typeof vi.fn>;
+  setGroupColor: ReturnType<typeof vi.fn>;
   closeNodeDialog: ReturnType<typeof vi.fn>;
   mergeDramaExtract: ReturnType<typeof vi.fn>;
   openNodeDialog: ReturnType<typeof vi.fn>;
@@ -126,6 +128,8 @@ function createStore(nodes: TestNode[], getRevision: () => number): TestStore {
     recordOutputHistory: vi.fn().mockResolvedValue(undefined),
     showToast: vi.fn(),
     renameGroup: vi.fn(),
+    toggleGroupCollapsed: vi.fn(),
+    setGroupColor: vi.fn(),
     closeNodeDialog: vi.fn(),
     mergeDramaExtract: vi.fn(),
     openNodeDialog: vi.fn(),
@@ -484,7 +488,8 @@ describe('critical canvas node interactions', () => {
     ) => unknown;
     const tree = GroupNode({ id: 'group-a', data: group.data, selected: true });
     const resizer = findElement(tree, (element) => componentName(element) === 'NodeResizerMock');
-    const batchButton = findElement(tree, (element) => componentName(element) === 'AnimatedButtonMock');
+    const batchButton = findElement(tree, (element) => componentName(element) === 'AnimatedButtonMock'
+      && String(element.props.className ?? '').includes('hover:text-green-300'));
 
     (resizer.props.onResizeStart as () => void)();
     (resizer.props.onResizeEnd as () => void)();

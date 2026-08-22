@@ -154,6 +154,14 @@ export function useCanvasContextMenu() {
     closeMenu();
   }, [menu.flowPosition, reactFlowInstance, pasteNodes, closeMenu]);
 
+  const handleCreateFolder = useCallback(() => {
+    const pos = menu.flowPosition;
+    useAppStore.getState().createEmptyGroup(
+      reactFlowInstance.screenToFlowPosition({ x: pos.x, y: pos.y }),
+    );
+    closeMenu();
+  }, [menu.flowPosition, reactFlowInstance, closeMenu]);
+
   const showSubmenu = useCallback((m: ContextMenuState['hoverMenu']) => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     setMenu((s) => ({ ...s, hoverMenu: m }));
@@ -284,6 +292,7 @@ export function useCanvasContextMenu() {
     handleUndo,
     handleRedo,
     handlePaste,
+    handleCreateFolder,
     handleDelete,
     handleCopyNodes,
     handleCopyFiles,

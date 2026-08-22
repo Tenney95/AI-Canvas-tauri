@@ -5,6 +5,8 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { getActiveTextSelection, type ActiveTextSelection } from '../utils/textSelection';
 import {
+  ensureGroupFolder,
+  openDirectoryInFileManager,
   revealFileInFolder,
   openInJianying,
   openInPhotoshop,
@@ -195,13 +197,42 @@ export function useNodeContextMenu() {
     const node = store.nodes.find((candidate) => candidate.id === menu.nodeId);
     if (!node) return;
 
+    // 多选时整批锁定/解锁；锁定分组同时锁定组内子节点
+    const picked = store.selectedNodeIds.includes(menu.nodeId)
+      ? store.selectedNodeIds
+      : [menu.nodeId];
+    const targets = new Set(picked);
+    for (const candidate of store.nodes) {
+      if (candidate.parentId && targets.has(candidate.parentId)) targets.add(candidate.id);
+    }
+
     const nextLocked = node.draggable !== false;
     store.commitToHistory();
-    store.setNodes(store.nodes.map((candidate) => candidate.id === menu.nodeId
+    store.setNodes(store.nodes.map((candidate) => targets.has(candidate.id)
       ? { ...candidate, draggable: nextLocked ? false : undefined }
       : candidate));
     closeMenu();
     store.showToast(nextLocked ? t('节点已锁定') : t('节点已解锁'));
+  }, [closeMenu, menu.nodeId, t]);
+
+  // ── 分组：在系统文件管理器中打开分组文件夹 ──
+  const handleOpenGroupFolder = useCallback(async () => {
+    const store = useAppStore.getState();
+    const node = store.nodes.find((n) => n.id === menu.nodeId);
+    const gid = (node?.data as BaseNodeData | undefined)?.groupId as string | undefined;
+    const group = store.groups.find((g) => g.id === (gid ?? menu.nodeId));
+    closeMenu();
+    if (!group) return;
+    const dir = await ensureGroupFolder(store.currentProjectId, group.name);
+    if (!dir) {
+      store.showToast(t('无法打开文件位置'));
+      return;
+    }
+    try {
+      await openDirectoryInFileManager(dir);
+    } catch {
+      store.showToast(t('无法打开文件位置'));
+    }
   }, [closeMenu, menu.nodeId, t]);
 
   const handleAddToCharacter = useCallback(() => {
@@ -441,6 +472,7 @@ export function useNodeContextMenu() {
     showImageConversion,
     imageConversionLabel,
     handleUngroup,
+    handleOpenGroupFolder,
     handleDelete,
     handleShowInFolder,
     showInFolder,

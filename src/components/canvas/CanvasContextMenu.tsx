@@ -54,7 +54,7 @@ const MENU_PADDING = 10;
 /** 根菜单项数（添加节点 + [复制] + 粘贴 + [复制文件] + 撤销 + 重做 + 打开项目文件夹 + [删除]）
  *  hasSelection 为真时最多 8 个 .menu-row + 3 个 .menu-sep；未选中时 5 个 .menu-row + 2 个 .menu-sep。
  *  以选中态最大项数估算高度，避免溢出。 */
-const L1_ITEM_COUNT = 8;
+const L1_ITEM_COUNT = 9;
 const L1_SEP_COUNT = 3;
 /** 子菜单项数（7 个内容节点 + 1 条分割线 + 6 个源节点 = 13 个 .menu-row + 1 个 .menu-sep） */
 const SUB_ITEM_COUNT = 13;
@@ -81,6 +81,7 @@ interface CanvasContextMenuProps {
   onUndo: () => void;
   onRedo: () => void;
   onPaste: () => void;
+  onCreateFolder: () => void;
   onDelete: () => void;
   onCopyNodes?: () => void;
   onCopyFiles?: () => void;
@@ -100,6 +101,7 @@ function CanvasContextMenu({
   onUndo,
   onRedo,
   onPaste,
+  onCreateFolder,
   onDelete,
   onCopyNodes,
   onCopyFiles,
@@ -176,6 +178,9 @@ function CanvasContextMenu({
         >
           <span className="menu-rowlabel">{t('添加节点')}</span>
           <span className="menu-arrow menu-arrow-ml8">▶</span>
+        </div>
+        <div className="menu-row" onClick={onCreateFolder}>
+          <span>{t('创建文件夹')}</span>
         </div>
         <div className="menu-sep" />
         {hasSelection && (

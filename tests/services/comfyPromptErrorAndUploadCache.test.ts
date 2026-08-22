@@ -310,3 +310,35 @@ describe('formatComfyPromptError', () => {
     expect(formatComfyPromptError(500, '')).toBe('ComfyUI 拒绝了工作流 (500)');
   });
 });
+
+describe('ComfyUI 参考媒体取回通道', () => {
+  it('http(s) 参考图走 Rust 通道，不用会被 CORS 拦掉的裸 fetch', async () => {
+    const remote = `http://comfy.test:8188/view?filename=up-${Date.now()}.png&type=output`;
+    const nativeFetch = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    vi.stubGlobal('fetch', nativeFetch);
+
+    const previous = mocks.corsSafeFetch.getMockImplementation()!;
+    mocks.corsSafeFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === remote) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'Content-Type': 'image/png' }),
+          blob: async () => new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }),
+        };
+      }
+      return previous(url, init);
+    });
+
+    try {
+      await executeComfyUIGenerate(baseParams, undefined, [remote]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(nativeFetch).not.toHaveBeenCalled();
+    expect(uploadCalls()).toHaveLength(1);
+  });
+});
