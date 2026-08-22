@@ -19,11 +19,14 @@ const mocks = vi.hoisted(() => ({
   registerProjectFolder: vi.fn(),
   deleteProjectDataDir: vi.fn(),
   notifyProjectDiskChanged: vi.fn(),
+  getBaseDir: vi.fn(async () => '/data'),
+  remove: vi.fn(async () => undefined),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: mocks.getVersion }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open, save: mocks.save }));
+vi.mock('@tauri-apps/plugin-fs', () => ({ remove: mocks.remove }));
 vi.mock('../../src/services/indexedDbService', () => ({
   getProjectById: mocks.getProjectById,
   saveProjectToDb: mocks.saveProjectToDb,
@@ -41,12 +44,15 @@ vi.mock('../../src/services/fileService', () => ({
   registerProjectFolder: mocks.registerProjectFolder,
   deleteProjectDataDir: mocks.deleteProjectDataDir,
   notifyProjectDiskChanged: mocks.notifyProjectDiskChanged,
+  getBaseDir: mocks.getBaseDir,
+  joinPath: (...parts: string[]) => parts.join('/'),
   buildProjectFolderName: (name: string, id: string) => `${name}-${id.slice(0, 8)}`,
   sanitizeFileName: (name: string) => name,
 }));
 
 import {
   PROJECT_ARCHIVE_FORMAT_VERSION,
+  duplicateProjectArchive,
   exportProjectArchive,
   importProjectArchive,
 } from '../../src/services/projectTransferService';
@@ -105,6 +111,8 @@ describe('projectTransferService', () => {
     mocks.putChatConversation.mockResolvedValue(undefined);
     mocks.putChatMessage.mockResolvedValue(undefined);
     mocks.putProjectMemory.mockResolvedValue(undefined);
+    mocks.getBaseDir.mockResolvedValue('/data');
+    mocks.remove.mockResolvedValue(undefined);
   });
 
   it('packs the project record, chat payload and asset directory', async () => {
@@ -191,6 +199,56 @@ describe('projectTransferService', () => {
     expect(memory.projectId).toBe(result!.projectId);
     expect(memory.source.conversationId).toBe(conversation.id);
     expect(memory.source.messageId).toBe(message.id);
+  });
+
+  it('duplicates a project through a temp archive and clones its episodes', async () => {
+    const EPISODE = {
+      ...PROJECT_RECORD,
+      id: 'episode-1',
+      name: '第 1 集',
+      parentId: 'source-project',
+      episodeNo: 1,
+    };
+    mocks.getProjectById.mockImplementation(async (id: string) => (
+      id === 'episode-1' ? EPISODE : PROJECT_RECORD
+    ));
+    mocks.getProjectConversations.mockResolvedValue([]);
+    mocks.getProjectMemories.mockResolvedValue([]);
+    mocks.invoke.mockImplementation(async (command: string) => (
+      command === 'pack_project_archive'
+        ? { assetCount: 1, assetBytes: 12, archiveBytes: 8 }
+        : { texts: archiveTexts(), assetPaths: ['镜头1/a.png'], assetBytes: 12 }
+    ));
+
+    const result = await duplicateProjectArchive('source-project', '分镜项目 副本', ['episode-1']);
+
+    expect(result.projectId).not.toBe('source-project');
+    expect(result.projectName).toBe('分镜项目 副本');
+    // 副本目录名跟着副本名走，不能和源项目共用同一个素材目录
+    expect(result.dataFolder).toContain('分镜项目 副本');
+    expect(mocks.invoke.mock.calls[0][1].outputPath).toContain('.duplicate-');
+    // 临时归档无论成败都要删掉，否则数据目录里会堆积复制残留
+    expect(mocks.remove).toHaveBeenCalledWith(mocks.invoke.mock.calls[0][1].outputPath);
+
+    expect(result.episodes).toHaveLength(1);
+    const episode = result.episodes[0];
+    expect(episode.id).not.toBe('episode-1');
+    expect(episode.parentId).toBe(result.projectId);
+    // 分集共用剧集素材目录，必须跟着副本的新目录走
+    expect(episode.dataFolder).toBe(result.dataFolder);
+    const savedEpisode = mocks.saveProjectToDb.mock.calls[1][0];
+    expect(savedEpisode.id).toBe(episode.id);
+    expect(savedEpisode.nodes[0].data.assetId).toBeUndefined();
+  });
+
+  it('removes the temp archive when packing fails', async () => {
+    mocks.getProjectById.mockResolvedValue(PROJECT_RECORD);
+    mocks.getProjectConversations.mockResolvedValue([]);
+    mocks.getProjectMemories.mockResolvedValue([]);
+    mocks.invoke.mockRejectedValue(new Error('磁盘已满'));
+
+    await expect(duplicateProjectArchive('source-project', '副本')).rejects.toThrow('磁盘已满');
+    expect(mocks.remove).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the staging folder name when renaming the data directory fails', async () => {

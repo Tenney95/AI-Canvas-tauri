@@ -11,6 +11,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { remove } from '@tauri-apps/plugin-fs';
 import * as fileService from './fileService';
 import {
   getProjectById,
@@ -28,6 +29,7 @@ import {
 import type { ProjectSaveData } from './storageService';
 import { normalizeProjectSettings } from './projectSettingsService';
 import { normalizeDramaAssetLibrary } from '../types/dramaAssets';
+import type { CanvasProject } from '../types';
 
 export const PROJECT_ARCHIVE_EXTENSION = 'aicanvas';
 /** 归档格式版本；解包时拒绝更高版本，避免旧版本误读新结构。 */
@@ -163,13 +165,8 @@ async function collectChatPayload(projectId: string): Promise<ProjectArchiveChat
   return { conversations, messages: messageGroups.flat(), memories };
 }
 
-/**
- * 导出项目为 `.aicanvas` 归档。用户取消保存对话框时返回 null。
- * 调用方需保证项目已落盘，导出读取的是 IndexedDB 里的持久化记录。
- */
-export async function exportProjectArchive(projectId: string): Promise<ProjectExportResult | null> {
-  if (!fileService.isTauriEnv()) throw new Error('项目导出仅在桌面版可用');
-
+/** 把项目记录、对话与素材目录打包到指定归档路径；调用方保证项目已落盘。 */
+async function packProjectArchive(projectId: string, outputPath: string): Promise<PackResult> {
   const record = await getProjectById(projectId);
   if (!record) throw new Error('未找到项目数据，无法导出');
 
@@ -183,17 +180,9 @@ export async function exportProjectArchive(projectId: string): Promise<ProjectEx
     projectName: projectRecord.name,
   };
 
-  const defaultName = `${fileService.sanitizeFileName(projectRecord.name || '项目')}.${PROJECT_ARCHIVE_EXTENSION}`;
-  const outputPath = await save({
-    defaultPath: defaultName,
-    title: '导出项目',
-    filters: [{ name: 'AI Canvas 项目包', extensions: [PROJECT_ARCHIVE_EXTENSION] }],
-  });
-  if (!outputPath) return null;
-
   // 用 ensure 而不是 get：老项目可能还没建过数据目录，直接打包会卡在路径校验上。
   const assetsDir = await fileService.ensureProjectDataDir(projectId).catch(() => null);
-  const result = await invoke<PackResult>('pack_project_archive', {
+  return invoke<PackResult>('pack_project_archive', {
     entries: [
       { path: MANIFEST_ENTRY, content: JSON.stringify(manifest) },
       { path: PROJECT_ENTRY, content: JSON.stringify(projectRecord) },
@@ -202,7 +191,27 @@ export async function exportProjectArchive(projectId: string): Promise<ProjectEx
     assetsDir: assetsDir ?? null,
     outputPath,
   });
+}
 
+/**
+ * 导出项目为 `.aicanvas` 归档。用户取消保存对话框时返回 null。
+ * 调用方需保证项目已落盘，导出读取的是 IndexedDB 里的持久化记录。
+ */
+export async function exportProjectArchive(projectId: string): Promise<ProjectExportResult | null> {
+  if (!fileService.isTauriEnv()) throw new Error('项目导出仅在桌面版可用');
+
+  const record = await getProjectById(projectId);
+  if (!record) throw new Error('未找到项目数据，无法导出');
+
+  const defaultName = `${fileService.sanitizeFileName(record.name || '项目')}.${PROJECT_ARCHIVE_EXTENSION}`;
+  const outputPath = await save({
+    defaultPath: defaultName,
+    title: '导出项目',
+    filters: [{ name: 'AI Canvas 项目包', extensions: [PROJECT_ARCHIVE_EXTENSION] }],
+  });
+  if (!outputPath) return null;
+
+  const result = await packProjectArchive(projectId, outputPath);
   return {
     filePath: outputPath,
     assetCount: result.assetCount,
@@ -267,19 +276,13 @@ async function restoreChatPayload(
 }
 
 /**
- * 从 `.aicanvas` 归档导入项目。用户取消选择时返回 null。
- * 素材先解到临时数据目录，读到项目名后再改名为正式的「项目名-短ID」目录。
+ * 从归档还原出一个全新项目。素材先解到临时数据目录，读到项目名后再改名为
+ * 正式的「项目名-短ID」目录；overrideName 用于复制项目时另起名字。
  */
-export async function importProjectArchive(): Promise<ProjectImportResult | null> {
-  if (!fileService.isTauriEnv()) throw new Error('项目导入仅在桌面版可用');
-
-  const archivePath = await open({
-    multiple: false,
-    title: '导入项目',
-    filters: [{ name: 'AI Canvas 项目包', extensions: [PROJECT_ARCHIVE_EXTENSION] }],
-  });
-  if (!archivePath || typeof archivePath !== 'string') return null;
-
+async function restoreProjectArchive(
+  archivePath: string,
+  overrideName?: string,
+): Promise<ProjectImportResult> {
   const projectId = createRecordId();
   const stagingFolder = fileService.buildProjectFolderName('导入中', projectId);
   fileService.registerProjectFolder(projectId, stagingFolder);
@@ -307,7 +310,7 @@ export async function importProjectArchive(): Promise<ProjectImportResult | null
       ? parseJson<ProjectArchiveChatPayload>(unpacked.texts[CHAT_ENTRY], '对话记录')
       : null;
 
-    const name = (source.name || manifest.projectName || '导入项目').trim() || '导入项目';
+    const name = (overrideName || source.name || manifest.projectName || '导入项目').trim() || '导入项目';
     const renamed = await fileService.renameProjectDataDir(
       projectId,
       stagingFolder,
@@ -365,5 +368,92 @@ export async function importProjectArchive(): Promise<ProjectImportResult | null
       });
     }
     throw error;
+  }
+}
+
+/**
+ * 从 `.aicanvas` 归档导入项目。用户取消选择时返回 null。
+ */
+export async function importProjectArchive(): Promise<ProjectImportResult | null> {
+  if (!fileService.isTauriEnv()) throw new Error('项目导入仅在桌面版可用');
+
+  const archivePath = await open({
+    multiple: false,
+    title: '导入项目',
+    filters: [{ name: 'AI Canvas 项目包', extensions: [PROJECT_ARCHIVE_EXTENSION] }],
+  });
+  if (!archivePath || typeof archivePath !== 'string') return null;
+
+  return restoreProjectArchive(archivePath);
+}
+
+export interface ProjectDuplicateResult extends ProjectImportResult {
+  /** 一起复制出来的分集记录，供调用方并入内存项目列表。 */
+  episodes: CanvasProject[];
+}
+
+/**
+ * 分集与剧集共用素材目录，归档只带走剧集本身；分集记录在副本建好后按新剧集 ID 直接克隆。
+ * 单集失败不影响其余分集，与导入时缺素材不阻断的策略一致。
+ */
+async function duplicateEpisodes(episodeIds: string[], target: ProjectImportResult): Promise<CanvasProject[]> {
+  const created: CanvasProject[] = [];
+  for (const episodeId of episodeIds) {
+    try {
+      const source = await getProjectById(episodeId);
+      if (!source) continue;
+      const record = { ...(source as unknown as ProjectSaveData) };
+      const nextId = createRecordId();
+      detachSourceAssetIdentity(record);
+      const next: ProjectSaveData = {
+        ...record,
+        id: nextId,
+        parentId: target.projectId,
+        dataFolder: target.dataFolder,
+        updatedAt: Date.now(),
+      };
+      await saveProjectToDb(next);
+      await restoreChatPayload(await collectChatPayload(episodeId), nextId);
+      created.push({
+        id: nextId,
+        name: next.name,
+        createdAt: next.createdAt,
+        updatedAt: next.updatedAt,
+        snapshot: next.snapshot,
+        dataFolder: next.dataFolder,
+        settings: next.settings,
+        parentId: next.parentId,
+        episodeNo: next.episodeNo,
+        episodeOutline: next.episodeOutline,
+      });
+    } catch (error) {
+      console.warn('[项目复制] 分集复制失败:', episodeId, error);
+    }
+  }
+  return created;
+}
+
+/**
+ * 复制项目：打包到临时归档再还原成新项目，素材拷贝、ID 重映射、对话与记忆还原
+ * 全部复用导入链路。
+ * ponytail: 多一次 gzip 往返换掉一整套目录拷贝代码；大项目嫌慢再加原生 copy_dir 命令。
+ */
+export async function duplicateProjectArchive(
+  projectId: string,
+  name: string,
+  episodeIds: string[] = [],
+): Promise<ProjectDuplicateResult> {
+  if (!fileService.isTauriEnv()) throw new Error('项目复制仅在桌面版可用');
+
+  const baseDir = await fileService.getBaseDir();
+  if (!baseDir) throw new Error('无法定位应用数据目录');
+  const tempPath = fileService.joinPath(baseDir, `.duplicate-${createRecordId()}.${PROJECT_ARCHIVE_EXTENSION}`);
+
+  try {
+    await packProjectArchive(projectId, tempPath);
+    const result = await restoreProjectArchive(tempPath, name);
+    return { ...result, episodes: await duplicateEpisodes(episodeIds, result) };
+  } finally {
+    await remove(tempPath).catch(() => undefined);
   }
 }

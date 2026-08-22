@@ -2,12 +2,15 @@
  * 项目库弹窗，提供项目搜索、排序、创建、重命名、打开和删除等管理操作。
  */
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import { motion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import { listTopLevelProjects, resolveOpenTargetId, seriesOwnerId } from '../store/store.utils';
 import type { CanvasProject } from '../types';
+import * as fileService from '../services/fileService';
+import { calcFixedPosition } from '../utils/popupPosition';
 import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
 import { useT } from '../i18n';
@@ -40,6 +43,34 @@ function formatProjectTimestamp(timestamp: number, t: (text: string, vars?: Reco
   return t('{year}年{month}月{date}日', { year: value.getFullYear(), month: value.getMonth() + 1, date: value.getDate() });
 }
 
+/** 右键菜单估算尺寸，仅用于贴边时的翻转计算。 */
+const PROJECT_MENU_WIDTH = 160;
+const PROJECT_MENU_HEIGHT = 230;
+
+function ProjectMenuItem({ icon, label, danger, disabled, onClick }: {
+  icon: string;
+  label: string;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 px-3 py-2 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${danger
+          ? 'text-red-400 hover:bg-red-500/10'
+          : 'text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text'
+        }`}
+    >
+      <Icon icon={icon} width="15" height="15" aria-hidden="true" />
+      {label}
+    </button>
+  );
+}
+
 function ProjectSnapshotPreview({ snapshot }: { snapshot?: string }) {
   return (
     <div className="relative aspect-[16/9] w-full overflow-hidden bg-canvas-bg/60">
@@ -65,7 +96,7 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
   const t = useT();
   const {
     projects, currentProjectId, createProject, renameProject, switchProject, deleteProject,
-    exportProject, importProject, isCreatingProject,
+    exportProject, importProject, duplicateProject, isCreatingProject,
   } = useAppStore(
     useShallow((state) => ({
       projects: state.projects,
@@ -76,6 +107,7 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
       deleteProject: state.deleteProject,
       exportProject: state.exportProject,
       importProject: state.importProject,
+      duplicateProject: state.duplicateProject,
       isCreatingProject: state.isCreatingProject,
     })),
   );
@@ -90,6 +122,8 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
   const [isDeleting, setIsDeleting] = useState(false);
   const [exportingId, setExportingId] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ project: CanvasProject; x: number; y: number } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const createInputRef = useRef<HTMLInputElement>(null);
 
@@ -129,6 +163,7 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
 
   const closeLibrary = () => {
     setQuery('');
+    setContextMenu(null);
     setIsCreating(false);
     setNewProjectName('');
     setRenameTargetId(null);
@@ -141,6 +176,10 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
 
   const requestClose = () => {
     if (isCreatingProject) return;
+    if (contextMenu) {
+      setContextMenu(null);
+      return;
+    }
     if (deleteTarget) {
       setDeleteTarget(null);
       return;
@@ -204,6 +243,25 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
       await exportProject(project.id);
     } finally {
       setExportingId(null);
+    }
+  };
+
+  const openProjectFolder = async (project: CanvasProject) => {
+    try {
+      const dir = await fileService.ensureProjectDataDir(project.id);
+      if (dir) await fileService.openDirectoryInFileManager(dir);
+    } catch (error) {
+      console.warn('[项目库] 打开项目文件夹失败:', error);
+    }
+  };
+
+  const runDuplicateProject = async (project: CanvasProject) => {
+    if (duplicatingId) return;
+    setDuplicatingId(project.id);
+    try {
+      await duplicateProject(project.id);
+    } finally {
+      setDuplicatingId(null);
     }
   };
 
@@ -357,11 +415,14 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
               return (
                 <div
                   key={project.id}
-                  className={`group overflow-hidden rounded-lg border bg-canvas-surface transition-[border-color,box-shadow] duration-150 ${
-                    isCurrent
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setContextMenu({ project, x: event.clientX, y: event.clientY });
+                  }}
+                  className={`group overflow-hidden rounded-lg border bg-canvas-surface transition-[border-color,box-shadow] duration-150 ${isCurrent
                       ? 'border-indigo-400/50 ring-1 ring-indigo-500/15'
                       : 'border-canvas-border hover:border-border-secondary hover:shadow-lg'
-                  }`}
+                    }`}
                 >
                   <button
                     type="button"
@@ -439,6 +500,15 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
                       <div className="mr-2 flex shrink-0 items-center gap-0.5">
                         <button
                           type="button"
+                          aria-label={t('重命名项目 {name}', { name: project.name })}
+                          data-tooltip={t('重命名')}
+                          onClick={() => beginRenameProject(project)}
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-canvas-text-muted transition-colors hover:bg-canvas-hover hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-canvas-border"
+                        >
+                          <Icon icon="mdi:pencil-outline" width="17" height="17" aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
                           aria-label={t('导出项目 {name}', { name: project.name })}
                           data-tooltip={t('导出项目包')}
                           disabled={exportingId !== null || isImporting}
@@ -453,14 +523,22 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
                             className={exportingId === project.id ? 'animate-spin' : undefined}
                           />
                         </button>
+
                         <button
                           type="button"
-                          aria-label={t('重命名项目 {name}', { name: project.name })}
-                          data-tooltip={t('重命名')}
-                          onClick={() => beginRenameProject(project)}
-                          className="flex h-8 w-8 items-center justify-center rounded-md text-canvas-text-muted transition-colors hover:bg-canvas-hover hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-canvas-border"
+                          aria-label={t('复制项目 {name}', { name: project.name })}
+                          data-tooltip={t('创建副本')}
+                          disabled={duplicatingId !== null}
+                          onClick={() => void runDuplicateProject(project)}
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-canvas-text-muted transition-colors hover:bg-canvas-hover hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-canvas-border disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                          <Icon icon="mdi:pencil-outline" width="17" height="17" aria-hidden="true" />
+                          <Icon
+                            icon={duplicatingId === project.id ? 'mdi:loading' : 'mdi:content-copy'}
+                            width="17"
+                            height="17"
+                            aria-hidden="true"
+                            className={duplicatingId === project.id ? 'animate-spin' : undefined}
+                          />
                         </button>
                         {canDeleteProject(project) ? (
                           <button
@@ -557,6 +635,81 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
             </div>
           ) : null}
         </main>
+
+        {contextMenu ? createPortal(
+          <div
+            className="fixed inset-0 z-[260]"
+            onMouseDown={() => setContextMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setContextMenu(null);
+            }}
+          >
+            <div
+              role="menu"
+              aria-label={t('项目操作')}
+              style={calcFixedPosition(contextMenu.x, contextMenu.y, PROJECT_MENU_WIDTH, PROJECT_MENU_HEIGHT)}
+              onMouseDown={(event) => event.stopPropagation()}
+              className="fixed w-40 overflow-hidden rounded-lg border border-canvas-border bg-canvas-card py-1 shadow-xl"
+            >
+              <ProjectMenuItem
+                icon="mdi:folder-open-outline"
+                label={t('打开项目')}
+                onClick={() => openProject(contextMenu.project.id)}
+              />
+              <ProjectMenuItem
+                icon="mdi:folder-search-outline"
+                label={t('打开项目文件夹')}
+                onClick={() => {
+                  void openProjectFolder(contextMenu.project);
+                  setContextMenu(null);
+                }}
+              />
+              <div className="my-1 border-t border-canvas-border" />
+              <ProjectMenuItem
+                icon="mdi:pencil-outline"
+                label={t('重命名')}
+                onClick={() => {
+                  beginRenameProject(contextMenu.project);
+                  setContextMenu(null);
+                }}
+              />
+              <ProjectMenuItem
+                icon="mdi:content-copy"
+                label={t('创建副本')}
+                disabled={duplicatingId !== null}
+                onClick={() => {
+                  void runDuplicateProject(contextMenu.project);
+                  setContextMenu(null);
+                }}
+              />
+              <ProjectMenuItem
+                icon="mdi:tray-arrow-up"
+                label={t('导出项目包')}
+                disabled={exportingId !== null || isImporting}
+                onClick={() => {
+                  void runExportProject(contextMenu.project);
+                  setContextMenu(null);
+                }}
+              />
+              {canDeleteProject(contextMenu.project) ? (
+                <>
+                  <div className="my-1 border-t border-canvas-border" />
+                  <ProjectMenuItem
+                    icon="mdi:trash-can-outline"
+                    label={t('删除项目')}
+                    danger
+                    onClick={() => {
+                      setDeleteTarget(contextMenu.project);
+                      setContextMenu(null);
+                    }}
+                  />
+                </>
+              ) : null}
+            </div>
+          </div>,
+          document.body,
+        ) : null}
 
         {deleteTarget ? (
           <div

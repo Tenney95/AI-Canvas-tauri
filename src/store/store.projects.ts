@@ -27,7 +27,7 @@ import { stopProjectAgentTasks } from '../services/chat/agentTaskControl';
 import { cancelProjectCanvasDerivations } from '../services/canvasDerivationGuard';
 import { clearConversationFileGrants } from '../services/chat/fileGrantService';
 import { reassignProjectMemories } from '../services/chat/projectMemoryService';
-import { exportProjectArchive, importProjectArchive } from '../services/projectTransferService';
+import { duplicateProjectArchive, exportProjectArchive, importProjectArchive } from '../services/projectTransferService';
 import {
   getLastActiveProjectId,
   setLastActiveProjectId,
@@ -313,6 +313,8 @@ export interface ProjectSlice {
   moveEpisode: (episodeId: string, direction: -1 | 1) => Promise<boolean>;
   exportProject: (id: string) => Promise<boolean>;
   importProject: () => Promise<string | undefined>;
+  /** 复制项目（含分集、对话与素材），复制完不切画布。 */
+  duplicateProject: (id: string) => Promise<string | undefined>;
   deleteProject: (id: string) => Promise<void>;
   /** captureSnapshot：切走前给当前画布重拍缩略图，只有项目库弹窗需要（拍一张要跑一轮位图合成） */
   switchProject: (id: string, options?: { captureSnapshot?: boolean }) => void;
@@ -953,6 +955,50 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       console.error('[项目导出] 失败:', error);
       get().showToast(error instanceof Error ? `项目导出失败：${error.message}` : '项目导出失败', 'error');
       return false;
+    }
+  },
+
+  duplicateProject: async (id) => {
+    const state = get();
+    const project = state.projects.find((item) => item.id === id);
+    if (!project) return undefined;
+
+    // 复制读的是 IndexedDB 里已落盘的记录，当前项目必须先把内存改动写回去。
+    if (state.currentProjectId === id || listEpisodes(state.projects, id).some((e) => e.id === state.currentProjectId)) {
+      if (state.projectLoadStatus !== 'ready') {
+        state.showToast('项目尚未成功加载，已阻止复制', 'error');
+        return undefined;
+      }
+      if (await get().saveCurrentProjectSilent() !== state.currentProjectId) {
+        get().showToast('项目保存失败，已取消复制', 'error');
+        return undefined;
+      }
+    }
+
+    try {
+      const result = await duplicateProjectArchive(
+        id,
+        `${project.name} 副本`,
+        listEpisodes(get().projects, id).map((episode) => episode.id),
+      );
+      const copy: CanvasProject = {
+        id: result.projectId,
+        name: result.projectName,
+        createdAt: result.createdAt,
+        updatedAt: result.updatedAt,
+        dataFolder: result.dataFolder,
+        settings: result.settings,
+        snapshot: result.snapshot,
+        series: project.series,
+      };
+      fileService.registerProjectFolders([copy, ...result.episodes]);
+      set((current) => ({ projects: [...current.projects, copy, ...result.episodes] }));
+      get().showToast(`已复制为「${result.projectName}」`);
+      return result.projectId;
+    } catch (error) {
+      console.error('[项目复制] 失败:', error);
+      get().showToast(error instanceof Error ? `项目复制失败：${error.message}` : '项目复制失败', 'error');
+      return undefined;
     }
   },
 
