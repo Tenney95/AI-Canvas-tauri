@@ -22,6 +22,22 @@ describe('providerDocsGrantService', () => {
     expect(normalizeProviderDocUrl('https://docs.example.com:8443/api')).toBeNull();
   });
 
+  it('allows continuing the same page at a new offset but not re-reading the same chunk', () => {
+    const taskId = 'task-offset';
+    const goal = '分析 https://docs.example.com/api 并配置模型';
+    const url = 'https://docs.example.com/api';
+
+    completeProviderDocRead(beginProviderDocRead(taskId, goal, url, undefined, 0), 10_000, []);
+    // 同一段重复读仍然被挡住，避免助手原地打转
+    expect(() => beginProviderDocRead(taskId, goal, url, undefined, 0))
+      .toThrow('该文档页面已读取或正在读取');
+
+    const continuation = beginProviderDocRead(taskId, goal, url, undefined, 10_000);
+    expect(continuation.readKey).toBe(`${url}#10000`);
+    expect(completeProviderDocRead(continuation, 10_000, []))
+      .toMatchObject({ remainingPages: 22, remainingTextChars: 60_000 });
+  });
+
   it('grants the explicit root and same-origin links discovered by a completed read', () => {
     const taskId = 'task-docs';
     const goal = '分析 https://docs.example.com/api 并配置模型';

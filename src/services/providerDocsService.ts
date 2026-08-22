@@ -24,8 +24,35 @@ export interface ProviderDocsPage {
   links: ProviderDocLink[];
   fetchedAt: number;
   truncated: boolean;
+  /** 本页正文总长度（未截断前），用于告诉助手还剩多少没读。 */
+  totalTextChars: number;
+  /** 续读时应传的下一个 offset；已读完为 undefined。 */
+  nextOffset?: number;
   /** 站点公开模型清单按分类分好组的可直接转述文本；非中转站为 undefined。 */
   modelCatalog?: string;
+}
+
+/**
+ * 按 offset 取一段正文。
+ *
+ * 单页上限 10k 字，长文档页（参数表 + 多个请求示例）经常超过——以前直接 slice(0, limit)
+ * 丢掉后半段，助手既看不到剩下的字段，也没有任何办法把它读回来，只能凭印象编请求体。
+ */
+export function sliceDocText(text: string, offset: number, limit: number): {
+  text: string;
+  truncated: boolean;
+  totalTextChars: number;
+  nextOffset?: number;
+} {
+  const start = Math.min(Math.max(0, Math.floor(offset)), text.length);
+  const slice = text.slice(start, start + limit);
+  const end = start + slice.length;
+  return {
+    text: slice,
+    truncated: end < text.length,
+    totalTextChars: text.length,
+    ...(end < text.length ? { nextOffset: end } : {}),
+  };
 }
 
 const BLOCK_TAGS = new Set([
@@ -301,12 +328,13 @@ async function readNewApiRelayCatalog(
     links: [],
     fetchedAt: Date.now(),
     truncated: false,
+    totalTextChars: content.text.length,
   };
 }
 
 export async function readProviderDocsPage(
   rawUrl: string,
-  options: { signal?: AbortSignal; maxTextChars?: number } = {},
+  options: { signal?: AbortSignal; maxTextChars?: number; offset?: number } = {},
 ): Promise<ProviderDocsPage> {
   const normalized = normalizeProviderDocUrl(rawUrl);
   if (!normalized) throw new Error('厂商文档 URL 未通过本地安全校验');
@@ -359,7 +387,7 @@ export async function readProviderDocsPage(
     const relay = await readNewApiRelayCatalog(finalUrl, options.signal);
     if (relay) {
       const limit = Math.max(1, Math.min(options.maxTextChars ?? 10_000, 10_000));
-      return { ...relay, text: relay.text.slice(0, limit), truncated: relay.text.length > limit };
+      return { ...relay, ...sliceDocText(relay.text, options.offset ?? 0, limit) };
     }
     throw new Error(
       '厂商文档页面没有可读取的正文；该页面可能是需要登录的后台 SPA，无法匿名读取。'
@@ -376,10 +404,9 @@ export async function readProviderDocsPage(
   return {
     title: extracted.title,
     url: finalUrl,
-    text: extracted.text.slice(0, limit),
     links: extracted.links.slice(0, 24),
     fetchedAt: response.fetchedAt,
-    truncated: extracted.text.length > limit,
+    ...sliceDocText(extracted.text, options.offset ?? 0, limit),
     ...(modelCatalog ? { modelCatalog } : {}),
   };
 }

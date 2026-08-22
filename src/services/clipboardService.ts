@@ -31,6 +31,15 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
+/** 读取剪贴板文本；无权限或为空时返回空串。 */
+export async function readText(): Promise<string> {
+  try {
+    return (await navigator.clipboard.readText()) || '';
+  } catch {
+    return '';
+  }
+}
+
 /**
  * 复制图像到系统剪贴板（位图格式，可粘贴到 PS、聊天工具）。
  * 支持 data: URL 和 http(s) URL（在 Tauri 环境用 fetch 拉取）。

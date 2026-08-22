@@ -5,6 +5,7 @@ import {
   inferRelayModelCategory,
   parseNewApiPricingPayload,
   parseNewApiStatusPayload,
+  sliceDocText,
 } from '../../src/services/providerDocsService';
 import { shouldRenderDynamicHtml } from '../../src/services/webPageService';
 
@@ -135,5 +136,31 @@ describe('分类模型清单', () => {
     ].join('\n'));
 
     expect(buildGroupedModelChoiceList([])).toBe('');
+  });
+});
+
+describe('sliceDocText', () => {
+  const text = 'a'.repeat(25_000);
+
+  it('reports how much of a long page is still unread', () => {
+    const first = sliceDocText(text, 0, 10_000);
+    expect(first.text).toHaveLength(10_000);
+    expect(first.truncated).toBe(true);
+    expect(first.totalTextChars).toBe(25_000);
+    expect(first.nextOffset).toBe(10_000);
+  });
+
+  it('continues from the given offset and closes out on the last chunk', () => {
+    const second = sliceDocText(text, 10_000, 10_000);
+    expect(second.nextOffset).toBe(20_000);
+
+    const last = sliceDocText(text, 20_000, 10_000);
+    expect(last.text).toHaveLength(5_000);
+    expect(last.truncated).toBe(false);
+    expect(last.nextOffset).toBeUndefined();
+  });
+
+  it('clamps an offset past the end instead of throwing', () => {
+    expect(sliceDocText('short', 999, 10_000)).toMatchObject({ text: '', truncated: false });
   });
 });

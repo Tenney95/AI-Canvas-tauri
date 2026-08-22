@@ -3,6 +3,7 @@ import {
   clearProviderConfigDraftsForTests,
   createProviderConfigDraft,
   getProviderConfigDraft,
+  type ProviderConfigDraftInput,
 } from '../../../src/services/chat/providerConfigDraftService';
 import { buildModelProtocolRequest } from '../../../src/services/ai/modelProtocol';
 
@@ -297,6 +298,65 @@ fetch("https://docs.newapi.pro/v1beta/models/string:generateContent/", {
     docsBaseUrlInput.baseUrl = 'https://docs.newapi.pro';
     expect(() => createProviderConfigDraft('task-docs-base-url', docsBaseUrlInput))
       .toThrow('不能使用文档站地址');
+  });
+
+  it('cleans up the declared base URL without loosening its security checks', () => {
+    // 助手常把文档里的完整端点当成 Base URL 抄回来
+    const pastedEndpoint = structuredClone(createInput()) as ReturnType<typeof createInput>
+      & { baseUrl?: string };
+    pastedEndpoint.baseUrl = 'gateway.example.com/v1/chat/completions/';
+    expect(createProviderConfigDraft('task-pasted-endpoint', pastedEndpoint).baseUrl)
+      .toBe('https://gateway.example.com/v1');
+
+    const insecure = structuredClone(createInput()) as typeof pastedEndpoint;
+    insecure.baseUrl = 'http://gateway.example.com/v1';
+    expect(() => createProviderConfigDraft('task-insecure', insecure))
+      .toThrow('必须是无凭据的 HTTPS 地址');
+
+    const oddPort = structuredClone(createInput()) as typeof pastedEndpoint;
+    oddPort.baseUrl = 'https://gateway.example.com:8443/v1';
+    expect(() => createProviderConfigDraft('task-odd-port', oddPort))
+      .toThrow('只允许使用 HTTPS 默认端口');
+  });
+
+  it('carries the documented description, vision capability and category into the selection', () => {
+    const input: ProviderConfigDraftInput = {
+      ...createInput(),
+      models: [{ ...createInput().models[0], description: '  擅长产品图与电商主图，最长边 2048。  ' }],
+    };
+    const [image] = createProviderConfigDraft('task-desc', input).config.selectedModels ?? [];
+    expect(image).toMatchObject({
+      description: '擅长产品图与电商主图，最长边 2048。',
+      descriptionManual: true,
+      // 助手按文档定的分类不该被下次拉取目录的 ID 正则改回去
+      categoryManual: true,
+    });
+
+    const visionInput: ProviderConfigDraftInput = {
+      connectionName: 'Example AI',
+      models: [{
+        name: 'Example Chat',
+        category: 'text' as const,
+        inputModalities: ['image' as const],
+        submitRequest: `
+curl https://gateway.example.com/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"chat-pro","messages":[{"role":"user","content":"{{prompt}}"}]}'`,
+        submitResponse: '{"choices":[{"message":{"content":"hello"}}]}',
+      }],
+    };
+    const [chat] = createProviderConfigDraft('task-vision', visionInput).config.selectedModels ?? [];
+    // 只声明 image 时补上 text，画布判断读图能力才不会漏掉纯文本输入
+    expect(chat).toMatchObject({ inputModalities: ['text', 'image'], inputModalitiesManual: true });
+  });
+
+  it('rejects declaring vision input on a non-text model', () => {
+    const input: ProviderConfigDraftInput = {
+      ...createInput(),
+      models: [{ ...createInput().models[0], inputModalities: ['text', 'image'] }],
+    };
+    expect(() => createProviderConfigDraft('task-bad-modality', input))
+      .toThrow('只有文本分类可以声明 inputModalities');
   });
 
   it('rejects credential fields before analyzing examples', () => {

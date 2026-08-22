@@ -25,6 +25,8 @@ interface ProviderDocsTaskState {
 export interface ProviderDocReadReservation extends ProviderDocGrant {
   taskId: string;
   conversationId?: string;
+  /** 去重键：同一 URL 的不同 offset 段算不同次读取，续读长文档才不会被当成重复。 */
+  readKey: string;
 }
 
 export interface ProviderDocReadCompletion {
@@ -190,13 +192,18 @@ export function beginProviderDocRead(
   taskGoal: string,
   rawUrl: string,
   conversationId?: string,
+  offset = 0,
 ): ProviderDocReadReservation {
   const normalized = normalizeProviderDocUrl(rawUrl);
   if (!normalized) throw new Error('文档 URL 无效或不满足 HTTPS 安全要求');
   const state = ensureTaskState(taskId, taskGoal, conversationId);
   const grant = resolveGrant(state, normalized, conversationId);
   if (!grant) throw new Error('只能读取用户本轮提供或已读页面发现的同站文档链接');
-  if (state.readUrls.has(normalized) || state.reservedUrls.has(normalized)) {
+  // 续读（offset>0）读的是同一页的后半段，按 URL 去重会把它当成重复读取直接拒掉；
+  // 用 URL#offset 作键：重复读同一段仍然被挡住，页数与字符预算照旧计入。
+  const safeOffset = Math.max(0, Math.floor(offset));
+  const readKey = safeOffset > 0 ? `${normalized}#${safeOffset}` : normalized;
+  if (state.readUrls.has(readKey) || state.reservedUrls.has(readKey)) {
     throw new Error('该文档页面已读取或正在读取');
   }
   if (state.completedPages + state.reservedUrls.size >= MAX_PROVIDER_DOC_PAGES) {
@@ -205,12 +212,12 @@ export function beginProviderDocRead(
   if (state.totalTextChars >= MAX_PROVIDER_DOC_TEXT_CHARS) {
     throw new Error('文档正文累计长度已达到任务上限');
   }
-  state.reservedUrls.add(normalized);
-  return { taskId, conversationId, ...grant };
+  state.reservedUrls.add(readKey);
+  return { taskId, conversationId, readKey, ...grant };
 }
 
 export function releaseProviderDocRead(reservation: ProviderDocReadReservation): void {
-  taskStates.get(reservation.taskId)?.reservedUrls.delete(reservation.url);
+  taskStates.get(reservation.taskId)?.reservedUrls.delete(reservation.readKey);
 }
 
 export function getProviderDocRemainingTextChars(taskId: string): number {
@@ -224,14 +231,14 @@ export function completeProviderDocRead(
   discoveredUrls: string[],
 ): ProviderDocReadCompletion {
   const state = taskStates.get(reservation.taskId);
-  if (!state || !state.reservedUrls.delete(reservation.url)) {
+  if (!state || !state.reservedUrls.delete(reservation.readKey)) {
     throw new Error('文档读取授权已失效');
   }
   const safeTextChars = Math.max(0, Math.floor(textChars));
   if (state.totalTextChars + safeTextChars > MAX_PROVIDER_DOC_TEXT_CHARS) {
     throw new Error('文档正文累计长度超过任务上限');
   }
-  state.readUrls.add(reservation.url);
+  state.readUrls.add(reservation.readKey);
   state.completedPages += 1;
   state.totalTextChars += safeTextChars;
 

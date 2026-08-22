@@ -22,7 +22,10 @@ describe('provider connection tests', () => {
       headers: { 'Content-Type': 'application/json' },
     }));
 
-    await expect(testProviderConnection(provider, 'secret', baseUrl)).resolves.toEqual({ success: true });
+    await expect(testProviderConnection(provider, 'secret', baseUrl)).resolves.toEqual({
+      success: true,
+      baseUrl: expectedUrl.replace(/\/models$/, ''),
+    });
     expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith(expectedUrl, {
       method: 'GET',
       headers: { Authorization: 'Bearer secret' },
@@ -42,6 +45,36 @@ describe('provider connection tests', () => {
       success: false,
       error: 'HTTP 401: invalid api key',
     });
+  });
+
+  it('falls back to /v1 when the pasted base URL omits it', async () => {
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+
+    await expect(testProviderConnection('custom-openai', 'secret', 'relay.example')).resolves.toEqual({
+      success: true,
+      baseUrl: 'https://relay.example/v1',
+    });
+    expect(transportMocks.corsSafeFetch.mock.calls.map((call) => call[0])).toEqual([
+      'https://relay.example/models',
+      'https://relay.example/v1/models',
+    ]);
+  });
+
+  it('stops probing on an authentication failure instead of trying more addresses', async () => {
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      error: { message: 'invalid api key' },
+    }), { status: 401, headers: { 'Content-Type': 'application/json' } }));
+
+    await expect(testProviderConnection('xai', 'bad-key')).resolves.toEqual({
+      success: false,
+      error: 'HTTP 401: invalid api key',
+    });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(1);
   });
 
   it('does not send a request when GRSAI has no confirmed free verification endpoint', async () => {

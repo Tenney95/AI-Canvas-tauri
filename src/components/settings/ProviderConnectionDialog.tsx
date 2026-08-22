@@ -9,16 +9,17 @@ import type {
   GeneralModelCategory,
   ImageReferenceRequestMode,
   ProviderModelSelection,
-  WebSearchProviderId,
 } from '../../types';
 import { GENERAL_MODEL_CATEGORY_LABELS } from '../../types';
 import {
+  createConnectionId,
   fetchProviderModelCatalog,
   getProviderDefinition,
   getProviderDefinitions,
   getWebSearchProviderDefinitions,
   type ProviderDefinition,
 } from '../../services/ai/providerCatalogService';
+import { normalizeBaseUrl } from '../../services/ai/providerBaseUrl';
 import type { ModelProtocolImportResult } from '../../services/ai/modelProtocolImport';
 import type { VideoModelCapability } from '../../types/aiTypes';
 import { emitCloseChatWindow } from '../../services/chat/chatWindowService';
@@ -451,13 +452,6 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
   );
 }
 
-function createConnectionId(providerId: string): string {
-  if (providerId !== 'custom-openai') return providerId;
-  const suffix = globalThis.crypto?.randomUUID?.().slice(0, 8)
-    ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
-  return `custom-${suffix}`;
-}
-
 function mergeModels(
   current: ProviderModelSelection[],
   incoming: ProviderModelSelection[],
@@ -662,7 +656,16 @@ export default function ProviderConnectionDialog({
       });
       setModels((current) => mergeModels(current, result.models));
       setCatalogStatus(result.warning ? 'warning' : 'ready');
-      setCatalogMessage(result.warning || t('已获取 {count} 个模型', { count: result.models.length }));
+      const corrected = adoptResolvedBaseUrl(result.resolvedBaseUrl);
+      setCatalogMessage(
+        result.warning
+        || (corrected
+          ? t('已获取 {count} 个模型，接口地址已更正为 {url}', {
+            count: result.models.length,
+            url: corrected,
+          })
+          : t('已获取 {count} 个模型', { count: result.models.length })),
+      );
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
       setCatalogStatus('error');
@@ -673,23 +676,42 @@ export default function ProviderConnectionDialog({
   const handleAssistantAdd = async () => {
     const store = useAppStore.getState();
     if (store.chatPanelDetached) await emitCloseChatWindow();
-    store.openChatWithDraft(buildRelayAssistantPrompt(connectionName.trim(), baseUrl.trim()));
+    store.openChatWithDraft(
+      buildRelayAssistantPrompt(connectionName.trim(), normalizeBaseUrl(baseUrl)),
+    );
   };
 
-  const handleTestWebSearchConnection = async () => {
-    if (!isWebSearchProvider || !definition || missingCredentials) return;
+  /**
+   * 探测补出的接口地址与用户填的不一致时回写输入框，返回更正后的地址。
+   * 输入框为空说明走的是厂商默认地址，没什么可更正的，也不该把默认值钉进配置。
+   */
+  const adoptResolvedBaseUrl = (resolved: string | undefined): string | undefined => {
+    const current = normalizeBaseUrl(baseUrl);
+    if (!resolved || !current || resolved === current) return undefined;
+    setBaseUrl(resolved);
+    return resolved;
+  };
+
+  const handleTestConnection = async () => {
+    if (!definition || missingCredentials) return;
     setCatalogStatus('loading');
     setCatalogMessage(t('正在验证 {name} 连接...', { name: definition.name }));
     const result = await testProviderConnection(
-      definition.id as WebSearchProviderId,
+      definition.id,
       apiKey.trim(),
+      baseUrl.trim() || undefined,
     );
     if (result.success) {
+      const corrected = adoptResolvedBaseUrl(result.baseUrl);
       setCatalogStatus('ready');
-      setCatalogMessage(t('{name} 连接验证成功', { name: definition.name }));
+      setCatalogMessage([
+        t('{name} 连接验证成功', { name: definition.name }),
+        result.balance,
+        corrected && t('接口地址已更正为 {url}', { url: corrected }),
+      ].filter(Boolean).join('，'));
       return;
     }
-    setCatalogStatus('error');
+    setCatalogStatus(result.unsupported ? 'warning' : 'error');
     setCatalogMessage(result.error || t('{name} 连接验证失败', { name: definition.name }));
   };
 
@@ -926,8 +948,8 @@ export default function ProviderConnectionDialog({
       {
         name: connectionName.trim() || definition.name,
         apiKey: definition.authType === 'oauth' ? '' : apiKey.trim(),
-        baseUrl: baseUrl.trim() || undefined,
-        anthropicUrl: anthropicUrl.trim() || undefined,
+        baseUrl: normalizeBaseUrl(baseUrl) || undefined,
+        anthropicUrl: normalizeBaseUrl(anthropicUrl) || undefined,
         catalogId: definition.id,
         ...modelConfig,
       },
@@ -1066,6 +1088,14 @@ export default function ProviderConnectionDialog({
                             else if (field.key === 'baseUrl') setBaseUrl(event.target.value);
                             else setAnthropicUrl(event.target.value);
                           }}
+                          onBlur={(event) => {
+                            // 补协议、去尾斜杠、剥掉误贴的 /chat/completions，
+                            // 让用户在保存前就看见真正会被请求的地址
+                            if (field.key === 'apiKey') return;
+                            const normalized = normalizeBaseUrl(event.target.value);
+                            if (field.key === 'baseUrl') setBaseUrl(normalized);
+                            else setAnthropicUrl(normalized);
+                          }}
                         />
                       </label>
                     );
@@ -1095,13 +1125,13 @@ export default function ProviderConnectionDialog({
                 </button>
               )}
 
-              {isWebSearchProvider && (
+              {definition.authType !== 'oauth' && (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <AnimatedButton
                     type="button"
                     className="provider-secondary-btn"
                     disabled={missingCredentials || catalogStatus === 'loading'}
-                    onClick={() => void handleTestWebSearchConnection()}
+                    onClick={() => void handleTestConnection()}
                   >
                     <Icon
                       icon={catalogStatus === 'loading' ? 'mdi:loading' : 'mdi:connection'}
@@ -1110,7 +1140,7 @@ export default function ProviderConnectionDialog({
                     />
                     {catalogStatus === 'loading' ? t('验证中') : t('验证连接')}
                   </AnimatedButton>
-                  {catalogMessage && (
+                  {isWebSearchProvider && catalogMessage && (
                     <div className={`provider-catalog-message is-${catalogStatus} m-0 flex-1`}>
                       <Icon
                         icon={catalogStatus === 'error' ? 'mdi:alert-circle-outline' : 'mdi:information-outline'}

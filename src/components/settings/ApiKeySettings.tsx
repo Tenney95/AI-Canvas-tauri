@@ -6,11 +6,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
 import {
+  createConnectionId,
   getProviderDefinition,
   getProviderDefinitions,
   getWebSearchProviderDefinitions,
   resolveWebSearchProviderId,
 } from '../../services/ai/providerCatalogService';
+import {
+  parseConnectionShare,
+  serializeConnection,
+} from '../../services/ai/providerConnectionTransfer';
+import { copyText, readText } from '../../services/clipboardService';
 import type {
   ApiProviderConfig,
   DreaminaRuntime,
@@ -308,6 +314,54 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** 导出连接（不含 API Key）到剪贴板，便于分享中转站的模型清单与调用协议。 */
+  const handleCopyConnection = async (connectionId: string) => {
+    const providerConfig = config.providers[connectionId];
+    if (!providerConfig) return;
+    const ok = await copyText(serializeConnection(providerConfig));
+    useAppStore.getState().showToast(
+      ok ? t('连接配置已复制（不含 API Key）') : t('复制失败'),
+      ok ? 'success' : 'error',
+    );
+  };
+
+  /** 从剪贴板导入连接；保存后直接打开对话框让用户补填 API Key。 */
+  const handleImportConnection = async () => {
+    const parsed = parseConnectionShare(await readText());
+    if (!parsed) {
+      useAppStore.getState().showToast(t('剪贴板里没有可导入的连接配置'), 'error');
+      return;
+    }
+    const definition = getProviderDefinition(parsed.catalogId);
+    if (!definition || definition.authType === 'oauth') {
+      useAppStore.getState().showToast(t('该连接类型不支持导入'), 'error');
+      return;
+    }
+    const newConnectionId = createConnectionId(parsed.catalogId);
+    if (config.providers[newConnectionId]) {
+      useAppStore.getState().showToast(
+        t('已存在 {name} 连接，请先删除后再导入', { name: definition.name }),
+        'error',
+      );
+      return;
+    }
+    const models = parsed.config.selectedModels?.map((model) => ({
+      ...model,
+      provider: newConnectionId,
+    }));
+    saveProviderConfig(newConnectionId, {
+      ...parsed.config,
+      selectedModels: models,
+      catalogModels: parsed.config.catalogModels?.map((model) => ({
+        ...model,
+        provider: newConnectionId,
+      })),
+    });
+    await saveConfig();
+    useAppStore.getState().showToast(t('已导入连接，请补填 API Key'));
+    setPendingApiKeyConnectionId(newConnectionId);
+  };
+
   const openAddDialog = () => {
     setPendingApiKeyConnectionId(null);
     setDialog((previous) => ({ open: true, connectionId: undefined, revision: previous.revision + 1 }));
@@ -365,15 +419,26 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     <div className="settings-pane">
       <div className="settings-pane-heading">
         <h2 className="settings-pane-title">API Key</h2>
-        <AnimatedButton
-          type="button"
-          className="settings-add-provider-btn"
-          aria-label={t('添加 API 厂商')}
-          data-tooltip={t('添加 API 厂商')}
-          onClick={openAddDialog}
-        >
-          <Icon icon="mdi:plus" width="18" />
-        </AnimatedButton>
+        <div className="flex items-center gap-1.5">
+          <AnimatedButton
+            type="button"
+            className="settings-add-provider-btn"
+            aria-label={t('从剪贴板导入连接')}
+            data-tooltip={t('从剪贴板导入连接')}
+            onClick={() => void handleImportConnection()}
+          >
+            <Icon icon="mdi:clipboard-arrow-down-outline" width="17" />
+          </AnimatedButton>
+          <AnimatedButton
+            type="button"
+            className="settings-add-provider-btn"
+            aria-label={t('添加 API 厂商')}
+            data-tooltip={t('添加 API 厂商')}
+            onClick={openAddDialog}
+          >
+            <Icon icon="mdi:plus" width="18" />
+          </AnimatedButton>
+        </div>
       </div>
 
       <div className="settings-pane-body provider-settings-body">
@@ -483,6 +548,17 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                     </div>
                   ) : (
                     <div className="provider-card-actions">
+                      {!isDreamina && !isWebSearchProvider && (
+                        <AnimatedButton
+                          type="button"
+                          className="provider-icon-btn"
+                          aria-label={t('复制 {name} 配置', { name: definition.name })}
+                          data-tooltip={t('复制配置（不含 API Key）')}
+                          onClick={() => void handleCopyConnection(item.id)}
+                        >
+                          <Icon icon="mdi:content-copy" width="15" />
+                        </AnimatedButton>
+                      )}
                       <AnimatedButton
                         type="button"
                         className="provider-icon-btn"

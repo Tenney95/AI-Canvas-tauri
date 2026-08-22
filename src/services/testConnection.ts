@@ -4,6 +4,8 @@
 import { APIMART_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
 import type { WebSearchProviderId } from '../types';
 import { corsSafeFetch } from './ai/httpTransport';
+import { getProviderDefinition } from './ai/providerCatalogService';
+import { baseUrlCandidates } from './ai/providerBaseUrl';
 import { invoke } from '@tauri-apps/api/core';
 
 export interface TestResult {
@@ -14,6 +16,8 @@ export interface TestResult {
   error?: string;
   /** 厂商没有已知的无计费验证端点，本次未发送网络请求。 */
   unsupported?: boolean;
+  /** 实际验证通过的接口地址；与用户填的不同（如补了 /v1）时调用方应回写。 */
+  baseUrl?: string;
 }
 
 function readErrorMessage(payload: unknown): string | undefined {
@@ -29,21 +33,35 @@ function readErrorMessage(payload: unknown): string | undefined {
   return undefined;
 }
 
-/** OpenAI 兼容厂商 — GET /models 只验证目录可达与凭据，不调用任何模型。 */
+/**
+ * OpenAI 兼容厂商 — GET /models 只验证目录可达与凭据，不调用任何模型。
+ * 地址按 baseUrlCandidates 依次探测，用户漏填 /v1 时自动补上并回报真实地址。
+ */
 async function testModelCatalog(
   apiKey: string,
   baseUrl: string,
 ): Promise<TestResult> {
-  const url = `${baseUrl.trim().replace(/\/+$/, '')}/models`;
-  const response = await corsSafeFetch(url, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${apiKey}` },
-  });
-  if (response.ok) return { success: true };
+  const candidates = baseUrlCandidates(baseUrl);
+  if (candidates.length === 0) return { success: false, error: '请先填写接口地址' };
 
-  const payload: unknown = await response.json().catch(() => null);
-  const message = readErrorMessage(payload);
-  return { success: false, error: message ? `HTTP ${response.status}: ${message}` : `HTTP ${response.status}` };
+  let failure: TestResult = { success: false, error: '接口地址不可达' };
+  for (const candidate of candidates) {
+    const response = await corsSafeFetch(`${candidate}/models`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (response.ok) return { success: true, baseUrl: candidate };
+
+    const payload: unknown = await response.json().catch(() => null);
+    const message = readErrorMessage(payload);
+    failure = {
+      success: false,
+      error: message ? `HTTP ${response.status}: ${message}` : `HTTP ${response.status}`,
+    };
+    // 凭据本身不对时换地址也没用，直接把错误交回去
+    if (response.status === 401 || response.status === 403) return failure;
+  }
+  return failure;
 }
 
 /** RunningHUB — 模型 API 密钥，有余额 */
@@ -113,16 +131,27 @@ const testFns: Record<ProviderTestKey, (apiKey: string, baseUrl?: string) => Pro
   exa: (apiKey) => testWebSearch('exa', apiKey),
 };
 
+/**
+ * `provider` 传厂商目录定义 ID。未在 testFns 里登记特例的 api-key 厂商
+ * （xai / google / 自定义中转站等）统一按 OpenAI 目录端点验证，
+ * 新增内置厂商不必再回来登记一行。
+ */
 export async function testProviderConnection(
-  provider: ProviderTestKey,
+  provider: ProviderTestKey | string,
   apiKey: string,
   baseUrl?: string,
 ): Promise<TestResult> {
-  const fn = testFns[provider];
-  if (!fn) return { success: false, error: `未知厂商: ${provider}` };
   if (!apiKey) return { success: false, error: '请先填写 API 密钥' };
+  const fn = testFns[provider as ProviderTestKey];
   try {
-    return await fn(apiKey, baseUrl);
+    if (fn) return await fn(apiKey, baseUrl);
+    const definition = getProviderDefinition(provider);
+    if (definition?.authType === 'oauth') {
+      return { success: false, unsupported: true, error: `${definition.name} 使用 OAuth 登录，无需验证密钥` };
+    }
+    const target = baseUrl?.trim() || definition?.defaultBaseUrl;
+    if (!target) return { success: false, error: `未知厂商: ${provider}` };
+    return await testModelCatalog(apiKey, target);
   } catch (e) {
     return { success: false, error: `网络错误: ${e instanceof Error ? e.message : String(e)}` };
   }

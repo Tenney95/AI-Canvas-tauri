@@ -23,6 +23,7 @@ import {
   REFERENCE_PROTOCOL_VARIABLES,
   getCategoryProtocolVariables,
 } from '../ai/modelProtocolVariables';
+import { normalizeBaseUrl as normalizeUrlInput } from '../ai/providerBaseUrl';
 
 const PROVIDER_CONFIG_DRAFT_TTL_MS = 30 * 60 * 1_000;
 const MAX_PROVIDER_CONFIG_DRAFTS = 32;
@@ -41,6 +42,10 @@ export interface ProviderConfigModelExamples extends ModelProtocolExamples {
   modelId?: string;
   name?: string;
   category?: GeneralModelCategory;
+  /** 文档里的模型用途说明，显示在模型选择器里。 */
+  description?: string;
+  /** 文档声明的输入模态；含 'image' 表示该文本模型可读图。 */
+  inputModalities?: Array<'text' | 'image'>;
   imageReferenceRequestMode?: ImageReferenceRequestMode;
   videoCapability?: VideoModelCapability;
 }
@@ -100,8 +105,14 @@ function normalizeConnectionId(value?: string): string {
   return candidate;
 }
 
+/**
+ * Agent 侧的 Base URL 规范化：先走和设置页同一套清理（补协议、去尾斜杠、
+ * 剥掉助手常从文档里照抄的 /chat/completions 之类端点后缀），再做这里独有的
+ * 安全校验——助手的输入来自它读到的网页，比用户手输的更不可信，
+ * 所以 HTTPS、默认端口、非文档站这几条限制一条都不放宽。
+ */
 function normalizeBaseUrl(value: string): string {
-  const url = new URL(value);
+  const url = new URL(normalizeUrlInput(value) || value);
   if (url.protocol !== 'https:' || url.username || url.password) {
     throw new Error('厂商 Base URL 必须是无凭据的 HTTPS 地址');
   }
@@ -112,9 +123,6 @@ function normalizeBaseUrl(value: string): string {
   if (DOCUMENTATION_HOST_LABELS.has(firstHostLabel)) {
     throw new Error('厂商 Base URL 不能使用文档站地址，请提供实际 API 网关地址');
   }
-  url.hash = '';
-  url.search = '';
-  url.pathname = url.pathname.replace(/\/$/, '');
   return url.toString().replace(/\/$/, '');
 }
 
@@ -168,6 +176,13 @@ function createModelSelection(
   if (examples.videoCapability && category !== 'video') {
     throw new Error(`模型“${displayName || result.modelId}”只有视频分类可以声明 videoCapability`);
   }
+  const description = examples.description?.trim().slice(0, 500);
+  const inputModalities = examples.inputModalities?.length
+    ? [...new Set(['text' as const, ...examples.inputModalities])]
+    : undefined;
+  if (inputModalities && category !== 'text') {
+    throw new Error(`模型“${displayName || result.modelId}”只有文本分类可以声明 inputModalities`);
+  }
   return {
     baseUrl: normalizeBaseUrl(result.baseUrl),
     selection: {
@@ -176,6 +191,10 @@ function createModelSelection(
       category,
       provider: connectionId,
       executionProfile,
+      // 助手按文档定下的分类比拉取目录时的 ID 正则更准，标成手动避免下次刷新被改回去
+      ...(examples.category ? { categoryManual: true } : {}),
+      ...(description ? { description, descriptionManual: true } : {}),
+      ...(inputModalities ? { inputModalities, inputModalitiesManual: true } : {}),
       ...(imageReferenceRequestMode ? { imageReferenceRequestMode } : {}),
       ...(examples.videoCapability ? { videoCapability: examples.videoCapability } : {}),
     },
@@ -293,7 +312,9 @@ export function summarizeProviderConfigDraft(draft: ProviderConfigDraft): string
     `连接：${draft.connectionName}`,
     `地址：${draft.baseUrl}`,
     `模型：${models.map((model) => (
-      `${model.name}（${GENERAL_MODEL_CATEGORY_LABELS[model.category]}${model.imageReferenceRequestMode
+      `${model.name}（${GENERAL_MODEL_CATEGORY_LABELS[model.category]}${model.inputModalities?.includes('image')
+        ? '，可读图'
+        : ''}${model.imageReferenceRequestMode
         ? `，参考图：${referenceModeLabels[model.imageReferenceRequestMode]}`
         : ''}${describeReferenceGap(model)}）`
     )).join('、')}`,
