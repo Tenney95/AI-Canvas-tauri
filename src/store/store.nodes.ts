@@ -22,7 +22,7 @@ import type {
   ShotRow,
   StoryboardCellOverride,
 } from '../types';
-import { createCanvasNoteData } from '../types';
+import { createCanvasNoteData, STORYBOARD_CELL_SOURCE_TYPES } from '../types';
 import type { MediaGenerationIntent, MediaGenerationResult } from '../types/media';
 import { generateId, getNextDisplayId } from './store.utils';
 import { BATCH_NODE_LIMIT } from './store.chat';
@@ -73,6 +73,30 @@ function prepareDuplicateNodeData(
   }
 
   return duplicate;
+}
+
+/**
+ * 删除节点前统计「还有人在用」的文件：存活节点的媒体文件、宫格各格引用的图片、
+ * 对话里的媒体产物。宫格格子和源图共用同一个文件，漏掉它就会把还在显示的图搬进回收站。
+ */
+export function collectKeepPaths(
+  nodes: Node<BaseNodeData>[],
+  idsToDelete: ReadonlySet<string>,
+  messages: { mediaResult?: { filePath?: string } }[],
+): Set<string> {
+  const keepPaths = new Set<string>();
+  for (const node of nodes) {
+    const data = node.data as BaseNodeData;
+    if (!idsToDelete.has(node.id) && data.filePath) keepPaths.add(data.filePath);
+    // 宫格格子无论节点存活与否都不删：删除路径只清 filePath，撤销也只还原 filePath
+    for (const override of data.storyboardOverrides ?? []) {
+      if (override?.filePath) keepPaths.add(override.filePath);
+    }
+  }
+  for (const message of messages) {
+    if (message.mediaResult?.filePath) keepPaths.add(message.mediaResult.filePath);
+  }
+  return keepPaths;
 }
 
 function mergeNodeData(previous: BaseNodeData, patch: Partial<BaseNodeData>): BaseNodeData {
@@ -781,14 +805,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     }
 
     // Delete local files for all affected nodes —— 跳过仍被存活节点引用的共享文件（复制节点场景）
-    const keepPaths = new Set(
-      nodes.filter((n) => !idsToDelete.has(n.id))
-        .map((n) => (n.data as BaseNodeData).filePath)
-        .filter((p): p is string => !!p),
-    );
-    for (const message of get().messages) {
-      if (message.mediaResult?.filePath) keepPaths.add(message.mediaResult.filePath);
-    }
+    const keepPaths = collectKeepPaths(nodes, idsToDelete, get().messages);
     for (const id of idsToDelete) {
       const n = nodes.find((nn) => nn.id === id);
       if (n && !n.data.artifactId) {
@@ -833,14 +850,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     }
 
     // 清理文件
-    const keepPaths = new Set(
-      nodes.filter((n) => !idsToDelete.has(n.id))
-        .map((n) => (n.data as BaseNodeData).filePath)
-        .filter((p): p is string => !!p),
-    );
-    for (const message of get().messages) {
-      if (message.mediaResult?.filePath) keepPaths.add(message.mediaResult.filePath);
-    }
+    const keepPaths = collectKeepPaths(nodes, idsToDelete, get().messages);
     for (const id of idsToDelete) {
       const n = nodes.find((nn) => nn.id === id);
       if (n && !n.data.artifactId) {
@@ -905,7 +915,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     const { nodes } = get();
     const sb = nodes.find((n) => n.id === storyboardId && n.type === 'ai-storyboard');
     const src = nodes.find((n) => n.id === sourceNodeId);
-    if (!sb || !src || src.type !== 'ai-image') return;
+    if (!sb || !src || !STORYBOARD_CELL_SOURCE_TYPES.includes(src.type ?? '')) return;
     const url = (src.data.imageUrl || src.data.thumbnailUrl) as string | undefined;
     if (!url) return;
 

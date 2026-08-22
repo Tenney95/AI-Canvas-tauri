@@ -123,6 +123,9 @@ export const ANIMATION_FRAME_GRIDS: Record<6 | 8 | 10 | 12 | 16 | 20, { cols: nu
   20: { cols: 5, rows: 4 },
 };
 
+/** 可以拖进宫格空格的节点类型（角色库参考图落在画布上是 source-image） */
+export const STORYBOARD_CELL_SOURCE_TYPES = ['ai-image', 'source-image'];
+
 // 宫格分镜：被拖入某格的图片覆盖
 export interface StoryboardCellOverride {
   url: string;         // 展示用 asset/data URL

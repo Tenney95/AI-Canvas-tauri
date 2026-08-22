@@ -108,6 +108,18 @@ async function serializeProjectNodes(nodes: unknown, projectId: string): Promise
   }));
 }
 
+/** 从展示用的 asset URL 还原本地路径（convertFileSrc 的逆运算），非本地 URL 返回 undefined。 */
+function assetUrlToPath(url: string | undefined): string | undefined {
+  if (!url || !(url.includes('asset.localhost') || url.startsWith('asset://'))) return undefined;
+  try {
+    const { pathname } = new URL(url);
+    const decoded = decodeURIComponent(pathname.replace(/^\//, ''));
+    return decoded ? stripVerbatimPrefix(decoded) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function restoreAssetReference<T extends AssetReferenceLike>(
   data: T,
   projectId: string,
@@ -115,14 +127,23 @@ async function restoreAssetReference<T extends AssetReferenceLike>(
 ): Promise<T> {
   const storedPath = data.filePath ? stripVerbatimPrefix(data.filePath) : undefined;
   const relativeCandidate = data.relativePath ? joinPath(projectDir, data.relativePath) : undefined;
+  // 展示用的 URL 存的就是关掉项目那一刻正在显示的文件。0.8.13 之前重新生成不作废旧身份，
+  // 那些记录里 relativePath 还停在上一张图上，只有它能把节点拉回最后一次的生成结果。
+  const displayedPath = assetUrlToPath(data.imageUrl || data.videoUrl || data.audioUrl || data.url);
   // 保存成功的记录不会留 filePath；还留着说明上次保存没能收敛身份，此时 filePath 指的才是最后
   // 一次生成的文件，relativePath 还停在上一张图上。项目目录被移动/复制时 storedPath 不在本项目
   // 目录内，仍旧让 relativePath 先来。
   const asKey = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  const storedInsideProject = Boolean(storedPath && asKey(storedPath).startsWith(`${asKey(projectDir)}/`));
+  const insideProject = (path: string | undefined) => (
+    Boolean(path && asKey(path).startsWith(`${asKey(projectDir)}/`))
+  );
+  const storedInsideProject = insideProject(storedPath);
+  // 目录被移动/复制时，storedPath 与 displayedPath 指的都是原目录，只能让 relativePath 先来
   const candidates = storedInsideProject
     ? [storedPath, relativeCandidate]
-    : [relativeCandidate, storedPath];
+    : insideProject(displayedPath)
+      ? [displayedPath, relativeCandidate]
+      : [relativeCandidate, storedPath];
   let filePath: string | undefined;
   for (const candidate of candidates) {
     if (candidate && await exists(candidate).catch(() => false)) {
@@ -158,8 +179,10 @@ async function restoreAssetReference<T extends AssetReferenceLike>(
   const previousDiskName = (data.relativePath ?? data.filePath)?.split(/[/\\]/).pop();
   const currentDiskName = filePath.split(/[/\\]/).pop();
   const previousLabel = restored.label;
+  // 解析回的就是关项目时显示的那张 → 只是修好了记录，磁盘上没人改名，节点名不该跟着变
+  const repairedToDisplayed = currentDiskName === displayedPath?.split(/[/\\]/).pop();
   if (
-    previousLabel !== undefined
+    previousLabel !== undefined && !repairedToDisplayed
     && previousDiskName && currentDiskName && previousDiskName !== currentDiskName
   ) {
     const previousFileName = restored.fileName;

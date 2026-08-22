@@ -55,7 +55,7 @@ import { filterHiddenCanvasElements } from '../store/store.nodes';
 import { useNodeCreation } from '../hooks/useNodeCreation';
 import { useCanvasDrawing } from '../hooks/useCanvasDrawing';
 import type { BaseNodeData } from '../types';
-import { SHOTLIST_FRAME_SOURCE_TYPES } from '../types';
+import { SHOTLIST_FRAME_SOURCE_TYPES, STORYBOARD_CELL_SOURCE_TYPES } from '../types';
 import type { Node as RFNode, NodeProps, NodeTypes, Connection, Edge, OnMove } from '@xyflow/react';
 import { useNodeSnap, ResizeSnapContext, type SnapLine } from '../hooks/useNodeSnap';
 import { setCanvasPointerPosition } from '../services/canvasPointerService';
@@ -1068,7 +1068,7 @@ function CanvasInner() {
     clientX: number,
     clientY: number,
   ): { storyboard: HTMLElement; emptyCell: HTMLElement | null } | null => {
-    if (node.type !== 'ai-image') return null;
+    if (!STORYBOARD_CELL_SOURCE_TYPES.includes(node.type ?? '')) return null;
     const stack = document.elementsFromPoint(clientX, clientY);
     for (const el of stack) {
       const storyboard = el.closest<HTMLElement>('.storyboard-node');
