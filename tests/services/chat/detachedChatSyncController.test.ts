@@ -19,7 +19,7 @@ import {
   createDetachedChatSyncController,
   projectChatNodes,
 } from '../../../src/services/chat/detachedChatSyncController';
-import { applyChatStatePatch } from '../../../src/services/chat/chatWindowService';
+import { applyChatStatePatch, type ChatStateSync } from '../../../src/services/chat/chatWindowService';
 import { useAppStore } from '../../../src/store/useAppStore';
 
 function arrangeDetachedState(): void {
@@ -95,7 +95,7 @@ describe('detached chat sync controller', () => {
   });
 
   it('emits an initial snapshot followed by revisioned patches', async () => {
-    const emitSync = vi.fn(async () => undefined);
+    const emitSync = vi.fn(async (_sync: ChatStateSync) => undefined);
     const initListener = vi.fn(async () => () => undefined);
     const controller = createDetachedChatSyncController({
       enabled: true,
@@ -135,7 +135,7 @@ describe('detached chat sync controller', () => {
   it('routes detached actions and restores the main panel on close', async () => {
     let onAction: ((action: ChatAction) => void) | undefined;
     let onDetachClosed: (() => void) | undefined;
-    const emitSync = vi.fn(async () => undefined);
+    const emitSync = vi.fn(async (_sync: ChatStateSync) => undefined);
     const cleanup = vi.fn();
     const controller = createDetachedChatSyncController({
       enabled: true,
@@ -182,11 +182,11 @@ describe('detached chat sync controller', () => {
     useAppStore.setState({
       nodes: [{
         id: 'node-1',
-        type: 'image',
+        type: 'ai-image',
         position: { x: 120, y: 240 },
         data: {
           label: '主角立绘',
-          type: 'image',
+          type: 'ai-image',
           displayId: 3,
           thumbnailUrl: 'asset://thumb-1',
           prompt: '不应跨窗口传输的提示词',
@@ -212,18 +212,18 @@ describe('detached chat sync controller', () => {
     ]);
     expect(snapshot.nodes).toEqual([{
       id: 'node-1',
-      type: 'image',
+      type: 'ai-image',
       position: { x: 0, y: 0 },
       data: {
         label: '主角立绘',
-        type: 'image',
+        type: 'ai-image',
         displayId: 3,
         imageUrl: undefined,
         thumbnailUrl: 'asset://thumb-1',
       },
     }]);
 
-    const emitSync = vi.fn(async () => undefined);
+    const emitSync = vi.fn(async (_sync: ChatStateSync) => undefined);
     let onAction: ((action: ChatAction) => void) | undefined;
     const controller = createDetachedChatSyncController({
       enabled: true,
@@ -246,7 +246,9 @@ describe('detached chat sync controller', () => {
       })),
     }));
     await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(2));
-    const second = emitSync.mock.calls[1][0] as { patch: Parameters<typeof applyChatStatePatch>[1] };
+    const second = emitSync.mock.calls[1][0];
+    expect(second.type).toBe('patch');
+    if (second.type !== 'patch') throw new Error('expected patch sync');
     const patched = applyChatStatePatch(snapshot, second.patch);
     expect(patched.nodes[0].data.label).toBe('主角立绘 v2');
 
@@ -260,9 +262,9 @@ describe('detached chat sync controller', () => {
   it('keeps the node projection stable across canvas drags', () => {
     const node = (id: string, label: string, x: number) => ({
       id,
-      type: 'image',
+      type: 'ai-image',
       position: { x, y: 0 },
-      data: { label, type: 'image' as const, displayId: 1 },
+      data: { label, type: 'ai-image' as const, displayId: 1 },
     });
 
     const first = projectChatNodes([node('a', '甲', 0), node('b', '乙', 0)]);
