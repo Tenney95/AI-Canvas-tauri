@@ -15,7 +15,7 @@ import { useT } from '../../i18n';
 
 type ComfyStatus = 'idle' | 'starting' | 'ready' | 'failed';
 
-const INPUT_CLASS = 'w-full text-sm bg-canvas-surface border border-canvas-border rounded-md px-3 py-2 text-canvas-text placeholder-canvas-text-muted focus:outline-none focus:border-indigo-500 transition-colors';
+const INPUT_CLASS = 'text-sm bg-canvas-surface border border-canvas-border rounded-md px-3 py-2 text-canvas-text placeholder-canvas-text-muted focus:outline-none focus:border-indigo-500 transition-colors';
 
 export default function ComfyUISettings() {
   const {
@@ -191,7 +191,7 @@ export default function ComfyUISettings() {
           <div className="text-xs text-canvas-text-muted mb-1.5">{t('默认地址')}</div>
           <input
             type="text"
-            className={INPUT_CLASS}
+            className={`${INPUT_CLASS} w-full`}
             placeholder="http://127.0.0.1:8188"
             defaultValue={config.comfyUIUrl || ''}
             onBlur={async (event) => {
