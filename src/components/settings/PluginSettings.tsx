@@ -33,7 +33,19 @@ const EXAMPLE_MANIFEST = JSON.stringify({
       id: 'uppercase-output',
       title: '输出转大写',
       description: '把当前节点的 output 转为大写',
-      placements: ['node-context-menu'],
+      placements: ['node-context-menu', 'node-toolbar'],
+      icon: 'lucide:case-upper',
+      dialog: {
+        title: '输出转大写',
+        description: '可选填写前缀；确认后插件会处理当前节点输出。',
+        submitLabel: '转换',
+        fields: [{
+          id: 'prefix',
+          label: '结果前缀',
+          type: 'text',
+          placeholder: '例如：标题：',
+        }],
+      },
       nodeTypes: ['ai-text', 'source-text'],
       inputFields: ['output'],
       output: { mode: 'update-current', fields: ['output'] },
@@ -44,7 +56,9 @@ const EXAMPLE_MANIFEST = JSON.stringify({
 const EXAMPLE_SOURCE = `definePlugin({
   tools: {
     "uppercase-output": (input) => ({
-      data: { output: String(input.node.data.output || "").toUpperCase() },
+      data: {
+        output: String(input.parameters.prefix || "") + String(input.node.data.output || "").toUpperCase()
+      },
       message: "已将节点输出转换为大写"
     })
   }
@@ -120,7 +134,7 @@ export default function PluginSettings() {
           <div>
             <h3 className="text-sm font-medium text-canvas-text">用户插件</h3>
             <p className="mt-1 text-[11px] leading-5 text-canvas-text-muted">
-              导入包含 manifest.json 和 main.js 的文件夹。安装前会校验用途、入口位置、节点范围及读写字段。
+              导入包含 manifest.json 和 main.js 的文件夹。安装前会校验用途、入口位置、节点范围及读写字段。工具栏入口必须配置 Iconify 图标和宿主弹窗。
             </p>
           </div>
           <AnimatedButton
@@ -175,7 +189,7 @@ export default function PluginSettings() {
         <div className="mt-2 flex items-center justify-between rounded-lg border border-canvas-border bg-canvas-surface px-3 py-2">
           <div className="min-w-0">
             <div className="text-xs font-medium text-canvas-text">开发者示例</div>
-            <div className="mt-0.5 text-[11px] text-canvas-text-muted">为文本节点安装“输出转大写”右键工具</div>
+            <div className="mt-0.5 text-[11px] text-canvas-text-muted">为文本节点安装“输出转大写”右键与工具栏按钮</div>
           </div>
           <AnimatedButton
             type="button"
@@ -194,6 +208,11 @@ export default function PluginSettings() {
           const nodeTypes = [...new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.nodeTypes))];
           const inputFields = [...new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.inputFields))];
           const outputFields = [...new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.output.fields))];
+          const placements = new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.placements));
+          const placementLabels = [
+            placements.has('node-context-menu') ? '节点右键菜单' : null,
+            placements.has('node-toolbar') ? '节点工具栏' : null,
+          ].filter(Boolean).join('、');
           return (
             <article key={plugin.id} className="rounded-xl border border-canvas-border bg-canvas-card p-3">
               <div className="flex items-start gap-3">
@@ -219,7 +238,7 @@ export default function PluginSettings() {
                     ))}
                   </div>
                   <div className="mt-2 text-[10px] leading-4 text-canvas-text-muted">
-                    入口：节点右键菜单 · 工具 {plugin.manifest.contributes.nodeTools.length} 个<br />
+                    入口：{placementLabels || '未声明'} · 工具 {plugin.manifest.contributes.nodeTools.length} 个<br />
                     读取：{inputFields.join('、') || '无'} · 写入：{outputFields.join('、') || '无'}
                   </div>
                 </div>

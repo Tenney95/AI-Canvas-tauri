@@ -8,6 +8,7 @@ import AnimatedButton from '../../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../../hooks/useToolbarEdit';
 import ToolbarEditor from '../toolbar/ToolbarEditor';
 import ToolbarMoreMenu from '../toolbar/ToolbarMoreMenu';
+import NodePluginToolbarButtons from '../toolbar/NodePluginToolbarButtons';
 import {
   getButtonRegistry,
   getHiddenDefaultToolbarButtons,
@@ -308,6 +309,10 @@ function ImageNodeToolbar({
               )}
             </div>
           ))}
+          <NodePluginToolbarButtons
+            nodeId={_nodeId}
+            dividerClassName="img-toolbar-main-divider"
+          />
         </div>
       </div>
       {historyOpen && (

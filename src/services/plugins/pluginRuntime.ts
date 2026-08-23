@@ -7,6 +7,7 @@ import type {
   NodePluginExecutionResult,
   NodePluginInvocationInput,
   PluginJsonValue,
+  PluginPlacement,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
 import { derivedNodePlacement, generateId } from '../../store/store.utils';
@@ -63,12 +64,13 @@ function toPluginJson(value: unknown, depth = 0): PluginJsonValue | undefined {
 export function getAvailableNodePluginTools(
   plugins: InstalledPlugin[],
   nodeType: NodeType | undefined,
+  placement: PluginPlacement = 'node-context-menu',
 ): AvailableNodePluginTool[] {
   if (!nodeType) return [];
   return plugins.flatMap((plugin) => {
     if (!plugin.enabled) return [];
     return plugin.manifest.contributes.nodeTools
-      .filter((tool) => tool.nodeTypes.includes(nodeType) && tool.placements.includes('node-context-menu'))
+      .filter((tool) => tool.nodeTypes.includes(nodeType) && tool.placements.includes(placement))
       .map((tool) => ({
         pluginId: plugin.id,
         pluginName: plugin.manifest.name,
@@ -82,6 +84,7 @@ function buildInvocationInput(
   projectId: string,
   node: Node<BaseNodeData>,
   fields: string[],
+  parameters: Record<string, PluginJsonValue>,
 ): NodePluginInvocationInput {
   const data: Record<string, PluginJsonValue> = {};
   for (const field of fields) {
@@ -90,6 +93,7 @@ function buildInvocationInput(
   }
   return {
     projectId,
+    parameters,
     node: {
       id: node.id,
       type: node.data.type,
@@ -123,6 +127,7 @@ function validateResult(value: unknown, allowedFields: string[]): NodePluginExec
 export async function executeNodePluginTool(
   pluginTool: AvailableNodePluginTool,
   nodeId: string,
+  parameters: Record<string, PluginJsonValue> = {},
 ): Promise<void> {
   const before = useAppStore.getState();
   const projectId = before.currentProjectId;
@@ -130,7 +135,18 @@ export async function executeNodePluginTool(
   if (!projectId || !sourceNode) throw new Error('目标节点或项目不存在');
   const guard = registerCanvasDerivation(before, nodeId);
   if (!guard) throw new Error('无法创建插件执行保护');
-  const input = buildInvocationInput(projectId, sourceNode, pluginTool.tool.inputFields);
+  const normalizedParameters: Record<string, PluginJsonValue> = {};
+  for (const [key, value] of Object.entries(parameters)) {
+    if (DANGEROUS_OBJECT_KEYS.has(key)) continue;
+    const normalized = toPluginJson(value);
+    if (normalized !== undefined) normalizedParameters[key] = normalized;
+  }
+  const input = buildInvocationInput(
+    projectId,
+    sourceNode,
+    pluginTool.tool.inputFields,
+    normalizedParameters,
+  );
 
   try {
     const rawResult = await invoke<unknown>('execute_node_plugin_tool', {

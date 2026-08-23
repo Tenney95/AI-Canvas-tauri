@@ -8,6 +8,7 @@ import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
 import ToolbarMoreMenu from './toolbar/ToolbarMoreMenu';
+import NodePluginToolbarButtons from './toolbar/NodePluginToolbarButtons';
 import {
   getButtonRegistry,
   getHiddenDefaultToolbarButtons,
@@ -152,6 +153,12 @@ function TextNodeToolbar({ nodeId, data, onCopy, onClearEmptyLines, onShowPrompt
           )}
         </div>
       ))}
+      <NodePluginToolbarButtons
+        nodeId={nodeId}
+        iconSize={12}
+        dividerClassName="img-toolbar-main-divider"
+        rounded
+      />
     </div>
   );
 }

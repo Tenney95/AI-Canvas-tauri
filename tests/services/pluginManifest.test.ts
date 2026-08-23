@@ -20,7 +20,18 @@ function manifest(overrides: Record<string, unknown> = {}): string {
       nodeTools: [{
         id: 'uppercase',
         title: '转大写',
-        placements: ['node-context-menu'],
+        placements: ['node-context-menu', 'node-toolbar'],
+        icon: 'lucide:case-upper',
+        dialog: {
+          title: '转大写',
+          submitLabel: '转换',
+          fields: [{
+            id: 'prefix',
+            label: '前缀',
+            type: 'text',
+            defaultValue: '结果：',
+          }],
+        },
         nodeTypes: ['ai-text', 'source-text'],
         inputFields: ['output'],
         output: { mode: 'update-current', fields: ['output'] },
@@ -38,11 +49,73 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
     expect(parsed.permissions).toEqual(['node.read', 'node.write']);
     expect(parsed.contributes.nodeTools[0]).toMatchObject({
       id: 'uppercase',
-      placements: ['node-context-menu'],
+      placements: ['node-context-menu', 'node-toolbar'],
+      icon: 'lucide:case-upper',
+      dialog: expect.objectContaining({
+        title: '转大写',
+        fields: [expect.objectContaining({ id: 'prefix', type: 'text' })],
+      }),
       nodeTypes: ['ai-text', 'source-text'],
       inputFields: ['output'],
       output: { mode: 'update-current', fields: ['output'] },
     });
+  });
+
+  it('requires a safe Iconify icon for node toolbar tools', () => {
+    const toolbarTool = {
+      id: 'toolbar-action',
+      title: '工具栏操作',
+      placements: ['node-toolbar'],
+      nodeTypes: ['ai-text'],
+      inputFields: ['output'],
+      output: { mode: 'update-current', fields: ['output'] },
+    };
+
+    expect(() => parsePluginBundle(manifest({
+      contributes: { nodeTools: [toolbarTool] },
+    }), 'definePlugin({});')).toThrow('必须配置 icon');
+
+    expect(() => parsePluginBundle(manifest({
+      contributes: { nodeTools: [{ ...toolbarTool, icon: 'https://example.com/icon.svg' }] },
+    }), 'definePlugin({});')).toThrow('Iconify');
+
+    expect(() => parsePluginBundle(manifest({
+      contributes: { nodeTools: [{ ...toolbarTool, icon: 'lucide:wand-sparkles' }] },
+    }), 'definePlugin({});')).toThrow('必须配置 dialog');
+
+    const parsed = parsePluginBundle(manifest({
+      contributes: { nodeTools: [{
+        ...toolbarTool,
+        icon: 'lucide:wand-sparkles',
+        dialog: { fields: [] },
+      }] },
+    }), 'definePlugin({});');
+    expect(parsed.contributes.nodeTools[0].icon).toBe('lucide:wand-sparkles');
+  });
+
+  it('validates declarative dialog fields and select options', () => {
+    expect(() => parsePluginBundle(manifest({
+      contributes: {
+        nodeTools: [{
+          id: 'dialog-action',
+          title: '弹窗操作',
+          placements: ['node-toolbar'],
+          icon: 'lucide:sliders-horizontal',
+          dialog: {
+            fields: [{
+              id: 'mode',
+              label: '模式',
+              type: 'select',
+              options: [{ label: '快速', value: 'fast' }],
+              defaultValue: 'missing',
+            }],
+          },
+          nodeTypes: ['ai-text'],
+          inputFields: ['output'],
+          output: { mode: 'update-current', fields: ['output'] },
+        }],
+      },
+    }), 'definePlugin({});')).toThrow('defaultValue 不在选项中');
   });
 
   it('rejects unknown plugin API and unsupported contribution placement', () => {

@@ -2,19 +2,24 @@ import type { NodeType } from '../../types';
 import type {
   InstalledPlugin,
   PluginCategory,
+  PluginDialogFieldType,
   PluginManifest,
   PluginNodeOutputMode,
   PluginPermission,
   PluginPlacement,
+  PluginToolDialogManifest,
 } from '../../types/plugin';
 
 const PLUGIN_ID_RE = /^[a-z0-9](?:[a-z0-9._-]{1,126}[a-z0-9])?$/;
 const TOOL_ID_RE = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 const FIELD_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const ICON_RE = /^[a-z0-9][a-z0-9-]{0,31}:[a-z0-9][a-z0-9-]{0,63}$/;
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_SOURCE_BYTES = 512 * 1024;
 const MAX_TOOLS = 64;
 const MAX_FIELDS = 64;
+const MAX_DIALOG_FIELDS = 16;
+const MAX_DIALOG_OPTIONS = 32;
 
 const NODE_TYPES = new Set<NodeType>([
   'ai-text',
@@ -38,7 +43,8 @@ const NODE_TYPES = new Set<NodeType>([
 const PERMISSIONS = new Set<PluginPermission>(['node.read', 'node.write']);
 const OUTPUT_MODES = new Set<PluginNodeOutputMode>(['update-current', 'create-node']);
 const CATEGORIES = new Set<PluginCategory>(['content', 'media', 'workflow', 'utility']);
-const PLACEMENTS = new Set<PluginPlacement>(['node-context-menu']);
+const PLACEMENTS = new Set<PluginPlacement>(['node-context-menu', 'node-toolbar']);
+const DIALOG_FIELD_TYPES = new Set<PluginDialogFieldType>(['text', 'textarea', 'number', 'select', 'boolean']);
 const FORBIDDEN_INPUT_FIELDS = new Set([
   '__proto__',
   'constructor',
@@ -85,6 +91,85 @@ function stringArray(value: unknown, label: string, maxItems: number): string[] 
   return value.map((item, index) => nonEmptyString(item, `${label}[${index}]`, 128));
 }
 
+function optionalString(value: unknown, label: string, maxLength: number): string | undefined {
+  if (value === undefined) return undefined;
+  return nonEmptyString(value, label, maxLength);
+}
+
+function parseToolDialog(value: unknown, toolId: string): PluginToolDialogManifest {
+  const dialog = objectValue(value, `${toolId}.dialog`);
+  if (!Array.isArray(dialog.fields) || dialog.fields.length > MAX_DIALOG_FIELDS) {
+    throw new Error(`${toolId}.dialog.fields 必须是数组且不能超过 ${MAX_DIALOG_FIELDS} 项`);
+  }
+  const seenFieldIds = new Set<string>();
+  const fields = dialog.fields.map((rawField, index) => {
+    const field = objectValue(rawField, `${toolId}.dialog.fields[${index}]`);
+    const id = nonEmptyString(field.id, `${toolId}.dialog.fields[${index}].id`, 64);
+    if (!FIELD_RE.test(id)) throw new Error(`${toolId} 的弹窗字段 id 无效: ${id}`);
+    if (seenFieldIds.has(id)) throw new Error(`${toolId} 的弹窗字段 id 重复: ${id}`);
+    seenFieldIds.add(id);
+    const type = nonEmptyString(field.type, `${toolId}.${id}.type`, 16) as PluginDialogFieldType;
+    if (!DIALOG_FIELD_TYPES.has(type)) throw new Error(`${toolId}.${id} 使用了不支持的弹窗字段类型`);
+    if (field.required !== undefined && typeof field.required !== 'boolean') {
+      throw new Error(`${toolId}.${id}.required 必须是布尔值`);
+    }
+
+    let options: Array<{ label: string; value: string }> | undefined;
+    if (type === 'select') {
+      if (!Array.isArray(field.options) || field.options.length === 0 || field.options.length > MAX_DIALOG_OPTIONS) {
+        throw new Error(`${toolId}.${id}.options 必须包含 1-${MAX_DIALOG_OPTIONS} 项`);
+      }
+      const seenValues = new Set<string>();
+      options = field.options.map((rawOption, optionIndex) => {
+        const option = objectValue(rawOption, `${toolId}.${id}.options[${optionIndex}]`);
+        const value = nonEmptyString(option.value, `${toolId}.${id}.options[${optionIndex}].value`, 128);
+        if (seenValues.has(value)) throw new Error(`${toolId}.${id} 的选项值重复: ${value}`);
+        seenValues.add(value);
+        return {
+          label: nonEmptyString(option.label, `${toolId}.${id}.options[${optionIndex}].label`, 80),
+          value,
+        };
+      });
+    } else if (field.options !== undefined) {
+      throw new Error(`${toolId}.${id} 只有 select 字段可以配置 options`);
+    }
+
+    let defaultValue: string | number | boolean | undefined;
+    if (field.defaultValue !== undefined) {
+      if ((type === 'text' || type === 'textarea' || type === 'select') && typeof field.defaultValue === 'string') {
+        defaultValue = field.defaultValue.slice(0, 4096);
+      } else if (type === 'number' && typeof field.defaultValue === 'number' && Number.isFinite(field.defaultValue)) {
+        defaultValue = field.defaultValue;
+      } else if (type === 'boolean' && typeof field.defaultValue === 'boolean') {
+        defaultValue = field.defaultValue;
+      } else {
+        throw new Error(`${toolId}.${id}.defaultValue 与字段类型不匹配`);
+      }
+      if (type === 'select' && !options?.some((option) => option.value === defaultValue)) {
+        throw new Error(`${toolId}.${id}.defaultValue 不在选项中`);
+      }
+    }
+
+    return {
+      id,
+      label: nonEmptyString(field.label, `${toolId}.${id}.label`, 80),
+      type,
+      description: optionalString(field.description, `${toolId}.${id}.description`, 160),
+      placeholder: optionalString(field.placeholder, `${toolId}.${id}.placeholder`, 120),
+      required: field.required as boolean | undefined,
+      defaultValue,
+      options,
+    };
+  });
+
+  return {
+    title: optionalString(dialog.title, `${toolId}.dialog.title`, 80),
+    description: optionalString(dialog.description, `${toolId}.dialog.description`, 240),
+    submitLabel: optionalString(dialog.submitLabel, `${toolId}.dialog.submitLabel`, 40),
+    fields,
+  };
+}
+
 function parseManifest(value: unknown): PluginManifest {
   const root = objectValue(value, 'manifest');
   if (root.apiVersion !== 1) throw new Error('仅支持 apiVersion: 1');
@@ -124,6 +209,19 @@ function parseManifest(value: unknown): PluginManifest {
     if (placements.some((placement) => !PLACEMENTS.has(placement as PluginPlacement))) {
       throw new Error(`${toolId} 包含当前版本不支持的入口位置`);
     }
+    const icon = tool.icon === undefined
+      ? undefined
+      : nonEmptyString(tool.icon, `${toolId}.icon`, 96);
+    if (icon && !ICON_RE.test(icon)) {
+      throw new Error(`${toolId}.icon 必须是 Iconify 图标名（例如 lucide:wand-sparkles）`);
+    }
+    if (placements.includes('node-toolbar') && !icon) {
+      throw new Error(`${toolId} 使用节点工具栏入口时必须配置 icon`);
+    }
+    const dialog = tool.dialog === undefined ? undefined : parseToolDialog(tool.dialog, toolId);
+    if (placements.includes('node-toolbar') && !dialog) {
+      throw new Error(`${toolId} 使用节点工具栏入口时必须配置 dialog`);
+    }
 
     const output = objectValue(tool.output, `${toolId}.output`);
     const mode = nonEmptyString(output.mode, `${toolId}.output.mode`, 32) as PluginNodeOutputMode;
@@ -143,6 +241,8 @@ function parseManifest(value: unknown): PluginManifest {
       title: nonEmptyString(tool.title, `${toolId}.title`, 80),
       description: typeof tool.description === 'string' ? tool.description.trim().slice(0, 240) : undefined,
       placements: [...new Set(placements)] as PluginPlacement[],
+      icon,
+      dialog,
       nodeTypes: nodeTypes as NodeType[],
       inputFields,
       output: { mode, nodeType: outputNodeType, fields },

@@ -38,7 +38,9 @@ const plugin: InstalledPlugin = {
       nodeTools: [{
         id: 'rewrite',
         title: '改写输出',
-        placements: ['node-context-menu'],
+        placements: ['node-context-menu', 'node-toolbar'],
+        icon: 'lucide:pencil',
+        dialog: { fields: [] },
         nodeTypes: ['ai-text'],
         inputFields: ['label', 'output'],
         output: { mode: 'update-current', fields: ['output'] },
@@ -75,18 +77,29 @@ beforeEach(() => {
 describe('node plugin runtime', () => {
   it('shows enabled tools only on their declared node types and placements', () => {
     expect(getAvailableNodePluginTools([plugin], 'ai-text')).toHaveLength(1);
+    expect(getAvailableNodePluginTools([plugin], 'ai-text', 'node-toolbar')).toHaveLength(1);
     expect(getAvailableNodePluginTools([plugin], 'ai-image')).toHaveLength(0);
     expect(getAvailableNodePluginTools([{ ...plugin, enabled: false }], 'ai-text')).toHaveLength(0);
   });
 
+  it('uses empty parameters when a context-menu tool executes directly', async () => {
+    const tool = getAvailableNodePluginTools([plugin], 'ai-text', 'node-context-menu')[0];
+    await executeNodePluginTool(tool, 'node-1');
+
+    expect(mocks.invoke).toHaveBeenCalledWith('execute_node_plugin_tool', expect.objectContaining({
+      input: expect.objectContaining({ parameters: {} }),
+    }));
+  });
+
   it('projects declared node inputs and applies validated output through the Store action', async () => {
     const tool = getAvailableNodePluginTools([plugin], 'ai-text')[0];
-    await executeNodePluginTool(tool, 'node-1');
+    await executeNodePluginTool(tool, 'node-1', { tone: 'brief' });
 
     expect(mocks.invoke).toHaveBeenCalledWith('execute_node_plugin_tool', expect.objectContaining({
       toolId: 'rewrite',
       input: {
         projectId: 'project-1',
+        parameters: { tone: 'brief' },
         node: {
           id: 'node-1',
           type: 'ai-text',

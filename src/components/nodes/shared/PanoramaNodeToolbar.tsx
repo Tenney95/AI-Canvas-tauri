@@ -8,6 +8,7 @@ import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
 import ToolbarMoreMenu from './toolbar/ToolbarMoreMenu';
+import NodePluginToolbarButtons from './toolbar/NodePluginToolbarButtons';
 import {
   getButtonRegistry,
   getHiddenDefaultToolbarButtons,
@@ -113,6 +114,10 @@ function PanoramaNodeToolbar({ nodeId, onUpload, onToggleMode, previewMode, onSc
             {zi < edit.layout.zones.length - 1 && <div className="ftb-divider pano-toolbar-divider" />}
           </div>
         ))}
+        <NodePluginToolbarButtons
+          nodeId={nodeId}
+          dividerClassName="pano-toolbar-divider"
+        />
       </div>
     </div>
   );

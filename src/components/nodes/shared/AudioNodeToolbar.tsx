@@ -8,6 +8,7 @@ import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
 import ToolbarMoreMenu from './toolbar/ToolbarMoreMenu';
+import NodePluginToolbarButtons from './toolbar/NodePluginToolbarButtons';
 import {
   getButtonRegistry,
   getHiddenDefaultToolbarButtons,
@@ -141,6 +142,11 @@ function AudioNodeToolbar({
           {zi < edit.layout.zones.length - 1 && <div className="ftb-divider img-toolbar-main-divider" />}
         </div>
       ))}
+      <NodePluginToolbarButtons
+        nodeId={nodeId}
+        dividerClassName="img-toolbar-main-divider"
+        rounded
+      />
     </div>
   );
 }
