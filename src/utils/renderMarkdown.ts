@@ -35,9 +35,15 @@ function isSafeMarkdownUrl(url: string, kind: MarkdownUrlKind): boolean {
 export function renderMarkdown(md: string): string {
   if (!md) return '';
 
+  // ── 0. 剥离输入自带的 NUL ──
+  // 下面的占位符用 \x00 作分隔符，第 3 步的转义靠「按 \x00 切分，只转义偶数段」实现。
+  // 输入里混进一个 \x00 就会翻转奇偶性，让后面的原始 HTML 整段绕过转义（XSS）。
+  // NUL 在 Markdown 里没有任何呈现意义，直接丢掉即可。
+  const source = md.split('\x00').join('');
+
   // ── 1. 提取代码块，用占位符保护 ──
   const codeBlocks: string[] = [];
-  let processed = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+  let processed = source.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const idx = codeBlocks.length;
     codeBlocks.push(
       `<pre><code class="language-${escapeHtml(lang)}">${escapeHtml(code.trimEnd())}</code></pre>`

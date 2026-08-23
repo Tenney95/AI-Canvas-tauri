@@ -45,3 +45,27 @@ describe('renderMarkdown URL sanitization', () => {
     expect(renderMarkdown(`![预览](${url})`)).toContain('<img src=');
   });
 });
+
+describe('renderMarkdown HTML escaping', () => {
+  it('escapes raw HTML even when the input carries NUL bytes', () => {
+    const html = renderMarkdown('\u0000 <img src=x onerror=alert(1)>');
+
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(html).not.toContain('\u0000');
+  });
+
+  it('escapes raw HTML after a forged code-block placeholder', () => {
+    const html = renderMarkdown('\u0000CODEBLOCK0\u0000<script>alert(1)</script>');
+
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('still renders code blocks and inline code', () => {
+    const html = renderMarkdown('```ts\nconst a = 1 < 2;\n```\n\n`a && b`');
+
+    expect(html).toContain('<pre><code class="language-ts">const a = 1 &lt; 2;</code></pre>');
+    expect(html).toContain('<code>a &amp;&amp; b</code>');
+  });
+});
