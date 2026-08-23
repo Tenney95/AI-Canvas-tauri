@@ -7,10 +7,14 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, generateId } from '../store/useAppStore';
+import { isEligibleCharacterReferenceNode } from '../store/store.dramaAssets';
 import { normalizeAssetKey } from '../services/dramaAssetExtract';
 import { clamp } from '../utils/num';
 import { saveDataUrlToProjectData } from '../services/fileService';
+import type { BaseNodeData } from '../types';
 import type {
+  CharacterActionCategory,
+  CharacterActionMedia,
   CharacterCropRect,
   CharacterReferenceImage,
   CharacterReferenceKind,
@@ -41,6 +45,93 @@ const VOICE_KINDS = Object.entries(CHARACTER_VOICE_KIND_LABELS) as Array<[
   CharacterVoiceKind,
   string,
 ]>;
+
+const ACTION_CATEGORIES: Array<[CharacterActionCategory, string]> = [
+  ['standing', '站立'],
+  ['walking', '行走'],
+  ['running', '奔跑'],
+  ['jumping', '跳跃'],
+  ['sitting', '坐姿'],
+  ['crouching', '蹲伏'],
+  ['lying', '躺卧'],
+  ['climbing', '攀爬'],
+  ['swimming', '游泳'],
+  ['attacking', '攻击'],
+  ['defending', '防御'],
+  ['hit', '受击'],
+  ['death', '死亡'],
+  ['casting', '施法'],
+  ['interacting', '互动'],
+  ['dancing', '舞蹈'],
+  ['expression', '表情动作'],
+  ['custom', '自定义'],
+];
+
+function actionMediaFromNode(node?: { data: BaseNodeData }): CharacterActionMedia | null {
+  if (!node) return null;
+  const data = node.data;
+  const name = data.fileName || data.label || '画布动作素材';
+  const now = Date.now();
+  if (data.videoUrl) {
+    const extension = (data.fileName || data.filePath || data.videoUrl)
+      .split(/[?#]/, 1)[0]
+      .split('.')
+      .pop()
+      ?.toLowerCase();
+    return {
+      id: `action-media-${generateId()}`,
+      kind: 'video',
+      name,
+      mimeType: extension === 'webm'
+        ? 'video/webm'
+        : extension === 'mov'
+          ? 'video/quicktime'
+          : extension === 'm4v'
+            ? 'video/x-m4v'
+            : 'video/mp4',
+      assetId: data.assetId,
+      relativePath: data.relativePath,
+      filePath: data.filePath,
+      url: data.videoUrl,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+  const imageUrl = data.imageUrl || data.thumbnailUrl;
+  if (!imageUrl) return null;
+  const imageIdentity = [data.fileName, data.filePath, imageUrl]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ');
+  const isGif = /\.gif(?:[?#]|$)/i.test(imageIdentity) || imageUrl.startsWith('data:image/gif');
+  const extension = (data.fileName || data.filePath || imageUrl)
+    .split(/[?#]/, 1)[0]
+    .split('.')
+    .pop()
+    ?.toLowerCase();
+  const dataMimeType = imageUrl.match(/^data:(image\/[^;,]+)/i)?.[1]?.toLowerCase();
+  const mimeType = isGif
+    ? 'image/gif'
+    : dataMimeType
+      ?? (extension === 'jpg' || extension === 'jpeg'
+        ? 'image/jpeg'
+        : extension === 'webp'
+          ? 'image/webp'
+          : extension === 'avif'
+            ? 'image/avif'
+            : 'image/png');
+  return {
+    id: `action-media-${generateId()}`,
+    kind: isGif ? 'gif' : 'image',
+    name,
+    mimeType,
+    assetId: data.assetId,
+    relativePath: data.relativePath,
+    filePath: data.filePath,
+    url: imageUrl,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
 
 function createEmptyCharacter(): DramaCharacter {
   const now = Date.now();
@@ -220,6 +311,8 @@ function CharacterNodeCaptureDialog({
     globalCharacters,
     loadGlobalCharacters,
     captureImageNodeToCharacter,
+    addCharacterAction,
+    addCharacterActionMedia,
     showToast,
   } = useAppStore(
     useShallow((state) => ({
@@ -228,15 +321,26 @@ function CharacterNodeCaptureDialog({
       globalCharacters: state.globalCharacters,
       loadGlobalCharacters: state.loadGlobalCharacters,
       captureImageNodeToCharacter: state.captureImageNodeToCharacter,
+      addCharacterAction: state.addCharacterAction,
+      addCharacterActionMedia: state.addCharacterActionMedia,
       showToast: state.showToast,
     })),
+  );
+  const imageUrl = isEligibleCharacterReferenceNode(sourceNode)
+    ? sourceNode?.data.imageUrl ?? sourceNode?.data.thumbnailUrl
+    : undefined;
+  const actionMedia = useMemo(() => actionMediaFromNode(sourceNode), [sourceNode]);
+  const [captureTab, setCaptureTab] = useState<'reference' | 'action'>(
+    imageUrl ? 'reference' : actionMedia ? 'action' : 'reference',
   );
   const [scope, setScope] = useState<CharacterLibraryScope>(initialScope ?? 'project');
   const [targetMode, setTargetMode] = useState<'existing' | 'new'>(
     initialCharacterId ? 'existing' : 'new',
   );
   const [selectedCharacterId, setSelectedCharacterId] = useState(
-    initialCharacterId ?? projectCharacters[0]?.id ?? '',
+    initialCharacterId
+      ?? (initialScope === 'global' ? globalCharacters[0]?.id : projectCharacters[0]?.id)
+      ?? '',
   );
   const [name, setName] = useState(sourceNode?.data.label || '');
   const [identity, setIdentity] = useState('');
@@ -244,6 +348,12 @@ function CharacterNodeCaptureDialog({
   const [kind, setKind] = useState<CharacterReferenceKind>('primary');
   const [prompt, setPrompt] = useState(sourceNode?.data.prompt ?? '');
   const [hideNode, setHideNode] = useState(true);
+  const [actionAttachMode, setActionAttachMode] = useState<'new' | 'existing'>('new');
+  const [selectedActionId, setSelectedActionId] = useState('');
+  const [actionCategory, setActionCategory] = useState<CharacterActionCategory>('standing');
+  const [customActionCategory, setCustomActionCategory] = useState('');
+  const [actionName, setActionName] = useState(sourceNode?.data.label || '');
+  const [actionPrompt, setActionPrompt] = useState(sourceNode?.data.prompt ?? '');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -254,19 +364,98 @@ function CharacterNodeCaptureDialog({
   const effectiveCharacterId = characters.some((character) => character.id === selectedCharacterId)
     ? selectedCharacterId
     : characters[0]?.id ?? '';
-  const imageUrl = sourceNode?.data.imageUrl ?? sourceNode?.data.thumbnailUrl;
+  const selectedCharacter = characters.find((character) => character.id === effectiveCharacterId);
+  const actions = selectedCharacter?.actions ?? [];
+  const effectiveActionId = actions.some((action) => action.id === selectedActionId)
+    ? selectedActionId
+    : actions[0]?.id ?? '';
 
   const switchScope = (nextScope: CharacterLibraryScope) => {
     const nextCharacters = nextScope === 'project' ? projectCharacters : globalCharacters;
     setScope(nextScope);
     setSelectedCharacterId(nextCharacters[0]?.id ?? '');
-    setTargetMode((currentMode) => (
-      currentMode === 'existing' && nextCharacters.length === 0 ? 'new' : currentMode
-    ));
+    setSelectedActionId('');
+    if (captureTab === 'reference') {
+      setTargetMode((currentMode) => (
+        currentMode === 'existing' && nextCharacters.length === 0 ? 'new' : currentMode
+      ));
+    }
+  };
+
+  const switchCaptureTab = (tab: 'reference' | 'action') => {
+    setCaptureTab(tab);
+    if (tab === 'action') setTargetMode('existing');
   };
 
   const handleCapture = async () => {
-    if (!sourceNode || !imageUrl) {
+    if (!sourceNode) {
+      showToast('无法读取来源节点', 'error');
+      return;
+    }
+
+    if (captureTab === 'action') {
+      if (!actionMedia) {
+        showToast('该节点没有可用的图片、GIF 或视频', 'error');
+        return;
+      }
+      if (!effectiveCharacterId || !selectedCharacter) {
+        showToast('请选择要添加到的角色', 'error');
+        return;
+      }
+
+      setSaving(true);
+      let saved: boolean;
+      if (actionAttachMode === 'existing') {
+        if (!effectiveActionId) {
+          setSaving(false);
+          showToast('请选择已有动作', 'error');
+          return;
+        }
+        const action = actions.find((item) => item.id === effectiveActionId);
+        const duplicated = action?.media?.some((item) => (
+          Boolean(actionMedia.assetId && item.assetId === actionMedia.assetId)
+          || Boolean(actionMedia.filePath && item.filePath === actionMedia.filePath)
+          || item.url === actionMedia.url
+        ));
+        if (duplicated) {
+          setSaving(false);
+          showToast('该节点已经添加到这个动作');
+          return;
+        }
+        saved = await addCharacterActionMedia(
+          scope,
+          effectiveCharacterId,
+          effectiveActionId,
+          [actionMedia],
+        );
+      } else {
+        const normalizedActionName = actionName.trim();
+        if (!normalizedActionName) {
+          setSaving(false);
+          showToast('请填写动作名称', 'error');
+          return;
+        }
+        if (actionCategory === 'custom' && !customActionCategory.trim()) {
+          setSaving(false);
+          showToast('请填写自定义分类名', 'error');
+          return;
+        }
+        saved = Boolean(await addCharacterAction(scope, effectiveCharacterId, {
+          category: actionCategory,
+          customCategory: actionCategory === 'custom' ? customActionCategory.trim() : undefined,
+          name: normalizedActionName,
+          prompt: actionPrompt.trim(),
+          media: [actionMedia],
+        }));
+      }
+      setSaving(false);
+      if (!saved) return;
+      showToast(`已添加到「${selectedCharacter.name}」的动作库`);
+      onClose();
+      return;
+    }
+
+    if (!imageUrl) {
       showToast('该节点没有可用的角色图片', 'error');
       return;
     }
@@ -316,27 +505,79 @@ function CharacterNodeCaptureDialog({
       <header className="character-dialog-header">
         <div>
           <h2>添加到角色库</h2>
-          <p>{sourceNode?.data.label || '图片节点'}</p>
+          <p>{sourceNode?.data.label || '画布节点'}</p>
         </div>
         <PopupCloseButton onClick={onClose} />
       </header>
 
+      <div className="flex gap-1 border-b border-canvas-border px-4 py-2" role="tablist" aria-label="添加类型">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={captureTab === 'reference'}
+          disabled={!imageUrl}
+          className={`flex min-h-8 items-center gap-1.5 rounded-md px-3 text-[11px] transition-[color,background-color,transform] duration-150 ease-out active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-40 ${captureTab === 'reference' ? 'bg-canvas-hover text-canvas-text' : 'text-canvas-text-muted hover:text-canvas-text'}`}
+          onClick={() => switchCaptureTab('reference')}
+        >
+          <Icon icon="lucide:image" width="14" height="14" aria-hidden="true" />
+          形象参考
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={captureTab === 'action'}
+          disabled={!actionMedia}
+          className={`flex min-h-8 items-center gap-1.5 rounded-md px-3 text-[11px] transition-[color,background-color,transform] duration-150 ease-out active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-40 ${captureTab === 'action' ? 'bg-canvas-hover text-canvas-text' : 'text-canvas-text-muted hover:text-canvas-text'}`}
+          onClick={() => switchCaptureTab('action')}
+        >
+          <Icon icon="lucide:film" width="14" height="14" aria-hidden="true" />
+          动作素材
+        </button>
+      </div>
+
       <div className="character-capture-body">
-        <section className="character-capture-preview" aria-label="待添加图片">
-          <div className="character-capture-image">
-            {imageUrl ? (
-              <img src={imageUrl} alt="" draggable={false} />
+        <section
+          className="character-capture-preview"
+          aria-label={captureTab === 'reference' ? '待添加图片' : '待添加动作素材'}
+        >
+          <div className="grid min-h-80 w-full place-items-center overflow-hidden rounded-lg border border-canvas-border bg-canvas-bg/70 p-1 max-[920px]:mx-auto max-[920px]:max-w-[360px]">
+            {captureTab === 'action' && actionMedia?.kind === 'video' ? (
+              <video
+                src={actionMedia.url}
+                className="max-h-[min(62vh,720px)] max-w-full object-contain"
+                controls
+                muted
+                playsInline
+                preload="metadata"
+              />
+            ) : captureTab === 'action' && actionMedia?.url ? (
+              <img
+                src={actionMedia.url}
+                alt=""
+                className="block max-h-[min(62vh,720px)] max-w-full object-contain"
+                draggable={false}
+              />
+            ) : imageUrl ? (
+              <img
+                src={imageUrl}
+                alt=""
+                className="block max-h-[min(62vh,720px)] max-w-full object-contain"
+                draggable={false}
+              />
             ) : (
-              <Icon icon="lucide:image-off" width="28" height="28" aria-hidden="true" />
+              <Icon icon="lucide:file-x" width="28" height="28" aria-hidden="true" />
             )}
           </div>
           <div>
             <span>来源节点</span>
-            <strong>{sourceNode?.data.label || '图片节点'}</strong>
+            <strong>{sourceNode?.data.label || '画布节点'}</strong>
           </div>
         </section>
 
-        <section className="character-capture-options" aria-label="角色与参考图信息">
+        <section
+          className="character-capture-options"
+          aria-label={captureTab === 'reference' ? '角色与参考图信息' : '角色与动作信息'}
+        >
           <div className="character-capture-group">
             <span className="character-capture-label">保存范围</span>
             <div className="character-capture-segmented" role="tablist" aria-label="保存范围">
@@ -361,6 +602,8 @@ function CharacterNodeCaptureDialog({
             </div>
           </div>
 
+          {captureTab === 'reference' ? (
+            <>
           <div className="character-capture-group">
             <span className="character-capture-label">添加方式</span>
             <div className="character-capture-segmented" role="tablist" aria-label="添加方式">
@@ -388,7 +631,7 @@ function CharacterNodeCaptureDialog({
 
           {targetMode === 'existing' ? (
             <label className="character-field character-field-wide">
-              <span>角色</span>
+              <span>添加到角色</span>
               <select
                 autoFocus
                 value={effectiveCharacterId}
@@ -461,6 +704,113 @@ function CharacterNodeCaptureDialog({
             />
             <span>添加后隐藏画布节点</span>
           </label>
+            </>
+          ) : (
+            <>
+              <label className="character-field character-field-wide">
+                <span>添加到角色</span>
+                <select
+                  autoFocus
+                  value={effectiveCharacterId}
+                  disabled={characters.length === 0}
+                  onChange={(event) => {
+                    setSelectedCharacterId(event.target.value);
+                    setSelectedActionId('');
+                  }}
+                >
+                  {characters.length === 0 ? <option value="">当前范围暂无角色</option> : null}
+                  {characters.map((character) => (
+                    <option key={character.id} value={character.id}>{character.name}</option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="character-capture-group">
+                <span className="character-capture-label">动作方式</span>
+                <div className="character-capture-segmented" role="tablist" aria-label="动作添加方式">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={actionAttachMode === 'new'}
+                    className={actionAttachMode === 'new' ? 'is-active' : ''}
+                    onClick={() => setActionAttachMode('new')}
+                  >
+                    新建动作
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={actionAttachMode === 'existing'}
+                    className={actionAttachMode === 'existing' ? 'is-active' : ''}
+                    disabled={actions.length === 0}
+                    onClick={() => setActionAttachMode('existing')}
+                  >
+                    追加到已有动作
+                  </button>
+                </div>
+              </div>
+
+              {actionAttachMode === 'existing' ? (
+                <label className="character-field character-field-wide">
+                  <span>已有动作</span>
+                  <select
+                    value={effectiveActionId}
+                    onChange={(event) => setSelectedActionId(event.target.value)}
+                  >
+                    {actions.map((action) => (
+                      <option key={action.id} value={action.id}>{action.name}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <div className="character-capture-reference-fields">
+                  <label className="character-field">
+                    <span>动作类别</span>
+                    <select
+                      value={actionCategory}
+                      onChange={(event) => setActionCategory(event.target.value as CharacterActionCategory)}
+                    >
+                      {ACTION_CATEGORIES.map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {actionCategory === 'custom' ? (
+                    <label className="character-field">
+                      <span>自定义分类名</span>
+                      <input
+                        value={customActionCategory}
+                        onChange={(event) => setCustomActionCategory(event.target.value)}
+                        placeholder="例如：武术、特殊技能"
+                      />
+                    </label>
+                  ) : null}
+                  <label className="character-field character-field-wide">
+                    <span>动作名称</span>
+                    <input
+                      value={actionName}
+                      onChange={(event) => setActionName(event.target.value)}
+                      placeholder="例如：待机呼吸、冲刺"
+                    />
+                  </label>
+                  <label className="character-field character-field-wide">
+                    <span>动作提示词</span>
+                    <textarea
+                      value={actionPrompt}
+                      onChange={(event) => setActionPrompt(event.target.value)}
+                      rows={3}
+                      placeholder="记录姿态、节奏和镜头表现"
+                    />
+                  </label>
+                </div>
+              )}
+
+              <div className="flex min-h-10 items-center gap-2 rounded-lg border border-canvas-border bg-canvas-surface px-3 text-[10px] leading-4 text-canvas-text-muted">
+                <Icon icon="lucide:link-2" width="14" height="14" className="shrink-0" aria-hidden="true" />
+                动作素材会绑定到所选角色，原画布节点保持不变。
+              </div>
+            </>
+          )}
         </section>
       </div>
 
@@ -469,11 +819,25 @@ function CharacterNodeCaptureDialog({
         <button
           type="button"
           className="character-button-primary text-white"
-          disabled={saving || !sourceNode}
+          disabled={saving
+            || !sourceNode
+            || (captureTab === 'reference' && (!imageUrl
+              || (targetMode === 'existing' ? !effectiveCharacterId : !name.trim())))
+            || (captureTab === 'action' && (!actionMedia
+              || !effectiveCharacterId
+              || (actionAttachMode === 'existing'
+                ? !effectiveActionId
+                : (!actionName.trim()
+                  || (actionCategory === 'custom' && !customActionCategory.trim())))))}
           onClick={() => void handleCapture()}
         >
-          <Icon icon="lucide:contact-round" width="15" height="15" aria-hidden="true" />
-          {saving ? '添加中…' : '添加到角色库'}
+          <Icon
+            icon={captureTab === 'action' ? 'lucide:film' : 'lucide:contact-round'}
+            width="15"
+            height="15"
+            aria-hidden="true"
+          />
+          {saving ? '添加中…' : captureTab === 'action' ? '添加到动作库' : '添加到角色库'}
         </button>
       </footer>
     </ModalOverlay>

@@ -10,6 +10,8 @@ import {
   putGlobalCharacter,
 } from './indexedDbService';
 import type {
+  CharacterAction,
+  CharacterActionMedia,
   CharacterReferenceImage,
   CharacterVoiceClip,
   DramaCharacter,
@@ -42,6 +44,19 @@ function detachProjectVoiceClip(clip: CharacterVoiceClip): CharacterVoiceClip {
   return persisted;
 }
 
+function detachProjectActionMedia(media: CharacterActionMedia): CharacterActionMedia {
+  const persisted = { ...media };
+  delete persisted.filePath;
+  return persisted;
+}
+
+function detachProjectAction(action: CharacterAction): CharacterAction {
+  return {
+    ...action,
+    media: (action.media ?? []).map(detachProjectActionMedia),
+  };
+}
+
 export function prepareGlobalCharacter(character: DramaCharacter): DramaCharacter {
   const normalized = normalizeDramaCharacter(character);
   const detached = { ...normalized };
@@ -50,6 +65,7 @@ export function prepareGlobalCharacter(character: DramaCharacter): DramaCharacte
     ...detached,
     referenceImages: (normalized.referenceImages ?? []).map(detachProjectReference),
     voiceClips: (normalized.voiceClips ?? []).map(detachProjectVoiceClip),
+    actions: (normalized.actions ?? []).map(detachProjectAction),
   };
 }
 
@@ -84,6 +100,18 @@ function extensionForVoiceClip(clip: CharacterVoiceClip): string {
   return pathExtension || 'mp3';
 }
 
+function extensionForActionMedia(media: CharacterActionMedia): string {
+  const { mimeSubtype, pathExtension } = urlExtensionHints(media.url);
+  const nameExtension = media.name.split('.').pop()?.toLowerCase();
+  if (nameExtension && nameExtension !== media.name.toLowerCase()) return nameExtension;
+  if (mimeSubtype) {
+    if (mimeSubtype === 'quicktime') return 'mov';
+    if (mimeSubtype === 'x-m4v') return 'm4v';
+    return mimeSubtype;
+  }
+  return pathExtension || (media.kind === 'video' ? 'mp4' : media.kind === 'gif' ? 'gif' : 'png');
+}
+
 interface GlobalMediaInput {
   id: string;
   /** 落盘文件名中的用途片段 */
@@ -93,7 +121,7 @@ interface GlobalMediaInput {
   filePath?: string;
   url?: string;
   extension: string;
-  category: 'image' | 'audio';
+  category: 'image' | 'video' | 'audio';
 }
 
 interface GlobalMediaResult {
@@ -199,6 +227,43 @@ async function persistGlobalVoiceClip(
   };
 }
 
+async function persistGlobalActionMedia(
+  characterName: string,
+  action: CharacterAction,
+  media: CharacterActionMedia,
+): Promise<CharacterActionMedia> {
+  const detached = detachProjectActionMedia(media);
+  if (!isTauriEnv()) return detached;
+
+  const persisted = await persistGlobalMedia(characterName, {
+    id: media.id,
+    kind: `${action.category}-${media.kind}`,
+    assetId: media.assetId,
+    filePath: media.filePath,
+    url: media.url,
+    extension: extensionForActionMedia(media),
+    category: media.kind === 'video' ? 'video' : 'image',
+  });
+  if (!persisted) throw new Error(`角色动作素材 ${media.id} 保存失败`);
+  return {
+    ...detached,
+    assetId: persisted.assetId ?? detached.assetId,
+    relativePath: persisted.relativePath,
+    url: persisted.url,
+  };
+}
+
+async function persistGlobalAction(
+  characterName: string,
+  action: CharacterAction,
+): Promise<CharacterAction> {
+  const media: CharacterActionMedia[] = [];
+  for (const item of action.media ?? []) {
+    media.push(await persistGlobalActionMedia(characterName, action, item));
+  }
+  return { ...action, media };
+}
+
 async function persistGlobalMediaOfCharacter(character: DramaCharacter): Promise<DramaCharacter> {
   const references: CharacterReferenceImage[] = [];
   for (const reference of character.referenceImages ?? []) {
@@ -208,7 +273,11 @@ async function persistGlobalMediaOfCharacter(character: DramaCharacter): Promise
   for (const clip of character.voiceClips ?? []) {
     voiceClips.push(await persistGlobalVoiceClip(character.name, clip));
   }
-  return { ...character, referenceImages: references, voiceClips };
+  const actions: CharacterAction[] = [];
+  for (const action of character.actions ?? []) {
+    actions.push(await persistGlobalAction(character.name, action));
+  }
+  return { ...character, referenceImages: references, voiceClips, actions };
 }
 
 export async function loadGlobalCharacterCards(): Promise<DramaCharacter[]> {

@@ -5,6 +5,8 @@ import type { StateCreator } from 'zustand';
 import type { Node } from '@xyflow/react';
 import type { AppState } from './useAppStore';
 import type {
+  CharacterAction,
+  CharacterActionMedia,
   CharacterCropRect,
   CharacterReferenceImage,
   CharacterReferenceKind,
@@ -176,6 +178,28 @@ export interface DramaAssetsSlice {
     scope: CharacterLibraryScope,
     characterId: string,
     clipId: string,
+  ) => Promise<boolean>;
+  addCharacterAction: (
+    scope: CharacterLibraryScope,
+    characterId: string,
+    action: Pick<CharacterAction, 'category' | 'customCategory' | 'name' | 'prompt' | 'media'>,
+  ) => Promise<string | null>;
+  addCharacterActionMedia: (
+    scope: CharacterLibraryScope,
+    characterId: string,
+    actionId: string,
+    media: CharacterActionMedia[],
+  ) => Promise<boolean>;
+  removeCharacterActionMedia: (
+    scope: CharacterLibraryScope,
+    characterId: string,
+    actionId: string,
+    mediaId: string,
+  ) => Promise<boolean>;
+  removeCharacterAction: (
+    scope: CharacterLibraryScope,
+    characterId: string,
+    actionId: string,
   ) => Promise<boolean>;
   /** 把画布音频节点绑定为角色声音，返回声音片段 id */
   bindAudioNodeToCharacterVoice: (
@@ -958,6 +982,93 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     return get().saveCharacterCard(scope, normalizeDramaCharacter({
       ...character,
       primaryVoiceClipId: clipId,
+      updatedAt: Date.now(),
+    }));
+  },
+
+  addCharacterAction: async (scope, characterId, action) => {
+    const characters = scope === 'project'
+      ? get().dramaAssets.characters
+      : get().globalCharacters;
+    const character = characters.find((item) => item.id === characterId);
+    const name = action.name.trim();
+    const prompt = action.prompt.trim();
+    if (!character || !name) return null;
+    const now = Date.now();
+    const actionId = `action-${generateId()}`;
+    const saved = await get().saveCharacterCard(scope, normalizeDramaCharacter({
+      ...character,
+      actions: [
+        ...(character.actions ?? []),
+        {
+          id: actionId,
+          category: action.category,
+          customCategory: action.category === 'custom'
+            ? action.customCategory?.trim() || undefined
+            : undefined,
+          name,
+          prompt,
+          media: action.media ?? [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      updatedAt: now,
+    }));
+    return saved ? actionId : null;
+  },
+
+  addCharacterActionMedia: async (scope, characterId, actionId, media) => {
+    if (media.length === 0) return false;
+    const characters = scope === 'project'
+      ? get().dramaAssets.characters
+      : get().globalCharacters;
+    const character = characters.find((item) => item.id === characterId);
+    if (!character?.actions?.some((action) => action.id === actionId)) return false;
+    const now = Date.now();
+    return get().saveCharacterCard(scope, normalizeDramaCharacter({
+      ...character,
+      actions: character.actions.map((action) => action.id === actionId
+        ? {
+            ...action,
+            media: [...(action.media ?? []), ...media],
+            updatedAt: now,
+          }
+        : action),
+      updatedAt: now,
+    }));
+  },
+
+  removeCharacterActionMedia: async (scope, characterId, actionId, mediaId) => {
+    const characters = scope === 'project'
+      ? get().dramaAssets.characters
+      : get().globalCharacters;
+    const character = characters.find((item) => item.id === characterId);
+    const action = character?.actions?.find((item) => item.id === actionId);
+    if (!character || !action?.media?.some((item) => item.id === mediaId)) return false;
+    const now = Date.now();
+    return get().saveCharacterCard(scope, normalizeDramaCharacter({
+      ...character,
+      actions: character.actions?.map((item) => item.id === actionId
+        ? {
+            ...item,
+            media: item.media?.filter((mediaItem) => mediaItem.id !== mediaId),
+            updatedAt: now,
+          }
+        : item),
+      updatedAt: now,
+    }));
+  },
+
+  removeCharacterAction: async (scope, characterId, actionId) => {
+    const characters = scope === 'project'
+      ? get().dramaAssets.characters
+      : get().globalCharacters;
+    const character = characters.find((item) => item.id === characterId);
+    if (!character?.actions?.some((action) => action.id === actionId)) return false;
+    return get().saveCharacterCard(scope, normalizeDramaCharacter({
+      ...character,
+      actions: character.actions.filter((action) => action.id !== actionId),
       updatedAt: Date.now(),
     }));
   },

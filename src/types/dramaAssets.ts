@@ -22,6 +22,28 @@ export type CharacterVoiceKind =
   | 'emotion'
   | 'other';
 
+export type CharacterActionCategory =
+  | 'standing'
+  | 'walking'
+  | 'running'
+  | 'jumping'
+  | 'sitting'
+  | 'crouching'
+  | 'lying'
+  | 'climbing'
+  | 'swimming'
+  | 'attacking'
+  | 'defending'
+  | 'hit'
+  | 'death'
+  | 'casting'
+  | 'interacting'
+  | 'dancing'
+  | 'expression'
+  | 'custom';
+
+export type CharacterActionMediaKind = 'image' | 'gif' | 'video';
+
 /** 头像裁剪区域，坐标与尺寸均为相对原图的 0-1 值。 */
 export interface CharacterCropRect {
   x: number;
@@ -66,6 +88,34 @@ export interface CharacterVoiceClip {
   updatedAt: number;
 }
 
+/** 单个动作可绑定多份静态图片、GIF 或视频素材。 */
+export interface CharacterActionMedia {
+  id: string;
+  kind: CharacterActionMediaKind;
+  name: string;
+  mimeType?: string;
+  assetId?: string;
+  relativePath?: string;
+  /** 运行期本地绝对路径；全局角色保存时必须剥离。 */
+  filePath?: string;
+  url?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 绑定在角色卡上的动作定义，可作为后续图像/视频生成的动作提示词。 */
+export interface CharacterAction {
+  id: string;
+  category: CharacterActionCategory;
+  /** 自定义分类的显示名；预置分类不使用该字段。 */
+  customCategory?: string;
+  name: string;
+  prompt: string;
+  media?: CharacterActionMedia[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface DramaAssetBase {
   id: string;
   name: string;
@@ -102,6 +152,8 @@ export interface DramaCharacter extends DramaAssetBase {
   voiceClips?: CharacterVoiceClip[];
   /** 主音色片段 id，配音与音色参考默认取它 */
   primaryVoiceClipId?: string;
+  /** 与角色绑定的动作库。 */
+  actions?: CharacterAction[];
 }
 
 export interface DramaScene extends DramaAssetBase {
@@ -178,6 +230,27 @@ const CHARACTER_VOICE_KINDS = new Set<CharacterVoiceKind>([
   'line',
   'emotion',
   'other',
+]);
+
+const CHARACTER_ACTION_CATEGORIES = new Set<CharacterActionCategory>([
+  'standing',
+  'walking',
+  'running',
+  'jumping',
+  'sitting',
+  'crouching',
+  'lying',
+  'climbing',
+  'swimming',
+  'attacking',
+  'defending',
+  'hit',
+  'death',
+  'casting',
+  'interacting',
+  'dancing',
+  'expression',
+  'custom',
 ]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -280,6 +353,76 @@ function normalizeVoiceClip(
   };
 }
 
+function normalizeCharacterAction(
+  value: unknown,
+  characterId: string,
+  index: number,
+  fallbackTime: number,
+): CharacterAction | null {
+  const action = asRecord(value);
+  if (!action) return null;
+  const rawCategory = typeof action.category === 'string' ? action.category : '';
+  const category = CHARACTER_ACTION_CATEGORIES.has(rawCategory as CharacterActionCategory)
+    ? rawCategory as CharacterActionCategory
+    : 'custom';
+  const name = typeof action.name === 'string' ? action.name.trim() : '';
+  const prompt = typeof action.prompt === 'string' ? action.prompt.trim() : '';
+  if (!name && !prompt) return null;
+  const customCategory = category === 'custom' && typeof action.customCategory === 'string'
+    ? action.customCategory.trim() || undefined
+    : undefined;
+  const media = (Array.isArray(action.media) ? action.media : [])
+    .map((value, mediaIndex): CharacterActionMedia | null => {
+      const item = asRecord(value);
+      if (!item) return null;
+      const url = typeof item.url === 'string' ? item.url : undefined;
+      const assetId = typeof item.assetId === 'string' ? item.assetId : undefined;
+      const relativePath = typeof item.relativePath === 'string' ? item.relativePath : undefined;
+      const filePath = typeof item.filePath === 'string' ? item.filePath : undefined;
+      if (!url && !assetId && !relativePath && !filePath) return null;
+      const rawKind = item.kind === 'image' || item.kind === 'gif' || item.kind === 'video'
+        ? item.kind
+        : undefined;
+      const mimeType = typeof item.mimeType === 'string' ? item.mimeType : undefined;
+      const kind: CharacterActionMediaKind = rawKind
+        ?? (mimeType?.startsWith('video/')
+          ? 'video'
+          : mimeType === 'image/gif'
+            ? 'gif'
+            : 'image');
+      const mediaId = typeof item.id === 'string' && item.id.trim()
+        ? item.id
+        : `action-media-${characterId}-${index}-${mediaIndex}`;
+      return {
+        id: mediaId,
+        kind,
+        name: typeof item.name === 'string' && item.name.trim()
+          ? item.name.trim()
+          : `${kind === 'video' ? '视频' : kind === 'gif' ? '动图' : '图片'} ${mediaIndex + 1}`,
+        mimeType,
+        assetId,
+        relativePath,
+        filePath,
+        url,
+        createdAt: finiteNumber(item.createdAt, fallbackTime),
+        updatedAt: finiteNumber(item.updatedAt, fallbackTime),
+      };
+    })
+    .filter((item): item is CharacterActionMedia => item !== null);
+  return {
+    id: typeof action.id === 'string' && action.id.trim()
+      ? action.id
+      : `action-${characterId}-${index}`,
+    category,
+    customCategory,
+    name: name || prompt,
+    prompt,
+    media,
+    createdAt: finiteNumber(action.createdAt, fallbackTime),
+    updatedAt: finiteNumber(action.updatedAt, fallbackTime),
+  };
+}
+
 export function normalizeDramaCharacter(character: DramaCharacter): DramaCharacter {
   const rawReferences = Array.isArray(character.referenceImages)
     ? character.referenceImages
@@ -328,6 +471,14 @@ export function normalizeDramaCharacter(character: DramaCharacter): DramaCharact
     && voiceClipIds.has(character.primaryVoiceClipId)
     ? character.primaryVoiceClipId
     : voiceClips[0]?.id;
+  const actions = (Array.isArray(character.actions) ? character.actions : [])
+    .map((action, index) => normalizeCharacterAction(
+      action,
+      character.id,
+      index,
+      character.updatedAt || character.createdAt,
+    ))
+    .filter((action): action is CharacterAction => action !== null);
 
   return {
     ...character,
@@ -337,6 +488,7 @@ export function normalizeDramaCharacter(character: DramaCharacter): DramaCharact
     avatarCrop: avatarReferenceImageId ? normalizeCropRect(character.avatarCrop) : undefined,
     voiceClips,
     primaryVoiceClipId,
+    actions,
   };
 }
 

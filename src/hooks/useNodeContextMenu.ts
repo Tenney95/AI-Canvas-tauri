@@ -171,7 +171,14 @@ export function useNodeContextMenu() {
   const nodeType = (currentNode?.type) as NodeType | undefined;
   const nodeData = currentNode?.data as BaseNodeData | undefined;
   const isNodeLocked = currentNode?.draggable === false;
-  const showAddToCharacter = isEligibleCharacterReferenceNode(currentNode);
+  const actionMediaIdentity = [nodeData?.fileName, nodeData?.filePath, nodeData?.imageUrl]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ');
+  const hasCharacterActionMedia = Boolean(nodeData?.videoUrl)
+    || /(?:^|[./\\])[^?#]*\.gif(?:[?#]|$)/i.test(actionMediaIdentity)
+    || nodeData?.imageUrl?.startsWith('data:image/gif') === true;
+  const showAddToCharacter = isEligibleCharacterReferenceNode(currentNode)
+    || hasCharacterActionMedia;
   const isImageNote = nodeType === 'canvas-note' && nodeData?.note?.kind === 'image';
   const isImageNode = nodeType === 'ai-image' || nodeType === 'source-image';
   const showImageConversion = (isImageNote || isImageNode)
