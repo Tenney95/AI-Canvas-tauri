@@ -774,8 +774,49 @@ describe('project switching', () => {
     await expect(useAppStore.getState().saveCurrentProject()).resolves.toBeUndefined();
 
     expect(fileMocks.saveProject).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith('项目加载失败，已阻止空画布覆盖原数据', 'error');
+    expect(showToast).toHaveBeenCalledWith(
+      expect.stringContaining('项目加载失败，已阻止空画布覆盖原数据'),
+      'error',
+    );
     expect(showToast).toHaveBeenCalledWith('项目尚未成功加载，已阻止覆盖保存', 'error');
+  });
+
+  it('keeps warning while auto-save stays broken, and clears the failure after a success', async () => {
+    const showToast = vi.fn();
+    fileMocks.saveProject.mockRejectedValue(new Error('write failed: No space left on device'));
+    useAppStore.setState({
+      projects: [{ id: 'project-a', name: 'A', createdAt: 1, updatedAt: 1 }],
+      currentProjectId: 'project-a',
+      projectName: 'A',
+      projectLoadStatus: 'ready',
+      nodes: [],
+      edges: [],
+      groups: [],
+      showToast,
+    });
+
+    await expect(useAppStore.getState().saveCurrentProjectSilent()).resolves.toBeUndefined();
+    expect(useAppStore.getState().autoSaveFailure).toMatchObject({ kind: 'disk-full', count: 1 });
+    expect(showToast).toHaveBeenCalledTimes(1);
+
+    // 紧接着的失败只累计次数，不刷屏
+    await useAppStore.getState().saveCurrentProjectSilent();
+    expect(useAppStore.getState().autoSaveFailure).toMatchObject({ count: 2 });
+    expect(showToast).toHaveBeenCalledTimes(1);
+
+    // 超过重复提醒间隔后必须再提醒一次，不能一直静默
+    vi.advanceTimersByTime(61_000);
+    await useAppStore.getState().saveCurrentProjectSilent();
+    expect(showToast).toHaveBeenCalledTimes(2);
+    expect(showToast).toHaveBeenLastCalledWith(
+      expect.stringContaining('自动保存已连续失败 3 次'),
+      'error',
+    );
+
+    // 恢复正常后失败状态清空，退出时不再拦截
+    fileMocks.saveProject.mockImplementation(async (record: { id: string }) => record.id);
+    await expect(useAppStore.getState().saveCurrentProjectSilent()).resolves.toBe('project-a');
+    expect(useAppStore.getState().autoSaveFailure).toBeNull();
   });
 
   it('keeps the current canvas when switching to a project that cannot be loaded', async () => {

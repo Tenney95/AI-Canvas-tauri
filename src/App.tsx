@@ -181,16 +181,38 @@ export default function App() {
         const win = getCurrentWindow();
         unlisten = await win.onCloseRequested(async (event) => {
           event.preventDefault();
+          const store = useAppStore.getState();
           try {
-            const store = useAppStore.getState();
             await store.captureCurrentProjectSnapshot();
+          } catch (error) {
+            console.warn('[退出] 生成画布快照失败:', error);
+          }
+          try {
             await store.saveCurrentProjectSilent();
+          } catch (error) {
+            console.warn('[退出] 保存失败:', error);
+          }
+
+          // 保存一直失败时不能默默销毁窗口，否则这次会话的工作全丢
+          const failure = useAppStore.getState().autoSaveFailure;
+          if (failure) {
+            const { ask } = await import('@tauri-apps/plugin-dialog');
+            const detail = failure.count > 1 ? `已连续失败 ${failure.count} 次。` : '';
+            const quitAnyway = await ask(
+              `${detail}${failure.reason}\n\n现在退出会丢失未保存的改动。建议先取消退出，再用「导出项目」把内容备份出去。`,
+              { title: '保存失败，仍要退出吗？', kind: 'warning', okLabel: '仍然退出', cancelLabel: '取消退出' },
+            ).catch(() => true); // 弹不出对话框时不要把用户关在应用里
+            if (!quitAnyway) return;
+          }
+
+          try {
             await fileService.flushUndoTrashDirs();
             const { stopMcpBridge } = await import('./services/mcp/mcpBridgeService');
             await stopMcpBridge().catch(() => {});
-          } finally {
-            await win.destroy();
+          } catch (error) {
+            console.warn('[退出] 清理失败:', error);
           }
+          await win.destroy();
         });
       } catch { /* non-Tauri env */ }
     })();

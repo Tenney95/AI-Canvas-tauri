@@ -17,6 +17,12 @@ import {
   type OrphanFileInfo,
   type DuplicateFileGroup,
 } from '../../services/fs/storageHealth';
+import {
+  estimateBrowserStorage,
+  formatBytes,
+  STORAGE_PRESSURE_RATIO,
+  type StorageEstimate,
+} from '../../services/storageQuota';
 import AnimatedButton from '../shared/AnimatedButton';
 import { useT } from '../../i18n';
 
@@ -40,14 +46,6 @@ const PROJECT_COLORS = [
 // ============================================
 // 工具函数
 // ============================================
-
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
 
 function formatShortPath(filePath: string, maxLen = 42): string {
   if (filePath.length <= maxLen) return filePath;
@@ -307,6 +305,7 @@ export default function StorageHealthCenter() {
 
   const [scanning, setScanning] = useState(false);
   const [report, setReport] = useState<StorageHealthReport | null>(null);
+  const [browserStorage, setBrowserStorage] = useState<StorageEstimate | null>(null);
   const [activeSection, setActiveSection] = useState<string>('overview');
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
   const scannedRef = useRef(false);
@@ -315,6 +314,9 @@ export default function StorageHealthCenter() {
   const handleScan = useCallback(async () => {
     setScanning(true);
     try {
+      // 浏览器配额（IndexedDB 里的画布数据）和磁盘占用是两笔账，都要看
+      void estimateBrowserStorage().then(setBrowserStorage);
+
       // 收集所有节点的 filePath 引用
       const nodeFilePaths = collectNodeFilePaths(nodes as Array<{ data?: Record<string, unknown> }>);
       const assetFolders = [] as { path: string; label: string }[];
@@ -543,6 +545,33 @@ export default function StorageHealthCenter() {
           )}
         </AnimatedButton>
       </div>
+
+      {/* 浏览器存储配额 — 画布数据存在 IndexedDB 里，配额用尽会导致自动保存失败 */}
+      {browserStorage && browserStorage.quota > 0 && (() => {
+        const ratio = Math.min(1, browserStorage.ratio);
+        const pressured = ratio >= STORAGE_PRESSURE_RATIO;
+        return (
+          <div className={`rounded-[10px] p-3 border ${pressured ? 'border-amber-500/40 bg-amber-500/10' : 'border-canvas-border bg-canvas-card'}`}>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-medium text-canvas-text">{t('浏览器存储配额')}</div>
+              <div className="text-[11px] text-canvas-text-secondary">
+                {formatBytes(browserStorage.usage)} / {formatBytes(browserStorage.quota)}（{(ratio * 100).toFixed(1)}%）
+              </div>
+            </div>
+            <div className="h-2 rounded-full bg-canvas-hover overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-[width] ${pressured ? 'bg-amber-400' : 'bg-indigo-400'}`}
+                style={{ width: `${Math.max(2, ratio * 100)}%` }}
+              />
+            </div>
+            <p className="text-[11px] text-canvas-text-muted mt-1.5">
+              {pressured
+                ? t('配额即将用尽，自动保存可能失败，建议清理下方可释放空间或导出并删除旧项目')
+                : t('项目画布数据存放在浏览器存储中，配额用尽会导致自动保存失败')}
+            </p>
+          </div>
+        );
+      })()}
 
       {scanning && !report && (
         <div className="flex flex-col items-center justify-center py-8 gap-3">

@@ -6,6 +6,9 @@
  *    重命名、删除等），即使节点结构指纹未变也会触发保存。
  * 均在 2 秒防抖后调用 saveCurrentProjectSilent。
  * 不响应选中、拖拽位置等非持久内容变化。
+ *
+ * 保存前基线（指纹 / data 引用）就已前移，所以保存失败必须自己退避重试，
+ * 否则这批改动会被当成「已保存」，直到下一次编辑才有机会再写盘。
  */
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../store/useAppStore';
@@ -38,6 +41,10 @@ export function captureNodeDataReferences(nodes: NodeDataReference[]): Map<strin
   return new Map(nodes.map((node) => [node.id, node.data]));
 }
 
+/** 保存失败后的退避重试间隔：5s → 10s → 20s → 40s → 60s 封顶 */
+const SAVE_RETRY_BASE_MS = 5_000;
+const SAVE_RETRY_MAX_MS = 60_000;
+
 export function useAutoSave() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fingerprintRef = useRef<string>('');
@@ -53,10 +60,26 @@ export function useAutoSave() {
   });
 
   useEffect(() => {
+    function saveAndRetryOnFailure() {
+      void useAppStore.getState().saveCurrentProjectSilent().then((savedId) => {
+        if (savedId !== undefined) return;
+        const failure = useAppStore.getState().autoSaveFailure;
+        if (!failure) return; // 没有当前项目/没有可保存记录，不是失败
+        // 基线已前移，不重试这批改动就永远写不进去
+        forceSaveRef.current = true;
+        const delay = Math.min(
+          SAVE_RETRY_MAX_MS,
+          SAVE_RETRY_BASE_MS * 2 ** Math.min(failure.count - 1, 4),
+        );
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(checkAndSave, delay);
+      });
+    }
+
     // 真正的结构指纹计算 + 保存判断，仅在防抖稳定后执行一次，
     // 拖拽期间每帧只做一次极廉价的引用比较（见下方 subscribe 回调），
     // 不再每帧 map/sort/join 分配数组（消除 GC 抖动）。
-    const checkAndSave = () => {
+    function checkAndSave() {
       const state = useAppStore.getState();
       if (!state.currentProjectId) return;
 
@@ -94,7 +117,7 @@ export function useAutoSave() {
         forceSaveRef.current = false;
         fingerprintRef.current = structFp;
         dataRefsRef.current = captureNodeDataReferences(state.nodes);
-        state.saveCurrentProjectSilent();
+        saveAndRetryOnFailure();
         return;
       }
 
@@ -103,8 +126,8 @@ export function useAutoSave() {
 
       fingerprintRef.current = structFp;
       dataRefsRef.current = captureNodeDataReferences(state.nodes);
-      useAppStore.getState().saveCurrentProjectSilent();
-    };
+      saveAndRetryOnFailure();
+    }
 
     // 挂载时立即建立当前项目基线，避免第一次用户操作被误认为初始化加载。
     const initialState = useAppStore.getState();

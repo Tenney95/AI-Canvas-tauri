@@ -32,6 +32,7 @@ import {
   getLastActiveProjectId,
   setLastActiveProjectId,
 } from '../services/indexedDbService';
+import { describeStorageError, type StorageFailureKind } from '../services/storageQuota';
 
 type ProjectLoadStatus = 'loading' | 'ready' | 'error';
 let activeProjectMetadataWrite: Promise<void> = Promise.resolve();
@@ -285,6 +286,65 @@ async function saveCurrentProjectRecord(state: AppState, record: ProjectSaveData
   return savedProjectId;
 }
 
+export interface AutoSaveFailureState {
+  /** 失败归因：配额用尽 / 磁盘写满 / 项目未加载成功 / 其它 */
+  kind: StorageFailureKind | 'load-error';
+  reason: string;
+  /** 连续失败次数，成功保存后清零 */
+  count: number;
+  firstAt: number;
+  lastAt: number;
+  lastNotifiedAt: number;
+}
+
+/** 持续失败时的重复提醒间隔：既不刷屏，也不会失败一次之后全程静默 */
+const AUTO_SAVE_RENOTIFY_MS = 60_000;
+
+/**
+ * 记录一次保存失败。第一次、原因变化、或距上次提醒超过 1 分钟才会再弹 toast，
+ * 避免 2 秒一次的自动保存刷屏，同时保证磁盘满/配额满这类持续故障不会被静音。
+ */
+function noteSaveFailure(
+  set: ProjectSliceSet,
+  get: ProjectSliceGet,
+  params: { kind: AutoSaveFailureState['kind']; reason: string; notify: boolean },
+): AutoSaveFailureState {
+  const now = Date.now();
+  const prev = get().autoSaveFailure;
+  const count = (prev?.count ?? 0) + 1;
+  const shouldNotify = params.notify
+    && (!prev || prev.reason !== params.reason || now - prev.lastNotifiedAt >= AUTO_SAVE_RENOTIFY_MS);
+  const next: AutoSaveFailureState = {
+    kind: params.kind,
+    reason: params.reason,
+    count,
+    firstAt: prev?.firstAt ?? now,
+    lastAt: now,
+    lastNotifiedAt: shouldNotify ? now : (prev?.lastNotifiedAt ?? now),
+  };
+  set({ autoSaveFailure: next });
+  if (shouldNotify) {
+    const prefix = count > 1 ? `自动保存已连续失败 ${count} 次` : '自动保存失败';
+    get().showToast(`${prefix}：${params.reason}。请手动保存 (Ctrl+S) 或导出项目备份`, 'error');
+  }
+  return next;
+}
+
+function clearSaveFailure(set: ProjectSliceSet, get: ProjectSliceGet) {
+  if (get().autoSaveFailure) set({ autoSaveFailure: null });
+}
+
+/** 保存异常 → 结构化失败状态（含配额/磁盘归因） */
+async function noteSaveError(
+  set: ProjectSliceSet,
+  get: ProjectSliceGet,
+  error: unknown,
+  notify: boolean,
+): Promise<AutoSaveFailureState> {
+  const { kind, reason } = await describeStorageError(error);
+  return noteSaveFailure(set, get, { kind, reason, notify });
+}
+
 export interface ProjectSlice {
   projects: CanvasProject[];
   currentProjectId: string | null;
@@ -293,7 +353,8 @@ export interface ProjectSlice {
   isCreatingProject: boolean;
   /** 正在切换到的画布名；非 null 时显示切换遮罩 */
   switchingProjectName: string | null;
-  _autoSaveFailedNotified?: boolean;
+  /** 自动保存持续失败时的诊断状态；成功保存后清空 */
+  autoSaveFailure: AutoSaveFailureState | null;
   setProjectName: (name: string) => void;
   renameProject: (id: string, name: string) => Promise<boolean>;
   updateProjectSettings: (settings: ProjectSettings) => Promise<boolean>;
@@ -500,6 +561,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   projectLoadStatus: 'loading',
   isCreatingProject: false,
   switchingProjectName: null,
+  autoSaveFailure: null,
 
   setProjectName: (name) => {
     const state = get();
@@ -1259,6 +1321,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   saveCurrentProject: async () => {
     const state = get();
     if (state.currentProjectId && state.projectLoadStatus !== 'ready') {
+      // 加载中只是还没就绪，不算故障；加载失败才记进退出拦截状态
+      if (state.projectLoadStatus === 'error') {
+        noteSaveFailure(set, get, {
+          kind: 'load-error',
+          reason: '项目加载失败，已阻止空画布覆盖原数据',
+          notify: false,
+        });
+      }
       state.showToast('项目尚未成功加载，已阻止覆盖保存', 'error');
       return undefined;
     }
@@ -1271,11 +1341,14 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           p.id === record.id ? { ...p, updatedAt: record.updatedAt, name: record.name } : p
         ),
       }));
+      clearSaveFailure(set, get);
       get().showToast('项目已保存');
       return record.id;
     } catch (error) {
       console.error('Save failed:', error);
-      get().showToast('保存失败', 'error');
+      // 手动保存本来就每次都给反馈，交给 toast 自己说，不走去重逻辑
+      const failure = await noteSaveError(set, get, error, false);
+      get().showToast(`保存失败：${failure.reason}`, 'error');
       return undefined;
     }
   },
@@ -1284,9 +1357,12 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   saveCurrentProjectSilent: async () => {
     const state = get();
     if (state.currentProjectId && state.projectLoadStatus !== 'ready') {
-      if (state.projectLoadStatus === 'error' && !state._autoSaveFailedNotified) {
-        state.showToast('项目加载失败，已阻止空画布覆盖原数据', 'error');
-        set({ _autoSaveFailedNotified: true });
+      if (state.projectLoadStatus === 'error') {
+        noteSaveFailure(set, get, {
+          kind: 'load-error',
+          reason: '项目加载失败，已阻止空画布覆盖原数据',
+          notify: true,
+        });
       }
       return undefined;
     }
@@ -1299,16 +1375,11 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           p.id === record.id ? { ...p, updatedAt: record.updatedAt, name: record.name } : p
         ),
       }));
-      // 成功后重置失败通知标志
-      set({ _autoSaveFailedNotified: false });
+      clearSaveFailure(set, get);
       return record.id;
     } catch (error) {
       console.warn('[自动保存] 保存失败:', error);
-      // 首次失败才弹 toast，避免每 2 秒刷屏
-      if (!get()._autoSaveFailedNotified) {
-        get().showToast('自动保存失败，请手动保存 (Ctrl+S)', 'error');
-        set({ _autoSaveFailedNotified: true });
-      }
+      await noteSaveError(set, get, error, true);
       return undefined;
     }
   },
