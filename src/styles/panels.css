@@ -16,11 +16,15 @@
   animation: floatIn var(--dur-normal) var(--ease-out-expo);
   transition: left 0.28s var(--ease-spring), top 0.28s var(--ease-spring);
 }
-/* 生成中：border-beam 覆盖层（仅描边环，中间透明，不挡内容） */
+/* 生成中：border-beam 覆盖层（仅描边环，中间透明，不挡内容）
+   z-index 必须高于面板内容：底部工具栏等子元素有自己的背景，
+   压在光束上会让光束在那一段"消失"，看起来就像瞬移 */
 .ai-dialog-float .ai-dialog-beam {
   position: absolute;
-  inset: 0;
-  z-index: 0;
+  /* 对话框有 1px 透明边框，inset:0 只能盖到 padding box，
+     光束环会比外圆角小一圈、角上对不齐；-1px 让它正好贴合 border box */
+  inset: -1px;
+  z-index: 5;
   border-radius: 14px;
   pointer-events: none;
 }

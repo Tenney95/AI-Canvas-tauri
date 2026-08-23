@@ -914,10 +914,15 @@ function AINodeDialog() {
           <Suspense fallback={null}>
             <BorderBeam
               className="ai-dialog-beam"
-              size="md"
               borderRadius={14}
+              colorVariant="colorful"
+              /* 长宽比大，角度匀速旋转在角落会加速；放慢一圈的时间让观感平顺些 */
+              duration={5}
+              strength={0.85}
               theme={typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'}
-            />
+            >
+              {null}
+            </BorderBeam>
           </Suspense>
         )}
         {isExpanded && (
