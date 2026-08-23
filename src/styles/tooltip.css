@@ -34,3 +34,22 @@
   visibility: visible;
   transition-delay: 0s;
 }
+
+.app-tooltip[data-structured="true"] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(420px, calc(100vw - 16px));
+}
+
+.app-tooltip__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-tooltip__action {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}

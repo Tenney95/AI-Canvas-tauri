@@ -101,6 +101,29 @@ function positionTooltip(tooltip: HTMLDivElement, target: HTMLElement) {
   tooltip.dataset.position = position;
 }
 
+function updateTooltipContent(tooltip: HTMLDivElement, target: HTMLElement): boolean {
+  const content = target.dataset.tooltip?.trim();
+  if (!content) return false;
+
+  const label = target.dataset.tooltipLabel?.trim();
+  const action = target.dataset.tooltipAction?.trim();
+  if (label && action) {
+    const labelElement = document.createElement('span');
+    labelElement.className = 'app-tooltip__label';
+    labelElement.textContent = label;
+    const actionElement = document.createElement('span');
+    actionElement.className = 'app-tooltip__action';
+    actionElement.textContent = action;
+    tooltip.replaceChildren(labelElement, actionElement);
+    tooltip.dataset.structured = 'true';
+    return true;
+  }
+
+  tooltip.textContent = content;
+  tooltip.removeAttribute('data-structured');
+  return true;
+}
+
 export function useTooltipAutoPlacement() {
   useEffect(() => {
     const tooltip = document.createElement('div');
@@ -115,12 +138,10 @@ export function useTooltipAutoPlacement() {
     let showTimer: number | null = null;
     const activeTargetObserver = new MutationObserver(() => {
       if (!activeTarget) return;
-      const content = activeTarget.dataset.tooltip?.trim();
-      if (!content) {
+      if (!updateTooltipContent(tooltip, activeTarget)) {
         hideTooltip();
         return;
       }
-      tooltip.textContent = content;
       if (tooltip.dataset.open === 'true') positionTooltip(tooltip, activeTarget);
     });
 
@@ -143,13 +164,11 @@ export function useTooltipAutoPlacement() {
         return;
       }
 
-      const content = activeTarget.dataset.tooltip?.trim();
-      if (!content) {
+      if (!updateTooltipContent(tooltip, activeTarget)) {
         hideTooltip();
         return;
       }
 
-      tooltip.textContent = content;
       tooltip.setAttribute('data-open', 'true');
       tooltip.setAttribute('aria-hidden', 'false');
       positionTooltip(tooltip, activeTarget);
@@ -165,7 +184,7 @@ export function useTooltipAutoPlacement() {
 
       activeTargetObserver.observe(activeTarget, {
         attributes: true,
-        attributeFilter: ['data-tooltip', 'data-tooltip-pos'],
+        attributeFilter: ['data-tooltip', 'data-tooltip-label', 'data-tooltip-action', 'data-tooltip-pos'],
       });
       showTimer = window.setTimeout(showTooltip, SHOW_DELAY);
     };

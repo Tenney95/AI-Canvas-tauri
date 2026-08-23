@@ -1,7 +1,7 @@
 ﻿/**
  * MentionEditor @提及编辑器 — 支持 @引用其他节点输出的富文本输入框，实时渲染为彩色标签芯片
  */
-import { useState, useCallback, useRef, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import type { WorkflowIONodeType } from '../../../types';
 import { useShallow } from 'zustand/react/shallow';
@@ -10,6 +10,7 @@ import { Icon } from '@iconify/react';
 import { listGlobalFiles, listExternalFolderFiles, type AssetFileEntry } from '../../../services/fileService';
 import { getAllAssetMeta } from '../../../services/indexedDbService';
 import { springSmooth, fadeFast } from '../../../utils/motion';
+import { calcAnchoredPosition } from '../../../utils/popupPosition';
 import { AnimatePresence, motion } from 'framer-motion';
 import PopupCloseButton from '../../shared/PopupCloseButton';
 import MentionPicker, { type MentionPickerChip, type MentionPickerItem } from '../../shared/MentionPicker';
@@ -89,6 +90,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   // ── @ Mention state ──
   const [showMention, setShowMention] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
+  const mentionEditorWrapRef = useRef<HTMLDivElement>(null);
+  const mentionDropdownRef = useRef<HTMLDivElement>(null);
+  const [mentionDropdownPosition, setMentionDropdownPosition] = useState({ left: 12, top: 0 });
   const editorRef = useRef<HTMLDivElement>(null);
   const savedMentionRangeRef = useRef<Range | null>(null);
   const lastFocusedWfValueRef = useRef<HTMLSpanElement | null>(null);
@@ -1041,8 +1045,67 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       ? 'nodes'
       : pickerTab;
 
+  const updateMentionDropdownPosition = useCallback(() => {
+    const wrap = mentionEditorWrapRef.current;
+    const dropdown = mentionDropdownRef.current;
+    if (!wrap || !dropdown) return;
+
+    const wrapRect = wrap.getBoundingClientRect();
+    const savedRange = savedMentionRangeRef.current;
+    const rangeRects = savedRange?.getClientRects();
+    const caretRect = rangeRects?.[rangeRects.length - 1]
+      ?? savedRange?.getBoundingClientRect()
+      ?? editorRef.current?.getBoundingClientRect()
+      ?? wrapRect;
+    const safePosition = calcAnchoredPosition(
+      caretRect,
+      dropdown.offsetWidth,
+      dropdown.offsetHeight,
+      8,
+      12,
+    );
+    const nextPosition = {
+      left: Math.round(safePosition.left - wrapRect.left),
+      top: Math.round(safePosition.top - wrapRect.top),
+    };
+    setMentionDropdownPosition((current) => (
+      current.left === nextPosition.left && current.top === nextPosition.top ? current : nextPosition
+    ));
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!showMention) {
+      setMentionDropdownPosition({ left: 12, top: 0 });
+      return undefined;
+    }
+
+    const dropdown = mentionDropdownRef.current;
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(updateMentionDropdownPosition);
+    if (dropdown) resizeObserver?.observe(dropdown);
+
+    updateMentionDropdownPosition();
+    window.addEventListener('resize', updateMentionDropdownPosition);
+    window.addEventListener('scroll', updateMentionDropdownPosition, true);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updateMentionDropdownPosition);
+      window.removeEventListener('scroll', updateMentionDropdownPosition, true);
+    };
+  }, [
+    assetTabItems.length,
+    dramaKindChips.length,
+    drillItem?.id,
+    effectiveTab,
+    mentionQuery,
+    nodeTabItems.length,
+    showMention,
+    updateMentionDropdownPosition,
+  ]);
+
   return (
-    <div className={`mention-editor-wrap relative ${className}`}>
+    <div ref={mentionEditorWrapRef} className={`mention-editor-wrap relative ${className}`}>
       <div
         ref={editorRef}
         contentEditable
@@ -1086,7 +1149,11 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
 
       {/* @ Mention Dropdown */}
       {showMention && (
-        <div className="mention-dropdown absolute left-3 bottom-full mb-1 w-[336px] z-50">
+        <div
+          ref={mentionDropdownRef}
+          className="mention-dropdown absolute w-[336px] max-w-[calc(100vw-24px)] z-50 [&>.mention-picker]:max-h-[calc(100vh-24px)] [&>.mention-picker]:overflow-hidden [&_.mention-picker-grid]:min-h-0"
+          style={{ left: mentionDropdownPosition.left, top: mentionDropdownPosition.top }}
+        >
           <MentionPicker
             ariaLabel="引用节点或资产"
             tabs={[

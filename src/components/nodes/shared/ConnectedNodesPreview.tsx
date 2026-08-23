@@ -14,6 +14,11 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../../store/useAppStore';
 import type { BaseNodeData, StoryboardCellOverride } from '../../../types';
 import { useT } from '../../../i18n';
+import FullscreenOverlay from '../../shared/FullscreenOverlay';
+import {
+  calculateDockOffset,
+  createConnectedPreviewLongPressController,
+} from './connectedNodesPreviewInteractions';
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 function localAssetUrl(filePath?: string): string | undefined {
@@ -24,6 +29,7 @@ function localAssetUrl(filePath?: string): string | undefined {
 interface ConnectedNodesPreviewProps {
   nodeId?: string;
   onInsertMention?: (mentionStr: string) => void;
+  hoverEmphasis?: 'default' | 'expanded';
 }
 
 const OUTPUT_TYPE_ICON: Record<string, string> = {
@@ -42,13 +48,29 @@ interface SbCellItem {
   overrideUrl?: string;
 }
 
-export default function ConnectedNodesPreview({ nodeId, onInsertMention }: ConnectedNodesPreviewProps) {
+interface FullscreenPreviewItem {
+  id: string;
+  label: string;
+  displayId?: number;
+  outputType: string;
+  mediaUrl?: string;
+  thumbnailUrl?: string;
+  previewText?: string;
+}
+
+export default function ConnectedNodesPreview({
+  nodeId,
+  onInsertMention,
+  hoverEmphasis = 'default',
+}: ConnectedNodesPreviewProps) {
   const t = useT();
   // 只订阅画布数据：对话框打开期间的聊天流式、轮询进度等无关变更不再触发重渲染
   const { nodes, edges } = useAppStore(
     useShallow((s) => ({ nodes: s.nodes, edges: s.edges })),
   );
   const hoveredMentionNodeId = useAppStore((s) => s.hoveredMentionNodeId);
+  const [fullscreenPreview, setFullscreenPreview] = useState<FullscreenPreviewItem | null>(null);
+  const [suppressClickNodeId, setSuppressClickNodeId] = useState<string | null>(null);
 
   // ── 宫格弹出浮层状态 ──
   const [sbPopupId, setSbPopupId] = useState<string | null>(null);
@@ -57,7 +79,7 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
 
   const clearPopupDelayed = useCallback(() => {
     sbCloseTimer.current = setTimeout(() => setSbPopupId(null), 120);
-  }, []);
+  }, [setSbPopupId]);
   const cancelCloseTimer = useCallback(() => {
     if (sbCloseTimer.current) { clearTimeout(sbCloseTimer.current); sbCloseTimer.current = null; }
   }, []);
@@ -99,8 +121,16 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           ? (localAssetUrl(data.filePath as string | undefined) || (data.thumbnailUrl as string) || data.imageUrl || directorThumb || undefined)
           : outputType === 'video'
           ? ((data.thumbnailUrl as string) || undefined) : undefined;
-        const textSnippet = outputType === 'text' && data.output
-          ? String(data.output).slice(0, 50) : undefined;
+        const previewText = data.output ? String(data.output) : undefined;
+        const textSnippet = outputType === 'text' && previewText
+          ? previewText.slice(0, 50) : undefined;
+        const mediaUrl = outputType === 'image'
+          ? (localAssetUrl(data.filePath as string | undefined) || data.imageUrl || directorThumb || thumbnailUrl)
+          : outputType === 'video'
+            ? (data.videoUrl as string | undefined)
+            : outputType === 'audio'
+              ? (data.audioUrl as string | undefined)
+              : undefined;
 
         // 宫格分镜：收集各格 Sprite 信息
         let sbCells: SbCellItem[] | undefined;
@@ -155,6 +185,8 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           outputType,
           thumbnailUrl,
           textSnippet,
+          previewText,
+          mediaUrl,
           shotCount,
           hasOutput: isShotlist ? shotCount > 0 : !!data.output,
           nodeType: data.type,
@@ -170,6 +202,14 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const onHoverStart = useCallback((idx: number) => setHoverIndex(idx), []);
   const onHoverEnd = useCallback(() => setHoverIndex(null), []);
+  const [longPressController] = useState(() => (
+    createConnectedPreviewLongPressController<FullscreenPreviewItem>((item) => {
+      setSuppressClickNodeId(item.id);
+      setHoverIndex(null);
+      setFullscreenPreview(item);
+    })
+  ));
+  useEffect(() => () => longPressController.dispose(), [longPressController]);
 
   if (connectedNodes.length === 0) return null;
 
@@ -182,14 +222,19 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
     : -1;
   const effectiveHover = hoverIndex !== null ? hoverIndex : (externalIndex >= 0 ? externalIndex : null);
 
-  const MAX_SCALE = 1.22; const NEAR_SCALE = 1.10;
+  const isExpandedEmphasis = hoverEmphasis === 'expanded';
+  const maxScale = isExpandedEmphasis ? 2.5 : 1.22;
+  const nearScale = isExpandedEmphasis ? 1.16 : 1.10;
   const getDockScale = (index: number): number => {
     if (hoverIndex === null) return 1;
     const d = Math.abs(index - hoverIndex);
-    if (d === 0) return MAX_SCALE; if (d === 1) return NEAR_SCALE; return 1;
+    if (d === 0) return maxScale; if (d === 1) return nearScale; return 1;
   };
   const getDockX = (index: number): number => {
     if (hoverIndex === null) return 0;
+    if (isExpandedEmphasis) {
+      return calculateDockOffset(index, hoverIndex, maxScale, nearScale);
+    }
     const delta = index - hoverIndex;
     const d = Math.abs(delta);
     if (d === 0) return 0; if (d === 1) return delta * 12; if (d === 2) return delta * 5; return 0;
@@ -204,20 +249,49 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
           const isHovered = effectiveHover === idx;
           const isStoryboard = node.nodeType === 'ai-storyboard';
           const isShotlist = node.nodeType === 'ai-shotlist';
+          const canFullscreen = Boolean(node.mediaUrl || node.thumbnailUrl || node.previewText);
+          const tooltipLabel = `${node.label}${node.displayId != null ? ` #${node.displayId}` : ''}`;
+          const tooltipAction = canFullscreen
+            ? `${t('点击引用')} · ${t('长按全屏显示')}`
+            : t('点击引用');
 
           return (
           <motion.button
             key={node.id}
             type="button"
-            className={`connected-node-thumb ${!node.hasOutput ? 'thumb-idle' : ''} thumb-${node.outputType}${isStoryboard ? ' thumb-storyboard' : ''}${isShotlist ? ' thumb-shotlist' : ''}`}
-            data-tooltip={`${node.label}${node.displayId != null ? ` #${node.displayId}` : ''} — ${t('点击引用')}`}
-            onClick={() => handleClick(node.id, node.label)}
+            className={`connected-node-thumb ${!node.hasOutput ? 'thumb-idle' : ''} thumb-${node.outputType}${isStoryboard ? ' thumb-storyboard' : ''}${isShotlist ? ' thumb-shotlist' : ''}${isExpandedEmphasis ? ' origin-bottom' : ''}`}
+            data-tooltip={`${tooltipLabel} — ${tooltipAction}`}
+            data-tooltip-label={`${tooltipLabel} —`}
+            data-tooltip-action={tooltipAction}
+            onClick={() => {
+              if (suppressClickNodeId === node.id) {
+                setSuppressClickNodeId(null);
+                return;
+              }
+              handleClick(node.id, node.label);
+            }}
             onHoverStart={() => onHoverStart(idx)}
             onHoverEnd={onHoverEnd}
+            onPointerDown={(event) => {
+              if (!canFullscreen) return;
+              if (longPressController.start(node, event)) {
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }
+            }}
+            onPointerMove={(event) => longPressController.move(event)}
+            onPointerUp={(event) => {
+              longPressController.end(event.pointerId);
+              window.setTimeout(() => {
+                setSuppressClickNodeId((current) => current === node.id ? null : current);
+              }, 0);
+            }}
+            onPointerCancel={(event) => longPressController.end(event.pointerId)}
+            onLostPointerCapture={longPressController.cancel}
+            onContextMenu={(event) => { if (canFullscreen) event.preventDefault(); }}
             onMouseEnter={(e) => { if (isStoryboard) { cancelCloseTimer(); setSbPopupId(node.id); setSbThumbRect(e.currentTarget.getBoundingClientRect()); } }}
             onMouseLeave={() => { if (isStoryboard) clearPopupDelayed(); }}
             animate={{
-              scale, x, y: isHovered ? -4 : 0,
+              scale, x, y: isHovered && !isExpandedEmphasis ? -4 : 0,
               opacity: isHovered ? 1 : 0.85,
               boxShadow: isHovered ? `0 6px 20px rgba(99,102,241,0.25), 0 0 0 2px rgba(99,102,241,0.35)` : `0 0 0 0px rgba(99,102,241,0)`,
               borderColor: isHovered ? 'rgba(99,102,241,0.6)' : 'rgba(195,195,202,0.33)',
@@ -311,6 +385,69 @@ export default function ConnectedNodesPreview({ nodeId, onInsertMention }: Conne
         </AnimatePresence>,
         document.body,
       )}
+
+      <FullscreenOverlay
+        isOpen={fullscreenPreview !== null}
+        onClose={() => setFullscreenPreview(null)}
+        hidePanel
+        title={fullscreenPreview?.label}
+      >
+        {fullscreenPreview && (
+          <div
+            className="fixed inset-0 flex flex-col items-center justify-center gap-4 px-10 py-12"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-2xl">
+              {fullscreenPreview.outputType === 'image' && (fullscreenPreview.mediaUrl || fullscreenPreview.thumbnailUrl) ? (
+                <img
+                  src={fullscreenPreview.mediaUrl || fullscreenPreview.thumbnailUrl}
+                  alt={fullscreenPreview.label}
+                  className="max-h-full max-w-full select-none rounded-2xl object-contain shadow-2xl"
+                  draggable={false}
+                />
+              ) : fullscreenPreview.outputType === 'video' && fullscreenPreview.mediaUrl ? (
+                <video
+                  src={fullscreenPreview.mediaUrl}
+                  className="max-h-full max-w-full rounded-2xl bg-black shadow-2xl"
+                  controls
+                  autoPlay
+                />
+              ) : fullscreenPreview.outputType === 'audio' && fullscreenPreview.mediaUrl ? (
+                <div className="flex w-full max-w-xl flex-col items-center gap-5 rounded-2xl border border-canvas-border bg-canvas-surface/90 p-8 shadow-2xl backdrop-blur-xl">
+                  <span className="text-5xl" aria-hidden="true">🎵</span>
+                  <audio src={fullscreenPreview.mediaUrl} className="w-full" controls autoPlay />
+                </div>
+              ) : fullscreenPreview.outputType === 'video' && fullscreenPreview.thumbnailUrl ? (
+                <img
+                  src={fullscreenPreview.thumbnailUrl}
+                  alt={fullscreenPreview.label}
+                  className="max-h-full max-w-full select-none rounded-2xl object-contain shadow-2xl"
+                  draggable={false}
+                />
+              ) : (
+                <div className="max-h-full w-full max-w-3xl overflow-y-auto rounded-2xl border border-canvas-border bg-canvas-surface/90 p-6 text-sm leading-7 text-canvas-text shadow-2xl backdrop-blur-xl">
+                  {fullscreenPreview.previewText || t('暂无可预览内容')}
+                </div>
+              )}
+            </div>
+            <div className="flex shrink-0 flex-col items-center gap-2">
+              <span className="max-w-[70vw] truncate text-xs text-white/70">
+                {fullscreenPreview.label}{fullscreenPreview.displayId != null ? ` #${fullscreenPreview.displayId}` : ''}
+              </span>
+              <button
+                type="button"
+                className="inline-flex min-h-10 items-center justify-center rounded-xl bg-indigo-500 px-5 text-sm font-medium text-white shadow-lg transition-[transform,background-color] duration-150 ease-out hover:bg-indigo-400 active:scale-[.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+                onClick={() => {
+                  handleClick(fullscreenPreview.id, fullscreenPreview.label);
+                  setFullscreenPreview(null);
+                }}
+              >
+                {t('单击引用')}
+              </button>
+            </div>
+          </div>
+        )}
+      </FullscreenOverlay>
 
       <style>{`
         .connected-nodes-float {

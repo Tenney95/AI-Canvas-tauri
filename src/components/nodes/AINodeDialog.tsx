@@ -927,7 +927,11 @@ function AINodeDialog() {
         )}
         {isExpanded && (
           <div className="ai-dialog-preview-float is-expanded">
-            <ConnectedNodesPreview nodeId={activeNodeId} onInsertMention={handleInsertMention} />
+            <ConnectedNodesPreview
+              nodeId={activeNodeId}
+              onInsertMention={handleInsertMention}
+              hoverEmphasis="expanded"
+            />
           </div>
         )}
         <button

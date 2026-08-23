@@ -13,6 +13,12 @@ export interface ViewportEdge {
   left: number;
 }
 
+export interface PopupAnchorRect {
+  left: number;
+  top: number;
+  bottom: number;
+}
+
 /**
  * 获取当前可用视口区域
  * 通常使用 window.innerWidth / innerHeight，但可传入自定义值用于测试
@@ -67,6 +73,36 @@ export function calcFixedPosition(
   }
 
   return { left, top };
+}
+
+/**
+ * 让弹层贴近光标或触发元素：优先显示在上方，空间不足时翻到下方，
+ * 最后再执行视口边缘校正。
+ */
+export function calcAnchoredPosition(
+  anchor: PopupAnchorRect,
+  popupWidth: number,
+  popupHeight: number,
+  gap: number = 8,
+  padding: number = DEFAULT_PADDING,
+): { left: number; top: number; placement: 'above' | 'below' } {
+  const vp = getViewport();
+  const aboveTop = anchor.top - popupHeight - gap;
+  const belowTop = anchor.bottom + gap;
+  const fitsAbove = aboveTop >= vp.top + padding;
+  const fitsBelow = belowTop + popupHeight <= vp.bottom - padding;
+  const spaceAbove = anchor.top - vp.top;
+  const spaceBelow = vp.bottom - anchor.bottom;
+  const placement = fitsAbove || (!fitsBelow && spaceAbove >= spaceBelow) ? 'above' : 'below';
+  const safePosition = calcFixedPosition(
+    anchor.left,
+    placement === 'above' ? aboveTop : belowTop,
+    popupWidth,
+    popupHeight,
+    padding,
+  );
+
+  return { ...safePosition, placement };
 }
 
 /**
