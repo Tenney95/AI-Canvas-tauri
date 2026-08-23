@@ -4,14 +4,13 @@
  * 顶部是撤销 / 重做按钮，下面按时间倒序列出可回溯的画布操作，并标出当前所在位置。
  * 记录名称由前后快照的差异推断（见 utils/historyOperationLabels），不依赖调用点传参。
  *
- * 与「最近打开的项目」一致：平时只露一条小竖线，鼠标悬浮（或键盘聚焦）才滑出面板；
+ * 与「最近打开的项目」一致：平时只露一条小竖线，鼠标悬浮（或键盘聚焦）才显示面板；
  * 点图钉可锁定常显（写入配置，重启保留）。内置聊天助手展开时整体左移，让出助手宽度。
- * 外层容器只有竖线那么大（16×48），面板用绝对定位挂在它上面 —— 这样收起时画布右上角
- * 不会留下一块吃掉拖拽的透明死区；面板是容器的子节点，指针移到面板上仍算悬浮。
- * 注意不能用「容器 pointer-events-none + 子元素 auto」的写法：Chrome 下 pointer-events
- * 为 none 的元素不会进入 :hover，group-hover 永远不触发。
+ * 收起时外层只有竖线那么大（16×48），不会留下吃掉画布拖拽的透明死区；进入触发区后
+ * 由 React 显式保持打开状态并扩展命中区，点击面板外部才关闭，避免 WebView 在绝对定位
+ * 子元素之间移动时错误触发 pointerleave。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
@@ -31,6 +30,8 @@ interface TimelineRow extends HistoryOperationLabel {
 export default function HistoryTimelinePanel() {
   const t = useT();
   const [expanded, setExpanded] = useState(true);
+  const [hoverOpen, setHoverOpen] = useState(false);
+  const panelWrapRef = useRef<HTMLDivElement>(null);
   const { history, historyIndex, undo, redo, pinned, chatOpen, chatPanelDetached } = useAppStore(
     useShallow((state) => ({
       history: state.history,
@@ -95,29 +96,46 @@ export default function HistoryTimelinePanel() {
     () => [...committedRows, ...(latestRow ? [latestRow] : [])].reverse(),
     [committedRows, latestRow],
   );
+  const panelOpen = pinned || hoverOpen;
+
+  useEffect(() => {
+    if (!hoverOpen || pinned) return;
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      if (!panelWrapRef.current?.contains(event.target as Node)) {
+        setHoverOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handleOutsidePointerDown, true);
+    return () => document.removeEventListener('pointerdown', handleOutsidePointerDown, true);
+  }, [hoverOpen, pinned]);
 
   return (
     <div
-      className="canvas-history-wrap group/history relative h-12 w-4 select-none"
+      ref={panelWrapRef}
+      className="canvas-history-wrap relative h-12 w-4 select-none"
       data-pinned={pinned ? 'true' : 'false'}
+      data-open={panelOpen ? 'true' : 'false'}
       data-chat-open={chatDocked ? 'true' : 'false'}
+      onPointerEnter={() => setHoverOpen(true)}
+      onFocusCapture={() => setHoverOpen(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setHoverOpen(false);
+        }
+      }}
     >
       <span
         aria-hidden="true"
         className="canvas-history-hint absolute right-0 top-0 flex h-12 w-4 items-center justify-end
-                   transition-opacity duration-150
-                   group-hover/history:opacity-0 group-focus-within/history:opacity-0"
+                   transition-opacity duration-150"
       >
         <span className="h-8 w-0.5 rounded-full bg-canvas-text-muted/35" />
       </span>
       <div
         className="canvas-history-panel glass-bevel glass-bevel--floating
                    absolute right-0 top-0
-                   pointer-events-none translate-x-[calc(100%+0.75rem)] opacity-0
-                   transition-[transform,opacity] duration-200 ease-out will-change-transform
-                   motion-reduce:transition-opacity
-                   group-hover/history:pointer-events-auto group-hover/history:translate-x-0 group-hover/history:opacity-100
-                   group-focus-within/history:pointer-events-auto group-focus-within/history:translate-x-0 group-focus-within/history:opacity-100"
+                   pointer-events-none opacity-0
+                   transition-opacity duration-150 ease-out"
       >
       <div className="canvas-history-panel__head">
         <AnimatedButton

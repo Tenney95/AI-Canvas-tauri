@@ -303,18 +303,23 @@
   transition: transform 0.28s ease-out;
 }
 
+/* React 显式保持打开状态；展开后父级命中区覆盖整块面板。 */
+.canvas-history-wrap[data-open='true'] {
+  width: 208px;
+}
+
 .canvas-history-wrap[data-chat-open='true'] {
   transform: translateX(calc(-1 * (var(--chat-panel-width) + var(--chat-panel-inset))));
 }
 
-/* 锁定常显：覆盖悬浮才展开的默认态 */
-.canvas-history-wrap[data-pinned='true'] .canvas-history-panel {
+/* 打开或锁定常显时恢复面板命中。 */
+.canvas-history-wrap[data-open='true'] .canvas-history-panel {
   transform: none;
   opacity: 1;
   pointer-events: auto;
 }
 
-.canvas-history-wrap[data-pinned='true'] .canvas-history-hint {
+.canvas-history-wrap[data-open='true'] .canvas-history-hint {
   opacity: 0;
 }
 
