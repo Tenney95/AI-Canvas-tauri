@@ -43,6 +43,11 @@ vi.mock('../../src/utils/nodeAnimations', () => ({
 }));
 
 import { useAppStore } from '../../src/store/useAppStore';
+import { isCanvasConnectionValid } from '../../src/store/store.nodes';
+import {
+  getConnectionMenuOptions,
+  resolveNodeBodyHandle,
+} from '../../src/hooks/useConnectionDropMenu';
 
 function node(id: string, data: Partial<BaseNodeData> = {}): Node<BaseNodeData> {
   return {
@@ -388,6 +393,64 @@ describe('batch canvas history', () => {
 
     expect(useAppStore.getState().edges).toEqual([]);
     expect(useAppStore.getState().nodes[0].data.label).toBe('Current');
+  });
+
+  it('normalizes loose connections to right-side output and left-side input', () => {
+    useAppStore.setState({
+      nodes: [node('node-a'), node('node-b')],
+      edges: [],
+      history: [],
+      historyIndex: -1,
+    });
+
+    // 用户从 A 的左侧输入端拖到 B 的右侧输出端，React Flow 会把拖拽起点暂记为 source。
+    useAppStore.getState().onConnect({
+      source: 'node-a',
+      target: 'node-b',
+      sourceHandle: 'left',
+      targetHandle: 'right',
+    });
+
+    expect(useAppStore.getState().edges).toEqual([
+      expect.objectContaining({
+        source: 'node-b',
+        sourceHandle: 'right',
+        target: 'node-a',
+        targetHandle: 'left',
+      }),
+    ]);
+
+    useAppStore.getState().onConnect({
+      source: 'node-a',
+      target: 'node-b',
+      sourceHandle: 'left',
+      targetHandle: 'left',
+    });
+    expect(useAppStore.getState().edges).toHaveLength(1);
+  });
+
+  it('uses the same handle roles for drag validation and node-body drops', () => {
+    expect(isCanvasConnectionValid({
+      source: 'node-a', target: 'node-b', sourceHandle: 'right', targetHandle: 'left',
+    })).toBe(true);
+    expect(isCanvasConnectionValid({
+      source: 'node-a', target: 'node-b', sourceHandle: 'left', targetHandle: 'right',
+    })).toBe(true);
+    expect(isCanvasConnectionValid({
+      source: 'node-a', target: 'node-b', sourceHandle: 'right', targetHandle: 'right',
+    })).toBe(false);
+    expect(resolveNodeBodyHandle(149, 100, 100)).toBe('left');
+    expect(resolveNodeBodyHandle(150, 100, 100)).toBe('right');
+  });
+
+  it('offers upstream node types when a connection starts from an input handle', () => {
+    expect(getConnectionMenuOptions('ai-video', 'output')).toEqual([]);
+    expect(getConnectionMenuOptions('ai-video', 'input').map((option) => option.type)).toEqual([
+      'ai-text',
+      'ai-image',
+      'ai-storyboard',
+      'ai-director',
+    ]);
   });
 
   it('treats storyboard cell state as structural history', async () => {

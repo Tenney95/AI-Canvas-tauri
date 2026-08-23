@@ -51,12 +51,12 @@ import { useNodeContextMenu } from '../hooks/useNodeContextMenu';
 import { useCanvasSecondaryClickMenu } from '../hooks/useCanvasSecondaryClickMenu';
 import { useCanvasLongPressRadialMenu } from '../hooks/useCanvasLongPressRadialMenu';
 import { useAppStore } from '../store/useAppStore';
-import { filterHiddenCanvasElements } from '../store/store.nodes';
+import { filterHiddenCanvasElements, isCanvasConnectionValid } from '../store/store.nodes';
 import { useNodeCreation } from '../hooks/useNodeCreation';
 import { useCanvasDrawing } from '../hooks/useCanvasDrawing';
 import type { BaseNodeData } from '../types';
 import { SHOTLIST_FRAME_SOURCE_TYPES, STORYBOARD_CELL_SOURCE_TYPES } from '../types';
-import type { Node as RFNode, NodeProps, NodeTypes, Connection, Edge, OnMove } from '@xyflow/react';
+import type { Node as RFNode, NodeProps, NodeTypes, OnMove } from '@xyflow/react';
 import { useNodeSnap, ResizeSnapContext, type SnapLine } from '../hooks/useNodeSnap';
 import { setCanvasPointerPosition } from '../services/canvasPointerService';
 import {
@@ -173,7 +173,6 @@ const MINIMAP_STYLE = {
   borderRadius: '8px',
 };
 const INLINE_EDIT_DOUBLE_CLICK_DELAY_MS = 280;
-const isValidConnection = (conn: Connection | Edge) => conn.source !== conn.target;
 const minimapNodeColor = (node: RFNode) => {
   switch (node.type) {
     case 'ai-text':
@@ -1184,7 +1183,7 @@ function CanvasInner() {
         edges={renderedEdges}
         onConnect={onConnect}
         onConnectEnd={handleConnectEnd}
-        isValidConnection={isValidConnection}
+        isValidConnection={isCanvasConnectionValid}
         onNodeClick={onNodeClick}
         onDoubleClick={onDoubleClick}
         onSelectionChange={onSelectionChange}
@@ -1197,6 +1196,7 @@ function CanvasInner() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose}
+        connectionRadius={64}
         onlyRenderVisibleElements
         fitView
         fitViewOptions={FIT_VIEW_OPTIONS}
@@ -1327,6 +1327,7 @@ function CanvasInner() {
         visible={connectionMenu.visible}
         position={connectionMenu.position}
         sourceNodeType={connectionMenu.sourceNodeType}
+        direction={connectionMenu.direction}
         sourceNode={sourceNode}
         menuRef={connectionMenuRef}
         onSelect={handleConnectionMenuSelect}

@@ -3,8 +3,9 @@
  */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useReactFlow } from '@xyflow/react';
-import type { Node as RFNode, Edge, FinalConnectionState } from '@xyflow/react';
+import type { Node as RFNode, Edge, FinalConnectionState, Connection } from '@xyflow/react';
 import { useAppStore, generateId } from '../store/useAppStore';
+import { isCanvasConnectionValid } from '../store/store.nodes';
 import type { BaseNodeData, NodeType } from '../types';
 
 // ── Model preference helper ──
@@ -34,11 +35,14 @@ interface ConnectionMenuOption {
   type: NodeType;
 }
 
+export type ConnectionMenuDirection = 'input' | 'output';
+
 interface ConnectionMenuState {
   visible: boolean;
   sourceNodeId: string;
   sourceNodeType: string;
   sourceHandleId: string | null;
+  direction: ConnectionMenuDirection;
   position: { x: number; y: number };
 }
 
@@ -83,9 +87,54 @@ const CONNECTION_MENU_MAP: Record<string, ConnectionMenuOption[]> = {
   'ai-shotlist': [],
 };
 
+const CONNECTION_NODE_LABELS: Partial<Record<NodeType, string>> = {
+  'ai-text': '生成文本',
+  'ai-image': '生成图像',
+  'ai-video': '生成视频',
+  'ai-audio': '生成音频',
+  'ai-animation': '生成动画',
+  'ai-panorama': '生成360全景图',
+  'ai-storyboard': '生成分镜',
+  'ai-director': '导演台',
+};
+
+const INPUT_CONNECTION_MENU_MAP: Record<string, ConnectionMenuOption[]> = Object.fromEntries(
+  Object.keys(CONNECTION_MENU_MAP).map((targetType) => [
+    targetType,
+    Object.entries(CONNECTION_MENU_MAP).flatMap(([candidateType, outputs]) => {
+      const type = candidateType as NodeType;
+      const label = CONNECTION_NODE_LABELS[type];
+      return label && outputs.some((option) => option.type === targetType)
+        ? [{ label, type }]
+        : [];
+    }),
+  ]),
+);
+
+function getClientPosition(event: MouseEvent | TouchEvent): { x: number; y: number } | null {
+  if ('changedTouches' in event) {
+    const touch = event.changedTouches[0];
+    return touch ? { x: touch.clientX, y: touch.clientY } : null;
+  }
+  return { x: event.clientX, y: event.clientY };
+}
+
+export function resolveNodeBodyHandle(clientX: number, left: number, width: number): 'left' | 'right' {
+  return clientX < left + width / 2 ? 'left' : 'right';
+}
+
+export function getConnectionMenuOptions(
+  nodeType: string,
+  direction: ConnectionMenuDirection,
+): ConnectionMenuOption[] {
+  const menuMap = direction === 'input' ? INPUT_CONNECTION_MENU_MAP : CONNECTION_MENU_MAP;
+  return menuMap[nodeType] ?? [];
+}
+
 export function useConnectionDropMenu(smoothLine: boolean) {
   const reactFlowInstance = useReactFlow();
   const addNodeWithEdge = useAppStore((s) => s.addNodeWithEdge);
+  const connectNodes = useAppStore((s) => s.onConnect);
   const nodes = useAppStore((s) => s.nodes);
 
   const [menu, setMenu] = useState<ConnectionMenuState>({
@@ -93,6 +142,7 @@ export function useConnectionDropMenu(smoothLine: boolean) {
     sourceNodeId: '',
     sourceNodeType: '',
     sourceHandleId: null,
+    direction: 'output',
     position: { x: 0, y: 0 },
   });
   const menuRef = useRef<HTMLDivElement>(null);
@@ -125,31 +175,48 @@ export function useConnectionDropMenu(smoothLine: boolean) {
       if (connectionState.isValid === true) return;
       if (!connectionState.fromNode) return;
 
+      const clientPosition = getClientPosition(event);
+      if (!clientPosition) return;
+      const hitNodeElement = document
+        .elementFromPoint(clientPosition.x, clientPosition.y)
+        ?.closest<HTMLElement>('.react-flow__node[data-id]');
+      const hitNodeId = hitNodeElement?.dataset.id;
+      if (hitNodeElement && hitNodeId) {
+        if (hitNodeId === connectionState.fromNode.id) return;
+        const rect = hitNodeElement.getBoundingClientRect();
+        const targetHandle = resolveNodeBodyHandle(clientPosition.x, rect.left, rect.width);
+        const connection: Connection = {
+          source: connectionState.fromNode.id,
+          sourceHandle: connectionState.fromHandle?.id ?? null,
+          target: hitNodeId,
+          targetHandle,
+        };
+        if (isCanvasConnectionValid(connection)) connectNodes(connection);
+        return;
+      }
+
       const fromNode = connectionState.fromNode as RFNode;
       const sourceType = fromNode.type;
-      if (!sourceType || !CONNECTION_MENU_MAP[sourceType]?.length) return;
+      const sourceHandleId = connectionState.fromHandle?.id ?? null;
+      const direction = sourceHandleId === 'left' ? 'input' : 'output';
+      if (!sourceType || getConnectionMenuOptions(sourceType, direction).length === 0) return;
 
-      const mouseEvt = event as MouseEvent;
       setMenu({
         visible: true,
         sourceNodeId: fromNode.id,
         sourceNodeType: sourceType,
-        sourceHandleId: connectionState.fromHandle?.id ?? null,
-        position: { x: mouseEvt.clientX, y: mouseEvt.clientY },
+        sourceHandleId,
+        direction,
+        position: clientPosition,
       });
     },
-    [],
+    [connectNodes],
   );
 
   const handleSelect = useCallback(
     (option: ConnectionMenuOption) => {
       const { sourceNodeId, sourceHandleId, position } = menu;
       const flowPos = reactFlowInstance.screenToFlowPosition({ x: position.x, y: position.y });
-
-      const sourceNode = reactFlowInstance.getNode(sourceNodeId) as RFNode<BaseNodeData> | undefined;
-      const srcX = sourceNode?.position?.x ?? 0;
-      const srcWidth = (sourceNode?.data?.nodeWidth as number | undefined) ?? 280;
-      const srcRight = srcX + srcWidth;
 
       const isAnimation = option.type === 'ai-animation';
       const isDirector = option.type === 'ai-director';
@@ -168,29 +235,9 @@ export function useConnectionDropMenu(smoothLine: boolean) {
                   ? 200
                   : 160;
 
-      // Determine handle direction based on position relative to source
-      const releasedRight = flowPos.x >= srcRight + 10;
-      const releasedLeft = flowPos.x <= srcX - 10;
-
-      let edgeSourceHandle: string | undefined;
-      let edgeTargetHandle: string | undefined;
-
-      if (releasedRight) {
-        edgeSourceHandle = 'right';
-        edgeTargetHandle = 'left';
-      } else if (releasedLeft) {
-        edgeSourceHandle = 'left';
-        edgeTargetHandle = 'right';
-      } else {
-        const handle = sourceHandleId;
-        if (handle === 'left') {
-          edgeSourceHandle = 'left';
-          edgeTargetHandle = 'right';
-        } else {
-          edgeSourceHandle = 'right';
-          edgeTargetHandle = 'left';
-        }
-      }
+      // 输入/输出语义由开始拖拽的 Handle 决定，不再随空白落点跨过节点而翻转。
+      const edgeSourceHandle = sourceHandleId === 'left' ? 'left' : 'right';
+      const edgeTargetHandle = edgeSourceHandle === 'left' ? 'right' : 'left';
 
       // Position at the drop point:
       // - left side:  right edge of new node aligns with cursor  (nodeX = flowPos.x - newWidth)
@@ -236,10 +283,11 @@ export function useConnectionDropMenu(smoothLine: boolean) {
       };
       const edge: Edge = {
         id: `edge-${generateId()}`,
-        source: sourceNodeId,
-        sourceHandle: edgeSourceHandle,
-        target: newNodeId,
-        targetHandle: edgeTargetHandle,
+        // 新节点建在原节点左侧时，原节点的左接口是输入；方向必须反转为新节点右出、原节点左入。
+        source: edgeSourceHandle === 'left' ? newNodeId : sourceNodeId,
+        sourceHandle: edgeSourceHandle === 'left' ? edgeTargetHandle : edgeSourceHandle,
+        target: edgeSourceHandle === 'left' ? sourceNodeId : newNodeId,
+        targetHandle: edgeSourceHandle === 'left' ? edgeSourceHandle : edgeTargetHandle,
         type: smoothLine ? 'smoothstep' : 'default',
       };
       addNodeWithEdge(newNode, edge);
@@ -249,6 +297,9 @@ export function useConnectionDropMenu(smoothLine: boolean) {
   );
 
   const sourceNode = nodes.find((n) => n.id === menu.sourceNodeId);
+  const connectionMenuMap = menu.direction === 'input'
+    ? INPUT_CONNECTION_MENU_MAP
+    : CONNECTION_MENU_MAP;
 
   return {
     menu,
@@ -257,6 +308,6 @@ export function useConnectionDropMenu(smoothLine: boolean) {
     handleConnectEnd,
     handleSelect,
     closeMenu: close,
-    connectionMenuMap: CONNECTION_MENU_MAP,
+    connectionMenuMap,
   };
 }

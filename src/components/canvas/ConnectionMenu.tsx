@@ -10,6 +10,7 @@ import type { Node as RFNode } from '@xyflow/react';
 import { calcFixedPosition } from '../../utils/popupPosition';
 import AnimatedButton from '../shared/AnimatedButton';
 import { useT } from '../../i18n';
+import type { ConnectionMenuDirection } from '../../hooks/useConnectionDropMenu';
 
 interface ConnectionMenuOption {
   label: string;
@@ -20,6 +21,7 @@ interface ConnectionMenuProps {
   visible: boolean;
   position: { x: number; y: number };
   sourceNodeType: string;
+  direction: ConnectionMenuDirection;
   sourceNode: RFNode<BaseNodeData> | undefined;
   menuRef: React.RefObject<HTMLDivElement | null>;
   onSelect: (option: ConnectionMenuOption) => void;
@@ -42,6 +44,7 @@ function ConnectionMenu({
   visible,
   position,
   sourceNodeType,
+  direction,
   sourceNode,
   menuRef,
   onSelect,
@@ -74,7 +77,7 @@ function ConnectionMenu({
       {/* Header */}
       <div className="px-3 py-2.5 border-b border-canvas-border">
         <div className="text-[11px] font-medium text-canvas-text-muted uppercase mb-1">
-          {t('引用该节点生成')}
+          {direction === 'input' ? t('创建上游输入') : t('引用该节点生成')}
         </div>
         <div className="text-xs text-canvas-text-secondary truncate">
           {sourceNode?.data?.label ?? t('节点')}

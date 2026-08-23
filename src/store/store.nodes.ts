@@ -37,6 +37,35 @@ interface GroupNodeDataAccess {
   groupId: string;
 }
 
+export function isCanvasConnectionValid(connection: {
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+}): boolean {
+  if (connection.source === connection.target) return false;
+  const { sourceHandle, targetHandle } = connection;
+  if (
+    (sourceHandle === 'left' || sourceHandle === 'right')
+    && (targetHandle === 'left' || targetHandle === 'right')
+  ) {
+    return sourceHandle !== targetHandle;
+  }
+  return true;
+}
+
+function normalizeCanvasConnection(connection: Connection): Connection | null {
+  if (!isCanvasConnectionValid(connection)) return null;
+  const draggedFromInput = connection.sourceHandle === 'left' && connection.targetHandle === 'right';
+  if (!draggedFromInput) return connection;
+  return {
+    source: connection.target,
+    target: connection.source,
+    sourceHandle: connection.targetHandle,
+    targetHandle: connection.sourceHandle,
+  };
+}
+
 function hasMaterializedNodeOutput(data: BaseNodeData, nodeType: string | undefined): boolean {
   const hasValue = (value: unknown) => typeof value === 'string' && value.trim().length > 0;
   if (['ai-image', 'source-image', 'ai-animation', 'ai-panorama', 'ai-storyboard'].includes(nodeType ?? '')) {
@@ -960,14 +989,14 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
   },
 
   onConnect: (connection) => {
+    // Loose 模式允许从任一端开始拖拽；持久化前统一为「右侧输出 → 左侧输入」。
+    const normalized = normalizeCanvasConnection(connection);
+    if (!normalized) return;
     get().commitToHistory();
     const id = `edge-${generateId()}`;
     const edge: Edge = {
       id,
-      source: connection.source!,
-      target: connection.target!,
-      sourceHandle: connection.sourceHandle,
-      targetHandle: connection.targetHandle,
+      ...normalized,
     };
     set((state) => ({ edges: [...state.edges, edge] }));
   },

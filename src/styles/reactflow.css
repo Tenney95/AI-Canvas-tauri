@@ -179,8 +179,9 @@
    Node Handles (React Flow)
    ============================================ */
 .node-handle {
-  width: 2px !important;
-  height: 2px !important;
+  width: 16px !important;
+  height: 16px !important;
+  z-index: 15;
   border: none !important;
   background: transparent !important;
   overflow: visible !important;
