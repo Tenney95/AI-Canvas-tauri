@@ -13,18 +13,18 @@ import { PROJECT_STYLE_OPTIONS } from '../../../services/projectSettingsService'
 import { useT } from '../../../i18n';
 
 // ── 画风缩略图 ──
-import thumbRealistic from '../../../assets/images/styles/realistic.png';
-import thumbAnime from '../../../assets/images/styles/anime.png';
-import thumbWatercolor from '../../../assets/images/styles/watercolor.png';
-import thumbOilPainting from '../../../assets/images/styles/oil-painting.png';
-import thumbSketch from '../../../assets/images/styles/sketch.png';
-import thumbCyberpunk from '../../../assets/images/styles/cyberpunk.png';
-import thumbInkWash from '../../../assets/images/styles/ink-wash.png';
-import thumbPixelArt from '../../../assets/images/styles/pixel-art.png';
-import thumb3dRender from '../../../assets/images/styles/3d-render.png';
-import thumbFlatIllustration from '../../../assets/images/styles/flat-illustration.png';
-import thumbCinematic from '../../../assets/images/styles/cinematic.png';
-import thumbVintage from '../../../assets/images/styles/vintage.png';
+import thumbRealistic from '../../../assets/images/styles/realistic.webp';
+import thumbAnime from '../../../assets/images/styles/anime.webp';
+import thumbWatercolor from '../../../assets/images/styles/watercolor.webp';
+import thumbOilPainting from '../../../assets/images/styles/oil-painting.webp';
+import thumbSketch from '../../../assets/images/styles/sketch.webp';
+import thumbCyberpunk from '../../../assets/images/styles/cyberpunk.webp';
+import thumbInkWash from '../../../assets/images/styles/ink-wash.webp';
+import thumbPixelArt from '../../../assets/images/styles/pixel-art.webp';
+import thumb3dRender from '../../../assets/images/styles/3d-render.webp';
+import thumbFlatIllustration from '../../../assets/images/styles/flat-illustration.webp';
+import thumbCinematic from '../../../assets/images/styles/cinematic.webp';
+import thumbVintage from '../../../assets/images/styles/vintage.webp';
 
 /** 画风缩略图映射表 */
 const THUMBNAILS: Record<string, string> = {
