@@ -15,11 +15,13 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'storage', label: '存储健康' },
   { id: 'comfyui', label: 'ComfyUI' },
   { id: 'shortcuts', label: '快捷键' },
+  { id: 'plugins', label: '插件' },
   { id: 'mcp', label: 'MCP 控制' },
 ];
 
 function SettingsTabIcon({ tab }: { tab: SettingsTab }) {
   if (tab === 'mcp') return <Icon icon="lucide:plug-zap" width="14" height="14" />;
+  if (tab === 'plugins') return <Icon icon="lucide:blocks" width="14" height="14" />;
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       {tab === 'storage' && (

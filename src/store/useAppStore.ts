@@ -36,6 +36,7 @@ import type { AgentSlice } from './store.agent';
 import type { MemorySlice } from './store.memory';
 import type { ToolbarSlice } from './store.toolbar';
 import type { DramaAssetsSlice } from './store.dramaAssets';
+import type { PluginSlice } from './store.plugins';
 
 import { createNodeSlice } from './store.nodes';
 import { createUISlice } from './store.ui';
@@ -56,6 +57,7 @@ import { createAgentSlice } from './store.agent';
 import { createMemorySlice } from './store.memory';
 import { createToolbarSlice } from './store.toolbar';
 import { createDramaAssetsSlice } from './store.dramaAssets';
+import { createPluginSlice } from './store.plugins';
 
 // ---- Re-export utilities for backward compatibility ----
 export { generateId, computeImageNodeDimensions } from './store.utils';
@@ -79,7 +81,8 @@ export type AppState = NodeSlice
   & AgentSlice
   & MemorySlice
   & ToolbarSlice
-  & DramaAssetsSlice;
+  & DramaAssetsSlice
+  & PluginSlice;
 
 // ---- Store creation via slice composition ----
 export const useAppStore = create<AppState>()((...a) => ({
@@ -102,4 +105,5 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createMemorySlice(...a),
   ...createToolbarSlice(...a),
   ...createDramaAssetsSlice(...a),
+  ...createPluginSlice(...a),
 }));

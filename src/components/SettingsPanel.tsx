@@ -17,6 +17,7 @@ import SettingsNavigation from './settings/SettingsNavigation';
 import ShortcutSettings from './settings/ShortcutSettings';
 import ComfyUISettings from './settings/ComfyUISettings';
 import FileAppSettings from './settings/FileAppSettings';
+import PluginSettings from './settings/PluginSettings';
 import { BACKGROUND_OPTIONS } from './backgrounds/backgroundOptions';
 import { detectBackgroundBrightness, compressImageLossless } from '../services/backgroundService';
 import type {
@@ -844,6 +845,8 @@ export default function SettingsPanel() {
             )}
 
             {activeTab === 'mcp' && <McpControlSettings />}
+
+            {activeTab === 'plugins' && <PluginSettings />}
           </div>
         </div>
     </ModalOverlay>

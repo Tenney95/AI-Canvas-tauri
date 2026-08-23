@@ -19,6 +19,7 @@ import type { BaseNodeData, NodeType } from '../types';
 import type { Node as RFNode } from '@xyflow/react';
 import { isEligibleCharacterReferenceNode } from '../store/store.dramaAssets';
 import { useT } from '../i18n';
+import { executeNodePluginTool, getAvailableNodePluginTools } from '../services/plugins/pluginRuntime';
 
 export interface NodeContextMenuState {
   visible: boolean;
@@ -38,6 +39,7 @@ export function useNodeContextMenu() {
   const setSelectedNodeIds = useAppStore((s) => s.setSelectedNodeIds);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const convertImageNodeKind = useAppStore((s) => s.convertImageNodeKind);
+  const installedPlugins = useAppStore((s) => s.installedPlugins);
 
   const [menu, setMenu] = useState<NodeContextMenuState>({
     visible: false,
@@ -170,6 +172,7 @@ export function useNodeContextMenu() {
   const currentNode = nodes.find((n) => n.id === menu.nodeId);
   const nodeType = (currentNode?.type) as NodeType | undefined;
   const nodeData = currentNode?.data as BaseNodeData | undefined;
+  const pluginTools = getAvailableNodePluginTools(installedPlugins, nodeType);
   const isNodeLocked = currentNode?.draggable === false;
   const actionMediaIdentity = [nodeData?.fileName, nodeData?.filePath, nodeData?.imageUrl]
     .filter((value): value is string => typeof value === 'string')
@@ -463,6 +466,27 @@ export function useNodeContextMenu() {
     closeMenu();
   }, [menu.nodeId, nodes, nodeType, copyMediaLabel, closeMenu, t]);
 
+  const handlePluginTool = useCallback((pluginId: string, toolId: string) => {
+    if (!menu.nodeId) return;
+    const state = useAppStore.getState();
+    const current = state.nodes.find((node) => node.id === menu.nodeId);
+    const available = getAvailableNodePluginTools(
+      state.installedPlugins,
+      current?.data.type,
+    ).find((item) => item.pluginId === pluginId && item.tool.id === toolId);
+    closeMenu();
+    if (!available) {
+      state.showToast(t('插件工具已不可用'), 'error');
+      return;
+    }
+    void executeNodePluginTool(available, menu.nodeId).catch((error) => {
+      useAppStore.getState().showToast(
+        error instanceof Error ? error.message : t('插件工具执行失败'),
+        'error',
+      );
+    });
+  }, [closeMenu, menu.nodeId, t]);
+
   return {
     menu,
     menuRef,
@@ -500,5 +524,7 @@ export function useNodeContextMenu() {
     handleAddToCharacter,
     closeCharacterCapture,
     showAddToCharacter,
+    pluginTools,
+    handlePluginTool,
   };
 }

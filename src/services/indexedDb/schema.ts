@@ -4,7 +4,7 @@
  * 项目记忆、角色、子智能体、视频编辑器项目等），openDB 按版本声明补齐缺失的 store/index 并保留旧数据升级。
  */
 export const DB_NAME = 'ai-canvas-db';
-export const DB_VERSION = 19;
+export const DB_VERSION = 20;
 
 export const STORE_PROJECTS = 'projects';
 export const STORE_WORKFLOWS = 'workflows';
@@ -26,6 +26,7 @@ export const STORE_GLOBAL_CHARACTERS = 'globalCharacters';
 export const STORE_SUB_AGENT_PROFILES = 'subAgentProfiles';
 export const STORE_VIDEO_EDITOR_PROJECTS = 'videoEditorProjects';
 export const STORE_PROJECT_VISUAL_DESCRIPTIONS = 'projectVisualDescriptions';
+export const STORE_PLUGINS = 'plugins';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -126,6 +127,9 @@ export function openDB(): Promise<IDBDatabase> {
         const visualStore = db.createObjectStore(STORE_PROJECT_VISUAL_DESCRIPTIONS, { keyPath: 'id' });
         visualStore.createIndex('projectId_updatedAt', ['projectId', 'updatedAt'], { unique: false });
         visualStore.createIndex('projectId_fingerprint', ['projectId', 'fingerprint'], { unique: true });
+      }
+      if (!db.objectStoreNames.contains(STORE_PLUGINS)) {
+        db.createObjectStore(STORE_PLUGINS, { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);

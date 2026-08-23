@@ -620,6 +620,8 @@ function CanvasInner() {
     handleAddToCharacter,
     closeCharacterCapture,
     showAddToCharacter,
+    pluginTools,
+    handlePluginTool,
   } = useNodeContextMenu();
   const isGroupNode = nodeCtxMenu.nodeId
     ? nodes.find((n) => n.id === nodeCtxMenu.nodeId && n.type === 'group') != null
@@ -1383,6 +1385,8 @@ function CanvasInner() {
         onOpenInPremiere={showOpenInVideoEditor ? handleOpenInPremiere : undefined}
         onCopyMedia={showCopyMedia ? handleCopyMedia : undefined}
         copyMediaLabel={copyMediaLabel}
+        pluginTools={pluginTools}
+        onPluginTool={handlePluginTool}
       />
 
       {characterCaptureNodeId ? createPortal(

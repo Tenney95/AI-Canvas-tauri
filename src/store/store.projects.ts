@@ -1434,7 +1434,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
 
   initFromDb: async () => {
     try {
-      await Promise.all([get().loadConfig(), get().loadWorkflows(), get().loadPresets(), get().loadSkills(), get().loadSubAgentProfiles(), get().loadCustomStyles(), get().loadToolbarLayouts()]);
+      await Promise.all([get().loadConfig(), get().loadWorkflows(), get().loadPresets(), get().loadSkills(), get().loadSubAgentProfiles(), get().loadCustomStyles(), get().loadToolbarLayouts(), get().loadPlugins()]);
 
       const allProjects = await fileService.loadProjectsList();
       const valid = allProjects.filter((p) => p.id !== 'default');

@@ -18,7 +18,7 @@ import { registerAgentTool, type AgentToolExecutionResult } from '../toolRegistr
 const MCP_PREFIX = 'mcp-control-';
 const WINDOW_LABELS = ['main', 'chat-assistant', 'asset-search', 'video-editor', 'director-desk', 'comfyui'];
 const CAPTURE_LABELS = ['main', 'chat-assistant', 'asset-search', 'video-editor'];
-const SETTINGS_TABS: SettingsTab[] = ['general', 'files', 'api', 'shortcuts', 'comfyui', 'storage', 'mcp'];
+const SETTINGS_TABS: SettingsTab[] = ['general', 'files', 'api', 'shortcuts', 'comfyui', 'storage', 'plugins', 'mcp'];
 const PANELS = ['none', 'settings', 'assets', 'characters', 'history', 'drama', 'workflow', 'chat'];
 
 function mcpOnly(context: { conversationId: string }): boolean {
