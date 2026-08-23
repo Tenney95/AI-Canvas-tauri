@@ -1,7 +1,9 @@
 /**
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { lazy, Suspense, useState, useRef, useCallback, useEffect } from 'react';
+// 生成中的思考球：仅在生成时按需加载
+const ThinkingOrb = lazy(() => import('thinking-orbs').then((m) => ({ default: m.ThinkingOrb })));
 import type {
   AnimationAction,
   CameraAperture,
@@ -478,6 +480,7 @@ export default function PromptPanel({
     }
   }, [aspectRatio, dreaminaImageModel, imageSize, onChangeAspectRatio, onChangeImageSize]);
 
+  const performanceMode = useAppStore((s) => s.config.performanceMode === true);
   const userPresets = useAppStore((s) => s.userPresets);
   const userSkills = useAppStore((s) => s.userSkills);
   const uploadSkill = useAppStore((s) => s.uploadSkill);
@@ -851,7 +854,14 @@ export default function PromptPanel({
                   onCancelGeneration();
                 }}
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                {!performanceMode && (
+                  <span className="prompt-stop-orb" aria-hidden="true">
+                    <Suspense fallback={null}>
+                      <ThinkingOrb state="composing" size={20} />
+                    </Suspense>
+                  </span>
+                )}
+                <svg className="prompt-stop-icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <rect x="5" y="5" width="14" height="14" rx="2" />
                 </svg>
               </button>
@@ -863,11 +873,11 @@ export default function PromptPanel({
             >
               <button
                 type="button"
-                className={`prompt-btn prompt-submit-btn ${!canGenerate || !prompt.trim() ? 'disabled' : ''}`}
+                className={`prompt-btn prompt-submit-btn${isGenerating ? ' is-generating' : ''} ${!canGenerate || !prompt.trim() ? 'disabled' : ''}`}
                 disabled={!canGenerate || !prompt.trim()}
                 aria-haspopup={batchSupported ? 'menu' : undefined}
                 aria-expanded={batchSupported ? batchMenuOpen : undefined}
-                data-tooltip={batchSupported ? t('点击生成 1 张，长按选择数量') : t('调用模型生成')}
+                data-tooltip={isGenerating ? t('生成中') : (batchSupported ? t('点击生成 1 张，长按选择数量') : t('调用模型生成'))}
                 onPointerDown={handleBatchPointerDown}
                 onPointerUp={clearBatchLongPress}
                 onPointerCancel={clearBatchLongPress}
@@ -875,10 +885,16 @@ export default function PromptPanel({
                 onContextMenu={(event) => { if (batchSupported) event.preventDefault(); }}
                 onClick={handleSubmitClick}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                  <polyline points="12 5 19 12 12 19" />
-                </svg>
+                {isGenerating && !performanceMode ? (
+                  <Suspense fallback={null}>
+                    <ThinkingOrb state="composing" size={20} aria-label={t('生成中')} />
+                  </Suspense>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                    <polyline points="12 5 19 12 12 19" />
+                  </svg>
+                )}
               </button>
               {batchSupported && (
                 <div className="image-batch-clip">

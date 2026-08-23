@@ -236,6 +236,7 @@ const nodes = {
   '终止 ComfyUI 任务': 'Terminate ComfyUI task',
   '点击生成 1 张，长按选择数量': 'Click to generate 1, long-press to choose a count',
   '调用模型生成': 'Call the model to generate',
+  '生成中': 'Generating',
   '选择批量生成数量': 'Choose batch count',
   '生成 {count} 张图片': 'Generate {count} image(s)',
   '生成 {count} 张，费用可能按张计算': 'Generate {count}, cost may be per image',

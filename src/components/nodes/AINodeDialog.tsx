@@ -916,7 +916,7 @@ function AINodeDialog() {
               className="ai-dialog-beam"
               size="md"
               borderRadius={14}
-              theme={document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'}
+              theme={typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'}
             />
           </Suspense>
         )}

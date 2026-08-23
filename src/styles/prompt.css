@@ -421,8 +421,44 @@
   background: transparent;
   color: var(--text-disabled);
 }
+.prompt-submit-btn.is-generating,
+.prompt-submit-btn.is-generating.disabled {
+  cursor: default;
+  color: var(--brand);
+}
+.prompt-submit-btn.is-generating.disabled:hover {
+  background: transparent;
+}
+/* 生成中的思考球：撑满按钮居中，不参与指针事件 */
+.prompt-submit-btn > canvas,
+.prompt-stop-orb > canvas {
+  display: block;
+  pointer-events: none;
+}
 .prompt-stop-btn {
   color: var(--danger);
+  position: relative;
+}
+/* 有思考球时默认显示球，悬停才露出终止方块 */
+.prompt-stop-orb {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity var(--transition-base);
+}
+.prompt-stop-btn:hover .prompt-stop-orb,
+.prompt-stop-btn:focus-visible .prompt-stop-orb {
+  opacity: 0;
+}
+.prompt-stop-btn:has(.prompt-stop-orb) .prompt-stop-icon {
+  opacity: 0;
+  transition: opacity var(--transition-base);
+}
+.prompt-stop-btn:has(.prompt-stop-orb):hover .prompt-stop-icon,
+.prompt-stop-btn:has(.prompt-stop-orb):focus-visible .prompt-stop-icon {
+  opacity: 1;
 }
 .prompt-stop-btn:hover {
   color: var(--danger-light);

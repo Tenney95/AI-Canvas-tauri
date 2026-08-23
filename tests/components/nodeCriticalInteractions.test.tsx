@@ -15,6 +15,7 @@ interface TestNode {
 
 interface TestStore {
   activeNodeId: string | null;
+  config: { performanceMode: boolean };
   currentProjectId: string | null;
   dialogPosition?: { x: number; y: number };
   nodes: TestNode[];
@@ -103,6 +104,7 @@ async function installReactHookDriver(
 function createStore(nodes: TestNode[], getRevision: () => number): TestStore {
   const store = {
     activeNodeId: null,
+    config: { performanceMode: false },
     currentProjectId: 'project-a',
     nodes,
     edges: [],
