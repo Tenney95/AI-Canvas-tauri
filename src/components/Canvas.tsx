@@ -34,6 +34,7 @@ import GroupNode from './nodes/GroupNode';
 import CanvasNoteNode from './noteNodes/CanvasNoteNode';
 import PluginNode from './nodes/PluginNode';
 import NodeRenderBoundary from './nodes/shared/NodeRenderBoundary';
+import { isEditableTarget } from '../utils/textSelection';
 import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
 import NodeContextMenu from './canvas/NodeContextMenu';
@@ -670,8 +671,7 @@ function CanvasInner() {
   useEffect(() => {
     const handler = (e: ClipboardEvent) => {
       // Skip if user is editing an input
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.contentEditable === 'true') return;
+      if (isEditableTarget(e.target)) return;
       // Skip if internal clipboard has nodes (handled by keyboard shortcut)
       if (useAppStore.getState().clipboard.nodes.length > 0) return;
 

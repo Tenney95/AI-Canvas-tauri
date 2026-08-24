@@ -640,6 +640,7 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
                 }}
                 onBlur={(e) => commitText(e.target.value)}
                 onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return; // 输入法组合中，回车属于候选框
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     commitText((e.target as HTMLTextAreaElement).value);

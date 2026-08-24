@@ -71,3 +71,14 @@ export function getActiveTextSelection(): ActiveTextSelection | null {
 export function hasActiveTextSelection(): boolean {
   return getActiveTextSelection() != null;
 }
+
+/**
+ * 事件目标是否落在可编辑区域内（输入框 / textarea / contenteditable）。
+ * 用 isContentEditable 而不是 contentEditable === 'true'：后者对「继承可编辑性」的
+ * 子元素返回 'inherit'，提示词编辑器里插入的行/芯片就属于这种，会漏判成非编辑态。
+ */
+export function isEditableTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.tagName !== 'string') return false;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable === true;
+}

@@ -752,6 +752,8 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   // ── KeyDown: mention navigation / submit / chip deletion ──
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
+      // 输入法组合中：回车/方向键属于候选框，不该触发提交或 @ 选中
+      if (e.nativeEvent.isComposing) return;
       // 方向键导航前先补好行首芯片的光标落点（ZWSP），否则光标跳不到芯片前
       if (e.key.startsWith('Arrow') && editorRef.current) normalizeChipSlots(editorRef.current);
       // @ mention: Enter → select first match

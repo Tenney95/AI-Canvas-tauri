@@ -335,6 +335,7 @@ export default function PresetManager() {
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (e.nativeEvent.isComposing) return; // 输入法组合中，回车属于候选框
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         handleEditorInput();

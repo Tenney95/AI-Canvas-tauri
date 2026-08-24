@@ -7,7 +7,7 @@ import { useAppStore } from '../store/useAppStore';
 import * as fileService from '../services/fileService';
 import { openAssetSearchWindow } from '../utils/assetSearchWindow';
 import { playNodeExit } from '../utils/nodeAnimations';
-import { hasActiveTextSelection } from '../utils/textSelection';
+import { hasActiveTextSelection, isEditableTarget } from '../utils/textSelection';
 import { cancelNodePolling } from '../services/pollManager';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import type { Node as RFNode } from '@xyflow/react';
@@ -120,7 +120,7 @@ export function useKeyboardShortcuts() {
     // ── Web fallback: JS keyboard events ──
     async function handleKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
-      const isEditing = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.contentEditable === 'true';
+      const isEditing = isEditableTarget(target);
 
       // Ctrl+S / Alt+S — always allow save even in inputs
       if ((e.ctrlKey || e.metaKey || e.altKey) && e.key === 's') {
