@@ -50,7 +50,9 @@ export const IMAGE_BUTTONS: ToolbarButtonDef[] = [
   { key: 'expand',         label: '扩图',        icon: 'mdi:arrow-expand-all',           defaultZone: 'Primary' },
   { key: 'multiGrid',      label: '宫格裁切',    icon: 'mdi:grid',                       defaultZone: 'Primary' },
   { key: 'cameraStudio',   label: '小逻摄影棚',  icon: 'mdi:camera-control',              defaultZone: 'Primary' },
-  { key: 'repaint',        label: '重绘',        icon: 'mdi:draw',                       defaultZone: 'Primary' },
+  // 行为与文本/视频节点的 showPrompt 一致（都是打开节点对话框），统一成同一套文案与图标；
+  // key 仍保留 repaint，避免用户已保存的工具栏布局丢掉这个按钮
+  { key: 'repaint',        label: '查看提示词',  icon: 'mdi:message-text-outline',       defaultZone: 'Primary' },
   { key: 'upscale',        label: '高清超分',    icon: 'mdi:image-auto-adjust',          defaultZone: 'Primary' },
   { key: 'subjectMatting', label: '自动识别主体',icon: 'mdi:hexagon-outline',             defaultZone: 'Primary' },
   { key: 'annotate',       label: '标注',        icon: 'mdi:draw-pen',                   defaultZone: 'Primary' },
