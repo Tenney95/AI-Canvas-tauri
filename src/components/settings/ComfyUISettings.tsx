@@ -15,7 +15,7 @@ import { useT } from '../../i18n';
 
 type ComfyStatus = 'idle' | 'starting' | 'ready' | 'failed';
 
-const INPUT_CLASS = 'text-sm bg-canvas-surface border border-canvas-border rounded-md px-3 py-2 text-canvas-text placeholder-canvas-text-muted focus:outline-none focus:border-indigo-500 transition-colors';
+const INPUT_CLASS = 'text-xs bg-canvas-surface border border-canvas-border rounded-md px-2.5 py-1.5 text-canvas-text placeholder-canvas-text-muted focus:outline-none focus:border-indigo-500 transition-colors';
 
 export default function ComfyUISettings() {
   const {
@@ -133,12 +133,12 @@ export default function ComfyUISettings() {
         <div className="bg-canvas-card border border-canvas-border rounded-lg p-2">
           <div className="text-xs text-canvas-text-muted mb-1.5">{t('ComfyUI 根目录路径')}</div>
           <div className="flex items-center gap-2 mb-3">
-            <div className={`flex-1 min-w-0 text-[11px] break-all bg-canvas-surface rounded-md px-3 py-1.5 border border-canvas-border ${
-              comfyUIPath ? 'text-canvas-text-secondary font-mono leading-relaxed select-all' : 'text-canvas-text-muted italic'
+            <div className={`flex-1 min-w-0 text-[11px] leading-4 break-all bg-canvas-surface rounded-md px-2.5 py-1 border border-canvas-border ${
+              comfyUIPath ? 'text-canvas-text-secondary font-mono select-all' : 'text-canvas-text-muted italic'
             }`}>
               {comfyUIPath || t('未设置')}
             </div>
-            <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs" onClick={choosePath}>
+            <AnimatedButton type="button" className="settings-save-btn self-stretch shrink-0 text-xs" onClick={choosePath}>
               {comfyUIPath ? t('更换') : t('选择文件夹')}
             </AnimatedButton>
           </div>
@@ -149,31 +149,31 @@ export default function ComfyUISettings() {
             <div className="grid grid-cols-2 gap-2">
               <AnimatedButton
                 type="button"
-                className="flex items-center justify-center gap-2 py-2.5 rounded-lg bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors text-sm font-medium"
+                className="flex items-center justify-center gap-1.5 py-1.5 rounded-md bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors text-xs font-medium"
                 onClick={launch}
                 disabled={launching}
               >
                 {launching ? (
                   <>
-                    <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="8" />
                     </svg>
                     {t('正在启动…')}
                   </>
                 ) : (
                   <>
-                    <Icon icon="lucide:play" width="16" height="16" />
+                    <Icon icon="lucide:play" width="14" height="14" />
                     {t('启动 ComfyUI')}
                   </>
                 )}
               </AnimatedButton>
               <AnimatedButton
                 type="button"
-                className="flex items-center justify-center gap-2 py-2.5 rounded-lg bg-canvas-surface border border-canvas-border text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text transition-colors text-sm font-medium"
+                className="flex items-center justify-center gap-1.5 py-1.5 rounded-md bg-canvas-surface border border-canvas-border text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text transition-colors text-xs font-medium"
                 onClick={() => void openComfyUI()}
                 disabled={opening}
               >
-                <Icon icon={opening ? 'lucide:loader-circle' : 'lucide:external-link'} width="16" height="16" className={opening ? 'animate-spin' : ''} />
+                <Icon icon={opening ? 'lucide:loader-circle' : 'lucide:external-link'} width="14" height="14" className={opening ? 'animate-spin' : ''} />
                 {t('打开 ComfyUI 页面')}
               </AnimatedButton>
             </div>
