@@ -11,6 +11,10 @@ export type PresetParameterValues = Record<string, PresetParameterValue>;
 
 export const CURRENT_PROMPT_VARIABLE = 'currentPrompt';
 export const LEGACY_PROMPT_VARIABLE = '文章内容';
+/** 上一步生成结果的 @ 引用；模板里不写则自动前置，写了就按写的位置插入 */
+export const PREVIOUS_RESULT_VARIABLE = 'previousResult';
+
+const RESERVED_VARIABLES = [CURRENT_PROMPT_VARIABLE, LEGACY_PROMPT_VARIABLE, PREVIOUS_RESULT_VARIABLE];
 
 const TEMPLATE_VARIABLE_PATTERN = /\{\{\s*([^{}]+?)\s*\}\}/g;
 const PARAMETER_KEY_PATTERN = /^[\p{L}_][\p{L}\p{N}_-]*$/u;
@@ -56,6 +60,26 @@ export function renderPresetTemplate(
   });
 }
 
+/**
+ * 渲染一个步骤的最终提示词：模板里出现 {{previousResult}} 就替换到该位置，
+ * 否则把上一步引用前置——保持旧预设的行为不变。
+ */
+export function composeStepPrompt(
+  template: string,
+  values: PresetParameterValues,
+  currentPrompt: string,
+  previousMention: string,
+): string {
+  const rendered = renderPresetTemplate(
+    template,
+    { ...values, [PREVIOUS_RESULT_VARIABLE]: previousMention },
+    currentPrompt,
+  ).trim();
+  return extractPresetTemplateVariables(template).includes(PREVIOUS_RESULT_VARIABLE)
+    ? rendered
+    : previousMention + '\n' + rendered;
+}
+
 export function validatePresetParameterValues(
   parameters: PresetParameterDefinition[],
   values: PresetParameterValues,
@@ -93,6 +117,8 @@ export function validatePresetAdvancedConfig(config: PresetAdvancedConfig): stri
       errors.push('参数 ' + displayIndex + ' 缺少变量名');
     } else if (!PARAMETER_KEY_PATTERN.test(key)) {
       errors.push('参数“' + (parameter.label || displayIndex) + '”的变量名格式无效');
+    } else if (RESERVED_VARIABLES.includes(key)) {
+      errors.push('变量名“' + key + '”是内置变量，请换一个');
     } else if (keys.has(key)) {
       errors.push('变量名“' + key + '”重复');
     }
@@ -111,7 +137,7 @@ export function validatePresetAdvancedConfig(config: PresetAdvancedConfig): stri
     return errors;
   }
 
-  const allowedVariables = new Set([CURRENT_PROMPT_VARIABLE, LEGACY_PROMPT_VARIABLE, ...keys]);
+  const allowedVariables = new Set([...RESERVED_VARIABLES, ...keys]);
   for (const [index, step] of config.steps.entries()) {
     const displayIndex = index + 1;
     if (!step.name.trim()) errors.push('步骤 ' + displayIndex + ' 缺少名称');

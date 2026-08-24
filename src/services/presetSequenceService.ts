@@ -13,7 +13,7 @@ import { generateId } from '../store/store.utils';
 import { useAppStore } from '../store/useAppStore';
 import { executeGeneration } from './generationService';
 import {
-  renderPresetTemplate,
+  composeStepPrompt,
   validatePresetAdvancedConfig,
   validatePresetParameterValues,
   type PresetParameterValues,
@@ -115,10 +115,10 @@ export function buildPresetSequencePlan({
     const label = step.name.trim();
     const previousLabel = previousNode.data.label || previousNode.data.fileName || previousNode.id;
     const mention = '@{' + previousNode.id + ':' + previousLabel + '}';
-    const renderedTemplate = renderPresetTemplate(step.promptTemplate, values, currentPrompt).trim();
-    const prompt = mention + '\n' + renderedTemplate;
+    const prompt = composeStepPrompt(step.promptTemplate, values, currentPrompt, mention);
     const dimensions = computeNodeDimensions(step.nodeType, step.aspectRatio);
     const canInheritModel = previousNode.data.type === step.nodeType;
+    const provider = step.provider || (canInheritModel ? previousNode.data.provider : undefined);
 
     const data: BaseNodeData = {
       type: step.nodeType,
@@ -127,7 +127,11 @@ export function buildPresetSequencePlan({
       role: 'generator',
       status: 'idle',
       model: step.model || (canInheritModel ? previousNode.data.model : undefined),
-      provider: step.provider || (canInheritModel ? previousNode.data.provider : undefined),
+      provider,
+      // ComfyUI 靠 workflowId 走本地执行路径，只带 provider 会在生成时找不到工作流（同 createPresetNode）
+      ...(provider === 'comfyui' && (step.workflowId || sourceNode.data.workflowId)
+        ? { workflowId: step.workflowId || sourceNode.data.workflowId }
+        : {}),
       imageSize: step.imageSize || (canInheritModel ? previousNode.data.imageSize : undefined),
       aspectRatio: step.aspectRatio || (canInheritModel ? previousNode.data.aspectRatio : undefined),
       ...dimensions,
@@ -136,6 +140,8 @@ export function buildPresetSequencePlan({
       id: nodeId,
       type: step.nodeType,
       position: { x: nextX, y: sourceNode.position.y },
+      // 源节点在分组内时 position 是相对父节点的，不带 parentId 会被当成绝对坐标画到组外
+      ...(sourceNode.parentId ? { parentId: sourceNode.parentId } : {}),
       data,
     };
     nodes.push(node);

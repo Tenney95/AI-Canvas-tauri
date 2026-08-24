@@ -1,6 +1,7 @@
 /**
  * 编辑高级预设的参数定义、模板和多步骤节点序列，并提供即时结构校验。
  */
+import { useMemo } from 'react';
 import { Icon } from '@iconify/react';
 import type {
   ModelOption,
@@ -17,6 +18,13 @@ import {
   getNodeTypeConfig,
 } from '../../../types';
 import { generateId } from '../../../store/store.utils';
+import { useAppStore } from '../../../store/useAppStore';
+import {
+  PREVIOUS_RESULT_VARIABLE,
+  composeStepPrompt,
+  createPresetParameterValues,
+  validatePresetAdvancedConfig,
+} from '../../../services/presetTemplateService';
 import ModelSelector from './ModelSelector';
 import QualityRatioSelector from './QualityRatioSelector';
 
@@ -114,6 +122,14 @@ export default function PresetAdvancedEditor({
   defaultNodeType,
   onChange,
 }: PresetAdvancedEditorProps) {
+  const workflows = useAppStore((state) => state.workflows);
+  const errors = useMemo(() => validatePresetAdvancedConfig(config), [config]);
+  // 预览用默认值渲染，未填的必填参数会显示成空——只是让变量拼写和拼接位置可见
+  const previewValues = useMemo(
+    () => createPresetParameterValues(config.parameters),
+    [config.parameters],
+  );
+
   const updateParameter = (id: string, patch: Partial<PresetParameterDefinition>) => {
     onChange({
       ...config,
@@ -137,6 +153,15 @@ export default function PresetAdvancedEditor({
 
   return (
     <div className="preset-advanced-editor">
+      {errors.length > 0 ? (
+        <div className="preset-advanced-errors" role="status">
+          <Icon icon="mdi:alert-circle-outline" width={15} height={15} />
+          <ul>
+            {errors.map((error) => <li key={error}>{error}</li>)}
+          </ul>
+        </div>
+      ) : null}
+
       <section className="preset-advanced-section" aria-labelledby="preset-parameters-title">
         <div className="preset-advanced-section-header">
           <div>
@@ -319,6 +344,7 @@ export default function PresetAdvancedEditor({
                         nodeType: event.target.value as PresetNodeType,
                         model: undefined,
                         provider: undefined,
+                        workflowId: undefined,
                         imageSize: undefined,
                         aspectRatio: undefined,
                       })}
@@ -373,6 +399,12 @@ export default function PresetAdvancedEditor({
                     <button type="button" onClick={() => appendVariable(step, 'currentPrompt')}>
                       当前提示词
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => appendVariable(step, PREVIOUS_RESULT_VARIABLE)}
+                    >
+                      {index === 0 ? '触发节点' : '上一步结果'}
+                    </button>
                     {config.parameters.map((parameter) => (
                       <button
                         type="button"
@@ -391,6 +423,18 @@ export default function PresetAdvancedEditor({
                     onChange={(event) => updateStep(step.id, { promptTemplate: event.target.value })}
                   />
 
+                  <div className="preset-advanced-step-preview">
+                    <span>预览</span>
+                    <p>
+                      {composeStepPrompt(
+                        step.promptTemplate,
+                        previewValues,
+                        '当前提示词',
+                        index === 0 ? '@触发节点' : '@上一步',
+                      )}
+                    </p>
+                  </div>
+
                   <div className="preset-advanced-step-settings">
                     <div className="preset-advanced-setting">
                       <span>模型</span>
@@ -398,16 +442,26 @@ export default function PresetAdvancedEditor({
                         nodeType={step.nodeType}
                         selectedModel={step.model}
                         selectedProvider={step.provider}
+                        selectedWorkflowId={step.workflowId}
+                        workflows={workflows}
                         onSelect={(model: ModelOption) => updateStep(step.id, {
                           model: model.value,
                           provider: model.provider,
+                          workflowId: undefined,
                         })}
+                        onWorkflowSelect={(workflowId) => updateStep(step.id, workflowId
+                          ? { workflowId, provider: 'comfyui', model: 'comfyui/workflow' }
+                          : { workflowId: undefined })}
                       />
-                      {step.model ? (
+                      {step.model || step.workflowId ? (
                         <button
                           type="button"
                           className="preset-advanced-clear-button"
-                          onClick={() => updateStep(step.id, { model: undefined, provider: undefined })}
+                          onClick={() => updateStep(step.id, {
+                            model: undefined,
+                            provider: undefined,
+                            workflowId: undefined,
+                          })}
                         >
                           使用默认
                         </button>

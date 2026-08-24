@@ -710,6 +710,8 @@ export interface PresetSequenceStep {
   promptTemplate: string;
   model?: string;
   provider?: string;
+  /** provider=comfyui 时指定本地工作流；缺省则沿用触发节点的工作流 */
+  workflowId?: string;
   imageSize?: string;
   aspectRatio?: string;
 }

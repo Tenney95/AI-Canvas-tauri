@@ -1301,3 +1301,62 @@
   font-size: 12px;
   line-height: 1;
 }
+
+/* 高级编辑器：实时结构校验清单 */
+.preset-advanced-errors {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger-pale);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.preset-advanced-errors > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.preset-advanced-errors ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.preset-advanced-errors li {
+  word-break: break-word;
+}
+
+/* 高级编辑器：步骤模板的实际拼接结果预览 */
+.preset-advanced-step-preview {
+  display: flex;
+  gap: 7px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: var(--theme-hover);
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.preset-advanced-step-preview > span {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+
+.preset-advanced-step-preview p {
+  margin: 0;
+  min-width: 0;
+  max-height: 76px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

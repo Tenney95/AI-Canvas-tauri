@@ -23,6 +23,8 @@ import { isAdvancedPreset, runPresetSequence } from '../../../services/presetSeq
 import PopupCloseButton from '../../shared/PopupCloseButton';
 
 const EMPTY_PARAMETERS: PresetParameterDefinition[] = [];
+// ponytail: 只记在内存，重启清空；要跨会话记住再落到 preset 里
+const lastRunValues = new Map<string, PresetParameterValues>();
 const EMPTY_STEPS: NonNullable<UserPreset['advanced']>['steps'] = [];
 
 const runnerPanelVariants = {
@@ -109,9 +111,16 @@ function PresetRunnerContent({
 }) {
   const parameters = preset.advanced?.parameters ?? EMPTY_PARAMETERS;
   const steps = preset.advanced?.steps ?? EMPTY_STEPS;
-  const [values, setValues] = useState<PresetParameterValues>(
-    () => createPresetParameterValues(parameters),
-  );
+  const [values, setValues] = useState<PresetParameterValues>(() => {
+    const initial = createPresetParameterValues(parameters);
+    const remembered = lastRunValues.get(preset.id);
+    if (!remembered) return initial;
+    // 只回填仍然存在的参数，改过定义的老值不带进来
+    for (const parameter of parameters) {
+      if (parameter.key in remembered) initial[parameter.key] = remembered[parameter.key];
+    }
+    return initial;
+  });
   const showToast = useAppStore((state) => state.showToast);
   const errors = useMemo(
     () => validatePresetParameterValues(parameters, values),
@@ -123,6 +132,7 @@ function PresetRunnerContent({
       showToast(errors[0], 'error');
       return;
     }
+    lastRunValues.set(preset.id, values);
     onClose();
     void runPresetSequence({
       preset,
