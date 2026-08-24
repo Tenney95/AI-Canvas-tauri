@@ -335,7 +335,6 @@ export default function WorkflowPanel() {
             animate="visible"
             exit="hidden"
             transition={{ duration: 0.2 }}
-            onClick={handleClose}
           />
 
           {/* Centering wrapper */}
