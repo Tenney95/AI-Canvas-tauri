@@ -64,6 +64,16 @@
   border-color: rgba(251, 191, 36, 0.45);
 }
 
+.shotlist-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.shotlist-btn:disabled:hover {
+  background: transparent;
+  border-color: var(--theme-border, rgba(255, 255, 255, 0.12));
+}
+
 .shotlist-btn--primary {
   border-color: rgba(251, 191, 36, 0.45);
   color: #fbbf24;

@@ -42,6 +42,7 @@ export {
   isShotRowTextOnly,
   readShotFrameSource,
   resolveShotDuration,
+  resolveShotlistColumns,
   resolveShotTransitionKind,
   SHOT_CAMERA_OPTIONS,
   SHOT_SIZE_OPTIONS,

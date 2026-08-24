@@ -235,3 +235,15 @@ export function createShotRow(id: string, shotNo: string | number): ShotRow {
     note: '',
   };
 }
+
+/**
+ * 当前该显示哪些列：常驻列恒在其中，存量数据没存过配置就回落到默认列。
+ * 表头、单元格与 AI 出题共用这一份，免得三处各算各的。
+ */
+export function resolveShotlistColumns(columns: ShotlistColumnKey[] | undefined): ShotlistColumnKey[] {
+  const enabled = new Set<ShotlistColumnKey>([
+    ...SHOTLIST_PINNED_COLUMNS,
+    ...(columns ?? SHOTLIST_DEFAULT_COLUMNS),
+  ]);
+  return SHOTLIST_COLUMN_ORDER.filter((key) => enabled.has(key));
+}

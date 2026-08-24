@@ -28,6 +28,7 @@ const nodes = {
   '全景图生成完成': 'Panorama generated',
   '视频生成完成': 'Video generated',
   '音频生成完成': 'Audio generated',
+  '已生成 {count} 个镜头': 'Generated {count} shots',
   '人物': 'character',
   '场景': 'scene',
   '道具': 'prop',

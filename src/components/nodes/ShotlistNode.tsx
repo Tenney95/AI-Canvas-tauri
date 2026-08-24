@@ -25,12 +25,12 @@ import {
   SHOTLIST_COLUMN_ORDER,
   SHOTLIST_DEFAULT_COLUMNS,
   SHOTLIST_OPTIONAL_COLUMNS,
-  SHOTLIST_PINNED_COLUMNS,
   buildShotFramePrompt,
   collectShotFrameCandidates,
   computeShotlistDuration,
   createShotRow,
   readShotFrameSource,
+  resolveShotlistColumns,
 } from '../../types';
 import MentionEditor from './shared/MentionEditor';
 import { isInsideMentionPortal } from './shared/mentionPortals';
@@ -82,10 +82,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   );
 
   // 常驻列不受配置影响，避免存量数据把表结构裁没了
-  const visibleColumns = useMemo(() => {
-    const enabled = new Set<ShotlistColumnKey>([...SHOTLIST_PINNED_COLUMNS, ...columns]);
-    return SHOTLIST_COLUMN_ORDER.filter((key) => enabled.has(key));
-  }, [columns]);
+  const visibleColumns = useMemo(() => resolveShotlistColumns(columns), [columns]);
 
   /**
    * 画面格实时解析：读画布上被引用节点的当前素材，源节点不在了才回落到快照。
@@ -110,6 +107,9 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   );
 
   const totalDuration = useMemo(() => computeShotlistDuration(rows), [rows]);
+
+  /** 整表生成中（AI 弹窗把节点 status 置为 loading），与单格出图的 busyRows 是两回事 */
+  const generating = data.status === 'loading';
 
   const { displayLabel, handleRename } = useNodeRename(id, data, '分镜表');
 
@@ -281,6 +281,20 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       setBusyRows((prev) => prev.filter((item) => item !== rowId));
     }
   }, [aiPrompt, displayLabel, id, rows]);
+
+  /**
+   * 叫模型拆整张表：复用节点通用的 AI 弹窗（模型选择器 + @ 引用 + 提示词），
+   * 回答由 AINodeDialog 解析成 shotlistRows 写回来，这里只负责把弹窗开在表底下。
+   */
+  const openAiDialog = useCallback(() => {
+    setColumnMenuRequested(false);
+    const el = document.querySelector(`.react-flow__node[data-id="${id}"]`);
+    const rect = el?.getBoundingClientRect();
+    useAppStore.getState().openNodeDialog(
+      id,
+      rect ? { x: rect.left + rect.width / 2, y: rect.bottom } : undefined,
+    );
+  }, [id]);
 
   const pushToTimeline = useCallback(async () => {
     const store = useAppStore.getState();
@@ -486,6 +500,18 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             <button
               type="button"
               className="shotlist-btn"
+              onClick={openAiDialog}
+              disabled={generating}
+              title="按剧本让模型拆出整张分镜表（只填当前显示的列）"
+            >
+              {generating
+                ? <span className="shot-frame-spinner" aria-hidden="true" />
+                : <Icon icon="mdi:auto-fix" width={13} height={13} />}
+              {generating ? '生成中' : 'AI 生成'}
+            </button>
+            <button
+              type="button"
+              className="shotlist-btn"
               onClick={() => setColumnMenuRequested((open) => !open)}
               title="选择显示的列"
             >
@@ -573,7 +599,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
           </table>
 
           {rows.length === 0 && (
-            <div className="shotlist-empty">还没有镜头，点下面「加一镜」开始</div>
+            <div className="shotlist-empty">还没有镜头，点「AI 生成」让模型拆，或点下面「加一镜」自己写</div>
           )}
         </div>
 

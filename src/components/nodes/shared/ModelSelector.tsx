@@ -22,6 +22,16 @@ import { useT } from '../../../i18n';
 
 const MODEL_PREF_KEY = 'canvas-model-prefs';
 
+/**
+ * 没有独立模型清单的节点类型，借用哪一类的模型和偏好。
+ * 分镜表让文本模型把剧本拆成表格行，用的就是生文那批模型。
+ */
+const MODEL_TYPE_FALLBACK: Partial<Record<NodeType, NodeType>> = {
+  'ai-panorama': 'ai-image',
+  'ai-animation': 'ai-image',
+  'ai-shotlist': 'ai-text',
+};
+
 function loadModelPrefs(): Record<string, string> {
   try {
     const raw = localStorage.getItem(MODEL_PREF_KEY);
@@ -72,7 +82,7 @@ export default function ModelSelector({
 }: ModelSelectorProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  const modelNodeType = nodeType === 'ai-panorama' || nodeType === 'ai-animation' ? 'ai-image' : nodeType;
+  const modelNodeType = MODEL_TYPE_FALLBACK[nodeType] ?? nodeType;
 
   // 读取配置 — 判断哪些 provider 有 API Key
   const config = useAppStore((s) => s.config);
@@ -229,13 +239,14 @@ export default function ModelSelector({
     .filter((g) => g.models.length > 0);
 
   // 持久化偏好：优先 props 传入的 selectedModel，其次 localStorage 中的记录
-  // 全景图节点回退到生图节点偏好
+  // 全景图/动画回退到生图偏好，分镜表回退到生文偏好
   const effectiveModel = useMemo(
     () => {
       const prefs = loadModelPrefs();
+      const fallbackType = MODEL_TYPE_FALLBACK[nodeType];
       return selectedModel
         || prefs[nodeType]
-        || (nodeType === 'ai-panorama' || nodeType === 'ai-animation' ? prefs['ai-image'] : undefined)
+        || (fallbackType ? prefs[fallbackType] : undefined)
         || undefined;
     },
     [selectedModel, nodeType],
