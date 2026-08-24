@@ -25,6 +25,7 @@ async function applyInitialChatWindowTheme() {
   if (!isChatWindow) return
 
   let effectiveTheme: AppConfig['theme'] = 'dark'
+  let nativeCursor = false
   try {
     // 只要主题字段，不必为此去读凭据存储
     const { loadConfigWithoutSecrets } = await import('./services/fileService')
@@ -33,11 +34,13 @@ async function applyInitialChatWindowTheme() {
       ? 'light'
       : config?.theme === 'light' ? 'light' : 'dark'
     // 与主题同批应用，避免独立窗口先闪一帧中文
+    nativeCursor = config?.customCursor === false
     setLocale(config?.language)
   } catch (error) {
     console.warn('[main] failed to load chat window theme:', error)
   }
   document.documentElement.setAttribute('data-theme', effectiveTheme)
+  document.documentElement.toggleAttribute('data-native-cursor', nativeCursor)
 }
 
 async function mountRoot() {

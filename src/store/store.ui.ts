@@ -24,6 +24,8 @@ export interface UISlice {
   dialogPosition: { x: number; y: number } | null;
   assetsPanelOpen: boolean;
   characterLibraryOpen: boolean;
+  /** 角色库里的动作库弹层；圆环快捷入口要能越过角色列表直接打开它 */
+  characterActionLibraryOpen: boolean;
   historyPanelOpen: boolean;
   minimapVisible: boolean;
   directorDeskRuntimeRequest: {
@@ -65,6 +67,7 @@ export interface UISlice {
   closeNodeDialog: () => void;
   setAssetsPanelOpen: (open: boolean) => void;
   setCharacterLibraryOpen: (open: boolean) => void;
+  setCharacterActionLibraryOpen: (open: boolean) => void;
   setHistoryPanelOpen: (open: boolean) => void;
   toggleMinimap: () => void;
   requestDirectorDeskRuntime: (instanceId: string, openAfterInstall?: boolean) => void;
@@ -88,6 +91,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   dialogPosition: null,
   assetsPanelOpen: false,
   characterLibraryOpen: false,
+  characterActionLibraryOpen: false,
   historyPanelOpen: false,
   minimapVisible: true,
   directorDeskRuntimeRequest: null,
@@ -101,6 +105,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
         settingsInitialTab: tab ?? null,
         assetsPanelOpen: false,
         characterLibraryOpen: false,
+        characterActionLibraryOpen: false,
         historyPanelOpen: false,
         dramaAssetsPanelOpen: false,
         chatOpen: false,
@@ -134,6 +139,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
         settingsOpen: false,
         assetsPanelOpen: true,
         characterLibraryOpen: false,
+        characterActionLibraryOpen: false,
         historyPanelOpen: false,
         dramaAssetsPanelOpen: false,
         chatOpen: false,
@@ -144,16 +150,29 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
         settingsOpen: false,
         assetsPanelOpen: false,
         characterLibraryOpen: true,
+        characterActionLibraryOpen: false,
         historyPanelOpen: false,
         dramaAssetsPanelOpen: false,
         chatOpen: false,
       }
-    : { characterLibraryOpen: false }),
+    : { characterLibraryOpen: false, characterActionLibraryOpen: false }),
+  // 角色库里点开时两个都开着（关掉动作库退回角色库）；圆环直接进来时只开这一个
+  setCharacterActionLibraryOpen: (open) => set(open
+    ? {
+        settingsOpen: false,
+        assetsPanelOpen: false,
+        historyPanelOpen: false,
+        dramaAssetsPanelOpen: false,
+        chatOpen: false,
+        characterActionLibraryOpen: true,
+      }
+    : { characterActionLibraryOpen: false }),
   setHistoryPanelOpen: (open) => set(open
     ? {
         settingsOpen: false,
         assetsPanelOpen: false,
         characterLibraryOpen: false,
+        characterActionLibraryOpen: false,
         historyPanelOpen: true,
         dramaAssetsPanelOpen: false,
         chatOpen: false,

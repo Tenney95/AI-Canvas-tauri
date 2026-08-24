@@ -99,7 +99,7 @@ export default function App() {
       nodeDialog: state.activeNodeId !== null,
       workflows: state.workflowPanelOpen,
       assets: state.assetsPanelOpen,
-      characters: state.characterLibraryOpen,
+      characters: state.characterLibraryOpen || state.characterActionLibraryOpen,
       history: state.historyPanelOpen,
       chat: state.chatOpen || state.chatPanelDetached,
       presetRunner: state.presetRunRequest !== null,
@@ -318,10 +318,17 @@ export default function App() {
   const mascotLoading = useAppStore(selectMascotLoading);
   const mascotStatus = useMascotStatus();
   const effectiveTheme = canvasBackground === 'off-white' ? 'light' : configTheme;
+  const nativeCursor = useAppStore((s) => s.config.customCursor === false);
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', effectiveTheme);
     return () => document.documentElement.removeAttribute('data-theme');
   }, [effectiveTheme]);
+
+  // 关闭自定义指针时打标记，cursors.css 据此把 --cursor-* 清空、回落系统指针
+  useEffect(() => {
+    document.documentElement.toggleAttribute('data-native-cursor', nativeCursor);
+    return () => document.documentElement.removeAttribute('data-native-cursor');
+  }, [nativeCursor]);
 
   // 性能模式取消 CSS 自绘圆角后，由 Windows DWM 提供系统原生圆角。
   useEffect(() => {

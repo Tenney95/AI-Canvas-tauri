@@ -464,6 +464,8 @@ export type CanvasQuickActionKind =
   | 'assets'
   | 'settings'
   | 'projects'
+  | 'video-editor'
+  | 'action-library'
   | 'fit-view'
   | 'custom-url'
   | 'disabled';
@@ -494,6 +496,7 @@ export interface AppConfig {
   windowAspectRatio?: WindowAspectRatio; // 窗口尺寸预设所用比例，默认 '16:9'
   windowAspectLocked?: boolean; // 拖拽缩放窗口时是否固定为上面的比例，默认 false
   windowSize?: { width: number; height: number }; // 上次退出时的窗口逻辑尺寸，启动时恢复
+  customCursor?: boolean; // 是否启用内置鼠标指针样式，默认 true
   customBackgroundUrl?: string;  // 自定义背景图片 data URL
   customBackgroundIsDark?: boolean; // 自定义背景是否为深色（自动识别）
   customBackgroundOpacity?: number; // 自定义背景透明度 0-1，默认 0.3

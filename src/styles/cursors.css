@@ -39,3 +39,19 @@ html,
 body {
   cursor: var(--cursor-default, default);
 }
+
+/* 常规设置里关掉自定义指针：清空变量，每处 var(--cursor-x, x) 自动回落到
+   原来的系统关键字。必须排在上面两块之后（同为 0,1,0 特异性，靠顺序取胜）。 */
+[data-native-cursor] {
+  --cursor-default: initial;
+  --cursor-pointer: initial;
+  --cursor-text: initial;
+  --cursor-not-allowed: initial;
+  --cursor-move: initial;
+  --cursor-crosshair: initial;
+  --cursor-ew-resize: initial;
+  --cursor-ns-resize: initial;
+  --cursor-nwse-resize: initial;
+  --cursor-nesw-resize: initial;
+  --cursor-help: initial;
+}

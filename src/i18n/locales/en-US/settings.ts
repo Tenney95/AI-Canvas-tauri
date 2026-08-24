@@ -19,6 +19,10 @@ const settings = {
   '拖拽缩放窗口时不限制宽高比': 'Resize the window freely, no ratio constraint',
 
   // ── 设置 · 画布背景 ──
+  '鼠标指针': 'Mouse cursor',
+  '自定义指针样式': 'Custom cursor style',
+  '使用内置指针，跟随明暗主题自动切换黑白': 'Built-in cursors, switching black/white with the theme',
+  '使用系统默认指针': 'Use the system default cursor',
   '画布背景': 'Canvas background',
   '默认暗色': 'Default dark',
   '太阳系': 'Solar system',

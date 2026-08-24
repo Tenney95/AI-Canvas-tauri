@@ -186,6 +186,8 @@ export default function CharacterLibraryPanel() {
   const t = useT();
   const {
     open,
+    actionLibraryOpen,
+    setActionLibraryOpen,
     setOpen,
     projectCharacters,
     globalCharacters,
@@ -214,6 +216,8 @@ export default function CharacterLibraryPanel() {
     useShallow((state) => ({
       open: state.characterLibraryOpen,
       setOpen: state.setCharacterLibraryOpen,
+      actionLibraryOpen: state.characterActionLibraryOpen,
+      setActionLibraryOpen: state.setCharacterActionLibraryOpen,
       projectCharacters: state.dramaAssets.characters,
       globalCharacters: state.globalCharacters,
       globalCharactersLoading: state.globalCharactersLoading,
@@ -263,7 +267,6 @@ export default function CharacterLibraryPanel() {
   const [bindingVoice, setBindingVoice] = useState(false);
   const [captureNodeId, setCaptureNodeId] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [actionLibraryOpen, setActionLibraryOpen] = useState(false);
   const [actionCategory, setActionCategory] = useState<CharacterActionCategory>('standing');
   const [actionFilter, setActionFilter] = useState<CharacterActionCategory | 'all'>('all');
   const [actionName, setActionName] = useState('');
@@ -278,8 +281,12 @@ export default function CharacterLibraryPanel() {
   const actionMediaInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (open) void loadGlobalCharacters();
-  }, [loadGlobalCharacters, open]);
+    if (open || actionLibraryOpen) void loadGlobalCharacters();
+  }, [actionLibraryOpen, loadGlobalCharacters, open]);
+
+  // 面板卸载时清掉动作库标记：关角色库的路径有好几条（开设置、开素材库…），
+  // 不清的话下次从侧边栏进角色库会莫名直接弹出动作库
+  useEffect(() => () => setActionLibraryOpen(false), [setActionLibraryOpen]);
 
   const sourceCharacters = scope === 'project' ? projectCharacters : globalCharacters;
   const characters = useMemo(() => {
@@ -1024,6 +1031,18 @@ export default function CharacterLibraryPanel() {
                   <h3 className="text-xs font-semibold">{t('动作列表')}</h3>
                   <p className="mt-0.5 text-[10px] text-canvas-text-muted">{t('同一动作可继续添加多份演示素材')}</p>
                 </div>
+                <label className="flex items-center gap-2 text-[10px] text-canvas-text-secondary">
+                  {t('角色')}
+                  <select
+                    value={selectedCharacter.id}
+                    onChange={(event) => setSelectedCharacterId(event.target.value)}
+                    className="h-8 min-w-32 max-w-44 rounded-lg border border-canvas-border bg-canvas-card px-2 text-xs text-canvas-text outline-none focus:border-indigo-400"
+                  >
+                    {characters.map((character) => (
+                      <option key={character.id} value={character.id}>{character.name}</option>
+                    ))}
+                  </select>
+                </label>
                 <label className="flex items-center gap-2 text-[10px] text-canvas-text-secondary">
                   {t('筛选')}
                   <select

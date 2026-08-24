@@ -57,6 +57,7 @@ export default function ChatWindow() {
           ? 'light'
           : config?.theme === 'light' ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', effectiveTheme);
+        document.documentElement.toggleAttribute('data-native-cursor', config?.customCursor === false);
         setLocale(config?.language);
       });
     };

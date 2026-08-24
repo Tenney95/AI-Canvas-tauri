@@ -388,6 +388,7 @@ export default function VideoEditorWindow() {
           'data-theme',
           config?.theme === 'light' ? 'light' : session.theme,
         );
+        document.documentElement.toggleAttribute('data-native-cursor', config?.customCursor === false);
         setLocale(config?.language);
         setBaseDataDir(config?.baseDataDir);
         await syncAuthorizedDirectories(config ?? {});

@@ -163,6 +163,7 @@ export default function SettingsPanel() {
   const performanceMode = config.performanceMode === true;
   const windowAspectRatio = config.windowAspectRatio ?? '16:9';
   const windowAspectLocked = config.windowAspectLocked === true;
+  const customCursor = config.customCursor !== false; // 默认开启
   // 当前窗口实际尺寸 —— 用来给尺寸预设标出选中态
   const [currentWindowSize, setCurrentWindowSize] = useState<{ w: number; h: number } | null>(null);
   useEffect(() => {
@@ -744,6 +745,43 @@ export default function SettingsPanel() {
                   </div>
                 </section>
                 )}
+
+                {/* 鼠标指针 */}
+                <section>
+                  <h3 className="mb-2 text-sm font-medium text-canvas-text">{t('鼠标指针')}</h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateConfig({ customCursor: !customCursor });
+                      saveConfig();
+                    }}
+                    aria-pressed={customCursor}
+                    className={`sidebar-pref-card${customCursor ? ' is-floating' : ''}`}
+                  >
+                    <span
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                        customCursor ? 'bg-indigo-500/15 text-indigo-400' : 'bg-canvas-surface text-canvas-text-secondary'
+                      }`}
+                      aria-hidden="true"
+                    >
+                      <Icon icon="mdi:cursor-default-outline" width="16" height="16" />
+                    </span>
+
+                    <div className="sidebar-pref-text">
+                      <div className="sidebar-pref-title">{t('自定义指针样式')}</div>
+                      <div className="sidebar-pref-desc">
+                        {customCursor
+                          ? t('使用内置指针，跟随明暗主题自动切换黑白')
+                          : t('使用系统默认指针')}
+                      </div>
+                    </div>
+
+                    <div className="sidebar-pref-switch" aria-hidden="true">
+                      <span />
+                    </div>
+                  </button>
+
+                </section>
 
                 {/* 节点顶部工具栏显示方式 */}
                 <section>

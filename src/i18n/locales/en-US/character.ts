@@ -60,6 +60,7 @@ const character = {
   '角色已删除': 'Character deleted',
   '节点已显示': 'Node shown',
   '已将角色参考图添加到画布': 'Character reference image added to canvas',
+  '动作库': 'Action library',
   '角色动作库': 'Character action library',
   '打开「{name}」的动作库': 'Open the action library for {name}',
   '「{name}」的动作库': 'Action library for {name}',

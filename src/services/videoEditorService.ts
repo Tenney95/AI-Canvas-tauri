@@ -264,6 +264,38 @@ export async function openVideoEditorForShotlist(params: {
   await openVideoEditorWindow({ instanceId: id, projectId, nodeId, theme });
 }
 
+/**
+ * 圆环快捷入口：不带素材直接开剪辑窗口。
+ * 编辑器只按 ID 取工程，没有记录会报「未找到剪辑工程」，所以这里先补一条空轨道；
+ * 已存在就直接复用，避免把上次的剪辑清空。
+ */
+export async function openVideoEditorBlank(params: {
+  projectId: string;
+  theme?: 'dark' | 'light';
+}): Promise<void> {
+  const { projectId, theme } = params;
+  if (!projectId) throw new Error('请先打开一个项目再进入视频编辑器');
+
+  const nodeId = 'canvas-quick';
+  const id = buildVideoEditorProjectId(projectId, nodeId);
+  if (!(await getVideoEditorProject(id))) {
+    const now = Date.now();
+    await saveVideoEditorProject({
+      id,
+      schemaVersion: VIDEO_EDITOR_SCHEMA_VERSION,
+      projectId,
+      nodeId,
+      nodeIds: [],
+      name: '快速剪辑',
+      tracks: [{ id: 'video-1', kind: 'video', name: '视频轨 1', clips: [] }],
+      createdAt: now,
+      updatedAt: now,
+    } satisfies VideoEditorProjectRecord);
+  }
+
+  await openVideoEditorWindow({ instanceId: id, projectId, nodeId, theme });
+}
+
 /** 单节点入口，保留给只右键一个视频节点的场景 */
 export async function openVideoEditorForNode(params: {
   projectId: string;

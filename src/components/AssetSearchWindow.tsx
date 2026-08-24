@@ -66,6 +66,7 @@ export default function AssetSearchWindow() {
       const cfg = (await loadConfig()) as AppConfig | null;
       // 主题（独立窗口需自行应用 data-theme）
       document.documentElement.setAttribute('data-theme', cfg?.theme === 'light' ? 'light' : 'dark');
+      document.documentElement.toggleAttribute('data-native-cursor', cfg?.customCursor === false);
       setLocale(cfg?.language);
       // 同步用户自定义数据根目录到 fileService
       setBaseDataDir(cfg?.baseDataDir);

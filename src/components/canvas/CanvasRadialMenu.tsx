@@ -30,6 +30,8 @@ const ACTION_DEFINITIONS: ActionDefinition[] = [
   { kind: 'assets', label: '素材库', icon: 'solar:gallery-wide-bold-duotone' },
   { kind: 'settings', label: '设置', icon: 'solar:settings-bold-duotone' },
   { kind: 'projects', label: '项目库', icon: 'solar:folder-with-files-bold-duotone' },
+  { kind: 'video-editor', label: '视频编辑器', icon: 'solar:clapperboard-play-bold-duotone' },
+  { kind: 'action-library', label: '动作库', icon: 'lucide:accessibility' },
   { kind: 'fit-view', label: '适应画布', icon: 'solar:maximize-square-3-bold-duotone' },
   { kind: 'custom-url', label: '自定义网页', icon: 'solar:link-round-angle-bold-duotone' },
   { kind: 'disabled', label: '留空', icon: 'solar:minus-circle-bold-duotone' },
@@ -40,9 +42,9 @@ const DEFINITION_BY_KIND = new Map(ACTION_DEFINITIONS.map((definition) => [defin
 const DEFAULT_CANVAS_QUICK_ACTIONS: CanvasQuickAction[] = [
   { id: 'canvas-quick-comfyui', kind: 'comfyui' },
   { id: 'canvas-quick-workflows', kind: 'workflows' },
-  { id: 'canvas-quick-assets', kind: 'assets' },
+  { id: 'canvas-quick-video-editor', kind: 'video-editor' },
   { id: 'canvas-quick-settings', kind: 'settings' },
-  { id: 'canvas-quick-projects', kind: 'projects' },
+  { id: 'canvas-quick-action-library', kind: 'action-library' },
   { id: 'canvas-quick-fit-view', kind: 'fit-view' },
 ];
 
@@ -114,6 +116,8 @@ export default function CanvasRadialMenu({ position, onClose }: CanvasRadialMenu
     setAssetsPanelOpen,
     setSettingsOpen,
     setProjectLibraryOpen,
+    setCharacterLibraryOpen,
+    setCharacterActionLibraryOpen,
     showToast,
   } = useAppStore(useShallow((state) => ({
     configuredActions: state.config.canvasQuickActions,
@@ -124,6 +128,8 @@ export default function CanvasRadialMenu({ position, onClose }: CanvasRadialMenu
     setAssetsPanelOpen: state.setAssetsPanelOpen,
     setSettingsOpen: state.setSettingsOpen,
     setProjectLibraryOpen: state.setProjectLibraryOpen,
+    setCharacterLibraryOpen: state.setCharacterLibraryOpen,
+    setCharacterActionLibraryOpen: state.setCharacterActionLibraryOpen,
     showToast: state.showToast,
   })));
   const actions = useMemo(() => normalizeCanvasQuickActions(configuredActions), [configuredActions]);
@@ -151,6 +157,22 @@ export default function CanvasRadialMenu({ position, onClose }: CanvasRadialMenu
           break;
         case 'projects':
           setProjectLibraryOpen(true);
+          break;
+        case 'video-editor': {
+          const { currentProjectId, config } = useAppStore.getState();
+          const { openVideoEditorBlank } = await import('../../services/videoEditorService');
+          await openVideoEditorBlank({
+            projectId: currentProjectId ?? '',
+            theme: config.theme === 'light' ? 'light' : 'dark',
+          });
+          break;
+        }
+        case 'action-library':
+          // 动作库弹层依赖选中角色，一个都没有就先把角色库摆出来
+          if (useAppStore.getState().dramaAssets.characters.length === 0) {
+            setCharacterLibraryOpen(true);
+          }
+          setCharacterActionLibraryOpen(true);
           break;
         case 'fit-view':
           window.dispatchEvent(new Event('canvas-fit-view'));
