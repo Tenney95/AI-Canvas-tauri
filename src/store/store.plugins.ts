@@ -3,6 +3,7 @@ import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
 import type { InstalledPlugin } from '../types/plugin';
 import { createInstalledPlugin, parsePluginBundle } from '../services/plugins/pluginManifest';
+import { clearPluginFileGrants } from '../services/plugins/pluginFileGrantService';
 import {
   deletePluginFromDb,
   getAllPlugins,
@@ -43,10 +44,12 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
     set((state) => ({
       installedPlugins: state.installedPlugins.map((item) => item.id === id ? updated : item),
     }));
+    if (!enabled) clearPluginFileGrants(id);
   },
 
   deletePlugin: async (id) => {
     await deletePluginFromDb(id);
+    clearPluginFileGrants(id);
     set((state) => ({
       installedPlugins: state.installedPlugins.filter((plugin) => plugin.id !== id),
     }));

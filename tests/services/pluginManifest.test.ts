@@ -119,7 +119,7 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
   });
 
   it('rejects unknown plugin API and unsupported contribution placement', () => {
-    expect(() => parsePluginBundle(manifest({ apiVersion: 2 }), 'definePlugin({});'))
+    expect(() => parsePluginBundle(manifest({ apiVersion: 3 }), 'definePlugin({});'))
       .toThrow('apiVersion');
     expect(() => parsePluginBundle(manifest({
       contributes: {
@@ -133,6 +133,63 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
         }],
       },
     }), 'definePlugin({});')).toThrow('入口位置');
+  });
+
+  it('accepts API v2 custom nodes with model and granted-file fields', () => {
+    const parsed = parsePluginBundle(manifest({
+      apiVersion: 2,
+      permissions: ['node.read', 'node.write', 'models.read', 'models.invoke', 'files.read', 'files.write'],
+      contributes: {
+        nodeTools: [],
+        nodes: [{
+          id: 'story-card',
+          title: '故事卡片',
+          icon: 'lucide:sparkles',
+          inputs: [{ id: 'context', label: '上下文', type: 'text', multiple: true }],
+          outputs: [{ id: 'result', label: '结果', type: 'text' }],
+          fields: [
+            { id: 'prompt', label: '提示词', type: 'textarea', required: true },
+            { id: 'model', label: '模型', type: 'model', modelCategories: ['text'] },
+            { id: 'source', label: '资料', type: 'file' },
+          ],
+        }],
+      },
+    }), 'definePlugin({ tools: { "story-card": () => ({ data: { outputs: { result: "ok" } } }) } });');
+
+    expect(parsed.apiVersion).toBe(2);
+    expect(parsed.contributes.nodeTools).toEqual([]);
+    expect(parsed.contributes.nodes?.[0]).toMatchObject({
+      id: 'story-card',
+      inputs: [{ id: 'context', type: 'text', multiple: true }],
+      outputs: [{ id: 'result', type: 'text' }],
+      fields: [
+        expect.objectContaining({ id: 'prompt', type: 'textarea' }),
+        expect.objectContaining({ id: 'model', modelCategories: ['text'] }),
+        expect.objectContaining({ id: 'source', type: 'file' }),
+      ],
+    });
+  });
+
+  it('requires declared capabilities for custom-node model and file fields', () => {
+    const contributes = {
+      nodeTools: [],
+      nodes: [{
+        id: 'unsafe-node',
+        title: '未授权节点',
+        icon: 'lucide:box',
+        inputs: [],
+        outputs: [],
+        fields: [
+          { id: 'model', label: '模型', type: 'model' },
+          { id: 'file', label: '文件', type: 'file' },
+        ],
+      }],
+    };
+    expect(() => parsePluginBundle(manifest({
+      apiVersion: 2,
+      permissions: ['node.write'],
+      contributes,
+    }), 'definePlugin({});')).toThrow('models.read');
   });
 
   it('rejects local path exposure and protected output fields', () => {

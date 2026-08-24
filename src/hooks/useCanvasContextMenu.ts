@@ -11,6 +11,8 @@ import * as fileService from '../services/fileService';
 import { copyFiles as copyFilesToClipboard } from '../services/clipboardService';
 import { cancelNodePolling } from '../services/pollManager';
 import { playNodeExit } from '../utils/nodeAnimations';
+import { createPluginNode, getAvailablePluginNodes } from '../services/plugins/pluginRuntime';
+import type { AvailablePluginNode } from '../types/plugin';
 
 // ── Model preference helper ──
 const MODEL_PREF_KEY = 'canvas-model-prefs';
@@ -48,6 +50,8 @@ export function useCanvasContextMenu() {
   const redo = useAppStore((s) => s.redo);
   const pasteNodes = useAppStore((s) => s.pasteNodes);
   const selectedNodeIds = useAppStore((s) => s.selectedNodeIds);
+  const installedPlugins = useAppStore((s) => s.installedPlugins);
+  const pluginNodes = getAvailablePluginNodes(installedPlugins);
 
   const [menu, setMenu] = useState<ContextMenuState>({
     visible: false,
@@ -138,6 +142,12 @@ export function useCanvasContextMenu() {
     },
     [menu.flowPosition, reactFlowInstance, addNode, closeMenu],
   );
+
+  const addPluginNodeAtCtxPos = useCallback((pluginNode: AvailablePluginNode) => {
+    const flowPos = reactFlowInstance.screenToFlowPosition(menu.flowPosition);
+    addNode(createPluginNode(pluginNode, flowPos));
+    closeMenu();
+  }, [menu.flowPosition, reactFlowInstance, addNode, closeMenu]);
 
   const handleUndo = useCallback(() => { undo(); closeMenu(); }, [undo, closeMenu]);
   const handleRedo = useCallback(() => { redo(); closeMenu(); }, [redo, closeMenu]);
@@ -289,6 +299,8 @@ export function useCanvasContextMenu() {
     openMenu,
     closeMenu,
     addNodeAtCtxPos,
+    addPluginNodeAtCtxPos,
+    pluginNodes,
     handleUndo,
     handleRedo,
     handlePaste,

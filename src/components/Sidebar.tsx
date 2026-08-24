@@ -22,6 +22,10 @@ import LazyLoadBoundary, { LazyLoadFallback } from './shared/LazyLoadBoundary';
 import ProjectLibraryModal from './ProjectLibraryModal';
 import { invoke } from '@tauri-apps/api/core';
 import { useT } from '../i18n';
+import {
+  createPluginNode,
+  getAvailablePluginNodes,
+} from '../services/plugins/pluginRuntime';
 
 const HelpCenterDialog = lazy(() => import('./HelpCenterDialog'));
 
@@ -108,16 +112,18 @@ function NodePicker({
   onLeave: () => void;
 }) {
   const t = useT();
-  const { nodePickerOpen, closeNodePicker, addNode, currentProjectId, showToast } = useAppStore(
+  const { nodePickerOpen, closeNodePicker, addNode, currentProjectId, showToast, installedPlugins } = useAppStore(
     useShallow((s) => ({
       nodePickerOpen: s.nodePickerOpen,
       closeNodePicker: s.closeNodePicker,
       addNode: s.addNode,
       currentProjectId: s.currentProjectId,
       showToast: s.showToast,
+      installedPlugins: s.installedPlugins,
     })),
   );
   const pickerRef = useRef<HTMLDivElement>(null);
+  const pluginNodes = getAvailablePluginNodes(installedPlugins);
 
   const handleAddNode = (type: NodeType) => {
     const isImage = type === 'ai-image';
@@ -237,6 +243,11 @@ function NodePicker({
     }
   };
 
+  const handleAddPluginNode = (pluginNode: (typeof pluginNodes)[number]) => {
+    addNode(createPluginNode(pluginNode, getCanvasPointerPosition()));
+    closeNodePicker();
+  };
+
   return (
     <AnimatePresence>
       {nodePickerOpen && (
@@ -270,6 +281,30 @@ function NodePicker({
           </div>
         </AnimatedButton>
       ))}
+      {pluginNodes.length > 0 && (
+        <>
+          <div className="menu-section">
+            <span className="menu-title">{t('插件节点')}</span>
+            <div className="menu-rule" />
+          </div>
+          {pluginNodes.map((pluginNode) => (
+            <AnimatedButton
+              key={`${pluginNode.pluginId}:${pluginNode.node.id}`}
+              scale={1.02}
+              className="menu-row has-desc"
+              onClick={() => handleAddPluginNode(pluginNode)}
+            >
+              <div className="menu-ico">
+                <Icon icon={pluginNode.node.icon} width="18" height="18" />
+              </div>
+              <div className="menu-txt-wrap">
+                <span className="menu-lbl">{pluginNode.node.title}</span>
+                <span className="menu-sub">{pluginNode.pluginName}</span>
+              </div>
+            </AnimatedButton>
+          ))}
+        </>
+      )}
       <div className="menu-section">
         <span className="menu-title">{t('添加资源')}</span>
         <div className="menu-rule" />

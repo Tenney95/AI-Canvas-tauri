@@ -1,10 +1,18 @@
-import type { NodeType } from './index';
+import type { GeneralModelCategory, NodeType } from './index';
 
-export type PluginPermission = 'node.read' | 'node.write';
+export type PluginPermission =
+  | 'node.read'
+  | 'node.write'
+  | 'models.read'
+  | 'models.invoke'
+  | 'files.read'
+  | 'files.write';
 export type PluginNodeOutputMode = 'update-current' | 'create-node';
 export type PluginCategory = 'content' | 'media' | 'workflow' | 'utility';
 export type PluginPlacement = 'node-context-menu' | 'node-toolbar';
 export type PluginDialogFieldType = 'text' | 'textarea' | 'number' | 'select' | 'boolean';
+export type PluginCustomNodeFieldType = PluginDialogFieldType | 'model' | 'file';
+export type PluginNodePortType = 'text' | 'image' | 'video' | 'audio' | 'json';
 
 export type PluginJsonValue =
   | null
@@ -61,8 +69,38 @@ export interface PluginNodeToolManifest {
   output: PluginNodeToolOutputManifest;
 }
 
+export interface PluginCustomNodePortManifest {
+  id: string;
+  label: string;
+  type: PluginNodePortType;
+  required?: boolean;
+  multiple?: boolean;
+}
+
+export interface PluginCustomNodeFieldManifest {
+  id: string;
+  label: string;
+  type: PluginCustomNodeFieldType;
+  description?: string;
+  placeholder?: string;
+  required?: boolean;
+  defaultValue?: string | number | boolean;
+  options?: PluginDialogFieldOption[];
+  modelCategories?: GeneralModelCategory[];
+}
+
+export interface PluginCustomNodeManifest {
+  id: string;
+  title: string;
+  description?: string;
+  icon: string;
+  inputs: PluginCustomNodePortManifest[];
+  outputs: PluginCustomNodePortManifest[];
+  fields: PluginCustomNodeFieldManifest[];
+}
+
 export interface PluginManifest {
-  apiVersion: 1;
+  apiVersion: 1 | 2;
   id: string;
   name: string;
   version: string;
@@ -74,6 +112,7 @@ export interface PluginManifest {
   permissions: PluginPermission[];
   contributes: {
     nodeTools: PluginNodeToolManifest[];
+    nodes?: PluginCustomNodeManifest[];
   };
 }
 
@@ -107,4 +146,66 @@ export interface AvailableNodePluginTool {
   pluginName: string;
   source: string;
   tool: PluginNodeToolManifest;
+}
+
+export interface AvailablePluginNode {
+  pluginId: string;
+  pluginName: string;
+  source: string;
+  node: PluginCustomNodeManifest;
+  permissions: PluginPermission[];
+}
+
+export interface PluginModelSummary {
+  id: string;
+  name: string;
+  provider: string;
+  category: GeneralModelCategory;
+  description?: string;
+  inputModalities?: Array<'text' | 'image'>;
+}
+
+export interface PluginFileGrantSummary {
+  grantId: string;
+  displayName: string;
+  size: number;
+  extension: string;
+}
+
+export type PluginNodeHostEffect =
+  | {
+      type: 'model.generate';
+      modelId: string;
+      prompt: string;
+      parameters?: Record<string, PluginJsonValue>;
+    }
+  | { type: 'file.readText'; grantId: string }
+  | { type: 'file.saveText'; content: string; suggestedName?: string };
+
+export interface PluginNodeHostEffectResult {
+  type: PluginNodeHostEffect['type'];
+  ok: boolean;
+  value?: PluginJsonValue;
+  error?: string;
+}
+
+export interface PluginNodeInvocationInput {
+  projectId: string;
+  iteration: number;
+  node: {
+    id: string;
+    values: Record<string, PluginJsonValue>;
+  };
+  inputs: Record<string, PluginJsonValue>;
+  models: PluginModelSummary[];
+  effectResult?: PluginNodeHostEffectResult;
+}
+
+export interface PluginNodeExecutionResult {
+  data?: {
+    values?: Record<string, PluginJsonValue>;
+    outputs?: Record<string, PluginJsonValue>;
+  };
+  effect?: PluginNodeHostEffect;
+  message?: string;
 }

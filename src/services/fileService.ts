@@ -551,12 +551,14 @@ const AGENT_TEXT_EXTENSIONS = [
 ];
 
 /** 通过原生选择器选择 Agent 可读取的文本文件；路径只返回给授权服务，不进入模型。 */
-export async function selectAgentTextFiles(): Promise<AgentTextFileSelection[]> {
+export async function selectAgentTextFiles(
+  title = '授权当前对话读取本地文件',
+): Promise<AgentTextFileSelection[]> {
   if (!isTauriEnv()) throw new Error('本地文件授权仅在 Tauri 桌面环境可用');
   const selected = await open({
     multiple: true,
     directory: false,
-    title: '授权当前对话读取本地文件',
+    title,
     filters: [{ name: '文本与数据文件', extensions: AGENT_TEXT_EXTENSIONS }],
   });
   if (!selected) return [];

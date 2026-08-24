@@ -85,6 +85,7 @@ export type NodeType =
   | 'source-video'
   | 'source-audio'
   | 'source-text'
+  | 'plugin-node'
   | 'canvas-note'
   | 'comment';
 
@@ -675,6 +676,7 @@ export const NODE_TYPE_CONFIG: Record<string, NodeTypeVisualConfig> = {
   'ai-storyboard': { icon: 'mdi:grid',                    color: 'text-pink-400',    bg: 'bg-pink-500/15',    label: '宫格分镜' },
   'ai-shotlist':   { icon: 'mdi:table-large',             color: 'text-amber-400',   bg: 'bg-amber-500/15',   label: '分镜表' },
   'ai-director':   { icon: 'mdi:video-3d',                color: 'text-violet-400',  bg: 'bg-violet-500/15',  label: '3D 导演台' },
+  'plugin-node':   { icon: 'mdi:puzzle-outline',          color: 'text-indigo-400',  bg: 'bg-indigo-500/15',  label: '插件节点' },
   'canvas-note':   { icon: 'mdi:draw',                    color: 'text-sky-400',     bg: 'bg-sky-500/15',     label: '画布笔记' },
 };
 

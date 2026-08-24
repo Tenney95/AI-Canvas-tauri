@@ -18,6 +18,10 @@ import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { classifyFile } from '../hooks/useNodeCreation';
 import AnimatedButton from './shared/AnimatedButton';
 import { useT } from '../i18n';
+import {
+  createPluginNode,
+  getAvailablePluginNodes,
+} from '../services/plugins/pluginRuntime';
 
 const menuItems: { type: NodeType; label: string; icon: JSX.Element; badge?: string }[] = [
   {
@@ -63,11 +67,11 @@ const menuItems: { type: NodeType; label: string; icon: JSX.Element; badge?: str
 ];
 
 const NODE_MENU_W = 240;
-const NODE_MENU_H = 434; // items + header + footer
+const NODE_MENU_H = 640;
 
 export default function NodeMenu() {
   const t = useT();
-  const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, currentProjectId, showToast } = useAppStore(
+  const { nodeMenuVisible, nodeMenuPosition, hideNodeMenu, addNode, currentProjectId, showToast, installedPlugins } = useAppStore(
     useShallow((s) => ({
       nodeMenuVisible: s.nodeMenuVisible,
       nodeMenuPosition: s.nodeMenuPosition,
@@ -75,9 +79,11 @@ export default function NodeMenu() {
       addNode: s.addNode,
       currentProjectId: s.currentProjectId,
       showToast: s.showToast,
+      installedPlugins: s.installedPlugins,
     })),
   );
   const menuRef = useRef<HTMLDivElement>(null);
+  const pluginNodes = getAvailablePluginNodes(installedPlugins);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -189,6 +195,11 @@ export default function NodeMenu() {
     }
   };
 
+  const handleAddPluginNode = (pluginNode: (typeof pluginNodes)[number]) => {
+    addNode(createPluginNode(pluginNode, getCanvasPointerPosition()));
+    hideNodeMenu();
+  };
+
   const safePos = useMemo(
     () => calcFixedPosition(nodeMenuPosition.x, nodeMenuPosition.y, NODE_MENU_W, NODE_MENU_H),
     [nodeMenuPosition.x, nodeMenuPosition.y],
@@ -199,7 +210,7 @@ export default function NodeMenu() {
       {nodeMenuVisible && (
         <motion.div
           ref={menuRef}
-          className="fixed z-50 w-[240px] bg-canvas-card border border-canvas-border rounded-xl shadow-2xl shadow-black/40 overflow-hidden"
+          className="fixed z-50 max-h-[min(640px,calc(100vh-32px))] w-[240px] overflow-y-auto rounded-xl border border-canvas-border bg-canvas-card shadow-2xl shadow-black/40"
           style={{ left: safePos.left, top: safePos.top, transformOrigin: 'top center' }}
           initial={{ opacity: 0, scale: 0.92, y: -8 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -231,6 +242,30 @@ export default function NodeMenu() {
             </AnimatedButton>
           )})}
         </div>
+        {pluginNodes.length > 0 && (
+          <>
+            <div className="mt-2 border-t border-canvas-border px-2 pt-2 text-[11px] font-medium uppercase text-canvas-text-muted">
+              {t('插件节点')}
+            </div>
+            <div className="mt-1 space-y-0.5">
+              {pluginNodes.map((pluginNode) => (
+                <AnimatedButton
+                  key={`${pluginNode.pluginId}:${pluginNode.node.id}`}
+                  onClick={() => handleAddPluginNode(pluginNode)}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-canvas-hover"
+                >
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-indigo-500/15 text-indigo-400">
+                    <Icon icon={pluginNode.node.icon} width="18" height="18" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm text-canvas-text">{pluginNode.node.title}</div>
+                    <div className="truncate text-[10px] text-canvas-text-muted">{pluginNode.pluginName}</div>
+                  </div>
+                </AnimatedButton>
+              ))}
+            </div>
+          </>
+        )}
       </div>
       <div className="border-t border-canvas-border p-2">
         <AnimatedButton

@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   updateNodeData: vi.fn(),
   addNode: vi.fn(),
   showToast: vi.fn(),
+  generateText: vi.fn(),
+  generateImage: vi.fn(),
   state: {} as Record<string, unknown>,
 }));
 
@@ -14,9 +16,17 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: { getState: () => mocks.state },
 }));
+vi.mock('../../src/services/ai/generateText', () => ({ generateText: mocks.generateText }));
+vi.mock('../../src/services/ai/generateImage', () => ({ generateImage: mocks.generateImage }));
+vi.mock('../../src/services/ai/generateVideo', () => ({ generateVideo: vi.fn() }));
+vi.mock('../../src/services/ai/generateAudio', () => ({ generateAudio: vi.fn() }));
+vi.mock('../../src/services/plugins/pluginFileGrantService', () => ({ readPluginGrantedTextFile: vi.fn() }));
+vi.mock('../../src/services/fileService', () => ({ saveAgentTextOutput: vi.fn() }));
 
 import {
   executeNodePluginTool,
+  executePluginNode,
+  getAvailablePluginNodes,
   getAvailableNodePluginTools,
 } from '../../src/services/plugins/pluginRuntime';
 
@@ -49,6 +59,28 @@ const plugin: InstalledPlugin = {
   },
 };
 
+const customNodePlugin: InstalledPlugin = {
+  ...plugin,
+  id: 'com.example.custom-node',
+  manifest: {
+    ...plugin.manifest,
+    apiVersion: 2,
+    id: 'com.example.custom-node',
+    permissions: ['node.read', 'node.write', 'models.read', 'models.invoke'],
+    contributes: {
+      nodeTools: [],
+      nodes: [{
+        id: 'writer',
+        title: '写作节点',
+        icon: 'lucide:sparkles',
+        inputs: [{ id: 'context', label: '上下文', type: 'text' }],
+        outputs: [{ id: 'result', label: '结果', type: 'text' }],
+        fields: [{ id: 'prompt', label: '提示词', type: 'textarea' }],
+      }],
+    },
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.revision = 3;
@@ -66,12 +98,15 @@ beforeEach(() => {
       },
     }],
     installedPlugins: [plugin],
+    edges: [],
     getCurrentRevision: () => mocks.revision,
     updateNodeData: mocks.updateNodeData,
     addNode: mocks.addNode,
     showToast: mocks.showToast,
   };
   mocks.invoke.mockResolvedValue({ data: { output: 'after' }, message: '完成' });
+  mocks.generateText.mockResolvedValue('模型结果');
+  mocks.generateImage.mockResolvedValue({ url: 'https://example.com/result.png', width: 1024, height: 1024 });
 });
 
 describe('node plugin runtime', () => {
@@ -128,5 +163,84 @@ describe('node plugin runtime', () => {
 
     await expect(executeNodePluginTool(tool, 'node-1')).rejects.toThrow('未声明字段');
     expect(mocks.updateNodeData).not.toHaveBeenCalled();
+  });
+
+  it('runs a custom node through a host-controlled model effect', async () => {
+    mocks.state = {
+      ...mocks.state,
+      nodes: [{
+        id: 'plugin-node-1',
+        type: 'plugin-node',
+        position: { x: 10, y: 20 },
+        data: {
+          label: '写作节点',
+          type: 'plugin-node',
+          pluginId: customNodePlugin.id,
+          pluginNodeId: 'writer',
+          pluginValues: { prompt: '写一句话' },
+        },
+      }],
+      installedPlugins: [customNodePlugin],
+    };
+    mocks.invoke
+      .mockResolvedValueOnce({
+        effect: { type: 'model.generate', modelId: 'general/text-1', prompt: '写一句话' },
+      })
+      .mockResolvedValueOnce({
+        data: { outputs: { result: '模型结果' } },
+        message: '生成完成',
+      });
+    const available = getAvailablePluginNodes([customNodePlugin])[0];
+
+    await executePluginNode(available, 'plugin-node-1', [{
+      id: 'general/text-1',
+      name: '文本模型',
+      provider: 'general',
+      category: 'text',
+    }]);
+
+    expect(mocks.generateText).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'general/text-1',
+      provider: 'general',
+      prompt: '写一句话',
+    }));
+    expect(mocks.invoke).toHaveBeenCalledTimes(2);
+    expect(mocks.updateNodeData).toHaveBeenCalledWith('plugin-node-1', expect.objectContaining({
+      pluginOutputs: { result: '模型结果' },
+      output: '模型结果',
+      status: 'success',
+    }));
+  });
+
+  it('does not accept arbitrary media URLs from plugin model parameters', async () => {
+    mocks.state = {
+      ...mocks.state,
+      nodes: [{
+        id: 'plugin-node-1',
+        type: 'plugin-node',
+        position: { x: 10, y: 20 },
+        data: { label: '写作节点', type: 'plugin-node', pluginValues: { prompt: '生成图片' } },
+      }],
+      installedPlugins: [customNodePlugin],
+    };
+    mocks.invoke
+      .mockResolvedValueOnce({
+        effect: {
+          type: 'model.generate',
+          modelId: 'general/image-1',
+          prompt: '生成图片',
+          parameters: { imageUrls: ['http://127.0.0.1/private'] },
+        },
+      })
+      .mockResolvedValueOnce({ data: { outputs: { result: 'done' } } });
+
+    await executePluginNode(getAvailablePluginNodes([customNodePlugin])[0], 'plugin-node-1', [{
+      id: 'general/image-1',
+      name: '图像模型',
+      provider: 'general',
+      category: 'image',
+    }]);
+
+    expect(mocks.generateImage).toHaveBeenCalledWith(expect.objectContaining({ image_urls: [] }));
   });
 });

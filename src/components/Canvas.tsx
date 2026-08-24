@@ -32,6 +32,7 @@ import StoryboardNode from './nodes/StoryboardNode';
 import ShotlistNode from './nodes/ShotlistNode';
 import GroupNode from './nodes/GroupNode';
 import CanvasNoteNode from './noteNodes/CanvasNoteNode';
+import PluginNode from './nodes/PluginNode';
 import NodeRenderBoundary from './nodes/shared/NodeRenderBoundary';
 import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
@@ -116,6 +117,7 @@ const nodeTypes: NodeTypes = withNodeRenderBoundaries({
   comment: TextNode,
   group: GroupNode,
   'canvas-note': CanvasNoteNode,
+  'plugin-node': PluginNode,
 });
 
 const edgeTypes: EdgeTypes = {
@@ -643,6 +645,8 @@ function CanvasInner() {
     submenuRef: ctxSubmenuRef,
     openMenu: openCtxMenu,
     addNodeAtCtxPos,
+    addPluginNodeAtCtxPos,
+    pluginNodes,
     handleUndo: handleCtxUndo,
     handleRedo: handleCtxRedo,
     handlePaste: handleCtxPaste,
@@ -1353,6 +1357,8 @@ function CanvasInner() {
         menuRef={ctxMenuRef}
         submenuRef={ctxSubmenuRef}
         onAddNode={addNodeAtCtxPos}
+        onAddPluginNode={addPluginNodeAtCtxPos}
+        pluginNodes={pluginNodes}
         onUndo={handleCtxUndo}
         onRedo={handleCtxRedo}
         onPaste={handleCtxPaste}

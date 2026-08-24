@@ -4,6 +4,7 @@
  */
 import { memo, useLayoutEffect, useState } from 'react';
 import type { NodeType } from '../../types';
+import type { AvailablePluginNode } from '../../types/plugin';
 import { calcFixedPosition, calcSubmenuPosition } from '../../utils/popupPosition';
 import { useT } from '../../i18n';
 
@@ -25,6 +26,7 @@ const MENU_SHORTCUTS = {
 };
 
 function nodeShortcutLabel(item: MergedNodeItem): string {
+  if (item.type === 'ai-director') return item.shortcut;
   if (item.role === 'source') return `${IS_MAC_OS ? '⌥' : 'Alt'} ${item.shortcut}`;
   return item.shortcut;
 }
@@ -78,6 +80,8 @@ interface CanvasContextMenuProps {
   menuRef: React.RefObject<HTMLDivElement | null>;
   submenuRef: React.RefObject<HTMLDivElement | null>;
   onAddNode: (type: NodeType, label: string, role: 'generator' | 'source') => void;
+  onAddPluginNode: (pluginNode: AvailablePluginNode) => void;
+  pluginNodes: AvailablePluginNode[];
   onUndo: () => void;
   onRedo: () => void;
   onPaste: () => void;
@@ -98,6 +102,8 @@ function CanvasContextMenu({
   menuRef,
   submenuRef,
   onAddNode,
+  onAddPluginNode,
+  pluginNodes,
   onUndo,
   onRedo,
   onPaste,
@@ -146,8 +152,10 @@ function CanvasContextMenu({
 
     const l1Rect = l1El.getBoundingClientRect();
     const subEl = submenuRef.current;
-    const subH = subEl?.offsetHeight ?? estMenuHeight(SUB_ITEM_COUNT, SUB_SEP_COUNT);
-    const subW = subEl?.offsetWidth ?? estMenuWidth(SUB_ITEM_COUNT);
+    const subItemCount = SUB_ITEM_COUNT + pluginNodes.length;
+    const subSepCount = SUB_SEP_COUNT + (pluginNodes.length > 0 ? 1 : 0);
+    const subH = subEl?.offsetHeight ?? estMenuHeight(subItemCount, subSepCount);
+    const subW = subEl?.offsetWidth ?? estMenuWidth(subItemCount);
     const sub = calcSubmenuPosition(l1Rect, subW, subH, 'right');
     const nextSubPos = {
       left: sub.left - (fixedContainerRect?.left ?? 0),
@@ -158,7 +166,7 @@ function CanvasContextMenu({
         ? current
         : nextSubPos
     ));
-  }, [visible, position.x, position.y, hoverMenu, hasSelection, l1Pos, menuRef, submenuRef]);
+  }, [visible, position.x, position.y, hoverMenu, hasSelection, pluginNodes.length, l1Pos, menuRef, submenuRef]);
 
   if (!visible) return null;
 
@@ -225,7 +233,7 @@ function CanvasContextMenu({
       {hoverMenu === 'addNode' && subPos && (
         <div
           ref={submenuRef}
-          className="canvas-ctx-menu submenu"
+          className="canvas-ctx-menu submenu max-h-[calc(100vh-16px)] overflow-y-auto"
           style={{ left: subPos.left, top: subPos.top }}
           onMouseEnter={() => onShowSubmenu('addNode')}
           onMouseLeave={() => onHideSubmenu(null)}
@@ -243,6 +251,22 @@ function CanvasContextMenu({
               </div>
             </div>
           ))}
+          {pluginNodes.length > 0 && (
+            <>
+              <div className="menu-sep" />
+              {pluginNodes.map((pluginNode) => (
+                <div
+                  key={`${pluginNode.pluginId}-${pluginNode.node.id}`}
+                  className="menu-row menu-row-split"
+                  title={pluginNode.pluginName}
+                  onClick={() => onAddPluginNode(pluginNode)}
+                >
+                  <span>{pluginNode.node.title}</span>
+                  <span className="menu-kbd">{pluginNode.pluginName}</span>
+                </div>
+              ))}
+            </>
+          )}
         </div>
       )}
     </>

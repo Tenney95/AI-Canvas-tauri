@@ -99,6 +99,14 @@ definePlugin({
 - 暂不支持：插件市场、签名、自动更新、压缩包、异步 JS、第三方模块、网络、文件 grant、自定义 React 节点、任意插件 UI/HTML 面板、Agent 工具注册。
 - 后续扩展必须继续走 capability API，不得把 Store、Tauri API 或密钥直接交给插件。
 
+## Plugin API v2 扩展（已实施）
+
+- `contributes.nodes` 可声明宿主渲染的自定义节点、字段及输入输出端口；画布统一使用 `plugin-node` 渲染器，不加载插件 React/HTML。
+- 自定义节点继续复用同步 QuickJS 函数，通过最多 4 次受控 effect 请求异步宿主能力。
+- `models.read` 只提供脱敏模型目录，`models.invoke` 由现有文本、图片、视频和音频生成服务代为调用，插件拿不到密钥或连接地址。
+- `files.read` 只读取用户通过系统选择器授权的 UTF-8 文本，绝对路径仅存在内存；`files.write` 每次通过系统保存弹窗写出文本。
+- API v1 插件保持兼容；插件停用或卸载后自定义节点保留为不可用占位，不删除项目数据。
+
 ## 回滚
 
 插件记录使用独立 object store。关闭插件入口或降级应用时，旧版本只会忽略该 store，不影响项目画布；禁用插件即可停止其所有节点工具。

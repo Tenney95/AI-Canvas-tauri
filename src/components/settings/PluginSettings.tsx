@@ -19,7 +19,7 @@ const CATEGORY_LABELS: Record<PluginCategory, string> = {
 };
 
 const EXAMPLE_MANIFEST = JSON.stringify({
-  apiVersion: 1,
+  apiVersion: 2,
   id: 'com.ai-canvas.example-uppercase',
   name: '文本大写示例',
   version: '1.0.0',
@@ -28,7 +28,7 @@ const EXAMPLE_MANIFEST = JSON.stringify({
   category: 'content',
   keywords: ['文本', '示例'],
   entry: 'main.js',
-  permissions: ['node.read', 'node.write'],
+  permissions: ['node.read', 'node.write', 'models.read', 'models.invoke'],
   contributes: {
     nodeTools: [{
       id: 'uppercase-output',
@@ -51,6 +51,18 @@ const EXAMPLE_MANIFEST = JSON.stringify({
       inputFields: ['output'],
       output: { mode: 'update-current', fields: ['output'] },
     }],
+    nodes: [{
+      id: 'prompt-writer',
+      title: '提示词写作节点',
+      description: '选择已配置模型生成文本，可连接其他文本节点作为上下文。',
+      icon: 'lucide:sparkles',
+      inputs: [{ id: 'context', label: '上下文', type: 'text', multiple: true }],
+      outputs: [{ id: 'result', label: '文本结果', type: 'text' }],
+      fields: [
+        { id: 'prompt', label: '提示词', type: 'textarea', required: true },
+        { id: 'model', label: '模型', type: 'model', modelCategories: ['text'], required: true },
+      ],
+    }],
   },
 }, null, 2);
 
@@ -61,7 +73,23 @@ const EXAMPLE_SOURCE = `definePlugin({
         output: String(input.parameters.prefix || "") + String(input.node.data.output || "").toUpperCase()
       },
       message: "已将节点输出转换为大写"
-    })
+    }),
+    "prompt-writer": (input) => {
+      if (!input.effectResult) {
+        return {
+          effect: {
+            type: "model.generate",
+            modelId: String(input.node.values.model || ""),
+            prompt: [String(input.node.values.prompt || ""), ...(input.inputs.context || [])].join("\\n")
+          }
+        };
+      }
+      if (!input.effectResult.ok) throw new Error(input.effectResult.error || "模型调用失败");
+      return {
+        data: { outputs: { result: String(input.effectResult.value.text || "") } },
+        message: "文本生成完成"
+      };
+    }
   }
 });`;
 
@@ -198,7 +226,7 @@ export default function PluginSettings() {
           <div>
             <h3 className="text-sm font-medium text-canvas-text">用户插件</h3>
             <p className="mt-1 text-[11px] leading-5 text-canvas-text-muted">
-              导入包含 manifest.json 和 main.js 的文件夹。安装前会校验用途、入口位置、节点范围及读写字段。工具栏入口必须配置 Iconify 图标和宿主弹窗。
+              导入包含 manifest.json 和 main.js 的文件夹。插件可贡献节点工具或自定义节点；模型与文件能力必须显式声明，密钥和本地路径不会交给插件。
             </p>
           </div>
           <motion.div
@@ -284,7 +312,7 @@ export default function PluginSettings() {
         <div className="mt-2 flex items-center justify-between rounded-lg border border-canvas-border bg-canvas-surface px-3 py-2">
           <div className="min-w-0">
             <div className="text-xs font-medium text-canvas-text">开发者示例</div>
-            <div className="mt-0.5 text-[11px] text-canvas-text-muted">为文本节点安装“输出转大写”右键与工具栏按钮</div>
+            <div className="mt-0.5 text-[11px] text-canvas-text-muted">安装文本工具和一个可调用模型的自定义写作节点</div>
           </div>
           <AnimatedButton
             type="button"
@@ -301,6 +329,7 @@ export default function PluginSettings() {
       <section className="space-y-2">
         {plugins.map((plugin) => {
           const nodeTypes = [...new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.nodeTypes))];
+          const customNodes = plugin.manifest.contributes.nodes ?? [];
           const inputFields = [...new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.inputFields))];
           const outputFields = [...new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.output.fields))];
           const placements = new Set(plugin.manifest.contributes.nodeTools.flatMap((tool) => tool.placements));
@@ -331,10 +360,17 @@ export default function PluginSettings() {
                         {getNodeTypeConfig(nodeType).label}
                       </span>
                     ))}
+                    {customNodes.map((node) => (
+                      <span key={node.id} className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] text-indigo-400">
+                        {node.title}
+                      </span>
+                    ))}
                   </div>
                   <div className="mt-2 text-[10px] leading-4 text-canvas-text-muted">
-                    入口：{placementLabels || '未声明'} · 工具 {plugin.manifest.contributes.nodeTools.length} 个<br />
-                    读取：{inputFields.join('、') || '无'} · 写入：{outputFields.join('、') || '无'}
+                    API v{plugin.manifest.apiVersion} · 入口：{placementLabels || (customNodes.length ? '节点选择器' : '未声明')}<br />
+                    工具 {plugin.manifest.contributes.nodeTools.length} 个 · 自定义节点 {customNodes.length} 个<br />
+                    读取：{inputFields.join('、') || '无'} · 写入：{outputFields.join('、') || '无'}<br />
+                    权限：{plugin.manifest.permissions.join('、')}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
@@ -387,7 +423,7 @@ export default function PluginSettings() {
           </span>
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-canvas-text">AI Canvas 插件开发规范</h2>
-            <p className="mt-0.5 text-[11px] text-canvas-text-muted">Plugin API v1 · 与当前插件运行时同步</p>
+            <p className="mt-0.5 text-[11px] text-canvas-text-muted">Plugin API v2 · 与当前插件运行时同步</p>
           </div>
           <AnimatedButton
             type="button"
