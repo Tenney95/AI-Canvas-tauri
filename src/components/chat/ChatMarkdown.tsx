@@ -63,7 +63,7 @@ function InlineContent({
       nodes.push(
         <code
           key={`code-${start}`}
-          className="rounded-[4px] border border-canvas-border/70 bg-canvas-bg/70 px-1.5 py-0.5 font-mono text-[0.92em] text-emerald-200"
+          className="rounded-[4px] bg-canvas-hover/70 px-1 py-0.5 font-mono text-[0.9em] text-emerald-200"
         >
           {raw.slice(1, -1)}
         </code>,
@@ -320,7 +320,7 @@ export default function ChatMarkdown({
       index += 1;
     }
     blocks.push(
-      <p key={`p-${index}`} className="my-1.5 break-words text-canvas-text/90 first:mt-0 last:mb-0">
+      <p key={`p-${index}`} className="my-1.5 text-canvas-text/90 first:mt-0 last:mb-0">
         {paragraph.map((paragraphLine, lineIndex) => (
           <span key={lineIndex}>
             {lineIndex > 0 && <br />}
@@ -331,5 +331,6 @@ export default function ChatMarkdown({
     );
   }
 
-  return <div className="chat-markdown min-w-0">{blocks}</div>;
+  // overflow-wrap 会继承：长 URL、行内代码在列表项/表格/引用里也不会再撑破气泡
+  return <div className="chat-markdown min-w-0 [overflow-wrap:anywhere]">{blocks}</div>;
 }

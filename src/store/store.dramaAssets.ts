@@ -28,6 +28,7 @@ import {
   purposeLabel,
 } from '../services/dramaAssetPrompt';
 import { generateId } from './store.utils';
+import { nodeHeightForAspectRatio } from '../utils/nodeBounds';
 import type { BaseNodeData, CharacterLibraryNodeLink } from '../types';
 import {
   clearGlobalCharacterCards,
@@ -627,11 +628,8 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     const aspectRatio = defaultAspectRatioForAsset(kind);
     const label = `${asset.name} · ${purposeLabel(purpose)}`;
 
-    // 粗算节点高度
     const nodeWidth = 280;
-    const ratioParts = aspectRatio.split(':').map(Number);
-    const ar = ratioParts[0] && ratioParts[1] ? ratioParts[0] / ratioParts[1] : 1;
-    const nodeHeight = Math.max(160, Math.round((nodeWidth - 4) / ar) + 4);
+    const nodeHeight = nodeHeightForAspectRatio(aspectRatio, nodeWidth);
 
     const newNode: Node<BaseNodeData> = {
       id: nodeId,

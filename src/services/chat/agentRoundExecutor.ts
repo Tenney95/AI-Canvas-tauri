@@ -1038,14 +1038,19 @@ export async function executeAgentRound({
       callbacks.onToolResult?.(result.summary);
     },
   );
+  // 同一轮里的写工具是串行的，前一个写操作自己会 incrementRevision；
+  // 若继续沿用轮次开始时的 baseRevision，后续写操作都会误判为“画布已变更”。
+  // 每次写完把基线推进到自己造成的 revision，外部（用户）改动仍然能被 guard 拦下。
+  let writeBaseRevision = roundContext.baseRevision;
   for (const item of writeCalls) {
     const result = await executePreparedToolCall(
       taskId,
       item.call,
       item.prepared,
-      item.context,
+      { ...item.context, baseRevision: writeBaseRevision },
       item.step,
     );
+    writeBaseRevision = useAppStore.getState().getCurrentRevision();
     results.set(item.call.callId, result);
     callbacks.onToolResult?.(result.summary);
   }

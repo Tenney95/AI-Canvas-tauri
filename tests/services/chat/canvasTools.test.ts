@@ -121,6 +121,59 @@ describe('canvas agent tools', () => {
     });
   });
 
+  it('sizes created nodes from aspect ratio and text length instead of one fixed box', async () => {
+    const script = Array.from({ length: 30 }, (_, index) => `line ${index}`).join('\n');
+    const result = await getAgentTool('canvas_create_nodes')!.execute(context(), {
+      nodes: [
+        { type: 'ai-image', label: '角色·林默', prompt: '冷白皮肤，及肩黑发', aspectRatio: '3:4' },
+        { type: 'ai-video', label: '场景·雨夜街道', prompt: '霓虹倒影', aspectRatio: '16:9' },
+        { type: 'source-text', label: '剧本 第一集全文', prompt: script },
+        { type: 'ai-text', label: '分镜文案', prompt: '拆解为镜头表' },
+      ],
+    });
+
+    expect(result.status).toBe('success');
+    const created = useAppStore.getState().nodes.slice(2);
+    expect(created.map((item) => item.data.nodeHeight)).toEqual([
+      372, // 3:4 竖构图撑高
+      160, // 16:9 横构图算出 159，被 160 下限兜住
+      600, // 30 行正文按行数撑高，封顶 600
+      160, // 还没有正文的生成型文本节点保持默认
+    ]);
+    expect(created[0].data.aspectRatio).toBe('3:4');
+    // 比例只对视觉节点有意义，文本节点不该被塞上 aspectRatio
+    expect(created[2].data.aspectRatio).toBeUndefined();
+  });
+
+  it('puts finished text in the node body and generation instructions in the prompt', async () => {
+    const script = '场景一：剧本正文\n场景二：更多正文';
+    const result = await getAgentTool('canvas_create_nodes')!.execute(context(), {
+      nodes: [
+        { type: 'ai-text', label: '剧本·第一集全文', content: script },
+        { type: 'ai-text', label: '分镜文案', prompt: '把这集拆成镜头表' },
+      ],
+    });
+
+    expect(result.status).toBe('success');
+    const [body, generator] = useAppStore.getState().nodes.slice(2);
+    // 定稿正文进节点正文，建完就能看见，也能被下游 @ 引用
+    expect(body.data).toMatchObject({ output: script, role: 'source', status: 'success' });
+    expect(body.data.prompt).toBeUndefined();
+    // 生成指令仍然只进提示词，节点正文留空等用户点生成
+    expect(generator.data).toMatchObject({ prompt: '把这集拆成镜头表', role: 'generator', status: 'idle' });
+    expect(generator.data.output).toBeUndefined();
+  });
+
+  it('refuses to write content into media nodes whose output holds a path', async () => {
+    const result = await getAgentTool('canvas_create_nodes')!.execute(context(), {
+      nodes: [{ type: 'ai-image', label: '角色·林默', content: '不该写进图片节点' }],
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.summary).toContain('content 只能用于文本类节点');
+    expect(useAppStore.getState().nodes).toHaveLength(2);
+  });
+
   it('returns structured node detail without leaking local media paths', async () => {
     const result = await getAgentTool('canvas_query')!.execute(context(), { detail: true });
     const payload = JSON.parse(result.modelContent);

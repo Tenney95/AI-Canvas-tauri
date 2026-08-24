@@ -14,6 +14,20 @@ function getDefaultNodeSize(nodeType: string | undefined): { width: number; heig
   }
 }
 
+/**
+ * 生成前按画面比例预估节点框高度：图片还没出来，只能用比例把固定宽度的卡片撑开。
+ * 4px 是卡片边框，min 保证竖排比例下不会矮到看不见标题。
+ */
+export function nodeHeightForAspectRatio(
+  aspectRatio: string,
+  nodeWidth = 280,
+  min = 160,
+): number {
+  const [w, h] = aspectRatio.split(':').map(Number);
+  const ratio = w && h ? w / h : 1;
+  return Math.max(min, Math.round((nodeWidth - 4) / ratio) + 4);
+}
+
 /** Follow parentId chain to compute absolute offset from relative position */
 export function getParentOffset(
   node: RFNode<BaseNodeData>,

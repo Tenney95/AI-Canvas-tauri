@@ -155,4 +155,53 @@ describe('agent round executor', () => {
       resultDisplay: { fields: [{ label: '状态', value: '完成' }] },
     });
   });
+
+  it('advances the write baseline so later writes in one round are not self-invalidated', async () => {
+    const seen: Array<{ base?: number; current: number }> = [];
+    registerAgentTool<{ index: number }>({
+      id: 'round_write_test',
+      title: 'Round write',
+      description: 'Round write',
+      effect: 'canvas_write',
+      inputSchema: {
+        type: 'object',
+        required: ['index'],
+        additionalProperties: false,
+        properties: { index: { type: 'integer' } },
+      },
+      execute: async (context) => {
+        seen.push({
+          base: context.baseRevision,
+          current: useAppStore.getState().getCurrentRevision(),
+        });
+        useAppStore.getState().incrementRevision();
+        return { status: 'success', summary: 'done', modelContent: 'done' };
+      },
+    });
+    streamAssistantReplyMock.mockImplementation(async ({ onEvent }) => {
+      onEvent({
+        type: 'tool.call.final',
+        call: { callId: 'call-write-1', toolId: 'round_write_test', input: { index: 1 } },
+      });
+      onEvent({
+        type: 'tool.call.final',
+        call: { callId: 'call-write-2', toolId: 'round_write_test', input: { index: 2 } },
+      });
+    });
+
+    await executeAgentRound({
+      taskId: 'task-round',
+      signal: new AbortController().signal,
+      messages: [{ role: 'user', content: 'update canvas' }],
+      fullText: '',
+      totalToolResultChars: 0,
+      callbacks: {},
+      transitionTask: transitionAgentTask,
+      waitForApproval: vi.fn(async () => ({ decision: 'approved' as const })),
+    });
+
+    expect(seen).toHaveLength(2);
+    for (const entry of seen) expect(entry.base).toBe(entry.current);
+    expect(seen[1].current).toBe(seen[0].current + 1);
+  });
 });
