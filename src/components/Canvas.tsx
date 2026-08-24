@@ -563,6 +563,15 @@ function CanvasInner() {
     (e: React.MouseEvent) => {
       const flowPos = reactFlowInstance.screenToFlowPosition({ x: e.clientX, y: e.clientY });
       setCanvasPointerPosition(flowPos);
+
+      const toolbar = e.target instanceof Element
+        ? e.target.closest<HTMLElement>('.node-floating-toolbar')
+        : null;
+      if (toolbar) {
+        const rect = toolbar.getBoundingClientRect();
+        toolbar.style.setProperty('--toolbar-pointer-x', `${((e.clientX - rect.left) / rect.width) * 100}%`);
+        toolbar.style.setProperty('--toolbar-pointer-y', `${((e.clientY - rect.top) / rect.height) * 100}%`);
+      }
     },
     [reactFlowInstance],
   );
