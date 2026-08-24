@@ -95,8 +95,8 @@ definePlugin({
 
 ## MVP 边界
 
-- 支持：安装、替换、启用、禁用、卸载；按节点类型显示右键工具和工具栏按钮；声明式操作弹窗；结构化输入/输出；更新当前节点；创建结果节点；超时与内存隔离。
-- 暂不支持：插件市场、签名、自动更新、压缩包、异步 JS、第三方模块、网络、文件 grant、自定义 React 节点、任意插件 UI/HTML 面板、Agent 工具注册。
+- 支持：安装、替换、启用、禁用、卸载；按节点类型显示右键工具和工具栏按钮；声明式操作弹窗；结构化输入/输出；更新当前节点；创建结果节点；超时与内存隔离；GitHub Release 安装、市场索引和更新提示。
+- 暂不支持：代码签名、静默自动更新、压缩包、异步 JS、第三方模块、任意网络、自定义 React 节点、任意插件 UI/HTML 面板、Agent 工具注册。
 - 后续扩展必须继续走 capability API，不得把 Store、Tauri API 或密钥直接交给插件。
 
 ## Plugin API v2 扩展（已实施）
@@ -106,6 +106,15 @@ definePlugin({
 - `models.read` 只提供脱敏模型目录，`models.invoke` 由现有文本、图片、视频和音频生成服务代为调用，插件拿不到密钥或连接地址。
 - `files.read` 只读取用户通过系统选择器授权的 UTF-8 文本，绝对路径仅存在内存；`files.write` 每次通过系统保存弹窗写出文本。
 - API v1 插件保持兼容；插件停用或卸载后自定义节点保留为不可用占位，不删除项目数据。
+
+## GitHub 插件市场扩展（已实施）
+
+- Manifest 可声明 `repository`、`homepage` 和 `license`；市场安装要求 `repository` 与实际 GitHub 仓库一致。
+- `public/plugin-marketplace.json` 是轻量仓库索引；收录采用 Pull Request，未收录仓库仍可直接输入地址安装。
+- 宿主通过 GitHub 最新正式 Release 追踪版本，只接受 `vX.Y.Z`，并要求标签版本与 Manifest `version` 一致。
+- 市场下载的 `manifest.json` 和 `main.js` 继续复用本地安装校验与 QuickJS 沙箱，不新增远程执行路径。
+- 插件页自动检查更新并做 15 分钟内存缓存；安装和更新都必须由用户点击，不静默执行。
+- 当前不提供代码签名或市场服务端代理；规模超过匿名 GitHub API 限额后，再增加可信聚合服务。
 
 ## 回滚
 

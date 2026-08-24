@@ -106,6 +106,9 @@ export interface PluginManifest {
   version: string;
   author?: string;
   description?: string;
+  repository?: string;
+  homepage?: string;
+  license?: string;
   category: PluginCategory;
   keywords?: string[];
   entry: 'main.js';

@@ -27,6 +27,41 @@ const MAX_DIALOG_FIELDS = 16;
 const MAX_DIALOG_OPTIONS = 32;
 const MAX_NODE_PORTS = 16;
 
+export function normalizeGithubRepository(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('repository 必须是有效的 GitHub HTTPS 地址');
+  }
+  const parts = url.pathname.replace(/\.git\/?$/, '').split('/').filter(Boolean);
+  if (
+    url.protocol !== 'https:'
+    || url.hostname.toLowerCase() !== 'github.com'
+    || url.username
+    || url.password
+    || url.search
+    || url.hash
+    || parts.length !== 2
+    || parts.some((part) => !/^[A-Za-z0-9_.-]+$/.test(part))
+  ) {
+    throw new Error('repository 必须是 https://github.com/作者/仓库');
+  }
+  return `https://github.com/${parts[0]}/${parts[1]}`;
+}
+
+function optionalHttpsUrl(value: unknown, label: string): string | undefined {
+  const raw = optionalString(value, label, 512);
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.username || url.password) throw new Error();
+    return url.toString();
+  } catch {
+    throw new Error(`${label} 必须是有效的 HTTPS 地址`);
+  }
+}
+
 const NODE_TYPES = new Set<NodeType>([
   'ai-text',
   'ai-image',
@@ -433,6 +468,9 @@ function parseManifest(value: unknown): PluginManifest {
   const category = nonEmptyString(root.category, '插件分类', 32) as PluginCategory;
   if (!CATEGORIES.has(category)) throw new Error('插件分类不受支持');
   const keywords = root.keywords === undefined ? undefined : stringArray(root.keywords, 'keywords', 12);
+  const repository = root.repository === undefined
+    ? undefined
+    : normalizeGithubRepository(nonEmptyString(root.repository, 'repository', 512));
 
   return {
     apiVersion: root.apiVersion,
@@ -441,6 +479,9 @@ function parseManifest(value: unknown): PluginManifest {
     version: nonEmptyString(root.version, '插件版本', 32),
     author: typeof root.author === 'string' ? root.author.trim().slice(0, 80) : undefined,
     description: typeof root.description === 'string' ? root.description.trim().slice(0, 240) : undefined,
+    repository,
+    homepage: optionalHttpsUrl(root.homepage, 'homepage'),
+    license: optionalString(root.license, 'license', 80),
     category,
     keywords,
     entry: 'main.js',

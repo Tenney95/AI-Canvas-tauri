@@ -61,6 +61,21 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
     });
   });
 
+  it('normalizes GitHub publishing metadata', () => {
+    const parsed = parsePluginBundle(manifest({
+      repository: 'https://github.com/example/text-tools.git',
+      homepage: 'https://example.com/plugins/text-tools',
+      license: 'MIT',
+    }), 'definePlugin({ tools: {} });');
+
+    expect(parsed.repository).toBe('https://github.com/example/text-tools');
+    expect(parsed.homepage).toBe('https://example.com/plugins/text-tools');
+    expect(parsed.license).toBe('MIT');
+    expect(() => parsePluginBundle(manifest({
+      repository: 'https://example.com/example/text-tools',
+    }), 'definePlugin({});')).toThrow('github.com');
+  });
+
   it('requires a safe Iconify icon for node toolbar tools', () => {
     const toolbarTool = {
       id: 'toolbar-action',

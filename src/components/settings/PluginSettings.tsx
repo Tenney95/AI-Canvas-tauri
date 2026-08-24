@@ -1,8 +1,14 @@
 import { Icon } from '@iconify/react';
 import { motion } from 'framer-motion';
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import pluginDeveloperGuide from '../../../doc/插件开发规范.md?raw';
 import { isTauriEnv, saveBinaryToLocalFile } from '../../services/fileService';
+import {
+  comparePluginVersions,
+  loadPluginMarketplace,
+  resolveGithubPlugin,
+} from '../../services/plugins/pluginMarketplace';
+import type { PluginMarketplaceItem } from '../../services/plugins/pluginMarketplace';
 import { useAppStore } from '../../store/useAppStore';
 import { getNodeTypeConfig } from '../../types';
 import type { PluginCategory } from '../../types/plugin';
@@ -17,6 +23,14 @@ const CATEGORY_LABELS: Record<PluginCategory, string> = {
   workflow: '工作流',
   utility: '通用工具',
 };
+
+function isUpdateAvailable(latest: string, current: string): boolean {
+  try {
+    return comparePluginVersions(latest, current) > 0;
+  } catch {
+    return latest !== current;
+  }
+}
 
 const EXAMPLE_MANIFEST = JSON.stringify({
   apiVersion: 2,
@@ -162,6 +176,65 @@ export default function PluginSettings() {
   const [busy, setBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [marketplaceItems, setMarketplaceItems] = useState<PluginMarketplaceItem[]>([]);
+  const [marketplaceLoading, setMarketplaceLoading] = useState(true);
+  const [marketplaceError, setMarketplaceError] = useState('');
+  const [marketplaceQuery, setMarketplaceQuery] = useState('');
+  const [repositoryInput, setRepositoryInput] = useState('');
+  const [installingRepository, setInstallingRepository] = useState('');
+  const installedRepositories = useMemo(
+    () => plugins.flatMap((plugin) => plugin.manifest.repository ? [plugin.manifest.repository] : []),
+    [plugins],
+  );
+
+  const refreshMarketplace = useCallback(async (force = false) => {
+    setMarketplaceLoading(true);
+    setMarketplaceError('');
+    try {
+      setMarketplaceItems(await loadPluginMarketplace(installedRepositories, { force }));
+    } catch (error) {
+      setMarketplaceError(error instanceof Error ? error.message : '插件市场加载失败');
+    } finally {
+      setMarketplaceLoading(false);
+    }
+  }, [installedRepositories]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void refreshMarketplace(), 0);
+    return () => window.clearTimeout(timer);
+  }, [refreshMarketplace]);
+
+  const visibleMarketplaceItems = useMemo(() => {
+    const query = marketplaceQuery.trim().toLocaleLowerCase();
+    if (!query) return marketplaceItems;
+    return marketplaceItems.filter((item) => {
+      if (item.status === 'error') return item.repository.toLocaleLowerCase().includes(query);
+      return [
+        item.manifest.name,
+        item.manifest.description,
+        item.manifest.author,
+        item.repository,
+        ...(item.manifest.keywords ?? []),
+      ].some((value) => value?.toLocaleLowerCase().includes(query));
+    });
+  }, [marketplaceItems, marketplaceQuery]);
+
+  const installGithubPlugin = async (repository: string, item?: PluginMarketplaceItem) => {
+    if (!repository.trim() || installingRepository) return;
+    setInstallingRepository(repository);
+    try {
+      const plugin = item?.status === 'ready'
+        ? item
+        : await resolveGithubPlugin(repository, { force: true });
+      await installPluginBundle(plugin.manifestText, plugin.source);
+      setRepositoryInput('');
+      await refreshMarketplace(true);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'GitHub 插件安装失败', 'error');
+    } finally {
+      setInstallingRepository('');
+    }
+  };
 
   const downloadDeveloperGuide = async () => {
     try {
@@ -323,6 +396,144 @@ export default function PluginSettings() {
           >
             安装示例
           </AnimatedButton>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-canvas-border bg-canvas-card p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-1.5 text-sm font-medium text-canvas-text">
+              <Icon icon="lucide:store" width={16} height={16} className="text-indigo-400" />
+              插件市场
+            </div>
+            <p className="mt-1 text-[11px] leading-5 text-canvas-text-muted">
+              从已登记的 GitHub Release 安装插件，并检查已安装 GitHub 插件的新版本。
+            </p>
+          </div>
+          <AnimatedButton
+            type="button"
+            aria-label="刷新插件市场"
+            disabled={marketplaceLoading}
+            className="rounded-md p-1.5 text-canvas-text-muted hover:bg-indigo-500/10 hover:text-indigo-400 disabled:opacity-50"
+            onClick={() => void refreshMarketplace(true)}
+          >
+            <Icon icon="lucide:refresh-cw" width={14} height={14} className={marketplaceLoading ? 'animate-spin' : ''} />
+          </AnimatedButton>
+        </div>
+
+        <div className="mt-3 flex gap-2">
+          <input
+            value={repositoryInput}
+            onChange={(event) => setRepositoryInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void installGithubPlugin(repositoryInput);
+            }}
+            placeholder="GitHub 仓库地址，例如 owner/my-plugin"
+            aria-label="GitHub 插件仓库地址"
+            className="min-w-0 flex-1 rounded-lg border border-canvas-border bg-canvas-surface px-3 py-2 text-xs text-canvas-text outline-none placeholder:text-canvas-text-muted focus:border-indigo-400/50"
+          />
+          <AnimatedButton
+            type="button"
+            disabled={!repositoryInput.trim() || Boolean(installingRepository)}
+            className="shrink-0 rounded-lg bg-indigo-500/15 px-3 text-xs font-medium text-indigo-400 hover:bg-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => void installGithubPlugin(repositoryInput)}
+          >
+            {installingRepository === repositoryInput ? '读取中…' : '从仓库安装'}
+          </AnimatedButton>
+        </div>
+
+        {(marketplaceItems.length > 0 || marketplaceQuery) && (
+          <div className="relative mt-3">
+            <Icon icon="lucide:search" width={14} height={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-canvas-text-muted" />
+            <input
+              value={marketplaceQuery}
+              onChange={(event) => setMarketplaceQuery(event.target.value)}
+              placeholder="搜索插件、作者或关键词"
+              aria-label="搜索插件市场"
+              className="w-full rounded-lg border border-canvas-border bg-canvas-surface py-2 pl-8 pr-3 text-xs text-canvas-text outline-none placeholder:text-canvas-text-muted focus:border-indigo-400/50"
+            />
+          </div>
+        )}
+
+        <div className="mt-3 space-y-2">
+          {marketplaceLoading && marketplaceItems.length === 0 && (
+            <div className="rounded-lg border border-dashed border-canvas-border px-3 py-6 text-center text-xs text-canvas-text-muted">
+              正在读取 GitHub 插件列表…
+            </div>
+          )}
+          {marketplaceError && (
+            <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+              {marketplaceError}
+            </div>
+          )}
+          {!marketplaceLoading && !marketplaceError && marketplaceItems.length === 0 && (
+            <div className="rounded-lg border border-dashed border-canvas-border px-3 py-6 text-center text-xs text-canvas-text-muted">
+              市场暂未收录插件，可先粘贴 GitHub 仓库地址安装。
+            </div>
+          )}
+          {visibleMarketplaceItems.map((item) => {
+            if (item.status === 'error') {
+              return (
+                <article key={item.repository} className="rounded-lg border border-canvas-border bg-canvas-surface p-3">
+                  <div className="truncate text-xs font-medium text-canvas-text">{item.repository}</div>
+                  <div className="mt-1 text-[11px] text-red-400">{item.error}</div>
+                </article>
+              );
+            }
+            const installed = plugins.find((plugin) => plugin.id === item.manifest.id);
+            const updateAvailable = installed
+              ? isUpdateAvailable(item.manifest.version, installed.manifest.version)
+              : false;
+            const actionDisabled = Boolean(installed && !updateAvailable) || Boolean(installingRepository);
+            return (
+              <article key={item.repository} className="rounded-lg border border-canvas-border bg-canvas-surface p-3">
+                <div className="flex items-start gap-3">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
+                    <Icon icon="lucide:blocks" width={18} height={18} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="truncate text-sm font-medium text-canvas-text">{item.manifest.name}</span>
+                      <span className="rounded bg-canvas-card px-1.5 py-0.5 text-[10px] text-canvas-text-muted">v{item.manifest.version}</span>
+                      {item.featured && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400">推荐</span>}
+                      {updateAvailable && <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-400">可更新</span>}
+                    </div>
+                    <p className="mt-1 text-[11px] leading-4 text-canvas-text-secondary">
+                      {item.manifest.description || '未提供说明'}
+                    </p>
+                    <a
+                      href={item.repository}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 block truncate text-[10px] text-canvas-text-muted hover:text-indigo-400"
+                    >
+                      {item.repository.replace('https://github.com/', '')}
+                    </a>
+                    <div className="mt-1 text-[10px] text-canvas-text-muted">
+                      {CATEGORY_LABELS[item.manifest.category]} · 权限：{item.manifest.permissions.join('、')}
+                    </div>
+                  </div>
+                  <AnimatedButton
+                    type="button"
+                    disabled={actionDisabled}
+                    className="shrink-0 rounded-md bg-indigo-500/10 px-2.5 py-1.5 text-[11px] font-medium text-indigo-400 hover:bg-indigo-500/15 disabled:cursor-not-allowed disabled:bg-canvas-card disabled:text-canvas-text-muted"
+                    onClick={() => void installGithubPlugin(item.repository, item)}
+                  >
+                    {installingRepository === item.repository
+                      ? '安装中…'
+                      : updateAvailable
+                        ? '更新'
+                        : installed
+                          ? '已安装'
+                          : '安装'}
+                  </AnimatedButton>
+                </div>
+              </article>
+            );
+          })}
+          {!marketplaceLoading && marketplaceItems.length > 0 && visibleMarketplaceItems.length === 0 && (
+            <div className="py-4 text-center text-xs text-canvas-text-muted">没有匹配的插件</div>
+          )}
         </div>
       </section>
 
