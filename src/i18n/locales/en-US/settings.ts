@@ -10,6 +10,13 @@ const settings = {
   '恢复关闭软件时正在编辑的项目': 'Restore the project you were editing when the app closed',
   '项目列表': 'Project list',
   '启动后先选择要打开的项目': 'Pick a project to open after launch',
+  // ── 设置 · 窗口大小 ──
+  '应用窗口大小': 'App window size',
+  '窗口比例': 'Window aspect ratio',
+  '大屏': 'Large',
+  '固定窗口比例': 'Lock window aspect ratio',
+  '拖拽缩放窗口时自动保持 {ratio}': 'Keeps {ratio} while you resize the window',
+  '拖拽缩放窗口时不限制宽高比': 'Resize the window freely, no ratio constraint',
 
   // ── 设置 · 画布背景 ──
   '画布背景': 'Canvas background',
@@ -601,6 +608,31 @@ const settings = {
   '{name} 连接验证失败': '{name} connection verification failed',
   '已从接口文档导入模型 {id}，保存前可继续检查调用协议':
     'Imported model {id} from API docs; you can keep reviewing the call protocol before saving',
+  '连接配置已复制（不含 API Key）': 'Connection config copied (API key excluded)',
+  '剪贴板里没有可导入的连接配置': 'No importable connection config on the clipboard',
+  '该连接类型不支持导入': 'This connection type cannot be imported',
+  '已存在 {name} 连接，请先删除后再导入': 'A {name} connection already exists — delete it before importing',
+  '已导入连接，请补填 API Key': 'Connection imported — fill in the API key',
+  '从剪贴板导入连接': 'Import connection from clipboard',
+  '复制 {name} 配置': 'Copy {name} config',
+  '复制配置（不含 API Key）': 'Copy config (API key excluded)',
+  '返回 {count} 个结果地址': 'Returned {count} result URL(s)',
+  '返回文本 {count} 字': 'Returned {count} characters of text',
+  '任务 ID {id}': 'Task ID {id}',
+  '调用成功，但没有解析出结果': 'The call succeeded but no result could be parsed',
+  '试跑失败': 'Test run failed',
+  '「自动兼容」不走声明式协议，无法试跑': '“Auto compatible” bypasses the declarative protocol, so it cannot be test run',
+  '先填写接口地址': 'Enter the endpoint URL first',
+  '先填写 API Key': 'Enter the API key first',
+  '试跑中': 'Test running',
+  '试跑': 'Test run',
+  '用上面的示例变量真发一次请求，会产生真实调用与计费': 'Sends a real request with the sample variables above — real usage and billing apply',
+  '已获取 {count} 个模型，接口地址已更正为 {url}': 'Fetched {count} model(s); endpoint corrected to {url}',
+  '接口地址已更正为 {url}': 'Endpoint corrected to {url}',
+  '已有连接「{name}」使用相同接口地址。继续保存会新建第二条同网关连接；如果只是想加模型，建议回列表编辑「{name}」。': 'The connection {name} already uses this endpoint. Saving creates a second connection to the same gateway; to just add models, edit {name} in the list instead.',
+  '浏览器存储配额': 'Browser storage quota',
+  '配额即将用尽，自动保存可能失败，建议清理下方可释放空间或导出并删除旧项目': 'The quota is nearly full and autosave may fail — free up the space listed below, or export and delete old projects',
+  '项目画布数据存放在浏览器存储中，配额用尽会导致自动保存失败': 'Project canvas data lives in browser storage; autosave fails once the quota runs out',
 };
 
 export default settings;

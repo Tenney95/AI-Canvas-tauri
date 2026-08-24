@@ -447,6 +447,9 @@ export type NodeToolbarMode = 'icons' | 'icons-and-text';
 /** 软件启动后优先展示的视图。 */
 export type StartupView = 'last-project' | 'project-library';
 
+/** 主窗口可固定的宽高比 */
+export type WindowAspectRatio = '16:9' | '16:10' | '4:3';
+
 /** 吉祥物在可拖动视口中的相对位置，x/y 均为 0-1。 */
 export interface MascotPosition {
   x: number;
@@ -487,6 +490,8 @@ export interface AppConfig {
   canvasHistoryPinned?: boolean; // 操作记录浮层是否锁定常显（默认悬浮才显示）
   canvasQuickActions?: CanvasQuickAction[]; // 画布空白处长按圆环，最多 6 个槽位
   startupView?: StartupView; // 软件启动后打开上次画布或项目列表，默认 'last-project'
+  windowAspectRatio?: WindowAspectRatio; // 窗口尺寸预设所用比例，默认 '16:9'
+  windowAspectLocked?: boolean; // 拖拽缩放窗口时是否固定为上面的比例，默认 false
   customBackgroundUrl?: string;  // 自定义背景图片 data URL
   customBackgroundIsDark?: boolean; // 自定义背景是否为深色（自动识别）
   customBackgroundOpacity?: number; // 自定义背景透明度 0-1，默认 0.3

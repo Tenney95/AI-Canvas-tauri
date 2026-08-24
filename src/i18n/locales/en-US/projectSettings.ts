@@ -37,6 +37,8 @@ const projectSettings = {
   '比例、分辨率与时长': 'Aspect ratio, resolution and duration',
   '切换视频项目默认': 'Toggle video project defaults',
   '启用视频项目默认': 'Enable video project defaults',
+  '清除': 'Clear',
+  '上传中…': 'Uploading…',
 };
 
 export default projectSettings;

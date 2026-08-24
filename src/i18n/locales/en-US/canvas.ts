@@ -216,6 +216,8 @@ const canvas = {
   '该节点没有本地文件，无法复制': 'This node has no local file, cannot copy',
   '已{label}到剪贴板': 'Copied {label} to clipboard',
   '复制失败': 'Copy failed',
+  '插件节点': 'Plugin node',
+  '创建上游输入': 'Create upstream input',
 };
 
 export default canvas;

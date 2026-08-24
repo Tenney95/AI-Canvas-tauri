@@ -298,6 +298,8 @@ const videoEditor = {
 
   // ── 转场映射内部（轨道名等） ──
   '文字与贴图': 'Text & stickers',
+  '{count} 个叠加层': '{count} overlay(s)',
+  '选中一个片段后设置它与前一段之间的转场': 'Select a clip to set the transition between it and the previous one',
 };
 
 export default videoEditor;

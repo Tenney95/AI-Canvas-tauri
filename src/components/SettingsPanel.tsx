@@ -25,11 +25,48 @@ import type {
   InteractionMode,
   NodeToolbarMode,
   StartupView,
+  WindowAspectRatio,
 } from '../types';
 import type { BackgroundDetection } from '../services/backgroundService';
 
 import type { SettingsTab } from '../store/store.ui';
 import { LOCALES, LOCALE_LABELS, getLocale, useT } from '../i18n';
+
+/** 窗口尺寸预设：每种比例给紧凑 / 标准 / 大屏三档主流尺寸 */
+const WINDOW_ASPECT_OPTIONS: {
+  id: WindowAspectRatio;
+  presets: { w: number; h: number; label: string }[];
+}[] = [
+  { id: '16:9',  presets: [{ w: 1280, h: 720, label: '紧凑' }, { w: 1600, h: 900, label: '标准' }, { w: 1920, h: 1080, label: '大屏' }] },
+  { id: '16:10', presets: [{ w: 1280, h: 800, label: '紧凑' }, { w: 1440, h: 900, label: '标准' }, { w: 1680, h: 1050, label: '大屏' }] },
+  { id: '4:3',   presets: [{ w: 1024, h: 768, label: '紧凑' }, { w: 1280, h: 960, label: '标准' }, { w: 1440, h: 1080, label: '大屏' }] },
+];
+
+/** 把主窗口设成指定逻辑尺寸；超出当前显示器可视范围时等比缩小，避免窗口大到没法操作 */
+async function applyWindowSize(width: number, height: number): Promise<void> {
+  try {
+    const { getCurrentWindow, LogicalSize, currentMonitor } = await import('@tauri-apps/api/window');
+    const win = getCurrentWindow();
+    if (await win.isFullscreen()) await win.setFullscreen(false);
+    if (await win.isMaximized()) await win.unmaximize();
+
+    let w = width;
+    let h = height;
+    const monitor = await currentMonitor();
+    if (monitor) {
+      const maxW = monitor.size.width / monitor.scaleFactor - 40;
+      const maxH = monitor.size.height / monitor.scaleFactor - 80;
+      const scale = Math.min(1, maxW / w, maxH / h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+    await win.setSize(new LogicalSize(w, h));
+    await win.center();
+  } catch (error) {
+    // 权限没配全时 Tauri 会直接 reject，静默 catch 会让人以为按钮没反应
+    console.warn('[窗口尺寸] 设置失败:', error);
+  }
+}
 
 const INTERACTION_MODE_OPTIONS: {
   id: InteractionMode;
@@ -124,6 +161,8 @@ export default function SettingsPanel() {
   const sidebarFloating = config.sidebarFloating !== false; // 默认开启
   const configuredWindowGlassFrame = config.windowGlassFrame !== false; // 默认开启
   const performanceMode = config.performanceMode === true;
+  const windowAspectRatio = config.windowAspectRatio ?? '16:9';
+  const windowAspectLocked = config.windowAspectLocked === true;
   const windowGlassFrame = configuredWindowGlassFrame && !performanceMode;
   const interactionMode = config.interactionMode ?? 'default';
   const nodeToolbarMode = config.nodeToolbarMode ?? 'icons';
@@ -323,6 +362,86 @@ export default function SettingsPanel() {
                       );
                     })}
                   </div>
+                </section>
+
+                {/* 应用窗口大小 */}
+                <section>
+                  <h3 className="mb-2 text-sm font-medium text-canvas-text">{t('应用窗口大小')}</h3>
+                  <div
+                    className="mb-2 grid grid-cols-3 gap-1 rounded-lg border border-canvas-border bg-canvas-card p-1"
+                    role="radiogroup"
+                    aria-label={t('窗口比例')}
+                  >
+                    {WINDOW_ASPECT_OPTIONS.map(({ id }) => {
+                      const active = windowAspectRatio === id;
+                      return (
+                        <AnimatedButton
+                          key={id}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={async () => {
+                            if (active) return;
+                            updateConfig({ windowAspectRatio: id });
+                            await saveConfig();
+                          }}
+                          className={`flex h-9 items-center justify-center rounded-md text-xs font-medium transition-colors ${
+                            active
+                              ? 'bg-indigo-500/15 text-indigo-400 shadow-sm'
+                              : 'text-canvas-text-secondary hover:bg-canvas-hover hover:text-canvas-text'
+                          }`}
+                        >
+                          {id}
+                        </AnimatedButton>
+                      );
+                    })}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    {(WINDOW_ASPECT_OPTIONS.find((o) => o.id === windowAspectRatio) ?? WINDOW_ASPECT_OPTIONS[0]).presets.map(({ w, h, label }) => (
+                      <AnimatedButton
+                        key={`${w}x${h}`}
+                        type="button"
+                        onClick={() => { void applyWindowSize(w, h); }}
+                        className="flex flex-col items-center gap-0.5 rounded-lg border border-canvas-border bg-canvas-card px-2 py-2 transition-colors hover:border-canvas-hover"
+                      >
+                        <span className="text-xs font-medium text-canvas-text">{w} × {h}</span>
+                        <span className="text-[11px] text-canvas-text-muted">{t(label)}</span>
+                      </AnimatedButton>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateConfig({ windowAspectLocked: !windowAspectLocked });
+                      saveConfig();
+                    }}
+                    aria-pressed={windowAspectLocked}
+                    className={`sidebar-pref-card mt-2${windowAspectLocked ? ' is-floating' : ''}`}
+                  >
+                    <span
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                        windowAspectLocked ? 'bg-indigo-500/15 text-indigo-400' : 'bg-canvas-surface text-canvas-text-secondary'
+                      }`}
+                      aria-hidden="true"
+                    >
+                      <Icon icon={windowAspectLocked ? 'mdi:lock-outline' : 'mdi:lock-open-variant-outline'} width="16" height="16" />
+                    </span>
+
+                    <div className="sidebar-pref-text">
+                      <div className="sidebar-pref-title">{t('固定窗口比例')}</div>
+                      <div className="sidebar-pref-desc">
+                        {windowAspectLocked
+                          ? t('拖拽缩放窗口时自动保持 {ratio}', { ratio: windowAspectRatio })
+                          : t('拖拽缩放窗口时不限制宽高比')}
+                      </div>
+                    </div>
+
+                    <div className="sidebar-pref-switch" aria-hidden="true">
+                      <span />
+                    </div>
+                  </button>
                 </section>
 
                 {/* 画布背景主题 */}
