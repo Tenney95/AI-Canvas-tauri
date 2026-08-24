@@ -32,11 +32,20 @@ const WF_IO_ICON: Record<string, string> = {
   video: 'V',
   audio: 'A',
 };
+const IMAGE_REFERENCE_NODE_TYPES = new Set([
+  'ai-image',
+  'source-image',
+  'ai-storyboard',
+  'ai-director',
+  'ai-panorama',
+  'ai-animation',
+]);
 
 type NodeMeta = {
   type: string;
   displayId: number | undefined;
   thumbnailUrl?: string;
+  imageReferenceKey?: string;
 };
 
 const nodeMetaCache = new WeakMap<AppState['nodes'], Map<string, NodeMeta>>();
@@ -66,10 +75,18 @@ export function getNodeMetaMap(nodes: AppState['nodes']) {
   if (cached) return cached;
   const map = new Map<string, NodeMeta>();
   for (const node of nodes) {
+    const type = (node.data.type as string) || '';
+    const thumbnailUrl = bestNodeThumb(node.data);
+    const directorCaptureUrl = type === 'ai-director' && Array.isArray(node.data.directorCaptureUrls)
+      ? node.data.directorCaptureUrls.find((url) => typeof url === 'string' && url.trim())
+      : undefined;
     map.set(node.id, {
-      type: (node.data.type as string) || '',
+      type,
       displayId: node.data.displayId as number | undefined,
-      thumbnailUrl: bestNodeThumb(node.data),
+      thumbnailUrl,
+      imageReferenceKey: IMAGE_REFERENCE_NODE_TYPES.has(type) && (thumbnailUrl || directorCaptureUrl)
+        ? `node:${node.id}${!thumbnailUrl && directorCaptureUrl ? ':cap0' : ''}`
+        : undefined,
     });
     if (node.data.type !== 'ai-storyboard') continue;
     const cols = Math.max(1, (node.data.storyboardCols as number) || 3);
@@ -79,7 +96,13 @@ export function getNodeMetaMap(nodes: AppState['nodes']) {
     for (let index = 0; index < rows * cols; index += 1) {
       const thumbnailUrl = overrides[index]?.url || imageUrl;
       if (thumbnailUrl) {
-        map.set(`${node.id}/cell/${index}`, { type: 'ai-image', displayId: undefined, thumbnailUrl });
+        const cellId = `${node.id}/cell/${index}`;
+        map.set(cellId, {
+          type: 'ai-image',
+          displayId: undefined,
+          thumbnailUrl,
+          imageReferenceKey: `sbcell:${cellId}`,
+        });
       }
     }
   }
@@ -113,6 +136,40 @@ export function ensureCaretSlotBeforeChip(chip: Node): void {
 export function normalizeChipSlots(root: HTMLElement): void {
   const chips = root.querySelectorAll('[data-ref-id],[data-asset-path],[data-drama-id],[data-wf-id],[data-skill-id]');
   for (const chip of Array.from(chips)) ensureCaretSlotBeforeChip(chip);
+}
+
+export function numberImageReferenceKeys(keys: Array<string | undefined>): Array<number | undefined> {
+  const indexByKey = new Map<string, number>();
+  return keys.map((key) => {
+    if (!key) return undefined;
+    const existing = indexByKey.get(key);
+    if (existing !== undefined) return existing;
+    const index = indexByKey.size + 1;
+    indexByKey.set(key, index);
+    return index;
+  });
+}
+
+export function syncImageReferenceLabels(root: HTMLElement, metaMap: Map<string, NodeMeta>): void {
+  const chips = Array.from(root.querySelectorAll<HTMLElement>('[data-ref-id],[data-image-ref-key]'));
+  const keys = chips.map((chip) => {
+    const nodeId = chip.getAttribute('data-ref-id');
+    return nodeId ? metaMap.get(nodeId)?.imageReferenceKey : chip.getAttribute('data-image-ref-key') || undefined;
+  });
+  const indices = numberImageReferenceKeys(keys);
+
+  chips.forEach((chip, position) => {
+    const existing = Array.from(chip.children).find((child) => child.classList.contains('prompt-chip-image-index'));
+    const index = indices[position];
+    if (index === undefined) {
+      existing?.remove();
+      return;
+    }
+    const label = existing || document.createElement('span');
+    label.className = 'prompt-chip-id prompt-chip-image-index text-canvas-text-secondary';
+    label.textContent = `(图${index})`;
+    if (!existing) chip.appendChild(label);
+  });
 }
 
 export function serializeDOM(root: HTMLElement): string {
@@ -194,6 +251,7 @@ export function buildAssetChipEl(path: string, assetUrl?: string): HTMLSpanEleme
   span.className = 'prompt-chip chip-asset';
   span.contentEditable = 'false';
   span.setAttribute('data-asset-path', path);
+  if (isImage) span.setAttribute('data-image-ref-key', `asset:${encodeURIComponent(path)}`);
   const icon = document.createElement('span');
   icon.className = 'prompt-chip-icon';
   if (isImage && assetUrl) {
@@ -220,6 +278,7 @@ export function buildDramaChipEl(dramaId: string, name: string, kind: string, th
   span.setAttribute('data-drama-id', dramaId);
   span.setAttribute('data-drama-label', name);
   span.setAttribute('data-drama-kind', kind);
+  if (thumbUrl) span.setAttribute('data-image-ref-key', `drama:${dramaId}`);
   const icon = document.createElement('span');
   icon.className = 'prompt-chip-icon';
   if (thumbUrl) {

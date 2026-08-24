@@ -33,6 +33,7 @@ import {
   normalizeChipSlots,
   renderPromptToNodes,
   serializeDOM,
+  syncImageReferenceLabels,
   ZWSP,
 } from './mentionEditorDom';
 import {
@@ -133,6 +134,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   useEffect(() => {
     const el = editorRef.current;
     if (!el) return;
+    syncImageReferenceLabels(el, nodeMetaMap);
     if (serializeDOM(el) === prompt) {
       // 删空后浏览器常残留 <br>，而 serializeDOM 会剥掉尾部换行使其「看起来为空」，
       // 于是 DOM 不会被清理、光标停在残留空行（第 2/3 行）。这里把真正的空状态归一化。
@@ -157,6 +159,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     for (const node of renderPromptToNodes(prompt, nodeMetaMap)) {
       el.appendChild(node);
     }
+    syncImageReferenceLabels(el, nodeMetaMap);
     if (cursorOffset !== null) restoreCursor(el, cursorOffset);
   }, [prompt, nodeMetaMap]);
 
@@ -235,8 +238,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const emitDOM = useCallback(() => {
     const el = editorRef.current;
     if (!el) return;
+    syncImageReferenceLabels(el, nodeMetaMap);
     onChange(serializeDOM(el));
-  }, [onChange]);
+  }, [nodeMetaMap, onChange]);
 
   const canvasMentionNodes = useMemo(
     () => (showMention ? resolveCanvasMentionNodes(nodeId, nodes, edges) : []),
