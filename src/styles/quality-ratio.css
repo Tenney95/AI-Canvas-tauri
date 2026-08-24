@@ -19,7 +19,7 @@
   border-radius: 6px;
   color: var(--theme-text-secondary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
   font-family: inherit;
 }
@@ -79,7 +79,7 @@
   padding: 6px 12px;
   font-size: 12px;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   border-radius: 6px;
   transition:
     var(--transition-colors),
@@ -120,7 +120,7 @@
   background: var(--theme-bg);
   color: var(--theme-text-secondary);
   border-radius: 8px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition:
     var(--transition-colors),
     transform var(--transition-base);
@@ -164,7 +164,7 @@
   background: var(--theme-bg);
   color: var(--theme-text-secondary);
   border-radius: 6px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition:
     var(--transition-colors),
     transform var(--transition-base);
@@ -283,7 +283,7 @@
   color: var(--brand);
   background: none;
   border: none;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   padding: 0 2px;
 }
 .rh-video-ref-add:hover {
@@ -308,7 +308,7 @@
   background: none;
   color: var(--theme-text-muted);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .rh-video-ref-remove:hover {
   color: var(--theme-text);
@@ -336,7 +336,7 @@
   border: none;
   border-radius: 6px;
   background: none;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .rh-video-ref-option:hover {
   background: var(--theme-hover);
@@ -413,7 +413,7 @@
   color: var(--theme-text-secondary);
   font-size: 10px;
   font-weight: 700;
-  cursor: help;
+  cursor: var(--cursor-help, help);
   line-height: 1;
 }
 .rh-v5-fps-seg .img-rp-quality-item {
@@ -441,7 +441,7 @@
   border-radius: 6px;
   font-size: 12px;
   color: var(--theme-text);
-  cursor: text;
+  cursor: var(--cursor-text, text);
   font-family: inherit;
   outline: none;
   transition: border-color 0.15s;
@@ -516,7 +516,7 @@
   -webkit-appearance: none;
   appearance: none;
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   margin: 0;
   z-index: 1;
 }
@@ -566,7 +566,7 @@
   text-align: center;
   font-size: 10px;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color 0.15s;
   user-select: none;
   padding: 2px 0;
@@ -588,7 +588,7 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   user-select: none;
 }
 .rh-toggle-switch input {

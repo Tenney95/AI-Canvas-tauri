@@ -39,7 +39,7 @@
   border: 0;
   background: var(--black-alpha-50);
   backdrop-filter: blur(3px);
-  cursor: default;
+  cursor: var(--cursor-default, default);
   animation: aiDialogBackdropIn var(--dur-normal) var(--ease-out-expo);
 }
 .ai-dialog-float.is-expanded {
@@ -69,7 +69,7 @@
   border-radius: 8px;
   background: color-mix(in srgb, var(--theme-surface) 82%, transparent);
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base), transform var(--transition-base);
 }
 .ai-dialog-float .ai-dialog-expand-btn:hover {
@@ -229,7 +229,7 @@
   background: transparent;
   color: var(--theme-text-secondary);
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base);
   padding: 0;
 }
@@ -311,7 +311,7 @@
   background: var(--white-alpha-04);
   border: 1px solid var(--white-alpha-08);
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
 }
 .wf-reset-btn:hover {
@@ -440,7 +440,7 @@
   background: var(--white-alpha-03);
   color: var(--theme-text-secondary);
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
   font-family: inherit;
 }
@@ -465,7 +465,7 @@
   border: 1.5px dashed var(--separator-color);
   border-radius: 14px;
   background: var(--white-alpha-02);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: border-color var(--transition-base), background var(--transition-base);
 }
 .wf-dropzone:hover,
@@ -557,7 +557,7 @@
   border-radius: 50%;
   background: transparent;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
 }
 .wf-file-card-clear:hover {
@@ -589,7 +589,7 @@
 }
 .wf-btn-ghost:disabled {
   opacity: 0.35;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 .wf-actions-row .wf-msg {
   flex: 1 1 100%;
@@ -602,7 +602,7 @@
   font-size: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-family: inherit;
   transition: var(--transition-control);
 }
@@ -617,7 +617,7 @@
 }
 .wf-btn-primary:disabled {
   opacity: 0.35;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 .wf-msg {
   font-size: 12px;
@@ -752,7 +752,7 @@
   font: inherit;
   font-size: 11px;
   white-space: nowrap;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
 }
 .wf-item-toggle:hover {
@@ -785,7 +785,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   border-radius: 5px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base);
   padding: 0;
   flex-shrink: 0;
@@ -843,7 +843,7 @@
   color: inherit;
   font: inherit;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
 }
 .wf-item-cat:hover {
@@ -856,7 +856,7 @@ button.wf-ionode-badge {
   border: 1px solid transparent;
   font: inherit;
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 button.wf-ionode-badge:hover {
@@ -1035,7 +1035,7 @@ button.wf-ionode-badge.is-default {
   background: transparent;
   color: var(--theme-text-secondary);
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base);
   padding: 0;
 }
@@ -1063,7 +1063,7 @@ button.wf-ionode-badge.is-default {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color 0.15s, border-color 0.15s;
   margin-bottom: -1px;
 }
@@ -1122,7 +1122,7 @@ button.wf-ionode-badge.is-default {
   background: var(--white-alpha-04);
   border: none;
   border-radius: 8px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-control);
 }
 .assets-cat-chip:hover:not(:disabled) {
@@ -1136,7 +1136,7 @@ button.wf-ionode-badge.is-default {
 }
 .assets-cat-chip:disabled {
   opacity: 0.35;
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 .assets-cat-count {
   font-size: 10px;
@@ -1153,7 +1153,7 @@ button.wf-ionode-badge.is-default {
   border-radius: 8px;
   background: var(--theme-card);
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-control);
 }
 .assets-filter-more svg {
@@ -1307,7 +1307,7 @@ button.wf-ionode-badge.is-default {
   backdrop-filter: blur(var(--glass-blur-sm));
   color: rgba(255, 255, 255, 0.8);
   border-radius: 6px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base);
   padding: 0;
 }
@@ -1410,7 +1410,7 @@ button.wf-ionode-badge.is-default {
   border: none;
   background: transparent;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   padding: 2px;
   border-radius: 4px;
   transition: color var(--transition-base), background var(--transition-base);
@@ -1445,7 +1445,7 @@ button.wf-ionode-badge.is-default {
   border-radius: 5px;
   background: transparent;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base);
 }
 .assets-column-stepper button svg {
@@ -1462,7 +1462,7 @@ button.wf-ionode-badge.is-default {
 }
 .assets-column-stepper button:disabled {
   opacity: 0.3;
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 .assets-column-stepper output {
   color: var(--theme-text);
@@ -1483,7 +1483,7 @@ button.wf-ionode-badge.is-default {
   color: var(--theme-text);
   font-size: 13px;
   font-family: inherit;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   outline: none;
   transition: border-color var(--transition-base), background var(--transition-base);
 }
@@ -1553,10 +1553,10 @@ button.wf-ionode-badge.is-default {
   color: #fff;
   font-size: 13px;
   font-weight: 500;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-family: inherit;
 }
-.assets-add-btn:disabled { opacity: 0.6; cursor: default; }
+.assets-add-btn:disabled { opacity: 0.6; cursor: var(--cursor-default, default); }
 .assets-add-menu {
   position: absolute;
   top: calc(100% + 6px);
@@ -1583,7 +1583,7 @@ button.wf-ionode-badge.is-default {
   border-radius: 7px;
   color: var(--theme-text-secondary);
   font-size: 13px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-family: inherit;
   transition: background var(--transition-base), color var(--transition-base);
 }
@@ -1618,7 +1618,7 @@ button.wf-ionode-badge.is-default {
   border-radius: 50%;
   background: var(--white-alpha-08);
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 13px;
   line-height: 1;
   transition: background var(--transition-base), color var(--transition-base);
@@ -1670,7 +1670,7 @@ button.wf-ionode-badge.is-default {
   border: none;
   background: transparent;
   color: var(--brand-pale);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 12px;
   line-height: 1;
   padding: 0;
@@ -1834,7 +1834,7 @@ button.wf-ionode-badge.is-default {
   background: transparent;
   color: var(--theme-text-muted);
   border-radius: 8px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base);
 }
 .asset-search-winbtn:hover { color: var(--theme-text); background: var(--white-alpha-08); }
@@ -1862,11 +1862,11 @@ button.wf-ionode-badge.is-default {
   height: 30px;
   border-radius: 8px;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base);
 }
 .asset-search-refresh:hover:not(:disabled) { color: var(--theme-text); background: var(--theme-surface); }
-.asset-search-refresh:disabled { opacity: 0.5; cursor: default; }
+.asset-search-refresh:disabled { opacity: 0.5; cursor: var(--cursor-default, default); }
 .asset-search-toolbar {
   display: flex;
   align-items: center;

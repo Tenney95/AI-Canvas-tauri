@@ -32,7 +32,7 @@
   border-radius: 9px;
   background: transparent;
   color: var(--theme-text);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
 }
 
@@ -117,7 +117,7 @@
   border-radius: 7px;
   background: color-mix(in srgb, var(--theme-hover) 72%, transparent);
   color: var(--theme-text);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
@@ -141,7 +141,7 @@
   border-radius: 7px;
   background: var(--note-swatch);
   box-shadow: inset 0 0 0 1px var(--glass-ring);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .canvas-note-swatch.is-transparent {
@@ -228,7 +228,7 @@
 
 .canvas-note-link-form button {
   padding: 0 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .react-flow__node-canvas-note {
@@ -295,7 +295,7 @@
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
   pointer-events: auto;
-  cursor: move;
+  cursor: var(--cursor-move, move);
 }
 
 /* 曲率手柄：实心填充以区别于端点手柄 */
@@ -340,7 +340,7 @@
 }
 
 .canvas-note-text {
-  cursor: text;
+  cursor: var(--cursor-text, text);
 }
 
 .canvas-note-textarea {
@@ -390,7 +390,7 @@
 .canvas-drawing-root.is-tool-line,
 .canvas-drawing-root.is-tool-freehand,
 .canvas-drawing-root.is-tool-text {
-  cursor: crosshair;
+  cursor: var(--cursor-crosshair, crosshair);
 }
 
 .canvas-drawing-root.is-tool-image {

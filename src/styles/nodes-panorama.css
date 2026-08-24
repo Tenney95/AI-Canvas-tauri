@@ -177,7 +177,7 @@
   border-radius: 6px;
   background: var(--theme-card);
   color: var(--theme-text);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .xiaoluo-pano-retry:hover {

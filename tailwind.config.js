@@ -6,6 +6,19 @@ export default {
   ],
   theme: {
     extend: {
+      cursor: {
+        'default': 'var(--cursor-default, default)',
+        'pointer': 'var(--cursor-pointer, pointer)',
+        'text': 'var(--cursor-text, text)',
+        'not-allowed': 'var(--cursor-not-allowed, not-allowed)',
+        'move': 'var(--cursor-move, move)',
+        'crosshair': 'var(--cursor-crosshair, crosshair)',
+        'ew-resize': 'var(--cursor-ew-resize, ew-resize)',
+        'ns-resize': 'var(--cursor-ns-resize, ns-resize)',
+        'nwse-resize': 'var(--cursor-nwse-resize, nwse-resize)',
+        'nesw-resize': 'var(--cursor-nesw-resize, nesw-resize)',
+        'help': 'var(--cursor-help, help)',
+      },
       colors: {
         /* Theme layer */
         'canvas-bg': '#0a0a0f',

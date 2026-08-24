@@ -42,7 +42,7 @@
 
 /* 按钮区自己接管指针，其余部分留给拖拽 */
 .shotlist-toolbar-actions {
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 
 .shotlist-btn {
@@ -55,7 +55,7 @@
   border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
   background: transparent;
   color: var(--theme-text, rgba(255, 255, 255, 0.85));
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 0.15s, border-color 0.15s;
 }
 
@@ -66,7 +66,7 @@
 
 .shotlist-btn:disabled {
   opacity: 0.6;
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 
 .shotlist-btn:disabled:hover {
@@ -103,7 +103,7 @@
   font-size: 11px;
   border-radius: 5px;
   color: var(--theme-text, rgba(255, 255, 255, 0.85));
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .shotlist-column-item:hover {
@@ -185,7 +185,7 @@
   cursor: grab;
 }
 
-.shot-row-delete { cursor: pointer; }
+.shot-row-delete { cursor: var(--cursor-pointer, pointer); }
 .shot-row-delete:hover { color: #f87171; }
 .shot-grip:active { cursor: grabbing; }
 
@@ -247,7 +247,7 @@
 button.shot-frame {
   padding: 0;
   font: inherit;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 button.shot-frame:hover {
@@ -288,7 +288,7 @@ button.shot-frame:hover {
   height: 100%;
   object-fit: cover;
   display: block;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   user-select: none;
 }
 
@@ -320,7 +320,7 @@ button.shot-frame:hover {
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.6);
   color: rgba(255, 255, 255, 0.9);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .shot-frame-pick {
@@ -368,7 +368,7 @@ button.shot-frame:hover {
   border: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
   background: var(--theme-bg, rgba(0, 0, 0, 0.25));
   overflow: hidden;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -474,7 +474,7 @@ button.shot-frame:hover {
   border-top: 1px solid var(--theme-border, rgba(255, 255, 255, 0.12));
   background: transparent;
   color: var(--theme-text-muted, rgba(255, 255, 255, 0.6));
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .shotlist-add:hover {

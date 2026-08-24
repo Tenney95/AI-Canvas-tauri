@@ -7,7 +7,7 @@ html body input[type='range']:not([data-native-range]) {
   border: 0;
   outline: none;
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   color-scheme: inherit;
 }
 
@@ -74,7 +74,7 @@ html body input[type='range']:not([data-native-range])::-moz-range-thumb {
 }
 
 html body input[type='range']:not([data-native-range]):disabled {
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
   opacity: 0.42;
 }
 

@@ -262,7 +262,7 @@
   height: 14px;
   border-radius: 50%;
   border: 2px solid transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: transform var(--transition-base);
 }
 .canvas-group-swatch:hover {

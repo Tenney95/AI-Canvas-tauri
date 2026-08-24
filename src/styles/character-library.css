@@ -55,7 +55,7 @@
   border-radius: 7px;
   font-size: 12px;
   font-weight: 550;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
@@ -98,7 +98,7 @@
   background: var(--danger);
   font-size: 12px;
   font-weight: 550;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 140ms ease;
 }
 
@@ -172,7 +172,7 @@
   border: 1px solid var(--theme-border);
   border-radius: 7px;
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-library-new:hover {
@@ -191,7 +191,7 @@
   border: 0;
   border-bottom: 2px solid transparent;
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-library-tabs button span {
@@ -247,7 +247,7 @@
   background: transparent;
   border: 0;
   border-radius: 6px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-library-search button:hover {
@@ -372,7 +372,7 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-library-profile-actions button:hover,
@@ -416,7 +416,7 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-node-picker > button:hover {
@@ -481,7 +481,7 @@
   background: color-mix(in srgb, var(--theme-bg) 72%, var(--theme-card));
   border: 1px solid var(--theme-border);
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-reference-item:hover,
@@ -588,7 +588,7 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-library-strip-list > button:hover,
@@ -708,7 +708,7 @@
   background: transparent;
   border: 0;
   border-radius: 5px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 11px;
 }
 
@@ -723,7 +723,7 @@
 }
 
 .character-capture-segmented button:disabled {
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
   opacity: 0.42;
 }
 
@@ -744,7 +744,7 @@
   background: color-mix(in srgb, var(--theme-bg) 52%, transparent);
   border: 1px solid var(--theme-border);
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 11px;
 }
 
@@ -884,7 +884,7 @@
   background: var(--theme-card);
   border: 1px solid var(--theme-border);
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-dialog-reference-strip > button.is-selected {
@@ -910,7 +910,7 @@
   background: transparent;
   border: 1px dashed var(--theme-border);
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 11px;
 }
 
@@ -1082,7 +1082,7 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-voice-dock-head > button:hover,
@@ -1093,7 +1093,7 @@
 }
 
 .character-voice-dock-head > button:disabled {
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
   opacity: 0.42;
 }
 
@@ -1138,7 +1138,7 @@
   background: var(--theme-card);
   border: 1px solid var(--theme-border);
   border-radius: 50%;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-voice-play:hover {
@@ -1147,7 +1147,7 @@
 }
 
 .character-voice-play:disabled {
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
   opacity: 0.42;
 }
 
@@ -1188,7 +1188,7 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .character-voice-chip-actions button:hover {
@@ -1224,7 +1224,7 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 11px;
 }
 
@@ -1279,7 +1279,7 @@
   color: inherit;
   background: transparent;
   border: 0;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-align: left;
 }
 

@@ -162,7 +162,7 @@
   font-weight: 500;
   border: 1px solid var(--brand-alpha-25);
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-family: inherit;
   transition: var(--transition-control);
   background: var(--brand-alpha-12);
@@ -175,7 +175,7 @@
 }
 .settings-save-btn:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 .settings-btn-ghost {
   background: transparent;
@@ -244,7 +244,7 @@
   border-radius: 10px;
   background: var(--theme-card);
   color: var(--theme-text);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-align: left;
   overflow: hidden;
   transition:
@@ -554,7 +554,7 @@
   background: var(--theme-card);
   border: 1px solid var(--theme-border);
   border-radius: 10px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-align: left;
   transition: background var(--transition-base), border-color var(--transition-base),
     transform var(--dur-fast) var(--ease-out-quart);
@@ -695,7 +695,7 @@
   border-radius: 7px;
   color: var(--theme-text-secondary);
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), border-color var(--transition-base), background var(--transition-base);
 }
 .settings-add-provider-btn:hover,
@@ -706,7 +706,7 @@
 }
 .provider-icon-btn:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 .provider-icon-btn.is-danger {
   color: var(--danger-light);
@@ -913,7 +913,7 @@
   border-radius: 8px;
   color: var(--theme-text-secondary);
   background: var(--theme-card);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-align: left;
   transition: border-color var(--transition-base), background var(--transition-base), transform var(--transition-base);
 }
@@ -979,7 +979,7 @@
   border: 0;
   color: var(--brand-light);
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 10px;
 }
 .provider-fields-grid {
@@ -1023,7 +1023,7 @@
   background: var(--white-alpha-06);
 }
 .provider-field input:disabled {
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
   opacity: 0.6;
 }
 .provider-external-link {
@@ -1078,7 +1078,7 @@
   border-radius: 7px;
   color: var(--brand-light);
   background: var(--brand-alpha-12);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 11px;
   transition: color var(--transition-base), border-color var(--transition-base), background var(--transition-base);
 }
@@ -1102,7 +1102,7 @@
 .provider-primary-btn:disabled,
 .provider-secondary-btn:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 .provider-catalog-message {
   display: flex;
@@ -1170,7 +1170,7 @@
   border-radius: 5px;
   color: var(--theme-text-muted);
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 9px;
 }
 .provider-category-choice {
@@ -1178,7 +1178,7 @@
   border: 0;
   color: var(--theme-text-muted);
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color 150ms ease, background-color 150ms ease, box-shadow 150ms ease;
 }
 .provider-category-choice.is-text {
@@ -1214,7 +1214,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .provider-model-list {
   max-height: 238px;
@@ -1238,7 +1238,7 @@
   min-width: 0;
   align-items: center;
   gap: 8px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .provider-model-row:last-child {
   border-bottom: 0;
@@ -1262,7 +1262,7 @@
   font-size: 8px;
   line-height: normal;
   text-align: center;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background var(--transition-base), box-shadow var(--transition-base);
 }
 .provider-model-kind:hover {
@@ -1381,7 +1381,7 @@
   border-radius: 6px;
   color: var(--theme-text-muted);
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), border-color var(--transition-base), background var(--transition-base);
 }
 .provider-model-protocol-btn:hover,
@@ -1454,7 +1454,7 @@
   border-radius: 4px;
   color: var(--theme-text-muted);
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 12px;
 }
 .provider-protocol-view-tabs button.is-active {
@@ -1559,7 +1559,7 @@
 }
 .provider-protocol-field input:disabled {
   opacity: 0.45;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 .provider-protocol-field textarea {
   resize: vertical;
@@ -1685,7 +1685,7 @@
   align-items: center;
   gap: 7px;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 12px;
 }
 .provider-protocol-toggle input {
@@ -1699,7 +1699,7 @@
 }
 .provider-protocol-variables summary {
   width: fit-content;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .provider-protocol-variables > div {
   display: flex;
@@ -1723,7 +1723,7 @@
 }
 .provider-protocol-response-preview > summary {
   width: fit-content;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   color: var(--theme-text-secondary);
 }
 .provider-protocol-response-preview-content {

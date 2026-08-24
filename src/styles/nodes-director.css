@@ -47,7 +47,7 @@
   border-radius: 8px;
   padding: 5px 10px;
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
 
@@ -58,7 +58,7 @@
 
 .director-node-btn:disabled {
   opacity: 0.45;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 
 .director-node-btn.primary {

@@ -86,7 +86,7 @@
   background: transparent;
   color: var(--theme-text-secondary);
   font-size: 13px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   border-bottom: 2px solid transparent;
   transition: var(--transition-colors);
   margin-bottom: -1px;
@@ -137,7 +137,7 @@
   background: transparent;
   color: var(--theme-text-secondary);
   font-size: 13px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
 }
 
@@ -161,7 +161,7 @@
   gap: 8px;
   padding: 6px 8px;
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background-color var(--transition-base);
   position: relative;
 }
@@ -184,7 +184,7 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   overflow: hidden;
   position: relative;
   transition: border-color var(--transition-base);
@@ -209,7 +209,7 @@
   position: absolute;
   inset: 0;
   opacity: 0;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .preset-manager-list-text {
@@ -245,7 +245,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   font-size: 14px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   display: none;
   align-items: center;
   justify-content: center;
@@ -337,7 +337,7 @@
   background: var(--theme-hover);
   color: var(--theme-text-secondary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
 }
 
@@ -395,7 +395,7 @@
   color: var(--brand-pale);
   font-weight: 500;
   user-select: none;
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 
 /* ── Footer actions ── */
@@ -427,7 +427,7 @@
   background: transparent;
   color: var(--theme-text-secondary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
 }
 .preset-manager-trigger-mode:hover {
@@ -447,7 +447,7 @@
   color: #fff;
   font-size: 13px;
   font-weight: 500;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition:
     background-color var(--transition-base),
     opacity var(--transition-base);
@@ -467,11 +467,11 @@
 }
 
 .slash-command-user-preset {
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .slash-command-manage {
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   opacity: 0.8;
   transition: opacity var(--transition-base), background var(--transition-base);
 }
@@ -514,7 +514,7 @@
 .preset-manager-section-toggle {
   font-size: 12px;
   color: var(--brand);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   background: none;
   border: none;
   padding: 0;
@@ -573,7 +573,7 @@
   border-radius: 5px;
   background: transparent;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 12px;
   transition: var(--transition-colors);
 }
@@ -637,7 +637,7 @@
   border-radius: 6px;
   background: var(--brand-alpha-10);
   color: var(--brand-pale);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 12px;
   transition: var(--transition-colors);
 }
@@ -757,7 +757,7 @@
   border-radius: 5px;
   background: transparent;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .preset-advanced-row-actions button:hover:not(:disabled) {
@@ -766,7 +766,7 @@
 }
 
 .preset-advanced-row-actions button:disabled {
-  cursor: default;
+  cursor: var(--cursor-default, default);
   opacity: 0.3;
 }
 
@@ -833,7 +833,7 @@
   border-radius: 5px;
   background: var(--brand-alpha-10);
   color: var(--brand-pale);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 10px;
 }
 
@@ -866,7 +866,7 @@
   border: 0;
   background: transparent;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 10px;
 }
 
@@ -999,7 +999,7 @@
   align-items: center;
   gap: 8px;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 11px;
 }
 
@@ -1135,7 +1135,7 @@
 }
 
 .preset-modal-btn-primary:disabled {
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
   opacity: 0.45;
 }
 

@@ -36,7 +36,7 @@
   background: transparent;
   border: none;
   border-radius: 9px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   white-space: nowrap;
   transition: background var(--transition-base), color var(--transition-base);
 }
@@ -66,7 +66,7 @@
   background: var(--theme-card);
   border: 1px solid var(--theme-border);
   border-radius: 999px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background var(--transition-base), color var(--transition-base), border-color var(--transition-base);
 }
 .mention-picker-chip:hover { color: var(--theme-text); border-color: var(--border-secondary); }
@@ -107,12 +107,12 @@
   padding: 0;
   background: transparent;
   border: none;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-align: center;
   transition: transform var(--dur-fast) var(--ease-out-quart);
 }
 .mention-picker-card:active:not(:disabled) { transform: scale(0.97); }
-.mention-picker-card:disabled { opacity: 0.45; cursor: not-allowed; }
+.mention-picker-card:disabled { opacity: 0.45; cursor: var(--cursor-not-allowed, not-allowed); }
 
 .mention-picker-card-media {
   position: relative;

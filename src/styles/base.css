@@ -986,12 +986,12 @@ select:not([multiple]):not([size]) {
   background-repeat: no-repeat;
   background-size: 5px 5px;
   color-scheme: inherit;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-overflow: ellipsis;
 }
 
 select:not([multiple]):not([size]):disabled {
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
   opacity: 0.55;
 }
 
@@ -1142,7 +1142,7 @@ select option:disabled {
   appearance: none;
   border-radius: 2px;
   background: var(--separator-color);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .canvas-zoom-slider::-webkit-slider-thumb {

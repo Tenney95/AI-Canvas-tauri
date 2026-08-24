@@ -153,7 +153,7 @@
   background: rgba(10, 10, 15, 0.55);
   backdrop-filter: blur(var(--glass-blur-sm));
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background var(--transition-base), color var(--transition-base), border-color var(--transition-base), opacity var(--transition-base);
   flex-shrink: 0;
   opacity: 0.7;
@@ -723,10 +723,10 @@
   height: 14px;
 }
 
-.node-resize-handle--nw { left: 0; top: 0; cursor: nwse-resize; }
-.node-resize-handle--ne { right: 0; top: 0; cursor: nesw-resize; }
-.node-resize-handle--sw { left: 0; bottom: 0; cursor: nesw-resize; }
-.node-resize-handle--se { right: 0; bottom: 0; cursor: nwse-resize; }
+.node-resize-handle--nw { left: 0; top: 0; cursor: var(--cursor-nwse-resize, nwse-resize); }
+.node-resize-handle--ne { right: 0; top: 0; cursor: var(--cursor-nesw-resize, nesw-resize); }
+.node-resize-handle--sw { left: 0; bottom: 0; cursor: var(--cursor-nesw-resize, nesw-resize); }
+.node-resize-handle--se { right: 0; bottom: 0; cursor: var(--cursor-nwse-resize, nwse-resize); }
 
 /* 边把手：骑在边线上的 6px 窄条，两端让出角把手，避免与节点内容抢事件 */
 .node-resize-handle--n,
@@ -734,7 +734,7 @@
   left: 14px;
   right: 14px;
   height: 6px;
-  cursor: ns-resize;
+  cursor: var(--cursor-ns-resize, ns-resize);
 }
 
 .node-resize-handle--n { top: -3px; }
@@ -745,7 +745,7 @@
   top: 14px;
   bottom: 14px;
   width: 6px;
-  cursor: ew-resize;
+  cursor: var(--cursor-ew-resize, ew-resize);
 }
 
 .node-resize-handle--w { left: -3px; }
@@ -861,7 +861,7 @@
   border-radius: 6px;
   background: transparent;
   color: inherit;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background var(--dur-fast) ease, transform 80ms ease-out;
 }
 
@@ -903,7 +903,7 @@
   padding: 0;
   appearance: none;
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .video-node-progress {
@@ -947,7 +947,7 @@
 }
 
 .video-node-progress:disabled {
-  cursor: default;
+  cursor: var(--cursor-default, default);
   opacity: 0.45;
 }
 
@@ -1020,7 +1020,7 @@
   border: none;
   background: transparent;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   border-radius: 6px;
   transition: color var(--transition-base), background var(--transition-base);
 }
@@ -1254,7 +1254,7 @@
   border-radius: 999px;
   background: transparent;
   color: rgba(255, 255, 255, 0.88);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 0.15s ease, transform 0.12s ease, opacity 0.15s ease;
 }
 
@@ -1268,7 +1268,7 @@
 
 .zoom-controls .zoom-btn:disabled {
   opacity: 0.35;
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 
 .zoom-controls .zoom-percent {
@@ -1281,7 +1281,7 @@
   color: rgba(255, 255, 255, 0.92);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 0.15s ease;
 }
 
@@ -1319,7 +1319,7 @@
   border: 1px solid transparent;
   background: transparent;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background var(--transition-base), color var(--transition-base), border-color var(--transition-base);
 }
 
@@ -1336,7 +1336,7 @@
 
 .markdown-mode-btn:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 
 .markdown-node-content {

@@ -72,7 +72,7 @@
   background: transparent;
   color: var(--theme-text);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 140ms ease, border-color 140ms ease, transform 120ms var(--video-editor-ease-out);
   font-weight: 500;
   white-space: nowrap;
@@ -82,7 +82,7 @@
   border-color: rgba(255, 255, 255, 0.15);
 }
 .video-editor-btn:active:not(:disabled) { transform: scale(0.97); }
-.video-editor-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.video-editor-btn:disabled { opacity: 0.45; cursor: var(--cursor-not-allowed, not-allowed); }
 .video-editor-btn.primary {
   border-color: transparent;
   background: var(--video-editor-accent);
@@ -103,7 +103,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   border-radius: 8px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color 0.15s ease, background 0.15s ease;
 }
 .video-editor-winbtn:hover { color: var(--theme-text); background: var(--white-alpha-08); }
@@ -159,10 +159,10 @@
   border-radius: 5px;
   padding: 1px 6px;
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .video-editor-failure-detail summary {
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 11px;
   opacity: 0.8;
 }
@@ -227,7 +227,7 @@
   border-radius: 7px;
   background: var(--white-alpha-04);
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color 130ms ease, border-color 130ms ease, background 130ms ease, transform 120ms var(--video-editor-ease-out);
 }
 .video-editor-media-add:hover,
@@ -264,7 +264,7 @@
   border-radius: 7px;
   background: transparent;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-align: left;
 }
 .video-editor-media-add-sources > button:hover,
@@ -313,7 +313,7 @@
   border-radius: 6px;
   background: transparent;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .video-editor-media-picker-head > button:hover { color: var(--theme-text); background: var(--white-alpha-06); }
 .video-editor-media-picker-head strong { grid-column: 2; font-size: 12px; color: var(--theme-text); }
@@ -382,7 +382,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color 130ms ease, background 130ms ease, transform 100ms ease;
 }
 .video-editor-media-filters button:hover { color: var(--theme-text); }
@@ -426,7 +426,7 @@
   border-radius: 5px;
   background: transparent;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .video-editor-media-list-search button:hover { background: var(--white-alpha-06); color: var(--theme-text); }
 .video-editor-inspector-tabs {
@@ -449,7 +449,7 @@
   color: var(--theme-text-muted);
   font-size: 12px;
   font-weight: 600;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 140ms ease, color 140ms ease, transform 120ms var(--video-editor-ease-out);
 }
 .video-editor-inspector-tabs button svg {
@@ -485,7 +485,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 100ms var(--video-editor-ease-out);
 }
 .video-editor-property-tabs button:hover {
@@ -533,12 +533,12 @@
   gap: 8px;
   padding: 7px 8px;
   border-radius: 8px;
-  cursor: default;
+  cursor: var(--cursor-default, default);
   transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
   width: 100%;
   border: 1px solid transparent;
   text-align: left;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .video-editor-media-item[draggable='true'] { cursor: grab; }
 .video-editor-media-item[draggable='true']:active { cursor: grabbing; }
@@ -706,7 +706,7 @@
   height: 8px;
   flex-shrink: 0;
   background: var(--white-alpha-08);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   touch-action: none;
 }
 .video-editor-progress-fill {
@@ -743,7 +743,7 @@
 .video-editor-main-selection {
   position: absolute;
   border: 1px solid transparent;
-  cursor: move;
+  cursor: var(--cursor-move, move);
   touch-action: none;
   transform-origin: center;
   z-index: 2;
@@ -753,7 +753,7 @@
   box-shadow: 0 0 0 1px var(--accent, #6366f1);
 }
 .video-editor-main-selection.locked {
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 @media (hover: hover) and (pointer: fine) {
   .video-editor-main-selection:not(.selected, .locked):hover {
@@ -763,7 +763,7 @@
 .video-editor-overlay {
   position: absolute;
   border: 1px solid transparent;
-  cursor: move;
+  cursor: var(--cursor-move, move);
   touch-action: none;
   overflow: visible;
   transition: border-color 0.15s ease;
@@ -774,7 +774,7 @@
   box-shadow: 0 0 0 1px var(--accent, #6366f1);
 }
 .video-editor-overlay.locked {
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 .video-editor-overlay-img {
   position: absolute;
@@ -816,22 +816,22 @@
 .video-editor-overlay-handle.nw {
   top: -5px;
   left: -5px;
-  cursor: nwse-resize;
+  cursor: var(--cursor-nwse-resize, nwse-resize);
 }
 .video-editor-overlay-handle.ne {
   top: -5px;
   right: -5px;
-  cursor: nesw-resize;
+  cursor: var(--cursor-nesw-resize, nesw-resize);
 }
 .video-editor-overlay-handle.sw {
   bottom: -5px;
   left: -5px;
-  cursor: nesw-resize;
+  cursor: var(--cursor-nesw-resize, nesw-resize);
 }
 .video-editor-overlay-handle.se {
   bottom: -5px;
   right: -5px;
-  cursor: nwse-resize;
+  cursor: var(--cursor-nwse-resize, nwse-resize);
 }
 .video-editor-rotation-stem {
   position: absolute;
@@ -933,7 +933,7 @@
   border-radius: 8px;
   background: transparent;
   color: var(--theme-text);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 140ms ease, transform 120ms var(--video-editor-ease-out), border-color 140ms ease;
 }
 .video-editor-transport-btn:hover {
@@ -972,7 +972,7 @@
   font-weight: 500;
   text-align: center;
 }
-.video-editor-timecode-edit { cursor: text; }
+.video-editor-timecode-edit { cursor: var(--cursor-text, text); }
 .video-editor-timecode-edit:hover {
   border-color: var(--theme-border);
   background: var(--white-alpha-04);
@@ -1011,7 +1011,7 @@
   background-color: transparent;
   color: var(--theme-text-secondary);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .video-editor-shortcut-hint {
   display: inline-flex;
@@ -1042,7 +1042,7 @@
   height: 28px;
   border-radius: 7px;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   list-style: none;
   transition: color 130ms ease, background 130ms ease;
 }
@@ -1179,14 +1179,14 @@
   background: transparent;
   color: var(--theme-text);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 120ms var(--video-editor-ease-out);
 }
 .video-editor-timeline-btn:hover:not(:disabled) {
   background: var(--white-alpha-08);
   border-color: var(--theme-border);
 }
-.video-editor-timeline-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.video-editor-timeline-btn:disabled { opacity: 0.4; cursor: var(--cursor-not-allowed, not-allowed); }
 .video-editor-timeline-btn:active:not(:disabled) { transform: scale(0.97); }
 .video-editor-timeline-btn.icon-only {
   width: 30px;
@@ -1217,10 +1217,10 @@
   padding: 1px 7px;
   font-size: 10px;
   font-weight: 400;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .video-editor-probe-btn:hover:not(:disabled) { color: var(--theme-text); }
-.video-editor-probe-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.video-editor-probe-btn:disabled { opacity: 0.5; cursor: var(--cursor-not-allowed, not-allowed); }
 .video-editor-probe-btn + .video-editor-probe-btn { margin-left: 4px; }
 .video-editor-inspect-hint {
   font-size: 11px;
@@ -1273,7 +1273,7 @@
   height: 28px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--theme-border);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   touch-action: none;
   -webkit-user-select: none;
   user-select: none;
@@ -1394,7 +1394,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   flex-shrink: 0;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms var(--video-editor-ease-out);
 }
@@ -1416,7 +1416,7 @@
 }
 .video-editor-track-flag:disabled {
   opacity: 0.35;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 
 .video-editor-track-lane {
@@ -1425,7 +1425,7 @@
   margin-bottom: 4px;
   border-radius: 6px;
   background: var(--white-alpha-03);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   touch-action: none;
   transition: background 0.15s ease;
   overflow: visible;
@@ -1463,7 +1463,7 @@
     ),
     rgba(255, 255, 255, 0.03);
   box-shadow: inset 2px 0 0 var(--warning);
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 .video-editor-track-lane.is-hidden {
   border: 1px dashed color-mix(in srgb, var(--theme-text-muted) 45%, transparent);
@@ -1531,7 +1531,7 @@
   background: var(--video-editor-card);
   color: var(--theme-text-muted);
   opacity: 0;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: opacity 140ms ease, background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 .video-editor-track-lane:hover .video-editor-seam,
@@ -1663,7 +1663,7 @@
   top: 0;
   bottom: 0;
   width: 10px;
-  cursor: ew-resize;
+  cursor: var(--cursor-ew-resize, ew-resize);
   touch-action: none;
   background: var(--accent, #6366f1);
   opacity: 0.85;
@@ -1769,11 +1769,11 @@
   background: transparent;
   color: var(--theme-text);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 0.1s ease;
 }
 .video-editor-clip-menu button:hover:not(:disabled) { background: var(--white-alpha-08); }
-.video-editor-clip-menu button:disabled { opacity: 0.4; cursor: not-allowed; }
+.video-editor-clip-menu button:disabled { opacity: 0.4; cursor: var(--cursor-not-allowed, not-allowed); }
 .video-editor-clip-menu button.danger { color: var(--danger); }
 .video-editor-clip-menu button span {
   font-size: 10px;
@@ -1867,7 +1867,7 @@
   color: var(--brand-light);
   font-size: 11px;
   font-weight: 600;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 140ms ease, border-color 140ms ease;
 }
 .video-editor-ai-transition-toggle:hover {
@@ -1901,11 +1901,11 @@
   border-radius: 8px;
   font-size: 11px;
   font-weight: 600;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 140ms ease, border-color 140ms ease, transform 120ms var(--video-editor-ease-out);
 }
 .video-editor-ai-transition-actions button:active:not(:disabled) { transform: scale(0.98); }
-.video-editor-ai-transition-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.video-editor-ai-transition-actions button:disabled { opacity: 0.5; cursor: var(--cursor-not-allowed, not-allowed); }
 .video-editor-ai-transition-refresh {
   padding: 0 10px;
   border: 1px solid var(--theme-border);
@@ -1951,7 +1951,7 @@
   color: var(--brand-light);
   font-size: 12px;
   font-weight: 600;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background 140ms ease, border-color 140ms ease, transform 120ms var(--video-editor-ease-out);
 }
 .video-editor-layer-add:hover:not(:disabled) {
@@ -2019,7 +2019,7 @@
   justify-content: center;
   line-height: 1;
   vertical-align: middle;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
 }
 .video-editor-font-trigger {
@@ -2112,7 +2112,7 @@
   border-radius: 6px;
   background: transparent;
   color: var(--theme-text);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-align: left;
   font-size: 14px;
 }
@@ -2165,7 +2165,7 @@
   border: 0;
   border-radius: 5px;
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .video-editor-color-field code {
   color: var(--theme-text-secondary);
@@ -2190,7 +2190,7 @@
   background: transparent;
   color: var(--theme-text-muted);
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 .video-editor-segmented button:hover { color: var(--theme-text); background: var(--white-alpha-04); }
 .video-editor-segmented button.active { color: var(--theme-text); background: var(--theme-hover); }
@@ -2251,7 +2251,7 @@
   border: 1px solid var(--theme-border);
   border-radius: 8px;
   background: var(--theme-bg);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: border-color 140ms ease, transform 120ms var(--video-editor-ease-out);
 }
 .video-editor-project-image-grid button:hover { border-color: var(--brand-alpha-30); }
@@ -2320,7 +2320,7 @@
   background-repeat: no-repeat;
   color: var(--theme-text);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 .video-editor-inspect-slider select:hover {
@@ -2333,7 +2333,7 @@
   box-shadow: 0 0 0 3px var(--brand-alpha-12);
 }
 .video-editor-inspect-slider select:disabled {
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
   opacity: 0.5;
 }
 .video-editor-inspect-slider em {

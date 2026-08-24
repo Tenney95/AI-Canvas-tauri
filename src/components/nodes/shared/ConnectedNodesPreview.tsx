@@ -472,7 +472,7 @@ export default function ConnectedNodesPreview({
           border-radius: 8px;
           border: 2px solid rgba(195,195,202,0.33);
           background: var(--theme-surface);
-          cursor: pointer;
+          cursor: var(--cursor-pointer, pointer);
           display: flex; align-items: center; justify-content: center;
           overflow: hidden; position: relative; padding: 0;
         }
@@ -559,7 +559,7 @@ export default function ConnectedNodesPreview({
           border-radius: 6px;
           border: 1.5px solid rgba(195,195,202,0.28);
           overflow: hidden;
-          cursor: pointer;
+          cursor: var(--cursor-pointer, pointer);
           background: var(--theme-surface);
           padding: 0;
           transition: border-color 0.15s, box-shadow 0.15s;

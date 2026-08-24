@@ -1,0 +1,41 @@
+/* ============================================
+   Custom cursors - "regular" set, 32/64px, hotspots taken from the .cur headers.
+   The pack ships white cursors under light/ and black under dark/; each is mapped
+   to the UI theme that needs the contrast, so the folder names below are the app
+   theme, not the pack's.
+   Animated states (wait/progress) are .ani and unusable in CSS - left native, as
+   are grab/grabbing/copy/cell, which the pack has no glyph for.
+   ============================================ */
+
+:root {
+  --cursor-default: image-set(url('../assets/cursors/dark/default.png') 1x, url('../assets/cursors/dark/default@2x.png') 2x) 3 9, default;
+  --cursor-pointer: image-set(url('../assets/cursors/dark/pointer.png') 1x, url('../assets/cursors/dark/pointer@2x.png') 2x) 13 7, pointer;
+  --cursor-text: image-set(url('../assets/cursors/dark/text.png') 1x, url('../assets/cursors/dark/text@2x.png') 2x) 15 15, text;
+  --cursor-not-allowed: image-set(url('../assets/cursors/dark/not-allowed.png') 1x, url('../assets/cursors/dark/not-allowed@2x.png') 2x) 15 15, not-allowed;
+  --cursor-move: image-set(url('../assets/cursors/dark/move.png') 1x, url('../assets/cursors/dark/move@2x.png') 2x) 15 15, move;
+  --cursor-crosshair: image-set(url('../assets/cursors/dark/crosshair.png') 1x, url('../assets/cursors/dark/crosshair@2x.png') 2x) 15 15, crosshair;
+  --cursor-ew-resize: image-set(url('../assets/cursors/dark/ew-resize.png') 1x, url('../assets/cursors/dark/ew-resize@2x.png') 2x) 15 15, ew-resize;
+  --cursor-ns-resize: image-set(url('../assets/cursors/dark/ns-resize.png') 1x, url('../assets/cursors/dark/ns-resize@2x.png') 2x) 15 15, ns-resize;
+  --cursor-nwse-resize: image-set(url('../assets/cursors/dark/nwse-resize.png') 1x, url('../assets/cursors/dark/nwse-resize@2x.png') 2x) 15 15, nwse-resize;
+  --cursor-nesw-resize: image-set(url('../assets/cursors/dark/nesw-resize.png') 1x, url('../assets/cursors/dark/nesw-resize@2x.png') 2x) 15 15, nesw-resize;
+  --cursor-help: image-set(url('../assets/cursors/dark/help.png') 1x, url('../assets/cursors/dark/help@2x.png') 2x) 3 9, help;
+}
+
+[data-theme='light'] {
+  --cursor-default: image-set(url('../assets/cursors/light/default.png') 1x, url('../assets/cursors/light/default@2x.png') 2x) 3 9, default;
+  --cursor-pointer: image-set(url('../assets/cursors/light/pointer.png') 1x, url('../assets/cursors/light/pointer@2x.png') 2x) 13 7, pointer;
+  --cursor-text: image-set(url('../assets/cursors/light/text.png') 1x, url('../assets/cursors/light/text@2x.png') 2x) 15 15, text;
+  --cursor-not-allowed: image-set(url('../assets/cursors/light/not-allowed.png') 1x, url('../assets/cursors/light/not-allowed@2x.png') 2x) 15 15, not-allowed;
+  --cursor-move: image-set(url('../assets/cursors/light/move.png') 1x, url('../assets/cursors/light/move@2x.png') 2x) 15 15, move;
+  --cursor-crosshair: image-set(url('../assets/cursors/light/crosshair.png') 1x, url('../assets/cursors/light/crosshair@2x.png') 2x) 15 15, crosshair;
+  --cursor-ew-resize: image-set(url('../assets/cursors/light/ew-resize.png') 1x, url('../assets/cursors/light/ew-resize@2x.png') 2x) 15 15, ew-resize;
+  --cursor-ns-resize: image-set(url('../assets/cursors/light/ns-resize.png') 1x, url('../assets/cursors/light/ns-resize@2x.png') 2x) 15 15, ns-resize;
+  --cursor-nwse-resize: image-set(url('../assets/cursors/light/nwse-resize.png') 1x, url('../assets/cursors/light/nwse-resize@2x.png') 2x) 15 15, nwse-resize;
+  --cursor-nesw-resize: image-set(url('../assets/cursors/light/nesw-resize.png') 1x, url('../assets/cursors/light/nesw-resize@2x.png') 2x) 15 15, nesw-resize;
+  --cursor-help: image-set(url('../assets/cursors/light/help.png') 1x, url('../assets/cursors/light/help@2x.png') 2x) 3 9, help;
+}
+
+html,
+body {
+  cursor: var(--cursor-default, default);
+}

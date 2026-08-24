@@ -58,7 +58,7 @@
   margin: 0 2px;
   border: 1px solid transparent;
   transition: filter 0.15s var(--ease-out-quart), box-shadow 0.15s var(--ease-out-quart);
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 .prompt-chip:hover {
   filter: brightness(1.14) saturate(1.05);
@@ -234,7 +234,7 @@
   min-width: 2em;
   max-width: 200px;
   outline: none;
-  cursor: text;
+  cursor: var(--cursor-text, text);
   caret-color: currentColor;
   white-space: nowrap;
   overflow: hidden;
@@ -341,7 +341,7 @@
   color: var(--theme-text-secondary);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   opacity: 0;
   transform: translateX(6px) scale(0.82);
   transition:
@@ -398,7 +398,7 @@
   background: transparent;
   color: var(--theme-text-secondary);
   border-radius: 6px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base);
   padding: 0;
 }
@@ -415,7 +415,7 @@
 }
 .prompt-submit-btn.disabled {
   color: var(--text-disabled);
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 .prompt-submit-btn.disabled:hover {
   background: transparent;
@@ -423,7 +423,7 @@
 }
 .prompt-submit-btn.is-generating,
 .prompt-submit-btn.is-generating.disabled {
-  cursor: default;
+  cursor: var(--cursor-default, default);
   color: var(--brand);
 }
 .prompt-submit-btn.is-generating.disabled:hover {
@@ -476,7 +476,7 @@
 }
 .prompt-pass-through-btn.disabled {
   color: var(--text-disabled);
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 .prompt-pass-through-btn.disabled:hover {
   background: transparent;
@@ -529,7 +529,7 @@
   gap: 10px;
   padding: 6px 8px;
   border-radius: 7px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background var(--transition-base);
 }
 
@@ -722,7 +722,7 @@
   border-radius: 10px;
   overflow: hidden;
   background: var(--theme-card);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: border-color var(--transition-base), box-shadow var(--transition-base), transform var(--dur-fast) var(--ease-out-quart);
 }
 .asset-picker-card:hover {
@@ -777,7 +777,7 @@
   background: var(--theme-card);
   border: 1px solid var(--theme-border);
   border-radius: 999px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background var(--transition-base), color var(--transition-base), border-color var(--transition-base);
 }
 .asset-picker-tag:hover { color: var(--theme-text); border-color: var(--border-secondary); }
@@ -858,7 +858,7 @@
   border-radius: 10px;
   overflow: hidden;
   background: var(--theme-card);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   padding: 0;
   transition: border-color var(--transition-base), box-shadow var(--transition-base), transform var(--dur-fast) var(--ease-out-quart);
   color: inherit;
@@ -948,7 +948,7 @@
   border: none;
   color: var(--theme-text-secondary);
   border-radius: 8px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background var(--transition-base), color var(--transition-base);
 }
 .style-add-btn:hover {
@@ -974,7 +974,7 @@
   border: none;
   border-radius: 6px;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   opacity: 0;
   transition: opacity var(--transition-base), background var(--transition-base), color var(--transition-base);
   z-index: 2;
@@ -1005,7 +1005,7 @@
   border: 1px dashed var(--theme-border);
   border-radius: 10px;
   overflow: hidden;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: border-color var(--transition-base);
   background: var(--black-alpha-15);
 }
@@ -1072,7 +1072,7 @@
   font-family: inherit;
   font-weight: 500;
   border-radius: 8px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background var(--transition-base), color var(--transition-base), opacity var(--transition-base);
 }
 .style-add-cancel {
@@ -1089,7 +1089,7 @@
 .style-add-submit:hover { background: var(--brand-light); }
 .style-add-submit:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 
 /* @ 芯片 hover 名字浮层（Portal 到 body，固定定位在芯片上方）*/

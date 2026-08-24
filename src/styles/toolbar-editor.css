@@ -13,7 +13,7 @@
   gap: 8px;
   min-width: 420px;
   max-width: 820px;
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 
 /* ── 按钮库 ── */
@@ -61,7 +61,7 @@
   background: var(--theme-surface, #14141c);
   color: var(--theme-text-secondary, #8888a0);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   white-space: nowrap;
   transition: var(--transition-colors);
   flex-shrink: 0;
@@ -111,7 +111,7 @@
   background: var(--theme-surface, #14141c);
   color: var(--theme-text-secondary, #8888a0);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
 }
 
@@ -242,7 +242,7 @@ body.toolbar-edit-zone-dragging {
   font-size: 10px;
   font-weight: 600;
   color: var(--theme-text-muted, #555566);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   display: flex;
   align-items: center;
   text-transform: uppercase;
@@ -276,7 +276,7 @@ body.toolbar-edit-zone-dragging {
   border: none;
   background: transparent;
   color: var(--theme-text-muted, #555566);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   border-radius: 4px;
   transition: var(--transition-colors);
 }
@@ -416,7 +416,7 @@ body.toolbar-edit-dragging {
   border: none;
   background: transparent;
   color: var(--theme-text-muted, #555566);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   border-radius: 3px;
   transition: var(--transition-colors);
   margin-left: 2px;
@@ -440,7 +440,7 @@ body.toolbar-edit-dragging {
   background: transparent;
   color: var(--theme-text-muted, #555566);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
 }
 
@@ -493,7 +493,7 @@ body.toolbar-edit-dragging {
   background: transparent;
   color: var(--theme-text-secondary, #8888a0);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-align: left;
   transition: var(--transition-colors);
   flex-shrink: 0;

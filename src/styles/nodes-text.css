@@ -12,7 +12,7 @@
   white-space: pre-wrap;
   word-break: break-word;
   padding: 4px;
-  cursor: text;
+  cursor: var(--cursor-text, text);
   border-radius: 4px;
   transition: background var(--transition-base), box-shadow var(--transition-base);
 }
@@ -46,7 +46,7 @@
 }
 
 .text-node-empty-editable {
-  cursor: text;
+  cursor: var(--cursor-text, text);
   transition: color var(--transition-base), background var(--transition-base);
 }
 

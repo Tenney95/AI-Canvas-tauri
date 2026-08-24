@@ -20,7 +20,7 @@
 }
 
 .react-flow__node {
-  cursor: move;
+  cursor: var(--cursor-move, move);
 }
 
 .react-flow__edge-path {
@@ -372,7 +372,7 @@
   border-radius: 7px;
   background: transparent;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background-color 0.12s, color 0.12s;
 }
 
@@ -383,7 +383,7 @@
 
 .canvas-history-btn:disabled {
   opacity: 0.35;
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 
 .canvas-history-btn--ghost {
@@ -449,4 +449,46 @@
   background: color-mix(in srgb, var(--brand) 22%, transparent);
   color: var(--brand);
   font-size: 9px;
+}
+
+/* Custom cursors over @xyflow/react's own rules: its stylesheet is imported from
+   Canvas.tsx, so it lands after index.css and one extra class is needed to outrank
+   it. grab/grabbing are left to the vendor - the cursor pack has no hand glyph. */
+.react-flow .react-flow__pane.selection,
+.react-flow .react-flow__edge.selectable,
+.react-flow .react-flow__node.selectable,
+.react-flow .react-flow__controls-button {
+  cursor: var(--cursor-pointer, pointer);
+}
+
+.react-flow .react-flow__node {
+  cursor: var(--cursor-default, default);
+}
+
+.react-flow .react-flow__handle.connectionindicator {
+  cursor: var(--cursor-crosshair, crosshair);
+}
+
+.react-flow .react-flow__edgeupdater {
+  cursor: var(--cursor-move, move);
+}
+
+.react-flow .react-flow__resize-control.left,
+.react-flow .react-flow__resize-control.right {
+  cursor: var(--cursor-ew-resize, ew-resize);
+}
+
+.react-flow .react-flow__resize-control.top,
+.react-flow .react-flow__resize-control.bottom {
+  cursor: var(--cursor-ns-resize, ns-resize);
+}
+
+.react-flow .react-flow__resize-control.top.left,
+.react-flow .react-flow__resize-control.bottom.right {
+  cursor: var(--cursor-nwse-resize, nwse-resize);
+}
+
+.react-flow .react-flow__resize-control.bottom.left,
+.react-flow .react-flow__resize-control.top.right {
+  cursor: var(--cursor-nesw-resize, nesw-resize);
 }

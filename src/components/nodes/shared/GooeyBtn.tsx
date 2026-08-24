@@ -79,7 +79,7 @@ const invZoom = Math.min(1, 1 / zoom);
     background: transparent;
     border: none;
     position: relative;
-    cursor: pointer;
+    cursor: var(--cursor-pointer, pointer);
     transition: scale 0.5s ease;
     isolation: isolate;
   }

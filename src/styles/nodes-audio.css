@@ -6,7 +6,7 @@
 .audio-waveform-wrapper {
   position: relative;
   width: 100%;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   border-radius: 8px;
   overflow: hidden;
   background: var(--theme-surface);

@@ -17,7 +17,7 @@
   border-radius: 6px;
   color: var(--theme-text-secondary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base);
 }
 .model-selector-trigger:hover {
@@ -235,7 +235,7 @@
   border: none;
   border-radius: 6px;
   color: var(--theme-text);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-align: left;
   transition: background 0.1s;
   font-family: inherit;
@@ -294,7 +294,7 @@
   border: none;
   border-radius: 6px;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   text-align: left;
   transition: background 0.1s, color 0.1s;
   font-family: inherit;
@@ -340,7 +340,7 @@
 /* Disabled group header (no API Key configured) */
 .model-group-header.disabled {
   opacity: 0.38;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
   pointer-events: auto; /* retain hover for tooltip */
 }
 .model-group-header.disabled:hover {
@@ -350,7 +350,7 @@
 /* Disabled model item */
 .model-item.disabled {
   opacity: 0.38;
-  cursor: not-allowed;
+  cursor: var(--cursor-not-allowed, not-allowed);
   pointer-events: auto;
 }
 .model-item.disabled:hover {

@@ -30,7 +30,7 @@
   border-radius: 6px;
   background: transparent;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base), transform var(--transition-base);
 }
 
@@ -139,7 +139,7 @@
   border-radius: 5px;
   background: transparent;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .animation-preview-switch button:hover {
@@ -181,7 +181,7 @@
   background: var(--theme-surface);
   color: var(--theme-text);
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .animation-param-bar select:hover,
@@ -198,7 +198,7 @@
   background: var(--theme-surface);
   color: var(--theme-text);
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   flex-shrink: 0;
   font-family: inherit;
   appearance: none;
@@ -230,7 +230,7 @@
   color: var(--theme-text-secondary);
   font-family: inherit;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   flex-shrink: 0;
 }
 
@@ -242,7 +242,7 @@
 
 .animation-param-btn:disabled {
   opacity: 0.55;
-  cursor: default;
+  cursor: var(--cursor-default, default);
 }
 
 /* 播放控制条：悬停预览区才浮出，平时不挡角色 */
@@ -280,7 +280,7 @@
   border-radius: 5px;
   background: transparent;
   color: var(--theme-text-muted);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   flex-shrink: 0;
 }
 
@@ -307,7 +307,7 @@
   height: 20px;
   margin: 0 2px;
   accent-color: var(--brand);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 @media (prefers-reduced-motion: reduce) {

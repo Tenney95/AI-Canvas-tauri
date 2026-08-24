@@ -39,7 +39,7 @@
   background: transparent;
   color: rgba(136, 136, 160, 0.7);
   border-radius: 9px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base), transform var(--transition-base);
   padding: 0;
   position: relative;
@@ -157,7 +157,7 @@
   background: transparent;
   color: rgba(136, 136, 160, 0.6);
   border-radius: 9px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   font-size: 18px;
   transition: color var(--transition-base), background var(--transition-base), transform var(--transition-base);
 }
@@ -200,7 +200,7 @@
   background: transparent;
   color: var(--theme-text);
   font-size: 13px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   border-radius: 6px;
   transition: background var(--transition-base);
   text-align: left;
@@ -269,7 +269,7 @@
   background: transparent;
   color: var(--theme-text);
   font-size: 13px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   border-radius: 7px;
   transition: background var(--transition-base);
   text-align: left;

@@ -108,7 +108,7 @@
   font-size: 13px;
   color: var(--theme-text, #e9eaee);
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: background var(--dur-fast, 0.14s);
 }
 
@@ -165,7 +165,7 @@
   background: transparent;
   border: 0;
   border-radius: 8px;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   transition: color 0.15s ease, background-color 0.15s ease;
 }
 
@@ -256,7 +256,7 @@
   border: none;
   background: transparent;
   color: var(--theme-text-secondary);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   border-radius: 12px;
   transition: var(--transition-colors);
   flex-shrink: 0;
@@ -282,7 +282,7 @@
 .matting-btn:disabled,
 .customgrid-btn:disabled {
   opacity: 0.3;
-  cursor: default;
+  cursor: var(--cursor-default, default);
   pointer-events: none;
 }
 
@@ -351,7 +351,7 @@
   background: var(--theme-border);
   border-radius: 2px;
   outline: none;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .matting-size-range::-webkit-slider-thumb {
@@ -361,7 +361,7 @@
   height: 14px;
   border-radius: 50%;
   border: none;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .matting-size-range::-moz-range-thumb {
@@ -369,7 +369,7 @@
   height: 14px;
   border-radius: 50%;
   border: none;
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
 }
 
 .matting-size-range::-webkit-slider-thumb,
@@ -432,7 +432,7 @@
 }
 
 .cursor-crosshair {
-  cursor: crosshair;
+  cursor: var(--cursor-crosshair, crosshair);
 }
 
 .image-annotation-layer {
@@ -535,7 +535,7 @@
   box-sizing: border-box;
   overflow: auto;
   pointer-events: auto;
-  cursor: crosshair;
+  cursor: var(--cursor-crosshair, crosshair);
 }
 
 @media (max-width: 680px), (max-height: 560px) {
@@ -653,7 +653,7 @@
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.75);
   border: 1px solid var(--theme-border);
-  cursor: pointer;
+  cursor: var(--cursor-pointer, pointer);
   opacity: 0;
   transition: opacity 0.15s, background 0.15s;
   z-index: 4;
