@@ -21,6 +21,7 @@
   --theme-text: #dddde4;
   --theme-text-secondary: #8888a0;
   --theme-text-muted: #7d7d91;
+  --canvas-edge: #33334a;
 
   /* Brand (Indigo) / 品牌色（靛蓝）── */
   --brand: #6366f1;
@@ -282,6 +283,7 @@
   --theme-text: #33364D;
   --theme-text-secondary: #6E7488;
   --theme-text-muted: #767D92;
+  --canvas-edge: #B1B1B7;
 
   /* Brand — macaron periwinkle / 品牌色 — 马卡龙紫罗兰 ── */
   --brand: #7280E4;

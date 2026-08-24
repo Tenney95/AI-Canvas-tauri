@@ -249,7 +249,7 @@ export default function SettingsPanel() {
                 <section>
                   <h3 className="mb-2 text-sm font-medium text-canvas-text">{t('界面语言')}</h3>
                   <div
-                    className="grid grid-cols-2 gap-1 rounded-lg border border-canvas-border bg-canvas-card p-1"
+                    className="grid grid-cols-4 gap-1 rounded-lg border border-canvas-border bg-canvas-card p-1"
                     role="radiogroup"
                     aria-label={t('界面语言')}
                   >
@@ -315,7 +315,7 @@ export default function SettingsPanel() {
                           </span>
                           <span className="min-w-0">
                             <span className="block text-xs font-medium text-canvas-text">{t(option.label)}</span>
-                            <span className="mt-1 block text-[11px] leading-4 text-canvas-text-muted">
+                            <span className="mt-1 block whitespace-nowrap text-[11px] leading-4 text-canvas-text-muted">
                               {t(option.description)}
                             </span>
                           </span>

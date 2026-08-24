@@ -24,6 +24,7 @@
 }
 
 .react-flow__edge-path {
+  stroke: var(--canvas-edge) !important;
   stroke-width: 1.5 !important;
   transition: stroke var(--transition-base), stroke-width var(--transition-base);
 }
