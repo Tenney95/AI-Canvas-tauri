@@ -492,6 +492,7 @@ export interface AppConfig {
   startupView?: StartupView; // 软件启动后打开上次画布或项目列表，默认 'last-project'
   windowAspectRatio?: WindowAspectRatio; // 窗口尺寸预设所用比例，默认 '16:9'
   windowAspectLocked?: boolean; // 拖拽缩放窗口时是否固定为上面的比例，默认 false
+  windowSize?: { width: number; height: number }; // 上次退出时的窗口逻辑尺寸，启动时恢复
   customBackgroundUrl?: string;  // 自定义背景图片 data URL
   customBackgroundIsDark?: boolean; // 自定义背景是否为深色（自动识别）
   customBackgroundOpacity?: number; // 自定义背景透明度 0-1，默认 0.3

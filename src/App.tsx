@@ -19,7 +19,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useReferencedImageWatcher } from './hooks/useReferencedImageWatcher';
 import { useTooltipAutoPlacement } from './hooks/useTooltipAutoPlacement';
-import { parseAspectRatio, useWindowAspectLock } from './hooks/useWindowAspectLock';
+import { parseAspectRatio, useMainWindowSize } from './hooks/useMainWindowSize';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type AppState } from './store/useAppStore';
 import * as fileService from './services/fileService';
@@ -78,9 +78,9 @@ export default function App() {
   useAutoSave();
   useReferencedImageWatcher();
   useTooltipAutoPlacement();
-  // 设置里勾了「固定窗口比例」才生效
+  // 记住窗口尺寸；勾了「固定窗口比例」时还会把比例锁住
   const lockedAspect = useAppStore((s) => (s.config.windowAspectLocked ? s.config.windowAspectRatio ?? '16:9' : null));
-  useWindowAspectLock(parseAspectRatio(lockedAspect));
+  useMainWindowSize(parseAspectRatio(lockedAspect));
   const {
     constraintsRef: mascotDragConstraintsRef,
     x: mascotX,

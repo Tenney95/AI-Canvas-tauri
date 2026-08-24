@@ -1,7 +1,7 @@
 /**
  * SettingsPanel 设置面板 — 模态弹窗，管理常规、文件与应用、API Key、快捷键、ComfyUI 等设置
  */
-import { useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import '../styles/settings.css';
 import { useShallow } from 'zustand/react/shallow';
@@ -163,6 +163,28 @@ export default function SettingsPanel() {
   const performanceMode = config.performanceMode === true;
   const windowAspectRatio = config.windowAspectRatio ?? '16:9';
   const windowAspectLocked = config.windowAspectLocked === true;
+  // 当前窗口实际尺寸 —— 用来给尺寸预设标出选中态
+  const [currentWindowSize, setCurrentWindowSize] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    if (!settingsOpen) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        const read = async () => {
+          const size = (await win.innerSize()).toLogical(await win.scaleFactor());
+          setCurrentWindowSize({ w: Math.round(size.width), h: Math.round(size.height) });
+        };
+        await read();
+        const off = await win.onResized(() => { void read(); });
+        if (disposed) off();
+        else unlisten = off;
+      } catch { /* 非 Tauri 环境（浏览器预览）忽略 */ }
+    })();
+    return () => { disposed = true; unlisten?.(); };
+  }, [settingsOpen]);
   const windowGlassFrame = configuredWindowGlassFrame && !performanceMode;
   const interactionMode = config.interactionMode ?? 'default';
   const nodeToolbarMode = config.nodeToolbarMode ?? 'icons';
@@ -397,18 +419,30 @@ export default function SettingsPanel() {
                     })}
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2">
-                    {(WINDOW_ASPECT_OPTIONS.find((o) => o.id === windowAspectRatio) ?? WINDOW_ASPECT_OPTIONS[0]).presets.map(({ w, h, label }) => (
-                      <AnimatedButton
-                        key={`${w}x${h}`}
-                        type="button"
-                        onClick={() => { void applyWindowSize(w, h); }}
-                        className="flex flex-col items-center gap-0.5 rounded-lg border border-canvas-border bg-canvas-card px-2 py-2 transition-colors hover:border-canvas-hover"
-                      >
-                        <span className="text-xs font-medium text-canvas-text">{w} × {h}</span>
-                        <span className="text-[11px] text-canvas-text-muted">{t(label)}</span>
-                      </AnimatedButton>
-                    ))}
+                  <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label={t('应用窗口大小')}>
+                    {(WINDOW_ASPECT_OPTIONS.find((o) => o.id === windowAspectRatio) ?? WINDOW_ASPECT_OPTIONS[0]).presets.map(({ w, h, label }) => {
+                      // 允许 2px 误差：DPI 缩放下取整会差一点
+                      const active = currentWindowSize != null
+                        && Math.abs(currentWindowSize.w - w) <= 2
+                        && Math.abs(currentWindowSize.h - h) <= 2;
+                      return (
+                        <AnimatedButton
+                          key={`${w}x${h}`}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => { void applyWindowSize(w, h); }}
+                          className={`flex flex-col items-center gap-0.5 rounded-lg border px-2 py-2 transition-colors ${
+                            active
+                              ? 'border-indigo-500 bg-indigo-500/10'
+                              : 'border-canvas-border bg-canvas-card hover:border-canvas-hover'
+                          }`}
+                        >
+                          <span className={`text-xs font-medium ${active ? 'text-indigo-400' : 'text-canvas-text'}`}>{w} × {h}</span>
+                          <span className={`text-[11px] ${active ? 'text-indigo-400/70' : 'text-canvas-text-muted'}`}>{t(label)}</span>
+                        </AnimatedButton>
+                      );
+                    })}
                   </div>
 
                   <button
