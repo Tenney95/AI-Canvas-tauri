@@ -2387,6 +2387,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - [x] 文本、图片、视频、音频、全景五类现有浮动工具栏接入插件按钮；源文本、源图片、源视频和源音频继续复用对应工具栏，并按工具 `nodeTypes` 精确匹配。
 - [x] 安装前拒绝未知 API 版本、未知分类/权限/节点类型/入口位置、重复工具 ID、本地路径字段和受保护身份字段。
 - [x] 设置页新增“插件”管理入口，支持文件夹导入、同 ID 更新、启用、停用、卸载和内置开发示例，并展示插件做什么、出现在哪里、读取什么及写入什么。
+- [x] 插件导入区复用 ComfyUI 工作流的 `wf-dropzone` 视觉与交互，支持点击选择或直接拖入目录；拖入目录递归读取且最多接收 256 个文件，仍要求唯一 `manifest.json` 与同级 `main.js`。
 - [x] 插件记录独立保存到 IndexedDB `plugins` store，schema 从真实在库 v19 升到 v20；插件源码不进入项目、消息、AgentTask 或日志。
 - [x] Rust 新增独立 QuickJS 沙箱，每次调用创建新 Runtime，不安装模块加载器、文件、网络、Shell、Tauri 或凭据宿主函数；设置 64 MiB 内存、512 KiB 栈、2 秒执行上限，以及 512 KiB 源码和 1 MiB 输入/输出上限。
 - [x] 节点输入只投影 manifest 声明字段并做 JSON 深度/数量/长度裁剪；插件输出再次校验声明字段和受保护字段。
@@ -2401,7 +2402,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - `cargo check --lib` 与新增 `plugin_runtime.rs` 定向 `rustfmt --check` 通过。全仓 `cargo fmt --check` 仍被多个既有 Rust 文件的历史格式差异阻断，未格式化无关文件。
 - 核心插件 TypeScript/TSX 与测试文件定向 ESLint 通过；`npm run check` 已覆盖全部变更文件，`git diff --check` 通过。
 - `npx vite build --outDir <系统临时目录>`：生产构建通过，仅有既有大 chunk 警告。
-- 本地浏览器实际检查插件设置页、文本节点工具栏图标、弹窗打开与字段输入，以及深色/米白浅色主题；交互验收发现并修复了 React 事件值延迟读取导致的节点错误边界问题，复测后无渲染告警并恢复默认暗色主题。
+- 本地浏览器实际检查插件设置页、`wf-dropzone` 上传区、文本节点工具栏图标、弹窗打开与字段输入，以及深色/米白浅色主题；交互验收发现并修复了 React 事件值延迟读取导致的节点错误边界问题，复测后无渲染告警并恢复默认暗色主题。
 
 本阶段经用户确认新增 `rquickjs 0.12.2` Rust 依赖，未修改 `tauri.conf.json` 或 capability，未开放文件、网络、Shell 或凭据权限。回滚时移除插件设置/节点菜单入口、Plugin Store、QuickJS command 与依赖即可；IndexedDB 保留 v20 和空 `plugins` store，不降版本且不影响项目数据。
 
@@ -2411,6 +2412,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-24 | 插件上传体验统一 | 插件设置页复用 ComfyUI 工作流 `wf-dropzone` 上传区，支持点击目录选择和拖入插件文件夹；递归读取目录并限制最多 256 个文件，继续校验唯一 `manifest.json` 与同级 `main.js`。 |
 | 2026-08-23 | 用户插件平台 MVP | 建立 AI Canvas Plugin Manifest Standard v1、QuickJS 沙箱、v20 插件持久化、插件管理页，以及按节点类型出现的右键工具与节点工具栏按钮；工具栏入口由宿主渲染声明式操作弹窗，按钮图标、节点输入、弹窗参数和输出字段均由 manifest 声明并校验，异步写回复用 canvas revision 和 Store 历史边界。 |
 | 2026-08-20 | 8.28 | 保留本机 stdio，并新增经高风险确认的 `0.0.0.0` Streamable HTTP MCP；加入 Bearer/Host/Origin/限长保护，修复安装版适配器资源缺失。 |
 | 2026-08-13 | 8.26 第四批 | 补齐节点复制、画布笔记、图层、图片形态转换、分组重命名、分镜宫格和镜头表绑定工具。 |

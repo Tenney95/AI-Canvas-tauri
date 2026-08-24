@@ -1,4 +1,5 @@
 import { Icon } from '@iconify/react';
+import { motion } from 'framer-motion';
 import { useRef, useState } from 'react';
 import pluginDeveloperGuide from '../../../doc/插件开发规范.md?raw';
 import { isTauriEnv, saveBinaryToLocalFile } from '../../services/fileService';
@@ -65,10 +66,62 @@ const EXAMPLE_SOURCE = `definePlugin({
 });`;
 
 const PLUGIN_GUIDE_FILE_NAME = 'AI-Canvas-插件开发规范.md';
+const MAX_DROPPED_PLUGIN_FILES = 256;
 
-function folderPrefix(file: File): string {
-  const path = file.webkitRelativePath || file.name;
-  return path.slice(0, Math.max(0, path.length - file.name.length));
+interface PluginUploadFile {
+  file: File;
+  path: string;
+}
+
+function isFileEntry(entry: FileSystemEntry): entry is FileSystemFileEntry {
+  return entry.isFile;
+}
+
+function isDirectoryEntry(entry: FileSystemEntry): entry is FileSystemDirectoryEntry {
+  return entry.isDirectory;
+}
+
+async function readDirectoryEntries(entry: FileSystemDirectoryEntry): Promise<FileSystemEntry[]> {
+  const reader = entry.createReader();
+  const entries: FileSystemEntry[] = [];
+  while (true) {
+    const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => {
+      reader.readEntries(resolve, reject);
+    });
+    if (batch.length === 0) return entries;
+    entries.push(...batch);
+    if (entries.length > MAX_DROPPED_PLUGIN_FILES) throw new Error('插件文件夹包含的文件过多');
+  }
+}
+
+async function collectDroppedEntry(
+  entry: FileSystemEntry,
+  parentPath: string,
+  output: PluginUploadFile[],
+): Promise<void> {
+  if (output.length >= MAX_DROPPED_PLUGIN_FILES) throw new Error('插件文件夹包含的文件过多');
+  const path = `${parentPath}${entry.name}`;
+  if (isFileEntry(entry)) {
+    const file = await new Promise<File>((resolve, reject) => entry.file(resolve, reject));
+    output.push({ file, path });
+    return;
+  }
+  if (!isDirectoryEntry(entry)) return;
+  const entries = await readDirectoryEntries(entry);
+  for (const child of entries) await collectDroppedEntry(child, `${path}/`, output);
+}
+
+async function droppedPluginFiles(dataTransfer: DataTransfer): Promise<PluginUploadFile[]> {
+  const entries = Array.from(dataTransfer.items)
+    .map((item) => item.webkitGetAsEntry?.())
+    .filter((entry): entry is FileSystemEntry => Boolean(entry));
+
+  if (entries.length === 0) {
+    return Array.from(dataTransfer.files).map((file) => ({ file, path: file.name }));
+  }
+  const files: PluginUploadFile[] = [];
+  for (const entry of entries) await collectDroppedEntry(entry, '', files);
+  return files;
 }
 
 export default function PluginSettings() {
@@ -79,6 +132,7 @@ export default function PluginSettings() {
   const deletePlugin = useAppStore((state) => state.deletePlugin);
   const showToast = useAppStore((state) => state.showToast);
   const [busy, setBusy] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
 
   const downloadDeveloperGuide = async () => {
@@ -107,18 +161,17 @@ export default function PluginSettings() {
     }
   };
 
-  const installFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
+  const installFiles = async (files: PluginUploadFile[]) => {
+    if (files.length === 0) return;
     setBusy(true);
     try {
-      const all = Array.from(files);
-      const manifests = all.filter((file) => file.name === 'manifest.json');
+      const manifests = files.filter(({ file }) => file.name === 'manifest.json');
       if (manifests.length !== 1) throw new Error('插件文件夹必须且只能包含一个 manifest.json');
       const manifestFile = manifests[0];
-      const prefix = folderPrefix(manifestFile);
-      const entryFile = all.find((file) => (file.webkitRelativePath || file.name) === `${prefix}main.js`);
+      const prefix = manifestFile.path.slice(0, Math.max(0, manifestFile.path.length - manifestFile.file.name.length));
+      const entryFile = files.find(({ path }) => path === `${prefix}main.js`);
       if (!entryFile) throw new Error('manifest.json 同级目录缺少 main.js');
-      await installPluginBundle(await manifestFile.text(), await entryFile.text());
+      await installPluginBundle(await manifestFile.file.text(), await entryFile.file.text());
     } catch (error) {
       showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
     } finally {
@@ -127,32 +180,74 @@ export default function PluginSettings() {
     }
   };
 
+  const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragOver(false);
+    if (busy) return;
+    try {
+      await installFiles(await droppedPluginFiles(event.dataTransfer));
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '无法读取插件文件夹', 'error');
+    }
+  };
+
   return (
     <div className="space-y-4">
       <section className="rounded-xl border border-canvas-border bg-canvas-card p-3">
-        <div className="flex items-start justify-between gap-3">
+        <div>
           <div>
             <h3 className="text-sm font-medium text-canvas-text">用户插件</h3>
             <p className="mt-1 text-[11px] leading-5 text-canvas-text-muted">
               导入包含 manifest.json 和 main.js 的文件夹。安装前会校验用途、入口位置、节点范围及读写字段。工具栏入口必须配置 Iconify 图标和宿主弹窗。
             </p>
           </div>
-          <AnimatedButton
-            type="button"
-            className="settings-save-btn shrink-0 text-xs"
-            disabled={busy}
+          <motion.div
+            className={`wf-dropzone mt-3${dragOver ? ' is-dragover' : ''}${busy ? ' pointer-events-none opacity-60' : ''}`}
+            role="button"
+            tabIndex={busy ? -1 : 0}
+            aria-disabled={busy}
+            aria-busy={busy}
             onClick={() => inputRef.current?.click()}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                inputRef.current?.click();
+              }
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              if (!busy) setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(event) => void handleDrop(event)}
+            whileTap={busy ? undefined : { scale: 0.995 }}
           >
-            <Icon icon="lucide:folder-up" width={14} height={14} />
-            {busy ? '校验中…' : '导入插件文件夹'}
-          </AnimatedButton>
+            <span className="wf-dropzone-title">
+              {busy ? '正在校验并安装插件…' : '把插件文件夹拖到这里'}
+            </span>
+            <span className="wf-dropzone-icon" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+            </span>
+            <span className="wf-dropzone-hint">
+              支持包含 manifest.json 和 main.js 的插件文件夹，点击这里也可以选择。
+            </span>
+          </motion.div>
           <input
             ref={inputRef}
             type="file"
             className="hidden"
             multiple
             {...({ webkitdirectory: '' } as Record<string, string>)}
-            onChange={(event) => void installFiles(event.currentTarget.files)}
+            onChange={(event) => void installFiles(
+              Array.from(event.currentTarget.files ?? []).map((file) => ({
+                file,
+                path: file.webkitRelativePath || file.name,
+              })),
+            )}
           />
         </div>
         <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-canvas-border bg-canvas-surface px-3 py-2">
