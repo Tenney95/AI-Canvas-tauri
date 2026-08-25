@@ -103,3 +103,20 @@
 3. 连接验证改用 `/api/v1/credits`，解析 `balance` 与 `currency`，不发送生成请求。
 4. 声明式图片/视频协议的提交和轮询，以及模型目录请求，统一复用同一份 UTM 参数。
 5. 保持服务端返回的签名媒体 URL 原样，不对下载地址追加参数。
+
+### 任务 7：设置页余额与临时模型隐藏
+
+**文件：**
+
+- 修改：`src/components/settings/ApiKeySettings.tsx`
+- 修改：`src/services/ai/providerCatalogService.ts`
+- 修改：`tests/services/providerCatalogService.test.ts`
+- 修改：`tests/services/sora2uModelManifest.test.ts`
+
+**步骤：**
+
+1. API Key 页面每次挂载后自动调用 Sora2U 额度验证，并在连接状态右侧显示最新 GP 余额。
+2. 额度请求失败时保持卡片可用且不展示过期结果；API Key 或接口地址变化时允许重新请求。
+3. 在厂商目录中声明三个暂时隐藏的 Seedance 2.5 模型 ID，同时过滤远端目录和本地兜底目录。
+4. 页面加载已有 Sora2U 配置时清理被隐藏模型，并同步通用模型目录，确保所有模型选择入口都不再展示。
+5. 保留九个模型的底层执行协议，后续恢复时只需撤销目录隐藏规则。

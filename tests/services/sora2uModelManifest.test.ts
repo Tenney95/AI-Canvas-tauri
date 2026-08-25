@@ -37,12 +37,11 @@ beforeEach(() => {
 });
 
 describe('Sora2U 内置模型清单', () => {
-  it('注册独立厂商及文档当前公开的全部九个模型', () => {
+  it('保留九个模型协议，但厂商目录暂时隐藏三个 Seedance 2.5 变体', () => {
     expect(getProviderDefinition('sora2u')).toMatchObject({
       id: 'sora2u',
       defaultBaseUrl: SORA2U_BASE_URL,
       modelsPath: '/api/v1/models',
-      models: SORA2U_MODEL_MANIFEST,
       externalUrl: 'https://sora2u.com/?utm_source=tenney&utm_medium=canvas&utm_content=wx',
       connectionTestPath: '/api/v1/credits',
       requestQuery: {
@@ -50,7 +49,16 @@ describe('Sora2U 内置模型清单', () => {
         utm_medium: 'canvas',
         utm_content: 'wx',
       },
+      hiddenModelIds: [
+        'seedance-2.5',
+        'seedance-2.5-character',
+        'seedance-2.5-character-mono',
+      ],
     });
+    expect(getProviderDefinition('sora2u')?.models).toHaveLength(6);
+    expect(getProviderDefinition('sora2u')?.models?.some(
+      (model) => model.id.startsWith('seedance-2.5'),
+    )).toBe(false);
     expect(SORA2U_MODEL_MANIFEST.map((model) => model.id)).toEqual(EXPECTED_MODELS);
     expect(SORA2U_MODEL_MANIFEST.filter((model) => model.category === 'video')).toHaveLength(7);
     expect(SORA2U_MODEL_MANIFEST.filter((model) => model.category === 'image')).toHaveLength(2);

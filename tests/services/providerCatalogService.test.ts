@@ -108,7 +108,7 @@ describe('Sora2U 远端模型能力目录', () => {
     vi.restoreAllMocks();
   });
 
-  it('合并远端能力与本地执行协议，并保留远端新增模型', async () => {
+  it('隐藏 Sora2U 的三个 Seedance 2.5 变体，并保留其他远端新增模型', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       object: 'list',
       data: [
@@ -159,25 +159,8 @@ describe('Sora2U 远端模型能力目录', () => {
         headers: { Authorization: 'Bearer sk_sora_test' },
       }),
     );
-    const seedance = result.models.find((model) => model.id === 'seedance-2.5');
-    expect(seedance).toMatchObject({
-      name: 'Seedance 2.5 Remote',
-      category: 'video',
-      videoCapability: {
-        durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 30],
-        minDuration: 5,
-        maxDuration: 30,
-        defaultDuration: 15,
-        ratios: ['16:9', '9:16', 'adaptive'],
-        defaultRatio: 'adaptive',
-        resolutions: ['720p', '1080p'],
-        defaultResolution: '720p',
-        maxImageReferences: 30,
-        maxVideoReferences: 10,
-        maxAudioReferences: 10,
-      },
-    });
-    expect(seedance?.executionProfile?.preset).toBe('custom');
+    expect(result.models.find((model) => model.id === 'seedance-2.5')).toBeUndefined();
+    expect(result.models.some((model) => model.id.startsWith('seedance-2.5'))).toBe(false);
     expect(result.models.find((model) => model.id === 'future-image')).toMatchObject({
       category: 'image',
       provider: 'sora2u',

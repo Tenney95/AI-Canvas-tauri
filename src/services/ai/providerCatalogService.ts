@@ -61,6 +61,8 @@ export interface ProviderDefinition {
   connectionTestPath?: string;
   /** 该厂商 API 请求必须携带的固定查询参数。 */
   requestQuery?: Readonly<Record<string, string>>;
+  /** 暂时不向用户暴露的模型 ID；保留底层协议，便于后续恢复。 */
+  hiddenModelIds?: readonly string[];
   credentials: ProviderCredentialField[];
   /** 内置厂商随应用发布的模型及声明式执行协议。 */
   models?: readonly ProviderModelSelection[];
@@ -89,6 +91,13 @@ const API_KEY_FIELD: ProviderCredentialField = {
   required: true,
   secret: true,
 };
+
+const SORA2U_HIDDEN_MODEL_IDS = [
+  'seedance-2.5',
+  'seedance-2.5-character',
+  'seedance-2.5-character-mono',
+] as const;
+const SORA2U_HIDDEN_MODEL_ID_SET = new Set<string>(SORA2U_HIDDEN_MODEL_IDS);
 
 export const WEB_SEARCH_PROVIDER_IDS: readonly WebSearchProviderId[] = [
   'tavily',
@@ -152,10 +161,11 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
     externalUrl: 'https://sora2u.com/?utm_source=tenney&utm_medium=canvas&utm_content=wx',
     connectionTestPath: '/api/v1/credits',
     requestQuery: SORA2U_REQUEST_QUERY,
+    hiddenModelIds: SORA2U_HIDDEN_MODEL_IDS,
     credentials: [
       { ...API_KEY_FIELD, placeholder: 'sk_sora_...' },
     ],
-    models: SORA2U_MODEL_MANIFEST,
+    models: SORA2U_MODEL_MANIFEST.filter((model) => !SORA2U_HIDDEN_MODEL_ID_SET.has(model.id)),
   },
   {
     id: 'volcengine',
@@ -268,6 +278,12 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
     ],
   },
 ];
+
+export function isProviderModelVisible(catalogId: string | undefined, modelId: string): boolean {
+  if (!catalogId) return true;
+  const definition = BUILT_IN_PROVIDER_DEFINITIONS.find((item) => item.id === catalogId);
+  return !definition?.hiddenModelIds?.includes(modelId);
+}
 
 const PROVIDER_DEFINITION_MAP = new Map(
   BUILT_IN_PROVIDER_DEFINITIONS.map((definition) => [definition.id, definition]),
@@ -510,7 +526,9 @@ async function fetchCatalogAt(
   const payload: unknown = await response.json().catch(() => null);
   const models = readCatalogItems(payload)
     .map((item) => parseCatalogItem(item, providerId))
-    .filter((item): item is ProviderModelSelection => item !== null);
+    .filter((item): item is ProviderModelSelection => (
+      item !== null && isProviderModelVisible(definition.id, item.id)
+    ));
   if (models.length === 0) throw new Error('模型列表拉取失败 (HTTP 200)');
   return normalizeModels(models, providerId);
 }
@@ -546,7 +564,8 @@ export async function fetchProviderModelCatalog(
   if (signal?.aborted) throw new DOMException('模型列表拉取已取消', 'AbortError');
   const definition = getProviderDefinition(providerId, config);
   if (!definition) throw new Error('未知厂商目录');
-  const normalizedFallback = normalizeModels(fallbackModels, providerId);
+  const normalizedFallback = normalizeModels(fallbackModels, providerId)
+    .filter((model) => isProviderModelVisible(definition.id, model.id));
 
   if (definition.catalogAdapter === 'local-manifest') {
     return { models: normalizedFallback, source: 'local-manifest' };

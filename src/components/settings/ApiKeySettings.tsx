@@ -10,6 +10,7 @@ import {
   getProviderDefinition,
   getProviderDefinitions,
   getWebSearchProviderDefinitions,
+  isProviderModelVisible,
   resolveWebSearchProviderId,
 } from '../../services/ai/providerCatalogService';
 import {
@@ -27,6 +28,7 @@ import AnimatedButton from '../shared/AnimatedButton';
 import { defaultModelGroups } from '../nodes/shared/defaultModels';
 import { shouldListProviderConnection } from './apiKeySettingsUtils';
 import { isSecretStoreAvailable } from '../../services/providerSecretService';
+import { testProviderConnection } from '../../services/testConnection';
 import DreaminaLoginModal from './DreaminaLoginModal';
 import ProviderConnectionDialog from './ProviderConnectionDialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -89,6 +91,9 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     revision: 0,
   });
   const [pendingDeleteId, setPendingDeleteId] = useState<string>();
+  const [providerBalances, setProviderBalances] = useState<Record<string, string>>({});
+  const balanceRefreshStartedRef = useRef(new Set<string>());
+  const balanceRefreshActiveRef = useRef(true);
   // 凭据存在 Rust 侧的凭据存储里；不可用时只能本次会话有效，得在用户填写前就说清楚
   const [secretStoreAvailable, setSecretStoreAvailable] = useState(true);
 
@@ -206,6 +211,57 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    balanceRefreshActiveRef.current = true;
+    return () => { balanceRefreshActiveRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    let changed = false;
+    for (const [connectionId, providerConfig] of Object.entries(config.providers)) {
+      const catalogId = providerConfig.catalogId
+        || getProviderDefinition(connectionId, providerConfig)?.id;
+      if (catalogId !== 'sora2u') continue;
+      const selectedModels = providerConfig.selectedModels?.filter(
+        (model) => isProviderModelVisible(catalogId, model.id),
+      );
+      const catalogModels = providerConfig.catalogModels?.filter(
+        (model) => isProviderModelVisible(catalogId, model.id),
+      );
+      if (
+        selectedModels?.length === providerConfig.selectedModels?.length
+        && catalogModels?.length === providerConfig.catalogModels?.length
+      ) continue;
+      changed = true;
+      saveProviderConfig(connectionId, { ...providerConfig, selectedModels, catalogModels });
+    }
+    if (changed) void saveConfig({ silent: true });
+  }, [config.providers, saveConfig, saveProviderConfig]);
+
+  useEffect(() => {
+    for (const item of providerItems) {
+      const definition = getProviderDefinition(item.id, item.config);
+      if (definition?.id !== 'sora2u' || !item.config.apiKey.trim()) continue;
+      const fingerprint = `${item.id}\u0000${item.config.apiKey}\u0000${item.config.baseUrl || ''}`;
+      if (balanceRefreshStartedRef.current.has(fingerprint)) continue;
+      balanceRefreshStartedRef.current.add(fingerprint);
+      setProviderBalances((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
+      void testProviderConnection(
+        definition.id,
+        item.config.apiKey.trim(),
+        item.config.baseUrl,
+      ).then((result) => {
+        const balance = result.balance;
+        if (!balanceRefreshActiveRef.current || !result.success || !balance) return;
+        setProviderBalances((current) => ({ ...current, [item.id]: balance }));
+      });
+    }
+  }, [providerItems]);
 
   const applyDreaminaRuntime = useCallback((runtime: DreaminaRuntime) => {
     setDreaminaRuntime(runtime);
@@ -494,6 +550,11 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                       <span className={`provider-list-status${isPendingApiKey || (isRunningHub && runningHubKeyCount < 2) ? ' is-limited' : ''}`}>
                         {statusLabel}
                       </span>
+                      {providerBalances[item.id] && (
+                        <span className="shrink-0 text-xs font-medium text-canvas-text-secondary">
+                          {providerBalances[item.id]}
+                        </span>
+                      )}
                     </div>
                     <div className="provider-connection-meta">
                       {isRunningHub ? (
