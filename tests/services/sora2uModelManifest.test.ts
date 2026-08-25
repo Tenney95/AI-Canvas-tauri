@@ -23,6 +23,7 @@ const EXPECTED_MODELS = [
   'gemini-image',
   'kontext-image',
 ];
+const TRACKING_QUERY = 'utm_source=tenney&utm_medium=canvas&utm_content=wx';
 
 function protocolFor(modelId: string): ModelExecutionProtocol {
   const protocol = SORA2U_MODEL_MANIFEST.find((model) => model.id === modelId)
@@ -43,6 +44,12 @@ describe('Sora2U 内置模型清单', () => {
       modelsPath: '/api/v1/models',
       models: SORA2U_MODEL_MANIFEST,
       externalUrl: 'https://sora2u.com/?utm_source=tenney&utm_medium=canvas&utm_content=wx',
+      connectionTestPath: '/api/v1/credits',
+      requestQuery: {
+        utm_source: 'tenney',
+        utm_medium: 'canvas',
+        utm_content: 'wx',
+      },
     });
     expect(SORA2U_MODEL_MANIFEST.map((model) => model.id)).toEqual(EXPECTED_MODELS);
     expect(SORA2U_MODEL_MANIFEST.filter((model) => model.category === 'video')).toHaveLength(7);
@@ -70,7 +77,7 @@ describe('Sora2U 内置模型清单', () => {
 
     expect(request).toMatchObject({
       method: 'POST',
-      relativeUrl: '/api/v1/videos',
+      relativeUrl: `/api/v1/videos?${TRACKING_QUERY}`,
       body: {
         model: 'gemini-image',
         prompt: '雨后的霓虹街道',
@@ -141,12 +148,12 @@ describe('Sora2U 内置模型清单', () => {
     });
 
     expect(image.poll).toMatchObject({
-      url: 'https://sora2u.com/api/v1/videos/task-image',
+      url: `https://sora2u.com/api/v1/videos/task-image?${TRACKING_QUERY}`,
       statusPath: 'task.status',
       resultUrlPath: 'task.image_url',
     });
     expect(video.poll).toMatchObject({
-      url: 'https://sora2u.com/api/v1/videos/task-video',
+      url: `https://sora2u.com/api/v1/videos/task-video?${TRACKING_QUERY}`,
       statusPath: 'task.status',
       resultUrlPath: 'task.video_url',
     });

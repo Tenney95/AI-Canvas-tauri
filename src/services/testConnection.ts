@@ -64,6 +64,39 @@ async function testModelCatalog(
   return failure;
 }
 
+async function testReadOnlyEndpoint(
+  apiKey: string,
+  baseUrl: string,
+  path: string,
+  query: Readonly<Record<string, string>> = {},
+): Promise<TestResult> {
+  const candidate = baseUrlCandidates(baseUrl)[0];
+  if (!candidate) return { success: false, error: '请先填写接口地址' };
+  const url = new URL(path, `${candidate}/`);
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+  const response = await corsSafeFetch(url.toString(), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = readErrorMessage(payload);
+    return {
+      success: false,
+      error: message ? `HTTP ${response.status}: ${message}` : `HTTP ${response.status}`,
+    };
+  }
+  const record = payload && typeof payload === 'object'
+    ? payload as Record<string, unknown>
+    : {};
+  const balanceValue = record.balance;
+  const currency = typeof record.currency === 'string' ? record.currency.trim() : '';
+  const balance = (typeof balanceValue === 'number' || typeof balanceValue === 'string')
+    ? `${balanceValue}${currency ? ` ${currency}` : ''}`
+    : undefined;
+  return { success: true, balance, baseUrl: candidate };
+}
+
 /** RunningHUB — 模型 API 密钥，有余额 */
 async function testRunninghubModel(apiKey: string): Promise<TestResult> {
   const url = 'https://www.runninghub.cn/uc/openapi/accountStatus';
@@ -151,6 +184,14 @@ export async function testProviderConnection(
     }
     const target = baseUrl?.trim() || definition?.defaultBaseUrl;
     if (!target) return { success: false, error: `未知厂商: ${provider}` };
+    if (definition?.connectionTestPath) {
+      return await testReadOnlyEndpoint(
+        apiKey,
+        target,
+        definition.connectionTestPath,
+        definition.requestQuery,
+      );
+    }
     return await testModelCatalog(apiKey, target);
   } catch (e) {
     return { success: false, error: `网络错误: ${e instanceof Error ? e.message : String(e)}` };

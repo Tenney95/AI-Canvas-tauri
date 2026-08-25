@@ -103,4 +103,28 @@ describe('provider connection tests', () => {
       expect.objectContaining({ method: 'POST' }),
     );
   });
+
+  it('tests Sora2U through the tracked read-only credits endpoint', async () => {
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      success: true,
+      balance: 1280,
+      currency: 'GP',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(testProviderConnection('sora2u', 'sk_sora_secret')).resolves.toEqual({
+      success: true,
+      balance: '1280 GP',
+      baseUrl: 'https://sora2u.com',
+    });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith(
+      'https://sora2u.com/api/v1/credits?utm_source=tenney&utm_medium=canvas&utm_content=wx',
+      {
+        method: 'GET',
+        headers: { Authorization: 'Bearer sk_sora_secret' },
+      },
+    );
+  });
 });

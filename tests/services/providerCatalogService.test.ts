@@ -153,7 +153,7 @@ describe('Sora2U 远端模型能力目录', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://sora2u.com/api/v1/models',
+      'https://sora2u.com/api/v1/models?utm_source=tenney&utm_medium=canvas&utm_content=wx',
       expect.objectContaining({
         method: 'GET',
         headers: { Authorization: 'Bearer sk_sora_test' },

@@ -84,3 +84,22 @@
 3. 运行 `npm run typecheck` 与改动文件定向 ESLint。
 4. 运行 `npx vite build --outDir <系统临时目录>`、`git diff --check` 和严格 UTF-8/乱码扫描。
 5. 检查 `git status --short`，确认没有意外文件；按阶段使用中文提交说明提交。
+
+### 任务 6：合作追踪参数与额度验证修正
+
+**文件：**
+
+- 修改：`src/services/ai/providers/sora2uModelManifest.ts`
+- 修改：`src/services/ai/providerCatalogService.ts`
+- 修改：`src/services/testConnection.ts`
+- 修改：`tests/services/sora2uModelManifest.test.ts`
+- 修改：`tests/services/providerCatalogService.test.ts`
+- 修改：`tests/services/testConnection.test.ts`
+
+**步骤：**
+
+1. 写失败测试，断言额度验证、模型目录、生成提交和任务轮询都携带固定 UTM 查询参数。
+2. 在厂商定义中集中声明只读验证路径和静态请求查询参数，避免各调用点手写字符串。
+3. 连接验证改用 `/api/v1/credits`，解析 `balance` 与 `currency`，不发送生成请求。
+4. 声明式图片/视频协议的提交和轮询，以及模型目录请求，统一复用同一份 UTM 参数。
+5. 保持服务端返回的签名媒体 URL 原样，不对下载地址追加参数。

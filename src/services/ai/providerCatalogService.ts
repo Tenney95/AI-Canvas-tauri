@@ -31,6 +31,7 @@ import {
 import {
   SORA2U_BASE_URL,
   SORA2U_MODEL_MANIFEST,
+  SORA2U_REQUEST_QUERY,
 } from './providers/sora2uModelManifest';
 
 export type ProviderAuthType = 'api-key' | 'oauth';
@@ -56,6 +57,10 @@ export interface ProviderDefinition {
   allowCustomBaseUrl?: boolean;
   /** 用户主动打开的注册、获取 Key 或充值页面；不得用作 API Base URL。 */
   externalUrl?: string;
+  /** 无生成副作用的连接验证路径。 */
+  connectionTestPath?: string;
+  /** 该厂商 API 请求必须携带的固定查询参数。 */
+  requestQuery?: Readonly<Record<string, string>>;
   credentials: ProviderCredentialField[];
   /** 内置厂商随应用发布的模型及声明式执行协议。 */
   models?: readonly ProviderModelSelection[];
@@ -145,6 +150,8 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
     modelsPath: '/api/v1/models',
     allowCustomBaseUrl: false,
     externalUrl: 'https://sora2u.com/?utm_source=tenney&utm_medium=canvas&utm_content=wx',
+    connectionTestPath: '/api/v1/credits',
+    requestQuery: SORA2U_REQUEST_QUERY,
     credentials: [
       { ...API_KEY_FIELD, placeholder: 'sk_sora_...' },
     ],
@@ -489,8 +496,12 @@ async function fetchCatalogAt(
   config: ApiProviderConfig,
   signal?: AbortSignal,
 ): Promise<ProviderModelSelection[]> {
+  const url = new URL(`${baseUrl}${definition.modelsPath || '/models'}`);
+  for (const [key, value] of Object.entries(definition.requestQuery ?? {})) {
+    url.searchParams.set(key, value);
+  }
   const response = await fetchCatalogResponse(
-    `${baseUrl}${definition.modelsPath || '/models'}`,
+    url.toString(),
     config.apiKey,
     signal,
   );

@@ -11,6 +11,11 @@ import type {
 } from '../../../types/aiTypes';
 
 export const SORA2U_BASE_URL = 'https://sora2u.com';
+export const SORA2U_REQUEST_QUERY = {
+  utm_source: 'tenney',
+  utm_medium: 'canvas',
+  utm_content: 'wx',
+} as const;
 
 const SORA2U_POLL_RETRY = {
   httpStatuses: [408, 429, 500, 502, 503, 504],
@@ -30,6 +35,7 @@ NormalizedModelExecutionProtocol {
     submit: {
       method: 'POST',
       path: '/api/v1/videos',
+      query: { ...SORA2U_REQUEST_QUERY },
       bodyEncoding: 'json',
       body: {
         model: '{{model}}',
@@ -56,6 +62,7 @@ NormalizedModelExecutionProtocol {
     poll: {
       method: 'GET',
       path: '/api/v1/videos/{{submit.task.id}}',
+      query: { ...SORA2U_REQUEST_QUERY },
       response: {
         statusPath: 'task.status',
         successValues: ['completed'],
