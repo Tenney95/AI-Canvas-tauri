@@ -197,7 +197,7 @@ describe('agent round executor', () => {
       totalToolResultChars: 0,
       callbacks: {},
       transitionTask: transitionAgentTask,
-      waitForApproval: vi.fn(async () => ({ decision: 'approved' as const })),
+      waitForApproval: vi.fn(async () => ({ approved: true })),
     });
 
     expect(seen).toHaveLength(2);
