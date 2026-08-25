@@ -11,11 +11,11 @@ import type {
   ModelGroup,
   WorkflowDefinition,
 } from '../../../types';
-import { getWorkflowCategory, CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS } from '../../../types';
+import { getWorkflowCategory } from '../../../types';
 import {
   defaultModelGroups,
   getConfiguredModelGroups,
-  isProviderCategoryVisible,
+  getGeneralModelGroups,
 } from './defaultModels';
 import { useAppStore } from '../../../store/useAppStore';
 import { useT } from '../../../i18n';
@@ -98,40 +98,21 @@ export default function ModelSelector({
     [config, groups, modelNodeType],
   );
 
-  /** 动态生成「通用模型」分组 */
-  const generalModelGroup: ModelGroup | null = useMemo(() => {
-    if (generalModels.length === 0) return null;
-    const models: ModelOption[] = generalModels
-      .filter((gm) => (
-        CATEGORY_TO_NODE_TYPES[gm.category].includes(modelNodeType)
-        && isProviderCategoryVisible(config, gm.providerConfigId, gm.category)
-      ))
-      .map((gm) => ({
-        value: `general/${gm.id}`,
-        provider: 'general',
-        label: gm.name,
-        description: `ID: ${gm.modelId}`,
-        iconType: 'badge' as const,
-        badgeText: GENERAL_MODEL_CATEGORY_LABELS[gm.category].slice(0, 2),
-        nodeTypes: CATEGORY_TO_NODE_TYPES[gm.category],
-      }));
-    if (models.length === 0) return null;
-    return {
-      id: 'general-models',
-      name: t('通用模型'),
-      description: t('用户自定义的兼容接口模型'),
-      iconType: 'badge',
-      badgeText: 'GM',
-      models,
-    };
-  }, [config, generalModels, modelNodeType, t]);
+  /** 通用执行协议保持不变，只把内置 Sora2U 连接拆成独立厂商分组。 */
+  const generalModelGroups = useMemo(() => getGeneralModelGroups(
+    generalModels,
+    config,
+    modelNodeType,
+    {
+      genericName: t('通用模型'),
+      genericDescription: t('用户自定义的兼容接口模型'),
+    },
+  ), [config, generalModels, modelNodeType, t]);
 
   /** 合并默认分组与通用模型分组 */
   const allGroups = useMemo(() => {
-    const merged = [...configuredGroups];
-    if (generalModelGroup) merged.push(generalModelGroup);
-    return merged;
-  }, [configuredGroups, generalModelGroup]);
+    return [...configuredGroups, ...generalModelGroups];
+  }, [configuredGroups, generalModelGroups]);
 
   // 默认分组收起，except defaultExpandedGroupIds（含通用模型默认展开）
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
@@ -147,7 +128,7 @@ export default function ModelSelector({
   const isGroupAvailable = useCallback(
     (groupId: string) => {
       // 通用模型分组：每个模型自带 API Key，始终可用
-      if (groupId === 'general-models') return true;
+      if (groupId === 'general-models' || groupId.startsWith('general-provider-')) return true;
       if (groupAvailability && groupId in groupAvailability) {
         return groupAvailability[groupId];
       }

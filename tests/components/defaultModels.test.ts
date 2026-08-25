@@ -3,6 +3,7 @@ import {
   defaultModelGroups,
   findMediaModelOption,
   getConfiguredModelGroups,
+  getGeneralModelGroups,
   getMediaModelOptions,
 } from '../../src/components/nodes/shared/defaultModels';
 import type { AppConfig, ProviderModelSelection } from '../../src/types';
@@ -179,6 +180,61 @@ describe('内置厂商动态模型目录', () => {
         mediaKind: 'image',
       }),
     );
+  });
+});
+
+describe('Sora2U 独立模型分组', () => {
+  const config: AppConfig = {
+    providers: {
+      sora2u: { name: 'Sora2U', apiKey: 'k', catalogId: 'sora2u', selectedModels: [] },
+      relay: { name: '自定义中转', apiKey: 'k', catalogId: 'custom-openai', selectedModels: [] },
+    },
+    theme: 'dark',
+  };
+  const generalModels = [
+    {
+      id: 'sora-image',
+      name: 'Gemini Image',
+      modelId: 'gemini-image',
+      category: 'image' as const,
+      providerConfigId: 'sora2u',
+    },
+    {
+      id: 'relay-image',
+      name: 'Relay Image',
+      modelId: 'relay-image',
+      category: 'image' as const,
+      providerConfigId: 'relay',
+    },
+  ];
+
+  it('节点菜单把 Sora2U 从通用模型中拆成独立厂商分组', () => {
+    const groups = getGeneralModelGroups(generalModels, config, 'ai-image');
+
+    expect(groups.find((group) => group.name === 'Sora2U')).toMatchObject({
+      id: 'general-provider-sora2u',
+      badgeText: 'S2U',
+      models: [expect.objectContaining({
+        value: 'general/sora-image',
+        provider: 'general',
+        label: 'Gemini Image',
+      })],
+    });
+    expect(groups.find((group) => group.id === 'general-models')?.models).toEqual([
+      expect.objectContaining({ value: 'general/relay-image' }),
+    ]);
+  });
+
+  it('对话媒体目录沿用 Sora2U 分组，但模型引用保持 general 协议', () => {
+    const option = getMediaModelOptions(generalModels, config)
+      .find((model) => model.value === 'general/sora-image');
+
+    expect(option).toMatchObject({
+      value: 'general/sora-image',
+      provider: 'general',
+      groupId: 'general-provider-sora2u',
+      groupName: 'Sora2U',
+    });
   });
 });
 

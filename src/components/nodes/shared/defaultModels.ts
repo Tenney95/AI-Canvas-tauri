@@ -12,7 +12,7 @@ import type {
   WorkflowCategory,
   WorkflowDefinition,
 } from '../../../types';
-import { CATEGORY_TO_NODE_TYPES } from '../../../types';
+import { CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS } from '../../../types';
 import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from '../../../services/ai/dreaminaModels';
 
 export type MediaModelKind = 'image' | 'video' | 'audio';
@@ -1121,6 +1121,77 @@ function describeGeneralModel(
   return connectionName ? `${connectionName} · ${detail}` : detail;
 }
 
+interface GeneralModelGroupPresentation {
+  id: string;
+  name: string;
+  description: string;
+  badgeText: string;
+}
+
+function dedicatedGeneralModelGroup(
+  model: GeneralModelConfig,
+  config?: ProviderModelVisibilityConfig,
+): GeneralModelGroupPresentation | null {
+  const provider = config?.providers[model.providerConfigId];
+  if (provider?.catalogId !== 'sora2u' && model.providerConfigId !== 'sora2u') return null;
+  return {
+    id: `general-provider-${model.providerConfigId}`,
+    name: 'Sora2U',
+    description: 'Seedance 视频与图片模型',
+    badgeText: 'S2U',
+  };
+}
+
+function createGeneralModelOption(model: GeneralModelConfig): ModelOption {
+  return {
+    value: `general/${model.id}`,
+    provider: 'general',
+    label: model.name,
+    description: `ID: ${model.modelId}`,
+    inputModalities: model.inputModalities,
+    iconType: 'badge',
+    badgeText: GENERAL_MODEL_CATEGORY_LABELS[model.category].slice(0, 2),
+    nodeTypes: CATEGORY_TO_NODE_TYPES[model.category],
+  };
+}
+
+export function getGeneralModelGroups(
+  generalModels: GeneralModelConfig[],
+  config: ProviderModelVisibilityConfig,
+  nodeType: NodeType,
+  labels: { genericName?: string; genericDescription?: string } = {},
+): ModelGroup[] {
+  const dedicatedGroups = new Map<string, ModelGroup>();
+  const genericModels: ModelOption[] = [];
+  for (const model of generalModels) {
+    if (
+      !CATEGORY_TO_NODE_TYPES[model.category].includes(nodeType)
+      || !isProviderCategoryVisible(config, model.providerConfigId, model.category)
+    ) continue;
+    const option = createGeneralModelOption(model);
+    const presentation = dedicatedGeneralModelGroup(model, config);
+    if (!presentation) {
+      genericModels.push(option);
+      continue;
+    }
+    const group = dedicatedGroups.get(presentation.id);
+    if (group) group.models.push(option);
+    else dedicatedGroups.set(presentation.id, { ...presentation, iconType: 'badge', models: [option] });
+  }
+  const groups = [...dedicatedGroups.values()];
+  if (genericModels.length > 0) {
+    groups.push({
+      id: 'general-models',
+      name: labels.genericName || '通用模型',
+      description: labels.genericDescription || '用户自定义的兼容接口模型',
+      iconType: 'badge',
+      badgeText: 'GM',
+      models: genericModels,
+    });
+  }
+  return groups;
+}
+
 /** 节点与对话共用的图片/视频/音频模型目录；传入 workflows 时把 ComfyUI 工作流一并列为可选模型。 */
 export function getMediaModelOptions(
   generalModels: GeneralModelConfig[] = [],
@@ -1169,6 +1240,7 @@ export function getMediaModelOptions(
         : mediaKind === 'video'
           ? 'ai-video'
           : 'ai-audio';
+      const dedicatedGroup = dedicatedGeneralModelGroup(model, config);
       return {
         value: `general/${model.id}`,
         provider: 'general',
@@ -1179,8 +1251,8 @@ export function getMediaModelOptions(
         badgeText: mediaKind === 'image' ? '图' : mediaKind === 'video' ? '视' : '音',
         nodeTypes: [nodeType],
         mediaKind,
-        groupId: 'general-models',
-        groupName: '通用模型',
+        groupId: dedicatedGroup?.id || 'general-models',
+        groupName: dedicatedGroup?.name || '通用模型',
       };
     });
 

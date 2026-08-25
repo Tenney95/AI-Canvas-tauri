@@ -2413,6 +2413,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - [x] 内置 Sora2U 厂商卡片、固定 `https://sora2u.com` API Base URL，以及仅由用户主动打开的 UTM 专属站点链接。
 - [x] 额度验证、模型目录、生成提交和任务轮询统一附带 `utm_source=tenney&utm_medium=canvas&utm_content=wx`；验证改用无生成副作用的 `/api/v1/credits` 并展示 GP 余额，返回的签名媒体 URL 不做改写。
 - [x] API Key 页面每次打开自动刷新 Sora2U 余额并显示在连接状态右侧；暂时隐藏 Sora2U 的三个 Seedance 2.5 变体，已有连接同步清理对应选择项，但保留底层协议供后续恢复。
+- [x] 节点模型菜单和对话媒体目录把 Sora2U 显示为独立厂商分组，同时保持 `general/...` 模型引用与生成路由不变；自定义中转站仍归入通用模型。
 - [x] 本地兜底清单包含公开文档当前列出的 7 个 Seedance 视频模型和 2 个图片模型；填写 Key 后从 `/api/v1/models` 动态同步远端新增模型与能力字段。
 - [x] 远端目录按模型 ID 合并本地执行协议，归一化时长、比例、分辨率、文本直出能力和图片/视频/音频参考上限；目录失败时继续使用不含凭据的本地清单。
 - [x] 图片和视频统一通过声明式协议提交 `/api/v1/videos`，从 `task.id` 构建同源轮询，分别读取 `task.image_url` / `task.video_url`，失败展示 `task.error`。
@@ -2424,7 +2425,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - `npm run typecheck`：通过。
 - 改动文件定向 ESLint：通过。
 - Sora2U、目录、Store、协议导入、默认模型与生成运行时定向 Vitest：10 个文件、122 项通过。
-- 全量 `npm run test`：196 个文件、1498 项通过。
+- 全量 `npm run test`：196 个文件、1500 项通过。
 - `npx vite build --outDir <系统临时目录>`：生产构建通过；仅报告既有动态导入和大 chunk 警告。
 - `npm run check`：被仓库已知 ESLint 10 / parser 兼容错误 `scopeManager.addGlobals is not a function` 阻断；未修改依赖，定向 ESLint 已通过。
 - `npm run test:typecheck`：被既有 `tests/services/chat/agentRoundExecutor.test.ts` mock 缺少 `AgentApprovalResolution.approved` 字段阻断；本次 Sora2U 定向测试和前端类型检查均通过。
