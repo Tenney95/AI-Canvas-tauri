@@ -1137,11 +1137,13 @@ export default function ProviderConnectionDialog({
                 </div>
               )}
 
-              {PROVIDER_LINKS[definition.id] && (
+              {(definition.externalUrl || PROVIDER_LINKS[definition.id]) && (
                 <button
                   type="button"
                   className="provider-external-link"
-                  onClick={() => void openExternal(PROVIDER_LINKS[definition.id])}
+                  onClick={() => void openExternal(
+                    definition.externalUrl || PROVIDER_LINKS[definition.id],
+                  )}
                 >
                   <Icon icon="mdi:open-in-new" width="13" />
                   {definition.id === 'grsai' ? t('前往 API Key 页面') : t('前往厂商控制台')}

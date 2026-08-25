@@ -186,6 +186,8 @@ export interface ModelExecutionProfile {
  * 字段语义与内置 Seedance 能力表（apimartVideoModels）对齐，便于同一套 UI 消费。
  */
 export interface VideoModelCapability {
+  /** 是否至少需要一份图片、视频或音频参考素材。 */
+  requiresReference?: boolean;
   /** 可选分辨率档位，如 ['480p', '720p', '1080p']。 */
   resolutions?: string[];
   /** 未指定分辨率时的默认值。 */

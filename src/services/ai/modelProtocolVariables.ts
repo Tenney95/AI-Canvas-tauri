@@ -185,6 +185,18 @@ export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
       { key, template: '{{imageUrls.0}}' },
     ]),
   },
+  {
+    name: 'referenceUrls', supplied: VIDEO,
+    reference: true,
+    categories: VIDEO,
+    fields: ['referenceurls'],
+  },
+  {
+    name: 'inlineReferences', supplied: VIDEO,
+    reference: true,
+    categories: VIDEO,
+    fields: ['references', 'inlinereferences'],
+  },
 
   // 运行时提供但没有对应请求字段名的别名变量，仍允许模板直接引用
   { name: 'batchCount', supplied: MEDIA },
@@ -196,6 +208,7 @@ export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
   { name: 'seedanceRatio', supplied: VIDEO },
   { name: 'seedanceDuration', supplied: VIDEO },
   { name: 'videoOperation', supplied: VIDEO },
+  { name: 'disableAudio', supplied: VIDEO },
 ];
 
 interface CompiledRule extends ProtocolFieldRule {

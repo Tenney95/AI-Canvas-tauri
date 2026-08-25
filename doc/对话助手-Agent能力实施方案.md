@@ -2406,12 +2406,37 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 本阶段经用户确认新增 `rquickjs 0.12.2` Rust 依赖，未修改 `tauri.conf.json` 或 capability，未开放文件、网络、Shell 或凭据权限。回滚时移除插件设置/节点菜单入口、Plugin Store、QuickJS command 与依赖即可；IndexedDB 保留 v20 和空 `plugins` store，不降版本且不影响项目数据。
 
+### 12.3 平台补充：Sora2U 内置图片与视频厂商
+
+目标：把 Sora2U 作为独立内置厂商接入统一模型目录与声明式媒体协议，并使用合作方提供的专属站点入口，同时保持真实 API Base URL、凭据和付费请求安全边界不变。
+
+- [x] 内置 Sora2U 厂商卡片、固定 `https://sora2u.com` API Base URL，以及仅由用户主动打开的 UTM 专属站点链接。
+- [x] 本地兜底清单包含公开文档当前列出的 7 个 Seedance 视频模型和 2 个图片模型；填写 Key 后从 `/api/v1/models` 动态同步远端新增模型与能力字段。
+- [x] 远端目录按模型 ID 合并本地执行协议，归一化时长、比例、分辨率、文本直出能力和图片/视频/音频参考上限；目录失败时继续使用不含凭据的本地清单。
+- [x] 图片和视频统一通过声明式协议提交 `/api/v1/videos`，从 `task.id` 构建同源轮询，分别读取 `task.image_url` / `task.video_url`，失败展示 `task.error`。
+- [x] 多模态参考按公网 `reference_urls` 与带 MIME 的内联 `references` 分流；Seedance 1.5 / 2.5 无参考时在本地拒绝，创建付费任务不自动重试。
+- [x] 所选模型继续同步为不含 API Key 的 `generalModels`，节点与对话 `@model` 复用现有统一媒体生成入口、取消信号和产物持久化。
+
+实际检查：
+
+- `npm run typecheck`：通过。
+- 改动文件定向 ESLint：通过。
+- Sora2U、目录、Store、协议导入、默认模型与生成运行时定向 Vitest：9 个文件、114 项通过。
+- 全量 `npm run test`：196 个文件、1497 项通过。
+- `npx vite build --outDir <系统临时目录>`：生产构建通过；仅报告既有动态导入和大 chunk 警告。
+- `npm run check`：被仓库已知 ESLint 10 / parser 兼容错误 `scopeManager.addGlobals is not a function` 阻断；未修改依赖，定向 ESLint 已通过。
+- `npm run test:typecheck`：被既有 `tests/services/chat/agentRoundExecutor.test.ts` mock 缺少 `AgentApprovalResolution.approved` 字段阻断；本次 Sora2U 定向测试和前端类型检查均通过。
+- 未配置真实 Sora2U API Key，因此未发送付费生成请求；真实余额、扣费和上游内容审核仍需用户在应用内手测。
+
+本阶段未新增依赖，未修改 `tauri.conf.json`、capability、IndexedDB schema、Agent Policy 或媒体确认策略。回滚时移除 Sora2U 厂商定义与 manifest、统一模型同步标识，以及通用参考数组变量即可；已有连接配置会保留为未知厂商数据，不涉及数据库降级。
+
 ## 13. 变更日志
 
 | 2026-08-14 | 媒体参数映射第一阶段 | 新增图片、视频、音频三类统一参数映射注册表；图片标准/APIMart/火山/RunningHub、APIMart 视频 Seedance、APIMart TTS/Flow Music 与通用异步媒体入口接入映射函数；新增 `tests/services/mediaParameterMappings.test.ts` 定向测试。保留现有 URL、鉴权、轮询和响应解析边界，未新增依赖。已执行 `npm run typecheck`、5 个受影响服务测试（68 项）与改动文件定向 ESLint；`npm run check` 仍被仓库既有 ESLint 10 / parser 错误 `scopeManager.addGlobals is not a function` 阻断。 |
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-25 | 平台补充 | 内置 Sora2U 的 9 个公开图片/视频模型与动态能力目录，接通多模态参考、异步轮询、统一模型同步和合作专属站点入口；不新增依赖或安全权限。 |
 | 2026-08-24 | 插件上传体验统一 | 插件设置页复用 ComfyUI 工作流 `wf-dropzone` 上传区，支持点击目录选择和拖入插件文件夹；递归读取目录并限制最多 256 个文件，继续校验唯一 `manifest.json` 与同级 `main.js`。 |
 | 2026-08-23 | 用户插件平台 MVP | 建立 AI Canvas Plugin Manifest Standard v1、QuickJS 沙箱、v20 插件持久化、插件管理页，以及按节点类型出现的右键工具与节点工具栏按钮；工具栏入口由宿主渲染声明式操作弹窗，按钮图标、节点输入、弹窗参数和输出字段均由 manifest 声明并校验，异步写回复用 canvas revision 和 Store 历史边界。 |
 | 2026-08-20 | 8.28 | 保留本机 stdio，并新增经高风险确认的 `0.0.0.0` Streamable HTTP MCP；加入 Bearer/Host/Origin/限长保护，修复安装版适配器资源缺失。 |

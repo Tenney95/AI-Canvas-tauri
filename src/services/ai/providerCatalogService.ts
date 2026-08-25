@@ -28,6 +28,10 @@ import {
   GOOGLE_GEMINI_BASE_URL,
   GOOGLE_MODEL_MANIFEST,
 } from './providers/googleModelManifest';
+import {
+  SORA2U_BASE_URL,
+  SORA2U_MODEL_MANIFEST,
+} from './providers/sora2uModelManifest';
 
 export type ProviderAuthType = 'api-key' | 'oauth';
 export type ProviderCredentialKey = 'apiKey' | 'baseUrl';
@@ -50,6 +54,8 @@ export interface ProviderDefinition {
   defaultBaseUrl?: string;
   modelsPath?: string;
   allowCustomBaseUrl?: boolean;
+  /** 用户主动打开的注册、获取 Key 或充值页面；不得用作 API Base URL。 */
+  externalUrl?: string;
   credentials: ProviderCredentialField[];
   /** 内置厂商随应用发布的模型及声明式执行协议。 */
   models?: readonly ProviderModelSelection[];
@@ -127,6 +133,22 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
       { ...API_KEY_FIELD, placeholder: 'Google AI Studio API Key' },
     ],
     models: GOOGLE_MODEL_MANIFEST,
+  },
+  {
+    id: 'sora2u',
+    name: 'Sora2U',
+    description: 'Seedance 全模态视频与 Gemini/Kontext 图片模型',
+    badgeText: 'S2U',
+    authType: 'api-key',
+    catalogAdapter: 'openai-compatible',
+    defaultBaseUrl: SORA2U_BASE_URL,
+    modelsPath: '/api/v1/models',
+    allowCustomBaseUrl: false,
+    externalUrl: 'https://sora2u.com/?utm_source=tenney&utm_medium=canvas&utm_content=wx',
+    credentials: [
+      { ...API_KEY_FIELD, placeholder: 'sk_sora_...' },
+    ],
+    models: SORA2U_MODEL_MANIFEST,
   },
   {
     id: 'volcengine',
@@ -323,6 +345,58 @@ function readCatalogItems(payload: unknown): unknown[] {
   return [];
 }
 
+function readStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  return items.length > 0 ? items : undefined;
+}
+
+function readNumberArray(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item));
+  return items.length > 0 ? items : undefined;
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function parseVideoCapability(
+  record: Record<string, unknown>,
+  category: GeneralModelCategory,
+): ProviderModelSelection['videoCapability'] {
+  if (category !== 'video') return undefined;
+  const durations = readNumberArray(record.durations);
+  const durationRange = readRecord(record.duration_range ?? record.durationRange);
+  const referenceLimits = readRecord(record.reference_limits ?? record.referenceLimits);
+  const capability: NonNullable<ProviderModelSelection['videoCapability']> = {
+    durations,
+    minDuration: readFiniteNumber(durationRange?.min) ?? (durations ? Math.min(...durations) : undefined),
+    maxDuration: readFiniteNumber(durationRange?.max) ?? (durations ? Math.max(...durations) : undefined),
+    defaultDuration: readFiniteNumber(record.default_duration ?? record.defaultDuration),
+    ratios: readStringArray(record.aspect_ratios ?? record.aspectRatios),
+    defaultRatio: typeof (record.default_aspect_ratio ?? record.defaultAspectRatio) === 'string'
+      ? String(record.default_aspect_ratio ?? record.defaultAspectRatio)
+      : undefined,
+    resolutions: readStringArray(record.resolutions),
+    defaultResolution: typeof (record.default_resolution ?? record.defaultResolution) === 'string'
+      ? String(record.default_resolution ?? record.defaultResolution)
+      : undefined,
+    maxImageReferences: readFiniteNumber(referenceLimits?.image),
+    maxVideoReferences: readFiniteNumber(referenceLimits?.video),
+    maxAudioReferences: readFiniteNumber(referenceLimits?.audio),
+    supportsStandaloneAudio: record.supports_audio === true ? true : undefined,
+    requiresReference: record.supports_text_only === false ? true : undefined,
+  };
+  return Object.values(capability).some((value) => value !== undefined) ? capability : undefined;
+}
+
 function parseCatalogItem(item: unknown, providerId: string): ProviderModelSelection | null {
   if (typeof item === 'string') {
     const id = item.trim();
@@ -336,7 +410,16 @@ function parseCatalogItem(item: unknown, providerId: string): ProviderModelSelec
   const id = rawId.trim();
   const rawName = record.name ?? record.display_name ?? record.displayName;
   const name = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : id;
-  return { id, name, category: inferModelCategory(id), provider: providerId };
+  const category = inferModelCategory(id);
+  const supportsImageInput = record.supports_image === true || record.supportsImage === true;
+  return {
+    id,
+    name,
+    category,
+    provider: providerId,
+    inputModalities: supportsImageInput ? ['text', 'image'] : undefined,
+    videoCapability: parseVideoCapability(record, category),
+  };
 }
 
 function normalizeModels(
@@ -357,6 +440,29 @@ function normalizeModels(
   return [...unique.values()].sort((left, right) =>
     left.name.localeCompare(right.name, 'zh-CN', { sensitivity: 'base' }),
   );
+}
+
+function mergeRemoteCatalogMetadata(
+  remoteModels: ProviderModelSelection[],
+  fallbackModels: ProviderModelSelection[],
+): ProviderModelSelection[] {
+  const fallbackById = new Map(fallbackModels.map((model) => [model.id, model]));
+  return remoteModels.map((remote) => {
+    const fallback = fallbackById.get(remote.id);
+    if (!fallback) return remote;
+    return {
+      ...fallback,
+      ...remote,
+      description: remote.description ?? fallback.description,
+      inputModalities: remote.inputModalities ?? fallback.inputModalities,
+      executionProfile: remote.executionProfile ?? fallback.executionProfile,
+      imageReferenceRequestMode: remote.imageReferenceRequestMode
+        ?? fallback.imageReferenceRequestMode,
+      videoCapability: remote.videoCapability || fallback.videoCapability
+        ? { ...fallback.videoCapability, ...remote.videoCapability }
+        : undefined,
+    };
+  });
 }
 
 function safeCatalogError(error: unknown): string {
@@ -442,7 +548,11 @@ export async function fetchProviderModelCatalog(
       config,
       signal,
     );
-    return { models, source: 'remote', resolvedBaseUrl: baseUrl };
+    return {
+      models: mergeRemoteCatalogMetadata(models, normalizedFallback),
+      source: 'remote',
+      resolvedBaseUrl: baseUrl,
+    };
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     const warning = safeCatalogError(error);

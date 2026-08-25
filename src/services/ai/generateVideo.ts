@@ -191,6 +191,15 @@ export function assertVideoReferenceLimits(
   modelName: string,
 ): void {
   if (!capability) return;
+  if (
+    'requiresReference' in capability
+    && capability.requiresReference
+    && referenceInput.imageUrls.length === 0
+    && referenceInput.videoUrls.length === 0
+    && referenceInput.audioUrls.length === 0
+  ) {
+    throw new Error(`模型 "${modelName}" 至少需要一份参考素材`);
+  }
   const limits = [
     { kind: '参考图', count: referenceInput.imageUrls.length, max: capability.maxImageReferences },
     { kind: '参考视频', count: referenceInput.videoUrls.length, max: capability.maxVideoReferences },
@@ -247,6 +256,13 @@ export function buildGeneralVideoProtocolVariables(
         : 'reference_image',
     }));
   const imageWithRoles = roleImages.length > 0 ? roleImages : undefined;
+  const combinedReferences = [
+    ...referenceInput.imageUrls,
+    ...referenceInput.videoUrls,
+    ...referenceInput.audioUrls,
+  ];
+  const referenceUrls = combinedReferences.filter((url) => /^https?:\/\//i.test(url));
+  const inlineReferences = combinedReferences.filter((url) => url.startsWith('data:'));
 
   return {
     model: modelId,
@@ -267,6 +283,7 @@ export function buildGeneralVideoProtocolVariables(
     seedanceRatio: aspectRatio,
     seedanceDuration: duration,
     generateAudio: params.generateAudio ?? true,
+    disableAudio: params.generateAudio === false ? true : undefined,
     videoOperation: referenceInput.operation,
     imageUrls: referenceInput.imageUrls,
     firstImage,
@@ -279,6 +296,8 @@ export function buildGeneralVideoProtocolVariables(
     audioUrls: referenceInput.audioUrls,
     audioUrl: referenceInput.audioUrls[0],
     referenceAudioUrls: referenceInput.audioUrls,
+    referenceUrls: referenceUrls.length > 0 ? referenceUrls : undefined,
+    inlineReferences: inlineReferences.length > 0 ? inlineReferences : undefined,
     n: 1,
     batchCount: 1,
   };

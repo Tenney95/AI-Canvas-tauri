@@ -451,6 +451,58 @@ describe('config hydration guard', () => {
     expect(useAppStore.getState().config.generalModels?.[0]).not.toHaveProperty('apiKey');
   });
 
+  it('syncs Sora2U media models into the unified model runtime', () => {
+    useAppStore.getState().saveProviderConfig('sora2u', {
+      name: 'Sora2U',
+      apiKey: 'sk_sora_secret',
+      baseUrl: 'https://sora2u.com',
+      catalogId: 'sora2u',
+      selectedModels: [{
+        id: 'seedance-2.5',
+        name: 'Seedance 2.5',
+        category: 'video',
+        provider: 'sora2u',
+        videoCapability: {
+          minDuration: 5,
+          maxDuration: 30,
+          maxImageReferences: 30,
+          maxVideoReferences: 10,
+          maxAudioReferences: 10,
+        },
+        executionProfile: {
+          preset: 'custom',
+          protocol: {
+            version: 2,
+            mode: 'async',
+            submit: { method: 'POST', path: '/api/v1/videos' },
+            response: { type: 'json', taskIdPath: 'task.id' },
+            poll: {
+              method: 'GET',
+              path: '/api/v1/videos/{{submit.task.id}}',
+              response: {
+                statusPath: 'task.status',
+                successValues: ['completed'],
+                failureValues: ['failed', 'canceled'],
+                result: { urlPath: 'task.video_url' },
+              },
+            },
+          },
+        },
+      }],
+    });
+
+    expect(useAppStore.getState().config.generalModels).toEqual([
+      expect.objectContaining({
+        modelId: 'seedance-2.5',
+        category: 'video',
+        providerConfigId: 'sora2u',
+        videoCapability: expect.objectContaining({ maxDuration: 30 }),
+        executionProfile: expect.objectContaining({ preset: 'custom' }),
+      }),
+    ]);
+    expect(useAppStore.getState().config.generalModels?.[0]).not.toHaveProperty('apiKey');
+  });
+
   it('clears every model reference owned by a removed provider', async () => {
     localStorage.setItem('canvas-model-prefs', JSON.stringify({
       'ai-text': 'general/provider-text',
