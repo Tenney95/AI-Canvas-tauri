@@ -33,6 +33,7 @@
     "global-shortcut:allow-unregister-all",
     "drag:default",
     "updater:default",
+    "process:allow-restart",
     "fs:allow-watch",
     "fs:allow-unwatch",
     "fs:default",

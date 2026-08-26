@@ -81,9 +81,7 @@ export async function downloadAndInstallUpdate(): Promise<boolean> {
     await update.downloadAndInstall();
     console.log(`[Updater] v${update.version} 安装完成，即将重启`);
 
-    setTimeout(() => {
-      relaunch().catch(() => {});
-    }, 500);
+    await relaunch();
 
     return true;
   } catch (err) {
