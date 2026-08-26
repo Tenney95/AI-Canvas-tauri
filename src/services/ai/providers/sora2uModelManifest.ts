@@ -81,6 +81,18 @@ NormalizedModelExecutionProtocol {
 const SORA2U_IMAGE_PROTOCOL = createSora2uProtocol('task.image_url');
 const SORA2U_VIDEO_PROTOCOL = createSora2uProtocol('task.video_url');
 
+const SORA2U_VIDEO_INPUT_CONSTRAINTS: NonNullable<VideoModelCapability['inputConstraints']> = {
+  promptMinCharacters: 10,
+  maxBase64DecodedBytes: 20 * 1024 * 1024,
+  referenceVideo: {
+    width: { min: 300 },
+    durationSeconds: { max: 15, maxExclusive: true },
+  },
+  referenceAudio: {
+    durationSeconds: { min: 3, max: 15, maxExclusive: true },
+  },
+};
+
 function integerDurations(min: number, max: number): number[] {
   return Array.from({ length: max - min + 1 }, (_, index) => min + index);
 }
@@ -98,6 +110,7 @@ function videoCapability(
     maxDuration,
     defaultDuration: minDuration,
     supportsAudio: true,
+    inputConstraints: SORA2U_VIDEO_INPUT_CONSTRAINTS,
     ...limits,
     ...extras,
   };

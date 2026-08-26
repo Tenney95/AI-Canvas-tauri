@@ -47,6 +47,7 @@ import {
   isVolcengineSeedance25Model,
 } from './volcengineVideoModels';
 import { getDreaminaVideoCapability } from './dreaminaModels';
+import { assertVideoInputConstraints } from './videoInputValidation';
 
 export function resolveVideoGenerationOperation(
   imageUrls: readonly string[],
@@ -447,17 +448,29 @@ export async function generateVideo(
         resolveGeneralProtocolMediaUrls(referenceInput.references ?? [], 'video'),
         resolveGeneralProtocolMediaUrls(referenceInput.references ?? [], 'audio'),
       ]);
+      const resolvedReferenceInput = {
+        ...referenceInput,
+        imageUrls: remoteImageUrls,
+        videoUrls,
+        audioUrls,
+      };
+      await assertVideoInputConstraints(
+        resolvedReferenceInput,
+        gm.videoCapability,
+        gm.name,
+        { signal },
+      );
       const urls = await runConfiguredModelProtocol({
         model: gm,
         category: 'video',
         nodeId: params.nodeId,
         signal,
-        variables: buildGeneralVideoProtocolVariables(gm.modelId, params, {
-          ...referenceInput,
-          imageUrls: remoteImageUrls,
-          videoUrls,
-          audioUrls,
-        }, gm.videoCapability),
+        variables: buildGeneralVideoProtocolVariables(
+          gm.modelId,
+          params,
+          resolvedReferenceInput,
+          gm.videoCapability,
+        ),
       });
       const url = urls[0];
       if (!url) throw new Error('视频生成完成但未返回结果');

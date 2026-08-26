@@ -2419,10 +2419,21 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - [x] 图片和视频统一通过声明式协议提交 `/api/v1/videos`，从 `task.id` 构建同源轮询，分别读取 `task.image_url` / `task.video_url`，失败展示 `task.error`。
 - [x] 多模态参考按公网 `reference_urls` 与带 MIME 的内联 `references` 分流；Seedance 1.5 / 2.5 无参考时在本地拒绝，创建付费任务不自动重试。
 - [x] 所选模型继续同步为不含 API Key 的 `generalModels`，节点与对话 `@model` 复用现有统一媒体生成入口、取消信号和产物持久化。
+- [x] 视频模型能力增加声明式提交前校验；Sora2U 全部视频模型统一拦截 Prompt 少于 10 个字符、Base64 解码总量超过 20 MiB、参考视频宽度低于 300 px、参考视频时长达到 15 秒，以及参考音频短于 3 秒或达到 15 秒。自定义通用接口可在视频能力编辑器中修改或清空相同规则，未声明规则的旧模型保持不变。
 
 实际检查：
 
+本次输入校验增量检查（2026-08-26）：
+
 - `npm run typecheck`：通过。
+- `npm run test:typecheck`：通过。
+- 视频输入校验、Sora2U 运行时/manifest、模型目录和通用视频生成定向 Vitest：5 个文件、53 项通过。
+- 全量 Vitest：197 个文件中 196 个直接通过，1508 项中 1507 项通过；唯一失败为无关的图片裁剪交互测试偶发 5 秒超时，随后单独复跑该文件 8 项全部通过。
+- 本次改动文件定向 ESLint：通过。
+- `npx vite build --outDir <系统临时目录>`：生产构建通过；仅有既有动态导入和大 chunk 警告。
+
+原始 Sora2U 接入检查（2026-08-25）：
+
 - 改动文件定向 ESLint：通过。
 - Sora2U、目录、Store、协议导入、默认模型与生成运行时定向 Vitest：10 个文件、122 项通过。
 - 全量 `npm run test`：196 个文件、1500 项通过。
@@ -2433,12 +2444,15 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 本阶段未新增依赖，未修改 `tauri.conf.json`、capability、IndexedDB schema、Agent Policy 或媒体确认策略。回滚时移除 Sora2U 厂商定义与 manifest、统一模型同步标识，以及通用参考数组变量即可；已有连接配置会保留为未知厂商数据，不涉及数据库降级。
 
+本次输入校验增量同样未新增依赖，未修改 Tauri 安全配置、IndexedDB schema、Agent Policy 或媒体确认策略。回滚时移除 `inputConstraints`、通用生成入口中的校验调用和自定义编辑区即可，不需要数据迁移。
+
 ## 13. 变更日志
 
 | 2026-08-14 | 媒体参数映射第一阶段 | 新增图片、视频、音频三类统一参数映射注册表；图片标准/APIMart/火山/RunningHub、APIMart 视频 Seedance、APIMart TTS/Flow Music 与通用异步媒体入口接入映射函数；新增 `tests/services/mediaParameterMappings.test.ts` 定向测试。保留现有 URL、鉴权、轮询和响应解析边界，未新增依赖。已执行 `npm run typecheck`、5 个受影响服务测试（68 项）与改动文件定向 ESLint；`npm run check` 仍被仓库既有 ESLint 10 / parser 错误 `scopeManager.addGlobals is not a function` 阻断。 |
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-26 | Sora2U 输入校验 | 视频模型能力新增声明式提交前约束；Sora2U 拦截 Prompt、Base64 总量、参考视频宽度/时长和参考音频时长，自定义通用接口可编辑同类规则。 |
 | 2026-08-25 | 平台补充 | 内置 Sora2U 的 9 个公开图片/视频模型与动态能力目录，接通多模态参考、异步轮询、统一模型同步和合作专属站点入口；不新增依赖或安全权限。 |
 | 2026-08-24 | 插件上传体验统一 | 插件设置页复用 ComfyUI 工作流 `wf-dropzone` 上传区，支持点击目录选择和拖入插件文件夹；递归读取目录并限制最多 256 个文件，继续校验唯一 `manifest.json` 与同级 `main.js`。 |
 | 2026-08-23 | 用户插件平台 MVP | 建立 AI Canvas Plugin Manifest Standard v1、QuickJS 沙箱、v20 插件持久化、插件管理页，以及按节点类型出现的右键工具与节点工具栏按钮；工具栏入口由宿主渲染声明式操作弹窗，按钮图标、节点输入、弹窗参数和输出字段均由 manifest 声明并校验，异步写回复用 canvas revision 和 Store 历史边界。 |

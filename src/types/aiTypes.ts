@@ -180,6 +180,38 @@ export interface ModelExecutionProfile {
   protocol?: ModelExecutionProtocol;
 }
 
+/** 声明式数值范围；边界默认包含，可按厂商规则改为严格大于 / 小于。 */
+export interface NumericInputConstraint {
+  min?: number;
+  max?: number;
+  minExclusive?: boolean;
+  maxExclusive?: boolean;
+}
+
+/** 参考视频的本地提交前校验规则。 */
+export interface ReferenceVideoInputConstraints {
+  width?: NumericInputConstraint;
+  durationSeconds?: NumericInputConstraint;
+}
+
+/** 参考音频的本地提交前校验规则。 */
+export interface ReferenceAudioInputConstraints {
+  durationSeconds?: NumericInputConstraint;
+}
+
+/**
+ * 视频模型输入约束。仅声明的字段生效，适用于内置厂商和用户配置的通用接口。
+ * 这些规则在付费任务提交前执行，不参与请求模板变量映射。
+ */
+export interface VideoInputConstraints {
+  /** 去除首尾空白后的提示词最少字符数。 */
+  promptMinCharacters?: number;
+  /** 所有 Base64 data URL 解码后的合计字节上限。 */
+  maxBase64DecodedBytes?: number;
+  referenceVideo?: ReferenceVideoInputConstraints;
+  referenceAudio?: ReferenceAudioInputConstraints;
+}
+
 /**
  * 视频生成模型的能力声明，用于在参数面板与生成入口里按模型约束
  * 时长 / 分辨率 / 比例 / 参考素材等，替代「全局 2~15s + 通用分辨率」的兜底。
@@ -221,6 +253,8 @@ export interface VideoModelCapability {
   maxVideoReferences?: number;
   /** 参考音频数量上限。 */
   maxAudioReferences?: number;
+  /** 付费请求提交前执行的输入校验规则。 */
+  inputConstraints?: VideoInputConstraints;
 }
 
 /**

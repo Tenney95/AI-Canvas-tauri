@@ -14,6 +14,27 @@ function capabilityFor(modelId: string) {
 }
 
 describe('Sora2U 通用视频运行时映射', () => {
+  it('为全部 Sora2U 视频模型声明统一的提交前素材约束', () => {
+    const videoCapabilities = SORA2U_MODEL_MANIFEST
+      .filter((model) => model.category === 'video')
+      .map((model) => model.videoCapability?.inputConstraints);
+
+    expect(videoCapabilities).toHaveLength(7);
+    for (const constraints of videoCapabilities) {
+      expect(constraints).toEqual({
+        promptMinCharacters: 10,
+        maxBase64DecodedBytes: 20 * 1024 * 1024,
+        referenceVideo: {
+          width: { min: 300 },
+          durationSeconds: { max: 15, maxExclusive: true },
+        },
+        referenceAudio: {
+          durationSeconds: { min: 3, max: 15, maxExclusive: true },
+        },
+      });
+    }
+  });
+
   it('把公网和 data URL 参考素材拆到对应请求数组', () => {
     const references: VideoGenerationReferenceInput = {
       prompt: '保持角色与动作一致',

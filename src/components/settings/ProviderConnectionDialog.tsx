@@ -22,7 +22,7 @@ import {
 } from '../../services/ai/providerCatalogService';
 import { normalizeBaseUrl } from '../../services/ai/providerBaseUrl';
 import type { ModelProtocolImportResult } from '../../services/ai/modelProtocolImport';
-import type { VideoModelCapability } from '../../types/aiTypes';
+import type { VideoInputConstraints, VideoModelCapability } from '../../types/aiTypes';
 import { emitCloseChatWindow } from '../../services/chat/chatWindowService';
 import { testProviderConnection } from '../../services/testConnection';
 import { useAppStore } from '../../store/useAppStore';
@@ -169,6 +169,14 @@ function createEditableVideoCapability(
   };
 }
 
+function optionalNumber(value: string, options: { integer?: boolean; scale?: number } = {}): number | undefined {
+  if (!value.trim()) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  const scaled = parsed * (options.scale ?? 1);
+  return options.integer ? Math.round(scaled) : scaled;
+}
+
 function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEditorProps) {
   const [customRatio, setCustomRatio] = useState('');
   const [customResolution, setCustomResolution] = useState('');
@@ -191,8 +199,13 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
     ...VIDEO_DURATION_PRESETS,
     ...(discreteDurations ?? []),
   ])].sort((left, right) => left - right);
+  const inputConstraints = capability.inputConstraints ?? {};
 
   const commit = (next: VideoModelCapability) => onChange(createEditableVideoCapability(next));
+  const commitInputConstraints = (next: VideoInputConstraints) => commit({
+    ...capability,
+    inputConstraints: next,
+  });
   const toggleStringOption = (
     field: 'ratios' | 'resolutions',
     defaultField: 'defaultRatio' | 'defaultResolution',
@@ -443,6 +456,201 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
               </label>
             </div>
           )}
+        </section>
+
+        <section className="rounded-lg border border-canvas-border bg-black/10 p-3">
+          <div className="mb-3">
+            <span className="text-xs font-medium text-canvas-text">提交前输入校验</span>
+            <p className="mt-1 text-[10px] leading-4 text-canvas-text-muted">
+              留空表示不限制；不符合时会在创建远端任务前拦截，避免无效请求产生费用。
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1 text-[10px] text-canvas-text-secondary">
+              <span>提示词最少字符</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
+                value={inputConstraints.promptMinCharacters ?? ''}
+                placeholder="不限"
+                onChange={(event) => commitInputConstraints({
+                  ...inputConstraints,
+                  promptMinCharacters: optionalNumber(event.target.value, { integer: true }),
+                })}
+              />
+            </label>
+            <label className="space-y-1 text-[10px] text-canvas-text-secondary">
+              <span>Base64 解码后总上限（MiB）</span>
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
+                value={inputConstraints.maxBase64DecodedBytes === undefined
+                  ? ''
+                  : Number((inputConstraints.maxBase64DecodedBytes / (1024 * 1024)).toFixed(2))}
+                placeholder="不限"
+                onChange={(event) => commitInputConstraints({
+                  ...inputConstraints,
+                  maxBase64DecodedBytes: optionalNumber(event.target.value, {
+                    integer: true,
+                    scale: 1024 * 1024,
+                  }),
+                })}
+              />
+            </label>
+            <label className="space-y-1 text-[10px] text-canvas-text-secondary">
+              <span>参考视频最小宽度（px）</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
+                value={inputConstraints.referenceVideo?.width?.min ?? ''}
+                placeholder="不限"
+                onChange={(event) => commitInputConstraints({
+                  ...inputConstraints,
+                  referenceVideo: {
+                    ...inputConstraints.referenceVideo,
+                    width: {
+                      ...inputConstraints.referenceVideo?.width,
+                      min: optionalNumber(event.target.value, { integer: true }),
+                    },
+                  },
+                })}
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="space-y-1 text-[10px] text-canvas-text-secondary">
+                <span>视频最短（秒）</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
+                  value={inputConstraints.referenceVideo?.durationSeconds?.min ?? ''}
+                  placeholder="不限"
+                  onChange={(event) => commitInputConstraints({
+                    ...inputConstraints,
+                    referenceVideo: {
+                      ...inputConstraints.referenceVideo,
+                      durationSeconds: {
+                        ...inputConstraints.referenceVideo?.durationSeconds,
+                        min: optionalNumber(event.target.value),
+                      },
+                    },
+                  })}
+                />
+              </label>
+              <label className="space-y-1 text-[10px] text-canvas-text-secondary">
+                <span>视频最长（秒）</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
+                  value={inputConstraints.referenceVideo?.durationSeconds?.max ?? ''}
+                  placeholder="不限"
+                  onChange={(event) => commitInputConstraints({
+                    ...inputConstraints,
+                    referenceVideo: {
+                      ...inputConstraints.referenceVideo,
+                      durationSeconds: {
+                        ...inputConstraints.referenceVideo?.durationSeconds,
+                        max: optionalNumber(event.target.value),
+                      },
+                    },
+                  })}
+                />
+              </label>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="space-y-1 text-[10px] text-canvas-text-secondary">
+                <span>音频最短（秒）</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
+                  value={inputConstraints.referenceAudio?.durationSeconds?.min ?? ''}
+                  placeholder="不限"
+                  onChange={(event) => commitInputConstraints({
+                    ...inputConstraints,
+                    referenceAudio: {
+                      ...inputConstraints.referenceAudio,
+                      durationSeconds: {
+                        ...inputConstraints.referenceAudio?.durationSeconds,
+                        min: optionalNumber(event.target.value),
+                      },
+                    },
+                  })}
+                />
+              </label>
+              <label className="space-y-1 text-[10px] text-canvas-text-secondary">
+                <span>音频最长（秒）</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-indigo-400/60"
+                  value={inputConstraints.referenceAudio?.durationSeconds?.max ?? ''}
+                  placeholder="不限"
+                  onChange={(event) => commitInputConstraints({
+                    ...inputConstraints,
+                    referenceAudio: {
+                      ...inputConstraints.referenceAudio,
+                      durationSeconds: {
+                        ...inputConstraints.referenceAudio?.durationSeconds,
+                        max: optionalNumber(event.target.value),
+                      },
+                    },
+                  })}
+                />
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] text-canvas-text-secondary">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-indigo-500"
+                  checked={inputConstraints.referenceVideo?.durationSeconds?.maxExclusive ?? false}
+                  disabled={inputConstraints.referenceVideo?.durationSeconds?.max === undefined}
+                  onChange={(event) => commitInputConstraints({
+                    ...inputConstraints,
+                    referenceVideo: {
+                      ...inputConstraints.referenceVideo,
+                      durationSeconds: {
+                        ...inputConstraints.referenceVideo?.durationSeconds,
+                        maxExclusive: event.target.checked,
+                      },
+                    },
+                  })}
+                />
+                视频最长严格小于
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-indigo-500"
+                  checked={inputConstraints.referenceAudio?.durationSeconds?.maxExclusive ?? false}
+                  disabled={inputConstraints.referenceAudio?.durationSeconds?.max === undefined}
+                  onChange={(event) => commitInputConstraints({
+                    ...inputConstraints,
+                    referenceAudio: {
+                      ...inputConstraints.referenceAudio,
+                      durationSeconds: {
+                        ...inputConstraints.referenceAudio?.durationSeconds,
+                        maxExclusive: event.target.checked,
+                      },
+                    },
+                  })}
+                />
+                音频最长严格小于
+              </label>
+            </div>
+          </div>
         </section>
       </div>
 
