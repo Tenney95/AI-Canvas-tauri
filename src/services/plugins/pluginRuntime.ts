@@ -14,6 +14,7 @@ import type {
   PluginNodeInvocationInput,
   PluginJsonValue,
   PluginPlacement,
+  PythonPluginRuntimeStatus,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
 import { derivedNodePlacement, generateId } from '../../store/store.utils';
@@ -89,6 +90,7 @@ export function getAvailableNodePluginTools(
       .map((tool) => ({
         pluginId: plugin.id,
         pluginName: plugin.manifest.name,
+        runtime: plugin.manifest.runtime ?? 'javascript',
         source: plugin.source,
         tool,
       }));
@@ -101,6 +103,7 @@ export function getAvailablePluginNodes(plugins: InstalledPlugin[]): AvailablePl
     return (plugin.manifest.contributes.nodes ?? []).map((node) => ({
       pluginId: plugin.id,
       pluginName: plugin.manifest.name,
+      runtime: plugin.manifest.runtime ?? 'javascript',
       source: plugin.source,
       node,
       permissions: plugin.manifest.permissions,
@@ -425,6 +428,7 @@ export async function executePluginNode(
         effectResult,
       };
       const rawResult = await invoke<unknown>('execute_node_plugin_tool', {
+        runtime: pluginNode.runtime,
         source: pluginNode.source,
         toolId: pluginNode.node.id,
         input,
@@ -481,6 +485,7 @@ export async function executeNodePluginTool(
 
   try {
     const rawResult = await invoke<unknown>('execute_node_plugin_tool', {
+      runtime: pluginTool.runtime,
       source: pluginTool.source,
       toolId: pluginTool.tool.id,
       input,
@@ -515,4 +520,8 @@ export async function executeNodePluginTool(
   } finally {
     completeCanvasDerivation(guard);
   }
+}
+
+export async function getPythonPluginRuntimeStatus(): Promise<PythonPluginRuntimeStatus> {
+  return invoke<PythonPluginRuntimeStatus>('get_python_plugin_runtime_status');
 }

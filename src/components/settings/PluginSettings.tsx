@@ -9,9 +9,11 @@ import {
   resolveGithubPlugin,
 } from '../../services/plugins/pluginMarketplace';
 import type { PluginMarketplaceItem } from '../../services/plugins/pluginMarketplace';
+import { parsePluginManifest } from '../../services/plugins/pluginManifest';
+import { getPythonPluginRuntimeStatus } from '../../services/plugins/pluginRuntime';
 import { useAppStore } from '../../store/useAppStore';
 import { getNodeTypeConfig } from '../../types';
-import type { PluginCategory } from '../../types/plugin';
+import type { PluginCategory, PluginManifest, PythonPluginRuntimeStatus } from '../../types/plugin';
 import ChatMarkdown from '../chat/ChatMarkdown';
 import AnimatedButton from '../shared/AnimatedButton';
 import ModalOverlay from '../shared/ModalOverlay';
@@ -107,12 +109,55 @@ const EXAMPLE_SOURCE = `definePlugin({
   }
 });`;
 
+const PYTHON_EXAMPLE_MANIFEST = JSON.stringify({
+  apiVersion: 3,
+  runtime: 'python',
+  id: 'com.ai-canvas.example-python-uppercase',
+  name: 'Python 文本大写示例',
+  version: '1.0.0',
+  author: 'AI Canvas',
+  description: '演示可信 Python 插件读取文本节点并返回结构化结果',
+  category: 'content',
+  keywords: ['Python', '文本', '示例'],
+  entry: 'main.py',
+  permissions: ['node.read', 'node.write'],
+  contributes: {
+    nodeTools: [{
+      id: 'python-uppercase-output',
+      title: 'Python 输出转大写',
+      placements: ['node-context-menu'],
+      nodeTypes: ['ai-text', 'source-text'],
+      inputFields: ['output'],
+      output: { mode: 'update-current', fields: ['output'] },
+    }],
+  },
+}, null, 2);
+
+const PYTHON_EXAMPLE_SOURCE = `def uppercase_output(input_value):
+    output = str(input_value["node"]["data"].get("output", ""))
+    return {
+        "data": {"output": output.upper()},
+        "message": "已使用本机 Python 转换输出",
+    }
+
+define_plugin({"tools": {"python-uppercase-output": uppercase_output}})
+`;
+
 const PLUGIN_GUIDE_FILE_NAME = 'AI-Canvas-插件开发规范.md';
 const MAX_DROPPED_PLUGIN_FILES = 256;
 
 interface PluginUploadFile {
   file: File;
   path: string;
+}
+
+function confirmTrustedPython(manifest: PluginManifest, action: '安装' | '更新' | '启用'): boolean {
+  if (manifest.runtime !== 'python') return true;
+  return window.confirm(
+    `${action}可信 Python 插件「${manifest.name}」？\n\n`
+    + 'Python 插件会以你的当前系统权限运行，可以读取或修改本机文件、访问网络和环境变量，也可以启动其他程序。'
+    + '\n\n只对你信任并已审查源码的插件继续。',
+  );
 }
 
 function isFileEntry(entry: FileSystemEntry): entry is FileSystemFileEntry {
@@ -182,6 +227,8 @@ export default function PluginSettings() {
   const [marketplaceQuery, setMarketplaceQuery] = useState('');
   const [repositoryInput, setRepositoryInput] = useState('');
   const [installingRepository, setInstallingRepository] = useState('');
+  const [pythonStatus, setPythonStatus] = useState<PythonPluginRuntimeStatus | null>(null);
+  const [pythonChecking, setPythonChecking] = useState(false);
   const installedRepositories = useMemo(
     () => plugins.flatMap((plugin) => plugin.manifest.repository ? [plugin.manifest.repository] : []),
     [plugins],
@@ -199,10 +246,33 @@ export default function PluginSettings() {
     }
   }, [installedRepositories]);
 
+  const refreshPythonStatus = useCallback(async () => {
+    if (!isTauriEnv()) {
+      setPythonStatus({ available: false, error: '请在 Tauri 桌面版中检测本机 Python' });
+      return;
+    }
+    setPythonChecking(true);
+    try {
+      setPythonStatus(await getPythonPluginRuntimeStatus());
+    } catch (error) {
+      setPythonStatus({
+        available: false,
+        error: error instanceof Error ? error.message : 'Python 环境检测失败',
+      });
+    } finally {
+      setPythonChecking(false);
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => void refreshMarketplace(), 0);
     return () => window.clearTimeout(timer);
   }, [refreshMarketplace]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void refreshPythonStatus(), 0);
+    return () => window.clearTimeout(timer);
+  }, [refreshPythonStatus]);
 
   const visibleMarketplaceItems = useMemo(() => {
     const query = marketplaceQuery.trim().toLocaleLowerCase();
@@ -226,7 +296,11 @@ export default function PluginSettings() {
       const plugin = item?.status === 'ready'
         ? item
         : await resolveGithubPlugin(repository, { force: true });
-      await installPluginBundle(plugin.manifestText, plugin.source);
+      const action = plugins.some((installed) => installed.id === plugin.manifest.id) ? '更新' : '安装';
+      if (!confirmTrustedPython(plugin.manifest, action)) return;
+      await installPluginBundle(plugin.manifestText, plugin.source, {
+        trustedPythonConfirmed: plugin.manifest.runtime === 'python',
+      });
       setRepositoryInput('');
       await refreshMarketplace(true);
     } catch (error) {
@@ -269,16 +343,30 @@ export default function PluginSettings() {
       const manifests = files.filter(({ file }) => file.name === 'manifest.json');
       if (manifests.length !== 1) throw new Error('插件文件夹必须且只能包含一个 manifest.json');
       const manifestFile = manifests[0];
+      const manifestText = await manifestFile.file.text();
+      const manifest = parsePluginManifest(manifestText);
       const prefix = manifestFile.path.slice(0, Math.max(0, manifestFile.path.length - manifestFile.file.name.length));
-      const entryFile = files.find(({ path }) => path === `${prefix}main.js`);
-      if (!entryFile) throw new Error('manifest.json 同级目录缺少 main.js');
-      await installPluginBundle(await manifestFile.file.text(), await entryFile.file.text());
+      const entryFile = files.find(({ path }) => path === `${prefix}${manifest.entry}`);
+      if (!entryFile) throw new Error(`manifest.json 同级目录缺少 ${manifest.entry}`);
+      const action = plugins.some((installed) => installed.id === manifest.id) ? '更新' : '安装';
+      if (!confirmTrustedPython(manifest, action)) return;
+      await installPluginBundle(manifestText, await entryFile.file.text(), {
+        trustedPythonConfirmed: manifest.runtime === 'python',
+      });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = '';
     }
+  };
+
+  const togglePlugin = async (plugin: (typeof plugins)[number]) => {
+    const enabled = !plugin.enabled;
+    if (enabled && !confirmTrustedPython(plugin.manifest, '启用')) return;
+    await setPluginEnabled(plugin.id, enabled, {
+      trustedPythonConfirmed: enabled && plugin.manifest.runtime === 'python',
+    });
   };
 
   const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
@@ -299,7 +387,7 @@ export default function PluginSettings() {
           <div>
             <h3 className="text-sm font-medium text-canvas-text">用户插件</h3>
             <p className="mt-1 text-[11px] leading-5 text-canvas-text-muted">
-              导入包含 manifest.json 和 main.js 的文件夹。插件可贡献节点工具或自定义节点；模型与文件能力必须显式声明，密钥和本地路径不会交给插件。
+              JavaScript 插件使用 QuickJS 沙箱；可信 Python 插件使用本机 Python 和已安装依赖，并拥有当前用户的本机权限。
             </p>
           </div>
           <motion.div
@@ -334,7 +422,7 @@ export default function PluginSettings() {
               </svg>
             </span>
             <span className="wf-dropzone-hint">
-              支持包含 manifest.json 和 main.js 的插件文件夹，点击这里也可以选择。
+              支持 manifest.json + main.js 或 main.py，点击这里也可以选择。
             </span>
           </motion.div>
           <input
@@ -350,6 +438,29 @@ export default function PluginSettings() {
               })),
             )}
           />
+        </div>
+        <div className={`mt-3 flex items-center justify-between gap-3 rounded-lg border px-3 py-2 ${pythonStatus?.available ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-amber-500/20 bg-amber-500/5'}`}>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-canvas-text">
+              <Icon icon="lucide:terminal-square" width={14} height={14} className={pythonStatus?.available ? 'text-emerald-400' : 'text-amber-400'} />
+              本机 Python
+            </div>
+            <div className="mt-0.5 break-words text-[11px] text-canvas-text-muted">
+              {pythonChecking
+                ? '正在检测 Python 3…'
+                : pythonStatus?.available
+                  ? `可用：${pythonStatus.command} · Python ${pythonStatus.version}`
+                  : pythonStatus?.error || '尚未检测'}
+            </div>
+          </div>
+          <AnimatedButton
+            type="button"
+            disabled={pythonChecking}
+            className="shrink-0 rounded-md px-2.5 py-1.5 text-xs text-indigo-400 hover:bg-indigo-500/10 disabled:opacity-50"
+            onClick={() => void refreshPythonStatus()}
+          >
+            重新检测
+          </AnimatedButton>
         </div>
         <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-canvas-border bg-canvas-surface px-3 py-2">
           <div className="min-w-0">
@@ -382,20 +493,37 @@ export default function PluginSettings() {
             </AnimatedButton>
           </div>
         </div>
-        <div className="mt-2 flex items-center justify-between rounded-lg border border-canvas-border bg-canvas-surface px-3 py-2">
+        <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-canvas-border bg-canvas-surface px-3 py-2">
           <div className="min-w-0">
             <div className="text-xs font-medium text-canvas-text">开发者示例</div>
             <div className="mt-0.5 text-[11px] text-canvas-text-muted">安装文本工具和一个可调用模型的自定义写作节点</div>
           </div>
-          <AnimatedButton
-            type="button"
-            className="rounded-md px-2.5 py-1.5 text-xs text-indigo-400 hover:bg-indigo-500/10"
-            onClick={() => void installPluginBundle(EXAMPLE_MANIFEST, EXAMPLE_SOURCE).catch((error) => {
-              showToast(error instanceof Error ? error.message : '示例插件安装失败', 'error');
-            })}
-          >
-            安装示例
-          </AnimatedButton>
+          <div className="flex shrink-0 items-center gap-1">
+            <AnimatedButton
+              type="button"
+              className="rounded-md px-2.5 py-1.5 text-xs text-indigo-400 hover:bg-indigo-500/10"
+              onClick={() => void installPluginBundle(EXAMPLE_MANIFEST, EXAMPLE_SOURCE).catch((error) => {
+                showToast(error instanceof Error ? error.message : '示例插件安装失败', 'error');
+              })}
+            >
+              JavaScript
+            </AnimatedButton>
+            <AnimatedButton
+              type="button"
+              className="rounded-md px-2.5 py-1.5 text-xs text-amber-400 hover:bg-amber-500/10"
+              onClick={() => {
+                const manifest = parsePluginManifest(PYTHON_EXAMPLE_MANIFEST);
+                if (!confirmTrustedPython(manifest, '安装')) return;
+                void installPluginBundle(PYTHON_EXAMPLE_MANIFEST, PYTHON_EXAMPLE_SOURCE, {
+                  trustedPythonConfirmed: true,
+                }).catch((error) => {
+                  showToast(error instanceof Error ? error.message : 'Python 示例安装失败', 'error');
+                });
+              }}
+            >
+              Python
+            </AnimatedButton>
+          </div>
         </div>
       </section>
 
@@ -496,6 +624,7 @@ export default function PluginSettings() {
                       <span className="truncate text-sm font-medium text-canvas-text">{item.manifest.name}</span>
                       <span className="rounded bg-canvas-card px-1.5 py-0.5 text-[10px] text-canvas-text-muted">v{item.manifest.version}</span>
                       {item.featured && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400">推荐</span>}
+                      {item.manifest.runtime === 'python' && <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] text-red-400">可信本机代码</span>}
                       {updateAvailable && <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-400">可更新</span>}
                     </div>
                     <p className="mt-1 text-[11px] leading-4 text-canvas-text-secondary">
@@ -561,6 +690,9 @@ export default function PluginSettings() {
                     <span className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] text-indigo-400">
                       {CATEGORY_LABELS[plugin.manifest.category]}
                     </span>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] ${plugin.manifest.runtime === 'python' ? 'bg-red-500/10 text-red-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
+                      {plugin.manifest.runtime === 'python' ? 'Python · 可信本机代码' : 'JavaScript · 沙箱'}
+                    </span>
                   </div>
                   <p className="mt-1 text-[11px] leading-4 text-canvas-text-secondary">
                     {plugin.manifest.description || '未提供说明'}
@@ -578,7 +710,7 @@ export default function PluginSettings() {
                     ))}
                   </div>
                   <div className="mt-2 text-[10px] leading-4 text-canvas-text-muted">
-                    API v{plugin.manifest.apiVersion} · 入口：{placementLabels || (customNodes.length ? '节点选择器' : '未声明')}<br />
+                    API v{plugin.manifest.apiVersion} · {plugin.manifest.entry} · 入口：{placementLabels || (customNodes.length ? '节点选择器' : '未声明')}<br />
                     工具 {plugin.manifest.contributes.nodeTools.length} 个 · 自定义节点 {customNodes.length} 个<br />
                     读取：{inputFields.join('、') || '无'} · 写入：{outputFields.join('、') || '无'}<br />
                     权限：{plugin.manifest.permissions.join('、')}
@@ -590,7 +722,7 @@ export default function PluginSettings() {
                     role="switch"
                     aria-checked={plugin.enabled}
                     className={`rounded-md px-2 py-1 text-[11px] ${plugin.enabled ? 'bg-emerald-500/10 text-emerald-400' : 'bg-canvas-surface text-canvas-text-muted'}`}
-                    onClick={() => void setPluginEnabled(plugin.id, !plugin.enabled).catch((error) => {
+                    onClick={() => void togglePlugin(plugin).catch((error) => {
                       showToast(error instanceof Error ? error.message : '插件状态保存失败', 'error');
                     })}
                   >
@@ -634,7 +766,7 @@ export default function PluginSettings() {
           </span>
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-canvas-text">AI Canvas 插件开发规范</h2>
-            <p className="mt-0.5 text-[11px] text-canvas-text-muted">Plugin API v2 · 与当前插件运行时同步</p>
+            <p className="mt-0.5 text-[11px] text-canvas-text-muted">Plugin API v1 / v2 / v3 · 与当前插件运行时同步</p>
           </div>
           <AnimatedButton
             type="button"

@@ -7,6 +7,7 @@ export type PluginPermission =
   | 'models.invoke'
   | 'files.read'
   | 'files.write';
+export type PluginRuntime = 'javascript' | 'python';
 export type PluginNodeOutputMode = 'update-current' | 'create-node';
 export type PluginCategory = 'content' | 'media' | 'workflow' | 'utility';
 export type PluginPlacement = 'node-context-menu' | 'node-toolbar';
@@ -100,7 +101,9 @@ export interface PluginCustomNodeManifest {
 }
 
 export interface PluginManifest {
-  apiVersion: 1 | 2;
+  apiVersion: 1 | 2 | 3;
+  /** v1/v2 固定为 QuickJS；v3 可声明可信 Python 子进程。 */
+  runtime: PluginRuntime;
   id: string;
   name: string;
   version: string;
@@ -111,7 +114,7 @@ export interface PluginManifest {
   license?: string;
   category: PluginCategory;
   keywords?: string[];
-  entry: 'main.js';
+  entry: 'main.js' | 'main.py';
   permissions: PluginPermission[];
   contributes: {
     nodeTools: PluginNodeToolManifest[];
@@ -147,6 +150,7 @@ export interface NodePluginExecutionResult {
 export interface AvailableNodePluginTool {
   pluginId: string;
   pluginName: string;
+  runtime: PluginRuntime;
   source: string;
   tool: PluginNodeToolManifest;
 }
@@ -154,6 +158,7 @@ export interface AvailableNodePluginTool {
 export interface AvailablePluginNode {
   pluginId: string;
   pluginName: string;
+  runtime: PluginRuntime;
   source: string;
   node: PluginCustomNodeManifest;
   permissions: PluginPermission[];
@@ -211,4 +216,11 @@ export interface PluginNodeExecutionResult {
   };
   effect?: PluginNodeHostEffect;
   message?: string;
+}
+
+export interface PythonPluginRuntimeStatus {
+  available: boolean;
+  command?: string;
+  version?: string;
+  error?: string;
 }

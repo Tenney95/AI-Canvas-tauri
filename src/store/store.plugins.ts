@@ -12,8 +12,16 @@ import {
 
 export interface PluginSlice {
   installedPlugins: InstalledPlugin[];
-  installPluginBundle: (manifestText: string, source: string) => Promise<InstalledPlugin>;
-  setPluginEnabled: (id: string, enabled: boolean) => Promise<void>;
+  installPluginBundle: (
+    manifestText: string,
+    source: string,
+    options?: { trustedPythonConfirmed?: boolean },
+  ) => Promise<InstalledPlugin>;
+  setPluginEnabled: (
+    id: string,
+    enabled: boolean,
+    options?: { trustedPythonConfirmed?: boolean },
+  ) => Promise<void>;
   deletePlugin: (id: string) => Promise<void>;
   loadPlugins: () => Promise<void>;
 }
@@ -21,8 +29,11 @@ export interface PluginSlice {
 export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (set, get) => ({
   installedPlugins: [],
 
-  installPluginBundle: async (manifestText, source) => {
+  installPluginBundle: async (manifestText, source, options) => {
     const manifest = parsePluginBundle(manifestText, source);
+    if (manifest.runtime === 'python' && options?.trustedPythonConfirmed !== true) {
+      throw new Error('安装可信 Python 插件前必须确认其可访问本机资源');
+    }
     const previous = get().installedPlugins.find((plugin) => plugin.id === manifest.id);
     const plugin = createInstalledPlugin(manifest, source, previous);
     await savePluginToDb(plugin);
@@ -36,9 +47,12 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
     return plugin;
   },
 
-  setPluginEnabled: async (id, enabled) => {
+  setPluginEnabled: async (id, enabled, options) => {
     const plugin = get().installedPlugins.find((item) => item.id === id);
     if (!plugin) return;
+    if (enabled && plugin.manifest.runtime === 'python' && options?.trustedPythonConfirmed !== true) {
+      throw new Error('启用可信 Python 插件前必须确认其可访问本机资源');
+    }
     const updated = { ...plugin, enabled, updatedAt: Date.now() };
     await savePluginToDb(updated);
     set((state) => ({
@@ -56,7 +70,13 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
   },
 
   loadPlugins: async () => {
-    const plugins = await getAllPlugins();
+    const plugins = (await getAllPlugins()).map((plugin) => ({
+      ...plugin,
+      manifest: {
+        ...plugin.manifest,
+        runtime: plugin.manifest.runtime ?? 'javascript',
+      },
+    }));
     set({ installedPlugins: plugins.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name)) });
   },
 });

@@ -38,6 +38,7 @@ const plugin: InstalledPlugin = {
   source: 'definePlugin({ tools: {} });',
   manifest: {
     apiVersion: 1,
+    runtime: 'javascript',
     id: 'com.example.text',
     name: '文本插件',
     version: '1.0.0',
@@ -122,6 +123,7 @@ describe('node plugin runtime', () => {
     await executeNodePluginTool(tool, 'node-1');
 
     expect(mocks.invoke).toHaveBeenCalledWith('execute_node_plugin_tool', expect.objectContaining({
+      runtime: 'javascript',
       input: expect.objectContaining({ parameters: {} }),
     }));
   });
@@ -131,6 +133,7 @@ describe('node plugin runtime', () => {
     await executeNodePluginTool(tool, 'node-1', { tone: 'brief' });
 
     expect(mocks.invoke).toHaveBeenCalledWith('execute_node_plugin_tool', expect.objectContaining({
+      runtime: 'javascript',
       toolId: 'rewrite',
       input: {
         projectId: 'project-1',

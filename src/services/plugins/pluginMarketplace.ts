@@ -2,6 +2,7 @@ import type { PluginManifest } from '../../types/plugin';
 import {
   normalizeGithubRepository,
   parsePluginBundle,
+  parsePluginManifest,
 } from './pluginManifest';
 
 const REMOTE_CATALOG_URL = 'https://raw.githubusercontent.com/Tenney95/AI-Canvas-tauri/master/public/plugin-marketplace.json';
@@ -140,10 +141,9 @@ export async function resolveGithubPlugin(
   if (release.draft === true || release.prerelease === true) throw new Error('不能安装草稿或预发布版本');
 
   const rawBase = `https://raw.githubusercontent.com/${owner}/${repo}/${releaseTag}`;
-  const [manifestText, source] = await Promise.all([
-    fetchText(fetcher, `${rawBase}/manifest.json`, MAX_MANIFEST_BYTES),
-    fetchText(fetcher, `${rawBase}/main.js`, MAX_SOURCE_BYTES),
-  ]);
+  const manifestText = await fetchText(fetcher, `${rawBase}/manifest.json`, MAX_MANIFEST_BYTES);
+  const declaredManifest = parsePluginManifest(manifestText);
+  const source = await fetchText(fetcher, `${rawBase}/${declaredManifest.entry}`, MAX_SOURCE_BYTES);
   const manifest = parsePluginBundle(manifestText, source);
   if (!manifest.repository || manifest.repository !== repository) {
     throw new Error('Manifest repository 与 GitHub 仓库不一致');

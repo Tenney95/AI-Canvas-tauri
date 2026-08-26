@@ -112,9 +112,19 @@ definePlugin({
 - Manifest 可声明 `repository`、`homepage` 和 `license`；市场安装要求 `repository` 与实际 GitHub 仓库一致。
 - `public/plugin-marketplace.json` 是轻量仓库索引；收录采用 Pull Request，未收录仓库仍可直接输入地址安装。
 - 宿主通过 GitHub 最新正式 Release 追踪版本，只接受 `vX.Y.Z`，并要求标签版本与 Manifest `version` 一致。
-- 市场下载的 `manifest.json` 和 `main.js` 继续复用本地安装校验与 QuickJS 沙箱，不新增远程执行路径。
+- 市场下载的 `manifest.json` 和 Manifest 声明入口继续复用本地安装校验；JavaScript 使用 QuickJS 沙箱，Python 使用下述可信运行时。
 - 插件页自动检查更新并做 15 分钟内存缓存；安装和更新都必须由用户点击，不静默执行。
 - 当前不提供代码签名或市场服务端代理；规模超过匿名 GitHub API 限额后，再增加可信聚合服务。
+
+## Plugin API v3 可信 Python 扩展（已实施）
+
+- v3 通过 `runtime: "python"` 与 `entry: "main.py"` 显式声明可信 Python 代码；v1/v2 继续归一化为 JavaScript，不迁移已有记录。
+- Python 使用本机 Python 3 与当前环境已安装包，每次调用独立子进程，通过有界 JSON stdin/stdout 协议执行 `define_plugin` 注册的同步工具。
+- Rust 使用固定参数数组启动解释器，不经过 Shell；提供 30 秒超时、进程终止、512 KiB 源码、1 MiB 输出和 64 KiB 错误上限。
+- Python 插件不是沙箱，可以以当前用户权限访问文件、网络、环境变量和系统 API；安装、更新与重新启用时均显示不可混淆的高风险确认。
+- Manifest 权限继续约束宿主代办能力、输入投影、输出字段、宿主 effect 与 UI，但不声称限制 Python 对操作系统的直接访问。
+- 设置页检测 `python`、`python3` 或 Windows `py -3` 并展示版本；不下载解释器、不创建虚拟环境、不执行 `requirements.txt`。
+- Python 不注册为 Agent/MCP 工具，不修改 Tauri Shell capability、IndexedDB schema 或凭据边界。
 
 ## 回滚
 

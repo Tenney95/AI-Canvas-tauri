@@ -29,6 +29,30 @@ function pluginManifest(repository: string, version = '1.2.0'): string {
   });
 }
 
+function pythonPluginManifest(repository: string): string {
+  return JSON.stringify({
+    apiVersion: 3,
+    runtime: 'python',
+    id: 'com.example.python-tool',
+    name: 'Python 插件',
+    version: '1.2.0',
+    repository,
+    category: 'content',
+    entry: 'main.py',
+    permissions: ['node.read', 'node.write'],
+    contributes: {
+      nodeTools: [{
+        id: 'uppercase',
+        title: '转大写',
+        placements: ['node-context-menu'],
+        nodeTypes: ['ai-text'],
+        inputFields: ['output'],
+        output: { mode: 'update-current', fields: ['output'] },
+      }],
+    },
+  });
+}
+
 describe('GitHub plugin marketplace', () => {
   it('validates and normalizes marketplace repositories', () => {
     expect(parsePluginMarketplaceCatalog(JSON.stringify({
@@ -74,6 +98,25 @@ describe('GitHub plugin marketplace', () => {
     expect(plugin.releaseTag).toBe('v1.2.0');
     expect(plugin.manifest.repository).toBe(repository);
     expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it('downloads the Python entry declared by a trusted v3 plugin', async () => {
+    const repository = 'https://github.com/example/python-tool';
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/releases/latest')) {
+        return new Response(JSON.stringify({ tag_name: 'v1.2.0', draft: false, prerelease: false }));
+      }
+      if (url.endsWith('/manifest.json')) return new Response(pythonPluginManifest(repository));
+      if (url.endsWith('/main.py')) return new Response('define_plugin({"tools": {}})');
+      return new Response('', { status: 404 });
+    }) as typeof fetch;
+
+    const plugin = await resolveGithubPlugin(repository, { fetcher, force: true });
+
+    expect(plugin.manifest.runtime).toBe('python');
+    expect(plugin.manifest.entry).toBe('main.py');
+    expect(fetcher).toHaveBeenCalledWith(expect.stringContaining('/main.py'), expect.anything());
   });
 
   it('rejects a release whose tag and Manifest version differ', async () => {

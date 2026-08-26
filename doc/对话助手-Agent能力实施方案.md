@@ -2406,6 +2406,21 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 本阶段经用户确认新增 `rquickjs 0.12.2` Rust 依赖，未修改 `tauri.conf.json` 或 capability，未开放文件、网络、Shell 或凭据权限。回滚时移除插件设置/节点菜单入口、Plugin Store、QuickJS command 与依赖即可；IndexedDB 保留 v20 和空 `plugins` store，不降版本且不影响项目数据。
 
+### 12.2.1 平台补充：可信 Python 插件兼容
+
+目标：在不降低 JavaScript QuickJS 沙箱的前提下，让用户明确选择以本机权限运行 Python 插件，复用本机 Python 3 与已安装依赖。
+
+- [x] Plugin API v3 增加 `runtime: "python"` 与固定 `main.py` 入口；v1/v2 和旧 IndexedDB 记录继续归一化为 `javascript` / `main.js`。
+- [x] 本地文件夹与 GitHub Release 都先解析 Manifest，再读取其声明入口；源码继续使用 512 KiB 上限和现有身份、权限、字段校验。
+- [x] Python 使用一次性子进程和固定参数数组，不经过 Shell；源码、toolId 与裁剪输入通过 JSON stdin 传入，结果经 stdout 返回并复用前端输出校验。
+- [x] Rust 自动探测 `python`、`python3` 与 Windows `py -3`，提供解释器状态、30 秒超时、终止回收、1 MiB 输出及 64 KiB 错误上限。
+- [x] Python runner 支持同步 `define_plugin({"tools": ...})` 协议和本机 site-packages；不下载 Python、不创建虚拟环境、不读取或执行 `requirements.txt`。
+- [x] 设置页展示 Python 环境与版本；安装、更新和重新启用 Python 插件均提示其可访问文件、网络、环境变量并启动本机程序。
+- [x] Manifest 权限继续约束宿主 effect、输入投影、输出字段、canvas revision 和 Store Action；文档明确 Python 本身是可信代码而非操作系统沙箱。
+- [x] Python 能力未注册为 Agent/MCP 工具，未新增依赖、IndexedDB schema、Tauri Shell capability 或安全配置。
+
+实际检查将在本阶段最终验证后记录。回滚时移除 v3 解析、Python command、环境状态和风险 UI 即可；JavaScript 插件、v20 `plugins` store 与现有画布节点无需迁移。
+
 ### 12.3 平台补充：Sora2U 内置图片与视频厂商
 
 目标：把 Sora2U 作为独立内置厂商接入统一模型目录与声明式媒体协议，并使用合作方提供的专属站点入口，同时保持真实 API Base URL、凭据和付费请求安全边界不变。
@@ -2452,6 +2467,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-26 | Python 插件兼容 | Plugin API v3 增加可信 `main.py` 运行时，复用本机 Python 与现有依赖；独立子进程执行并加入高风险确认、环境检测、协议限长和超时终止，JavaScript QuickJS 沙箱保持不变。 |
 | 2026-08-26 | Sora2U 输入校验 | 视频模型能力新增声明式提交前约束；Sora2U 拦截 Prompt、Base64 总量、参考视频宽度/时长和参考音频时长，自定义通用接口可编辑同类规则。 |
 | 2026-08-25 | 平台补充 | 内置 Sora2U 的 9 个公开图片/视频模型与动态能力目录，接通多模态参考、异步轮询、统一模型同步和合作专属站点入口；不新增依赖或安全权限。 |
 | 2026-08-24 | 插件上传体验统一 | 插件设置页复用 ComfyUI 工作流 `wf-dropzone` 上传区，支持点击目录选择和拖入插件文件夹；递归读取目录并限制最多 256 个文件，继续校验唯一 `manifest.json` 与同级 `main.js`。 |

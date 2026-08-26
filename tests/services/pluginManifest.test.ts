@@ -45,6 +45,8 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
   it('describes what a plugin does and where its tools appear', () => {
     const parsed = parsePluginBundle(manifest(), 'definePlugin({ tools: {} });');
 
+    expect(parsed.runtime).toBe('javascript');
+    expect(parsed.entry).toBe('main.js');
     expect(parsed.category).toBe('content');
     expect(parsed.permissions).toEqual(['node.read', 'node.write']);
     expect(parsed.contributes.nodeTools[0]).toMatchObject({
@@ -133,8 +135,31 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
     }), 'definePlugin({});')).toThrow('defaultValue 不在选项中');
   });
 
+  it('accepts trusted Python plugins only through API v3 and main.py', () => {
+    const parsed = parsePluginBundle(manifest({
+      apiVersion: 3,
+      runtime: 'python',
+      entry: 'main.py',
+    }), 'define_plugin({"tools": {}})');
+
+    expect(parsed.apiVersion).toBe(3);
+    expect(parsed.runtime).toBe('python');
+    expect(parsed.entry).toBe('main.py');
+
+    expect(() => parsePluginBundle(manifest({
+      apiVersion: 2,
+      runtime: 'python',
+      entry: 'main.py',
+    }), 'define_plugin({"tools": {}})')).toThrow('apiVersion: 3');
+    expect(() => parsePluginBundle(manifest({
+      apiVersion: 3,
+      runtime: 'python',
+      entry: 'main.js',
+    }), 'define_plugin({"tools": {}})')).toThrow('main.py');
+  });
+
   it('rejects unknown plugin API and unsupported contribution placement', () => {
-    expect(() => parsePluginBundle(manifest({ apiVersion: 3 }), 'definePlugin({});'))
+    expect(() => parsePluginBundle(manifest({ apiVersion: 4 }), 'definePlugin({});'))
       .toThrow('apiVersion');
     expect(() => parsePluginBundle(manifest({
       contributes: {

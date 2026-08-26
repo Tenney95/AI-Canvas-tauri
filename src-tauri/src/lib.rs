@@ -1032,6 +1032,7 @@ pub fn run() {
             secret_store::secret_store_available,
             local_fonts::list_local_fonts,
             plugin_runtime::execute_node_plugin_tool,
+            plugin_runtime::get_python_plugin_runtime_status,
         ])
         .on_window_event(|window, event| {
             // 用户把文件拖进自有窗口 = 一次显式授权，登记后复制/读取命令才放行。
