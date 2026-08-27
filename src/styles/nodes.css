@@ -166,6 +166,19 @@
   opacity: 1;
 }
 
+[data-theme='light'] .node-upload-btn {
+  border-color: var(--border-secondary);
+  background: color-mix(in srgb, var(--theme-surface) 88%, var(--theme-hover));
+  color: var(--brand-pale);
+  opacity: 1;
+}
+
+[data-theme='light'] .node-upload-btn:hover {
+  border-color: var(--brand-alpha-30);
+  background: var(--brand-alpha-10);
+  color: var(--brand-light);
+}
+
 /* Floating Toolbar */
 .node-floating-toolbar {
   --toolbar-offset-x: 0px;
