@@ -21,9 +21,77 @@ mod comfyui;
 mod director_desk_runtime;
 mod dreamina;
 mod file_transfer;
-mod mcp_bridge;
 mod local_fonts;
+mod mcp_bridge;
+#[cfg(feature = "local-onnx")]
 pub mod onnx;
+#[cfg(not(feature = "local-onnx"))]
+pub mod onnx {
+    const UNSUPPORTED_MESSAGE: &str =
+        "x64-legacy 版本为兼容不支持 AVX 的 CPU，未包含本地 ONNX Runtime";
+
+    fn unsupported<T>() -> Result<T, String> {
+        Err(UNSUPPORTED_MESSAGE.to_string())
+    }
+
+    #[tauri::command]
+    pub fn get_models_dir() -> Result<String, String> {
+        unsupported()
+    }
+
+    #[tauri::command]
+    pub fn check_model_exists(_model_name: String) -> Result<bool, String> {
+        unsupported()
+    }
+
+    #[tauri::command]
+    pub async fn download_onnx_model(
+        _app: tauri::AppHandle,
+        _model_name: String,
+        _url: String,
+        _task_id: String,
+    ) -> Result<String, String> {
+        unsupported()
+    }
+
+    #[tauri::command]
+    pub fn get_onnx_gpu_status() -> Result<String, String> {
+        unsupported()
+    }
+
+    #[tauri::command]
+    pub async fn image_upscale(
+        _app: tauri::AppHandle,
+        _webview: tauri::Webview,
+        _input_path: String,
+        _output_path: String,
+        _model_name: String,
+        _task_id: String,
+    ) -> Result<String, String> {
+        unsupported()
+    }
+
+    #[tauri::command]
+    pub async fn subject_matting(
+        _app: tauri::AppHandle,
+        _webview: tauri::Webview,
+        _input_path: String,
+        _output_path: String,
+        _model_name: String,
+        _task_id: String,
+    ) -> Result<String, String> {
+        unsupported()
+    }
+
+    #[tauri::command]
+    pub async fn character_direction_grid(
+        _app: tauri::AppHandle,
+        _webview: tauri::Webview,
+        _input_path: String,
+    ) -> Result<String, String> {
+        unsupported()
+    }
+}
 mod path_policy;
 mod plugin_runtime;
 mod project_archive;

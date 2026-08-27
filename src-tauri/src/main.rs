@@ -6,7 +6,10 @@ fn main() {
     // --onnx-worker 模式：独立的推理子进程
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "--onnx-worker" {
+        #[cfg(feature = "local-onnx")]
         ai_canvas_tauri_lib::onnx::worker::run();
+        #[cfg(not(feature = "local-onnx"))]
+        eprintln!("x64-legacy 版本未包含本地 ONNX Runtime");
         return;
     }
 

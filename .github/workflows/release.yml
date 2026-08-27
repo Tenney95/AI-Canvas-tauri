@@ -111,8 +111,60 @@ jobs:
             ## 📦 下载
 
             - 🪟 Windows：使用 `.exe` 或 `.msi`。
+            - 🪟 Windows 旧款 CPU：使用名称含 `Legacy` 的 `.exe` 或 `.msi`；该版本不包含本地 ONNX 功能。
             - 🍎 macOS：Apple Silicon 使用 `aarch64.dmg`，Intel 使用 `x64.dmg`。
             - 🐧 Linux：使用 `.AppImage`、`.deb` 或 `.rpm`。
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: true
+          uploadUpdaterJson: true
+          args: --target ${{ matrix.target }}
+
+  publish-windows-legacy:
+    name: Publish Windows x64 legacy
+    needs: publish
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Windows x64 legacy
+        shell: pwsh
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64 -C target-feature=-avx,-avx2,-fma
+        run: |
+          $legacyConfig = '{"productName":"AI Canvas Legacy","plugins":{"updater":{"endpoints":[]}},"bundle":{"createUpdaterArtifacts":false}}'
+          node node_modules/@tauri-apps/cli/tauri.js build `
+            --target x86_64-pc-windows-msvc `
+            --config $legacyConfig `
+            -- `
+            --no-default-features
+
+      - name: Upload Windows x64 legacy installers
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $bundleRoot = Resolve-Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
+          $artifacts = @(
+            Get-ChildItem -LiteralPath $bundleRoot -Recurse -File |
+              Where-Object { $_.Extension -in '.exe', '.msi' }
+          )
+          if ($artifacts.Count -eq 0) {
+            throw "No Windows x64 legacy installers were generated."
+          }
+          foreach ($artifact in $artifacts) {
+            gh release upload "${{ github.ref_name }}" $artifact.FullName --clobber
+          }
