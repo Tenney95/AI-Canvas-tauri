@@ -274,14 +274,33 @@ async function applyNodeResult(
   store.showToast(`${nodeLabel} 生成已完成`);
 }
 
+function getBatchTaskNodeIds(
+  task: PendingTask,
+  nodes: ReadonlyArray<{ id: string; data: BaseNodeData }>,
+): string[] {
+  if (task.nodeType !== 'ai-image' || (task.batchCount ?? 1) <= 1) return [task.nodeId];
+  const sourceNode = nodes.find((node) => node.id === task.nodeId);
+  const batchGroupId = sourceNode?.data.batchGroupId;
+  if (!batchGroupId) return [task.nodeId];
+  return nodes
+    .filter((node) => node.id === task.nodeId || node.data.batchGroupId === batchGroupId)
+    .map((node) => node.id);
+}
+
 async function handleResumeError(
-  nodeId: string,
+  task: PendingTask,
   err: unknown,
 ): Promise<void> {
   const msg = err instanceof Error ? err.message : String(err || '任务恢复失败');
-  useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: msg });
-  cleanupNodePolling(nodeId);
-  removePendingTask(nodeId);
+  const store = useAppStore.getState();
+  const nodeIds = new Set(getBatchTaskNodeIds(task, store.nodes));
+  for (const node of store.nodes) {
+    if (nodeIds.has(node.id) && node.data.status === 'loading') {
+      store.updateNodeDataTransient(node.id, { status: 'error', error: msg });
+    }
+  }
+  cleanupNodePolling(task.nodeId);
+  removePendingTask(task.nodeId);
 }
 
 // ═══════════════════════════════════════════
@@ -340,8 +359,7 @@ async function resumeApimart(task: PendingTask): Promise<void> {
   const { nodeId, taskId, nodeType } = task;
   const providerConfig = resolveProviderTaskConfig(task, 'apimart', APIMART_BASE_URL);
   if (!providerConfig) {
-    useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: '任务恢复失败：缺少 API 配置' });
-    removePendingTask(nodeId);
+    await handleResumeError(task, new Error('任务恢复失败：缺少 API 配置'));
     return;
   }
   const { apiKey, baseUrl } = providerConfig;
@@ -391,7 +409,7 @@ async function resumeApimart(task: PendingTask): Promise<void> {
     }
     removePendingTask(nodeId);
   } catch (err) {
-    await handleResumeError(nodeId, err);
+    await handleResumeError(task, err);
   } finally {
     cleanupNodePolling(nodeId);
   }
@@ -512,7 +530,7 @@ async function resumeRunningHub(task: PendingTask): Promise<void> {
     }
     removePendingTask(nodeId);
   } catch (error) {
-    await handleResumeError(nodeId, error);
+    await handleResumeError(task, error);
   } finally {
     cleanupNodePolling(nodeId);
   }
@@ -542,8 +560,7 @@ async function resumeApimartFlowMusic(task: PendingTask): Promise<void> {
   const { nodeId } = task;
   const providerConfig = resolveProviderTaskConfig(task, 'apimart', APIMART_BASE_URL);
   if (!providerConfig) {
-    useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: '任务恢复失败：缺少 API 配置' });
-    removePendingTask(nodeId);
+    await handleResumeError(task, new Error('任务恢复失败：缺少 API 配置'));
     return;
   }
   const { apiKey, baseUrl } = providerConfig;
@@ -596,7 +613,7 @@ async function resumeApimartFlowMusic(task: PendingTask): Promise<void> {
     await applyNodeResult(nodeId, result.url, data.label);
     removePendingTask(nodeId);
   } catch (err) {
-    await handleResumeError(nodeId, err);
+    await handleResumeError(task, err);
   } finally {
     cleanupNodePolling(nodeId);
   }
@@ -639,7 +656,7 @@ async function resumeDreamina(task: PendingTask): Promise<void> {
     await applyNodeResult(nodeId, url, label);
     removePendingTask(nodeId);
   } catch (err) {
-    await handleResumeError(nodeId, err);
+    await handleResumeError(task, err);
   } finally {
     cleanupNodePolling(nodeId);
   }
@@ -681,7 +698,7 @@ async function resumeComfyUI(task: PendingTask): Promise<void> {
     await applyNodeResult(nodeId, url, label);
     removePendingTask(nodeId);
   } catch (err) {
-    await handleResumeError(nodeId, err);
+    await handleResumeError(task, err);
   } finally {
     cleanupNodePolling(nodeId);
   }
@@ -693,11 +710,7 @@ async function resumeGeneral(task: PendingTask): Promise<void> {
   const { nodeId, taskId, nodeType } = task;
   const providerConfig = resolveProviderTaskConfig(task);
   if (!providerConfig) {
-    useAppStore.getState().updateNodeDataTransient(nodeId, {
-      status: 'error',
-      error: '任务恢复失败：缺少 API 配置',
-    });
-    removePendingTask(nodeId);
+    await handleResumeError(task, new Error('任务恢复失败：缺少 API 配置'));
     return;
   }
   const { apiKey, baseUrl } = providerConfig;
@@ -742,7 +755,7 @@ async function resumeGeneral(task: PendingTask): Promise<void> {
     await applyNodeResult(nodeId, url, label);
     removePendingTask(nodeId);
   } catch (err) {
-    await handleResumeError(nodeId, err);
+    await handleResumeError(task, err);
   } finally {
     cleanupNodePolling(nodeId);
   }
@@ -754,11 +767,7 @@ async function resumeCustomProtocol(task: PendingTask): Promise<void> {
     ? useAppStore.getState().config.providers[providerConfigId]
     : undefined;
   if (!providerConfig?.apiKey || !protocolPoll) {
-    useAppStore.getState().updateNodeDataTransient(nodeId, {
-      status: 'error',
-      error: '任务恢复失败：调用协议或连接配置已不存在',
-    });
-    removePendingTask(nodeId);
+    await handleResumeError(task, new Error('任务恢复失败：调用协议或连接配置已不存在'));
     return;
   }
 
@@ -804,7 +813,7 @@ async function resumeCustomProtocol(task: PendingTask): Promise<void> {
     }
     removePendingTask(nodeId);
   } catch (error) {
-    await handleResumeError(nodeId, error);
+    await handleResumeError(task, error);
   } finally {
     cleanupNodePolling(nodeId);
   }
@@ -816,11 +825,7 @@ async function resumeVolcengine(task: PendingTask): Promise<void> {
   const { nodeId, taskId } = task;
   const providerConfig = resolveProviderTaskConfig(task, 'volcengine', VOLCENGINE_BASE_URL);
   if (!providerConfig) {
-    useAppStore.getState().updateNodeDataTransient(nodeId, {
-      status: 'error',
-      error: '任务恢复失败：缺少 API 配置',
-    });
-    removePendingTask(nodeId);
+    await handleResumeError(task, new Error('任务恢复失败：缺少 API 配置'));
     return;
   }
   const { apiKey, baseUrl } = providerConfig;
@@ -863,7 +868,7 @@ async function resumeVolcengine(task: PendingTask): Promise<void> {
     await applyNodeResult(nodeId, url, label);
     removePendingTask(nodeId);
   } catch (err) {
-    await handleResumeError(nodeId, err);
+    await handleResumeError(task, err);
   } finally {
     cleanupNodePolling(nodeId);
   }
@@ -889,6 +894,35 @@ function isCancellationErrorMessage(message?: string): boolean {
 }
 
 /**
+ * 批量图片只持久化源节点的远端任务记录；同组占位节点必须跟随源任务恢复，
+ * 不能在启动扫描时被当成没有任务的孤立 loading 节点。
+ */
+export function getPendingTaskCoveredNodeIds(
+  nodes: ReadonlyArray<{ id: string; data: BaseNodeData }>,
+  tasks: PendingTask[],
+): Set<string> {
+  const coveredNodeIds = new Set(tasks.map((task) => task.nodeId));
+  for (const task of tasks) {
+    if (
+      task.nodeType !== 'ai-image'
+      || (task.batchCount ?? 1) <= 1
+      || !task.submitted
+      || !task.taskId
+      || !RESUME_MAP[task.taskType]
+    ) continue;
+
+    const sourceNode = nodes.find((node) => node.id === task.nodeId);
+    if (
+      sourceNode?.data.status !== 'loading'
+      && !isCancellationErrorMessage(sourceNode?.data.error)
+    ) continue;
+
+    for (const nodeId of getBatchTaskNodeIds(task, nodes)) coveredNodeIds.add(nodeId);
+  }
+  return coveredNodeIds;
+}
+
+/**
  * 恢复指定项目下所有待续任务。
  * 仅对 status === 'loading' 的节点重新发起轮询。
  * 调用时机：应用初始化（initFromDb）、切换项目（switchProject）。
@@ -897,8 +931,8 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
   const store = useAppStore.getState();
   const tasks = getPendingTasksForProject(projectId);
 
-  // 收集有 pending task 记录的节点 ID
-  const coveredNodes = new Set(tasks.map((t) => t.nodeId));
+  // 批量图片的远端任务只挂在源节点上，同组占位节点也属于该任务的恢复范围。
+  const coveredNodes = getPendingTaskCoveredNodeIds(store.nodes, tasks);
 
   // 补充扫描：所有 status === 'loading' 但没有 pending task 记录的节点
   // 说明任务在保存"loading"状态后、savePendingTask 之前窗口关闭了
@@ -948,11 +982,7 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
     // 任务记录存在但未提交到远端（关闭窗口时还没来得及拿到 taskId）
     if (!task.submitted || !task.taskId) {
       console.warn(`[pollManager] 任务 ${task.nodeId} 未完成远端提交，需要重新生成`);
-      store.updateNodeDataTransient(task.nodeId, {
-        status: 'error',
-        error: '任务未完成提交，请重新点击生成',
-      });
-      removePendingTask(task.nodeId);
+      await handleResumeError(task, new Error('任务未完成提交，请重新点击生成'));
       continue;
     }
 
@@ -963,7 +993,7 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
     const resumeFn = RESUME_MAP[task.taskType];
     if (!resumeFn) {
       console.warn(`[pollManager] 未知任务类型: ${task.taskType}`);
-      removePendingTask(task.nodeId);
+      await handleResumeError(task, new Error('任务恢复失败：未知任务类型'));
       continue;
     }
 

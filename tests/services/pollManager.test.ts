@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseNodeData } from '../../src/types';
 import {
+  getPendingTaskCoveredNodeIds,
   getPendingTasksForProject,
   resumePendingTasks,
   savePendingTask,
@@ -14,6 +15,46 @@ beforeEach(() => {
 });
 
 describe('pending generation task recovery', () => {
+  it('keeps loading placeholders covered by a resumable image batch task', () => {
+    const nodes = [
+      {
+        id: 'batch-source',
+        data: {
+          label: 'Batch source',
+          type: 'ai-image',
+          status: 'loading',
+          batchGroupId: 'image-batch-1',
+        } satisfies BaseNodeData,
+      },
+      {
+        id: 'batch-placeholder',
+        data: {
+          label: 'Batch result 2',
+          type: 'ai-image',
+          status: 'loading',
+          batchGroupId: 'image-batch-1',
+        } satisfies BaseNodeData,
+      },
+    ];
+    const task = {
+      nodeId: 'batch-source',
+      projectId: 'project-1',
+      nodeType: 'ai-image',
+      provider: 'apimart',
+      taskId: 'remote-batch-task',
+      taskType: 'apimart',
+      batchCount: 2,
+      submitted: true,
+    } as const;
+
+    expect([...getPendingTaskCoveredNodeIds(nodes, [task])]).toEqual([
+      'batch-source',
+      'batch-placeholder',
+    ]);
+    expect([...getPendingTaskCoveredNodeIds(nodes, [{ ...task, submitted: false }])])
+      .toEqual(['batch-source']);
+  });
+
   it('marks loading nodes without a pending task as recoverable errors', async () => {
     useAppStore.setState({
       nodes: [{
@@ -34,6 +75,53 @@ describe('pending generation task recovery', () => {
       status: 'error',
       error: '任务未完成提交，请重新点击生成',
     });
+  });
+
+  it('marks every loading node in a failed recovered batch as an error', async () => {
+    useAppStore.setState({
+      nodes: [
+        {
+          id: 'batch-source',
+          type: 'ai-image',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Batch source',
+            type: 'ai-image',
+            status: 'loading',
+            batchGroupId: 'image-batch-1',
+          } satisfies BaseNodeData,
+        },
+        {
+          id: 'batch-placeholder',
+          type: 'ai-image',
+          position: { x: 320, y: 0 },
+          data: {
+            label: 'Batch result 2',
+            type: 'ai-image',
+            status: 'loading',
+            batchGroupId: 'image-batch-1',
+          } satisfies BaseNodeData,
+        },
+      ],
+    });
+    savePendingTask({
+      nodeId: 'batch-source',
+      projectId: 'project-1',
+      nodeType: 'ai-image',
+      provider: 'general',
+      providerConfigId: 'missing-provider',
+      taskId: 'remote-batch-task',
+      taskType: 'general',
+      batchCount: 2,
+      submitted: true,
+    });
+
+    await resumePendingTasks('project-1');
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().nodes.map((node) => node.data.status))
+        .toEqual(['error', 'error']);
+    });
+    expect(useAppStore.getState().nodes[1].data.error).toBe('任务恢复失败：缺少 API 配置');
   });
 
   it('removes stale pending records for nodes that already finished', async () => {
