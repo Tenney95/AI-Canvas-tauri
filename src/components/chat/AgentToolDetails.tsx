@@ -58,12 +58,12 @@ export default function AgentToolDetails({
   const changes = [...(input?.changes ?? []), ...(result?.changes ?? [])];
 
   return (
-    <div className="mt-1.5 rounded-md border border-canvas-border/60 bg-canvas-bg/25">
+    <div className="mt-1.5 rounded-md border border-canvas-border bg-canvas-card/80">
       <button
         type="button"
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
-        className="flex min-h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[11px] text-canvas-text-muted transition-colors hover:bg-canvas-hover/50 hover:text-canvas-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40"
+        className="flex min-h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[11px] text-canvas-text-muted transition-colors hover:bg-canvas-hover hover:text-canvas-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40"
       >
         <Icon icon="mdi:tune-variant" width="13" />
         <span>{t('调用详情')}</span>
@@ -75,7 +75,7 @@ export default function AgentToolDetails({
       </button>
 
       {expanded && (
-        <div className="space-y-2 border-t border-canvas-border/50 px-2 py-2 text-[11px] leading-[17px]">
+        <div className="space-y-2 border-t border-canvas-border px-2 py-2 text-[11px] leading-[17px]">
           {input?.fields?.length ? (
             <div>
               <p className="mb-1 font-medium text-canvas-text-secondary">{t('参数')}</p>
@@ -111,7 +111,7 @@ export default function AgentToolDetails({
                   return (
                     <div
                       key={`${reference.kind}-${reference.id}-${index}`}
-                      className="flex min-w-0 items-center gap-1.5 rounded border border-canvas-border/60 bg-canvas-surface/50 p-1.5"
+                      className="flex min-w-0 items-center gap-1.5 rounded border border-canvas-border bg-canvas-surface/60 p-1.5"
                     >
                       {preview ? (
                         <img
@@ -151,7 +151,7 @@ export default function AgentToolDetails({
               <p className="mb-1 font-medium text-canvas-text-secondary">{t('对象')}</p>
               <div className="space-y-1">
                 {entities.map((entity, index) => (
-                  <div key={`${entity.id ?? entity.title}-${index}`} className="rounded border border-canvas-border/50 px-2 py-1.5">
+                  <div key={`${entity.id ?? entity.title}-${index}`} className="rounded border border-canvas-border bg-canvas-surface/60 px-2 py-1.5">
                     <p className="break-words text-canvas-text-secondary">{entity.title}</p>
                     {entity.subtitle && <p className="text-canvas-text-muted">{entity.subtitle}</p>}
                     {entity.fields?.map((field, fieldIndex) => (
@@ -160,7 +160,7 @@ export default function AgentToolDetails({
                       </p>
                     ))}
                     {entity.preview && (
-                      <p className="mt-1 break-words border-t border-canvas-border/40 pt-1 text-canvas-text-muted">
+                      <p className="mt-1 break-words border-t border-canvas-border pt-1 text-canvas-text-muted">
                         {entity.preview}
                       </p>
                     )}
@@ -175,7 +175,7 @@ export default function AgentToolDetails({
               <p className="mb-1 font-medium text-canvas-text-secondary">{t('变更')}</p>
               <div className="space-y-1">
                 {changes.map((change, index) => (
-                  <div key={`${change.targetId}-${change.field}-${index}`} className="rounded border border-canvas-border/50 px-2 py-1.5">
+                  <div key={`${change.targetId}-${change.field}-${index}`} className="rounded border border-canvas-border bg-canvas-surface/60 px-2 py-1.5">
                     <p className="truncate text-canvas-text-secondary">
                       {change.targetLabel || change.targetId} · {change.field}
                     </p>

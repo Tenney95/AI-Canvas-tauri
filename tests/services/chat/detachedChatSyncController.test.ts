@@ -132,7 +132,7 @@ describe('detached chat sync controller', () => {
     controller.dispose();
   });
 
-  it('routes detached actions and restores the main panel on close', async () => {
+  it('routes detached actions, keeps detached mode on close, and only docks explicitly', async () => {
     let onAction: ((action: ChatAction) => void) | undefined;
     let onDetachClosed: (() => void) | undefined;
     const emitSync = vi.fn(async (_sync: ChatStateSync) => undefined);
@@ -168,6 +168,13 @@ describe('detached chat sync controller', () => {
     await vi.waitFor(() => expect(emitSync).toHaveBeenCalled());
 
     onDetachClosed?.();
+    expect(useAppStore.getState()).toMatchObject({
+      chatOpen: false,
+      chatPanelDetached: true,
+      hoveredMentionNodeId: null,
+    });
+
+    onAction?.({ type: 'dock_window' });
     expect(useAppStore.getState()).toMatchObject({
       chatOpen: true,
       chatPanelDetached: false,

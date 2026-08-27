@@ -293,14 +293,13 @@ export default function App() {
   };
   const handleMascotActivate = async () => {
     const store = useAppStore.getState();
-    // 独立窗口模式：点击吉祥物关闭独立窗口并收回内嵌（与 Sidebar 入口一致）
+    // 独立窗口模式是用户选择的显示偏好；窗口关闭后再次点击应重新打开独立窗口。
     if (store.chatPanelDetached) {
-      const { emitCloseChatWindow } = await import('./services/chat/chatWindowService');
       try {
-        await emitCloseChatWindow();
-        await invoke('close_chat_window');
-      } catch { /* ignore */ }
-      store.setChatPanelDetached(false);
+        await invoke('open_chat_window');
+      } catch {
+        store.showToast('打开独立窗口失败', 'error');
+      }
       return;
     }
     // 内嵌面板：打开 ⇄ 关闭切换

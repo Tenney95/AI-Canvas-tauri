@@ -764,13 +764,12 @@ export default function Sidebar() {
         onClick={async () => {
           const store = useAppStore.getState();
           if (store.chatPanelDetached) {
-            // 已分离 → 收回内嵌
-            const { emitCloseChatWindow } = await import('../services/chat/chatWindowService');
+            // 保留独立显示偏好：窗口被关闭后，再次点击仍打开独立窗口。
             try {
-              await emitCloseChatWindow();
-              await invoke('close_chat_window');
-            } catch { /* ignore */ }
-            store.setChatPanelDetached(false);
+              await invoke('open_chat_window');
+            } catch {
+              store.showToast(t('打开独立窗口失败'), 'error');
+            }
           } else {
             store.toggleChat();
           }

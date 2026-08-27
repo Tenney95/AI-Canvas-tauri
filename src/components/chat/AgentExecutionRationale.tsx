@@ -43,12 +43,12 @@ export default function AgentExecutionRationale({ task }: AgentExecutionRational
   const latest = entries.at(-1);
 
   return (
-    <div className="mt-2 rounded-md border border-canvas-border/60 bg-canvas-bg/20">
+    <div className="mt-2 rounded-md border border-canvas-border bg-canvas-card/80">
       <button
         type="button"
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
-        className="flex min-h-8 w-full items-center gap-1.5 rounded-md px-2 text-left transition-colors hover:bg-canvas-hover/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40"
+        className="flex min-h-8 w-full items-center gap-1.5 rounded-md px-2 text-left transition-colors hover:bg-canvas-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/40"
       >
         <Icon icon="mdi:timeline-text-outline" width="14" className="shrink-0 text-indigo-300/90" />
         <span className="shrink-0 text-[11px] font-medium text-canvas-text-secondary">{t('执行依据')}</span>
@@ -58,7 +58,7 @@ export default function AgentExecutionRationale({ task }: AgentExecutionRational
       </button>
 
       {expanded && (
-        <div className="border-t border-canvas-border/50 px-2 py-2">
+        <div className="border-t border-canvas-border px-2 py-2">
           <p className="mb-2 flex items-start gap-1.5 text-[10px] leading-4 text-canvas-text-muted">
             <Icon icon="mdi:information-outline" width="12" className="mt-0.5 shrink-0" />
             <span>{t('来自可验证的任务事件，不包含模型隐藏思维。')}</span>

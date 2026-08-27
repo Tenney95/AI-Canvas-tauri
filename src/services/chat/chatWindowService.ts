@@ -274,6 +274,7 @@ export type ChatAction =
   | { type: 'focus_node'; nodeId: string }
   | { type: 'set_hovered_node'; nodeId: string | null }
   | { type: 'set_composer_draft'; draft: string }
+  | { type: 'dock_window' }
   | { type: 'confirm_commands'; messageId: string }
   | { type: 'cancel_commands'; messageId: string }
   | { type: 'request_sync' };

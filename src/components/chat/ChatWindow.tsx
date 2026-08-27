@@ -93,6 +93,17 @@ export default function ChatWindow() {
     })();
   }, []);
 
+  const dockWindow = useCallback(() => {
+    void (async () => {
+      try {
+        await emitAction({ type: 'dock_window' });
+        await invoke('close_chat_window');
+      } catch (error) {
+        console.error('[ChatWindow] failed to dock window:', error);
+      }
+    })();
+  }, []);
+
   const handleToggleLock = useCallback(async () => {
     const next = !isLockedRef.current;
     try {
@@ -173,7 +184,7 @@ export default function ChatWindow() {
         className="pointer-events-auto flex items-center justify-center w-7 h-7 rounded-md
                    text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover transition-colors"
         data-tooltip={t('收回内嵌')}
-        onClick={closeWindow}
+        onClick={dockWindow}
       >
         <Icon icon="mdi:dock-left" width="16" height="16" />
       </button>

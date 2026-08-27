@@ -421,6 +421,12 @@ export function handleDetachedChatAction(
       store.setChatComposerLiveDraft(action.draft);
       break;
 
+    case 'dock_window':
+      store.setHoveredMentionNodeId(null);
+      store.setChatPanelDetached(false);
+      store.openChat();
+      break;
+
     case 'request_sync':
       requestSync(true, true);
       break;
@@ -581,8 +587,6 @@ export function createDetachedChatSyncController(
       () => {
         const store = useAppStore.getState();
         store.setHoveredMentionNodeId(null);
-        store.setChatPanelDetached(false);
-        store.openChat();
       },
     );
     if (disposed) {
