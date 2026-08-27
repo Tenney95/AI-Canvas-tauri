@@ -16,6 +16,15 @@
   animation: floatIn var(--dur-normal) var(--ease-out-expo);
   transition: left 0.28s var(--ease-spring), top 0.28s var(--ease-spring);
 }
+
+/* 画布平移、缩放或节点拖动时暂时隐藏浮动对话框；交互结束并同步到节点新位置后再显示。 */
+.canvas-interacting .ai-dialog-float:not(.is-expanded),
+.canvas-interacting .ai-dialog-preview-float {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
 /* 生成中：border-beam 覆盖层（仅描边环，中间透明，不挡内容）
    z-index 必须高于面板内容：底部工具栏等子元素有自己的背景，
    压在光束上会让光束在那一段"消失"，看起来就像瞬移 */
