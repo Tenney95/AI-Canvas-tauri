@@ -453,6 +453,12 @@ describe('batch canvas history', () => {
     ]);
   });
 
+  it('offers downstream node types from library reference images', () => {
+    expect(getConnectionMenuOptions('source-image', 'output')).toEqual(
+      getConnectionMenuOptions('ai-image', 'output'),
+    );
+  });
+
   it('treats storyboard cell state as structural history', async () => {
     useAppStore.setState({
       nodes: [node('storyboard', {

@@ -62,6 +62,14 @@ const CONNECTION_MENU_MAP: Record<string, ConnectionMenuOption[]> = {
     { label: '生成动画', type: 'ai-animation' },
     { label: '生成360全景图', type: 'ai-panorama' },
   ],
+  // 角色/素材库参考图是 source-image，连线能力与 ai-image 相同
+  'source-image': [
+    { label: '生成文本', type: 'ai-text' },
+    { label: '生成图像', type: 'ai-image' },
+    { label: '生成视频', type: 'ai-video' },
+    { label: '生成动画', type: 'ai-animation' },
+    { label: '生成360全景图', type: 'ai-panorama' },
+  ],
   'ai-storyboard': [
     { label: '生成文本', type: 'ai-text' },
     { label: '生成图像', type: 'ai-image' },
