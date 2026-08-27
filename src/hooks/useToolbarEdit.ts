@@ -10,7 +10,12 @@
 import { useState, useCallback, useRef, useMemo } from 'react';
 import type { ToolbarLayout, ToolbarButtonDef } from '../types';
 import { useAppStore } from '../store/useAppStore';
-import { getButtonRegistry, getDefaultLayout, migrateToolbarLayout } from '../components/nodes/shared/toolbar/toolbarRegistry';
+import {
+  getButtonRegistry,
+  getDefaultLayout,
+  getPluginToolbarButtonRegistry,
+  migrateToolbarLayout,
+} from '../components/nodes/shared/toolbar/toolbarRegistry';
 
 const LONG_PRESS_MS = 600;
 
@@ -60,8 +65,12 @@ export interface UseToolbarEditReturn {
 export function useToolbarEdit({ nodeType }: UseToolbarEditOptions): UseToolbarEditReturn {
   const savedLayout = useAppStore((s) => s.toolbarLayouts[nodeType]);
   const setToolbarLayout = useAppStore((s) => s.setToolbarLayout);
+  const installedPlugins = useAppStore((s) => s.installedPlugins);
 
-  const registry = useMemo(() => getButtonRegistry(nodeType), [nodeType]);
+  const registry = useMemo(() => [
+    ...getButtonRegistry(nodeType),
+    ...getPluginToolbarButtonRegistry(installedPlugins, nodeType),
+  ], [installedPlugins, nodeType]);
 
   const [isEditing, setIsEditing] = useState(false);
   const [dirtyLayout, setDirtyLayout] = useState<ToolbarLayout | null>(null);

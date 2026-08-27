@@ -8,9 +8,8 @@ import AnimatedButton from '../../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../../hooks/useToolbarEdit';
 import ToolbarEditor from '../toolbar/ToolbarEditor';
 import ToolbarMoreMenu from '../toolbar/ToolbarMoreMenu';
-import NodePluginToolbarButtons from '../toolbar/NodePluginToolbarButtons';
+import { useNodePluginToolbar } from '../toolbar/NodePluginToolbarButtons';
 import {
-  getButtonRegistry,
   getHiddenDefaultToolbarButtons,
   TOOLBAR_MORE_KEY,
 } from '../toolbar/toolbarRegistry';
@@ -53,8 +52,12 @@ function ImageNodeToolbar({
   isUpscaling, isSubjectMattingRunning,
 }: ImageNodeToolbarProps) {
   const nodeType = 'ai-image';
-  const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
+  const registry = edit.registry;
+  const {
+    renderButton: renderPluginButton,
+    dialog: pluginDialog,
+  } = useNodePluginToolbar({ nodeId: _nodeId });
   const [historyOpen, setHistoryOpen] = useState(false);
 
   // ── 宫格子菜单 ──
@@ -172,6 +175,8 @@ function ImageNodeToolbar({
 
   // ── 渲染单个按钮 ──
   const renderButton = useCallback((key: string) => {
+    const pluginButton = renderPluginButton(key);
+    if (pluginButton) return pluginButton;
     const def = registry.find((d) => d.key === key);
     const handler = actionMap[key];
     const isPreset = !def;
@@ -263,7 +268,7 @@ function ImageNodeToolbar({
         <Icon icon={def.icon} width={14} height={14} />
       </AnimatedButton>
     );
-  }, [registry, actionMap, isUpscaling, isSubjectMattingRunning, toggleGridMenu, gridMenuOpen, gridMenuBelow, pickGrid, pickCustom, handlePresetClick, userPresets]);
+  }, [registry, actionMap, isUpscaling, isSubjectMattingRunning, toggleGridMenu, gridMenuOpen, gridMenuBelow, pickGrid, pickCustom, handlePresetClick, renderPluginButton, userPresets]);
 
   // ── 编辑态 ──
   if (edit.isEditing) {
@@ -309,12 +314,9 @@ function ImageNodeToolbar({
               )}
             </div>
           ))}
-          <NodePluginToolbarButtons
-            nodeId={_nodeId}
-            dividerClassName="img-toolbar-main-divider"
-          />
         </div>
       </div>
+      {pluginDialog}
       {historyOpen && (
         <Suspense fallback={null}>
           <ImageGenerationHistoryDialog

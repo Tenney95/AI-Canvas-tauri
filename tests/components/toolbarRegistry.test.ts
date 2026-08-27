@@ -3,8 +3,10 @@ import {
   getDefaultLayout,
   getButtonRegistry,
   getHiddenDefaultToolbarButtons,
+  getPluginToolbarButtonRegistry,
   migrateToolbarLayout,
 } from '../../src/components/nodes/shared/toolbar/toolbarRegistry';
+import type { InstalledPlugin } from '../../src/types/plugin';
 
 describe('toolbar layout migration', () => {
   it('registers Camera Studio and history without the superseded angle tool', () => {
@@ -131,6 +133,54 @@ describe('toolbar layout migration', () => {
     expect(hidden.map((button) => button.key)).toEqual([
       'clearEmptyLines', 'showPrompt', 'fullscreen',
     ]);
+  });
+
+  it('registers enabled plugin buttons without adding them to the default layout', () => {
+    const plugin: InstalledPlugin = {
+      id: 'example.plugin',
+      source: 'main.js',
+      enabled: true,
+      installedAt: 1,
+      updatedAt: 1,
+      manifest: {
+        apiVersion: 1,
+        runtime: 'javascript',
+        id: 'example.plugin',
+        name: '示例插件',
+        version: '1.0.0',
+        category: 'utility',
+        entry: 'main.js',
+        permissions: ['node.read'],
+        contributes: {
+          nodeTools: [{
+            id: 'uppercase',
+            title: '输出转大写',
+            placements: ['node-toolbar'],
+            icon: 'mdi:format-letter-case-upper',
+            dialog: { fields: [] },
+            nodeTypes: ['ai-text'],
+            inputFields: ['output'],
+            output: { mode: 'update-current', fields: ['output'] },
+          }],
+        },
+      },
+    };
+
+    const pluginButtons = getPluginToolbarButtonRegistry([plugin], 'ai-text');
+    expect(pluginButtons).toEqual([expect.objectContaining({
+      key: 'example.plugin:uppercase',
+      label: '输出转大写 · 示例插件',
+      defaultZone: '更多',
+    })]);
+    expect(getDefaultLayout('ai-text').zones.flatMap((zone) => zone.buttonKeys))
+      .not.toContain('example.plugin:uppercase');
+
+    const registry = [...getButtonRegistry('ai-text'), ...pluginButtons];
+    const hidden = getHiddenDefaultToolbarButtons(
+      registry,
+      new Set(getDefaultLayout('ai-text').zones.flatMap((zone) => zone.buttonKeys)),
+    );
+    expect(hidden.map((button) => button.key)).toContain('example.plugin:uppercase');
   });
 
   it('registers More in every editable node toolbar', () => {

@@ -8,9 +8,8 @@ import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
 import ToolbarMoreMenu from './toolbar/ToolbarMoreMenu';
-import NodePluginToolbarButtons from './toolbar/NodePluginToolbarButtons';
+import { useNodePluginToolbar } from './toolbar/NodePluginToolbarButtons';
 import {
-  getButtonRegistry,
   getHiddenDefaultToolbarButtons,
   TOOLBAR_MORE_KEY,
 } from './toolbar/toolbarRegistry';
@@ -43,8 +42,9 @@ function VideoNodeToolbar({
   nodeId, onCaptureFrame, onFullscreen, onCopyFile, onReversePrompt, onShowPrompt, isReversingPrompt,
 }: VideoNodeToolbarProps) {
   const nodeType = 'ai-video';
-  const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
+  const registry = edit.registry;
+  const pluginToolbar = useNodePluginToolbar({ nodeId });
   const userPresets = useAppStore((s) => s.userPresets);
   const addNodeWithEdge = useAppStore((s) => s.addNodeWithEdge);
 
@@ -116,6 +116,8 @@ function VideoNodeToolbar({
   const hiddenDefaultButtons = getHiddenDefaultToolbarButtons(registry, edit.activeButtonKeys);
 
   const renderActionButton = (key: string) => {
+    const pluginButton = pluginToolbar.renderButton(key);
+    if (pluginButton) return pluginButton;
     const def = registry.find((button) => button.key === key);
     const handler = actionMap[key];
     const isPreset = !def;
@@ -181,30 +183,29 @@ function VideoNodeToolbar({
   }
 
   return (
-    <div className="node-floating-toolbar img-toolbar nodrag" {...edit.longPressHandlers}>
-      <div className="img-toolbar-main nodrag">
-        {edit.layout.zones.map((zone, zi) => (
-          <div key={zone.id} className="img-toolbar-zone nodrag">
-            {zone.buttonKeys.map((key) => (
-              key === TOOLBAR_MORE_KEY
-                ? (
-                  <ToolbarMoreMenu
-                    key={key}
-                    items={hiddenDefaultButtons}
-                    renderItem={renderActionButton}
-                  />
-                )
-                : renderActionButton(key)
-            ))}
-            {zi < edit.layout.zones.length - 1 && <div className="ftb-divider img-toolbar-main-divider" />}
-          </div>
-        ))}
-        <NodePluginToolbarButtons
-          nodeId={nodeId}
-          dividerClassName="img-toolbar-main-divider"
-        />
+    <>
+      <div className="node-floating-toolbar img-toolbar nodrag" {...edit.longPressHandlers}>
+        <div className="img-toolbar-main nodrag">
+          {edit.layout.zones.map((zone, zi) => (
+            <div key={zone.id} className="img-toolbar-zone nodrag">
+              {zone.buttonKeys.map((key) => (
+                key === TOOLBAR_MORE_KEY
+                  ? (
+                    <ToolbarMoreMenu
+                      key={key}
+                      items={hiddenDefaultButtons}
+                      renderItem={renderActionButton}
+                    />
+                  )
+                  : renderActionButton(key)
+              ))}
+              {zi < edit.layout.zones.length - 1 && <div className="ftb-divider img-toolbar-main-divider" />}
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+      {pluginToolbar.dialog}
+    </>
   );
 }
 

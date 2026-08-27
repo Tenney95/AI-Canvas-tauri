@@ -8,9 +8,8 @@ import AnimatedButton from '../../shared/AnimatedButton';
 import { useToolbarEdit } from '../../../hooks/useToolbarEdit';
 import ToolbarEditor from './toolbar/ToolbarEditor';
 import ToolbarMoreMenu from './toolbar/ToolbarMoreMenu';
-import NodePluginToolbarButtons from './toolbar/NodePluginToolbarButtons';
+import { useNodePluginToolbar } from './toolbar/NodePluginToolbarButtons';
 import {
-  getButtonRegistry,
   getHiddenDefaultToolbarButtons,
   TOOLBAR_MORE_KEY,
 } from './toolbar/toolbarRegistry';
@@ -30,8 +29,9 @@ interface PanoramaNodeToolbarProps {
 
 function PanoramaNodeToolbar({ nodeId, onUpload, onToggleMode, previewMode, onScreenshot, onFullscreen }: PanoramaNodeToolbarProps) {
   const nodeType = 'ai-panorama';
-  const registry = getButtonRegistry(nodeType);
   const edit = useToolbarEdit({ nodeType });
+  const registry = edit.registry;
+  const pluginToolbar = useNodePluginToolbar({ nodeId });
   const userPresets = useAppStore((s) => s.userPresets);
   const addNodeWithEdge = useAppStore((s) => s.addNodeWithEdge);
 
@@ -61,6 +61,8 @@ function PanoramaNodeToolbar({ nodeId, onUpload, onToggleMode, previewMode, onSc
   const hiddenDefaultButtons = getHiddenDefaultToolbarButtons(registry, edit.activeButtonKeys);
 
   const renderActionButton = (key: string) => {
+    const pluginButton = pluginToolbar.renderButton(key);
+    if (pluginButton) return pluginButton;
     const def = registry.find((button) => button.key === key);
     const handler = actionMap[key];
     const isPreset = !def;
@@ -96,30 +98,29 @@ function PanoramaNodeToolbar({ nodeId, onUpload, onToggleMode, previewMode, onSc
   }
 
   return (
-    <div className="node-floating-toolbar pano-toolbar nodrag" {...edit.longPressHandlers}>
-      <div className="pano-toolbar-main nodrag">
-        {edit.layout.zones.map((zone, zi) => (
-          <div key={zone.id} className="img-toolbar-zone nodrag">
-            {zone.buttonKeys.map((key) => (
-              key === TOOLBAR_MORE_KEY
-                ? (
-                  <ToolbarMoreMenu
-                    key={key}
-                    items={hiddenDefaultButtons}
-                    renderItem={renderActionButton}
-                  />
-                )
-                : renderActionButton(key)
-            ))}
-            {zi < edit.layout.zones.length - 1 && <div className="ftb-divider pano-toolbar-divider" />}
-          </div>
-        ))}
-        <NodePluginToolbarButtons
-          nodeId={nodeId}
-          dividerClassName="pano-toolbar-divider"
-        />
+    <>
+      <div className="node-floating-toolbar pano-toolbar nodrag" {...edit.longPressHandlers}>
+        <div className="pano-toolbar-main nodrag">
+          {edit.layout.zones.map((zone, zi) => (
+            <div key={zone.id} className="img-toolbar-zone nodrag">
+              {zone.buttonKeys.map((key) => (
+                key === TOOLBAR_MORE_KEY
+                  ? (
+                    <ToolbarMoreMenu
+                      key={key}
+                      items={hiddenDefaultButtons}
+                      renderItem={renderActionButton}
+                    />
+                  )
+                  : renderActionButton(key)
+              ))}
+              {zi < edit.layout.zones.length - 1 && <div className="ftb-divider pano-toolbar-divider" />}
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+      {pluginToolbar.dialog}
+    </>
   );
 }
 
