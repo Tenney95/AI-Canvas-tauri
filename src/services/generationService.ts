@@ -8,7 +8,11 @@ import { MAX_IMAGE_BATCH_COUNT } from '../types/aiTypes';
 import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
 import { persistAudioGenerationResult } from './ai/generateAudio';
 import { downloadUrlAndSave } from './fileService';
-import { applyImageBatchResults } from './imageBatchService';
+import {
+  applyImageBatchResults,
+  failImageBatchNodes,
+  prepareImageBatchNodes,
+} from './imageBatchService';
 import { derivedNodePlacement, generateId } from '../store/store.utils';
 import { useAppStore } from '../store/useAppStore';
 import {
@@ -72,6 +76,7 @@ export async function executeGeneration(
   };
 
   store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined });
+  let batchNodeIds: string[] | undefined;
 
   try {
     if (nodeType === 'ai-image') {
@@ -80,6 +85,11 @@ export async function executeGeneration(
       const batchCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(data.batchCount) || 1)));
       if (batchCount > 1) {
         if (postProcess) throw new Error('批量生成暂不支持图片后处理，请将数量设为 1');
+        batchNodeIds = prepareImageBatchNodes({
+          nodeId,
+          count: batchCount,
+          projectId: submittingProjectId,
+        }).nodeIds;
         store.showToast(`正在批量生成 ${batchCount} 张图片`);
         const batch = await generateImagesBatch({
           prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
@@ -89,6 +99,7 @@ export async function executeGeneration(
         if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
         await applyImageBatchResults({
           nodeId,
+          targetNodeIds: batchNodeIds,
           batch,
           projectId: submittingProjectId,
           prompt: effectivePrompt,
@@ -276,6 +287,7 @@ export async function executeGeneration(
     const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');
     if (msg === '任务已被取消') return { success: false, message: '任务已取消' };
     if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
+    if (batchNodeIds) failImageBatchNodes(batchNodeIds, msg, submittingProjectId);
     store.updateNodeDataTransient(nodeId, { status: 'error', error: msg });
     store.recordOutputHistory(nodeId, {
       nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,

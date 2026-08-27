@@ -15,7 +15,11 @@ import { MAX_IMAGE_BATCH_COUNT, type AudioOutputFormat, type AudioTtsVoice, type
 import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
 import { persistAudioGenerationResult } from '../../services/ai/generateAudio';
 import { downloadUrlAndSave } from '../../services/fileService';
-import { applyImageBatchResults } from '../../services/imageBatchService';
+import {
+  applyImageBatchResults,
+  failImageBatchNodes,
+  prepareImageBatchNodes,
+} from '../../services/imageBatchService';
 import { createCharacterDirectionGrid } from '../../services/onnxService';
 import PromptPanel from './shared/PromptPanel';
 import type { MentionEditorHandle } from './shared/MentionEditor';
@@ -330,12 +334,18 @@ function AINodeDialog() {
       );
     };
     updateNodeDataTransient(activeNodeId!, { status: 'loading', error: undefined });
+    let batchNodeIds: string[] | undefined;
     try {
       const batchCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(latestData.batchCount) || 1)));
       if (nodeType === 'ai-image' && batchCount > 1) {
         if (postProcess) throw new Error(t('批量生成暂不支持图片后处理，请将数量设为 1'));
         const imageSize = (latestData.imageSize as string) || '2K';
         const aspectRatio = (latestData.aspectRatio as string) || '1:1';
+        batchNodeIds = prepareImageBatchNodes({
+          nodeId: submittingNodeId,
+          count: batchCount,
+          projectId: submittingProjectId,
+        }).nodeIds;
         showToast(t('正在批量生成 {count} 张图片', { count: batchCount }));
         const batch = await generateImagesBatch({
           prompt: effectivePrompt,
@@ -350,6 +360,7 @@ function AINodeDialog() {
         if (!isStillCurrentSubmission()) return;
         await applyImageBatchResults({
           nodeId: submittingNodeId,
+          targetNodeIds: batchNodeIds,
           batch,
           projectId: submittingProjectId,
           prompt: effectivePrompt,
@@ -689,6 +700,7 @@ function AINodeDialog() {
         return;
       }
       if (!isStillCurrentSubmission()) return;
+      if (batchNodeIds) failImageBatchNodes(batchNodeIds, msg, submittingProjectId);
       updateNodeDataTransient(activeNodeId!, { status: 'error', error: msg });
       recordOutputHistory(activeNodeId!, {
         nodeId: activeNodeId!,
