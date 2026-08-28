@@ -422,6 +422,32 @@ curl https://gateway.example.com/v1/images/generations \\
     const customConfig = Object.values(useAppStore.getState().config.providers)[0];
     expect(customConfig.apiKey).toBe('');
   });
+
+  it('allows a provider draft to cross audited tasks inside the same MCP control scope', async () => {
+    const previewContext: AgentToolContext = {
+      ...context,
+      taskId: 'mcp-task-preview',
+      conversationId: 'mcp-control-project-1',
+      mode: 'autonomous',
+    };
+    const preview = await getAgentTool('provider_config_preview')!.execute(
+      previewContext,
+      previewInput(),
+    );
+    const draftId = readDraftId(preview.modelContent);
+    const applyContext = { ...previewContext, taskId: 'mcp-task-apply' };
+    const applyTool = getAgentTool('provider_config_apply')!;
+
+    expect(applyTool.authorize?.(applyContext, { draftId })).toEqual({ allowed: true });
+    const applied = await applyTool.execute(applyContext, { draftId });
+
+    expect(applied).toMatchObject({ status: 'success' });
+    expect(Object.values(useAppStore.getState().config.providers)[0]).toMatchObject({
+      name: 'Example AI',
+      apiKey: '',
+      selectedModels: [expect.objectContaining({ id: 'image-pro' })],
+    });
+  });
 });
 
 describe('模型勾选卡片', () => {

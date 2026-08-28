@@ -64,6 +64,8 @@ export type ProviderConfigDraftConfig = Omit<ApiProviderConfig, 'apiKey'>;
 export interface ProviderConfigDraft {
   id: string;
   taskId: string;
+  projectId?: string;
+  conversationId?: string;
   connectionId: string;
   connectionName: string;
   baseUrl: string;
@@ -71,6 +73,11 @@ export interface ProviderConfigDraft {
   summary: string;
   createdAt: number;
   expiresAt: number;
+}
+
+export interface ProviderConfigDraftAccessScope {
+  projectId: string;
+  conversationId: string;
 }
 
 const drafts = new Map<string, ProviderConfigDraft>();
@@ -335,6 +342,7 @@ export function createProviderConfigDraft(
   taskId: string,
   input: ProviderConfigDraftInput,
   now = Date.now(),
+  accessScope?: ProviderConfigDraftAccessScope,
 ): ProviderConfigDraft {
   if (containsCredentialField(input)) {
     throw new Error('配置草稿不得包含 API Key 或其他凭据字段');
@@ -367,6 +375,10 @@ export function createProviderConfigDraft(
   const draft: ProviderConfigDraft = {
     id: draftId,
     taskId: normalizedTaskId,
+    ...(accessScope ? {
+      projectId: accessScope.projectId,
+      conversationId: accessScope.conversationId,
+    } : {}),
     connectionId,
     connectionName,
     baseUrl,
@@ -389,14 +401,28 @@ export function createProviderConfigDraft(
   return draft;
 }
 
+function isSameMcpControlScope(
+  draft: ProviderConfigDraft,
+  accessScope?: ProviderConfigDraftAccessScope,
+): boolean {
+  if (!accessScope || !draft.projectId || !draft.conversationId) return false;
+  const expectedConversationId = `mcp-control-${accessScope.projectId}`;
+  return draft.projectId === accessScope.projectId
+    && draft.conversationId === expectedConversationId
+    && accessScope.conversationId === expectedConversationId;
+}
+
 export function getProviderConfigDraft(
   taskId: string,
   draftId: string,
   now = Date.now(),
+  accessScope?: ProviderConfigDraftAccessScope,
 ): ProviderConfigDraft {
   const draft = drafts.get(draftId);
   if (!draft) throw new Error('厂商配置草稿不存在或已失效');
-  if (draft.taskId !== taskId) throw new Error('厂商配置草稿不属于当前 Agent 任务');
+  if (draft.taskId !== taskId && !isSameMcpControlScope(draft, accessScope)) {
+    throw new Error('厂商配置草稿不属于当前 Agent 任务');
+  }
   if (draft.expiresAt <= now) {
     drafts.delete(draftId);
     throw new Error('厂商配置草稿已过期，请重新分析文档');
@@ -404,8 +430,12 @@ export function getProviderConfigDraft(
   return draft;
 }
 
-export function deleteProviderConfigDraft(taskId: string, draftId: string): void {
-  const draft = getProviderConfigDraft(taskId, draftId);
+export function deleteProviderConfigDraft(
+  taskId: string,
+  draftId: string,
+  accessScope?: ProviderConfigDraftAccessScope,
+): void {
+  const draft = getProviderConfigDraft(taskId, draftId, Date.now(), accessScope);
   if (drafts.get(draftId) === draft) drafts.delete(draftId);
 }
 

@@ -106,8 +106,12 @@ function createProviderConfigDraftWithConversationFallback(
   context: AgentToolContext,
   input: ProviderConfigDraftInput,
 ) {
+  const accessScope = {
+    projectId: context.projectId,
+    conversationId: context.conversationId,
+  };
   try {
-    return createProviderConfigDraft(context.taskId, input);
+    return createProviderConfigDraft(context.taskId, input, Date.now(), accessScope);
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
     if (
@@ -125,7 +129,7 @@ function createProviderConfigDraftWithConversationFallback(
         return createProviderConfigDraft(context.taskId, {
           ...input,
           models: [{ ...model, submitRequest: document }],
-        });
+        }, Date.now(), accessScope);
       } catch {
         // Continue with the next user-authored example; return the original error if none work.
       }
@@ -397,7 +401,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
         'docs、developer 等文档站地址不能作为 baseUrl；必须使用用户实际调用模型的 API 网关地址。',
         '当文档示例使用 loading、example 等占位主机时，通过 baseUrl 提供文档或用户明确声明的实际接口地址。',
         '所有模型必须属于同一个 HTTPS Base URL。不得传入 API Key、Token、Authorization 值或其他真实凭据。',
-        '该工具只生成任务级临时草稿，不写入设置；成功后必须在同一任务中立即使用返回的 draftId 调用 provider_config_apply，由本地审批卡等待用户确认。',
+        '该工具只生成临时草稿，不写入设置；普通对话必须在同一任务中使用，MCP 可在同一项目的控制会话中继续调用 provider_config_apply。',
       ].join(''),
       inputSchema: {
         type: 'object',
@@ -518,7 +522,10 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
       isAvailable: () => useAppStore.getState().configHydrated,
       authorize: (context, input) => {
         try {
-          const draft = getProviderConfigDraft(context.taskId, input.draftId);
+          const draft = getProviderConfigDraft(context.taskId, input.draftId, Date.now(), {
+            projectId: context.projectId,
+            conversationId: context.conversationId,
+          });
           const { existing } = resolveTargetConnection(draft);
           if (existing && existing.catalogId !== 'custom-openai') {
             return { allowed: false, reason: 'Agent 不能覆盖内置厂商连接' };
@@ -547,7 +554,16 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
       },
       execute: async (context, input) => {
         try {
-          const draft = getProviderConfigDraft(context.taskId, input.draftId);
+          const accessScope = {
+            projectId: context.projectId,
+            conversationId: context.conversationId,
+          };
+          const draft = getProviderConfigDraft(
+            context.taskId,
+            input.draftId,
+            Date.now(),
+            accessScope,
+          );
           const store = useAppStore.getState();
           if (!store.configHydrated) throw new Error('配置尚未完成加载，不能保存厂商连接');
           const { connectionId, existing, merge } = planProviderConfigMerge(draft);
@@ -569,7 +585,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
             ])],
           });
           await useAppStore.getState().saveConfig();
-          deleteProviderConfigDraft(context.taskId, input.draftId);
+          deleteProviderConfigDraft(context.taskId, input.draftId, accessScope);
           // 保存成功后打开设置的 API Key 页并弹出该连接编辑框，方便用户立即补填密钥
           useAppStore.getState().openApiKeySettings(connectionId);
           const mergeNote = describeProviderModelMerge(merge);
