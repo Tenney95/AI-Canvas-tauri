@@ -9,6 +9,36 @@
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../store/useAppStore';
 
+export const MAIN_WINDOW_MIN_WIDTH = 1000;
+export const MAIN_WINDOW_MIN_HEIGHT = 700;
+
+export interface MainWindowSize {
+  width: number;
+  height: number;
+}
+
+/** 过滤启动、退出或 DPI 切换时系统可能短暂上报的异常尺寸。 */
+export function normalizeMainWindowSize(size: MainWindowSize): MainWindowSize | null {
+  const width = Math.round(size.width);
+  const height = Math.round(size.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  if (width < MAIN_WINDOW_MIN_WIDTH || height < MAIN_WINDOW_MIN_HEIGHT) return null;
+  return { width, height };
+}
+
+/** 保持比例时也要满足主窗口最小尺寸，避免把未实际生效的小高度写进配置。 */
+export function fitMainWindowAspectRatio(width: number, ratio: number): MainWindowSize {
+  const safeWidth = Math.max(MAIN_WINDOW_MIN_WIDTH, Math.round(width));
+  const heightFromWidth = Math.round(safeWidth / ratio);
+  if (heightFromWidth >= MAIN_WINDOW_MIN_HEIGHT) {
+    return { width: safeWidth, height: heightFromWidth };
+  }
+  return {
+    width: Math.max(MAIN_WINDOW_MIN_WIDTH, Math.round(MAIN_WINDOW_MIN_HEIGHT * ratio)),
+    height: MAIN_WINDOW_MIN_HEIGHT,
+  };
+}
+
 /** '16:9' → 16/9 */
 export function parseAspectRatio(ratio: string | undefined | null): number | null {
   if (!ratio) return null;
@@ -17,29 +47,12 @@ export function parseAspectRatio(ratio: string | undefined | null): number | nul
 }
 
 export function useMainWindowSize(lockedRatio: number | null): void {
-  const savedSize = useAppStore((s) => s.config.windowSize);
-  // 配置是异步读出来的，等它到位后只恢复一次，之后用户怎么拖都不再干预
+  const configHydrated = useAppStore((s) => s.configHydrated);
+  // 配置加载后只恢复一次；比例设置变化只重建监听，不重复恢复。
   const restored = useRef(false);
 
   useEffect(() => {
-    if (restored.current || !savedSize) return;
-    const { width, height } = savedSize;
-    if (!(width > 0 && height > 0)) return;
-    restored.current = true;
-
-    void (async () => {
-      try {
-        const { getCurrentWindow, LogicalSize } = await import('@tauri-apps/api/window');
-        const win = getCurrentWindow();
-        if (await win.isMaximized() || await win.isFullscreen()) return;
-        await win.setSize(new LogicalSize(width, height));
-      } catch (error) {
-        console.warn('[窗口尺寸] 恢复失败:', error);
-      }
-    })();
-  }, [savedSize]);
-
-  useEffect(() => {
+    if (!configHydrated) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
     let timer: number | undefined;
@@ -50,6 +63,20 @@ export function useMainWindowSize(lockedRatio: number | null): void {
       try {
         const { getCurrentWindow, LogicalSize } = await import('@tauri-apps/api/window');
         const win = getCurrentWindow();
+
+        // 必须先恢复再监听，避免恢复动作或启动期系统事件反过来污染持久化尺寸。
+        if (!restored.current) {
+          restored.current = true;
+          const savedSize = normalizeMainWindowSize(useAppStore.getState().config.windowSize ?? {
+            width: 0,
+            height: 0,
+          });
+          if (savedSize && !(await win.isMaximized()) && !(await win.isFullscreen())) {
+            await win.setSize(new LogicalSize(savedSize.width, savedSize.height));
+          }
+        }
+        if (disposed) return;
+
         const off = await win.onResized(() => {
           if (applying) return;
           window.clearTimeout(timer);
@@ -58,26 +85,31 @@ export function useMainWindowSize(lockedRatio: number | null): void {
               // 最大化 / 全屏时窗口尺寸由系统决定，既不纠正也不记忆
               if (await win.isMaximized() || await win.isFullscreen()) return;
               const size = (await win.innerSize()).toLogical(await win.scaleFactor());
-              const width = Math.round(size.width);
-              let height = Math.round(size.height);
+              let actualSize = normalizeMainWindowSize(size);
+              if (!actualSize) return;
 
               if (lockedRatio) {
-                const target = Math.round(width / lockedRatio);
-                if (Math.abs(target - height) > 2) {
+                const target = fitMainWindowAspectRatio(actualSize.width, lockedRatio);
+                if (
+                  Math.abs(target.width - actualSize.width) > 2
+                  || Math.abs(target.height - actualSize.height) > 2
+                ) {
                   applying = true;
                   try {
-                    await win.setSize(new LogicalSize(width, target));
-                    height = target;
+                    await win.setSize(new LogicalSize(target.width, target.height));
+                    const applied = (await win.innerSize()).toLogical(await win.scaleFactor());
+                    actualSize = normalizeMainWindowSize(applied);
                   } finally {
                     applying = false;
                   }
+                  if (!actualSize) return;
                 }
               }
 
               const store = useAppStore.getState();
               const prev = store.config.windowSize;
-              if (prev?.width === width && prev?.height === height) return;
-              store.updateConfig({ windowSize: { width, height } });
+              if (prev?.width === actualSize.width && prev?.height === actualSize.height) return;
+              store.updateConfig({ windowSize: actualSize });
               void store.saveConfig();
             } catch (error) {
               console.warn('[窗口尺寸] 记忆或纠正失败:', error);
@@ -96,5 +128,5 @@ export function useMainWindowSize(lockedRatio: number | null): void {
       window.clearTimeout(timer);
       unlisten?.();
     };
-  }, [lockedRatio]);
+  }, [configHydrated, lockedRatio]);
 }
