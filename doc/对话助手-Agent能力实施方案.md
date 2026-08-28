@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）与 Phase 0-B（高风险原生命令 Rust 调用方校验）已完成
+> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）与 Phase 0-B（高风险原生命令 Rust 调用方校验）已完成；3D 镜头台 Phase 0-C 双运行时前端契约与 Phase 0-D 协议冻结已完成
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -61,6 +61,8 @@
 | 角色库 S1 | `[x]` | 多图角色类型、旧数据迁移与全局角色持久化 | 2026-07-25 | 2026-07-25 |
 | 安全前置 0-A | `[x]` | Tauri 应用 command 外层 ACL | 2026-08-28 | 2026-08-28 |
 | 安全前置 0-B | `[x]` | 插件执行与导演台资源命令 Rust 调用方校验 | 2026-08-28 | 2026-08-28 |
+| 导演台 0-C | `[x]` | 同一 `ai-director` 的 `lightweight-web` / `blender` 双运行时前端契约 | 2026-08-28 | 2026-08-28 |
+| 导演台 0-D | `[x]` | Blender 场景权威、固定脚本和后续原生阶段范围冻结 | 2026-08-28 | 2026-08-28 |
 
 ## 3. 已确认的产品决策
 
@@ -2336,6 +2338,78 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - 两个改动 Rust 文件的定向 `rustfmt --check` 通过；全仓 `cargo fmt --check` 已执行但被其他既有 Rust 文件的格式差异阻断，本阶段未批量格式化或覆盖这些文件。
 - 6 个命令的 guard-before-operation 静态顺序检查、严格 UTF-8 与 scoped `git diff --check` 通过；生成 ACL/schema 无变化。未启动应用做 `main`/`director-desk` 窗口级动态拒绝手测，因此不把本阶段表述为完整运行时端到端验收。
 
+### 8.32 3D 镜头台双运行时前端契约（Phase 0-C）
+
+**状态：** `[x]`
+
+#### 目标与边界
+
+- “3D 镜头台”继续使用唯一的 `ai-director` NodeType；`lightweight-web` 与 `blender` 是同一节点的运行时状态，不新增 NodeType、节点菜单、平行 Store 或第二套下游连线语义。
+- 保留现有截图、参考视频、复制、历史和项目持久化行为；旧节点缺少运行时字段时解释为 `lightweight-web`，未知非空值失败关闭。
+- 本阶段只建立前端类型、固定 registry/facade、现有节点选择和复制语义；Blender adapter 保持 unavailable，不检测安装、不启动进程、不执行 Python。
+
+#### 实施结果
+
+- `BaseNodeData` 增加可选 `directorRuntimeKind`；新建节点在 Store 插入边界获得显式 `lightweight-web` 默认值和稳定实例 ID，恢复旧项目不做静默迁移。
+- 固定 `directorRuntimeRegistry` 统一打开、订阅、当前帧和参考视频操作；它没有动态 `register()` 或通用 action，Blender 与未知分支不会调用旧网页窗口服务。
+- 现有 `DirectorDeskNode` 内显示运行时状态；普通轻量节点不能主动选择尚未接入的 Blender，导入的 Blender 状态可以显式切回轻量运行时。
+- 同项目粘贴与 Ctrl 拖拽继续创建同类型节点，保留已有媒体，重建瞬时实例并清除会话错误；不触发轻量运行资源下载提示。
+- 轻量资源安装完成后重新核对节点、实例 ID 和运行时，防止安装期间切换状态或删除节点后误开网页窗口。
+
+#### 验收与回滚
+
+- 定向测试首轮 5 个文件共 28 项通过；最终核心回归 3 个文件共 19 项通过。`npm run typecheck`、8 个受影响 TS/TSX/测试文件的定向 ESLint 和临时目录生产构建通过。
+- 9 个目标文件严格 UTF-8 与 scoped `git diff --check` 通过；未修改 Rust、Tauri capability、依赖或 IndexedDB，未启动 Blender，也未下载或安装导演台资源。
+- 回滚时移除运行时字段、固定 registry 与现有节点选择 UI，恢复轻量 facade 直连即可；旧媒体和项目数据不删除，不需要数据库降级。
+
+#### 完成记录
+
+- 本地提交：`7279555df8a9aef5a7e33838fbf64d88544055f4`（`feat(director): 建立双运行时前端契约`）。
+- 提交精确包含 `doc/架构说明.md`、`DirectorDeskRuntimeManager.tsx`、现有 `DirectorDeskNode.tsx`、`directorRuntimeRegistry.ts`、`store.nodes.ts`、`types/index.ts` 以及 registry、clipboard、运行资源提示 3 个测试文件，共 9 文件。
+- 当前只完成同项目复制。旧 Director 多媒体跨项目复制仍受单一 `filePath` 和平行 URL/path 数组限制，留待结构化 artifact 阶段处理，禁止猜测配对。
+
+### 8.33 Blender 原生运行时协议冻结（Phase 0-D）
+
+**状态：** `[x]`
+
+#### 目标与边界
+
+- 冻结同一 `ai-director` 节点接入 Blender 的产品、数据和执行边界；不新增节点、节点菜单或第二套连线协议。
+- [ADR 0003](./adr/0003-director-desk-prebuilt-runtime.md) 继续约束长期正式的 `lightweight-web`；[ADR 0010](./adr/0010-director-dual-runtime-and-blender-scene-authority.md) 管理双运行时、Scene/Result 与 Blender 安全边界，两者互不取代。
+- 本阶段仅修改 5 个正式文档，不改产品代码、Rust、数据库、依赖、Tauri 安全配置或安装包资源，不启动 Blender、不安装资源、不执行 Python。
+
+#### 冻结决策
+
+- Director Scene JSON 是 AI Canvas 可理解场景的可移植权威；节点只保存项目相对路径、revision、大小和 SHA-256 等不可变引用。
+- `.blend` 是绑定 Scene revision/hash 的 Blender 工作产物，不得自动覆盖 JSON，也不承诺与 JSON 无损双向转换。
+- Scene 中的项目文件引用必须同时绑定相对路径、大小和 SHA-256；仅有相对路径的引用无效，跨项目复制在完成哈希校验和引用重写前失败关闭。
+- Result Manifest 是截图、参考视频和 `.blend` 等不可变结果文件的清单权威，不负责场景编辑状态，也不能自行创建或覆盖 Scene；新的 Scene revision 只能来自独立通过白名单和父 revision/hash 校验的 portable Scene proposal。
+- Blender 内只允许由 Rust 第一方信任根解析、版本固定且通过哈希或签名校验的 AI Canvas 脚本；具体资源交付方式留到 Phase 1-C 检查点。不得复用 Plugin API v3 的可信 Python 入口，也不得接收 Python 源码、脚本路径、`--python-expr`、自由 argv、cwd、env 或绝对输出路径。
+- 项目目录必须先由 `main` 窗口建立绑定 `projectId` 的 Rust 进程内 grant；Job 只接收不透明 `projectGrantId`。`installationId` 只作查找键，每次启动前重新验证；`jobId` 由 Rust 生成并只用于状态表查找。真实可执行文件、模板、脚本、参数和 Job 目录均由 Rust 从受信状态派生。
+
+#### 下一阶段范围
+
+1. Phase 1-A：Director Scene/Result 纯 TypeScript 合同、不可变项目文件和归档识别，Blender 继续 unavailable。
+2. Phase 1-B：用途单一的 Rust Blender 安装候选发现，只返回不透明 ID，不执行候选、不持久化绝对路径。
+3. Phase 1-C：固定 Application Template、固定脚本 Job、进度/取消/崩溃恢复和 Result Manifest 回收；C1 自动化通过后仍 unavailable，只有用户明确授权的真机 C2 验收全部通过才可启用。涉及 bundle resources 或安全配置时另设检查点。
+4. Phase 1-D：结构化 Director artifact 与跨项目复制，不能提前猜测旧媒体 URL/path 配对。
+5. Phase 2/3：Blender 导演模式模板和 AI Canvas 内快速导演，始终写回同一 `ai-director` 节点。
+
+详细阶段、候选文件、验收和回滚见 [3D 镜头台 Blender 原生运行时实施计划](./plans/2026-08-28-director-blender-native-runtime.md)。
+
+#### 验收与回滚
+
+- 五份文档必须一致声明唯一 `ai-director`、`lightweight-web | blender` 状态、轻量运行时长期保留、Scene JSON 权威、`.blend` revision/hash 约束以及固定第一方脚本边界。
+- 新增文档链接存在，严格 UTF-8、乱码扫描和 scoped `git diff --check` 通过；文档批次不以编译或 mock 结果宣称 Blender 已安装、已启动或已渲染。
+- 回滚只恢复 3 个既有文档并移除 ADR 0010 与新实施计划；不回滚 Phase 0-C 代码、不迁移数据库、不删除导演台资源或用户产物。
+
+#### 完成记录
+
+- 实际正式范围为 5 份文档：更新 ADR 0003、产品方案和本文档；新增 ADR 0010 与 Blender 原生运行时实施计划。未修改产品代码、Rust、数据库、依赖、Tauri 安全配置或安装包资源。
+- 严格 UTF-8 / BOM / 常见乱码扫描覆盖 5 文件并通过；12 个本地 Markdown 链接全部存在；2 个新增文档的一级标题、代码围栏、尾随空白和 CRCRLF 检查通过；既有 3 个文档的 scoped `git diff --check` 通过。
+- 本阶段没有启动 Blender、安装导演台或 Blender 资源、执行 Python、生成 `.blend`、截图或参考视频。`blender` adapter 继续保持 unavailable；本文档状态只代表协议与后续阶段范围已冻结。
+- 阶段文档以独立本地提交交付，不包含 push、tag 或 Release；后续从 Phase 1-A 开始仍按独立范围与检查点实施。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -2576,6 +2650,8 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-28 | 导演台 0-D | 冻结同一 `ai-director` 节点的 Blender 双运行时、Director Scene JSON 权威、不可变 Result Manifest、项目 grant、安装复核、Rust Job ID、固定第一方脚本与 C2 真机启用门；仅修改 5 份文档，Blender 继续 unavailable。 |
+| 2026-08-28 | 导演台 0-C | 在现有 `ai-director` 节点内建立 `lightweight-web` / `blender` 双运行时前端契约，统一打开与导出 facade、旧节点默认、未知值失败关闭、同项目复制和安装提示语义；未新增节点、Rust、数据库或 Blender 进程能力。 |
 | 2026-08-28 | 自定义视频 API Stage 1 | 建立 Canonical Video Request 与 capability 权威校验，移除自定义视频猜测端点和隐藏默认；声明式协议补齐安全条件项、多参考数组展开、逐角色完整消费、动态任务轮询与真实请求体上限；助手 direct protocol 增加凭据防护和三种输入形态本地 dry-run；MCP 画布节点增加统一视频规格字段。Agnes 2.5 Flash、MiniMax H3 契约测试通过，MetaSo 实机提交到计费校验并准确返回余额不足。 |
 | 2026-08-28 | 安全前置 0-B | 为受信插件执行/Python 环境探测与轻量导演台资源状态、安装、取消、删除命令增加 Rust 调用方校验；明确导演台安装不使用 Python，未来 Blender 仅允许应用固定脚本。未修改 Agent/MCP Policy、数据库、UI 或 Blender 行为。 |
 | 2026-08-28 | 安全前置 0-A | 为 61 个 Tauri 应用 commands 增加只由首方 default capability 引用的外层 ACL；未修改 Agent/MCP Policy、数据库、UI、导演台运行时或 Blender 行为。 |
