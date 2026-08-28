@@ -89,6 +89,140 @@ describe('APIMart image polling', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('collects multiple images returned by one native batch task', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/images/generations')) {
+        return jsonResponse({
+          code: 200,
+          data: [{ task_id: 'native-batch-task', status: 'submitted' }],
+        });
+      }
+      return jsonResponse({
+        code: 200,
+        data: {
+          status: 'completed',
+          result: {
+            images: [{ url: ['https://img.example/1.png', 'https://img.example/2.png'] }],
+          },
+        },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const batch = await generateApimartImagesBatch(
+      'api-key',
+      'https://api.example.com',
+      'qwen-image-2.0',
+      'prompt',
+      '2K',
+      '1:1',
+      { width: 2048, height: 2048 },
+      [],
+      2,
+    );
+
+    expect(batch.results.map((result) => result.url)).toEqual([
+      'https://img.example/1.png',
+      'https://img.example/2.png',
+    ]);
+    expect(batch.failedCount).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('polls every task id returned by one native batch submission', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/images/generations')) {
+        return jsonResponse({
+          code: 200,
+          data: [
+            { task_id: 'native-task-1', status: 'submitted' },
+            { task_id: 'native-task-2', status: 'submitted' },
+          ],
+        });
+      }
+      const taskNumber = url.includes('native-task-2') ? 2 : 1;
+      return jsonResponse({
+        code: 200,
+        data: {
+          status: 'completed',
+          result: { images: [{ url: `https://img.example/${taskNumber}.png` }] },
+        },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const batch = await generateApimartImagesBatch(
+      'api-key',
+      'https://api.example.com',
+      'qwen-image-2.0',
+      'prompt',
+      '2K',
+      '1:1',
+      { width: 2048, height: 2048 },
+      [],
+      2,
+      'node-1',
+    );
+
+    expect(batch.results.map((result) => result.url)).toEqual([
+      'https://img.example/1.png',
+      'https://img.example/2.png',
+    ]);
+    expect(pollingMocks.updatePendingTask).toHaveBeenCalledWith('node-1', {
+      taskId: 'native-task-1',
+      taskIds: ['native-task-1', 'native-task-2'],
+      submitted: true,
+    });
+  });
+
+  it('splits multi-image requests into independent tasks when the model has no native batch support', async () => {
+    let submissionCount = 0;
+    const submittedBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/images/generations')) {
+        submissionCount += 1;
+        submittedBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return jsonResponse({
+          code: 200,
+          data: [{ task_id: `split-task-${submissionCount}`, status: 'submitted' }],
+        });
+      }
+      const taskNumber = url.includes('split-task-2') ? 2 : 1;
+      return jsonResponse({
+        code: 200,
+        data: {
+          status: 'completed',
+          result: { images: [{ url: [`https://img.example/split-${taskNumber}.png`] }] },
+        },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const batch = await generateApimartImagesBatch(
+      'api-key',
+      'https://api.example.com',
+      'gpt-image-2',
+      'prompt',
+      '1K',
+      '1:1',
+      { width: 1024, height: 1024 },
+      [],
+      2,
+    );
+
+    expect(submittedBodies).toHaveLength(2);
+    expect(submittedBodies.every((body) => body.n === 1)).toBe(true);
+    expect(batch.requestedCount).toBe(2);
+    expect(batch.results.map((result) => result.url)).toEqual([
+      'https://img.example/split-1.png',
+      'https://img.example/split-2.png',
+    ]);
+    expect(batch.failedCount).toBe(0);
+  });
+
   it('cleans up node polling when cancellation interrupts task submission', async () => {
     const controller = new AbortController();
     let submitSignal: AbortSignal | undefined;

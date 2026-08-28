@@ -120,8 +120,8 @@ const IMAGE_CAPABILITIES: Record<string, ImageCapability> = {
     ratios: ['1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '1:2', '2:1', '1:3', '3:1', '21:9', '9:21'],
     defaultRatio: '1:1',
     resolutionStyle: 'K',
-    supportsBatch: true,
-    maxBatchCount: 10,
+    // APIMart 的 gpt-image-2 不接受 n>1；多图由调用层拆成多次 n=1 请求。
+    supportsBatch: false,
     supportsImageReference: true,
     maxImageReferences: 16,
     supportsDataUrlReference: true,

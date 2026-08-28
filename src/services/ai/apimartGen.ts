@@ -10,9 +10,10 @@ import {
   buildApimartSeedanceRequest,
   type ApimartSeedanceRequestParams,
 } from './apimartVideoModels';
-import { buildImageCapabilityRequest } from './mediaModelCapabilities';
+import { buildImageCapabilityRequest, getImageCapability } from './mediaModelCapabilities';
 import { corsSafeFetch } from './httpTransport';
 import { mapImageParameters } from './imageParameterMappings';
+import { runBatchTasks } from './batchUtils';
 
 /* ── APIMart 任务轮询共享类型 ── */
 export interface ApimartTaskResult<TResult = Record<string, unknown>> {
@@ -34,6 +35,15 @@ type ApimartTaskError = string | {
   message?: string;
   type?: string;
 };
+
+type ApimartMediaResult = { images?: Array<{ url?: string | string[] }> };
+
+function extractApimartImageUrls(result?: ApimartMediaResult): string[] {
+  return result?.images?.flatMap((image) => {
+    if (Array.isArray(image.url)) return splitCommaSeparatedUrls(image.url);
+    return typeof image.url === 'string' ? splitCommaSeparatedUrls([image.url]) : [];
+  }) ?? [];
+}
 
 function getApimartFailureMessage(
   task: ApimartTaskResult,
@@ -161,13 +171,18 @@ export async function generateApimartImagesBatch(
 ): Promise<BatchImageResult> {
   // 能力表驱动：命中 APIMart 生图能力表时，按模型约束分辨率 / 批量数量 / 参考图，
   // 并复用能力表换算出的结果回填尺寸；未命中则回退通用提交逻辑（兼容旧模型）。
+  const requestedBatchCount = Math.max(1, Math.floor(count));
+  const capability = getImageCapability(model);
   const capabilityRequest = buildImageCapabilityRequest(model, prompt, {
     resolution: imageSize,
     ratio: aspectRatio,
-    count,
+    count: requestedBatchCount,
     imageUrls,
   });
-  const requestedCount = capabilityRequest?.requestedCount ?? Math.max(1, Math.floor(count));
+  const supportsNativeBatch = capability?.supportsBatch !== false;
+  const requestedCount = capability && !supportsNativeBatch
+    ? requestedBatchCount
+    : (capabilityRequest?.requestedCount ?? requestedBatchCount);
   const effectiveDimensions = capabilityRequest?.dimensions ?? dimensions;
   const nodeSignal = nodeId ? registerNodePolling(nodeId) : undefined;
   const signal = nodeSignal && externalSignal
@@ -192,8 +207,8 @@ export async function generateApimartImagesBatch(
       }
     }
 
-    // 步骤 1: 提交生成任务
-    const submitBody: Record<string, unknown> = capabilityRequest?.body ?? mapImageParameters(
+    // 原生批量模型一次提交 n 张；不支持 n 的模型拆成多次 n=1 提交。
+    const nativeSubmitBody: Record<string, unknown> = capabilityRequest?.body ?? mapImageParameters(
       'apimart',
       model,
       {
@@ -205,56 +220,85 @@ export async function generateApimartImagesBatch(
         referenceImageUrls: imageUrls,
       },
     );
-    const submitResp = await corsSafeFetch(`${baseUrl}/images/generations`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(submitBody),
-      signal,
-    });
-
-    if (!submitResp.ok) {
-      const errBody = await submitResp.text().catch(() => '');
-      throw new Error(`APIMart 生成提交失败 (${submitResp.status}): ${errBody.slice(0, 200)}`);
-    }
-
-    const submitResult = await submitResp.json() as { code: number; data: Array<{ task_id: string; status: string }> };
-    const taskId = submitResult.data?.[0]?.task_id;
-    if (!taskId) {
-      throw new Error('APIMart 生成提交失败: 未返回 task_id');
-    }
-
-    // 回填 taskId，标记为已提交
-    if (nodeId) {
-      updatePendingTask(nodeId, { taskId, submitted: true });
-    }
-
-    // 步骤 2: 轮询任务直到完成/失败（不设超时，仅 ComfyUI 才设超时）
-    return await pollTask<ApimartTaskResult<{ images?: Array<{ url: string[] }> }>, BatchImageResult>({
-      fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId, signal),
-      isComplete: (task) => {
-        if (task.status === 'completed') {
-          const imageUrls = task.result?.images?.flatMap((img) => splitCommaSeparatedUrls(img.url)) ?? [];
-          if (imageUrls.length === 0) throw new Error('APIMart 生成完成但未返回图片');
-          const results = imageUrls.slice(0, requestedCount).map((url) => ({
-            url,
-            width: effectiveDimensions.width,
-            height: effectiveDimensions.height,
-          }));
-          return {
-            requestedCount,
-            results,
-            failedCount: Math.max(0, requestedCount - results.length),
-          };
+    const submitBodies = supportsNativeBatch
+      ? [nativeSubmitBody]
+      : Array.from({ length: requestedCount }, () => ({ ...nativeSubmitBody, n: 1 }));
+    const taskIdsBySubmission: string[][] = [];
+    let firstError: unknown;
+    const submitted = await runBatchTasks(submitBodies.length, 3, async (index) => {
+      try {
+        const submitResp = await corsSafeFetch(`${baseUrl}/images/generations`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(submitBodies[index]),
+          signal,
+        });
+        if (!submitResp.ok) {
+          const errBody = await submitResp.text().catch(() => '');
+          throw new Error(`APIMart 生成提交失败 (${submitResp.status}): ${errBody.slice(0, 200)}`);
         }
-        return null;
-      },
-      isFailed: (task) => getApimartFailureMessage(task, 'APIMart 图片生成失败'),
-      interval: 2000,
-      signal,
+        const submitResult = await submitResp.json() as {
+          task_id?: string;
+          data?: Array<{ task_id?: string }> | { task_id?: string };
+        };
+        const dataTaskIds = Array.isArray(submitResult.data)
+          ? submitResult.data.flatMap((item) => item.task_id ? [item.task_id] : [])
+          : submitResult.data?.task_id ? [submitResult.data.task_id] : [];
+        const taskIds = [...dataTaskIds, ...(submitResult.task_id ? [submitResult.task_id] : [])];
+        if (taskIds.length === 0) throw new Error('APIMart 生成提交失败: 未返回 task_id');
+        taskIdsBySubmission[index] = taskIds;
+        if (nodeId) {
+          const persistedTaskIds = taskIdsBySubmission.flatMap((ids) => ids ?? []);
+          updatePendingTask(nodeId, {
+            taskId: persistedTaskIds[0],
+            taskIds: persistedTaskIds,
+            submitted: true,
+          });
+        }
+        return taskIds;
+      } catch (error) {
+        firstError ??= error;
+        throw error;
+      }
     });
+    const taskIds = submitted.results.flat();
+    if (taskIds.length === 0) throw firstError || new Error('APIMart 生成提交失败');
+
+    // 单个任务可返回多张图，也可能一次提交返回多个任务；两种形态统一汇总。
+    const completed = await runBatchTasks(taskIds.length, 3, async (index) => {
+      try {
+        return await pollTask<ApimartTaskResult<ApimartMediaResult>, string[]>({
+          fetchState: () => fetchApimartTask(apiKey, baseUrl, taskIds[index], signal),
+          isComplete: (task) => {
+            if (task.status !== 'completed') return null;
+            const urls = extractApimartImageUrls(task.result);
+            if (urls.length === 0) throw new Error('APIMart 生成完成但未返回图片');
+            return urls;
+          },
+          isFailed: (task) => getApimartFailureMessage(task, 'APIMart 图片生成失败'),
+          interval: 2000,
+          signal,
+        });
+      } catch (error) {
+        firstError ??= error;
+        throw error;
+      }
+    });
+    const urls = completed.results.flat().slice(0, requestedCount);
+    if (urls.length === 0) throw firstError || new Error('APIMart 生成完成但未返回图片');
+    const results = urls.map((url) => ({
+      url,
+      width: effectiveDimensions.width,
+      height: effectiveDimensions.height,
+    }));
+    return {
+      requestedCount,
+      results,
+      failedCount: Math.max(0, requestedCount - results.length),
+    };
   } finally {
     if (nodeId) {
       cleanupNodePolling(nodeId);

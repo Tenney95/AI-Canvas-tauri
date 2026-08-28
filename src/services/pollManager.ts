@@ -81,9 +81,9 @@ export interface PendingTask {
   audioTaskStage?: 'lyrics' | 'music';
   /** 本地 ComfyUI 恢复轮询用地址；厂商地址统一从 providerConfigId 解析。 */
   baseUrl?: string;
-  /** APIMart 原生批量图片任务请求数量；旧记录缺省为 1。 */
+  /** 批量图片任务期望回填的结果数量；旧记录缺省为 1。 */
   batchCount?: number;
-  /** 同一节点对应的多个异步任务 ID（RunningHub 批量图片生成）。 */
+  /** 同一节点对应的多个异步任务 ID（APIMart / RunningHub 批量图片生成）。 */
   taskIds?: string[];
   /** 声明式协议任务从连接配置重新读取密钥，不在此处新增密钥副本。 */
   providerConfigId?: string;
@@ -320,9 +320,11 @@ async function fetchApimartTask(
   apiKey: string,
   baseUrl: string,
   taskId: string,
+  signal?: AbortSignal,
 ): Promise<ApimartTaskResult> {
   const resp = await fetch(`${baseUrl}/tasks/${taskId}?language=zh`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal,
   });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const raw = (await resp.json()) as Record<string, unknown>;
@@ -343,22 +345,33 @@ function extractApimartUrls(
   nodeType: NodeType,
 ): string[] {
   if (!result) return [];
+  const extractUrls = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const url = (item as { url?: unknown }).url;
+      if (Array.isArray(url)) {
+        return splitCommaSeparatedUrls(url.filter((entry): entry is string => typeof entry === 'string'));
+      }
+      return typeof url === 'string' ? splitCommaSeparatedUrls([url]) : [];
+    });
+  };
   if (nodeType === 'ai-video') {
-    const videos = result.videos as Array<{ url: string[] }> | undefined;
-    if (videos?.[0]?.url?.[0]) return [splitCommaSeparatedUrls(videos[0].url)[0]];
+    const urls = extractUrls(result.videos);
+    if (urls.length > 0) return [urls[0]];
   }
   if (nodeType === 'ai-audio') {
-    const audios = result.audios as Array<{ url: string[] }> | undefined;
-    if (audios?.[0]?.url?.[0]) return [splitCommaSeparatedUrls(audios[0].url)[0]];
+    const urls = extractUrls(result.audios);
+    if (urls.length > 0) return [urls[0]];
   }
-  const images = result.images as Array<{ url: string[] }> | undefined;
-  return images?.flatMap((image) => splitCommaSeparatedUrls(image.url)) ?? [];
+  return extractUrls(result.images);
 }
 
 async function resumeApimart(task: PendingTask): Promise<void> {
-  const { nodeId, taskId, nodeType } = task;
+  const { nodeId, nodeType } = task;
   const providerConfig = resolveProviderTaskConfig(task, 'apimart', APIMART_BASE_URL);
-  if (!providerConfig) {
+  const taskIds = (task.taskIds?.length ? task.taskIds : [task.taskId]).filter(Boolean);
+  if (!providerConfig || taskIds.length === 0) {
     await handleResumeError(task, new Error('任务恢复失败：缺少 API 配置'));
     return;
   }
@@ -370,22 +383,27 @@ async function resumeApimart(task: PendingTask): Promise<void> {
   const signal = registerNodePolling(nodeId);
 
   try {
-    const { urls } = await pollTask<ApimartTaskResult, { urls: string[] }>({
-      fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId),
-      isComplete: (t) => {
-        if (t.status === 'completed') {
+    const settled = await Promise.allSettled(taskIds.map((taskId) => (
+      pollTask<ApimartTaskResult, string[]>({
+        fetchState: () => fetchApimartTask(apiKey, baseUrl, taskId, signal),
+        isComplete: (t) => {
+          if (t.status !== 'completed') return null;
           const resolved = extractApimartUrls(t.result, nodeType);
-          if (resolved.length > 0) return { urls: resolved };
-          throw new Error('任务完成但未返回结果');
-        }
-        return null;
-      },
-      isFailed: (t) =>
-        t.status === 'failed' || t.status === 'error' ? `任务失败: ${t.status}` : null,
-      interval: 3000,
-      onFetchError: 'continue',
-      signal,
-    });
+          if (resolved.length === 0) throw new Error('任务完成但未返回结果');
+          return resolved;
+        },
+        isFailed: (t) =>
+          t.status === 'failed' || t.status === 'error' ? `任务失败: ${t.status}` : null,
+        interval: 3000,
+        onFetchError: 'continue',
+        signal,
+      })
+    )));
+    const urls = settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+    if (urls.length === 0) {
+      const failed = settled.find((result) => result.status === 'rejected') as PromiseRejectedResult | undefined;
+      throw failed?.reason || new Error('任务完成但未返回结果');
+    }
     const requestedCount = Math.max(1, task.batchCount ?? 1);
     if (nodeType === 'ai-image' && requestedCount > 1 && nodeData) {
       const imageSize = (nodeData.imageSize as string) || '2K';
