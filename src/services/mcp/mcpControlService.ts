@@ -210,10 +210,13 @@ async function callMcpTool(
       ?? finalTask.errorMessage
       ?? 'MCP 工具调用未返回结果';
     const isError = executionResult?.summary.status !== 'success';
+    // 工具业务失败仍是一次成功送达的结构化 MCP 响应：任务和步骤保留 failed，
+    // 但审计消息不应再误报为网络/模型“响应失败”。只有执行链没有产出结果时才标 error。
+    const responseReceived = executionResult !== undefined;
     useAppStore.getState().updateAgentTask(task.id, { resultSummary: summary });
     useAppStore.getState().updateMessage(assistantMessageId, {
       content: summary,
-      status: isError ? 'error' : 'done',
+      status: responseReceived ? 'done' : 'error',
     });
     return {
       isError,

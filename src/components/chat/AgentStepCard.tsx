@@ -40,7 +40,7 @@ export default function AgentStepCard({ step }: AgentStepCardProps) {
   const detail = step.errorMessage || step.outputSummary || step.toolCall?.resultSummary;
 
   return (
-    <div className="flex gap-2 rounded-md px-0.5 py-1.5 transition-colors hover:bg-canvas-hover/25">
+    <div className="agent-step-card flex gap-2 rounded-md px-0.5 py-1.5 transition-colors hover:bg-canvas-hover/25">
       <span className={`mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${meta.iconBg}`}>
         <Icon
           icon={meta.icon}

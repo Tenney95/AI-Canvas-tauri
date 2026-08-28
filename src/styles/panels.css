@@ -1922,6 +1922,8 @@ button.wf-ionode-badge.is-default {
    Chat Panel — AI 对话助手悬浮面板（右侧）
    ============================================ */
 .chat-panel {
+  container-name: chat-panel;
+  container-type: inline-size;
   right: var(--chat-panel-inset);
   bottom: var(--chat-panel-inset);
   width: var(--chat-panel-width);
@@ -2036,6 +2038,11 @@ body.chat-panel-resizing {
   background-color: color-mix(in srgb, var(--theme-hover) 58%, transparent);
 }
 
+/* Keep message timeline hover airy in the light theme instead of mixing dark utility RGB. */
+[data-theme='light'] .agent-step-card:hover {
+  background-color: color-mix(in srgb, var(--brand) 12%, var(--theme-surface));
+}
+
 [data-theme='light'] .agent-task-center [class~='text-slate-400'] {
   color: var(--theme-text-muted);
 }
@@ -2090,6 +2097,56 @@ body.chat-panel-resizing {
 .chat-panel-header::after {
   bottom: -12px;
   background: linear-gradient(to bottom, var(--glass-panel-bg), transparent);
+}
+
+/* Header actions have a larger fixed minimum width than the brand area.
+   Query the panel itself (not the viewport) because the docked panel is resizable. */
+@container chat-panel (max-width: 480px) {
+  .chat-panel-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    row-gap: 0.375rem;
+  }
+
+  .chat-panel-header-brand {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .chat-panel-header-window-actions {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .chat-panel-header-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    margin-left: 0;
+    min-width: 0;
+    justify-content: flex-end;
+  }
+}
+
+@container chat-panel (max-width: 390px) {
+  .chat-panel-header-actions {
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
+  }
+
+  .chat-panel-header-actions > [role='group'] {
+    flex: 1 0 100%;
+  }
+
+  .chat-panel-header-actions > [role='group'] > button {
+    flex: 1 1 0;
+  }
+
+  .chat-panel-header-actions > span[aria-hidden='true'] {
+    display: none;
+  }
 }
 
 .chat-panel-input-area::before {

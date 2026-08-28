@@ -90,7 +90,7 @@ export default function ChatHeader({
         </div>
       </div>
 
-      <div className="chat-panel-header-actions flex items-center gap-1">
+      <div className="chat-panel-header-actions ml-auto flex items-center gap-1">
         <AgentModeSelector
           mode={agentMode}
           onChange={onAgentModeChange}
@@ -159,25 +159,27 @@ export default function ChatHeader({
             <Icon icon="lucide:users-round" width="16" height="16" />
           </button>
         )}
+      </div>
 
+      <div className="chat-panel-header-window-actions flex shrink-0 items-center gap-1">
         {detached ? detachedHeaderActions : (
           <>
-          {/* 独立窗口按钮 */}
-          <button
-            type="button"
-            className="chat-panel-detach-btn flex items-center justify-center w-8 h-8 rounded-lg
-                       text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
-                       active:scale-95 transition-[color,background-color,box-shadow,transform] duration-150
-                       motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
-            onClick={onDetachToggle}
-            data-tooltip={chatPanelDetached ? t('收回内嵌') : t('独立窗口')}
-            aria-label={chatPanelDetached ? t('收回内嵌') : t('独立窗口')}
-          >
-            <Icon icon={chatPanelDetached ? 'mdi:dock-left' : 'mdi:dock-window'} width="16" height="16" />
-          </button>
+            {/* 独立窗口按钮 */}
+            <button
+              type="button"
+              className="chat-panel-detach-btn flex items-center justify-center w-8 h-8 rounded-lg
+                         text-canvas-text-muted hover:text-canvas-text hover:bg-canvas-hover
+                         active:scale-95 transition-[color,background-color,box-shadow,transform] duration-150
+                         motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+              onClick={onDetachToggle}
+              data-tooltip={chatPanelDetached ? t('收回内嵌') : t('独立窗口')}
+              aria-label={chatPanelDetached ? t('收回内嵌') : t('独立窗口')}
+            >
+              <Icon icon={chatPanelDetached ? 'mdi:dock-left' : 'mdi:dock-window'} width="16" height="16" />
+            </button>
 
-          {/* 关闭按钮 */}
-          <PopupCloseButton onClick={onClose} />
+            {/* 关闭按钮 */}
+            <PopupCloseButton onClick={onClose} />
           </>
         )}
       </div>
