@@ -3,6 +3,7 @@
   "description": "Default capabilities for AI Canvas",
   "windows": ["main", "asset-search", "chat-assistant", "video-editor"],
   "permissions": [
+    "allow-first-party-app-commands",
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",

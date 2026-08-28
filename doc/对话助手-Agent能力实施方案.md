@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施
+> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）已完成
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -59,6 +59,7 @@
 | P5-C | `[ ]` | 端到端安全回归与验收 |  |  |
 | P5-D | `[x]` | 通用联网搜索、受控网页提取和来源引用 | 2026-07-22 | 2026-07-22 |
 | 角色库 S1 | `[x]` | 多图角色类型、旧数据迁移与全局角色持久化 | 2026-07-25 | 2026-07-25 |
+| 安全前置 0-A | `[x]` | Tauri 应用 command 外层 ACL | 2026-08-28 | 2026-08-28 |
 
 ## 3. 已确认的产品决策
 
@@ -2283,6 +2284,29 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - 移除助手中心入口、Agent Package Store/独立 Catalog、前端导入服务和 Rust `agent_package` 命令注册即可回到无兼容层状态；核心项目数据库没有迁移，无需降级。
 - 回滚前应先通过智能体中心移除 managed 安装，避免在应用私有目录保留无入口的托管副本；linked 外部目录始终由用户保留。
 
+### 8.30 平台安全前置：Tauri 应用 command 外层 ACL（Phase 0-A）
+
+**状态：** `[x]`
+
+#### 目标与边界
+
+- 为本阶段纳入范围的 Tauri 应用 command 增加统一的外层调用方 ACL，在进入既有业务校验和副作用前拒绝未授权窗口或调用来源。
+- 保留各 command 现有参数校验、路径策略、业务逻辑和错误语义；外层 ACL 只收紧调用入口，不扩大任何权限。
+- 本阶段不修改 Agent/MCP Tool Registry、Policy Engine 或确认矩阵，不新增 Agent/MCP 工具；不修改 IndexedDB schema、持久化数据、UI、导演台运行时或 Blender 行为。
+
+#### 验收与回滚
+
+- 授权应用窗口的既有 command 调用保持可用；生成的 ACL 必须确认未授权窗口不会获得应用 command 权限。
+- 完成记录只填写实际修改文件和真实执行过的 Rust/差异检查，不把静态配置检查等同于完整窗口运行时验收。
+- 回滚仅撤销本阶段应用 permission 与 capability 引用并重新生成 ACL/schema；既有 command 实现、Agent/MCP Policy、数据库、UI 和导演台行为保持不变，无数据迁移或降级。
+
+#### 完成记录
+
+- 新增 `src-tauri/permissions/allow-first-party-app-commands.toml`，将 `invoke_handler` 当前注册的 61 个应用 commands 收口到单一 permission；`capabilities/default.json` 只为 `main`、`asset-search`、`chat-assistant`、`video-editor` 引用它。`director-desk`、`dreamina-login` 与 `comfyui` capability 均未获得该 permission。
+- `cargo check --lib` 通过；生成的 `__app-acl__` 为 allow 61、deny 0，源 handler 与 permission 集合 missing 0、extra 0。Windows 构建实际更新 `acl-manifests.json`、`capabilities.json`、`desktop-schema.json` 与 `windows-schema.json`；平台专属 `macOS-schema.json` 未由 Windows target 重写。
+- `cargo test --no-default-features --lib` 通过：83 项通过、0 失败、1 项既有 176 MiB 压力测试忽略。`cargo test --lib` 已执行，但被既有 ORT/MSVC 链接环境以 LNK1120 阻断，39 个 `__std_find_*` 等符号未解析；本阶段未修改 ONNX、Cargo 依赖或工具链。
+- 严格 UTF-8、生成 JSON 解析和 `git diff --check` 通过；未启动应用做窗口级动态拒绝手测，因此本阶段验收证据为 Tauri 构建解析、生成 ACL 结构与既有 Rust 测试，不把它表述为完整运行时端到端验收。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -2496,6 +2520,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-28 | 安全前置 0-A | 为 61 个 Tauri 应用 commands 增加只由首方 default capability 引用的外层 ACL；未修改 Agent/MCP Policy、数据库、UI、导演台运行时或 Blender 行为。 |
 | 2026-08-27 | 8.29 | 完成全局 Agent Package 首批纵向切片：助手内上传与管理、linked 文件夹、managed tar.gz、独立目录库、私有 sourceId 注册和无智能体旁路；任务级按需绑定与普通 zip 留待后续。 |
 | 2026-08-26 | Python 插件兼容 | Plugin API v3 增加可信 `main.py` 运行时，复用本机 Python 与现有依赖；独立子进程执行并加入高风险确认、环境检测、协议限长和超时终止，JavaScript QuickJS 沙箱保持不变。 |
 | 2026-08-26 | Sora2U 输入校验 | 视频模型能力新增声明式提交前约束；Sora2U 拦截 Prompt、Base64 总量、参考视频宽度/时长和参考音频时长，自定义通用接口可编辑同类规则。 |
