@@ -15,7 +15,15 @@
  * - EmptyChatState.tsx      空会话状态
  * - ChatModelSelector.tsx   模型选择器
  */
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { invoke } from '@tauri-apps/api/core';
@@ -71,6 +79,16 @@ import { useT } from '../../i18n';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 const DRAFT_SYNC_DEBOUNCE_MS = 300;
+const CHAT_PANEL_DEFAULT_WIDTH = 400;
+const CHAT_PANEL_MIN_WIDTH = 320;
+const CHAT_PANEL_MAX_WIDTH = 720;
+const CHAT_PANEL_VIEWPORT_GUTTER = 64;
+
+interface ChatPanelResizeGesture {
+  pointerId: number;
+  startX: number;
+  startWidth: number;
+}
 
 interface ChatPanelProps {
   detached?: boolean;
@@ -228,6 +246,97 @@ export default function ChatPanel({
   const [showSubAgentPanel, setShowSubAgentPanel] = useState(false);
   const [showAgentCenter, setShowAgentCenter] = useState(false);
   const [showTaskCenter, setShowTaskCenter] = useState(false);
+  const chatPanelRef = useRef<HTMLElement | null>(null);
+  const preferredChatPanelWidthRef = useRef(CHAT_PANEL_DEFAULT_WIDTH);
+  const chatPanelWidthInitializedRef = useRef(false);
+  const chatPanelResizeGestureRef = useRef<ChatPanelResizeGesture | null>(null);
+
+  const applyDockedChatPanelWidth = useCallback((preferredWidth: number) => {
+    const shell = chatPanelRef.current?.closest<HTMLElement>('.app-shell');
+    if (!shell) return;
+
+    const viewportMaxWidth = Math.max(0, window.innerWidth - CHAT_PANEL_VIEWPORT_GUTTER);
+    const minWidth = Math.min(CHAT_PANEL_MIN_WIDTH, viewportMaxWidth);
+    const maxWidth = Math.max(minWidth, Math.min(CHAT_PANEL_MAX_WIDTH, viewportMaxWidth));
+    const width = Math.min(maxWidth, Math.max(minWidth, preferredWidth));
+    shell.style.setProperty('--chat-panel-width', `${Math.round(width)}px`);
+  }, []);
+
+  useEffect(() => {
+    if (detached || !chatOpen || chatPanelDetached) return;
+    const panel = chatPanelRef.current;
+    if (!panel) return;
+
+    const renderedWidth = panel.getBoundingClientRect().width;
+    if (!chatPanelWidthInitializedRef.current
+      && Number.isFinite(renderedWidth)
+      && renderedWidth > 0) {
+      preferredChatPanelWidthRef.current = Math.min(
+        CHAT_PANEL_MAX_WIDTH,
+        Math.max(CHAT_PANEL_MIN_WIDTH, renderedWidth),
+      );
+      chatPanelWidthInitializedRef.current = true;
+    }
+
+    const syncWidthToViewport = () => {
+      applyDockedChatPanelWidth(preferredChatPanelWidthRef.current);
+    };
+    syncWidthToViewport();
+    window.addEventListener('resize', syncWidthToViewport);
+    return () => window.removeEventListener('resize', syncWidthToViewport);
+  }, [applyDockedChatPanelWidth, chatOpen, chatPanelDetached, detached]);
+
+  useEffect(() => () => {
+    chatPanelResizeGestureRef.current = null;
+    document.body.classList.remove('chat-panel-resizing');
+  }, []);
+
+  const handleChatPanelResizePointerDown = useCallback((
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    if (detached || event.button !== 0) return;
+    const panel = chatPanelRef.current;
+    if (!panel) return;
+
+    chatPanelResizeGestureRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: panel.getBoundingClientRect().width,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.classList.add('chat-panel-resizing');
+    event.preventDefault();
+  }, [detached]);
+
+  const handleChatPanelResizePointerMove = useCallback((
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    const gesture = chatPanelResizeGestureRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+
+    const preferredWidth = Math.min(
+      CHAT_PANEL_MAX_WIDTH,
+      Math.max(
+        CHAT_PANEL_MIN_WIDTH,
+        gesture.startWidth + gesture.startX - event.clientX,
+      ),
+    );
+    preferredChatPanelWidthRef.current = preferredWidth;
+    applyDockedChatPanelWidth(preferredWidth);
+  }, [applyDockedChatPanelWidth]);
+
+  const handleChatPanelResizePointerEnd = useCallback((
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    const gesture = chatPanelResizeGestureRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+
+    chatPanelResizeGestureRef.current = null;
+    document.body.classList.remove('chat-panel-resizing');
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
   // 记忆挂在剧集项目上，分集画布要按归属项目取
   const memoryOwnerId = useAppStore((s) => (
     effectiveProjectId ? seriesOwnerId(s.projects, effectiveProjectId) : null
@@ -734,6 +843,7 @@ export default function ChatPanel({
     <AnimatePresence>
       {(detached || (chatOpen && !chatPanelDetached)) && (
           <motion.aside
+            ref={chatPanelRef}
             className={`chat-panel-root ${detached
               ? 'chat-panel-detached h-screen w-screen flex flex-col overflow-hidden rounded-[16px] border border-canvas-border bg-[var(--glass-panel-bg)] text-canvas-text backdrop-blur-2xl'
               : 'chat-panel fixed z-50 flex flex-col'}`}
@@ -752,6 +862,17 @@ export default function ChatPanel({
               ? { duration: 0.12 }
               : { type: 'spring', visualDuration: 0.35, bounce: 0 }}
           >
+            {!detached && (
+              <div
+                aria-hidden="true"
+                className="chat-panel-resize-handle"
+                onPointerDown={handleChatPanelResizePointerDown}
+                onPointerMove={handleChatPanelResizePointerMove}
+                onPointerUp={handleChatPanelResizePointerEnd}
+                onPointerCancel={handleChatPanelResizePointerEnd}
+                onLostPointerCapture={handleChatPanelResizePointerEnd}
+              />
+            )}
             {/* Header */}
             <ChatHeader
               detached={detached}

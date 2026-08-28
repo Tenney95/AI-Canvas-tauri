@@ -1940,6 +1940,40 @@ button.wf-ionode-badge.is-default {
   isolation: isolate;
 }
 
+.chat-panel-resize-handle {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 8px;
+  cursor: var(--cursor-ew-resize, ew-resize);
+  touch-action: none;
+}
+
+.chat-panel-resize-handle::after {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 70%, transparent);
+  content: '';
+  opacity: 0;
+  transition: opacity var(--dur-fast) ease-out;
+}
+
+.chat-panel-resize-handle:hover::after,
+body.chat-panel-resizing .chat-panel-resize-handle::after {
+  opacity: 1;
+}
+
+body.chat-panel-resizing {
+  cursor: var(--cursor-ew-resize, ew-resize);
+  user-select: none;
+}
+
 .chat-panel-detached {
   border-color: transparent;
   background:
