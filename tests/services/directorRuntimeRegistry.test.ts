@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   openDirectorDeskWindow: vi.fn(),
   requestDirectorWindowAction: vi.fn(),
   subscribeDirectorDeskWindow: vi.fn(),
+  getDirectorBlenderAvailability: vi.fn(),
+  prepareDirectorBlenderInstallation: vi.fn(),
+  runDirectorBlenderOperation: vi.fn(),
 }));
 
 vi.mock('../../src/services/directorDeskRuntimeService', () => ({
@@ -24,15 +27,42 @@ vi.mock('../../src/services/directorDeskWindowService', () => ({
   subscribeDirectorDeskWindow: mocks.subscribeDirectorDeskWindow,
 }));
 
+vi.mock('../../src/services/directorBlenderRuntimeService', () => ({
+  getDirectorBlenderAvailability: mocks.getDirectorBlenderAvailability,
+  prepareDirectorBlenderInstallation: mocks.prepareDirectorBlenderInstallation,
+  runDirectorBlenderOperation: mocks.runDirectorBlenderOperation,
+}));
+
 import {
   BLENDER_RUNTIME_UNAVAILABLE_REASON,
   exportDirectorRuntimeFrame,
   exportDirectorRuntimeVideo,
   getDirectorRuntimeAvailability,
   openDirectorRuntime,
+  prepareDirectorRuntime,
   resolveDirectorRuntime,
   subscribeDirectorRuntime,
 } from '../../src/services/directorRuntimeRegistry';
+
+const sceneReference = {
+  schemaVersion: 1 as const,
+  sceneId: 'scene-director-1',
+  revision: 1,
+  relativePath: 'director/scenes/scene-director-1/revisions/1.json',
+  sha256: 'a'.repeat(64),
+  bytes: 512,
+};
+
+const manifestReference = {
+  schemaVersion: 1 as const,
+  sceneId: sceneReference.sceneId,
+  sceneRevision: sceneReference.revision,
+  sceneSha256: sceneReference.sha256,
+  manifestRevision: 1,
+  relativePath: 'director/results/scene-director-1/manifests/1.json',
+  sha256: 'b'.repeat(64),
+  bytes: 768,
+};
 
 describe('directorRuntimeRegistry', () => {
   let protocolListener: ((message: ProtocolMessage) => void) | null;
@@ -45,6 +75,10 @@ describe('directorRuntimeRegistry', () => {
     mocks.isDirectorDeskRuntimeAvailable.mockReturnValue(true);
     mocks.getDirectorDeskRuntimeStatus.mockResolvedValue({ installed: true });
     mocks.openDirectorDeskWindow.mockResolvedValue(undefined);
+    mocks.getDirectorBlenderAvailability.mockResolvedValue({ state: 'ready' });
+    mocks.prepareDirectorBlenderInstallation.mockResolvedValue({
+      installationId: 'blender-installation-1',
+    });
     mocks.subscribeDirectorDeskWindow.mockImplementation(
       (_instanceId: string, listener: (message: ProtocolMessage) => void) => {
         protocolListener = listener;
@@ -72,8 +106,9 @@ describe('directorRuntimeRegistry', () => {
       supported: true,
       kind: 'blender',
       descriptor: {
-        selectable: false,
-        capabilities: { open: false, exportFrame: false, exportVideo: false },
+        label: 'Blender',
+        selectable: true,
+        capabilities: { open: true, exportFrame: true, exportVideo: true },
       },
     });
 
@@ -82,7 +117,7 @@ describe('directorRuntimeRegistry', () => {
     }
   });
 
-  it('reports desktop setup state only for the lightweight web runtime', async () => {
+  it('reports availability through the selected runtime without cross-calling services', async () => {
     mocks.isDirectorDeskRuntimeAvailable.mockReturnValue(false);
     await expect(getDirectorRuntimeAvailability(undefined)).resolves.toEqual({
       state: 'unavailable',
@@ -98,11 +133,24 @@ describe('directorRuntimeRegistry', () => {
       state: 'ready',
     });
 
+    mocks.getDirectorBlenderAvailability.mockResolvedValueOnce({ state: 'setup-required' });
+    await expect(getDirectorRuntimeAvailability('blender')).resolves.toEqual({
+      state: 'setup-required',
+    });
+    expect(mocks.getDirectorDeskRuntimeStatus).toHaveBeenCalledTimes(2);
+    expect(mocks.getDirectorBlenderAvailability).toHaveBeenCalledOnce();
+
+    vi.clearAllMocks();
+    mocks.getDirectorBlenderAvailability.mockResolvedValue({
+      state: 'unavailable',
+      reason: BLENDER_RUNTIME_UNAVAILABLE_REASON,
+    });
     await expect(getDirectorRuntimeAvailability('blender')).resolves.toEqual({
       state: 'unavailable',
       reason: BLENDER_RUNTIME_UNAVAILABLE_REASON,
     });
-    expect(mocks.getDirectorDeskRuntimeStatus).toHaveBeenCalledTimes(2);
+    expect(mocks.getDirectorBlenderAvailability).toHaveBeenCalledOnce();
+    expect(mocks.getDirectorDeskRuntimeStatus).not.toHaveBeenCalled();
   });
 
   it('forwards lightweight web open, frame, video and subscription semantics', async () => {
@@ -181,26 +229,148 @@ describe('directorRuntimeRegistry', () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
-  it('fails closed for Blender and unknown runtimes without touching web services', async () => {
-    for (const runtime of ['blender', 'future-runtime']) {
-      await expect(openDirectorRuntime(runtime, {
-        instanceId: 'director-1',
-        theme: 'dark',
-      })).rejects.toThrow();
-      await expect(exportDirectorRuntimeFrame(runtime, 'director-1', {
-        position: 'current',
-        quality: '1080p',
-        fileName: 'frame.png',
-      })).rejects.toThrow();
-      await expect(exportDirectorRuntimeVideo(runtime, 'director-1', {
-        quality: '720p',
-        fps: 24,
-        fileName: 'reference.mp4',
-      })).rejects.toThrow();
-      const stop = subscribeDirectorRuntime(runtime, 'director-1', vi.fn());
-      stop();
-    }
+  it('routes Blender prepare, open, frame and video operations only to the native service', async () => {
+    const controller = new AbortController();
+    const onStatus = vi.fn();
+    const blender = {
+      projectId: 'project-1',
+      sceneReference,
+      previousManifestReference: manifestReference,
+      signal: controller.signal,
+      onStatus,
+    };
 
+    await prepareDirectorRuntime('blender');
+    expect(mocks.prepareDirectorBlenderInstallation).toHaveBeenCalledOnce();
+
+    mocks.runDirectorBlenderOperation.mockResolvedValueOnce({
+      manifestReference,
+      blend: {
+        mediaUrl: 'asset://director.blend',
+        filePath: 'project/director.blend',
+        fileName: 'director.blend',
+      },
+    });
+    await expect(openDirectorRuntime('blender', {
+      instanceId: 'director-1',
+      theme: 'dark',
+      blender,
+    })).resolves.toEqual({
+      manifestReference,
+      blendFilePath: 'project/director.blend',
+    });
+    expect(mocks.runDirectorBlenderOperation).toHaveBeenLastCalledWith({
+      operation: 'open-editor',
+      projectId: 'project-1',
+      directorInstanceId: 'director-1',
+      sceneReference,
+      previousManifestReference: manifestReference,
+    }, {
+      signal: controller.signal,
+      onStatus,
+    });
+
+    mocks.runDirectorBlenderOperation.mockResolvedValueOnce({
+      manifestReference,
+      frame: {
+        mediaUrl: 'asset://frame.png',
+        filePath: 'project/frame.png',
+        fileName: 'frame.png',
+      },
+    });
+    await expect(exportDirectorRuntimeFrame('blender', 'director-1', {
+      position: 'current',
+      quality: '1080p',
+      fileName: 'requested.png',
+      targetFrame: 42,
+      blender,
+    })).resolves.toEqual({
+      mediaUrl: 'asset://frame.png',
+      filePath: 'project/frame.png',
+      fileName: 'frame.png',
+      manifestReference,
+    });
+    expect(mocks.runDirectorBlenderOperation).toHaveBeenLastCalledWith({
+      operation: 'render-frame',
+      projectId: 'project-1',
+      directorInstanceId: 'director-1',
+      sceneReference,
+      previousManifestReference: manifestReference,
+      targetFrame: 42,
+    }, {
+      signal: controller.signal,
+      onStatus,
+    });
+
+    mocks.runDirectorBlenderOperation.mockResolvedValueOnce({
+      manifestReference,
+      video: {
+        mediaUrl: 'asset://reference.mp4',
+        filePath: 'project/reference.mp4',
+        fileName: 'reference.mp4',
+      },
+    });
+    await expect(exportDirectorRuntimeVideo('blender', 'director-1', {
+      quality: '720p',
+      fps: 24,
+      fileName: 'requested.mp4',
+      blender,
+    })).resolves.toEqual({
+      mediaUrl: 'asset://reference.mp4',
+      filePath: 'project/reference.mp4',
+      fileName: 'reference.mp4',
+      manifestReference,
+    });
+    expect(mocks.runDirectorBlenderOperation).toHaveBeenLastCalledWith({
+      operation: 'render-video',
+      projectId: 'project-1',
+      directorInstanceId: 'director-1',
+      sceneReference,
+      previousManifestReference: manifestReference,
+    }, {
+      signal: controller.signal,
+      onStatus,
+    });
+
+    const listener = vi.fn();
+    const stop = subscribeDirectorRuntime('blender', 'director-1', listener);
+    stop();
+    expect(listener).not.toHaveBeenCalled();
+
+    expect(mocks.openDirectorDeskWindow).not.toHaveBeenCalled();
+    expect(mocks.requestDirectorWindowAction).not.toHaveBeenCalled();
+    expect(mocks.subscribeDirectorDeskWindow).not.toHaveBeenCalled();
+    expect(mocks.getDirectorDeskRuntimeStatus).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for unknown runtimes without touching either service', async () => {
+    await expect(getDirectorRuntimeAvailability('future-runtime')).resolves.toEqual({
+      state: 'unavailable',
+      reason: '未知 3D 导演运行时，已拒绝自动回退',
+    });
+    await expect(prepareDirectorRuntime('future-runtime')).rejects.toThrow(
+      '未知 3D 导演运行时，已拒绝自动回退',
+    );
+    await expect(openDirectorRuntime('future-runtime', {
+      instanceId: 'director-1',
+      theme: 'dark',
+    })).rejects.toThrow();
+    await expect(exportDirectorRuntimeFrame('future-runtime', 'director-1', {
+      position: 'current',
+      quality: '1080p',
+      fileName: 'frame.png',
+    })).rejects.toThrow();
+    await expect(exportDirectorRuntimeVideo('future-runtime', 'director-1', {
+      quality: '720p',
+      fps: 24,
+      fileName: 'reference.mp4',
+    })).rejects.toThrow();
+    const stop = subscribeDirectorRuntime('future-runtime', 'director-1', vi.fn());
+    stop();
+
+    expect(mocks.getDirectorBlenderAvailability).not.toHaveBeenCalled();
+    expect(mocks.prepareDirectorBlenderInstallation).not.toHaveBeenCalled();
+    expect(mocks.runDirectorBlenderOperation).not.toHaveBeenCalled();
     expect(mocks.openDirectorDeskWindow).not.toHaveBeenCalled();
     expect(mocks.requestDirectorWindowAction).not.toHaveBeenCalled();
     expect(mocks.subscribeDirectorDeskWindow).not.toHaveBeenCalled();

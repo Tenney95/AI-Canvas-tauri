@@ -218,6 +218,20 @@ pub fn is_agent_private_path<R: Runtime>(app: &AppHandle<R>, resolved: &Path) ->
         .unwrap_or(false)
 }
 
+/// Blender 项目根不能覆盖 Agent 私有注册表，也不能位于其内部。
+pub(crate) fn is_agent_private_path_overlap<R: Runtime>(
+    app: &AppHandle<R>,
+    resolved: &Path,
+) -> bool {
+    agent_private_dir(app)
+        .map(|directory| {
+            let private = normalized_for_compare(&directory);
+            let target = normalized_for_compare(resolved);
+            is_within(&target, &private) || is_within(&private, &target)
+        })
+        .unwrap_or(false)
+}
+
 /// 把真实路径注册表从 Renderer 的 fs 与 asset scope 中移除。
 ///
 /// 该动作在应用 setup 中 best-effort 执行；失败只会记录诊断，不阻断普通功能启动。

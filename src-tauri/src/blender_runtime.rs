@@ -2,16 +2,27 @@
 //!
 //! 本阶段只读取固定 Program Files 层级，不执行候选，也不向前端暴露绝对路径。
 
-use serde::Serialize;
+mod job;
+pub mod project_grant;
+mod resources;
+mod result;
+mod runner;
+
+pub use job::{BlenderJobCore, BlenderJobStartRequest, BlenderJobStatus};
+pub use project_grant::ProjectGrantState;
+pub use result::BlenderCollectedResult;
+
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsStr,
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Mutex,
 };
-use tauri::{State, Webview};
+use tauri::{AppHandle, Manager, Runtime, State, Webview};
 
 const BLENDER_VENDOR_DIRECTORY: &str = "Blender Foundation";
 const BLENDER_EXECUTABLE_NAME: &str = "blender.exe";
@@ -21,6 +32,7 @@ const MAX_DIRECTORY_ENTRIES: usize = 128;
 const MAX_RETURNED_CANDIDATES: usize = 16;
 const MAX_DISPLAY_NAME_CHARS: usize = 80;
 const MAX_VERSION_HINT_CHARS: usize = 32;
+const BLENDER_PRIVATE_DIRECTORY: &str = "blender-native-private";
 
 /// 候选来源只描述本轮扫描入口，不代表候选已通过版本或架构验证。
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -31,6 +43,8 @@ pub enum BlenderInstallationSource {
     ProgramFiles,
     #[serde(rename = "program-files-x86")]
     ProgramFilesX86,
+    #[serde(rename = "user-selected")]
+    UserSelected,
 }
 
 /// 返回给前端的只读候选摘要，不包含可执行文件或安装目录路径。
@@ -66,7 +80,14 @@ pub struct BlenderDiscoveryResult {
 /// 发现记录只存在于当前 Rust 进程内；后续 Job 启动仍必须重新校验路径和兼容性。
 #[derive(Default)]
 pub struct BlenderRuntimeState {
-    installations: Mutex<HashMap<String, (PathBuf, PathBuf)>>,
+    installations: Mutex<HashMap<String, InstallationRecord>>,
+}
+
+#[derive(Clone, Debug)]
+struct InstallationRecord {
+    candidate: BlenderInstallationCandidate,
+    canonical_root: PathBuf,
+    canonical_executable: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -107,15 +128,16 @@ impl BlenderRuntimeState {
         &self,
         installations: &[DiscoveredInstallation],
     ) -> Result<(), String> {
-        let next = installations
+        let next: HashMap<_, _> = installations
             .iter()
             .map(|installation| {
                 (
                     installation.candidate.installation_id.clone(),
-                    (
-                        installation.canonical_root.clone(),
-                        installation.canonical_executable.clone(),
-                    ),
+                    InstallationRecord {
+                        candidate: installation.candidate.clone(),
+                        canonical_root: installation.canonical_root.clone(),
+                        canonical_executable: installation.canonical_executable.clone(),
+                    },
                 )
             })
             .collect();
@@ -124,14 +146,88 @@ impl BlenderRuntimeState {
             .installations
             .lock()
             .map_err(|_| "Blender 安装候选状态不可用".to_string())?;
-        *current = next;
+        current
+            .retain(|_, record| record.candidate.source == BlenderInstallationSource::UserSelected);
+        current.extend(next);
         Ok(())
+    }
+
+    fn register_manual(
+        &self,
+        record: InstallationRecord,
+    ) -> Result<BlenderInstallationCandidate, String> {
+        let candidate = record.candidate.clone();
+        self.installations
+            .lock()
+            .map_err(|_| "Blender 安装候选状态不可用".to_string())?
+            .insert(candidate.installation_id.clone(), record);
+        Ok(candidate)
+    }
+
+    fn resolve_installation(&self, installation_id: &str) -> Result<InstallationRecord, String> {
+        let installations = self
+            .installations
+            .lock()
+            .map_err(|_| "Blender 安装候选状态不可用".to_string())?;
+        installations
+            .get(installation_id)
+            .cloned()
+            .ok_or_else(|| "Blender 安装候选不存在或已失效".to_string())
     }
 
     #[cfg(test)]
     fn installation_count(&self) -> usize {
         self.installations.lock().expect("测试状态锁不应中毒").len()
     }
+}
+
+pub(crate) fn blender_private_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    app.path()
+        .app_local_data_dir()
+        .map(|directory| directory.join(BLENDER_PRIVATE_DIRECTORY))
+        .map_err(|_| "无法定位 Blender 私有运行目录".to_string())
+}
+
+pub(crate) fn is_blender_private_path_overlap<R: Runtime>(
+    app: &AppHandle<R>,
+    resolved: &Path,
+) -> bool {
+    blender_private_dir(app)
+        .map(|directory| {
+            let private = directory.components().collect::<PathBuf>();
+            resolved == private || resolved.starts_with(&private) || private.starts_with(resolved)
+        })
+        .unwrap_or(false)
+}
+
+pub fn prepare_blender_private_runtime<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    use tauri_plugin_fs::FsExt;
+    let directory = blender_private_dir(app)?;
+    fs::create_dir_all(&directory).map_err(|_| "无法创建 Blender 私有运行目录".to_string())?;
+    let metadata =
+        fs::symlink_metadata(&directory).map_err(|_| "Blender 私有运行目录不可用".to_string())?;
+    if !is_plain_directory(&metadata) {
+        return Err("Blender 私有运行目录不安全".to_string());
+    }
+    let canonical = directory
+        .canonicalize()
+        .map_err(|_| "Blender 私有运行目录不可用".to_string())?;
+    app.fs_scope()
+        .forbid_directory(&canonical, true)
+        .map_err(|_| "无法隔离 Blender 私有运行目录".to_string())?;
+    let _ = app.state::<tauri::scope::Scopes>().forbid_file(&canonical);
+    Ok(canonical)
+}
+
+pub fn production_blender_job_core() -> BlenderJobCore {
+    use job::{DefaultBlenderJobIdGenerator, NoopBlenderJobEventSink, SystemBlenderJobClock};
+    use std::sync::Arc;
+    BlenderJobCore::with_dependencies(
+        Arc::new(runner::NativeBlenderJobRunner::default()),
+        Arc::new(SystemBlenderJobClock),
+        Arc::new(DefaultBlenderJobIdGenerator::default()),
+        Arc::new(NoopBlenderJobEventSink),
+    )
 }
 
 /// 只允许主窗口发起候选发现；其他首方窗口也不能扩大这一入口。
@@ -324,6 +420,70 @@ fn display_summary(directory_name: &OsStr) -> (String, Option<String>) {
     } else {
         ("Blender candidate".to_string(), None)
     }
+}
+
+fn validate_pe_x64(path: &Path) -> Result<(), String> {
+    const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
+    let mut file = fs::File::open(path).map_err(|_| "Blender 可执行文件不可用".to_string())?;
+    let mut dos = [0u8; 64];
+    file.read_exact(&mut dos)
+        .map_err(|_| "Blender 可执行文件格式无效".to_string())?;
+    if &dos[..2] != b"MZ" {
+        return Err("Blender 可执行文件格式无效".to_string());
+    }
+    let pe_offset = u32::from_le_bytes(dos[60..64].try_into().unwrap()) as u64;
+    if !(64..=1024 * 1024).contains(&pe_offset) {
+        return Err("Blender 可执行文件格式无效".to_string());
+    }
+    file.seek(SeekFrom::Start(pe_offset))
+        .map_err(|_| "Blender 可执行文件格式无效".to_string())?;
+    let mut header = [0u8; 6];
+    file.read_exact(&mut header)
+        .map_err(|_| "Blender 可执行文件格式无效".to_string())?;
+    if &header[..4] != b"PE\0\0"
+        || u16::from_le_bytes([header[4], header[5]]) != IMAGE_FILE_MACHINE_AMD64
+    {
+        return Err("只支持 Windows x64 Blender".to_string());
+    }
+    Ok(())
+}
+
+/// `path_policy` 为前端路径语义移除了 Windows verbatim 前缀；安装记录内部则必须
+/// 保留 `std::fs::canonicalize` 的稳定表示，才能在每次 Job 启动时做严格身份复核。
+fn canonicalize_registered_executable(path: &Path) -> Result<PathBuf, String> {
+    path.canonicalize()
+        .map_err(|_| "Blender 可执行文件不可用".to_string())
+}
+
+fn validate_installation_record(record: &InstallationRecord) -> Result<PathBuf, String> {
+    let root_metadata = fs::symlink_metadata(&record.canonical_root)
+        .map_err(|_| "Blender 安装候选不存在或已失效".to_string())?;
+    let executable_metadata = fs::symlink_metadata(&record.canonical_executable)
+        .map_err(|_| "Blender 安装候选不存在或已失效".to_string())?;
+    if !is_plain_directory(&root_metadata) || !is_plain_file(&executable_metadata) {
+        return Err("Blender 安装候选不存在或已失效".to_string());
+    }
+    let root = record
+        .canonical_root
+        .canonicalize()
+        .map_err(|_| "Blender 安装候选不存在或已失效".to_string())?;
+    let executable = record
+        .canonical_executable
+        .canonicalize()
+        .map_err(|_| "Blender 安装候选不存在或已失效".to_string())?;
+    if root != record.canonical_root
+        || executable != record.canonical_executable
+        || !executable.starts_with(&root)
+        || executable
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_none_or(|name| !name.eq_ignore_ascii_case(BLENDER_EXECUTABLE_NAME))
+        || !canonical_root_is_allowed(&root)
+    {
+        return Err("Blender 安装候选不存在或已失效".to_string());
+    }
+    validate_pe_x64(&executable)?;
+    Ok(executable)
 }
 
 fn bounded_directory_entries(directory: &Path) -> Result<Vec<fs::DirEntry>, DirectoryEntriesError> {
@@ -540,6 +700,129 @@ pub fn discover_blender_installations(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegisterBlenderInstallationRequest {
+    executable_path: String,
+}
+
+#[tauri::command]
+pub fn register_blender_installation(
+    webview: Webview,
+    state: State<'_, BlenderRuntimeState>,
+    request: RegisterBlenderInstallationRequest,
+) -> Result<BlenderInstallationCandidate, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
+    ensure_main_window_label(webview.label())?;
+    let executable = crate::path_policy::authorize_existing_plain_file(
+        webview.app_handle(),
+        &request.executable_path,
+    )?;
+    if executable
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_none_or(|name| !name.eq_ignore_ascii_case(BLENDER_EXECUTABLE_NAME))
+    {
+        return Err("请选择 blender.exe".to_string());
+    }
+    let executable = canonicalize_registered_executable(&executable)?;
+    validate_pe_x64(&executable)?;
+    let root = executable
+        .parent()
+        .ok_or_else(|| "Blender 安装目录无效".to_string())?
+        .to_path_buf();
+    let identity_key = path_identity(&executable);
+    state.register_manual(InstallationRecord {
+        candidate: BlenderInstallationCandidate {
+            installation_id: installation_id(&identity_key),
+            display_name: "Blender（手动选择）".to_string(),
+            source: BlenderInstallationSource::UserSelected,
+            version_hint: None,
+            version_hint_is_verified: false,
+        },
+        canonical_root: root,
+        canonical_executable: executable,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BlenderJobIdRequest {
+    job_id: String,
+}
+
+#[tauri::command]
+pub fn start_blender_job(
+    webview: Webview,
+    runtime_state: State<'_, BlenderRuntimeState>,
+    project_grants: State<'_, ProjectGrantState>,
+    jobs: State<'_, BlenderJobCore>,
+    request: BlenderJobStartRequest,
+) -> Result<BlenderJobStatus, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
+    ensure_main_window_label(webview.label())?;
+    let installation = runtime_state.resolve_installation(&request.installation_id)?;
+    let executable = validate_installation_record(&installation)?;
+    let private_root = prepare_blender_private_runtime(webview.app_handle())?;
+    let resources = resources::install_embedded_blender_runtime(&private_root)
+        .map_err(|error| error.to_string())?;
+    let project_id = request.project_id.clone();
+    let project_grant_id = request.project_grant_id.clone();
+    project_grants.with_revalidated_project_root(
+        webview.app_handle(),
+        &project_id,
+        &project_grant_id,
+        |project_root| {
+            jobs.start(
+                request,
+                job::BlenderJobTrustedContext {
+                    executable,
+                    project_root: project_root.to_path_buf(),
+                    private_root,
+                    resources,
+                },
+            )
+            .map_err(|error| error.public_message().to_string())
+        },
+    )
+}
+
+#[tauri::command]
+pub fn get_blender_job_status(
+    webview: Webview,
+    jobs: State<'_, BlenderJobCore>,
+    request: BlenderJobIdRequest,
+) -> Result<BlenderJobStatus, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
+    ensure_main_window_label(webview.label())?;
+    jobs.get_status(&request.job_id)
+        .map_err(|error| error.public_message().to_string())
+}
+
+#[tauri::command]
+pub fn cancel_blender_job(
+    webview: Webview,
+    jobs: State<'_, BlenderJobCore>,
+    request: BlenderJobIdRequest,
+) -> Result<BlenderJobStatus, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
+    ensure_main_window_label(webview.label())?;
+    jobs.cancel(&request.job_id)
+        .map_err(|error| error.public_message().to_string())
+}
+
+#[tauri::command]
+pub fn collect_blender_job_result(
+    webview: Webview,
+    jobs: State<'_, BlenderJobCore>,
+    request: BlenderJobIdRequest,
+) -> Result<BlenderCollectedResult, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
+    ensure_main_window_label(webview.label())?;
+    jobs.collect(&request.job_id)
+        .map_err(|error| error.public_message().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,6 +867,25 @@ mod tests {
             fs::create_dir_all(&directory).expect("应能创建候选目录");
             let executable = directory.join(BLENDER_EXECUTABLE_NAME);
             fs::write(&executable, b"test-only placeholder").expect("应能创建候选文件");
+            executable
+        }
+
+        fn create_manual_x64_candidate(&self) -> PathBuf {
+            let directory = self
+                .path
+                .join("Program Files (x86)")
+                .join("Steam")
+                .join("steamapps")
+                .join("common")
+                .join("Blender");
+            fs::create_dir_all(&directory).expect("应能创建手选候选目录");
+            let executable = directory.join(BLENDER_EXECUTABLE_NAME);
+            let mut bytes = vec![0u8; 126];
+            bytes[0..2].copy_from_slice(b"MZ");
+            bytes[60..64].copy_from_slice(&120u32.to_le_bytes());
+            bytes[120..124].copy_from_slice(b"PE\0\0");
+            bytes[124..126].copy_from_slice(&0x8664u16.to_le_bytes());
+            fs::write(&executable, bytes).expect("应能创建最小 x64 PE 候选");
             executable
         }
     }
@@ -871,6 +1173,32 @@ mod tests {
         assert!(ensure_main_window_label("chat-assistant").is_err());
         assert!(ensure_main_window_label("asset-search").is_err());
         assert!(ensure_main_window_label("director-desk").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn manually_selected_windows_path_keeps_stable_canonical_identity() {
+        let root = TestDirectory::new("manual-steam-path");
+        let selected = root.create_manual_x64_candidate();
+        let executable =
+            canonicalize_registered_executable(&selected).expect("手选路径应能转换为内部稳定表示");
+        let canonical_root = executable.parent().expect("候选应有安装目录").to_path_buf();
+        let record = InstallationRecord {
+            candidate: BlenderInstallationCandidate {
+                installation_id: installation_id(&path_identity(&executable)),
+                display_name: "Blender（手动选择）".to_string(),
+                source: BlenderInstallationSource::UserSelected,
+                version_hint: None,
+                version_hint_is_verified: false,
+            },
+            canonical_root,
+            canonical_executable: executable.clone(),
+        };
+
+        assert_eq!(
+            validate_installation_record(&record).expect("启动前复核应接受同一手选候选"),
+            executable
+        );
     }
 
     #[cfg(windows)]

@@ -1,6 +1,6 @@
 # 3D 镜头台 Blender 原生运行时实施计划
 
-> **状态：** Phase 0-D 文档与协议冻结已完成；Blender 原生运行时尚未实施，`blender` adapter 继续保持 unavailable。
+> **状态：** Phase 1-A/1-B 已完成；Phase 1-C Windows Blender 5.2.1 原生运行时预览已接通，核心真机流程通过，故障注入与完整保存返回投影验收仍进行中。
 
 **Goal:** 在不新增画布节点、不破坏现有免安装导演台的前提下，把 Blender 接入为同一 `ai-director` 节点的可选专业运行时，形成 Scene JSON → 固定 Blender Job → Result Manifest → 节点媒体回写的安全最小闭环。
 
@@ -114,6 +114,8 @@
 **目标：** 用固定请求清单驱动截图、参考视频和高级编辑打开，安全回收 Result Manifest。
 
 **前置：** Phase 1-A/1-B 通过；固定 `.blend` 模板、Application Template 和第一方脚本已经确定版本、来源、哈希与打包方式。若需要修改 `tauri.conf.json` resources，必须单独展示安全配置检查点。
+
+**当前实施状态（2026-08-28）：** 固定资源最终采用 Rust `include_bytes!` / `include_str!` 编译内嵌并按 manifest 校验，因此没有修改 `tauri.conf.json`。Windows 首批锁定 Blender 5.2.1 LTS；Rust native runner、项目内存 grant、opaque Job、Windows Job Object、同节点高级编辑/截图/视频、Result Manifest 回收、设置页手选及 Steam canonical 路径修复已经接通。Application Template、单帧、短视频、两次高级编辑保存与 `.blend` 续接已取得真机证据，AI Canvas 原节点也已真实启动 Steam Blender。真实超时、崩溃、应用退出进程树回收和完整保存返回投影仍需补齐可重复证据，所以本阶段继续标记进行中。
 
 **用途单一 commands：**
 

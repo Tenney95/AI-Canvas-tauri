@@ -4,11 +4,16 @@
  * 本模块不提供动态注册入口。lightweight-web 复用现有导演台服务；Blender 在接入
  * 固定脚本与场景协议前只返回 unavailable，不能回退或触发网页运行时。
  */
-import type { DirectorRuntimeKind } from '../types';
+import type {
+  DirectorResultManifestReference,
+  DirectorRuntimeKind,
+  DirectorSceneReference,
+} from '../types';
+import type { DirectorBlenderJobStatus } from './directorBlenderRuntimeService';
 import type { DirectorDeskProtocolMessage } from './directorDeskWindowService';
 
 export const DEFAULT_DIRECTOR_RUNTIME_KIND: DirectorRuntimeKind = 'lightweight-web';
-export const BLENDER_RUNTIME_UNAVAILABLE_REASON = 'Blender 导演运行时尚未接入';
+export const BLENDER_RUNTIME_UNAVAILABLE_REASON = 'Blender 导演运行时仅支持 Tauri 桌面端';
 const INVALID_RUNTIME_REASON = '未知 3D 导演运行时，已拒绝自动回退';
 
 export interface DirectorRuntimeCapabilities {
@@ -31,8 +36,11 @@ export type DirectorRuntimeAvailability =
   | { state: 'unavailable'; reason: string };
 
 export interface DirectorRuntimeCapture {
-  dataUrl: string;
+  dataUrl?: string;
+  mediaUrl?: string;
+  filePath?: string;
   fileName: string;
+  manifestReference?: DirectorResultManifestReference;
 }
 
 export type DirectorRuntimeEvent =
@@ -55,23 +63,42 @@ export type DirectorRuntimeResolution =
 export interface DirectorRuntimeOpenRequest {
   instanceId: string;
   theme: 'dark' | 'light';
+  blender?: DirectorRuntimeBlenderContext;
+}
+
+export interface DirectorRuntimeBlenderContext {
+  projectId: string;
+  sceneReference: DirectorSceneReference;
+  previousManifestReference?: DirectorResultManifestReference;
+  signal?: AbortSignal;
+  onStatus?: (status: DirectorBlenderJobStatus) => void;
+}
+
+export interface DirectorRuntimeOpenResult {
+  manifestReference?: DirectorResultManifestReference;
+  blendFilePath?: string;
 }
 
 export interface DirectorRuntimeFrameExportOptions {
   position: 'current';
   quality: '1080p';
   fileName: string;
+  targetFrame?: number;
+  blender?: DirectorRuntimeBlenderContext;
 }
 
 export interface DirectorRuntimeVideoExportOptions {
   quality: '720p';
   fps: number;
   fileName: string;
+  blender?: DirectorRuntimeBlenderContext;
 }
 
 export interface DirectorRuntimeVideoResult {
   mediaUrl: string;
   fileName?: string;
+  filePath?: string;
+  manifestReference?: DirectorResultManifestReference;
 }
 
 const LIGHTWEIGHT_WEB_DESCRIPTOR: DirectorRuntimeDescriptor = {
@@ -87,14 +114,13 @@ const LIGHTWEIGHT_WEB_DESCRIPTOR: DirectorRuntimeDescriptor = {
 
 const BLENDER_DESCRIPTOR: DirectorRuntimeDescriptor = {
   kind: 'blender',
-  label: 'Blender（即将开放）',
-  selectable: false,
+  label: 'Blender',
+  selectable: true,
   capabilities: {
-    open: false,
-    exportFrame: false,
-    exportVideo: false,
+    open: true,
+    exportFrame: true,
+    exportVideo: true,
   },
-  unavailableReason: BLENDER_RUNTIME_UNAVAILABLE_REASON,
 };
 
 const DIRECTOR_RUNTIME_DESCRIPTORS = {
@@ -143,10 +169,8 @@ export async function getDirectorRuntimeAvailability(
     return { state: 'unavailable', reason: resolution.reason };
   }
   if (resolution.kind === 'blender') {
-    return {
-      state: 'unavailable',
-      reason: resolution.descriptor.unavailableReason ?? BLENDER_RUNTIME_UNAVAILABLE_REASON,
-    };
+    const { getDirectorBlenderAvailability } = await import('./directorBlenderRuntimeService');
+    return getDirectorBlenderAvailability();
   }
 
   const runtimeService = await import('./directorDeskRuntimeService');
@@ -157,23 +181,53 @@ export async function getDirectorRuntimeAvailability(
   return status.installed ? { state: 'ready' } : { state: 'setup-required' };
 }
 
-function assertLightweightWebRuntime(value: unknown): void {
+function requireSupportedRuntime(value: unknown): DirectorRuntimeKind {
   const resolution = resolveDirectorRuntime(value);
   if (!resolution.supported) throw new Error(resolution.reason);
-  if (resolution.kind !== 'lightweight-web') {
-    throw new Error(
-      resolution.descriptor.unavailableReason ?? BLENDER_RUNTIME_UNAVAILABLE_REASON,
-    );
-  }
+  return resolution.kind;
+}
+
+function requireBlenderContext(
+  context: DirectorRuntimeBlenderContext | undefined,
+): DirectorRuntimeBlenderContext {
+  if (!context) throw new Error('Blender 导演操作缺少项目与场景绑定');
+  return context;
+}
+
+export async function prepareDirectorRuntime(value: unknown): Promise<void> {
+  const kind = requireSupportedRuntime(value);
+  if (kind !== 'blender') return;
+  const { prepareDirectorBlenderInstallation } = await import('./directorBlenderRuntimeService');
+  await prepareDirectorBlenderInstallation();
 }
 
 export async function openDirectorRuntime(
   value: unknown,
   request: DirectorRuntimeOpenRequest,
-): Promise<void> {
-  assertLightweightWebRuntime(value);
-  const { openDirectorDeskWindow } = await import('./directorDeskWindowService');
-  await openDirectorDeskWindow(request);
+): Promise<DirectorRuntimeOpenResult | void> {
+  const kind = requireSupportedRuntime(value);
+  if (kind === 'lightweight-web') {
+    const { openDirectorDeskWindow } = await import('./directorDeskWindowService');
+    await openDirectorDeskWindow({ instanceId: request.instanceId, theme: request.theme });
+    return;
+  }
+
+  const context = requireBlenderContext(request.blender);
+  const { runDirectorBlenderOperation } = await import('./directorBlenderRuntimeService');
+  const result = await runDirectorBlenderOperation({
+    operation: 'open-editor',
+    projectId: context.projectId,
+    directorInstanceId: request.instanceId,
+    sceneReference: context.sceneReference,
+    previousManifestReference: context.previousManifestReference,
+  }, {
+    signal: context.signal,
+    onStatus: context.onStatus,
+  });
+  return {
+    manifestReference: result.manifestReference,
+    blendFilePath: result.blend?.filePath,
+  };
 }
 
 function mapLightweightWebEvent(
@@ -197,7 +251,7 @@ function mapLightweightWebEvent(
             : 'director-capture.png',
         } satisfies DirectorRuntimeCapture;
       })
-      .filter((capture): capture is DirectorRuntimeCapture => capture !== null)
+      .filter((capture): capture is { dataUrl: string; fileName: string } => capture !== null)
     : [];
   return { type: 'captures', captures };
 }
@@ -235,17 +289,45 @@ export async function exportDirectorRuntimeFrame(
   instanceId: string,
   options: DirectorRuntimeFrameExportOptions,
 ): Promise<DirectorRuntimeCapture> {
-  assertLightweightWebRuntime(value);
+  const kind = requireSupportedRuntime(value);
+  if (kind === 'blender') {
+    const context = requireBlenderContext(options.blender);
+    if (!Number.isSafeInteger(options.targetFrame) || (options.targetFrame as number) <= 0) {
+      throw new Error('Blender 当前帧缺少有效目标帧');
+    }
+    const { runDirectorBlenderOperation } = await import('./directorBlenderRuntimeService');
+    const result = await runDirectorBlenderOperation({
+      operation: 'render-frame',
+      projectId: context.projectId,
+      directorInstanceId: instanceId,
+      sceneReference: context.sceneReference,
+      previousManifestReference: context.previousManifestReference,
+      targetFrame: options.targetFrame,
+    }, {
+      signal: context.signal,
+      onStatus: context.onStatus,
+    });
+    if (!result.frame) throw new Error('Blender Job 未返回当前帧');
+    return {
+      mediaUrl: result.frame.mediaUrl,
+      filePath: result.frame.filePath,
+      fileName: result.frame.fileName,
+      manifestReference: result.manifestReference,
+    };
+  }
+
   const { requestDirectorWindowAction } = await import('./directorDeskWindowService');
   const result = (await requestDirectorWindowAction(
     instanceId,
     'export.frame',
-    { ...options },
+    {
+      position: options.position,
+      quality: options.quality,
+      fileName: options.fileName,
+    },
   )) as { dataUrl?: unknown; fileName?: unknown } | undefined;
   const dataUrl = typeof result?.dataUrl === 'string' ? result.dataUrl.trim() : '';
-  if (!dataUrl.startsWith('data:image/')) {
-    throw new Error('导演台未返回有效帧图');
-  }
+  if (!dataUrl.startsWith('data:image/')) throw new Error('导演台未返回有效帧图');
   return {
     dataUrl,
     fileName: typeof result?.fileName === 'string' && result.fileName.trim()
@@ -259,12 +341,38 @@ export async function exportDirectorRuntimeVideo(
   instanceId: string,
   options: DirectorRuntimeVideoExportOptions,
 ): Promise<DirectorRuntimeVideoResult> {
-  assertLightweightWebRuntime(value);
+  const kind = requireSupportedRuntime(value);
+  if (kind === 'blender') {
+    const context = requireBlenderContext(options.blender);
+    const { runDirectorBlenderOperation } = await import('./directorBlenderRuntimeService');
+    const result = await runDirectorBlenderOperation({
+      operation: 'render-video',
+      projectId: context.projectId,
+      directorInstanceId: instanceId,
+      sceneReference: context.sceneReference,
+      previousManifestReference: context.previousManifestReference,
+    }, {
+      signal: context.signal,
+      onStatus: context.onStatus,
+    });
+    if (!result.video) throw new Error('Blender Job 未返回参考视频');
+    return {
+      mediaUrl: result.video.mediaUrl,
+      fileName: result.video.fileName,
+      filePath: result.video.filePath,
+      manifestReference: result.manifestReference,
+    };
+  }
+
   const { requestDirectorWindowAction } = await import('./directorDeskWindowService');
   const result = (await requestDirectorWindowAction(
     instanceId,
     'export.video',
-    { ...options },
+    {
+      quality: options.quality,
+      fps: options.fps,
+      fileName: options.fileName,
+    },
     90_000,
   )) as { dataUrl?: unknown; blobUrl?: unknown; fileName?: unknown } | undefined;
   const mediaUrl = typeof result?.dataUrl === 'string' && result.dataUrl
