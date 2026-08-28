@@ -71,15 +71,17 @@ export async function runVideoEditorAiTransition(
 
   const projectSettings = useAppStore.getState().projects
     .find((project) => project.id === projectId)?.settings;
+  const directGeneralProtocol = request.provider === 'general';
 
   const result = await generateVideo({
     prompt,
     model: request.model,
     provider: request.provider,
     referenceMedia: references,
-    seedanceRatio: projectSettings?.generation?.videoAspectRatio,
-    seedanceResolution: projectSettings?.generation?.videoResolution,
-    seedanceDuration: request.duration ?? projectSettings?.generation?.videoDuration,
+    seedanceRatio: directGeneralProtocol ? undefined : projectSettings?.generation?.videoAspectRatio,
+    seedanceResolution: directGeneralProtocol ? undefined : projectSettings?.generation?.videoResolution,
+    seedanceDuration: request.duration
+      ?? (directGeneralProtocol ? undefined : projectSettings?.generation?.videoDuration),
   }, signal);
 
   const baseName = `AI转场-${Date.now().toString(36)}`;

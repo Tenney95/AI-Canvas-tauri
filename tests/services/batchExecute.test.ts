@@ -190,13 +190,36 @@ describe('batchExecuteNodes', () => {
       nodeId: 'video',
       videoResolution: 1280,
       videoFps: 30,
-      videoFrames: 121,
+      videoFrames: 301,
       seedanceResolution: '1080p',
       seedanceRatio: '9:16',
       seedanceDuration: 10,
       generateAudio: true,
       workflowId: 'workflow-video',
       workflowInputs: { motion: '8' },
+    }));
+  });
+
+  it('does not inject legacy video defaults into direct general batch requests', async () => {
+    mocks.generateVideo.mockResolvedValue({ url: 'https://example.com/video.mp4' });
+    const node = createNode('general-video', 'ai-video', {
+      provider: 'general',
+      model: 'general/custom-video',
+    });
+
+    await expect(batchExecuteNodes([node.id], [node], [], createContext())).resolves.toEqual({
+      ok: 1,
+      fail: 0,
+    });
+
+    expect(mocks.generateVideo).toHaveBeenCalledWith(expect.objectContaining({
+      nodeId: 'general-video',
+      videoResolution: undefined,
+      videoFps: undefined,
+      videoFrames: undefined,
+      seedanceResolution: undefined,
+      seedanceRatio: undefined,
+      seedanceDuration: undefined,
     }));
   });
 

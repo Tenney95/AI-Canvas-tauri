@@ -7,19 +7,19 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import AnimatedButton from '../../shared/AnimatedButton';
 import type { BaseNodeData, GeneralModelConfig } from '../../../types';
-import type { VideoReferenceItem } from '../../../types/aiTypes';
+import type { VideoModelCapability, VideoReferenceItem } from '../../../types/aiTypes';
 import type { DramaCharacter } from '../../../types/dramaAssets';
 import { resolveDramaAssetImageRef } from '../../../services/dramaAssetPrompt';
-import { getApimartSeedanceCapability, toSeedanceCapabilityView } from '../../../services/ai/apimartVideoModels';
+import { getApimartSeedanceCapability } from '../../../services/ai/apimartVideoModels';
 import { getVolcengineSeedanceCapability } from '../../../services/ai/volcengineVideoModels';
 import { getDreaminaVideoCapability } from '../../../services/ai/dreaminaModels';
+import { getModelProtocolPresetVideoCapability } from '../../../services/ai/modelProtocol';
 import {
   resolveVideoDurationSeconds,
   VIDEO_ASPECT_RATIOS,
   VIDEO_DURATION_MAX_SECONDS,
   VIDEO_DURATION_MIN_SECONDS,
 } from '../../../services/aiDimensions';
-import { modelProtocolUsesVariable } from '../../../services/ai/modelProtocol';
 import { useAppStore } from '../../../store/useAppStore';
 
 interface VideoParamSelectorProps {
@@ -33,16 +33,16 @@ interface VideoParamSelectorProps {
   videoFps?: number;
   videoFrames?: number;
   onChangeResolution?: (value: number) => void;
-  onChangeFps?: (value: number) => void;
+  onChangeFps?: (value: number | undefined) => void;
   // ── Seedance ──
   seedanceResolution?: string;
   seedanceRatio?: string;
   seedanceDuration?: number;
   generateAudio?: boolean;
-  onChangeSeedanceResolution?: (value: string) => void;
-  onChangeSeedanceRatio?: (value: string) => void;
-  onChangeSeedanceDuration?: (value: number) => void;
-  onChangeGenerateAudio?: (value: boolean) => void;
+  onChangeSeedanceResolution?: (value: string | undefined) => void;
+  onChangeSeedanceRatio?: (value: string | undefined) => void;
+  onChangeSeedanceDuration?: (value: number | undefined) => void;
+  onChangeGenerateAudio?: (value: boolean | undefined) => void;
   showSeedanceRatio?: boolean;
   showGenerateAudio?: boolean;
   onContinuousEditEnd?: () => void;
@@ -110,12 +110,62 @@ export function resolveGeneralVideoModel(
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+export interface GeneralVideoControlSupport {
+  resolution: boolean;
+  ratio: boolean;
+  duration: boolean;
+  frameRate: boolean;
+  audio: boolean;
+}
+
+/** 通用视频模型的参数面板只读取 capability，不再扫描传输协议 JSON 猜模型能力。 */
+// eslint-disable-next-line react-refresh/only-export-components
+export function resolveGeneralVideoControlSupport(
+  capability: VideoModelCapability | undefined,
+): GeneralVideoControlSupport {
+  return {
+    resolution: Boolean(capability?.resolutions?.length || capability?.defaultResolution),
+    ratio: Boolean(capability?.ratios?.length || capability?.defaultRatio),
+    duration: Boolean(
+      capability?.durations?.length
+      || capability?.minDuration !== undefined
+      || capability?.maxDuration !== undefined
+      || capability?.defaultDuration !== undefined
+    ),
+    frameRate: Boolean(capability?.frameRates?.length || capability?.defaultFrameRate !== undefined),
+    audio: capability?.supportsAudio === true,
+  };
+}
+
+export interface GeneralVideoParameterDisplayState {
+  resolution?: string;
+  ratio?: string;
+  duration?: number;
+  frameRate?: number;
+  generateAudio?: boolean;
+}
+
+/** 允许值不等于默认值；只有节点显式值或 capability 明确 default 才能显示为已选择。 */
+// eslint-disable-next-line react-refresh/only-export-components
+export function resolveGeneralVideoParameterDisplayState(
+  capability: VideoModelCapability | undefined,
+  current: GeneralVideoParameterDisplayState,
+): GeneralVideoParameterDisplayState {
+  return {
+    resolution: current.resolution ?? capability?.defaultResolution,
+    ratio: current.ratio ?? capability?.defaultRatio,
+    duration: current.duration ?? capability?.defaultDuration,
+    frameRate: current.frameRate ?? capability?.defaultFrameRate,
+    generateAudio: current.generateAudio,
+  };
+}
+
 export default function VideoParamSelector({
   provider, selectedModel,
   nodeId, videoReferences, onChangeVideoReferences,
-  videoResolution = 832, videoFps = 24, videoFrames = 77,
+  videoResolution, videoFps, videoFrames,
   onChangeResolution, onChangeFps,
-  seedanceResolution = '720p', seedanceRatio = '16:9',
+  seedanceResolution, seedanceRatio,
   seedanceDuration, generateAudio,
   onChangeSeedanceResolution, onChangeSeedanceRatio,
   onChangeSeedanceDuration, onChangeGenerateAudio,
@@ -193,12 +243,6 @@ export default function VideoParamSelector({
     return resolveGeneralVideoModel(generalModels, selectedModel, provider);
   }, [generalModels, provider, selectedModel]);
 
-  const customProtocolSource = useMemo(() => (
-    generalModel?.executionProfile?.protocol
-      ? JSON.stringify(generalModel.executionProfile.protocol)
-      : ''
-  ), [generalModel]);
-
   const apimartCapability = provider === 'apimart'
     ? getApimartSeedanceCapability(selectedModel)
     : undefined;
@@ -208,51 +252,60 @@ export default function VideoParamSelector({
   const dreaminaCapability = provider === 'dreamina'
     ? getDreaminaVideoCapability(selectedModel)
     : undefined;
-  // 通用模型（general）按 videoCapability 声明约束参数；未声明则保持通用兜底
   const generalCapability = generalModel
-    ? toSeedanceCapabilityView(generalModel?.videoCapability)
+    ? generalModel.videoCapability
+      ?? getModelProtocolPresetVideoCapability(generalModel.executionProfile)
     : undefined;
-  // 统一的能力约束：APIMart / 火山方舟 / 即梦 / 通用模型都可能有按模型的档位约束，取命中者
-  const seedanceCapability = apimartCapability ?? volcengineCapability ?? dreaminaCapability ?? generalCapability;
+  const generalDisplayState = resolveGeneralVideoParameterDisplayState(generalCapability, {
+    resolution: seedanceResolution,
+    ratio: seedanceRatio,
+    duration: seedanceDuration,
+    frameRate: videoFps,
+    generateAudio,
+  });
+  // 原生模型和通用模型共享参数面板，但通用模型不再经过会补齐 Seedance 默认值的能力视图。
+  // 这样 capability 未声明的字段会保持未指定，不会被 UI 悄悄写成 720p / 16:9 / 24fps。
+  const nativeCapability = apimartCapability ?? volcengineCapability ?? dreaminaCapability;
+  const parameterCapability = nativeCapability ?? generalCapability;
   const isNativeSeedance = provider === 'volcengine' || provider === 'dreamina' || Boolean(apimartCapability);
-  const customUsesDuration = modelProtocolUsesVariable(customProtocolSource, 'duration', 'seedanceDuration');
-  const customUsesResolution = modelProtocolUsesVariable(
-    customProtocolSource,
-    'resolution',
-    'seedanceResolution',
-  );
-  const customUsesRatio = modelProtocolUsesVariable(customProtocolSource, 'aspectRatio', 'seedanceRatio');
-  const customUsesAudio = modelProtocolUsesVariable(customProtocolSource, 'generateAudio');
+  const generalControlSupport = resolveGeneralVideoControlSupport(generalCapability);
   // 本地工作流（ComfyUI / RunningHub）才按像素分辨率 + 帧率走；
-  // 其余接口模型即使添加时没声明分辨率/宽高比变量，也用这套 Seedance 风格的设置
+  // 其余接口模型使用按秒表达的 API 布局；具体控件仍只由 capability 决定。
   const isWorkflowProvider = provider === 'comfyui' || provider === 'runninghub' || !provider;
-  const usesDurationControls = isNativeSeedance
-    || customUsesDuration
-    || customUsesResolution
-    || customUsesRatio
-    || customUsesAudio
-    || !isWorkflowProvider;
+  const usesDurationControls = isNativeSeedance || !isWorkflowProvider;
+  const legacyVideoResolution = videoResolution ?? 832;
+  const legacyVideoFps = videoFps ?? 24;
+  const legacyVideoFrames = videoFrames ?? 77;
+  const legacySeedanceRatio = seedanceRatio ?? '16:9';
   // 非 Seedance（ComfyUI / RunningHub / 自建模型）：比例换算成 width/height 后注入请求
   const genericRatios = VIDEO_ASPECT_RATIOS.map((value) => ({ value, label: value }));
   const showGenericRatio = showSeedanceRatio;
-  const genericRatio = genericRatios.some((item) => item.value === seedanceRatio)
-    ? seedanceRatio
+  const genericRatio = genericRatios.some((item) => item.value === legacySeedanceRatio)
+    ? legacySeedanceRatio
     : VIDEO_ASPECT_RATIOS[0];
-  const isVolcengine = provider === 'volcengine';
-  const seedanceResolutions = seedanceCapability
-    ? seedanceCapability.resolutions.map((value) => ({ value, label: value === '4k' ? '4K' : value }))
-    : SEEDANCE_RESOLUTIONS;
-  const seedanceRatios = seedanceCapability
-    ? seedanceCapability.ratios.map((value) => ({ value, label: value }))
+  const declaredResolutions = parameterCapability?.resolutions?.length
+    ? parameterCapability.resolutions
+    : parameterCapability?.defaultResolution
+      ? [parameterCapability.defaultResolution]
+      : undefined;
+  const declaredRatios = parameterCapability?.ratios?.length
+    ? parameterCapability.ratios
+    : parameterCapability?.defaultRatio
+      ? [parameterCapability.defaultRatio]
+      : undefined;
+  const seedanceResolutions = declaredResolutions
+    ? declaredResolutions.map((value) => ({ value, label: value === '4k' ? '4K' : value }))
+    : generalModel ? [] : SEEDANCE_RESOLUTIONS;
+  const seedanceRatios = declaredRatios
+    ? declaredRatios.map((value) => ({ value, label: value }))
     : isNativeSeedance || !isWorkflowProvider
-      ? SEEDANCE_RATIOS
+      ? generalModel ? [] : SEEDANCE_RATIOS
       : genericRatios;
-  // 参考素材上限只能读模型真正声明的值：toSeedanceCapabilityView 会替通用模型补上
-  // 9/3/3 的兜底默认值，拿它做提示会写出模型根本没声明过的限制。
+  // 参考素材上限只能读模型真正声明的值，不能用 UI 兼容默认值充当模型约束。
   const referenceLimits = apimartCapability
     ?? volcengineCapability
     ?? dreaminaCapability
-    ?? generalModel?.videoCapability;
+    ?? generalCapability;
   const describeLimit = (max: number | undefined, unit: string, kind: string) => {
     if (max === undefined) return '';
     return max === 0 ? `不支持${kind}` : `最多 ${max} ${unit}${kind}`;
@@ -264,32 +317,64 @@ export default function VideoParamSelector({
       describeLimit(referenceLimits.maxAudioReferences, '个', '参考音频'),
     ].filter(Boolean).join('、')
     : '';
-  const minDuration = seedanceCapability?.minDuration ?? VIDEO_DURATION_MIN_SECONDS;
-  const maxDuration = seedanceCapability?.maxDuration ?? VIDEO_DURATION_MAX_SECONDS;
+  const durationCandidates = [
+    ...(parameterCapability?.durations ?? []),
+    ...(parameterCapability?.defaultDuration === undefined ? [] : [parameterCapability.defaultDuration]),
+  ];
+  const minDuration = parameterCapability?.minDuration
+    ?? (durationCandidates.length ? Math.min(...durationCandidates) : VIDEO_DURATION_MIN_SECONDS);
+  const maxDuration = parameterCapability?.maxDuration
+    ?? (durationCandidates.length ? Math.max(...durationCandidates) : VIDEO_DURATION_MAX_SECONDS);
   // 文档写「仅支持 10 或 15 秒」这类离散取值时，只给这几档，不能用连续滑杆
-  const allowedDurations = seedanceCapability?.durations?.length
-    ? [...seedanceCapability.durations].sort((left, right) => left - right)
+  const allowedDurations = parameterCapability?.durations?.length
+    ? [...parameterCapability.durations].sort((left, right) => left - right)
     : undefined;
-  const resolvedDuration = seedanceDuration === undefined && seedanceCapability
-    ? seedanceCapability.defaultDuration
-    : resolveVideoDurationSeconds(seedanceDuration, videoFrames, videoFps, maxDuration);
-  const displayedDuration = allowedDurations
-    ? allowedDurations.reduce((best, value) => (
-      Math.abs(value - resolvedDuration) < Math.abs(best - resolvedDuration) ? value : best
-    ), allowedDurations[0])
-    : Math.min(maxDuration, Math.max(minDuration, resolvedDuration));
-  const displayedResolution = seedanceResolutions.some((item) => item.value === seedanceResolution)
-    ? seedanceResolution
-    : seedanceCapability?.defaultResolution ?? seedanceResolution;
-  const displayedRatio = seedanceRatios.some((item) => item.value === seedanceRatio)
-    ? seedanceRatio
-    : seedanceCapability?.defaultRatio ?? seedanceRatio;
-  const configuredFrameRates = generalModel?.videoCapability?.frameRates?.length
-    ? [...generalModel.videoCapability.frameRates].sort((left, right) => left - right)
-    : undefined;
-  const displayedFrameRate = configuredFrameRates?.includes(videoFps)
-    ? videoFps
-    : generalModel?.videoCapability?.defaultFrameRate ?? configuredFrameRates?.[0] ?? videoFps;
+  const capabilityDurationDefault = parameterCapability?.defaultDuration;
+  const useUnboundedDurationInput = Boolean(
+    generalModel
+    && !allowedDurations
+    && (generalCapability?.minDuration === undefined || generalCapability?.maxDuration === undefined),
+  );
+  const durationTooltip = allowedDurations
+    ? `该模型仅支持 ${allowedDurations.join(' / ')} 秒。`
+    : useUnboundedDurationInput
+      ? generalCapability?.minDuration !== undefined
+        ? `该模型仅声明最短 ${generalCapability.minDuration} 秒；未声明最长时长。`
+        : generalCapability?.maxDuration !== undefined
+          ? `该模型仅声明最长 ${generalCapability.maxDuration} 秒；未声明最短时长。`
+          : '该模型未声明固定时长范围；输入值会在提交前由 capability 和接口校验。'
+      : `整数秒，范围 ${minDuration}-${maxDuration}。值越大视频越长、耗时越高。`;
+  const requestedDuration = seedanceDuration
+    ?? (generalModel ? generalDisplayState.duration : capabilityDurationDefault)
+    ?? (generalModel
+      ? undefined
+      : resolveVideoDurationSeconds(undefined, legacyVideoFrames, legacyVideoFps, maxDuration));
+  const displayedDuration = generalModel || requestedDuration === undefined
+    ? requestedDuration
+    : allowedDurations
+      ? allowedDurations.reduce((best, value) => (
+        Math.abs(value - requestedDuration) < Math.abs(best - requestedDuration) ? value : best
+      ), allowedDurations[0])
+      : Math.min(maxDuration, Math.max(minDuration, requestedDuration));
+  const durationControlValue = displayedDuration === undefined
+    ? allowedDurations?.[0] ?? minDuration
+    : Math.min(maxDuration, Math.max(minDuration, displayedDuration));
+  const displayedResolution = generalModel
+    ? generalDisplayState.resolution
+    : seedanceResolution && seedanceResolutions.some((item) => item.value === seedanceResolution)
+      ? seedanceResolution
+      : parameterCapability?.defaultResolution ?? seedanceResolutions[0]?.value ?? '720p';
+  const displayedRatio = generalModel
+    ? generalDisplayState.ratio
+    : seedanceRatio && seedanceRatios.some((item) => item.value === seedanceRatio)
+      ? seedanceRatio
+      : parameterCapability?.defaultRatio ?? seedanceRatios[0]?.value ?? '16:9';
+  const configuredFrameRates = generalCapability?.frameRates?.length
+    ? [...generalCapability.frameRates].sort((left, right) => left - right)
+    : generalCapability?.defaultFrameRate === undefined
+      ? undefined
+      : [generalCapability.defaultFrameRate];
+  const displayedFrameRate = generalDisplayState.frameRate;
   // 标签按跨度等距抽样，保证数字之间有足够间距不重叠：
   // 跨度 ≤8（如 4~12）每秒都标；≤16（如 4~15/4~20）每 2s 标一个；
   // 更大（如 2.5 的 4~30）每 4s 标一个。端点 min/max 始终标。
@@ -305,40 +390,53 @@ export default function VideoParamSelector({
     { length: Math.max(1, maxDuration - minDuration + 1) },
     (_, index) => minDuration + index,
   );
-  const showResolutionControl = isNativeSeedance || customUsesResolution || !isWorkflowProvider;
-  const showRatioControl = showSeedanceRatio && (isNativeSeedance || customUsesRatio || !isWorkflowProvider);
-  // 所有视频模型都以秒数呈现；协议若需要帧数，由生成入口统一换算。
-  const showDurationControl = true;
-  const showFrameRateControl = Boolean(generalModel && configuredFrameRates?.length);
-  const supportsAudio = isVolcengine
-    || Boolean(seedanceCapability?.audioField)
-    || customUsesAudio
-    || !isWorkflowProvider;
-  // 自建接口模型默认出有声视频；火山方舟老模型（Seedance 1.0）不支持音频，保持默认关闭
+  const showResolutionControl = isNativeSeedance || generalControlSupport.resolution;
+  const showRatioControl = showSeedanceRatio && (isNativeSeedance || generalControlSupport.ratio);
+  // 自定义 API 只有 capability 声明了时长语义才显示；内置 API 保留原有时长控件。
+  const showDurationControl = generalModel ? generalControlSupport.duration : true;
+  const showFrameRateControl = Boolean(generalModel && generalControlSupport.frameRate);
+  const supportsAudio = isNativeSeedance
+    ? Boolean(nativeCapability?.audioField)
+    : generalControlSupport.audio;
+  // 音频能力必须由模型 capability 明确声明，未知能力保持关闭。
   const displayedGenerateAudio = generateAudio
-    ?? seedanceCapability?.defaultAudio
-    ?? (isNativeSeedance ? false : true);
+    ?? nativeCapability?.defaultAudio
+    ?? false;
 
   useEffect(() => {
-    if (!seedanceCapability) return;
-    if (displayedResolution !== seedanceResolution) {
+    if (!parameterCapability) return;
+    if (displayedResolution !== undefined
+      && (isNativeSeedance || generalCapability?.defaultResolution !== undefined)
+      && displayedResolution !== seedanceResolution) {
       onChangeSeedanceResolution?.(displayedResolution);
     }
-    if (displayedRatio !== seedanceRatio) {
+    if (displayedRatio !== undefined
+      && (isNativeSeedance || generalCapability?.defaultRatio !== undefined)
+      && displayedRatio !== seedanceRatio) {
       onChangeSeedanceRatio?.(displayedRatio);
     }
-    if (displayedDuration !== seedanceDuration) {
+    if (displayedDuration !== undefined
+      && (isNativeSeedance || generalCapability?.defaultDuration !== undefined)
+      && displayedDuration !== seedanceDuration) {
       onChangeSeedanceDuration?.(displayedDuration);
     }
-    if (showFrameRateControl && displayedFrameRate !== videoFps) {
+    if (displayedFrameRate !== undefined
+      && showFrameRateControl
+      && generalCapability?.defaultFrameRate !== undefined
+      && displayedFrameRate !== videoFps) {
       onChangeFps?.(displayedFrameRate);
     }
   }, [
-    seedanceCapability,
+    parameterCapability,
     displayedDuration,
     displayedRatio,
     displayedResolution,
     displayedFrameRate,
+    generalCapability?.defaultDuration,
+    generalCapability?.defaultFrameRate,
+    generalCapability?.defaultRatio,
+    generalCapability?.defaultResolution,
+    isNativeSeedance,
     onChangeSeedanceDuration,
     onChangeSeedanceRatio,
     onChangeSeedanceResolution,
@@ -375,19 +473,26 @@ export default function VideoParamSelector({
 
   // ── 触发按钮文案 ──
   const durationLabelParts = [
-    showResolutionControl ? displayedResolution : '',
-    showDurationControl ? `时长${displayedDuration}s` : '',
-    showRatioControl ? displayedRatio : '',
-    showFrameRateControl ? `${displayedFrameRate}帧` : '',
+    showResolutionControl ? displayedResolution ?? '分辨率模型默认' : '',
+    showDurationControl ? displayedDuration === undefined ? '时长模型默认' : `时长${displayedDuration}s` : '',
+    showRatioControl ? displayedRatio ?? '比例模型默认' : '',
+    showFrameRateControl ? displayedFrameRate === undefined ? '帧率模型默认' : `${displayedFrameRate}帧` : '',
+    supportsAudio && generalModel
+      ? generateAudio === undefined ? '音频模型默认' : generateAudio ? '有声视频' : '无声视频'
+      : '',
   ].filter(Boolean);
   const durationTriggerLabel = durationLabelParts.length > 0
     ? durationLabelParts.join(' · ')
-    : displayedGenerateAudio ? '有声视频' : '无声视频';
+    : supportsAudio
+      ? generalModel && generateAudio === undefined
+        ? '音频模型默认'
+        : displayedGenerateAudio ? '有声视频' : '无声视频'
+      : '模型默认参数';
   const triggerLabel = usesDurationControls
     ? durationTriggerLabel
     : showGenericRatio
-      ? `${genericRatio} · ${videoResolution} · 时长${displayedDuration}s`
-      : `时长${displayedDuration}s · 帧率${videoFps} · 分辨率${videoResolution}`;
+      ? `${genericRatio} · ${legacyVideoResolution} · 时长${displayedDuration}s`
+      : `时长${displayedDuration}s · 帧率${legacyVideoFps} · 分辨率${legacyVideoResolution}`;
 
   return (
     <div className="ui-schema-renderer" data-ui-schema-placement="videoParams" ref={ref}>
@@ -513,9 +618,18 @@ export default function VideoParamSelector({
                 {showResolutionControl && <div className="img-rp-quality-area mb-2">
                   <div className="img-rp-section-label">
                     分辨率
-                    <span className="rh-tip" data-tooltip="分辨率越高细节越清晰，但生成耗时会明显增加。4K 仅 Seedance 2.0 支持。">!</span>
+                    <span className="rh-tip" data-tooltip="只展示模型 capability 声明支持的分辨率档位；更高分辨率通常耗时更长。">!</span>
                   </div>
                   <div className="img-rp-quality-segmented rh-video-resolution-seg">
+                    {generalModel && generalCapability?.defaultResolution === undefined && (
+                      <AnimatedButton
+                        type="button"
+                        className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${displayedResolution === undefined ? 'active' : ''}`}
+                        onClick={() => onChangeSeedanceResolution?.(undefined)}
+                      >
+                        模型默认
+                      </AnimatedButton>
+                    )}
                     {seedanceResolutions.map((opt) => (
                       <AnimatedButton
                         key={opt.value}
@@ -536,6 +650,15 @@ export default function VideoParamSelector({
                       <span className="rh-tip" data-tooltip="决定输出视频的画面形状：16:9 横屏、9:16 竖屏，自适应 = 由模型智能决定。">!</span>
                     </div>
                     <div className="img-rp-quality-segmented rh-video-resolution-seg">
+                      {generalModel && generalCapability?.defaultRatio === undefined && (
+                        <AnimatedButton
+                          type="button"
+                          className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${displayedRatio === undefined ? 'active' : ''}`}
+                          onClick={() => onChangeSeedanceRatio?.(undefined)}
+                        >
+                          模型默认
+                        </AnimatedButton>
+                      )}
                       {seedanceRatios.map((opt) => (
                         <AnimatedButton
                           key={opt.value}
@@ -557,6 +680,15 @@ export default function VideoParamSelector({
                       <span className="rh-tip" data-tooltip="仅展示该模型配置中声明支持的帧率；帧率越高运动越顺滑，但生成成本通常也更高。">!</span>
                     </div>
                     <div className="img-rp-quality-segmented rh-video-resolution-seg">
+                      {generalCapability?.defaultFrameRate === undefined && (
+                        <AnimatedButton
+                          type="button"
+                          className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${displayedFrameRate === undefined ? 'active' : ''}`}
+                          onClick={() => onChangeFps?.(undefined)}
+                        >
+                          模型默认
+                        </AnimatedButton>
+                      )}
                       {configuredFrameRates?.map((value) => (
                         <AnimatedButton
                           key={value}
@@ -577,10 +709,27 @@ export default function VideoParamSelector({
                   {showDurationControl && <div className="rh-vram-adv-row">
                     <div className="rh-vram-adv-label">
                       <span>生成时长（秒）</span>
-                      <span className="rh-tip" data-tooltip={allowedDurations
-                        ? `该模型仅支持 ${allowedDurations.join(' / ')} 秒。`
-                        : `整数秒，范围 ${minDuration}-${maxDuration}。值越大视频越长、耗时越高。`}>!</span>
+                      <span className="rh-tip" data-tooltip={durationTooltip}>!</span>
                     </div>
+                    {generalModel && generalCapability?.defaultDuration === undefined && (
+                      <button
+                        type="button"
+                        aria-pressed={displayedDuration === undefined}
+                        onClick={() => onChangeSeedanceDuration?.(undefined)}
+                        className={`mb-2 min-h-7 rounded-full border px-3 py-1 text-[11px] leading-4 transition-colors ${
+                          displayedDuration === undefined
+                            ? 'border-blue-400/70 bg-blue-400/15 text-blue-200'
+                            : 'border-canvas-border text-canvas-text-secondary hover:border-blue-400/40 hover:text-canvas-text'
+                        }`}
+                      >
+                        模型默认
+                      </button>
+                    )}
+                    {generalModel && displayedDuration === undefined && (
+                      <div className="mb-2 text-[10px] text-canvas-text-muted">
+                        当前未指定时长；选择或输入数值后才会显式提交。
+                      </div>
+                    )}
                     {allowedDurations ? (
                       <div className="flex flex-wrap gap-1.5">
                         {allowedDurations.map((value) => (
@@ -599,27 +748,44 @@ export default function VideoParamSelector({
                           </button>
                         ))}
                       </div>
+                    ) : useUnboundedDurationInput ? (
+                      <input
+                        type="number"
+                        className="h-8 w-full rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text outline-none focus:border-blue-400/60"
+                        aria-label="生成时长（秒）"
+                        min={generalCapability?.minDuration}
+                        max={generalCapability?.maxDuration}
+                        step={1}
+                        value={displayedDuration ?? ''}
+                        placeholder="模型默认"
+                        onChange={(event) => onChangeSeedanceDuration?.(
+                          event.target.value ? Number(event.target.value) : undefined,
+                        )}
+                        onBlur={onContinuousEditEnd}
+                      />
                     ) : (
                     <div className="rh-duration-slider">
                       <div className="rh-duration-track">
-                        <div
-                          className="rh-duration-fill"
-                          style={{ width: `${((displayedDuration - minDuration) / (maxDuration - minDuration)) * 100}%` }}
-                        />
+                         <div
+                           className="rh-duration-fill"
+                           style={{ width: displayedDuration === undefined
+                             ? '0%'
+                             : `${((durationControlValue - minDuration) / Math.max(1, maxDuration - minDuration)) * 100}%` }}
+                         />
                         <input
                           type="range"
                           className="rh-duration-input"
                           min={minDuration}
                           max={maxDuration}
                           step={1}
-                          value={displayedDuration}
+                          value={durationControlValue}
                           onChange={(e) => onChangeSeedanceDuration?.(Number(e.target.value))}
                           onBlur={onContinuousEditEnd}
                         />
                       </div>
                       <div className="rh-duration-labels">
                         {durationTicks.map((v) => (
-                          <span key={v} className={`rh-duration-tick ${displayedDuration >= v ? 'active' : ''}`} onClick={() => onChangeSeedanceDuration?.(v)}>
+                          <span key={v} className={`rh-duration-tick ${displayedDuration !== undefined && displayedDuration >= v ? 'active' : ''}`} onClick={() => onChangeSeedanceDuration?.(v)}>
                             {durationLabelValues.has(v) ? `${v}s` : ''}
                           </span>
                         ))}
@@ -629,24 +795,41 @@ export default function VideoParamSelector({
                   </div>}
 
 
-                  {/* 有声视频开关 — 仅支持音频参数的 Seedance 模型显示 */}
+                  {/* 原生模型保留开关；通用模型使用三态，区分接口默认 / 显式有声 / 显式无声。 */}
                   {showGenerateAudio && supportsAudio && (
                   <div className="rh-vram-adv-row">
                     <div className="rh-vram-adv-label" style={{ justifyContent: 'space-between', width: '100%' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <span>生成有声视频</span>
-                        <span className="rh-tip" data-tooltip="开启后 Seedance 会同时生成配乐（仅 Seedance 2.0 / 1.5 pro 支持）。">!</span>
+                        <span className="rh-tip" data-tooltip={generalModel
+                          ? '模型默认表示不发送音频开关；也可以显式要求生成音频或不生成音频。'
+                          : '开启后由当前原生视频模型同时生成音频。'}>!</span>
                       </div>
-                      <label className="rh-toggle-switch">
-                        <input
-                          type="checkbox"
-                          checked={displayedGenerateAudio}
-                          onChange={(e) => onChangeGenerateAudio?.(e.target.checked)}
-                        />
-                        <span className="rh-toggle-track">
-                          <span className="rh-toggle-knob" />
-                        </span>
-                      </label>
+                      {generalModel ? (
+                        <select
+                          className="h-7 rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text"
+                          aria-label="视频音频策略"
+                          value={generateAudio === undefined ? 'default' : generateAudio ? 'on' : 'off'}
+                          onChange={(event) => onChangeGenerateAudio?.(
+                            event.target.value === 'default' ? undefined : event.target.value === 'on',
+                          )}
+                        >
+                          <option value="default">模型默认</option>
+                          <option value="on">生成音频</option>
+                          <option value="off">不生成音频</option>
+                        </select>
+                      ) : (
+                        <label className="rh-toggle-switch">
+                          <input
+                            type="checkbox"
+                            checked={displayedGenerateAudio}
+                            onChange={(e) => onChangeGenerateAudio?.(e.target.checked)}
+                          />
+                          <span className="rh-toggle-track">
+                            <span className="rh-toggle-knob" />
+                          </span>
+                        </label>
+                      )}
                     </div>
                   </div>
                   )}
@@ -687,7 +870,7 @@ export default function VideoParamSelector({
                       <AnimatedButton
                         key={res}
                         type="button"
-                        className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${videoResolution === res ? 'active' : ''}`}
+                        className={`img-rp-quality-item rh-v5-res-btn ui-schema-option ${legacyVideoResolution === res ? 'active' : ''}`}
                         data-value={res}
                         data-ui-schema-value={res}
                         onClick={() => onChangeResolution?.(res)}
@@ -704,7 +887,7 @@ export default function VideoParamSelector({
                       max={MAX_CUSTOM_RESOLUTION}
                       step={8}
                       // 选中预设时留空只显示占位符，填了值才算自定义
-                      value={COMBO_RESOLUTIONS.includes(videoResolution) ? '' : videoResolution}
+                      value={COMBO_RESOLUTIONS.includes(legacyVideoResolution) ? '' : legacyVideoResolution}
                       onChange={(event) => {
                         const value = Number(event.target.value);
                         if (Number.isFinite(value) && value > 0) onChangeResolution?.(value);
@@ -735,13 +918,13 @@ export default function VideoParamSelector({
                         <AnimatedButton
                           key={opt.value}
                           type="button"
-                          className={`img-rp-quality-item rh-v5-fps-btn ui-schema-option ${videoFps === opt.value ? 'active' : ''}`}
+                          className={`img-rp-quality-item rh-v5-fps-btn ui-schema-option ${legacyVideoFps === opt.value ? 'active' : ''}`}
                           data-value={opt.value}
                           data-ui-schema-value={opt.value}
                           onClick={() => {
                             // 旧节点只有帧数时，先固定反算出的秒数，避免切换 FPS 改变用户看到的时长。
                             if (!Number.isFinite(seedanceDuration)) {
-                              onChangeSeedanceDuration?.(displayedDuration);
+                              onChangeSeedanceDuration?.(durationControlValue);
                             }
                             onChangeFps?.(opt.value);
                           }}
@@ -761,7 +944,7 @@ export default function VideoParamSelector({
                       <div className="rh-duration-track">
                         <div
                           className="rh-duration-fill"
-                          style={{ width: `${((displayedDuration - minDuration) / (maxDuration - minDuration)) * 100}%` }}
+                          style={{ width: `${((durationControlValue - minDuration) / Math.max(1, maxDuration - minDuration)) * 100}%` }}
                         />
                         <input
                           type="range"
@@ -769,7 +952,7 @@ export default function VideoParamSelector({
                           min={minDuration}
                           max={maxDuration}
                           step={1}
-                          value={displayedDuration}
+                          value={durationControlValue}
                           onChange={(e) => onChangeSeedanceDuration?.(Number(e.target.value))}
                           onBlur={onContinuousEditEnd}
                         />
@@ -778,7 +961,7 @@ export default function VideoParamSelector({
                         {durationTicks.map((value) => (
                           <span
                             key={value}
-                            className={`rh-duration-tick ${displayedDuration >= value ? 'active' : ''}`}
+                            className={`rh-duration-tick ${durationControlValue >= value ? 'active' : ''}`}
                             onClick={() => onChangeSeedanceDuration?.(value)}
                           >
                             {durationLabelValues.has(value) ? `${value}s` : ''}

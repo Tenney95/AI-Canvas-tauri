@@ -3,6 +3,7 @@ import {
   analyzeModelProtocolDocument,
   analyzeModelProtocolExamples,
 } from '../../src/services/ai/modelProtocolImport';
+import { buildModelProtocolRequest } from '../../src/services/ai/modelProtocol';
 
 describe('model protocol document import', () => {
   it('imports an async image API with data URL reference arrays', () => {
@@ -285,6 +286,70 @@ curl --location --request GET 'https://apihub.agnes-ai.com/agnesapi?video_id=<VI
       },
     });
     expect(JSON.stringify(result)).not.toContain('YOUR_API_KEY');
+  });
+
+  it('maps Agnes 2.5 string seconds, resolution preset and input mode without fixing sample values', () => {
+    const result = analyzeModelProtocolExamples({
+      submitRequest: `curl -X POST https://api.agnes-ai.cn/v1/videos -H "Content-Type: application/json" -d '{
+        "model":"agnes-video-2.5-flash",
+        "prompt":"海边奔跑",
+        "seconds":"5",
+        "mode":"text",
+        "size":"720P",
+        "aspect_ratio":"16:9",
+        "n":1
+      }'`,
+      submitResponse: '{"video_id":"video_example","status":"queued"}',
+      pollRequest: 'curl "https://api.agnes-ai.cn/agnesapi?video_id=video_example&model_name=agnes-video-2.5-flash"',
+      pollResponse: '{"status":"completed","url":"https://cdn.example/result.mp4"}',
+    }, {
+      baseUrl: 'https://api.agnes-ai.cn/v1',
+      category: 'video',
+      modelId: 'agnes-video-2.5-flash',
+    });
+
+    expect(result.protocol).toMatchObject({
+      submit: {
+        path: '/videos',
+        body: {
+          seconds: '{{durationText}}',
+          mode: '{{videoInputMode}}',
+          size: '{{seedanceResolution}}',
+          aspect_ratio: '{{aspectRatio}}',
+        },
+      },
+      response: { taskIdPath: 'video_id' },
+      poll: {
+        path: '/agnesapi',
+        pathMode: 'origin',
+        query: {
+          video_id: '{{submit.video_id}}',
+          // 单模型协议里轮询模型名保持文档常量；任务 ID 才必须动态绑定。
+          model_name: 'agnes-video-2.5-flash',
+        },
+      },
+    });
+
+    if (!result.protocol || !result.baseUrl) throw new Error('Agnes 2.5 示例没有生成协议');
+    const request = buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: result.baseUrl,
+      protocol: result.protocol,
+      variables: {
+        model: 'agnes-video-2.5-flash',
+        prompt: '海边奔跑',
+        durationText: '8',
+        videoInputMode: 'reference',
+        seedanceResolution: '720P',
+        aspectRatio: '9:16',
+      },
+    });
+    expect(request.renderedBody).toMatchObject({
+      seconds: '8',
+      mode: 'reference',
+      size: '720P',
+      aspect_ratio: '9:16',
+    });
   });
 
   it('imports an OpenAI-style async video protocol with reference media fields', () => {
@@ -573,6 +638,254 @@ curl -sS -X POST "https://relay.example.com/v1/audio/speech" \\
             response_format: '{{audioFormat}}',
           },
         },
+      },
+    });
+  });
+
+  it('imports MetaSo-style numeric video tasks without flattening media URL wrappers', () => {
+    const result = analyzeModelProtocolExamples({
+      submitRequest: `
+curl -sS -X POST "https://relay.example.com/v1/video_generation" \\
+  -H "Authorization: Bearer sk-placeholder" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "MiniMax-H3",
+    "content": [
+      { "type": "text", "text": "让人物向镜头挥手" },
+      { "type": "image_url", "image_url": { "url": "https://cdn.example.com/reference.png" }, "role": "reference_image" },
+      { "type": "video_url", "video_url": { "url": "https://cdn.example.com/reference.mp4" }, "role": "reference_video" },
+      { "type": "audio_url", "audio_url": { "url": "https://cdn.example.com/reference.mp3" }, "role": "reference_audio" }
+    ],
+    "duration": 6,
+    "resolution": "768P",
+    "ratio": "16:9"
+  }'`,
+      submitResponse: '{"task_id":424010985738629}',
+      pollRequest: 'curl -sS "https://relay.example.com/query/video_generation/424010985738629" -H "Authorization: Bearer sk-placeholder"',
+      pollResponse: '{"task":{"status":"success","content":{"url":"https://cdn.example.com/result.mp4"}}}',
+    }, {
+      baseUrl: 'https://relay.example.com/v1',
+    });
+
+    expect(result).toMatchObject({
+      baseUrl: 'https://relay.example.com/v1',
+      category: 'video',
+      protocol: {
+        mode: 'async',
+        submit: {
+          path: '/video_generation',
+          body: {
+            content: [
+              { type: 'text', text: '{{prompt}}' },
+              {
+                $forEach: '{{referenceImageUrls}}',
+                $value: { type: 'image_url', image_url: { url: '{{referenceImageUrls}}' }, role: 'reference_image' },
+              },
+              {
+                $forEach: '{{referenceVideoUrls}}',
+                $value: { type: 'video_url', video_url: { url: '{{referenceVideoUrls}}' }, role: 'reference_video' },
+              },
+              {
+                $forEach: '{{referenceAudioUrls}}',
+                $value: { type: 'audio_url', audio_url: { url: '{{referenceAudioUrls}}' }, role: 'reference_audio' },
+              },
+            ],
+          },
+        },
+        response: { taskIdPath: 'task_id' },
+        poll: {
+          path: '/query/video_generation/{{submit.task_id}}',
+          pathMode: 'origin',
+          response: {
+            statusPath: 'task.status',
+            result: { urlPath: 'task.content.url' },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(result.protocol?.submit.body)).not.toContain('cdn.example.com');
+
+    if (!result.protocol) throw new Error('MetaSo 示例没有生成调用协议');
+    const withoutReferences = buildModelProtocolRequest({
+      apiKey: 'test-key',
+      baseUrl: result.baseUrl!,
+      protocol: result.protocol,
+      variables: {
+        model: 'MiniMax-H3',
+        prompt: '让人物向镜头挥手',
+        duration: 6,
+        seedanceResolution: '768P',
+        aspectRatio: '16:9',
+      },
+    });
+    expect(withoutReferences.renderedBody).toMatchObject({
+      model: 'MiniMax-H3',
+      content: [{ type: 'text', text: '让人物向镜头挥手' }],
+      duration: 6,
+      resolution: '768P',
+      ratio: '16:9',
+    });
+
+    const withReferences = buildModelProtocolRequest({
+      apiKey: 'test-key',
+      baseUrl: result.baseUrl!,
+      protocol: result.protocol,
+      variables: {
+        model: 'MiniMax-H3',
+        prompt: '让人物向镜头挥手',
+        referenceImageUrls: [
+          'https://assets.example/reference-1.png',
+          'https://assets.example/reference-2.png',
+        ],
+        referenceVideoUrls: [
+          'https://assets.example/reference-1.mp4',
+          'https://assets.example/reference-2.mp4',
+        ],
+        referenceAudioUrls: [
+          'https://assets.example/reference-1.mp3',
+          'https://assets.example/reference-2.mp3',
+        ],
+        duration: 6,
+        seedanceResolution: '768P',
+        aspectRatio: '16:9',
+      },
+    });
+    expect(withReferences.renderedBody).toMatchObject({
+      content: [
+        { type: 'text', text: '让人物向镜头挥手' },
+        { type: 'image_url', image_url: { url: 'https://assets.example/reference-1.png' }, role: 'reference_image' },
+        { type: 'image_url', image_url: { url: 'https://assets.example/reference-2.png' }, role: 'reference_image' },
+        { type: 'video_url', video_url: { url: 'https://assets.example/reference-1.mp4' }, role: 'reference_video' },
+        { type: 'video_url', video_url: { url: 'https://assets.example/reference-2.mp4' }, role: 'reference_video' },
+        { type: 'audio_url', audio_url: { url: 'https://assets.example/reference-1.mp3' }, role: 'reference_audio' },
+        { type: 'audio_url', audio_url: { url: 'https://assets.example/reference-2.mp3' }, role: 'reference_audio' },
+      ],
+    });
+  });
+
+  it('keeps MetaSo keyframes singular and separate from repeatable reference images', () => {
+    const result = analyzeModelProtocolExamples({
+      submitRequest: `curl -sS -X POST "https://relay.example.com/v1/video_generation" -d '{
+        "model":"MiniMax-H3",
+        "content":[
+          {"type":"text","text":"镜头推进"},
+          {"type":"image_url","image_url":{"url":"https://cdn.example.com/first.png"},"role":"first_frame"},
+          {"type":"image_url","image_url":{"url":"https://cdn.example.com/last.png"},"role":"last_frame"}
+        ]
+      }'`,
+      submitResponse: '{"url":"https://cdn.example.com/result.mp4"}',
+    });
+
+    expect(result.protocol?.submit.body).toMatchObject({
+      content: [
+        { type: 'text', text: '{{prompt}}' },
+        {
+          $whenPresent: '{{firstImage}}',
+          $value: { type: 'image_url', image_url: { url: '{{firstImage}}' }, role: 'first_frame' },
+        },
+        {
+          $whenPresent: '{{lastImage}}',
+          $value: { type: 'image_url', image_url: { url: '{{lastImage}}' }, role: 'last_frame' },
+        },
+      ],
+    });
+  });
+
+  it('expands a generic reference role by known media type instead of keeping only item zero', () => {
+    const result = analyzeModelProtocolExamples({
+      submitRequest: `curl -sS -X POST "https://relay.example.com/v1/video_generation" -d '{
+        "model":"MiniMax-H3",
+        "content":[
+          {"type":"text","text":"参考素材"},
+          {"type":"image_url","image_url":{"url":"https://cdn.example.com/ref.png"},"role":"reference"},
+          {"type":"video_url","video_url":{"url":"https://cdn.example.com/ref.mp4"},"role":"reference"},
+          {"type":"audio_url","audio_url":{"url":"https://cdn.example.com/ref.mp3"},"role":"reference"}
+        ]
+      }'`,
+      submitResponse: '{"url":"https://cdn.example.com/result.mp4"}',
+    });
+
+    expect(result.protocol?.submit.body).toMatchObject({
+      content: [
+        { type: 'text', text: '{{prompt}}' },
+        {
+          $forEach: '{{referenceImageUrls}}',
+          $value: { image_url: { url: '{{referenceImageUrls}}' }, role: 'reference' },
+        },
+        {
+          $forEach: '{{referenceVideoUrls}}',
+          $value: { video_url: { url: '{{referenceVideoUrls}}' }, role: 'reference' },
+        },
+        {
+          $forEach: '{{referenceAudioUrls}}',
+          $value: { audio_url: { url: '{{referenceAudioUrls}}' }, role: 'reference' },
+        },
+      ],
+    });
+  });
+
+  it('requires manual review when role reference has no trusted media mapping', () => {
+    const result = analyzeModelProtocolExamples({
+      submitRequest: `curl -sS -X POST "https://relay.example.com/v1/video_generation" -d '{
+        "model":"MiniMax-H3",
+        "content":[
+          {"type":"media_url","media_url":{"url":"https://cdn.example.com/ref.bin"},"role":"reference"}
+        ]
+      }'`,
+      submitResponse: '{"url":"https://cdn.example.com/result.mp4"}',
+    });
+
+    expect(result.protocol).toBeUndefined();
+    expect(result.warnings).toContainEqual(expect.stringContaining('role="reference"'));
+  });
+
+  it('does not auto-wrap composite content media items and emits a review warning', () => {
+    const result = analyzeModelProtocolExamples({
+      submitRequest: `
+curl -sS -X POST "https://relay.example.com/v1/video_generation" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "video-model",
+    "content": [{
+      "type": "image_url",
+      "image_url": { "url": "https://cdn.example.com/first.png" },
+      "role": "first_frame",
+      "caption": "this field is coupled to the image"
+    }]
+  }'`,
+      submitResponse: '{"url":"https://cdn.example.com/result.mp4"}',
+    });
+
+    expect(result.protocol).toBeUndefined();
+    expect(result.warnings).toContainEqual(expect.stringContaining('复合或多参考媒体项'));
+  });
+
+  it('removes dangerous object keys from strict JSON request examples', () => {
+    const result = analyzeModelProtocolExamples({
+      submitRequest: `curl -sS -X POST "https://relay.example.com/v1/video_generation" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"video-model","prompt":"test","__proto__":{"polluted":true}}'`,
+      submitResponse: '{"url":"https://cdn.example.com/result.mp4"}',
+    });
+
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('__proto__');
+    expect(result.warnings).toContainEqual(expect.stringContaining('不安全对象键'));
+  });
+
+  it('replaces string task IDs after a video-generation path container', () => {
+    const result = analyzeModelProtocolExamples({
+      submitRequest: `curl -sS -X POST "https://relay.example.com/v1/video-generation" -d '{"model":"video-pro","prompt":"test"}'`,
+      submitResponse: '{"task_id":"video-task-1"}',
+      pollRequest: 'curl -sS "https://relay.example.com/v1/query/video-generation/video-task-1"',
+      pollResponse: '{"status":"completed","video_url":"https://cdn.example.com/result.mp4"}',
+    });
+
+    expect(result.protocol).toMatchObject({
+      mode: 'async',
+      response: { taskIdPath: 'task_id' },
+      poll: {
+        path: '/query/video-generation/{{submit.task_id}}',
       },
     });
   });

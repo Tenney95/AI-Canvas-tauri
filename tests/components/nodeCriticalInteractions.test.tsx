@@ -567,6 +567,22 @@ describe('critical canvas node interactions', () => {
     const AINodeDialog = (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
     const tree = AINodeDialog();
     const promptPanel = findElement(tree, (element) => componentName(element) === 'PromptPanelMock');
+    (promptPanel.props.onModelSelect as (model: Record<string, unknown>) => void)({
+      value: 'general/custom-video',
+      label: 'Custom Video',
+      provider: 'general',
+    });
+    expect(store.updateNodeData).toHaveBeenCalledWith('video-node', expect.objectContaining({
+      model: 'general/custom-video',
+      provider: 'general',
+      videoResolution: undefined,
+      videoFps: undefined,
+      videoFrames: undefined,
+      seedanceResolution: undefined,
+      seedanceRatio: undefined,
+      seedanceDuration: undefined,
+      generateAudio: undefined,
+    }));
     store.nodes[0] = {
       ...store.nodes[0],
       data: {

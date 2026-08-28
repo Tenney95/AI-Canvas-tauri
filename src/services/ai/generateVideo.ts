@@ -25,14 +25,17 @@ import {
   mergeMediaReferences,
   warnIfTooManyReferences,
 } from './connectedReferenceMedia';
-import { executeGeneralAsyncTask } from './apimartGen';
 import type { ApimartSeedanceCapability } from './apimartVideoModels';
 import { pollTask } from '../pollTask';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
-import { normalizeFrames8n1, type ModelProtocolVariables } from './modelProtocol';
+import {
+  getModelProtocolPresetVideoCapability,
+  normalizeFrames8n1,
+  resolveModelExecutionProfile,
+  type ModelProtocolVariables,
+} from './modelProtocol';
 import { mediaProviderRegistry } from './mediaProviderRegistry';
 import {
-  mapVideoDimensions,
   normalizeVideoFps,
   resolveVideoDurationSeconds,
   videoFramesFromDuration,
@@ -48,6 +51,11 @@ import {
 } from './volcengineVideoModels';
 import { getDreaminaVideoCapability } from './dreaminaModels';
 import { assertVideoInputConstraints } from './videoInputValidation';
+import {
+  resolveCanonicalVideoRequest,
+  toResolvedVideoCompatibilityValues,
+  type CanonicalVideoRequest,
+} from './videoRequestResolver';
 
 export function resolveVideoGenerationOperation(
   imageUrls: readonly string[],
@@ -139,22 +147,42 @@ async function resolveGeneralProtocolMediaUrls(
   }));
 }
 
+function replaceReferenceUrls(
+  references: readonly MediaReference[],
+  urls: { image: readonly string[]; video: readonly string[]; audio: readonly string[] },
+): MediaReference[] {
+  const indexes = { image: 0, video: 0, audio: 0 };
+  return references.map((reference) => {
+    const index = indexes[reference.kind]++;
+    const url = urls[reference.kind][index];
+    if (!url) throw new Error(`参考${reference.kind}素材转换后数量不一致，请重新连接素材后重试`);
+    return { ...reference, url, sourceUrl: url };
+  });
+}
+
 async function resolveVideoReferenceInput(
   rawPrompt: string,
   nodeId: string | undefined,
   /** 调用方直接给定的参考媒体；排在最前，保证首/尾帧角色按调用方的顺序分配 */
   explicitReferences: readonly MediaReference[] = [],
+  options: { preserveDeclaredRoles?: boolean } = {},
 ): Promise<VideoGenerationReferenceInput> {
   const promptInput = await resolvePromptWithMediaRefs(rawPrompt);
   const connected = collectConnectedReferenceMedia(nodeId);
   const nodeItems = resolveVideoNodeReferences(nodeId);
-  const references = assignVideoReferenceRoles(
-    mergeMediaReferences(
-      // 节点上手动挑的参考帧/参考角色排在连线与提示词引用之前，重复的图按它们的角色去重
-      mergeMediaReferences(explicitReferences, toMediaReferences(nodeItems)),
-      mergeMediaReferences(promptInput.references, connected.references),
-    ),
+  const collectedReferences = mergeMediaReferences(
+    // 节点上手动挑的参考帧/参考角色排在连线与提示词引用之前，重复的图按它们的角色去重
+    mergeMediaReferences(explicitReferences, toMediaReferences(nodeItems)),
+    mergeMediaReferences(promptInput.references, connected.references),
   );
+  // 通用声明式协议必须保留用户/连线给出的角色：普通 reference 图片不能
+  // 被全局规则偷偷改成 first_frame，否则 MetaSo 一类接口会把互斥模式混在一起。
+  // 内置 Provider 暂时保留原有“按图片顺序推断首尾帧”的兼容行为。
+  const references = options.preserveDeclaredRoles
+    ? collectedReferences.map((reference) => reference.kind === 'audio'
+      ? { ...reference, role: 'reference_audio' as const }
+      : reference)
+    : assignVideoReferenceRoles(collectedReferences);
   const imageUrls = getMediaReferenceUrls(references, 'image');
   const videoUrls = getMediaReferenceUrls(references, 'video');
   const audioUrls = getMediaReferenceUrls(references, 'audio');
@@ -214,93 +242,145 @@ export function assertVideoReferenceLimits(
   }
 }
 
+function referencesFromLegacyInput(
+  referenceInput: VideoGenerationReferenceInput,
+): MediaReference[] {
+  if (referenceInput.references?.length) return referenceInput.references;
+  const imageReferences = referenceInput.imageUrls.map((url, index) => ({
+    kind: 'image' as const,
+    url,
+    origin: 'connection' as const,
+    role: index === 0
+      ? ('first_frame' as const)
+      : index === referenceInput.imageUrls.length - 1
+        ? ('last_frame' as const)
+        : ('reference' as const),
+  }));
+  return [
+    ...imageReferences,
+    ...referenceInput.videoUrls.map((url) => ({
+      kind: 'video' as const,
+      url,
+      origin: 'connection' as const,
+      role: 'reference' as const,
+    })),
+    ...referenceInput.audioUrls.map((url) => ({
+      kind: 'audio' as const,
+      url,
+      origin: 'connection' as const,
+      role: 'reference_audio' as const,
+    })),
+  ];
+}
+
+/** 旧调用入口保留；内部先统一解析为 provider-neutral canonical request。 */
 export function buildGeneralVideoProtocolVariables(
   modelId: string,
   params: AIVideoGenParams,
   referenceInput: VideoGenerationReferenceInput,
   videoCapability?: VideoModelCapability,
 ): ModelProtocolVariables {
-  const videoResolution = params.videoResolution ?? 1152;
-  const aspectRatio = params.seedanceRatio ?? '16:9';
-  const { width, height } = mapVideoDimensions(videoResolution, aspectRatio);
-  const fps = normalizeVideoFps(params.videoFps);
-  // 通用模型声明了时长上限时按声明钳制，否则沿用全局兜底上限
-  const requestedDuration = resolveVideoDurationSeconds(
-    params.seedanceDuration,
-    params.videoFrames,
-    fps,
-    videoCapability?.maxDuration,
-  );
-  // 声明了离散时长（如仅 10 / 15 秒）时吸附到最接近的合法档，
-  // 否则画布上的 4 秒会原样发出去换来一句 seconds must be one of 10, 15
-  const allowedDurations = videoCapability?.durations?.length ? videoCapability.durations : undefined;
-  const duration = allowedDurations
-    ? allowedDurations.reduce((best, value) => (
-      Math.abs(value - requestedDuration) < Math.abs(best - requestedDuration) ? value : best
-    ), allowedDurations[0])
-    : requestedDuration;
-  const frames = videoFramesFromDuration(duration, fps);
-  const seedanceResolution = params.seedanceResolution ?? '720p';
-  const firstImage = referenceInput.imageUrls[0];
-  const lastImage = referenceInput.imageUrls.length > 1
-    ? referenceInput.imageUrls[referenceInput.imageUrls.length - 1]
+  const canonical = resolveCanonicalVideoRequest({
+    ...params,
+    model: modelId,
+    prompt: referenceInput.prompt,
+  }, {
+    references: referencesFromLegacyInput(referenceInput),
+    capability: videoCapability,
+  });
+  return buildCanonicalVideoProtocolVariables(canonical);
+}
+
+export function buildCanonicalVideoProtocolVariables(
+  request: CanonicalVideoRequest,
+): ModelProtocolVariables {
+  const compatibility = toResolvedVideoCompatibilityValues(request);
+  const aspectRatio = compatibility.aspectRatio;
+  const width = compatibility.width;
+  const height = compatibility.height;
+  const size = width !== undefined && height !== undefined ? `${width}x${height}` : undefined;
+  const videoResolution = width !== undefined && height !== undefined
+    ? Math.max(width, height)
     : undefined;
+  const fps = request.sources.requestedFrameRate === 'compatibility-default'
+    ? undefined
+    : compatibility.requestedFrameRate;
+  const duration = request.sources.durationSeconds === 'compatibility-default'
+    ? undefined
+    : compatibility.durationSeconds;
+  const frames = request.output.frameCount ?? (
+    duration !== undefined && fps !== undefined ? compatibility.frameCount : undefined
+  );
+  const firstImage = request.references.images
+    .find((reference) => reference.role === 'first_frame')?.url;
+  const lastImage = request.references.images
+    .find((reference) => reference.role === 'last_frame')?.url;
+  const imageUrls = compatibility.imageUrls.length > 0 ? compatibility.imageUrls : undefined;
+  const referenceImageUrlsValue = request.references.images
+    .filter((reference) => reference.role === 'reference')
+    .map((reference) => reference.url);
+  const referenceImageUrls = referenceImageUrlsValue.length > 0
+    ? referenceImageUrlsValue
+    : undefined;
+  const videoUrls = compatibility.videoUrls.length > 0 ? compatibility.videoUrls : undefined;
+  const audioUrls = compatibility.audioUrls.length > 0 ? compatibility.audioUrls : undefined;
   // 带角色的参考图数组（[{ url, role }]），供协议模板按 image_with_roles 语义引用：
   // 首/尾帧保留原角色，其余参考图按 Seedance 约定写 reference_image；
   // 为空时置 undefined，让模板省略该字段而不是发出空数组。
-  const roleImages = (referenceInput.references ?? [])
-    .filter((reference) => reference.kind === 'image')
+  const roleImages = request.references.images
     .map((reference) => ({
-      url: getMediaReferenceUrl(reference),
+      url: reference.url,
       role: reference.role === 'first_frame' || reference.role === 'last_frame'
         ? reference.role
         : 'reference_image',
     }));
   const imageWithRoles = roleImages.length > 0 ? roleImages : undefined;
   const combinedReferences = [
-    ...referenceInput.imageUrls,
-    ...referenceInput.videoUrls,
-    ...referenceInput.audioUrls,
+    ...compatibility.imageUrls,
+    ...compatibility.videoUrls,
+    ...compatibility.audioUrls,
   ];
   const referenceUrls = combinedReferences.filter((url) => /^https?:\/\//i.test(url));
   const inlineReferences = combinedReferences.filter((url) => url.startsWith('data:'));
 
   return {
-    model: modelId,
-    prompt: referenceInput.prompt,
-    size: `${width}x${height}`,
+    model: request.modelId,
+    prompt: request.prompt,
+    size,
     aspectRatio,
     width,
     height,
     frames,
-    frames8n1: normalizeFrames8n1(frames),
+    frames8n1: frames === undefined ? undefined : normalizeFrames8n1(frames),
     fps,
     duration,
-    resolution: seedanceResolution,
+    durationText: duration === undefined ? undefined : String(duration),
+    resolution: compatibility.resolutionPreset,
     videoResolution,
     videoFrames: frames,
     videoFps: fps,
-    seedanceResolution,
+    seedanceResolution: compatibility.resolutionPreset,
     seedanceRatio: aspectRatio,
     seedanceDuration: duration,
-    generateAudio: params.generateAudio ?? true,
-    disableAudio: params.generateAudio === false ? true : undefined,
-    videoOperation: referenceInput.operation,
-    imageUrls: referenceInput.imageUrls,
+    generateAudio: compatibility.generateAudio,
+    disableAudio: request.output.audio.policy === 'mute' ? true : undefined,
+    videoOperation: request.operation,
+    videoInputMode: request.inputMode,
+    imageUrls,
     firstImage,
     lastImage,
     imageWithRoles,
-    referenceImageUrls: referenceInput.imageUrls,
-    videoUrls: referenceInput.videoUrls,
-    referenceVideoUrl: referenceInput.videoUrls[0],
-    referenceVideoUrls: referenceInput.videoUrls,
-    audioUrls: referenceInput.audioUrls,
-    audioUrl: referenceInput.audioUrls[0],
-    referenceAudioUrls: referenceInput.audioUrls,
+    referenceImageUrls,
+    videoUrls,
+    referenceVideoUrl: videoUrls?.[0],
+    referenceVideoUrls: videoUrls,
+    audioUrls,
+    audioUrl: audioUrls?.[0],
+    referenceAudioUrls: audioUrls,
     referenceUrls: referenceUrls.length > 0 ? referenceUrls : undefined,
     inlineReferences: inlineReferences.length > 0 ? inlineReferences : undefined,
-    n: 1,
-    batchCount: 1,
+    n: compatibility.candidateCount,
+    batchCount: compatibility.candidateCount,
   };
 }
 
@@ -308,18 +388,22 @@ export async function generateVideo(
   params: AIVideoGenParams,
   signal?: AbortSignal,
 ): Promise<{ url: string }> {
-  const videoFps = normalizeVideoFps(params.videoFps);
-  const seedanceDuration = resolveVideoDurationSeconds(
-    params.seedanceDuration,
-    params.videoFrames,
-    videoFps,
-  );
-  params = {
-    ...params,
-    videoFps,
-    seedanceDuration,
-    videoFrames: videoFramesFromDuration(seedanceDuration, videoFps),
-  };
+  // 内置 Provider 与本地工作流暂时保持旧归一化；通用模型交给 capability-aware
+  // canonical resolver，避免在读到模型的 30 秒能力前先被全局 15 秒上限截断。
+  if (params.provider !== 'general' || params.workflowId) {
+    const videoFps = normalizeVideoFps(params.videoFps);
+    const seedanceDuration = resolveVideoDurationSeconds(
+      params.seedanceDuration,
+      params.videoFrames,
+      videoFps,
+    );
+    params = {
+      ...params,
+      videoFps,
+      seedanceDuration,
+      videoFrames: videoFramesFromDuration(seedanceDuration, videoFps),
+    };
+  }
   const { prompt: rawPrompt, model, provider } = params;
 
   // 解析 @{nodeId:label} 引用为对应节点的实际输出内容
@@ -440,23 +524,52 @@ export async function generateVideo(
     const connection = resolveGeneralModelConnection(model);
     if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
     if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
-    const referenceInput = await resolveVideoReferenceInput(rawPrompt, params.nodeId, params.referenceMedia ?? []);
-    assertVideoReferenceLimits(referenceInput, gm.videoCapability, gm.name);
-    if (gm.executionProfile) {
+    const videoCapability = gm.videoCapability
+      ?? getModelProtocolPresetVideoCapability(gm.executionProfile);
+    const referenceInput = await resolveVideoReferenceInput(
+      rawPrompt,
+      params.nodeId,
+      params.referenceMedia ?? [],
+      { preserveDeclaredRoles: true },
+    );
+    const canonicalParams = {
+      ...params,
+      model: gm.modelId,
+      prompt: referenceInput.prompt,
+    };
+    const originalReferences = referenceInput.references ?? referencesFromLegacyInput(referenceInput);
+    // 所有能力和组合错误都必须在素材上传或付费提交前失败。
+    resolveCanonicalVideoRequest(canonicalParams, {
+      references: originalReferences,
+      capability: videoCapability,
+    });
+    if (resolveModelExecutionProfile(gm.executionProfile)) {
       const [remoteImageUrls, videoUrls, audioUrls] = await Promise.all([
         resolveImageUrlArray(referenceInput.imageUrls, connection.providerConfigId),
-        resolveGeneralProtocolMediaUrls(referenceInput.references ?? [], 'video'),
-        resolveGeneralProtocolMediaUrls(referenceInput.references ?? [], 'audio'),
+        resolveGeneralProtocolMediaUrls(originalReferences, 'video'),
+        resolveGeneralProtocolMediaUrls(originalReferences, 'audio'),
       ]);
+      const remoteReferences = replaceReferenceUrls(originalReferences, {
+        image: remoteImageUrls,
+        video: videoUrls,
+        audio: audioUrls,
+      });
+      const canonicalRequest = resolveCanonicalVideoRequest(canonicalParams, {
+        references: remoteReferences,
+        capability: videoCapability,
+      });
+      const compatibility = toResolvedVideoCompatibilityValues(canonicalRequest);
       const resolvedReferenceInput = {
-        ...referenceInput,
-        imageUrls: remoteImageUrls,
-        videoUrls,
-        audioUrls,
+        prompt: canonicalRequest.prompt,
+        operation: canonicalRequest.operation,
+        references: remoteReferences,
+        imageUrls: compatibility.imageUrls,
+        videoUrls: compatibility.videoUrls,
+        audioUrls: compatibility.audioUrls,
       };
       await assertVideoInputConstraints(
         resolvedReferenceInput,
-        gm.videoCapability,
+        videoCapability,
         gm.name,
         { signal },
       );
@@ -465,38 +578,15 @@ export async function generateVideo(
         category: 'video',
         nodeId: params.nodeId,
         signal,
-        variables: buildGeneralVideoProtocolVariables(
-          gm.modelId,
-          params,
-          resolvedReferenceInput,
-          gm.videoCapability,
-        ),
+        variables: buildCanonicalVideoProtocolVariables(canonicalRequest),
       });
       const url = urls[0];
       if (!url) throw new Error('视频生成完成但未返回结果');
       return { url };
     }
-    assertVideoOperationSupported(referenceInput, '该通用模型的旧版视频协议');
-    return executeGeneralAsyncTask(
-      connection.apiKey,
-      connection.baseUrl,
-      gm.modelId,
-      referenceInput.prompt,
-      'videos',
-      connection.providerConfigId,
-      params.nodeId,
-      signal,
-      mapVideoParameters(connection.providerConfigId, gm.modelId, {
-        model: gm.modelId,
-        prompt: referenceInput.prompt,
-        resolution: params.seedanceResolution,
-        aspectRatio: params.seedanceRatio,
-        duration: params.seedanceDuration,
-        generateAudio: params.generateAudio,
-        imageUrls: referenceInput.imageUrls,
-        videoUrls: referenceInput.videoUrls,
-        audioUrls: referenceInput.audioUrls,
-      }),
+    throw new Error(
+      `视频模型“${gm.name}”未配置可执行的提交/轮询协议，请在自定义 API 设置中重新导入并确认接口文档。`
+      + '系统不会再猜测 /videos/generations 等通用视频端点。',
     );
   }
 

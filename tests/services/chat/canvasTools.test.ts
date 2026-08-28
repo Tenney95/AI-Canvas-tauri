@@ -246,6 +246,52 @@ describe('canvas agent tools', () => {
     ]));
   });
 
+  it('maps standardized video controls onto video node protocol fields', async () => {
+    useAppStore.setState({
+      nodes: [
+        ...useAppStore.getState().nodes,
+        node('n3', { displayId: 3, type: 'ai-video' }, { x: 800, y: 100 }),
+      ],
+    });
+
+    const definition = getAgentTool('canvas_update_nodes')!;
+    expect(definition.inputSchema.properties).toMatchObject({
+      videoResolution: { type: 'string' },
+      videoDuration: { type: 'integer' },
+    });
+    const result = await definition.execute(context(), {
+      nodeIds: ['n3'],
+      videoResolution: '768P',
+      videoDuration: 4,
+    });
+
+    expect(result.status).toBe('success');
+    expect(useAppStore.getState().nodes.find((item) => item.id === 'n3')?.data).toMatchObject({
+      seedanceResolution: '768P',
+      seedanceDuration: 4,
+    });
+    expect(result.display?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: '视频分辨率', before: undefined, after: '768P' }),
+      expect.objectContaining({ field: '视频时长', before: undefined, after: 4 }),
+    ]));
+
+    const queried = await getAgentTool('canvas_query')!.execute(context(), {
+      nodeIds: ['n3'],
+      detail: true,
+    });
+    expect(JSON.parse(queried.modelContent).nodes[0]).toMatchObject({
+      videoResolution: '768P',
+      videoDuration: 4,
+    });
+
+    const guarded = await definition.execute(context(), {
+      nodeIds: ['n1'],
+      videoDuration: 4,
+    });
+    expect(guarded.status).toBe('error');
+    expect(guarded.summary).toContain('只能用于视频节点');
+  });
+
   it('rejects absolute moves that target more than one node', async () => {
     const result = await getAgentTool('canvas_update_nodes')!.execute(context(), {
       nodeIds: ['n1', 'n2'],

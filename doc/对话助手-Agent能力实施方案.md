@@ -2543,12 +2543,40 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 本次输入校验增量同样未新增依赖，未修改 Tauri 安全配置、IndexedDB schema、Agent Policy 或媒体确认策略。回滚时移除 `inputConstraints`、通用生成入口中的校验调用和自定义编辑区即可，不需要数据迁移。
 
+### 12.4 平台补充：自定义视频 API Canonical Request 第一阶段
+
+目标：统一自定义视频模型在画布、批处理、视频编辑器和对话助手中的产品语义与提交前校验，同时把各平台不同的 endpoint、鉴权、嵌套请求体、任务轮询和结果路径继续留在声明式传输协议，不制造一个虚假的“通用视频 JSON”。
+
+- [x] 新增 provider-neutral 视频请求解析层，统一 operation、text/keyframe/reference 输入形态、画幅、分辨率、时长、帧率、音频策略和带角色参考素材；旧 `AIVideoGenParams` 与 V2 模板变量继续通过兼容投影运行。
+- [x] `VideoModelCapability` 成为通用视频提交前与参数 UI 的权威来源；移除协议正文反向决定控件和 direct general 的 720p、16:9、5 秒、24 fps、15 秒截断等隐藏猜测。
+- [x] 支持按输入形态声明比例约束与默认值；文生、首尾帧和多模态参考不再被迫共用一个比例默认。参考视频、参考音频同时支持单项与合计时长约束。
+- [x] 自定义视频缺少 execution profile 时在本地明确失败，不再静默提交 `/videos/generations`；文字、图片和已有内置视频 adapter 保持原执行边界。
+- [x] 声明式协议补齐数组索引变量识别、字符串/数字任务 ID、精确动态 task 绑定、origin 轮询、`video_generation` 容器和嵌套 URL 对象保留。
+- [x] 新增受限 `$whenPresent` 与 `$forEach`：只允许 JSON 请求体数组项，数组展开仅限三类受信参考 URL 数组且最多 64 项；复合或低置信结构必须人工复核。
+- [x] 首帧、尾帧、普通参考图、参考视频和参考音频按实际角色与数量分别验证；多项数组只绑定 `.0` 不再被误判为已完整发送。
+- [x] 请求模板可声明 `maxBodyBytes`，提交前按真实序列化字节数拦截；multipart 与未贯通的 poll 限制在保存前拒绝。
+- [x] `provider_config_preview` 支持直接提交声明式协议，并执行凭据/危险键/复杂度/变量/动态轮询校验及 text、keyframe、reference 纯本地 dry-run；固定提示词、漏传/重复素材、能力与协议不一致的草稿不能应用。
+- [x] Agnes Video 2.5 Flash fixture 验证 `/v1/videos`、字符串秒数、动态 mode、互斥参考字段、origin `/agnesapi` 和 `metadata.url` 结果路径；MiniMax H3 fixture 验证 `{ url }` 嵌套、多类参考数组展开、按输入形态比例、64 MiB 请求体上限和动态 `task_id` 轮询。
+
+实际检查（2026-08-28）：
+
+- 本批 18 个改动测试文件及协议变量回归：19 个文件、287 项通过。
+- `npm run typecheck`、`npm run test:typecheck`、本批 TypeScript/TSX 定向 ESLint、`git diff --check`、严格 UTF-8 与乱码扫描：通过。
+- `npm run check` 中 lint、前端类型和测试类型通过；全量 Vitest 210 个文件中 207 个通过，1668 项中 1667 项通过。3 个失败均为未被本阶段修改的既有基线：i18n 两个孤儿词条，以及两个 MCP 测试导入带 shebang 入口时的 Vite 收集错误。
+- `npx vite build --outDir <系统临时目录>`：生产构建通过；仅有既有动态导入和大 chunk 警告，临时输出已清理。
+- 已通过 `ai-canvas` MCP 在运行中的应用完成 Agnes AI 与 MetaSo MiniMax 两个 declarative 配置的 preview、纯本地 dry-run 和 apply；目录回查确认两个通用视频模型均已出现。
+- MCP 画布节点更新补充统一的 `videoResolution` / `videoDuration` 输入，并安全映射到现有节点协议字段；定向画布工具测试 1 个文件、17 项通过，非视频节点会拒绝这两个字段。
+- MetaSo MiniMax 使用精确自定义模型创建独立视频节点并真实调用一次：提交到厂商后返回 `402 H3 积分余额不足 (1008)`。这证明请求已越过本地模型、URL 与协议渲染阶段并到达计费校验；未创建任务，异步轮询和结果 URL 仍需充值后验证。未自动重试。
+
+本阶段未新增依赖，未修改 Tauri 安全配置、IndexedDB schema、Agent Policy 或媒体确认策略。回滚时可移除 canonical resolver、能力新增字段和有限协议指令，并恢复旧 V2 兼容入口；无数据迁移或数据库降级。
+
 ## 13. 变更日志
 
 | 2026-08-14 | 媒体参数映射第一阶段 | 新增图片、视频、音频三类统一参数映射注册表；图片标准/APIMart/火山/RunningHub、APIMart 视频 Seedance、APIMart TTS/Flow Music 与通用异步媒体入口接入映射函数；新增 `tests/services/mediaParameterMappings.test.ts` 定向测试。保留现有 URL、鉴权、轮询和响应解析边界，未新增依赖。已执行 `npm run typecheck`、5 个受影响服务测试（68 项）与改动文件定向 ESLint；`npm run check` 仍被仓库既有 ESLint 10 / parser 错误 `scopeManager.addGlobals is not a function` 阻断。 |
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-28 | 自定义视频 API Stage 1 | 建立 Canonical Video Request 与 capability 权威校验，移除自定义视频猜测端点和隐藏默认；声明式协议补齐安全条件项、多参考数组展开、逐角色完整消费、动态任务轮询与真实请求体上限；助手 direct protocol 增加凭据防护和三种输入形态本地 dry-run；MCP 画布节点增加统一视频规格字段。Agnes 2.5 Flash、MiniMax H3 契约测试通过，MetaSo 实机提交到计费校验并准确返回余额不足。 |
 | 2026-08-28 | 安全前置 0-B | 为受信插件执行/Python 环境探测与轻量导演台资源状态、安装、取消、删除命令增加 Rust 调用方校验；明确导演台安装不使用 Python，未来 Blender 仅允许应用固定脚本。未修改 Agent/MCP Policy、数据库、UI 或 Blender 行为。 |
 | 2026-08-28 | 安全前置 0-A | 为 61 个 Tauri 应用 commands 增加只由首方 default capability 引用的外层 ACL；未修改 Agent/MCP Policy、数据库、UI、导演台运行时或 Blender 行为。 |
 | 2026-08-27 | 8.29 | 完成全局 Agent Package 首批纵向切片：助手内上传与管理、linked 文件夹、managed tar.gz、独立目录库、私有 sourceId 注册和无智能体旁路；任务级按需绑定与普通 zip 留待后续。 |

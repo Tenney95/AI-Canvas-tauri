@@ -269,7 +269,9 @@ function JsonDraftField({
 function createDefaultPoll(category: GeneralModelCategory): ModelProtocolPollTemplate {
   return {
     method: 'GET',
-    path: '/tasks/{{submit.task_id}}',
+    // 视频接口没有统一查询端点；保持无效直到用户按文档填写，避免重新制造
+    // /tasks/{id} 这类看似可执行、实则 404 的猜测协议。
+    path: category === 'video' ? '' : '/tasks/{{submit.task_id}}',
     response: {
       statusPath: 'status',
       successValues: ['completed'],

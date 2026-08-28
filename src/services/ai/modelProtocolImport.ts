@@ -13,6 +13,7 @@ import { validateModelExecutionProtocol } from './modelProtocol';
 import {
   IMAGE_ARRAY_FIELDS,
   IMAGE_SINGLE_FIELDS,
+  REFERENCE_PROTOCOL_VARIABLES,
   resolveProtocolFieldTemplate,
 } from './modelProtocolVariables';
 
@@ -92,9 +93,15 @@ const HTTP_METHOD_RE = /\bmethod\s*:\s*(["'])(GET|POST)\1/i;
 const CALLBACK_KEY_RE = /(?:callback|webhook|notify|notification)[_-]?(?:url|uri)|(?:callback|webhook)/i;
 const AUTH_VALUE_RE = /(?:bearer\s+)?(?:<[^>]+>|\{\{[^}]+}}|\$\{[^}]+}|YOUR_[A-Z_]+|sk-[A-Za-z0-9_-]+|[A-Za-z0-9_-]{20,})/i;
 const API_PREFIX_SEGMENT_RE = /^(?:api|openai|anthropic|v\d+(?:\.\d+)?)$/i;
-const TASK_CONTAINER_RE = /^(?:tasks?|jobs?|predictions?|requests?|operations?|videos?)$/i;
+const TASK_CONTAINER_RE = /^(?:tasks?|jobs?|predictions?|requests?|operations?|videos?|video[_-]generation)$/i;
+const MEDIA_URL_WRAPPER_FIELDS = new Set(['imageurl', 'videourl', 'audiourl']);
+const CONTENT_MEDIA_FIELDS = new Set(['imageurl', 'videourl', 'audiourl']);
+const FULL_PROTOCOL_TEMPLATE_RE = /^{{\s*([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_-]+)*)\s*}}$/;
+const REFERENCE_PROTOCOL_VARIABLE_ROOTS = new Set(REFERENCE_PROTOCOL_VARIABLES);
 const URL_VALUE_RE = /^(?:https?:\/\/|data:[^;,]+;base64,)/i;
 const GENERATE_CONTENT_PATH_RE = /\/models\/[^/]+:generateContent\/?$/i;
+const BLOCKED_LITERAL_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+const REVIEW_REQUIRED_WARNING_PREFIX = '需要人工确认：';
 
 class LooseLiteralParser {
   private index = 0;
@@ -122,7 +129,7 @@ class LooseLiteralParser {
   }
 
   private parseObject(): ProtocolJsonValue {
-    const result: Record<string, ProtocolJsonValue> = {};
+    const result: Record<string, ProtocolJsonValue> = Object.create(null) as Record<string, ProtocolJsonValue>;
     this.index += 1;
     this.skipWhitespace();
     while (this.index < this.source.length && this.source[this.index] !== '}') {
@@ -639,6 +646,10 @@ function relativePathname(pathname: string, prefix: string): string {
   return pathname || '/';
 }
 
+function requiresOriginPath(url: URL, prefix: string): boolean {
+  return !!prefix && url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`);
+}
+
 function normalizedKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -647,28 +658,179 @@ function mapBodyValue(
   key: string,
   value: ProtocolJsonValue,
   category: GeneralModelCategory,
+  warnings: string[],
 ): ProtocolJsonValue {
+  const normalized = normalizedKey(key);
+  if (MEDIA_URL_WRAPPER_FIELDS.has(normalized) && isRecord(value)) {
+    const urlEntry = Object.entries(value).find(([nestedKey]) => normalizedKey(nestedKey) === 'url');
+    if (urlEntry && typeof urlEntry[1] === 'string') {
+      const urlTemplate = resolveProtocolFieldTemplate(normalized, urlEntry[1], category);
+      if (urlTemplate) {
+        return Object.fromEntries(Object.entries(value)
+          .filter(([nestedKey]) => !BLOCKED_LITERAL_KEYS.has(nestedKey))
+          .map(([nestedKey, nestedValue]) => [
+            nestedKey,
+            normalizedKey(nestedKey) === 'url'
+              ? urlTemplate
+              : mapBodyValue(nestedKey, nestedValue, category, warnings),
+          ]));
+      }
+    }
+  }
   // 字段名 → 变量的对应关系全在 modelProtocolVariables 总表里，这里只负责递归
-  const template = resolveProtocolFieldTemplate(normalizedKey(key), value, category);
+  const template = resolveProtocolFieldTemplate(normalized, value, category);
   if (template) return template;
-  if (Array.isArray(value)) return value.map((item) => mapNestedBody(item, category));
+  if (Array.isArray(value)) {
+    const mapped = value.map((item) => mapNestedBody(item, category, warnings));
+    return category === 'video' && normalized === 'content'
+      ? mapped.map((item) => wrapOptionalReferenceContentItem(item, warnings))
+      : mapped;
+  }
   if (isRecord(value)) return Object.fromEntries(Object.entries(value)
-    .map(([nestedKey, nestedValue]) => [nestedKey, mapBodyValue(nestedKey, nestedValue, category)]));
+    .filter(([nestedKey]) => !BLOCKED_LITERAL_KEYS.has(nestedKey))
+    .map(([nestedKey, nestedValue]) => [
+      nestedKey,
+      mapBodyValue(nestedKey, nestedValue, category, warnings),
+    ]));
   return value;
 }
 
-function mapNestedBody(value: ProtocolJsonValue, category: GeneralModelCategory): ProtocolJsonValue {
-  if (Array.isArray(value)) return value.map((item) => mapNestedBody(item, category));
-  if (isRecord(value)) return Object.fromEntries(Object.entries(value)
-    .map(([key, item]) => [key, mapBodyValue(key, item, category)]));
+function collectReferenceTemplates(value: ProtocolJsonValue, templates = new Set<string>()): Set<string> {
+  if (typeof value === 'string') {
+    const match = FULL_PROTOCOL_TEMPLATE_RE.exec(value);
+    if (match && REFERENCE_PROTOCOL_VARIABLE_ROOTS.has(match[1].split('.')[0])) {
+      templates.add(`{{${match[1]}}}`);
+    }
+    return templates;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectReferenceTemplates(item, templates));
+    return templates;
+  }
+  if (isRecord(value)) {
+    Object.values(value).forEach((item) => collectReferenceTemplates(item, templates));
+  }
+  return templates;
+}
+
+function pushUniqueWarning(warnings: string[], warning: string): void {
+  if (!warnings.includes(warning)) warnings.push(warning);
+}
+
+interface ContentReferenceTransport {
+  variable: 'firstImage' | 'lastImage' | 'referenceImageUrls' | 'referenceVideoUrls' | 'referenceAudioUrls';
+  repeat: boolean;
+}
+
+function resolveContentReferenceTransport(
+  mediaType: string,
+  role: string,
+): ContentReferenceTransport | undefined {
+  if (mediaType === 'imageurl' && role === 'firstframe') {
+    return { variable: 'firstImage', repeat: false };
+  }
+  if (mediaType === 'imageurl' && role === 'lastframe') {
+    return { variable: 'lastImage', repeat: false };
+  }
+  if (mediaType === 'imageurl' && (role === 'referenceimage' || role === 'reference')) {
+    return { variable: 'referenceImageUrls', repeat: true };
+  }
+  if (mediaType === 'videourl' && (role === 'referencevideo' || role === 'reference')) {
+    return { variable: 'referenceVideoUrls', repeat: true };
+  }
+  if (mediaType === 'audiourl' && (role === 'referenceaudio' || role === 'reference')) {
+    return { variable: 'referenceAudioUrls', repeat: true };
+  }
+  return undefined;
+}
+
+function replaceExactTemplate(
+  value: ProtocolJsonValue,
+  source: string,
+  target: string,
+): ProtocolJsonValue {
+  if (typeof value === 'string') return value === source ? target : value;
+  if (Array.isArray(value)) {
+    return value.map((item) => replaceExactTemplate(item, source, target));
+  }
+  if (isRecord(value)) {
+    return Object.fromEntries(Object.entries(value)
+      .map(([key, item]) => [key, replaceExactTemplate(item, source, target)]));
+  }
   return value;
 }
 
-function mapRequestBody(body: ProtocolJsonValue | undefined, category: GeneralModelCategory): ProtocolJsonValue | undefined {
+function wrapOptionalReferenceContentItem(
+  value: ProtocolJsonValue,
+  warnings: string[],
+): ProtocolJsonValue {
+  const references = [...collectReferenceTemplates(value)];
+  const role = isRecord(value) && typeof value.role === 'string' ? normalizedKey(value.role) : '';
+  if (references.length === 0) {
+    if (role === 'reference') {
+      pushUniqueWarning(
+        warnings,
+        `${REVIEW_REQUIRED_WARNING_PREFIX}content[] 中 role="reference" 的媒体类型或 URL 字段无法高置信映射，禁止保留示例素材地址。`,
+      );
+    }
+    return value;
+  }
+  if (!isRecord(value)) {
+    pushUniqueWarning(warnings, `${REVIEW_REQUIRED_WARNING_PREFIX}content[] 中检测到复合参考素材项，无法安全推断缺少素材时的请求结构。`);
+    return value;
+  }
+
+  const mediaType = typeof value.type === 'string' ? normalizedKey(value.type) : '';
+  const hasMatchingMediaField = CONTENT_MEDIA_FIELDS.has(mediaType)
+    && Object.keys(value).some((key) => normalizedKey(key) === mediaType);
+  const allowedKeys = new Set(['type', 'role', mediaType]);
+  const hasExtraFields = Object.keys(value).some((key) => !allowedKeys.has(normalizedKey(key)));
+  if (!hasMatchingMediaField || hasExtraFields || references.length !== 1) {
+    pushUniqueWarning(warnings, `${REVIEW_REQUIRED_WARNING_PREFIX}content[] 中检测到复合或多参考媒体项，无法安全推断缺少素材时的请求结构。`);
+    return value;
+  }
+
+  const transport = resolveContentReferenceTransport(mediaType, role);
+  if (transport) {
+    const template = `{{${transport.variable}}}`;
+    const mappedValue = replaceExactTemplate(value, references[0], template);
+    return transport.repeat
+      ? { $forEach: template, $value: mappedValue }
+      : { $whenPresent: template, $value: mappedValue };
+  }
+  return {
+    $whenPresent: references[0],
+    $value: value,
+  };
+}
+
+function mapNestedBody(
+  value: ProtocolJsonValue,
+  category: GeneralModelCategory,
+  warnings: string[],
+): ProtocolJsonValue {
+  if (Array.isArray(value)) return value.map((item) => mapNestedBody(item, category, warnings));
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !BLOCKED_LITERAL_KEYS.has(key))
+    .map(([key, item]) => [key, mapBodyValue(key, item, category, warnings)]));
+  return value;
+}
+
+function mapRequestBody(
+  body: ProtocolJsonValue | undefined,
+  category: GeneralModelCategory,
+  warnings: string[],
+): ProtocolJsonValue | undefined {
   if (!isRecord(body)) return body;
-  return Object.fromEntries(Object.entries(body)
-    .filter(([key]) => !isCredentialKey(key))
-    .map(([key, value]) => [key, mapBodyValue(key, value, category)]));
+  const entries = Object.entries(body).filter(([key]) => {
+    if (BLOCKED_LITERAL_KEYS.has(key)) {
+      pushUniqueWarning(warnings, '请求体包含不安全对象键，已从导入协议中移除。');
+      return false;
+    }
+    return !isCredentialKey(key);
+  });
+  return Object.fromEntries(entries
+    .map(([key, value]) => [key, mapBodyValue(key, value, category, warnings)]));
 }
 
 function inferImageReferenceRequestMode(
@@ -775,7 +937,7 @@ function inferCategory(request: ParsedRequest, response: ProtocolJsonValue | und
   const path = new URL(request.url).pathname.toLowerCase();
   const bodyKeys = isRecord(request.body) ? Object.keys(request.body).map(normalizedKey) : [];
   const responseUrls = enumerateLeaves(response).filter((leaf) => typeof leaf.value === 'string' && URL_VALUE_RE.test(leaf.value));
-  if (/\b(?:videos?|video-generation)\b/.test(path) || bodyKeys.some((key) => ['numframes', 'framerate', 'videoduration'].includes(key))) return 'video';
+  if (/\bvideos?\b|video[_-]generation/.test(path) || bodyKeys.some((key) => ['numframes', 'framerate', 'videoduration'].includes(key))) return 'video';
   if (/\b(?:audio|speech|music|transcriptions?)\b/.test(path) || bodyKeys.some((key) => ['voice', 'audiovoice', 'audioformat'].includes(key))) return 'audio';
   if (/\b(?:images?|image-generation)\b/.test(path) || responseUrls.some((leaf) => /\.(?:png|jpe?g|webp)(?:\?|$)/i.test(String(leaf.value)))) return 'image';
   return 'text';
@@ -831,7 +993,7 @@ function inferPreferredTaskKey(pollRequest: ParsedRequest | undefined): string |
 function inferTaskIdPath(response: ProtocolJsonValue | undefined, preferredKey?: string): string | undefined {
   const leaves = enumerateLeaves(response);
   return selectLeaf(leaves, (leaf) => {
-    if (typeof leaf.value !== 'string') return 0;
+    if (typeof leaf.value !== 'string' && typeof leaf.value !== 'number') return 0;
     const key = normalizedKey(leaf.key);
     let score = 0;
     if (preferredKey && key === preferredKey) score += 120;
@@ -1046,7 +1208,7 @@ export function analyzeModelProtocolDocument(
   const submitQuery = { ...submitRequest.query };
   if (auth.type === 'query' && auth.name) delete submitQuery[auth.name];
   const relativeSubmitPath = relativeRequestPath(submitUrl, prefix);
-  const mappedSubmitBody = mapRequestBody(submitRequest.body, category);
+  const mappedSubmitBody = mapRequestBody(submitRequest.body, category, warnings);
   const submit = {
     method: submitRequest.method,
     path: withGenerateContentModelPath(relativeSubmitPath, modelId),
@@ -1092,10 +1254,13 @@ export function analyzeModelProtocolDocument(
         poll: {
           method: pollRequest.method,
           path: relativePathname(templated.path, prefix),
+          ...(requiresOriginPath(pollUrl, prefix) ? { pathMode: 'origin' as const } : {}),
           ...(safeHeaders(pollRequest.headers) ? { headers: safeHeaders(pollRequest.headers) } : {}),
           ...(omitEmptyRecord(templated.query) ? { query: omitEmptyRecord(templated.query) } : {}),
           ...(pollRequest.bodyEncoding ? { bodyEncoding: pollRequest.bodyEncoding === 'multipart' ? 'json' : pollRequest.bodyEncoding } : {}),
-          ...(pollRequest.body !== undefined ? { body: mapRequestBody(pollRequest.body, category) } : {}),
+          ...(pollRequest.body !== undefined
+            ? { body: mapRequestBody(pollRequest.body, category, warnings) }
+            : {}),
           response: {
             statusPath,
             successValues: ['completed', 'succeeded', 'success', 'done'],
@@ -1146,6 +1311,9 @@ export function analyzeModelProtocolDocument(
 
   if (warnings.some((warning) => warning.includes('Webhook/回调'))) protocol = undefined;
   if (usesBodyCredential) protocol = undefined;
+  if (warnings.some((warning) => warning.startsWith(REVIEW_REQUIRED_WARNING_PREFIX))) {
+    protocol = undefined;
+  }
   if (protocol) {
     const protocolErrors = validateModelExecutionProtocol(protocol);
     if (protocolErrors.length > 0) {

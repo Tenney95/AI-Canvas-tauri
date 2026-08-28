@@ -239,13 +239,14 @@ export function applyProjectDefaultsToNodeData(
     }
   }
   if (data.type === 'ai-video') {
-    if (settings.generation?.videoAspectRatio && (!hasPrompt || !data.seedanceRatio)) {
+    const directGeneralProtocol = next.provider === 'general' && !data.workflowId;
+    if (!directGeneralProtocol && settings.generation?.videoAspectRatio && (!hasPrompt || !data.seedanceRatio)) {
       next.seedanceRatio = settings.generation.videoAspectRatio;
     }
-    if (settings.generation?.videoResolution && (!hasPrompt || !data.seedanceResolution)) {
+    if (!directGeneralProtocol && settings.generation?.videoResolution && (!hasPrompt || !data.seedanceResolution)) {
       next.seedanceResolution = settings.generation.videoResolution;
     }
-    if (settings.generation?.videoDuration && (!hasPrompt || !data.seedanceDuration)) {
+    if (!directGeneralProtocol && settings.generation?.videoDuration && (!hasPrompt || !data.seedanceDuration)) {
       next.seedanceDuration = settings.generation.videoDuration;
     }
   }

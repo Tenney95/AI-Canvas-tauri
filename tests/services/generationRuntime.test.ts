@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ApiProviderConfig, GeneralModelConfig } from '../../src/types';
 
 const mocks = vi.hoisted(() => ({
   generateImage: vi.fn(),
@@ -12,10 +13,10 @@ const mocks = vi.hoisted(() => ({
   tagGeneratedProjectAssetSafely: vi.fn(),
   storeState: {
     config: {
-      generalModels: [],
+      generalModels: [] as GeneralModelConfig[],
       providers: {
-        openai: { apiKey: 'secret' },
-      },
+        openai: { name: 'OpenAI', apiKey: 'secret' },
+      } as Record<string, ApiProviderConfig>,
     },
     currentProjectId: 'project-1',
     projects: [] as Array<Record<string, unknown>>,
@@ -37,7 +38,7 @@ vi.mock('../../src/components/nodes/shared/defaultModels', () => ({
       : modelRef.includes('audio')
         ? 'audio'
         : 'image',
-    provider: 'openai',
+    provider: modelRef.startsWith('general/') ? 'general' : 'openai',
   }),
 }));
 vi.mock('../../src/services/ai/generateImage', () => ({ generateImage: mocks.generateImage }));
@@ -68,6 +69,8 @@ beforeEach(() => {
   mocks.storeState.currentProjectId = 'project-1';
   mocks.storeState.projects = [];
   mocks.storeState.customStyles = [];
+  mocks.storeState.config.generalModels = [];
+  mocks.storeState.config.providers = { openai: { name: 'OpenAI', apiKey: 'secret' } };
   mocks.generateImage.mockResolvedValue({ url: 'https://cdn.example/image.png', width: 1, height: 1 });
   mocks.generateVideo.mockResolvedValue({ url: 'https://cdn.example/video.mp4' });
   mocks.generateAudio.mockResolvedValue({ url: 'https://cdn.example/audio.mp3' });
@@ -196,6 +199,47 @@ describe('media generation project settings', () => {
       seedanceResolution: '720p',
       seedanceDuration: 6,
       videoResolution: 1280,
+    }), undefined);
+  });
+
+  it('does not inject project video defaults or derived pixels into direct general protocols', async () => {
+    mocks.storeState.config.generalModels = [{
+      id: 'custom-video',
+      name: 'Custom Video',
+      modelId: 'upstream-video',
+      category: 'video',
+      providerConfigId: 'custom',
+    }];
+    mocks.storeState.config.providers = {
+      openai: { name: 'OpenAI', apiKey: 'secret' },
+      custom: { name: 'Custom', apiKey: '', baseUrl: 'https://gateway.example.com' },
+    };
+    mocks.storeState.projects = [{
+      id: 'project-1',
+      settings: {
+        generation: {
+          videoAspectRatio: '16:9',
+          videoResolution: '1080p',
+          videoDuration: 10,
+        },
+      },
+    }];
+
+    await runMediaGeneration({
+      kind: 'video',
+      prompt: '保持模型默认参数',
+      modelRef: 'general/custom-video',
+      deliveryMode: 'chat',
+    }, 'project-1');
+
+    expect(mocks.generateVideo).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'general/custom-video',
+      provider: 'general',
+      seedanceRatio: undefined,
+      seedanceResolution: undefined,
+      seedanceDuration: undefined,
+      videoResolution: undefined,
+      workflowId: undefined,
     }), undefined);
   });
 
