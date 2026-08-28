@@ -1,0 +1,4 @@
+# Blender 固定运行资源按清单校验原始字节；文本必须跨平台保持 LF。
+src-tauri/resources/blender-runtime/**/*.json text eol=lf
+src-tauri/resources/blender-runtime/**/*.py text eol=lf
+src-tauri/resources/blender-runtime/**/*.blend binary
