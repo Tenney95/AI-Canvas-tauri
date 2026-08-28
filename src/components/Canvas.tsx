@@ -54,6 +54,7 @@ import { useCanvasSecondaryClickMenu } from '../hooks/useCanvasSecondaryClickMen
 import { useCanvasLongPressRadialMenu } from '../hooks/useCanvasLongPressRadialMenu';
 import { useAppStore } from '../store/useAppStore';
 import { filterHiddenCanvasElements, isCanvasConnectionValid } from '../store/store.nodes';
+import { withCanvasEdgeLayer, withCanvasNodeLayer } from '../utils/canvasElementLayering';
 import { useNodeCreation } from '../hooks/useNodeCreation';
 import { useCanvasDrawing } from '../hooks/useCanvasDrawing';
 import type { BaseNodeData } from '../types';
@@ -971,7 +972,7 @@ function CanvasInner() {
   );
   const renderedCanvasNodes = useMemo(() => {
     const graphNodes = draftNode ? [...renderableGraph.nodes, draftNode] : renderableGraph.nodes;
-    return graphNodes.map((node) => node.type === 'canvas-note'
+    return graphNodes.map((node) => withCanvasNodeLayer(node.type === 'canvas-note'
       ? {
           ...node,
           style: {
@@ -980,17 +981,19 @@ function CanvasInner() {
             pointerEvents: 'none' as const,
           },
         }
-      : node);
+      : node));
   }, [draftNode, renderableGraph.nodes]);
 
   // 仅派生渲染状态，不把隐藏和节点选中效果写回可持久化的边数据。
   const renderedEdges = useMemo(() => {
-    if (selectedNodeIds.length === 0) return renderableGraph.edges;
+    if (selectedNodeIds.length === 0) return renderableGraph.edges.map(withCanvasEdgeLayer);
 
     const selectedIds = new Set(selectedNodeIds);
     return renderableGraph.edges.map((edge) => {
-      if (!selectedIds.has(edge.source) && !selectedIds.has(edge.target)) return edge;
-      return {
+      if (!selectedIds.has(edge.source) && !selectedIds.has(edge.target)) {
+        return withCanvasEdgeLayer(edge);
+      }
+      return withCanvasEdgeLayer({
         ...edge,
         type: 'selected-node-flow',
         data: {
@@ -999,7 +1002,7 @@ function CanvasInner() {
             ? 'smoothstep'
             : 'default',
         },
-      };
+      });
     });
   }, [renderableGraph.edges, selectedNodeIds, smoothLine]);
 
@@ -1258,6 +1261,7 @@ function CanvasInner() {
         onEdgesChange={handleEdgesChange}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        zIndexMode="manual"
         connectionMode={ConnectionMode.Loose}
         connectionRadius={64}
         onlyRenderVisibleElements
