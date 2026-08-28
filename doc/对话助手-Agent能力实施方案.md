@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）与 Phase 0-B（高风险原生命令 Rust 调用方校验）已完成；3D 镜头台 Phase 0-C 双运行时前端契约、Phase 0-D 协议冻结与 Phase 1-A Scene/Result 纯数据层已完成
+> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）与 Phase 0-B（高风险原生命令 Rust 调用方校验）已完成；3D 镜头台 Phase 0-C 双运行时前端契约、Phase 0-D 协议冻结、Phase 1-A Scene/Result 纯数据层与 Phase 1-B Blender 安装候选发现已完成
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -64,6 +64,7 @@
 | 导演台 0-C | `[x]` | 同一 `ai-director` 的 `lightweight-web` / `blender` 双运行时前端契约 | 2026-08-28 | 2026-08-28 |
 | 导演台 0-D | `[x]` | Blender 场景权威、固定脚本和后续原生阶段范围冻结 | 2026-08-28 | 2026-08-28 |
 | 导演台 1-A | `[x]` | Director Scene/Result 严格合同、不可变项目文件与归档识别 | 2026-08-28 | 2026-08-28 |
+| 导演台 1-B | `[x]` | 受限 Blender 安装候选发现、opaque ID 与进程内记录 | 2026-08-28 | 2026-08-28 |
 
 ## 3. 已确认的产品决策
 
@@ -2438,6 +2439,33 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - 回滚时移除两个可选节点引用、Director 类型/schema/服务/项目文件模块及归档 collector 的两个显式字段即可；旧截图、视频与轻量运行时数据不删除，已存在的不可变项目文件保留为可恢复孤儿文件，不做破坏性清理。
 - 正式范围为 9 个产品/测试文件加本文档共 10 文件；没有修改 Rust、Tauri 安全配置、数据库、依赖、运行资源或现有 Blender unavailable 实现。
 
+### 8.35 Blender 安装候选发现（Phase 1-B）
+
+**状态：** `[x]`
+
+#### 目标与边界
+
+- 只在 Windows 的 `ProgramW6432`、`ProgramFiles`、`ProgramFiles(x86)` 非权威根提示下检查固定标准层级 `Blender Foundation/<直接版本目录>/blender.exe`；不递归扫描 Program Files，不读取 PATH、注册表、Steam、WindowsApps、用户目录或整盘。
+- 新 command 不接收路径、扫描深度、命令行或其他业务参数；先通过既有 trusted caller 本地来源校验，再额外限制为 `main` 窗口。发现过程不调用 Blender、Shell、Python、`--version` 或任何子进程。
+- 返回值只含 opaque `installationId`、安全展示名、固定来源、未验证目录版本提示，以及 scope / `exhaustive=false` / partial / truncated 状态；绝对根和可执行文件路径仅存当前 Rust 进程内，不进入前端持久化、节点、IndexedDB 或日志。
+- 本阶段发现记录不构成 Blender 身份、版本、架构、兼容性或执行授权。Phase 1-C 启动前必须使用操作系统 Known Folder 或等价可信根重新验证，并重新 canonicalize、检查普通文件和兼容性；不能直接信任环境变量或本阶段 ID。
+- 前端 registry、节点和 UI 不在本阶段修改；`blender` 保持 `selectable: false`、全部 capabilities false 与 unavailable，轻量网页导演台继续正常工作。
+
+#### 当前实施与验证
+
+- 新增独立 `blender_runtime.rs`：固定 3 个根、每个 vendor 目录 128 项、最终 16 个候选上限；第 129 项整根失败关闭，去重和稳定排序后才截断。候选 ID 使用带域分隔的 SHA-256 规范路径摘要，不含路径明文，也不是凭据。
+- 根、vendor、直接版本目录和候选均执行 `symlink_metadata`、Windows reparse point 拒绝、canonicalize、精确父层级与包含关系校验；外部根提示只接受普通盘符路径，内部 Windows verbatim canonical 路径继续允许，UNC 与 DeviceNS 不放行。
+- Rust 状态以一次互斥锁替换本轮候选表；旧发现记录不会与新结果混合。后续 Job 仍须重新验证，不得只按 ID 直接启动。
+- 最终定向测试 15 项通过，覆盖固定层级、错误文件名、过深目录、目录伪装候选、链接逃逸、无需 symlink 权限的 canonical 越界、Windows reparse 属性、本地盘/UNC/DeviceNS、去重、稳定 ID/排序、3/4 根、128/129 条目、16/17 候选、版本提示、非穷尽空结果和进程内状态替换。
+- `cargo check --locked --lib` 与新增 Rust 文件 `rustfmt --check` 通过且无警告；handler、首方 permission 和生成 ACL 均为 62 项，missing/extra/deny 均为 0；既有 Blender unavailable registry 1 文件/5 项回归通过。
+- 五个阶段文件严格 UTF-8、无 BOM 和常见乱码检查通过；静态检查确认 trusted caller → main-only → scan 顺序，且模块不含 Python、Command、Shell 或 `--version`；`git diff --check` 无内容错误。三路最终只读审阅均未发现 P0–P2 阻断。
+
+#### 实际文件与回滚
+
+- 当前实际范围为新增 `src-tauri/src/blender_runtime.rs`；修改 `src-tauri/src/lib.rs`、`src-tauri/permissions/allow-first-party-app-commands.toml`、构建实际生成的 `src-tauri/gen/schemas/acl-manifests.json` 和本文档。没有修改依赖、`tauri.conf.json`、capability、数据库、前端、Blender 资源或 macOS schema。
+- 回滚时移除模块、State、command 注册和首方 ACL 条目，再由 Rust 构建重新生成 ACL manifest，并恢复本文档记录即可。没有 Blender 进程、安装文件、配置、数据库迁移或用户产物需要终止、删除或清理。
+- 本阶段只在注入的临时目录测试发现算法，没有调用发现 command、扫描或报告真实本机 Blender 安装状态，也没有启动 Blender、安装资源、推送、打 tag 或发布。Phase 1-B 模块没有 Python、Command、Shell 或子进程入口；主流程与并行复审合计三次运行了范围过大的全量无默认特性 Rust 回归，最新结果为 98 passed、0 failed、1 ignored，但每次都会连带执行仓库既有的两项 Python Plugin API 测试。该范围偏差已向用户披露并停止重复，结果不作为 Blender 能力证据。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -2678,6 +2706,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-28 | 导演台 1-B | 新增用途单一的 Rust Blender 安装候选发现：固定 Program Files 标准层级、main-only 双层 guard、reparse/canonical 边界、有界稳定 opaque ID、非穷尽结果状态与进程内记录；Blender 继续 unavailable，未扫描或启动真实 Blender。 |
 | 2026-08-28 | 导演台 1-A | 为同一 `ai-director` 节点建立 Director Scene/Result 严格 v1 合同、内容寻址不可变项目文件、父 revision/Manifest 追加校验与归档嵌套引用识别；Blender 继续 unavailable，未修改 Rust、数据库或安全配置。 |
 | 2026-08-28 | 导演台 0-D | 冻结同一 `ai-director` 节点的 Blender 双运行时、Director Scene JSON 权威、不可变 Result Manifest、项目 grant、安装复核、Rust Job ID、固定第一方脚本与 C2 真机启用门；仅修改 5 份文档，Blender 继续 unavailable。 |
 | 2026-08-28 | 导演台 0-C | 在现有 `ai-director` 节点内建立 `lightweight-web` / `blender` 双运行时前端契约，统一打开与导出 facade、旧节点默认、未知值失败关闭、同项目复制和安装提示语义；未新增节点、Rust、数据库或 Blender 进程能力。 |

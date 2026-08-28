@@ -10,6 +10,7 @@ commands.allow = [
   "assistant_web_extract",
   "assistant_web_render",
   "provider_docs_read",
+  "discover_blender_installations",
   "agent_source_link",
   "agent_package_import_archive",
   "agent_source_probe",

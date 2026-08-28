@@ -17,6 +17,7 @@ use url::Url;
 
 mod agent_package;
 mod assistant_web;
+mod blender_runtime;
 mod clipboard;
 mod comfyui;
 mod director_desk_runtime;
@@ -1036,6 +1037,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(proxy_http_state)
+        .manage(blender_runtime::BlenderRuntimeState::default())
         .manage(mcp_bridge::McpBridgeState::default())
         .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)
         .plugin(tauri_plugin_fs::init())
@@ -1054,6 +1056,7 @@ pub fn run() {
             assistant_web::assistant_web_extract,
             assistant_web::assistant_web_render,
             provider_docs::provider_docs_read,
+            blender_runtime::discover_blender_installations,
             agent_package::agent_source_link,
             agent_package::agent_package_import_archive,
             agent_package::agent_source_probe,
