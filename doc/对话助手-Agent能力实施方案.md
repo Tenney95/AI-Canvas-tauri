@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）已完成
+> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）与 Phase 0-B（高风险原生命令 Rust 调用方校验）已完成
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -60,6 +60,7 @@
 | P5-D | `[x]` | 通用联网搜索、受控网页提取和来源引用 | 2026-07-22 | 2026-07-22 |
 | 角色库 S1 | `[x]` | 多图角色类型、旧数据迁移与全局角色持久化 | 2026-07-25 | 2026-07-25 |
 | 安全前置 0-A | `[x]` | Tauri 应用 command 外层 ACL | 2026-08-28 | 2026-08-28 |
+| 安全前置 0-B | `[x]` | 插件执行与导演台资源命令 Rust 调用方校验 | 2026-08-28 | 2026-08-28 |
 
 ## 3. 已确认的产品决策
 
@@ -2307,6 +2308,34 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - `cargo test --no-default-features --lib` 通过：83 项通过、0 失败、1 项既有 176 MiB 压力测试忽略。`cargo test --lib` 已执行，但被既有 ORT/MSVC 链接环境以 LNK1120 阻断，39 个 `__std_find_*` 等符号未解析；本阶段未修改 ONNX、Cargo 依赖或工具链。
 - 严格 UTF-8、生成 JSON 解析和 `git diff --check` 通过；未启动应用做窗口级动态拒绝手测，因此本阶段验收证据为 Tauri 构建解析、生成 ACL 结构与既有 Rust 测试，不把它表述为完整运行时端到端验收。
 
+### 8.31 平台安全前置：Python、导演台与 Blender 运行边界（Phase 0-B）
+
+**状态：** `[x]`
+
+#### 目标与边界
+
+- 现有 Python 能力仅指 Plugin API v3 的受信本机插件运行时：它执行用户明确安装并启用的 `main.py`，沿用既有高风险提示、宿主 effect、canvas revision 和输出校验；它不是导演台安装器，也不作为未来 Blender 适配器的通用脚本执行入口。
+- 当前 3D 导演台的轻量网页运行时继续由 Rust `director_desk_runtime` 按固定发布清单下载、校验 SHA-256、限制并解包归档、校验发布元数据，再通过 `director-desk://` 提供静态资源；该链路不调用 Python、Shell 或任意脚本进程。
+- 后续 Blender 运行时只能调用应用自带、版本固定且可校验的脚本，并只接受结构化场景清单和固定参数；不得接收模型、插件、网页、Agent/MCP 或普通用户输入的任意 Python 源码、脚本路径、自由命令行参数或任意工作目录。Blender 接入仍属于后续阶段，本阶段不实现或宣称已接通。
+- 本阶段在 Phase 0-A 外层 ACL 之外，为任意插件源码执行、Python 环境探测以及轻量导演台资源状态、安装、取消和删除命令增加 Rust `ensure_trusted_caller` 校验；只接受 AI Canvas 自有本地窗口，第三方 `director-desk`、远程登录页与其他未授权窗口即使未来 capability 配置漂移也会被命令本身拒绝。
+- 本阶段不修改 Agent/MCP Tool Registry、Policy Engine 或确认矩阵，不修改数据库、UI、导演台下载清单、资源格式、现有节点协议或 Blender 行为。
+
+#### 验收与回滚
+
+- 受保护的 6 个 Tauri commands 必须先校验调用窗口，再执行环境探测、插件源码、网络下载、安装状态变更或资源删除；校验发生在启动子进程、设置安装状态和磁盘写入之前。
+- 主窗口前端 `invoke` 的业务参数与返回数据保持兼容；`get_python_plugin_runtime_status` 仅由 Rust 外层增加可拒绝错误，不改变成功时的 `PythonPluginRuntimeStatus` 数据结构。
+- 执行 Rust 编译、非 ONNX 既有 Rust 测试、命令结构静态核对、严格 UTF-8 与 `git diff --check`；不把源码静态检查表述为窗口级动态端到端验收。
+- 回滚只需撤销两个 Rust 模块的 `Webview` 参数与调用方校验，以及本节台账；Phase 0-A ACL、项目数据库、现有导演台资源和用户插件文件均不迁移、不删除。
+
+#### 完成记录
+
+- `plugin_runtime.rs` 的 `execute_node_plugin_tool` 与 `get_python_plugin_runtime_status` 已注入 `Webview` 并在启动 QuickJS/Python 运行、探测 Python 进程前调用 `ensure_trusted_caller`；为保持既有单元测试不构造真实 Webview，仅把运行时分派提取为同文件私有 `execute_plugin_tool_inner`，生产命令仍先经过调用方校验。
+- `director_desk_runtime.rs` 的状态、安装、取消与删除 4 个命令已在读取或修改安装状态、下载、解包和删除资源前执行同一校验；私有 `runtime_status`、`install_runtime` 与 `director-desk://` 静态资源协议没有扩权或改写。
+- `cargo check --lib` 通过；`cargo test --no-default-features --lib` 通过，83 项通过、0 失败、1 项既有 176 MiB 压力测试忽略。没有重复运行 Phase 0-A 已确认会被本机 ORT/MSVC LNK1120 阻断的完整特性测试。
+- 两个受影响前端服务测试通过：2 个测试文件、10 项测试；`npm run typecheck` 通过。命令名、前端 `invoke` 参数和成功响应结构保持不变，Tauri 注入的 `Webview` 不需要前端传参。
+- 两个改动 Rust 文件的定向 `rustfmt --check` 通过；全仓 `cargo fmt --check` 已执行但被其他既有 Rust 文件的格式差异阻断，本阶段未批量格式化或覆盖这些文件。
+- 6 个命令的 guard-before-operation 静态顺序检查、严格 UTF-8 与 scoped `git diff --check` 通过；生成 ACL/schema 无变化。未启动应用做 `main`/`director-desk` 窗口级动态拒绝手测，因此不把本阶段表述为完整运行时端到端验收。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -2520,6 +2549,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-28 | 安全前置 0-B | 为受信插件执行/Python 环境探测与轻量导演台资源状态、安装、取消、删除命令增加 Rust 调用方校验；明确导演台安装不使用 Python，未来 Blender 仅允许应用固定脚本。未修改 Agent/MCP Policy、数据库、UI 或 Blender 行为。 |
 | 2026-08-28 | 安全前置 0-A | 为 61 个 Tauri 应用 commands 增加只由首方 default capability 引用的外层 ACL；未修改 Agent/MCP Policy、数据库、UI、导演台运行时或 Blender 行为。 |
 | 2026-08-27 | 8.29 | 完成全局 Agent Package 首批纵向切片：助手内上传与管理、linked 文件夹、managed tar.gz、独立目录库、私有 sourceId 注册和无智能体旁路；任务级按需绑定与普通 zip 留待后续。 |
 | 2026-08-26 | Python 插件兼容 | Plugin API v3 增加可信 `main.py` 运行时，复用本机 Python 与现有依赖；独立子进程执行并加入高风险确认、环境检测、协议限长和超时终止，JavaScript QuickJS 沙箱保持不变。 |
