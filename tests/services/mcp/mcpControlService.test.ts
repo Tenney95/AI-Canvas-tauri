@@ -148,6 +148,46 @@ describe('MCP control service', () => {
     ]));
   });
 
+  it('keeps a structured tool failure distinct from a failed response', async () => {
+    registerAgentTool({
+      id: 'mcp_control_structured_error_test',
+      title: '测试结构化失败',
+      description: '验证工具失败与响应失败使用不同状态',
+      effect: 'read',
+      inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+      execute: async () => ({
+        status: 'error',
+        summary: '已运行 0/1 个节点',
+        modelContent: JSON.stringify({
+          results: [{ nodeId: 'node-1', status: 'failed', message: '余额不足' }],
+        }),
+      }),
+    });
+
+    const result = await handleMcpBridgeRequest({
+      sessionId: 'session-error',
+      requestId: 'session-error:call-1',
+      method: 'tools/call',
+      params: { name: 'mcp_control_structured_error_test', arguments: {} },
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      summary: '已运行 0/1 个节点',
+    });
+    expect(useAppStore.getState().agentTasks[0]).toMatchObject({
+      status: 'failed',
+      resultSummary: '已运行 0/1 个节点',
+      steps: [expect.objectContaining({ status: 'failed' })],
+    });
+    expect(useAppStore.getState().messages).toContainEqual(expect.objectContaining({
+      role: 'assistant',
+      content: '已运行 0/1 个节点',
+      status: 'done',
+      agentTaskId: expect.any(String),
+    }));
+  });
+
   it('returns transient image content without persisting its base64 payload', async () => {
     registerAgentTool({
       id: 'mcp_control_image_test',

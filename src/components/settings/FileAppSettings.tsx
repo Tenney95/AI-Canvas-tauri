@@ -15,8 +15,27 @@ import {
   PROJECT_DISK_CHANGED_EVENT,
 } from '../../services/fileService';
 import { useAppStore } from '../../store/useAppStore';
+import {
+  chooseDirectorBlenderInstallation,
+  detectDirectorBlenderInstallation,
+  type DirectorBlenderInstallationCandidate,
+} from '../../services/directorBlenderRuntimeService';
 import AnimatedButton from '../shared/AnimatedButton';
 import { useT } from '../../i18n';
+
+interface ExternalEditorRow {
+  id: string;
+  label: string;
+  path?: string;
+  description: string;
+  onChoose: () => Promise<void>;
+}
+
+function formatBlenderInstallation(candidate: DirectorBlenderInstallationCandidate): string {
+  const version = candidate.versionHint?.trim();
+  if (!version || candidate.displayName.includes(version)) return candidate.displayName;
+  return `${candidate.displayName} · ${version}`;
+}
 
 export default function FileAppSettings({ active }: { active: boolean }) {
   const t = useT();
@@ -30,6 +49,10 @@ export default function FileAppSettings({ active }: { active: boolean }) {
   const [defaultBaseDir, setDefaultBaseDir] = useState<string | null>(null);
   const [appExecutableDir, setAppExecutableDir] = useState<string | null>(null);
   const [dirLoading, setDirLoading] = useState(false);
+  const [blenderInstallation, setBlenderInstallation] =
+    useState<DirectorBlenderInstallationCandidate | null>(null);
+  const [blenderLoading, setBlenderLoading] = useState(true);
+  const [blenderError, setBlenderError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!active) return;
@@ -64,6 +87,28 @@ export default function FileAppSettings({ active }: { active: boolean }) {
       window.removeEventListener(PROJECT_DISK_CHANGED_EVENT, refreshDirectories);
     };
   }, [active, currentProjectId]);
+
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    void detectDirectorBlenderInstallation()
+      .then((candidate) => {
+        if (cancelled) return;
+        setBlenderInstallation(candidate);
+        setBlenderError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setBlenderInstallation(null);
+        setBlenderError(error instanceof Error ? error.message : 'Blender 安装检测失败');
+      })
+      .finally(() => {
+        if (!cancelled) setBlenderLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
 
   const chooseDirectory = async (
     title: string,
@@ -100,8 +145,22 @@ export default function FileAppSettings({ active }: { active: boolean }) {
     }
   };
 
+  const chooseBlender = async () => {
+    setBlenderLoading(true);
+    setBlenderError(null);
+    try {
+      setBlenderInstallation(await chooseDirectorBlenderInstallation());
+    } catch (error) {
+      if (!(error instanceof Error && error.name === 'AbortError')) {
+        setBlenderError(error instanceof Error ? error.message : 'Blender 选择失败');
+      }
+    } finally {
+      setBlenderLoading(false);
+    }
+  };
+
   const baseDataDir = config.baseDataDir;
-  const editors = [
+  const editors: ExternalEditorRow[] = [
     {
       id: 'photoshop',
       label: 'Photoshop',
@@ -225,7 +284,11 @@ export default function FileAppSettings({ active }: { active: boolean }) {
                 }`}>
                   {editor.path || t('未设置（自动检测）')}
                 </div>
-                <AnimatedButton type="button" className="settings-save-btn shrink-0 text-xs" onClick={editor.onChoose}>
+                <AnimatedButton
+                  type="button"
+                  className="settings-save-btn shrink-0 text-xs"
+                  onClick={() => { void editor.onChoose(); }}
+                >
                   {editor.path ? t('更换') : t('选择文件')}
                 </AnimatedButton>
               </div>
@@ -234,6 +297,36 @@ export default function FileAppSettings({ active }: { active: boolean }) {
               </p>
             </div>
           ))}
+          <div className="py-2 first:pt-0 last:pb-0">
+            <div className="text-xs text-canvas-text-muted mb-1.5">Blender</div>
+            <div className="flex items-center gap-2">
+              <div className={`flex-1 min-w-0 text-[11px] break-words leading-relaxed rounded-md px-3 py-1.5 border border-canvas-border bg-canvas-surface ${
+                blenderInstallation ? 'text-canvas-text-secondary' : 'text-canvas-text-muted italic'
+              }`}>
+                {blenderLoading
+                  ? t('检测中…')
+                  : blenderInstallation
+                    ? formatBlenderInstallation(blenderInstallation)
+                    : t('未检测到唯一安装，请选择 blender.exe')}
+              </div>
+              <AnimatedButton
+                type="button"
+                className="settings-save-btn shrink-0 text-xs"
+                disabled={blenderLoading}
+                onClick={() => { void chooseBlender(); }}
+              >
+                {blenderInstallation ? t('重新选择') : t('选择 Blender')}
+              </AnimatedButton>
+            </div>
+            <p className="text-[11px] text-canvas-text-muted leading-relaxed mt-1.5">
+              {t('用于 3D 导演台的高级编辑、当前帧截图和参考视频渲染；安装仅在当前运行会话登记，启动前会重新校验')}
+            </p>
+            {blenderError && (
+              <p className="mt-1 text-[11px] leading-relaxed text-red-400" role="alert">
+                {blenderError}
+              </p>
+            )}
+          </div>
         </div>
       </div>
     </div>

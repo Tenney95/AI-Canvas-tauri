@@ -760,7 +760,8 @@ export default function Sidebar() {
       <button
         type="button"
         className="sidebar-btn-v3"
-        data-tooltip={t('画布助手')}
+        data-tooltip={t('AI 助手')}
+        aria-label={t('打开 AI 助手')}
         onClick={async () => {
           const store = useAppStore.getState();
           if (store.chatPanelDetached) {

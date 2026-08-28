@@ -260,9 +260,13 @@ export async function runMediaGeneration(
   }
 
   if (intent.kind === 'video') {
-    const aspectRatio = intent.aspectRatio ?? projectSettings?.generation?.videoAspectRatio;
-    const resolution = intent.resolution ?? projectSettings?.generation?.videoResolution;
-    const duration = intent.duration ?? projectSettings?.generation?.videoDuration;
+    const directGeneralProtocol = model.provider === 'general' && !model.workflowId;
+    const aspectRatio = intent.aspectRatio
+      ?? (directGeneralProtocol ? undefined : projectSettings?.generation?.videoAspectRatio);
+    const resolution = intent.resolution
+      ?? (directGeneralProtocol ? undefined : projectSettings?.generation?.videoResolution);
+    const duration = intent.duration
+      ?? (directGeneralProtocol ? undefined : projectSettings?.generation?.videoDuration);
     const result = await generateVideo({
       prompt: effectivePrompt,
       model: model.requestModel,
@@ -271,7 +275,7 @@ export async function runMediaGeneration(
       seedanceResolution: resolution,
       seedanceDuration: duration,
       // 工作流只认数字长边，档位换算后再传
-      videoResolution: videoLongSideFromLabel(resolution),
+      videoResolution: directGeneralProtocol ? undefined : videoLongSideFromLabel(resolution),
       workflowId: model.workflowId,
     }, signal);
     throwIfAborted(signal);

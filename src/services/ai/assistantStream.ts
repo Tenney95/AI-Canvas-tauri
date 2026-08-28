@@ -358,10 +358,19 @@ function buildMediaPrompt(): string {
  * 脱敏：不发送 prompt/output 等隐私内容。
  */
 export function buildAssistantSystemPrompt(
-  options: { agentTools?: boolean } = {},
+  options: {
+    agentTools?: boolean;
+    projectId?: string | null;
+    includeCanvasContext?: boolean;
+  } = {},
 ): string {
   const store = useAppStore.getState();
-  const nodes = store.nodes;
+  const projectId = options.projectId ?? store.currentProjectId;
+  const includeCanvasContext = options.includeCanvasContext
+    ?? projectId === store.currentProjectId;
+  const nodes = includeCanvasContext ? store.nodes : [];
+  const edges = includeCanvasContext ? store.edges : [];
+  const selectedNodeIds = includeCanvasContext ? store.selectedNodeIds : [];
 
   // 统计信息
   const typeCounts = new Map<string, number>();
@@ -464,9 +473,11 @@ export function buildAssistantSystemPrompt(
 
   const context = [
     `AI Canvas 画布助手`,
-    `项目: ${store.currentProjectId ?? 'unknown'}`,
-    `节点总数: ${nodes.length} | 连线: ${store.edges.length}`,
-    `选中节点: ${store.selectedNodeIds.length > 0 ? store.selectedNodeIds.join(', ') : '无'}`,
+    `项目: ${projectId ?? 'unknown'}`,
+    includeCanvasContext
+      ? `节点总数: ${nodes.length} | 连线: ${edges.length}`
+      : `画布上下文: 当前未加载任务所属画布，已省略节点摘要`,
+    `选中节点: ${selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '无'}`,
     ``,
     `类型分布: ${[...typeCounts.entries()].map(([k, v]) => `${k}×${v}`).join(', ')}`,
     `状态分布: ${[...statusCounts.entries()].map(([k, v]) => `${k}×${v}`).join(', ')}`,

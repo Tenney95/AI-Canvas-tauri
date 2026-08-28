@@ -11,6 +11,8 @@ import { useT } from '../../i18n';
 interface EmptyChatStateProps {
   onNew: () => void;
   onList: () => void;
+  /** 打开全局智能体中心；独立窗口不提供以保持主窗口单写入。 */
+  onOpenAgents?: () => void;
   /** 点击示例提示 → 预填输入框（不提供时示例不可点击） */
   onExample?: (text: string) => void;
 }
@@ -21,14 +23,14 @@ const EXAMPLES = [
   '删除失败节点',
 ];
 
-export default function EmptyChatState({ onNew, onList, onExample }: EmptyChatStateProps) {
+export default function EmptyChatState({ onNew, onList, onOpenAgents, onExample }: EmptyChatStateProps) {
   const t = useT();
   return (
     <div className="chat-empty-state flex flex-col items-center justify-center h-full text-center px-6">
       <MascotAvatar size={72} className="mb-5" />
-      <h3 className="text-base font-semibold text-canvas-text mb-2">{t('画布 AI 助手')}</h3>
+      <h3 className="text-base font-semibold text-canvas-text mb-2">{t('AI 助手')}</h3>
       <p className="text-sm text-canvas-text-secondary mb-6 max-w-[260px]">
-        {t('用自然语言读取和操作画布。查询状态、定位节点、批量管理，一个对话框完成。')}
+        {t('直接开始对话，或按需安装智能体来扩展专业能力。没有智能体时，默认助手仍可正常使用。')}
       </p>
       <div className="chat-empty-state-actions flex flex-col gap-2 w-48">
         <AnimatedButton
@@ -48,6 +50,17 @@ export default function EmptyChatState({ onNew, onList, onExample }: EmptyChatSt
           <Icon icon="mdi:history" width="16" height="16" />
           {t('历史记录')}
         </AnimatedButton>
+        {onOpenAgents && (
+          <AnimatedButton
+            className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl
+                       border border-canvas-border bg-canvas-card text-canvas-text-secondary text-sm
+                       hover:border-brand/40 hover:bg-brand/10 hover:text-canvas-text transition-colors"
+            onClick={onOpenAgents}
+          >
+            <Icon icon="lucide:bot" width="16" height="16" />
+            {t('智能体中心')}
+          </AnimatedButton>
+        )}
       </div>
 
       {/* Example prompts */}

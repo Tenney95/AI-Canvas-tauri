@@ -37,7 +37,7 @@ describe('Sora2U 通用视频运行时映射', () => {
 
   it('把公网和 data URL 参考素材拆到对应请求数组', () => {
     const references: VideoGenerationReferenceInput = {
-      prompt: '保持角色与动作一致',
+      prompt: '保持角色与动作一致并保持镜头稳定',
       imageUrls: ['https://assets.example/character.png'],
       videoUrls: ['data:video/mp4;base64,VklERU8='],
       audioUrls: ['https://assets.example/voice.mp3'],

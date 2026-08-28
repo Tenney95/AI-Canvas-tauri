@@ -46,6 +46,27 @@ describe('项目默认的视频画面比例', () => {
     expect(applied.seedanceRatio).toBe('21:9');
   });
 
+  it('不把项目视频默认值注入 direct general 自定义模型', () => {
+    const settings: ProjectSettings = {
+      defaultModels: { video: 'general/custom-video' },
+      generation: {
+        videoAspectRatio: '9:16',
+        videoResolution: '1080p',
+        videoDuration: 10,
+      },
+    };
+
+    const applied = applyProjectDefaultsToNodeData(videoNode(), settings);
+
+    expect(applied).toMatchObject({
+      model: 'general/custom-video',
+      provider: 'general',
+    });
+    expect(applied.seedanceRatio).toBeUndefined();
+    expect(applied.seedanceResolution).toBeUndefined();
+    expect(applied.seedanceDuration).toBeUndefined();
+  });
+
   it('只作用于视频节点', () => {
     const settings: ProjectSettings = { generation: { videoAspectRatio: '9:16' } };
 

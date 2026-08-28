@@ -35,10 +35,12 @@ import type {
 /**
  * 构建脱敏画布上下文（不包含 prompt/output 等隐私/大量内容）。
  */
-export function buildCanvasContext(): CanvasContext {
+export function buildCanvasContext(projectId?: string | null): CanvasContext {
   const store = useAppStore.getState();
+  const resolvedProjectId = projectId ?? store.currentProjectId ?? '';
+  const canvasLoaded = resolvedProjectId === (store.currentProjectId ?? '');
 
-  const nodes: CanvasNodeSummary[] = store.nodes.map((n) => {
+  const nodes: CanvasNodeSummary[] = (canvasLoaded ? store.nodes : []).map((n) => {
     const data = n.data as BaseNodeData;
     return {
       id: n.id,
@@ -50,10 +52,10 @@ export function buildCanvasContext(): CanvasContext {
   });
 
   return {
-    projectId: store.currentProjectId ?? '',
-    totalNodes: store.nodes.length,
-    totalEdges: store.edges.length,
-    selectedNodeIds: store.selectedNodeIds,
+    projectId: resolvedProjectId,
+    totalNodes: nodes.length,
+    totalEdges: canvasLoaded ? store.edges.length : 0,
+    selectedNodeIds: canvasLoaded ? store.selectedNodeIds : [],
     nodes,
   };
 }
@@ -92,13 +94,24 @@ export interface PipelineResult {
 export async function runAssistantPipeline(
   userMessage: string,
   conversationId: string,
+  projectId?: string,
 ): Promise<PipelineResult> {
   const store = useAppStore.getState();
+  const resolvedProjectId = projectId ?? store.currentProjectId ?? '';
+  const canvasLoaded = resolvedProjectId === (store.currentProjectId ?? '');
 
   // Step 1: 本地规则引擎
   const rulesResult = parseRules(userMessage);
 
   if (rulesResult.hasHighConfidence && rulesResult.intents.length > 0) {
+    if (!canvasLoaded) {
+      return {
+        reply: '任务所属画布当前未加载。请切回对应项目后再执行画布操作。',
+        commandExecuted: false,
+        commandResults: [],
+        parseSource: 'help',
+      };
+    }
     // Step 2: 规划 & 执行（循环处理多个意图）
     const results: CommandResult[] = [];
     const pendingIntents: CommandIntent[] = [];
@@ -115,7 +128,7 @@ export async function runAssistantPipeline(
 
       // 记录操作日志
       logOperation({
-        projectId: store.currentProjectId ?? '',
+        projectId: resolvedProjectId,
         conversationId,
         timestamp: Date.now(),
         commandId: intent.commandId,
@@ -143,7 +156,7 @@ export async function runAssistantPipeline(
 
   // Step 3: 无高置信度匹配 → 生成帮助回复
   const isCommandish = isLikelyCommand(userMessage);
-  const canvasContext = buildCanvasContext();
+  const canvasContext = buildCanvasContext(resolvedProjectId);
 
   if (isCommandish) {
     // 看起来像命令但解析失败 → 提示
@@ -164,7 +177,7 @@ export async function runAssistantPipeline(
     };
   }
 
-  if (!resolveAssistantModel()) {
+  if (!resolveAssistantModel(resolvedProjectId)) {
     return {
       reply: [
         '未选择可用的对话文本模型。',
@@ -255,26 +268,33 @@ export async function runStreamingPipeline(
   userMessage: string,
   conversationId: string,
   callbacks: StreamingPipelineCallbacks,
+  projectId?: string,
 ): Promise<void> {
+  const storeAtStart = useAppStore.getState();
+  const resolvedProjectId = projectId ?? storeAtStart.currentProjectId ?? '';
+  const canvasLoaded = resolvedProjectId === (storeAtStart.currentProjectId ?? '');
   // Step 1: 先尝试本地规则引擎
   const rulesResult = parseRules(userMessage);
 
   if (rulesResult.hasHighConfidence && rulesResult.intents.length > 0) {
-    const result = await runAssistantPipeline(userMessage, conversationId);
+    const result = await runAssistantPipeline(userMessage, conversationId, resolvedProjectId);
     callbacks.onComplete(result.reply, result.commandResults, result.pendingIntents);
     return;
   }
 
   // Step 2: 检查是否有 LLM 模型配置
-  if (!resolveAssistantModel()) {
+  if (!resolveAssistantModel(resolvedProjectId)) {
     // 无模型 → 回退到本地管线
-    const result = await runAssistantPipeline(userMessage, conversationId);
+    const result = await runAssistantPipeline(userMessage, conversationId, resolvedProjectId);
     callbacks.onComplete(result.reply, result.commandResults, result.pendingIntents);
     return;
   }
 
   // Step 3: LLM 流式请求
-  const systemPrompt = buildAssistantSystemPrompt();
+  const systemPrompt = buildAssistantSystemPrompt({
+    projectId: resolvedProjectId,
+    includeCanvasContext: canvasLoaded,
+  });
   const expandedUserMessage = expandSkillReferences(
     userMessage,
     useAppStore.getState().userSkills,
@@ -303,6 +323,7 @@ export async function runStreamingPipeline(
         }
       },
       signal: callbacks.signal,
+      projectId: resolvedProjectId,
     });
 
     // Step 4: 对 LLM 回复进行意图解析
@@ -310,9 +331,9 @@ export async function runStreamingPipeline(
     const results: CommandResult[] = [];
     const pendingIntents: CommandIntent[] = [];
 
-    if (llmResult.intents.length > 0) {
-      const store = useAppStore.getState();
-
+    const taskCanvasStillLoaded = canvasLoaded
+      && (useAppStore.getState().currentProjectId ?? '') === resolvedProjectId;
+    if (llmResult.intents.length > 0 && taskCanvasStillLoaded) {
       for (const intent of llmResult.intents) {
         const { plan } = planCommand(intent);
         if (intent.commandId === 'deleteNodes') {
@@ -322,7 +343,7 @@ export async function runStreamingPipeline(
         const result = await executeCommand(plan);
 
         logOperation({
-          projectId: store.currentProjectId ?? '',
+          projectId: resolvedProjectId,
           conversationId,
           timestamp: Date.now(),
           commandId: intent.commandId,

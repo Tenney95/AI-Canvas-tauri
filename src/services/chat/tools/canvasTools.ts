@@ -150,6 +150,10 @@ interface UpdateNodesInput extends NodeTargetInput {
   aspectRatio?: string;
   imageSize?: string;
   batchCount?: number;
+  /** 统一视频参数名；节点内部继续兼容 seedanceResolution。 */
+  videoResolution?: string;
+  /** 统一视频参数名；节点内部继续兼容 seedanceDuration。 */
+  videoDuration?: number;
 }
 
 interface ConnectNodesInput {
@@ -174,6 +178,8 @@ interface NodeAuditSnapshot {
   aspectRatio?: string;
   imageSize?: string;
   batchCount?: number;
+  videoResolution?: string;
+  videoDuration?: number;
 }
 
 function displayPreview(value: string | undefined): string | undefined {
@@ -220,6 +226,8 @@ function captureNodeAudit(node: Node<BaseNodeData>): NodeAuditSnapshot {
     aspectRatio: typeof data.aspectRatio === 'string' ? data.aspectRatio : undefined,
     imageSize: typeof data.imageSize === 'string' ? data.imageSize : undefined,
     batchCount: typeof data.batchCount === 'number' ? data.batchCount : undefined,
+    videoResolution: typeof data.seedanceResolution === 'string' ? data.seedanceResolution : undefined,
+    videoDuration: typeof data.seedanceDuration === 'number' ? data.seedanceDuration : undefined,
   };
 }
 
@@ -241,6 +249,8 @@ const UPDATE_DISPLAY_FIELDS: Array<{
   { inputKey: 'aspectRatio', auditKey: 'aspectRatio', label: '画面比例' },
   { inputKey: 'imageSize', auditKey: 'imageSize', label: '图片尺寸' },
   { inputKey: 'batchCount', auditKey: 'batchCount', label: '批量数量' },
+  { inputKey: 'videoResolution', auditKey: 'videoResolution', label: '视频分辨率' },
+  { inputKey: 'videoDuration', auditKey: 'videoDuration', label: '视频时长' },
 ];
 
 function buildUpdateChanges(
@@ -387,6 +397,8 @@ function describeNode(node: Node<BaseNodeData>): Record<string, unknown> {
     aspectRatio: data.aspectRatio,
     imageSize: data.imageSize,
     batchCount: data.batchCount,
+    videoResolution: data.seedanceResolution,
+    videoDuration: data.seedanceDuration,
     workflowId: data.workflowId,
     prompt: truncateText(data.prompt),
     outputKind,
@@ -865,6 +877,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
       title: '更新画布节点',
       description: [
         '批量更新匹配节点：名称、提示词、正文内容、位置、尺寸、生成模型和生成参数。',
+        '视频节点使用统一字段 videoResolution / videoDuration；内部会映射到对应厂商协议字段。',
         'content 改写节点正文，只能用于文本类节点（ai-text / ai-markdown / source-text / comment）。',
         'prompt 里可写 @{nodeId:label} 引用其他节点输出、@drama{assetId:name} 引用资产库设定，生成时自动展开；ID 必须真实存在。',
         'x/y 是绝对坐标，一次只能移动一个节点；dx/dy 是相对位移，可批量。',
@@ -888,6 +901,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
           aspectRatio: { type: 'string', enum: ASPECT_RATIOS },
           imageSize: { type: 'string', enum: [...PROJECT_IMAGE_SIZES] },
           batchCount: { type: 'integer', minimum: 1, maximum: MAX_IMAGE_BATCH_COUNT },
+          videoResolution: { type: 'string', minLength: 1, maxLength: 40 },
+          videoDuration: { type: 'integer', minimum: 1, maximum: 3600 },
         },
         additionalProperties: false,
       },
@@ -915,12 +930,21 @@ export function registerCanvasAgentTools(): Array<() => void> {
           ...(input.aspectRatio !== undefined ? { aspectRatio: input.aspectRatio } : {}),
           ...(input.imageSize !== undefined ? { imageSize: input.imageSize } : {}),
           ...(input.batchCount !== undefined ? { batchCount: input.batchCount } : {}),
+          ...(input.videoResolution !== undefined ? { seedanceResolution: input.videoResolution.trim() } : {}),
+          ...(input.videoDuration !== undefined ? { seedanceDuration: input.videoDuration } : {}),
         };
         const targets = useAppStore.getState().nodes
           .filter((node) => targetIds.includes(node.id));
         const beforeAudit = new Map(
           targets.map((node) => [node.id, captureNodeAudit(node)]),
         );
+        if (input.videoResolution !== undefined || input.videoDuration !== undefined) {
+          const nonVideo = targets.filter((node) => node.data.type !== 'ai-video');
+          if (nonVideo.length > 0) {
+            const message = `videoResolution / videoDuration 只能用于视频节点，${nonVideo.length} 个目标节点不是视频节点`;
+            return { status: 'error', summary: message, modelContent: message };
+          }
+        }
         if (input.content !== undefined) {
           // 媒体节点的 output 存的是本地路径或 URL，改写会直接破坏节点
           const nonText = targets.filter((node) => !TEXT_OUTPUT_NODE_TYPES.has(node.data.type));

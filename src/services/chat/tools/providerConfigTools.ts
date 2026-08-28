@@ -122,7 +122,8 @@ function createProviderConfigDraftWithConversationFallback(
     }
 
     const [model] = input.models;
-    const originalRequest = model.submitRequest.trim();
+    const originalRequest = model.submitRequest?.trim();
+    if (!originalRequest) throw error;
     for (const document of getProviderConfigFallbackDocuments(context)) {
       if (document === originalRequest) continue;
       try {
@@ -388,8 +389,13 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
       id: 'provider_config_preview',
       title: '生成 API 厂商配置草稿',
       description: [
-        '把已读取厂商文档中的请求和响应示例分析为配置草稿。',
-        '每个模型必须提供准确的 modelId、提交请求和提交响应；异步接口还要同时提供轮询请求和轮询响应。',
+        '把已读取厂商文档中的请求和响应示例，或已经逐字段核对过的声明式执行协议，分析为配置草稿。',
+        '缺省 protocolSource=examples：每个模型必须提供准确的 modelId、提交请求和提交响应；异步接口还要同时提供轮询请求和轮询响应。',
+        '只有示例推断无法安全表达文档结构时才使用 protocolSource=declarative，并直接提供 executionProtocol JSON 对象；此模式必须显式提供连接 baseUrl、模型 modelId 和 category，且不得再传 submitRequest、submitResponse、pollRequest、pollResponse。',
+        'declarative 模板只能引用所选模型分类会提供的受信变量：通用 {{model}}、{{prompt}}；视频还可使用 imageUrls/firstImage/lastImage/imageWithRoles/referenceImageUrls、videoUrls/referenceVideoUrl/referenceVideoUrls、audioUrls/audioUrl/referenceAudioUrls、referenceUrls/inlineReferences，以及分辨率、时长、比例和 videoOperation/videoInputMode 等受信控制变量。禁止表达式、动态键、任意路径或自定义变量。',
+        '可选数组项必须写成 {"$whenPresent":"{{imageUrls.0}}","$value":{...}}：只能作为请求体数组元素、对象只能有这两个键，条件必须是完整受信变量模板。多参考素材展开必须写成 {"$forEach":"{{referenceImageUrls}}","$value":{"image_url":"{{referenceImageUrls}}"}}：也只能作为 JSON 请求体数组元素，根变量只允许 referenceImageUrls/referenceVideoUrls/referenceAudioUrls，$value 必须是对象并用同一个完整根变量代表当前 URL；不得用于 query、请求体根、form/multipart 或任意表达式。',
+        '视频 declarative 会对文档声明的 text/keyframe/reference 输入形态做纯本地 dry-run：submit 必须实际发送动态 {{prompt}}，operations、参考字段和 max*References 必须一致，每份参考素材必须恰好消费一次；dry-run 只渲染请求，绝不会联网。submit.maxBodyBytes 可按文档声明正整数上限，提交前会在本地阻止超限请求体。',
+        'declarative 不代表信任助手：协议仍会在本地检查凭据字段、危险对象键、复杂度、同源路径、受信变量、鉴权、响应映射和动态轮询任务 ID，任一失败都不会创建草稿。',
         'OpenAPI 文档中的 string、0、空对象和空数组是有效的结构占位符，不要因此拒绝调用。',
         'Gemini 图片 generateContent 会自动规范化 IMAGE、contents 和 inlineData.data，不要求真实 Base64 响应样例。',
         '图片接口若使用 image 字段接收 data:image/...;base64,... 数组，应把 imageReferenceRequestMode 设为 generation-json-image-data-urls。',
@@ -397,7 +403,9 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
         '文本模型的文档若写明支持图片/多模态输入，把 inputModalities 设为 ["text","image"]，画布才允许把图片连进该模型；只支持纯文本就不要填。',
         '文档写明上下文窗口时把 token 数填进 contextWindow（如 128000）；中转站的自定义模型名推断不出窗口大小，不填会按 32000 保守压缩上下文。',
         'submitRequest 必须来自文档的真实请求示例或参数表；不要补充文档没有列出的字段，多余字段会让接口返回 400 unsupported field。',
-        '视频模型请把文档写明的固定能力填进 videoCapability：文档写「仅支持 10 或 15 秒」这类离散取值时用 durations: [10, 15]（不要写成 min/max，那会放过 12 秒），固定时长写 durations: [15]，宽高比枚举写 ratios，参考图上限写 maxImageReferences。画布参数面板会据此约束用户，避免发出该模型不支持的取值。',
+        '视频模型必须把文档写明的能力填进 videoCapability，且 operations 必须非空；不要从请求字段名猜能力：用 operations 声明 text-to-video/image-to-video/video-to-video；离散时长用 durations，固定时长用单元素 durations；帧率用 frameRates；参考数量用 max*References；首尾帧不能和普通参考模式混用时设置 allowFrameAndReferenceMix:false。',
+        '若 text/keyframe/reference/mixed 的比例规则不同，用 inputModeCapabilities 分别声明 ratios/defaultRatio/requiresRatio；多个参考视频或音频还有总时长限制时，用 inputConstraints.referenceVideo.totalDurationSeconds 或 referenceAudio.totalDurationSeconds，不能拿单文件 durationSeconds 代替总和。',
+        '异步 pollRequest 必须通过 path、query 或 body 动态引用 submitResponse 的任务 ID；不得照抄文档中的固定示例任务号。媒体字段若是 image_url:{url:...} 等嵌套对象，必须保留对象包装。',
         'docs、developer 等文档站地址不能作为 baseUrl；必须使用用户实际调用模型的 API 网关地址。',
         '当文档示例使用 loading、example 等占位主机时，通过 baseUrl 提供文档或用户明确声明的实际接口地址。',
         '所有模型必须属于同一个 HTTPS Base URL。不得传入 API Key、Token、Authorization 值或其他真实凭据。',
@@ -417,12 +425,21 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
             maxItems: 16,
             items: {
               type: 'object',
-              required: ['modelId', 'submitRequest', 'submitResponse'],
+              required: ['modelId'],
               additionalProperties: false,
               properties: {
                 modelId: { type: 'string', minLength: 1, maxLength: 160 },
                 name: { type: 'string', minLength: 1, maxLength: 120 },
                 category: { type: 'string', enum: MODEL_CATEGORIES },
+                protocolSource: {
+                  type: 'string',
+                  enum: ['examples', 'declarative'],
+                  description: '缺省为 examples；declarative 直接使用 executionProtocol。',
+                },
+                executionProtocol: {
+                  type: 'object',
+                  description: '声明式模型执行协议 JSON 对象；仅 protocolSource=declarative 时允许。模板只接受分类受信变量。$whenPresent 只能作为 body 数组项，格式为 {"$whenPresent":"{{imageUrls.0}}","$value":{...}}；$forEach 只能作为 JSON body 数组项，根变量限 referenceImageUrls/referenceVideoUrls/referenceAudioUrls，且 $value 对象必须使用同一完整根变量。禁止 query/root/form/multipart 指令、表达式、动态键和凭据；submit.maxBodyBytes 必须是本地协议校验允许的正整数。',
+                },
                 description: { type: 'string', maxLength: 500 },
                 inputModalities: {
                   type: 'array',
@@ -436,21 +453,126 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
                 },
                 videoCapability: {
                   type: 'object',
+                  required: ['operations'],
                   additionalProperties: false,
                   properties: {
+                    operations: {
+                      type: 'array',
+                      items: { type: 'string', enum: ['text-to-video', 'image-to-video', 'video-to-video'] },
+                      minItems: 1,
+                      maxItems: 3,
+                    },
+                    requiresReference: { type: 'boolean' },
                     resolutions: { type: 'array', items: { type: 'string' }, maxItems: 12 },
                     defaultResolution: { type: 'string', maxLength: 24 },
                     ratios: { type: 'array', items: { type: 'string' }, maxItems: 12 },
                     defaultRatio: { type: 'string', maxLength: 24 },
+                    inputModeCapabilities: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: Object.fromEntries(
+                        ['text', 'keyframe', 'reference', 'mixed'].map((mode) => [mode, {
+                          type: 'object',
+                          additionalProperties: false,
+                          properties: {
+                            ratios: {
+                              type: 'array',
+                              minItems: 1,
+                              maxItems: 12,
+                              items: { type: 'string', minLength: 1, maxLength: 24 },
+                            },
+                            defaultRatio: { type: 'string', minLength: 1, maxLength: 24 },
+                            requiresRatio: { type: 'boolean' },
+                          },
+                        }]),
+                      ),
+                    },
+                    frameRates: {
+                      type: 'array',
+                      items: { type: 'number', minimum: 1, maximum: 240 },
+                      maxItems: 12,
+                    },
+                    defaultFrameRate: { type: 'number', minimum: 1, maximum: 240 },
                     durations: { type: 'array', items: { type: 'number' }, maxItems: 12 },
                     minDuration: { type: 'number' },
                     maxDuration: { type: 'number' },
                     defaultDuration: { type: 'number' },
                     supportsAudio: { type: 'boolean' },
                     supportsStandaloneAudio: { type: 'boolean' },
+                    allowFrameAndReferenceMix: { type: 'boolean' },
                     maxImageReferences: { type: 'number' },
                     maxVideoReferences: { type: 'number' },
                     maxAudioReferences: { type: 'number' },
+                    inputConstraints: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        promptMinCharacters: { type: 'number', minimum: 0 },
+                        maxBase64DecodedBytes: { type: 'number', minimum: 0 },
+                        referenceVideo: {
+                          type: 'object',
+                          additionalProperties: false,
+                          properties: {
+                            width: {
+                              type: 'object',
+                              additionalProperties: false,
+                              properties: {
+                                min: { type: 'number' },
+                                max: { type: 'number' },
+                                minExclusive: { type: 'boolean' },
+                                maxExclusive: { type: 'boolean' },
+                              },
+                            },
+                            durationSeconds: {
+                              type: 'object',
+                              additionalProperties: false,
+                              properties: {
+                                min: { type: 'number' },
+                                max: { type: 'number' },
+                                minExclusive: { type: 'boolean' },
+                                maxExclusive: { type: 'boolean' },
+                              },
+                            },
+                            totalDurationSeconds: {
+                              type: 'object',
+                              additionalProperties: false,
+                              properties: {
+                                min: { type: 'number' },
+                                max: { type: 'number' },
+                                minExclusive: { type: 'boolean' },
+                                maxExclusive: { type: 'boolean' },
+                              },
+                            },
+                          },
+                        },
+                        referenceAudio: {
+                          type: 'object',
+                          additionalProperties: false,
+                          properties: {
+                            durationSeconds: {
+                              type: 'object',
+                              additionalProperties: false,
+                              properties: {
+                                min: { type: 'number' },
+                                max: { type: 'number' },
+                                minExclusive: { type: 'boolean' },
+                                maxExclusive: { type: 'boolean' },
+                              },
+                            },
+                            totalDurationSeconds: {
+                              type: 'object',
+                              additionalProperties: false,
+                              properties: {
+                                min: { type: 'number' },
+                                max: { type: 'number' },
+                                minExclusive: { type: 'boolean' },
+                                maxExclusive: { type: 'boolean' },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
                   },
                 },
                 submitRequest: { type: 'string', minLength: 1, maxLength: 20_000 },

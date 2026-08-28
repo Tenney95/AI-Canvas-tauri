@@ -15,7 +15,9 @@ use tauri::{
 use tauri_plugin_fs::FsExt;
 use url::Url;
 
+mod agent_package;
 mod assistant_web;
+mod blender_runtime;
 mod clipboard;
 mod comfyui;
 mod director_desk_runtime;
@@ -1035,6 +1037,9 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(proxy_http_state)
+        .manage(blender_runtime::BlenderRuntimeState::default())
+        .manage(blender_runtime::ProjectGrantState::default())
+        .manage(blender_runtime::production_blender_job_core())
         .manage(mcp_bridge::McpBridgeState::default())
         .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)
         .plugin(tauri_plugin_fs::init())
@@ -1053,6 +1058,19 @@ pub fn run() {
             assistant_web::assistant_web_extract,
             assistant_web::assistant_web_render,
             provider_docs::provider_docs_read,
+            blender_runtime::discover_blender_installations,
+            blender_runtime::register_blender_installation,
+            blender_runtime::project_grant::create_blender_project_grant,
+            blender_runtime::project_grant::revoke_blender_project_grant,
+            blender_runtime::start_blender_job,
+            blender_runtime::get_blender_job_status,
+            blender_runtime::cancel_blender_job,
+            blender_runtime::collect_blender_job_result,
+            agent_package::agent_source_link,
+            agent_package::agent_package_import_archive,
+            agent_package::agent_source_probe,
+            agent_package::agent_source_remove,
+            agent_package::agent_source_read_text,
             project_archive::pack_project_archive,
             project_archive::unpack_project_archive,
             file_transfer::copy_file_streamed,
@@ -1147,6 +1165,12 @@ pub fn run() {
             // 凭据目录只允许本进程的 secret_* 命令访问：从 fs 与 asset scope 中拒掉，
             // 否则 Renderer 能绕过命令直接读走整份凭据文件
             secret_store::deny_secret_dir_access(_app.handle());
+            // Agent 外部来源的真实路径只保存在 Rust 私有注册表中，Renderer 仅持有 sourceId。
+            // 拒绝失败只影响 Agent 子系统的诊断，不得阻断普通功能启动。
+            agent_package::deny_agent_private_dir_access(_app.handle());
+            if let Err(error) = blender_runtime::prepare_blender_private_runtime(_app.handle()) {
+                eprintln!("[blender-runtime] {error}");
+            }
 
             // 调试构建自动打开 DevTools（方便排查打包后白屏等问题）
             #[cfg(debug_assertions)]
@@ -1157,6 +1181,13 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app_handle
+                    .state::<blender_runtime::BlenderJobCore>()
+                    .shutdown();
+            }
+        });
 }

@@ -145,4 +145,66 @@ describe('media_generate display parameters', () => {
       duration: 6,
     });
   });
+
+  it('keeps omitted custom API video fields unspecified and accepts model-specific values', () => {
+    useAppStore.setState((state) => ({
+      config: {
+        ...state.config,
+        providers: {
+          ...state.config.providers,
+          custom: { name: '自定义', apiKey: '', baseUrl: 'https://gateway.example.com' },
+        },
+        generalModels: [{
+          id: 'video-custom',
+          name: '自定义视频',
+          modelId: 'video-custom-upstream',
+          category: 'video',
+          providerConfigId: 'custom',
+          videoCapability: {
+            ratios: ['7:4'],
+            resolutions: ['2K'],
+            maxDuration: 30,
+          },
+        }],
+      },
+      projects: state.projects.map((project) => ({
+        ...project,
+        settings: { ...project.settings, defaultModels: { video: 'general/video-custom' } },
+      })),
+    }));
+
+    const omitted = prepareAgentToolCall({
+      callId: 'call-custom-default',
+      toolId: 'media_generate',
+      input: { kind: 'video', prompt: '自定义镜头', deliveryMode: 'chat' },
+    }, context);
+    expect(omitted).toMatchObject({ ok: true });
+    if (omitted.ok) {
+      expect(omitted.prepared.input).toMatchObject({ modelRef: 'general/video-custom' });
+      expect(omitted.prepared.input).not.toHaveProperty('aspectRatio');
+      expect(omitted.prepared.input).not.toHaveProperty('resolution');
+      expect(omitted.prepared.input).not.toHaveProperty('duration');
+    }
+
+    const explicit = prepareAgentToolCall({
+      callId: 'call-custom-explicit',
+      toolId: 'media_generate',
+      input: {
+        kind: 'video',
+        prompt: '自定义镜头',
+        deliveryMode: 'chat',
+        aspectRatio: '7:4',
+        resolution: '2K',
+        duration: 30,
+      },
+    }, context);
+    expect(explicit).toMatchObject({ ok: true });
+    if (explicit.ok) {
+      expect(explicit.prepared.input).toMatchObject({
+        aspectRatio: '7:4',
+        resolution: '2K',
+        duration: 30,
+      });
+    }
+  });
 });

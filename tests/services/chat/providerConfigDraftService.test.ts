@@ -6,6 +6,7 @@ import {
   type ProviderConfigDraftInput,
 } from '../../../src/services/chat/providerConfigDraftService';
 import { buildModelProtocolRequest } from '../../../src/services/ai/modelProtocol';
+import type { ModelExecutionProtocol, VideoModelCapability } from '../../../src/types/aiTypes';
 
 const IMAGE_REQUEST = `
 curl https://gateway.example.com/v1/images/generations \\
@@ -38,6 +39,73 @@ const VIDEO_POLL_RESPONSE = `{
   "url": "https://cdn.example.com/video.mp4"
 }`;
 
+const BASIC_VIDEO_CAPABILITY: VideoModelCapability = {
+  operations: ['text-to-video', 'image-to-video', 'video-to-video'],
+  maxImageReferences: 1,
+  maxVideoReferences: 1,
+};
+
+const DECLARATIVE_VIDEO_PROTOCOL: ModelExecutionProtocol = {
+  version: 2,
+  mode: 'async',
+  auth: { type: 'bearer' },
+  submit: {
+    method: 'POST',
+    path: '/video_generation',
+    body: {
+      model: '{{model}}',
+      content: [
+        { type: 'text', text: '{{prompt}}' },
+        {
+          $whenPresent: '{{imageUrls.0}}',
+          $value: {
+            type: 'image_url',
+            image_url: { url: '{{imageUrls.0}}' },
+            role: 'first_frame',
+          },
+        },
+        {
+          $whenPresent: '{{referenceVideoUrl}}',
+          $value: {
+            type: 'video_url',
+            video_url: '{{referenceVideoUrl}}',
+            role: 'reference_video',
+          },
+        },
+      ],
+    },
+  },
+  response: { type: 'json', taskIdPath: 'task_id' },
+  poll: {
+    method: 'GET',
+    path: '/query/video_generation/{{submit.task_id}}',
+    response: {
+      statusPath: 'task.status',
+      successValues: ['completed'],
+      failureValues: ['failed', 'error'],
+      result: { urlPath: 'task.content.url' },
+    },
+    intervalMs: 3000,
+  },
+};
+
+function declarativeInput(
+  protocol: ModelExecutionProtocol = DECLARATIVE_VIDEO_PROTOCOL,
+): ProviderConfigDraftInput {
+  return {
+    connectionName: 'Declarative Relay',
+    baseUrl: 'https://gateway.example.com/v1',
+    models: [{
+      protocolSource: 'declarative' as const,
+      modelId: 'video-model',
+      name: 'Declarative Video',
+      category: 'video' as const,
+      videoCapability: BASIC_VIDEO_CAPABILITY,
+      executionProtocol: structuredClone(protocol),
+    }],
+  };
+}
+
 function createInput() {
   return {
     connectionName: 'Example AI',
@@ -51,6 +119,7 @@ function createInput() {
       {
         name: 'Example Video Pro',
         category: 'video' as const,
+        videoCapability: BASIC_VIDEO_CAPABILITY,
         submitRequest: VIDEO_REQUEST,
         submitResponse: VIDEO_RESPONSE,
         pollRequest: VIDEO_POLL_REQUEST,
@@ -111,6 +180,7 @@ curl -X POST https://www.right.codes/draw/v1/images/generations \\
       models: [{
         name: 'Example Video Ref',
         category: 'video' as const,
+        videoCapability: BASIC_VIDEO_CAPABILITY,
         submitRequest: VIDEO_REQUEST.replace('"duration":5', '"duration":5,"image_urls":["https://cdn.example.com/ref.png"]'),
         submitResponse: VIDEO_RESPONSE,
         pollRequest: VIDEO_POLL_REQUEST,
@@ -174,6 +244,378 @@ curl -X POST https://www.right.codes/draw/v1/images/generations \\
       ...input,
       models: [input.models[0]],
     })).toThrow('无法生成有效调用协议');
+  });
+
+  it('rejects ambiguous composite video content items instead of applying a guessed protocol', () => {
+    expect(() => createProviderConfigDraft('task-composite-content', {
+      connectionName: 'Composite Relay',
+      models: [{
+        modelId: 'video-model',
+        name: 'Composite Video',
+        category: 'video',
+        submitRequest: `curl -X POST https://gateway.example.com/v1/video_generation \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"video-model","content":[{"type":"image_url","image_url":{"url":"https://cdn.example.com/first.png"},"role":"first_frame","caption":"coupled field"}]}'`,
+        submitResponse: '{"url":"https://cdn.example.com/result.mp4"}',
+      }],
+    })).toThrow('需要人工确认');
+  });
+
+  it('accepts an explicitly declared protocol without re-inferring request examples', () => {
+    const draft = createProviderConfigDraft('task-declarative', declarativeInput());
+    const profile = draft.config.selectedModels?.[0]?.executionProfile;
+
+    expect(draft).toMatchObject({
+      baseUrl: 'https://gateway.example.com/v1',
+      config: {
+        selectedModels: [{
+          id: 'video-model',
+          category: 'video',
+          executionProfile: {
+            preset: 'custom',
+            protocol: {
+              version: 2,
+              mode: 'async',
+              submit: { path: '/video_generation' },
+              poll: { path: '/query/video_generation/{{submit.task_id}}' },
+            },
+          },
+        }],
+      },
+    });
+    expect(JSON.stringify(draft)).not.toContain('submitRequest');
+    if (profile?.preset !== 'custom' || !profile.protocol) {
+      throw new Error('declarative protocol was not stored');
+    }
+
+    const withoutReferences = buildModelProtocolRequest({
+      apiKey: 'test-key',
+      baseUrl: draft.baseUrl,
+      protocol: profile.protocol,
+      variables: { model: 'video-model', prompt: 'a cat' },
+    });
+    expect(withoutReferences.renderedBody).toMatchObject({
+      content: [{ type: 'text', text: 'a cat' }],
+    });
+
+    const withImage = buildModelProtocolRequest({
+      apiKey: 'test-key',
+      baseUrl: draft.baseUrl,
+      protocol: profile.protocol,
+      variables: {
+        model: 'video-model',
+        prompt: 'a cat',
+        imageUrls: ['https://cdn.example.com/first.png'],
+      },
+    });
+    expect(withImage.renderedBody).toMatchObject({
+      content: [
+        { type: 'text', text: 'a cat' },
+        {
+          type: 'image_url',
+          image_url: { url: 'https://cdn.example.com/first.png' },
+          role: 'first_frame',
+        },
+      ],
+    });
+  });
+
+  it('normalizes a compatible legacy declarative protocol before storing the draft', () => {
+    const legacyProtocol: ModelExecutionProtocol = {
+      version: 1,
+      mode: 'sync',
+      auth: { type: 'bearer' },
+      submit: {
+        method: 'POST',
+        path: '/videos',
+        body: { model: '{{model}}', prompt: '{{prompt}}' },
+      },
+      responseType: 'json',
+      resultUrlPath: 'data.url',
+    };
+
+    const input = declarativeInput(legacyProtocol);
+    input.models[0].videoCapability = { operations: ['text-to-video'] };
+    const draft = createProviderConfigDraft('task-declarative-v1', input);
+
+    expect(draft.config.selectedModels?.[0]?.executionProfile?.protocol).toMatchObject({
+      version: 2,
+      mode: 'sync',
+      response: {
+        type: 'json',
+        result: { urlPath: 'data.url' },
+      },
+    });
+  });
+
+  it('keeps example inference and declarative protocols strictly mutually exclusive', () => {
+    const declarativeWithExample = declarativeInput();
+    declarativeWithExample.models[0] = {
+      ...declarativeWithExample.models[0],
+      submitRequest: VIDEO_REQUEST,
+    };
+    expect(() => createProviderConfigDraft('task-declarative-mixed', declarativeWithExample))
+      .toThrow('declarative 模式不得同时提供');
+
+    const examplesWithProtocol: ProviderConfigDraftInput = createInput();
+    examplesWithProtocol.models[1] = {
+      ...examplesWithProtocol.models[1],
+      protocolSource: 'examples',
+      executionProtocol: structuredClone(DECLARATIVE_VIDEO_PROTOCOL),
+    };
+    expect(() => createProviderConfigDraft('task-examples-mixed', examplesWithProtocol))
+      .toThrow('examples 模式不得提供 executionProtocol');
+  });
+
+  it('requires an explicit baseUrl, category, modelId and protocol object in declarative mode', () => {
+    const missingBaseUrl = declarativeInput();
+    delete missingBaseUrl.baseUrl;
+    expect(() => createProviderConfigDraft('task-no-base', missingBaseUrl))
+      .toThrow('必须显式提供 connection baseUrl');
+
+    const missingCategory = declarativeInput();
+    delete missingCategory.models[0].category;
+    expect(() => createProviderConfigDraft('task-no-category', missingCategory))
+      .toThrow('必须显式提供 category');
+
+    const missingModelId = declarativeInput();
+    delete missingModelId.models[0].modelId;
+    expect(() => createProviderConfigDraft('task-no-model', missingModelId))
+      .toThrow('必须显式提供 modelId');
+
+    const missingProtocol = declarativeInput();
+    delete missingProtocol.models[0].executionProtocol;
+    expect(() => createProviderConfigDraft('task-no-protocol', missingProtocol))
+      .toThrow('必须提供 executionProtocol JSON 对象');
+
+    const missingVideoOperations = declarativeInput();
+    delete missingVideoOperations.models[0].videoCapability;
+    expect(() => createProviderConfigDraft('task-no-video-operations', missingVideoOperations))
+      .toThrow('必须按接口文档声明非空 videoCapability.operations');
+  });
+
+  it('rejects credential keys, dangerous keys, oversized, deep and overly complex protocols', () => {
+    const withCredential = declarativeInput();
+    (withCredential.models[0].executionProtocol!.submit.body as Record<string, unknown>).api_key = 'secret';
+    expect(() => createProviderConfigDraft('task-credential', withCredential))
+      .toThrow(/API Key|凭据/);
+
+    const withCredentialLiteral = declarativeInput();
+    withCredentialLiteral.models[0].executionProtocol!.submit.headers = {
+      'X-Request-Signature': 'sk-this-is-a-real-looking-secret',
+    };
+    expect(() => createProviderConfigDraft('task-credential-value', withCredentialLiteral))
+      .toThrow('疑似真实凭据值');
+
+    const withDangerousKey = declarativeInput();
+    withDangerousKey.models[0].executionProtocol!.submit.body = JSON.parse(
+      '{"__proto__":{"polluted":true}}',
+    );
+    expect(() => createProviderConfigDraft('task-dangerous-key', withDangerousKey))
+      .toThrow('不安全对象键');
+
+    const oversized = declarativeInput();
+    oversized.models[0].executionProtocol!.submit.body = { padding: 'x'.repeat(70 * 1_024) };
+    expect(() => createProviderConfigDraft('task-oversized', oversized))
+      .toThrow('不能超过 64 KiB');
+
+    const tooDeep = declarativeInput();
+    let nested: Record<string, unknown> = {};
+    const root = nested;
+    for (let index = 0; index < 34; index += 1) {
+      nested.next = {};
+      nested = nested.next as Record<string, unknown>;
+    }
+    tooDeep.models[0].executionProtocol!.submit.body = root as never;
+    expect(() => createProviderConfigDraft('task-too-deep', tooDeep))
+      .toThrow('嵌套深度不能超过 32 层');
+
+    const tooManyNodes = declarativeInput();
+    tooManyNodes.models[0].executionProtocol!.submit.body = Array.from(
+      { length: 4_100 },
+      () => null,
+    );
+    expect(() => createProviderConfigDraft('task-too-many-nodes', tooManyNodes))
+      .toThrow('最多允许 4096 个 JSON 节点');
+  });
+
+  it('rejects credential-like key fragments and secret-shaped literals without blocking model IDs or URLs', () => {
+    for (const key of [
+      'sessionTokenValue',
+      'client_key_id',
+      'vendorSecretMaterial',
+      'dbPasswordValue',
+      'apiCredentialBlob',
+    ]) {
+      const input = declarativeInput();
+      (input.models[0].executionProtocol!.submit.body as Record<string, unknown>)[key] = 'redacted';
+      expect(() => createProviderConfigDraft(`task-key-${key}`, input))
+        .toThrow(/API Key|凭据/);
+    }
+
+    for (const [index, literal] of [
+      '0123456789abcdef0123456789abcdef',
+      '0123456789abcdef0123456789abcdef01234567',
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      'AbCdefGHIjklMNopQRstuVWxyz0123456789_-AbCdEfGh',
+    ].entries()) {
+      const input = declarativeInput();
+      (input.models[0].executionProtocol!.submit.body as Record<string, unknown>).request_id = literal;
+      expect(() => createProviderConfigDraft(`task-literal-${index}`, input))
+        .toThrow('疑似真实凭据值');
+    }
+
+    const contentHashModelId = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const safeInput = declarativeInput();
+    safeInput.models[0].modelId = contentHashModelId;
+    const safeBody = safeInput.models[0].executionProtocol!.submit.body as Record<string, unknown>;
+    safeBody.model = contentHashModelId;
+    safeBody.callback_url = `https://cdn.example.com/models/${contentHashModelId}`;
+    safeInput.models[0].videoCapability = {
+      ...BASIC_VIDEO_CAPABILITY,
+      inputModeCapabilities: { keyframe: { ratios: ['16:9'] } },
+      ratios: ['16:9'],
+    };
+
+    expect(() => createProviderConfigDraft('task-safe-model-id-url', safeInput)).not.toThrow();
+  });
+
+  it('requires executable prompt and capability/reference semantics for direct video protocols', () => {
+    const fixedPrompt = declarativeInput();
+    fixedPrompt.models[0].videoCapability = { operations: ['text-to-video'] };
+    fixedPrompt.models[0].executionProtocol!.submit.body = {
+      model: '{{model}}',
+      prompt: 'fixed prompt',
+    };
+    expect(() => createProviderConfigDraft('task-fixed-prompt', fixedPrompt))
+      .toThrow('submit 必须动态绑定 {{prompt}}');
+
+    const promptOnlyInCondition = declarativeInput();
+    promptOnlyInCondition.models[0].videoCapability = { operations: ['text-to-video'] };
+    promptOnlyInCondition.models[0].executionProtocol!.submit.body = {
+      content: [{
+        $whenPresent: '{{prompt}}',
+        $value: { type: 'text', text: 'fixed prompt' },
+      }],
+    };
+    expect(() => createProviderConfigDraft('task-prompt-condition-only', promptOnlyInCondition))
+      .toThrow('没有实际发送动态 {{prompt}}');
+
+    const missingImageField = declarativeInput();
+    missingImageField.models[0].videoCapability = {
+      operations: ['image-to-video'],
+      maxImageReferences: 1,
+    };
+    missingImageField.models[0].executionProtocol!.submit.body = {
+      model: '{{model}}',
+      prompt: '{{prompt}}',
+    };
+    expect(() => createProviderConfigDraft('task-missing-image-field', missingImageField))
+      .toThrow('声明 image-to-video，但 submit 没有图片参考字段');
+
+    const undeclaredVideoOperation = declarativeInput();
+    undeclaredVideoOperation.models[0].videoCapability = { operations: ['text-to-video'] };
+    undeclaredVideoOperation.models[0].executionProtocol!.submit.body = {
+      prompt: '{{prompt}}',
+      video: '{{referenceVideoUrl}}',
+    };
+    expect(() => createProviderConfigDraft('task-undeclared-video-operation', undeclaredVideoOperation))
+      .toThrow('operations 未声明 video-to-video');
+
+    const mutuallyExclusiveModes = declarativeInput();
+    mutuallyExclusiveModes.models[0].videoCapability = {
+      operations: ['image-to-video'],
+      maxImageReferences: 1,
+      allowFrameAndReferenceMix: false,
+      inputModeCapabilities: { mixed: { ratios: ['16:9'] } },
+      ratios: ['16:9'],
+    };
+    mutuallyExclusiveModes.models[0].executionProtocol!.submit.body = {
+      prompt: '{{prompt}}',
+      image: '{{imageUrls}}',
+    };
+    expect(() => createProviderConfigDraft('task-mutually-exclusive-modes', mutuallyExclusiveModes))
+      .toThrow('inputModeCapabilities.mixed 与 allowFrameAndReferenceMix:false 互斥');
+  });
+
+  it('dry-runs keyframe/reference arrays and rejects dropped or duplicate reference materials', () => {
+    const dropped = declarativeInput();
+    dropped.models[0].videoCapability = {
+      operations: ['image-to-video'],
+      maxImageReferences: 2,
+    };
+    dropped.models[0].executionProtocol!.submit.body = {
+      prompt: '{{prompt}}',
+      first_image: '{{imageUrls.0}}',
+    };
+    expect(() => createProviderConfigDraft('task-dropped-reference', dropped))
+      .toThrow('没有消费全部参考素材');
+
+    const duplicate = declarativeInput();
+    duplicate.models[0].videoCapability = {
+      operations: ['image-to-video'],
+      maxImageReferences: 1,
+    };
+    duplicate.models[0].executionProtocol!.submit.body = {
+      prompt: '{{prompt}}',
+      first_image: '{{firstImage}}',
+      images: '{{imageUrls}}',
+    };
+    expect(() => createProviderConfigDraft('task-duplicate-reference', duplicate))
+      .toThrow('重复映射了同一参考素材');
+
+    const consumed = declarativeInput();
+    consumed.models[0].videoCapability = {
+      operations: ['image-to-video'],
+      maxImageReferences: 2,
+    };
+    consumed.models[0].executionProtocol!.submit.body = {
+      prompt: '{{prompt}}',
+      images: '{{imageUrls}}',
+    };
+    expect(() => createProviderConfigDraft('task-consumed-reference', consumed)).not.toThrow();
+
+    const expanded = declarativeInput();
+    expanded.models[0].videoCapability = {
+      operations: ['image-to-video'],
+      maxImageReferences: 2,
+    };
+    expanded.models[0].executionProtocol!.submit.body = {
+      content: [
+        { type: 'text', text: '{{prompt}}' },
+        {
+          $forEach: '{{referenceImageUrls}}',
+          $value: { type: 'image_url', image_url: '{{referenceImageUrls}}' },
+        },
+      ],
+    };
+    expect(() => createProviderConfigDraft('task-expanded-reference', expanded)).not.toThrow();
+
+    const overExpansionLimit = structuredClone(expanded);
+    overExpansionLimit.models[0].videoCapability!.maxImageReferences = 65;
+    expect(() => createProviderConfigDraft('task-over-expansion-limit', overExpansionLimit))
+      .toThrow('超过调用协议 $forEach 的单数组安全上限 64');
+  });
+
+  it('runs declarative protocols through the existing protocol validator', () => {
+    const invalid = declarativeInput();
+    invalid.models[0].executionProtocol!.poll!.path = '/query/video_generation/fixed-task-id';
+    expect(() => createProviderConfigDraft('task-invalid-direct', invalid))
+      .toThrow(/写死任务 ID/);
+  });
+
+  it('rejects declarative variables that the selected model category never supplies', () => {
+    const wrongCategory = declarativeInput();
+    wrongCategory.models[0].category = 'text';
+    delete wrongCategory.models[0].videoCapability;
+    wrongCategory.models[0].executionProtocol!.submit.body = {
+      model: '{{model}}',
+      prompt: '{{prompt}}',
+      video: '{{referenceVideoUrls}}',
+    };
+
+    expect(() => createProviderConfigDraft('task-wrong-variable-category', wrongCategory))
+      .toThrow('文本模型不会提供的变量：referenceVideoUrls');
   });
 
   it('imports a Gemini generateContent schema with an explicit model ID and Base URL', () => {
@@ -409,6 +851,7 @@ describe('video capability declaration', () => {
     modelId: 'lec-seed-2-0-900',
     name: 'Seedance 2.0 900',
     category: 'video' as const,
+    videoCapability: BASIC_VIDEO_CAPABILITY,
     // 文档给的请求示例：只有 aspect_ratio / duration / images，没有 size / resolution
     submitRequest: `
 curl https://gateway.example.com/v1/videos \
@@ -434,29 +877,71 @@ curl https://gateway.example.com/v1/videos \
     });
   });
 
-  it('保留视频模型声明的固定能力，非视频模型则拒绝', () => {
+  it('完整保留视频模型声明的操作、帧率、素材组合和输入约束', () => {
+    const capability: NonNullable<ProviderConfigDraftInput['models'][number]['videoCapability']> = {
+      operations: ['image-to-video', 'video-to-video'],
+      requiresReference: true,
+      resolutions: ['720p', '1080p'],
+      defaultResolution: '720p',
+      ratios: ['16:9', '9:16'],
+      defaultRatio: '16:9',
+      frameRates: [24, 30],
+      defaultFrameRate: 24,
+      durations: [10, 15],
+      minDuration: 10,
+      maxDuration: 15,
+      defaultDuration: 15,
+      supportsAudio: true,
+      supportsStandaloneAudio: true,
+      allowFrameAndReferenceMix: false,
+      maxImageReferences: 9,
+      maxVideoReferences: 1,
+      maxAudioReferences: 1,
+      inputConstraints: {
+        promptMinCharacters: 1,
+        maxBase64DecodedBytes: 20 * 1024 * 1024,
+        referenceVideo: {
+          width: { min: 480, max: 1920, minExclusive: true },
+          durationSeconds: { min: 1, max: 15 },
+        },
+        referenceAudio: {
+          durationSeconds: { min: 0, max: 15, minExclusive: true },
+        },
+      },
+    };
     const draft = createProviderConfigDraft('task-capability', {
       connectionName: 'Relay',
       models: [{
         ...VIDEO_MODEL,
-        videoCapability: {
-          ratios: ['16:9', '9:16'],
-          defaultRatio: '16:9',
-          minDuration: 15,
-          maxDuration: 15,
-          defaultDuration: 15,
-          maxImageReferences: 9,
-          maxVideoReferences: 0,
-          maxAudioReferences: 0,
-        },
+        videoCapability: capability,
       }],
     });
-    expect(draft.config.selectedModels?.[0].videoCapability).toMatchObject({
-      ratios: ['16:9', '9:16'],
-      minDuration: 15,
-      maxDuration: 15,
-      maxImageReferences: 9,
-    });
+    expect(draft.config.selectedModels?.[0].videoCapability).toEqual(capability);
+  });
+
+  it('拒绝不一致的视频 capability 和非视频模型声明', () => {
+    expect(() => createProviderConfigDraft('task-capability-reference-conflict', {
+      connectionName: 'Relay',
+      models: [{
+        ...VIDEO_MODEL,
+        videoCapability: {
+          operations: ['text-to-video', 'image-to-video'],
+          requiresReference: true,
+        },
+      }],
+    })).toThrow('模型要求参考素材时，operations 不能同时声明 text-to-video');
+
+    expect(() => createProviderConfigDraft('task-capability-default-outside-enum', {
+      connectionName: 'Relay',
+      models: [{
+        ...VIDEO_MODEL,
+        videoCapability: {
+          operations: ['text-to-video'],
+          frameRates: [24, 30],
+          defaultFrameRate: 25,
+        },
+      }],
+    })).toThrow('defaultFrameRate 不在声明的可选值中');
 
     expect(() => createProviderConfigDraft('task-capability-bad', {
       connectionName: 'Relay',

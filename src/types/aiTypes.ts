@@ -54,6 +54,8 @@ export interface ModelProtocolRequestTemplate {
   query?: Record<string, ProtocolJsonValue>;
   /** 请求体编码，缺省为 JSON。multipart 文件只接受受控的 data URL 声明。 */
   bodyEncoding?: ModelProtocolBodyEncoding;
+  /** 序列化后的真实请求体字节上限；只在发送前校验，不包含请求头。 */
+  maxBodyBytes?: number;
   body?: ProtocolJsonValue;
 }
 
@@ -192,11 +194,25 @@ export interface NumericInputConstraint {
 export interface ReferenceVideoInputConstraints {
   width?: NumericInputConstraint;
   durationSeconds?: NumericInputConstraint;
+  /** 所有参考视频时长之和的约束。 */
+  totalDurationSeconds?: NumericInputConstraint;
 }
 
 /** 参考音频的本地提交前校验规则。 */
 export interface ReferenceAudioInputConstraints {
   durationSeconds?: NumericInputConstraint;
+  /** 所有参考音频时长之和的约束。 */
+  totalDurationSeconds?: NumericInputConstraint;
+}
+
+/** 按参考素材形态覆盖视频比例能力，避免把一个全局默认套给所有输入模式。 */
+export interface VideoInputModeCapability {
+  /** 当前输入模式允许的比例；缺省时继承模型级 ratios。 */
+  ratios?: string[];
+  /** 当前输入模式未指定比例时的默认值；缺省时继承模型级 defaultRatio。 */
+  defaultRatio?: string;
+  /** 当前输入模式是否必须最终得到一个比例。 */
+  requiresRatio?: boolean;
 }
 
 /**
@@ -218,6 +234,8 @@ export interface VideoInputConstraints {
  * 字段语义与内置 Seedance 能力表（apimartVideoModels）对齐，便于同一套 UI 消费。
  */
 export interface VideoModelCapability {
+  /** 支持的生成操作；缺省仅用于兼容旧配置，不代表模型自动支持全部操作。 */
+  operations?: VideoGenerationOperation[];
   /** 是否至少需要一份图片、视频或音频参考素材。 */
   requiresReference?: boolean;
   /** 可选分辨率档位，如 ['480p', '720p', '1080p']。 */
@@ -228,6 +246,8 @@ export interface VideoModelCapability {
   ratios?: string[];
   /** 未指定比例时的默认值。 */
   defaultRatio?: string;
+  /** 按 text/keyframe/reference/mixed 输入形态覆盖比例约束与默认值。 */
+  inputModeCapabilities?: Partial<Record<VideoGenerationInputMode, VideoInputModeCapability>>;
   /** 可选帧率档位，如 [16, 24, 30]。 */
   frameRates?: number[];
   /** 未指定帧率时的默认值。 */
@@ -247,6 +267,11 @@ export interface VideoModelCapability {
   supportsAudio?: boolean;
   /** 是否支持纯音频参考（无图/视频）。 */
   supportsStandaloneAudio?: boolean;
+  /**
+   * 是否允许首/尾帧角色与普通图片、视频或音频参考同时出现。
+   * 缺省保持旧配置兼容；明确为 false 时由提交前 resolver 拒绝混用。
+   */
+  allowFrameAndReferenceMix?: boolean;
   /** 参考图数量上限。 */
   maxImageReferences?: number;
   /** 参考视频数量上限。 */
@@ -344,6 +369,19 @@ export type VideoGenerationOperation =
   | 'text-to-video'
   | 'image-to-video'
   | 'video-to-video';
+
+/**
+ * Provider-neutral input shape derived from reference roles.
+ *
+ * This is intentionally separate from operation: an image-to-video request may
+ * use first/last keyframes or ordinary reference images, and some providers use
+ * different transport values for those two cases.
+ */
+export type VideoGenerationInputMode =
+  | 'text'
+  | 'keyframe'
+  | 'reference'
+  | 'mixed';
 
 export type MediaReferenceKind = 'image' | 'video' | 'audio';
 

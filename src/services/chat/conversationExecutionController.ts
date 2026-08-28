@@ -143,7 +143,7 @@ function createStreamingMessageBuffer(
 export function getAgentModeToast(mode: AgentMode): string {
   if (mode === 'plan') return '已切换到 Plan 模式：仅分析与规划，不执行任何写操作';
   if (mode === 'autonomous') {
-    return '已切换到 C 自主模式：画布操作可自动执行，付费媒体和文件写入仍需确认';
+    return '已切换到 C 自主模式：所有工具按固定权限边界自动执行，不等待人工确认';
   }
   return '已切换到 B 协作模式：画布写操作将先预览确认';
 }
@@ -191,6 +191,7 @@ export function submitConversationMessage({
 
   const store = useAppStore.getState();
   const conversation = store.conversations.find((item) => item.id === conversationId);
+  const executionProjectId = projectId ?? conversation?.projectId ?? store.currentProjectId ?? '';
   const userMessage: ChatMessage = {
     id: createMessageId(),
     conversationId,
@@ -207,13 +208,13 @@ export function submitConversationMessage({
     role: 'assistant',
     content: '',
     timestamp: Date.now(),
-    status: resolveAssistantModel() ? 'streaming' : 'parsing',
+    status: resolveAssistantModel(executionProjectId) ? 'streaming' : 'parsing',
   };
   store.addMessage(assistantMessage);
 
   const taskId = startAgentMessageExecution({
     text,
-    projectId: projectId ?? conversation?.projectId ?? store.currentProjectId ?? '',
+    projectId: executionProjectId,
     conversationId,
     userMessageId: userMessage.id,
     assistantMessageId: assistantMessage.id,
@@ -303,7 +304,7 @@ function scheduleAgentTaskExecution(
       const message = store.messages.find((item) => item.id === assistantMessageId);
       if (message && message.status === 'queued') {
         store.updateMessage(assistantMessageId, {
-          status: resolveAssistantModel() ? 'streaming' : 'parsing',
+          status: resolveAssistantModel(task.projectId) ? 'streaming' : 'parsing',
         });
       }
     },
@@ -365,7 +366,7 @@ function driveAgentTask(
   return runAgentTask(taskId, async (signal) => {
     let failed = false;
 
-    if (resolveAssistantModel()) {
+    if (resolveAssistantModel(projectId)) {
       const streamingMessage = createStreamingMessageBuffer(assistantMessageId, onProgress);
       const availableTools = getAvailableAgentTools({
         taskId,
@@ -381,7 +382,11 @@ function driveAgentTask(
       ) {
         return runAgentLoop({
           taskId,
-          systemPrompt: buildAssistantSystemPrompt({ agentTools: true }),
+          systemPrompt: buildAssistantSystemPrompt({
+            agentTools: true,
+            projectId,
+            includeCanvasContext: useAppStore.getState().currentProjectId === projectId,
+          }),
           userMessage: task.skillBindings === undefined
             ? expandSkillReferences(text, store.userSkills)
             : expandSkillBindings(text, task.skillBindings),
@@ -458,7 +463,7 @@ function driveAgentTask(
           void triggerMediaGeneration(assistantMessageId, intent);
         },
         signal,
-      });
+      }, projectId);
       return failed ? 'failed' : 'completed';
     }
 
@@ -474,7 +479,7 @@ function driveAgentTask(
     }
 
     try {
-      const result = await runAssistantPipeline(text, conversationId);
+      const result = await runAssistantPipeline(text, conversationId, projectId);
       useAppStore.getState().updateMessage(assistantMessageId, {
         content: result.reply,
         status: 'done',

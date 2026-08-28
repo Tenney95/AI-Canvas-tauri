@@ -15,7 +15,7 @@ use std::{
 use tar::Archive;
 use tauri::{
     http::{header, Request, Response, StatusCode},
-    AppHandle, Emitter, Manager, Runtime, UriSchemeContext,
+    AppHandle, Emitter, Manager, Runtime, UriSchemeContext, Webview,
 };
 use url::Url;
 
@@ -141,7 +141,11 @@ fn runtime_status<R: Runtime>(app: &AppHandle<R>) -> Result<DirectorDeskRuntimeS
 }
 
 #[tauri::command]
-pub fn director_desk_runtime_status(app: AppHandle) -> Result<DirectorDeskRuntimeStatus, String> {
+pub fn director_desk_runtime_status(
+    webview: Webview,
+    app: AppHandle,
+) -> Result<DirectorDeskRuntimeStatus, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
     runtime_status(&app)
 }
 
@@ -432,8 +436,10 @@ fn install_runtime<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn install_director_desk_runtime(
+    webview: Webview,
     app: AppHandle,
 ) -> Result<DirectorDeskRuntimeStatus, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
     if INSTALLING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -452,7 +458,8 @@ pub async fn install_director_desk_runtime(
 }
 
 #[tauri::command]
-pub fn cancel_director_desk_install() -> Result<(), String> {
+pub fn cancel_director_desk_install(webview: Webview) -> Result<(), String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
     if INSTALLING.load(Ordering::Acquire) {
         CANCELLED.store(true, Ordering::Release);
     }
@@ -460,7 +467,11 @@ pub fn cancel_director_desk_install() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn remove_director_desk_runtime(app: AppHandle) -> Result<DirectorDeskRuntimeStatus, String> {
+pub fn remove_director_desk_runtime(
+    webview: Webview,
+    app: AppHandle,
+) -> Result<DirectorDeskRuntimeStatus, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
     if INSTALLING.load(Ordering::Acquire) {
         return Err("导演台正在下载，取消完成后才能删除".to_string());
     }

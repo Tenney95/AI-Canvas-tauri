@@ -11,6 +11,7 @@
  *   store.workflows.ts — ComfyUI 工作流
  *   store.presets.ts   — 用户预设
  *   store.skills.ts    — 用户上传 Skill
+ *   store.agentPackages.ts — 用户上传的全局智能体目录
  *   store.groups.ts    — 节点分组
  *   store.clipboard.ts — 复制 / 粘贴
  *   store.projects.ts  — 项目管理 / 保存加载
@@ -37,6 +38,7 @@ import type { MemorySlice } from './store.memory';
 import type { ToolbarSlice } from './store.toolbar';
 import type { DramaAssetsSlice } from './store.dramaAssets';
 import type { PluginSlice } from './store.plugins';
+import type { AgentPackageSlice } from './store.agentPackages';
 
 import { createNodeSlice } from './store.nodes';
 import { createUISlice } from './store.ui';
@@ -58,6 +60,7 @@ import { createMemorySlice } from './store.memory';
 import { createToolbarSlice } from './store.toolbar';
 import { createDramaAssetsSlice } from './store.dramaAssets';
 import { createPluginSlice } from './store.plugins';
+import { createAgentPackageSlice } from './store.agentPackages';
 
 // ---- Re-export utilities for backward compatibility ----
 export { generateId, computeImageNodeDimensions } from './store.utils';
@@ -82,7 +85,8 @@ export type AppState = NodeSlice
   & MemorySlice
   & ToolbarSlice
   & DramaAssetsSlice
-  & PluginSlice;
+  & PluginSlice
+  & AgentPackageSlice;
 
 // ---- Store creation via slice composition ----
 export const useAppStore = create<AppState>()((...a) => ({
@@ -106,4 +110,5 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createToolbarSlice(...a),
   ...createDramaAssetsSlice(...a),
   ...createPluginSlice(...a),
+  ...createAgentPackageSlice(...a),
 }));

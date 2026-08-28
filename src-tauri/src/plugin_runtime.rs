@@ -11,6 +11,7 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+use tauri::Webview;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -351,25 +352,41 @@ __json;
     serde_json::from_str(&output_json).map_err(|error| format!("插件输出不是有效 JSON: {error}"))
 }
 
-#[tauri::command]
-pub async fn execute_node_plugin_tool(
+fn execute_plugin_tool_inner(
     runtime: String,
     source: String,
     tool_id: String,
     input: Value,
 ) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || match runtime.as_str() {
+    match runtime.as_str() {
         "javascript" => execute_with_timeout(source, tool_id, input, JAVASCRIPT_EXECUTION_TIMEOUT),
         "python" => execute_python(source, tool_id, input, PYTHON_EXECUTION_TIMEOUT),
         _ => Err("不支持的插件运行时".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn execute_node_plugin_tool(
+    webview: Webview,
+    runtime: String,
+    source: String,
+    tool_id: String,
+    input: Value,
+) -> Result<Value, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        execute_plugin_tool_inner(runtime, source, tool_id, input)
     })
     .await
     .map_err(|error| format!("插件运行任务失败: {error}"))?
 }
 
 #[tauri::command]
-pub async fn get_python_plugin_runtime_status() -> PythonPluginRuntimeStatus {
-    tauri::async_runtime::spawn_blocking(|| match find_python() {
+pub async fn get_python_plugin_runtime_status(
+    webview: Webview,
+) -> Result<PythonPluginRuntimeStatus, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
+    let status = tauri::async_runtime::spawn_blocking(|| match find_python() {
         Ok((python, version)) => PythonPluginRuntimeStatus {
             available: true,
             command: Some(python.label),
@@ -389,7 +406,8 @@ pub async fn get_python_plugin_runtime_status() -> PythonPluginRuntimeStatus {
         command: None,
         version: None,
         error: Some(format!("Python 环境检测失败: {error}")),
-    })
+    });
+    Ok(status)
 }
 
 #[cfg(test)]
@@ -480,12 +498,12 @@ define_plugin({"tools": {"loop": loop}})
 
     #[test]
     fn rejects_unknown_runtime() {
-        let error = tauri::async_runtime::block_on(execute_node_plugin_tool(
+        let error = execute_plugin_tool_inner(
             "ruby".to_string(),
             "puts 1".to_string(),
             "tool".to_string(),
             json!({}),
-        ))
+        )
         .unwrap_err();
         assert!(error.contains("不支持的插件运行时"));
     }

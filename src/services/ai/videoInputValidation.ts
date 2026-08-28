@@ -69,7 +69,9 @@ function needsMetadata(constraints: VideoInputConstraints | undefined, kind: 'vi
   return kind === 'video'
     ? hasRangeBound(constraints?.referenceVideo?.width)
       || hasRangeBound(constraints?.referenceVideo?.durationSeconds)
-    : hasRangeBound(constraints?.referenceAudio?.durationSeconds);
+      || hasRangeBound(constraints?.referenceVideo?.totalDurationSeconds)
+    : hasRangeBound(constraints?.referenceAudio?.durationSeconds)
+      || hasRangeBound(constraints?.referenceAudio?.totalDurationSeconds);
 }
 
 export const probeReferenceMediaMetadata: ReferenceMediaMetadataProbe = async (
@@ -162,6 +164,26 @@ async function validateMediaReferences(
     const failure = describeRangeFailure(metadata.durationSeconds, durationRange, ' 秒');
     if (failure) {
       throw new Error(`第 ${index + 1} 个${label}时长为 ${Number(metadata.durationSeconds.toFixed(2))} 秒，${failure}`);
+    }
+  }
+
+  const totalDurationRange = kind === 'video'
+    ? constraints.referenceVideo?.totalDurationSeconds
+    : constraints.referenceAudio?.totalDurationSeconds;
+  if (hasRangeBound(totalDurationRange)) {
+    const durations: number[] = [];
+    for (const metadata of metadataItems) {
+      if (metadata.durationSeconds === undefined) {
+        throw new Error(`模型 "${modelName}" 无法确认全部${label}的合计时长，请更换可读取的素材`);
+      }
+      durations.push(metadata.durationSeconds);
+    }
+    const totalDuration = durations.reduce((total, duration) => total + duration, 0);
+    const failure = describeRangeFailure(totalDuration, totalDurationRange, ' 秒');
+    if (failure) {
+      throw new Error(
+        `${label}合计时长为 ${Number(totalDuration.toFixed(2))} 秒，${failure}`,
+      );
     }
   }
 }

@@ -13,6 +13,7 @@ import { useAppStore } from '../../../src/store/useAppStore';
 import {
   clearProviderConfigDraftsForTests,
   getProviderConfigDraft,
+  type ProviderConfigDraftInput,
 } from '../../../src/services/chat/providerConfigDraftService';
 import { registerProviderConfigAgentTools } from '../../../src/services/chat/tools/providerConfigTools';
 import { evaluateAgentToolPolicy } from '../../../src/services/chat/policyEngine';
@@ -23,6 +24,7 @@ import {
   prepareAgentToolCall,
   type AgentToolContext,
 } from '../../../src/services/chat/toolRegistry';
+import type { ModelExecutionProtocol } from '../../../src/types/aiTypes';
 
 const context: AgentToolContext = {
   taskId: 'task-1',
@@ -46,6 +48,36 @@ curl https://gateway.example.com/v1/images/generations \\
   -H "Content-Type: application/json" \\
   -d '{"model":"image-pro","prompt":"glass cube"}'`,
       submitResponse: '{"data":[{"url":"https://cdn.example.com/image.png"}]}',
+    }],
+  };
+}
+
+const DECLARATIVE_PROTOCOL: ModelExecutionProtocol = {
+  version: 2,
+  mode: 'sync',
+  auth: { type: 'bearer' },
+  submit: {
+    method: 'POST',
+    path: '/videos',
+    maxBodyBytes: 4_096,
+    body: { model: '{{model}}', prompt: '{{prompt}}' },
+  },
+  response: {
+    type: 'json',
+    result: { urlPath: 'data.url' },
+  },
+};
+
+function declarativePreviewInput(): ProviderConfigDraftInput {
+  return {
+    connectionName: 'Declarative Relay',
+    baseUrl: 'https://gateway.example.com/v1',
+    models: [{
+      protocolSource: 'declarative',
+      modelId: 'video-pro',
+      category: 'video',
+      videoCapability: { operations: ['text-to-video'] },
+      executionProtocol: structuredClone(DECLARATIVE_PROTOCOL),
     }],
   };
 }
@@ -112,6 +144,136 @@ describe('provider config agent tools', () => {
     }, context);
 
     expect(result).toMatchObject({ ok: false, result: { status: 'error' } });
+  });
+
+  it('exposes the canonical video capability fields through the preview tool schema', () => {
+    const tool = getAgentTool('provider_config_preview')!;
+    const modelsSchema = tool.inputSchema.properties?.models;
+    const modelSchema = modelsSchema?.items;
+    const capabilitySchema = modelSchema?.properties?.videoCapability;
+    const capabilityProperties = capabilitySchema?.properties;
+
+    expect(capabilityProperties).toEqual(expect.objectContaining({
+      operations: expect.any(Object),
+      requiresReference: expect.any(Object),
+      frameRates: expect.any(Object),
+      defaultFrameRate: expect.any(Object),
+      allowFrameAndReferenceMix: expect.any(Object),
+      inputModeCapabilities: expect.any(Object),
+      inputConstraints: expect.any(Object),
+    }));
+    expect(capabilitySchema?.required).toEqual(['operations']);
+    expect(capabilityProperties?.operations.minItems).toBe(1);
+    expect(capabilityProperties?.inputConstraints.properties).toEqual(expect.objectContaining({
+      promptMinCharacters: expect.any(Object),
+      maxBase64DecodedBytes: expect.any(Object),
+      referenceVideo: expect.any(Object),
+      referenceAudio: expect.any(Object),
+    }));
+    expect(capabilityProperties?.inputModeCapabilities.properties).toEqual(expect.objectContaining({
+      text: expect.any(Object),
+      keyframe: expect.any(Object),
+      reference: expect.any(Object),
+      mixed: expect.any(Object),
+    }));
+    expect(capabilityProperties?.inputConstraints.properties?.referenceVideo.properties)
+      .toHaveProperty('totalDurationSeconds');
+    expect(capabilityProperties?.inputConstraints.properties?.referenceAudio.properties)
+      .toHaveProperty('totalDurationSeconds');
+
+    const prepared = prepareAgentToolCall({
+      callId: 'call-video-capability-preview',
+      toolId: 'provider_config_preview',
+      input: {
+        connectionName: 'Video Relay',
+        models: [{
+          modelId: 'video-pro',
+          category: 'video',
+          submitRequest: 'POST https://gateway.example.com/v1/videos HTTP/1.1',
+          submitResponse: '{"task_id":"task-1"}',
+          videoCapability: {
+            operations: ['image-to-video', 'video-to-video'],
+            requiresReference: true,
+            ratios: ['16:9'],
+            inputModeCapabilities: {
+              keyframe: { ratios: ['16:9'], defaultRatio: '16:9', requiresRatio: true },
+            },
+            frameRates: [24, 30],
+            defaultFrameRate: 24,
+            allowFrameAndReferenceMix: false,
+            inputConstraints: {
+              promptMinCharacters: 1,
+              maxBase64DecodedBytes: 20971520,
+              referenceVideo: {
+                width: { min: 480, max: 1920, minExclusive: true },
+                durationSeconds: { min: 1, max: 15 },
+                totalDurationSeconds: { min: 1, max: 30 },
+              },
+              referenceAudio: {
+                durationSeconds: { min: 0, max: 15, minExclusive: true },
+                totalDurationSeconds: { min: 0, max: 30, minExclusive: true },
+              },
+            },
+          },
+        }],
+      },
+    }, context);
+    expect(prepared).toMatchObject({ ok: true });
+  });
+
+  it('exposes and executes the declarative protocol input without request examples', async () => {
+    const tool = getAgentTool('provider_config_preview')!;
+    const modelSchema = tool.inputSchema.properties?.models.items;
+
+    expect(modelSchema?.required).toEqual(['modelId']);
+    expect(modelSchema?.properties).toEqual(expect.objectContaining({
+      protocolSource: expect.objectContaining({ enum: ['examples', 'declarative'] }),
+      executionProtocol: expect.objectContaining({ type: 'object' }),
+      submitRequest: expect.any(Object),
+      submitResponse: expect.any(Object),
+    }));
+    expect(tool.description).toContain('$whenPresent');
+    expect(tool.description).toContain('$forEach');
+    expect(tool.description).toContain('请求体数组元素');
+    expect(tool.description).toContain('referenceImageUrls/referenceVideoUrls/referenceAudioUrls');
+    expect(tool.description).toContain('submit.maxBodyBytes');
+    expect(modelSchema?.properties?.executionProtocol.description).toContain('受信变量');
+    expect(modelSchema?.properties?.executionProtocol.description).toContain('$whenPresent');
+    expect(modelSchema?.properties?.executionProtocol.description).toContain('$forEach');
+    expect(modelSchema?.properties?.executionProtocol.description).toContain('body 数组项');
+
+    const input = declarativePreviewInput();
+    const prepared = prepareAgentToolCall({
+      callId: 'call-declarative-preview',
+      toolId: 'provider_config_preview',
+      input,
+    }, context);
+    expect(prepared).toMatchObject({ ok: true });
+
+    const result = await tool.execute(context, input);
+    expect(result).toMatchObject({ status: 'success' });
+    const draft = getProviderConfigDraft(context.taskId, readDraftId(result.modelContent));
+    expect(draft.config.selectedModels?.[0]?.executionProfile).toMatchObject({
+      preset: 'custom',
+      protocol: {
+        version: 2,
+        mode: 'sync',
+        submit: { path: '/videos' },
+        response: { result: { urlPath: 'data.url' } },
+      },
+    });
+    expect(result.modelContent).not.toContain('/videos');
+  });
+
+  it('rejects credential fields nested inside a declarative protocol before drafting', async () => {
+    const input = declarativePreviewInput();
+    (input.models[0].executionProtocol!.submit.body as Record<string, unknown>).apiKey = 'secret';
+
+    const result = await getAgentTool('provider_config_preview')!.execute(context, input);
+
+    expect(result).toMatchObject({ status: 'error', retryable: false });
+    expect(result.modelContent).toMatch(/API Key|凭据/);
+    expect(result.modelContent).not.toContain('secret');
   });
 
   it('creates a credential-free task draft from model examples', async () => {
@@ -432,7 +594,7 @@ curl https://gateway.example.com/v1/images/generations \\
     };
     const preview = await getAgentTool('provider_config_preview')!.execute(
       previewContext,
-      previewInput(),
+      declarativePreviewInput(),
     );
     const draftId = readDraftId(preview.modelContent);
     const applyContext = { ...previewContext, taskId: 'mcp-task-apply' };
@@ -443,9 +605,9 @@ curl https://gateway.example.com/v1/images/generations \\
 
     expect(applied).toMatchObject({ status: 'success' });
     expect(Object.values(useAppStore.getState().config.providers)[0]).toMatchObject({
-      name: 'Example AI',
+      name: 'Declarative Relay',
       apiKey: '',
-      selectedModels: [expect.objectContaining({ id: 'image-pro' })],
+      selectedModels: [expect.objectContaining({ id: 'video-pro', category: 'video' })],
     });
   });
 });

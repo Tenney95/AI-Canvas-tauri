@@ -32,17 +32,15 @@ import PopupCloseButton from '../shared/PopupCloseButton';
 import ModelProtocolEditor from './ModelProtocolEditor';
 import ProtocolImportPanel from './ProtocolImportPanel';
 import { useT } from '../../i18n';
+import { assertVideoModelCapability } from '../../services/ai/videoRequestResolver';
 
 const CATEGORY_ORDER: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
 const VIDEO_RATIO_PRESETS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', 'adaptive'];
-const DEFAULT_VIDEO_RATIOS = VIDEO_RATIO_PRESETS.slice(0, 6);
 const VIDEO_RESOLUTION_PRESETS = ['480p', '540p', '720p', '1080p', '2K', '4K', '480', '640', '832', '1280'];
-const DEFAULT_VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
 const VIDEO_FRAME_RATE_PRESETS = [16, 24, 25, 30, 48, 60];
-const DEFAULT_VIDEO_FRAME_RATES = [16, 24, 30];
 const VIDEO_DURATION_PRESETS = [2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30];
-const VIDEO_DURATION_RANGE_MIN = 2;
-const VIDEO_DURATION_RANGE_MAX = 30;
+const VIDEO_DURATION_RANGE_MIN = 1;
+const VIDEO_DURATION_RANGE_MAX = 3600;
 const PROVIDER_LINKS: Record<string, string> = {
   apimart: 'https://apimart.ai/register?aff=ZnmCKm',
   volcengine: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
@@ -73,7 +71,7 @@ function buildRelayAssistantPrompt(connectionName: string, baseUrl: string): str
     '1. 用 provider_docs_read 阅读该中转站的文档首页，拿到模型清单以及每个模型的接口页链接。',
     '2. 调用 provider_models_select，把清单里的全部模型作为候选传进去，我会在勾选卡片里选。不要在正文里罗列清单让我打字回复，也不要自作主张全部添加。',
     '3. 我勾选之后，对选中的每个模型用 provider_docs_read 打开它自己的接口页（形如 /docs/videos/{模型ID}），只读这些。只有那里才有该模型真实的参数表、固定能力和请求示例。',
-    '4. 逐个核对模型 ID、显示名称、类型。请求体字段一律以该模型自己的文档为准：文档有「请求示例」JSON 就原样用，只有参数表就只写表里的字段，两者都没有才退回 OpenAI 标准端点（chat/completions、images/generations、/v1/videos、audio/speech）。多写一个该模型不认识的字段，接口就会返回 400 unsupported field，所以宁可少写也不要凭印象补字段。',
+    '4. 逐个核对模型 ID、显示名称、类型。请求路径和请求体字段一律以该模型自己的文档为准：文档有「请求示例」JSON 就原样用，只有参数表就只写表里的字段。只有文档明确声明 OpenAI 兼容时才能采用对应标准端点；文档没有端点或字段时必须报告资料不足，禁止猜测 /v1/videos、/videos/generations 等路径。多写一个该模型不认识的字段，接口就会返回 400 unsupported field，所以宁可暂停配置也不要凭印象补字段。',
     '4.1 文档写明的固定能力（固定时长、宽高比枚举、参考图上限等）用 videoCapability 声明出来，画布上的参数面板会据此约束用户，避免发出该模型不支持的取值。',
     '5. 读完所选模型的接口页后必须立即调用 provider_config_preview 生成草稿，再调用 provider_config_apply 保存；不要只报告一遍字段就结束任务（同一 Base URL，单次最多 16 个，超出就分多次保存）。',
     '6. 不要写入 API Key，把其余内容都填好即可；保存后我会自己补填 API Key。',
@@ -122,51 +120,43 @@ interface VideoCapabilityEditorProps {
   onClose: () => void;
 }
 
-function createEditableVideoCapability(
+// 编辑器候选预设只用于展示，绝不能把未声明字段补进权威 capability。
+// eslint-disable-next-line react-refresh/only-export-components
+export function createEditableVideoCapability(
   capability?: VideoModelCapability,
 ): VideoModelCapability {
-  const ratios = capability?.ratios?.length ? capability.ratios : DEFAULT_VIDEO_RATIOS;
-  const resolutions = capability?.resolutions?.length
-    ? capability.resolutions
-    : DEFAULT_VIDEO_RESOLUTIONS;
-  const frameRates = capability?.frameRates?.length
-    ? capability.frameRates
-    : DEFAULT_VIDEO_FRAME_RATES;
-  const minDuration = Math.min(
-    VIDEO_DURATION_RANGE_MAX,
-    Math.max(
-      VIDEO_DURATION_RANGE_MIN,
-      capability?.minDuration ?? Math.min(...(capability?.durations ?? [VIDEO_DURATION_RANGE_MIN])),
-    ),
-  );
-  const maxDuration = Math.max(
-    minDuration,
-    Math.min(
-      VIDEO_DURATION_RANGE_MAX,
-      capability?.maxDuration ?? Math.max(...(capability?.durations ?? [15])),
-    ),
-  );
   return {
     ...capability,
-    ratios: [...ratios],
-    defaultRatio: ratios.includes(capability?.defaultRatio ?? '')
-      ? capability?.defaultRatio
-      : ratios[0],
-    resolutions: [...resolutions],
-    defaultResolution: resolutions.includes(capability?.defaultResolution ?? '')
-      ? capability?.defaultResolution
-      : resolutions[0],
-    frameRates: [...frameRates],
-    defaultFrameRate: frameRates.includes(capability?.defaultFrameRate ?? Number.NaN)
-      ? capability?.defaultFrameRate
-      : frameRates[0],
-    minDuration,
-    maxDuration,
-    defaultDuration: Math.min(
-      maxDuration,
-      Math.max(minDuration, capability?.defaultDuration ?? capability?.durations?.[0] ?? 5),
-    ),
+    ...(capability?.ratios ? { ratios: [...capability.ratios] } : {}),
+    ...(capability?.resolutions ? { resolutions: [...capability.resolutions] } : {}),
+    ...(capability?.frameRates ? { frameRates: [...capability.frameRates] } : {}),
+    ...(capability?.durations ? { durations: [...capability.durations] } : {}),
   };
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function keepDeclaredVideoCapabilityDefault<T>(
+  currentDefault: T | undefined,
+  allowedValues: readonly T[],
+): T | undefined {
+  return currentDefault !== undefined && allowedValues.includes(currentDefault)
+    ? currentDefault
+    : undefined;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function assertProviderModelsVideoCapabilities(
+  models: readonly ProviderModelSelection[],
+): void {
+  for (const model of models) {
+    if (model.category !== 'video' || !model.videoCapability) continue;
+    try {
+      assertVideoModelCapability(model.videoCapability);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '能力声明无效';
+      throw new Error(`视频模型“${model.name}”的能力配置无效：${detail}`, { cause: error });
+    }
+  }
 }
 
 function optionalNumber(value: string, options: { integer?: boolean; scale?: number } = {}): number | undefined {
@@ -200,6 +190,20 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
     ...(discreteDurations ?? []),
   ])].sort((left, right) => left - right);
   const inputConstraints = capability.inputConstraints ?? {};
+  const editorMinDuration = Math.min(
+    VIDEO_DURATION_RANGE_MAX,
+    Math.max(
+      VIDEO_DURATION_RANGE_MIN,
+      capability.minDuration ?? Math.min(...(capability.durations ?? [VIDEO_DURATION_RANGE_MIN])),
+    ),
+  );
+  const editorMaxDuration = Math.max(
+    editorMinDuration,
+    Math.min(
+      VIDEO_DURATION_RANGE_MAX,
+      capability.maxDuration ?? Math.max(...(capability.durations ?? [15])),
+    ),
+  );
 
   const commit = (next: VideoModelCapability) => onChange(createEditableVideoCapability(next));
   const commitInputConstraints = (next: VideoInputConstraints) => commit({
@@ -219,9 +223,10 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
     commit({
       ...capability,
       [field]: next,
-      [defaultField]: next.includes(String(capability[defaultField] ?? ''))
-        ? capability[defaultField]
-        : next[0],
+      [defaultField]: keepDeclaredVideoCapabilityDefault(
+        capability[defaultField] as string | undefined,
+        next,
+      ),
     });
   };
   const addStringOption = (
@@ -236,7 +241,7 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
     commit({
       ...capability,
       [field]: current.includes(value) ? current : [...current, value],
-      [defaultField]: capability[defaultField] ?? value,
+      [defaultField]: capability[defaultField],
     });
     clear();
   };
@@ -249,9 +254,7 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
     commit({
       ...capability,
       frameRates: next,
-      defaultFrameRate: next.includes(capability.defaultFrameRate ?? Number.NaN)
-        ? capability.defaultFrameRate
-        : next[0],
+      defaultFrameRate: keepDeclaredVideoCapabilityDefault(capability.defaultFrameRate, next),
     });
   };
   const toggleDuration = (value: number) => {
@@ -263,11 +266,9 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
     commit({
       ...capability,
       durations: next,
-      minDuration: Math.min(...next),
-      maxDuration: Math.max(...next),
-      defaultDuration: next.includes(capability.defaultDuration ?? Number.NaN)
-        ? capability.defaultDuration
-        : next[0],
+      ...(capability.minDuration === undefined ? {} : { minDuration: Math.min(...next) }),
+      ...(capability.maxDuration === undefined ? {} : { maxDuration: Math.max(...next) }),
+      defaultDuration: keepDeclaredVideoCapabilityDefault(capability.defaultDuration, next),
     });
   };
   const optionClass = (active: boolean) => `min-h-7 rounded-md border px-2.5 py-1 text-[11px] transition-colors ${
@@ -299,9 +300,13 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
               默认
               <select
                 className="h-7 rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text"
-                value={capability.defaultRatio}
-                onChange={(event) => commit({ ...capability, defaultRatio: event.target.value })}
+                value={capability.defaultRatio ?? ''}
+                onChange={(event) => commit({
+                  ...capability,
+                  defaultRatio: event.target.value || undefined,
+                })}
               >
+                <option value="">模型默认（未声明）</option>
                 {capability.ratios?.map((value) => <option key={value}>{value}</option>)}
               </select>
             </label>
@@ -324,7 +329,8 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
             <span className="text-xs font-medium text-canvas-text">分辨率（可多选）</span>
             <label className="flex items-center gap-2 text-[10px] text-canvas-text-secondary">
               默认
-              <select className="h-7 rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text" value={capability.defaultResolution} onChange={(event) => commit({ ...capability, defaultResolution: event.target.value })}>
+              <select className="h-7 rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text" value={capability.defaultResolution ?? ''} onChange={(event) => commit({ ...capability, defaultResolution: event.target.value || undefined })}>
+                <option value="">模型默认（未声明）</option>
                 {capability.resolutions?.map((value) => <option key={value}>{value}</option>)}
               </select>
             </label>
@@ -346,7 +352,8 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
             <span className="text-xs font-medium text-canvas-text">帧率（可多选）</span>
             <label className="flex items-center gap-2 text-[10px] text-canvas-text-secondary">
               默认
-              <select className="h-7 rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text" value={capability.defaultFrameRate} onChange={(event) => commit({ ...capability, defaultFrameRate: Number(event.target.value) })}>
+              <select className="h-7 rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text" value={capability.defaultFrameRate ?? ''} onChange={(event) => commit({ ...capability, defaultFrameRate: event.target.value ? Number(event.target.value) : undefined })}>
+                <option value="">模型默认（未声明）</option>
                 {capability.frameRates?.map((value) => <option key={value} value={value}>{value} FPS</option>)}
               </select>
             </label>
@@ -381,7 +388,8 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
               </span>
               <label className="ml-auto flex items-center gap-2 text-[10px] text-canvas-text-secondary">
                 默认
-                <select className="h-7 rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text" value={capability.defaultDuration} onChange={(event) => commit({ ...capability, defaultDuration: Number(event.target.value) })}>
+                <select className="h-7 rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text" value={capability.defaultDuration ?? ''} onChange={(event) => commit({ ...capability, defaultDuration: event.target.value ? Number(event.target.value) : undefined })}>
+                  <option value="">模型默认（未声明）</option>
                   {discreteDurations.map((value) => <option key={value} value={value}>{value}s</option>)}
                 </select>
               </label>
@@ -389,16 +397,21 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
           ) : (
             <div>
               <div className="mb-2 flex items-center justify-between text-[11px] font-medium text-canvas-text">
-                <span>最短 {capability.minDuration}s</span>
-                <span>最长 {capability.maxDuration}s</span>
+                <span>最短 {capability.minDuration ?? '未声明'}</span>
+                <span>最长 {capability.maxDuration ?? '未声明'}</span>
               </div>
+              {capability.minDuration === undefined && capability.maxDuration === undefined && (
+                <p className="mb-2 text-[10px] text-canvas-text-muted">
+                  当前未声明时长范围；滑动端点后才会写入限制。
+                </p>
+              )}
               <div className="relative h-8">
                 <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-canvas-card" />
                 <div
                   className="pointer-events-none absolute top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.35)]"
                   style={{
-                    left: `${(((capability.minDuration ?? VIDEO_DURATION_RANGE_MIN) - VIDEO_DURATION_RANGE_MIN) / (VIDEO_DURATION_RANGE_MAX - VIDEO_DURATION_RANGE_MIN)) * 100}%`,
-                    width: `${(((capability.maxDuration ?? VIDEO_DURATION_RANGE_MAX) - (capability.minDuration ?? VIDEO_DURATION_RANGE_MIN)) / (VIDEO_DURATION_RANGE_MAX - VIDEO_DURATION_RANGE_MIN)) * 100}%`,
+                    left: `${((editorMinDuration - VIDEO_DURATION_RANGE_MIN) / (VIDEO_DURATION_RANGE_MAX - VIDEO_DURATION_RANGE_MIN)) * 100}%`,
+                    width: `${((editorMaxDuration - editorMinDuration) / (VIDEO_DURATION_RANGE_MAX - VIDEO_DURATION_RANGE_MIN)) * 100}%`,
                   }}
                 />
                 <input
@@ -406,16 +419,18 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
                   min={VIDEO_DURATION_RANGE_MIN}
                   max={VIDEO_DURATION_RANGE_MAX}
                   step="1"
-                  value={capability.minDuration}
+                  value={editorMinDuration}
                   aria-label="最短生成时长"
                   className="rh-duration-input pointer-events-none absolute inset-0 z-20 [&::-moz-range-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:pointer-events-auto"
                   style={{ position: 'absolute', top: 4, left: 0, right: 0, zIndex: 20 }}
                   onChange={(event) => {
-                    const minDuration = Math.min(Number(event.target.value), capability.maxDuration ?? VIDEO_DURATION_RANGE_MAX);
+                    const minDuration = Math.min(Number(event.target.value), editorMaxDuration);
                     commit({
                       ...capability,
                       minDuration,
-                      defaultDuration: Math.max(minDuration, capability.defaultDuration ?? minDuration),
+                      ...(capability.defaultDuration === undefined
+                        ? {}
+                        : { defaultDuration: Math.max(minDuration, capability.defaultDuration) }),
                     });
                   }}
                 />
@@ -424,16 +439,18 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
                   min={VIDEO_DURATION_RANGE_MIN}
                   max={VIDEO_DURATION_RANGE_MAX}
                   step="1"
-                  value={capability.maxDuration}
+                  value={editorMaxDuration}
                   aria-label="最长生成时长"
                   className="rh-duration-input pointer-events-none absolute inset-0 z-10 [&::-moz-range-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:pointer-events-auto"
                   style={{ position: 'absolute', top: 4, left: 0, right: 0, zIndex: 10 }}
                   onChange={(event) => {
-                    const maxDuration = Math.max(Number(event.target.value), capability.minDuration ?? VIDEO_DURATION_RANGE_MIN);
+                    const maxDuration = Math.max(Number(event.target.value), editorMinDuration);
                     commit({
                       ...capability,
                       maxDuration,
-                      defaultDuration: Math.min(maxDuration, capability.defaultDuration ?? maxDuration),
+                      ...(capability.defaultDuration === undefined
+                        ? {}
+                        : { defaultDuration: Math.min(maxDuration, capability.defaultDuration) }),
                     });
                   }}
                 />
@@ -445,12 +462,16 @@ function VideoCapabilityEditor({ model, onChange, onClose }: VideoCapabilityEdit
                 默认时长
                 <select
                   className="h-7 rounded-md border border-canvas-border bg-canvas-card px-2 text-[11px] text-canvas-text"
-                  value={capability.defaultDuration}
-                  onChange={(event) => commit({ ...capability, defaultDuration: Number(event.target.value) })}
+                  value={capability.defaultDuration ?? ''}
+                  onChange={(event) => commit({
+                    ...capability,
+                    defaultDuration: event.target.value ? Number(event.target.value) : undefined,
+                  })}
                 >
+                  <option value="">模型默认（未声明）</option>
                   {Array.from(
-                    { length: (capability.maxDuration ?? 15) - (capability.minDuration ?? VIDEO_DURATION_RANGE_MIN) + 1 },
-                    (_, index) => (capability.minDuration ?? VIDEO_DURATION_RANGE_MIN) + index,
+                    { length: editorMaxDuration - editorMinDuration + 1 },
+                    (_, index) => editorMinDuration + index,
                   ).map((value) => <option key={value} value={value}>{value}s</option>)}
                 </select>
               </label>
@@ -1160,6 +1181,13 @@ export default function ProviderConnectionDialog({
       || (!isWebSearchProvider && selectedModels.length === 0)
       || !protocolValid
     ) return;
+    try {
+      assertProviderModelsVideoCapabilities(selectedModels);
+    } catch (error) {
+      setCatalogStatus('error');
+      setCatalogMessage(error instanceof Error ? error.message : t('视频能力配置无效'));
+      return;
+    }
     const nextConnectionId = isWebSearchProvider
       ? definition.id
       : connectionId || createConnectionId(definition.id);

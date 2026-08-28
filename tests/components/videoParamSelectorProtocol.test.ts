@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { modelProtocolUsesVariable } from '../../src/services/ai/modelProtocol';
 import { analyzeModelProtocolExamples } from '../../src/services/ai/modelProtocolImport';
-import { resolveGeneralVideoModel } from '../../src/components/nodes/shared/VideoParamSelector';
+import {
+  resolveGeneralVideoControlSupport,
+  resolveGeneralVideoModel,
+  resolveGeneralVideoParameterDisplayState,
+} from '../../src/components/nodes/shared/VideoParamSelector';
 
 describe('VideoParamSelector 自定义协议参数识别', () => {
-  it('按协议变量识别任意厂商视频模型的比例、分辨率和秒数控件', () => {
+  it('保留导入协议的比例、分辨率和秒数变量', () => {
     const imported = analyzeModelProtocolExamples({
       submitRequest: `
 curl https://api.paipu.net/v1/videos \\
@@ -50,5 +54,57 @@ curl https://api.paipu.net/v1/videos \\
       .toBe(models[0]);
     expect(resolveGeneralVideoModel(models, 'custom-video/lec-h3video-2k', 'custom-video'))
       .toBe(models[0]);
+  });
+
+  it('通用视频控件只暴露 capability 明确声明的能力', () => {
+    expect(resolveGeneralVideoControlSupport({
+      ratios: ['16:9'],
+      frameRates: [24],
+      supportsAudio: false,
+    })).toEqual({
+      resolution: false,
+      ratio: true,
+      duration: false,
+      frameRate: true,
+      audio: false,
+    });
+  });
+
+  it('缺少 capability 时保持未知，不套用 Seedance 参数', () => {
+    expect(resolveGeneralVideoControlSupport(undefined)).toEqual({
+      resolution: false,
+      ratio: false,
+      duration: false,
+      frameRate: false,
+      audio: false,
+    });
+  });
+
+  it('可选枚举和单侧范围不会被误当成模型默认值', () => {
+    expect(resolveGeneralVideoParameterDisplayState({
+      resolutions: ['2K'],
+      ratios: ['7:4'],
+      frameRates: [30],
+      minDuration: 10,
+      supportsAudio: true,
+    }, {})).toEqual({
+      resolution: undefined,
+      ratio: undefined,
+      duration: undefined,
+      frameRate: undefined,
+      generateAudio: undefined,
+    });
+
+    expect(resolveGeneralVideoParameterDisplayState({
+      defaultResolution: '2K',
+      defaultRatio: '7:4',
+      defaultFrameRate: 30,
+      defaultDuration: 20,
+    }, {})).toMatchObject({
+      resolution: '2K',
+      ratio: '7:4',
+      frameRate: 30,
+      duration: 20,
+    });
   });
 });

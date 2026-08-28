@@ -55,6 +55,18 @@ const ALL: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
 const isRatio = (value: ProtocolJsonValue) =>
   typeof value === 'string' && /^\d+\s*:\s*\d+$/.test(value);
 
+const isResolutionPreset = (value: ProtocolJsonValue) =>
+  typeof value === 'string' && /^\d+(?:\.\d+)?\s*[pk]$/i.test(value.trim());
+
+const isNumericStringValue = (value: ProtocolJsonValue) => (
+  typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())
+);
+
+const isVideoInputMode = (value: ProtocolJsonValue) => (
+  typeof value === 'string'
+  && ['text', 'keyframe', 'reference'].includes(value.trim().toLowerCase())
+);
+
 /**
  * 参考图字段分两类：恒为数组的复数字段，和单张 / 数组两用的单数字段。
  * inferImageReferenceRequestMode 也用这两组判断请求模式，所以在此统一声明。
@@ -97,7 +109,12 @@ export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
     ],
   },
   // 非图片模型的 resolution 走视频档位（'720p' 这类），图片模型由上面的规则先接走
-  { name: 'seedanceResolution', supplied: VIDEO, fields: ['resolution', 'videoresolution', 'videoquality'] },
+  {
+    name: 'seedanceResolution', supplied: VIDEO,
+    fields: ['resolution', 'videoresolution', 'videoquality'],
+    // 视频接口常把 720P / 2K 写在 size，而 width x height 仍走通用 size。
+    rules: [{ key: 'size', categories: VIDEO, when: isResolutionPreset }],
+  },
   { name: 'width', supplied: IMAGE_VIDEO, fields: ['width', 'imagewidth', 'videowidth'] },
   { name: 'height', supplied: IMAGE_VIDEO, fields: ['height', 'imageheight', 'videoheight'] },
   {
@@ -109,8 +126,18 @@ export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
   {
     name: 'duration', supplied: VIDEO_AUDIO,
     fields: ['duration', 'seconds', 'videoduration', 'durationseconds'],
-    // Flow Music 一类音乐接口用 length 表示时长
-    rules: [{ key: 'length', categories: AUDIO }],
+    rules: [
+      // 部分视频接口严格要求字符串秒数；按文档示例的 JSON 类型选择对应变量，
+      // 不在传输层擅自把所有 duration 都改成字符串。
+      ...['duration', 'seconds', 'videoduration', 'durationseconds'].map((key) => ({
+        key,
+        categories: VIDEO,
+        when: isNumericStringValue,
+        template: '{{durationText}}',
+      })),
+      // Flow Music 一类音乐接口用 length 表示时长
+      { key: 'length', categories: AUDIO },
+    ],
   },
   {
     name: 'generateAudio', supplied: VIDEO,
@@ -208,6 +235,13 @@ export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
   { name: 'seedanceRatio', supplied: VIDEO },
   { name: 'seedanceDuration', supplied: VIDEO },
   { name: 'videoOperation', supplied: VIDEO },
+  {
+    name: 'videoInputMode', supplied: VIDEO,
+    // Agnes 2.5 等接口用 mode 在 text / keyframe / reference 三种互斥输入形态间切换。
+    // 只有示例值明确属于这三个枚举时才映射，避免误把其他厂商的通用 mode 字段改写。
+    rules: [{ key: 'mode', categories: VIDEO, when: isVideoInputMode }],
+  },
+  { name: 'durationText', supplied: VIDEO },
   { name: 'disableAudio', supplied: VIDEO },
 ];
 

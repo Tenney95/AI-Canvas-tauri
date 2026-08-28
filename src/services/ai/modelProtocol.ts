@@ -20,6 +20,7 @@ import type {
   NormalizedModelExecutionProtocol,
   ProtocolJsonValue,
   ResolvedModelProtocolPoll,
+  VideoModelCapability,
 } from '../../types/aiTypes';
 import {
   redactModelProtocolMultipartPreview,
@@ -36,6 +37,21 @@ import { PROTOCOL_VARIABLE_NAMES } from './modelProtocolVariables';
 
 const TEMPLATE_RE = /{{\s*([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_-]+)*)\s*}}/g;
 const FULL_TEMPLATE_RE = /^{{\s*([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_-]+)*)\s*}}$/;
+const WHEN_PRESENT_KEY = '$whenPresent';
+const FOR_EACH_KEY = '$forEach';
+const CONDITIONAL_VALUE_KEY = '$value';
+/**
+ * Stage 1 only permits array expansion for the canonical typed reference URL lists.
+ * Keeping this list narrow prevents arbitrary protocol values (messages, tools, submit
+ * payloads, etc.) from becoming an implicit expression language.
+ */
+const FOR_EACH_VARIABLE_ROOTS = new Set([
+  'referenceImageUrls',
+  'referenceVideoUrls',
+  'referenceAudioUrls',
+]);
+export const MODEL_PROTOCOL_MAX_FOR_EACH_ITEMS = 64;
+const MAX_MODEL_PROTOCOL_BODY_BYTES = 512 * 1024 * 1024;
 /** 变量白名单由 modelProtocolVariables 总表派生，避免与字段映射表各自漂移。 */
 const ALLOWED_VARIABLE_ROOTS = PROTOCOL_VARIABLE_NAMES;
 const BLOCKED_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
@@ -108,7 +124,39 @@ export type { ModelProtocolResponsePreviewEntry } from './modelProtocolResponse'
 
 /** 判断序列化协议中是否引用了指定的受信模板变量。 */
 export function modelProtocolUsesVariable(source: string, ...variables: string[]): boolean {
-  return variables.some((variable) => new RegExp(`\\{\\{\\s*${variable}\\s*\\}\\}`).test(source));
+  const requested = variables.filter(Boolean);
+  if (requested.length === 0) return false;
+  return [...source.matchAll(TEMPLATE_RE)].some((match) => {
+    const templatePath = match[1];
+    return requested.some((variable) => (
+      templatePath === variable || templatePath.startsWith(`${variable}.`)
+    ));
+  });
+}
+
+/** 返回协议片段中出现的模板路径；调用方可据此区分整数组与 `.0` 等局部引用。 */
+export function collectModelProtocolTemplatePaths(source: string): string[] {
+  return [...source.matchAll(TEMPLATE_RE)].map((match) => match[1]);
+}
+
+/** 返回协议中实际使用 `$forEach` 展开的受信数组变量。 */
+export function collectModelProtocolForEachVariables(value: unknown): string[] {
+  const found = new Set<string>();
+  const visit = (item: unknown) => {
+    if (Array.isArray(item)) {
+      item.forEach(visit);
+      return;
+    }
+    if (!isRecord(item)) return;
+    const source = item[FOR_EACH_KEY];
+    if (typeof source === 'string') {
+      const path = FULL_TEMPLATE_RE.exec(source)?.[1];
+      if (path && FOR_EACH_VARIABLE_ROOTS.has(path)) found.add(path);
+    }
+    Object.values(item).forEach(visit);
+  };
+  visit(value);
+  return [...found];
 }
 
 const OPENAI_CHAT_PROTOCOL: NormalizedModelExecutionProtocol = {
@@ -189,6 +237,23 @@ const AGNES_VIDEO_PROTOCOL: NormalizedModelExecutionProtocol = {
   },
 };
 
+/**
+ * The legacy Agnes preset historically relied on the application's global
+ * 5-second / 24-fps defaults. Keep that compatibility explicit at the preset
+ * boundary so the canonical resolver never has to invent values for arbitrary
+ * custom video protocols.
+ */
+const AGNES_VIDEO_CAPABILITY: VideoModelCapability = {
+  operations: ['text-to-video'],
+  defaultResolution: '1152x768',
+  defaultRatio: '3:2',
+  defaultFrameRate: 24,
+  defaultDuration: 5,
+  maxImageReferences: 0,
+  maxVideoReferences: 0,
+  maxAudioReferences: 0,
+};
+
 function cloneProtocol(protocol: NormalizedModelExecutionProtocol): NormalizedModelExecutionProtocol {
   return structuredClone(protocol);
 }
@@ -199,6 +264,14 @@ export function getModelProtocolPreset(
   if (preset === 'openai-chat') return cloneProtocol(OPENAI_CHAT_PROTOCOL);
   if (preset === 'agnes-video') return cloneProtocol(AGNES_VIDEO_PROTOCOL);
   return cloneProtocol(OPENAI_IMAGE_PROTOCOL);
+}
+
+export function getModelProtocolPresetVideoCapability(
+  profile: ModelExecutionProfile | undefined,
+): VideoModelCapability | undefined {
+  return profile?.preset === 'agnes-video'
+    ? structuredClone(AGNES_VIDEO_CAPABILITY)
+    : undefined;
 }
 
 /** 将帧数收敛到 Agnes 等模型要求的 8 * n + 1，尽量贴近用户原始选择。 */
@@ -222,12 +295,15 @@ export function resolveModelExecutionProfile(
 export function getDefaultCustomProtocol(category: GeneralModelCategory): NormalizedModelExecutionProtocol {
   if (category === 'text') return getModelProtocolPreset('openai-chat');
   if (category === 'image') return getModelProtocolPreset('openai-image');
+  const requiresDocumentedVideoEndpoint = category === 'video';
   return {
     version: 2,
     mode: 'async',
     submit: {
       method: 'POST',
-      path: category === 'video' ? '/videos/generations' : '/audio/generations',
+      // Video APIs have no cross-provider standard endpoint. An empty path is
+      // deliberately invalid so the editor cannot save a guessed request.
+      path: requiresDocumentedVideoEndpoint ? '' : '/audio/generations',
       body: { model: '{{model}}', prompt: '{{prompt}}' },
     },
     response: {
@@ -236,7 +312,7 @@ export function getDefaultCustomProtocol(category: GeneralModelCategory): Normal
     },
     poll: {
       method: 'GET',
-      path: '/tasks/{{submit.task_id}}',
+      path: requiresDocumentedVideoEndpoint ? '' : '/tasks/{{submit.task_id}}',
       response: {
         statusPath: 'status',
         successValues: ['completed'],
@@ -346,8 +422,100 @@ function validateTemplateVariables(
       if (!ALLOWED_VARIABLE_ROOTS.has(root) && !(allowSubmit && root === 'submit')) {
         errors.push(`${label}使用了不允许的变量 ${variable}`);
       }
+      if (variable.split('.').some((segment) => BLOCKED_PATH_SEGMENTS.has(segment))) {
+        errors.push(`${label}使用了不安全的变量路径 ${variable}`);
+      }
     }
   });
+}
+
+function usesExactFullTemplate(value: unknown, path: string): boolean {
+  let found = false;
+  visitTemplateStrings(value, (template) => {
+    if (FULL_TEMPLATE_RE.exec(template)?.[1] === path) found = true;
+  });
+  return found;
+}
+
+function validateConditionalTemplateDirectives(
+  value: unknown,
+  label: string,
+  errors: string[],
+  options: {
+    enabled: boolean;
+    arrayItem?: boolean;
+    forEachEnabled?: boolean;
+  },
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((item) => validateConditionalTemplateDirectives(item, label, errors, {
+      enabled: options.enabled,
+      arrayItem: true,
+      forEachEnabled: options.forEachEnabled,
+    }));
+    return;
+  }
+  if (!isRecord(value)) return;
+
+  const hasCondition = Object.hasOwn(value, WHEN_PRESENT_KEY);
+  const hasForEach = Object.hasOwn(value, FOR_EACH_KEY);
+  const hasConditionalValue = Object.hasOwn(value, CONDITIONAL_VALUE_KEY);
+  if (hasForEach) {
+    if (!options.enabled || !options.arrayItem) {
+      errors.push(`${label}数组展开项只能用于请求体数组元素`);
+      return;
+    }
+    if (!options.forEachEnabled) {
+      errors.push(`${label}数组展开项只支持 JSON 请求体`);
+      return;
+    }
+    const keys = Object.keys(value);
+    if (hasCondition || !hasConditionalValue || keys.length !== 2) {
+      errors.push(`${label}数组展开项必须且只能包含 ${FOR_EACH_KEY} 和 ${CONDITIONAL_VALUE_KEY}`);
+      return;
+    }
+    const source = value[FOR_EACH_KEY];
+    const sourcePath = typeof source === 'string' ? FULL_TEMPLATE_RE.exec(source)?.[1] : undefined;
+    if (!sourcePath || sourcePath.includes('.') || !FOR_EACH_VARIABLE_ROOTS.has(sourcePath)) {
+      errors.push(
+        `${label}${FOR_EACH_KEY} 必须是 referenceImageUrls、referenceVideoUrls 或 referenceAudioUrls 的完整根变量模板`,
+      );
+    }
+    if (!isRecord(value[CONDITIONAL_VALUE_KEY])) {
+      errors.push(`${label}${FOR_EACH_KEY} 的 ${CONDITIONAL_VALUE_KEY} 必须是 JSON 对象`);
+    } else if (sourcePath && !usesExactFullTemplate(value[CONDITIONAL_VALUE_KEY], sourcePath)) {
+      errors.push(`${label}${FOR_EACH_KEY} 的 ${CONDITIONAL_VALUE_KEY} 必须使用完整模板 {{${sourcePath}}} 接收当前 URL`);
+    }
+    validateConditionalTemplateDirectives(value[CONDITIONAL_VALUE_KEY], label, errors, {
+      enabled: options.enabled,
+      forEachEnabled: options.forEachEnabled,
+    });
+    return;
+  }
+  if (hasCondition || hasConditionalValue) {
+    if (!options.enabled || !options.arrayItem) {
+      errors.push(`${label}条件项只能用于请求体数组元素`);
+      return;
+    }
+    const keys = Object.keys(value);
+    if (!hasCondition || !hasConditionalValue || keys.length !== 2) {
+      errors.push(`${label}条件项必须且只能包含 ${WHEN_PRESENT_KEY} 和 ${CONDITIONAL_VALUE_KEY}`);
+      return;
+    }
+    if (typeof value[WHEN_PRESENT_KEY] !== 'string' || !FULL_TEMPLATE_RE.test(value[WHEN_PRESENT_KEY])) {
+      errors.push(`${label}${WHEN_PRESENT_KEY} 必须是一个完整的受信变量模板`);
+    }
+    validateConditionalTemplateDirectives(value[CONDITIONAL_VALUE_KEY], label, errors, {
+      enabled: options.enabled,
+      forEachEnabled: options.forEachEnabled,
+    });
+    return;
+  }
+
+  Object.values(value).forEach((item) => validateConditionalTemplateDirectives(item, label, errors, {
+    enabled: options.enabled,
+    forEachEnabled: options.forEachEnabled,
+  }));
 }
 
 function validateRequest(
@@ -374,6 +542,19 @@ function validateRequest(
     errors.push('请求体编码只支持 json、form-urlencoded 或 multipart');
   }
   if (
+    request.maxBodyBytes !== undefined
+    && (!Number.isSafeInteger(request.maxBodyBytes)
+      || Number(request.maxBodyBytes) <= 0
+      || Number(request.maxBodyBytes) > MAX_MODEL_PROTOCOL_BODY_BYTES)
+  ) {
+    errors.push(
+      `${label} maxBodyBytes 必须是 1 到 ${MAX_MODEL_PROTOCOL_BODY_BYTES} 的正整数`,
+    );
+  }
+  if (request.maxBodyBytes !== undefined && request.bodyEncoding === 'multipart') {
+    errors.push(`${label}使用 multipart 时不支持 maxBodyBytes，因为无法精确计算 multipart 边界开销`);
+  }
+  if (
     (request.bodyEncoding === 'form-urlencoded' || request.bodyEncoding === 'multipart')
     && request.body !== undefined
     && !isRecord(request.body)
@@ -382,7 +563,26 @@ function validateRequest(
   }
   validateRequestHeaders(request.headers, label, errors);
   validateTemplateVariables(request, allowSubmit, label, errors);
+  validateConditionalTemplateDirectives(request.body, label, errors, {
+    enabled: true,
+    forEachEnabled: request.bodyEncoding === undefined || request.bodyEncoding === 'json',
+  });
+  validateConditionalTemplateDirectives(request.query, label, errors, { enabled: false });
   return true;
+}
+
+function pollRequestUsesTaskId(
+  request: Record<string, unknown>,
+  taskIdPath: unknown,
+): boolean {
+  if (typeof taskIdPath !== 'string' || !taskIdPath.trim()) return false;
+  const expected = `submit.${taskIdPath.trim()}`;
+  const source = JSON.stringify({
+    path: request.path,
+    query: request.query,
+    body: request.body,
+  });
+  return [...source.matchAll(TEMPLATE_RE)].some((match) => match[1] === expected);
 }
 
 function validatePollRetryConfig(value: unknown, errors: string[]): void {
@@ -593,6 +793,14 @@ export function validateModelExecutionProtocol(value: unknown): string[] {
     }
     validatePathExpression(response.taskIdPath, '任务 ID 路径', errors);
     if (validateRequest(protocol.poll, '轮询请求', true, errors) && isRecord(protocol.poll)) {
+      if (protocol.poll.maxBodyBytes !== undefined) {
+        errors.push('轮询请求不支持 maxBodyBytes；该限制当前只支持提交请求');
+      }
+      if (!pollRequestUsesTaskId(protocol.poll, response.taskIdPath)) {
+        errors.push(
+          `异步轮询请求的 path、query 或 body 必须引用任务 ID 变量 {{submit.${String(response.taskIdPath ?? 'task_id')}}}，不能引用其他提交字段或写死任务 ID`,
+        );
+      }
       if (protocol.poll.bodyEncoding === 'multipart') {
         errors.push('异步轮询请求不支持 multipart 请求体');
       }
@@ -684,21 +892,93 @@ function renderTemplateString(
   });
 }
 
+function renderForEachDirective(
+  directive: Record<string, ProtocolJsonValue>,
+  context: Record<string, unknown>,
+  options: { conditionalDirectives?: boolean },
+): ProtocolJsonValue[] {
+  if (!options.conditionalDirectives) {
+    throw new Error('调用协议数组展开项只能用于请求体数组元素');
+  }
+  const sourceTemplate = directive[FOR_EACH_KEY];
+  const sourcePath = typeof sourceTemplate === 'string'
+    ? FULL_TEMPLATE_RE.exec(sourceTemplate)?.[1]
+    : undefined;
+  if (!sourcePath || sourcePath.includes('.') || !FOR_EACH_VARIABLE_ROOTS.has(sourcePath)) {
+    throw new Error('调用协议数组展开变量无效');
+  }
+  const source = renderTemplateString(sourceTemplate as string, context);
+  if (source === OMIT_TEMPLATE_VALUE || source === null) return [];
+  if (!Array.isArray(source)) {
+    throw new Error(`调用协议数组展开变量 ${sourcePath} 必须是字符串数组`);
+  }
+  if (source.length > MODEL_PROTOCOL_MAX_FOR_EACH_ITEMS) {
+    throw new Error(
+      `调用协议数组展开变量 ${sourcePath} 最多允许 ${MODEL_PROTOCOL_MAX_FOR_EACH_ITEMS} 项`,
+    );
+  }
+  const template = directive[CONDITIONAL_VALUE_KEY];
+  return source.flatMap((item) => {
+    if (typeof item !== 'string' || !item.trim()) {
+      throw new Error(`调用协议数组展开变量 ${sourcePath} 只能包含非空字符串`);
+    }
+    // Inside $value the source root denotes the current element. This keeps the
+    // protocol language closed: no eval, expressions, dynamic aliases or keys.
+    const rendered = renderTemplate(template, { ...context, [sourcePath]: item }, {
+      conditionalDirectives: true,
+    });
+    if (rendered === OMIT_TEMPLATE_VALUE) return [];
+    if (!rendered || typeof rendered !== 'object' || Array.isArray(rendered)) {
+      throw new Error('调用协议数组展开项必须渲染为 JSON 对象');
+    }
+    return [rendered];
+  });
+}
+
 function renderTemplate(
   value: ProtocolJsonValue,
   context: Record<string, unknown>,
+  options: {
+    conditionalDirectives?: boolean;
+    arrayItem?: boolean;
+  } = {},
 ): ProtocolJsonValue | typeof OMIT_TEMPLATE_VALUE {
   if (typeof value === 'string') return renderTemplateString(value, context);
   if (Array.isArray(value)) {
     return value.flatMap((item) => {
-      const rendered = renderTemplate(item, context);
+      if (isRecord(item) && Object.hasOwn(item, FOR_EACH_KEY)) {
+        return renderForEachDirective(item as Record<string, ProtocolJsonValue>, context, options);
+      }
+      const rendered = renderTemplate(item, context, {
+        conditionalDirectives: options.conditionalDirectives,
+        arrayItem: true,
+      });
       return rendered === OMIT_TEMPLATE_VALUE ? [] : [rendered];
     });
   }
   if (value && typeof value === 'object') {
+    if (Object.hasOwn(value, FOR_EACH_KEY)) {
+      throw new Error('调用协议数组展开项只能用于请求体数组元素');
+    }
+    if (Object.hasOwn(value, WHEN_PRESENT_KEY) || Object.hasOwn(value, CONDITIONAL_VALUE_KEY)) {
+      if (!options.conditionalDirectives || !options.arrayItem) {
+        throw new Error('调用协议条件项只能用于请求体数组元素');
+      }
+      const condition = renderTemplateString(String(value[WHEN_PRESENT_KEY]), context);
+      const isMissing = condition === OMIT_TEMPLATE_VALUE
+        || condition === null
+        || (typeof condition === 'string' && !condition.trim())
+        || (Array.isArray(condition) && condition.length === 0);
+      if (isMissing) return OMIT_TEMPLATE_VALUE;
+      return renderTemplate(value[CONDITIONAL_VALUE_KEY], context, {
+        conditionalDirectives: true,
+      });
+    }
     const entries: Array<[string, ProtocolJsonValue]> = [];
     for (const [key, item] of Object.entries(value)) {
-      const rendered = renderTemplate(item, context);
+      const rendered = renderTemplate(item, context, {
+        conditionalDirectives: options.conditionalDirectives,
+      });
       if (rendered !== OMIT_TEMPLATE_VALUE) entries.push([key, rendered]);
     }
     return Object.fromEntries(entries);
@@ -790,8 +1070,32 @@ function renderRequestBody(
   context: Record<string, unknown>,
 ): ProtocolJsonValue | undefined {
   if (request.body === undefined) return undefined;
-  const rendered = renderTemplate(request.body, context);
+  const rendered = renderTemplate(request.body, context, { conditionalDirectives: true });
   return rendered === OMIT_TEMPLATE_VALUE ? undefined : rendered;
+}
+
+function serializedBodyByteLength(body: BodyInit): number {
+  if (typeof body === 'string') return new TextEncoder().encode(body).byteLength;
+  if (body instanceof ArrayBuffer) return body.byteLength;
+  if (ArrayBuffer.isView(body)) return body.byteLength;
+  if (typeof Blob !== 'undefined' && body instanceof Blob) return body.size;
+  if (body instanceof URLSearchParams) {
+    return new TextEncoder().encode(body.toString()).byteLength;
+  }
+  throw new Error('调用协议无法计算该请求体的序列化字节数');
+}
+
+function assertSerializedBodyWithinLimit(
+  request: ModelProtocolRequestTemplate,
+  body: BodyInit,
+  label: string,
+): void {
+  if (request.maxBodyBytes === undefined) return;
+  const actualBytes = serializedBodyByteLength(body);
+  if (actualBytes <= request.maxBodyBytes) return;
+  throw new Error(
+    `${label}序列化后为 ${actualBytes} 字节，超过调用协议 maxBodyBytes ${request.maxBodyBytes} 字节`,
+  );
 }
 
 function buildRequestInit(
@@ -803,12 +1107,16 @@ function buildRequestInit(
 ): RequestInit {
   const headers = renderRequestHeaders(request, auth, apiKey, context);
   const body = renderRequestBody(request, context);
+  const serializedBody = request.method === 'GET' || body === undefined
+    ? undefined
+    : serializeModelProtocolBody(body, request.bodyEncoding, headers);
+  if (serializedBody !== undefined) {
+    assertSerializedBodyWithinLimit(request, serializedBody, '提交请求体');
+  }
   return {
     method: request.method,
     headers,
-    body: request.method === 'GET' || body === undefined
-      ? undefined
-      : serializeModelProtocolBody(body, request.bodyEncoding, headers),
+    body: serializedBody,
     signal,
   };
 }
@@ -1049,7 +1357,8 @@ function resolvePoll(
   const headers = renderRequestHeaders(poll, { type: 'none' }, '', context);
   const body = renderRequestBody(poll, context);
   if (poll.method !== 'GET' && body !== undefined) {
-    serializeModelProtocolBody(body, poll.bodyEncoding, headers);
+    const serializedBody = serializeModelProtocolBody(body, poll.bodyEncoding, headers);
+    assertSerializedBodyWithinLimit(poll, serializedBody, '轮询请求体');
   }
   const response = poll.response;
   const result = response.result;

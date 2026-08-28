@@ -21,6 +21,7 @@ import {
   resolveAnimationSheetAspectRatio,
 } from '../services/ai/animationPrompt';
 import { persistAudioGenerationResult } from '../services/ai/generateAudio';
+import { resolveVideoSubmissionControls } from '../services/ai/videoRequestResolver';
 import { downloadUrlAndSave } from '../services/fileService';
 
 export interface BatchContext {
@@ -190,16 +191,21 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         params: { imageSize, aspectRatio },
       });
     } else if (nt === 'ai-video') {
+      const videoControls = resolveVideoSubmissionControls({
+        provider: d.provider!,
+        workflowId: d.workflowId,
+        videoResolution: d.videoResolution as number | undefined,
+        videoFps: d.videoFps as number | undefined,
+        videoFrames: d.videoFrames as number | undefined,
+        seedanceResolution: d.seedanceResolution as string | undefined,
+        seedanceRatio: d.seedanceRatio as string | undefined,
+        seedanceDuration: d.seedanceDuration as number | undefined,
+      });
       const result = await generateVideo({
         prompt,
         model: d.model!,
         provider: d.provider!,
-        videoResolution: (d.videoResolution as number) || 832,
-        videoFps: (d.videoFps as number) || 24,
-        videoFrames: (d.videoFrames as number) || 77,
-        seedanceResolution: (d.seedanceResolution as string) || '720p',
-        seedanceRatio: (d.seedanceRatio as string) || '16:9',
-        seedanceDuration: (d.seedanceDuration as number) || 5,
+        ...videoControls,
         generateAudio: d.generateAudio as boolean | undefined,
         workflowId: d.workflowId,
         workflowInputs: d.workflowInputs,
@@ -230,12 +236,7 @@ async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Prom
         mediaUrl: result.url,
         filePath: saved?.filePath,
         params: {
-          videoResolution: d.videoResolution,
-          videoFps: d.videoFps,
-          videoFrames: d.videoFrames,
-          seedanceResolution: d.seedanceResolution,
-          seedanceRatio: d.seedanceRatio,
-          seedanceDuration: d.seedanceDuration,
+          ...videoControls,
           generateAudio: d.generateAudio,
         },
       });

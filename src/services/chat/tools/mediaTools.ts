@@ -18,10 +18,6 @@ import {
   MEDIA_PERSIST_FAILED_MESSAGE,
   runMediaGeneration,
 } from '../../ai/generationRuntime';
-import {
-  PROJECT_VIDEO_ASPECT_RATIOS,
-  PROJECT_VIDEO_RESOLUTIONS,
-} from '../../projectSettingsService';
 import type { AgentToolDisplaySnapshot } from '../../../types/agent';
 import {
   registerAgentTool,
@@ -77,6 +73,17 @@ function resolveMediaToolInput(
     ...(modelRef ? { modelRef } : {}),
   };
   if (input.kind !== 'video') return resolved;
+  const selectedModel = modelRef
+    ? findMediaModelOption(
+      modelRef,
+      store.config.generalModels ?? [],
+      store.config,
+      store.workflows,
+    )
+    : undefined;
+  // 自定义 API 的缺省值由该模型 capability / 上游接口决定，不能套用项目里为内置模型
+  // 保存的 16:9、1080p、10 秒等偏好。用户本轮显式传入的值已经保留在 resolved 中。
+  if (selectedModel?.provider === 'general' && !selectedModel.workflowId) return resolved;
   return {
     ...resolved,
     aspectRatio: input.aspectRatio ?? projectSettings?.generation?.videoAspectRatio,
@@ -171,7 +178,7 @@ export function registerMediaAgentTools(): Array<() => void> {
         '若项目已设置该类型默认模型则直接使用；自主模式开启自动路由后，可依据模型能力与用户自定义说明选择。',
         '图片 prompt 可以原样包含用户提供的 @{nodeId:label} 或 @asset{path} 引用，',
         '运行时会自动解析为参考图输入；无需先读取节点原 prompt，也不要要求用户重新描述图片。',
-        '视频可显式传入 aspectRatio、resolution 和 duration；省略时在审批前锁定项目默认值。',
+        '视频可显式传入 aspectRatio、resolution 和 duration；自定义 API 省略时由模型 capability / 接口默认值决定，内置模型与工作流才锁定项目默认值。',
         '协作模式由 Policy 请求确认，自主模式直接执行。deliveryMode 控制结果显示在对话、画布或两者。',
       ].join(''),
       inputSchema: {
@@ -191,19 +198,21 @@ export function registerMediaAgentTools(): Array<() => void> {
           audioPurpose: { type: 'string', enum: ['music', 'speech'] },
           aspectRatio: {
             type: 'string',
-            enum: [...PROJECT_VIDEO_ASPECT_RATIOS],
-            description: '视频画面比例；用户明确指定时传入。',
+            minLength: 1,
+            maxLength: 64,
+            description: '视频画面比例；用户明确指定时传入，合法值由所选模型 capability 校验。',
           },
           resolution: {
             type: 'string',
-            enum: [...PROJECT_VIDEO_RESOLUTIONS],
-            description: '视频分辨率档位；用户明确指定时传入。',
+            minLength: 1,
+            maxLength: 64,
+            description: '视频分辨率档位；用户明确指定时传入，合法值由所选模型 capability 校验。',
           },
           duration: {
             type: 'integer',
-            minimum: 2,
-            maximum: 15,
-            description: '视频时长，单位秒；用户明确指定时传入。',
+            minimum: 1,
+            maximum: 3600,
+            description: '视频时长，单位秒；用户明确指定时传入，模型范围由 capability 在提交前校验。',
           },
         },
       },

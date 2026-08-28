@@ -18,7 +18,11 @@ import {
 import { mediaProviderRegistry } from '../../src/services/ai/mediaProviderRegistry';
 import { useAppStore } from '../../src/store/useAppStore';
 import type { BaseNodeData } from '../../src/types';
-import type { VideoGenerationReferenceInput, VideoReferenceItem } from '../../src/types/aiTypes';
+import type {
+  ModelExecutionProfile,
+  VideoGenerationReferenceInput,
+  VideoReferenceItem,
+} from '../../src/types/aiTypes';
 
 const comfyMocks = vi.hoisted(() => ({
   executeVideo: vi.fn(),
@@ -632,7 +636,7 @@ describe('general video protocol variables', () => {
         prompt: 'raw prompt',
         videoResolution: 1280,
         videoFps: 30,
-        videoFrames: 129,
+        videoFrames: 181,
         seedanceResolution: '720p',
         seedanceRatio: '16:9',
         seedanceDuration: 6,
@@ -662,9 +666,11 @@ describe('general video protocol variables', () => {
       seedanceResolution: '720p',
       generateAudio: true,
       videoOperation: 'video-to-video',
+      videoInputMode: 'mixed',
+      durationText: '6',
       firstImage: 'https://cdn.example/first.png',
       lastImage: 'https://cdn.example/last.png',
-      referenceImageUrls: ['https://cdn.example/first.png', 'https://cdn.example/last.png'],
+      referenceImageUrls: undefined,
       referenceVideoUrl: 'https://cdn.example/reference.mp4',
       referenceVideoUrls: ['https://cdn.example/reference.mp4'],
       audioUrl: 'https://cdn.example/reference.mp3',
@@ -702,7 +708,7 @@ describe('general video protocol variables', () => {
     expect(withoutRoles.imageWithRoles).toBeUndefined();
   });
 
-  it('provides usable defaults and omits a last frame when only one image is present', () => {
+  it('keeps unknown capability fields unspecified and omits a last frame for one image', () => {
     const variables = buildGeneralVideoProtocolVariables(
       'video-model',
       { model: 'general/video', provider: 'general', prompt: 'prompt' },
@@ -716,17 +722,54 @@ describe('general video protocol variables', () => {
     );
 
     expect(variables).toMatchObject({
-      aspectRatio: '16:9',
-      duration: 5,
-      seedanceResolution: '720p',
-      videoFrames: 121,
-      videoFps: 24,
+      aspectRatio: undefined,
+      duration: undefined,
+      seedanceResolution: undefined,
+      videoFrames: undefined,
+      videoFps: undefined,
+      size: undefined,
       firstImage: 'https://cdn.example/only.png',
-      // 自建接口模型默认出有声视频
-      generateAudio: true,
+      // 未声明 capability 时不猜比例、尺寸、时长、帧率、分辨率或有声能力
+      generateAudio: undefined,
       videoOperation: 'image-to-video',
     });
     expect(variables.lastImage).toBeUndefined();
+  });
+
+  it('omits compatibility fps and duration for partial capabilities without declared defaults', () => {
+    const variables = buildGeneralVideoProtocolVariables(
+      'partial-video-model',
+      {
+        model: 'general/partial-video',
+        provider: 'general',
+        prompt: 'prompt',
+        videoFrames: 121,
+      },
+      {
+        prompt: 'prompt',
+        imageUrls: [],
+        videoUrls: [],
+        audioUrls: [],
+        operation: 'text-to-video',
+      },
+      {
+        resolutions: ['2K'],
+        ratios: ['16:9'],
+        frameRates: [30],
+        durations: [10, 15],
+      },
+    );
+
+    expect(variables).toMatchObject({
+      videoFrames: 121,
+      frames: 121,
+      videoFps: undefined,
+      fps: undefined,
+      seedanceDuration: undefined,
+      duration: undefined,
+      seedanceResolution: undefined,
+      seedanceRatio: undefined,
+    });
   });
 
   it('emits imageWithRoles array from reference roles for image_with_roles protocols', () => {
@@ -781,7 +824,7 @@ describe('video reference limits', () => {
   });
 });
 
-describe('离散时长吸附', () => {
+describe('离散时长校验', () => {
   const build = (seedanceDuration: number, capability?: { durations?: number[]; maxDuration?: number }) =>
     buildGeneralVideoProtocolVariables(
       'lec-ac-seedance-900-720p',
@@ -790,17 +833,162 @@ describe('离散时长吸附', () => {
       capability,
     ).duration;
 
-  it('画布上的 4 秒吸附到模型允许的最近档，而不是原样发出', () => {
-    // 文档：仅支持 10 或 15 秒
-    expect(build(4, { durations: [10, 15] })).toBe(10);
-    expect(build(13, { durations: [10, 15] })).toBe(15);
+  it('拒绝不在模型允许档位内的时长，不静默改写用户请求', () => {
+    expect(() => build(4, { durations: [10, 15] })).toThrow('不在模型支持的离散时长中');
+    expect(() => build(13, { durations: [10, 15] })).toThrow('不在模型支持的离散时长中');
     expect(build(15, { durations: [10, 15] })).toBe(15);
-    // 固定时长写成单元素数组
-    expect(build(4, { durations: [15] })).toBe(15);
+    expect(() => build(4, { durations: [15] })).toThrow('不在模型支持的离散时长中');
   });
 
   it('没声明离散档位时保持原有的范围钳制', () => {
     expect(build(8, { maxDuration: 15 })).toBe(8);
     expect(build(8)).toBe(8);
+  });
+});
+
+describe('general video runtime safety', () => {
+  function configureGeneralVideoModel(options: {
+    id: string;
+    executionProfile?: ModelExecutionProfile;
+    videoCapability?: {
+      minDuration?: number;
+      maxDuration?: number;
+      defaultDuration?: number;
+    };
+  }): void {
+    useAppStore.setState((state) => ({
+      config: {
+        ...state.config,
+        providers: {
+          ...state.config.providers,
+          'runtime-video-provider': {
+            name: '运行时视频测试连接',
+            apiKey: 'secret',
+            baseUrl: 'https://video-gateway.example',
+          },
+        },
+        generalModels: [{
+          id: options.id,
+          name: '运行时视频测试模型',
+          modelId: 'vendor-video-model',
+          category: 'video',
+          providerConfigId: 'runtime-video-provider',
+          ...(options.executionProfile ? { executionProfile: options.executionProfile } : {}),
+          ...(options.videoCapability ? { videoCapability: options.videoCapability } : {}),
+        }],
+      },
+    }));
+  }
+
+  it('applies the legacy Agnes preset defaults explicitly instead of omitting required fields', async () => {
+    configureGeneralVideoModel({
+      id: 'agnes-preset-video',
+      executionProfile: { preset: 'agnes-video' },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ video_id: 'video-task-1' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'completed',
+        url: 'https://cdn.example/agnes.mp4',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(generateVideo({
+      provider: 'general',
+      model: 'general/agnes-preset-video',
+      prompt: '平稳向前推进的镜头',
+    })).resolves.toEqual({ url: 'https://cdn.example/agnes.mp4' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://video-gateway.example/videos');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      model: 'vendor-video-model',
+      prompt: '平稳向前推进的镜头',
+      width: 1152,
+      height: 768,
+      num_frames: 121,
+      frame_rate: 24,
+    });
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/agnesapi?video_id=video-task-1');
+  });
+
+  it('fails before upload or fetch when a custom video model has no execution profile', async () => {
+    configureGeneralVideoModel({ id: 'missing-video-protocol' });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(generateVideo({
+      provider: 'general',
+      model: 'general/missing-video-protocol',
+      prompt: '让首帧产生轻微运动',
+      referenceMedia: [{
+        kind: 'image',
+        url: 'data:image/png;base64,iVBORw0KGgo=',
+        origin: 'connection',
+        role: 'first_frame',
+      }],
+    })).rejects.toThrow(/未配置可执行的提交\/轮询协议[\s\S]*不会再猜测 \/videos\/generations/);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('passes a capability-approved 30 second duration through to the configured protocol', async () => {
+    configureGeneralVideoModel({
+      id: 'thirty-second-video',
+      videoCapability: {
+        minDuration: 5,
+        maxDuration: 30,
+        defaultDuration: 5,
+      },
+      executionProfile: {
+        preset: 'custom',
+        protocol: {
+          version: 2,
+          mode: 'sync',
+          submit: {
+            method: 'POST',
+            path: '/v1/videos',
+            bodyEncoding: 'json',
+            body: {
+              model: '{{model}}',
+              prompt: '{{prompt}}',
+              duration: '{{duration}}',
+            },
+          },
+          response: {
+            type: 'json',
+            result: { urlPath: 'video.url' },
+          },
+        },
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      video: { url: 'https://cdn.example/thirty-seconds.mp4' },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(generateVideo({
+      provider: 'general',
+      model: 'general/thirty-second-video',
+      prompt: '连续三十秒的长镜头',
+      seedanceDuration: 30,
+      videoFps: 24,
+    })).resolves.toEqual({ url: 'https://cdn.example/thirty-seconds.mp4' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://video-gateway.example/v1/videos');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      model: 'vendor-video-model',
+      duration: 30,
+    });
   });
 });

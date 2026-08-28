@@ -165,6 +165,11 @@ export default function App() {
   // Load projects from IndexedDB on mount
   const initFromDb = useAppStore((s) => s.initFromDb);
   const migrateHistoryAndLoad = useAppStore((s) => s.migrateHistoryAndLoad);
+  const loadAgentPackages = useAppStore((s) => s.loadAgentPackages);
+  // Agent Package 是可选增强层：独立加载且不参与项目、配置或画布 readiness。
+  useEffect(() => {
+    void loadAgentPackages();
+  }, [loadAgentPackages]);
   useEffect(() => {
     void initFromDb().then(() => {
       const store = useAppStore.getState();

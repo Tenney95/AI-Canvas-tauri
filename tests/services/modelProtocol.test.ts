@@ -3,7 +3,9 @@ import type { ModelExecutionProtocol } from '../../src/types/aiTypes';
 import {
   buildModelProtocolRequest,
   executeModelProtocol,
+  getDefaultCustomProtocol,
   getModelProtocolPreset,
+  modelProtocolUsesVariable,
   normalizeFrames8n1,
   parseModelExecutionProtocol,
   pollResolvedModelProtocol,
@@ -12,6 +14,7 @@ import {
   validateModelExecutionProtocol,
 } from '../../src/services/ai/modelProtocol';
 import {
+  findModelProtocolForEachCapabilityConflicts,
   findUnusedReferenceVariables,
   runConfiguredModelProtocol,
 } from '../../src/services/ai/modelProtocolRuntime';
@@ -31,6 +34,27 @@ beforeEach(() => {
 });
 
 describe('declarative model execution protocol', () => {
+  it('does not invent an endpoint for a new custom video protocol', () => {
+    const protocol = getDefaultCustomProtocol('video');
+    expect(protocol.submit.path).toBe('');
+    expect(protocol.poll?.path).toBe('');
+    expect(validateModelExecutionProtocol(protocol)).toContain('提交请求 path必须是以 / 开头的同源相对路径');
+    expect(JSON.stringify(protocol)).not.toContain('/videos/generations');
+  });
+
+  it('recognizes dotted variable paths without accepting similar prefixes', () => {
+    const source = JSON.stringify({
+      image: '{{imageUrls.0}}',
+      nested: '{{ imageUrls.0.url }}',
+      lookalike: '{{imageUrlsExtra}}',
+    });
+
+    expect(modelProtocolUsesVariable(source, 'imageUrls')).toBe(true);
+    expect(modelProtocolUsesVariable(source, 'imageUrls.0')).toBe(true);
+    expect(modelProtocolUsesVariable('{{imageUrlsExtra}}', 'imageUrls')).toBe(false);
+    expect(modelProtocolUsesVariable('{{imageUrls}}', 'imageUrl')).toBe(false);
+  });
+
   it('emits version 2 presets with explicit submit and polling response blocks', () => {
     const protocol = getModelProtocolPreset('agnes-video') as unknown as Record<string, unknown>;
     const poll = protocol.poll as Record<string, unknown>;
@@ -65,7 +89,7 @@ describe('declarative model execution protocol', () => {
       errorPath: 'error.message',
       poll: {
         method: 'GET',
-        path: '/status',
+        path: '/status/{{submit.video_id}}',
         statusPath: 'state',
         successValues: ['done'],
         failureValues: ['failed'],
@@ -275,6 +299,504 @@ describe('declarative model execution protocol', () => {
       operation: 'video-to-video',
       video_urls: ['https://cdn.example/reference.mp4'],
     });
+  });
+
+  it('omits a whole conditional content item when its reference variable is absent', () => {
+    const protocol: ModelExecutionProtocol = {
+      version: 2,
+      mode: 'sync',
+      auth: { type: 'none' },
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        body: {
+          content: [
+            { type: 'text', text: '{{prompt}}' },
+            {
+              $whenPresent: '{{imageUrls.0}}',
+              $value: {
+                type: 'image_url',
+                image_url: { url: '{{imageUrls.0}}' },
+                role: 'first_frame',
+              },
+            },
+          ],
+        },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    };
+
+    const withoutReference = buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: 'https://relay.example.com/v1',
+      protocol,
+      variables: { prompt: '挥手', imageUrls: [] },
+    });
+    expect(withoutReference.renderedBody).toEqual({
+      content: [{ type: 'text', text: '挥手' }],
+    });
+
+    const withReference = buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: 'https://relay.example.com/v1',
+      protocol,
+      variables: { prompt: '挥手', imageUrls: ['https://cdn.example.com/first.png'] },
+    });
+    expect(withReference.renderedBody).toEqual({
+      content: [
+        { type: 'text', text: '挥手' },
+        {
+          type: 'image_url',
+          image_url: { url: 'https://cdn.example.com/first.png' },
+          role: 'first_frame',
+        },
+      ],
+    });
+  });
+
+  it('renders conditional array items before form and multipart serialization', () => {
+    const formProtocol: ModelExecutionProtocol = {
+      version: 2,
+      mode: 'sync',
+      auth: { type: 'none' },
+      submit: {
+        method: 'POST',
+        path: '/form-video',
+        bodyEncoding: 'form-urlencoded',
+        body: {
+          references: [{
+            $whenPresent: '{{imageUrls.0}}',
+            $value: '{{imageUrls.0}}',
+          }],
+        },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    };
+    const withoutFormReference = buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: 'https://relay.example.com',
+      protocol: formProtocol,
+      variables: { imageUrls: [] },
+    });
+    expect(withoutFormReference.renderedBody).toEqual({ references: [] });
+    expect(String(withoutFormReference.init.body)).toBe('');
+
+    const withFormReference = buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: 'https://relay.example.com',
+      protocol: formProtocol,
+      variables: { imageUrls: ['https://cdn.example.com/ref.png'] },
+    });
+    expect(new URLSearchParams(String(withFormReference.init.body)).getAll('references'))
+      .toEqual(['https://cdn.example.com/ref.png']);
+
+    const multipartProtocol: ModelExecutionProtocol = {
+      ...formProtocol,
+      submit: {
+        method: 'POST',
+        path: '/multipart-video',
+        bodyEncoding: 'multipart',
+        body: {
+          images: [{
+            $whenPresent: '{{imageUrls.0}}',
+            $value: {
+              $file: '{{imageUrls.0}}',
+              filename: 'reference.txt',
+            },
+          }],
+        },
+      },
+    };
+    expect(previewModelProtocolRequest({
+      baseUrl: 'https://relay.example.com',
+      protocol: multipartProtocol,
+      variables: { imageUrls: [] },
+    }).body).toEqual({ images: [] });
+    expect(previewModelProtocolRequest({
+      baseUrl: 'https://relay.example.com',
+      protocol: multipartProtocol,
+      variables: { imageUrls: ['data:text/plain;base64,aGVsbG8='] },
+    }).body).toEqual({
+      images: [{
+        $file: '[data URL text/plain, 5 bytes]',
+        filename: 'reference.txt',
+      }],
+    });
+  });
+
+  it('expands trusted reference URL arrays into ordered JSON content objects', () => {
+    const protocol: ModelExecutionProtocol = {
+      version: 2,
+      mode: 'sync',
+      auth: { type: 'none' },
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        body: {
+          content: [
+            { type: 'text', text: '{{prompt}}' },
+            {
+              $forEach: '{{referenceImageUrls}}',
+              $value: {
+                type: 'image_url',
+                image_url: { url: '{{referenceImageUrls}}' },
+                role: 'reference_image',
+              },
+            },
+            {
+              $forEach: '{{referenceVideoUrls}}',
+              $value: {
+                type: 'video_url',
+                video_url: { url: '{{referenceVideoUrls}}' },
+                role: 'reference_video',
+              },
+            },
+            {
+              $forEach: '{{referenceAudioUrls}}',
+              $value: {
+                type: 'audio_url',
+                audio_url: { url: '{{referenceAudioUrls}}' },
+                role: 'reference_audio',
+              },
+            },
+          ],
+        },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    };
+
+    expect(buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: 'https://relay.example.com/v1',
+      protocol,
+      variables: { prompt: '挥手' },
+    }).renderedBody).toEqual({ content: [{ type: 'text', text: '挥手' }] });
+
+    expect(buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: 'https://relay.example.com/v1',
+      protocol,
+      variables: {
+        prompt: '挥手',
+        referenceImageUrls: ['https://cdn.example.com/1.png', 'https://cdn.example.com/2.png'],
+        referenceVideoUrls: ['https://cdn.example.com/1.mp4'],
+        referenceAudioUrls: ['https://cdn.example.com/1.mp3'],
+      },
+    }).renderedBody).toEqual({
+      content: [
+        { type: 'text', text: '挥手' },
+        { type: 'image_url', image_url: { url: 'https://cdn.example.com/1.png' }, role: 'reference_image' },
+        { type: 'image_url', image_url: { url: 'https://cdn.example.com/2.png' }, role: 'reference_image' },
+        { type: 'video_url', video_url: { url: 'https://cdn.example.com/1.mp4' }, role: 'reference_video' },
+        { type: 'audio_url', audio_url: { url: 'https://cdn.example.com/1.mp3' }, role: 'reference_audio' },
+      ],
+    });
+  });
+
+  it.each([
+    {
+      label: 'untrusted source root',
+      directive: {
+        $forEach: '{{prompt}}',
+        $value: { url: '{{prompt}}' },
+      },
+      bodyEncoding: undefined,
+      error: '$forEach 必须是 referenceImageUrls',
+    },
+    {
+      label: 'dotted source path',
+      directive: {
+        $forEach: '{{referenceImageUrls.0}}',
+        $value: { url: '{{referenceImageUrls.0}}' },
+      },
+      bodyEncoding: undefined,
+      error: '$forEach 必须是 referenceImageUrls',
+    },
+    {
+      label: 'source is not consumed',
+      directive: {
+        $forEach: '{{referenceImageUrls}}',
+        $value: { url: 'https://fixed.example/ref.png' },
+      },
+      bodyEncoding: undefined,
+      error: '必须使用完整模板 {{referenceImageUrls}}',
+    },
+    {
+      label: 'scalar output',
+      directive: {
+        $forEach: '{{referenceImageUrls}}',
+        $value: '{{referenceImageUrls}}',
+      },
+      bodyEncoding: undefined,
+      error: '$value 必须是 JSON 对象',
+    },
+    {
+      label: 'non-json body',
+      directive: {
+        $forEach: '{{referenceImageUrls}}',
+        $value: { url: '{{referenceImageUrls}}' },
+      },
+      bodyEncoding: 'form-urlencoded' as const,
+      error: '数组展开项只支持 JSON 请求体',
+    },
+  ])('rejects unsafe array expansion directives: $label', ({ directive, bodyEncoding, error }) => {
+    expect(validateModelExecutionProtocol({
+      version: 2,
+      mode: 'sync',
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        ...(bodyEncoding ? { bodyEncoding } : {}),
+        body: { content: [directive] },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    })).toContainEqual(expect.stringContaining(error));
+  });
+
+  it('rejects non-array and oversized runtime values for array expansion', () => {
+    const protocol: ModelExecutionProtocol = {
+      version: 2,
+      mode: 'sync',
+      auth: { type: 'none' },
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        body: {
+          content: [{
+            $forEach: '{{referenceImageUrls}}',
+            $value: { url: '{{referenceImageUrls}}' },
+          }],
+        },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    };
+
+    expect(() => buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: 'https://relay.example.com',
+      protocol,
+      variables: { referenceImageUrls: 'https://cdn.example.com/ref.png' },
+    })).toThrow('必须是字符串数组');
+    expect(() => buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: 'https://relay.example.com',
+      protocol,
+      variables: {
+        referenceImageUrls: Array.from({ length: 65 }, (_, index) => `https://cdn.example.com/${index}.png`),
+      },
+    })).toThrow('最多允许 64 项');
+  });
+
+  it('allows array expansion only as a direct body array item', () => {
+    const directive = {
+      $forEach: '{{referenceImageUrls}}',
+      $value: { url: '{{referenceImageUrls}}' },
+    };
+    expect(validateModelExecutionProtocol({
+      version: 2,
+      mode: 'sync',
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        body: { nested: directive },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    })).toContainEqual(expect.stringContaining('数组展开项只能用于请求体数组元素'));
+
+    expect(validateModelExecutionProtocol({
+      version: 2,
+      mode: 'sync',
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        body: {
+          content: [{
+            ...directive,
+            $whenPresent: '{{referenceImageUrls.0}}',
+          }],
+        },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    })).toContainEqual(expect.stringContaining('必须且只能包含 $forEach 和 $value'));
+  });
+
+  it('validates maxBodyBytes as a bounded positive integer', () => {
+    for (const maxBodyBytes of [0, -1, 1.5, 512 * 1024 * 1024 + 1]) {
+      expect(validateModelExecutionProtocol({
+        version: 2,
+        mode: 'sync',
+        submit: {
+          method: 'POST',
+          path: '/video_generation',
+          maxBodyBytes,
+          body: { prompt: '{{prompt}}' },
+        },
+        response: { type: 'json', result: { urlPath: 'url' } },
+      })).toContainEqual(expect.stringContaining('maxBodyBytes 必须是'));
+    }
+    expect(validateModelExecutionProtocol({
+      version: 2,
+      mode: 'sync',
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        maxBodyBytes: 64 * 1024 * 1024,
+        body: { prompt: '{{prompt}}' },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    })).toEqual([]);
+  });
+
+  it('rejects maxBodyBytes for multipart and poll requests', () => {
+    expect(validateModelExecutionProtocol({
+      version: 2,
+      mode: 'sync',
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        bodyEncoding: 'multipart',
+        maxBodyBytes: 1024,
+        body: { prompt: '{{prompt}}' },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    })).toContainEqual(expect.stringContaining('multipart 时不支持 maxBodyBytes'));
+
+    expect(validateModelExecutionProtocol({
+      version: 2,
+      mode: 'async',
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        body: { prompt: '{{prompt}}' },
+      },
+      response: { type: 'json', taskIdPath: 'task_id' },
+      poll: {
+        method: 'POST',
+        path: '/query/video_generation',
+        maxBodyBytes: 1024,
+        body: { task_id: '{{submit.task_id}}' },
+        response: {
+          statusPath: 'status',
+          successValues: ['completed'],
+          failureValues: ['failed'],
+          result: { urlPath: 'url' },
+        },
+      },
+    })).toContainEqual(expect.stringContaining('轮询请求不支持 maxBodyBytes'));
+  });
+
+  it('blocks an oversized submit using the actual serialized UTF-8 byte length', () => {
+    const rendered = { prompt: '猫' };
+    const actualBytes = new TextEncoder().encode(JSON.stringify(rendered)).byteLength;
+    const protocol: ModelExecutionProtocol = {
+      version: 2,
+      mode: 'sync',
+      auth: { type: 'none' },
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        maxBodyBytes: actualBytes - 1,
+        body: { prompt: '{{prompt}}' },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    };
+
+    expect(() => buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: 'https://relay.example.com',
+      protocol,
+      variables: { prompt: '猫' },
+    })).toThrow(`序列化后为 ${actualBytes} 字节`);
+
+    protocol.submit.maxBodyBytes = actualBytes;
+    expect(buildModelProtocolRequest({
+      apiKey: '',
+      baseUrl: 'https://relay.example.com',
+      protocol,
+      variables: { prompt: '猫' },
+    }).init.body).toBe(JSON.stringify(rendered));
+  });
+
+  it.each([
+    {
+      label: 'missing value',
+      directive: { $whenPresent: '{{imageUrls.0}}' },
+      error: '条件项必须且只能包含',
+    },
+    {
+      label: 'missing condition',
+      directive: { $value: {} },
+      error: '条件项必须且只能包含',
+    },
+    {
+      label: 'non-template condition',
+      directive: { $whenPresent: 'imageUrls.0', $value: {} },
+      error: '$whenPresent 必须是一个完整的受信变量模板',
+    },
+    {
+      label: 'unknown variable root',
+      directive: { $whenPresent: '{{unknownReferences.0}}', $value: {} },
+      error: '使用了不允许的变量 unknownReferences.0',
+    },
+    {
+      label: 'blocked path segment',
+      directive: { $whenPresent: '{{imageUrls.__proto__}}', $value: {} },
+      error: '使用了不安全的变量路径 imageUrls.__proto__',
+    },
+  ])('rejects malformed conditional content directives: $label', ({ directive, error }) => {
+    const invalid = {
+      version: 2,
+      mode: 'sync',
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        body: {
+          content: [directive],
+        },
+      },
+      response: { type: 'json', result: { urlPath: 'url' } },
+    };
+
+    expect(validateModelExecutionProtocol(invalid)).toContainEqual(expect.stringContaining(error));
+  });
+
+  it.each([
+    {
+      label: 'query',
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        query: {
+          optional: { $whenPresent: '{{imageUrls.0}}', $value: 'yes' },
+        },
+        body: {},
+      },
+    },
+    {
+      label: 'whole body',
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        body: { $whenPresent: '{{imageUrls.0}}', $value: { image: '{{imageUrls.0}}' } },
+      },
+    },
+    {
+      label: 'ordinary object field',
+      submit: {
+        method: 'POST',
+        path: '/video_generation',
+        body: {
+          optional: { $whenPresent: '{{imageUrls.0}}', $value: { image: '{{imageUrls.0}}' } },
+        },
+      },
+    },
+  ])('allows conditional directives only in body array items: $label', ({ submit }) => {
+    expect(validateModelExecutionProtocol({
+      version: 2,
+      mode: 'sync',
+      submit,
+      response: { type: 'json', result: { urlPath: 'url' } },
+    })).toContainEqual(expect.stringContaining('条件项只能用于请求体数组元素'));
   });
 
   it('normalizes arbitrary video frame counts to 8 * n + 1', () => {
@@ -1091,6 +1613,23 @@ describe('declarative model execution protocol', () => {
     ]));
   });
 
+  it('rejects async polling with a hard-coded task id and accepts submit binding in the body', () => {
+    const protocol = getModelProtocolPreset('agnes-video');
+    protocol.poll!.path = '/query/video_generation/424010985738629';
+    delete protocol.poll!.query;
+
+    const bindingError =
+      '异步轮询请求的 path、query 或 body 必须引用任务 ID 变量 {{submit.video_id}}，不能引用其他提交字段或写死任务 ID';
+    expect(validateModelExecutionProtocol(protocol)).toContain(bindingError);
+
+    protocol.poll!.method = 'POST';
+    protocol.poll!.body = { video_id: '{{submit.video_id}}' };
+    expect(validateModelExecutionProtocol(protocol)).not.toContain(bindingError);
+
+    protocol.poll!.body = { video_id: '{{submit.status}}' };
+    expect(validateModelExecutionProtocol(protocol)).toContain(bindingError);
+  });
+
   it('stops after three consecutive rate-limited status query retries', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({
       code: 'rate_limit',
@@ -1149,9 +1688,159 @@ describe('reference media coverage in custom protocols', () => {
 
     expect(findUnusedReferenceVariables(withImageField, variables)).toEqual([]);
     expect(findUnusedReferenceVariables(textOnly, variables).sort())
-      .toEqual(['imageUrls', 'referenceImageUrls']);
+      .toEqual(['referenceImageUrls']);
     // 没有连参考素材就不该提示
     expect(findUnusedReferenceVariables(textOnly, { imageUrls: [] })).toEqual([]);
+  });
+
+  it('checks submit only and requires each provided media group to be consumed', () => {
+    const protocol = JSON.stringify({
+      submit: {
+        body: { image_url: '{{imageUrls.0}}' },
+      },
+      poll: {
+        path: '/tasks/{{submit.task_id}}',
+        body: {
+          video_url: '{{videoUrls.0}}',
+          audio_url: '{{audioUrls.0}}',
+        },
+      },
+    });
+
+    expect(findUnusedReferenceVariables(protocol, {
+      imageUrls: ['https://cdn.example/ref.png'],
+      videoUrls: ['https://cdn.example/ref.mp4'],
+      audioUrls: ['https://cdn.example/ref.mp3'],
+    }).sort()).toEqual(['audioUrls', 'videoUrls']);
+
+    const wrongGenericTransport = JSON.stringify({
+      submit: { body: { references: '{{referenceUrls}}' } },
+    });
+    expect(findUnusedReferenceVariables(wrongGenericTransport, {
+      imageUrls: ['data:image/png;base64,AAAA'],
+      inlineReferences: ['data:image/png;base64,AAAA'],
+    })).toEqual(['imageUrls']);
+  });
+
+  it('checks first frame, last frame and ordinary reference images independently', () => {
+    const protocol = JSON.stringify({
+      submit: {
+        body: {
+          first_frame: '{{firstImage}}',
+        },
+      },
+    });
+    expect(findUnusedReferenceVariables(protocol, {
+      firstImage: 'https://cdn.example/first.png',
+      lastImage: 'https://cdn.example/last.png',
+      imageUrls: ['https://cdn.example/first.png', 'https://cdn.example/last.png'],
+    })).toEqual(['lastImage']);
+
+    expect(findUnusedReferenceVariables(JSON.stringify({
+      submit: { body: { images: '{{imageUrls}}' } },
+    }), {
+      firstImage: 'https://cdn.example/first.png',
+      lastImage: 'https://cdn.example/last.png',
+      referenceImageUrls: ['https://cdn.example/reference.png'],
+      imageUrls: [
+        'https://cdn.example/first.png',
+        'https://cdn.example/last.png',
+        'https://cdn.example/reference.png',
+      ],
+    })).toEqual([]);
+  });
+
+  it('does not treat .0 as full consumption when a canonical reference array has multiple items', () => {
+    const firstOnly = JSON.stringify({
+      submit: {
+        body: {
+          image: '{{referenceImageUrls.0}}',
+          video: '{{referenceVideoUrls.0}}',
+          audio: '{{referenceAudioUrls.0}}',
+        },
+      },
+    });
+    const multiple = {
+      referenceImageUrls: ['https://cdn.example/1.png', 'https://cdn.example/2.png'],
+      referenceVideoUrls: ['https://cdn.example/1.mp4', 'https://cdn.example/2.mp4'],
+      referenceAudioUrls: ['https://cdn.example/1.mp3', 'https://cdn.example/2.mp3'],
+    };
+    expect(findUnusedReferenceVariables(firstOnly, multiple).sort()).toEqual([
+      'referenceAudioUrls',
+      'referenceImageUrls',
+      'referenceVideoUrls',
+    ]);
+
+    expect(findUnusedReferenceVariables(firstOnly, {
+      referenceImageUrls: ['https://cdn.example/1.png'],
+      referenceVideoUrls: ['https://cdn.example/1.mp4'],
+      referenceAudioUrls: ['https://cdn.example/1.mp3'],
+    })).toEqual([]);
+  });
+
+  it('accepts whole arrays and $forEach values as full canonical reference delivery', () => {
+    const protocol = JSON.stringify({
+      submit: {
+        body: {
+          images: '{{referenceImageUrls}}',
+          content: [
+            {
+              $forEach: '{{referenceVideoUrls}}',
+              $value: { video_url: { url: '{{referenceVideoUrls}}' } },
+            },
+            {
+              $forEach: '{{referenceAudioUrls}}',
+              $value: { audio_url: { url: '{{referenceAudioUrls}}' } },
+            },
+          ],
+        },
+      },
+    });
+    expect(findUnusedReferenceVariables(protocol, {
+      referenceImageUrls: ['https://cdn.example/1.png', 'https://cdn.example/2.png'],
+      referenceVideoUrls: ['https://cdn.example/1.mp4', 'https://cdn.example/2.mp4'],
+      referenceAudioUrls: ['https://cdn.example/1.mp3', 'https://cdn.example/2.mp3'],
+    })).toEqual([]);
+  });
+
+  it('does not count a $whenPresent condition as transporting the reference', () => {
+    const protocol = JSON.stringify({
+      submit: {
+        body: {
+          content: [{
+            $whenPresent: '{{referenceImageUrls.0}}',
+            $value: { type: 'marker' },
+          }],
+        },
+      },
+    });
+    expect(findUnusedReferenceVariables(protocol, {
+      referenceImageUrls: ['https://cdn.example/ref.png'],
+    })).toEqual(['referenceImageUrls']);
+  });
+
+  it('reports a local conflict when capability exceeds the $forEach safety ceiling', () => {
+    const protocol = {
+      submit: {
+        body: {
+          content: [{
+            $forEach: '{{referenceImageUrls}}',
+            $value: { image_url: { url: '{{referenceImageUrls}}' } },
+          }],
+        },
+      },
+    };
+    expect(findModelProtocolForEachCapabilityConflicts(protocol, {
+      maxImageReferences: 65,
+    })).toContainEqual(expect.stringContaining('maxImageReferences=65'));
+    expect(findModelProtocolForEachCapabilityConflicts(protocol, {
+      maxImageReferences: 64,
+    })).toEqual([]);
+    expect(findModelProtocolForEachCapabilityConflicts({
+      submit: { body: { images: '{{referenceImageUrls}}' } },
+    }, {
+      maxImageReferences: 100,
+    })).toEqual([]);
   });
 });
 
@@ -1200,8 +1889,12 @@ describe('undeliverable reference media', () => {
         protocol: {
           version: 2 as const,
           mode: 'async' as const,
-          // 请求体只有 model / prompt，没有任何参考素材字段
-          submit: { method: 'POST' as const, path: '/v1/videos', body: { model: '{{model}}', prompt: '{{prompt}}' } },
+          // 只映射第 1 项不能代表完整接收多项参考素材。
+          submit: {
+            method: 'POST' as const,
+            path: '/v1/videos',
+            body: { model: '{{model}}', prompt: '{{prompt}}', image: '{{imageUrls.0}}' },
+          },
           response: { type: 'json' as const, taskIdPath: 'id' },
           poll: {
             method: 'GET' as const,
@@ -1220,14 +1913,27 @@ describe('undeliverable reference media', () => {
     await expect(runConfiguredModelProtocol({
       model,
       category: 'video',
-      variables: { model: 'lec-seed-2-0-900', prompt: '图片1, 释放法术', imageUrls: ['https://cdn.example/a.png'] },
-    })).rejects.toThrow('"images": "{{imageUrls}}"');
+      variables: {
+        model: 'lec-seed-2-0-900',
+        prompt: '图片1、图片2，释放法术',
+        imageUrls: ['https://cdn.example/a.png', 'https://cdn.example/b.png'],
+      },
+    })).rejects.toThrow('没有完整接收参考图');
+    await expect(runConfiguredModelProtocol({
+      model,
+      category: 'video',
+      variables: {
+        model: 'lec-seed-2-0-900',
+        prompt: '图片1、图片2，释放法术',
+        imageUrls: ['https://cdn.example/a.png', 'https://cdn.example/b.png'],
+      },
+    })).rejects.toThrow('无法完整发送');
 
     // 没有参考素材时照常放行（会走到网络层，这里只验证没被参考素材检查拦下）
     await expect(runConfiguredModelProtocol({
       model,
       category: 'video',
       variables: { model: 'lec-seed-2-0-900', prompt: '释放法术', imageUrls: [] },
-    })).rejects.not.toThrow('没有接收参考图');
+    })).rejects.not.toThrow('没有完整接收参考图');
   });
 });

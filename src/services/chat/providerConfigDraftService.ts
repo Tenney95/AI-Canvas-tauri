@@ -9,36 +9,89 @@ import type {
   ProviderModelSelection,
 } from '../../types';
 import { GENERAL_MODEL_CATEGORY_LABELS } from '../../types';
-import type { ModelExecutionProfile, VideoModelCapability } from '../../types/aiTypes';
+import type {
+  ModelExecutionProfile,
+  ModelExecutionProtocol,
+  NormalizedModelExecutionProtocol,
+  VideoGenerationInputMode,
+  VideoGenerationOperation,
+  VideoModelCapability,
+} from '../../types/aiTypes';
 import {
   analyzeModelProtocolExamples,
   type ModelProtocolExamples,
 } from '../ai/modelProtocolImport';
 import {
   modelProtocolUsesVariable,
+  parseModelExecutionProtocol,
+  previewModelProtocolRequest,
   resolveModelExecutionProfile,
   validateModelExecutionProtocol,
+  type ModelProtocolVariables,
 } from '../ai/modelProtocol';
 import {
   REFERENCE_PROTOCOL_VARIABLES,
   getCategoryProtocolVariables,
 } from '../ai/modelProtocolVariables';
+import { findModelProtocolForEachCapabilityConflicts } from '../ai/modelProtocolRuntime';
 import { normalizeBaseUrl as normalizeUrlInput } from '../ai/providerBaseUrl';
+import { assertVideoModelCapability } from '../ai/videoRequestResolver';
 
 const PROVIDER_CONFIG_DRAFT_TTL_MS = 30 * 60 * 1_000;
 const MAX_PROVIDER_CONFIG_DRAFTS = 32;
+const MAX_DECLARATIVE_PROTOCOL_BYTES = 64 * 1_024;
+const MAX_DECLARATIVE_PROTOCOL_DEPTH = 32;
+const MAX_DECLARATIVE_PROTOCOL_NODES = 4_096;
 const DOCUMENTATION_HOST_LABELS = new Set(['doc', 'docs', 'documentation', 'developer']);
-const CREDENTIAL_FIELD_NAMES = new Set([
-  'apikey',
-  'authorization',
-  'credential',
-  'credentials',
-  'password',
-  'secret',
-  'token',
-]);
+const CREDENTIAL_FIELD_FRAGMENTS = ['token', 'key', 'secret', 'password', 'credential'] as const;
+const CREDENTIAL_FIELD_EXACT_NAMES = new Set(['authorization']);
+// keyframe 是视频输入形态而非凭据。其余包含 key 的任意未知键仍按凭据拒绝。
+const SAFE_KEY_FIELD_NAMES = new Set(['keyframe', 'keyframes']);
+const MODEL_IDENTIFIER_FIELD_NAMES = new Set(['model', 'modelid', 'modelname', 'modelcode', 'models']);
+const DANGEROUS_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+const PROTOCOL_TEMPLATE_ROOT_RE = /{{\s*([a-zA-Z][a-zA-Z0-9_]*)/g;
+const CREDENTIAL_LITERAL_PATTERNS = [
+  /^\s*Bearer\s+\S{12,}\s*$/i,
+  /^\s*sk-[A-Za-z0-9_-]{12,}\s*$/,
+  /^\s*AKIA[0-9A-Z]{16}\s*$/,
+  /^\s*[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\s*$/,
+];
+const HEX_CREDENTIAL_LITERAL_RE = /^(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/;
+const BASE64URL_LITERAL_RE = /^[A-Za-z0-9_-]+={0,2}$/;
+const FULL_TRUSTED_TEMPLATE_RE = /^{{\s*[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)*\s*}}$/;
+const VIDEO_IMAGE_REFERENCE_VARIABLES = [
+  'imageUrls',
+  'firstImage',
+  'lastImage',
+  'imageWithRoles',
+  'referenceImageUrls',
+] as const;
+const VIDEO_KEYFRAME_VARIABLES = [
+  'imageUrls',
+  'firstImage',
+  'lastImage',
+  'imageWithRoles',
+] as const;
+const VIDEO_REFERENCE_IMAGE_VARIABLES = ['referenceImageUrls'] as const;
+const VIDEO_VIDEO_REFERENCE_VARIABLES = [
+  'videoUrls',
+  'referenceVideoUrl',
+  'referenceVideoUrls',
+] as const;
+const VIDEO_AUDIO_REFERENCE_VARIABLES = [
+  'audioUrls',
+  'audioUrl',
+  'referenceAudioUrls',
+] as const;
+const VIDEO_GENERIC_REFERENCE_VARIABLES = ['referenceUrls', 'inlineReferences'] as const;
 
-export interface ProviderConfigModelExamples extends ModelProtocolExamples {
+export type ProviderConfigProtocolSource = 'examples' | 'declarative';
+
+export interface ProviderConfigModelExamples extends Partial<ModelProtocolExamples> {
+  /** 缺省保持原有示例推断模式；declarative 直接使用本地校验通过的声明式协议。 */
+  protocolSource?: ProviderConfigProtocolSource;
+  /** protocolSource=declarative 时必填；不得与四个请求/响应示例字段混用。 */
+  executionProtocol?: ModelExecutionProtocol;
   modelId?: string;
   name?: string;
   category?: GeneralModelCategory;
@@ -87,16 +140,530 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeCredentialFieldName(value: string): string {
-  return value.replace(/[\s_-]/g, '').toLowerCase();
+  return value.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+}
+
+function isCredentialFieldName(value: string): boolean {
+  const normalized = normalizeCredentialFieldName(value);
+  if (SAFE_KEY_FIELD_NAMES.has(normalized)) return false;
+  return CREDENTIAL_FIELD_EXACT_NAMES.has(normalized)
+    || CREDENTIAL_FIELD_FRAGMENTS.some((fragment) => normalized.includes(fragment));
+}
+
+function hasHighRiskBase64UrlShape(value: string): boolean {
+  if (value.length < 43 || value.length > 4_096 || !BASE64URL_LITERAL_RE.test(value)) {
+    return false;
+  }
+  const characterClasses = [/[a-z]/, /[A-Z]/, /\d/, /[_-]/]
+    .filter((pattern) => pattern.test(value)).length;
+  const uniqueCharacters = new Set(value.replace(/=/g, '')).size;
+  return uniqueCharacters >= 12
+    && (characterClasses >= 3 || (value.length >= 64 && characterClasses >= 2));
+}
+
+function looksLikeCredentialLiteral(value: string, parentKey?: string): boolean {
+  const candidate = value.trim();
+  if (!candidate || FULL_TRUSTED_TEMPLATE_RE.test(candidate)) return false;
+  const normalizedParentKey = parentKey ? normalizeCredentialFieldName(parentKey) : '';
+  // 模型 ID 可能本来就是内容哈希；URL / 相对路径也可能包含哈希段，不能误判为凭据。
+  if (
+    MODEL_IDENTIFIER_FIELD_NAMES.has(normalizedParentKey)
+    || /^(?:https?:\/\/|data:|\/)/i.test(candidate)
+  ) {
+    return false;
+  }
+  return CREDENTIAL_LITERAL_PATTERNS.some((pattern) => pattern.test(candidate))
+    || HEX_CREDENTIAL_LITERAL_RE.test(candidate)
+    || hasHighRiskBase64UrlShape(candidate);
 }
 
 function containsCredentialField(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(containsCredentialField);
-  if (!isRecord(value)) return false;
-  return Object.entries(value).some(([key, child]) => (
-    CREDENTIAL_FIELD_NAMES.has(normalizeCredentialFieldName(key))
-    || containsCredentialField(child)
-  ));
+  const pending: unknown[] = [value];
+  const visited = new WeakSet<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object') continue;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    if (Array.isArray(current)) {
+      for (const item of current) pending.push(item);
+      continue;
+    }
+    for (const [key, child] of Object.entries(current)) {
+      if (isCredentialFieldName(key)) return true;
+      pending.push(child);
+    }
+  }
+  return false;
+}
+
+function assertSafeDeclarativeProtocol(value: unknown): void {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new Error('声明式调用协议必须是可序列化的 JSON 对象');
+  }
+  if (new TextEncoder().encode(serialized).byteLength > MAX_DECLARATIVE_PROTOCOL_BYTES) {
+    throw new Error(`声明式调用协议不能超过 ${MAX_DECLARATIVE_PROTOCOL_BYTES / 1_024} KiB`);
+  }
+
+  let nodes = 0;
+  const visit = (current: unknown, depth: number, parentKey?: string): void => {
+    nodes += 1;
+    if (nodes > MAX_DECLARATIVE_PROTOCOL_NODES) {
+      throw new Error(`声明式调用协议最多允许 ${MAX_DECLARATIVE_PROTOCOL_NODES} 个 JSON 节点`);
+    }
+    if (depth > MAX_DECLARATIVE_PROTOCOL_DEPTH) {
+      throw new Error(`声明式调用协议嵌套深度不能超过 ${MAX_DECLARATIVE_PROTOCOL_DEPTH} 层`);
+    }
+    if (typeof current === 'string') {
+      if (looksLikeCredentialLiteral(current, parentKey)) {
+        throw new Error('声明式调用协议不得包含疑似真实凭据值');
+      }
+      return;
+    }
+    if (
+      current === null
+      || typeof current === 'boolean'
+      || (typeof current === 'number' && Number.isFinite(current))
+    ) {
+      return;
+    }
+    if (Array.isArray(current)) {
+      current.forEach((item) => visit(item, depth + 1, parentKey));
+      return;
+    }
+    if (!isRecord(current)) {
+      throw new Error('声明式调用协议只能包含标准 JSON 值');
+    }
+    const prototype = Object.getPrototypeOf(current);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error('声明式调用协议只能包含普通 JSON 对象');
+    }
+    for (const [key, child] of Object.entries(current)) {
+      if (DANGEROUS_OBJECT_KEYS.has(key)) {
+        throw new Error(`声明式调用协议包含不安全对象键：${key}`);
+      }
+      if (isCredentialFieldName(key)) {
+        throw new Error(`声明式调用协议不得包含凭据字段：${key}`);
+      }
+      visit(child, depth + 1, key);
+    }
+  };
+  visit(value, 0);
+}
+
+function assertDeclarativeProtocolCategoryVariables(
+  value: unknown,
+  category: GeneralModelCategory,
+): void {
+  const supported = new Set(getCategoryProtocolVariables(category));
+  supported.add('submit');
+  const source = JSON.stringify(value);
+  for (const match of source.matchAll(PROTOCOL_TEMPLATE_ROOT_RE)) {
+    const root = match[1];
+    if (!supported.has(root)) {
+      throw new Error(`声明式调用协议使用了${GENERAL_MODEL_CATEGORY_LABELS[category]}模型不会提供的变量：${root}`);
+    }
+  }
+}
+
+function usesSubmitVariables(
+  submitSource: string,
+  variables: readonly string[],
+): boolean {
+  return modelProtocolUsesVariable(submitSource, ...variables);
+}
+
+function dryRunReferenceCount(maximum: number | undefined): number {
+  if (maximum === 0) return 0;
+  return maximum === 1 ? 1 : 2;
+}
+
+function createVideoDryRunVariables(
+  modelId: string,
+  operation: VideoGenerationOperation,
+  inputMode: VideoGenerationInputMode,
+  promptMarker: string,
+): ModelProtocolVariables {
+  return {
+    model: modelId,
+    prompt: promptMarker,
+    n: 1,
+    batchCount: 1,
+    size: '1280x720',
+    aspectRatio: '16:9',
+    width: 1280,
+    height: 720,
+    frames: 49,
+    frames8n1: 49,
+    fps: 24,
+    duration: 5,
+    durationText: '5',
+    resolution: '720p',
+    videoResolution: 720,
+    videoFrames: 49,
+    videoFps: 24,
+    seedanceResolution: '720p',
+    seedanceRatio: '16:9',
+    seedanceDuration: 5,
+    generateAudio: true,
+    disableAudio: false,
+    videoOperation: operation,
+    videoInputMode: inputMode,
+  };
+}
+
+interface DryRunReference {
+  marker: string;
+  url: string;
+}
+
+function createDryRunReferences(kind: string, count: number): DryRunReference[] {
+  return Array.from({ length: count }, (_, index) => {
+    const marker = `AICANVAS_DRY_RUN_${kind.toUpperCase()}_${index + 1}_Q7Z`;
+    return { marker, url: `https://dry-run.invalid/${marker}` };
+  });
+}
+
+function addDryRunImages(
+  variables: ModelProtocolVariables,
+  references: DryRunReference[],
+  mode: 'keyframe' | 'reference',
+): void {
+  const urls = references.map((reference) => reference.url);
+  variables.imageUrls = urls;
+  variables.imageWithRoles = urls.map((url, index) => ({
+    url,
+    role: mode === 'keyframe'
+      ? index === 0 ? 'first_frame' : 'last_frame'
+      : 'reference_image',
+  }));
+  if (mode === 'keyframe') {
+    variables.firstImage = urls[0];
+    if (urls.length > 1) variables.lastImage = urls[urls.length - 1];
+  } else {
+    variables.referenceImageUrls = urls;
+  }
+}
+
+function addDryRunVideos(
+  variables: ModelProtocolVariables,
+  references: DryRunReference[],
+): void {
+  const urls = references.map((reference) => reference.url);
+  variables.videoUrls = urls;
+  variables.referenceVideoUrl = urls[0];
+  variables.referenceVideoUrls = urls;
+}
+
+function addDryRunAudios(
+  variables: ModelProtocolVariables,
+  references: DryRunReference[],
+): void {
+  const urls = references.map((reference) => reference.url);
+  variables.audioUrls = urls;
+  variables.audioUrl = urls[0];
+  variables.referenceAudioUrls = urls;
+}
+
+function countOccurrences(source: string, needle: string): number {
+  let count = 0;
+  let cursor = 0;
+  while (cursor < source.length) {
+    const found = source.indexOf(needle, cursor);
+    if (found < 0) break;
+    count += 1;
+    cursor = found + needle.length;
+  }
+  return count;
+}
+
+function assertDeclarativeVideoDryRun(
+  protocol: NormalizedModelExecutionProtocol,
+  baseUrl: string,
+  modelId: string,
+  label: string,
+  operation: VideoGenerationOperation,
+  inputMode: VideoGenerationInputMode,
+  references: DryRunReference[],
+  configureReferences?: (variables: ModelProtocolVariables) => void,
+): void {
+  const promptMarker = `AICANVAS_DRY_RUN_PROMPT_${inputMode.toUpperCase()}_Q7Z`;
+  const variables = createVideoDryRunVariables(modelId, operation, inputMode, promptMarker);
+  configureReferences?.(variables);
+  const referenceUrls = references.map((reference) => reference.url);
+  if (referenceUrls.length > 0) variables.referenceUrls = referenceUrls;
+
+  let preview: ReturnType<typeof previewModelProtocolRequest>;
+  try {
+    // 这里只渲染同源 URL、headers 和 body；preview 不调用 fetch，绝不会向厂商发请求。
+    preview = previewModelProtocolRequest({ baseUrl, protocol, variables });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '本地请求渲染失败';
+    throw new Error(`视频声明式协议无法执行${label}本地 dry-run：${message}`, { cause: error });
+  }
+  const rendered = JSON.stringify(preview);
+  if (!rendered.includes(promptMarker)) {
+    throw new Error(`视频声明式协议的 ${label} 请求没有实际发送动态 {{prompt}}`);
+  }
+  for (const reference of references) {
+    const occurrences = countOccurrences(rendered, reference.marker);
+    if (occurrences === 0) {
+      throw new Error(`视频声明式协议的 ${label} 请求没有消费全部参考素材`);
+    }
+    if (occurrences > 1) {
+      throw new Error(
+        `视频声明式协议的 ${label} 请求重复映射了同一参考素材，`
+        + '可能同时输出了互斥的请求字段',
+      );
+    }
+  }
+}
+
+function assertDeclarativeVideoProtocolSemantics(
+  protocol: NormalizedModelExecutionProtocol,
+  capability: VideoModelCapability,
+  baseUrl: string,
+  modelId: string,
+): void {
+  const submitSource = JSON.stringify(protocol.submit);
+  if (!modelProtocolUsesVariable(submitSource, 'prompt')) {
+    throw new Error('视频声明式协议的 submit 必须动态绑定 {{prompt}}，不能发送固定提示词');
+  }
+  const expansionConflicts = findModelProtocolForEachCapabilityConflicts(protocol, capability);
+  if (expansionConflicts.length > 0) {
+    throw new Error(expansionConflicts[0]);
+  }
+
+  const operations = new Set(capability.operations ?? []);
+  const usesImage = usesSubmitVariables(submitSource, VIDEO_IMAGE_REFERENCE_VARIABLES);
+  const usesKeyframe = usesSubmitVariables(submitSource, VIDEO_KEYFRAME_VARIABLES);
+  const usesReferenceImage = usesSubmitVariables(submitSource, VIDEO_REFERENCE_IMAGE_VARIABLES);
+  const usesVideo = usesSubmitVariables(submitSource, VIDEO_VIDEO_REFERENCE_VARIABLES);
+  const usesAudio = usesSubmitVariables(submitSource, VIDEO_AUDIO_REFERENCE_VARIABLES);
+  const usesGeneric = usesSubmitVariables(submitSource, VIDEO_GENERIC_REFERENCE_VARIABLES);
+
+  if (operations.has('image-to-video') && !usesImage && !usesGeneric) {
+    throw new Error('videoCapability.operations 声明 image-to-video，但 submit 没有图片参考字段');
+  }
+  if (operations.has('video-to-video') && !usesVideo && !usesGeneric) {
+    throw new Error('videoCapability.operations 声明 video-to-video，但 submit 没有视频参考字段');
+  }
+  if (usesVideo && !operations.has('video-to-video')) {
+    throw new Error('submit 使用了视频参考字段，但 videoCapability.operations 未声明 video-to-video');
+  }
+  if (usesImage && !operations.has('image-to-video') && !operations.has('video-to-video')) {
+    throw new Error('submit 使用了图片参考字段，但 videoCapability.operations 未声明可接收图片的操作');
+  }
+  const canUseGenericReference = operations.has('image-to-video')
+    || operations.has('video-to-video')
+    || capability.supportsStandaloneAudio === true
+    || (capability.maxAudioReferences ?? 0) > 0;
+  if (usesGeneric && !canUseGenericReference) {
+    throw new Error('submit 使用了通用参考素材字段，但 videoCapability 未声明对应参考能力');
+  }
+
+  if (operations.has('image-to-video') && capability.maxImageReferences === 0) {
+    throw new Error('videoCapability.operations 声明 image-to-video，但 maxImageReferences 为 0');
+  }
+  if (operations.has('video-to-video') && capability.maxVideoReferences === 0) {
+    throw new Error('videoCapability.operations 声明 video-to-video，但 maxVideoReferences 为 0');
+  }
+  const referenceRules: Array<[string, number | undefined, boolean]> = [
+    ['图片', capability.maxImageReferences, usesImage],
+    ['视频', capability.maxVideoReferences, usesVideo],
+    ['音频', capability.maxAudioReferences, usesAudio],
+  ];
+  for (const [kind, maximum, usesTypedField] of referenceRules) {
+    if (maximum === 0 && usesTypedField) {
+      throw new Error(`videoCapability 声明不支持参考${kind}，但 submit 仍包含对应参考字段`);
+    }
+    if ((maximum ?? 0) > 0 && !usesTypedField && !usesGeneric) {
+      throw new Error(`videoCapability 声明支持参考${kind}，但 submit 没有对应参考字段`);
+    }
+  }
+  if (capability.supportsStandaloneAudio && !usesAudio && !usesGeneric) {
+    throw new Error('videoCapability 声明 supportsStandaloneAudio，但 submit 没有音频参考字段');
+  }
+  if (capability.supportsStandaloneAudio && !operations.has('text-to-video')) {
+    throw new Error('supportsStandaloneAudio 需要 operations 声明 text-to-video');
+  }
+
+  const modeCapabilities = capability.inputModeCapabilities;
+  if (modeCapabilities?.text && !operations.has('text-to-video')) {
+    throw new Error('inputModeCapabilities.text 与 operations 不一致');
+  }
+  if (modeCapabilities?.keyframe && !operations.has('image-to-video')) {
+    throw new Error('inputModeCapabilities.keyframe 与 operations 不一致');
+  }
+  if (
+    modeCapabilities?.reference
+    && !operations.has('image-to-video')
+    && !operations.has('video-to-video')
+    && capability.supportsStandaloneAudio !== true
+  ) {
+    throw new Error('inputModeCapabilities.reference 与参考素材能力不一致');
+  }
+  if (modeCapabilities?.mixed && capability.allowFrameAndReferenceMix === false) {
+    throw new Error('inputModeCapabilities.mixed 与 allowFrameAndReferenceMix:false 互斥');
+  }
+
+  if (operations.has('text-to-video')) {
+    assertDeclarativeVideoDryRun(
+      protocol,
+      baseUrl,
+      modelId,
+      '纯文本形态',
+      'text-to-video',
+      'text',
+      [],
+    );
+  }
+
+  if (operations.has('image-to-video') && (usesKeyframe || !usesReferenceImage)) {
+    const keyframes = createDryRunReferences(
+      'keyframe',
+      dryRunReferenceCount(capability.maxImageReferences),
+    );
+    assertDeclarativeVideoDryRun(
+      protocol,
+      baseUrl,
+      modelId,
+      '关键帧形态',
+      'image-to-video',
+      'keyframe',
+      keyframes,
+      (variables) => addDryRunImages(variables, keyframes, 'keyframe'),
+    );
+  }
+
+  const referenceImages = usesReferenceImage
+    || (usesGeneric && (capability.maxImageReferences ?? 0) > 0
+      && !operations.has('image-to-video'))
+    ? createDryRunReferences('reference_image', dryRunReferenceCount(capability.maxImageReferences))
+    : [];
+  const referenceVideos = operations.has('video-to-video') || usesVideo
+    ? createDryRunReferences('reference_video', dryRunReferenceCount(capability.maxVideoReferences))
+    : [];
+  const referenceAudios = usesAudio
+    || capability.supportsStandaloneAudio === true
+    || (capability.maxAudioReferences ?? 0) > 0
+    ? createDryRunReferences('reference_audio', dryRunReferenceCount(capability.maxAudioReferences))
+    : [];
+  const referenceMaterials = [...referenceImages, ...referenceVideos, ...referenceAudios];
+  if (referenceMaterials.length > 0) {
+    const operation: VideoGenerationOperation = referenceVideos.length > 0
+      ? 'video-to-video'
+      : referenceImages.length > 0 ? 'image-to-video' : 'text-to-video';
+    assertDeclarativeVideoDryRun(
+      protocol,
+      baseUrl,
+      modelId,
+      '参考素材形态',
+      operation,
+      'reference',
+      referenceMaterials,
+      (variables) => {
+        if (referenceImages.length > 0) addDryRunImages(variables, referenceImages, 'reference');
+        if (referenceVideos.length > 0) addDryRunVideos(variables, referenceVideos);
+        if (referenceAudios.length > 0) addDryRunAudios(variables, referenceAudios);
+      },
+    );
+  }
+}
+
+function hasOwnExampleField(examples: ProviderConfigModelExamples): boolean {
+  return ['submitRequest', 'submitResponse', 'pollRequest', 'pollResponse']
+    .some((key) => Object.hasOwn(examples, key));
+}
+
+interface ResolvedDraftModelProtocol {
+  baseUrl: string;
+  modelId: string;
+  category: GeneralModelCategory;
+  protocol: NormalizedModelExecutionProtocol;
+  imageReferenceRequestMode?: ImageReferenceRequestMode;
+}
+
+function resolveDraftModelProtocol(
+  examples: ProviderConfigModelExamples,
+  declaredBaseUrl?: string,
+): ResolvedDraftModelProtocol {
+  const protocolSource = examples.protocolSource ?? 'examples';
+  if (protocolSource !== 'examples' && protocolSource !== 'declarative') {
+    throw new Error('protocolSource 只支持 examples 或 declarative');
+  }
+
+  if (protocolSource === 'declarative') {
+    if (hasOwnExampleField(examples)) {
+      throw new Error('declarative 模式不得同时提供请求或响应示例字段');
+    }
+    if (!declaredBaseUrl) throw new Error('declarative 模式必须显式提供 connection baseUrl');
+    const modelId = examples.modelId?.trim();
+    if (!modelId) throw new Error('declarative 模式必须显式提供 modelId');
+    if (!examples.category) throw new Error('declarative 模式必须显式提供 category');
+    if (!Object.hasOwn(examples, 'executionProtocol') || !isRecord(examples.executionProtocol)) {
+      throw new Error('declarative 模式必须提供 executionProtocol JSON 对象');
+    }
+    assertSafeDeclarativeProtocol(examples.executionProtocol);
+    assertDeclarativeProtocolCategoryVariables(examples.executionProtocol, examples.category);
+    const protocolErrors = validateModelExecutionProtocol(examples.executionProtocol);
+    if (protocolErrors.length > 0) {
+      throw new Error(`模型“${examples.name?.trim() || modelId}”协议校验失败：${protocolErrors[0]}`);
+    }
+    return {
+      baseUrl: declaredBaseUrl,
+      modelId,
+      category: examples.category,
+      protocol: parseModelExecutionProtocol(examples.executionProtocol),
+      imageReferenceRequestMode: examples.imageReferenceRequestMode,
+    };
+  }
+
+  if (Object.hasOwn(examples, 'executionProtocol')) {
+    throw new Error('examples 模式不得提供 executionProtocol；请改用 protocolSource: declarative');
+  }
+  if (typeof examples.submitRequest !== 'string' || !examples.submitRequest.trim()) {
+    throw new Error('examples 模式必须提供 submitRequest');
+  }
+  if (typeof examples.submitResponse !== 'string' || !examples.submitResponse.trim()) {
+    throw new Error('examples 模式必须提供 submitResponse');
+  }
+  const sourceExamples: ModelProtocolExamples = {
+    submitRequest: examples.submitRequest,
+    submitResponse: examples.submitResponse,
+    ...(examples.pollRequest !== undefined ? { pollRequest: examples.pollRequest } : {}),
+    ...(examples.pollResponse !== undefined ? { pollResponse: examples.pollResponse } : {}),
+  };
+  const explicitModelId = examples.modelId?.trim()
+    || (examples.name && !/\s/.test(examples.name.trim()) ? examples.name.trim() : undefined);
+  const result = analyzeModelProtocolExamples(sourceExamples, {
+    category: examples.category,
+    modelId: explicitModelId,
+    baseUrl: declaredBaseUrl,
+  });
+  const displayName = examples.name?.trim() || explicitModelId || result.modelId;
+  const diagnostic = result.warnings[0] ? `：${result.warnings[0]}` : '';
+  if (!result.baseUrl) {
+    throw new Error(`模型“${displayName || '未命名模型'}”未识别到 Base URL${diagnostic}`);
+  }
+  if (!result.modelId) throw new Error(`模型“${displayName || '未命名模型'}”未识别到模型 ID`);
+  if (!result.protocol) {
+    throw new Error(`模型“${displayName || result.modelId}”无法生成有效调用协议${diagnostic}`);
+  }
+  const protocolErrors = validateModelExecutionProtocol(result.protocol);
+  if (protocolErrors.length > 0) {
+    throw new Error(`模型“${displayName || result.modelId}”协议校验失败：${protocolErrors[0]}`);
+  }
+  return {
+    baseUrl: result.baseUrl,
+    modelId: result.modelId,
+    category: result.category ?? examples.category ?? 'text',
+    protocol: parseModelExecutionProtocol(result.protocol),
+    imageReferenceRequestMode: result.imageReferenceRequestMode,
+  };
 }
 
 function createOpaqueId(prefix: string): string {
@@ -151,31 +718,13 @@ function createModelSelection(
   examples: ProviderConfigModelExamples,
   declaredBaseUrl?: string,
 ): { selection: ProviderModelSelection; baseUrl: string } {
-  const explicitModelId = examples.modelId?.trim()
-    || (examples.name && !/\s/.test(examples.name.trim()) ? examples.name.trim() : undefined);
-  const result = analyzeModelProtocolExamples(examples, {
-    category: examples.category,
-    modelId: explicitModelId,
-    baseUrl: declaredBaseUrl,
-  });
-  const displayName = examples.name?.trim() || explicitModelId || result.modelId;
-  const diagnostic = result.warnings[0] ? `：${result.warnings[0]}` : '';
-  if (!result.baseUrl) {
-    throw new Error(`模型“${displayName || '未命名模型'}”未识别到 Base URL${diagnostic}`);
-  }
-  if (!result.modelId) throw new Error(`模型“${displayName || '未命名模型'}”未识别到模型 ID`);
-  if (!result.protocol) {
-    throw new Error(`模型“${displayName || result.modelId}”无法生成有效调用协议${diagnostic}`);
-  }
-  const protocolErrors = validateModelExecutionProtocol(result.protocol);
-  if (protocolErrors.length > 0) {
-    throw new Error(`模型“${displayName || result.modelId}”协议校验失败：${protocolErrors[0]}`);
-  }
+  const result = resolveDraftModelProtocol(examples, declaredBaseUrl);
+  const displayName = examples.name?.trim() || result.modelId;
   const executionProfile: ModelExecutionProfile = {
     preset: 'custom',
     protocol: result.protocol,
   };
-  const category = result.category ?? examples.category ?? 'text';
+  const category = result.category;
   const imageReferenceRequestMode = examples.imageReferenceRequestMode
     ?? result.imageReferenceRequestMode;
   if (imageReferenceRequestMode && category !== 'image') {
@@ -184,6 +733,35 @@ function createModelSelection(
   // 能力声明只对视频模型生效：参数面板据此约束时长 / 比例 / 分辨率 / 参考素材数量
   if (examples.videoCapability && category !== 'video') {
     throw new Error(`模型“${displayName || result.modelId}”只有视频分类可以声明 videoCapability`);
+  }
+  if (category === 'video' && !examples.videoCapability?.operations?.length) {
+    throw new Error(
+      `模型“${displayName || result.modelId}”必须按接口文档声明非空 videoCapability.operations，`
+      + '避免运行时猜测文生视频、图生视频或视频生视频能力',
+    );
+  }
+  if (examples.videoCapability) {
+    try {
+      assertVideoModelCapability(examples.videoCapability);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '能力声明无效';
+      throw new Error(
+        `模型“${displayName || result.modelId}”的 videoCapability 无效：${message}`,
+        { cause: error },
+      );
+    }
+  }
+  if (
+    examples.protocolSource === 'declarative'
+    && category === 'video'
+    && examples.videoCapability
+  ) {
+    assertDeclarativeVideoProtocolSemantics(
+      result.protocol,
+      examples.videoCapability,
+      result.baseUrl,
+      result.modelId,
+    );
   }
   const description = examples.description?.trim().slice(0, 500);
   const inputModalities = examples.inputModalities?.length

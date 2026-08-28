@@ -105,6 +105,29 @@ describe('通用视频提交前输入校验', () => {
     )).rejects.toThrow('必须小于 15 秒');
   });
 
+  it('按媒体类型校验多参考素材的合计时长', async () => {
+    const probe = vi.fn<ReferenceMediaMetadataProbe>()
+      .mockResolvedValueOnce({ durationSeconds: 8 })
+      .mockResolvedValueOnce({ durationSeconds: 8 });
+
+    await expect(assertVideoInputConstraints(
+      input({
+        videoUrls: ['https://cdn.example/one.mp4', 'https://cdn.example/two.mp4'],
+        operation: 'video-to-video',
+      }),
+      {
+        inputConstraints: {
+          referenceVideo: {
+            durationSeconds: { min: 2, max: 15 },
+            totalDurationSeconds: { max: 15 },
+          },
+        },
+      },
+      'MiniMax H3',
+      { probeMediaMetadata: probe },
+    )).rejects.toThrow('参考视频合计时长为 16 秒，不能超过 15 秒');
+  });
+
   it('声明了元数据规则但无法读取时阻止付费提交', async () => {
     const unreadable = vi.fn<ReferenceMediaMetadataProbe>().mockRejectedValue(new Error('媒体无法加载'));
     await expect(assertVideoInputConstraints(
