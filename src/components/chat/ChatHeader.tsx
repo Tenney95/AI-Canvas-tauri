@@ -29,6 +29,8 @@ interface ChatHeaderProps {
   onOpenMemory?: () => void;
   /** 打开子智能体配置面板；不提供时不显示入口（如独立窗口） */
   onOpenSubAgents?: () => void;
+  /** 打开全局智能体中心；独立窗口不提供，保持主窗口单写入。 */
+  onOpenAgents?: () => void;
   onOpenTasks?: () => void;
   activeTaskCount?: number;
   /** 分离模式下由外部传入的 header 操作按钮 */
@@ -48,6 +50,7 @@ export default function ChatHeader({
   agentModeDisabled,
   onOpenMemory,
   onOpenSubAgents,
+  onOpenAgents,
   onOpenTasks,
   activeTaskCount = 0,
   detachedHeaderActions,
@@ -95,6 +98,20 @@ export default function ChatHeader({
         />
 
         <span className="mx-0.5 h-4 w-px bg-canvas-border" aria-hidden="true" />
+
+        {onOpenAgents && (
+          <button
+            type="button"
+            className="chat-panel-agents-btn flex h-8 w-8 items-center justify-center rounded-lg text-canvas-text-muted
+                       transition-[color,background-color,box-shadow,transform] duration-150 hover:bg-canvas-hover hover:text-canvas-text
+                       active:scale-95 motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+            onClick={onOpenAgents}
+            data-tooltip={t('智能体中心')}
+            aria-label={t('智能体中心')}
+          >
+            <Icon icon="lucide:bot" width="16" height="16" />
+          </button>
+        )}
 
         {onOpenTasks && (
           <button

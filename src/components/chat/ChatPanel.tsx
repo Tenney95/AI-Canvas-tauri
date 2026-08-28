@@ -27,6 +27,7 @@ import ChatMessages from './ChatMessages';
 import ChatInput from './ChatInput';
 import ProjectMemoryPanel from './ProjectMemoryPanel';
 import SubAgentPanel from './SubAgentPanel';
+import AgentCenterPanel from './AgentCenterPanel';
 import AgentTaskCenter from './AgentTaskCenter';
 import {
   emitAction,
@@ -225,6 +226,7 @@ export default function ChatPanel({
   const [viewMode, setViewMode] = useState<'list' | 'chat'>('chat');
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
   const [showSubAgentPanel, setShowSubAgentPanel] = useState(false);
+  const [showAgentCenter, setShowAgentCenter] = useState(false);
   const [showTaskCenter, setShowTaskCenter] = useState(false);
   // 记忆挂在剧集项目上，分集画布要按归属项目取
   const memoryOwnerId = useAppStore((s) => (
@@ -759,10 +761,29 @@ export default function ChatPanel({
               onAgentModeChange={handleAgentModeChange}
               agentModeDisabled={!effectiveActiveConversationId}
               onOpenMemory={!detached && effectiveProjectId
-                ? () => setShowMemoryPanel(true)
+                ? () => {
+                    setShowAgentCenter(false);
+                    setShowSubAgentPanel(false);
+                    setShowMemoryPanel(true);
+                  }
                 : undefined}
-              onOpenSubAgents={detached ? undefined : () => setShowSubAgentPanel(true)}
-              onOpenTasks={() => setShowTaskCenter(true)}
+              onOpenSubAgents={detached ? undefined : () => {
+                setShowAgentCenter(false);
+                setShowMemoryPanel(false);
+                setShowSubAgentPanel(true);
+              }}
+              onOpenAgents={detached ? undefined : () => {
+                setShowMemoryPanel(false);
+                setShowSubAgentPanel(false);
+                setShowTaskCenter(false);
+                setShowAgentCenter(true);
+              }}
+              onOpenTasks={() => {
+                setShowAgentCenter(false);
+                setShowMemoryPanel(false);
+                setShowSubAgentPanel(false);
+                setShowTaskCenter(true);
+              }}
               activeTaskCount={effectiveAgentTasks.filter((task) =>
                 !['completed', 'failed', 'stopped'].includes(task.status)).length}
               showBackButton={viewMode === 'chat' && !!effectiveActiveConversationId}
@@ -836,6 +857,7 @@ export default function ChatPanel({
                     detachedInitialized={detachedInitialized}
                     onNewConversation={handleNewConversation}
                     onShowList={handleShowList}
+                    onOpenAgents={detached ? undefined : () => setShowAgentCenter(true)}
                     onExampleClick={handleExampleClick}
                     onAddMediaToCanvas={detached ? undefined : handleAddMediaToCanvas}
                     onRetryMediaSave={detached ? undefined : handleRetryMediaSave}
@@ -886,6 +908,10 @@ export default function ChatPanel({
             {/* 子智能体配置面板（主窗口） */}
             {showSubAgentPanel && !detached && (
               <SubAgentPanel onClose={() => setShowSubAgentPanel(false)} />
+            )}
+
+            {showAgentCenter && !detached && (
+              <AgentCenterPanel allowInstall onClose={() => setShowAgentCenter(false)} />
             )}
           </motion.aside>
       )}

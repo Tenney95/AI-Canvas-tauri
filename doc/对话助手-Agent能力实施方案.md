@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施
+> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -2254,6 +2254,35 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - 先停止 MCP 会话，再移除 HTTP transport、设置页远程选项和新增 Cargo 依赖即可恢复仅本机 stdio；现有工具、审计任务与项目数据不需迁移。
 - 如需同时回滚安装版适配器修复，再移除 esbuild 构建脚本、生成资源和 `tauri.conf.json` resource 映射。
 
+### 8.29 全局 Agent Package 首批纵向切片（2026-08-27）
+
+**状态：首批纵向切片已完成；任务级按需绑定、项目覆盖和 MCP/后台表面接入待后续阶段**
+
+- 建立用户安装的 Agent Package v1 合同、严格 Manifest 校验和独立 `ai-canvas-agent-catalog` IndexedDB；可选目录加载失败时退化为空目录，不参与项目、画布和配置的启动 readiness。
+- 全局安装记录只持有 Manifest、包内相对入口、健康信息和不透明 `sourceId`；不保存真实路径、入口正文、API Key 或包内容。没有外部智能体时，默认助手、画布、工作流和模型发送链保持原样。
+- AI 助手 Header 和空态新增“智能体中心”，支持选择文件夹与压缩包、查看预检结果、启停和移除。写操作只在主窗口提供，独立助手窗口不成为第二个写入源。
+- 文件夹采用只读 linked 来源；没有 `ai-canvas-agent.json` 的旧目录由宿主生成 `legacy.<hash>` 兼容清单，标记 `degraded` 并默认停用，不写回用户源目录。
+- 压缩包采用 managed 导入，首批支持 `.aicanvas-agent`、`.tgz`、`.tar.gz`。归档在空 staging 中完成条目数、体积、重复路径、路径逃逸、链接和设备文件检查，通过后再原子迁入托管目录；失败清理半安装来源。
+- Rust 私有注册表保存 `sourceId` 到真实路径的映射，并从 Renderer 的通用 fs/asset 与自定义路径命令中拒绝访问；包内资源只允许通过 `sourceId + 相对路径` 有界读取，不执行包内脚本。
+- 卸载 linked 来源只解除注册、不删除外部目录；卸载 managed 来源删除托管副本。同一包升级并更换来源后会清理旧来源，避免孤儿副本。
+- 助手执行链补充任务项目作用域：后台任务不再把当前已切换画布的节点摘要当作任务画布，也不会在任务所属画布未加载时执行旧管线画布写入。
+
+#### 完成记录
+
+- 前端类型：`npm run typecheck` 与 `npm run test:typecheck` 通过。
+- 定向测试：Agent Catalog、Manifest、Store、导入服务、助手中心、助手项目作用域和会话控制共 7 个文件、55 项通过；快进 fork 后连同上游厂商配置回归共 8 个文件、71 项通过。
+- 定向 Lint：本阶段 25 个 TypeScript/TSX 文件通过，无告警。
+- Rust：`cargo test --no-default-features agent_package::tests --lib` 10 项通过；`cargo test --no-default-features path_policy::tests --lib` 6 项通过；`cargo check --lib` 与新增模块 `rustfmt --check` 通过。新增断言确认私有来源注册表不会持久化指令正文。
+- 生产构建：Vite 输出到系统临时目录并通过；仅报告既有动态导入失效和大 chunk 警告。
+- Fork 同步：绕过失效的本机代理获取 `myfork/master`，确认远端只改 3 个无重叠文件后，把本地 `master` 从 `4622b35` 快进到 `dc85e67`；当前实现保留且快进后重新通过类型、测试和生产构建。
+- 本阶段未新增依赖，未修改 `tauri.conf.json`、capability、核心 IndexedDB schema、Agent Policy 或媒体确认策略；未执行真实外部目录的 Tauri 对话框端到端手测。
+- 普通 `.zip` 尚未支持；其安全实现需要增加直接 Rust 依赖，必须在用户单独确认新增依赖后进入后续阶段。
+
+#### 回滚
+
+- 移除助手中心入口、Agent Package Store/独立 Catalog、前端导入服务和 Rust `agent_package` 命令注册即可回到无兼容层状态；核心项目数据库没有迁移，无需降级。
+- 回滚前应先通过智能体中心移除 managed 安装，避免在应用私有目录保留无入口的托管副本；linked 外部目录始终由用户保留。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -2467,6 +2496,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-27 | 8.29 | 完成全局 Agent Package 首批纵向切片：助手内上传与管理、linked 文件夹、managed tar.gz、独立目录库、私有 sourceId 注册和无智能体旁路；任务级按需绑定与普通 zip 留待后续。 |
 | 2026-08-26 | Python 插件兼容 | Plugin API v3 增加可信 `main.py` 运行时，复用本机 Python 与现有依赖；独立子进程执行并加入高风险确认、环境检测、协议限长和超时终止，JavaScript QuickJS 沙箱保持不变。 |
 | 2026-08-26 | Sora2U 输入校验 | 视频模型能力新增声明式提交前约束；Sora2U 拦截 Prompt、Base64 总量、参考视频宽度/时长和参考音频时长，自定义通用接口可编辑同类规则。 |
 | 2026-08-25 | 平台补充 | 内置 Sora2U 的 9 个公开图片/视频模型与动态能力目录，接通多模态参考、异步轮询、统一模型同步和合作专属站点入口；不新增依赖或安全权限。 |

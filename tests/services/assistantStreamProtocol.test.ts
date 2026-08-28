@@ -243,6 +243,46 @@ describe('buildAssistantSystemPrompt 的 Skill 索引', () => {
   });
 });
 
+describe('助手任务项目作用域', () => {
+  it('后台任务所属项目未加载时不注入当前画布节点', () => {
+    useAppStore.setState({
+      currentProjectId: 'project-b',
+      projects: [
+        { id: 'project-a', name: 'A', createdAt: 1, updatedAt: 1 },
+        { id: 'project-b', name: 'B', createdAt: 1, updatedAt: 1 },
+      ],
+      nodes: [{
+        id: 'node-b',
+        type: 'ai-text',
+        position: { x: 0, y: 0 },
+        data: { type: 'ai-text', label: 'B 项目私有节点' },
+      }],
+      edges: [],
+      selectedNodeIds: ['node-b'],
+    });
+
+    const prompt = buildAssistantSystemPrompt({
+      agentTools: true,
+      projectId: 'project-a',
+      includeCanvasContext: false,
+    });
+
+    expect(prompt).toContain('项目: project-a');
+    expect(prompt).toContain('当前未加载任务所属画布');
+    expect(prompt).not.toContain('B 项目私有节点');
+    expect(prompt).not.toContain('node-b');
+  });
+
+  it('拒绝在当前未加载的任务项目上执行本地画布命令', async () => {
+    useAppStore.setState({ currentProjectId: 'project-b' });
+
+    const result = await runAssistantPipeline('选中 3 号节点', 'conversation-a', 'project-a');
+
+    expect(result.commandExecuted).toBe(false);
+    expect(result.reply).toContain('任务所属画布当前未加载');
+  });
+});
+
 describe('buildAssistantSystemPrompt 的厂商配置审批时序', () => {
   it('要求草稿生成后立即发起本地审批，不等待用户再发一条确认消息', () => {
     const prompt = buildAssistantSystemPrompt({ agentTools: true });

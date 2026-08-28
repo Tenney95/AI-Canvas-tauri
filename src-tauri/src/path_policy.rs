@@ -106,6 +106,11 @@ fn is_secret_path<R: Runtime>(app: &tauri::AppHandle<R>, resolved: &Path) -> boo
     is_under_secret_dir(&secret_dir, resolved)
 }
 
+/// 除凭据外，智能体 sourceId 到真实外部目录的映射也只能由 Rust 专用命令读取。
+fn is_private_app_path<R: Runtime>(app: &tauri::AppHandle<R>, resolved: &Path) -> bool {
+    is_secret_path(app, resolved) || crate::agent_package::is_agent_private_path(app, resolved)
+}
+
 /// 凭据目录可能尚未创建（无法 canonicalize），因此同时按原始路径与解析后路径比对。
 fn is_under_secret_dir(secret_dir: &Path, resolved: &Path) -> bool {
     let normalized = secret_dir.components().collect::<PathBuf>();
@@ -195,8 +200,8 @@ pub fn authorize_path_with_roots<R: Runtime>(
     extra_roots: &[PathBuf],
 ) -> Result<PathBuf, String> {
     let resolved = resolve_path(raw, access)?;
-    if is_secret_path(app, &resolved) {
-        return Err("凭据目录不允许通过该命令访问".to_string());
+    if is_private_app_path(app, &resolved) {
+        return Err("应用私有目录不允许通过该命令访问".to_string());
     }
     if !is_authorized(app, &resolved, access, extra_roots) {
         return Err(format!(
@@ -328,6 +333,19 @@ mod tests {
         // 同级目录不能被误判，否则会挡掉正常的项目素材路径
         assert!(!is_under_secret_dir(&secret_dir, Path::new("/data/app/projects/a.png")));
         assert!(!is_under_secret_dir(&secret_dir, Path::new("/data/app/secrets-backup/x")));
+    }
+
+    #[test]
+    fn agent_private_directory_helper_rejects_only_its_own_subtree() {
+        let private_dir = PathBuf::from("/data/app/agent-private");
+        assert!(crate::agent_package::is_under_agent_private_dir(
+            &private_dir,
+            Path::new("/data/app/agent-private/sources.json"),
+        ));
+        assert!(!crate::agent_package::is_under_agent_private_dir(
+            &private_dir,
+            Path::new("/data/app/agent-private-copy/sources.json"),
+        ));
     }
 
     #[test]

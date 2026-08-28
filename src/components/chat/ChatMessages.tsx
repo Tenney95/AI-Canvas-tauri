@@ -22,6 +22,7 @@ interface ChatMessagesProps extends ChatReferenceHandlers {
   detachedInitialized: boolean;
   onNewConversation: () => void;
   onShowList: () => void;
+  onOpenAgents?: () => void;
   onAddMediaToCanvas?: (messageId: string) => void;
   onRetryMediaSave?: (messageId: string) => Promise<void>;
   agentControls?: AgentTaskControls;
@@ -64,6 +65,7 @@ export default function ChatMessages({
   detachedInitialized,
   onNewConversation,
   onShowList,
+  onOpenAgents,
   onAddMediaToCanvas,
   onRetryMediaSave,
   agentControls,
@@ -192,6 +194,7 @@ export default function ChatMessages({
           <EmptyChatState
             onNew={onNewConversation}
             onList={onShowList}
+            onOpenAgents={onOpenAgents}
             onExample={onExampleClick}
           />
         )}
