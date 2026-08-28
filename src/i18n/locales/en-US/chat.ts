@@ -13,9 +13,6 @@ const chat = {
   '独立窗口': 'Detach window',
 
   // ── EmptyChatState ──
-  '画布 AI 助手': 'Canvas AI Assistant',
-  '用自然语言读取和操作画布。查询状态、定位节点、批量管理，一个对话框完成。':
-    'Read and control the canvas in natural language. Check status, locate nodes and manage in bulk — all from one dialog.',
   '新建对话': 'New conversation',
   '历史记录': 'History',
   '试试这些：': 'Try these:',
