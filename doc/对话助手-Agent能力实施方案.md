@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）与 Phase 0-B（高风险原生命令 Rust 调用方校验）已完成；3D 镜头台 Phase 0-C 双运行时前端契约与 Phase 0-D 协议冻结已完成
+> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）与 Phase 0-B（高风险原生命令 Rust 调用方校验）已完成；3D 镜头台 Phase 0-C 双运行时前端契约、Phase 0-D 协议冻结与 Phase 1-A Scene/Result 纯数据层已完成
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -63,6 +63,7 @@
 | 安全前置 0-B | `[x]` | 插件执行与导演台资源命令 Rust 调用方校验 | 2026-08-28 | 2026-08-28 |
 | 导演台 0-C | `[x]` | 同一 `ai-director` 的 `lightweight-web` / `blender` 双运行时前端契约 | 2026-08-28 | 2026-08-28 |
 | 导演台 0-D | `[x]` | Blender 场景权威、固定脚本和后续原生阶段范围冻结 | 2026-08-28 | 2026-08-28 |
+| 导演台 1-A | `[x]` | Director Scene/Result 严格合同、不可变项目文件与归档识别 | 2026-08-28 | 2026-08-28 |
 
 ## 3. 已确认的产品决策
 
@@ -2410,6 +2411,33 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - 本阶段没有启动 Blender、安装导演台或 Blender 资源、执行 Python、生成 `.blend`、截图或参考视频。`blender` adapter 继续保持 unavailable；本文档状态只代表协议与后续阶段范围已冻结。
 - 阶段文档以独立本地提交交付，不包含 push、tag 或 Release；后续从 Phase 1-A 开始仍按独立范围与检查点实施。
 
+### 8.34 Director Scene/Result 纯数据层（Phase 1-A）
+
+**状态：** `[x]`
+
+#### 目标与边界
+
+- “3D 镜头台”继续使用唯一 `ai-director` NodeType；本阶段只增加同一节点可选的 `directorScene` / `directorResultManifest` 不可变引用，不新增节点、菜单、平行 Store 或下游连线协议。
+- 建立纯 TypeScript Scene/Result 合同、项目文件完整性与归档识别；不修改 Rust、Tauri capability、IndexedDB schema、依赖或 Blender adapter，不探测/启动 Blender，不安装资源，不执行 Python。
+- 旧 `directorCaptureUrls` / `directorCaptureFilePaths` 与通用视频输出保持原样；缺少新引用的旧项目继续按既有轻量运行时工作，不做静默迁移或媒体配对猜测。
+
+#### 实施结果
+
+- 新增 Director 领域类型并由 `types/index.ts` 兼容导出：Scene reference 绑定 schema、scene ID、revision、项目相对路径、SHA-256 与 bytes；Manifest reference 额外绑定 Scene revision/hash 与 manifest revision。
+- 新增严格 v1 schema：所有嵌套对象采用固定字段白名单，拒绝未来 schema、未知字段、非有限数字、危险路径、重复 ID、越界帧与错误 camera 引用；Scene JSON 上限 2 MiB，Manifest 上限 512 KiB。
+- Scene 明确右手系、Z-up、-Y forward、米/度/XYZ；transform、集合数量、关键帧总量与 artifact 数量均有限制。Result artifact 只接受 `frame-image/image/png`、`reference-video/video/mp4` 和 `blend-project/application/x-blender` 固定组合。
+- 新增项目文件边界：严格相对路径、逐级 `lstat` 拒绝静态符号链接、Web Crypto SHA-256、`writeFile(..., { createNew: true })` 独占创建、写后读回校验；同路径同内容幂等，不同内容或损坏目标失败关闭且不覆盖。
+- Scene 保存要求精确父 revision/hash 并验证直接父文件；Manifest 必须绑定已验证 Scene，先验证所有 artifact，最后写入清单。Manifest revision 为追加式清单，旧 artifact 身份不可改写，新 revision 至少追加一个新 artifact。
+- 项目归档保持 format version 1 和原有三个顶层条目；现有 Rust 归档递归携带 `director/**`，前端只显式识别 `directorScene` / `directorResultManifest` 两个已知嵌套引用用于缺失统计，不解析清单或递归猜测未知对象。
+
+#### 验收、限制与回滚
+
+- 最终定向验证通过：schema/service/transfer 3 个测试文件共 41 项；Blender unavailable 契约回归 1 个文件 5 项；`npm run typecheck`、9 文件定向 ESLint、临时目录生产构建、严格 UTF-8/无 BOM/无尾随空白与 scoped `git diff --check` 通过。
+- `npm run check` 的全仓 lint、typecheck 与 test:typecheck 通过；全量 Vitest 有 209 个文件、1701 项测试通过，另有 3 个范围外既有失败：i18n 两个孤儿词条，以及两个 MCP 测试文件导入时 `SyntaxError`。失败文件不在本阶段差异中，未为通过检查而扩大范围。
+- Renderer 对 Scene asset 与 Result artifact 的总读取复核上限为 64 MiB；真实视频和 `.blend` 仍必须由 Phase 1-C Rust 流式哈希。TypeScript `lstat` 与实际读写之间的 TOCTOU 窗口不能作为原生 Job 安全边界，因此 `blender` adapter 继续 unavailable。
+- 回滚时移除两个可选节点引用、Director 类型/schema/服务/项目文件模块及归档 collector 的两个显式字段即可；旧截图、视频与轻量运行时数据不删除，已存在的不可变项目文件保留为可恢复孤儿文件，不做破坏性清理。
+- 正式范围为 9 个产品/测试文件加本文档共 10 文件；没有修改 Rust、Tauri 安全配置、数据库、依赖、运行资源或现有 Blender unavailable 实现。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -2650,6 +2678,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-28 | 导演台 1-A | 为同一 `ai-director` 节点建立 Director Scene/Result 严格 v1 合同、内容寻址不可变项目文件、父 revision/Manifest 追加校验与归档嵌套引用识别；Blender 继续 unavailable，未修改 Rust、数据库或安全配置。 |
 | 2026-08-28 | 导演台 0-D | 冻结同一 `ai-director` 节点的 Blender 双运行时、Director Scene JSON 权威、不可变 Result Manifest、项目 grant、安装复核、Rust Job ID、固定第一方脚本与 C2 真机启用门；仅修改 5 份文档，Blender 继续 unavailable。 |
 | 2026-08-28 | 导演台 0-C | 在现有 `ai-director` 节点内建立 `lightweight-web` / `blender` 双运行时前端契约，统一打开与导出 facade、旧节点默认、未知值失败关闭、同项目复制和安装提示语义；未新增节点、Rust、数据库或 Blender 进程能力。 |
 | 2026-08-28 | 自定义视频 API Stage 1 | 建立 Canonical Video Request 与 capability 权威校验，移除自定义视频猜测端点和隐藏默认；声明式协议补齐安全条件项、多参考数组展开、逐角色完整消费、动态任务轮询与真实请求体上限；助手 direct protocol 增加凭据防护和三种输入形态本地 dry-run；MCP 画布节点增加统一视频规格字段。Agnes 2.5 Flash、MiniMax H3 契约测试通过，MetaSo 实机提交到计费校验并准确返回余额不足。 |

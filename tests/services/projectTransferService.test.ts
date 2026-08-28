@@ -201,6 +201,84 @@ describe('projectTransferService', () => {
     expect(memory.source.messageId).toBe(message.id);
   });
 
+  it('counts only missing Director Scene/Result references and preserves both fields', async () => {
+    const sceneRelativePath = `director/scenes/scene-main/scene-r1-${'a'.repeat(64)}.json`;
+    const manifestRelativePath = `director/scenes/scene-main/results/manifest-r1-${'b'.repeat(64)}.json`;
+    const project = {
+      ...PROJECT_RECORD,
+      nodes: [{
+        id: 'director-1',
+        data: {
+          label: '3D 镜头台',
+          type: 'ai-director',
+          directorScene: {
+            schemaVersion: 1,
+            sceneId: 'scene-main',
+            revision: 1,
+            relativePath: sceneRelativePath,
+            sha256: 'a'.repeat(64),
+            bytes: 128,
+          },
+          directorResultManifest: {
+            schemaVersion: 1,
+            sceneId: 'scene-main',
+            sceneRevision: 1,
+            sceneSha256: 'a'.repeat(64),
+            manifestRevision: 1,
+            relativePath: manifestRelativePath,
+            sha256: 'b'.repeat(64),
+            bytes: 96,
+          },
+        },
+      }],
+    };
+    mocks.open.mockResolvedValue('/in/director.aicanvas');
+    mocks.invoke.mockResolvedValue({
+      texts: archiveTexts({ project }),
+      assetPaths: [sceneRelativePath],
+      assetBytes: 128,
+    });
+
+    const result = await importProjectArchive();
+
+    expect(result!.missingAssetCount).toBe(1);
+    const saved = mocks.saveProjectToDb.mock.calls[0][0];
+    expect(saved.nodes[0].data.directorScene).toEqual(project.nodes[0].data.directorScene);
+    expect(saved.nodes[0].data.directorResultManifest).toEqual(
+      project.nodes[0].data.directorResultManifest,
+    );
+  });
+
+  it('does not infer new Director references from legacy capture arrays', async () => {
+    const project = {
+      ...PROJECT_RECORD,
+      nodes: [{
+        id: 'director-legacy',
+        data: {
+          label: '3D 导演台',
+          type: 'ai-director',
+          directorCaptureUrls: ['asset://localhost/frame-a.png'],
+          directorCaptureFilePaths: ['C:/legacy/frame-a.png'],
+        },
+      }],
+    };
+    mocks.open.mockResolvedValue('/in/legacy-director.aicanvas');
+    mocks.invoke.mockResolvedValue({
+      texts: archiveTexts({ project }),
+      assetPaths: [],
+      assetBytes: 0,
+    });
+
+    const result = await importProjectArchive();
+
+    expect(result!.missingAssetCount).toBe(0);
+    const savedData = mocks.saveProjectToDb.mock.calls[0][0].nodes[0].data;
+    expect(savedData.directorCaptureUrls).toEqual(project.nodes[0].data.directorCaptureUrls);
+    expect(savedData.directorCaptureFilePaths).toEqual(project.nodes[0].data.directorCaptureFilePaths);
+    expect(savedData.directorScene).toBeUndefined();
+    expect(savedData.directorResultManifest).toBeUndefined();
+  });
+
   it('duplicates a project through a temp archive and clones its episodes', async () => {
     const EPISODE = {
       ...PROJECT_RECORD,

@@ -5,6 +5,11 @@ import type { AudioOutputFormat, AudioTtsVoice, ModelExecutionProfile, VideoMode
 import type { AudioGenerationPurpose } from './media';
 import type { ImageAnnotationLayer } from '@tenney95/xiaoluo-image-editor';
 import type { CanvasNoteData } from './canvasNote';
+import type {
+  DirectorResultManifestReference,
+  DirectorRuntimeKind,
+  DirectorSceneReference,
+} from './directorScene';
 import type { ShotlistColumnKey, ShotRow } from './shotlist';
 import type { Locale } from '../i18n';
 
@@ -28,6 +33,32 @@ export type {
   CanvasNoteTextAlign,
 } from './canvasNote';
 export { createCanvasNoteData, DEFAULT_CANVAS_NOTE_STYLE, isCanvasNoteKind } from './canvasNote';
+
+export type {
+  DirectorBlendProjectArtifact,
+  DirectorCamera,
+  DirectorCameraInterpolation,
+  DirectorCameraKeyframe,
+  DirectorCoordinateSystem,
+  DirectorEnvironment,
+  DirectorFrameImageArtifact,
+  DirectorProjectFileReference,
+  DirectorReferenceVideoArtifact,
+  DirectorResultArtifact,
+  DirectorResultManifest,
+  DirectorResultManifestReference,
+  DirectorResultProducer,
+  DirectorRuntimeKind,
+  DirectorScene,
+  DirectorSceneEntity,
+  DirectorSceneParent,
+  DirectorSceneReference,
+  DirectorShot,
+  DirectorTimeline,
+  DirectorTransform,
+  DirectorVector3,
+  DirectorWorldColor,
+} from './directorScene';
 
 export type { ShotFrameBinding, ShotFrameCandidate, ShotlistColumnKey, ShotRow } from './shotlist';
 export {
@@ -89,9 +120,6 @@ export type NodeType =
   | 'plugin-node'
   | 'canvas-note'
   | 'comment';
-
-/** 3D 导演节点的持久化运行时选择；字段缺失由 resolver 兼容为轻量网页运行时。 */
-export type DirectorRuntimeKind = 'lightweight-web' | 'blender';
 
 // 内置图像预设可请求的生成后处理流程
 export type ImagePostProcess = 'character-8-direction-grid';
@@ -236,6 +264,8 @@ export interface BaseNodeData {
   directorStatus?: 'idle' | 'open' | 'ready';
   directorCaptureUrls?: string[];        // 从导演台同步的截图 URL 列表
   directorCaptureFilePaths?: string[];   // 对应本地路径
+  directorScene?: DirectorSceneReference; // 结构化 Director Scene 的不可变项目文件引用
+  directorResultManifest?: DirectorResultManifestReference; // 当前结果清单的不可变项目文件引用
   /** 轻量笔记/绘图元素。与 AI 生成节点数据语义隔离。 */
   note?: CanvasNoteData;
   [key: string]: unknown;
