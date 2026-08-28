@@ -90,6 +90,9 @@ export type NodeType =
   | 'canvas-note'
   | 'comment';
 
+/** 3D 导演节点的持久化运行时选择；字段缺失由 resolver 兼容为轻量网页运行时。 */
+export type DirectorRuntimeKind = 'lightweight-web' | 'blender';
+
 // 内置图像预设可请求的生成后处理流程
 export type ImagePostProcess = 'character-8-direction-grid';
 
@@ -228,6 +231,7 @@ export interface BaseNodeData {
   shotlistRows?: ShotRow[];                 // 逐行镜头
   shotlistColumns?: ShotlistColumnKey[];    // 当前显示的列（常驻列恒在其中）
   // ── 3D 导演台（ai-director）──
+  directorRuntimeKind?: DirectorRuntimeKind; // 缺失=lightweight-web；未知运行时必须失败关闭
   directorInstanceId?: string;           // 导演台 localStorage 隔离实例 ID
   directorStatus?: 'idle' | 'open' | 'ready';
   directorCaptureUrls?: string[];        // 从导演台同步的截图 URL 列表

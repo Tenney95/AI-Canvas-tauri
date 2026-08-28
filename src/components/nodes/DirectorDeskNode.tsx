@@ -2,10 +2,10 @@
  * DirectorDeskNode — 3D 导演台节点
  * 通过 Tauri 独立窗口打开 Tenney95/3d-director-desk，截图/导出回写本节点。
  */
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { Icon } from '@iconify/react';
-import type { BaseNodeData } from '../../types';
+import type { BaseNodeData, DirectorRuntimeKind } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
 import GooeyBtn from './shared/GooeyBtn';
@@ -13,20 +13,17 @@ import ResizeHandle from './shared/ResizeHandle';
 import { useNodeRename } from './shared/useNodeRename';
 import { useAppStore } from '../../store/useAppStore';
 import { saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
+import { collectDirectorImageUrls } from '../../services/directorDeskService';
 import {
-  collectDirectorImageUrls,
-  type DirectorCaptureItem,
-} from '../../services/directorDeskService';
-import {
-  openDirectorDeskWindow,
-  requestDirectorWindowAction,
-  subscribeDirectorDeskWindow,
-  type DirectorDeskProtocolMessage,
-} from '../../services/directorDeskWindowService';
-import {
-  getDirectorDeskRuntimeStatus,
-  requiresDirectorDeskRuntime,
-} from '../../services/directorDeskRuntimeService';
+  DIRECTOR_RUNTIME_OPTIONS,
+  exportDirectorRuntimeFrame,
+  exportDirectorRuntimeVideo,
+  getDirectorRuntimeAvailability,
+  openDirectorRuntime,
+  resolveDirectorRuntime,
+  subscribeDirectorRuntime,
+  type DirectorRuntimeCapture,
+} from '../../services/directorRuntimeRegistry';
 
 const DEFAULT_W = 320;
 const DEFAULT_H = 240;
@@ -55,6 +52,17 @@ function DirectorDeskNode({
     () => (typeof data.directorInstanceId === 'string' && data.directorInstanceId) || id,
     [data.directorInstanceId, id],
   );
+  const runtimeResolution = useMemo(
+    () => resolveDirectorRuntime(data.directorRuntimeKind),
+    [data.directorRuntimeKind],
+  );
+  const runtimeKind = runtimeResolution.supported ? runtimeResolution.kind : null;
+  const runtimeDescriptor = runtimeResolution.supported
+    ? runtimeResolution.descriptor
+    : null;
+  const runtimeUnavailableReason = runtimeResolution.supported
+    ? runtimeResolution.descriptor.unavailableReason
+    : runtimeResolution.reason;
 
   const captureUrls = useMemo(
     () => collectDirectorImageUrls(data),
@@ -79,7 +87,7 @@ function DirectorDeskNode({
   );
 
   const persistCaptures = useCallback(
-    async (captures: DirectorCaptureItem[]) => {
+    async (captures: DirectorRuntimeCapture[]) => {
       if (!captures.length) return;
       const projectId = currentProjectId;
       const nextUrls: string[] = Array.isArray(data.directorCaptureUrls)
@@ -135,16 +143,14 @@ function DirectorDeskNode({
   );
 
   useEffect(() => {
-    function onMessage(message: DirectorDeskProtocolMessage) {
-      const type = message.type;
-
-      if (type === 'storyai:director-desk-ready') {
+    return subscribeDirectorRuntime(data.directorRuntimeKind, instanceId, (event) => {
+      if (event.type === 'ready') {
         setReady(true);
         updateNodeDataTransient(id, { directorStatus: 'ready', error: undefined });
         return;
       }
 
-      if (type === 'storyai:director-desk-close') {
+      if (event.type === 'closed') {
         setReady(false);
         updateNodeDataTransient(id, {
           directorStatus: captureUrls.length ? 'ready' : 'idle',
@@ -152,42 +158,31 @@ function DirectorDeskNode({
         return;
       }
 
-      if (type === 'storyai:director-desk-captures-sent') {
-        const captures = (message.payload?.captures ?? []) as DirectorCaptureItem[];
-        void persistCaptures(
-          captures
-            .map((c) => ({
-              dataUrl: String(c?.dataUrl || ''),
-              fileName: String(c?.fileName || 'director-capture.png'),
-            }))
-            .filter((c) => c.dataUrl.startsWith('data:image/')),
-        );
+      if (event.type === 'captures') {
+        void persistCaptures(event.captures);
       }
-    }
-
-    return subscribeDirectorDeskWindow(instanceId, onMessage);
-  }, [captureUrls.length, id, instanceId, persistCaptures, updateNodeDataTransient]);
+    });
+  }, [captureUrls.length, data.directorRuntimeKind, id, instanceId, persistCaptures, updateNodeDataTransient]);
 
   const handleOpen = useCallback(async () => {
     setReady(false);
     updateNodeDataTransient(id, { directorStatus: 'open' });
     try {
-      if (requiresDirectorDeskRuntime()) {
-        const runtime = await getDirectorDeskRuntimeStatus();
-        if (!runtime.installed) {
-          updateNodeDataTransient(id, { directorStatus: 'idle', error: undefined });
-          useAppStore.getState().requestDirectorDeskRuntime(instanceId, true);
-          return;
-        }
+      const availability = await getDirectorRuntimeAvailability(data.directorRuntimeKind);
+      if (availability.state === 'setup-required') {
+        updateNodeDataTransient(id, { directorStatus: 'idle', error: undefined });
+        useAppStore.getState().requestDirectorDeskRuntime(instanceId, true);
+        return;
       }
-      await openDirectorDeskWindow({ instanceId, theme: deskTheme });
+      if (availability.state === 'unavailable') throw new Error(availability.reason);
+      await openDirectorRuntime(data.directorRuntimeKind, { instanceId, theme: deskTheme });
     } catch (error) {
       const message = error instanceof Error ? error.message : '打开 3D 导演台失败';
       setReady(false);
       updateNodeDataTransient(id, { directorStatus: 'idle', error: message });
       showToast(message, 'error');
     }
-  }, [deskTheme, id, instanceId, showToast, updateNodeDataTransient]);
+  }, [data.directorRuntimeKind, deskTheme, id, instanceId, showToast, updateNodeDataTransient]);
 
   const handleExportFrame = useCallback(async () => {
     if (!ready) {
@@ -196,23 +191,18 @@ function DirectorDeskNode({
     }
     setBusy('导出当前帧…');
     try {
-      const result = (await requestDirectorWindowAction(instanceId, 'export.frame', {
+      const result = await exportDirectorRuntimeFrame(data.directorRuntimeKind, instanceId, {
         position: 'current',
         quality: '1080p',
         fileName: `${(data.label as string) || 'director'}-frame.png`,
-      })) as { dataUrl?: string; fileName?: string } | undefined;
-
-      const dataUrl = result?.dataUrl;
-      if (!dataUrl?.startsWith('data:image/')) {
-        throw new Error('导演台未返回有效帧图');
-      }
-      await persistCaptures([{ dataUrl, fileName: result?.fileName || 'director-frame.png' }]);
+      });
+      await persistCaptures([result]);
     } catch (err) {
       showToast(err instanceof Error ? err.message : '导出帧失败', 'error');
     } finally {
       setBusy(null);
     }
-  }, [data.label, instanceId, persistCaptures, ready, showToast]);
+  }, [data.directorRuntimeKind, data.label, instanceId, persistCaptures, ready, showToast]);
 
   const handleExportVideo = useCallback(async () => {
     if (!ready) {
@@ -221,21 +211,17 @@ function DirectorDeskNode({
     }
     setBusy('导出参考视频…');
     try {
-      const result = (await requestDirectorWindowAction(
+      const result = await exportDirectorRuntimeVideo(
+        data.directorRuntimeKind,
         instanceId,
-        'export.video',
         {
           quality: '720p',
           fps: 24,
           fileName: `${(data.label as string) || 'director'}-ref.mp4`,
         },
-        90_000,
-      )) as { dataUrl?: string; blobUrl?: string; fileName?: string } | undefined;
+      );
 
-      const mediaUrl = result?.dataUrl || result?.blobUrl;
-      if (!mediaUrl) {
-        throw new Error('导演台未返回参考视频（需先录制运镜轨迹）');
-      }
+      const mediaUrl = result.mediaUrl;
 
       let videoUrl = mediaUrl;
       let filePath: string | undefined;
@@ -266,7 +252,26 @@ function DirectorDeskNode({
     } finally {
       setBusy(null);
     }
-  }, [currentProjectId, data.filePath, data.label, id, instanceId, ready, showToast, updateNodeData]);
+  }, [currentProjectId, data.directorRuntimeKind, data.filePath, data.label, id, instanceId, ready, showToast, updateNodeData]);
+
+  const handleRuntimeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const nextKind = event.target.value as DirectorRuntimeKind;
+    if (nextKind === runtimeKind) return;
+    setReady(false);
+    setBusy(null);
+    updateNodeData(id, {
+      directorRuntimeKind: nextKind,
+      directorStatus: 'idle',
+      error: undefined,
+    });
+  }, [id, runtimeKind, updateNodeData]);
+
+  const canOpenRuntime = runtimeResolution.supported
+    && runtimeResolution.descriptor.capabilities.open;
+  const canExportFrame = runtimeResolution.supported
+    && runtimeResolution.descriptor.capabilities.exportFrame;
+  const canExportVideo = runtimeResolution.supported
+    && runtimeResolution.descriptor.capabilities.exportVideo;
 
   return (
     <>
@@ -285,6 +290,28 @@ function DirectorDeskNode({
           onDoubleClick={() => { void handleOpen(); }}
         >
           <div className="node-preview director-preview">
+            <div className="nodrag nopan absolute left-2 top-2 z-10">
+              <select
+                value={runtimeKind ?? ''}
+                onChange={handleRuntimeChange}
+                aria-label="3D 导演运行时"
+                data-tooltip={runtimeUnavailableReason}
+                className="h-7 max-w-[180px] rounded-md border border-canvas-border bg-canvas-surface/90 px-2 text-[11px] text-canvas-text shadow-sm outline-none focus:border-violet-400"
+              >
+                {!runtimeResolution.supported && (
+                  <option value="" disabled>未知运行时</option>
+                )}
+                {DIRECTOR_RUNTIME_OPTIONS.map((option) => (
+                  <option
+                    key={option.kind}
+                    value={option.kind}
+                    disabled={!option.selectable && runtimeKind !== option.kind}
+                  >
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             {captureUrls.length > 0 ? (
               <div className="director-capture-grid">
                 {captureUrls.slice(-4).map((url, idx) => (
@@ -300,8 +327,10 @@ function DirectorDeskNode({
             ) : (
               <div className="node-preview-placeholder">
                 <Icon icon="mdi:video-3d" width={28} height={28} />
-                <span>3D 导演台</span>
-                <span className="text-node-edit-hint">双击打开 · 同步截图后连线生视频</span>
+                <span>{runtimeDescriptor?.label ?? '未知运行时'}</span>
+                <span className="text-node-edit-hint">
+                  {runtimeUnavailableReason || '双击打开 · 同步截图后连线生视频'}
+                </span>
               </div>
             )}
           </div>
@@ -310,14 +339,16 @@ function DirectorDeskNode({
             <button
               type="button"
               className="director-node-btn primary"
+              disabled={!canOpenRuntime || !!busy}
               onClick={() => { void handleOpen(); }}
+              data-tooltip={runtimeUnavailableReason}
             >
-              {ready ? '聚焦导演台' : '打开导演台'}
+              {canOpenRuntime ? (ready ? '聚焦导演台' : '打开导演台') : '运行时不可用'}
             </button>
             <button
               type="button"
               className="director-node-btn grid h-7 w-7 place-items-center p-0"
-              disabled={!ready || !!busy}
+              disabled={!ready || !canExportFrame || !!busy}
               onClick={() => { void handleExportFrame(); }}
               aria-label="同步当前帧"
               data-tooltip="同步当前帧"
@@ -327,7 +358,7 @@ function DirectorDeskNode({
             <button
               type="button"
               className="director-node-btn grid h-7 w-7 place-items-center p-0"
-              disabled={!ready || !!busy}
+              disabled={!ready || !canExportVideo || !!busy}
               onClick={() => { void handleExportVideo(); }}
               aria-label="导出参考视频"
               data-tooltip="导出参考视频"
@@ -335,7 +366,9 @@ function DirectorDeskNode({
               <Icon icon="lucide:video" width={14} height={14} />
             </button>
             <span className="director-node-meta">
-              {busy || (captureUrls.length > 0 ? `${captureUrls.length} 张参考图` : '未同步截图')}
+              {busy
+                || runtimeUnavailableReason
+                || (captureUrls.length > 0 ? `${captureUrls.length} 张参考图` : '未同步截图')}
             </span>
           </div>
 

@@ -47,6 +47,34 @@ function mediaNode(id: string, projectId: string): Node<BaseNodeData> {
   };
 }
 
+function directorNode(
+  id: string,
+  runtime: 'lightweight-web' | 'blender',
+  status: 'loading' | 'error',
+): Node<BaseNodeData> {
+  return {
+    id,
+    type: 'ai-director',
+    position: { x: 0, y: 0 },
+    data: {
+      label: id,
+      type: 'ai-director',
+      role: 'source',
+      status,
+      error: '源节点的瞬时错误',
+      directorRuntimeKind: runtime,
+      directorInstanceId: id,
+      directorStatus: 'ready',
+      directorCaptureUrls: ['asset:///director/frame-a.png'],
+      directorCaptureFilePaths: ['/data/project-a/frame-a.png'],
+      imageUrl: 'asset:///director/frame-a.png',
+      thumbnailUrl: 'asset:///director/frame-a.png',
+      videoUrl: 'asset:///director/reference.mp4',
+      filePath: '/data/project-a/reference.mp4',
+    },
+  };
+}
+
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState(), true);
   fileMocks.copyFileToProjectData.mockReset();
@@ -124,6 +152,37 @@ describe('canvas clipboard', () => {
     ));
     expect(pastedEdges).toHaveLength(1);
   });
+
+  it('copies director outputs but creates an independent runtime instance', () => {
+    const source = directorNode('director-source', 'blender', 'error');
+    useAppStore.setState({
+      currentProjectId: 'project-a',
+      nodes: [source],
+      edges: [],
+      selectedNodeIds: [source.id],
+      showToast: vi.fn(),
+    });
+
+    useAppStore.getState().copySelectedNodes();
+    useAppStore.getState().pasteNodes({ x: 30, y: 30 });
+
+    const pasted = useAppStore.getState().nodes.find((item) => item.id !== source.id);
+    expect(pasted).toBeDefined();
+    expect(pasted?.data).toMatchObject({
+      directorRuntimeKind: 'blender',
+      directorInstanceId: pasted?.id,
+      directorStatus: 'idle',
+      status: 'success',
+      directorCaptureUrls: ['asset:///director/frame-a.png'],
+      directorCaptureFilePaths: ['/data/project-a/frame-a.png'],
+      imageUrl: 'asset:///director/frame-a.png',
+      videoUrl: 'asset:///director/reference.mp4',
+      filePath: '/data/project-a/reference.mp4',
+    });
+    expect(pasted?.data.error).toBeUndefined();
+    expect(pasted?.data.directorCaptureUrls).not.toBe(source.data.directorCaptureUrls);
+    expect(useAppStore.getState().directorDeskRuntimeRequest).toBeNull();
+  });
 });
 
 describe('control-drag duplication', () => {
@@ -173,6 +232,28 @@ describe('control-drag duplication', () => {
       source: stationaryClone?.id,
       target: 'downstream',
     }));
+  });
+
+  it('keeps director media while resetting the cloned runtime session', () => {
+    const source = directorNode('director-dragged', 'lightweight-web', 'loading');
+    useAppStore.setState({ nodes: [source], edges: [] });
+
+    useAppStore.getState().duplicateNode(source.id);
+
+    const clone = useAppStore.getState().nodes.find((item) => item.id !== source.id);
+    expect(clone).toBeDefined();
+    expect(clone?.data).toMatchObject({
+      directorRuntimeKind: 'lightweight-web',
+      directorInstanceId: clone?.id,
+      directorStatus: 'idle',
+      status: 'success',
+      directorCaptureUrls: ['asset:///director/frame-a.png'],
+      imageUrl: 'asset:///director/frame-a.png',
+      videoUrl: 'asset:///director/reference.mp4',
+    });
+    expect(clone?.data.error).toBeUndefined();
+    expect(clone?.data.directorCaptureUrls).not.toBe(source.data.directorCaptureUrls);
+    expect(useAppStore.getState().directorDeskRuntimeRequest).toBeNull();
   });
 });
 

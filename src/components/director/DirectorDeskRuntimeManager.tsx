@@ -11,7 +11,10 @@ import {
   subscribeDirectorDeskInstallProgress,
   type DirectorDeskInstallProgress,
 } from '../../services/directorDeskRuntimeService';
-import { openDirectorDeskWindow } from '../../services/directorDeskWindowService';
+import {
+  openDirectorRuntime,
+  resolveDirectorRuntime,
+} from '../../services/directorRuntimeRegistry';
 import DirectorDeskDownloadDialog, {
   type DirectorDeskDialogPhase,
 } from './DirectorDeskDownloadDialog';
@@ -119,15 +122,23 @@ function DirectorDeskRuntimeRequestController({
       setVersion(status.version);
       setProgress(100);
       clearRequest();
-      const nodeStillExists = useAppStore.getState().nodes.some((node) => {
+      const matchingNode = useAppStore.getState().nodes.find((node) => {
         if (node.type !== 'ai-director') return false;
         const nodeInstanceId = typeof node.data.directorInstanceId === 'string'
           ? node.data.directorInstanceId
           : node.id;
         return nodeInstanceId === request.instanceId;
       });
-      if (request.openAfterInstall && nodeStillExists) {
-        await openDirectorDeskWindow({
+      const runtimeResolution = matchingNode
+        ? resolveDirectorRuntime(matchingNode.data.directorRuntimeKind)
+        : null;
+      if (
+        request.openAfterInstall
+        && matchingNode
+        && runtimeResolution?.supported
+        && runtimeResolution.kind === 'lightweight-web'
+      ) {
+        await openDirectorRuntime(matchingNode.data.directorRuntimeKind, {
           instanceId: request.instanceId,
           theme: theme === 'light' ? 'light' : 'dark',
         });
