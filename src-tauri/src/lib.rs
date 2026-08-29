@@ -237,11 +237,17 @@ fn set_main_window_native_corners(app: tauri::AppHandle, rounded: bool) -> Resul
 
 /// 将用户明确选择的保存目录和素材目录加入本次进程的文件与 asset 协议 scope。
 /// ComfyUI 安装目录不经过此命令，仍由专用启动命令独立校验。
+///
+/// `base_data_dir` 另外会被记为原生侧的用户存储根：需要落到用户目录的派生数据
+/// （例如智能体压缩包解压目录）由它定位，从而不必占用系统盘。
 #[tauri::command]
 fn sync_authorized_directories(
     app: tauri::AppHandle,
     directories: Vec<String>,
+    base_data_dir: Option<String>,
 ) -> Result<Vec<String>, String> {
+    path_policy::set_user_storage_root(&app, base_data_dir.as_deref());
+
     let fs_scope = app.fs_scope();
     let asset_scope = app.state::<tauri::scope::Scopes>();
     let mut rejected = Vec::new();
@@ -1041,6 +1047,7 @@ pub fn run() {
         .manage(blender_runtime::ProjectGrantState::default())
         .manage(blender_runtime::production_blender_job_core())
         .manage(mcp_bridge::McpBridgeState::default())
+        .manage(path_policy::UserStorageRoot::default())
         .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())

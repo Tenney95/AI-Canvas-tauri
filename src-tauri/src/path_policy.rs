@@ -8,7 +8,10 @@
 //! 2. 路径校验：解析真实路径（含符号链接），要求落在应用自有数据目录，
 //!    或用户通过对话框 / 外部素材目录显式授权过的 fs scope 内。
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    path::{Component, Path, PathBuf},
+    sync::Mutex,
+};
 
 use tauri::{Manager, Runtime, Webview};
 use tauri_plugin_fs::FsExt;
@@ -451,6 +454,62 @@ pub fn authorize_launch_target<R: Runtime>(
     }
 
     Ok(canonical.to_string_lossy().into_owned())
+}
+
+/// 用户在设置里指定的文件保存根目录（`AppConfig.baseDataDir` 的原生侧投影）。
+///
+/// 只存在于本进程内存：权威值持久化在前端 AppConfig，每次启动或改动都会由
+/// `sync_authorized_directories` 重新带入。需要落到用户目录的派生数据
+/// （例如智能体压缩包解压目录）通过它定位，避免默认写进系统盘。
+#[derive(Default)]
+pub struct UserStorageRoot(pub Mutex<Option<PathBuf>>);
+
+/// 记录用户设置的保存根目录；传入空值表示回退到应用自有目录。
+///
+/// 校验标准与 fs scope 授权保持一致：必须是已存在的普通目录，且不得落在应用
+/// 私有子树内。校验失败时静默清空并回退，不阻断设置同步 —— 否则用户把一个
+/// 暂时不可用的盘符设为保存根目录后，整个设置面板都会报错。
+pub fn set_user_storage_root<R: Runtime>(app: &tauri::AppHandle<R>, raw: Option<&str>) {
+    let next = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| resolve_user_storage_root(app, value));
+
+    if let Some(state) = app.try_state::<UserStorageRoot>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = next;
+        }
+    }
+}
+
+fn resolve_user_storage_root<R: Runtime>(app: &tauri::AppHandle<R>, raw: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return None;
+    }
+    // 与 fs scope 授权同样拒绝符号链接：否则可用软链把「用户目录」指向凭据等私有子树。
+    let metadata = std::fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_dir() || is_link_or_reparse(&metadata) {
+        return None;
+    }
+    let resolved = canonicalize_simplified(&path).ok()?;
+    let resolved_metadata = std::fs::symlink_metadata(&resolved).ok()?;
+    if !resolved_metadata.is_dir() || is_link_or_reparse(&resolved_metadata) {
+        return None;
+    }
+    if overlaps_private_app_path(app, &resolved) {
+        return None;
+    }
+    Some(resolved)
+}
+
+/// 读取用户设置的保存根目录；未设置或当前不可用时返回 None，由调用方回退到应用自有目录。
+pub fn user_storage_root<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+    app.try_state::<UserStorageRoot>()?
+        .0
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
 }
 
 #[cfg(test)]

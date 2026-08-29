@@ -174,7 +174,16 @@ fn registry_file<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(agent_private_dir(app)?.join(REGISTRY_FILE_NAME))
 }
 
+/// 智能体压缩包解压后的托管目录。
+///
+/// 默认跟随用户在设置里指定的保存根目录，避免把展开后体积可达 20 GB 的包写进系统盘；
+/// 用户未设置该目录或它当前不可用时，回退到应用自有数据目录。
+/// 注意这里只决定「托管副本」的位置：`agent-private` 注册表始终留在应用私有目录，
+/// 不随保存根目录迁移，否则 sourceId 到真实外部路径的映射会暴露成可读写路径。
 fn managed_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    if let Some(directory) = crate::path_policy::user_storage_root(app) {
+        return Ok(directory.join(MANAGED_ROOT_NAME));
+    }
     app.path()
         .app_local_data_dir()
         .map(|directory| directory.join(MANAGED_ROOT_NAME))

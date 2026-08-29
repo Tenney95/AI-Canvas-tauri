@@ -147,6 +147,9 @@ export * from './fs/externalEditors';
 /**
  * 同步用户明确选择的文件目录白名单。
  * 仅保存根目录和素材文件夹可进入；ComfyUI 等其他配置路径不得传入。
+ *
+ * 保存根目录会额外同步给原生侧作为用户存储根：智能体压缩包解压目录等派生数据
+ * 据此落到用户指定的磁盘，而不是系统盘。传 null 表示未设置，原生侧回退到默认目录。
  */
 export async function syncAuthorizedDirectories(config: {
   baseDataDir?: string;
@@ -160,6 +163,7 @@ export async function syncAuthorizedDirectories(config: {
 
   const rejected = await invoke<string[]>('sync_authorized_directories', {
     directories: [...new Set(directories)],
+    baseDataDir: config.baseDataDir?.trim() || null,
   });
   if (rejected.length > 0) {
     console.warn('[fileService] 已跳过不存在或无效的授权目录:', rejected);
