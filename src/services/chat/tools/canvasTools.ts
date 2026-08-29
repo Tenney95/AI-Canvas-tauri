@@ -48,6 +48,9 @@ const NODE_TYPES: NodeType[] = [
   'comment',
 ];
 
+/** 宫格分镜只能由已有图片裁切产生，通用 Agent 创建入口不得伪造空宫格。 */
+const AGENT_CREATABLE_NODE_TYPES = NODE_TYPES.filter((type) => type !== 'ai-storyboard');
+
 const NODE_STATUSES = ['idle', 'loading', 'success', 'error'] as const;
 
 /** 画面比例对这些节点才有意义；动画/分镜/镜头表的节点框由各自组件按格数算，不在这里改。 */
@@ -777,7 +780,8 @@ export function registerCanvasAgentTools(): Array<() => void> {
         'prompt 里可写 @{nodeId:label} 或 @drama{assetId:name} 引用已有节点输出与资产库设定，生成时自动展开。',
         'type 按这个节点最终要产出什么来选，不要因为内容是文字描述就一律建文本节点：',
         '产物是画面的（角色设定图、场景图、道具图、关键帧、单张分镜）用 ai-image，把画面描述写进 prompt；',
-        '产物是镜头的用 ai-video，配乐旁白用 ai-audio，多格分镜用 ai-storyboard，镜头表用 ai-shotlist。',
+        '产物是镜头的用 ai-video，配乐旁白用 ai-audio，多宫格图片也用 ai-image，镜头表用 ai-shotlist。',
+        'ai-storyboard 是把已有图片进行宫格裁切后产生的素材节点，本工具不能直接创建，也不能给它提示词或运行生成。',
         '产物本身就是文字的用 ai-text（markdown 排版用 ai-markdown）。',
         '文本节点分 prompt 和 content 两个口，别混：',
         'content 是已经写好的正文（全局提示词、视觉基调、世界观设定、剧本全文、你自己刚写完的段落），',
@@ -803,7 +807,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
               required: ['type', 'label'],
               additionalProperties: false,
               properties: {
-                type: { type: 'string', enum: NODE_TYPES },
+                type: { type: 'string', enum: AGENT_CREATABLE_NODE_TYPES },
                 label: { type: 'string', minLength: 1, maxLength: 120 },
                 prompt: { type: 'string', maxLength: 8000 },
                 content: { type: 'string', maxLength: 40000 },
@@ -821,6 +825,11 @@ export function registerCanvasAgentTools(): Array<() => void> {
       buildInputDisplay: createNodesInputDisplay,
       execute: async (context, input) => {
         assertCanvasRevision(context);
+        const storyboardCount = input.nodes.filter((node) => node.type === 'ai-storyboard').length;
+        if (storyboardCount > 0) {
+          const message = `宫格分镜只能由已有图片裁切产生，不能直接创建（${storyboardCount} 个无效节点）`;
+          return { status: 'error', summary: message, modelContent: message };
+        }
         // 媒体节点的 output 存的是本地路径或 URL，写正文进去会直接建出一个坏节点
         const nonText = input.nodes.filter(
           (node) => node.content?.trim() && !TEXT_OUTPUT_NODE_TYPES.has(node.type),
@@ -935,6 +944,10 @@ export function registerCanvasAgentTools(): Array<() => void> {
         };
         const targets = useAppStore.getState().nodes
           .filter((node) => targetIds.includes(node.id));
+        if (input.prompt?.trim() && targets.some((node) => node.data.type === 'ai-storyboard')) {
+          const message = '宫格分镜是已有图片的裁切结果，不能设置生成提示词';
+          return { status: 'error', summary: message, modelContent: message };
+        }
         const beforeAudit = new Map(
           targets.map((node) => [node.id, captureNodeAudit(node)]),
         );
@@ -1192,6 +1205,13 @@ export function registerCanvasAgentTools(): Array<() => void> {
         }
         if (targetIds.length > MAX_RUN_NODES) {
           const message = `一次最多运行 ${MAX_RUN_NODES} 个节点，当前匹配 ${targetIds.length} 个`;
+          return { status: 'error', summary: message, modelContent: message };
+        }
+        const storyboardCount = useAppStore.getState().nodes.filter((node) => (
+          targetIds.includes(node.id) && node.data.type === 'ai-storyboard'
+        )).length;
+        if (storyboardCount > 0) {
+          const message = `宫格分镜是已有图片的裁切结果，不能运行生成（${storyboardCount} 个无效节点）`;
           return { status: 'error', summary: message, modelContent: message };
         }
         const results: Array<{ nodeId: string; status: string; message?: string }> = [];

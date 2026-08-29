@@ -174,6 +174,39 @@ describe('canvas agent tools', () => {
     expect(useAppStore.getState().nodes).toHaveLength(2);
   });
 
+  it('treats storyboard grids as image-cut results instead of generatable nodes', async () => {
+    const createTool = getAgentTool('canvas_create_nodes')!;
+    expect(createTool.inputSchema.properties).toMatchObject({
+      nodes: { items: { properties: { type: { enum: expect.not.arrayContaining(['ai-storyboard']) } } } },
+    });
+
+    const created = await createTool.execute(context(), {
+      nodes: [{ type: 'ai-storyboard', label: '九宫格', prompt: '生成九宫格分镜' }],
+    });
+    expect(created.status).toBe('error');
+    expect(created.summary).toContain('只能由已有图片裁切产生');
+    expect(useAppStore.getState().nodes).toHaveLength(2);
+
+    useAppStore.setState({
+      nodes: [
+        ...useAppStore.getState().nodes,
+        node('grid', { type: 'ai-storyboard', imageUrl: 'asset://localhost/D:/data/grid.png' }),
+      ],
+    });
+    const updated = await getAgentTool('canvas_update_nodes')!.execute(context(), {
+      nodeIds: ['grid'],
+      prompt: '不应写入宫格',
+    });
+    expect(updated.status).toBe('error');
+    expect(updated.summary).toContain('不能设置生成提示词');
+    expect(useAppStore.getState().nodes.at(-1)?.data.prompt).toBeUndefined();
+
+    const run = await getAgentTool('canvas_run_nodes')!.execute(context(), { nodeIds: ['grid'] });
+    expect(run.status).toBe('error');
+    expect(run.summary).toContain('不能运行生成');
+    expect(executeGeneration).not.toHaveBeenCalled();
+  });
+
   it('returns structured node detail without leaking local media paths', async () => {
     const result = await getAgentTool('canvas_query')!.execute(context(), { detail: true });
     const payload = JSON.parse(result.modelContent);
