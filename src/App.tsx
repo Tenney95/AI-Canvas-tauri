@@ -2,7 +2,7 @@
  * App 根组件 — 装配 Header / Sidebar / Canvas / NodeMenu / SettingsPanel / Titlebar / Toast / AINodeDialog / WorkflowPanel
  * Tauri 环境下启用自定义窗口装饰和透明圆角窗口
  */
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { MotionConfig, motion, useReducedMotion } from 'framer-motion';
 import Header from './components/Header';
 import Titlebar from './components/Titlebar';
@@ -28,7 +28,10 @@ import { DOWNLOAD_MASCOT_EVENT } from './components/shared/ModelDownloadDialog';
 import UpdateBubble from './components/shared/mascot/UpdateBubble';
 import LazyLoadBoundary, { LazyLoadFallback } from './components/shared/LazyLoadBoundary';
 import { useMascotStatus } from './hooks/useMascotStatus';
+import { useMascotLifecycle } from './hooks/useMascotLifecycle';
 import { useMascotDrag } from './hooks/useMascotDrag';
+// type-only：Mascot 是懒加载的，类型导入不会把它拖进主包
+import type { MascotHandle } from './components/shared/mascot/Mascot';
 import { initComfyUIWindowBridge } from './services/comfyUIWindowService';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -321,6 +324,10 @@ export default function App() {
   // 任意节点处于生成中 → 吉祥物切换为 LOADING 形态
   const mascotLoading = useAppStore(selectMascotLoading);
   const mascotStatus = useMascotStatus();
+  // 播放句柄：窗口失焦、待审批任务等事件通过它触发一次性动画片段
+  const mascotHandleRef = useRef<MascotHandle | null>(null);
+  // 下载更新时显示的是吃豆人吉祥物，生命周期片段对不上，先停掉
+  useMascotLifecycle(mascotHandleRef, Boolean(mascotVisible) && !updating);
   const effectiveTheme = canvasBackground === 'off-white' ? 'light' : configTheme;
   const nativeCursor = useAppStore((s) => s.config.customCursor === false);
   useEffect(() => {
@@ -533,6 +540,7 @@ export default function App() {
                         theme={effectiveTheme}
                         reduceMotion={performanceMode || Boolean(reduceMotion)}
                         getDragForce={getMascotDragForce}
+                        handleRef={mascotHandleRef}
                       />
                     )}
                   </Suspense>
