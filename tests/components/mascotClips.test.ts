@@ -5,6 +5,7 @@ import {
   canPlayClip,
   createClipState,
   isClipFinished,
+  isGazeLocked,
   requestClip,
   sampleClipExpression,
   startClip,
@@ -126,6 +127,41 @@ describe('mascotClips', () => {
 
     stopClip(state);
     expect(sampleClipExpression(state, 'thinking')).toBe(EXPRESSIONS.thinking);
+  });
+
+  it('locks the gaze only for clips that mean looking away', () => {
+    const state = createClipState();
+    // 没有片段播放时视线正常跟随
+    expect(isGazeLocked(state)).toBe(false);
+
+    for (const id of ['sleep', 'sleepy', 'rest'] as const) {
+      startClip(state, id);
+      expect(isGazeLocked(state)).toBe(true);
+    }
+
+    // 反应类片段必须能看鼠标，否则醒来后眼神是死的
+    for (const id of ['wake', 'remind', 'excited', 'surprised', 'suspicious', 'angry'] as const) {
+      startClip(state, id);
+      expect(isGazeLocked(state)).toBe(false);
+    }
+  });
+
+  it('releases the gaze lock when a lingering clip is replaced', () => {
+    // sleep / rest 是常驻片段，只能靠更高优先级的片段顶掉来解锁
+    const state = createClipState();
+    startClip(state, 'sleep');
+    expect(isGazeLocked(state)).toBe(true);
+    startClip(state, 'wake');
+    expect(isGazeLocked(state)).toBe(false);
+  });
+
+  it('releases the gaze lock once the clip state is cleared', () => {
+    // 三个锁视线的片段都是常驻的，所以要么被顶掉、要么被显式清空才会解锁
+    const state = createClipState();
+    startClip(state, 'sleepy');
+    expect(isGazeLocked(state)).toBe(true);
+    stopClip(state);
+    expect(isGazeLocked(state)).toBe(false);
   });
 
   it('reports finished state consistently', () => {

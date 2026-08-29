@@ -59,6 +59,7 @@ import {
 import {
   advanceClip,
   createClipState,
+  isGazeLocked,
   requestClip,
   sampleClipVector,
   type MascotClipId,
@@ -721,6 +722,8 @@ export default function Mascot({
 
       // 帧间隔统一换算成秒：拖拽积分、片段推进和表情弹簧都要用同一个值
       const deltaSeconds = Math.min(elapsed / 1000, 1 / 30);
+      // 片段进度要在视线逻辑之前推进：睡眠这类片段需要立刻锁住视线，不能晚一帧
+      advanceClip(clipState, deltaSeconds);
       if (!motionEnabled) {
         dragForce.set(0, 0);
         dragForceVelocity.set(0, 0);
@@ -768,7 +771,9 @@ export default function Mascot({
 
       // 思考态与待机态都会在光标静止后自主张望，待机态等得更久、看得更远、节奏更慢。
       const isThinking = visualStatus === 'thinking';
-      const canWander = motionEnabled && (visualStatus === 'idle' || isThinking);
+      // 睡眠 / 打盹 / 放松期间角色不关注外界：视线回正，既不跟随鼠标也不自主张望
+      const gazeLocked = isGazeLocked(clipState);
+      const canWander = motionEnabled && (visualStatus === 'idle' || isThinking) && !gazeLocked;
       const wanderDelay = isThinking ? THINKING_POINTER_PRIORITY_MS : IDLE_GAZE_DELAY_MS;
       const wanderActive = canWander && now - lastPointerMoveAt >= wanderDelay;
       if (wanderActive && !wanderEngaged) nextWanderAt = t; // 刚接管视线就换个新落点
@@ -813,12 +818,13 @@ export default function Mascot({
       }
 
       // 鼠标刚移动时仍优先跟随用户，静止够久才交给自主张望。
-      const allowGaze = visualStatus === 'idle' || isThinking;
+      const allowGaze = (visualStatus === 'idle' || isThinking) && !gazeLocked;
       const gazeTarget = wanderActive ? wanderLook : look;
       const px = motionEnabled && allowGaze ? gazeTarget.x : 0;
       const py = motionEnabled && allowGaze ? gazeTarget.y : 0;
-      const headPx = motionEnabled && visualStatus === 'idle' ? look.x : 0;
-      const headPy = motionEnabled && visualStatus === 'idle' ? look.y : 0;
+      // 头部跟随也要一起停，否则头转了眼睛不转，看着很别扭
+      const headPx = motionEnabled && visualStatus === 'idle' && !gazeLocked ? look.x : 0;
+      const headPy = motionEnabled && visualStatus === 'idle' && !gazeLocked ? look.y : 0;
 
       if (motionEnabled) {
         // 用帧率无关的指数逼近：渲染循环会在 30/60fps 之间切换，
@@ -887,9 +893,8 @@ export default function Mascot({
           scheduleBlink(t);
         }
       }
-      // 片段推进后得到目标表情；眨眼乘在 open 上 —— 闭眼就是眼睑合拢，
+      // 取当前片段的目标表情；眨眼乘在 open 上 —— 闭眼就是眼睑合拢，
       // 比原来压扁整个几何体更接近真实的眨眼
-      advanceClip(clipState, deltaSeconds);
       sampleClipVector(clipState, STATUS_EXPRESSIONS[visualStatus], expressionTarget);
       for (let index = 0; index < eyes.length; index += 1) {
         // 眨单眼时另一只保持睁开

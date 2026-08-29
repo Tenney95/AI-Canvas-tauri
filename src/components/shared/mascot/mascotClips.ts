@@ -198,6 +198,19 @@ export function advanceClip(state: ClipPlaybackState, dt: number): void {
 }
 
 /**
+ * 这些片段期间角色处于「不关注外界」的状态：睡着、打盹、放松。
+ * 此时视线应当回正 —— 既不跟随鼠标，也不自主张望。
+ */
+const GAZE_LOCKED_CLIPS: ReadonlySet<MascotClipId> = new Set<MascotClipId>([
+  'sleep', 'sleepy', 'rest',
+]);
+
+/** 当前片段是否需要锁住视线。没有片段播放时不锁。 */
+export function isGazeLocked(state: ClipPlaybackState): boolean {
+  return state.clipId !== null && GAZE_LOCKED_CLIPS.has(state.clipId);
+}
+
+/**
  * 取当前时刻的目标表情。
  *
  * 关键帧之间是阶梯切换而非插值：平滑由弹簧负责，这里只负责「现在想要什么」。
