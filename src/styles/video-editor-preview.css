@@ -1,0 +1,497 @@
+/* ── 预览区 ── */
+.video-editor-preview {
+  background: var(--video-editor-card);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+}
+.video-editor-preview:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  background: var(--video-editor-card);
+}
+.video-editor-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(45deg, var(--white-alpha-03) 25%, transparent 25%, transparent 75%, var(--white-alpha-03) 75%),
+    linear-gradient(45deg, var(--white-alpha-03) 25%, transparent 25%, transparent 75%, var(--white-alpha-03) 75%),
+    var(--video-editor-panel);
+  background-position: 0 0, 8px 8px;
+  background-size: 16px 16px;
+  overflow: auto;
+  position: relative;
+  padding: 16px;
+  align-items: safe center;
+  justify-items: safe center;
+}
+/* 播放状态指示器 — 画面四角微微发光表示正在播放 */
+.video-editor-stage.playing {
+  box-shadow: inset 0 0 40px rgba(99, 102, 241, 0.06);
+}
+
+/* 画布框：严格按输出宽高比适配 stage，所有主轨/叠加层都相对它定位 */
+.video-editor-canvas-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  background: #000;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--theme-text) 24%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--theme-bg) 72%, transparent),
+    0 12px 40px rgba(0, 0, 0, 0.36);
+}
+.video-editor-canvas-frame.zoomed {
+  max-width: none;
+  max-height: none;
+  flex: none;
+}
+.video-editor-video {
+  position: absolute;
+  /* 覆盖 Tailwind preflight 的 max-width: 100%，否则 scale > 1 时只放大高度而压扁宽度。 */
+  max-width: none;
+  max-height: none;
+  object-fit: fill;
+  display: block;
+  z-index: 1;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+.video-editor-video.track-hidden {
+  opacity: 0;
+}
+/* 交叠淡入的底画面压在主轨画面之下、黑底之上 */
+.video-editor-video.underlay {
+  z-index: 0;
+  pointer-events: none;
+}
+.video-editor-stage-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--theme-text-muted);
+  font-size: 13px;
+  z-index: 1;
+}
+.video-editor-stage-passthrough {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+/* 画面信息条 */
+.video-editor-stage-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  font-variant-numeric: tabular-nums;
+  background: var(--video-editor-panel);
+  border-bottom: 1px solid var(--theme-border);
+}
+.video-editor-stage-info .dim { opacity: 0.7; }
+.video-editor-canvas-size-label {
+  color: var(--theme-text-secondary);
+  font-weight: 600;
+}
+
+/* 进度条 */
+.video-editor-progress-bar {
+  position: relative;
+  height: 8px;
+  flex-shrink: 0;
+  background: var(--white-alpha-08);
+  cursor: var(--cursor-pointer, pointer);
+  touch-action: none;
+}
+.video-editor-progress-fill {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  bottom: 2px;
+  background: var(--accent, #6366f1);
+  opacity: 0.5;
+  transition: width 0.05s linear;
+}
+.video-editor-progress-bar:hover .video-editor-progress-fill {
+  top: 1px;
+  bottom: 1px;
+}
+.video-editor-progress-thumb {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: var(--accent, #6366f1);
+  transform: translateY(-50%);
+  box-shadow: 0 0 6px rgba(99, 102, 241, 0.5);
+  pointer-events: none;
+  transition: transform 0.1s ease;
+}
+.video-editor-progress-bar:hover .video-editor-progress-thumb {
+  transform: translateY(-50%) scale(1.3);
+}
+
+/* 叠加层 — 可在画布上直接拖拽编辑 */
+.video-editor-main-selection {
+  position: absolute;
+  border: 1px solid transparent;
+  cursor: var(--cursor-move, move);
+  touch-action: none;
+  transform-origin: center;
+  z-index: 2;
+}
+.video-editor-main-selection.selected {
+  border-color: var(--accent, #6366f1);
+  box-shadow: 0 0 0 1px var(--accent, #6366f1);
+}
+.video-editor-main-selection.locked {
+  cursor: var(--cursor-default, default);
+}
+@media (hover: hover) and (pointer: fine) {
+  .video-editor-main-selection:not(.selected, .locked):hover {
+    border-color: color-mix(in srgb, var(--video-editor-accent) 55%, transparent);
+  }
+}
+.video-editor-overlay {
+  position: absolute;
+  border: 1px solid transparent;
+  cursor: var(--cursor-move, move);
+  touch-action: none;
+  overflow: visible;
+  transition: border-color 0.15s ease;
+  z-index: 2;
+}
+.video-editor-overlay.selected {
+  border-color: var(--accent, #6366f1);
+  box-shadow: 0 0 0 1px var(--accent, #6366f1);
+}
+.video-editor-overlay.locked {
+  cursor: var(--cursor-default, default);
+}
+.video-editor-overlay-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+.video-editor-overlay.text {
+  width: max-content;
+  max-width: 82%;
+  min-width: 40px;
+  min-height: 24px;
+}
+.video-editor-overlay-text {
+  max-width: min(720px, 72vw);
+  padding: 4px 6px;
+  line-height: 1.2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  user-select: none;
+}
+/* 四角缩放手柄 */
+.video-editor-overlay-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  min-width: 0;
+  padding: 0;
+  background: var(--accent, #6366f1);
+  border: 1.5px solid #fff;
+  border-radius: 2px;
+  z-index: 2;
+}
+.video-editor-overlay-handle.nw {
+  top: -5px;
+  left: -5px;
+  cursor: var(--cursor-nwse-resize, nwse-resize);
+}
+.video-editor-overlay-handle.ne {
+  top: -5px;
+  right: -5px;
+  cursor: var(--cursor-nesw-resize, nesw-resize);
+}
+.video-editor-overlay-handle.sw {
+  bottom: -5px;
+  left: -5px;
+  cursor: var(--cursor-nesw-resize, nesw-resize);
+}
+.video-editor-overlay-handle.se {
+  bottom: -5px;
+  right: -5px;
+  cursor: var(--cursor-nwse-resize, nwse-resize);
+}
+.video-editor-rotation-stem {
+  position: absolute;
+  bottom: calc(100% + 1px);
+  left: 50%;
+  width: 1px;
+  height: 18px;
+  background: var(--video-editor-accent);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.video-editor-rotation-handle {
+  position: absolute;
+  bottom: calc(100% + 14px);
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  min-width: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid #fff;
+  border-radius: 50%;
+  background: var(--video-editor-accent);
+  color: #fff;
+  cursor: grab;
+  transform: translateX(-50%);
+  z-index: 3;
+}
+.video-editor-rotation-handle:active { cursor: grabbing; }
+/* 主视频通常铺满画布，外置旋转手柄会被输出画布裁掉，因此收进安全区。 */
+.video-editor-main-selection .video-editor-rotation-stem {
+  top: 0;
+  bottom: auto;
+  height: 18px;
+}
+.video-editor-main-selection .video-editor-rotation-handle {
+  top: 10px;
+  bottom: auto;
+}
+.video-editor-snap-guide {
+  position: absolute;
+  z-index: 5;
+  background: var(--video-editor-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--video-editor-accent) 28%, transparent);
+  pointer-events: none;
+}
+.video-editor-snap-guide.vertical {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+}
+.video-editor-snap-guide.horizontal {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+/* 走带控制 */
+.video-editor-transport {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 8px 12px;
+  flex-shrink: 0;
+  background: var(--video-editor-panel);
+  border-top: 1px solid var(--theme-border);
+}
+.video-editor-transport-time,
+.video-editor-transport-playback,
+.video-editor-transport-view {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.video-editor-transport-time {
+  justify-self: start;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+.video-editor-transport-playback {
+  justify-self: center;
+  gap: 8px;
+}
+.video-editor-transport-view {
+  justify-self: end;
+  gap: 6px;
+}
+.video-editor-transport-btn {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text);
+  cursor: var(--cursor-pointer, pointer);
+  transition: background 140ms ease, transform 120ms var(--video-editor-ease-out), border-color 140ms ease;
+}
+.video-editor-transport-btn:hover {
+  background: var(--white-alpha-08);
+  border-color: var(--theme-border);
+}
+.video-editor-transport-btn:active {
+  transform: scale(0.95);
+}
+.video-editor-transport-btn.primary {
+  border-color: var(--video-editor-accent);
+  background: var(--video-editor-accent);
+  color: #fff;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+}
+.video-editor-transport-btn.primary:hover {
+  background: color-mix(in srgb, var(--video-editor-accent) 85%, #fff);
+  border-color: color-mix(in srgb, var(--video-editor-accent) 85%, #fff);
+}
+.video-editor-transport-btn.primary:active {
+  transform: scale(0.9);
+}
+.video-editor-timecode-edit,
+.video-editor-timecode-input {
+  width: 72px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--theme-text);
+  font-weight: 500;
+  text-align: center;
+}
+.video-editor-timecode-edit { cursor: var(--cursor-text, text); }
+.video-editor-timecode-edit:hover {
+  border-color: var(--theme-border);
+  background: var(--white-alpha-04);
+}
+.video-editor-timecode-input {
+  border-color: var(--video-editor-accent);
+  outline: none;
+  background: var(--video-editor-card);
+  box-shadow: 0 0 0 2px var(--brand-alpha-12);
+}
+.video-editor-timecode-separator {
+  padding: 0 5px;
+  color: var(--theme-text-muted);
+}
+.video-editor-timecode-total {
+  color: var(--theme-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.video-editor-preview-zoom {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 8px;
+  border: 1px solid var(--theme-border);
+  border-radius: 7px;
+  background: var(--white-alpha-04);
+  color: var(--theme-text-muted);
+}
+.video-editor-preview-zoom select {
+  height: 100%;
+  min-width: 62px;
+  padding: 0 22px 0 2px;
+  border: 0;
+  outline: none;
+  background-color: transparent;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  cursor: var(--cursor-pointer, pointer);
+}
+.video-editor-shortcut-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 2px;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+}
+.video-editor-shortcut-hint kbd,
+.video-editor-timeline-btn kbd {
+  min-width: 20px;
+  padding: 1px 5px;
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  background: var(--white-alpha-04);
+  color: var(--theme-text-secondary);
+  font: inherit;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: inset 0 -1px 0 var(--white-alpha-08);
+}
+.video-editor-shortcuts { position: relative; }
+.video-editor-shortcuts > summary {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  color: var(--theme-text-muted);
+  cursor: var(--cursor-pointer, pointer);
+  list-style: none;
+  transition: color 130ms ease, background 130ms ease;
+}
+.video-editor-shortcuts > summary::-webkit-details-marker { display: none; }
+.video-editor-shortcuts > summary:hover,
+.video-editor-shortcuts[open] > summary {
+  color: var(--theme-text);
+  background: var(--white-alpha-06);
+}
+.video-editor-shortcuts-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 9px);
+  z-index: 30;
+  display: grid;
+  gap: 8px;
+  width: 250px;
+  padding: 11px;
+  border: 1px solid var(--theme-border);
+  border-radius: 10px;
+  background: var(--video-editor-card);
+  box-shadow: var(--shadow-lg, 0 14px 36px rgba(0, 0, 0, 0.34));
+}
+.video-editor-shortcuts-popover > strong {
+  color: var(--theme-text);
+  font-size: 12px;
+}
+.video-editor-shortcuts-popover > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--theme-text-secondary);
+  font-size: 10px;
+}
+.video-editor-shortcuts-popover em { font-style: normal; }
+.video-editor-shortcuts-popover kbd {
+  flex: none;
+  padding: 2px 5px;
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  background: var(--white-alpha-04);
+  color: var(--theme-text);
+  font: inherit;
+}
+

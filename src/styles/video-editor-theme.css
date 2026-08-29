@@ -1,0 +1,108 @@
+/* ── 浅色主题适配 ── */
+[data-theme='light'] .video-editor-root {
+  --video-editor-label-w: clamp(196px, 17vw, 224px);
+}
+
+[data-theme='light'] .video-editor-timeline-head {
+  background: var(--video-editor-panel);
+}
+
+[data-theme='light'] .video-editor-clip {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme='light'] .video-editor-clip:hover {
+  border-color: rgba(0, 0, 0, 0.15);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme='light'] .video-editor-clip-hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: #333;
+}
+
+[data-theme='light'] .video-editor-track-lane {
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme='light'] .video-editor-track-lane:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+[data-theme='light'] .video-editor-track-lane.locked {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0,
+      transparent 7px,
+      color-mix(in srgb, var(--warning) 10%, transparent) 7px,
+      color-mix(in srgb, var(--warning) 10%, transparent) 8px
+    ),
+    var(--warning-bg);
+}
+[data-theme='light'] .video-editor-track-lane.is-hidden {
+  background: color-mix(in srgb, var(--theme-bg) 84%, transparent);
+}
+[data-theme='light'] .video-editor-track-lane.compact-text {
+  background: color-mix(in srgb, var(--node-markdown) 9%, var(--theme-card));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--node-markdown) 55%, transparent);
+}
+[data-theme='light'] .video-editor-clip.text {
+  border-color: color-mix(in srgb, var(--node-markdown) 58%, var(--theme-border));
+  background: color-mix(in srgb, var(--node-markdown) 20%, var(--theme-card));
+  box-shadow: inset 3px 0 0 var(--node-markdown);
+}
+[data-theme='light'] .video-editor-clip.text:hover {
+  border-color: var(--node-markdown);
+  background: color-mix(in srgb, var(--node-markdown) 27%, var(--theme-card));
+}
+[data-theme='light'] .video-editor-clip.text.selected {
+  border-color: var(--node-markdown);
+  box-shadow:
+    0 0 0 1px var(--node-markdown),
+    inset 4px 0 0 var(--node-markdown),
+    inset 0 0 16px color-mix(in srgb, var(--node-markdown) 12%, transparent);
+}
+[data-theme='light'] .video-editor-clip.text .video-editor-clip-name {
+  color: color-mix(in srgb, var(--node-markdown) 72%, var(--theme-text));
+  text-shadow: none;
+}
+
+[data-theme='light'] .video-editor-ruler {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.02) 0%, transparent 100%);
+}
+
+[data-theme='light'] .video-editor-clip-menu {
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme='light'] .video-editor-clip.audio {
+  background: color-mix(in srgb, #22c55e 12%, transparent);
+  border-color: color-mix(in srgb, #22c55e 35%, transparent);
+}
+
+[data-theme='light'] .video-editor-media-item:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+@media (max-width: 1180px) {
+  .video-editor-timeline-selection,
+  .video-editor-shortcut-hint {
+    display: none;
+  }
+
+  .video-editor-body {
+    grid-template-columns: 190px minmax(0, 1fr) 240px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-editor-btn,
+  .video-editor-media-item,
+  .video-editor-transport-btn,
+  .video-editor-timeline-btn,
+  .video-editor-track-flag {
+    transition-property: background, border-color, color;
+  }
+
+  .video-editor-layer-add:disabled svg,
+  .video-editor-ai-transition-submit.busy svg { animation: none; }
+}

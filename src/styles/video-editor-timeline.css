@@ -1,0 +1,723 @@
+/* ── 检查器 ── */
+.video-editor-inspect-group {
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid var(--theme-border);
+}
+.video-editor-inspect-group:last-child { border-bottom: none; }
+.video-editor-inspect-group.pending { opacity: 0.45; }
+.video-editor-inspect-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 0 10px;
+  color: var(--theme-text);
+  letter-spacing: 0.01em;
+}
+.video-editor-inspect-badge {
+  font-size: 10px;
+  font-weight: 400;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--white-alpha-08);
+  color: var(--theme-text-muted);
+}
+.video-editor-inspect-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  padding: 4px 0;
+  color: var(--theme-text-muted);
+  line-height: 1.5;
+}
+.video-editor-inspect-row span:last-child {
+  color: var(--theme-text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+/* ── 时间轴 ── */
+.video-editor-timeline {
+  --video-editor-track-h: 64px;
+  --video-editor-text-track-h: 30px;
+  flex-shrink: 0;
+  height: 292px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--theme-border);
+  background: var(--video-editor-panel);
+}
+.video-editor-timeline-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 7px 10px;
+  flex-shrink: 0;
+  background: var(--video-editor-panel);
+  border-bottom: 1px solid var(--theme-border);
+}
+.video-editor-timeline-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.video-editor-timeline-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 2px;
+  border-right: 1px solid var(--theme-border);
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.video-editor-timeline-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--theme-text);
+  font-size: 12px;
+  cursor: var(--cursor-pointer, pointer);
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 120ms var(--video-editor-ease-out);
+}
+.video-editor-timeline-btn:hover:not(:disabled) {
+  background: var(--white-alpha-08);
+  border-color: var(--theme-border);
+}
+.video-editor-timeline-btn:disabled { opacity: 0.4; cursor: var(--cursor-not-allowed, not-allowed); }
+.video-editor-timeline-btn:active:not(:disabled) { transform: scale(0.97); }
+.video-editor-timeline-btn.icon-only {
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+}
+.video-editor-timeline-btn.emphasis:not(:disabled) {
+  background: var(--video-editor-accent-soft);
+  border-color: var(--brand-alpha-20, rgba(99, 102, 241, 0.2));
+  color: var(--brand-light, #818cf8);
+}
+.video-editor-timeline-btn.emphasis kbd {
+  margin-left: 2px;
+  border-color: var(--brand-alpha-20, rgba(99, 102, 241, 0.2));
+  color: inherit;
+}
+.video-editor-timeline-btn.danger:hover:not(:disabled) {
+  color: #fff;
+  background: color-mix(in srgb, var(--danger) 70%, transparent);
+}
+/* 自检面板 */
+.video-editor-probe-btn {
+  margin-left: auto;
+  border: 1px solid var(--theme-border);
+  background: transparent;
+  color: var(--theme-text-muted);
+  border-radius: 5px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 400;
+  cursor: var(--cursor-pointer, pointer);
+}
+.video-editor-probe-btn:hover:not(:disabled) { color: var(--theme-text); }
+.video-editor-probe-btn:disabled { opacity: 0.5; cursor: var(--cursor-not-allowed, not-allowed); }
+.video-editor-probe-btn + .video-editor-probe-btn { margin-left: 4px; }
+.video-editor-inspect-hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--theme-text-muted);
+  padding: 2px 0 4px;
+}
+.video-editor-probe-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 3px 0;
+  color: var(--theme-text);
+}
+.video-editor-probe-row .ok { color: #22c55e; flex-shrink: 0; }
+.video-editor-probe-row .bad { color: var(--danger); flex-shrink: 0; }
+.video-editor-probe-label { flex: 1; }
+.video-editor-probe-verdict { color: var(--theme-text-muted); }
+.video-editor-probe-verdict em { font-style: normal; opacity: 0.75; }
+
+.video-editor-inspect-ellipsis {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.video-editor-timeline-range {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.video-editor-timeline-range.dim { opacity: 0.72; }
+.video-editor-timeline-selection {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 80px;
+  max-width: 240px;
+  color: var(--theme-text-muted);
+}
+/* ── 刻度尺 ── */
+.video-editor-ruler {
+  position: relative;
+  height: 28px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--theme-border);
+  cursor: var(--cursor-pointer, pointer);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, transparent 100%);
+}
+.video-editor-tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 5px;
+  background: var(--theme-text-muted);
+  opacity: 0.35;
+  pointer-events: none;
+}
+.video-editor-tick.major { height: 10px; opacity: 0.65; }
+.video-editor-tick-label {
+  position: absolute;
+  left: 4px;
+  top: -12px;
+  font-style: normal;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--theme-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+.video-editor-ruler-handle {
+  position: absolute;
+  top: 0;
+  width: 12px;
+  height: 14px;
+  margin-left: -6px;
+  background: var(--danger, #ef4444);
+  border-radius: 3px 3px 5px 5px;
+  pointer-events: none;
+  z-index: 3;
+  box-shadow: 0 1px 4px rgba(239, 68, 68, 0.35);
+}
+.video-editor-ruler-spacer { height: 28px; flex-shrink: 0; }
+
+/* ── 时间轴主体：左侧固定轨道头 + 右侧横向滚动画布 ── */
+.video-editor-timeline-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+/* 拖拽期间允许片段溢出，实现跨轨道视觉跟随 */
+.video-editor-timeline-body.dragging {
+  overflow: visible;
+}
+.video-editor-track-labels {
+  width: var(--video-editor-label-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--theme-border);
+  background: var(--video-editor-panel);
+}
+.video-editor-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  position: relative;
+  background: var(--theme-bg);
+}
+.video-editor-canvas {
+  position: relative;
+  min-width: 100%;
+  height: 100%;
+}
+
+.video-editor-track-label {
+  height: var(--video-editor-track-h);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--theme-text-muted);
+}
+.video-editor-track-label.compact-text {
+  height: var(--video-editor-text-track-h);
+  margin-bottom: 2px;
+  gap: 4px;
+  padding-inline: 6px;
+}
+.video-editor-track-label.is-locked {
+  color: var(--warning-light);
+  background: var(--warning-bg);
+  box-shadow: inset 2px 0 0 var(--warning);
+}
+.video-editor-track-label.is-hidden .video-editor-track-icon,
+.video-editor-track-label.is-hidden .video-editor-track-name {
+  opacity: 0.45;
+}
+.video-editor-track-label.is-hidden,
+.video-editor-track-label.is-muted {
+  color: var(--theme-text-muted);
+}
+.video-editor-track-icon { font-size: 13px; }
+.video-editor-track-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.video-editor-track-flag {
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  border: 1px solid var(--theme-border);
+  background: transparent;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  cursor: var(--cursor-pointer, pointer);
+  flex-shrink: 0;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms var(--video-editor-ease-out);
+}
+.video-editor-track-flag:active:not(:disabled) { transform: scale(0.94); }
+.video-editor-track-flag.active {
+  background: var(--video-editor-accent);
+  border-color: transparent;
+  color: #fff;
+}
+.video-editor-track-flag.is-lock.active {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning-light);
+}
+.video-editor-track-flag.is-visibility.active {
+  border-color: var(--theme-border);
+  background: var(--white-alpha-08);
+  color: var(--theme-text-muted);
+}
+.video-editor-track-flag:disabled {
+  opacity: 0.35;
+  cursor: var(--cursor-not-allowed, not-allowed);
+}
+
+.video-editor-track-lane {
+  position: relative;
+  height: var(--video-editor-track-h);
+  margin-bottom: 4px;
+  border-radius: 6px;
+  background: var(--white-alpha-03);
+  cursor: var(--cursor-pointer, pointer);
+  touch-action: none;
+  transition: background 0.15s ease;
+  overflow: visible;
+}
+.video-editor-track-lane.compact-text {
+  height: var(--video-editor-text-track-h);
+  margin-bottom: 2px;
+  background: color-mix(in srgb, var(--node-markdown) 8%, var(--theme-bg));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--node-markdown) 48%, transparent);
+}
+.video-editor-track-lane.compact-text .video-editor-clip-name {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+}
+.video-editor-track-lane.compact-text .video-editor-clip-hover {
+  top: 50%;
+  transform: translateY(-50%);
+}
+.video-editor-track-lane.compact-text .video-editor-clip:hover .video-editor-clip-hover {
+  transform: translateY(-50%);
+}
+.video-editor-track-lane:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.video-editor-track-lane.locked {
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0,
+      transparent 7px,
+      color-mix(in srgb, var(--warning) 7%, transparent) 7px,
+      color-mix(in srgb, var(--warning) 7%, transparent) 8px
+    ),
+    rgba(255, 255, 255, 0.03);
+  box-shadow: inset 2px 0 0 var(--warning);
+  cursor: var(--cursor-not-allowed, not-allowed);
+}
+.video-editor-track-lane.is-hidden {
+  border: 1px dashed color-mix(in srgb, var(--theme-text-muted) 45%, transparent);
+  background: color-mix(in srgb, var(--theme-bg) 72%, transparent);
+}
+.video-editor-track-lane.is-muted .video-editor-clip {
+  filter: saturate(0.45);
+}
+.video-editor-track-lane.is-hidden .video-editor-clip {
+  opacity: 0.25;
+  filter: grayscale(1) saturate(0);
+}
+
+/* 片段块 */
+.video-editor-clip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: grab;
+  touch-action: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.video-editor-clip:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/* 转场覆盖区：贴着片段开头，宽度即转场时长 */
+.video-editor-clip-transition {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
+  pointer-events: none;
+  border-right: 1px solid var(--brand-alpha-30);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--video-editor-accent) 55%, transparent),
+    transparent
+  );
+}
+.video-editor-clip-transition.fade {
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.8), transparent);
+  border-right-color: rgba(255, 255, 255, 0.35);
+}
+
+/* 两段之间的接缝按钮：加转场 / 跳去编辑已有转场 */
+.video-editor-seam {
+  position: absolute;
+  top: 50%;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--theme-border);
+  border-radius: 50%;
+  background: var(--video-editor-card);
+  color: var(--theme-text-muted);
+  opacity: 0;
+  cursor: var(--cursor-pointer, pointer);
+  transition: opacity 140ms ease, background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.video-editor-track-lane:hover .video-editor-seam,
+.video-editor-seam:focus-visible { opacity: 1; }
+.video-editor-seam:hover {
+  border-color: var(--video-editor-accent);
+  background: var(--video-editor-accent);
+  color: #fff;
+}
+/* 已有转场就常驻显示，否则轨道上看不出哪里加过转场 */
+.video-editor-seam.has-transition {
+  opacity: 1;
+  border-color: var(--brand-alpha-30);
+  background: var(--video-editor-accent-soft);
+  color: var(--brand-light);
+}
+.video-editor-clip:hover .video-editor-clip-hover {
+  opacity: 1;
+  transform: translateY(0);
+}
+.video-editor-clip.selected {
+  border-color: var(--video-editor-accent);
+  box-shadow: 0 0 0 1px var(--video-editor-accent), inset 0 0 0 1px var(--video-editor-accent-soft);
+  z-index: 1;
+}
+.video-editor-clip.dragging {
+  opacity: 0.85;
+  cursor: grabbing;
+  z-index: 10;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  border-color: var(--accent, #6366f1);
+  pointer-events: none;
+}
+/* hover 时显示的片段时长浮层 */
+.video-editor-clip-hover {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+/* 插入指示线：告诉用户松手后会落在哪 */
+.video-editor-drop-indicator {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent, #6366f1);
+  box-shadow: 0 0 8px var(--accent, #6366f1);
+  pointer-events: none;
+  z-index: 4;
+  border-radius: 1px;
+}
+.video-editor-drop-indicator::before {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  translate: -50% 0;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--accent, #6366f1);
+}
+.video-editor-clip.image { border-style: dashed; }
+.video-editor-clip.text {
+  border-color: color-mix(in srgb, var(--node-markdown) 72%, var(--theme-border));
+  background: color-mix(in srgb, var(--node-markdown) 30%, var(--theme-card));
+  box-shadow: inset 3px 0 0 var(--node-markdown-light);
+}
+.video-editor-clip.text:hover {
+  border-color: var(--node-markdown-light);
+  background: color-mix(in srgb, var(--node-markdown) 38%, var(--theme-card));
+}
+.video-editor-clip.text.selected {
+  border-color: var(--node-markdown-light);
+  box-shadow:
+    0 0 0 1px var(--node-markdown-light),
+    inset 4px 0 0 var(--node-markdown-light),
+    inset 0 0 18px color-mix(in srgb, var(--node-markdown) 18%, transparent);
+}
+.video-editor-clip.text .video-editor-clip-name {
+  color: var(--theme-text);
+  text-shadow: 0 1px 2px color-mix(in srgb, var(--theme-bg) 70%, transparent);
+}
+.video-editor-clip-thumbs {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+  pointer-events: none;
+}
+.video-editor-clip-thumbs img,
+.video-editor-thumb-blank {
+  flex: 0 0 64px;
+  width: 64px;
+  height: 100%;
+  object-fit: cover;
+}
+.video-editor-thumb-blank { background: var(--white-alpha-08); }
+.video-editor-clip-name {
+  position: absolute;
+  left: 4px;
+  bottom: 3px;
+  right: 4px;
+  font-size: 10px;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.video-editor-trim-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: var(--cursor-ew-resize, ew-resize);
+  touch-action: none;
+  background: var(--accent, #6366f1);
+  opacity: 0.85;
+  transition: opacity 0.15s ease, width 0.15s ease;
+  z-index: 2;
+}
+.video-editor-trim-handle:hover {
+  opacity: 1;
+  width: 12px;
+}
+.video-editor-trim-handle.in {
+  left: 0;
+  border-radius: 5px 0 0 5px;
+}
+.video-editor-trim-handle.out {
+  right: 0;
+  border-radius: 0 5px 5px 0;
+}
+.video-editor-track-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  color: var(--theme-text-muted);
+}
+.video-editor-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--danger, #ef4444);
+  pointer-events: none;
+  z-index: 2;
+  box-shadow: 0 0 4px rgba(239, 68, 68, 0.4);
+}
+/* 播放头顶部三角形指示器 */
+.video-editor-playhead::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  translate: -50% 0;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid var(--danger, #ef4444);
+}
+.video-editor-timeline-snap-indicator {
+  position: absolute;
+  top: 28px;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--video-editor-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--video-editor-accent) 22%, transparent);
+  pointer-events: none;
+  z-index: 5;
+}
+.video-editor-timeline-snap-indicator::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--video-editor-accent);
+  translate: -50% -50%;
+}
+.video-editor-timeline-selection-box {
+  position: absolute;
+  border: 1px solid var(--video-editor-accent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--video-editor-accent) 14%, transparent);
+  pointer-events: none;
+  z-index: 6;
+}
+
+/* 片段右键菜单 */
+.video-editor-clip-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 170px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--theme-border);
+  background: var(--theme-surface, #14141c);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+}
+.video-editor-clip-menu button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--theme-text);
+  font-size: 12px;
+  cursor: var(--cursor-pointer, pointer);
+  transition: background 0.1s ease;
+}
+.video-editor-clip-menu button:hover:not(:disabled) { background: var(--white-alpha-08); }
+.video-editor-clip-menu button:disabled { opacity: 0.4; cursor: var(--cursor-not-allowed, not-allowed); }
+.video-editor-clip-menu button.danger { color: var(--danger); }
+.video-editor-clip-menu button span {
+  font-size: 10px;
+  color: var(--theme-text-muted);
+}
+
+/* 工具栏分组与缩放条 */
+.video-editor-toolgroup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+  border-right: 1px solid var(--theme-border);
+}
+.video-editor-toolgroup.compact { gap: 1px; }
+.video-editor-zoom {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.video-editor-zoom input[type="range"] {
+  --range-thumb-border: var(--video-editor-panel);
+  --range-thumb-color: var(--video-editor-accent);
+  --range-track-background: linear-gradient(
+    to right,
+    var(--video-editor-accent) 0 var(--range-progress, 0%),
+    var(--white-alpha-08) var(--range-progress, 0%) 100%
+  );
+  width: 108px;
+  margin: 0 2px;
+}
+.video-editor-timeline-btn.active {
+  border-color: var(--brand-alpha-25, rgba(99, 102, 241, 0.25));
+  color: var(--brand-light, #818cf8);
+  background: var(--video-editor-accent-soft);
+}
+

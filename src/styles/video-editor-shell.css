@@ -1,0 +1,182 @@
+/* 视频编辑器独立窗口 — 暗色为基线，浅色由 [data-theme='light'] 覆盖 */
+
+.video-editor-root {
+  --video-editor-label-w: clamp(196px, 17vw, 224px);
+  --video-editor-accent: var(--brand, #6366f1);
+  --video-editor-accent-soft: var(--brand-alpha-12, rgba(99, 102, 241, 0.12));
+  --video-editor-panel: var(--theme-surface, #14141c);
+  --video-editor-card: var(--theme-card, #1a1a26);
+  --video-editor-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--theme-bg);
+  color: var(--theme-text);
+  overflow: hidden;
+  /* 无系统边框 + 透明窗口，圆角同资源搜索窗口 */
+  border-radius: 10px;
+  border: 1px solid var(--theme-border);
+  box-shadow: var(--shadow-xl, 0 24px 64px rgba(0, 0, 0, 0.42));
+}
+
+/* ── 标题栏 ── */
+.video-editor-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 10px 8px 14px;
+  flex-shrink: 0;
+  -webkit-user-select: none;
+  user-select: none;
+  background: var(--video-editor-panel);
+  border-bottom: 1px solid var(--theme-border);
+  box-shadow: inset 0 -1px 0 var(--white-alpha-03);
+}
+.video-editor-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+  letter-spacing: -0.01em;
+}
+.video-editor-meta {
+  font-size: 12px;
+  color: var(--theme-text-secondary);
+  padding-left: 12px;
+  border-left: 1px solid var(--theme-border);
+}
+.video-editor-winctrls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.video-editor-progress {
+  font-size: 12px;
+  color: var(--theme-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.video-editor-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--theme-border);
+  background: transparent;
+  color: var(--theme-text);
+  font-size: 12px;
+  cursor: var(--cursor-pointer, pointer);
+  transition: background 140ms ease, border-color 140ms ease, transform 120ms var(--video-editor-ease-out);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.video-editor-btn:hover:not(:disabled) {
+  background: var(--white-alpha-08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.video-editor-btn:active:not(:disabled) { transform: scale(0.97); }
+.video-editor-btn:disabled { opacity: 0.45; cursor: var(--cursor-not-allowed, not-allowed); }
+.video-editor-btn.primary {
+  border-color: transparent;
+  background: var(--video-editor-accent);
+  color: #fff;
+  box-shadow: 0 4px 12px var(--brand-alpha-20, rgba(99, 102, 241, 0.2));
+}
+.video-editor-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  background: var(--video-editor-accent);
+}
+.video-editor-winbtn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-muted);
+  border-radius: 8px;
+  cursor: var(--cursor-pointer, pointer);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.video-editor-winbtn:hover { color: var(--theme-text); background: var(--white-alpha-08); }
+.video-editor-winbtn.close:hover { color: #fff; background: color-mix(in srgb, var(--danger) 75%, transparent); }
+
+/* ── 状态提示 ── */
+.video-editor-loading,
+.video-editor-error {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  color: var(--theme-text-muted);
+}
+.video-editor-error { color: var(--danger); }
+.video-editor-error.inline {
+  flex: none;
+  padding: 6px 12px;
+  justify-content: flex-start;
+  font-size: 12px;
+}
+
+/* 导出提示（例如关键帧对齐导致的入点偏移），不是错误 */
+.video-editor-notice {
+  flex: none;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--theme-text-muted);
+  background: rgba(99, 102, 241, 0.06);
+  border-bottom: 1px solid var(--theme-border);
+  line-height: 1.5;
+}
+
+/* 失败详情：独立窗口开不了 devtools，必须能在界面上看全并复制 */
+.video-editor-failure {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  text-align: left;
+  max-width: 720px;
+}
+.video-editor-failure-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.video-editor-failure-copy {
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 11px;
+  cursor: var(--cursor-pointer, pointer);
+}
+.video-editor-failure-detail summary {
+  cursor: var(--cursor-pointer, pointer);
+  font-size: 11px;
+  opacity: 0.8;
+}
+.video-editor-failure-detail pre {
+  margin: 4px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--white-alpha-08);
+  color: var(--theme-text);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+

@@ -3,7 +3,7 @@ import {
   assertProviderModelsVideoCapabilities,
   createEditableVideoCapability,
   keepDeclaredVideoCapabilityDefault,
-} from '../../src/components/settings/ProviderConnectionDialog';
+} from '../../src/components/settings/providerConnection/providerConnectionModels';
 import type { ProviderModelSelection } from '../../src/types';
 import type { VideoModelCapability } from '../../src/types/aiTypes';
 
