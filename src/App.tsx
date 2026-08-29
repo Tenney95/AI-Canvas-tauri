@@ -365,10 +365,10 @@ export default function App() {
     return () => { unlisten?.(); };
   }, []);
 
-  // 侧边栏悬浮显示开关（默认开启）；最大化时强制非悬浮。
+  // 侧边栏悬浮显示开关（默认关闭）；最大化时强制非悬浮。
   // 同步到 body 属性，供 CSS 切换侧边栏停靠/悬浮位置 + 弹窗蒙层的左偏移
   const sidebarFloatingCfg = useAppStore((s) => s.config.sidebarFloating);
-  const effectiveFloating = sidebarFloatingCfg !== false && !isMaximized;
+  const effectiveFloating = sidebarFloatingCfg === true && !isMaximized;
   const showWindowGlassFrame = windowGlassFrame !== false && !isMaximized && !performanceMode;
   useEffect(() => {
     if (!isTauri) return;

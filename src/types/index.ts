@@ -540,7 +540,7 @@ export interface AppConfig {
   dreaminaAuth?: DreaminaAuthData; // 即梦登录态
   baseDataDir?: string;       // 用户自定义文件保存根目录，保存结构为 {baseDataDir}/{projectId}/**
   generalModels?: GeneralModelConfig[]; // 用户自建通用模型
-  sidebarFloating?: boolean;  // 侧边栏是否悬浮显示（半隐于窗口边缘），默认 true
+  sidebarFloating?: boolean;  // 侧边栏是否悬浮显示（半隐于窗口边缘），默认 false
   windowGlassFrame?: boolean; // 是否显示主窗口玻璃外框，默认 true
   performanceMode?: boolean; // 性能模式：关闭高开销视觉效果与装饰动画，默认 false
   /** @deprecated 仅用于读取早期图形兼容模式配置，加载后迁移到 performanceMode。 */

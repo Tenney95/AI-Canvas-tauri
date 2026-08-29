@@ -39,7 +39,7 @@ function TitlebarInner({
   const t = useT();
   const [isWindowExpanded, setIsWindowExpanded] = useState(false);
   const appWindow = getCurrentWindow();
-  const sidebarFloating = useAppStore((state) => state.config.sidebarFloating) !== false
+  const sidebarFloating = useAppStore((state) => state.config.sidebarFloating) === true
     && !isWindowExpanded;
 
   useEffect(() => {

@@ -158,7 +158,7 @@ export default function SettingsPanel() {
         showToast: s.showToast,
       })),
     );
-  const sidebarFloating = config.sidebarFloating !== false; // 默认开启
+  const sidebarFloating = config.sidebarFloating === true; // 默认关闭
   const configuredWindowGlassFrame = config.windowGlassFrame !== false; // 默认开启
   const performanceMode = config.performanceMode === true;
   const windowAspectRatio = config.windowAspectRatio ?? '16:9';

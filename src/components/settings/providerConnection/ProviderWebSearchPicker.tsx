@@ -4,13 +4,13 @@
  */
 import { Icon } from '@iconify/react';
 import { useT } from '../../../i18n';
-import type { ApiProviderConfig, ProviderDefinition } from '../../../types';
-import type { ProviderDefinition as CatalogDefinition } from '../../../services/ai/providerCatalogService';
+import type { ApiProviderConfig } from '../../../types';
+import type { ProviderDefinition } from '../../../services/ai/providerCatalogService';
 
 interface ProviderWebSearchPickerProps {
-  definitions: CatalogDefinition[];
+  definitions: readonly ProviderDefinition[];
   providerConfigs: Record<string, ApiProviderConfig>;
-  currentDefinition: CatalogDefinition;
+  currentDefinition: ProviderDefinition;
   onChoose: (definition: ProviderDefinition) => void;
 }
 
