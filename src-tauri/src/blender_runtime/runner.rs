@@ -30,7 +30,6 @@ use std::{
 };
 
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
-const TEMPLATE_ID: &str = "ai_canvas_director";
 const ADAPTER_VERSION: &str = "1.0.0";
 const MAX_SCENE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_STAGING_RESULT_BYTES: usize = 64 * 1024;
@@ -152,27 +151,21 @@ impl NativeBlenderJobRunner {
         cancellation: &BlenderJobCancellation,
     ) -> Result<(), BlenderJobRunnerFailure> {
         let background = job.request.operation != BlenderJobOperation::OpenEditor;
-        let mut arguments = Vec::<OsString>::new();
-        arguments.push(job.trusted.executable.as_os_str().to_owned());
-        if background {
-            arguments.push("--background".into());
-        }
-        arguments.extend([
-            OsString::from("--disable-autoexec"),
-            OsString::from("--python-exit-code"),
-            OsString::from("23"),
-            OsString::from("--app-template"),
-            OsString::from(TEMPLATE_ID),
-            OsString::from("--python"),
-            job.trusted.resources.job_script.as_os_str().to_owned(),
-        ]);
+        let arguments = build_blender_arguments(
+            &job.trusted.executable,
+            &job.trusted
+                .resources
+                .application_template_root
+                .join("startup.blend"),
+            &job.trusted
+                .resources
+                .application_template_root
+                .join("__init__.py"),
+            &job.trusted.resources.job_script,
+            background,
+        );
 
-        let profile_config = layout.job_directory.join("profile/config");
-        let environment = build_windows_environment(
-            &profile_config,
-            &job.trusted.resources.blender_user_scripts_root,
-        )
-        .map_err(|diagnostic| startup_failure(diagnostic))?;
+        let environment = build_windows_environment().map_err(startup_failure)?;
         let process = spawn_managed_process(
             &job.trusted.executable,
             &arguments,
@@ -268,6 +261,35 @@ impl NativeBlenderJobRunner {
     }
 }
 
+#[cfg(windows)]
+fn build_blender_arguments(
+    executable: &Path,
+    startup_blend: &Path,
+    template_init: &Path,
+    job_script: &Path,
+    background: bool,
+) -> Vec<OsString> {
+    let mut arguments = vec![executable.as_os_str().to_owned()];
+    if background {
+        arguments.extend([
+            OsString::from("--background"),
+            // 后台 Job 不读取用户首选项，也不会加载用户已启用的插件。
+            OsString::from("--factory-startup"),
+        ]);
+    }
+    arguments.extend([
+        OsString::from("--disable-autoexec"),
+        startup_blend.as_os_str().to_owned(),
+        OsString::from("--python-exit-code"),
+        OsString::from("23"),
+        OsString::from("--python"),
+        template_init.as_os_str().to_owned(),
+        OsString::from("--python"),
+        job_script.as_os_str().to_owned(),
+    ]);
+    arguments
+}
+
 fn cancelled_failure() -> BlenderJobRunnerFailure {
     BlenderJobRunnerFailure::new(BlenderJobRunnerFailureKind::Cancelled)
 }
@@ -331,8 +353,7 @@ fn prepare_job_layout(job: &PreparedBlenderJob) -> Result<JobLayout, String> {
     let job_directory = create_private_job_directory(&job.trusted.private_root, &job.job_id)?;
     let input_directory = job_directory.join("input");
     let output_directory = job_directory.join("output");
-    let profile_config = job_directory.join("profile/config");
-    for directory in [&input_directory, &output_directory, &profile_config] {
+    for directory in [&input_directory, &output_directory] {
         fs::create_dir_all(directory).map_err(|_| "无法创建 Blender Job 私有目录".to_string())?;
         ensure_plain_directory(directory)?;
     }
@@ -1236,10 +1257,18 @@ fn spawn_managed_process(
 }
 
 #[cfg(windows)]
-fn build_windows_environment(config_root: &Path, scripts_root: &Path) -> Result<Vec<u16>, String> {
+fn build_windows_environment() -> Result<Vec<u16>, String> {
+    build_windows_environment_from(std::env::vars_os())
+}
+
+#[cfg(windows)]
+fn build_windows_environment_from<I>(inherited: I) -> Result<Vec<u16>, String>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
     use std::os::windows::ffi::OsStrExt;
     let mut entries: HashMap<String, (OsString, OsString)> = HashMap::new();
-    for (name, value) in std::env::vars_os() {
+    for (name, value) in inherited {
         let display = name.to_string_lossy();
         let upper = display.to_ascii_uppercase();
         if display.is_empty()
@@ -1252,20 +1281,8 @@ fn build_windows_environment(config_root: &Path, scripts_root: &Path) -> Result<
         }
         entries.insert(upper, (name, value));
     }
-    entries.insert(
-        "BLENDER_USER_CONFIG".to_string(),
-        (
-            OsString::from("BLENDER_USER_CONFIG"),
-            config_root.as_os_str().to_owned(),
-        ),
-    );
-    entries.insert(
-        "BLENDER_USER_SCRIPTS".to_string(),
-        (
-            OsString::from("BLENDER_USER_SCRIPTS"),
-            scripts_root.as_os_str().to_owned(),
-        ),
-    );
+    // 不注入任何 Blender 用户/系统资源根，让编辑器按正常启动规则解析首选项、插件和扩展。
+    // 外部 Blender/Python 路径覆盖仍被过滤；固定启动文件与脚本只通过受信命令参数传入。
     let mut ordered: Vec<_> = entries.into_iter().collect();
     ordered.sort_by(|left, right| left.0.cmp(&right.0));
     let mut block = Vec::new();
@@ -1282,6 +1299,90 @@ fn build_windows_environment(config_root: &Path, scripts_root: &Path) -> Result<
     }
     block.push(0);
     Ok(block)
+}
+
+#[cfg(all(test, windows))]
+mod environment_tests {
+    use super::*;
+
+    fn decode_environment(block: &[u16]) -> HashMap<String, String> {
+        block
+            .split(|value| *value == 0)
+            .take_while(|entry| !entry.is_empty())
+            .map(|entry| String::from_utf16(entry).expect("环境块应为 UTF-16"))
+            .map(|entry| {
+                let (name, value) = entry.split_once('=').expect("环境项应包含等号");
+                (name.to_ascii_uppercase(), value.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn blender_environment_reuses_default_user_directories_without_path_overrides() {
+        let inherited = [
+            (
+                OsString::from("APPDATA"),
+                OsString::from(r"C:\Users\Tester\AppData\Roaming"),
+            ),
+            (
+                OsString::from("BLENDER_USER_CONFIG"),
+                OsString::from(r"C:\untrusted-config"),
+            ),
+            (
+                OsString::from("BLENDER_USER_SCRIPTS"),
+                OsString::from(r"C:\untrusted-scripts"),
+            ),
+            (
+                OsString::from("BLENDER_SYSTEM_SCRIPTS"),
+                OsString::from(r"C:\untrusted-system-scripts"),
+            ),
+            (
+                OsString::from("PYTHONPATH"),
+                OsString::from(r"C:\untrusted-python"),
+            ),
+        ];
+        let block = build_windows_environment_from(inherited).expect("应能构造 Blender 环境");
+        let environment = decode_environment(&block);
+
+        assert_eq!(
+            environment.get("APPDATA").map(String::as_str),
+            Some(r"C:\Users\Tester\AppData\Roaming")
+        );
+        assert!(!environment.contains_key("BLENDER_USER_CONFIG"));
+        assert!(!environment.contains_key("BLENDER_USER_SCRIPTS"));
+        assert!(!environment.contains_key("BLENDER_SYSTEM_SCRIPTS"));
+        assert!(!environment.contains_key("PYTHONPATH"));
+    }
+
+    #[test]
+    fn editor_inherits_preferences_while_background_jobs_use_factory_startup() {
+        let executable = Path::new(r"C:\Blender\blender.exe");
+        let startup_blend = Path::new(r"C:\AI Canvas\startup.blend");
+        let template_init = Path::new(r"C:\AI Canvas\__init__.py");
+        let job_script = Path::new(r"C:\AI Canvas\job.py");
+
+        let editor =
+            build_blender_arguments(executable, startup_blend, template_init, job_script, false);
+        assert!(!editor.contains(&OsString::from("--background")));
+        assert!(!editor.contains(&OsString::from("--factory-startup")));
+        assert!(!editor.contains(&OsString::from("--app-template")));
+        assert!(editor.contains(&startup_blend.as_os_str().to_owned()));
+        assert!(editor.contains(&template_init.as_os_str().to_owned()));
+        assert_eq!(
+            editor
+                .iter()
+                .filter(|argument| argument.as_os_str() == "--python")
+                .count(),
+            2
+        );
+
+        let background =
+            build_blender_arguments(executable, startup_blend, template_init, job_script, true);
+        assert!(background.contains(&OsString::from("--background")));
+        assert!(background.contains(&OsString::from("--factory-startup")));
+        assert!(background.contains(&OsString::from("--disable-autoexec")));
+        assert!(!background.contains(&OsString::from("--app-template")));
+    }
 }
 
 #[cfg(windows)]

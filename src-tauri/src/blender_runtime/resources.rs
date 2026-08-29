@@ -25,7 +25,7 @@ const JOB_SCRIPT_BYTES: &[u8] =
 
 const SCHEMA_VERSION: u32 = 1;
 const PACKAGE_ID: &str = "ai-canvas-blender-runtime";
-const PACKAGE_VERSION: &str = "1.0.0";
+const PACKAGE_VERSION: &str = "1.0.2";
 const TEMPLATE_ID: &str = "ai_canvas_director";
 const TEMPLATE_VERSION: u32 = 1;
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
@@ -40,18 +40,18 @@ const INSTALL_VENDOR_DIRECTORY: &str = "blender-runtime";
 const INSTALL_VERSION_DIRECTORY: &str = PACKAGE_VERSION;
 const INSTALLED_MANIFEST_PATH: &str = "runtime-manifest.json";
 const TEMPLATE_INIT_PATH: &str =
-    "scripts/startup/bl_app_templates_user/ai_canvas_director/__init__.py";
+    "scripts/startup/bl_app_templates_system/ai_canvas_director/__init__.py";
 const TEMPLATE_STARTUP_BLEND_PATH: &str =
-    "scripts/startup/bl_app_templates_user/ai_canvas_director/startup.blend";
+    "scripts/startup/bl_app_templates_system/ai_canvas_director/startup.blend";
 const JOB_SCRIPT_PATH: &str = "jobs/ai_canvas_director_job_v1.py";
 
 const TEMPLATE_INIT_SHA256: &str =
-    "4e2dec36561b03a969ed592a9f897a3e722608f0cf3bb31ac76d44dc90a883fb";
+    "ade7fbd05ba52976905aaf7fbed8199c99985056d49aff208e155d9192f52123";
 const TEMPLATE_STARTUP_BLEND_SHA256: &str =
     "a3e806fc2b910598b5f24c90127d02494fcbaf79a53f7e2eb7aee95f7f85e340";
 const JOB_SCRIPT_SHA256: &str = "3173845adb71ab01f718864353c8cfa92abd5d2aba6440f4fa1a1c5d782dbb19";
 
-const TEMPLATE_INIT_SIZE: u64 = 9_010;
+const TEMPLATE_INIT_SIZE: u64 = 9_054;
 const TEMPLATE_STARTUP_BLEND_SIZE: u64 = 91_348;
 const JOB_SCRIPT_SIZE: u64 = 40_364;
 
@@ -130,6 +130,7 @@ struct ManifestResource {
 pub struct TrustedBlenderResourcePaths {
     pub runtime_root: PathBuf,
     pub runtime_manifest: PathBuf,
+    /// 固定资源脚本根。字段名是既有内部契约，不代表启动时会覆盖用户脚本目录。
     pub blender_user_scripts_root: PathBuf,
     pub application_templates_root: PathBuf,
     pub application_template_root: PathBuf,
@@ -516,9 +517,9 @@ pub fn install_embedded_blender_runtime(
         &private_root,
         &PathBuf::from(INSTALL_VENDOR_DIRECTORY).join(INSTALL_VERSION_DIRECTORY),
     )?;
-    let blender_user_scripts_root = runtime_root.join("scripts");
+    let blender_system_scripts_root = runtime_root.join("scripts");
     let application_templates_root =
-        blender_user_scripts_root.join("startup/bl_app_templates_user");
+        blender_system_scripts_root.join("startup/bl_app_templates_system");
     let application_template_root = application_templates_root.join(TEMPLATE_ID);
     let jobs_root = runtime_root.join("jobs");
 
@@ -526,7 +527,7 @@ pub fn install_embedded_blender_runtime(
         runtime_manifest: runtime_root.join(INSTALLED_MANIFEST_PATH),
         job_script: jobs_root.join("ai_canvas_director_job_v1.py"),
         runtime_root,
-        blender_user_scripts_root,
+        blender_user_scripts_root: blender_system_scripts_root,
         application_templates_root,
         application_template_root,
         jobs_root,
@@ -575,6 +576,10 @@ mod tests {
             .expect("second resource install should be idempotent");
 
         assert_eq!(first, second);
+        assert!(first.runtime_root.ends_with("blender-runtime/1.0.2"));
+        assert!(first
+            .application_templates_root
+            .ends_with("scripts/startup/bl_app_templates_system"));
         assert_eq!(
             fs::read(&first.job_script).expect("job script should be readable"),
             JOB_SCRIPT_BYTES

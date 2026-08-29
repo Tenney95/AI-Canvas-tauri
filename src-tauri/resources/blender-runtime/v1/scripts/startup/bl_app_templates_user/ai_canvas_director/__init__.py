@@ -260,3 +260,7 @@ def unregister():
         bpy.app.handlers.load_factory_startup_post.remove(_load_factory_startup)
     for class_type in reversed(REGISTER_CLASSES):
         bpy.utils.unregister_class(class_type)
+
+
+if __name__ == "__main__":
+    register()
