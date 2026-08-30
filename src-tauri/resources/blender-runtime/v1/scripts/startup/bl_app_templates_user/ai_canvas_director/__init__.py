@@ -16,10 +16,10 @@ import blf
 import bpy
 import gpu
 from bpy.app.handlers import persistent
-from bpy.props import EnumProperty, FloatProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
 from gpu_extras.batch import batch_for_shader
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 
 TEMPLATE_ID = "ai_canvas_director"
@@ -505,6 +505,40 @@ def _validate_builtin_character(objects, before):
     ):
         raise RuntimeError("AI Canvas built-in character contains persistent data")
     return rig, meshes
+
+
+def _rotate_around_world_z(context, obj, angle):
+    context.view_layer.update()
+    pivot = obj.matrix_world.translation.copy()
+    obj.matrix_world = (
+        Matrix.Translation(pivot)
+        @ Matrix.Rotation(angle, 4, "Z")
+        @ Matrix.Translation(-pivot)
+        @ obj.matrix_world
+    )
+    context.view_layer.update()
+
+
+def _is_managed_character_object(obj):
+    return (
+        obj.get(DIRECTOR_OWNER_KEY) == DIRECTOR_OWNER_TOKEN
+        and obj.get(DIRECTOR_MANAGED_KEY) is True
+        and obj.get(DIRECTOR_KIND_KEY) == "character"
+        and isinstance(obj.get(DIRECTOR_INSTANCE_KEY), str)
+    )
+
+
+def _managed_character_objects():
+    return [obj for obj in bpy.data.objects if _is_managed_character_object(obj)]
+
+
+def _configure_character_selection(rig, meshes, allow_mesh_selection=False):
+    rig.hide_select = False
+    rig.show_in_front = True
+    for mesh in list(meshes):
+        if not allow_mesh_selection:
+            mesh.select_set(False)
+        mesh.hide_select = not allow_mesh_selection
 
 
 def _target_bounds(context):
@@ -1376,7 +1410,7 @@ class AI_CANVAS_OT_add_builtin_character(bpy.types.Operator):
                     raise RuntimeError("AI Canvas built-in character names are invalid")
                 data_to.objects = sorted(object_names)
             objects = [obj for obj in data_to.objects if obj is not None]
-            rig, _meshes = _validate_builtin_character(objects, before)
+            rig, meshes = _validate_builtin_character(objects, before)
             collection = _director_collection(scene)
             instance_id = f"{slug}-{time.time_ns():x}"
             asset_id = f"builtin-character-{slug}"
@@ -1391,12 +1425,14 @@ class AI_CANVAS_OT_add_builtin_character(bpy.types.Operator):
                     instance_id,
                 )
             rig.name = f"AI_character-{slug}-rig"
+            _rotate_around_world_z(context, rig, math.pi)
             _translate_roots_to_cursor(
                 context,
                 objects,
                 scene.cursor.location.copy(),
             )
-            _select_objects(context, objects, rig)
+            _configure_character_selection(rig, meshes)
+            _select_objects(context, [rig], rig)
         except Exception:
             _remove_new_import_data(before)
             if had_collection_property:
@@ -1407,6 +1443,63 @@ class AI_CANVAS_OT_add_builtin_character(bpy.types.Operator):
             return {"CANCELLED"}
 
         self.report({"INFO"}, f"已添加{label}；骨架已设为活动对象")
+        return {"FINISHED"}
+
+
+class AI_CANVAS_OT_toggle_character_mesh_selection(bpy.types.Operator):
+    bl_idname = "ai_canvas.toggle_character_mesh_selection"
+    bl_label = "切换人物网格选择"
+    bl_description = "默认锁定人物身体以防与骨架分离；需要高级网格编辑时可临时解锁"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    allow_mesh_selection: BoolProperty(
+        name="允许选择人物网格",
+        default=False,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return _editor_operator_poll(context)
+
+    def execute(self, context):
+        character_objects = _managed_character_objects()
+        meshes = [obj for obj in character_objects if obj.type == "MESH"]
+        rigs = [obj for obj in character_objects if obj.type == "ARMATURE"]
+        if not meshes or not rigs:
+            self.report({"WARNING"}, "当前场景没有可切换的内置人物")
+            return {"CANCELLED"}
+
+        active = context.view_layer.objects.active
+        active_instance = (
+            active.get(DIRECTOR_INSTANCE_KEY)
+            if active is not None and _is_managed_character_object(active)
+            else None
+        )
+        for rig in rigs:
+            rig.hide_select = False
+            rig.show_in_front = True
+        for mesh in list(meshes):
+            if not self.allow_mesh_selection:
+                mesh.select_set(False)
+            mesh.hide_select = not self.allow_mesh_selection
+
+        if not self.allow_mesh_selection and active_instance is not None:
+            rig = next(
+                (
+                    candidate
+                    for candidate in rigs
+                    if candidate.get(DIRECTOR_INSTANCE_KEY) == active_instance
+                ),
+                None,
+            )
+            if rig is not None:
+                _select_objects(context, [rig], rig)
+        context.view_layer.update()
+
+        if self.allow_mesh_selection:
+            self.report({"INFO"}, "已解锁人物网格；完成编辑后请恢复整体移动模式")
+        else:
+            self.report({"INFO"}, "已锁定人物网格；请移动显示在前方的骨架")
         return {"FINISHED"}
 
 
@@ -2175,6 +2268,25 @@ class AI_CANVAS_PT_quick_build(AI_CANVAS_PT_properties_base, bpy.types.Panel):
             text="男性白模",
             icon="ARMATURE_DATA",
         ).asset = "MALE"
+        character_meshes = [
+            obj
+            for obj in _managed_character_objects()
+            if obj.type == "MESH"
+        ]
+        if character_meshes:
+            mesh_selection_enabled = any(
+                not mesh.hide_select
+                for mesh in character_meshes
+            )
+            toggle = layout.operator(
+                AI_CANVAS_OT_toggle_character_mesh_selection.bl_idname,
+                text=(
+                    "锁定人物整体移动"
+                    if mesh_selection_enabled
+                    else "解锁人物网格编辑"
+                ),
+            )
+            toggle.allow_mesh_selection = not mesh_selection_enabled
         layout.operator(AI_CANVAS_OT_ground_selected.bl_idname, icon="CON_FLOOR")
 
 
@@ -2274,6 +2386,7 @@ class AI_CANVAS_PT_output(AI_CANVAS_PT_properties_base, bpy.types.Panel):
 
 REGISTER_CLASSES = (
     AI_CANVAS_OT_add_builtin_character,
+    AI_CANVAS_OT_toggle_character_mesh_selection,
     AI_CANVAS_OT_add_blockout,
     AI_CANVAS_OT_apply_scene_preset,
     AI_CANVAS_OT_clear_console_build,
