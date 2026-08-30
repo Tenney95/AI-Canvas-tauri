@@ -222,8 +222,9 @@ function selectOnlyCandidate(
   candidates: DirectorBlenderInstallationCandidate[],
 ): DirectorBlenderInstallationCandidate | null {
   if (selectedInstallation) return cloneInstallationCandidate(selectedInstallation);
-  if (candidates.length !== 1) return null;
-  selectedInstallation = cloneInstallationCandidate(candidates[0]);
+  const persistedSelection = candidates.find((candidate) => candidate.source === 'user-selected');
+  if (!persistedSelection && candidates.length !== 1) return null;
+  selectedInstallation = cloneInstallationCandidate(persistedSelection ?? candidates[0]);
   return cloneInstallationCandidate(selectedInstallation);
 }
 

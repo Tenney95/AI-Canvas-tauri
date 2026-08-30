@@ -165,11 +165,11 @@ impl NativeBlenderJobRunner {
             background,
         );
 
-        let environment = build_windows_environment().map_err(startup_failure)?;
+        let environment = build_windows_environment_for(background).map_err(startup_failure)?;
         let process = spawn_managed_process(
             &job.trusted.executable,
             &arguments,
-            &environment,
+            environment.as_deref(),
             &layout.job_directory,
             background,
         )?;
@@ -1173,7 +1173,7 @@ impl ManagedProcess {
 fn spawn_managed_process(
     executable: &Path,
     arguments: &[OsString],
-    environment: &[u16],
+    environment: Option<&[u16]>,
     current_directory: &Path,
     background: bool,
 ) -> Result<Arc<ManagedProcess>, BlenderJobRunnerFailure> {
@@ -1219,7 +1219,10 @@ fn spawn_managed_process(
     let mut startup = STARTUPINFOW::default();
     startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
     let mut information = PROCESS_INFORMATION::default();
-    let mut creation_flags: PROCESS_CREATION_FLAGS = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
+    let mut creation_flags: PROCESS_CREATION_FLAGS = CREATE_SUSPENDED;
+    if environment.is_some() {
+        creation_flags |= CREATE_UNICODE_ENVIRONMENT;
+    }
     if background {
         creation_flags |= CREATE_NO_WINDOW;
     }
@@ -1231,7 +1234,7 @@ fn spawn_managed_process(
             None,
             BOOL(0),
             creation_flags,
-            Some(environment.as_ptr().cast()),
+            environment.map(|block| block.as_ptr().cast()),
             PCWSTR(current_directory_wide.as_ptr()),
             &startup,
             &mut information,
@@ -1259,6 +1262,17 @@ fn spawn_managed_process(
 #[cfg(windows)]
 fn build_windows_environment() -> Result<Vec<u16>, String> {
     build_windows_environment_from(std::env::vars_os())
+}
+
+#[cfg(windows)]
+fn build_windows_environment_for(background: bool) -> Result<Option<Vec<u16>>, String> {
+    if background {
+        build_windows_environment().map(Some)
+    } else {
+        // 可见编辑器必须与用户直接启动 Blender 一样继承完整父进程环境，
+        // 否则会偏离用户的配置、插件与本地化资源解析规则。
+        Ok(None)
+    }
 }
 
 #[cfg(windows)]
@@ -1382,6 +1396,16 @@ mod environment_tests {
         assert!(background.contains(&OsString::from("--factory-startup")));
         assert!(background.contains(&OsString::from("--disable-autoexec")));
         assert!(!background.contains(&OsString::from("--app-template")));
+    }
+
+    #[test]
+    fn editor_inherits_parent_environment_while_background_jobs_are_sanitized() {
+        assert!(build_windows_environment_for(false)
+            .expect("编辑器环境模式应可构造")
+            .is_none());
+        assert!(build_windows_environment_for(true)
+            .expect("后台环境模式应可构造")
+            .is_some());
     }
 }
 

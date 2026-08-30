@@ -18,7 +18,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsStr,
     fs,
-    io::{Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -33,6 +33,9 @@ const MAX_RETURNED_CANDIDATES: usize = 16;
 const MAX_DISPLAY_NAME_CHARS: usize = 80;
 const MAX_VERSION_HINT_CHARS: usize = 32;
 const BLENDER_PRIVATE_DIRECTORY: &str = "blender-native-private";
+const BLENDER_SELECTION_FILE: &str = "selected-installation.json";
+const BLENDER_SELECTION_SCHEMA_VERSION: u32 = 1;
+const MAX_BLENDER_SELECTION_BYTES: u64 = 4 * 1024;
 
 /// 候选来源只描述本轮扫描入口，不代表候选已通过版本或架构验证。
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -75,6 +78,13 @@ pub struct BlenderDiscoveryResult {
     exhaustive: bool,
     partial: bool,
     truncated: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedBlenderSelection {
+    schema_version: u32,
+    executable_path: String,
 }
 
 /// 发现记录只存在于当前 Rust 进程内；后续 Job 启动仍必须重新校验路径和兼容性。
@@ -455,6 +465,103 @@ fn canonicalize_registered_executable(path: &Path) -> Result<PathBuf, String> {
         .map_err(|_| "Blender 可执行文件不可用".to_string())
 }
 
+fn manual_installation_record(path: &Path) -> Result<InstallationRecord, String> {
+    if path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_none_or(|name| !name.eq_ignore_ascii_case(BLENDER_EXECUTABLE_NAME))
+    {
+        return Err("请选择 blender.exe".to_string());
+    }
+    let executable = canonicalize_registered_executable(path)?;
+    validate_pe_x64(&executable)?;
+    let canonical_root = executable
+        .parent()
+        .ok_or_else(|| "Blender 安装目录无效".to_string())?
+        .to_path_buf();
+    Ok(InstallationRecord {
+        candidate: BlenderInstallationCandidate {
+            installation_id: installation_id(&path_identity(&executable)),
+            display_name: "Blender（手动选择）".to_string(),
+            source: BlenderInstallationSource::UserSelected,
+            version_hint: None,
+            version_hint_is_verified: false,
+        },
+        canonical_root,
+        canonical_executable: executable,
+    })
+}
+
+fn persist_manual_installation(private_directory: &Path, executable: &Path) -> Result<(), String> {
+    let executable_path = executable
+        .to_str()
+        .ok_or_else(|| "Blender 路径无法保存".to_string())?;
+    let body = serde_json::to_vec(&PersistedBlenderSelection {
+        schema_version: BLENDER_SELECTION_SCHEMA_VERSION,
+        executable_path: executable_path.to_string(),
+    })
+    .map_err(|_| "Blender 设置无法保存".to_string())?;
+    if body.len() as u64 > MAX_BLENDER_SELECTION_BYTES {
+        return Err("Blender 路径过长，无法保存".to_string());
+    }
+
+    let target = private_directory.join(BLENDER_SELECTION_FILE);
+    let temporary = private_directory.join(format!("{BLENDER_SELECTION_FILE}.tmp"));
+    if temporary.exists() {
+        let metadata = fs::symlink_metadata(&temporary)
+            .map_err(|_| "Blender 设置临时文件不可用".to_string())?;
+        if !is_plain_file(&metadata) {
+            return Err("Blender 设置临时文件不安全".to_string());
+        }
+        fs::remove_file(&temporary).map_err(|_| "Blender 设置临时文件无法清理".to_string())?;
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|_| "Blender 设置无法写入".to_string())?;
+    if let Err(error) = file.write_all(&body).and_then(|_| file.sync_all()) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("Blender 设置无法写入: {error}"));
+    }
+    drop(file);
+
+    if target.exists() {
+        let metadata =
+            fs::symlink_metadata(&target).map_err(|_| "Blender 设置文件不可用".to_string())?;
+        if !is_plain_file(&metadata) {
+            let _ = fs::remove_file(&temporary);
+            return Err("Blender 设置文件不安全".to_string());
+        }
+        fs::remove_file(&target).map_err(|_| "Blender 设置无法更新".to_string())?;
+    }
+    fs::rename(&temporary, &target).map_err(|_| "Blender 设置无法提交".to_string())
+}
+
+fn restore_manual_installation(
+    private_directory: &Path,
+) -> Result<Option<InstallationRecord>, String> {
+    let file = private_directory.join(BLENDER_SELECTION_FILE);
+    let metadata = match fs::symlink_metadata(&file) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("已保存的 Blender 设置不可用".to_string()),
+    };
+    if !is_plain_file(&metadata) || metadata.len() > MAX_BLENDER_SELECTION_BYTES {
+        return Err("已保存的 Blender 设置无效".to_string());
+    }
+    let body = fs::read(&file).map_err(|_| "已保存的 Blender 设置无法读取".to_string())?;
+    let saved: PersistedBlenderSelection = serde_json::from_slice(&body)
+        .map_err(|_| "已保存的 Blender 设置已损坏，请重新选择".to_string())?;
+    if saved.schema_version != BLENDER_SELECTION_SCHEMA_VERSION {
+        return Err("已保存的 Blender 设置版本不受支持，请重新选择".to_string());
+    }
+    manual_installation_record(Path::new(&saved.executable_path))
+        .map(Some)
+        .map_err(|_| "已保存的 Blender 已失效，请重新选择".to_string())
+}
+
 fn validate_installation_record(record: &InstallationRecord) -> Result<PathBuf, String> {
     let root_metadata = fs::symlink_metadata(&record.canonical_root)
         .map_err(|_| "Blender 安装候选不存在或已失效".to_string())?;
@@ -670,13 +777,19 @@ fn discover_from_roots(roots: Vec<DiscoveryRoot>) -> Vec<DiscoveredInstallation>
 fn public_discovery_result(
     snapshot: DiscoverySnapshot,
     scope: BlenderDiscoveryScope,
+    selected_candidate: Option<BlenderInstallationCandidate>,
 ) -> BlenderDiscoveryResult {
+    let mut candidates: Vec<_> = snapshot
+        .installations
+        .into_iter()
+        .map(|installation| installation.candidate)
+        .collect();
+    if let Some(candidate) = selected_candidate {
+        candidates.retain(|current| current.installation_id != candidate.installation_id);
+        candidates.insert(0, candidate);
+    }
     BlenderDiscoveryResult {
-        candidates: snapshot
-            .installations
-            .into_iter()
-            .map(|installation| installation.candidate)
-            .collect(),
+        candidates,
         scope,
         exhaustive: false,
         partial: snapshot.partial,
@@ -694,9 +807,14 @@ pub fn discover_blender_installations(
 
     let snapshot = scan_from_roots(platform_discovery_roots());
     state.replace_installations(&snapshot.installations)?;
+    let private_directory = prepare_blender_private_runtime(webview.app_handle())?;
+    let selected_candidate = restore_manual_installation(&private_directory)?
+        .map(|record| state.register_manual(record))
+        .transpose()?;
     Ok(public_discovery_result(
         snapshot,
         platform_discovery_scope(),
+        selected_candidate,
     ))
 }
 
@@ -718,31 +836,10 @@ pub fn register_blender_installation(
         webview.app_handle(),
         &request.executable_path,
     )?;
-    if executable
-        .file_name()
-        .and_then(OsStr::to_str)
-        .is_none_or(|name| !name.eq_ignore_ascii_case(BLENDER_EXECUTABLE_NAME))
-    {
-        return Err("请选择 blender.exe".to_string());
-    }
-    let executable = canonicalize_registered_executable(&executable)?;
-    validate_pe_x64(&executable)?;
-    let root = executable
-        .parent()
-        .ok_or_else(|| "Blender 安装目录无效".to_string())?
-        .to_path_buf();
-    let identity_key = path_identity(&executable);
-    state.register_manual(InstallationRecord {
-        candidate: BlenderInstallationCandidate {
-            installation_id: installation_id(&identity_key),
-            display_name: "Blender（手动选择）".to_string(),
-            source: BlenderInstallationSource::UserSelected,
-            version_hint: None,
-            version_hint_is_verified: false,
-        },
-        canonical_root: root,
-        canonical_executable: executable,
-    })
+    let record = manual_installation_record(&executable)?;
+    let private_directory = prepare_blender_private_runtime(webview.app_handle())?;
+    persist_manual_installation(&private_directory, &record.canonical_executable)?;
+    state.register_manual(record)
 }
 
 #[derive(Deserialize)]
@@ -1203,6 +1300,29 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn manually_selected_windows_path_persists_and_restores_from_private_directory() {
+        let root = TestDirectory::new("manual-persistence");
+        let selected = root.create_manual_x64_candidate();
+        let record = manual_installation_record(&selected).expect("手选候选应可登记");
+        let private_directory = root.path.join("private");
+        fs::create_dir_all(&private_directory).expect("应能创建私有设置目录");
+
+        persist_manual_installation(&private_directory, &record.canonical_executable)
+            .expect("手选候选应可保存");
+        let restored = restore_manual_installation(&private_directory)
+            .expect("已保存候选应可读取")
+            .expect("已保存候选应存在");
+
+        assert_eq!(restored.candidate, record.candidate);
+        assert_eq!(restored.canonical_executable, record.canonical_executable);
+        assert_eq!(
+            validate_installation_record(&restored).expect("恢复后仍应通过启动前复核"),
+            record.canonical_executable
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn accepts_only_local_drive_root_hints() {
         assert!(root_hint_is_allowed(Path::new(r"C:\Program Files")));
         assert!(!root_hint_is_allowed(Path::new(r"\\server\share")));
@@ -1227,6 +1347,7 @@ mod tests {
         let result = public_discovery_result(
             DiscoverySnapshot::default(),
             BlenderDiscoveryScope::WindowsProgramFilesStandardLayout,
+            None,
         );
 
         assert!(result.candidates.is_empty());

@@ -155,6 +155,28 @@ describe('directorBlenderRuntimeService', () => {
       .toBe(installation.displayName);
   });
 
+  it('重启后优先恢复原生层保存的手选候选', async () => {
+    const persistedInstallation = {
+      ...installation,
+      installationId: 'blender-installation-persisted',
+      displayName: 'Blender（手动选择）',
+      source: 'user-selected',
+      versionHint: null,
+      versionHintIsVerified: false,
+    };
+    mocks.invoke.mockResolvedValueOnce({
+      candidates: [persistedInstallation, installation],
+    });
+    const service = await loadService();
+
+    await expect(service.detectDirectorBlenderInstallation())
+      .resolves.toEqual(persistedInstallation);
+
+    expect(mocks.invoke).toHaveBeenCalledWith('discover_blender_installations');
+    expect(mocks.open).not.toHaveBeenCalled();
+    expect(service.getSelectedDirectorBlenderInstallation()).not.toHaveProperty('executablePath');
+  });
+
   it('设置页主动更换时直接打开选择器，且只返回不含路径的候选摘要', async () => {
     const manualInstallation = {
       ...installation,
