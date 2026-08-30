@@ -21,12 +21,21 @@ const TEMPLATE_INIT_BYTES: &[u8] = include_bytes!(
 const TEMPLATE_STARTUP_BLEND_BYTES: &[u8] = include_bytes!(
     "../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/startup.blend"
 );
+const CHARACTER_FEMALE_BLEND_BYTES: &[u8] = include_bytes!(
+    "../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/assets/characters/ai_canvas_female_white.blend"
+);
+const CHARACTER_MALE_BLEND_BYTES: &[u8] = include_bytes!(
+    "../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/assets/characters/ai_canvas_male_white.blend"
+);
+const CHARACTER_LICENSE_BYTES: &[u8] = include_bytes!(
+    "../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/assets/characters/License_Standard.txt"
+);
 const JOB_SCRIPT_BYTES: &[u8] =
     include_bytes!("../../resources/blender-runtime/v1/jobs/ai_canvas_director_job_v1.py");
 
 const SCHEMA_VERSION: u32 = 1;
 const PACKAGE_ID: &str = "ai-canvas-blender-runtime";
-const PACKAGE_VERSION: &str = "1.2.1";
+const PACKAGE_VERSION: &str = "1.3.0";
 const TEMPLATE_ID: &str = "ai_canvas_director";
 const TEMPLATE_VERSION: u32 = 1;
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
@@ -44,16 +53,28 @@ const TEMPLATE_INIT_PATH: &str =
     "scripts/startup/bl_app_templates_system/ai_canvas_director/__init__.py";
 const TEMPLATE_STARTUP_BLEND_PATH: &str =
     "scripts/startup/bl_app_templates_system/ai_canvas_director/startup.blend";
+const CHARACTER_FEMALE_BLEND_PATH: &str = "scripts/startup/bl_app_templates_system/ai_canvas_director/assets/characters/ai_canvas_female_white.blend";
+const CHARACTER_MALE_BLEND_PATH: &str = "scripts/startup/bl_app_templates_system/ai_canvas_director/assets/characters/ai_canvas_male_white.blend";
+const CHARACTER_LICENSE_PATH: &str = "scripts/startup/bl_app_templates_system/ai_canvas_director/assets/characters/License_Standard.txt";
 const JOB_SCRIPT_PATH: &str = "jobs/ai_canvas_director_job_v1.py";
 
 const TEMPLATE_INIT_SHA256: &str =
-    "50544e2485a948226fea2206e72e09568ea3790d35a39277ab69edb77df31c99";
+    "2fa010167b7e18de3511d19d78dfb2709bf4c959dda2a05231fbfcea8816f3cb";
 const TEMPLATE_STARTUP_BLEND_SHA256: &str =
     "a3e806fc2b910598b5f24c90127d02494fcbaf79a53f7e2eb7aee95f7f85e340";
+const CHARACTER_FEMALE_BLEND_SHA256: &str =
+    "473115a74a17451c5d1489ccd2370f203969954126d32c4349061c5c5d120690";
+const CHARACTER_MALE_BLEND_SHA256: &str =
+    "767911283f1e09295057dc4bdbe5e79e4e80eddd525ad74af1041b35e7425df9";
+const CHARACTER_LICENSE_SHA256: &str =
+    "c232257c8a2545520aa120cda96acb23d00a355d2e3339cba20b7ebf56f28a09";
 const JOB_SCRIPT_SHA256: &str = "3173845adb71ab01f718864353c8cfa92abd5d2aba6440f4fa1a1c5d782dbb19";
 
-const TEMPLATE_INIT_SIZE: u64 = 73_705;
+const TEMPLATE_INIT_SIZE: u64 = 84_690;
 const TEMPLATE_STARTUP_BLEND_SIZE: u64 = 91_348;
+const CHARACTER_FEMALE_BLEND_SIZE: u64 = 560_000;
+const CHARACTER_MALE_BLEND_SIZE: u64 = 543_063;
+const CHARACTER_LICENSE_SIZE: u64 = 782;
 const JOB_SCRIPT_SIZE: u64 = 40_364;
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -74,7 +95,7 @@ struct EmbeddedResource {
     encoding: EmbeddedResourceEncoding,
 }
 
-const EMBEDDED_RESOURCES: [EmbeddedResource; 3] = [
+const EMBEDDED_RESOURCES: [EmbeddedResource; 6] = [
     EmbeddedResource {
         id: "template-init",
         relative_path: TEMPLATE_INIT_PATH,
@@ -90,6 +111,30 @@ const EMBEDDED_RESOURCES: [EmbeddedResource; 3] = [
         sha256: TEMPLATE_STARTUP_BLEND_SHA256,
         content: TEMPLATE_STARTUP_BLEND_BYTES,
         encoding: EmbeddedResourceEncoding::Binary,
+    },
+    EmbeddedResource {
+        id: "character-female",
+        relative_path: CHARACTER_FEMALE_BLEND_PATH,
+        bytes: CHARACTER_FEMALE_BLEND_SIZE,
+        sha256: CHARACTER_FEMALE_BLEND_SHA256,
+        content: CHARACTER_FEMALE_BLEND_BYTES,
+        encoding: EmbeddedResourceEncoding::Binary,
+    },
+    EmbeddedResource {
+        id: "character-male",
+        relative_path: CHARACTER_MALE_BLEND_PATH,
+        bytes: CHARACTER_MALE_BLEND_SIZE,
+        sha256: CHARACTER_MALE_BLEND_SHA256,
+        content: CHARACTER_MALE_BLEND_BYTES,
+        encoding: EmbeddedResourceEncoding::Binary,
+    },
+    EmbeddedResource {
+        id: "character-license",
+        relative_path: CHARACTER_LICENSE_PATH,
+        bytes: CHARACTER_LICENSE_SIZE,
+        sha256: CHARACTER_LICENSE_SHA256,
+        content: CHARACTER_LICENSE_BYTES,
+        encoding: EmbeddedResourceEncoding::CanonicalLfText,
     },
     EmbeddedResource {
         id: "job-script",
@@ -646,7 +691,7 @@ mod tests {
     #[test]
     fn install_is_idempotent_and_returns_trusted_paths() {
         let root = TestDirectory::create();
-        let previous_runtime_root = root.0.join(INSTALL_VENDOR_DIRECTORY).join("1.1.0");
+        let previous_runtime_root = root.0.join(INSTALL_VENDOR_DIRECTORY).join("1.2.1");
         fs::create_dir_all(&previous_runtime_root)
             .expect("previous runtime directory should be created");
         let previous_marker = previous_runtime_root.join("preserved.txt");
@@ -658,7 +703,7 @@ mod tests {
             .expect("second resource install should be idempotent");
 
         assert_eq!(first, second);
-        assert!(first.runtime_root.ends_with("blender-runtime/1.2.1"));
+        assert!(first.runtime_root.ends_with("blender-runtime/1.3.0"));
         assert_eq!(
             fs::read(previous_marker).expect("previous runtime should remain readable"),
             b"previous runtime"
@@ -677,6 +722,33 @@ mod tests {
                 .expect("startup blend should be readable"),
             TEMPLATE_STARTUP_BLEND_BYTES
         );
+        let expected_template_init =
+            canonicalize_lf_text(TEMPLATE_INIT_BYTES).expect("template init should normalize");
+        assert_eq!(
+            fs::read(first.application_template_root.join("__init__.py"))
+                .expect("template init should be readable"),
+            expected_template_init.as_ref()
+        );
+        let character_directory = first.application_template_root.join("assets/characters");
+        assert_eq!(
+            fs::read(character_directory.join("ai_canvas_female_white.blend"))
+                .expect("female character should be readable"),
+            CHARACTER_FEMALE_BLEND_BYTES
+        );
+        assert_eq!(
+            fs::read(character_directory.join("ai_canvas_male_white.blend"))
+                .expect("male character should be readable"),
+            CHARACTER_MALE_BLEND_BYTES
+        );
+        let expected_license =
+            canonicalize_lf_text(CHARACTER_LICENSE_BYTES).expect("license should normalize");
+        assert_eq!(
+            fs::read(character_directory.join("License_Standard.txt"))
+                .expect("character license should be readable"),
+            expected_license.as_ref()
+        );
+        assert!(CHARACTER_FEMALE_BLEND_SIZE < 5_000_000);
+        assert!(CHARACTER_MALE_BLEND_SIZE < 5_000_000);
     }
 
     #[test]

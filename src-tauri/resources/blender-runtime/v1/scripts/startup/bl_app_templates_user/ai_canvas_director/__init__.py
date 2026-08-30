@@ -34,12 +34,28 @@ DIRECTOR_OWNER_KEY = "ai_canvas_console_owner"
 DIRECTOR_OWNER_TOKEN = "ai_canvas_director_console_v1"
 DIRECTOR_MANAGED_KEY = "ai_canvas_console_managed"
 DIRECTOR_KIND_KEY = "ai_canvas_console_kind"
+DIRECTOR_ASSET_KEY = "ai_canvas_console_asset"
+DIRECTOR_INSTANCE_KEY = "ai_canvas_console_instance"
 DIRECTOR_IMPORTED_KEY = "ai_canvas_console_imported"
 DIRECTOR_COLLECTION_SCENE_KEY = "ai_canvas_console_collection"
 DIRECTOR_MATERIAL_ROLE_KEY = "ai_canvas_console_material_role"
 DIRECTOR_PREVIOUS_WORLD_KEY = "ai_canvas_console_previous_world"
 DIRECTOR_CONSOLE_ATTEMPTS_KEY = "ai_canvas_console_activation_attempts"
 DIRECTOR_IMPORT_SUFFIXES = {".fbx", ".glb", ".gltf", ".obj"}
+DIRECTOR_BUILTIN_CHARACTERS = {
+    "FEMALE": (
+        "ai_canvas_female_white.blend",
+        "女性白模",
+        "female",
+        {"Armature", "Eyebrows", "Eyes", "Superhero_Female"},
+    ),
+    "MALE": (
+        "ai_canvas_male_white.blend",
+        "男性白模",
+        "male",
+        {"Armature", "Eyebrows", "Eyes", "SuperHero_Male"},
+    ),
+}
 CAMERA_PREVIEW_MARGIN = 16
 CAMERA_PREVIEW_HEADER_HEIGHT = 28
 CAMERA_PREVIEW_REFRESH_SECONDS = 0.12
@@ -116,10 +132,18 @@ def _director_collection(scene):
     return collection
 
 
-def _mark_console_object(obj, kind):
-    obj[DIRECTOR_OWNER_KEY] = DIRECTOR_OWNER_TOKEN
-    obj[DIRECTOR_MANAGED_KEY] = True
-    obj[DIRECTOR_KIND_KEY] = kind
+def _mark_console_datablock(datablock, kind, asset_id=None, instance_id=None):
+    datablock[DIRECTOR_OWNER_KEY] = DIRECTOR_OWNER_TOKEN
+    datablock[DIRECTOR_MANAGED_KEY] = True
+    datablock[DIRECTOR_KIND_KEY] = kind
+    if asset_id is not None:
+        datablock[DIRECTOR_ASSET_KEY] = asset_id
+    if instance_id is not None:
+        datablock[DIRECTOR_INSTANCE_KEY] = instance_id
+
+
+def _mark_console_object(obj, kind, asset_id=None, instance_id=None):
+    _mark_console_datablock(obj, kind, asset_id, instance_id)
 
 
 def _ensure_material(name, color, roughness=0.65, metallic=0.0):
@@ -221,6 +245,18 @@ def _remove_console_objects(scene, kinds):
     collection = _existing_director_collection(scene)
     if collection is None:
         return 0
+    protected_instances = {
+        obj.get(DIRECTOR_INSTANCE_KEY)
+        for obj in bpy.data.objects
+        if obj.get(DIRECTOR_OWNER_KEY) == DIRECTOR_OWNER_TOKEN
+        and obj.get(DIRECTOR_MANAGED_KEY) is True
+        and obj.get(DIRECTOR_KIND_KEY) in kinds
+        and isinstance(obj.get(DIRECTOR_INSTANCE_KEY), str)
+        and (
+            len(obj.users_collection) != 1
+            or obj.users_collection[0] != collection
+        )
+    }
     removed = 0
     for obj in list(collection.objects):
         if obj.get(DIRECTOR_OWNER_KEY) != DIRECTOR_OWNER_TOKEN:
@@ -228,6 +264,8 @@ def _remove_console_objects(scene, kinds):
         if obj.get(DIRECTOR_MANAGED_KEY) is not True:
             continue
         if obj.get(DIRECTOR_KIND_KEY) not in kinds:
+            continue
+        if obj.get(DIRECTOR_INSTANCE_KEY) in protected_instances:
             continue
         if len(obj.users_collection) != 1 or obj.users_collection[0] != collection:
             collection.objects.unlink(obj)
@@ -241,6 +279,7 @@ def _remove_console_objects(scene, kinds):
             elif isinstance(data, bpy.types.Light):
                 bpy.data.lights.remove(data)
         removed += 1
+    _remove_unused_console_datablocks(kinds, protected_instances)
     return removed
 
 
@@ -254,8 +293,32 @@ IMPORT_DATABLOCK_GROUPS = (
     "materials",
     "meshes",
     "node_groups",
+    "shape_keys",
     "textures",
 )
+
+
+def _remove_unused_console_datablocks(kinds, protected_instances=None):
+    protected_instances = protected_instances or set()
+    while True:
+        removed_any = False
+        for group_name in IMPORT_DATABLOCK_GROUPS:
+            group = getattr(bpy.data, group_name)
+            for datablock in list(group):
+                if datablock.get(DIRECTOR_OWNER_KEY) != DIRECTOR_OWNER_TOKEN:
+                    continue
+                if datablock.get(DIRECTOR_MANAGED_KEY) is not True:
+                    continue
+                if datablock.get(DIRECTOR_KIND_KEY) not in kinds:
+                    continue
+                if datablock.get(DIRECTOR_INSTANCE_KEY) in protected_instances:
+                    continue
+                if datablock.users != 0:
+                    continue
+                group.remove(datablock)
+                removed_any = True
+        if not removed_any:
+            return
 
 
 def _snapshot_import_state():
@@ -281,12 +344,167 @@ def _remove_new_import_data(before):
         if collection.objects:
             continue
         bpy.data.collections.remove(collection, do_unlink=True)
+    while True:
+        removed_any = False
+        for group_name in IMPORT_DATABLOCK_GROUPS:
+            group = getattr(bpy.data, group_name)
+            for datablock in list(group):
+                if datablock.as_pointer() in before[group_name] or datablock.users != 0:
+                    continue
+                group.remove(datablock)
+                removed_any = True
+        if not removed_any:
+            return
+
+
+def _new_import_datablocks(before):
     for group_name in IMPORT_DATABLOCK_GROUPS:
-        group = getattr(bpy.data, group_name)
-        for datablock in list(group):
-            if datablock.as_pointer() in before[group_name] or datablock.users != 0:
-                continue
-            group.remove(datablock)
+        for datablock in getattr(bpy.data, group_name):
+            if datablock.as_pointer() not in before[group_name]:
+                yield datablock
+
+
+def _path_is_link_or_junction(path):
+    return path.is_symlink() or (
+        hasattr(path, "is_junction") and path.is_junction()
+    )
+
+
+def _builtin_character_path(asset):
+    character = DIRECTOR_BUILTIN_CHARACTERS.get(asset)
+    if character is None:
+        raise RuntimeError("Unsupported AI Canvas built-in character")
+    filename, label, slug, object_names = character
+    try:
+        template_directory = Path(__file__).resolve(strict=True).parent
+        assets_directory = template_directory / "assets"
+        unresolved_directory = assets_directory / "characters"
+        if any(
+            _path_is_link_or_junction(path)
+            for path in (assets_directory, unresolved_directory)
+        ):
+            raise RuntimeError("AI Canvas built-in character directory is invalid")
+        character_directory = unresolved_directory.resolve(strict=True)
+        unresolved_path = character_directory / filename
+        if _path_is_link_or_junction(unresolved_path):
+            raise RuntimeError("AI Canvas built-in character path is invalid")
+        character_path = unresolved_path.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError("AI Canvas built-in character is unavailable") from error
+    try:
+        character_path.relative_to(template_directory)
+    except ValueError as error:
+        raise RuntimeError("AI Canvas built-in character escaped the template") from error
+    if character_path.parent != character_directory or not character_path.is_file():
+        raise RuntimeError("AI Canvas built-in character path is invalid")
+    return character_path, label, slug, object_names
+
+
+def _evaluated_mesh_bound_points(context, objects):
+    context.view_layer.update()
+    depsgraph = context.evaluated_depsgraph_get()
+    points = []
+    for obj in objects:
+        if obj.type != "MESH":
+            continue
+        evaluated = obj.evaluated_get(depsgraph)
+        points.extend(
+            evaluated.matrix_world @ vertex.co
+            for vertex in evaluated.data.vertices
+        )
+    return points
+
+
+def _hierarchy_members(roots):
+    members = []
+    pending = list(roots)
+    seen = set()
+    while pending:
+        obj = pending.pop()
+        pointer = obj.as_pointer()
+        if pointer in seen:
+            continue
+        seen.add(pointer)
+        members.append(obj)
+        pending.extend(obj.children)
+    return members
+
+
+def _translate_roots_to_cursor(context, objects, cursor):
+    points = _evaluated_mesh_bound_points(context, objects)
+    if not points:
+        raise RuntimeError("AI Canvas built-in character has no mesh bounds")
+    minimum = Vector((
+        min(point.x for point in points),
+        min(point.y for point in points),
+        min(point.z for point in points),
+    ))
+    maximum = Vector((
+        max(point.x for point in points),
+        max(point.y for point in points),
+        max(point.z for point in points),
+    ))
+    delta = Vector((
+        cursor.x - ((minimum.x + maximum.x) * 0.5),
+        cursor.y - ((minimum.y + maximum.y) * 0.5),
+        cursor.z - minimum.z,
+    ))
+    object_set = set(objects)
+    roots = [obj for obj in objects if obj.parent not in object_set]
+    if not roots:
+        raise RuntimeError("AI Canvas built-in character hierarchy is invalid")
+    for obj in roots:
+        matrix = obj.matrix_world.copy()
+        matrix.translation += delta
+        obj.matrix_world = matrix
+    context.view_layer.update()
+
+
+def _validate_builtin_character(objects, before):
+    if len(objects) != 4:
+        raise RuntimeError("AI Canvas built-in character object count is invalid")
+    armatures = [obj for obj in objects if obj.type == "ARMATURE"]
+    meshes = [obj for obj in objects if obj.type == "MESH"]
+    if len(armatures) != 1 or len(meshes) != 3:
+        raise RuntimeError("AI Canvas built-in character structure is invalid")
+    if any(obj.type not in {"ARMATURE", "MESH"} for obj in objects):
+        raise RuntimeError("AI Canvas built-in character contains unsupported objects")
+    if any(
+        obj.library is not None
+        or (obj.data is not None and obj.data.library is not None)
+        for obj in objects
+    ):
+        raise RuntimeError("AI Canvas built-in character was not appended locally")
+    object_set = set(objects)
+    if any(obj.parent is not None and obj.parent not in object_set for obj in objects):
+        raise RuntimeError("AI Canvas built-in character hierarchy is invalid")
+    rig = armatures[0]
+    if len(rig.data.bones) != 65 or rig.data.bones.get("root") is None:
+        raise RuntimeError("AI Canvas built-in character rig is invalid")
+    for mesh in meshes:
+        if mesh.parent is not rig:
+            raise RuntimeError("AI Canvas built-in character mesh parent is invalid")
+        if not any(
+            modifier.type == "ARMATURE" and modifier.object is rig
+            for modifier in mesh.modifiers
+        ):
+            raise RuntimeError("AI Canvas built-in character skin binding is invalid")
+    if any(
+        image.as_pointer() not in before["images"]
+        for image in bpy.data.images
+    ):
+        raise RuntimeError("AI Canvas built-in character contains external images")
+    if any(
+        datablock.library is not None
+        for datablock in _new_import_datablocks(before)
+    ):
+        raise RuntimeError("AI Canvas built-in character contains linked data")
+    if any(
+        getattr(datablock, "use_fake_user", False)
+        for datablock in _new_import_datablocks(before)
+    ):
+        raise RuntimeError("AI Canvas built-in character contains persistent data")
+    return rig, meshes
 
 
 def _target_bounds(context):
@@ -1117,6 +1335,81 @@ def _save_editor_blend_atomically(output_dir):
     return blend_path
 
 
+class AI_CANVAS_OT_add_builtin_character(bpy.types.Operator):
+    bl_idname = "ai_canvas.add_builtin_character"
+    bl_label = "添加内置人物"
+    bl_description = "在 3D 光标处添加带完整骨骼的 AI Canvas 内置白模"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+
+    asset: EnumProperty(
+        name="内置人物",
+        items=(
+            ("FEMALE", "女性白模", "添加带完整骨骼的女性测试白模"),
+            ("MALE", "男性白模", "添加带完整骨骼的男性测试白模"),
+        ),
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return _editor_operator_poll(context)
+
+    def execute(self, context):
+        scene = context.scene
+        before = _snapshot_import_state()
+        had_collection_property = DIRECTOR_COLLECTION_SCENE_KEY in scene
+        previous_collection_name = scene.get(DIRECTOR_COLLECTION_SCENE_KEY)
+        try:
+            character_path, label, slug, object_names = _builtin_character_path(
+                self.asset,
+            )
+            with bpy.data.libraries.load(
+                str(character_path),
+                link=False,
+                set_fake=False,
+                recursive=False,
+                reuse_local_id=False,
+            ) as (
+                data_from,
+                data_to,
+            ):
+                if set(data_from.objects) != object_names:
+                    raise RuntimeError("AI Canvas built-in character names are invalid")
+                data_to.objects = sorted(object_names)
+            objects = [obj for obj in data_to.objects if obj is not None]
+            rig, _meshes = _validate_builtin_character(objects, before)
+            collection = _director_collection(scene)
+            instance_id = f"{slug}-{time.time_ns():x}"
+            asset_id = f"builtin-character-{slug}"
+            for obj in objects:
+                collection.objects.link(obj)
+                _mark_console_object(obj, "character", asset_id, instance_id)
+            for datablock in _new_import_datablocks(before):
+                _mark_console_datablock(
+                    datablock,
+                    "character",
+                    asset_id,
+                    instance_id,
+                )
+            rig.name = f"AI_character-{slug}-rig"
+            _translate_roots_to_cursor(
+                context,
+                objects,
+                scene.cursor.location.copy(),
+            )
+            _select_objects(context, objects, rig)
+        except Exception:
+            _remove_new_import_data(before)
+            if had_collection_property:
+                scene[DIRECTOR_COLLECTION_SCENE_KEY] = previous_collection_name
+            elif DIRECTOR_COLLECTION_SCENE_KEY in scene:
+                del scene[DIRECTOR_COLLECTION_SCENE_KEY]
+            self.report({"ERROR"}, "内置人物加载失败，请重新安装 Blender 导演台资源")
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"已添加{label}；骨架已设为活动对象")
+        return {"FINISHED"}
+
+
 class AI_CANVAS_OT_add_blockout(bpy.types.Operator):
     bl_idname = "ai_canvas.add_blockout"
     bl_label = "添加基础模型"
@@ -1130,7 +1423,6 @@ class AI_CANVAS_OT_add_blockout(bpy.types.Operator):
             ("SPHERE", "球体", "创建一米球体"),
             ("FLOOR", "地面", "创建六米见方的地面"),
             ("TABLE", "桌子", "创建拍摄占位桌"),
-            ("MANNEQUIN", "人物占位", "创建一名低多边形人物占位"),
         ),
     )
 
@@ -1142,7 +1434,6 @@ class AI_CANVAS_OT_add_blockout(bpy.types.Operator):
         collection = _director_collection(context.scene)
         origin = context.scene.cursor.location.copy()
         neutral = _ensure_material("AI Canvas Neutral", (0.55, 0.58, 0.65))
-        character = _ensure_material("AI Canvas Character", (0.2, 0.55, 0.95))
         prop = _ensure_material("AI Canvas Prop", (0.85, 0.45, 0.2))
         created = []
 
@@ -1207,44 +1498,6 @@ class AI_CANVAS_OT_add_blockout(bpy.types.Operator):
                 )
                 leg.parent = root
                 created.append(leg)
-        elif self.asset == "MANNEQUIN":
-            root = bpy.data.objects.new("AI_blockout-person", None)
-            collection.objects.link(root)
-            root.location = origin
-            root.empty_display_type = "PLAIN_AXES"
-            root.empty_display_size = 0.35
-            _mark_console_object(root, "primitive")
-            created.append(root)
-            parts = (
-                ("head", "sphere", (0.0, 0.0, 1.65), (0.34, 0.34, 0.34)),
-                ("torso", "box", (0.0, 0.0, 1.15), (0.55, 0.32, 0.72)),
-                ("arm-l", "box", (-0.38, 0.0, 1.18), (0.16, 0.18, 0.68)),
-                ("arm-r", "box", (0.38, 0.0, 1.18), (0.16, 0.18, 0.68)),
-                ("leg-l", "box", (-0.16, 0.0, 0.46), (0.22, 0.26, 0.92)),
-                ("leg-r", "box", (0.16, 0.0, 0.46), (0.22, 0.26, 0.92)),
-            )
-            for part_name, geometry, location, dimensions in parts:
-                if geometry == "sphere":
-                    part = _new_sphere(
-                        f"AI_blockout-person-{part_name}",
-                        collection,
-                        location,
-                        dimensions[0],
-                        character,
-                        "primitive",
-                    )
-                else:
-                    part = _new_box(
-                        f"AI_blockout-person-{part_name}",
-                        collection,
-                        location,
-                        dimensions,
-                        character,
-                        "primitive",
-                    )
-                part.parent = root
-                created.append(part)
-
         _select_objects(context, created, created[0] if created else None)
         self.report({"INFO"}, f"已创建 {len(created)} 个基础对象")
         return {"FINISHED"}
@@ -1323,7 +1576,7 @@ class AI_CANVAS_OT_apply_scene_preset(bpy.types.Operator):
 class AI_CANVAS_OT_clear_console_build(bpy.types.Operator):
     bl_idname = "ai_canvas.clear_console_build"
     bl_label = "清理快速搭建"
-    bl_description = "只删除操作台创建的基础模型、场景和灯光，保留导入模型与 Director Scene"
+    bl_description = "只删除操作台创建的基础模型、内置人物、场景和灯光，保留本地导入模型与 Director Scene"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
 
     @classmethod
@@ -1331,7 +1584,10 @@ class AI_CANVAS_OT_clear_console_build(bpy.types.Operator):
         return _editor_operator_poll(context)
 
     def execute(self, context):
-        removed = _remove_console_objects(context.scene, {"primitive", "scene", "light"})
+        removed = _remove_console_objects(
+            context.scene,
+            {"primitive", "character", "scene", "light"},
+        )
         _restore_console_world(context.scene)
         self.report({"INFO"}, f"已清理 {removed} 个操作台对象")
         return {"FINISHED"}
@@ -1355,21 +1611,46 @@ class AI_CANVAS_OT_ground_selected(bpy.types.Operator):
             obj for obj in context.selected_objects
             if obj.type not in {"CAMERA", "LIGHT"}
         ]
-        points = [
-            obj.matrix_world @ Vector(corner)
+        character_instances = {
+            obj.get(DIRECTOR_INSTANCE_KEY)
             for obj in selected
-            for corner in obj.bound_box
+            if obj.get(DIRECTOR_OWNER_KEY) == DIRECTOR_OWNER_TOKEN
+            and obj.get(DIRECTOR_MANAGED_KEY) is True
+            and obj.get(DIRECTOR_KIND_KEY) == "character"
+            and isinstance(obj.get(DIRECTOR_INSTANCE_KEY), str)
+        }
+        movement_objects = list(selected)
+        movement_pointers = {obj.as_pointer() for obj in movement_objects}
+        for obj in bpy.data.objects:
+            if obj.get(DIRECTOR_INSTANCE_KEY) not in character_instances:
+                continue
+            if obj.as_pointer() in movement_pointers:
+                continue
+            movement_objects.append(obj)
+            movement_pointers.add(obj.as_pointer())
+        movement_set = set(movement_objects)
+        roots = [
+            obj for obj in movement_objects
+            if obj.parent not in movement_set
         ]
+        hierarchy = _hierarchy_members(roots)
+        points = _evaluated_mesh_bound_points(context, hierarchy)
+        if not points:
+            points = [
+                obj.matrix_world @ Vector(corner)
+                for obj in hierarchy
+                if obj.type not in {"CAMERA", "LIGHT"}
+                for corner in obj.bound_box
+            ]
         if not points:
             self.report({"ERROR"}, "所选对象没有可用于落地的边界")
             return {"CANCELLED"}
         delta = -min(point.z for point in points)
-        selected_set = set(selected)
-        roots = [obj for obj in selected if obj.parent not in selected_set]
         for obj in roots:
             matrix = obj.matrix_world.copy()
             matrix.translation.z += delta
             obj.matrix_world = matrix
+        context.view_layer.update()
         self.report({"INFO"}, "所选对象已落地")
         return {"FINISHED"}
 
@@ -1883,11 +2164,17 @@ class AI_CANVAS_PT_quick_build(AI_CANVAS_PT_properties_base, bpy.types.Panel):
         row = layout.row(align=True)
         row.operator(AI_CANVAS_OT_add_blockout.bl_idname, text="地面").asset = "FLOOR"
         row.operator(AI_CANVAS_OT_add_blockout.bl_idname, text="桌子").asset = "TABLE"
-        layout.operator(
-            AI_CANVAS_OT_add_blockout.bl_idname,
-            text="添加人物占位",
+        row = layout.row(align=True)
+        row.operator(
+            AI_CANVAS_OT_add_builtin_character.bl_idname,
+            text="女性白模",
             icon="ARMATURE_DATA",
-        ).asset = "MANNEQUIN"
+        ).asset = "FEMALE"
+        row.operator(
+            AI_CANVAS_OT_add_builtin_character.bl_idname,
+            text="男性白模",
+            icon="ARMATURE_DATA",
+        ).asset = "MALE"
         layout.operator(AI_CANVAS_OT_ground_selected.bl_idname, icon="CON_FLOOR")
 
 
@@ -1986,6 +2273,7 @@ class AI_CANVAS_PT_output(AI_CANVAS_PT_properties_base, bpy.types.Panel):
 
 
 REGISTER_CLASSES = (
+    AI_CANVAS_OT_add_builtin_character,
     AI_CANVAS_OT_add_blockout,
     AI_CANVAS_OT_apply_scene_preset,
     AI_CANVAS_OT_clear_console_build,
