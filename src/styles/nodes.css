@@ -1212,6 +1212,12 @@
   will-change: auto;
 }
 
+/* 安全预览作用域内不对大尺寸图片/视频表面做滤镜入场。 */
+.fullscreen-overlay--image-preview .fullscreen-img-view,
+.fullscreen-overlay--image-preview .fullscreen-video-view {
+  animation: none;
+}
+
 .zoom-controls {
   position: absolute;
   bottom: 28px;

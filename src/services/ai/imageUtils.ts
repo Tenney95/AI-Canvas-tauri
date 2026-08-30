@@ -174,12 +174,13 @@ export async function mergeImageWithOverlays(
 export async function resolveContentImageUrls(
   content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>,
   provider = '',
+  signal?: AbortSignal,
 ): Promise<string | Array<{ type: string; text?: string; image_url?: { url: string } }>> {
   if (typeof content === 'string') return content;
   const resolved = await Promise.all(
     content.map(async (part) => {
       if (part.type === 'image_url' && part.image_url?.url && isLocalImageUrl(part.image_url.url)) {
-        const publicUrl = await uploadToRemote(part.image_url.url, provider);
+        const publicUrl = await uploadToRemote(part.image_url.url, provider, 'image', signal);
         return { ...part, image_url: { url: publicUrl } };
       }
       return part;
@@ -189,11 +190,15 @@ export async function resolveContentImageUrls(
 }
 
 /** 上传 imageUrls 数组中的本地图片到远端 */
-export async function resolveImageUrlArray(urls: string[], provider = ''): Promise<string[]> {
+export async function resolveImageUrlArray(
+  urls: string[],
+  provider = '',
+  signal?: AbortSignal,
+): Promise<string[]> {
   return Promise.all(
     urls.map(async (url) => {
       if (isLocalImageUrl(url)) {
-        return await uploadToRemote(url, provider);
+        return await uploadToRemote(url, provider, 'image', signal);
       }
       return url;
     }),

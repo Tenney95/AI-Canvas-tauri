@@ -146,6 +146,7 @@ const chat = {
   // ── ChatMessages ──
   '开始对话': 'Start a conversation',
   '用自然语言操作画布，AI 助手帮你完成': 'Control the canvas in natural language, and the AI assistant will help',
+  '加载更早消息（还有 {count} 条）': 'Load earlier messages ({count} remaining)',
   '回到最新消息，{count} 条未读': 'Back to latest, {count} unread',
   '回到最新消息': 'Back to latest messages',
   '最新消息': 'Latest',

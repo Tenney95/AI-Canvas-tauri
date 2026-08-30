@@ -224,6 +224,15 @@
   height: calc(100vh - 24px);
   max-height: none;
   border-radius: 12px;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  will-change: auto;
+}
+
+.fullscreen-overlay.pano-original-overlay {
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .pano-original-overlay .fullscreen-close--absolute {

@@ -13,9 +13,12 @@ import { Stage, Layer as KLayer, Rect, Line, Transformer } from 'react-konva';
 import FullscreenOverlay from '../../../../shared/FullscreenOverlay';
 import { setExternalDropCaptured } from '../../../../../utils/dropCapture';
 import { useAppStore } from '../../../../../store/useAppStore';
-import { saveDataUrlToProjectData } from '../../../../../services/fileService';
+import {
+  fetchImageForCrop,
+  saveBinaryToProjectData,
+  saveDataUrlToProjectData,
+} from '../../../../../services/fileService';
 import { subjectMatting, checkModelExists, downloadModel } from '../../../../../services/onnxService';
-import { loadSafeImage } from '../imageUtils';
 import { clamp } from '../../../../../utils/num';
 import ImageEditorZoomControls from '../ImageEditorZoomControls';
 import { useComposer } from './useComposer';
@@ -24,8 +27,16 @@ import ComposerSidePanel from './ComposerSidePanel';
 import ComposerLayerNode from './ComposerLayerNode';
 import { NO_GUIDES, alignOffset, fitScaleFactor, snapDuringDrag } from './composerGeometry';
 import type { SnapGuides } from './composerGeometry';
-import type { AlignDir, Layer } from '../../../../../types/composerTypes';
+import { isDefaultAdjustments, type AlignDir, type Layer } from '../../../../../types/composerTypes';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import {
+  assertEditorCanvasBudget,
+  canvasToDataUrl,
+  estimateComposerFilterCacheWorkingSetBytes,
+  getComposerFilterCacheAggregateBudgetError,
+  getComposerPeakWorkingSetBudgetError,
+  getEditorCanvasBudgetError,
+} from '../imageResourceBudget';
 
 interface ImageComposerEditorProps {
   isOpen: boolean;
@@ -49,12 +60,50 @@ const errMessage = (err: unknown, fallback: string): string =>
   : err && typeof err === 'object' && 'message' in err ? String((err as Record<string, unknown>).message)
   : fallback;
 
+const IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+  'image/avif': 'avif',
+};
+
+function extensionForImageSource(source: string, mimeType: string): string {
+  const byMime = IMAGE_EXTENSION_BY_MIME[mimeType.toLowerCase()];
+  if (byMime) return byMime;
+  const match = source.match(/\.([a-z0-9]{2,5})(?:[?#]|$)/i);
+  return match?.[1]?.toLowerCase() || 'png';
+}
+
+async function saveComposerSourceToProject(source: string, projectId: string) {
+  const stamp = Date.now();
+  const resolvedSource = await fetchImageForCrop(source);
+  if (resolvedSource.startsWith('data:')) {
+    const mime = resolvedSource.match(/^data:([^;,]+)/i)?.[1] ?? 'image/png';
+    return saveDataUrlToProjectData(
+      resolvedSource,
+      projectId,
+      `composer_subject_${stamp}.${extensionForImageSource(source, mime)}`,
+    );
+  }
+  const response = await fetch(resolvedSource);
+  if (!response.ok) throw new Error(`图片读取失败：HTTP ${response.status}`);
+  const blob = await response.blob();
+  return saveBinaryToProjectData(
+    new Uint8Array(await blob.arrayBuffer()),
+    projectId,
+    `composer_subject_${stamp}.${extensionForImageSource(source, blob.type)}`,
+  );
+}
+
 export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose, onStart, onSave }: ImageComposerEditorProps) {
   const cmp = useComposer();
   const {
     layers, selectedId, setSelectedId, selectedLayer, canvas, updateCanvas,
-    updateLayer, removeLayer, duplicateLayer, reorderLayer, addImageLayer,
-    addBrushStroke, tool, setTool, brush, undo, redo, clearHistory, reset,
+    updateLayer, removeLayer, duplicateLayer, reorderLayer, addImageLayer, addImageFileLayer, replaceImageLayer,
+    addBrushStroke, tool, setTool, brush, undo, redo, clearHistory, reset, retainedImageBytes,
   } = cmp;
 
   const stageWrapRef = useRef<HTMLDivElement>(null);
@@ -73,6 +122,11 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
   const draftRef = useRef<number[] | null>(null);
   const drawingRef = useRef(false);
   const seededRef = useRef(false);
+  const exportingRef = useRef(false);
+  const exportFrameRef = useRef<number | null>(null);
+  const editorEpochRef = useRef(0);
+  const imageImportQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const resourceIssuesRef = useRef<Map<string, string>>(new Map());
 
   /** 笔画点位以 ref 为准，收笔时才读取（避免在 setState 更新器里做副作用） */
   const setDraftPoints = useCallback((points: number[] | null) => {
@@ -83,6 +137,64 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
   const registerNode = useCallback((id: string, node: Konva.Node | null) => {
     if (node) nodeRefs.current.set(id, node);
     else nodeRefs.current.delete(id);
+  }, []);
+
+  const handleResourceIssue = useCallback((id: string, message: string | null) => {
+    const previous = resourceIssuesRef.current.get(id);
+    if (!message) {
+      resourceIssuesRef.current.delete(id);
+      return;
+    }
+    resourceIssuesRef.current.set(id, message);
+    if (previous !== message) useAppStore.getState().showToast(message, 'error');
+  }, []);
+
+  const filterCacheBudget = useMemo(() => {
+    const errors = new Map<string, string>();
+    let retainedWorkingBytes = 0;
+    for (const layer of layers) {
+      if (layer.type !== 'image' || !layer.visible || isDefaultAdjustments(layer.adjustments)) continue;
+      const offset = Math.ceil(layer.adjustments.blur) * 2 + 1;
+      const error = getComposerFilterCacheAggregateBudgetError(
+        retainedWorkingBytes,
+        layer.width,
+        layer.height,
+        offset,
+        retainedImageBytes,
+      );
+      if (error) {
+        errors.set(layer.id, error);
+        continue;
+      }
+      retainedWorkingBytes += estimateComposerFilterCacheWorkingSetBytes(
+        layer.width,
+        layer.height,
+        offset,
+      ) ?? 0;
+    }
+    return { errors, workingBytes: retainedWorkingBytes };
+  }, [layers, retainedImageBytes]);
+  const filterCacheErrors = filterCacheBudget.errors;
+
+  /** 所有图片解码串行执行；关闭编辑器后，队列中尚未开始/完成的结果全部失效。 */
+  const enqueueImageImport = useCallback((
+    task: (isCurrent: () => boolean) => Promise<void>,
+    notifyFailure = true,
+  ): Promise<void> => {
+    const epoch = editorEpochRef.current;
+    const isCurrent = () => editorEpochRef.current === epoch;
+    const queued = imageImportQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (!isCurrent()) return;
+        await task(isCurrent);
+      });
+    imageImportQueueRef.current = queued.catch((error) => {
+      if (notifyFailure && isCurrent()) {
+        useAppStore.getState().showToast(errMessage(error, '图片导入失败'), 'error');
+      }
+    });
+    return queued;
   }, []);
 
   /* ── 居中适配相机 ── */
@@ -129,31 +241,65 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
   useEffect(() => {
     if (!isOpen || seededRef.current || stageSize.w === 0 || !imageUrl) return;
     seededRef.current = true;
-    (async () => {
-      try {
-        const img = await loadSafeImage(imageUrl);
+    void enqueueImageImport(async (isCurrent) => {
+      await addImageLayer(imageUrl, '底图', (img) => {
+        if (!isCurrent()) throw new Error('编辑器已关闭');
         const W = Math.min(img.naturalWidth, MAX_SEED);
         const H = Math.round((img.naturalHeight / img.naturalWidth) * W);
         updateCanvas({ width: W, height: H, bg: 'transparent' }, null);
         fitToView(W, H, stageSize.w, stageSize.h);
-        await addImageLayer(imageUrl, '底图');
-      } catch {
-        /* 加载失败时仍可手动加图 */
-      } finally {
+      });
+      if (isCurrent()) {
         // 底图属于初始状态，不该被撤销掉
         clearHistory();
       }
-    })();
-  }, [isOpen, stageSize.w, stageSize.h, imageUrl, updateCanvas, fitToView, addImageLayer, clearHistory]);
+    }, false).catch(() => {
+      /* 加载失败时仍可手动加图 */
+    });
+  }, [
+    addImageLayer,
+    clearHistory,
+    enqueueImageImport,
+    fitToView,
+    imageUrl,
+    isOpen,
+    stageSize.h,
+    stageSize.w,
+    updateCanvas,
+  ]);
 
   /* ── 关闭时复位 ── */
   const handleClose = useCallback(() => {
+    editorEpochRef.current += 1;
+    if (exportFrameRef.current !== null) {
+      cancelAnimationFrame(exportFrameRef.current);
+      exportFrameRef.current = null;
+    }
     reset();
     seededRef.current = false;
     setEditingText(null);
     setDraftPoints(null);
+    exportingRef.current = false;
+    resourceIssuesRef.current.clear();
     onClose();
   }, [reset, onClose, setDraftPoints]);
+
+  useEffect(() => {
+    if (isOpen) return;
+    editorEpochRef.current += 1;
+    if (exportFrameRef.current !== null) {
+      cancelAnimationFrame(exportFrameRef.current);
+      exportFrameRef.current = null;
+    }
+    exportingRef.current = false;
+  }, [isOpen]);
+
+  useEffect(() => () => {
+    editorEpochRef.current += 1;
+    seededRef.current = false;
+    if (exportFrameRef.current !== null) cancelAnimationFrame(exportFrameRef.current);
+    exportFrameRef.current = null;
+  }, []);
 
   /* ── Transformer 跟随选中（锁定图层与绘制模式下不挂控制点）── */
   useEffect(() => {
@@ -359,13 +505,14 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
       const file = items.find((it) => it.kind === 'file' && it.type.startsWith('image/'))?.getAsFile();
       if (!file) return;
       e.preventDefault();
-      const reader = new FileReader();
-      reader.onload = () => addImageLayer(reader.result as string, '粘贴图片');
-      reader.readAsDataURL(file);
+      void enqueueImageImport(async (isCurrent) => {
+        if (!isCurrent()) return;
+        await addImageFileLayer(file, '粘贴图片');
+      }).catch(() => {});
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [isOpen, addImageLayer]);
+  }, [isOpen, addImageFileLayer, enqueueImageImport]);
 
   /* ── 外部拖拽图片加入图层 ── */
   const [isDragOver, setIsDragOver] = useState(false);
@@ -386,11 +533,12 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
     setIsDragOver(false);
     const files = Array.from(e.dataTransfer?.files ?? []).filter((f) => f.type.startsWith('image/'));
     for (const f of files) {
-      const reader = new FileReader();
-      reader.onload = () => addImageLayer(reader.result as string, f.name);
-      reader.readAsDataURL(f);
+      void enqueueImageImport(async (isCurrent) => {
+        if (!isCurrent()) return;
+        await addImageFileLayer(f, f.name);
+      }).catch(() => {});
     }
-  }, [addImageLayer]);
+  }, [addImageFileLayer, enqueueImageImport]);
 
   // Tauri 桌面端：原生 drag-drop 事件（独占，避免画布在弹层后建节点）
   useEffect(() => {
@@ -407,9 +555,11 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
         setIsDragOver(false);
         for (const fp of paths ?? []) {
           if (!IMAGE_EXT.test(fp)) continue;
-          try {
-            await addImageLayer(convertFileSrc(fp), fp.split(/[\\/]/).pop() || '图片');
-          } catch { /* 单个文件失败不阻断其余 */ }
+          await enqueueImageImport(async (isCurrent) => {
+            if (!isCurrent()) return;
+            const src = convertFileSrc(fp);
+            await addImageLayer(src, fp.split(/[\\/]/).pop() || '图片');
+          }).catch(() => { /* 单个文件失败不阻断其余 */ });
         }
       });
       if (cancelled) ul();
@@ -421,7 +571,7 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
       setExternalDropCaptured(false);
       setIsDragOver(false);
     };
-  }, [isOpen, addImageLayer]);
+  }, [isOpen, addImageLayer, enqueueImageImport]);
 
   /* ── 识别主体：对选中图片图层抠出主体（透明背景）并原位替换 ──
    * 复用节点端的 ONNX RMBG-1.4。需桌面端 + 已保存项目（要落地本地文件）。 */
@@ -447,53 +597,122 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
         await downloadModel(MATTING_MODEL);
       }
       // 1. 落地图层图片为输入文件
-      const saved = await saveDataUrlToProjectData(layer.src, projectId, `composer_subject_${Date.now()}.png`);
+      const saved = await saveComposerSourceToProject(layer.src, projectId);
       if (!saved) throw new Error('无法写入临时文件');
       // 2. 抠主体
       const outputPath = `${saved.filePath.replace(/\.[^.]+$/, '')}_subject.png`;
       const result = await subjectMatting(saved.filePath, outputPath, MATTING_MODEL, `composer-matting-${Date.now()}`);
       // 3. 载回并原位替换图层图片
-      const img = await loadSafeImage(convertFileSrc(result.subject_path));
-      updateLayer(layer.id, { image: img, src: img.src, width: img.naturalWidth, height: img.naturalHeight } as Partial<Layer>);
+      const resultSrc = convertFileSrc(result.subject_path);
+      await replaceImageLayer(layer.id, resultSrc);
       store.showToast(`主体识别完成 (${result.input_size})`);
     } catch (err) {
       store.showToast(errMessage(err, '主体识别失败'), 'error');
     } finally {
       setMattingLayerId(null);
     }
-  }, [selectedLayer, updateLayer]);
+  }, [replaceImageLayer, selectedLayer]);
 
   /* ── 导出：临时复位相机 + 舞台尺寸=画布，导出原生分辨率透明 PNG ── */
   const handleExport = useCallback(() => {
     const stage = stageRef.current;
-    if (!stage || layers.length === 0) return;
+    if (!stage || layers.length === 0 || exportingRef.current) return;
+    const resourceIssue = resourceIssuesRef.current.values().next().value;
+    if (resourceIssue) {
+      useAppStore.getState().showToast(`${resourceIssue}；请处理后再导出`, 'error');
+      return;
+    }
+    const budgetError = getEditorCanvasBudgetError(canvas.width, canvas.height, '合成导出');
+    if (budgetError) {
+      useAppStore.getState().showToast(budgetError, 'error');
+      return;
+    }
+    const peakBudgetError = getComposerPeakWorkingSetBudgetError(
+      retainedImageBytes,
+      filterCacheBudget.workingBytes,
+      canvas.width,
+      canvas.height,
+    );
+    if (peakBudgetError) {
+      useAppStore.getState().showToast(peakBudgetError, 'error');
+      return;
+    }
+    exportingRef.current = true;
     setSelectedId(null);
     setGuides(NO_GUIDES);
-    requestAnimationFrame(() => {
-      try {
-        const prev = { scale: camScale, pos: { ...camPos }, w: stageSize.w, h: stageSize.h };
-        stage.size({ width: canvas.width, height: canvas.height });
-        stage.scale({ x: 1, y: 1 });
-        stage.position({ x: 0, y: 0 });
-        stage.batchDraw();
-        const dataUrl = stage.toDataURL({ x: 0, y: 0, width: canvas.width, height: canvas.height, pixelRatio: 1 });
-        // 还原
-        stage.size({ width: prev.w, height: prev.h });
-        stage.scale({ x: prev.scale, y: prev.scale });
-        stage.position(prev.pos);
-        stage.batchDraw();
+    const exportEpoch = editorEpochRef.current;
+    const isCurrentExport = () => editorEpochRef.current === exportEpoch;
+    exportFrameRef.current = requestAnimationFrame(() => {
+      exportFrameRef.current = null;
+      if (!isCurrentExport() || stageRef.current !== stage) {
+        exportingRef.current = false;
+        return;
+      }
 
-        onStart?.();
+      void (async () => {
+        const prev = { scale: camScale, pos: { ...camPos }, w: stageSize.w, h: stageSize.h };
+        let exportCanvas: HTMLCanvasElement | null = null;
+        let exportError: unknown = null;
+        try {
+          assertEditorCanvasBudget(canvas.width, canvas.height, '合成导出');
+          stage.size({ width: canvas.width, height: canvas.height });
+          stage.scale({ x: 1, y: 1 });
+          stage.position({ x: 0, y: 0 });
+          stage.batchDraw();
+          exportCanvas = stage.toCanvas({
+            x: 0,
+            y: 0,
+            width: canvas.width,
+            height: canvas.height,
+            pixelRatio: 1,
+          });
+        } catch (err) {
+          exportError = err;
+        } finally {
+          try {
+            stage.size({ width: prev.w, height: prev.h });
+            stage.scale({ x: prev.scale, y: prev.scale });
+            stage.position(prev.pos);
+            stage.batchDraw();
+          } catch (restoreError) {
+            exportError ??= restoreError;
+            console.error('[Composer] stage restore failed:', restoreError);
+          }
+        }
+
+        let dataUrl: string | null = null;
+        try {
+          if (exportError || !exportCanvas) throw exportError ?? new Error('合成导出画布不可用');
+          dataUrl = await canvasToDataUrl(exportCanvas);
+        } catch (err) {
+          exportError = err;
+        } finally {
+          if (exportCanvas) {
+            exportCanvas.width = 1;
+            exportCanvas.height = 1;
+          }
+        }
+
+        if (!isCurrentExport()) return;
+        if (exportError || !dataUrl) {
+          console.error('[Composer] export failed:', exportError);
+          useAppStore.getState().showToast(errMessage(exportError, '合成导出失败，请重试'), 'error');
+          return;
+        }
+
         const { width, height } = canvas;
+        editorEpochRef.current += 1;
+        onStart?.();
         reset();
         seededRef.current = false;
+        resourceIssuesRef.current.clear();
         onSave(dataUrl, { width, height });
-      } catch (err) {
-        console.error('[Composer] export failed:', err);
-        onSave('', { width: 0, height: 0 });
-      }
+      })().finally(() => {
+        exportingRef.current = false;
+      });
     });
-  }, [layers.length, camScale, camPos, stageSize, canvas, onStart, onSave, reset, setSelectedId]);
+  }, [layers.length, camScale, camPos, stageSize, canvas, filterCacheBudget.workingBytes,
+    onStart, onSave, reset, retainedImageBytes, setSelectedId]);
 
   /** 画布外沿一圈的参考线长度，超出画布也能看到 */
   const guideSpan = useMemo(() => ({
@@ -564,6 +783,8 @@ export default function ImageComposerEditor({ isOpen, nodeId, imageUrl, onClose,
                       onTransformEnd={syncFromNode}
                       onBeginTextEdit={beginTextEdit}
                       registerNode={registerNode}
+                      onResourceIssue={handleResourceIssue}
+                      resourceBudgetError={filterCacheErrors.get(layer.id)}
                     />
                   ))}
 

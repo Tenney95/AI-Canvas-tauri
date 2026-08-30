@@ -44,7 +44,7 @@ describe('image fullscreen memory guard', () => {
     const canvasPreviewStart = imageNodeSource.indexOf('className="image-preview-container"');
     const canvasPreviewEnd = imageNodeSource.indexOf(') : isUploading ? (', canvasPreviewStart);
     const canvasPreview = imageNodeSource.slice(canvasPreviewStart, canvasPreviewEnd);
-    const suspendedPreviewStart = canvasPreview.indexOf('{!isFullscreen && (');
+    const suspendedPreviewStart = canvasPreview.indexOf('{!shouldSuspendCanvasPreview && (');
     const suspendedPreviewEnd = canvasPreview.lastIndexOf('</>');
     const suspendedPreview = canvasPreview.slice(suspendedPreviewStart, suspendedPreviewEnd);
 
@@ -55,6 +55,10 @@ describe('image fullscreen memory guard', () => {
     expect(imageNodeSource).not.toContain('imagePreviewRef');
     expect(suspendedPreviewStart).toBeGreaterThan(-1);
     expect(suspendedPreviewEnd).toBeGreaterThan(suspendedPreviewStart);
+    expect(imageNodeSource).toContain('const shouldSuspendCanvasPreview = isFullscreen');
+    expect(imageNodeSource).toContain('|| isMatting');
+    expect(imageNodeSource).toContain('|| isAnnotate');
+    expect(imageNodeSource).toContain('|| isCompose');
     expect(suspendedPreview).toContain('src={displaySrc}');
     expect(suspendedPreview).toContain('data.mattingMask');
     expect(suspendedPreview).toContain('annotationLayer');

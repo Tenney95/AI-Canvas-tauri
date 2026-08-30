@@ -3,7 +3,12 @@
  */
 import { resolveNodeReferences } from '../nodeReferenceService';
 import { executeComfyUIAudioGenerate } from '../comfyWorkflowService';
-import { downloadUrlAndSave, isTauriEnv, saveBinaryToProjectData } from '../fileService';
+import {
+  createMediaDataUrlBudget,
+  downloadUrlAndSave,
+  isTauriEnv,
+  saveBinaryToProjectData,
+} from '../fileService';
 import { resolveMediaReferenceUrl } from '../uploadService';
 import type { AIAudioGenParams, AudioGenerationResult, MediaReference } from '../../types/aiTypes';
 import type { MediaPersistenceStatus } from '../../types/media';
@@ -49,12 +54,20 @@ function normalizeProtocolAudioResult(url: string): AudioGenerationResult {
 
 async function resolveGeneralAudioReferenceUrls(
   references: readonly MediaReference[],
+  signal?: AbortSignal,
 ): Promise<string[]> {
-  return Promise.all(references.filter((reference) => reference.kind === 'audio').map(async (reference) => {
+  const budget = createMediaDataUrlBudget('本次音频模型参考媒体');
+  const results: string[] = [];
+  const audioReferences = references.filter((reference) => reference.kind === 'audio');
+  for (const reference of audioReferences) {
+    if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
     const url = getMediaReferenceUrl(reference);
     // 通用协议模型需要 data URL（base64）；公网 / data: 原样返回
-    return resolveMediaReferenceUrl(url, { mode: 'dataUrl', kind: 'audio' });
-  }));
+    results.push(await resolveMediaReferenceUrl(url, {
+      mode: 'dataUrl', kind: 'audio', signal, dataUrlBudget: budget,
+    }));
+  }
+  return results;
 }
 
 function buildSafeAudioFileName(label: string, format: string): string {
@@ -147,7 +160,7 @@ export async function generateAudio(
     if (!connection) throw new Error(`通用模型 "${gm.name}" 的连接配置不存在`);
     if (!connection.baseUrl) throw new Error(`通用模型 "${gm.name}" 未配置接口地址`);
     if (gm.executionProfile) {
-      const protocolAudioUrls = await resolveGeneralAudioReferenceUrls(references);
+      const protocolAudioUrls = await resolveGeneralAudioReferenceUrls(references, signal);
       const urls = await runConfiguredModelProtocol({
         model: gm,
         category: 'audio',

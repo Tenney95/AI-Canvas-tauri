@@ -201,8 +201,9 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  background: rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(8px);
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   border-radius: 16pX;
   animation: fadeIn var(--dur-normal) var(--ease-out-expo);
 }
@@ -394,7 +395,20 @@
 .matting-zoom {
   display: inline-flex;
   transform-origin: center center;
-  will-change: transform;
+}
+
+/* 宫格编辑只遮暗画布，不为整窗建立模糊离屏缓冲。 */
+.fullscreen-overlay--transparent.customgrid-overlay {
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* 第三方 PointEdit 仅覆盖其根层，避免 16px 整窗模糊；工具栏的小面积玻璃效果保留。 */
+.point-edit-overlay.point-edit-overlay {
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 /* Viewport — relative wrapper so canvas overlays image exactly */

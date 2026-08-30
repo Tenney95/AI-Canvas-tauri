@@ -70,7 +70,7 @@ const SHAPES: { type: Extract<LayerType, 'rect' | 'ellipse' | 'line' | 'arrow'>;
 
 export default function ComposerToolbar({ composer, canExport, onFit, onExport, onClose }: Props) {
   const {
-    canvas, updateCanvas, addImageLayer, addText, addShape,
+    canvas, updateCanvas, addImageLayer, addImageFileLayer, addText, addShape,
     tool, setTool, brush, setBrush, undo, redo, canUndo, canRedo,
   } = composer;
   const fileRef = useRef<HTMLInputElement>(null);
@@ -97,9 +97,12 @@ export default function ComposerToolbar({ composer, canExport, onFit, onExport, 
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => addImageLayer(reader.result as string, file.name);
-    reader.readAsDataURL(file);
+    void addImageFileLayer(file, file.name).catch((error) => {
+      useAppStore.getState().showToast(
+        error instanceof Error ? error.message : '图片导入失败',
+        'error',
+      );
+    });
     e.target.value = '';
   };
 
@@ -197,7 +200,15 @@ export default function ComposerToolbar({ composer, canExport, onFit, onExport, 
                     key={n.id}
                     type="button"
                     className="composer-menu-item"
-                    onClick={() => { addImageLayer(d.imageUrl as string, (d.label as string) || '图片'); setMenu(null); }}
+                    onClick={() => {
+                      setMenu(null);
+                      void addImageLayer(d.imageUrl as string, (d.label as string) || '图片').catch((error) => {
+                        useAppStore.getState().showToast(
+                          error instanceof Error ? error.message : '图片导入失败',
+                          'error',
+                        );
+                      });
+                    }}
                   >
                     <img src={d.imageUrl as string} alt="" />
                     <span>{(d.label as string) || '图片'}</span>

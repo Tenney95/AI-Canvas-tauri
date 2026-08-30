@@ -25,6 +25,8 @@ export interface FullscreenOverlayProps {
   bodyClassName?: string;
   /** 注入到标题栏中（标题与关闭按钮之间） */
   headerContent?: ReactNode;
+  /** 关闭时立即卸载重媒体/Canvas 子树，不等待退场动画 */
+  unmountOnClose?: boolean;
 }
 
 const backdropVariants = {
@@ -42,19 +44,17 @@ const backdropVariantsInstant = {
 };
 
 const panelVariants = {
-  hidden: { opacity: 0, scale: 0.96, y: 18, filter: 'blur(8px)' },
+  hidden: { opacity: 0, scale: 0.96, y: 18 },
   visible: {
     opacity: 1,
     scale: 1,
     y: 0,
-    filter: 'blur(0px)',
     transition: { duration: 1, ease: EASE_OUT_EXPO },
   },
   exit: {
     opacity: 0,
     scale: 0.985,
     y: 10,
-    filter: 'blur(4px)',
     transition: { duration: 1, ease: EASE_OUT_EXPO },
   },
 };
@@ -70,6 +70,7 @@ export default function FullscreenOverlay({
   hidePanel = false,
   bodyClassName = '',
   headerContent,
+  unmountOnClose = false,
 }: FullscreenOverlayProps) {
   // Close on Escape release so child keydown handlers cannot swallow the shortcut.
   const handleKeyUp = useCallback(
@@ -86,9 +87,7 @@ export default function FullscreenOverlay({
     }
   }, [isOpen, handleKeyUp]);
 
-  return createPortal(
-    <AnimatePresence>
-      {isOpen && (
+  const overlay = isOpen ? (
         <motion.div
           data-tauri-drag-region
           className={`fullscreen-overlay${hidePanel ? ' fullscreen-overlay--transparent' : ''} ${className}`}
@@ -165,8 +164,13 @@ export default function FullscreenOverlay({
             </motion.div>
           )}
         </motion.div>
-      )}
-    </AnimatePresence>,
+  ) : null;
+
+  // hidePanel 均为图片、视频或编辑器舞台；关闭时保留一秒退场会与底层预览重叠占用资源。
+  const shouldUnmountImmediately = hidePanel || unmountOnClose;
+
+  return createPortal(
+    shouldUnmountImmediately ? overlay : <AnimatePresence>{overlay}</AnimatePresence>,
     document.body,
   );
 }

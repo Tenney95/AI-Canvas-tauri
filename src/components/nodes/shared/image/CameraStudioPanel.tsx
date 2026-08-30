@@ -374,6 +374,7 @@ function CameraStudioPanel({ isOpen, imageUrl, onClose, onGenerate }: CameraStud
       panelWidth="min(96vw, 1180px)"
       className="camera-studio-overlay"
       bodyClassName="camera-studio-body"
+      unmountOnClose
       headerContent={(
         <div className="camera-studio-mode" role="tablist" aria-label="摄影棚模式">
           <button type="button" className={mode === 'camera' ? 'is-active' : ''} onClick={() => handleModeChange('camera')}>

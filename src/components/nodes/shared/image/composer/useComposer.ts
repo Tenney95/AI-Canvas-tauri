@@ -11,9 +11,20 @@
  * 撤销栈：所有会改变画面的操作先调用 pushHistory() 存快照。连续操作（拖滑块、
  * 方向键微调）传相同的 tag，短时间内的重复快照会被合并成一条。
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { generateId } from '../../../../../store/useAppStore';
 import { loadSafeImage } from '../imageUtils';
+import {
+  estimateRgbaBytes,
+  getComposerRetainedSourceBudgetError,
+  getComposerSourceBudgetError,
+  MAX_COMPOSER_SOURCE_RGBA_BYTES,
+} from '../imageResourceBudget';
+import {
+  releaseUnreachableComposerObjectUrls,
+  trimComposerHistoryToImageBudget,
+  type ComposerLayerSnapshot,
+} from './composerHistoryBudget';
 import { DEFAULT_ADJUSTMENTS } from '../../../../../types/composerTypes';
 import type {
   BrushSettings,
@@ -26,7 +37,7 @@ import type {
 
 const newId = () => `layer-${generateId()}`;
 
-/** 撤销栈上限（一条快照只是图层对象的浅拷贝数组，代价很低） */
+/** 撤销栈条数上限；图片对象会被浅快照继续引用，另受解码字节预算约束。 */
 const HISTORY_LIMIT = 80;
 /** 同 tag 的连续操作在此毫秒内合并为一条历史 */
 const HISTORY_MERGE_MS = 600;
@@ -47,7 +58,7 @@ const baseProps = (id: string, name: string, x: number, y: number) => ({
   blendMode: 'source-over' as const,
 });
 
-interface Snapshot {
+interface Snapshot extends ComposerLayerSnapshot {
   layers: Layer[];
   canvas: CanvasSettings;
   selectedId: string | null;
@@ -62,6 +73,7 @@ export function useComposer() {
   const [tool, setToolState] = useState<ComposerTool>('select');
   const [brush, setBrushState] = useState<BrushSettings>({ color: '#ffffff', size: 12 });
   const [historyDepth, setHistoryDepth] = useState({ past: 0, future: 0 });
+  const [retainedImageBytes, setRetainedImageBytes] = useState(0);
 
   const layersRef = useRef<Layer[]>([]);
   const canvasRef = useRef<CanvasSettings>(DEFAULT_CANVAS);
@@ -70,12 +82,55 @@ export function useComposer() {
   const pastRef = useRef<Snapshot[]>([]);
   const futureRef = useRef<Snapshot[]>([]);
   const lastTagRef = useRef<{ tag: string; at: number } | null>(null);
+  const imageLoadQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const ownedObjectUrlsRef = useRef<Set<string>>(new Set());
+  const pendingOwnedObjectUrlsRef = useRef<Set<string>>(new Set());
+
+  const releaseUnreachableOwnedObjectUrls = useCallback((currentLayers = layersRef.current) => {
+    releaseUnreachableComposerObjectUrls(
+      ownedObjectUrlsRef.current,
+      pendingOwnedObjectUrlsRef.current,
+      [
+        currentLayers,
+        ...pastRef.current.map((item) => item.layers),
+        ...futureRef.current.map((item) => item.layers),
+      ],
+    );
+  }, []);
+
+  const releaseOwnedObjectUrls = useCallback(() => {
+    pendingOwnedObjectUrlsRef.current.clear();
+    releaseUnreachableComposerObjectUrls(
+      ownedObjectUrlsRef.current,
+      pendingOwnedObjectUrlsRef.current,
+      [],
+    );
+  }, []);
+
+  useEffect(() => releaseOwnedObjectUrls, [releaseOwnedObjectUrls]);
 
   /* ── 基础写入（ref 与 state 同步） ── */
   const commitLayers = useCallback((next: Layer[]) => {
+    const trimmedHistory = trimComposerHistoryToImageBudget(
+      next,
+      pastRef.current,
+      futureRef.current,
+    );
+    if (trimmedHistory.past !== pastRef.current || trimmedHistory.future !== futureRef.current) {
+      pastRef.current = trimmedHistory.past;
+      futureRef.current = trimmedHistory.future;
+      setHistoryDepth({ past: trimmedHistory.past.length, future: trimmedHistory.future.length });
+    }
+    const budgetError = getComposerRetainedSourceBudgetError(trimmedHistory.totalBytes);
+    if (budgetError) {
+      releaseUnreachableOwnedObjectUrls();
+      throw new RangeError(budgetError);
+    }
+    setRetainedImageBytes(trimmedHistory.totalBytes);
     layersRef.current = next;
     setLayersState(next);
-  }, []);
+    releaseUnreachableOwnedObjectUrls(next);
+  }, [releaseUnreachableOwnedObjectUrls]);
 
   const setSelectedId = useCallback((id: string | null) => {
     selectedIdRef.current = id;
@@ -112,7 +167,8 @@ export function useComposer() {
     pastRef.current = [...pastRef.current, snapshot()].slice(-HISTORY_LIMIT);
     futureRef.current = [];
     syncHistoryDepth();
-  }, [snapshot, syncHistoryDepth]);
+    releaseUnreachableOwnedObjectUrls();
+  }, [releaseUnreachableOwnedObjectUrls, snapshot, syncHistoryDepth]);
 
   const applySnapshot = useCallback((snap: Snapshot) => {
     commitLayers(snap.layers);
@@ -142,8 +198,14 @@ export function useComposer() {
     pastRef.current = [];
     futureRef.current = [];
     lastTagRef.current = null;
+    setRetainedImageBytes(trimComposerHistoryToImageBudget(
+      layersRef.current,
+      [],
+      [],
+    ).totalBytes);
     syncHistoryDepth();
-  }, [syncHistoryDepth]);
+    releaseUnreachableOwnedObjectUrls();
+  }, [releaseUnreachableOwnedObjectUrls, syncHistoryDepth]);
 
   const selectedLayer = layers.find((l) => l.id === selectedId) ?? null;
 
@@ -205,18 +267,63 @@ export function useComposer() {
     setSelectedId(layer.id);
   }, [commitLayers, pushHistory, setSelectedId]);
 
+  const enqueueImageOperation = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
+    const task = imageLoadQueueRef.current
+      .catch(() => undefined)
+      .then(operation);
+    imageLoadQueueRef.current = task.then(() => undefined, () => undefined);
+    return task;
+  }, []);
+
+  const loadImageForLayer = useCallback((src: string): Promise<HTMLImageElement> => loadSafeImage(src, {
+    label: '合成器源图',
+    beforeDecode: ({ width, height }) => {
+      const additional = estimateRgbaBytes(width, height);
+      if (!additional) throw new RangeError('图片图层尺寸无效，请重新添加图片');
+      const trimmedHistory = trimComposerHistoryToImageBudget(
+        layersRef.current,
+        pastRef.current,
+        futureRef.current,
+        MAX_COMPOSER_SOURCE_RGBA_BYTES,
+        additional.bytes,
+      );
+      if (trimmedHistory.past !== pastRef.current || trimmedHistory.future !== futureRef.current) {
+        pastRef.current = trimmedHistory.past;
+        futureRef.current = trimmedHistory.future;
+        syncHistoryDepth();
+      }
+      releaseUnreachableOwnedObjectUrls();
+      setRetainedImageBytes(trimmedHistory.totalBytes - additional.bytes);
+      const budgetError = getComposerRetainedSourceBudgetError(trimmedHistory.totalBytes);
+      if (budgetError) throw new RangeError(budgetError);
+    },
+  }), [releaseUnreachableOwnedObjectUrls, syncHistoryDepth]);
+
   /** 居中放入一张图片图层（若超出画布按比例缩小适配） */
-  const addImageLayer = useCallback(async (src: string, label = '图片') => {
-    const img = await loadSafeImage(src);
+  const addImageLayer = useCallback(async (
+    src: string,
+    label = '图片',
+    onLoaded?: (image: HTMLImageElement) => void,
+  ) => enqueueImageOperation(async () => {
+    const img = await loadImageForLayer(src);
     const w = img.naturalWidth;
     const h = img.naturalHeight;
+    const seenImages = new Set<HTMLImageElement>();
+    const existingBytes = layersRef.current.reduce((total, layer) => {
+      if (layer.type !== 'image' || !layer.image || seenImages.has(layer.image)) return total;
+      seenImages.add(layer.image);
+      return total + (estimateRgbaBytes(layer.width, layer.height)?.bytes ?? 0);
+    }, 0);
+    const budgetError = getComposerSourceBudgetError(existingBytes, w, h);
+    if (budgetError) throw new RangeError(budgetError);
+    onLoaded?.(img);
     const cv = canvasRef.current;
     const fit = Math.min(1, (cv.width * 0.9) / w, (cv.height * 0.9) / h);
     const id = newId();
     addLayer({
       ...baseProps(id, label, cv.width / 2, cv.height / 2),
       type: 'image',
-      src: img.src,
+      src,
       image: img,
       width: w,
       height: h,
@@ -224,7 +331,34 @@ export function useComposer() {
       scaleY: fit,
       adjustments: { ...DEFAULT_ADJUSTMENTS },
     });
-  }, [addLayer]);
+  }), [addLayer, enqueueImageOperation, loadImageForLayer]);
+
+  const replaceImageLayer = useCallback((id: string, src: string) => enqueueImageOperation(async () => {
+    const img = await loadImageForLayer(src);
+    updateLayer(id, {
+      image: img,
+      src,
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+    } as Partial<Layer>);
+    return img;
+  }), [enqueueImageOperation, loadImageForLayer, updateLayer]);
+
+  /** 浏览器 File/剪贴板用 object URL，避免把整张图片再膨胀成 Base64 字符串。 */
+  const addImageFileLayer = useCallback(async (file: File, label = file.name || '图片') => {
+    const src = URL.createObjectURL(file);
+    ownedObjectUrlsRef.current.add(src);
+    pendingOwnedObjectUrlsRef.current.add(src);
+    try {
+      await addImageLayer(src, label);
+      pendingOwnedObjectUrlsRef.current.delete(src);
+      releaseUnreachableOwnedObjectUrls();
+    } catch (error) {
+      pendingOwnedObjectUrlsRef.current.delete(src);
+      if (ownedObjectUrlsRef.current.delete(src)) URL.revokeObjectURL(src);
+      throw error;
+    }
+  }, [addImageLayer, releaseUnreachableOwnedObjectUrls]);
 
   const addText = useCallback((text = '双击编辑文字', label = '文字') => {
     const cv = canvasRef.current;
@@ -331,7 +465,8 @@ export function useComposer() {
     commitCanvas(DEFAULT_CANVAS);
     setToolState('select');
     clearHistory();
-  }, [clearHistory, commitCanvas, commitLayers, setSelectedId]);
+    releaseOwnedObjectUrls();
+  }, [clearHistory, commitCanvas, commitLayers, releaseOwnedObjectUrls, setSelectedId]);
 
   return {
     layers,
@@ -352,6 +487,8 @@ export function useComposer() {
     reorderLayer,
     moveLayerToIndex,
     addImageLayer,
+    addImageFileLayer,
+    replaceImageLayer,
     addText,
     addShape,
     addBrushStroke,
@@ -364,6 +501,7 @@ export function useComposer() {
     redo,
     canUndo: historyDepth.past > 0,
     canRedo: historyDepth.future > 0,
+    retainedImageBytes,
     clearHistory,
     reset,
   };

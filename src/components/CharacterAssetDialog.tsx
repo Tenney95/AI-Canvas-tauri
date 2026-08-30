@@ -1,7 +1,7 @@
 /**
  * CharacterAssetDialog — 角色资产编辑弹窗。
  * 编辑单个 DramaCharacter 的基本信息、参考图（上传/裁剪/分类）与声音素材（音频/时长），
- * 按项目或全局作用域写入 store，资产文件经 saveDataUrlToProjectData 落盘到项目数据目录。
+ * 按项目或全局作用域写入 store；项目资产优先二进制落盘，避免先构造 Base64。
  */
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { Icon } from '@iconify/react';
@@ -10,7 +10,12 @@ import { useAppStore, generateId } from '../store/useAppStore';
 import { isEligibleCharacterReferenceNode } from '../store/store.dramaAssets';
 import { normalizeAssetKey } from '../services/dramaAssetExtract';
 import { clamp } from '../utils/num';
-import { saveDataUrlToProjectData } from '../services/fileService';
+import {
+  assertMediaDataUrlSize,
+  assertMediaDataUrlWithinLimit,
+  inferMediaDataUrlKind,
+  saveBinaryToProjectData,
+} from '../services/fileService';
 import type { BaseNodeData } from '../types';
 import type {
   CharacterActionCategory,
@@ -45,6 +50,9 @@ const VOICE_KINDS = Object.entries(CHARACTER_VOICE_KIND_LABELS) as Array<[
   CharacterVoiceKind,
   string,
 ]>;
+
+const MAX_CHARACTER_REFERENCE_IMAGES = 16;
+const MAX_CHARACTER_VOICE_CLIPS = 16;
 
 const ACTION_CATEGORIES: Array<[CharacterActionCategory, string]> = [
   ['standing', '站立'],
@@ -913,26 +921,43 @@ function CharacterAssetEditorDialog({
     file: File,
     read: (file: File) => Promise<string>,
   ): Promise<{ url: string; filePath?: string }> => {
-    const dataUrl = await read(file);
-    if (scope !== 'project' || !currentProjectId || currentProjectId === 'default') {
-      return { url: dataUrl };
+    const mediaKind = inferMediaDataUrlKind(file.type || file.name);
+    assertMediaDataUrlSize(file.size, mediaKind, file.name);
+    if (scope === 'project' && currentProjectId && currentProjectId !== 'default') {
+      const stored = await saveBinaryToProjectData(
+        new Uint8Array(await file.arrayBuffer()),
+        currentProjectId,
+        file.name,
+      );
+      if (stored?.assetUrl) return { url: stored.assetUrl, filePath: stored.filePath };
     }
-    const stored = await saveDataUrlToProjectData(dataUrl, currentProjectId, file.name);
-    return stored?.assetUrl
-      ? { url: stored.assetUrl, filePath: stored.filePath }
-      : { url: dataUrl };
+    const dataUrl = await read(file);
+    assertMediaDataUrlWithinLimit(dataUrl, mediaKind, file.name);
+    return { url: dataUrl };
   };
 
   const handleFiles = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
+    const selectedFiles = Array.from(event.target.files ?? []);
+    const remainingSlots = Math.max(
+      0,
+      MAX_CHARACTER_REFERENCE_IMAGES - (draft.referenceImages?.length ?? 0),
+    );
+    const files = selectedFiles.slice(0, remainingSlots);
     const shouldAssignPrimary = !draft.primaryReferenceImageId;
     event.target.value = '';
-    if (files.length === 0) return;
+    if (files.length === 0) {
+      if (selectedFiles.length > 0) showToast(`每个角色最多保存 ${MAX_CHARACTER_REFERENCE_IMAGES} 张参考图`, 'error');
+      return;
+    }
+    if (selectedFiles.length > files.length) {
+      showToast(`仅添加前 ${files.length} 张：每个角色最多 ${MAX_CHARACTER_REFERENCE_IMAGES} 张参考图`);
+    }
     try {
       const now = Date.now();
-      const references = await Promise.all(files.map(async (file, index) => {
+      const references: CharacterReferenceImage[] = [];
+      for (const [index, file] of files.entries()) {
         const stored = await storeUploadToProject(file, readImageFile);
-        return {
+        references.push({
           id: `reference-${generateId()}`,
           kind: shouldAssignPrimary && index === 0 ? 'primary' as const : 'other' as const,
           imageUrl: stored.url,
@@ -940,8 +965,8 @@ function CharacterAssetEditorDialog({
           prompt: '',
           createdAt: now + index,
           updatedAt: now + index,
-        };
-      }));
+        });
+      }
       setDraft((current) => {
         const nextReferences = [...(current.referenceImages ?? []), ...references];
         return {
@@ -971,9 +996,17 @@ function CharacterAssetEditorDialog({
   };
 
   const handleVoiceFiles = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
+    const selectedFiles = Array.from(event.target.files ?? []);
+    const remainingSlots = Math.max(0, MAX_CHARACTER_VOICE_CLIPS - (draft.voiceClips?.length ?? 0));
+    const files = selectedFiles.slice(0, remainingSlots);
     event.target.value = '';
-    if (files.length === 0) return;
+    if (files.length === 0) {
+      if (selectedFiles.length > 0) showToast(`每个角色最多保存 ${MAX_CHARACTER_VOICE_CLIPS} 条声音`, 'error');
+      return;
+    }
+    if (selectedFiles.length > files.length) {
+      showToast(`仅添加前 ${files.length} 条：每个角色最多 ${MAX_CHARACTER_VOICE_CLIPS} 条声音`);
+    }
     try {
       const now = Date.now();
       const clips: CharacterVoiceClip[] = [];

@@ -120,6 +120,15 @@ export default function ComposerSidePanel({
     moveLayerToIndex(from, to);
   };
 
+  const addConnectedImage = (src: string, label: string) => {
+    void addImageLayer(src, label).catch((error) => {
+      useAppStore.getState().showToast(
+        error instanceof Error ? error.message : '图片导入失败',
+        'error',
+      );
+    });
+  };
+
   const fontStyle = selectedLayer?.type === 'text' ? selectedLayer.fontStyle : '';
   const toggleFontStyle = (flag: 'bold' | 'italic') => {
     const has = fontStyle.includes(flag);
@@ -429,7 +438,7 @@ export default function ComposerSidePanel({
               type="button"
               className="composer-file-card"
               data-tooltip={`${c.label}（点击加入图层）`}
-              onClick={() => (c.img ? addImageLayer(c.img, c.label) : c.text && addText(c.text, c.label))}
+              onClick={() => (c.img ? addConnectedImage(c.img, c.label) : c.text && addText(c.text, c.label))}
             >
               {c.img ? (
                 <img src={c.img} alt={c.label} />

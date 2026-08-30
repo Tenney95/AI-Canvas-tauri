@@ -34,7 +34,56 @@ import { mixTimelineAudio, toAudioBuffers, type ClipAudioResolver } from './vide
 /** 单次 Range 请求的上限，超出由 mediabunny 自行分片 */
 const MAX_RANGE_BYTES = 8 * 1024 * 1024;
 
+class RangeUnsupportedError extends Error {}
+
+async function readBoundedRangeBody(response: Response, maxBytes: number): Promise<Uint8Array> {
+  const declaredLength = Number(response.headers.get('Content-Length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new RangeUnsupportedError('媒体分片响应超过请求范围');
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    if (buffer.byteLength > maxBytes) {
+      throw new RangeUnsupportedError('媒体分片响应超过请求范围');
+    }
+    return buffer;
+  }
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (totalBytes + value.byteLength > maxBytes) {
+        throw new RangeUnsupportedError('媒体分片响应超过请求范围');
+      }
+      chunks.push(value);
+      totalBytes += value.byteLength;
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (chunks.length === 1) return chunks[0];
+  const result = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
 async function fetchRange(url: string, start: number, end: number): Promise<Uint8Array> {
+  const expectedLength = Math.max(0, end - start);
+  if (expectedLength === 0) return new Uint8Array();
   // Range 是闭区间，mediabunny 的 end 是开区间
   const response = await fetch(url, {
     headers: { Range: `bytes=${start}-${end - 1}` },
@@ -42,12 +91,11 @@ async function fetchRange(url: string, start: number, end: number): Promise<Uint
   if (!response.ok) {
     throw new Error(`读取媒体分片失败：HTTP ${response.status}`);
   }
-  const buffer = new Uint8Array(await response.arrayBuffer());
-  // 服务端忽略了 Range（返回 200 全量）时自行裁切，避免调用方拿到超量数据
-  if (response.status !== 206 && buffer.byteLength > end - start) {
-    return buffer.subarray(start, end);
+  if (response.status !== 206) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new RangeUnsupportedError('媒体源忽略 Range 请求');
   }
-  return buffer;
+  return readBoundedRangeBody(response, expectedLength);
 }
 
 /**
@@ -76,11 +124,17 @@ export function createResilientReader(url: string, size: number) {
 
     try {
       return await fetchRange(url, start, clampedEnd);
-    } catch {
+    } catch (error) {
+      if (error instanceof RangeUnsupportedError) {
+        return (await loadWholeFile()).subarray(start, clampedEnd);
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
       try {
         return await fetchRange(url, start, clampedEnd);
-      } catch {
+      } catch (retryError) {
+        if (retryError instanceof RangeUnsupportedError) {
+          return (await loadWholeFile()).subarray(start, clampedEnd);
+        }
         return (await loadWholeFile()).subarray(start, clampedEnd);
       }
     }
@@ -89,8 +143,9 @@ export function createResilientReader(url: string, size: number) {
 
 /** 探测 URL 是否支持 Range，并取得文件总长度 */
 async function probeRangeSupport(url: string): Promise<{ size: number; ranged: boolean } | null> {
+  let response: Response | null = null;
   try {
-    const response = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+    response = await fetch(url, { headers: { Range: 'bytes=0-0' } });
     if (!response.ok) return null;
     if (response.status === 206) {
       // Content-Range: bytes 0-0/12345
@@ -105,6 +160,8 @@ async function probeRangeSupport(url: string): Promise<{ size: number; ranged: b
     return null;
   } catch {
     return null;
+  } finally {
+    await response?.body?.cancel().catch(() => undefined);
   }
 }
 
@@ -500,93 +557,97 @@ export async function exportComposite(options: {
   const surface = document.createElement('canvas');
   surface.width = canvas.width;
   surface.height = canvas.height;
-  const context = surface.getContext('2d', { alpha: false });
-  if (!context) throw new Error('无法创建合成画布');
+  let pendingOutput: Output | null = null;
+  try {
+    const context = surface.getContext('2d', { alpha: false });
+    if (!context) throw new Error('无法创建合成画布');
 
-  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
-  const videoSource = new CanvasSource(surface, {
-    codec: 'avc',
-    bitrate: QUALITY_HIGH,
-  });
-  output.addVideoTrack(videoSource);
+    const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
+    pendingOutput = output;
+    const videoSource = new CanvasSource(surface, {
+      codec: 'avc',
+      bitrate: QUALITY_HIGH,
+    });
+    output.addVideoTrack(videoSource);
 
   // 先定音频走哪条路：本机没有 AudioEncoder 时退到分组直通，
   // 直通也不满足条件就干脆不出音轨，而不是让整个导出崩掉
-  const { mode: audioMode, reason: audioReason } = await resolveCompositeAudioMode(
-    tracks,
-    resolveAudio,
-  );
-  onAudioMode?.(audioMode, audioReason);
-
-  let mixed: Awaited<ReturnType<typeof mixTimelineAudio>> = null;
-  let audioSource: AudioBufferSource | null = null;
-
-  if (audioMode === 'encode' || audioMode === 'pcm') {
-    onStage?.('混合音频');
-    mixed = await mixTimelineAudio({
+    const { mode: audioMode, reason: audioReason } = await resolveCompositeAudioMode(
       tracks,
-      duration,
-      resolve: resolveAudio,
-      signal,
-      onProgress: (value) => onProgress?.(value * 0.2),
-    });
-    if (mixed) {
-      audioSource = audioMode === 'pcm'
-        ? new AudioBufferSource({ codec: PCM_FALLBACK_CODEC })
-        : new AudioBufferSource({ codec: 'aac', bitrate: QUALITY_MEDIUM });
-      output.addAudioTrack(audioSource);
-    }
-  }
+      resolveAudio,
+    );
+    onAudioMode?.(audioMode, audioReason);
 
-  // 分组直通模式由 copyAudioPackets 自己 addAudioTrack 并 start
-  if (audioMode !== 'copy') await output.start();
+    let mixed: Awaited<ReturnType<typeof mixTimelineAudio>> = null;
+    let audioSource: AudioBufferSource | null = null;
 
-  try {
-    if (audioMode === 'copy') {
-      onStage?.('搬运音频');
-      await copyAudioPackets({
-        output,
+    if (audioMode === 'encode' || audioMode === 'pcm') {
+      onStage?.('混合音频');
+      mixed = await mixTimelineAudio({
         tracks,
+        duration,
         resolve: resolveAudio,
         signal,
         onProgress: (value) => onProgress?.(value * 0.2),
       });
-    }
-
-    onStage?.('渲染画面');
-    const frameCount = Math.max(1, Math.round(duration * frameRate));
-    const frameDuration = 1 / frameRate;
-
-    for (let frame = 0; frame < frameCount; frame += 1) {
-      if (signal?.aborted) throw new VideoExportCanceledError();
-      const time = frame * frameDuration;
-      await renderFrameAt(context, canvas, tracks, time, resolveVideo);
-      await videoSource.add(time, frameDuration);
-      // 画面占 20%–90% 的进度区间，音频写入留在最后
-      onProgress?.(0.2 + (frame / frameCount) * 0.7);
-    }
-    videoSource.close();
-
-    if (audioSource && mixed) {
-      onStage?.('写入音频');
-      const buffers = toAudioBuffers(mixed);
-      for (const [index, buffer] of buffers.entries()) {
-        if (signal?.aborted) throw new VideoExportCanceledError();
-        await audioSource.add(buffer);
-        onProgress?.(0.9 + (index / buffers.length) * 0.1);
+      if (mixed) {
+        audioSource = audioMode === 'pcm'
+          ? new AudioBufferSource({ codec: PCM_FALLBACK_CODEC })
+          : new AudioBufferSource({ codec: 'aac', bitrate: QUALITY_MEDIUM });
+        output.addAudioTrack(audioSource);
       }
-      audioSource.close();
     }
 
-    await output.finalize();
-    onProgress?.(1);
+    // 分组直通模式由 copyAudioPackets 自己 addAudioTrack 并 start
+    if (audioMode !== 'copy') await output.start();
 
-    const buffer = (output.target as BufferTarget).buffer;
-    if (!buffer) throw new Error('导出未产生有效数据');
-    return new Uint8Array(buffer);
-  } catch (error) {
-    await output.cancel().catch(() => {});
-    throw error;
+    if (audioMode === 'copy') {
+        onStage?.('搬运音频');
+        await copyAudioPackets({
+          output,
+          tracks,
+          resolve: resolveAudio,
+          signal,
+          onProgress: (value) => onProgress?.(value * 0.2),
+        });
+      }
+
+      onStage?.('渲染画面');
+      const frameCount = Math.max(1, Math.round(duration * frameRate));
+      const frameDuration = 1 / frameRate;
+
+      for (let frame = 0; frame < frameCount; frame += 1) {
+        if (signal?.aborted) throw new VideoExportCanceledError();
+        const time = frame * frameDuration;
+        await renderFrameAt(context, canvas, tracks, time, resolveVideo);
+        await videoSource.add(time, frameDuration);
+        // 画面占 20%–90% 的进度区间，音频写入留在最后
+        onProgress?.(0.2 + (frame / frameCount) * 0.7);
+      }
+      videoSource.close();
+
+      if (audioSource && mixed) {
+        onStage?.('写入音频');
+        const buffers = toAudioBuffers(mixed);
+        for (const [index, buffer] of buffers.entries()) {
+          if (signal?.aborted) throw new VideoExportCanceledError();
+          await audioSource.add(buffer);
+          onProgress?.(0.9 + (index / buffers.length) * 0.1);
+        }
+        audioSource.close();
+      }
+
+      await output.finalize();
+      pendingOutput = null;
+      onProgress?.(1);
+
+      const buffer = (output.target as BufferTarget).buffer;
+      if (!buffer) throw new Error('导出未产生有效数据');
+      return new Uint8Array(buffer);
+  } finally {
+    await pendingOutput?.cancel().catch(() => undefined);
+    surface.width = 1;
+    surface.height = 1;
   }
 }
 

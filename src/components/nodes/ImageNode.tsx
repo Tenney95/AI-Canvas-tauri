@@ -831,6 +831,16 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   const { displayLabel, handleRename } = useNodeRename(id, data, t('粘贴图像'));
 
+  // 重编辑器会自行解码原图或建立 GPU 纹理；打开期间卸载画布预览，避免同一资源双份常驻。
+  const shouldSuspendCanvasPreview = isFullscreen
+    || isMatting
+    || isAnnotate
+    || isExpand
+    || isCrop
+    || isCustomGrid
+    || isCameraStudio
+    || isCompose;
+
   return (
     <>
       <div className="node-wrapper relative" style={{ width: nodeWidth }}>
@@ -848,7 +858,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           <div className="node-preview compact">
             {displaySrc ? (
               <div className="image-preview-container">
-                {!isFullscreen && (
+                {!shouldSuspendCanvasPreview && (
                   <>
                 {imgLoadError ? (
                   <div className="flex flex-col items-center justify-center gap-2 h-full min-h-[80px] text-canvas-text-muted">
@@ -1067,6 +1077,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           <CropEditor
             isOpen={isCrop}
             imageUrl={(data.imageUrl || data.thumbnailUrl) as string}
+            operationKey={`image-node:${id}`}
             onClose={handleCloseCrop}
             onStart={handleCropStart}
             onSave={handleCropSave}
@@ -1117,7 +1128,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         hidePanel
         className="fullscreen-overlay--image-preview"
       >
-        {fullscreenError ? (
+        {isFullscreen && (fullscreenError ? (
           <div className="flex flex-col items-center justify-center gap-3 text-canvas-text-muted" style={{ height: '100vh' }}>
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.5">
               <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -1140,7 +1151,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             onClose={handleCloseFullscreen}
             onError={() => setFullscreenFailedSrc(displaySrc)}
           />
-        ) : null}
+        ) : null)}
       </FullscreenOverlay>
 
       {/* ── 超分模型下载弹窗（Portal → body）── */}

@@ -2,32 +2,85 @@
  * 图像节点工具函数
  */
 import { fetchImageForCrop } from '../../../../services/fileService';
+import {
+  readRasterImageDimensions,
+  type RasterImageDimensions,
+} from '../../../../services/rasterImageDimensions';
+import { assertEditorSourceBudget } from './imageResourceBudget';
+
+interface LoadSafeImageOptions {
+  beforeDecode?: (dimensions: RasterImageDimensions) => void;
+  label?: string;
+}
+
+const SAFE_FORMAT_MESSAGE = '无法在解码前确认图片尺寸，请先转换为 PNG、JPEG、WebP、GIF、BMP 或带固定尺寸的 SVG';
+
+async function readSafeImageBlob(url: string): Promise<Blob> {
+  const source = !url.startsWith('data:')
+    && !url.startsWith('blob:')
+    && !url.startsWith('asset://')
+    && !url.includes('asset.localhost')
+    ? await fetchImageForCrop(url)
+    : url;
+  const response = await fetch(source);
+  if (!response.ok) throw new Error(`图片读取失败：HTTP ${response.status}`);
+  return response.blob();
+}
+
+export interface SafeImagePreviewSource {
+  sourceUrl: string;
+  src: string;
+  dimensions: RasterImageDimensions;
+  release: () => void;
+}
+
+/**
+ * 为编辑器预览准备同源 object URL，并在浏览器解码前完成尺寸/内存校验。
+ * 预览和后续 canvas 绘制可以复用同一个 DOM 图片，不再二次完整解码。
+ */
+export async function createSafeImagePreviewSource(
+  url: string,
+  label = '编辑源图',
+): Promise<SafeImagePreviewSource> {
+  const blob = await readSafeImageBlob(url);
+  const dimensions = await readRasterImageDimensions(blob);
+  if (!dimensions) throw new RangeError(SAFE_FORMAT_MESSAGE);
+  assertEditorSourceBudget(dimensions.width, dimensions.height, label);
+  const src = URL.createObjectURL(blob);
+  let released = false;
+  return {
+    sourceUrl: url,
+    src,
+    dimensions,
+    release: () => {
+      if (released) return;
+      released = true;
+      URL.revokeObjectURL(src);
+    },
+  };
+}
 
 /**
  * 加载一张「可安全绘制到 canvas / 不会污染」的 HTMLImageElement。
  * - data:/blob: 同源直接加载
- * - asset://（Tauri）：fetch → FileReader 转 data: 绝对同源
+ * - asset://（Tauri）：fetch → 临时 blob:，避免额外构造整份 Base64 字符串
  * - http(s)://：经 Rust 原生 HTTP 下载，绕过 WebView CORS
  * 用于 Konva 合成导出（toDataURL 在 tainted canvas 上会抛错）。
  */
-export async function loadSafeImage(url: string): Promise<HTMLImageElement> {
-  let src = url;
-  if (url.startsWith('asset://') || url.includes('asset.localhost')) {
-    const resp = await fetch(url);
-    const blob = await resp.blob();
-    src = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    });
-  } else if (!url.startsWith('data:') && !url.startsWith('blob:')) {
-    src = await fetchImageForCrop(url);
-  }
+export async function loadSafeImage(
+  url: string,
+  options: LoadSafeImageOptions = {},
+): Promise<HTMLImageElement> {
+  const prepared = await createSafeImagePreviewSource(url, options.label ?? '编辑源图');
   const img = new Image();
-  img.src = src;
-  await img.decode();
-  return img;
+  try {
+    options.beforeDecode?.(prepared.dimensions);
+    img.src = prepared.src;
+    await img.decode();
+    return img;
+  } finally {
+    prepared.release();
+  }
 }
 
 /**

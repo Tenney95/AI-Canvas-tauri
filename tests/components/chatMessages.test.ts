@@ -4,8 +4,16 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../../src/types/chat';
+
+const hooks = vi.hoisted(() => ({
+  values: [] as unknown[],
+  refs: [] as Array<{ current: unknown }>,
+  stateCursor: 0,
+  refCursor: 0,
+  layoutEffects: [] as Array<() => void | (() => void)>,
+}));
 
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react');
@@ -13,9 +21,32 @@ vi.mock('react', async () => {
     ...actual,
     useCallback: <T,>(callback: T) => callback,
     useEffect: vi.fn(),
+    useLayoutEffect: (effect: () => void | (() => void)) => {
+      hooks.layoutEffects.push(effect);
+    },
     useMemo: <T,>(factory: () => T) => factory(),
-    useRef: <T,>(initialValue: T) => ({ current: initialValue }),
-    useState: <T,>(initialValue: T) => [initialValue, vi.fn()],
+    useRef: <T,>(initialValue: T) => {
+      const index = hooks.refCursor;
+      hooks.refCursor += 1;
+      if (!hooks.refs[index]) hooks.refs[index] = { current: initialValue };
+      return hooks.refs[index] as { current: T };
+    },
+    useState: <T,>(initialValue: T | (() => T)) => {
+      const index = hooks.stateCursor;
+      hooks.stateCursor += 1;
+      if (!(index in hooks.values)) {
+        hooks.values[index] = typeof initialValue === 'function'
+          ? (initialValue as () => T)()
+          : initialValue;
+      }
+      const setValue = (next: T | ((current: T) => T)) => {
+        const current = hooks.values[index] as T;
+        hooks.values[index] = typeof next === 'function'
+          ? (next as (value: T) => T)(current)
+          : next;
+      };
+      return [hooks.values[index] as T, setValue] as const;
+    },
     useSyncExternalStore: () => 'zh-CN',
   };
 });
@@ -30,15 +61,17 @@ vi.mock('../../src/components/chat/MessageBubble', () => ({
 
 import ChatMessages from '../../src/components/chat/ChatMessages';
 import MessageBubble from '../../src/components/chat/MessageBubble';
+import { setLocale } from '../../src/i18n';
 
 function createMessage(
   id: string,
   role: ChatMessage['role'],
   content: string,
+  conversationId = 'conversation-1',
 ): ChatMessage {
   return {
     id,
-    conversationId: 'conversation-1',
+    conversationId,
     role,
     content,
     timestamp: Number(id.replace(/\D/g, '')) || 1,
@@ -55,7 +88,53 @@ function collectElements(node: ReactNode, elements: ReactElement[] = []): ReactE
   return elements;
 }
 
+function renderChat(messages: ChatMessage[]): ReactElement {
+  hooks.stateCursor = 0;
+  hooks.refCursor = 0;
+  hooks.layoutEffects = [];
+  const tree = ChatMessages({
+    messages,
+    showEmptyState: false,
+    detachedInitialized: true,
+    onNewConversation: vi.fn(),
+    onShowList: vi.fn(),
+  });
+  hooks.layoutEffects.forEach((effect) => effect());
+  return tree;
+}
+
+function collectMessageBubbles(tree: ReactNode): ReactElement[] {
+  return collectElements(tree).filter((element) => element.type === MessageBubble);
+}
+
+function findLoadOlderButton(tree: ReactNode): ReactElement {
+  const button = collectElements(tree).find((element) => (
+    element.type === 'button'
+    && String((element.props as { className?: string }).className).includes('mx-auto min-h-8')
+  ));
+  if (!button) throw new Error('load older button not found');
+  return button;
+}
+
+function findMessagesContainer(tree: ReactNode): ReactElement {
+  const container = collectElements(tree).find((element) => (
+    element.type === 'div'
+    && String((element.props as { className?: string }).className).includes('chat-panel-messages h-full')
+  ));
+  if (!container) throw new Error('messages container not found');
+  return container;
+}
+
 describe('ChatMessages', () => {
+  beforeEach(() => {
+    hooks.values = [];
+    hooks.refs = [];
+    hooks.stateCursor = 0;
+    hooks.refCursor = 0;
+    hooks.layoutEffects = [];
+    setLocale('zh-CN');
+  });
+
   it('associates assistant messages with the latest user prompt in one message scan', () => {
     const messages = [
       createMessage('message-1', 'assistant', 'orphan answer'),
@@ -70,16 +149,8 @@ describe('ChatMessages', () => {
     const iterator = vi.fn(originalIterator);
     Object.defineProperty(messages, Symbol.iterator, { value: iterator });
 
-    const tree = ChatMessages({
-      messages,
-      showEmptyState: false,
-      detachedInitialized: true,
-      onNewConversation: vi.fn(),
-      onShowList: vi.fn(),
-    });
-    const messageBubbles = collectElements(tree).filter(
-      (element) => element.type === MessageBubble,
-    );
+    const tree = renderChat(messages);
+    const messageBubbles = collectMessageBubbles(tree);
 
     expect(messageBubbles.map((element) => ({
       id: (element.props as { message: ChatMessage }).message.id,
@@ -94,5 +165,105 @@ describe('ChatMessages', () => {
       { id: 'message-7', regeneratePrompt: 'second prompt' },
     ]);
     expect(iterator).toHaveBeenCalledTimes(1);
+  });
+
+  it('only mounts the latest message batch and preserves the preceding user prompt', () => {
+    const messages = [createMessage('message-1', 'user', 'earlier prompt')];
+    for (let index = 2; index <= 91; index += 1) {
+      messages.push(createMessage(`message-${index}`, 'assistant', `answer ${index}`));
+    }
+
+    const tree = renderChat(messages);
+    const messageBubbles = collectMessageBubbles(tree);
+
+    expect(messageBubbles).toHaveLength(80);
+    expect((messageBubbles[0].props as { message: ChatMessage }).message.id).toBe('message-12');
+    expect((messageBubbles[0].props as { regeneratePrompt?: string }).regeneratePrompt).toBe('earlier prompt');
+  });
+
+  it('loads older messages in batches and translates the control', () => {
+    const messages = Array.from({ length: 150 }, (_, index) => createMessage(
+      `message-${index + 1}`,
+      index === 0 ? 'user' : 'assistant',
+      `message ${index + 1}`,
+    ));
+
+    let tree = renderChat(messages);
+    expect(collectMessageBubbles(tree)).toHaveLength(80);
+    (findLoadOlderButton(tree).props as { onClick: () => void }).onClick();
+
+    tree = renderChat(messages);
+    const loadedBubbles = collectMessageBubbles(tree);
+    expect(loadedBubbles).toHaveLength(140);
+    expect((loadedBubbles[0].props as { message: ChatMessage }).message.id).toBe('message-11');
+
+    setLocale('en-US');
+    tree = renderChat(messages);
+    expect(String((findLoadOlderButton(tree).props as { children?: ReactNode }).children))
+      .toBe('Load earlier messages (10 remaining)');
+  });
+
+  it('resets the scroll window on conversation switches, including when switching back', () => {
+    const makeConversation = (conversationId: string) => Array.from(
+      { length: 150 },
+      (_, index) => createMessage(
+        `${conversationId}-${index + 1}`,
+        index === 0 ? 'user' : 'assistant',
+        `message ${index + 1}`,
+        conversationId,
+      ),
+    );
+    const firstConversation = makeConversation('conversation-a');
+    const secondConversation = makeConversation('conversation-b');
+
+    let tree = renderChat(firstConversation);
+    (findLoadOlderButton(tree).props as { onClick: () => void }).onClick();
+    tree = renderChat(firstConversation);
+    expect(collectMessageBubbles(tree)).toHaveLength(140);
+
+    const container = findMessagesContainer(tree);
+    (container.props as { onScroll: (event: unknown) => void }).onScroll({
+      currentTarget: { scrollHeight: 2_000, scrollTop: 200, clientHeight: 400 },
+    });
+    tree = renderChat(firstConversation);
+    expect(collectElements(tree).some((element) => (
+      element.type === 'button'
+      && String((element.props as { className?: string }).className).includes('absolute bottom-3')
+    ))).toBe(true);
+
+    tree = renderChat(secondConversation);
+    expect(collectMessageBubbles(tree)).toHaveLength(80);
+    expect(collectElements(tree).some((element) => (
+      element.type === 'button'
+      && String((element.props as { className?: string }).className).includes('absolute bottom-3')
+    ))).toBe(false);
+
+    tree = renderChat(firstConversation);
+    expect(collectMessageBubbles(tree)).toHaveLength(80);
+  });
+
+  it('keeps the visible top message anchored when new messages arrive away from the bottom', () => {
+    const messages = Array.from({ length: 100 }, (_, index) => createMessage(
+      `message-${index + 1}`,
+      index === 0 ? 'user' : 'assistant',
+      `message ${index + 1}`,
+    ));
+    let tree = renderChat(messages);
+    const firstVisibleId = (
+      collectMessageBubbles(tree)[0].props as { message: ChatMessage }
+    ).message.id;
+
+    const container = findMessagesContainer(tree);
+    (container.props as { onScroll: (event: unknown) => void }).onScroll({
+      currentTarget: { scrollHeight: 2_000, scrollTop: 200, clientHeight: 400 },
+    });
+    const withNewMessage = [
+      ...messages,
+      createMessage('message-101', 'assistant', 'new answer'),
+    ];
+    tree = renderChat(withNewMessage);
+    const visible = collectMessageBubbles(tree);
+    expect((visible[0].props as { message: ChatMessage }).message.id).toBe(firstVisibleId);
+    expect(visible).toHaveLength(81);
   });
 });

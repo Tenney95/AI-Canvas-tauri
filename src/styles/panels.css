@@ -1235,6 +1235,24 @@ button.wf-ionode-badge.is-default {
   background: var(--white-alpha-03);
   border: 1px solid var(--border-subtle);
   transition: border-color 0.2s, background 0.2s;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 260px;
+}
+
+/* 短剧资产可能一次挂载大量卡片；离屏时跳过布局与绘制，尺寸由浏览器记忆。 */
+.drama-asset-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 148px;
+}
+
+.project-asset-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 150px;
+}
+
+.character-action-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
 }
 .assets-waterfall-card:hover {
   border-color: var(--border-secondary);

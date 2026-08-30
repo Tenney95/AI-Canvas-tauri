@@ -46,22 +46,94 @@ export function getMimeType(ext: string): string {
     avi: 'video/x-msvideo',
     mov: 'video/quicktime',
     mkv: 'video/x-matroska',
+    m4v: 'video/x-m4v',
+    flv: 'video/x-flv',
+    wmv: 'video/x-ms-wmv',
     mp3: 'audio/mpeg',
     wav: 'audio/wav',
     ogg: 'audio/ogg',
     flac: 'audio/flac',
     aac: 'audio/aac',
+    m4a: 'audio/mp4',
+    opus: 'audio/opus',
+    wma: 'audio/x-ms-wma',
   };
   return mimeMap[ext] || 'application/octet-stream';
 }
 
-export function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
+/** 逐块产生 Base64；parts 被视为一段连续字节流。 */
+function* encodeByteParts(parts: readonly Uint8Array[]): Generator<string> {
+  const chunkSize = 3 * 0x2000;
+  let carry: number[] = [];
+
+  for (const bytes of parts) {
+    let offset = 0;
+    if (carry.length > 0) {
+      while (carry.length < 3 && offset < bytes.length) {
+        carry.push(bytes[offset]);
+        offset += 1;
+      }
+      if (carry.length === 3) {
+        yield btoa(String.fromCharCode(...carry));
+        carry = [];
+      }
+    }
+
+    const fullEnd = offset + Math.floor((bytes.length - offset) / 3) * 3;
+    while (offset < fullEnd) {
+      const chunkEnd = Math.min(offset + chunkSize, fullEnd);
+      yield btoa(String.fromCharCode(...bytes.subarray(offset, chunkEnd)));
+      offset = chunkEnd;
+    }
+    while (offset < bytes.length) {
+      carry.push(bytes[offset]);
+      offset += 1;
+    }
   }
-  return btoa(binary);
+
+  if (carry.length > 0) yield btoa(String.fromCharCode(...carry));
+}
+
+function throwIfBase64EncodingAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason ?? new DOMException('转换已取消', 'AbortError');
+  }
+}
+
+/**
+ * 按 3 字节边界分块编码，避免先构造与整个文件等大的 JS 二进制字符串。
+ * parts 会被视为一段连续字节流，跨分块的 1-2 个尾字节会正确拼到下一块。
+ */
+export function bytePartsToBase64(parts: readonly Uint8Array[]): string {
+  return [...encodeByteParts(parts)].join('');
+}
+
+/**
+ * 可取消的分块 Base64 编码。每约 768 KiB 让出一次事件循环，
+ * 避免大媒体转换期间用户取消和超时信号无法被处理。
+ */
+export async function bytePartsToBase64Async(
+  parts: readonly Uint8Array[],
+  signal?: AbortSignal,
+): Promise<string> {
+  throwIfBase64EncodingAborted(signal);
+  const encodedParts: string[] = [];
+  let chunksSinceYield = 0;
+  for (const encoded of encodeByteParts(parts)) {
+    encodedParts.push(encoded);
+    chunksSinceYield += 1;
+    if (chunksSinceYield >= 32) {
+      chunksSinceYield = 0;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      throwIfBase64EncodingAborted(signal);
+    }
+  }
+  throwIfBase64EncodingAborted(signal);
+  return encodedParts.join('');
+}
+
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  return bytePartsToBase64([new Uint8Array(buffer)]);
 }
 
 export type FileWatchEvent = WatchEvent;

@@ -28,6 +28,17 @@ export interface SourceState {
   error?: string;
 }
 
+export function pruneVideoEditorSources(
+  previous: Record<string, SourceState>,
+  activeUrls: readonly string[],
+): Record<string, SourceState> {
+  const active = new Set(activeUrls);
+  const entries = Object.entries(previous).filter(([url]) => active.has(url));
+  return entries.length === Object.keys(previous).length
+    ? previous
+    : Object.fromEntries(entries);
+}
+
 /** 片段对应的可播放地址：优先本地文件，回落到片段自带 URL */
 export function resolveClipUrl(clip: VideoEditorClip): string {
   const convertFileSrc = getConvertFileSrc();
@@ -53,7 +64,11 @@ export function useVideoEditorSources(
 
   useEffect(() => {
     const pending = [...new Set(urls)];
-    if (pending.length === 0) return;
+    setSources((previous) => pruneVideoEditorSources(previous, pending));
+    if (pending.length === 0) {
+      setLoading(false);
+      return;
+    }
 
     let active = true;
     setLoading(true);
@@ -74,10 +89,11 @@ export function useVideoEditorSources(
           continue;
         }
 
+        let input: Awaited<ReturnType<typeof createVideoInput>> | null = null;
         try {
-          const input = await createVideoInput(url);
+          input = await createVideoInput(url);
           const probe = await probeVideoSource(input);
-          if (!active) { input.dispose(); return; }
+          if (!active) return;
           setSources((previous) => ({
             ...previous,
             [url]: { url, probe, thumbnails: [] },
@@ -89,7 +105,7 @@ export function useVideoEditorSources(
             height: THUMBNAIL_HEIGHT,
             duration: probe.duration,
           });
-          if (!active) { input.dispose(); return; }
+          if (!active) return;
           setSources((previous) => ({
             ...previous,
             [url]: { ...previous[url], url, probe, thumbnails },
@@ -99,7 +115,6 @@ export function useVideoEditorSources(
           const waveform = probe.audioCodec
             ? await extractWaveform(input, { buckets: WAVEFORM_BUCKETS, duration: probe.duration })
             : [];
-          input.dispose();
           if (!active) return;
           setSources((previous) => ({
             ...previous,
@@ -116,6 +131,8 @@ export function useVideoEditorSources(
               error: reason instanceof Error ? reason.message : String(reason),
             },
           }));
+        } finally {
+          input?.dispose();
         }
       }
       if (active) setLoading(false);

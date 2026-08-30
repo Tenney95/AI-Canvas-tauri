@@ -13,6 +13,8 @@ import ChatReferenceText, { type ChatReferenceHandlers } from './ChatReferenceTe
 import ChatMarkdown from './ChatMarkdown';
 import SourceList from './SourceList';
 import { useT } from '../../i18n';
+import ViewportImage from '../shared/ViewportImage';
+import ViewportVideo from '../shared/ViewportVideo';
 
 interface MessageBubbleProps extends ChatReferenceHandlers {
   message: ChatMessage;
@@ -175,11 +177,10 @@ function MessageBubble({
         {/* ── 图片结果 ── */}
         {hasImage && !isGenerating && (
           <div className="chat-message-image mt-1 pt-2 rounded-lg overflow-hidden border border-canvas-border">
-            <img
+            <ViewportImage
               src={mediaResult.url}
               alt={mediaResult.prompt || t('生成的图片')}
               className="w-full h-auto max-h-[280px] object-contain bg-canvas-bg rounded-lg"
-              loading="lazy"
             />
             {mediaResult.prompt && (
               <p className="bg-canvas-bg/60 px-2 py-1.5 text-[11px] leading-[17px] text-canvas-text-muted">
@@ -192,14 +193,14 @@ function MessageBubble({
         {/* ── 视频结果 ── */}
         {hasVideo && !isGenerating && (
           <div className="chat-message-video mt-2 rounded-lg overflow-hidden border border-canvas-border">
-            <video
+            <ViewportVideo
               src={mediaResult.url}
               controls
               className="w-full max-h-[280px] bg-canvas-bg"
               preload="metadata"
             >
               {t('您的浏览器不支持视频播放')}
-            </video>
+            </ViewportVideo>
             {mediaResult.prompt && (
               <p className="bg-canvas-bg/60 px-2 py-1.5 text-[11px] leading-[17px] text-canvas-text-muted">
                 {mediaResult.prompt}

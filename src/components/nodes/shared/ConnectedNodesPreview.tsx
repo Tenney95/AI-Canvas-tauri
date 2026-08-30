@@ -71,6 +71,10 @@ export default function ConnectedNodesPreview({
   const hoveredMentionNodeId = useAppStore((s) => s.hoveredMentionNodeId);
   const [fullscreenPreview, setFullscreenPreview] = useState<FullscreenPreviewItem | null>(null);
   const [suppressClickNodeId, setSuppressClickNodeId] = useState<string | null>(null);
+  const closeFullscreenPreview = useCallback(() => {
+    setFullscreenPreview(null);
+    setSuppressClickNodeId(null);
+  }, []);
 
   // ── 宫格弹出浮层状态 ──
   const [sbPopupId, setSbPopupId] = useState<string | null>(null);
@@ -242,7 +246,8 @@ export default function ConnectedNodesPreview({
 
   return (
     <div className="connected-nodes-float">
-      <div className="connected-nodes-strip">
+      {fullscreenPreview === null && (
+        <div className="connected-nodes-strip">
         {connectedNodes.map((node, idx) => {
           const scale = getDockScale(idx);
           const x = getDockX(idx);
@@ -328,12 +333,13 @@ export default function ConnectedNodesPreview({
             )}
           </motion.button>
         )})}
-      </div>
+        </div>
+      )}
 
       {/* 宫格弹出浮层 — Portal 到 body */}
       {createPortal(
         <AnimatePresence>
-          {sbPopupId !== null && (() => {
+          {fullscreenPreview === null && sbPopupId !== null && (() => {
             const sbNode = connectedNodes.find((n) => n.id === sbPopupId);
             if (!sbNode?.sbCells) return null;
             const rect = sbThumbRect;
@@ -388,9 +394,10 @@ export default function ConnectedNodesPreview({
 
       <FullscreenOverlay
         isOpen={fullscreenPreview !== null}
-        onClose={() => setFullscreenPreview(null)}
+        onClose={closeFullscreenPreview}
         hidePanel
         title={fullscreenPreview?.label}
+        className="fullscreen-overlay--image-preview"
       >
         {fullscreenPreview && (
           <div
@@ -439,7 +446,7 @@ export default function ConnectedNodesPreview({
                 className="inline-flex min-h-10 items-center justify-center rounded-xl bg-indigo-500 px-5 text-sm font-medium text-white shadow-lg transition-[transform,background-color] duration-150 ease-out hover:bg-indigo-400 active:scale-[.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
                 onClick={() => {
                   handleClick(fullscreenPreview.id, fullscreenPreview.label);
-                  setFullscreenPreview(null);
+                  closeFullscreenPreview();
                 }}
               >
                 {t('单击引用')}

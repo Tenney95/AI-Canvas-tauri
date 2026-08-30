@@ -9,8 +9,13 @@ import FullscreenOverlay from '../../../shared/FullscreenOverlay';
 import AnimatedButton from '../../../shared/AnimatedButton';
 import ModelSelector from '../ModelSelector';
 import { springGentle } from '../../../../utils/motion';
-import { fetchImageForCrop } from '../../../../services/fileService';
 import type { ModelGroup, ModelOption } from '../../../../types';
+import {
+  assertEditorCanvasBudget,
+  canvasToDataUrl,
+  getEditorCanvasBudgetError,
+} from './imageResourceBudget';
+import { createSafeImagePreviewSource, type SafeImagePreviewSource } from './imageUtils';
 
 /* ── 类型 ── */
 type AspectPreset = 'original' | '1:1' | '4:3' | '16:9' | '3:4' | '9:16';
@@ -70,39 +75,13 @@ function nearestSize(ratio: number): string {
   return best.size;
 }
 
-/* ── 跨源加载图片为 HTMLImageElement（复用 CropEditor 的同源化策略）── */
-async function loadSourceImage(imageUrl: string): Promise<HTMLImageElement> {
-  let src = imageUrl;
-  if (
-    !imageUrl.startsWith('data:') &&
-    !imageUrl.startsWith('blob:')
-  ) {
-    if (imageUrl.startsWith('asset://') || imageUrl.includes('asset.localhost')) {
-      // Tauri 本地资源：fetch → FileReader 转 data URL 避免污染 canvas
-      const resp = await fetch(imageUrl);
-      const blob = await resp.blob();
-      src = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-      });
-    } else {
-      // 远程 URL：经 Rust 端下载
-      src = await fetchImageForCrop(imageUrl);
-    }
-  }
-  const img = new Image();
-  img.src = src;
-  await img.decode();
-  return img;
-}
-
 /* ════════════════════════════════════════════
    ExpandEditor
    ════════════════════════════════════════════ */
 export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: ExpandEditorProps) {
   const stageRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const operationEpochRef = useRef(0);
 
   const [aspect, setAspect] = useState<AspectPreset>('1:1');
   const [zoom, setZoom] = useState(0.8);            // 原图在目标画布中的占比（越小，四周留白越多）
@@ -111,21 +90,44 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
   const [stageBox, setStageBox] = useState({ w: 0, h: 0 });
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [previewSource, setPreviewSource] = useState<SafeImagePreviewSource | null>(null);
+  const [readySourceUrl, setReadySourceUrl] = useState<string | null>(null);
 
   const [selectedModel, setSelectedModel] = useState('apimart/gemini-3.1-flash-image-preview');
   const [selectedProvider, setSelectedProvider] = useState('apimart');
 
-  /* ── 打开时加载原图自然尺寸 ── */
+  useEffect(() => {
+    if (!isOpen) operationEpochRef.current += 1;
+  }, [isOpen]);
+
+  useEffect(() => () => {
+    operationEpochRef.current += 1;
+  }, []);
+
+  /* ── 打开时只解码一次同源预览；后续 canvas 直接复用该 DOM 图片 ── */
   useEffect(() => {
     if (!isOpen || !imageUrl) return;
-    let cancelled = false;
-    const img = new Image();
-    img.onload = () => {
-      if (!cancelled) setNatural({ w: img.naturalWidth, h: img.naturalHeight });
+    let active = true;
+    let prepared: SafeImagePreviewSource | null = null;
+    void createSafeImagePreviewSource(imageUrl, '扩图源图').then((result) => {
+      if (!active) {
+        result.release();
+        return;
+      }
+      prepared = result;
+      setPreviewSource(result);
+      setNatural({ w: result.dimensions.width, h: result.dimensions.height });
+      setFailure(null);
+    }).catch((error) => {
+      if (active) setFailure(error instanceof Error ? error.message : '扩图源图读取失败，请重试');
+    });
+    return () => {
+      active = false;
+      prepared?.release();
     };
-    img.src = imageUrl;
-    return () => { cancelled = true; };
   }, [isOpen, imageUrl]);
+  const activePreviewSource = previewSource?.sourceUrl === imageUrl ? previewSource : null;
 
   /* ── 跟踪舞台可用尺寸（用于把目标画布等比缩放到视口内）── */
   useEffect(() => {
@@ -168,6 +170,10 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
     const maxOffY = (th - sh) / 2;
     return { tw, th, sw, sh, maxOffX, maxOffY, ratio };
   }, [natural, aspect, zoom]);
+  const budgetError = useMemo(
+    () => target ? getEditorCanvasBudgetError(target.tw, target.th, '扩图输出') : null,
+    [target],
+  );
 
   /* ── 目标画布在舞台中的显示缩放（contain）── */
   const display = useMemo(() => {
@@ -187,6 +193,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
   const handleAspectChange = useCallback((preset: AspectPreset) => {
     setAspect(preset);
     setOffset({ x: 0, y: 0 });
+    setFailure(null);
   }, []);
 
   /* ── 拖拽原图重定位 ── */
@@ -219,11 +226,13 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
 
   /* ── 关闭：重置状态 ── */
   const handleClose = useCallback(() => {
+    operationEpochRef.current += 1;
     setAspect('1:1');
     setZoom(0.8);
     setOffset({ x: 0, y: 0 });
     setPrompt('');
     setBusy(false);
+    setFailure(null);
     onClose();
   }, [onClose]);
 
@@ -235,44 +244,68 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
   const handleZoomChange = useCallback((val: number) => {
     setZoom(val);
     setOffset({ x: 0, y: 0 });
+    setFailure(null);
   }, []);
 
   /* ── 确认：合成"垫图"画布 → 回调 onGenerate ── */
   const handleConfirm = useCallback(async () => {
-    if (!target || busy) return;
+    const img = imgRef.current;
+    if (!target || !img || !img.complete || readySourceUrl !== imageUrl || busy) return;
+    if (budgetError) {
+      setFailure(budgetError);
+      return;
+    }
+    const operationEpoch = operationEpochRef.current + 1;
+    operationEpochRef.current = operationEpoch;
+    const isCurrentOperation = () => operationEpochRef.current === operationEpoch;
     setBusy(true);
+    setFailure(null);
+    let canvas: HTMLCanvasElement | null = null;
+    let result: { dataUrl: string; meta: { size: string; width: number; height: number; model: string; provider: string; prompt: string } } | null = null;
     try {
-      const img = await loadSourceImage(imageUrl);
       const { tw, th, sw, sh, maxOffX, maxOffY } = target;
+      assertEditorCanvasBudget(tw, th, '扩图输出');
 
-      const canvas = document.createElement('canvas');
+      canvas = document.createElement('canvas');
       canvas.width = tw;
       canvas.height = th;
       const ctx = canvas.getContext('2d');
-      if (!ctx) { setBusy(false); return; }
+      if (!ctx) throw new Error('扩图画布初始化失败，请重试');
 
       // 透明背景（留白区），原图按偏移居中绘制
       const dx = (tw - sw) / 2 + offset.x * 2 * maxOffX;
       const dy = (th - sh) / 2 + offset.y * 2 * maxOffY;
       ctx.drawImage(img, dx, dy, sw, sh);
 
-      const dataUrl = canvas.toDataURL('image/png');
+      const dataUrl = await canvasToDataUrl(canvas);
+      if (!isCurrentOperation()) return;
       const size = aspect === 'original' ? nearestSize(tw / th)
         : (ASPECT_OPTIONS.find((o) => o.key === aspect)?.ratio ? aspect : nearestSize(tw / th));
 
-      // 重置并交给父组件处理异步生成
       const meta = { size, width: tw, height: th, model: selectedModel, provider: selectedProvider, prompt };
+      result = { dataUrl, meta };
+    } catch (err) {
+      console.error('[ExpandEditor] composite failed:', err);
+      if (isCurrentOperation()) {
+        setFailure(err instanceof Error ? err.message : '扩图垫图生成失败，请重试');
+      }
+    } finally {
+      if (canvas) {
+        canvas.width = 1;
+        canvas.height = 1;
+      }
+      if (isCurrentOperation()) setBusy(false);
+    }
+
+    if (result && isCurrentOperation()) {
       setAspect('1:1');
       setZoom(0.8);
       setOffset({ x: 0, y: 0 });
       setPrompt('');
-      setBusy(false);
-      onGenerate(dataUrl, meta);
-    } catch (err) {
-      console.error('[ExpandEditor] composite failed:', err);
-      setBusy(false);
+      setFailure(null);
+      onGenerate(result.dataUrl, result.meta);
     }
-  }, [target, busy, imageUrl, offset, aspect, selectedModel, selectedProvider, prompt, onGenerate]);
+  }, [target, busy, budgetError, readySourceUrl, imageUrl, offset, aspect, selectedModel, selectedProvider, prompt, onGenerate]);
 
   return (
     <FullscreenOverlay
@@ -306,6 +339,7 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
             className="crop-action-btn confirm"
             data-tooltip="开始扩图"
             aria-label="开始扩图"
+            disabled={busy || !activePreviewSource || readySourceUrl !== imageUrl}
             onClick={handleConfirm}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
@@ -328,16 +362,18 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
 
         {/* ── 中部：预览舞台 ── */}
         <div className="crop-stage expand-stage" ref={stageRef}>
-          {display && target && (
+          {display && target && activePreviewSource && (
             <div
               className="expand-frame"
               style={{ width: display.frameW, height: display.frameH }}
             >
               <img
-                src={imageUrl}
+                ref={imgRef}
+                src={activePreviewSource.src}
                 alt="原图"
                 className="expand-src-img"
                 draggable={false}
+                onLoad={() => setReadySourceUrl(imageUrl)}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
@@ -379,6 +415,11 @@ export default function ExpandEditor({ isOpen, imageUrl, onClose, onGenerate }: 
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
           />
+          {(failure || budgetError) && (
+            <p className="m-0 text-xs leading-relaxed text-red-300" role="alert">
+              {failure || budgetError}
+            </p>
+          )}
           <ModelSelector
             nodeType="ai-image"
             selectedModel={selectedModel}
