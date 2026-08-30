@@ -1179,13 +1179,6 @@ pub fn run() {
                 eprintln!("[blender-runtime] {error}");
             }
 
-            // 调试构建自动打开 DevTools（方便排查打包后白屏等问题）
-            #[cfg(debug_assertions)]
-            {
-                if let Some(window) = _app.get_webview_window("main") {
-                    window.open_devtools();
-                }
-            }
             Ok(())
         })
         .build(tauri::generate_context!())
