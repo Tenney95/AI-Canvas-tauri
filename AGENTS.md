@@ -43,9 +43,9 @@
 | 文件系统 | @tauri-apps/plugin-fs | 读写本地文件 |
 | 对话框 | @tauri-apps/plugin-dialog | 打开/保存文件对话框 |
 | 对话 Agent | 会话级 Plan/B/C 模式 + Tool Registry + Policy Engine | 多轮规划、工具调用、确认、子智能体、后台任务、上下文与项目记忆 |
-| 外部控制 | @modelcontextprotocol/sdk + 本地 loopback bridge | 手动开启的会话级 MCP 控制桥，复用同一套工具与 Policy |
-| 凭据存储 | Rust `secret_store` | API Key 只落 `{appData}/secrets/`，不进 IndexedDB |
-| 本地持久化 | IndexedDB v17 | 项目、对话、消息、AgentTask、全局角色、子智能体配置、项目记忆等 |
+| 外部控制 | @modelcontextprotocol/sdk + Rust 双传输 bridge | 默认关闭、可显式配置自动开启；本机 stdio 与高风险 Streamable HTTP 复用同一套工具、Policy 和审计 |
+| 凭据存储 | Rust `secret_store` | API Key 与 MCP 固定令牌只落 `{appData}/secrets/`，不进普通配置或 IndexedDB |
+| 本地持久化 | IndexedDB v20（以 `src/services/indexedDb/schema.ts` 的 `DB_VERSION` 为准） | 项目、对话、消息、AgentTask、插件、全局角色、子智能体配置、项目记忆等 |
 | 包管理 | npm | 版本以 `package.json` 和 `src-tauri/Cargo.toml` 为准，禁止在规则中写死 |
 
 ## 项目目录结构
@@ -70,7 +70,8 @@ AI-Canvas-tauri/
 │   │   ├── character/         # 角色参考图与声音素材展示
 │   │   ├── director/          # 导演台下载确认、进度与安装编排
 │   │   ├── chat/              # 多会话、Agent 模式、时间线、审批、任务中心、子智能体、记忆、来源
-│   │   ├── settings/          # 厂商连接、模型协议、MCP、子智能体、存储健康等设置子页
+│   │   ├── settings/          # 厂商连接、模型协议、MCP、插件、子智能体、存储健康等设置子页
+│   │   │   └── PluginSettings.tsx # 用户插件安装、更新、启停与风险提示
 │   │   └── shared/            # 通用 UI、模型下载、懒加载边界和吉祥物
 │   ├── hooks/                 # 快捷键、自动保存、绘图、吸附、引用监听、Tooltip 等
 │   ├── services/
@@ -78,20 +79,23 @@ AI-Canvas-tauri/
 │   │   │   └── providers/     # 厂商适配器
 │   │   ├── chat/              # Agent Runtime、Registry、Policy、子智能体、上下文、记忆、历史
 │   │   │   └── tools/         # 画布、媒体、预设、联网、文件、Skill、厂商配置、短剧资产、剧集分集、记忆工具
-│   │   ├── mcp/               # MCP 控制服务、bridge 客户端与会话配置
+│   │   ├── mcp/               # MCP 控制服务、双传输 bridge 客户端、会话配置与令牌生命周期
+│   │   ├── plugins/           # 插件清单、市场、文件 grant 与执行租约
 │   │   ├── fs/                # 文件基础设施、资产索引、回收站、资产库、存储健康
 │   │   ├── fileService.ts     # 文件能力统一前端入口
-│   │   ├── providerSecretService.ts # API Key 与 Rust 凭据存储的桥接
+│   │   ├── providerSecretService.ts # API Key、MCP 固定令牌与 Rust 凭据存储的桥接
 │   │   ├── projectTransferService.ts # 项目整体导出与导入
-│   │   └── indexedDbService.ts # IndexedDB schema 与 CRUD
+│   │   └── indexedDbService.ts # IndexedDB 持久化入口与 CRUD；schema 位于 indexedDb/schema.ts
 │   ├── store/
-│   │   ├── useAppStore.ts     # Zustand slice 聚合入口（19 个 slice）
+│   │   ├── useAppStore.ts     # Zustand slice 聚合入口；slice 清单以该文件为准
+│   │   ├── store.plugins.ts   # 插件安装、迁移、启停、卸载与原生注册编排
+│   │   ├── store.agentPackages.ts # 全局 AgentPackage 目录状态
 │   │   └── store.*.ts         # 节点、项目、历史、聊天、Agent、记忆、子智能体等 slice
 │   └── types/
 │       ├── index.ts           # 通用画布、配置与模型类型
 │       ├── chat.ts / agent.ts # 对话、工具、任务、审批类型
 │       ├── canvasNote.ts / subAgent.ts / mcp.ts / dramaAssets.ts
-│       └── media.ts / memory.ts / aiTypes.ts / composerTypes.ts
+│       └── media.ts / memory.ts / plugin.ts / agentPackage.ts / aiTypes.ts / composerTypes.ts
 ├── src-tauri/
 │   ├── Cargo.toml
 │   ├── tauri.conf.json        # Tauri 配置
@@ -99,8 +103,12 @@ AI-Canvas-tauri/
 │       ├── main.rs            # Rust 入口
 │       ├── lib.rs             # Tauri Builder、窗口与命令注册
 │       ├── path_policy.rs     # 原生文件命令的调用方与路径校验
+│       ├── plugin_registry.rs # 插件活动版本、源码摘要与私有快照信任注册表
+│       ├── plugin_runtime.rs  # QuickJS 与可信 Python 插件执行、超时和取消
+│       ├── blender_runtime.rs # Blender 候选、项目 grant 与 Job commands
+│       ├── blender_runtime/   # 固定资源、Job、runner、结果清单与 artifact 校验
 │       ├── secret_store.rs    # Rust 独占的本地凭据存储
-│       ├── mcp_bridge.rs      # 本地 MCP loopback 控制桥
+│       ├── mcp_bridge.rs      # MCP stdio loopback 与 Streamable HTTP 双传输控制桥
 │       ├── project_archive.rs # 项目归档打包与解包
 │       ├── assistant_web.rs   # 固定搜索端点与受限网页读取
 │       ├── provider_docs.rs   # 受限厂商文档读取
@@ -120,7 +128,7 @@ AI-Canvas-tauri/
 
 ### 状态管理
 
-`src/store/useAppStore.ts` 是全局状态聚合入口。它通过 19 个 slice 组合节点、历史、项目、聊天、Agent、记忆、子智能体、短剧资产、工具栏、配置、工作流、Skill 和 UI 状态。
+`src/store/useAppStore.ts` 是全局状态聚合入口。当前聚合 21 个 slice；清单以该文件的 `AppState` 和组合调用为准，覆盖节点、历史、项目、聊天、Agent、AgentPackage、插件、记忆、子智能体、短剧资产、工具栏、配置、工作流、Skill 和 UI 状态。
 
 - 所有共享状态变更必须通过 Store Action，禁止组件直接修改 Store 对象
 - 新状态先选择现有 slice；只有职责独立且存在多项 Action 时才新增 slice
@@ -129,7 +137,10 @@ AI-Canvas-tauri/
 - Agent 画布写入必须同时校验 `projectId` 和 canvas revision
 - 异步画布派生结果回写前必须经过 `canvasDerivationGuard`，防止过期结果写入已切换的项目
 - 项目切换必须同步加载项目对话、AgentTask、短剧资产、项目记忆和项目数据
-- 非持久化运行时对象，例如 `AbortController`、文件 grant 路径、MCP 令牌和窗口句柄，禁止写入 IndexedDB
+- 非持久化运行时对象，例如 `AbortController`、文件 grant 路径和窗口句柄，禁止写入 IndexedDB；MCP 固定令牌只允许进入 Rust `secret_store`，不得进入 Store 持久化
+- `InstalledPlugin.sourceDigest` 只允许为旧记录迁移而暂时缺失；插件完成加载后，没有有效原生摘要必须失败关闭
+- 插件工具或节点捕获的 `sourceDigest` 是整次调用的版本租约；每轮原生执行、宿主 effect 和最终写回前都必须复核当前启用版本
+- 插件摘要切换、停用和卸载必须先撤销前端租约并清理内存文件 grant；旧版本结果不得写入新版本状态
 
 ### 组件职责
 
@@ -139,7 +150,7 @@ AI-Canvas-tauri/
 - `components/noteNodes/`：画布笔记渲染；几何计算放 `utils/canvasNoteGeometry.ts`，绘制交互放 `hooks/useCanvasDrawing.ts`
 - `components/chat/ChatPanel.tsx`：对话容器、主窗口与独立窗口路由，不实现具体工具协议
 - `components/chat/AgentTaskTimeline.tsx`：任务和步骤控制；状态变更必须调用 Agent Runtime
-- `components/settings/`：配置 UI；密钥只经 `providerSecretService.ts` 交给 Rust 凭据存储，不得进入 IndexedDB、消息或操作日志
+- `components/settings/`：配置 UI；API Key 与 MCP 固定令牌只经 `providerSecretService.ts` 交给 Rust 凭据存储，不得进入普通配置、IndexedDB、消息或操作日志
 - `HelpCenterDialog.tsx` / `OnboardingDialog.tsx`：面向用户的说明文案集中在这里，两者都懒加载；帮助弹窗的开关是 `store.ui.ts` 的 `helpOpen`，不要退回组件局部 state
 - 帮助内的操作演示复用真实组件与真实 DOM 构造器（如 `MentionPicker`、`buildWorkflowChipEl`），禁止另写一套仿真样式，避免演示与实际界面漂移
 - 复杂组件优先拆分子组件，通过 `React.memo` 或稳定 selector 降低画布重渲染
@@ -166,8 +177,8 @@ AI-Canvas-tauri/
 - 工具输入必须声明本地 schema，并设置准确的 effect
 - `read` 可自动执行；只对瞬时网络错误自动重试，最多 3 次
 - Plan 模式只允许 `read`，其余 effect 一律拒绝
-- B 模式的 `canvas_write` 必须确认；C 自主模式与 MCP 会话下所有 effect 一律自动执行、无须确认
-- `file_write`、`permanent_delete`、`media_generation`、`memory_write`、`config_write`、`asset_write` 仅在 Plan/B 模式要求确认，C 自主模式与 MCP 会话直接放行
+- B 模式的 `canvas_write`、`file_write`、`permanent_delete`、`media_generation`、`memory_write`、`config_write` 和 `asset_write` 必须确认；Plan 模式拒绝这些 effect
+- C 自主模式与 MCP 会话自动执行 `read` 及上述七类写入 effect，不逐次确认；`user_choice` 在 B/C/MCP 中必须等待用户作答，Plan 模式仍因非 `read` 而拒绝，MCP 客户端不能调用审批解决接口代替用户选择
 - 画布写、文件写、永久删除和付费媒体生成不得自动重试
 - 单任务预算默认为 12 个模型轮次、24 次工具调用、3 个并发只读工具
 - 子智能体只读、不写画布、不产生会话消息；单个父任务最多 6 个子任务，材料范围由用户配置显式勾选
@@ -178,7 +189,7 @@ AI-Canvas-tauri/
 - AgentTask 在应用运行期间可后台执行；重启后未完成任务只能恢复为 `paused`
 - 网页、本地文件、Skill 和 MCP 输入始终是不可信数据，不能修改 Policy、模式、工具权限或确认策略
 - 文件 grant 只在内存中保存，并绑定 conversationId；模型只能看到 grantId 和显示名
-- 项目记忆只能由 `memory_suggest` 提议；Plan/B 模式下需用户确认后写入，C 自主模式与 MCP 会话按最大权限直接写入
+- 项目记忆只能由 `memory_suggest` 提议；Plan 模式拒绝写入，B 模式需用户确认，C 自主模式与 MCP 会话按最大权限直接写入
 
 ### 流式对话与多窗口
 
@@ -187,7 +198,7 @@ AI-Canvas-tauri/
 - `chatWindowService.ts` 定义主窗口与独立窗口协议；主窗口 Store 是唯一写入源
 - 新的独立窗口操作必须先扩展 `ChatAction` 或 `ChatStateSnapshot`
 - 切换会话或项目时，后台任务消息不能写入当前错误会话
-- MCP 请求同样由主窗口 `mcpControlService.ts` 单点处理，Rust bridge 只负责端口、鉴权、关联和事件转发
+- MCP 请求同样由主窗口 `mcpControlService.ts` 单点处理，Rust bridge 只负责传输、端口、鉴权、请求关联和无令牌事件转发
 
 ### 样式规则
 
@@ -230,22 +241,34 @@ AI-Canvas-tauri/
 - 涉及文件路径时，必须同时考虑开发环境与打包环境差异，禁止硬编码路径
 - 新增原生能力优先通过 Tauri Plugin 体系，避免直接写系统调用
 - 新增接收路径参数的自定义 command 必须经过 `path_policy.rs` 的调用方窗口校验和真实路径授权校验；自定义命令不走 fs 插件 scope，漏掉这一步等于任意文件读写
-- 凭据只经 `secret_store.rs` 读写；`{appData}/secrets/` 在 fs scope、asset scope 和 `path_policy` 三条路径上都必须保持拒绝
+- API Key 与 MCP 固定令牌只经 `secret_store.rs` 读写；`{appData}/secrets/` 在 fs scope、asset scope 和 `path_policy` 三条路径上都必须保持拒绝
+- `agent-private`、`plugin-private` 与 Blender 原生私有目录同样不得通过 fs scope、asset scope 或通用路径 command 暴露；递归读取、归档、解包和删除还必须拒绝这些私有目录的祖先
+- 插件普通执行 IPC 只接受 `pluginId + sourceDigest + toolId + invocationId + input`；`plugin_registry.rs` 是插件 ID、启用状态、活动 revision、工具归属和实际源码的执行权威，运行前必须重新读取私有快照并计算摘要；禁止重新接收 Renderer 提交的 `runtime` 或 `source`
+- QuickJS 插件只拥有声明的宿主能力；可信 Python 插件拥有当前用户权限。Windows Job Object、macOS/Linux 进程组、原生确认、超时和进程树回收都只是生命周期边界，不等于 OS 沙箱
+- 插件安装或更新必须走按插件 ID 串行的 `stage → IndexedDB persist → 撤销旧租约 → activate`；已有摘要记录只做原生 registration 校验，私有快照缺失或损坏时不得回退到 Renderer 源码执行
+- Python 插件暂存、重新启用和回切上一版本必须经过原生高风险确认，Renderer 布尔值不得代替原生授权；停用、卸载和摘要切换必须取消活动 Python invocation
+- Blender 只执行应用内固定资源和固定 operation，Renderer 不得提交 executable、脚本、argv、cwd、env 或输出路径；运行包清单、内嵌资源、大小和 SHA-256 必须同步
+- Blender `open-editor` 保存返回只有在恰好生成当前活动摄影机 PNG 与 `.blend`、且 Rust 完成绑定、摘要、文件头和 Result Manifest 校验后才算成功；缺少摄影机、渲染失败或 artifact 集合异常必须失败关闭
+- Blender 结果只有在项目、导演节点、instanceId、Scene revision 和 canvas derivation guard 仍匹配时才能投影回 Store；进程退出本身不是成功证据
 - 通用 `proxy_fetch` 不能注册为 Agent 工具；Agent 网页读取必须经过 `assistant_web.rs`、厂商文档读取必须经过 `provider_docs.rs` 的协议、DNS/IP、重定向和体积校验
-- MCP bridge 只监听 IPv4 loopback，令牌一次性且只存进程内存，禁止写入配置、IndexedDB 或 Tauri Event 负载
+- MCP 默认关闭；只有用户手动开启或显式启用 `mcpAutoStart` 才启动。stdio 传输只绑定 `127.0.0.1` 并通过 `scripts/ai-canvas-mcp.mjs` 适配，Streamable HTTP 在用户完成高风险传输确认后绑定 `0.0.0.0` 的 `/mcp`；两者都支持固定端口或系统随机端口
+- MCP 令牌必须是密码学随机的 256-bit 值，可轮换；固定令牌唯一允许持久化到 Rust `secret_store` 的 `mcp/token` 条目，凭据存储不可用时才退化为当前会话内存令牌。令牌不得进入普通配置、IndexedDB、Tauri Event 负载、消息或日志；stdio 通过子进程环境变量传递，HTTP 使用 Bearer 鉴权
+- Streamable HTTP 必须保留 Bearer、Host 与同源 Origin 校验、1 MiB 请求体上限和有界并发；它当前是明文 HTTP，持有令牌的客户端按自主模式执行，因此只能用于受信网络或隔离环境，不能把 Token 当作传输加密
+- stdio 与 Streamable HTTP 都固定映射为 C 自主模式，对安全矩阵中的八类 effect 不逐次审批；切换远程传输时的高风险确认是配置授权，不是工具审批，`user_choice` 仍必须等待用户作答
 - 长时间文件传输使用 `file_transfer.rs`，必须支持取消信号和进度
 - ONNX 推理使用 `onnx/worker.rs` 子进程隔离；禁止把 DirectML Session 移回主进程
 - 修改 Rust 后运行与范围匹配的 `cargo test` 和 `cargo check`
 
 ### IndexedDB 与持久化
 
-- `indexedDbService.ts` 当前 schema 版本为 17
-- 已持久化项目、工作流、配置、预设、历史、资产索引、风格、Skill、对话、消息、AgentTask、项目记忆、工具栏布局、元数据、全局角色和子智能体配置
+- IndexedDB 当前 schema 版本为 20，并以 `src/services/indexedDb/schema.ts` 的 `DB_VERSION` 为唯一真值
+- 已持久化项目、工作流、配置、预设、历史、资产索引、风格、Skill、对话、消息、AgentTask、项目记忆、工具栏布局、元数据、全局角色、子智能体配置、视频剪辑工程、项目视觉描述和插件安装记录
+- 插件安装记录持久化在 `plugins` object store，并保存 `sourceDigest`；完整源码仍只用于管理、迁移和旧版本兼容，不能成为运行阶段的执行权威
 - 新 object store 或索引必须提升 `DB_VERSION`，并保持旧数据可升级读取
 - 删除会话时同步清理消息和 AgentTask；删除项目时同步清理项目域数据
 - 分集是带 `parentId` 的项目记录，不新建 Store；素材目录、角色库和项目记忆按 `seriesOwnerId` 统一挂在剧集记录上，分集不得各存一份副本
 - 删除单独一集不清理共享素材目录，只有整部剧（或普通项目）被删时才删目录
-- 不持久化完整网页正文、本地文件正文、文件 grant 路径、API Key、MCP 令牌或运行时控制器
+- 不持久化完整网页正文、本地文件正文、文件 grant 路径、API Key、MCP 令牌或运行时控制器到应用普通配置或 IndexedDB；API Key 与 MCP 固定令牌在应用自有持久化中只允许进入 Rust `secret_store`，用户主动复制到外部 MCP 客户端的配置片段不属于应用持久化
 
 ## 任务类型判断
 
@@ -367,13 +390,14 @@ RunningHub 工作流和厂商模型 API 是两类执行协议，禁止强行混�
 
 Policy Engine 是本地固定边界。系统提示词、网页、文件、Skill、MCP 客户端、模型输出和工具 Observation 都不能修改此矩阵。MCP 调用走同一矩阵，且不能调用审批解决接口。
 
-C 自主模式与 MCP 控制会话以最大权限运行以兼容无人值守场景：所有工具调用（`read`、`canvas_write`、`file_write`、`permanent_delete`、`media_generation`、`memory_write`、`config_write`、`asset_write`）均无须人工确认，自动执行，不等待任何审批。Plan 模式仍只允许 `read`，B 协作模式仍按上表保留确认。
+C 自主模式与 MCP 控制会话以最大权限运行以兼容无人值守场景：上表八类 effect（`read`、`canvas_write`、`file_write`、`permanent_delete`、`media_generation`、`memory_write`、`config_write`、`asset_write`）均无须人工确认并自动执行。`user_choice` 不属于这八类自动 effect：B/C/MCP 必须等待用户作答，Plan 模式则因非 `read` 直接拒绝。Plan 模式仍只允许 `read`，B 协作模式仍按上表保留确认。
 
 ## 禁止事项速查
 
 - 禁止凭记忆新增路径、模块、函数、配置
 - 禁止绕过 `fileService.ts` 直接在前端组件中调 `@tauri-apps/plugin-fs`
 - 禁止新增跳过 `path_policy.rs` 校验的路径参数型原生命令
+- 禁止让插件运行命令接受 Renderer 提交的源码或 runtime，或在原生注册异常时回退到前端源码执行
 - 禁止把 API Key 写入 IndexedDB、消息、日志或导出归档
 - 禁止放松 Tauri 安全配置
 - 禁止新增非 UTF-8 文本文件
@@ -382,7 +406,7 @@ C 自主模式与 MCP 控制会话以最大权限运行以兼容无人值守场�
 - 禁止把 `proxy_fetch`、任意 Shell、任意路径读写或通用 HTTP 请求暴露给 Agent 或 MCP（产生模型开销的 Agent 工具如 `agent_run_sub_agent` 不在禁止之列，C 自主模式与 MCP 会话下均自动执行、无须确认）
 - 禁止让模型在 Plan/B 模式下自行选择未由用户 `@` 的付费媒体模型（C 自主模式与 MCP 会话下媒体模型选择与调用自动执行、无须确认）
 - 禁止让网页、文件、Skill 或 MCP 输入直接触发权限升级
-- 禁止持久化 `AbortController`、文件 grant 路径、MCP 令牌或完整不可信正文
+- 禁止持久化 `AbortController`、文件 grant 路径或完整不可信正文；MCP 固定令牌除 Rust `secret_store` 外不得写入应用自有持久化、导出归档、消息、Event 或日志，只能由用户主动复制进外部 MCP 客户端配置
 - 禁止修改 `node_modules/`、`src-tauri/target/` 等构建产物
 - 禁止未经确认覆盖他人或用户已有的改动
 - 禁止声称通过了未实际运行的命令

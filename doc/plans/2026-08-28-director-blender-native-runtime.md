@@ -177,9 +177,13 @@ sceneId / sceneRevision / sceneSha256
 4. 旧节点只做可验证的最佳努力迁移；无法恢复配对的条目标记缺失，禁止猜测。
 5. 本阶段不得与 Phase 1-A 或 Blender 进程启动合并实施。
 
-### Phase 2：Blender Application Template 导演模式
+### Phase 2：Blender 导演模式（固定模板资源）
 
 **目标：** 为选择高级编辑的用户提供低门槛 Blender 工作区，不覆盖其个人 Blender 配置。
+
+**当前实施状态（2026-08-30）：** Phase 2-A 进行中。首批在现有 `startup.blend` 分区内增加只对 AI Canvas editor session 生效的 Properties/Scene 导演操作台，提供基础模型、轻量场景、协议镜头、焦段、景深、灯光、用户手选本地模型和保存返回；主 3D View 右下角增加基于 Blender `GPUOffScreen.draw_view3d` 的圆角实时相机预览、关闭与重开，离屏刷新限制在约 8 FPS。不新增节点，也不改变 Job/Result schema。
+
+**Phase 2 完整目标：**
 
 - 一个大尺寸 3D 视图；
 - 左侧场景、人物和道具库；
@@ -190,7 +194,11 @@ sceneId / sceneRevision / sceneSha256
 - 固定、可恢复的工作区布局；
 - 镜头、人物站位与基础运镜预设。
 
-Application Template 的安装、更新、兼容矩阵和用户选择必须另行设计；不得写入或替换用户全局 Blender 配置。
+Phase 2-A 尚未包含正式人物/道具资产库、项目模型资产化、简化时间轴、基础运镜、Blender 内直接截图/视频同步或 Scene JSON 双向同步。用户手选 OBJ/FBX/GLB/GLTF 只进入当前 `.blend`；FBX/OBJ 的 sidecar 贴图可能保持外部引用。
+
+固定资源由 Rust 编译内嵌、私有版本目录安装并按 bytes/SHA-256 校验；`1.2.0` 与旧 `1.1.0` / `1.0.4` 目录隔离，不写入或替换用户全局 Blender 配置。操作台数据使用 first-party owner collection/material/World，清理不触碰 Director Scene 或用户数据；用户在 Blender 文件选择器中手选路径不升级为 Tauri/Agent/MCP 任意路径能力。预览只自绘圆角外壳与交互，真实摄像机画面、视图层和色彩管理继续走 Blender 内部组件；Blender 的编辑区仍为矩形，未为小窗拆出第二个 View3D。未来 Blender 版本兼容矩阵仍需逐版本验证。
+
+验收必须区分固定资源/Rust 测试、Blender 5.2.1 真机、普通 Blender 不受影响和节点保存返回。回滚恢复旧固定包引用即可，保留用户 artifact、旧私有资源与 `lightweight-web`。
 
 ### Phase 3：AI Canvas 内快速导演
 
@@ -243,10 +251,10 @@ Application Template 的安装、更新、兼容矩阵和用户选择必须另�
 
 ## 7. 当前开放问题
 
-- 首批支持哪些 Blender LTS/稳定版本，以及 Application Template 的兼容矩阵；
-- 便携版、Steam、Microsoft Store 和自定义安装路径如何在不持久化绝对路径的前提下授权；
-- 固定 template/script 是编译内嵌、bundle resources 还是独立签名资源包；
-- 前台高级编辑的保存返回与后台渲染是否使用同一 Job 协议；
+- Blender 5.2.1 之后稳定版本的固定资源和 Python API 兼容矩阵；
+- 后续大型人物/道具资产包的签名、授权、体积和按需更新策略；
+- 运行中的 Blender 若需直接请求截图/视频，是否建立新的用途受限 IPC；
+- 外部模型 sidecar 贴图的 `.blend` 可移植性，以及项目模型库 grant/复制协议；
 - Blender 专有数据与新 Scene revision 发生冲突时的用户提示和合并策略；
 - 不可变 revision 与孤儿 Job 文件的空间配额、识别和回收周期；
 - `.blend` artifact 的大小上限和项目整体导入导出上限；

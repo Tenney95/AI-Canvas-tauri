@@ -36,6 +36,7 @@ import {
   VideoExportCanceledError,
   type ConcatSegment,
 } from '../../services/videoEditorMediaService';
+import { readRasterImageDimensions } from '../../services/rasterImageDimensions';
 import {
   createClipRenderSource,
   renderFrameAt,
@@ -79,6 +80,7 @@ import { resolveClipUrl, useVideoEditorSources } from './useVideoEditorSources';
 import { useTimelineHistory } from './useTimelineHistory';
 import { setLocale, useT } from '../../i18n';
 import {
+  collectFrameSourceClips,
   createTrack,
   duplicateClipInTracks,
   isClipLocked,
@@ -94,6 +96,61 @@ type ExportDestination = 'canvas' | 'local';
 
 /** 取边界帧时往片段内部让开的时间量：正好落在边界上会取到相邻片段 */
 const BOUNDARY_FRAME_EPSILON = 0.02;
+const MAX_RENDER_IMAGE_BITMAP_BYTES = 256 * 1024 * 1024;
+
+async function createBudgetedRenderBitmap(
+  url: string,
+  retainedBytes: number,
+  outputSize: VideoEditorCanvasSize,
+): Promise<{ bitmap: ImageBitmap; bytes: number }> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`读取图片素材失败：HTTP ${response.status}`);
+  const blob = await response.blob();
+  const dimensions = await readRasterImageDimensions(blob);
+  if (!dimensions) {
+    throw new RangeError('无法在解码前确认图片素材尺寸，请先转换为 PNG、JPEG、WebP、GIF、BMP 或带固定尺寸的 SVG');
+  }
+  const sourceBytes = dimensions.width * dimensions.height * 4;
+  if (!Number.isSafeInteger(sourceBytes) || sourceBytes < 1
+    || retainedBytes + sourceBytes > MAX_RENDER_IMAGE_BITMAP_BYTES) {
+    const sourceMiB = Math.ceil((retainedBytes + Math.max(0, sourceBytes)) / (1024 * 1024));
+    throw new RangeError(
+      `图片素材解码后累计约 ${sourceMiB} MiB，超过视频合成 256 MiB 安全上限，请减少大图贴图或先降低分辨率`,
+    );
+  }
+  const scale = Math.min(
+    1,
+    outputSize.width / dimensions.width,
+    outputSize.height / dimensions.height,
+  );
+  const targetWidth = Math.max(1, Math.round(dimensions.width * scale));
+  const targetHeight = Math.max(1, Math.round(dimensions.height * scale));
+  const bitmap = await createImageBitmap(blob, {
+    imageOrientation: 'from-image',
+    resizeWidth: targetWidth,
+    resizeHeight: targetHeight,
+    resizeQuality: 'high',
+  });
+  const bytes = bitmap.width * bitmap.height * 4;
+  if (!Number.isSafeInteger(bytes) || bytes < 1 || retainedBytes + bytes > MAX_RENDER_IMAGE_BITMAP_BYTES) {
+    bitmap.close();
+    const retainedMiB = Math.ceil((retainedBytes + Math.max(0, bytes)) / (1024 * 1024));
+    throw new RangeError(
+      `图片素材解码后累计约 ${retainedMiB} MiB，超过视频合成 256 MiB 安全上限，请减少大图贴图或先降低分辨率`,
+    );
+  }
+  return { bitmap, bytes };
+}
+
+function closeRenderSourceBitmaps(sources: Iterable<ClipRenderSource>): void {
+  const closed = new Set<ImageBitmap>();
+  for (const source of sources) {
+    const bitmap = source.bitmap;
+    if (!bitmap || closed.has(bitmap)) continue;
+    closed.add(bitmap);
+    bitmap.close();
+  }
+}
 
 function collectProjectImages(nodes: unknown): VideoEditorProjectImageSource[] {
   if (!Array.isArray(nodes)) return [];
@@ -938,46 +995,51 @@ export default function VideoEditorWindow() {
       const runComposite = async () => {
         // 合成路径：逐帧渲染 + 重编码，支持叠加、画中画、转场与混音
         const renderSources = new Map<string, ClipRenderSource>();
-        await withStage('准备合成', async () => {
-          for (const [url, input] of inputsByUrl) {
-            const source = await createClipRenderSource(input);
-            if (source) renderSources.set(url, source);
-          }
-          // 图片片段用位图直接绘制
-          for (const clip of allClips) {
-            if (clip.kind !== 'image') continue;
-            const url = resolveClipUrl(clip);
-            if (!url || renderSources.has(url)) continue;
-            const response = await fetch(url);
-            const bitmap = await createImageBitmap(await response.blob());
-            renderSources.set(url, {
-              bitmap,
-              width: bitmap.width,
-              height: bitmap.height,
-            });
-          }
-        });
+        let retainedImageBitmapBytes = 0;
+        try {
+          await withStage('准备合成', async () => {
+            for (const [url, input] of inputsByUrl) {
+              const source = await createClipRenderSource(input);
+              if (source) renderSources.set(url, source);
+            }
+            // 图片片段用位图直接绘制
+            for (const clip of allClips) {
+              if (clip.kind !== 'image') continue;
+              const url = resolveClipUrl(clip);
+              if (!url || renderSources.has(url)) continue;
+              const loaded = await createBudgetedRenderBitmap(url, retainedImageBitmapBytes, canvasSize);
+              retainedImageBitmapBytes += loaded.bytes;
+              renderSources.set(url, {
+                bitmap: loaded.bitmap,
+                width: loaded.bitmap.width,
+                height: loaded.bitmap.height,
+              });
+            }
+          });
 
-        return withStage('合成导出', () => exportComposite({
-          tracks,
-          duration: timelineDuration,
-          canvas: canvasSize,
-          frameRate: exportFrameRate,
-          resolveVideo: (clip) => renderSources.get(resolveClipUrl(clip)),
-          resolveAudio: inputFor,
-          onProgress: setExportProgress,
-          onStage: setExportStage,
-          onAudioMode: (mode, reason) => {
-            audioNote = mode === 'encode'
-              ? t('音频已重新混流（AAC）')
-              : mode === 'copy'
-                ? t('音频以原始分组直通保留，未重编码')
-                : mode === 'pcm'
-                  ? t('音频已混流为未压缩 PCM 音轨：{reason}', { reason: reason ?? '' })
-                  : t('未输出音轨：{reason}', { reason: reason ?? t('无可用音频') });
-          },
-          signal: controller.signal,
-        }));
+          return await withStage('合成导出', () => exportComposite({
+            tracks,
+            duration: timelineDuration,
+            canvas: canvasSize,
+            frameRate: exportFrameRate,
+            resolveVideo: (clip) => renderSources.get(resolveClipUrl(clip)),
+            resolveAudio: inputFor,
+            onProgress: setExportProgress,
+            onStage: setExportStage,
+            onAudioMode: (mode, reason) => {
+              audioNote = mode === 'encode'
+                ? t('音频已重新混流（AAC）')
+                : mode === 'copy'
+                  ? t('音频以原始分组直通保留，未重编码')
+                  : mode === 'pcm'
+                    ? t('音频已混流为未压缩 PCM 音轨：{reason}', { reason: reason ?? '' })
+                    : t('未输出音轨：{reason}', { reason: reason ?? t('无可用音频') });
+            },
+            signal: controller.signal,
+          }));
+        } finally {
+          closeRenderSourceBitmaps(renderSources.values());
+        }
       };
 
       if (compositing) {
@@ -1086,22 +1148,28 @@ export default function VideoEditorWindow() {
     tracksOverride?: VideoEditorTrack[],
   ): Promise<Uint8Array> => {
     const frameTracks = tracksOverride ?? tracksRef.current;
-    const frameClips = frameTracks.flatMap((track) => (track.hidden ? [] : track.clips));
+    const frameClips = collectFrameSourceClips(frameTracks, time);
     if (frameClips.length === 0) throw new Error('时间轴上没有可渲染的片段');
 
     const opened: Input[] = [];
+    const renderSources = new Map<string, ClipRenderSource>();
+    let retainedImageBitmapBytes = 0;
+    let canvas: HTMLCanvasElement | null = null;
     try {
       // 只准备这一帧用得到的素材：解码整条时间轴没有意义
-      const renderSources = new Map<string, ClipRenderSource>();
       await withStage(`准备${stageLabel}`, async () => {
         for (const clip of frameClips) {
           if (clip.kind === 'text') continue;
           const url = resolveClipUrl(clip);
           if (!url || renderSources.has(url)) continue;
           if (clip.kind === 'image') {
-            const response = await fetch(url);
-            const bitmap = await createImageBitmap(await response.blob());
-            renderSources.set(url, { bitmap, width: bitmap.width, height: bitmap.height });
+            const loaded = await createBudgetedRenderBitmap(url, retainedImageBitmapBytes, canvasSize);
+            retainedImageBitmapBytes += loaded.bytes;
+            renderSources.set(url, {
+              bitmap: loaded.bitmap,
+              width: loaded.bitmap.width,
+              height: loaded.bitmap.height,
+            });
             continue;
           }
           const input = await createVideoInput(url);
@@ -1111,10 +1179,11 @@ export default function VideoEditorWindow() {
         }
       });
 
-      const canvas = document.createElement('canvas');
-      canvas.width = canvasSize.width;
-      canvas.height = canvasSize.height;
-      const context = canvas.getContext('2d');
+      canvas = document.createElement('canvas');
+      const renderCanvas = canvas;
+      renderCanvas.width = canvasSize.width;
+      renderCanvas.height = canvasSize.height;
+      const context = renderCanvas.getContext('2d');
       if (!context) throw new Error('画布上下文不可用');
 
       await withStage(`渲染${stageLabel}`, () => renderFrameAt(
@@ -1127,13 +1196,18 @@ export default function VideoEditorWindow() {
 
       return await withStage(`编码${stageLabel}`, async () => {
         const blob = await new Promise<Blob | null>((resolve) => {
-          canvas.toBlob((result) => resolve(result), 'image/png');
+          renderCanvas.toBlob((result) => resolve(result), 'image/png');
         });
         if (!blob) throw new Error(`${stageLabel}编码失败`);
         return new Uint8Array(await blob.arrayBuffer());
       });
     } finally {
+      closeRenderSourceBitmaps(renderSources.values());
       opened.forEach((input) => input.dispose());
+      if (canvas) {
+        canvas.width = 1;
+        canvas.height = 1;
+      }
     }
   }, [canvasSize]);
 

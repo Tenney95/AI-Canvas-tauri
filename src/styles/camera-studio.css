@@ -4,9 +4,18 @@
   --cs-grid-color: var(--theme-text-muted);
 }
 
+.fullscreen-overlay.camera-studio-overlay {
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .camera-studio-overlay .fullscreen-panel {
   max-height: calc(100vh - 24px);
   overflow: hidden;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  will-change: auto;
 }
 
 .camera-studio-overlay .fullscreen-header {

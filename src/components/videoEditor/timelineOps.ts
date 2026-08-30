@@ -5,11 +5,45 @@
  * 这与剪映主轨的行为一致，也正好匹配无损拼接导出的前提。
  */
 import {
+  evaluateTransitionAlpha,
+  getActiveClips,
+  getClipEnd,
   getClipDuration,
   relayoutSequential,
   type VideoEditorClip,
   type VideoEditorTrack,
 } from '../../types/videoEditor';
+
+/**
+ * 只收集某一帧真正会访问的素材；dissolve 还需要首尾相接的前一段作底图。
+ */
+export function collectFrameSourceClips(
+  tracks: VideoEditorTrack[],
+  time: number,
+): VideoEditorClip[] {
+  const result: VideoEditorClip[] = [];
+  const seen = new Set<string>();
+  const append = (clip: VideoEditorClip) => {
+    if (seen.has(clip.id)) return;
+    seen.add(clip.id);
+    result.push(clip);
+  };
+
+  for (const track of tracks) {
+    if (track.hidden || track.kind !== 'video') continue;
+    for (const clip of getActiveClips(track, time)) {
+      const timeInClip = time - clip.timelineStart;
+      const alpha = evaluateTransitionAlpha(clip, timeInClip);
+      if (alpha < 1 && clip.transitionIn?.kind === 'dissolve') {
+        const index = track.clips.indexOf(clip);
+        const previous = index > 0 ? track.clips[index - 1] : undefined;
+        if (previous && Math.abs(getClipEnd(previous) - clip.timelineStart) < 0.001) append(previous);
+      }
+      append(clip);
+    }
+  }
+  return result;
+}
 
 /** 缩放范围：每秒对应的像素数 */
 export const MIN_PIXELS_PER_SECOND = 2;

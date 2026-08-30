@@ -32,6 +32,7 @@ function installation(
     health: 'ready',
     contentHash: 'a'.repeat(64),
     enabled: true,
+    mcpSkillReadEnabled: false,
     installedAt: 1,
     updatedAt: 1,
   };

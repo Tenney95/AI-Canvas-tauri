@@ -9,6 +9,7 @@ import { useAppStore } from '../store/useAppStore';
 import type { DramaAsset, DramaAssetKind } from '../types/dramaAssets';
 import { DRAMA_ASSET_KIND_LABEL } from '../types/dramaAssets';
 import { formatDramaAssetTextBrief } from '../services/dramaAssetPrompt';
+import ViewportImage from './shared/ViewportImage';
 
 const KIND_TABS: Array<{ key: DramaAssetKind | 'all'; label: string }> = [
   { key: 'all', label: '全部' },
@@ -95,7 +96,12 @@ function DramaAssetCard({
         {/* Thumb */}
         <div className="drama-asset-thumbnail w-20 h-20 rounded-lg overflow-hidden shrink-0 bg-canvas-hover border border-canvas-border flex items-center justify-center">
           {thumb ? (
-            <img src={thumb} alt="" className="drama-asset-thumbnail-image w-full h-full object-cover" />
+            <ViewportImage
+              src={thumb}
+              alt=""
+              className="drama-asset-thumbnail-image w-full h-full object-cover"
+              draggable={false}
+            />
           ) : (
             <span className="drama-asset-thumbnail-placeholder text-[12px] text-canvas-text-muted">
               {DRAMA_ASSET_KIND_LABEL[asset.kind][0]}

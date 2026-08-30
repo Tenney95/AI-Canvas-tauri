@@ -7,6 +7,7 @@ import type { AppState } from './useAppStore';
 import type {
   BaseNodeData,
   CanvasProject,
+  EpisodeCreativeInfo,
   NodeGroup,
   ProjectSeriesInfo,
   ProjectSettings,
@@ -240,6 +241,8 @@ function createCurrentProjectSaveRecord(state: AppState): ProjectSaveData | null
     parentId: project.parentId,
     episodeNo: project.episodeNo,
     episodeOutline: project.episodeOutline,
+    episodeScript: project.episodeScript,
+    episodeCreative: project.episodeCreative,
     series: project.series,
     nodes: state.nodes,
     edges: state.edges,
@@ -368,8 +371,13 @@ export interface ProjectSlice {
   addEpisode: (name?: string) => Promise<string | undefined>;
   /** 写入当前剧集的原著与剧本；当前项目还不是剧集时先转成剧集。 */
   updateSeriesInfo: (info: ProjectSeriesInfo) => Promise<boolean>;
-  /** 写入某一集的大纲 / 本集剧本片段。 */
+  /** 写入某一集的大纲。兼容既有 Agent 工具。 */
   updateEpisodeOutline: (episodeId: string, outline: string) => Promise<boolean>;
+  /** 原子更新某一集的大纲、正文和创作要点。 */
+  updateEpisodeCreative: (
+    episodeId: string,
+    updates: { outline?: string; script?: string; creative?: EpisodeCreativeInfo },
+  ) => Promise<boolean>;
   /** 与相邻的一集交换集号；direction 为 -1 上移、1 下移。 */
   moveEpisode: (episodeId: string, direction: -1 | 1) => Promise<boolean>;
   exportProject: (id: string) => Promise<boolean>;
@@ -635,6 +643,8 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           parentId: latestProject.parentId,
           episodeNo: latestProject.episodeNo,
           episodeOutline: latestProject.episodeOutline,
+          episodeScript: latestProject.episodeScript,
+          episodeCreative: latestProject.episodeCreative,
           series: latestProject.series,
           nodes: nextNodes,
           edges: latest.edges,
@@ -972,6 +982,15 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
   updateEpisodeOutline: async (episodeId, outline) => (
     patchProjectRecord(set, get, episodeId, { episodeOutline: outline })
   ),
+
+  updateEpisodeCreative: async (episodeId, updates) => {
+    const patch: Partial<CanvasProject> = {};
+    if ('outline' in updates) patch.episodeOutline = updates.outline;
+    if ('script' in updates) patch.episodeScript = updates.script;
+    if ('creative' in updates) patch.episodeCreative = updates.creative;
+    if (Object.keys(patch).length === 0) return true;
+    return patchProjectRecord(set, get, episodeId, patch);
+  },
 
   moveEpisode: async (episodeId, direction) => {
     const state = get();
@@ -1392,6 +1411,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
           snapshot: p.snapshot, dataFolder: p.dataFolder, settings: p.settings,
           parentId: p.parentId, episodeNo: p.episodeNo, episodeOutline: p.episodeOutline,
+          episodeScript: p.episodeScript, episodeCreative: p.episodeCreative,
           series: p.series,
         })));
         fileService.registerProjectFolders(mapped);
@@ -1447,6 +1467,7 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt,
           snapshot: p.snapshot, dataFolder: p.dataFolder, settings: p.settings,
           parentId: p.parentId, episodeNo: p.episodeNo, episodeOutline: p.episodeOutline,
+          episodeScript: p.episodeScript, episodeCreative: p.episodeCreative,
           series: p.series,
         })));
         fileService.registerProjectFolders(mapped);

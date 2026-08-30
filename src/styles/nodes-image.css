@@ -201,8 +201,9 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  background: rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(8px);
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   border-radius: 16pX;
   animation: fadeIn var(--dur-normal) var(--ease-out-expo);
 }
@@ -394,7 +395,41 @@
 .matting-zoom {
   display: inline-flex;
   transform-origin: center center;
-  will-change: transform;
+}
+
+/* 宫格编辑只遮暗画布，不为整窗建立模糊离屏缓冲。 */
+.fullscreen-overlay--transparent.customgrid-overlay {
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* 第三方 PointEdit 仅覆盖其根层，避免 16px 整窗模糊；工具栏的小面积玻璃效果保留。 */
+.point-edit-overlay.point-edit-overlay {
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/*
+ * 重型图片编辑器的静态景深层：中心约 86%、边缘约 92% 遮暗。
+ * 通过多层纯色渐变保留“磨砂”层级，但不采样底层画布，避免整窗 backdrop blur 的离屏纹理。
+ */
+body > :is(
+  .matting-overlay,
+  .point-edit-overlay.point-edit-overlay,
+  .fullscreen-overlay--transparent.customgrid-overlay,
+  .fullscreen-overlay--transparent.crop-overlay,
+  .fullscreen-overlay--transparent.composer-overlay,
+  .fullscreen-overlay.camera-studio-overlay,
+  .fullscreen-overlay--transparent.image-node-fullscreen-overlay
+) {
+  background:
+    radial-gradient(ellipse at center, var(--black-alpha-30) 0%, var(--black-alpha-60) 100%),
+    linear-gradient(var(--black-alpha-50), var(--black-alpha-50)),
+    var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 /* Viewport — relative wrapper so canvas overlays image exactly */

@@ -17,6 +17,12 @@ export interface AgentPackageSourceRemoveResult {
   externalSourcePreserved: boolean;
 }
 
+export interface AgentPackageSourceTextResult {
+  relativePath: string;
+  content: string;
+  sha256: string;
+}
+
 const ARCHIVE_EXTENSIONS = ['aicanvas-agent', 'tgz', 'tar.gz'];
 
 function selectedSinglePath(selected: string | string[] | null): string | null {
@@ -65,4 +71,19 @@ export async function removeAgentPackageSource(
   sourceId: string,
 ): Promise<AgentPackageSourceRemoveResult> {
   return invoke<AgentPackageSourceRemoveResult>('agent_source_remove', { sourceId });
+}
+
+/**
+ * 通过原生来源注册表读取一个有界 UTF-8 文本；调用方仍需施加领域级路径和扩展名限制。
+ */
+export async function readAgentPackageSourceText(
+  sourceId: string,
+  relativePath: string,
+  maxBytes: number,
+): Promise<AgentPackageSourceTextResult> {
+  return invoke<AgentPackageSourceTextResult>('agent_source_read_text', {
+    sourceId,
+    relativePath,
+    maxBytes,
+  });
 }

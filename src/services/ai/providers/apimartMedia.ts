@@ -33,6 +33,31 @@ import { resolveImageUrlArray } from '../imageUtils';
 import { resolveMediaReferenceUrl } from '../../uploadService';
 import type { MediaProviderAdapter } from '../mediaProviderRegistry';
 
+async function mapSequentially<T, R>(
+  items: readonly T[],
+  mapper: (item: T, index: number) => Promise<R>,
+  signal?: AbortSignal,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let index = 0; index < items.length; index += 1) {
+    if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
+    results.push(await mapper(items[index], index));
+  }
+  return results;
+}
+
+function resolveImageUrlsSequentially(
+  urls: readonly string[],
+  provider: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  return mapSequentially(
+    urls,
+    async (url) => (await resolveImageUrlArray([url], provider, signal))[0],
+    signal,
+  );
+}
+
 function resolveApimartConnection(): { apiKey: string; baseUrl: string } {
   const providerConfig = useAppStore.getState().config.providers.apimart;
   const apiKey = providerConfig?.apiKey || '';
@@ -235,9 +260,10 @@ export const apimartMediaProviderAdapter: MediaProviderAdapter = {
     ) {
       const frameRefs = references.filter((ref) => ref.kind === 'image'
         && (ref.role === 'first_frame' || ref.role === 'last_frame'));
-      const frameUrls = await resolveImageUrlArray(
+      const frameUrls = await resolveImageUrlsSequentially(
         frameRefs.map((ref) => getMediaReferenceUrl(ref)),
         'apimart',
+        signal,
       );
       const frameRoles = frameRefs.map((ref) => ref.role);
       if (capability?.frameFields) {
@@ -254,11 +280,12 @@ export const apimartMediaProviderAdapter: MediaProviderAdapter = {
         }));
       }
       // 其余角色为 reference 的图片作为多模态参考图
-      const referenceUrls = await resolveImageUrlArray(
+      const referenceUrls = await resolveImageUrlsSequentially(
         references
           .filter((ref) => ref.kind === 'image' && ref.role === 'reference')
           .map((ref) => getMediaReferenceUrl(ref)),
         'apimart',
+        signal,
       );
       // Seedance 2.0/2.5 走 image_with_roles，与 image_urls 互斥；参考图必须并入同一数组
       // （role=reference_image），否则首尾帧 + 参考图会被判为互斥直接报错。
@@ -272,13 +299,19 @@ export const apimartMediaProviderAdapter: MediaProviderAdapter = {
         imageUrls = referenceUrls;
       }
     } else {
-      imageUrls = await resolveImageUrlArray(referenceInput.imageUrls, 'apimart');
+      imageUrls = await resolveImageUrlsSequentially(referenceInput.imageUrls, 'apimart', signal);
     }
     // APIMart 的视频/音频参考必须是公网 URL；本地文件经统一入口上传（视频/音频强制走通用图床）
-    const [videoUrls, audioUrls] = await Promise.all([
-      Promise.all(referenceInput.videoUrls.map((url) => resolveMediaReferenceUrl(url, { kind: 'video' }))),
-      Promise.all(referenceInput.audioUrls.map((url) => resolveMediaReferenceUrl(url, { kind: 'audio' }))),
-    ]);
+    const videoUrls = await mapSequentially(
+      referenceInput.videoUrls,
+      (url) => resolveMediaReferenceUrl(url, { provider: 'apimart', kind: 'video', signal }),
+      signal,
+    );
+    const audioUrls = await mapSequentially(
+      referenceInput.audioUrls,
+      (url) => resolveMediaReferenceUrl(url, { provider: 'apimart', kind: 'audio', signal }),
+      signal,
+    );
     if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
     return generateApimartVideo(apiKey, baseUrl, modelName, referenceInput.prompt, params.nodeId, {
       resolution: params.seedanceResolution,

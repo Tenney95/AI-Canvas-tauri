@@ -10,6 +10,11 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/services/fileService', () => ({
+  createMediaDataUrlBudget: () => ({
+    usedBytes: 0,
+    maxBytes: 128 * 1024 * 1024,
+    label: '测试音频参考',
+  }),
   downloadUrlAndSave: mocks.downloadUrlAndSave,
   saveBinaryToProjectData: mocks.saveBinaryToProjectData,
   isTauriEnv: mocks.isTauriEnv,

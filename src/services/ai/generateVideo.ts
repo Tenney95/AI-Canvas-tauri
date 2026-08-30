@@ -44,6 +44,10 @@ import { savePendingTask, updatePendingTask, removePendingTask, registerNodePoll
 import { corsSafeFetch } from './httpTransport';
 import { resolveImageUrlArray } from './imageUtils';
 import { resolveMediaReferenceUrl } from '../uploadService';
+import {
+  createMediaDataUrlBudget,
+  type MediaDataUrlBudget,
+} from '../fileService';
 import { mapVideoParameters } from './videoParameterMappings';
 import {
   getVolcengineSeedanceCapability,
@@ -56,6 +60,31 @@ import {
   toResolvedVideoCompatibilityValues,
   type CanonicalVideoRequest,
 } from './videoRequestResolver';
+
+async function mapSequentially<T, R>(
+  items: readonly T[],
+  mapper: (item: T, index: number) => Promise<R>,
+  signal?: AbortSignal,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let index = 0; index < items.length; index += 1) {
+    if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
+    results.push(await mapper(items[index], index));
+  }
+  return results;
+}
+
+function resolveImageUrlsSequentially(
+  urls: readonly string[],
+  provider: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  return mapSequentially(
+    urls,
+    async (url) => (await resolveImageUrlArray([url], provider, signal))[0],
+    signal,
+  );
+}
 
 export function resolveVideoGenerationOperation(
   imageUrls: readonly string[],
@@ -139,12 +168,16 @@ function assignVideoReferenceRoles(references: readonly MediaReference[]): Media
 async function resolveGeneralProtocolMediaUrls(
   references: readonly MediaReference[],
   kind: 'video' | 'audio',
+  budget: MediaDataUrlBudget,
+  signal?: AbortSignal,
 ): Promise<string[]> {
-  return Promise.all(references.filter((reference) => reference.kind === kind).map(async (reference) => {
+  return mapSequentially(references.filter((reference) => reference.kind === kind), async (reference) => {
     const url = getMediaReferenceUrl(reference);
     // 通用协议模型需要 data URL（base64）；公网 / data: 原样返回
-    return resolveMediaReferenceUrl(url, { mode: 'dataUrl', kind });
-  }));
+    return resolveMediaReferenceUrl(url, {
+      mode: 'dataUrl', kind, signal, dataUrlBudget: budget,
+    });
+  }, signal);
 }
 
 function replaceReferenceUrls(
@@ -494,17 +527,18 @@ export async function generateVideo(
       ...(params.referenceMedia ?? []),
       ...resolveVideoNodeReferences(params.nodeId),
     ]);
-    const remoteReferences = await Promise.all(requestReferences.map(async (reference) => {
+    const remoteReferences = await mapSequentially(requestReferences, async (reference) => {
       const sourceUrl = getMediaReferenceUrl(reference);
       const url = reference.kind === 'image'
-        ? (await resolveImageUrlArray([sourceUrl], 'volcengine'))[0]
+        ? (await resolveImageUrlArray([sourceUrl], 'volcengine', signal))[0]
         : await resolveMediaReferenceUrl(sourceUrl, {
           provider: 'volcengine',
           kind: reference.kind,
           mode: 'publicUrl',
+          signal,
         });
       return { ...reference, url };
-    }));
+    }, signal);
     return generateVolcengineVideo(
       apiKey,
       baseUrl,
@@ -544,11 +578,18 @@ export async function generateVideo(
       capability: videoCapability,
     });
     if (resolveModelExecutionProfile(gm.executionProfile)) {
-      const [remoteImageUrls, videoUrls, audioUrls] = await Promise.all([
-        resolveImageUrlArray(referenceInput.imageUrls, connection.providerConfigId),
-        resolveGeneralProtocolMediaUrls(originalReferences, 'video'),
-        resolveGeneralProtocolMediaUrls(originalReferences, 'audio'),
-      ]);
+      const dataUrlBudget = createMediaDataUrlBudget('本次视频模型参考媒体');
+      const remoteImageUrls = await resolveImageUrlsSequentially(
+        referenceInput.imageUrls,
+        connection.providerConfigId,
+        signal,
+      );
+      const videoUrls = await resolveGeneralProtocolMediaUrls(
+        originalReferences, 'video', dataUrlBudget, signal,
+      );
+      const audioUrls = await resolveGeneralProtocolMediaUrls(
+        originalReferences, 'audio', dataUrlBudget, signal,
+      );
       const remoteReferences = replaceReferenceUrls(originalReferences, {
         image: remoteImageUrls,
         video: videoUrls,

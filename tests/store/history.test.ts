@@ -4,8 +4,23 @@ import type { BaseNodeData, NodeGroup } from '../../src/types';
 import { createCanvasNoteData } from '../../src/types';
 
 const fileMocks = vi.hoisted(() => ({
+  collectNodeFileReferences: vi.fn((data: BaseNodeData) => {
+    const references = new Set<string>();
+    if (data.filePath) references.add(data.filePath);
+    for (const path of data.directorCaptureFilePaths ?? []) references.add(path);
+    if (data.directorScene?.sceneId) references.add(`director-scene:${data.directorScene.sceneId}`);
+    if (data.directorResultManifest?.sceneId) {
+      references.add(`director-scene:${data.directorResultManifest.sceneId}`);
+    }
+    return references;
+  }),
   deleteNodeFile: vi.fn(async () => undefined),
   moveToUndoTrash: vi.fn(async () => undefined),
+  resolveNodeUndoTrashPaths: vi.fn(async (data: BaseNodeData) => {
+    const sceneId = data.directorScene?.sceneId ?? data.directorResultManifest?.sceneId;
+    if (sceneId) return [`project/director/scenes/${sceneId}`];
+    return data.filePath ? [data.filePath] : [];
+  }),
   restoreFromUndoTrash: vi.fn(async () => undefined),
   // 重做前会先确认文件属于当前项目，默认放行以保持既有断言
   isProjectOwnedFile: vi.fn(async () => true),
@@ -55,6 +70,17 @@ function node(id: string, data: Partial<BaseNodeData> = {}): Node<BaseNodeData> 
     type: 'ai-text',
     position: { x: 0, y: 0 },
     data: { label: id, type: 'ai-text', status: 'success', ...data },
+  };
+}
+
+function directorSceneReference(sceneId = 'scene-main') {
+  return {
+    schemaVersion: 1 as const,
+    sceneId,
+    revision: 1,
+    relativePath: `director/scenes/${sceneId}/scene-r1-${'a'.repeat(64)}.json`,
+    sha256: 'a'.repeat(64),
+    bytes: 128,
   };
 }
 
@@ -159,6 +185,35 @@ describe('batch canvas history', () => {
     expect(useAppStore.getState()).toMatchObject({ historyIndex: 0 });
     expect(fileMocks.moveToUndoTrash).toHaveBeenCalledWith('project/node-a.png');
     await expect(useAppStore.getState().redo()).resolves.toBe(false);
+  });
+
+  it('restores and re-trashes a deleted Blender Director scene bundle through history', async () => {
+    const director = {
+      ...node('director-1', {
+        type: 'ai-director',
+        directorScene: directorSceneReference('scene-history'),
+      }),
+      type: 'ai-director',
+    };
+    useAppStore.setState({
+      currentProjectId: 'project-1',
+      nodes: [director],
+      history: [],
+      historyIndex: -1,
+    });
+
+    useAppStore.getState().deleteNode(director.id);
+    await vi.waitFor(() => expect(useAppStore.getState().nodes).toEqual([]));
+
+    await expect(useAppStore.getState().undo()).resolves.toBe(true);
+    expect(fileMocks.restoreFromUndoTrash).toHaveBeenCalledWith(
+      'project/director/scenes/scene-history',
+    );
+
+    await expect(useAppStore.getState().redo()).resolves.toBe(true);
+    expect(fileMocks.moveToUndoTrash).toHaveBeenCalledWith(
+      'project/director/scenes/scene-history',
+    );
   });
 
   it('removes an empty group with its last child and restores both through history', async () => {

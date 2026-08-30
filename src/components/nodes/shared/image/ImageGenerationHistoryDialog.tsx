@@ -12,6 +12,7 @@ import ModalOverlay from '../../../shared/ModalOverlay';
 import PopupCloseButton from '../../../shared/PopupCloseButton';
 import FullscreenOverlay from '../../../shared/FullscreenOverlay';
 import ZoomableImage from '../../../shared/ZoomableImage';
+import ViewportImage from '../../../shared/ViewportImage';
 import { useT } from '../../../../i18n';
 
 interface ImageGenerationHistoryDialogProps {
@@ -84,11 +85,13 @@ function HistoryImage({
       aria-label={t('放大查看历史图片')}
       onClick={() => onPreview({ src, alt })}
     >
-      <img
+      <ViewportImage
         src={src}
         alt={alt}
         loading="lazy"
         decoding="async"
+        rootMargin="360px 0px"
+        unloadDelayMs={800}
         className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.02] motion-reduce:transform-none"
         onError={handleError}
       />
@@ -160,8 +163,8 @@ export default function ImageGenerationHistoryDialog({
 
   return createPortal(
     <>
-      <ModalOverlay
-        isOpen={isOpen && preview === null}
+      {preview === null && <ModalOverlay
+        isOpen={isOpen}
         onClose={handleClose}
         ariaLabel={t('图片生成历史')}
         className="max-h-[82vh] w-[min(94vw,880px)] rounded-lg border-canvas-border bg-canvas-surface"
@@ -228,13 +231,14 @@ export default function ImageGenerationHistoryDialog({
             </div>
           )}
         </div>
-      </ModalOverlay>
+      </ModalOverlay>}
 
       {preview && (
         <FullscreenOverlay
           isOpen={isOpen}
           onClose={() => setPreview(null)}
           hidePanel
+          className="fullscreen-overlay--image-preview"
         >
           <ZoomableImage
             src={preview.src}

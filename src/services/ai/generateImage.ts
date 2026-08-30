@@ -156,7 +156,7 @@ export async function generateImagesBatch(
   // 参考图传输格式由通用模型配置决定；其他 Provider 保持上传图床的既有行为。
   allImageUrls = usesImageDataUrls
     ? await resolveImageDataUrlArray(allImageUrls, signal)
-    : await resolveImageUrlArray(allImageUrls, provider);
+    : await resolveImageUrlArray(allImageUrls, provider, signal);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   if (!prompt.trim()) throw new Error('提示词不能为空');

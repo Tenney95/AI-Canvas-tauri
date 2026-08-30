@@ -17,6 +17,8 @@ import {
 } from '../services/fileService';
 import { loadProjectData } from '../services/storageService';
 import PopupCloseButton from './shared/PopupCloseButton';
+import ViewportImage from './shared/ViewportImage';
+import ViewportVideo from './shared/ViewportVideo';
 import { formatSize } from '../utils/assetFormat';
 
 const TABS: Array<{ key: FileCategory; label: string }> = [
@@ -36,7 +38,7 @@ function ImageCard({ file }: { file: AssetFileEntry }) {
   return (
     <div className="relative w-full" style={{ aspectRatio: '16 / 9' }}>
       {file.assetUrl ? (
-        <img
+        <ViewportImage
           src={file.assetUrl}
           alt={file.name}
           className="block h-full w-full object-cover"
@@ -59,14 +61,17 @@ function ImageCard({ file }: { file: AssetFileEntry }) {
 /** 视频卡片：可播放的 video 元素 */
 function VideoCard({ file }: { file: AssetFileEntry }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const shouldPlayRef = useRef(false);
 
   const handlePlay = () => {
+    shouldPlayRef.current = true;
     videoRef.current?.play().catch(() => {
       /* 自动播放被拦截，静默忽略 */
     });
   };
 
   const handlePause = () => {
+    shouldPlayRef.current = false;
     videoRef.current?.pause();
   };
 
@@ -77,7 +82,7 @@ function VideoCard({ file }: { file: AssetFileEntry }) {
       onMouseEnter={handlePlay}
       onMouseLeave={handlePause}
     >
-      <video
+      <ViewportVideo
         ref={videoRef}
         src={file.assetUrl}
         className="block h-full w-full rounded-t-lg object-cover"
@@ -86,6 +91,9 @@ function VideoCard({ file }: { file: AssetFileEntry }) {
         playsInline
         preload="metadata"
         title={file.name}
+        onCanPlay={() => {
+          if (shouldPlayRef.current) handlePlay();
+        }}
       />
       <span className="pointer-events-none absolute right-1.5 top-1.5 rounded bg-black/60 px-1 py-0.5 text-[9px] leading-none text-white/80">
         {formatSize(file.size)}
@@ -113,6 +121,7 @@ export default function ProjectAssetsOverlay({
   const [files, setFiles] = useState<EpisodeFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<FileCategory>('image');
+  const loadRequestRef = useRef(0);
   // 折叠状态：默认全部展开，点击标题切换
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -124,42 +133,48 @@ export default function ProjectAssetsOverlay({
   );
 
   const loadFiles = useCallback(async () => {
-    if (!ownerId) return;
+    const requestId = ++loadRequestRef.current;
+    if (!ownerId) {
+      setFiles([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const convertFileSrc = await getConvertFileSrc();
 
-      // 对每个分集从 IndexedDB 加载画布节点数据，提取属于该分集的文件
-      const results = await Promise.all(
-        episodes.map(async (ep) => {
-          let epNodes: Array<{ data: Record<string, unknown> }>;
-          if (ep.id === currentProjectId) {
-            // 当前激活的分集：直接用内存中的 nodes
-            epNodes = nodes as unknown as Array<{ data: Record<string, unknown> }>;
-          } else {
-            // 其他分集：从 IndexedDB 加载
-            const data = await loadProjectData(ep.id);
-            epNodes = (data?.nodes as Array<{ data: Record<string, unknown> }> | undefined) ?? [];
-          }
-          const entries = (
-            epNodes
-              .map((node) => extractFilesFromNodeData(node.data))
-              .flat()
-              .filter(Boolean) as AssetFileEntry[]
-          ).map((file) => ({
-            ...file,
-            // 视频文件补 assetUrl
-            ...(file.category === 'video' && !file.assetUrl && convertFileSrc
-              ? { assetUrl: convertFileSrc(file.path) }
-              : {}),
-            episodeId: ep.id,
-          }));
-          return entries;
-        }),
-      );
-      setFiles(results.flat());
+      // 分集数据按顺序读取，避免长剧集同时反序列化多份完整画布。
+      const results: EpisodeFile[] = [];
+      for (const ep of episodes) {
+        if (loadRequestRef.current !== requestId) return;
+        let epNodes: Array<{ data: Record<string, unknown> }>;
+        if (ep.id === currentProjectId) {
+          // 当前激活的分集：直接用内存中的 nodes
+          epNodes = nodes as unknown as Array<{ data: Record<string, unknown> }>;
+        } else {
+          // 其他分集：从 IndexedDB 加载
+          const data = await loadProjectData(ep.id);
+          if (loadRequestRef.current !== requestId) return;
+          epNodes = (data?.nodes as Array<{ data: Record<string, unknown> }> | undefined) ?? [];
+        }
+        const entries = (
+          epNodes
+            .map((node) => extractFilesFromNodeData(node.data))
+            .flat()
+            .filter(Boolean) as AssetFileEntry[]
+        ).map((file) => ({
+          ...file,
+          // 视频文件补 assetUrl
+          ...(file.category === 'video' && !file.assetUrl && convertFileSrc
+            ? { assetUrl: convertFileSrc(file.path) }
+            : {}),
+          episodeId: ep.id,
+        }));
+        results.push(...entries);
+      }
+      if (loadRequestRef.current === requestId) setFiles(results);
     } finally {
-      setLoading(false);
+      if (loadRequestRef.current === requestId) setLoading(false);
     }
   }, [ownerId, episodes, currentProjectId, nodes]);
 
@@ -168,6 +183,9 @@ export default function ProjectAssetsOverlay({
       // eslint-disable-next-line react-hooks/set-state-in-effect
       void loadFiles();
     }
+    return () => {
+      loadRequestRef.current += 1;
+    };
   }, [isOpen, loadFiles]);
 
   // 按 episodeId 分组：所有文件都归到对应的分集
@@ -276,7 +294,7 @@ export default function ProjectAssetsOverlay({
                       {groupFiles.map((file) => (
                         <div
                           key={assetKey(file)}
-                          className="group/card overflow-hidden rounded-lg border border-canvas-border bg-canvas-card transition-colors hover:border-canvas-hover"
+                          className="project-asset-card group/card overflow-hidden rounded-lg border border-canvas-border bg-canvas-card transition-colors hover:border-canvas-hover"
                         >
                           {file.category === 'video' && file.assetUrl ? (
                             <VideoCard file={file} />

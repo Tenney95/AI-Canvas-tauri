@@ -155,7 +155,10 @@ describe('Agent Package Manifest', () => {
       updatedAt: now,
     };
 
-    expect(normalizeAgentPackageInstallation(record).packageId).toBe(manifest().id);
+    expect(normalizeAgentPackageInstallation(record)).toMatchObject({
+      packageId: manifest().id,
+      mcpSkillReadEnabled: false,
+    });
     expect(() => normalizeAgentPackageInstallation({
       ...record,
       instructionText: sourcePreview.instructionText,

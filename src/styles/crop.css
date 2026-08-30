@@ -10,6 +10,13 @@
   padding: 0;
 }
 
+/* 裁切和扩图舞台直接遮暗背景，避免原图编辑时再模糊整个窗口。 */
+.fullscreen-overlay--transparent.crop-overlay {
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .crop-overlay > .fullscreen-close--absolute {
   display: none;
 }

@@ -11,6 +11,13 @@
   clip-path: inset(0 round var(--window-overlay-radius, 16px));
 }
 
+/* 合成器覆盖整个视口，直接遮暗背景以避免整窗 backdrop blur 的离屏缓冲。 */
+.fullscreen-overlay--transparent.composer-overlay {
+  background: var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .composer-root {
   /* 右侧属性面板占位：工作区与底部命令栏都按这个宽度让位，避免画面被面板压住 */
   --composer-side-w: 268px;
@@ -367,12 +374,10 @@
   from {
     opacity: 0;
     transform: scale(0.965);
-    filter: blur(10px);
   }
   to {
     opacity: 1;
     transform: scale(1);
-    filter: blur(0);
   }
 }
 

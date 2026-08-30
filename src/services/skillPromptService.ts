@@ -1,6 +1,7 @@
 /** 节点与对话共用的只读 Skill 提示词展开协议。 */
-import type { UserSkill } from '../types';
 import type { AgentSkillBinding } from '../types/agent';
+import type { RuntimeSkill } from '../types/agentPackage';
+import { isAgentPackageSkill } from '../types/agentPackage';
 import { stripSkillFrontmatter } from './chat/skillManifest';
 
 export const SKILL_REF_REGEX = /@skill\{([^|}]+)\|([^}]+)\}/g;
@@ -43,19 +44,20 @@ function fillSkillTemplate(template: string, input: string): string {
   return input ? `${input}\n\n${template}` : template;
 }
 
-export function isSkillUserInvocable(skill: UserSkill): boolean {
-  return skill.manifest?.userInvocable !== false;
+export function isSkillUserInvocable(skill: RuntimeSkill): boolean {
+  return skill.manifest?.userInvocable !== false
+    && (!isAgentPackageSkill(skill) || skill.packageUserInvocable);
 }
 
 export function resolveReferencedSkills(
   prompt: string,
-  userSkills: UserSkill[],
-): UserSkill[] {
-  const skillMap = new Map(userSkills.map((skill) => [skill.id, skill]));
+  skills: RuntimeSkill[],
+): RuntimeSkill[] {
+  const skillMap = new Map(skills.map((skill) => [skill.id, skill]));
   const ids = [...prompt.matchAll(SKILL_REF_REGEX)].map((match) => match[1]);
   return [...new Set(ids)]
     .map((id) => skillMap.get(id))
-    .filter((skill): skill is UserSkill => !!skill && isSkillUserInvocable(skill));
+    .filter((skill): skill is RuntimeSkill => !!skill && isSkillUserInvocable(skill));
 }
 
 /**
@@ -64,9 +66,9 @@ export function resolveReferencedSkills(
  */
 export function resolveSkillToolAllowlist(
   prompt: string,
-  userSkills: UserSkill[],
+  skills: RuntimeSkill[],
 ): string[] | undefined {
-  const declared = resolveReferencedSkills(prompt, userSkills)
+  const declared = resolveReferencedSkills(prompt, skills)
     .filter((skill) => skill.manifest?.allowedTools !== undefined);
   if (declared.length === 0) return undefined;
   return [...new Set(declared.flatMap((skill) => skill.manifest?.allowedTools ?? []))];
@@ -86,9 +88,9 @@ function sanitizeBindingLabel(value: string, maxLength: number): string {
  */
 export function captureExplicitSkillBindings(
   prompt: string,
-  userSkills: UserSkill[],
+  skills: RuntimeSkill[],
 ): AgentSkillBinding[] {
-  const referenced = resolveReferencedSkills(prompt, userSkills)
+  const referenced = resolveReferencedSkills(prompt, skills)
     .slice(0, SKILL_CONTENT_LIMITS.maxExplicitBindings);
   const bindings: AgentSkillBinding[] = [];
   let remaining = SKILL_CONTENT_LIMITS.expansionTotalChars;
@@ -107,11 +109,20 @@ export function captureExplicitSkillBindings(
     const allowedTools = skill.manifest?.allowedTools === undefined
       ? undefined
       : [...new Set(skill.manifest.allowedTools)];
+    const sourceAudit = isAgentPackageSkill(skill) ? {
+      origin: 'agent-package' as const,
+      packageId: skill.packageId,
+      packageName: skill.packageName,
+      packageVersion: skill.packageVersion,
+      entryPath: skill.entryPath,
+      contentHash: skill.contentHash,
+    } : { origin: 'user' as const };
     bindings.push({
       skillId: skill.id,
       name,
       ...(version ? { version } : {}),
       content,
+      ...sourceAudit,
       ...(allowedTools !== undefined ? { allowedTools } : {}),
     });
   }
@@ -153,12 +164,12 @@ export function expandSkillBindings(
     .trim();
 }
 
-export function expandSkillReferences(prompt: string, userSkills: UserSkill[]): string {
+export function expandSkillReferences(prompt: string, skills: RuntimeSkill[]): string {
   const refs = Array.from(prompt.matchAll(SKILL_REF_REGEX));
   if (refs.length === 0) return prompt;
 
   const skillMap = new Map(
-    resolveReferencedSkills(prompt, userSkills).map((skill) => [skill.id, skill]),
+    resolveReferencedSkills(prompt, skills).map((skill) => [skill.id, skill]),
   );
   const promptWithoutSkills = prompt.replace(SKILL_REF_REGEX, '').trim();
   const expandedParts: string[] = [];

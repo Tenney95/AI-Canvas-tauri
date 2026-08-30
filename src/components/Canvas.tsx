@@ -54,7 +54,17 @@ import { useCanvasSecondaryClickMenu } from '../hooks/useCanvasSecondaryClickMen
 import { useCanvasLongPressRadialMenu } from '../hooks/useCanvasLongPressRadialMenu';
 import { useAppStore } from '../store/useAppStore';
 import { filterHiddenCanvasElements, isCanvasConnectionValid } from '../store/store.nodes';
-import { withCanvasEdgeLayer, withCanvasNodeLayer } from '../utils/canvasElementLayering';
+import {
+  createCanvasEdgeProjection,
+  createCanvasNodeProjectionCache,
+  getCanvasNodeById,
+  hydrateCanvasNodeChanges,
+  hydrateCanvasNodeData,
+  projectCanvasNodesForReactFlow,
+  projectSelectedCanvasEdges,
+  projectTransientCanvasNode,
+  syncCanvasNodeIndex,
+} from '../utils/canvasRenderProjection';
 import { useNodeCreation } from '../hooks/useNodeCreation';
 import { useCanvasDrawing } from '../hooks/useCanvasDrawing';
 import type { BaseNodeData } from '../types';
@@ -91,11 +101,15 @@ const CharacterAssetDialog = lazy(() => import('./CharacterAssetDialog'));
  */
 function withNodeRenderBoundaries(types: NodeTypes): NodeTypes {
   return Object.fromEntries(Object.entries(types).map(([typeName, NodeComponent]) => {
-    const Bounded = (props: NodeProps) => (
-      <NodeRenderBoundary nodeId={props.id} typeName={typeName} data={props.data}>
-        <NodeComponent {...props} />
-      </NodeRenderBoundary>
-    );
+    const Bounded = (props: NodeProps) => {
+      const liveData = useAppStore((state) => getCanvasNodeById(state.nodes, props.id)?.data);
+      const data = liveData ?? props.data;
+      return (
+        <NodeRenderBoundary nodeId={props.id} typeName={typeName} data={data}>
+          <NodeComponent {...props} data={data} />
+        </NodeRenderBoundary>
+      );
+    };
     Bounded.displayName = `NodeBoundary(${typeName})`;
     return [typeName, Bounded] as const;
   }));
@@ -383,12 +397,16 @@ function CanvasInner() {
   const closeNodeDialog = useAppStore((s) => s.closeNodeDialog);
   const interactionMode = useAppStore((s) => s.config.interactionMode ?? 'default');
   const canvasNoteToolbarVisible = useAppStore((s) => s.config.canvasNoteToolbarVisible !== false);
+  const [nodeProjectionCache] = useState(createCanvasNodeProjectionCache);
   const interaction = interactionMode === 'classic' ? CLASSIC_INTERACTION : DEFAULT_INTERACTION;
   // 右键 effect 用 ref 读取模式，避免把 interactionMode 加进 effect 依赖而导致监听器重挂
   const interactionModeRef = useRef(interactionMode);
   useEffect(() => {
     interactionModeRef.current = interactionMode;
   }, [interactionMode]);
+  useEffect(() => {
+    syncCanvasNodeIndex(nodes);
+  }, [nodes]);
   const reactFlowInstance = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const activeCanvasPanRef = useRef<{
@@ -871,6 +889,7 @@ function CanvasInner() {
 
   const onNodeClick = useCallback(
     (e: React.MouseEvent, node: RFNode<BaseNodeData>) => {
+      const liveNode = hydrateCanvasNodeData(node, useAppStore.getState().nodes);
       if (inlineEditClickTimerRef.current !== null) {
         window.clearTimeout(inlineEditClickTimerRef.current);
         inlineEditClickTimerRef.current = null;
@@ -879,31 +898,31 @@ function CanvasInner() {
       if (e.shiftKey) return;
       const target = e.target instanceof Element ? e.target : null;
       const isEmptyTextEditTrigger = target?.closest('[data-inline-edit-trigger]')
-        && node.data?.type === 'ai-text'
-        && node.data?.role !== 'source';
+        && liveNode.data?.type === 'ai-text'
+        && liveNode.data?.role !== 'source';
       if (isEmptyTextEditTrigger) {
         // 第一次点击先让 React Flow 完成选中；第二次点击会取消弹窗并交给 TextNode 的双击编辑。
         if (e.detail > 1) return;
         inlineEditClickTimerRef.current = window.setTimeout(() => {
           inlineEditClickTimerRef.current = null;
-          const latestNode = useAppStore.getState().nodes.find((item) => item.id === node.id);
+          const latestNode = getCanvasNodeById(useAppStore.getState().nodes, liveNode.id);
           if (!latestNode?.selected || latestNode.data.output) return;
           openDialogForNode(latestNode);
         }, INLINE_EDIT_DOUBLE_CLICK_DELAY_MS);
         return;
       }
       // Non-generative canvas elements have no AI dialog.
-      if (node.type === 'group') return;
-      if (node.type === 'canvas-note') return;
-      if (node.data?.type === 'ai-markdown') return;
-      if (node.data?.role === 'source') return;
-      if (node.data?.type === 'ai-text' && node.data?.output) return;
-      if (node.data?.type === 'ai-image' && node.data?.imageUrl) return;
-      if (node.data?.type === 'ai-animation' && node.data?.imageUrl) return;
-      if (node.data?.type === 'ai-panorama' && node.data?.imageUrl) return;
-      if (node.data?.type === 'ai-video' && node.data?.videoUrl) return;
+      if (liveNode.type === 'group') return;
+      if (liveNode.type === 'canvas-note') return;
+      if (liveNode.data?.type === 'ai-markdown') return;
+      if (liveNode.data?.role === 'source') return;
+      if (liveNode.data?.type === 'ai-text' && liveNode.data?.output) return;
+      if (liveNode.data?.type === 'ai-image' && liveNode.data?.imageUrl) return;
+      if (liveNode.data?.type === 'ai-animation' && liveNode.data?.imageUrl) return;
+      if (liveNode.data?.type === 'ai-panorama' && liveNode.data?.imageUrl) return;
+      if (liveNode.data?.type === 'ai-video' && liveNode.data?.videoUrl) return;
 
-      openDialogForNode(node);
+      openDialogForNode(liveNode);
     },
     [openDialogForNode],
   );
@@ -946,12 +965,13 @@ function CanvasInner() {
   // 按住 Ctrl/⌘ 开始拖拽 → 在原位复制一个节点（拖动的仍是原节点，等于"拖出一个副本"）
   const handleNodeDragStart = useCallback(
     (evt: React.MouseEvent, node: RFNode<BaseNodeData>) => {
+      const liveNode = hydrateCanvasNodeData(node, useAppStore.getState().nodes);
       beginCanvasInteraction('node');
-      if (node.type === 'canvas-note') commitToHistory();
-      if ((evt.ctrlKey || evt.metaKey) && node.type !== 'group') {
-        duplicateNode(node.id);
+      if (liveNode.type === 'canvas-note') commitToHistory();
+      if ((evt.ctrlKey || evt.metaKey) && liveNode.type !== 'group') {
+        duplicateNode(liveNode.id);
       }
-      onNodeDragStart(evt, node);
+      onNodeDragStart(evt, liveNode);
     },
     [beginCanvasInteraction, commitToHistory, duplicateNode, onNodeDragStart],
   );
@@ -971,50 +991,33 @@ function CanvasInner() {
     [edges, nodes],
   );
   const renderedCanvasNodes = useMemo(() => {
-    const graphNodes = draftNode ? [...renderableGraph.nodes, draftNode] : renderableGraph.nodes;
-    return graphNodes.map((node) => withCanvasNodeLayer(node.type === 'canvas-note'
-      ? {
-          ...node,
-          style: {
-            ...node.style,
-            // 笔记的透明外接矩形不能遮挡下方节点；可见内容在 canvas-drawing.css 中恢复命中。
-            pointerEvents: 'none' as const,
-          },
-        }
-      : node));
-  }, [draftNode, renderableGraph.nodes]);
+    const projected = projectCanvasNodesForReactFlow(
+      renderableGraph.nodes,
+      nodeProjectionCache,
+    );
+    return draftNode ? [...projected, projectTransientCanvasNode(draftNode)] : projected;
+  }, [draftNode, nodeProjectionCache, renderableGraph.nodes]);
 
   // 仅派生渲染状态，不把隐藏和节点选中效果写回可持久化的边数据。
+  const edgeProjection = useMemo(
+    () => createCanvasEdgeProjection(renderableGraph.edges),
+    [renderableGraph.edges],
+  );
   const renderedEdges = useMemo(() => {
-    if (selectedNodeIds.length === 0) return renderableGraph.edges.map(withCanvasEdgeLayer);
-
-    const selectedIds = new Set(selectedNodeIds);
-    return renderableGraph.edges.map((edge) => {
-      if (!selectedIds.has(edge.source) && !selectedIds.has(edge.target)) {
-        return withCanvasEdgeLayer(edge);
-      }
-      return withCanvasEdgeLayer({
-        ...edge,
-        type: 'selected-node-flow',
-        data: {
-          ...edge.data,
-          selectedNodeFlowBaseType: edge.type === 'smoothstep' || (!edge.type && smoothLine)
-            ? 'smoothstep'
-            : 'default',
-        },
-      });
-    });
-  }, [renderableGraph.edges, selectedNodeIds, smoothLine]);
+    return projectSelectedCanvasEdges(edgeProjection, selectedNodeIds, smoothLine);
+  }, [edgeProjection, selectedNodeIds, smoothLine]);
 
   // ── Node change handler ──
   const handleNodesChange = useCallback(
     (changes: NodeChange<RFNode<BaseNodeData>>[]) => {
+      const currentNodes = useAppStore.getState().nodes;
+      const hydratedChanges = hydrateCanvasNodeChanges(changes, currentNodes);
       const lockedNodeIds = new Set(
-        useAppStore.getState().nodes
+        currentNodes
           .filter((node) => node.draggable === false)
           .map((node) => node.id),
       );
-      const unlockedChanges = changes.filter(
+      const unlockedChanges = hydratedChanges.filter(
         (change) => change.type !== 'position' || !lockedNodeIds.has(change.id),
       );
       if (unlockedChanges.length === 0) return;
@@ -1036,7 +1039,7 @@ function CanvasInner() {
           const draggedIds = new Set(
             draggingPosChanges.flatMap((change) => change.type === 'position' ? [change.id] : []),
           );
-          snapped = changes.map((change) => {
+          snapped = hydratedChanges.map((change) => {
             if (change.type !== 'position' || !change.position || !draggedIds.has(change.id)) return change;
             return {
               ...change,
@@ -1151,6 +1154,10 @@ function CanvasInner() {
 
   const handleNodeDrag = useCallback(
     (e: React.MouseEvent, node: RFNode) => {
+      const liveNode = hydrateCanvasNodeData(
+        node as RFNode<BaseNodeData>,
+        useAppStore.getState().nodes,
+      );
       const folder = node.type === 'group'
         ? null
         : document.elementsFromPoint(e.clientX, e.clientY)
@@ -1174,7 +1181,7 @@ function CanvasInner() {
         if (cell) { cell.classList.add('sb-cell--drop-target'); sbDropTarget.current = cell; }
       }
       // 进入宫格节点后隐藏真实节点；空格上倾斜表示可放置，占用区域保持水平。
-      const url = (node.data?.imageUrl || node.data?.thumbnailUrl) as string | undefined;
+      const url = (liveNode.data?.imageUrl || liveNode.data?.thumbnailUrl) as string | undefined;
       if (hit && url) {
         setDropGhost({ url, x: e.clientX, y: e.clientY, canDrop: cell != null });
         if (ghostNodeId.current !== node.id) {
@@ -1203,6 +1210,10 @@ function CanvasInner() {
   // ── Auto group/ungroup on drag stop ──
   const handleNodeDragStop = useCallback(
     (event: React.MouseEvent, node: RFNode) => {
+      const liveNode = hydrateCanvasNodeData(
+        node as RFNode<BaseNodeData>,
+        useAppStore.getState().nodes,
+      );
       endCanvasInteraction('node');
       const cell = findStoryboardDropHit(node, event.clientX, event.clientY)?.emptyCell ?? null;
       const frameCell = findShotlistDropHit(node, event.clientX, event.clientY);
@@ -1229,7 +1240,7 @@ function CanvasInner() {
           return;
         }
       }
-      settleNodeGroupingOnDragStop(node as RFNode<BaseNodeData>);
+      settleNodeGroupingOnDragStop(liveNode);
       onNodeDragStop();
     },
     [onNodeDragStop, settleNodeGroupingOnDragStop, findStoryboardDropHit, clearSbDropTarget, clearGhostNodeHidden, endCanvasInteraction, findShotlistDropHit, clearShotlistDropTarget, clearFolderDropTarget],

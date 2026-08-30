@@ -185,6 +185,63 @@ describe('detached chat sync controller', () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it('projects task Skill bindings without syncing frozen bodies or package audit paths', () => {
+    const task = {
+      id: 'task-with-package-skill',
+      projectId: 'project-1',
+      conversationId: 'conversation-1',
+      userMessageId: 'message-1',
+      mode: 'collaborative' as const,
+      goal: '检查剧本',
+      status: 'completed' as const,
+      steps: [],
+      modelRounds: 1,
+      toolCallCount: 0,
+      budget: {
+        maxModelRounds: 12,
+        maxToolCalls: 24,
+        maxParallelReadTools: 3,
+        maxReadRetries: 3,
+      },
+      skillBindings: [{
+        skillId: 'ap-skill-secret',
+        name: '短剧检查',
+        version: '1.0.0',
+        content: '冻结的任务 Skill 正文不应跨窗口',
+        origin: 'agent-package' as const,
+        packageId: 'com.example.secret',
+        packageName: 'AI短剧知识库',
+        packageVersion: '1.4.1',
+        entryPath: '04-分镜设计/secret/SKILL.md',
+        contentHash: 'binding-content-hash-secret',
+        allowedTools: ['canvas_get_state'],
+      }],
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    useAppStore.setState({ agentTasks: [task] });
+
+    const first = buildDetachedChatSnapshot(useAppStore.getState());
+    expect(first.agentTasks[0].skillBindings).toEqual([{
+      skillId: 'ap-skill-secret',
+      name: '短剧检查',
+      version: '1.0.0',
+      content: '',
+      allowedTools: ['canvas_get_state'],
+    }]);
+    const serialized = JSON.stringify(first.agentTasks);
+    expect(serialized).not.toContain('冻结的任务 Skill 正文');
+    expect(serialized).not.toContain('04-分镜设计/secret/SKILL.md');
+    expect(serialized).not.toContain('binding-content-hash-secret');
+    expect(serialized).not.toContain('com.example.secret');
+    expect(serialized).not.toContain('AI短剧知识库');
+
+    // Store 只换数组但任务对象未变时，沿用投影数组，避免无意义的时间线 patch。
+    useAppStore.setState({ agentTasks: [task] });
+    const second = buildDetachedChatSnapshot(useAppStore.getState());
+    expect(second.agentTasks).toBe(first.agentTasks);
+  });
+
   it('mirrors canvas slices to the detached window without leaking node bodies', async () => {
     useAppStore.setState({
       nodes: [{
@@ -209,14 +266,59 @@ describe('detached chat sync controller', () => {
         sourceType: 'file',
         createdAt: 1,
       }],
+      agentPackageSkills: [{
+        id: 'ap-skill-1',
+        name: '短剧开场钩子',
+        description: '为短剧设计前三秒钩子',
+        fileName: 'SKILL.md',
+        content: '智能体 Skill 正文不应跨窗口传输',
+        sourceType: 'agent-package',
+        createdAt: 2,
+        installationId: 'agent-package-1',
+        packageId: 'com.example.drama',
+        packageName: 'AI短剧知识库',
+        packageVersion: '1.4.1',
+        packageContentHash: 'package-hash',
+        sourceId: 'opaque-source-secret',
+        entryPath: '01-国内短剧/开场钩子/SKILL.md',
+        skillRoot: '01-国内短剧/开场钩子',
+        contentHash: 'skill-hash',
+        branch: 'domestic',
+        packageUserInvocable: true,
+        packageAutoInvoke: false,
+        mcpSkillReadEnabled: false,
+        readOnly: true,
+      }],
     });
 
     const snapshot = buildDetachedChatSnapshot(useAppStore.getState());
     expect(snapshot.composerDraft).toBe('内嵌浮窗里没发出去的草稿');
-    // 独立窗口只用技能做 @ 选择，正文留在主窗口
-    expect(snapshot.userSkills).toEqual([
-      expect.objectContaining({ id: 'skill-1', name: '分镜脚本', content: '' }),
+    // 独立窗口只同步可选择元数据；用户与智能体 Skill 正文都留在主窗口。
+    expect(snapshot.skillOptions).toEqual([
+      {
+        id: 'skill-1',
+        name: '分镜脚本',
+        description: '把剧本拆成分镜',
+        fileName: 'storyboard.md',
+        sourceKind: 'user',
+        sourceGroupId: 'user-skills',
+        sourceLabel: '我的 Skill',
+      },
+      {
+        id: 'ap-skill-1',
+        name: '短剧开场钩子',
+        description: '为短剧设计前三秒钩子',
+        fileName: 'SKILL.md',
+        sourceKind: 'agent-package',
+        sourceGroupId: 'agent-package-1',
+        sourceLabel: 'AI短剧知识库',
+      },
     ]);
+    expect(snapshot).not.toHaveProperty('userSkills');
+    expect(JSON.stringify(snapshot)).not.toContain('技能正文很长');
+    expect(JSON.stringify(snapshot)).not.toContain('智能体 Skill 正文');
+    expect(JSON.stringify(snapshot)).not.toContain('opaque-source-secret');
+    expect(JSON.stringify(snapshot)).not.toContain('01-国内短剧/开场钩子/SKILL.md');
     expect(snapshot.nodes).toEqual([{
       id: 'node-1',
       type: 'ai-image',
@@ -245,6 +347,15 @@ describe('detached chat sync controller', () => {
     await controller.start();
     await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(1));
 
+    // 智能体停用后运行时目录会移除包内 Skill，独立窗口应收到精简删除补丁。
+    useAppStore.setState({ agentPackageSkills: [] });
+    await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(2));
+    const skillRemoval = emitSync.mock.calls[1][0];
+    expect(skillRemoval.type).toBe('patch');
+    if (skillRemoval.type !== 'patch') throw new Error('expected skill removal patch');
+    const withoutPackageSkill = applyChatStatePatch(snapshot, skillRemoval.patch);
+    expect(withoutPackageSkill.skillOptions.map((option) => option.id)).toEqual(['skill-1']);
+
     // 节点改名要作为补丁推到独立窗口
     useAppStore.setState((state) => ({
       nodes: state.nodes.map((node) => ({
@@ -252,11 +363,11 @@ describe('detached chat sync controller', () => {
         data: { ...node.data, label: '主角立绘 v2' },
       })),
     }));
-    await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(2));
-    const second = emitSync.mock.calls[1][0];
-    expect(second.type).toBe('patch');
-    if (second.type !== 'patch') throw new Error('expected patch sync');
-    const patched = applyChatStatePatch(snapshot, second.patch);
+    await vi.waitFor(() => expect(emitSync).toHaveBeenCalledTimes(3));
+    const third = emitSync.mock.calls[2][0];
+    expect(third.type).toBe('patch');
+    if (third.type !== 'patch') throw new Error('expected patch sync');
+    const patched = applyChatStatePatch(withoutPackageSkill, third.patch);
     expect(patched.nodes[0].data.label).toBe('主角立绘 v2');
 
     // 独立窗口回写草稿，收回内嵌时接得上

@@ -31,7 +31,6 @@ import { playNodeExit } from '../utils/nodeAnimations';
 import { cancelNodePolling } from '../services/pollManager';
 import { applyProjectDefaultsToNodeData } from '../services/projectSettingsService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
-import { requiresDirectorDeskRuntime } from '../services/directorDeskRuntimeService';
 import { resolveDirectorRuntime } from '../services/directorRuntimeRegistry';
 import { clearPluginFileGrants } from '../services/plugins/pluginFileGrantService';
 
@@ -156,7 +155,9 @@ export function collectKeepPaths(
   const keepPaths = new Set<string>();
   for (const node of nodes) {
     const data = node.data as BaseNodeData;
-    if (!idsToDelete.has(node.id) && data.filePath) keepPaths.add(data.filePath);
+    if (!idsToDelete.has(node.id)) {
+      fileService.collectNodeFileReferences(data).forEach((reference) => keepPaths.add(reference));
+    }
     // 宫格格子无论节点存活与否都不删：删除路径只清 filePath，撤销也只还原 filePath
     for (const override of data.storyboardOverrides ?? []) {
       if (override?.filePath) keepPaths.add(override.filePath);
@@ -258,24 +259,6 @@ export function filterHiddenCanvasElements(
   };
 }
 
-function requestDirectorDeskRuntimeForNodes(
-  nodes: readonly Node<BaseNodeData>[],
-  get: () => AppState,
-) {
-  if (!requiresDirectorDeskRuntime()) return;
-  const insertedIds = new Set(nodes.map((node) => node.id));
-  const directorNode = get().nodes.find((node) => {
-    if (!insertedIds.has(node.id) || node.type !== 'ai-director') return false;
-    const resolution = resolveDirectorRuntime(node.data.directorRuntimeKind);
-    return resolution.supported && resolution.kind === 'lightweight-web';
-  });
-  if (!directorNode) return;
-  const instanceId = typeof directorNode.data.directorInstanceId === 'string'
-    ? directorNode.data.directorInstanceId.trim()
-    : '';
-  get().requestDirectorDeskRuntime(instanceId || directorNode.id, true);
-}
-
 export interface NodeSlice {
   nodes: Node<BaseNodeData>[];
   edges: Edge[];
@@ -351,7 +334,6 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
   addNode: (node) => {
     get().commitToHistory();
     get().addNodeTransient(node);
-    requestDirectorDeskRuntimeForNodes([node], get);
   },
 
   addNodeTransient: (node) => {
@@ -376,7 +358,6 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         edges: [...state.edges, edge],
       };
     });
-    requestDirectorDeskRuntimeForNodes([node], get);
   },
 
   addNodesWithEdges: (nodes, edges) => {
@@ -395,14 +376,12 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         edges: [...state.edges, ...edges],
       };
     });
-    requestDirectorDeskRuntimeForNodes(nodes, get);
   },
 
   addNodes: (nodes) => {
     if (nodes.length === 0) return;
     get().commitToHistory();
     get().addNodesTransient(nodes);
-    requestDirectorDeskRuntimeForNodes(nodes, get);
   },
 
   addNodesTransient: (nodes) => {

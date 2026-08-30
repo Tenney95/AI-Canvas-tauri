@@ -26,13 +26,26 @@ vi.mock('../../src/services/fs/core', () => ({
 }));
 
 import {
+  collectNodeFileReferences,
   deleteNodeFile,
   isPathInsideDir,
   isProjectOwnedFile,
   moveToUndoTrash,
+  resolveNodeUndoTrashPaths,
   restoreFromUndoTrash,
   waitForPendingNodeFileDeletions,
 } from '../../src/services/fs/trash';
+
+function directorSceneReference(sceneId = 'scene-main') {
+  return {
+    schemaVersion: 1 as const,
+    sceneId,
+    revision: 1,
+    relativePath: `director/scenes/${sceneId}/scene-r1-${'a'.repeat(64)}.json`,
+    sha256: 'a'.repeat(64),
+    bytes: 128,
+  };
+}
 
 describe('undo trash media moves', () => {
   beforeEach(() => {
@@ -131,6 +144,65 @@ describe('删除节点文件的项目归属校验', () => {
     await deleteNodeFile({ filePath: 'D:/data/project-b/own.png' }, undefined, 'project-b');
 
     expect(fsMocks.rename).toHaveBeenCalledTimes(1);
+  });
+
+  it('Blender 导演节点按 scene bundle 目录整体暂存，不重复移动目录内 artifact', async () => {
+    await deleteNodeFile({
+      filePath: 'D:/data/project-b/director/scenes/scene-main/results/frame.png',
+      directorCaptureFilePaths: [
+        'D:/data/project-b/director/scenes/scene-main/results/frame.png',
+        'D:/data/project-b/director/scenes/scene-main/results/project.blend',
+      ],
+      directorScene: directorSceneReference(),
+    }, undefined, 'project-b');
+
+    expect(fsMocks.rename).toHaveBeenCalledTimes(1);
+    expect(fsMocks.rename.mock.calls[0]?.[0]).toBe(
+      'D:/data/project-b/director/scenes/scene-main',
+    );
+    expect(fsMocks.rename.mock.calls[0]?.[1]).toMatch(
+      /^D:\/data\/project-b\/director\/scenes\/\.trash\/\d+-scene-main$/,
+    );
+  });
+
+  it('幸存导演节点共享同一 sceneId 时保留整个 Blender bundle', async () => {
+    const data = { directorScene: directorSceneReference() };
+    const keep = collectNodeFileReferences(data);
+
+    await deleteNodeFile(data, keep, 'project-b');
+
+    expect(fsMocks.rename).not.toHaveBeenCalled();
+  });
+
+  it('普通节点仍引用 scene bundle 内截图时也保留整个目录', async () => {
+    const keep = new Set([
+      'D:/data/project-b/director/scenes/scene-main/results/shared-frame.png',
+    ]);
+
+    await deleteNodeFile({
+      directorScene: directorSceneReference(),
+    }, keep, 'project-b');
+
+    expect(fsMocks.rename).not.toHaveBeenCalled();
+  });
+
+  it('目录引用冲突时失败关闭，只解析项目内普通文件', async () => {
+    const paths = await resolveNodeUndoTrashPaths({
+      filePath: 'D:/data/project-b/own.png',
+      directorScene: directorSceneReference('scene-a'),
+      directorResultManifest: {
+        schemaVersion: 1,
+        sceneId: 'scene-b',
+        sceneRevision: 1,
+        sceneSha256: 'b'.repeat(64),
+        manifestRevision: 1,
+        relativePath: `director/scenes/scene-b/results/manifest-r1-${'c'.repeat(64)}.json`,
+        sha256: 'c'.repeat(64),
+        bytes: 96,
+      },
+    }, 'project-b');
+
+    expect(paths).toEqual(['D:/data/project-b/own.png']);
   });
 
   it('仍被其他存活节点引用的文件跳过删除', async () => {

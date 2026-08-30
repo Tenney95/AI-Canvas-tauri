@@ -297,7 +297,10 @@ export async function runStreamingPipeline(
   });
   const expandedUserMessage = expandSkillReferences(
     userMessage,
-    useAppStore.getState().userSkills,
+    [
+      ...useAppStore.getState().userSkills,
+      ...useAppStore.getState().agentPackageSkills,
+    ],
   );
   let fullContent = '';
   const proposedToolCalls: ProposedToolCall[] = [];

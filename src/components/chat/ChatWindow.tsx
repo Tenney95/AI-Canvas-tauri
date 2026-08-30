@@ -29,7 +29,7 @@ const EMPTY_SNAPSHOT: ChatStateSnapshot = {
   generalModels: [],
   nodes: [],
   dramaAssets: emptyDramaAssetLibrary(),
-  userSkills: [],
+  skillOptions: [],
   composerDraft: '',
 };
 
@@ -77,10 +77,9 @@ export default function ChatWindow() {
     useAppStore.setState({
       nodes: snapshot.nodes,
       dramaAssets: snapshot.dramaAssets,
-      userSkills: snapshot.userSkills,
       currentProjectId: snapshot.projectId,
     });
-  }, [snapshot.nodes, snapshot.dramaAssets, snapshot.userSkills, snapshot.projectId]);
+  }, [snapshot.nodes, snapshot.dramaAssets, snapshot.projectId]);
 
   const closeWindow = useCallback(() => {
     void (async () => {

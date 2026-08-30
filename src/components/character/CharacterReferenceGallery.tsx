@@ -6,6 +6,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type { CharacterReferenceImage } from '../../types/dramaAssets';
+import ViewportImage from '../shared/ViewportImage';
 import { CHARACTER_REFERENCE_KIND_LABELS } from './characterReferencePresentation';
 import { justifiedRows } from './justifiedRows';
 
@@ -97,10 +98,11 @@ export default function CharacterReferenceGallery({
                 aria-label={`${CHARACTER_REFERENCE_KIND_LABELS[reference.kind]}参考图`}
               >
                 {reference.imageUrl ? (
-                  <img
+                  <ViewportImage
                     src={reference.imageUrl}
                     alt=""
                     draggable={false}
+                    eager={reference.id === selectedId}
                     onLoad={(event) => {
                       const { naturalWidth, naturalHeight } = event.currentTarget;
                       if (!naturalWidth || !naturalHeight) return;

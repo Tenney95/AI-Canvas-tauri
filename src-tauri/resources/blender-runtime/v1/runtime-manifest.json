@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "packageId": "ai-canvas-blender-runtime",
-  "packageVersion": "1.0.2",
+  "packageVersion": "1.3.2",
   "templateId": "ai_canvas_director",
   "templateVersion": 1,
   "jobProtocol": "ai-canvas-blender-job-v1",
@@ -19,14 +19,32 @@
     {
       "id": "template-init",
       "relativePath": "scripts/startup/bl_app_templates_system/ai_canvas_director/__init__.py",
-      "bytes": 9054,
-      "sha256": "ade7fbd05ba52976905aaf7fbed8199c99985056d49aff208e155d9192f52123"
+      "bytes": 93064,
+      "sha256": "09c4d751683b5a343599c7809f5e8333a7726984dd0beaa18f32650545b25523"
     },
     {
       "id": "template-startup-blend",
       "relativePath": "scripts/startup/bl_app_templates_system/ai_canvas_director/startup.blend",
       "bytes": 91348,
       "sha256": "a3e806fc2b910598b5f24c90127d02494fcbaf79a53f7e2eb7aee95f7f85e340"
+    },
+    {
+      "id": "character-female",
+      "relativePath": "scripts/startup/bl_app_templates_system/ai_canvas_director/assets/characters/ai_canvas_female_white.blend",
+      "bytes": 560000,
+      "sha256": "473115a74a17451c5d1489ccd2370f203969954126d32c4349061c5c5d120690"
+    },
+    {
+      "id": "character-male",
+      "relativePath": "scripts/startup/bl_app_templates_system/ai_canvas_director/assets/characters/ai_canvas_male_white.blend",
+      "bytes": 543063,
+      "sha256": "767911283f1e09295057dc4bdbe5e79e4e80eddd525ad74af1041b35e7425df9"
+    },
+    {
+      "id": "character-license",
+      "relativePath": "scripts/startup/bl_app_templates_system/ai_canvas_director/assets/characters/License_Standard.txt",
+      "bytes": 782,
+      "sha256": "c232257c8a2545520aa120cda96acb23d00a355d2e3339cba20b7ebf56f28a09"
     },
     {
       "id": "job-script",

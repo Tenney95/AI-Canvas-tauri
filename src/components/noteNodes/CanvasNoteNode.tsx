@@ -268,6 +268,7 @@ function CanvasNoteNode({ id, data, selected = false }: CanvasNoteNodeProps) {
           <CropEditor
             isOpen={cropOpen}
             imageUrl={data.imageUrl}
+            operationKey={`canvas-note:${id}`}
             onClose={() => setCropOpen(false)}
             onSave={handleCropSave}
           />

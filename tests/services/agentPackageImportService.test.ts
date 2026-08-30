@@ -9,6 +9,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 
 import {
+  readAgentPackageSourceText,
   removeAgentPackageSource,
   selectAgentPackageArchive,
   selectAgentPackageFolder,
@@ -100,6 +101,26 @@ describe('agentPackageImportService', () => {
     await expect(removeAgentPackageSource('source-1')).resolves.toEqual(result);
     expect(mocks.invoke).toHaveBeenCalledWith('agent_source_remove', {
       sourceId: 'source-1',
+    });
+  });
+
+  it('只把脱敏 sourceId、相对路径和本次字节上限交给原生文本读取', async () => {
+    const result = {
+      relativePath: 'skills/drama/SKILL.md',
+      content: '# Drama Skill',
+      sha256: 'a'.repeat(64),
+    };
+    mocks.invoke.mockResolvedValue(result);
+
+    await expect(readAgentPackageSourceText(
+      'source-1',
+      'skills/drama/SKILL.md',
+      131072,
+    )).resolves.toEqual(result);
+    expect(mocks.invoke).toHaveBeenCalledWith('agent_source_read_text', {
+      sourceId: 'source-1',
+      relativePath: 'skills/drama/SKILL.md',
+      maxBytes: 131072,
     });
   });
 });

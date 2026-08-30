@@ -151,12 +151,53 @@ interface PluginUploadFile {
   path: string;
 }
 
-function confirmTrustedPython(manifest: PluginManifest, action: '安装' | '更新' | '启用'): boolean {
+const PLUGIN_PERMISSION_LABELS: Record<string, string> = {
+  'node.read': '读取声明的画布节点字段',
+  'node.write': '修改节点或创建插件节点',
+  'models.read': '读取脱敏模型目录',
+  'models.invoke': '调用可能产生费用的模型',
+  'files.read': '读取用户明确选择的文本文件',
+  'files.write': '通过保存窗口写出文本文件',
+};
+
+function permissionSummary(manifest: PluginManifest): string {
+  return manifest.permissions
+    .map((permission) => PLUGIN_PERMISSION_LABELS[permission] ?? permission)
+    .join('；');
+}
+
+async function computeSourceDigest(source: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function reviewPluginInstall(
+  manifest: PluginManifest,
+  source: string,
+  action: '安装' | '更新',
+  sourceLabel: string,
+): Promise<string | null> {
+  const sourceDigest = await computeSourceDigest(source);
+  if (manifest.runtime !== 'python') return sourceDigest;
+  const confirmed = window.confirm(
+    `${action}可信 Python 插件「${manifest.name}」？\n\n`
+    + `来源：${sourceLabel}\n`
+    + `代码 SHA-256：${sourceDigest}\n`
+    + `宿主代办权限：${permissionSummary(manifest) || '无'}\n\n`
+    + 'Python 插件会以你的当前系统权限运行，可以读取或修改本机文件、访问网络和环境变量，也可以启动其他程序。'
+    + '\n\n只对你信任并已审查源码的插件继续。下一步 Rust 原生确认必须显示相同的完整摘要。',
+  );
+  return confirmed ? sourceDigest : null;
+}
+
+function confirmTrustedPythonEnable(manifest: PluginManifest, sourceDigest?: string): boolean {
   if (manifest.runtime !== 'python') return true;
   return window.confirm(
-    `${action}可信 Python 插件「${manifest.name}」？\n\n`
-    + 'Python 插件会以你的当前系统权限运行，可以读取或修改本机文件、访问网络和环境变量，也可以启动其他程序。'
-    + '\n\n只对你信任并已审查源码的插件继续。',
+    `启用可信 Python 插件「${manifest.name}」？\n\n`
+    + `已登记代码 SHA-256：${sourceDigest ?? '旧记录待原生迁移'}\n`
+    + `宿主代办权限：${permissionSummary(manifest) || '无'}\n\n`
+    + '启用后插件会以你的当前系统权限运行，可以读取或修改本机文件、访问网络和环境变量，也可以启动其他程序。'
+    + '\n\n继续后还必须通过 Rust 原生确认，且完整摘要应与这里一致。',
   );
 }
 
@@ -297,9 +338,11 @@ export default function PluginSettings() {
         ? item
         : await resolveGithubPlugin(repository, { force: true });
       const action = plugins.some((installed) => installed.id === plugin.manifest.id) ? '更新' : '安装';
-      if (!confirmTrustedPython(plugin.manifest, action)) return;
+      const sourceDigest = await reviewPluginInstall(plugin.manifest, plugin.source, action, plugin.repository);
+      if (!sourceDigest) return;
       await installPluginBundle(plugin.manifestText, plugin.source, {
         trustedPythonConfirmed: plugin.manifest.runtime === 'python',
+        expectedSourceDigest: sourceDigest,
       });
       setRepositoryInput('');
       await refreshMarketplace(true);
@@ -349,9 +392,12 @@ export default function PluginSettings() {
       const entryFile = files.find(({ path }) => path === `${prefix}${manifest.entry}`);
       if (!entryFile) throw new Error(`manifest.json 同级目录缺少 ${manifest.entry}`);
       const action = plugins.some((installed) => installed.id === manifest.id) ? '更新' : '安装';
-      if (!confirmTrustedPython(manifest, action)) return;
-      await installPluginBundle(manifestText, await entryFile.file.text(), {
+      const source = await entryFile.file.text();
+      const sourceDigest = await reviewPluginInstall(manifest, source, action, '本地文件夹');
+      if (!sourceDigest) return;
+      await installPluginBundle(manifestText, source, {
         trustedPythonConfirmed: manifest.runtime === 'python',
+        expectedSourceDigest: sourceDigest,
       });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
@@ -363,7 +409,7 @@ export default function PluginSettings() {
 
   const togglePlugin = async (plugin: (typeof plugins)[number]) => {
     const enabled = !plugin.enabled;
-    if (enabled && !confirmTrustedPython(plugin.manifest, '启用')) return;
+    if (enabled && !confirmTrustedPythonEnable(plugin.manifest, plugin.sourceDigest)) return;
     await setPluginEnabled(plugin.id, enabled, {
       trustedPythonConfirmed: enabled && plugin.manifest.runtime === 'python',
     });
@@ -511,15 +557,22 @@ export default function PluginSettings() {
             <AnimatedButton
               type="button"
               className="rounded-md px-2.5 py-1.5 text-xs text-amber-400 hover:bg-amber-500/10"
-              onClick={() => {
+              onClick={() => void (async () => {
                 const manifest = parsePluginManifest(PYTHON_EXAMPLE_MANIFEST);
-                if (!confirmTrustedPython(manifest, '安装')) return;
-                void installPluginBundle(PYTHON_EXAMPLE_MANIFEST, PYTHON_EXAMPLE_SOURCE, {
+                const sourceDigest = await reviewPluginInstall(
+                  manifest,
+                  PYTHON_EXAMPLE_SOURCE,
+                  '安装',
+                  '应用内置开发者示例',
+                );
+                if (!sourceDigest) return;
+                await installPluginBundle(PYTHON_EXAMPLE_MANIFEST, PYTHON_EXAMPLE_SOURCE, {
                   trustedPythonConfirmed: true,
-                }).catch((error) => {
-                  showToast(error instanceof Error ? error.message : 'Python 示例安装失败', 'error');
+                  expectedSourceDigest: sourceDigest,
                 });
-              }}
+              })().catch((error) => {
+                showToast(error instanceof Error ? error.message : 'Python 示例安装失败', 'error');
+              })}
             >
               Python
             </AnimatedButton>
@@ -713,7 +766,8 @@ export default function PluginSettings() {
                     API v{plugin.manifest.apiVersion} · {plugin.manifest.entry} · 入口：{placementLabels || (customNodes.length ? '节点选择器' : '未声明')}<br />
                     工具 {plugin.manifest.contributes.nodeTools.length} 个 · 自定义节点 {customNodes.length} 个<br />
                     读取：{inputFields.join('、') || '无'} · 写入：{outputFields.join('、') || '无'}<br />
-                    权限：{plugin.manifest.permissions.join('、')}
+                    权限：{plugin.manifest.permissions.join('、')}<br />
+                    代码 SHA-256：<span className="break-all font-mono" title={plugin.sourceDigest}>{plugin.sourceDigest ?? '待原生迁移'}</span>
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">

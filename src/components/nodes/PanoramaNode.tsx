@@ -59,6 +59,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
 
   const compactViewerRef = useRef<XiaoLuoPanoramaViewerHandle>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const panoActiveBeforeFullscreenRef = useRef(false);
   /** 视角模式：单击全景预览进入后才由查看器接管拖拽，否则拖拽用于移动节点 */
   const [panoActive, setPanoActive] = useState(false);
 
@@ -81,8 +82,15 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
   }, [id, previewMode, updateNodeDataTransient]);
 
   const toggleFullscreen = useCallback(() => {
+    if (isFullscreen) {
+      setPanoActive(panoActiveBeforeFullscreenRef.current);
+      panoActiveBeforeFullscreenRef.current = false;
+    } else {
+      panoActiveBeforeFullscreenRef.current = panoActive;
+      setPanoActive(false);
+    }
     updateNodeDataTransient(id, { panoFullscreen: !isFullscreen } as Partial<BaseNodeData>);
-  }, [id, isFullscreen, updateNodeDataTransient]);
+  }, [id, isFullscreen, panoActive, updateNodeDataTransient]);
 
   const createScreenshotNode = useCallback(async (dataUrl: string, derivation: CanvasDerivationGuard) => {
     const ensureFresh = () => {
@@ -232,8 +240,10 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
 
   const handleOpenFullscreen = useCallback(() => {
     if (!hasImage) return;
+    panoActiveBeforeFullscreenRef.current = panoActive;
+    setPanoActive(false);
     updateNodeDataTransient(id, { panoFullscreen: true } as Partial<BaseNodeData>);
-  }, [hasImage, id, updateNodeDataTransient]);
+  }, [hasImage, id, panoActive, updateNodeDataTransient]);
 
   return (
     <>
@@ -271,7 +281,11 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
               </button>
             )}
 
-            {show360 ? (
+            {isFullscreen && hasImage ? (
+              <div className="node-preview-placeholder" aria-hidden="true">
+                <Icon icon="mdi:panorama-sphere-outline" width="36" height="36" />
+              </div>
+            ) : show360 ? (
               <XiaoLuoPanoramaViewer
                 ref={compactViewerRef}
                 imageUrl={panoramaUrl}
@@ -347,15 +361,18 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
         className="pano-original-overlay"
         hideHeader
         bodyClassName="fullscreen-body--pano"
+        unmountOnClose
       >
-        <Suspense fallback={<div className="pano-fullscreen-loading"><span className="spinner" /></div>}>
-          <XiaoLuoPanoramaFullscreen
-            imageUrl={panoramaUrl}
-            theme={theme === 'light' ? 'light' : 'dark'}
-            onClose={toggleFullscreen}
-            onCapture={handleFullscreenCapture}
-          />
-        </Suspense>
+        {isFullscreen && hasImage && (
+          <Suspense fallback={<div className="pano-fullscreen-loading"><span className="spinner" /></div>}>
+            <XiaoLuoPanoramaFullscreen
+              imageUrl={panoramaUrl}
+              theme={theme === 'light' ? 'light' : 'dark'}
+              onClose={toggleFullscreen}
+              onCapture={handleFullscreenCapture}
+            />
+          </Suspense>
+        )}
       </FullscreenOverlay>
     </>
   );

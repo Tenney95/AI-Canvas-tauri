@@ -7,7 +7,6 @@ import type {
   ApiProviderConfig,
   BaseNodeData,
   GeneralModelConfig,
-  UserSkill,
 } from '../../types';
 import type { AgentTask } from '../../types/agent';
 import type { ChatConversation, ChatMessage } from '../../types/chat';
@@ -48,6 +47,7 @@ import {
   type ChatStateSync,
 } from './chatWindowService';
 import { getAssistantTextModelCandidates } from '../projectSettingsService';
+import { projectSkillPickerOptions } from './skillCatalog';
 
 const DEFAULT_SYNC_INTERVAL_MS = 150;
 const MAX_SYNC_RETRY_DELAY_MS = 5_000;
@@ -84,7 +84,53 @@ interface DetachedSnapshotSource {
   nodes: AppState['nodes'];
   dramaAssets: AppState['dramaAssets'];
   userSkills: AppState['userSkills'];
+  agentPackageSkills: AppState['agentPackageSkills'];
   chatComposerLiveDraft: string;
+}
+
+let cachedAgentTaskSource: AppState['agentTasks'] | null = null;
+let cachedAgentTaskProjection: AgentTask[] = [];
+let cachedAgentTaskSourceById = new Map<string, AgentTask>();
+let cachedAgentTaskProjectionById = new Map<string, AgentTask>();
+
+/**
+ * 独立窗口只展示任务进度与已注入 Skill 名称，不需要任务恢复所依赖的 Skill 正文和包审计路径。
+ * 相同任务对象沿用上一次投影，避免其他任务更新时整条时间线被补丁层判定为变化。
+ */
+export function projectChatAgentTasks(tasks: AppState['agentTasks']): AgentTask[] {
+  if (tasks === cachedAgentTaskSource) return cachedAgentTaskProjection;
+
+  let changed = tasks.length !== cachedAgentTaskProjection.length;
+  const nextSourceById = new Map<string, AgentTask>();
+  const nextProjectionById = new Map<string, AgentTask>();
+  const next = tasks.map((task, index) => {
+    const previousProjection = cachedAgentTaskProjectionById.get(task.id);
+    const projected = cachedAgentTaskSourceById.get(task.id) === task && previousProjection
+      ? previousProjection
+      : task.skillBindings?.length
+        ? {
+            ...task,
+            skillBindings: task.skillBindings.map((binding) => ({
+              skillId: binding.skillId,
+              name: binding.name,
+              version: binding.version,
+              content: '',
+              allowedTools: binding.allowedTools ? [...binding.allowedTools] : undefined,
+            })),
+          }
+        : task;
+    if (projected !== cachedAgentTaskProjection[index]) changed = true;
+    nextSourceById.set(task.id, task);
+    nextProjectionById.set(task.id, projected);
+    return projected;
+  });
+
+  cachedAgentTaskSource = tasks;
+  cachedAgentTaskSourceById = nextSourceById;
+  cachedAgentTaskProjectionById = nextProjectionById;
+  if (!changed) return cachedAgentTaskProjection;
+  cachedAgentTaskProjection = next;
+  return cachedAgentTaskProjection;
 }
 
 export function getMediaModelAvailability(
@@ -169,17 +215,6 @@ export function projectChatNodes(nodes: AppState['nodes']): Node<BaseNodeData>[]
   return cachedNodeProjection;
 }
 
-let cachedSkillSource: AppState['userSkills'] | null = null;
-let cachedSkillProjection: UserSkill[] = [];
-
-/** 独立窗口只用技能做 @ 选择，正文由主窗口执行时自己读，不跨窗口传 */
-export function projectChatSkills(skills: AppState['userSkills']): UserSkill[] {
-  if (skills === cachedSkillSource) return cachedSkillProjection;
-  cachedSkillSource = skills;
-  cachedSkillProjection = skills.map((skill) => ({ ...skill, content: '' }));
-  return cachedSkillProjection;
-}
-
 let cachedMediaConfig: AppState['config'] | null = null;
 let cachedMediaAvailability: Record<string, boolean> = {};
 
@@ -202,7 +237,7 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
     conversations: state.conversations,
     activeConversationId: state.activeConversationId,
     messages: state.messages,
-    agentTasks: state.agentTasks,
+    agentTasks: projectChatAgentTasks(state.agentTasks),
     projectId: state.currentProjectId,
     projectName: project?.name,
     generalModels: state.config.generalModels ?? [],
@@ -218,7 +253,7 @@ export function buildDetachedChatSnapshot(state: AppState): ChatStateSnapshot {
       : [],
     nodes: projectChatNodes(state.nodes),
     dramaAssets: state.dramaAssets,
-    userSkills: projectChatSkills(state.userSkills),
+    skillOptions: projectSkillPickerOptions(state.userSkills, state.agentPackageSkills),
     composerDraft: state.chatComposerLiveDraft,
   };
 }
@@ -238,6 +273,7 @@ function detachedSnapshotSourceChanged(
     || current.nodes !== previous.nodes
     || current.dramaAssets !== previous.dramaAssets
     || current.userSkills !== previous.userSkills
+    || current.agentPackageSkills !== previous.agentPackageSkills
     || current.chatComposerLiveDraft !== previous.chatComposerLiveDraft;
 }
 

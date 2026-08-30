@@ -77,6 +77,7 @@ export interface DirectorRuntimeBlenderContext {
 export interface DirectorRuntimeOpenResult {
   manifestReference?: DirectorResultManifestReference;
   blendFilePath?: string;
+  capture: DirectorRuntimeCapture;
 }
 
 export interface DirectorRuntimeFrameExportOptions {
@@ -224,9 +225,16 @@ export async function openDirectorRuntime(
     signal: context.signal,
     onStatus: context.onStatus,
   });
+  if (!result.frame) throw new Error('Blender 保存返回未生成当前镜头图');
   return {
     manifestReference: result.manifestReference,
     blendFilePath: result.blend?.filePath,
+    capture: {
+      mediaUrl: result.frame.mediaUrl,
+      filePath: result.frame.filePath,
+      fileName: result.frame.fileName,
+      manifestReference: result.manifestReference,
+    },
   };
 }
 

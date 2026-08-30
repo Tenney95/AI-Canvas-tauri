@@ -245,6 +245,11 @@ describe('directorRuntimeRegistry', () => {
 
     mocks.runDirectorBlenderOperation.mockResolvedValueOnce({
       manifestReference,
+      frame: {
+        mediaUrl: 'asset://saved-frame.png',
+        filePath: 'project/saved-frame.png',
+        fileName: 'saved-frame.png',
+      },
       blend: {
         mediaUrl: 'asset://director.blend',
         filePath: 'project/director.blend',
@@ -258,6 +263,12 @@ describe('directorRuntimeRegistry', () => {
     })).resolves.toEqual({
       manifestReference,
       blendFilePath: 'project/director.blend',
+      capture: {
+        mediaUrl: 'asset://saved-frame.png',
+        filePath: 'project/saved-frame.png',
+        fileName: 'saved-frame.png',
+        manifestReference,
+      },
     });
     expect(mocks.runDirectorBlenderOperation).toHaveBeenLastCalledWith({
       operation: 'open-editor',
@@ -269,6 +280,20 @@ describe('directorRuntimeRegistry', () => {
       signal: controller.signal,
       onStatus,
     });
+
+    mocks.runDirectorBlenderOperation.mockResolvedValueOnce({
+      manifestReference,
+      blend: {
+        mediaUrl: 'asset://director.blend',
+        filePath: 'project/director.blend',
+        fileName: 'director.blend',
+      },
+    });
+    await expect(openDirectorRuntime('blender', {
+      instanceId: 'director-1',
+      theme: 'dark',
+      blender,
+    })).rejects.toThrow('Blender 保存返回未生成当前镜头图');
 
     mocks.runDirectorBlenderOperation.mockResolvedValueOnce({
       manifestReference,

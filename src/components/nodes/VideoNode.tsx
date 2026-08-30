@@ -14,7 +14,7 @@ import FullscreenOverlay from '../shared/FullscreenOverlay';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { computeImageNodeDimensions, generateId, useAppStore } from '../../store/useAppStore';
-import { derivedNodePlacement } from '../../store/store.utils';
+import { blobToDataUrl, derivedNodePlacement } from '../../store/store.utils';
 import { afterVideoFramePresented, seekVideoTo } from '../../utils/videoSeek';
 import { downloadUrlAndSave, saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { copyFile as copyFileToClipboard } from '../../services/clipboardService';
@@ -45,6 +45,18 @@ const DEFAULT_VIDEO_NODE_HEIGHT = 158;
 const VIDEO_NODE_MAX_DIMENSION = 320;
 const VIDEO_NODE_MIN_WIDTH = 180;
 const VIDEO_NODE_MIN_HEIGHT = 110;
+const VIDEO_FRAME_MAX_DIMENSION = 1280;
+
+function fitVideoFrameDimensions(
+  video: Pick<HTMLVideoElement, 'videoWidth' | 'videoHeight'>,
+  maxDimension: number,
+): { width: number; height: number } {
+  const scale = Math.min(1, maxDimension / Math.max(video.videoWidth, video.videoHeight));
+  return {
+    width: Math.max(1, Math.round(video.videoWidth * scale)),
+    height: Math.max(1, Math.round(video.videoHeight * scale)),
+  };
+}
 
 function computeVideoNodeDimensions(videoWidth: number, videoHeight: number): { nodeWidth: number; nodeHeight: number } {
   if (videoWidth <= 0 || videoHeight <= 0) {
@@ -62,9 +74,10 @@ function computeVideoNodeDimensions(videoWidth: number, videoHeight: number): { 
   };
 }
 
-function captureVideoFrame(video: HTMLVideoElement): { dataUrl: string; width: number; height: number } {
-  const width = video.videoWidth;
-  const height = video.videoHeight;
+async function captureVideoFrame(
+  video: HTMLVideoElement,
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const { width, height } = fitVideoFrameDimensions(video, VIDEO_FRAME_MAX_DIMENSION);
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -75,20 +88,29 @@ function captureVideoFrame(video: HTMLVideoElement): { dataUrl: string; width: n
   }
 
   ctx.drawImage(video, 0, 0, width, height);
-  return {
-    dataUrl: canvas.toDataURL('image/png'),
-    width,
-    height,
-  };
+  try {
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (result) => result ? resolve(result) : reject(new Error('无法编码视频帧')),
+        'image/jpeg',
+        0.9,
+      );
+    });
+    return { dataUrl: await blobToDataUrl(blob), width, height };
+  } finally {
+    // 立即释放 backing store，不把 1280px RGBA 表面留给 GC 猜测回收时机。
+    canvas.width = 1;
+    canvas.height = 1;
+  }
 }
 
 /** 节点封面只保留预览尺寸，避免把 4K 原帧常驻在组件内存。 */
 function captureVideoPoster(video: HTMLVideoElement): { dataUrl: string; blank: boolean } {
   const maxDimension = 640;
-  const scale = Math.min(1, maxDimension / Math.max(video.videoWidth, video.videoHeight));
+  const { width, height } = fitVideoFrameDimensions(video, maxDimension);
   const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
-  canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+  canvas.width = width;
+  canvas.height = height;
   const context = canvas.getContext('2d');
   if (!context) throw new Error('无法创建视频封面画布');
   context.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -132,7 +154,7 @@ async function captureFrameAtTime(
   targetTime: number,
 ): Promise<{ dataUrl: string; width: number; height: number }> {
   await seekVideoTo(video, targetTime);
-  return captureVideoFrame(video);
+  return await captureVideoFrame(video);
 }
 
 function isTaintedCanvasError(error: unknown): boolean {
@@ -140,15 +162,22 @@ function isTaintedCanvasError(error: unknown): boolean {
   return error.message.includes('Tainted canvases') || error.message.includes('may not be exported');
 }
 
+function releaseVideoElement(video: HTMLVideoElement | null): void {
+  if (!video) return;
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+}
+
 function captureFrameFromVideoUrl(url: string, currentTime: number): Promise<{ dataUrl: string; width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
     let settled = false;
+    let captureStarted = false;
     let timer = 0;
     const cleanup = () => {
       window.clearTimeout(timer);
-      video.removeAttribute('src');
-      video.load();
+      releaseVideoElement(video);
     };
     const fail = (error: unknown) => {
       if (settled) return;
@@ -157,15 +186,22 @@ function captureFrameFromVideoUrl(url: string, currentTime: number): Promise<{ d
       reject(error);
     };
     const done = () => {
-      if (settled) return;
-      try {
-        const frame = captureVideoFrame(video);
-        settled = true;
-        cleanup();
-        resolve(frame);
-      } catch (error) {
-        fail(error);
-      }
+      if (settled || captureStarted) return;
+      captureStarted = true;
+      void captureVideoFrame(video).then(
+        (frame) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(frame);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(error);
+        },
+      );
     };
 
     timer = window.setTimeout(() => fail(new Error('本地视频加载超时')), 15000);
@@ -199,6 +235,14 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const t = useT();
   const justCompleted = useCompletionFlash(data.status);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const fullscreenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const fullscreenPlaybackRef = useRef({ currentTime: 0, wasPlaying: false });
+  const compactPlaybackRestoreRef = useRef<{
+    source: string;
+    currentTime: number;
+    shouldPlay: boolean;
+  } | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const previewAttemptedSourceRef = useRef<string | null>(null);
   const [generatedCover, setGeneratedCover] = useState<{ source: string; dataUrl: string } | null>(null);
   const [dismissedCoverSource, setDismissedCoverSource] = useState<string | null>(null);
@@ -236,6 +280,19 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     }
 
     const source = data.videoUrl;
+    const pendingRestore = compactPlaybackRestoreRef.current;
+    if (source && pendingRestore?.source === source) {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      video.currentTime = duration > 0
+        ? Math.min(Math.max(pendingRestore.currentTime, 0), Math.max(duration - 0.01, 0))
+        : Math.max(pendingRestore.currentTime, 0);
+      compactPlaybackRestoreRef.current = null;
+      previewAttemptedSourceRef.current = source;
+      if (pendingRestore.shouldPlay) {
+        void video.play().catch(() => {});
+      }
+      return;
+    }
     if (!source || previewAttemptedSourceRef.current === source) return;
     previewAttemptedSourceRef.current = source;
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
@@ -305,14 +362,50 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   /* ════════════════════════════════════════════
      Fullscreen State — 双击 / 工具栏按钮打开全屏预览
      ════════════════════════════════════════════ */
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReversingPrompt, setIsReversingPrompt] = useState(false);
-  const fullscreenVideoRef = useRef<HTMLVideoElement | null>(null);
   const handleOpenFullscreen = useCallback(() => {
     if (!data.videoUrl && !data.thumbnailUrl) return;
+    const compactVideo = videoRef.current;
+    fullscreenPlaybackRef.current = {
+      currentTime: compactVideo?.currentTime ?? 0,
+      wasPlaying: compactVideo ? !compactVideo.paused && !compactVideo.ended : false,
+    };
+    compactVideo?.pause();
     setIsFullscreen(true);
   }, [data.videoUrl, data.thumbnailUrl]);
-  const handleCloseFullscreen = useCallback(() => setIsFullscreen(false), []);
+  const handleCloseFullscreen = useCallback(() => {
+    const fullscreenVideo = fullscreenVideoRef.current;
+    if (data.videoUrl) {
+      compactPlaybackRestoreRef.current = {
+        source: data.videoUrl,
+        currentTime: fullscreenVideo?.currentTime ?? fullscreenPlaybackRef.current.currentTime,
+        // 旧实现关闭全屏后，节点播放器会保持打开前的播放/暂停状态。
+        // 全屏播放器会自动播放，不能据此把原本暂停的节点意外改成播放。
+        shouldPlay: fullscreenPlaybackRef.current.wasPlaying,
+      };
+    }
+    releaseVideoElement(fullscreenVideo);
+    fullscreenVideoRef.current = null;
+    setIsFullscreen(false);
+  }, [data.videoUrl]);
+  const setFullscreenVideoElement = useCallback((video: HTMLVideoElement | null) => {
+    if (fullscreenVideoRef.current && fullscreenVideoRef.current !== video) {
+      releaseVideoElement(fullscreenVideoRef.current);
+    }
+    fullscreenVideoRef.current = video;
+  }, []);
+  const handleFullscreenLoadedMetadata = useCallback((event: React.SyntheticEvent<HTMLVideoElement>) => {
+    const video = event.currentTarget;
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    video.currentTime = duration > 0
+      ? Math.min(Math.max(fullscreenPlaybackRef.current.currentTime, 0), Math.max(duration - 0.01, 0))
+      : Math.max(fullscreenPlaybackRef.current.currentTime, 0);
+  }, []);
+
+  useEffect(() => () => {
+    releaseVideoElement(fullscreenVideoRef.current);
+    fullscreenVideoRef.current = null;
+  }, []);
 
   const { displayLabel, handleRename } = useNodeRename(id, data, t('粘贴视频'));
   const generatedCoverUrl = generatedCover && generatedCover.source === data.videoUrl
@@ -503,7 +596,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       let liveStore = useAppStore.getState();
       const currentNode = liveStore.nodes.find((node) => node.id === id);
       const currentPosition = currentNode?.position ?? { x: 0, y: 0 };
-      const frameFileName = buildNodeFileName(`${displayLabel} ${frameLabel}`, 'png', `video-frame-${Date.now()}`);
+      const frameFileName = buildNodeFileName(`${displayLabel} ${frameLabel}`, 'jpg', `video-frame-${Date.now()}`);
       const savedFrame = derivation.projectId !== 'default'
         ? await saveDataUrlToProjectData(frame.dataUrl, derivation.projectId, frameFileName)
         : null;
@@ -669,7 +762,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         style={{ height: nodeHeight }}
       >
         <div className={`node-preview compact${data.videoUrl || data.thumbnailUrl ? ' has-media' : ''}`}>
-          {data.videoUrl ? (
+          {data.videoUrl && !isFullscreen ? (
             <video
               ref={videoRef}
               src={data.videoUrl}
@@ -682,6 +775,20 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               onDoubleClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
               data-source-url={data.sourceUrl}
             />
+          ) : data.videoUrl && initialCoverUrl ? (
+            <img
+              src={initialCoverUrl}
+              alt=""
+              className="video-node-poster"
+              draggable={false}
+            />
+          ) : data.videoUrl ? (
+            <div className="node-preview-placeholder" aria-hidden="true">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
+                <polygon points="23 7 16 12 23 17 23 7" />
+                <rect x="1" y="5" width="15" height="14" rx="2" />
+              </svg>
+            </div>
           ) : data.thumbnailUrl ? (
             <img
               src={data.thumbnailUrl}
@@ -726,10 +833,10 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               </div>
             )
           )}
-          {data.videoUrl && showInitialCover && (
+          {data.videoUrl && !isFullscreen && showInitialCover && (
             <img src={initialCoverUrl} alt="" className="video-node-initial-cover" draggable={false} />
           )}
-          {data.videoUrl && (
+          {data.videoUrl && !isFullscreen && (
             <VideoNodeControls
               videoRef={videoRef}
               source={data.videoUrl}
@@ -764,16 +871,19 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         onClose={handleCloseFullscreen}
         hidePanel
         title={(data.label as string) || t('视频预览')}
+        className="fullscreen-overlay--image-preview"
       >
-        {data.videoUrl ? (
+        {isFullscreen && (data.videoUrl ? (
           <video
-            ref={fullscreenVideoRef}
+            ref={setFullscreenVideoElement}
             src={data.videoUrl}
             className="fullscreen-video-view"
             controls
             autoPlay
+            playsInline
             crossOrigin="anonymous"
             data-source-url={data.sourceUrl}
+            onLoadedMetadata={handleFullscreenLoadedMetadata}
           />
         ) : data.thumbnailUrl ? (
           <img
@@ -781,7 +891,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             alt="Video thumbnail"
             className="fullscreen-img-view"
           />
-        ) : null}
+        ) : null)}
       </FullscreenOverlay>
     </div>
   );

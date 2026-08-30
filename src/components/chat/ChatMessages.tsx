@@ -3,7 +3,7 @@
  *
  * 渲染所有消息 + 空状态提示，自动滚动到底部。
  */
-import { useEffect, useMemo, useRef, useState, useCallback, type UIEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback, type UIEvent } from 'react';
 import { Icon } from '@iconify/react';
 import { useReducedMotion } from 'framer-motion';
 import type { ChatMessage } from '../../types/chat';
@@ -34,13 +34,28 @@ interface ChatMessagesProps extends ChatReferenceHandlers {
 
 const START_EXAMPLES = ['现在有几个失败节点？', '选中 3 号节点', '删除失败节点'];
 const EMPTY_AGENT_TASKS: AgentTask[] = [];
+const INITIAL_MESSAGE_BATCH = 80;
+const MESSAGE_BATCH_SIZE = 60;
+
+interface ChatScrollState {
+  conversationId: string;
+  isNearBottom: boolean;
+  unreadCount: number;
+}
+
+interface ChatRenderWindow {
+  conversationId: string;
+  limit: number;
+  messageCount: number;
+}
 
 function mapChatMessageRows<T>(
   messages: ChatMessage[],
   renderRow: (message: ChatMessage, regeneratePrompt?: string) => T,
+  initialUserContent = '',
 ): T[] {
   const rows: T[] = [];
-  let latestUserContent = '';
+  let latestUserContent = initialUserContent;
 
   for (const message of messages) {
     if (message.role === 'user') {
@@ -78,17 +93,61 @@ export default function ChatMessages({
 }: ChatMessagesProps) {
   const t = useT();
   const reduceMotion = useReducedMotion();
+  const conversationId = messages[0]?.conversationId ?? '';
   const messagesRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
-  const previousMessagesRef = useRef<ChatMessage[]>([]);
-  const [isNearBottom, setIsNearBottom] = useState(true);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const activeConversationRef = useRef(conversationId);
+  const previousMessagesRef = useRef<{ conversationId: string; messages: ChatMessage[] }>({
+    conversationId,
+    messages: [],
+  });
+  const pendingOlderScrollRef = useRef<{
+    conversationId: string;
+    height: number;
+    top: number;
+  } | null>(null);
+  const [scrollState, setScrollState] = useState<ChatScrollState>({
+    conversationId,
+    isNearBottom: true,
+    unreadCount: 0,
+  });
+  const [renderWindow, setRenderWindow] = useState<ChatRenderWindow>({
+    conversationId,
+    limit: INITIAL_MESSAGE_BATCH,
+    messageCount: messages.length,
+  });
+  const isNearBottom = scrollState.conversationId === conversationId
+    ? scrollState.isNearBottom
+    : true;
+  const unreadCount = scrollState.conversationId === conversationId
+    ? scrollState.unreadCount
+    : 0;
+  const baseRenderLimit = renderWindow.conversationId === conversationId
+    ? renderWindow.limit
+    : INITIAL_MESSAGE_BATCH;
+  // 用户停留在历史位置时，新消息应扩展窗口末尾，不能把当前窗口顶部挤掉。
+  const appendedWhileAway = renderWindow.conversationId === conversationId && !isNearBottom
+    ? Math.max(0, messages.length - renderWindow.messageCount)
+    : 0;
+  const renderLimit = Math.min(messages.length, baseRenderLimit + appendedWhileAway);
+  const visibleStartIndex = Math.max(0, messages.length - renderLimit);
+  const visibleMessages = useMemo(
+    () => visibleStartIndex === 0 ? messages : messages.slice(visibleStartIndex),
+    [messages, visibleStartIndex],
+  );
+  const precedingUserContent = useMemo(() => {
+    for (let index = visibleStartIndex - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role === 'user') return messages[index].content;
+    }
+    return '';
+  }, [messages, visibleStartIndex]);
+  const hiddenMessageCount = visibleStartIndex;
   const agentTaskById = useMemo(
     () => new Map(agentTasks.map((task) => [task.id, task])),
     [agentTasks],
   );
   const messageRows = useMemo(
-    () => mapChatMessageRows(messages, (message, regeneratePrompt) => (
+    () => mapChatMessageRows(visibleMessages, (message, regeneratePrompt) => (
       <MessageBubble
         key={message.id}
         message={message}
@@ -103,11 +162,11 @@ export default function ChatMessages({
         onModelActivate={onModelActivate}
         agentControls={agentControls}
       />
-    )),
+    ), precedingUserContent),
     [
       agentControls,
       agentTaskById,
-      messages,
+      precedingUserContent,
       onAddMediaToCanvas,
       onRetryMediaSave,
       onEditMessage,
@@ -115,17 +174,78 @@ export default function ChatMessages({
       onNodeActivate,
       onNodeHover,
       onRegenerateMessage,
+      visibleMessages,
     ],
   );
+
+  const loadOlderMessages = useCallback(() => {
+    const container = messagesRef.current;
+    if (container) {
+      pendingOlderScrollRef.current = {
+        conversationId,
+        height: container.scrollHeight,
+        top: container.scrollTop,
+      };
+    }
+    setRenderWindow((current) => ({
+      conversationId,
+      limit: Math.min(
+        messages.length,
+        (current.conversationId === conversationId ? renderLimit : INITIAL_MESSAGE_BATCH)
+        + MESSAGE_BATCH_SIZE,
+      ),
+      messageCount: messages.length,
+    }));
+  }, [conversationId, messages.length, renderLimit]);
+
+  useLayoutEffect(() => {
+    if (activeConversationRef.current !== conversationId) {
+      activeConversationRef.current = conversationId;
+      isNearBottomRef.current = true;
+      previousMessagesRef.current = { conversationId, messages };
+      pendingOlderScrollRef.current = null;
+      setScrollState({ conversationId, isNearBottom: true, unreadCount: 0 });
+      setRenderWindow({
+        conversationId,
+        limit: INITIAL_MESSAGE_BATCH,
+        messageCount: messages.length,
+      });
+      const container = messagesRef.current;
+      if (container) container.scrollTop = container.scrollHeight;
+      return;
+    }
+    if (renderWindow.conversationId !== conversationId) {
+      pendingOlderScrollRef.current = null;
+      return;
+    }
+    const pending = pendingOlderScrollRef.current;
+    const container = messagesRef.current;
+    if (!pending || pending.conversationId !== conversationId || !container) return;
+    container.scrollTop = pending.top + (container.scrollHeight - pending.height);
+    pendingOlderScrollRef.current = null;
+  }, [conversationId, messages, renderLimit, renderWindow.conversationId]);
 
   const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     const container = event.currentTarget;
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
     const nextIsNearBottom = distanceFromBottom < 80;
+    const wasNearBottom = isNearBottomRef.current;
     isNearBottomRef.current = nextIsNearBottom;
-    setIsNearBottom(nextIsNearBottom);
-    if (nextIsNearBottom) setUnreadCount(0);
-  }, []);
+    setScrollState((current) => ({
+      conversationId,
+      isNearBottom: nextIsNearBottom,
+      unreadCount: nextIsNearBottom
+        ? 0
+        : current.conversationId === conversationId ? current.unreadCount : 0,
+    }));
+    if (wasNearBottom !== nextIsNearBottom) {
+      setRenderWindow({
+        conversationId,
+        limit: nextIsNearBottom ? INITIAL_MESSAGE_BATCH : renderLimit,
+        messageCount: messages.length,
+      });
+    }
+  }, [conversationId, messages.length, renderLimit]);
 
   const jumpToLatest = useCallback(() => {
     const container = messagesRef.current;
@@ -137,11 +257,13 @@ export default function ChatMessages({
   }, []);
 
   useEffect(() => {
-    const previousMessages = previousMessagesRef.current;
-    previousMessagesRef.current = messages;
+    const previousSnapshot = previousMessagesRef.current;
+    const previousMessages = previousSnapshot.conversationId === conversationId
+      ? previousSnapshot.messages
+      : [];
+    previousMessagesRef.current = { conversationId, messages };
 
     if (isNearBottomRef.current) {
-      setUnreadCount(0);
       jumpToLatest();
       const frameId = requestAnimationFrame(() => {
         jumpToLatest();
@@ -160,12 +282,21 @@ export default function ChatMessages({
       && currentLast.id === previousLast?.id
       && currentLast.content !== previousLast.content;
     if (newAssistantMessages > 0 || streamedWhileAway) {
-      setUnreadCount((count) => newAssistantMessages > 0
-        ? count + newAssistantMessages
-        : Math.max(1, count));
+      setScrollState((current) => {
+        const currentUnread = current.conversationId === conversationId
+          ? current.unreadCount
+          : 0;
+        return {
+          conversationId,
+          isNearBottom: false,
+          unreadCount: newAssistantMessages > 0
+            ? currentUnread + newAssistantMessages
+            : Math.max(1, currentUnread),
+        };
+      });
     }
     return undefined;
-  }, [jumpToLatest, messages]);
+  }, [conversationId, jumpToLatest, messages]);
 
   const scrollToLatest = useCallback(() => {
     const container = messagesRef.current;
@@ -175,9 +306,14 @@ export default function ChatMessages({
       behavior: reduceMotion ? 'auto' : 'smooth',
     });
     isNearBottomRef.current = true;
-    setIsNearBottom(true);
-    setUnreadCount(0);
-  }, [reduceMotion]);
+    setScrollState({ conversationId, isNearBottom: true, unreadCount: 0 });
+    setRenderWindow({
+      conversationId,
+      limit: INITIAL_MESSAGE_BATCH,
+      messageCount: messages.length,
+    });
+    requestAnimationFrame(jumpToLatest);
+  }, [conversationId, jumpToLatest, messages.length, reduceMotion]);
 
   useEffect(() => () => {
     onNodeHover?.(null);
@@ -224,6 +360,16 @@ export default function ChatMessages({
               </div>
             )}
           </div>
+        )}
+
+        {hiddenMessageCount > 0 && (
+          <button
+            type="button"
+            onClick={loadOlderMessages}
+            className="mx-auto min-h-8 rounded-md border border-canvas-border px-3 py-1 text-[11px] text-canvas-text-secondary transition-colors hover:bg-canvas-hover hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50"
+          >
+            {t('加载更早消息（还有 {count} 条）', { count: hiddenMessageCount })}
+          </button>
         )}
 
         {messageRows}

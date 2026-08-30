@@ -994,6 +994,13 @@
   padding: 0;
 }
 
+/* 大图预览不模糊整个画布，避免 WebView2 为背景建立整窗离屏缓冲。 */
+.fullscreen-overlay--transparent.fullscreen-overlay--image-preview {
+  background: rgba(0, 0, 0, 0.58);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .fullscreen-panel {
   max-height: 92vh;
   display: flex;
@@ -1193,28 +1200,22 @@
   animation: imgZoomIn 0.5s var(--ease-out-expo) both;
 }
 
-.zoomable-image-stage.is-origin-linked {
-  animation: none;
-}
-
-.zoomable-image-stage.is-flying {
-  z-index: 1;
-  pointer-events: none;
-  will-change: left, top, width, height, opacity, filter;
-}
-
-.zoomable-image-stage.is-flying .fullscreen-img-view {
-  width: 100%;
-  height: 100%;
-  max-width: none;
-  max-height: none;
-  object-fit: contain;
-}
-
 /* 容器内的图片不再单独执行入场动画，transform 完全由 JS 控制 */
 .zoomable-image-container .fullscreen-img-view {
   animation: none;
   cursor: inherit;
+}
+
+/* 图片节点全屏预览即时入场；其他 ZoomableImage 调用保留原视觉效果。 */
+.fullscreen-overlay--image-preview .zoomable-image-stage {
+  animation: none;
+  will-change: auto;
+}
+
+/* 安全预览作用域内不对大尺寸图片/视频表面做滤镜入场。 */
+.fullscreen-overlay--image-preview .fullscreen-img-view,
+.fullscreen-overlay--image-preview .fullscreen-video-view {
+  animation: none;
 }
 
 .zoom-controls {

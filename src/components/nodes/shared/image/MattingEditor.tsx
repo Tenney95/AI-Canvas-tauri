@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ImageEditorZoomControls from './ImageEditorZoomControls';
 import MattingToolbar from './MattingToolbar';
+import { MAX_MATTING_CANVAS_EDGE, MAX_MATTING_HISTORY_BYTES } from './imageResourceBudget';
+import { floodFillImageData, trimImageDataHistory } from './mattingUtils';
 
 /* ── Types ── */
 type MattingTool = 'brush' | 'eraser' | 'bucket';
@@ -26,60 +28,6 @@ const MASK_RGB: [number, number, number] = [255, 200, 0];
 const MASK_DISPLAY_ALPHA = 0.45;
 const MASK_COLOR = `rgba(${MASK_RGB[0]}, ${MASK_RGB[1]}, ${MASK_RGB[2]}, 1)`;
 
-/* ── Flood fill helper ── */
-function floodFill(
-  imageData: ImageData,
-  startX: number,
-  startY: number,
-  fillColor: [number, number, number, number],
-): void {
-  const { data, width, height } = imageData;
-  const targetIdx = (startY * width + startX) * 4;
-  const targetR = data[targetIdx];
-  const targetG = data[targetIdx + 1];
-  const targetB = data[targetIdx + 2];
-  const targetA = data[targetIdx + 3];
-
-  if (
-    targetR === fillColor[0] &&
-    targetG === fillColor[1] &&
-    targetB === fillColor[2] &&
-    targetA === fillColor[3]
-  )
-    return;
-
-  const stack = [[startX, startY]];
-  const visited = new Uint8Array(width * height);
-  visited[startY * width + startX] = 1;
-
-  while (stack.length > 0) {
-    const [x, y] = stack.pop()!;
-    const pi = (y * width + x) * 4;
-    data[pi] = fillColor[0];
-    data[pi + 1] = fillColor[1];
-    data[pi + 2] = fillColor[2];
-    data[pi + 3] = fillColor[3];
-
-    const neighbors = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
-    for (const [nx, ny] of neighbors) {
-      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-      const ni = ny * width + nx;
-      if (visited[ni]) continue;
-      const np = ni * 4;
-      const tolerance = 20;
-      if (
-        Math.abs(data[np] - targetR) <= tolerance &&
-        Math.abs(data[np + 1] - targetG) <= tolerance &&
-        Math.abs(data[np + 2] - targetB) <= tolerance &&
-        Math.abs(data[np + 3] - targetA) <= tolerance
-      ) {
-        visited[ni] = 1;
-        stack.push([nx, ny]);
-      }
-    }
-  }
-}
-
 /** 调用方只在打开时挂载本组件（关闭即卸载），因此状态靠卸载重置，无需 effect 复位。 */
 export default function MattingEditor({
   isOpen,
@@ -94,6 +42,7 @@ export default function MattingEditor({
   const strokePoints = useRef<{ x: number; y: number }[]>([]);
   const isDrawing = useRef(false);
   const historyRef = useRef<ImageData[]>([]);
+  const disposedRef = useRef(false);
 
   const [tool, setTool] = useState<MattingTool>('brush');
   const [brushMode, setBrushMode] = useState<BrushMode>('normal');
@@ -123,6 +72,22 @@ export default function MattingEditor({
 
   useEffect(() => { offsetRef.current = offset; }, [offset]);
 
+  useEffect(() => {
+    disposedRef.current = false;
+    const canvas = canvasRef.current;
+    return () => {
+      disposedRef.current = true;
+      historyRef.current = [];
+      strokeBaseline.current = null;
+      strokePoints.current = [];
+      isDrawing.current = false;
+      if (canvas) {
+        canvas.width = 1;
+        canvas.height = 1;
+      }
+    };
+  }, []);
+
   const resetView = useCallback(() => {
     setScale(1);
     setOffset({ x: 0, y: 0 });
@@ -142,7 +107,6 @@ export default function MattingEditor({
 
     // 后备尺寸用图片自然分辨率（封顶防爆内存），与图片严格等比；
     // 显示尺寸交给 .matting-canvas 的 100%/100% 拉伸贴合，从而全图可涂、且不受缩放变换影响。
-    const MAX_DIM = 2048;
     let w = image.naturalWidth;
     let h = image.naturalHeight;
     if (!w || !h) {
@@ -151,8 +115,8 @@ export default function MattingEditor({
       h = Math.round(rect.height);
     }
     const longest = Math.max(w, h);
-    if (longest > MAX_DIM) {
-      const k = MAX_DIM / longest;
+    if (longest > MAX_MATTING_CANVAS_EDGE) {
+      const k = MAX_MATTING_CANVAS_EDGE / longest;
       w = Math.round(w * k);
       h = Math.round(h * k);
     }
@@ -167,6 +131,7 @@ export default function MattingEditor({
     if (initialMask) {
       const maskImg = new Image();
       maskImg.onload = () => {
+        if (disposedRef.current) return;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
         // 归一化：已保存的蒙版是半透明的，统一拉回满 alpha，保证后续涂抹不累加、显示不二次衰减
@@ -207,9 +172,9 @@ export default function MattingEditor({
     setHistory((current) => {
       const newHistory = historyRef.current.slice(0, current.idx + 1);
       newHistory.push(imageData);
-      if (newHistory.length > 30) newHistory.shift();
-      historyRef.current = newHistory;
-      return { idx: newHistory.length - 1, len: newHistory.length };
+      const trimmed = trimImageDataHistory(newHistory, MAX_MATTING_HISTORY_BYTES);
+      historyRef.current = trimmed;
+      return { idx: trimmed.length - 1, len: trimmed.length };
     });
   }, []);
 
@@ -265,8 +230,9 @@ export default function MattingEditor({
         const fillG = brushMode === 'normal' ? MASK_RGB[1] : 0;
         const fillB = brushMode === 'normal' ? MASK_RGB[2] : 0;
         const fillA = brushMode === 'normal' ? 255 : 0;
-        floodFill(imageData, Math.round(x), Math.round(y), [fillR, fillG, fillB, fillA]);
-        ctx.putImageData(imageData, 0, 0);
+        const changed = floodFillImageData(imageData, x, y, [fillR, fillG, fillB, fillA]);
+        if (changed) ctx.putImageData(imageData, 0, 0);
+        isDrawing.current = changed;
         return;
       }
 
@@ -329,15 +295,16 @@ export default function MattingEditor({
       if (isPanning.current) {
         isPanning.current = false;
         setPanning(false);
-        canvasRef.current?.releasePointerCapture(e.pointerId);
+        const canvas = canvasRef.current;
+        if (canvas?.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
         return;
       }
+      const canvas = canvasRef.current;
+      if (canvas?.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
       if (!isDrawing.current) return;
       isDrawing.current = false;
       strokeBaseline.current = null;
       strokePoints.current = [];
-      const canvas = canvasRef.current;
-      canvas?.releasePointerCapture(e.pointerId);
       pushHistory();
     },
     [pushHistory],
@@ -377,14 +344,19 @@ export default function MattingEditor({
     if (!canvas) return;
     // 画布内部是满 alpha；导出时统一乘以显示透明度，得到处处一致的半透明蒙版
     const out = document.createElement('canvas');
-    out.width = canvas.width;
-    out.height = canvas.height;
-    const octx = out.getContext('2d');
-    if (!octx) return;
-    octx.globalAlpha = MASK_DISPLAY_ALPHA;
-    octx.drawImage(canvas, 0, 0);
-    const maskUrl = out.toDataURL('image/png');
-    onSave(maskUrl);
+    try {
+      out.width = canvas.width;
+      out.height = canvas.height;
+      const octx = out.getContext('2d');
+      if (!octx) return;
+      octx.globalAlpha = MASK_DISPLAY_ALPHA;
+      octx.drawImage(canvas, 0, 0);
+      const maskUrl = out.toDataURL('image/png');
+      onSave(maskUrl);
+    } finally {
+      out.width = 1;
+      out.height = 1;
+    }
   }, [onSave]);
 
   // ── Keyboard shortcuts ──

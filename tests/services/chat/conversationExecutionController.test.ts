@@ -133,9 +133,56 @@ describe('conversation execution controller', () => {
       name: 'Canvas audit',
       version: '2.0.0',
       content: '# Fixed audit rules',
+      origin: 'user',
       allowedTools: ['canvas_get_state'],
     }]);
     expect(task.toolAllowlist).toEqual(['canvas_get_state']);
+  });
+
+  it('snapshots an explicitly selected AgentPackage Skill before the package is disabled', () => {
+    useAppStore.setState({
+      agentPackageSkills: [{
+        id: 'ap-skill-1',
+        name: '短剧分镜',
+        description: '生成短剧分镜',
+        fileName: 'SKILL.md',
+        content: '---\nversion: 1.4.1\n---\n# 固定分镜规则',
+        sourceType: 'agent-package',
+        manifest: { version: '1.4.1', allowedTools: ['canvas_get_state'] },
+        createdAt: 2,
+        installationId: 'installation-1',
+        packageId: 'legacy.drama',
+        packageName: 'AI短剧知识库',
+        packageVersion: '0.0.0-legacy',
+        packageContentHash: 'a'.repeat(64),
+        sourceId: 'source:opaque',
+        entryPath: '04-分镜设计/storyboard-script/SKILL.md',
+        skillRoot: '04-分镜设计/storyboard-script',
+        contentHash: 'b'.repeat(64),
+        branch: 'domestic',
+        packageUserInvocable: true,
+        packageAutoInvoke: false,
+        mcpSkillReadEnabled: false,
+        readOnly: true,
+      }],
+    });
+
+    submitConversationMessage({
+      content: '生成分镜 @skill{ap-skill-1|短剧分镜}',
+      conversationId: 'conversation-1',
+    });
+
+    const task = useAppStore.getState().agentTasks[0];
+    expect(task.skillBindings).toEqual([expect.objectContaining({
+      skillId: 'ap-skill-1',
+      content: '# 固定分镜规则',
+      origin: 'agent-package',
+      packageName: 'AI短剧知识库',
+      entryPath: '04-分镜设计/storyboard-script/SKILL.md',
+      contentHash: 'b'.repeat(64),
+    })]);
+    useAppStore.setState({ agentPackageSkills: [] });
+    expect(task.skillBindings?.[0].content).toBe('# 固定分镜规则');
   });
 
   it('rejects more explicit Skills than can be represented by the task snapshot', () => {

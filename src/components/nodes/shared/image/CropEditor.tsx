@@ -13,11 +13,13 @@ import 'react-image-crop/dist/ReactCrop.css';
 import FullscreenOverlay from '../../../shared/FullscreenOverlay';
 import AnimatedButton from '../../../shared/AnimatedButton';
 import { springGentle } from '../../../../utils/motion';
-import { fetchImageForCrop } from '../../../../services/fileService';
 import { useImageViewportGesture } from '../../../../hooks/useImageViewportGesture';
 import ImageEditorZoomControls from './ImageEditorZoomControls';
 import PenCropLayer, { type PenCropHandle, type Anchor } from './PenCropLayer';
 import { makeContainedCenteredCrop } from './cropUtils';
+import { assertEditorCanvasBudget, canvasToDataUrl } from './imageResourceBudget';
+import { beginCropOperation, type CropOperation } from './cropOperationRegistry';
+import { createSafeImagePreviewSource, type SafeImagePreviewSource } from './imageUtils';
 
 /* ── 类型 ── */
 type AspectPreset = 'free' | '1:1' | '4:3' | '16:9' | '3:4' | '9:16';
@@ -29,7 +31,9 @@ interface CropEditorProps {
   onClose: () => void;
   /** 点击确认后立即调用（在关闭弹窗之前），用于创建 loading 节点 */
   onStart?: () => void;
-  onSave: (croppedDataUrl: string, metadata?: { width: number; height: number }) => void;
+  onSave: (croppedDataUrl: string, metadata?: { width: number; height: number }) => void | Promise<void>;
+  /** 跨卸载/重开识别同一节点，避免旧裁切结果覆盖新结果。 */
+  operationKey?: string;
 }
 
 /* ── 预设 ── */
@@ -44,37 +48,6 @@ const ASPECT_OPTIONS: { key: AspectPreset; label: string; ratio?: number }[] = [
 
 function toDisplayedPixelCrop(percentCrop: Crop, img: HTMLImageElement, scale: number): PixelCrop {
   return convertToPixelCrop(percentCrop, img.clientWidth * scale, img.clientHeight * scale);
-}
-
-/**
- * 取得可安全绘制到 canvas 的自然分辨率图源。
- * - data:/blob: 同源，直接复用 DOM img。
- * - asset://（Tauri）：fetch → FileReader 转 data: 绝对同源，避免污染 canvas。
- * - http(s)://：经 Rust 原生 HTTP 下载，绕过 WebView CORS。
- */
-async function loadDrawableSource(
-  imageUrl: string,
-  domImg: HTMLImageElement,
-): Promise<CanvasImageSource> {
-  if (imageUrl.startsWith('data:') || imageUrl.startsWith('blob:')) return domImg;
-
-  let src: string;
-  if (imageUrl.startsWith('asset://') || imageUrl.includes('asset.localhost')) {
-    const resp = await fetch(imageUrl);
-    const blob = await resp.blob();
-    src = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    });
-  } else {
-    src = await fetchImageForCrop(imageUrl);
-  }
-  const img = new Image();
-  img.src = src;
-  await img.decode();
-  return img;
 }
 
 /** 将钢笔锚点（自然坐标）描成 canvas 贝塞尔路径 */
@@ -94,11 +67,14 @@ function tracePenPath(ctx: CanvasRenderingContext2D, anchors: Anchor[]) {
 /* ════════════════════════════════════════════
    CropEditor
    ════════════════════════════════════════════ */
-export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave }: CropEditorProps) {
+export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave, operationKey }: CropEditorProps) {
   const imgRef = useRef<HTMLImageElement>(null);
   const cropFrameRef = useRef<number | null>(null);
   const pendingCropRef = useRef<Crop | undefined>(undefined);
   const latestPixelCropRef = useRef<PixelCrop | undefined>(undefined);
+  const activeOperationRef = useRef<CropOperation | null>(null);
+  const busyRef = useRef(false);
+  const mountedRef = useRef(true);
 
   const [aspect, setAspect] = useState<AspectPreset>('free');
   const [crop, setCrop] = useState<Crop>();
@@ -106,6 +82,9 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
   const [mode, setMode] = useState<CropMode>('rect');
   const [penReady, setPenReady] = useState(false);
   const [imgSize, setImgSize] = useState({ natW: 0, natH: 0, clientW: 0 });
+  const [failure, setFailure] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [previewSource, setPreviewSource] = useState<SafeImagePreviewSource | null>(null);
   const penRef = useRef<PenCropHandle>(null);
   const {
     containerRef: stageRef,
@@ -144,6 +123,60 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
   }, []);
 
   useEffect(() => cancelPendingCrop, [cancelPendingCrop]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen || !imageUrl) return;
+    let active = true;
+    let prepared: SafeImagePreviewSource | null = null;
+    void createSafeImagePreviewSource(imageUrl, '裁切源图').then((result) => {
+      if (!active) {
+        result.release();
+        return;
+      }
+      prepared = result;
+      setPreviewSource(result);
+      setFailure(null);
+    }).catch((error) => {
+      if (active) setFailure(error instanceof Error ? error.message : '裁切源图读取失败，请重试');
+    });
+    return () => {
+      active = false;
+      prepared?.release();
+    };
+  }, [imageUrl, isOpen]);
+  const activePreviewSource = previewSource?.sourceUrl === imageUrl ? previewSource : null;
+
+  const beginConfirm = useCallback((): CropOperation | null => {
+    if (busyRef.current) return null;
+    const operation = beginCropOperation(operationKey ?? onSave);
+    if (!operation) {
+      setFailure('上一次裁切仍在处理中，请稍后再试');
+      return null;
+    }
+    busyRef.current = true;
+    setBusy(true);
+    activeOperationRef.current = operation;
+    return operation;
+  }, [onSave, operationKey]);
+
+  const finishConfirm = useCallback((operation: CropOperation) => {
+    operation.complete();
+    if (activeOperationRef.current !== operation) return;
+    activeOperationRef.current = null;
+    busyRef.current = false;
+    if (mountedRef.current) setBusy(false);
+  }, []);
+
+  const cancelActiveConfirm = useCallback(() => {
+    activeOperationRef.current?.cancel();
+    activeOperationRef.current = null;
+    busyRef.current = false;
+    if (mountedRef.current) setBusy(false);
+  }, []);
 
   /* ── 双击重置缩放 ── */
   const handleDoubleClick = useCallback(() => resetViewport(), [resetViewport]);
@@ -163,6 +196,8 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
 
   /* ── 关闭：重置所有状态 ── */
   const handleClose = useCallback(() => {
+    if (busyRef.current) return;
+    cancelActiveConfirm();
     cancelPendingCrop();
     setCrop(undefined);
     setCompletedCrop(undefined);
@@ -170,9 +205,10 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     setMode('rect');
     penRef.current?.reset();
     setPenReady(false);
+    setFailure(null);
     resetViewport();
     onClose();
-  }, [cancelPendingCrop, onClose, resetViewport]);
+  }, [cancelActiveConfirm, cancelPendingCrop, onClose, resetViewport]);
 
   /* ── 图片加载：初始化居中裁切框 ── */
   const onImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -180,6 +216,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     if (!w || !h) return;
 
     setImgSize({ natW: w, natH: h, clientW: clientWidth || w });
+    setFailure(null);
 
     const ratio = aspectRatio ?? w / h;
     const initial = makeContainedCenteredCrop(ratio, w, h);
@@ -220,6 +257,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     setMode('rect');
     penRef.current?.reset();
     setPenReady(false);
+    setFailure(null);
     resetViewport();
   }, [cancelPendingCrop, resetViewport]);
 
@@ -228,11 +266,13 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     const img = imgRef.current;
     const data = penRef.current?.getData();
     if (!img || !data || !data.closed || data.anchors.length < 3) return;
+    const operation = beginConfirm();
+    if (!operation) return;
     const { natW, natH } = imgSize;
 
-    onStart?.();
-    resetLocal();
-
+    let canvas: HTMLCanvasElement | null = null;
+    let started = false;
+    let delivered = false;
     try {
       // 控制点凸包包络即路径包围盒，取整并裁到图像范围
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -251,31 +291,54 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
       maxY = Math.min(natH, Math.ceil(maxY));
       const bw = Math.max(1, maxX - minX);
       const bh = Math.max(1, maxY - minY);
+      assertEditorCanvasBudget(bw, bh, '钢笔裁切输出');
 
-      const canvas = document.createElement('canvas');
+      onStart?.();
+      started = true;
+      resetLocal();
+
+      canvas = document.createElement('canvas');
       canvas.width = bw;
       canvas.height = bh;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) throw new Error('钢笔裁切画布初始化失败，请重试');
 
       ctx.translate(-minX, -minY);
       tracePenPath(ctx, data.anchors);
       ctx.clip();
 
-      const source = await loadDrawableSource(imageUrl, img);
-      ctx.drawImage(source, 0, 0, natW, natH);
+      ctx.drawImage(img, 0, 0, natW, natH);
 
-      onSave(canvas.toDataURL('image/png'), { width: bw, height: bh });
+      const dataUrl = await canvasToDataUrl(canvas);
+      if (!operation.isCurrent()) return;
+      delivered = true;
+      await onSave(dataUrl, { width: bw, height: bh });
     } catch (err) {
+      if (!operation.isCurrent()) return;
       console.error('[CropEditor] pen crop failed:', err);
-      onSave('', { width: 0, height: 0 });
+      setFailure(err instanceof Error ? err.message : '钢笔裁切失败，请重试');
+      if (started && !delivered) {
+        try {
+          await onSave('', { width: 0, height: 0 });
+        } catch (deliveryError) {
+          console.error('[CropEditor] failed to deliver pen crop failure:', deliveryError);
+        }
+      }
+    } finally {
+      if (canvas) {
+        canvas.width = 1;
+        canvas.height = 1;
+      }
+      finishConfirm(operation);
     }
-  }, [imageUrl, imgSize, onSave, onStart, resetLocal]);
+  }, [beginConfirm, finishConfirm, imgSize, onSave, onStart, resetLocal]);
 
   /* ── 矩形裁切 ── */
   const confirmRect = useCallback(async () => {
     const img = imgRef.current;
     if (!img || !completedCrop || completedCrop.width <= 0 || completedCrop.height <= 0) return;
+    const operation = beginConfirm();
+    if (!operation) return;
 
     const { x, y, width, height } = completedCrop;
 
@@ -285,31 +348,53 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
     const scaleX = img.naturalWidth / visualW;
     const scaleY = img.naturalHeight / visualH;
 
-    onStart?.();
-    resetLocal();
-
+    let canvas: HTMLCanvasElement | null = null;
+    let started = false;
+    let delivered = false;
     try {
       const destW = Math.round(width * scaleX);
       const destH = Math.round(height * scaleY);
-      const canvas = document.createElement('canvas');
+      assertEditorCanvasBudget(destW, destH, '矩形裁切输出');
+
+      onStart?.();
+      started = true;
+      resetLocal();
+
+      canvas = document.createElement('canvas');
       canvas.width = destW;
       canvas.height = destH;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) throw new Error('矩形裁切画布初始化失败，请重试');
 
-      const source = await loadDrawableSource(imageUrl, img);
       ctx.drawImage(
-        source,
+        img,
         x * scaleX, y * scaleY, width * scaleX, height * scaleY,
         0, 0, destW, destH,
       );
 
-      onSave(canvas.toDataURL('image/png'), { width: destW, height: destH });
+      const dataUrl = await canvasToDataUrl(canvas);
+      if (!operation.isCurrent()) return;
+      delivered = true;
+      await onSave(dataUrl, { width: destW, height: destH });
     } catch (err) {
+      if (!operation.isCurrent()) return;
       console.error('[CropEditor] crop failed:', err);
-      onSave('', { width: 0, height: 0 });
+      setFailure(err instanceof Error ? err.message : '矩形裁切失败，请重试');
+      if (started && !delivered) {
+        try {
+          await onSave('', { width: 0, height: 0 });
+        } catch (deliveryError) {
+          console.error('[CropEditor] failed to deliver crop failure:', deliveryError);
+        }
+      }
+    } finally {
+      if (canvas) {
+        canvas.width = 1;
+        canvas.height = 1;
+      }
+      finishConfirm(operation);
     }
-  }, [completedCrop, imageUrl, onSave, onStart, resetLocal, scale]);
+  }, [beginConfirm, completedCrop, finishConfirm, onSave, onStart, resetLocal, scale]);
 
   /* ── 确认裁切：立即关闭弹窗 → 后台裁切 → 回调 onSave ── */
   const handleConfirm = useCallback(() => {
@@ -321,6 +406,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
   const handleAspectChange = useCallback(
     (preset: AspectPreset) => {
       setAspect(preset);
+      setFailure(null);
       const img = imgRef.current;
       if (!img) return;
       const { naturalWidth: w, naturalHeight: h } = img;
@@ -361,14 +447,14 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
           <button
             type="button"
             className={`crop-aspect-btn${mode === 'rect' ? ' active' : ''}`}
-            onClick={() => setMode('rect')}
+            onClick={() => { setMode('rect'); setFailure(null); }}
           >
             矩形
           </button>
           <button
             type="button"
             className={`crop-aspect-btn${mode === 'pen' ? ' active' : ''}`}
-            onClick={() => setMode('pen')}
+            onClick={() => { setMode('pen'); setFailure(null); }}
           >
             钢笔
           </button>
@@ -400,11 +486,16 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
         )}
 
         <div className="crop-aspect-spacer" />
+        {failure && (
+          <span className="max-w-[360px] text-xs leading-relaxed text-red-300" role="alert">
+            {failure}
+          </span>
+        )}
         <AnimatedButton
           className="crop-action-btn confirm"
           data-tooltip="确认裁切"
           aria-label="确认裁切"
-          disabled={mode === 'pen' ? !penReady : !completedCrop}
+          disabled={busy || !activePreviewSource || (mode === 'pen' ? !penReady : !completedCrop)}
           onClick={handleConfirm}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
@@ -417,6 +508,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
           className="crop-aspect-btn crop-aspect-close crop-toolbar-close act-cancel"
           data-tooltip="关闭 (Esc)"
           aria-label="关闭"
+          disabled={busy}
           onClick={handleClose}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
@@ -447,7 +539,7 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
             transition: gesturing || dragging ? 'none' : 'transform 0.18s var(--ease-out-expo, ease-out)',
           }}
         >
-          <ReactCrop
+          {activePreviewSource && <ReactCrop
             crop={crop}
             onChange={handleChange}
             onComplete={handleComplete}
@@ -459,13 +551,13 @@ export default function CropEditor({ isOpen, imageUrl, onClose, onStart, onSave 
           >
             <img
               ref={imgRef}
-              src={imageUrl}
+              src={activePreviewSource.src}
               alt="Crop preview"
               className="crop-image"
               onLoad={onImageLoad}
               draggable={false}
             />
-          </ReactCrop>
+          </ReactCrop>}
           <PenCropLayer
             ref={penRef}
             active={mode === 'pen'}

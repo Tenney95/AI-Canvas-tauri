@@ -10,6 +10,7 @@ import { Rect, Ellipse, Image as KImage, Text as KText, Line, Arrow } from 'reac
 import { isDefaultAdjustments } from '../../../../../types/composerTypes';
 import type { Filter } from 'konva/lib/Node';
 import type { ImageAdjustments, ImageLayer, Layer } from '../../../../../types/composerTypes';
+import { getComposerFilterCacheBudgetError } from '../imageResourceBudget';
 
 interface Props {
   layer: Layer;
@@ -23,6 +24,8 @@ interface Props {
   onTransformEnd: (id: string, node: Konva.Node) => void;
   onBeginTextEdit: (layer: Layer) => void;
   registerNode: (id: string, node: Konva.Node | null) => void;
+  onResourceIssue: (id: string, message: string | null) => void;
+  resourceBudgetError?: string;
 }
 
 /** 各类图层共用的 Konva 属性 */
@@ -62,10 +65,14 @@ function ComposerImage({
   layer,
   register,
   common,
+  onResourceIssue,
+  resourceBudgetError,
 }: {
   layer: ImageLayer;
   register: (node: Konva.Node | null) => void;
   common: CommonNodeProps;
+  onResourceIssue: (id: string, message: string | null) => void;
+  resourceBudgetError?: string;
 }) {
   const ref = useRef<Konva.Image | null>(null);
   const a = layer.adjustments;
@@ -76,13 +83,30 @@ function ComposerImage({
     if (isDefaultAdjustments(a)) {
       node.filters([]);
       node.clearCache();
+      onResourceIssue(layer.id, null);
     } else {
       // blur 会向外扩散，缓存区域需要留余量，否则边缘被裁掉
-      node.cache({ offset: Math.ceil(a.blur) * 2 + 1 });
-      node.filters(buildFilters(a));
+      const offset = Math.ceil(a.blur) * 2 + 1;
+      const budgetError = resourceBudgetError
+        ?? getComposerFilterCacheBudgetError(layer.width, layer.height, offset);
+      if (budgetError) {
+        node.filters([]);
+        node.clearCache();
+        onResourceIssue(layer.id, `${layer.name}：${budgetError}`);
+      } else {
+        node.cache({ offset });
+        node.filters(buildFilters(a));
+        onResourceIssue(layer.id, null);
+      }
     }
     node.getLayer()?.batchDraw();
-  }, [a, layer.image, layer.width, layer.height]);
+    return () => {
+      node.filters([]);
+      node.clearCache();
+    };
+  }, [a, layer.id, layer.image, layer.name, layer.width, layer.height, onResourceIssue, resourceBudgetError]);
+
+  useEffect(() => () => onResourceIssue(layer.id, null), [layer.id, onResourceIssue]);
 
   return (
     <KImage
@@ -116,6 +140,8 @@ export default function ComposerLayerNode({
   onTransformEnd,
   onBeginTextEdit,
   registerNode,
+  onResourceIssue,
+  resourceBudgetError,
 }: Props) {
   if (!layer.visible) return null;
 
@@ -145,7 +171,15 @@ export default function ComposerLayerNode({
 
   switch (layer.type) {
     case 'image':
-      return <ComposerImage layer={layer} register={register} common={common} />;
+      return (
+        <ComposerImage
+          layer={layer}
+          register={register}
+          common={common}
+          onResourceIssue={onResourceIssue}
+          resourceBudgetError={resourceBudgetError}
+        />
+      );
     case 'rect':
       return (
         <Rect

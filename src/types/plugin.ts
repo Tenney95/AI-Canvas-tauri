@@ -126,6 +126,8 @@ export interface InstalledPlugin {
   id: string;
   manifest: PluginManifest;
   source: string;
+  /** Rust 原生注册表计算的入口源码 SHA-256；旧记录在加载时补齐。 */
+  sourceDigest?: string;
   enabled: boolean;
   installedAt: number;
   updatedAt: number;
@@ -152,6 +154,7 @@ export interface AvailableNodePluginTool {
   pluginName: string;
   runtime: PluginRuntime;
   source: string;
+  sourceDigest?: string;
   tool: PluginNodeToolManifest;
 }
 
@@ -160,6 +163,7 @@ export interface AvailablePluginNode {
   pluginName: string;
   runtime: PluginRuntime;
   source: string;
+  sourceDigest?: string;
   node: PluginCustomNodeManifest;
   permissions: PluginPermission[];
 }

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   clampZoom,
   clipEdges,
+  collectFrameSourceClips,
   dropIndexAt,
   duplicateClip,
   fitZoom,
@@ -52,6 +53,25 @@ function multitrack(): VideoEditorTrack[] {
 }
 
 describe('track-aware clip operations', () => {
+  it('collects only clips needed at the requested frame plus a contiguous dissolve underlay', () => {
+    const first = { ...clip('first', 4), timelineStart: 0 };
+    const second = {
+      ...clip('second', 4),
+      timelineStart: 4,
+      transitionIn: { kind: 'dissolve' as const, duration: 1 },
+    };
+    const distant = { ...clip('distant', 3), timelineStart: 20 };
+    const tracks: VideoEditorTrack[] = [
+      { id: 'main', kind: 'video', name: '主轨', clips: [first, second, distant] },
+      { id: 'hidden', kind: 'video', name: '隐藏轨', hidden: true, clips: [{ ...clip('hidden', 8) }] },
+      { id: 'audio', kind: 'audio', name: '音轨', clips: [{ ...clip('audio', 8) }] },
+    ];
+
+    expect(collectFrameSourceClips(tracks, 4.25).map((entry) => entry.id))
+      .toEqual(['first', 'second']);
+    expect(collectFrameSourceClips(tracks, 10)).toEqual([]);
+  });
+
   it('resolves locked state by either track id or clip id', () => {
     const tracks = multitrack().map((track) => (
       track.id === 'overlay' ? { ...track, locked: true } : track

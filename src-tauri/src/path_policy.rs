@@ -109,9 +109,11 @@ fn is_secret_path<R: Runtime>(app: &tauri::AppHandle<R>, resolved: &Path) -> boo
     is_under_secret_dir(&secret_dir, resolved)
 }
 
-/// 除凭据外，智能体 sourceId 到真实外部目录的映射也只能由 Rust 专用命令读取。
+/// 除凭据外，智能体来源映射与插件信任快照也只能由 Rust 专用命令读取。
 fn is_private_app_path<R: Runtime>(app: &tauri::AppHandle<R>, resolved: &Path) -> bool {
-    is_secret_path(app, resolved) || crate::agent_package::is_agent_private_path(app, resolved)
+    is_secret_path(app, resolved)
+        || crate::agent_package::is_agent_private_path(app, resolved)
+        || crate::plugin_registry::is_plugin_private_path(app, resolved)
 }
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {
@@ -133,6 +135,7 @@ fn overlaps_private_app_path<R: Runtime>(
         .unwrap_or(false);
     overlaps_secret
         || crate::agent_package::is_agent_private_path_overlap(app, resolved)
+        || crate::plugin_registry::is_plugin_private_path_overlap(app, resolved)
         || crate::blender_runtime::is_blender_private_path_overlap(app, resolved)
 }
 
@@ -339,7 +342,10 @@ pub fn authorize_path_with_roots<R: Runtime>(
     extra_roots: &[PathBuf],
 ) -> Result<PathBuf, String> {
     let resolved = resolve_path(raw, access)?;
-    if is_private_app_path(app, &resolved) {
+    // 递归读取、归档、解包和删除类命令只在这里校验一次根路径。除了私有子树本身，
+    // 也必须拒绝它们的祖先；否则 appLocalData 根会把 secrets/plugin-private 一并暴露。
+    // 普通同级文件不会与私有目录形成 Path 组件级祖先关系，因此不会被误判。
+    if overlaps_private_app_path(app, &resolved) {
         return Err("应用私有目录不允许通过该命令访问".to_string());
     }
     if !is_authorized(app, &resolved, access, extra_roots) {
@@ -540,6 +546,27 @@ mod tests {
         assert!(!crate::agent_package::is_under_agent_private_dir(
             &private_dir,
             Path::new("/data/app/agent-private-copy/sources.json"),
+        ));
+    }
+
+    #[test]
+    fn private_roots_overlap_their_ancestors_but_not_siblings() {
+        let app_root = Path::new("/data/app");
+        let private = Path::new("/data/app/plugin-private");
+
+        assert!(paths_overlap(app_root, private));
+        assert!(paths_overlap(private, app_root));
+        assert!(paths_overlap(
+            private,
+            Path::new("/data/app/plugin-private/revisions")
+        ));
+        assert!(!paths_overlap(
+            private,
+            Path::new("/data/app/plugin-private-backup"),
+        ));
+        assert!(!paths_overlap(
+            private,
+            Path::new("/data/app/projects/a.png")
         ));
     }
 

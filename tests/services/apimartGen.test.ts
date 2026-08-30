@@ -336,6 +336,8 @@ describe('APIMart video polling', () => {
     expect(serviceMocks.uploadToRemote).toHaveBeenCalledWith(
       'asset://localhost/reference.png',
       'apimart',
+      'image',
+      undefined,
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const submitBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as Record<string, unknown>;

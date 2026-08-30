@@ -15,10 +15,11 @@ import MentionPicker, { type MentionPickerItem } from '../shared/MentionPicker';
 import { resolveDramaMentionItems } from '../nodes/shared/mentionEditorSources';
 import { bestNodeThumb } from '../nodes/shared/mentionEditorDom';
 import type { BaseNodeData, GeneralModelConfig, ModelOption } from '../../types';
+import type { SkillPickerOption } from '../../types/agentPackage';
 import type { ContextUsageStat } from '../../services/chat/contextManager';
 import { useAppStore } from '../../store/useAppStore';
 import { useT } from '../../i18n';
-import { isSkillUserInvocable } from '../../services/skillPromptService';
+import { projectSkillPickerOptions } from '../../services/chat/skillCatalog';
 import {
   type MediaModelOption,
 } from '../nodes/shared/defaultModels';
@@ -46,6 +47,48 @@ const MEDIA_KIND_ICONS: Record<string, string> = {
 
 const REFERENCE_SUGGESTION_LIST_ID = 'chat-reference-suggestions';
 const SKILL_SUGGESTION_LIST_ID = 'chat-skill-suggestions';
+
+interface SkillPickerGroup {
+  id: string;
+  label: string;
+  sourceKind: SkillPickerOption['sourceKind'];
+  options: SkillPickerOption[];
+}
+
+function filterSkillPickerOptions(
+  options: SkillPickerOption[],
+  query: string,
+): SkillPickerOption[] {
+  return options.filter((skill) => fuzzyMatchText(
+    query,
+    skill.name,
+    skill.description,
+    skill.fileName,
+    skill.sourceLabel,
+  ));
+}
+
+/** 保持目录原始顺序，只把用户 Skill 分组固定在智能体包之前。 */
+function groupSkillPickerOptions(options: SkillPickerOption[]): SkillPickerGroup[] {
+  const groups = new Map<string, SkillPickerGroup>();
+  for (const option of options) {
+    const existing = groups.get(option.sourceGroupId);
+    if (existing) {
+      existing.options.push(option);
+      continue;
+    }
+    groups.set(option.sourceGroupId, {
+      id: option.sourceGroupId,
+      label: option.sourceLabel,
+      sourceKind: option.sourceKind,
+      options: [option],
+    });
+  }
+  return [...groups.values()].sort((left, right) => {
+    if (left.sourceKind === right.sourceKind) return 0;
+    return left.sourceKind === 'user' ? -1 : 1;
+  });
+}
 
 function parseReferenceQuery(query: string): { scope: ReferenceScope; query: string } {
   const shortcut = query.toLocaleLowerCase();
@@ -121,6 +164,8 @@ interface ChatInputProps {
   disabled?: boolean;
   /** 独立窗口是只读镜像，上传只会写进本窗口 Store 并被下一帧同步覆盖 */
   allowSkillUpload?: boolean;
+  /** 独立窗口只接收可选择的 Skill 元数据，不同步正文或来源路径。 */
+  skillOptions?: SkillPickerOption[];
 }
 
 export default function ChatInput({
@@ -140,6 +185,7 @@ export default function ChatInput({
   contextUsage,
   disabled = false,
   allowSkillUpload = true,
+  skillOptions,
 }: ChatInputProps) {
   const t = useT();
   const inputRef = useRef<ChatComposerEditorHandle>(null);
@@ -156,8 +202,14 @@ export default function ChatInput({
   const canvasNodes = useAppStore((state) => state.nodes);
   const dramaAssets = useAppStore((state) => state.dramaAssets);
   const userSkills = useAppStore((state) => state.userSkills);
+  const agentPackageSkills = useAppStore((state) => state.agentPackageSkills);
   const uploadSkill = useAppStore((state) => state.uploadSkill);
   const showToast = useAppStore((state) => state.showToast);
+  const storeSkillOptions = useMemo(
+    () => projectSkillPickerOptions(userSkills, agentPackageSkills),
+    [agentPackageSkills, userSkills],
+  );
+  const availableSkillOptions = skillOptions ?? storeSkillOptions;
   const compatibleMediaModels = mediaModelOptions;
   const filteredMediaModels = useMemo(
     () => compatibleMediaModels.filter((model) => fuzzyMatchModel(model, modelQuery)),
@@ -173,14 +225,18 @@ export default function ChatInput({
       node.data.type,
       node.id,
     )), [canvasNodes, modelQuery]);
-  const filteredSkills = useMemo(() => userSkills
-    .filter(isSkillUserInvocable)
-    .filter((skill) => fuzzyMatchText(
-      skillQuery,
-      skill.name,
-      skill.description,
-      skill.fileName,
-    )), [skillQuery, userSkills]);
+  const filteredSkills = useMemo(
+    () => filterSkillPickerOptions(availableSkillOptions, skillQuery),
+    [availableSkillOptions, skillQuery],
+  );
+  const groupedSkills = useMemo(
+    () => groupSkillPickerOptions(filteredSkills),
+    [filteredSkills],
+  );
+  const orderedSkills = useMemo(
+    () => groupedSkills.flatMap((group) => group.options),
+    [groupedSkills],
+  );
   const nodeDisplayIds = useMemo(
     () => new Map(canvasNodes.map((node) => [node.id, node.data.displayId])),
     [canvasNodes],
@@ -341,8 +397,12 @@ export default function ChatInput({
       })),
   ], [isModelAvailable, t, visibleCanvasNodes, visibleDramaAssets, visibleMediaModels]);
   const skillSuggestions = useMemo(
-    () => filteredSkills.map((skill) => ({ key: `skill:${skill.id}`, skill })),
-    [filteredSkills],
+    () => orderedSkills.map((skill) => ({ key: `skill:${skill.id}`, skill })),
+    [orderedSkills],
+  );
+  const skillSuggestionIndexes = useMemo(
+    () => new Map(skillSuggestions.map((suggestion, index) => [suggestion.skill.id, index])),
+    [skillSuggestions],
   );
   const referenceSuggestionIndexes = useMemo(
     () => new Map(referenceSuggestions.map((suggestion, index) => [suggestion.key, index])),
@@ -652,27 +712,44 @@ export default function ChatInput({
                 </span>
               </div>
               <div className="px-1 pb-1">
-                {filteredSkills.length > 0 ? filteredSkills.map((skill, skillIndex) => (
-                  <button
-                    key={skill.id}
-                    id={`chat-skill-suggestion-${skillIndex}`}
-                    type="button"
-                    role="option"
-                    aria-selected={skillIndex === resolvedActiveSuggestionIndex}
-                    onMouseEnter={() => setActiveSuggestionIndex(skillIndex)}
-                    onClick={() => insertSkillReference(skill.id, skill.name)}
-                    title={skill.description}
-                    className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] text-canvas-text transition-colors ${skillIndex === resolvedActiveSuggestionIndex ? 'bg-canvas-hover ring-1 ring-inset ring-indigo-400/25' : 'hover:bg-canvas-hover'}`}
+                {filteredSkills.length > 0 ? groupedSkills.map((group) => (
+                  <section
+                    key={group.id}
+                    role="group"
+                    aria-label={group.sourceKind === 'user' ? t('我的 Skill') : group.label}
                   >
-                    <Icon icon="mdi:puzzle-outline" width="16" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{skill.name}</span>
-                      <span className="block truncate text-[10px] text-canvas-text-muted">{skill.description}</span>
-                    </span>
-                  </button>
+                    <div className="flex items-center justify-between px-3 pb-1 pt-2 text-[10px] font-medium text-canvas-text-muted">
+                      <span className="truncate">
+                        {group.sourceKind === 'user' ? t('我的 Skill') : group.label}
+                      </span>
+                      <span className="ml-2 shrink-0">{group.options.length}</span>
+                    </div>
+                    {group.options.map((skill) => {
+                      const skillIndex = skillSuggestionIndexes.get(skill.id) ?? 0;
+                      return (
+                        <button
+                          key={skill.id}
+                          id={`chat-skill-suggestion-${skillIndex}`}
+                          type="button"
+                          role="option"
+                          aria-selected={skillIndex === resolvedActiveSuggestionIndex}
+                          onMouseEnter={() => setActiveSuggestionIndex(skillIndex)}
+                          onClick={() => insertSkillReference(skill.id, skill.name)}
+                          title={skill.description}
+                          className={`flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[11px] text-canvas-text transition-colors ${skillIndex === resolvedActiveSuggestionIndex ? 'bg-canvas-hover ring-1 ring-inset ring-indigo-400/25' : 'hover:bg-canvas-hover'}`}
+                        >
+                          <Icon icon={skill.sourceKind === 'agent-package' ? 'lucide:bot' : 'mdi:puzzle-outline'} width="16" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">{skill.name}</span>
+                            <span className="block truncate text-[10px] text-canvas-text-muted">{skill.description}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </section>
                 )) : (
                   <p className="px-3 py-3 text-center text-[11px] text-canvas-text-muted">
-                    {skillQuery ? t('没有匹配"{query}"的 Skill', { query: skillQuery }) : t('暂无已上传 Skill')}
+                    {skillQuery ? t('没有匹配"{query}"的 Skill', { query: skillQuery }) : t('暂无可调用 Skill')}
                   </p>
                 )}
               </div>
