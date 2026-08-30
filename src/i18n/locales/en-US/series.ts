@@ -28,7 +28,6 @@ const series = {
   '删除这一集': 'Delete this episode',
   '新增分集': 'Add episode',
   '转为剧集并新增分集': 'Convert to series and add episode',
-  '让助手按剧本拆分集': 'Have the assistant split episodes from the script',
   '生成 AI 拆分草案': 'Generate AI split draft',
   '打开剧本创作工作台': 'Open script workspace',
   '打开工作台': 'Open workspace',

@@ -27,10 +27,16 @@ vi.mock('../../src/services/fs/assetLibrary', () => ({
   walkDirectoryFiles: vi.fn(async () => [...files.keys()].map((path) => ({ path, size: files.get(path)!.size }))),
 }));
 
-vi.mock('../../src/services/fileService', () => ({
-  setBaseDataDir: vi.fn(),
-  syncAuthorizedDirectories: vi.fn(async () => undefined),
-}));
+vi.mock('../../src/services/fileService', async (importOriginal) => {
+  // store.nodes 在删除节点前会调用 collectNodeFileReferences 统计仍被引用的文件，
+  // 这里复用真实实现，避免 mock 落后于源码导致引用统计失真。
+  const actual = await importOriginal<typeof import('../../src/services/fileService')>();
+  return {
+    setBaseDataDir: vi.fn(),
+    syncAuthorizedDirectories: vi.fn(async () => undefined),
+    collectNodeFileReferences: actual.collectNodeFileReferences,
+  };
+});
 
 vi.mock('../../src/services/pollManager', () => ({
   cancelNodePolling: vi.fn(),
