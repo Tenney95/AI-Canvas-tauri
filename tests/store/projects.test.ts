@@ -905,3 +905,55 @@ describe('project switching', () => {
     expect(showToast).toHaveBeenCalledWith('项目数据读取失败，未创建空项目', 'error');
   });
 });
+
+describe('episode creative content', () => {
+  it('原子保存大纲、正文和创作要点到当前分集', async () => {
+    useAppStore.setState({
+      projects: [
+        { id: 'series', name: '月球列车', createdAt: 1, updatedAt: 1 },
+        {
+          id: 'ep-1',
+          name: '第 1 集',
+          createdAt: 1,
+          updatedAt: 1,
+          parentId: 'series',
+          episodeNo: 1,
+        },
+      ],
+      currentProjectId: 'ep-1',
+      projectName: '第 1 集',
+      projectLoadStatus: 'ready',
+      nodes: [],
+      edges: [],
+      groups: [],
+    });
+
+    const saved = await useAppStore.getState().updateEpisodeCreative('ep-1', {
+      outline: '林夏收到十年前的车票。',
+      script: '1-1 站台 外 夜\n林夏：这张票不该存在。',
+      creative: {
+        task: '让林夏决定登车',
+        coreConflict: '林夏想查明真相，但列车即将开走',
+        beats: ['收到车票', '发现日期异常', '决定登车'],
+        targetDurationSec: 90,
+      },
+    });
+
+    expect(saved).toBe(true);
+    expect(useAppStore.getState().projects.find((project) => project.id === 'ep-1'))
+      .toMatchObject({
+        episodeOutline: '林夏收到十年前的车票。',
+        episodeScript: '1-1 站台 外 夜\n林夏：这张票不该存在。',
+        episodeCreative: {
+          task: '让林夏决定登车',
+          targetDurationSec: 90,
+        },
+      });
+    expect(fileMocks.saveProject).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'ep-1',
+      episodeOutline: '林夏收到十年前的车票。',
+      episodeScript: expect.stringContaining('这张票不该存在'),
+      episodeCreative: expect.objectContaining({ task: '让林夏决定登车' }),
+    }));
+  });
+});

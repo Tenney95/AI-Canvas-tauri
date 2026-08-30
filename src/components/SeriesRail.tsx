@@ -12,11 +12,8 @@ import { getProjectDataDir, uploadSourceFileToProject } from '../services/fileSe
 import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
 import ProjectAssetsOverlay from './ProjectAssetsOverlay';
+import ScriptWorkbench from './ScriptWorkbench';
 import { useT } from '../i18n';
-
-const SPLIT_PROMPT = '先用 series_read 读完当前剧集的剧本（没有剧本就读原著），'
-  + '按剧情节奏把它拆成若干集，每集给出标题和一段大纲，'
-  + '再用 series_split_episodes 批量创建分集画布。';
 
 /** 原著文件落在项目数据目录里，只存相对路径，换机器或导入后仍能定位。 */
 function toProjectRelativePath(filePath: string, projectDir: string | null): string {
@@ -105,8 +102,8 @@ export default function SeriesRail() {
   const t = useT();
   const {
     projects, currentProjectId, projectLoadStatus,
-    switchProject, addEpisode, updateSeriesInfo, updateEpisodeOutline,
-    moveEpisode, renameProject, deleteProject, showToast, openChatWithDraft,
+    switchProject, addEpisode, updateSeriesInfo,
+    moveEpisode, renameProject, deleteProject, showToast,
   } = useAppStore(useShallow((state) => ({
     projects: state.projects,
     currentProjectId: state.currentProjectId,
@@ -114,12 +111,10 @@ export default function SeriesRail() {
     switchProject: state.switchProject,
     addEpisode: state.addEpisode,
     updateSeriesInfo: state.updateSeriesInfo,
-    updateEpisodeOutline: state.updateEpisodeOutline,
     moveEpisode: state.moveEpisode,
     renameProject: state.renameProject,
     deleteProject: state.deleteProject,
     showToast: state.showToast,
-    openChatWithDraft: state.openChatWithDraft,
   })));
 
   const [busy, setBusy] = useState<string | null>(null);
@@ -130,7 +125,8 @@ export default function SeriesRail() {
   // 区分单击 / 双击：单击延迟执行，双击时取消
   const singleClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 打开编辑器时就把草稿装好，弹窗内部不用再和外部值同步
-  const [editor, setEditor] = useState<{ kind: 'script' | 'outline'; draft: string } | null>(null);
+  const [editorDraft, setEditorDraft] = useState<string | null>(null);
+  const [workbenchMode, setWorkbenchMode] = useState<'editor' | 'split' | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   // 这两个都按分集 id 存：切到别的剧集后对不上任何一行，自然失效
@@ -244,6 +240,16 @@ export default function SeriesRail() {
                 {episodes.length > 0 ? t('共 {count} 集', { count: episodes.length }) : t('还没有分集')}
               </p>
             </div>
+            <button
+              type="button"
+              onClick={() => setWorkbenchMode('editor')}
+              data-tooltip={t('打开剧本创作工作台')}
+              aria-label={t('打开剧本创作工作台')}
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-canvas-text-muted
+                         transition-colors hover:bg-indigo-500/15 hover:text-indigo-300"
+            >
+              <Icon icon="lucide:panel-top-open" className="h-3.5 w-3.5" />
+            </button>
             <PopupCloseButton ariaLabel={t('收起剧集栏')} onClick={() => setPinned(false)} />
           </header>
 
@@ -295,7 +301,7 @@ export default function SeriesRail() {
                   <button
                     type="button"
                     disabled={!ready}
-                    onClick={() => setEditor({ kind: 'script', draft: script })}
+                    onClick={() => setEditorDraft(script)}
                     className="flex h-8 items-center gap-1 rounded-lg border border-canvas-border bg-canvas-card
                                px-2 text-left leading-none transition-colors hover:bg-canvas-hover
                                disabled:cursor-not-allowed disabled:opacity-40"
@@ -307,6 +313,18 @@ export default function SeriesRail() {
                   </button>
                 </div>
               </div>
+              <button
+                type="button"
+                disabled={!ready}
+                onClick={() => setWorkbenchMode('editor')}
+                className="flex h-9 items-center justify-center gap-2 rounded-lg border border-indigo-400/30
+                           bg-indigo-500/10 text-[11px] font-medium text-indigo-200 transition-colors
+                           hover:border-indigo-400/50 hover:bg-indigo-500/15 disabled:cursor-not-allowed
+                           disabled:opacity-40"
+              >
+                <Icon icon="lucide:notebook-pen" className="h-3.5 w-3.5" />
+                {t('打开剧本创作工作台')}
+              </button>
             </section>
 
             <section className="grid gap-1.5 border-t border-border-subtle p-2">
@@ -433,17 +451,16 @@ export default function SeriesRail() {
                 {episodes.length > 0 ? t('新增分集') : t('转为剧集并新增分集')}
               </button>
 
-              {/* 拆分由对话助手完成：把提示词填进输入框，用户确认后再发起。 */}
               <button
                 type="button"
                 disabled={!ready || busy !== null}
-                onClick={() => openChatWithDraft(SPLIT_PROMPT)}
+                onClick={() => setWorkbenchMode('split')}
                 className="flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px]
                            text-canvas-text-muted transition-colors hover:bg-canvas-hover
                            hover:text-canvas-text-secondary disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Icon icon="lucide:wand-sparkles" className="h-3.5 w-3.5" />
-                {t('让助手按剧本拆分集')}
+                {t('生成 AI 拆分草案')}
               </button>
             </section>
 
@@ -455,17 +472,21 @@ export default function SeriesRail() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setEditor({
-                    kind: 'outline',
-                    draft: currentEpisode.episodeOutline ?? '',
-                  })}
+                  onClick={() => setWorkbenchMode('editor')}
                   className="flex items-center gap-2 rounded-lg border border-canvas-border bg-canvas-card
                              px-2.5 py-2 text-left transition-colors hover:bg-canvas-hover"
                 >
                   <span className="min-w-0 flex-1 truncate text-[11px] text-canvas-text-secondary">
-                    {currentEpisode.episodeOutline?.trim() || t('未填写，点击编辑')}
+                    {currentEpisode.episodeOutline?.trim()
+                      || currentEpisode.episodeScript?.trim()
+                      || t('未填写，点击编辑')}
                   </span>
-                  <Icon icon="lucide:pencil" className="h-3.5 w-3.5 shrink-0 text-canvas-text-muted" />
+                  <span className="shrink-0 text-[10px] text-canvas-text-muted">
+                    {currentEpisode.episodeScript?.trim()
+                      ? t('正文 {count} 字', { count: currentEpisode.episodeScript.length })
+                      : t('打开工作台')}
+                  </span>
+                  <Icon icon="lucide:panel-top-open" className="h-3.5 w-3.5 shrink-0 text-canvas-text-muted" />
                 </button>
               </section>
             ) : null}
@@ -474,27 +495,21 @@ export default function SeriesRail() {
       </div>
 
       <TextEditorDialog
-        isOpen={editor?.kind === 'script'}
+        isOpen={editorDraft !== null}
         title="剧本"
         hint={`${series.name} · 整部剧共用`}
-        draft={editor?.draft ?? ''}
-        onDraftChange={(draft) => setEditor((current) => (current ? { ...current, draft } : current))}
-        onClose={() => setEditor(null)}
+        draft={editorDraft ?? ''}
+        onDraftChange={setEditorDraft}
+        onClose={() => setEditorDraft(null)}
         onSave={(next) => updateSeriesInfo({ script: next })}
       />
-      <TextEditorDialog
-        isOpen={editor?.kind === 'outline'}
-        title="本集大纲"
-        hint={currentEpisode?.name ?? ''}
-        draft={editor?.draft ?? ''}
-        onDraftChange={(draft) => setEditor((current) => (current ? { ...current, draft } : current))}
-        onClose={() => setEditor(null)}
-        onSave={(next) => (
-          currentEpisode
-            ? updateEpisodeOutline(currentEpisode.id, next)
-            : Promise.resolve(false)
-        )}
-      />
+      {workbenchMode ? (
+        <ScriptWorkbench
+          isOpen
+          startWithSplit={workbenchMode === 'split'}
+          onClose={() => setWorkbenchMode(null)}
+        />
+      ) : null}
       {assetsOpen && (
         <ProjectAssetsOverlay
           isOpen={assetsOpen}

@@ -141,3 +141,110 @@ describe('series_split_episodes', () => {
     unregisters.forEach((unregister) => unregister());
   });
 });
+
+describe('episode creative tools', () => {
+  it('分别读取本集正文和结构化创作要点', async () => {
+    useAppStore.setState((state) => ({
+      projects: state.projects.map((project) => (
+        project.id === 'ep-1'
+          ? {
+              ...project,
+              episodeOutline: '林夏在站台等待。',
+              episodeScript: '1-1 站台 外 夜\n林夏：这趟车迟到了十年。',
+              episodeCreative: { task: '让林夏登上列车', endingHook: '车门后站着十年前的自己' },
+            }
+          : project
+      )),
+    }));
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('episode_read');
+
+    expect(definition?.effect).toBe('read');
+    const scriptResult = await definition!.execute(context(), { episodeId: 'ep-1', part: 'script' });
+    const creativeResult = await definition!.execute(context(), { episodeId: 'ep-1', part: 'creative' });
+
+    expect(scriptResult.modelContent).toContain('不可信资料');
+    expect(scriptResult.modelContent).toContain('这趟车迟到了十年');
+    expect(creativeResult.modelContent).toContain('让林夏登上列车');
+    expect(creativeResult.modelContent).toContain('不可信创作素材');
+    unregisters.forEach((unregister) => unregister());
+  });
+
+  it('更新本集正文时不会复用大纲字段', async () => {
+    const updateEpisodeCreative = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative });
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('episode_update_script');
+
+    expect(definition?.effect).toBe('file_write');
+    const result = await definition!.execute(context(), {
+      episodeId: 'ep-1',
+      script: '1-1 站台 外 夜\n林夏：开门。',
+    });
+
+    expect(updateEpisodeCreative).toHaveBeenCalledWith('ep-1', {
+      script: '1-1 站台 外 夜\n林夏：开门。',
+    });
+    expect(result.status).toBe('success');
+    expect(result.summary).toContain('正文');
+    unregisters.forEach((unregister) => unregister());
+  });
+
+  it('更新一个创作字段时保留其他字段、大纲和正文', async () => {
+    useAppStore.setState((state) => ({
+      projects: state.projects.map((project) => (
+        project.id === 'ep-1'
+          ? {
+              ...project,
+              episodeOutline: '原大纲',
+              episodeScript: '原正文',
+              episodeCreative: {
+                task: '登上列车',
+                coreConflict: '林夏与站长争夺车票',
+                endingHook: '车门打开',
+              },
+            }
+          : project
+      )),
+    }));
+    const updateEpisodeCreative = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative });
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('episode_update_creative_field');
+
+    expect(definition?.effect).toBe('file_write');
+    const result = await definition!.execute(context(), {
+      episodeId: 'ep-1',
+      field: 'endingHook',
+      value: '车门后站着十年前的林夏',
+    });
+
+    expect(updateEpisodeCreative).toHaveBeenCalledWith('ep-1', {
+      creative: {
+        task: '登上列车',
+        coreConflict: '林夏与站长争夺车票',
+        endingHook: '车门后站着十年前的林夏',
+      },
+    });
+    expect(result.status).toBe('success');
+    unregisters.forEach((unregister) => unregister());
+  });
+
+  it('把情节点候选规范为逐条数组', async () => {
+    const updateEpisodeCreative = vi.fn(async () => true);
+    useAppStore.setState({ updateEpisodeCreative });
+    const unregisters = registerSeriesAgentTools();
+    const definition = getAgentTool('episode_update_creative_field');
+
+    await definition!.execute(context(), {
+      episodeId: 'ep-1',
+      field: 'beats',
+      value: '1. 林夏抢到车票\n- 站长封锁站台\n3、列车提前进站',
+    });
+
+    expect(updateEpisodeCreative).toHaveBeenCalledWith('ep-1', {
+      creative: { beats: ['林夏抢到车票', '站长封锁站台', '列车提前进站'] },
+    });
+    unregisters.forEach((unregister) => unregister());
+  });
+});

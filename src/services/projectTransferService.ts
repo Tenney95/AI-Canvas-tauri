@@ -429,6 +429,8 @@ async function duplicateEpisodes(episodeIds: string[], target: ProjectImportResu
         parentId: next.parentId,
         episodeNo: next.episodeNo,
         episodeOutline: next.episodeOutline,
+        episodeScript: next.episodeScript,
+        episodeCreative: next.episodeCreative,
       });
     } catch (error) {
       console.warn('[项目复制] 分集复制失败:', episodeId, error);

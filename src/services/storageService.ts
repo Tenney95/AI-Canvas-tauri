@@ -337,6 +337,8 @@ export interface ProjectSaveData {
   parentId?: string;
   episodeNo?: number;
   episodeOutline?: string;
+  episodeScript?: string;
+  episodeCreative?: import('../types').EpisodeCreativeInfo;
   /** 剧集级原著与剧本；仅剧集项目有 */
   series?: import('../types').ProjectSeriesInfo;
 }

@@ -290,6 +290,26 @@ export interface OutputHistoryEntry {
   params?: Record<string, unknown>; // 生成参数快照
 }
 
+/** 单集创作要点；只描述写作结构。 */
+export interface EpisodeCreativeInfo {
+  /** 本集要完成的叙事任务。 */
+  task?: string;
+  /** 对立双方、争夺目标与失败代价。 */
+  coreConflict?: string;
+  /** 开场几秒内建立的冲突或悬念。 */
+  openingHook?: string;
+  /** 本集的关键反转或情绪爆点。 */
+  reversal?: string;
+  /** 结尾未完成动作、揭露或关系反转。 */
+  endingHook?: string;
+  /** 按发生顺序排列的主要情节点。 */
+  beats?: string[];
+  /** 目标时长（秒），仅用于创作统计提示。 */
+  targetDurationSec?: number;
+  /** 原著章节、页码或段落范围。 */
+  sourceRange?: string;
+}
+
 export interface CanvasProject {
   id: string;
   name: string;
@@ -310,8 +330,12 @@ export interface CanvasProject {
   parentId?: string;
   /** 分集序号，从 1 开始；仅分集项目有。 */
   episodeNo?: number;
-  /** 本集大纲或剧本片段；仅分集项目有。 */
+  /** 本集大纲；仅分集项目有。旧项目继续兼容此字段。 */
   episodeOutline?: string;
+  /** 本集完整剧本正文；与大纲分开保存。 */
+  episodeScript?: string;
+  /** 本集结构化创作要点。 */
+  episodeCreative?: EpisodeCreativeInfo;
   /** 剧集级原著与剧本；仅剧集项目有。 */
   series?: ProjectSeriesInfo;
 }
