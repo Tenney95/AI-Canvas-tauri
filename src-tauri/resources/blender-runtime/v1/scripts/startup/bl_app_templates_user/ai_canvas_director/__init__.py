@@ -27,8 +27,11 @@ TEMPLATE_VERSION = 1
 EDITOR_SESSION_KEY = "ai_canvas_director_editor_session_v1"
 EDITOR_BLEND_NAME = "project.blend"
 EDITOR_BLEND_STAGING_NAME = ".project-return-staging.blend"
+EDITOR_FRAME_NAME = "frame.png"
+EDITOR_FRAME_STAGING_NAME = ".frame-return-staging.png"
 EDITOR_RESULT_NAME = "job-result.json"
 EDITOR_RESULT_STAGING_NAME = ".job-result.json.tmp"
+MAX_FRAME = 10_000_000
 DIRECTOR_COLLECTION_NAME = "AI Canvas Director Console"
 DIRECTOR_OWNER_KEY = "ai_canvas_console_owner"
 DIRECTOR_OWNER_TOKEN = "ai_canvas_director_console_v1"
@@ -1283,8 +1286,9 @@ def _editor_session():
     return session, output_dir
 
 
-def _write_editor_result(session, output_dir, blend_path):
-    size, digest = _hash_file(blend_path)
+def _write_editor_result(session, output_dir, blend_path, frame_path, frame):
+    blend_size, blend_digest = _hash_file(blend_path)
+    frame_size, frame_digest = _hash_file(frame_path)
     result = {
         "schemaVersion": 1,
         "protocol": "ai-canvas-blender-job-v1",
@@ -1298,14 +1302,25 @@ def _write_editor_result(session, output_dir, blend_path):
             "adapterVersion": session["adapterVersion"],
             "blenderVersion": session["blenderVersion"],
         },
-        "artifactCandidates": [{
-            "artifactId": f"blend-{digest}",
-            "kind": "blend-project",
-            "mimeType": "application/x-blender",
-            "stagedFileName": "project.blend",
-            "sha256": digest,
-            "bytes": size,
-        }],
+        "artifactCandidates": [
+            {
+                "artifactId": f"frame-{frame_digest}",
+                "kind": "frame-image",
+                "mimeType": "image/png",
+                "stagedFileName": EDITOR_FRAME_NAME,
+                "sha256": frame_digest,
+                "bytes": frame_size,
+                "frame": frame,
+            },
+            {
+                "artifactId": f"blend-{blend_digest}",
+                "kind": "blend-project",
+                "mimeType": "application/x-blender",
+                "stagedFileName": EDITOR_BLEND_NAME,
+                "sha256": blend_digest,
+                "bytes": blend_size,
+            },
+        ],
     }
     encoded = (json.dumps(
         result,
@@ -1334,15 +1349,106 @@ def _write_editor_result(session, output_dir, blend_path):
         raise RuntimeError("AI Canvas editor result could not be committed") from error
 
 
+def _render_editor_frame(output_dir):
+    frame_path = output_dir / EDITOR_FRAME_NAME
+    staging_path = output_dir / EDITOR_FRAME_STAGING_NAME
+    for path in (frame_path, staging_path):
+        if path.exists() or path.is_symlink():
+            raise RuntimeError("AI Canvas editor frame output is busy")
+
+    scene = bpy.context.scene
+    frame = int(scene.frame_current)
+    if frame < 0 or frame > MAX_FRAME:
+        raise RuntimeError("当前帧超出 AI Canvas 支持范围")
+    scene.frame_set(frame)
+    camera = scene.camera
+    if camera is None or camera.type != "CAMERA":
+        raise RuntimeError("当前场景没有活动摄影机")
+
+    render = scene.render
+    image_settings = render.image_settings
+    previous_filepath = render.filepath
+    previous_use_file_extension = render.use_file_extension
+    previous_use_multiview = render.use_multiview
+    previous_use_sequencer = render.use_sequencer
+    previous_file_format = image_settings.file_format
+    previous_media_type = (
+        image_settings.media_type
+        if hasattr(image_settings, "media_type")
+        else None
+    )
+    try:
+        render.filepath = str(staging_path)
+        render.use_file_extension = True
+        render.use_multiview = False
+        render.use_sequencer = False
+        if previous_media_type is not None:
+            image_settings.media_type = "IMAGE"
+        image_settings.file_format = "PNG"
+        _require_finished(
+            bpy.ops.render.render(
+                scene=scene.name,
+                write_still=True,
+                use_viewport=False,
+            ),
+            "AI Canvas editor frame render",
+        )
+        if not staging_path.is_file() or staging_path.is_symlink():
+            raise RuntimeError("AI Canvas editor frame staging output is invalid")
+        with staging_path.open("rb+") as handle:
+            os.fsync(handle.fileno())
+    except Exception:
+        try:
+            if staging_path.is_file() and not staging_path.is_symlink():
+                staging_path.unlink()
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            render.filepath = previous_filepath
+            render.use_file_extension = previous_use_file_extension
+            render.use_multiview = previous_use_multiview
+            render.use_sequencer = previous_use_sequencer
+            if previous_media_type is not None:
+                image_settings.media_type = previous_media_type
+            image_settings.file_format = previous_file_format
+        except Exception:
+            try:
+                if staging_path.is_file() and not staging_path.is_symlink():
+                    staging_path.unlink()
+            except OSError:
+                pass
+            raise
+    try:
+        os.replace(staging_path, frame_path)
+    except Exception:
+        try:
+            if staging_path.is_file() and not staging_path.is_symlink():
+                staging_path.unlink()
+        except OSError:
+            pass
+        raise
+    return frame_path, frame
+
+
 def _save_editor_blend_atomically(output_dir):
     blend_path = output_dir / EDITOR_BLEND_NAME
     staging_path = output_dir / EDITOR_BLEND_STAGING_NAME
+    frame_path = output_dir / EDITOR_FRAME_NAME
+    frame_staging_path = output_dir / EDITOR_FRAME_STAGING_NAME
     result_path = output_dir / EDITOR_RESULT_NAME
     result_staging_path = output_dir / EDITOR_RESULT_STAGING_NAME
 
     if not blend_path.is_file() or blend_path.is_symlink():
         raise RuntimeError("AI Canvas editor project path is invalid")
-    for path in (staging_path, result_path, result_staging_path):
+    for path in (
+        staging_path,
+        frame_path,
+        frame_staging_path,
+        result_path,
+        result_staging_path,
+    ):
         if path.exists() or path.is_symlink():
             raise RuntimeError("AI Canvas editor output is busy")
 
@@ -2170,11 +2276,28 @@ class AI_CANVAS_OT_save_and_return(bpy.types.Operator):
         return _has_editor_session()
 
     def execute(self, _context):
+        frame_path = None
         try:
             session, output_dir = _editor_session()
             blend_path = _save_editor_blend_atomically(output_dir)
-            _write_editor_result(session, output_dir, blend_path)
+            frame_path, frame = _render_editor_frame(output_dir)
+            _write_editor_result(
+                session,
+                output_dir,
+                blend_path,
+                frame_path,
+                frame,
+            )
         except Exception as error:
+            try:
+                if (
+                    frame_path is not None
+                    and frame_path.is_file()
+                    and not frame_path.is_symlink()
+                ):
+                    frame_path.unlink()
+            except OSError:
+                pass
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
 

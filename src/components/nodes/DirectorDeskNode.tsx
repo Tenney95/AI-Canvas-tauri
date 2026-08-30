@@ -171,6 +171,13 @@ function DirectorDeskNode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [data.imageUrl, data.directorCaptureUrls],
   );
+  const visibleCaptureUrls = useMemo(() => {
+    const latest = typeof data.imageUrl === 'string' ? data.imageUrl.trim() : '';
+    const ordered = latest
+      ? [...captureUrls.filter((url) => url !== latest), latest]
+      : captureUrls;
+    return ordered.slice(-4);
+  }, [captureUrls, data.imageUrl]);
 
   const width = (data.nodeWidth as number) || DEFAULT_W;
   const height = (data.nodeHeight as number) || DEFAULT_H;
@@ -483,15 +490,8 @@ function DirectorDeskNode({
           showToast('Blender 已返回，但画布绑定已变化，结果未写回节点', 'error');
           return;
         }
-        const liveState = useAppStore.getState();
-        liveState.updateNodeData(id, {
-          ...(result?.manifestReference
-            ? { directorResultManifest: result.manifestReference }
-            : {}),
-          directorStatus: 'ready',
-          error: undefined,
-        });
-        liveState.incrementRevision();
+        if (!result?.capture) throw new Error('Blender 保存返回未生成当前镜头图');
+        await persistCaptures([result.capture]);
         showToast('Blender 高级编辑已保存并返回 3D 导演台');
         return;
       }
@@ -522,6 +522,7 @@ function DirectorDeskNode({
     id,
     instanceId,
     isBlenderOperationFresh,
+    persistCaptures,
     prepareBlenderNodeOperation,
     runtimeKind,
     showToast,
@@ -755,8 +756,11 @@ function DirectorDeskNode({
               </select>
             </div>
             {captureUrls.length > 0 ? (
-              <div className="director-capture-grid">
-                {captureUrls.slice(-4).map((url, idx) => (
+              <div
+                className="director-capture-grid"
+                data-capture-count={visibleCaptureUrls.length}
+              >
+                {visibleCaptureUrls.map((url, idx) => (
                   <img
                     key={`${idx}-${url.slice(0, 48)}`}
                     src={url}
@@ -775,6 +779,8 @@ function DirectorDeskNode({
                 </span>
               </div>
             )}
+
+            {data.error && <NodeError nodeId={id} message={String(data.error)} />}
           </div>
 
           <div className="director-node-actions nodrag nopan">
@@ -824,8 +830,6 @@ function DirectorDeskNode({
                 || (captureUrls.length > 0 ? `${captureUrls.length} 张参考图` : '未同步截图')}
             </span>
           </div>
-
-          {data.error && <NodeError nodeId={id} message={String(data.error)} />}
 
           <Handle type="target" position={Position.Left} id="left" className="node-handle handle-target handle-director">
             <GooeyBtn className="gooey-btn-left" hue={280} />

@@ -7,6 +7,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  border-radius: 12px 12px 0 0;
+  overflow: hidden;
   background: color-mix(in srgb, var(--node-director) 8%, transparent);
 }
 
@@ -20,10 +22,21 @@
   box-sizing: border-box;
 }
 
+.director-capture-grid[data-capture-count='1'] {
+  gap: 0;
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0;
+}
+
+.director-capture-grid[data-capture-count='1'] .director-capture-thumb {
+  border-radius: 0;
+  object-fit: cover;
+}
+
 .director-capture-thumb {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.25);
   min-height: 48px;

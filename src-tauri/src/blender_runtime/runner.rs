@@ -33,6 +33,7 @@ const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
 const ADAPTER_VERSION: &str = "1.0.0";
 const MAX_SCENE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_STAGING_RESULT_BYTES: usize = 64 * 1024;
+const MAX_FRAME: u64 = 10_000_000;
 const MAX_FRAME_IMAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_REFERENCE_VIDEO_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_BLEND_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -508,7 +509,11 @@ fn collect_and_commit(
     {
         return Err("Blender Job 结果绑定无效".to_string());
     }
-    validate_operation_artifacts(job, &staged.artifact_candidates)?;
+    validate_operation_artifacts(
+        job.request.operation,
+        job.request.target_frame,
+        &staged.artifact_candidates,
+    )?;
     validate_output_directory(&layout.output_directory, &staged.artifact_candidates)?;
 
     let mut artifacts = layout.previous_artifacts.clone();
@@ -548,16 +553,7 @@ fn collect_and_commit(
         artifact.relative_path = expected_artifact_relative_path(&job.request.scene_id, &artifact);
         let target = join_project_relative(&job.trusted.project_root, &artifact.relative_path)?;
         persist_staged_artifact(&job.trusted.project_root, &staged_path, &target, &artifact)?;
-        if let Some(existing) = artifacts
-            .iter()
-            .find(|existing| existing.artifact_id == artifact.artifact_id)
-        {
-            if existing != &artifact {
-                return Err("Blender artifact 标识发生冲突".to_string());
-            }
-        } else {
-            artifacts.push(artifact);
-        }
+        append_latest_artifact(&mut artifacts, artifact);
     }
     if artifacts.len() > BLENDER_RESULT_MAX_ARTIFACTS {
         return Err("Blender 结果 artifact 数量超过上限".to_string());
@@ -596,10 +592,30 @@ fn collect_and_commit(
     ))
 }
 
+fn append_latest_artifact(
+    artifacts: &mut Vec<BlenderResultArtifact>,
+    artifact: BlenderResultArtifact,
+) {
+    artifacts.retain(|existing| existing.artifact_id != artifact.artifact_id);
+    artifacts.push(artifact);
+}
+
 fn validate_operation_artifacts(
-    job: &PreparedBlenderJob,
+    operation: BlenderJobOperation,
+    target_frame: Option<u64>,
     artifacts: &[StagedArtifact],
 ) -> Result<(), String> {
+    match operation {
+        BlenderJobOperation::RenderFrame if target_frame.is_none() => {
+            return Err("Blender Job 产物集合与操作不匹配".to_string());
+        }
+        BlenderJobOperation::OpenEditor | BlenderJobOperation::RenderVideo
+            if target_frame.is_some() =>
+        {
+            return Err("Blender Job 产物集合与操作不匹配".to_string());
+        }
+        _ => {}
+    }
     let frame_count = artifacts
         .iter()
         .filter(|artifact| artifact.kind == BlenderResultArtifactKind::FrameImage)
@@ -612,9 +628,9 @@ fn validate_operation_artifacts(
         .iter()
         .filter(|artifact| artifact.kind == BlenderResultArtifactKind::BlendProject)
         .count();
-    let exact = match job.request.operation {
+    let exact = match operation {
         BlenderJobOperation::OpenEditor => {
-            artifacts.len() == 1 && frame_count == 0 && video_count == 0 && blend_count == 1
+            artifacts.len() == 2 && frame_count == 1 && video_count == 0 && blend_count == 1
         }
         BlenderJobOperation::RenderFrame => {
             artifacts.len() == 2 && frame_count == 1 && video_count == 0 && blend_count == 1
@@ -640,7 +656,14 @@ fn validate_operation_artifacts(
         }
         match artifact.kind {
             BlenderResultArtifactKind::FrameImage => {
-                if artifact.frame != job.request.target_frame
+                let valid_frame = match operation {
+                    BlenderJobOperation::OpenEditor => {
+                        artifact.frame.is_some_and(|frame| frame <= MAX_FRAME)
+                    }
+                    BlenderJobOperation::RenderFrame => artifact.frame == target_frame,
+                    BlenderJobOperation::RenderVideo => false,
+                };
+                if !valid_frame
                     || artifact.start_frame.is_some()
                     || artifact.end_frame.is_some()
                     || artifact.fps.is_some()
@@ -722,6 +745,144 @@ fn artifact_limit(kind: BlenderResultArtifactKind) -> u64 {
         BlenderResultArtifactKind::FrameImage => MAX_FRAME_IMAGE_BYTES,
         BlenderResultArtifactKind::ReferenceVideo => MAX_REFERENCE_VIDEO_BYTES,
         BlenderResultArtifactKind::BlendProject => MAX_BLEND_BYTES,
+    }
+}
+
+#[cfg(test)]
+mod artifact_validation_tests {
+    use super::*;
+
+    fn candidate(kind: BlenderResultArtifactKind, frame: Option<u64>) -> StagedArtifact {
+        let hash = "a".repeat(64);
+        let (start_frame, end_frame, fps) = match kind {
+            BlenderResultArtifactKind::ReferenceVideo => {
+                (Some(1), Some(24), serde_json::Number::from_f64(24.0))
+            }
+            _ => (None, None, None),
+        };
+        StagedArtifact {
+            artifact_id: format!("{}-{hash}", artifact_prefix(kind)),
+            kind,
+            mime_type: kind.expected_mime_type().to_string(),
+            staged_file_name: staged_file_name(kind).to_string(),
+            sha256: hash,
+            bytes: 64,
+            frame,
+            start_frame,
+            end_frame,
+            fps,
+        }
+    }
+
+    fn collected_frame(frame: u64) -> BlenderResultArtifact {
+        let hash = "a".repeat(64);
+        BlenderResultArtifact {
+            artifact_id: format!("frame-{hash}"),
+            kind: BlenderResultArtifactKind::FrameImage,
+            mime_type: "image/png".to_string(),
+            relative_path: format!("director/scenes/scene/results/frame-{hash}-{hash}.png"),
+            sha256: hash,
+            bytes: 64,
+            frame: Some(frame),
+            start_frame: None,
+            end_frame: None,
+            fps: None,
+        }
+    }
+
+    #[test]
+    fn open_editor_requires_exactly_one_current_frame_and_one_blend() {
+        let valid = [
+            candidate(BlenderResultArtifactKind::FrameImage, Some(42)),
+            candidate(BlenderResultArtifactKind::BlendProject, None),
+        ];
+        assert!(
+            validate_operation_artifacts(BlenderJobOperation::OpenEditor, None, &valid,).is_ok()
+        );
+        assert!(
+            validate_operation_artifacts(BlenderJobOperation::OpenEditor, Some(42), &valid,)
+                .is_err()
+        );
+
+        let missing_frame = [candidate(BlenderResultArtifactKind::BlendProject, None)];
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::OpenEditor,
+            None,
+            &missing_frame,
+        )
+        .is_err());
+
+        let duplicate_frame = [
+            candidate(BlenderResultArtifactKind::FrameImage, Some(42)),
+            candidate(BlenderResultArtifactKind::FrameImage, Some(42)),
+            candidate(BlenderResultArtifactKind::BlendProject, None),
+        ];
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::OpenEditor,
+            None,
+            &duplicate_frame,
+        )
+        .is_err());
+
+        let video_mixed_in = [
+            candidate(BlenderResultArtifactKind::FrameImage, Some(42)),
+            candidate(BlenderResultArtifactKind::BlendProject, None),
+            candidate(BlenderResultArtifactKind::ReferenceVideo, None),
+        ];
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::OpenEditor,
+            None,
+            &video_mixed_in,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn render_frame_remains_bound_to_the_requested_frame() {
+        let valid = [
+            candidate(BlenderResultArtifactKind::FrameImage, Some(42)),
+            candidate(BlenderResultArtifactKind::BlendProject, None),
+        ];
+        assert!(
+            validate_operation_artifacts(BlenderJobOperation::RenderFrame, Some(42), &valid,)
+                .is_ok()
+        );
+        assert!(
+            validate_operation_artifacts(BlenderJobOperation::RenderFrame, Some(41), &valid,)
+                .is_err()
+        );
+        assert!(
+            validate_operation_artifacts(BlenderJobOperation::RenderFrame, None, &valid,).is_err()
+        );
+    }
+
+    #[test]
+    fn repeated_identical_frame_moves_the_current_metadata_to_the_end() {
+        let repeated = collected_frame(42);
+        let mut artifacts = vec![
+            repeated.clone(),
+            BlenderResultArtifact {
+                artifact_id: format!("blend-{}", "b".repeat(64)),
+                kind: BlenderResultArtifactKind::BlendProject,
+                mime_type: "application/x-blender".to_string(),
+                relative_path: "director/scenes/scene/results/project.blend".to_string(),
+                sha256: "b".repeat(64),
+                bytes: 64,
+                frame: None,
+                start_frame: None,
+                end_frame: None,
+                fps: None,
+            },
+        ];
+        let current = BlenderResultArtifact {
+            frame: Some(84),
+            ..repeated
+        };
+
+        append_latest_artifact(&mut artifacts, current.clone());
+
+        assert_eq!(artifacts.len(), 2);
+        assert_eq!(artifacts.last(), Some(&current));
     }
 }
 

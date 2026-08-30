@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "packageId": "ai-canvas-blender-runtime",
-  "packageVersion": "1.3.1",
+  "packageVersion": "1.3.2",
   "templateId": "ai_canvas_director",
   "templateVersion": 1,
   "jobProtocol": "ai-canvas-blender-job-v1",
@@ -19,8 +19,8 @@
     {
       "id": "template-init",
       "relativePath": "scripts/startup/bl_app_templates_system/ai_canvas_director/__init__.py",
-      "bytes": 88755,
-      "sha256": "8d2268de247bece2f9b5c7893569052545230f1480318e377d6a1604c88fc99b"
+      "bytes": 93064,
+      "sha256": "09c4d751683b5a343599c7809f5e8333a7726984dd0beaa18f32650545b25523"
     },
     {
       "id": "template-startup-blend",
