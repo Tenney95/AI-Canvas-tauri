@@ -1,6 +1,6 @@
 # 对话助手 Agent 能力实施方案
 
-> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片已完成，任务级按需绑定待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）与 Phase 0-B（高风险原生命令 Rust 调用方校验）已完成；3D 镜头台 Phase 0-C 双运行时前端契约、Phase 0-D 协议冻结、Phase 1-A Scene/Result 纯数据层与 Phase 1-B Blender 安装候选发现已完成，Phase 1-C Windows Blender 原生运行时预览已接通并继续完成故障注入验收
+> 文档状态：P3、P4 阶段已完成；P5-A/P5-B/P5-D 已完成，P5-C 待实施；8.29 Agent Package 首批纵向切片、任务级 Skill 按需绑定与 MCP 只读兼容已完成，项目覆盖和后台表面待实施；安全前置 Phase 0-A（Tauri 应用 command 外层 ACL）与 Phase 0-B（高风险原生命令 Rust 调用方校验）已完成；3D 镜头台 Phase 0-C 双运行时前端契约、Phase 0-D 协议冻结、Phase 1-A Scene/Result 纯数据层与 Phase 1-B Blender 安装候选发现已完成，Phase 1-C Windows Blender 原生运行时预览已接通并继续完成故障注入验收
 > 创建日期：2026-07-16
 > 适用项目：AI Canvas Tauri
 > 关联方案：`doc/对话式画布助手-功能方案.md`
@@ -2263,7 +2263,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 ### 8.29 全局 Agent Package 首批纵向切片（2026-08-27）
 
-**状态：首批纵向切片已完成；任务级按需绑定、项目覆盖和 MCP/后台表面接入待后续阶段**
+**状态：首批纵向切片、任务级 Skill 按需绑定与 MCP 只读兼容已完成；项目覆盖和后台表面接入待后续阶段**
 
 - 建立用户安装的 Agent Package v1 合同、严格 Manifest 校验和独立 `ai-canvas-agent-catalog` IndexedDB；可选目录加载失败时退化为空目录，不参与项目、画布和配置的启动 readiness。
 - 全局安装记录只持有 Manifest、包内相对入口、健康信息和不透明 `sourceId`；不保存真实路径、入口正文、API Key 或包内容。没有外部智能体时，默认助手、画布、工作流和模型发送链保持原样。
@@ -2286,6 +2286,17 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - 普通 `.zip` 尚未支持；其安全实现需要增加直接 Rust 依赖，必须在用户单独确认新增依赖后进入后续阶段。
 - 2026-08-30 修正通用目录兼容语义：`ai-canvas-agent.json` 不再作为健康门槛；有效无清单目录按 `ready` 载入且首次默认启用。旧 `legacy.*` 记录仅在命中精确历史提醒时迁移，保留用户启停状态和其他真实提醒；迁移写回失败会保留修正后的内存记录并将 Catalog 标记为受限。
 - 本次回归：Agent Package 相关 Vitest 5 个文件、37 项通过；Rust `agent_package::tests` 11 项通过；`npm run typecheck`、`npm run test:typecheck`、改动 TypeScript 定向 ESLint、`cargo check --lib` 和目标 `agent_package.rs` rustfmt 检查通过。全 crate `cargo fmt --check` 仍被多个未改 Rust 文件的既有格式差异阻断，未格式化无关文件。
+
+#### 2026-08-30 Skill 与 MCP 兼容扩展
+
+- 已安装且启用的 Agent Package 在主窗口构建运行期只读 Skill 目录；Manifest 包遵守 `skillRoots` / `excludePaths`，无清单通用目录使用已发现的 `SKILL.md` 入口。Skill 稳定 ID 由安装 ID 与相对入口生成，正文和原生来源句柄不写入 UserSkill 数据库或 Agent Catalog。
+- 聊天 `/` 选择器合并“我的 Skill”和各智能体包分组，支持按 Skill 或包名搜索；用户显式引用时在 AgentTask 内固定正文、版本、工具声明和来源审计快照，后续恢复不再读取可变全局记录。包级路由说明不会被伪装成额外 Skill，也不会自动注入 legacy 包正文。
+- 新增 `skill_search`，并把 Skill Catalog 分成 `assistant-model`、`assistant-user` 和 `mcp` 三个 surface。MCP 通用 Skill 工具在空目录时仍可稳定发现；包内 Skill 仅在宿主显式开启只读授权后支持 list/search/get/load/read_file，创建、更新和删除仍只作用于用户 Skill。
+- MCP 授权默认关闭，停用、删除、重新导入或关闭授权时会在 Store 同步撤下/撤权旧运行时快照；每次 MCP 调用还会交叉校验当前安装、健康、授权、sourceId、内容哈希和相对入口，避免异步目录刷新窗口继续读取旧内容。
+- 包内附属资料继续经过 Rust `sourceId + 相对路径` 包根边界；Renderer 只允许有界安全文本。正文明确引用的同包跨 Skill 资料可按需读取，实验 B 路线与其他路线双向隔离，脚本和未声明跨根文件拒绝读取。
+- 独立助手窗口只同步 `SkillPickerOption` 安全元数据；任务投影会清空 Skill 正文并移除包路径、内容哈希和原生来源信息，主窗口仍保留完整不可变任务快照用于执行和恢复。
+- 验证：`npm run lint`、`npm run typecheck`、`npm run test:typecheck` 通过；18 个 Skill/AgentPackage/MCP/独立窗口相关测试文件共 197 项通过；Vite 生产构建通过，仅报告既有动态导入失效和大 chunk 警告；37 个本批文本文件的严格 UTF-8 检查与 scoped `git diff --check` 均通过。
+- 全量 `npm run check` 的 lint、类型与测试类型阶段通过；全量 Vitest 为 233 个文件通过、1931/1932 项测试通过。剩余失败包括范围外既有 i18n 孤儿键 `让助手按剧本拆分集`，以及两个共同导入未改动 `scripts/ai-canvas-mcp.mjs` 的 suite 在 Vitest 导入期报无定位 `SyntaxError`；该脚本的 Node `--check` 和原生动态 import 均通过。本阶段未修改 Rust、依赖、Tauri 安全配置、IndexedDB schema 或 Policy，也未启动安装版做真实 MCP 连接端到端手测。
 
 #### 回滚
 
@@ -2621,7 +2632,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - [x] 同会话任务串行，安全边界支持插话，成功写操作恢复后不重放。
 - [x] Plan 模式由 Registry 和 Policy 双层限制为只读。
 - [x] Skill Manifest 只能缩小任务工具集合，不能扩大权限。
-- [x] 模型可发现并按需加载 Skill，但主动加载不改变任务工具权限，且只能读取该 Skill 目录子树内的文本资料。
+- [x] 模型可发现并按需加载 Skill，但主动加载不改变任务工具权限；UserSkill 只能读取自身目录子树，Agent Package Skill 可读取自身根及正文明确引用的同包安全文本，实验 B 路线保持隔离。
 - [x] 用户可自建只读领域子智能体并被主任务并行派出，子智能体无写权限；B 模式下主任务落地需确认，C/MCP 自动执行落地工具。
 - [x] 只读专家任务无工具、无嵌套、无画布副作用，并在任务中心显示父子关系。
 
@@ -2778,6 +2789,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 | 2026-08-28 | 自定义视频 API Stage 1 | 建立 Canonical Video Request 与 capability 权威校验，移除自定义视频猜测端点和隐藏默认；声明式协议补齐安全条件项、多参考数组展开、逐角色完整消费、动态任务轮询与真实请求体上限；助手 direct protocol 增加凭据防护和三种输入形态本地 dry-run；MCP 画布节点增加统一视频规格字段。Agnes 2.5 Flash、MiniMax H3 契约测试通过，MetaSo 实机提交到计费校验并准确返回余额不足。 |
 | 2026-08-28 | 安全前置 0-B | 为受信插件执行/Python 环境探测与轻量导演台资源状态、安装、取消、删除命令增加 Rust 调用方校验；明确导演台安装不使用 Python，未来 Blender 仅允许应用固定脚本。未修改 Agent/MCP Policy、数据库、UI 或 Blender 行为。 |
 | 2026-08-28 | 安全前置 0-A | 为 61 个 Tauri 应用 commands 增加只由首方 default capability 引用的外层 ACL；未修改 Agent/MCP Policy、数据库、UI、导演台运行时或 Blender 行为。 |
+| 2026-08-30 | 8.29 Skill/MCP 兼容 | 将已安装 Agent Package 的包内 Skill 接入聊天分组选择、不可变任务快照和显式授权的 MCP 只读工具；补齐运行期目录、受限跨根资料、独立窗口脱敏及停用/撤权立即 fail-closed，不复制进 UserSkill 数据库。 |
 | 2026-08-27 | 8.29 | 完成全局 Agent Package 首批纵向切片：助手内上传与管理、linked 文件夹、managed tar.gz、独立目录库、私有 sourceId 注册和无智能体旁路；任务级按需绑定与普通 zip 留待后续。 |
 | 2026-08-26 | Python 插件兼容 | Plugin API v3 增加可信 `main.py` 运行时，复用本机 Python 与现有依赖；独立子进程执行并加入高风险确认、环境检测、协议限长和超时终止，JavaScript QuickJS 沙箱保持不变。 |
 | 2026-08-26 | Sora2U 输入校验 | 视频模型能力新增声明式提交前约束；Sora2U 拦截 Prompt、Base64 总量、参考视频宽度/时长和参考音频时长，自定义通用接口可编辑同类规则。 |

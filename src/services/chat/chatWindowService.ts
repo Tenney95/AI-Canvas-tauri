@@ -18,7 +18,8 @@
 
 import type { Node } from '@xyflow/react';
 import type { ChatConversation, ChatMessage } from '../../types/chat';
-import type { BaseNodeData, GeneralModelConfig, UserSkill } from '../../types';
+import type { BaseNodeData, GeneralModelConfig } from '../../types';
+import type { SkillPickerOption } from '../../types/agentPackage';
 import type { DramaAssetLibrary } from '../../types/dramaAssets';
 import type {
   AgentApprovalResolution,
@@ -52,7 +53,8 @@ export interface ChatStateSnapshot {
   /** 画布节点精简投影，供 @ 引用与调用详情渲染；不含提示词/坐标等正文 */
   nodes: Node<BaseNodeData>[];
   dramaAssets: DramaAssetLibrary;
-  userSkills: UserSkill[];
+  /** 仅供 Skill 选择器展示；不含正文、sourceId 或包内路径。 */
+  skillOptions: SkillPickerOption[];
   /** 输入框草稿，独立窗口打开/收回时接力 */
   composerDraft: string;
 }
@@ -79,7 +81,7 @@ export interface ChatStatePatch {
     localFileGrants: LocalFileGrantSummary[] | null;
     nodes: Node<BaseNodeData>[];
     dramaAssets: DramaAssetLibrary;
-    userSkills: UserSkill[];
+    skillOptions: SkillPickerOption[];
     composerDraft: string;
   }>;
 }
@@ -185,7 +187,7 @@ export function createChatStatePatch(
   setChangedField(fields, 'localFileGrants', previous.localFileGrants, next.localFileGrants);
   setChangedField(fields, 'nodes', previous.nodes, next.nodes);
   setChangedField(fields, 'dramaAssets', previous.dramaAssets, next.dramaAssets);
-  setChangedField(fields, 'userSkills', previous.userSkills, next.userSkills);
+  setChangedField(fields, 'skillOptions', previous.skillOptions, next.skillOptions);
   setChangedField(fields, 'composerDraft', previous.composerDraft, next.composerDraft);
 
   return {
@@ -231,7 +233,7 @@ export function applyChatStatePatch(
       : (fields.localFileGrants ?? current.localFileGrants),
     nodes: fields.nodes ?? current.nodes,
     dramaAssets: fields.dramaAssets ?? current.dramaAssets,
-    userSkills: fields.userSkills ?? current.userSkills,
+    skillOptions: fields.skillOptions ?? current.skillOptions,
     composerDraft: fields.composerDraft ?? current.composerDraft,
     conversations: applyEntityPatch(current.conversations, patch.conversations),
     messages: applyEntityPatch(current.messages, patch.messages),

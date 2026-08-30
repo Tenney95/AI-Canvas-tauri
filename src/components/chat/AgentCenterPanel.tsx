@@ -58,12 +58,14 @@ export function AgentPackageCard({
   busy,
   allowInstall,
   onToggle,
+  onToggleMcpSkillRead,
   onRemove,
 }: {
   installation: AgentPackageInstallation;
   busy: boolean;
   allowInstall: boolean;
   onToggle: () => void;
+  onToggleMcpSkillRead: () => void;
   onRemove: () => void;
 }) {
   const t = useT();
@@ -108,6 +110,33 @@ export function AgentPackageCard({
               </ul>
             </div>
           )}
+          {allowInstall && (
+            <div className="mt-2 flex items-start justify-between gap-3 rounded-lg border border-canvas-border bg-canvas-surface px-2.5 py-2">
+              <div className="min-w-0">
+                <p className="text-[11px] font-medium text-canvas-text-secondary">{t('MCP 只读')}</p>
+                <p className="mt-0.5 text-[10px] leading-4 text-canvas-text-muted">
+                  {t('仅允许 MCP 客户端列出、加载和读取该智能体中的 Skill，不会执行包内脚本。')}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={installation.enabled && installation.mcpSkillReadEnabled}
+                aria-label={installation.mcpSkillReadEnabled
+                  ? t('禁止 MCP 读取智能体 {name} 的 Skill', { name })
+                  : t('允许 MCP 读取智能体 {name} 的 Skill', { name })}
+                disabled={busy || !installation.enabled}
+                onClick={onToggleMcpSkillRead}
+                className={`shrink-0 rounded-md px-2 py-1 text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  installation.enabled && installation.mcpSkillReadEnabled
+                    ? 'bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/15'
+                    : 'bg-canvas-card text-canvas-text-muted hover:bg-canvas-hover'
+                }`}
+              >
+                {t(installation.enabled && installation.mcpSkillReadEnabled ? '已允许' : '未允许')}
+              </button>
+            </div>
+          )}
         </div>
         {allowInstall && (
           <div className="flex shrink-0 flex-col items-end gap-1">
@@ -150,8 +179,14 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
   const agentPackages = useAppStore((state) => state.agentPackages);
   const agentCatalogStatus = useAppStore((state) => state.agentCatalogStatus);
   const agentCatalogErrorCode = useAppStore((state) => state.agentCatalogErrorCode);
+  const agentPackageSkillCatalogErrorCode = useAppStore(
+    (state) => state.agentPackageSkillCatalogErrorCode,
+  );
   const installAgentPackagePreview = useAppStore((state) => state.installAgentPackagePreview);
   const setAgentPackageEnabled = useAppStore((state) => state.setAgentPackageEnabled);
+  const setAgentPackageMcpSkillReadEnabled = useAppStore(
+    (state) => state.setAgentPackageMcpSkillReadEnabled,
+  );
   const removeAgentPackageRecord = useAppStore((state) => state.removeAgentPackageRecord);
   const showToast = useAppStore((state) => state.showToast);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -235,6 +270,24 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
     }
   };
 
+  const toggleMcpSkillRead = async (installation: AgentPackageInstallation) => {
+    if (!allowInstall || busyKey || !installation.enabled) return;
+    setBusyKey(`mcp:${installation.id}`);
+    setLocalError('');
+    try {
+      await setAgentPackageMcpSkillReadEnabled(
+        installation.id,
+        !installation.mcpSkillReadEnabled,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('智能体 MCP 权限保存失败');
+      setLocalError(message);
+      showToast(message, 'error');
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
   return (
     <div className="absolute inset-0 z-10 flex flex-col bg-canvas-bg">
       <div className="flex items-center justify-between border-b border-canvas-border px-4 py-3">
@@ -302,9 +355,11 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
           </section>
         )}
 
-        {(localError || agentCatalogErrorCode) && (
+        {(localError || agentCatalogErrorCode || agentPackageSkillCatalogErrorCode) && (
           <div role="alert" className="rounded-lg border border-red-400/20 bg-red-400/5 px-3 py-2 text-[11px] leading-4 text-red-300">
-            {localError || t('智能体目录当前受限（{code}）', { code: agentCatalogErrorCode || 'unknown' })}
+            {localError || t('智能体目录当前受限（{code}）', {
+              code: agentCatalogErrorCode || agentPackageSkillCatalogErrorCode || 'unknown',
+            })}
           </div>
         )}
 
@@ -327,9 +382,12 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
               <AgentPackageCard
                 key={installation.id}
                 installation={installation}
-                busy={busyKey === `toggle:${installation.id}` || busyKey === `remove:${installation.id}`}
+                busy={busyKey === `toggle:${installation.id}`
+                  || busyKey === `mcp:${installation.id}`
+                  || busyKey === `remove:${installation.id}`}
                 allowInstall={allowInstall}
                 onToggle={() => void togglePackage(installation)}
+                onToggleMcpSkillRead={() => void toggleMcpSkillRead(installation)}
                 onRemove={() => void removePackage(installation)}
               />
             ))}

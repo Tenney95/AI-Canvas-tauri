@@ -1008,6 +1008,7 @@ export default function ChatPanel({
                       onRevokeLocalFile={handleRevokeLocalFile}
                       contextUsage={contextUsage}
                       allowSkillUpload={!detached}
+                      skillOptions={detached ? (detachedSnapshot?.skillOptions ?? []) : undefined}
                     />
                   )}
                 </motion.div>

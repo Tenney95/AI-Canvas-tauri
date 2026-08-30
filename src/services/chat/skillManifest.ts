@@ -5,6 +5,12 @@ import type { SkillManifest } from '../../types';
 
 const FRONTMATTER_BOUNDARY = '---';
 const TOOL_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_.:-]*$/;
+const BLOCK_SCALAR_PATTERN = /^([>|])([+-])?$/;
+const SECURITY_RELEVANT_FIELDS = new Set([
+  'allowed-tools',
+  'user-invocable',
+  'disable-model-invocation',
+]);
 
 export interface ParsedSkillDocument {
   manifest?: SkillManifest;
@@ -56,6 +62,59 @@ function findFrontmatterEnd(lines: string[]): number {
   return -1;
 }
 
+function leadingSpaceCount(value: string): number {
+  let count = 0;
+  while (value[count] === ' ') count += 1;
+  return count;
+}
+
+function formatBlockScalar(lines: string[], style: '>' | '|'): string {
+  if (style === '|') return lines.join('\n').trim();
+
+  let folded = '';
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (index > 0) {
+      folded += lines[index - 1] && line ? ' ' : '\n';
+    }
+    folded += line;
+  }
+  return folded.trim();
+}
+
+function readBlockScalar(
+  lines: string[],
+  start: number,
+  end: number,
+  parentIndent: number,
+  style: '>' | '|',
+): { value: string; nextIndex: number } {
+  const blockLines: string[] = [];
+  let contentIndent: number | undefined;
+  let index = start;
+
+  for (; index < end; index += 1) {
+    const line = lines[index];
+    if (!line.trim()) {
+      blockLines.push('');
+      continue;
+    }
+
+    const indent = leadingSpaceCount(line);
+    if (indent <= parentIndent) break;
+    if (contentIndent === undefined) contentIndent = indent;
+    if (indent < contentIndent) {
+      throw new Error(`Skill Manifest 第 ${index + 1} 行块标量缩进无效`);
+    }
+    blockLines.push(line.slice(contentIndent));
+  }
+
+  return {
+    value: formatBlockScalar(blockLines, style),
+    nextIndex: index,
+  };
+}
+
 /** 只移除文档开头的 frontmatter，不解释或执行其中的任何内容。 */
 export function stripSkillFrontmatter(source: string): string {
   const normalized = source.replace(/^\uFEFF/, '');
@@ -100,6 +159,24 @@ export function parseSkillDocument(source: string): ParsedSkillDocument {
     }
     const key = line.slice(0, separator).trim().toLowerCase();
     const value = line.slice(separator + 1).trim();
+    const blockScalar = value.match(BLOCK_SCALAR_PATTERN);
+    if (blockScalar) {
+      if (SECURITY_RELEVANT_FIELDS.has(key)) {
+        throw new Error(`Skill Manifest 的 ${key} 不支持多行标量`);
+      }
+      const parentIndent = leadingSpaceCount(line);
+      const parsed = readBlockScalar(
+        lines,
+        index + 1,
+        end,
+        parentIndent,
+        blockScalar[1] as '>' | '|',
+      );
+      values.set(key, parsed.value ? [parsed.value] : []);
+      listKey = undefined;
+      index = parsed.nextIndex - 1;
+      continue;
+    }
     values.set(key, value ? [value] : []);
     listKey = value ? undefined : key;
   }

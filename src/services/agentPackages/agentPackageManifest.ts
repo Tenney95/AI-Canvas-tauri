@@ -73,6 +73,7 @@ const INSTALLATION_KEYS = new Set([
   'health',
   'contentHash',
   'enabled',
+  'mcpSkillReadEnabled',
   'installedAt',
   'updatedAt',
 ]);
@@ -458,6 +459,9 @@ export function normalizeAgentPackageInstallation(value: unknown): AgentPackageI
     health: normalizeHealth(raw.health),
     contentHash: normalizeContentHash(raw.contentHash),
     enabled: requiredBoolean(raw.enabled, 'enabled'),
+    mcpSkillReadEnabled: raw.mcpSkillReadEnabled === undefined
+      ? false
+      : requiredBoolean(raw.mcpSkillReadEnabled, 'mcpSkillReadEnabled'),
     installedAt: timestamp(raw.installedAt, 'installedAt'),
     updatedAt: timestamp(raw.updatedAt, 'updatedAt'),
   };

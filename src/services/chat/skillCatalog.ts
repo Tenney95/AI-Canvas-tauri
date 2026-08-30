@@ -8,6 +8,12 @@
  */
 import { useAppStore } from '../../store/useAppStore';
 import type { UserSkill } from '../../types';
+import type {
+  AgentPackageSkill,
+  RuntimeSkill,
+  SkillPickerOption,
+} from '../../types/agentPackage';
+import { isAgentPackageSkill } from '../../types/agentPackage';
 import { SKILL_CONTENT_LIMITS } from '../skillPromptService';
 import { estimateTokens } from './tokenEstimate';
 
@@ -68,30 +74,120 @@ export function sanitizeSkillLabel(
   return toSingleLine(value).slice(0, maxChars);
 }
 
-export function isSkillModelInvocable(skill: UserSkill): boolean {
-  return skill.manifest?.disableModelInvocation !== true;
+export type SkillCatalogSurface = 'assistant-model' | 'assistant-user' | 'mcp';
+
+/**
+ * MCP 授权以当前安装记录为准，不能只信任异步构建的运行时 Skill 快照。
+ * 关闭授权、停用、删除或重新导入内容后，即使目录刷新尚未完成也必须立即拒绝。
+ */
+function hasCurrentAgentPackageMcpGrant(skill: AgentPackageSkill): boolean {
+  const installation = useAppStore.getState().agentPackages.find(
+    (item) => item.id === skill.installationId,
+  );
+  return !!installation
+    && installation.enabled
+    && installation.health !== 'invalid'
+    && installation.health !== 'missing'
+    && installation.mcpSkillReadEnabled
+    && installation.packageId === skill.packageId
+    && installation.source.sourceId === skill.sourceId
+    && installation.contentHash === skill.packageContentHash
+    && installation.entrypoints.includes(skill.entryPath);
+}
+
+export function isSkillAvailableOnSurface(
+  skill: RuntimeSkill,
+  surface: SkillCatalogSurface,
+): boolean {
+  if (!isAgentPackageSkill(skill)) {
+    if (surface === 'assistant-user') return skill.manifest?.userInvocable !== false;
+    return skill.manifest?.disableModelInvocation !== true;
+  }
+  if (surface === 'assistant-user') {
+    return skill.packageUserInvocable && skill.manifest?.userInvocable !== false;
+  }
+  if (surface === 'mcp') {
+    return skill.mcpSkillReadEnabled
+      && hasCurrentAgentPackageMcpGrant(skill)
+      && skill.manifest?.disableModelInvocation !== true;
+  }
+  return skill.packageAutoInvoke && skill.manifest?.disableModelInvocation !== true;
+}
+
+export function isSkillModelInvocable(skill: RuntimeSkill): boolean {
+  return isSkillAvailableOnSurface(skill, 'assistant-model');
+}
+
+export function listRuntimeSkills(): RuntimeSkill[] {
+  const state = useAppStore.getState();
+  return [...state.userSkills, ...state.agentPackageSkills];
+}
+
+export function listSkillsForSurface(surface: SkillCatalogSurface): RuntimeSkill[] {
+  return listRuntimeSkills().filter((skill) => isSkillAvailableOnSurface(skill, surface));
 }
 
 /** 模型可见的 Skill，按上传时间倒序，最新的优先进入索引。 */
-export function listModelInvocableSkills(): UserSkill[] {
-  return useAppStore.getState().userSkills
-    .filter(isSkillModelInvocable)
+export function listModelInvocableSkills(): RuntimeSkill[] {
+  return listSkillsForSurface('assistant-model')
     .sort((left, right) => right.createdAt - left.createdAt);
 }
 
-export function resolveModelInvocableSkill(skillId: string): UserSkill | undefined {
-  const skill = useAppStore.getState().userSkills.find((item) => item.id === skillId);
-  return skill && isSkillModelInvocable(skill) ? skill : undefined;
+export function listUserInvocableSkills(): RuntimeSkill[] {
+  return listSkillsForSurface('assistant-user');
 }
 
-function skillPurpose(skill: UserSkill): string {
+export function listMcpReadableSkills(): RuntimeSkill[] {
+  return listSkillsForSurface('mcp');
+}
+
+export function resolveSkillForSurface(
+  skillId: string,
+  surface: SkillCatalogSurface,
+): RuntimeSkill | undefined {
+  const skill = listRuntimeSkills().find((item) => item.id === skillId);
+  return skill && isSkillAvailableOnSurface(skill, surface) ? skill : undefined;
+}
+
+export function resolveModelInvocableSkill(skillId: string): RuntimeSkill | undefined {
+  return resolveSkillForSurface(skillId, 'assistant-model');
+}
+
+export function projectSkillPickerOptions(
+  userSkills: UserSkill[],
+  packageSkills: AgentPackageSkill[],
+): SkillPickerOption[] {
+  const runtimeSkills: RuntimeSkill[] = [...userSkills, ...packageSkills];
+  return runtimeSkills
+    .filter((skill) => isSkillAvailableOnSurface(skill, 'assistant-user'))
+    .map((skill) => isAgentPackageSkill(skill) ? {
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      fileName: skill.fileName,
+      sourceKind: 'agent-package' as const,
+      sourceGroupId: skill.installationId,
+      sourceLabel: skill.packageName,
+    } : {
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      fileName: skill.fileName,
+      sourceKind: 'user' as const,
+      sourceGroupId: 'user-skills',
+      sourceLabel: '我的 Skill',
+    });
+}
+
+function skillPurpose(skill: RuntimeSkill): string {
   const purpose = skill.manifest?.whenToUse || skill.manifest?.description || skill.description;
   return toSingleLine(purpose || '').slice(0, SKILL_CATALOG_LIMITS.indexPurposeChars);
 }
 
 /** 构建注入系统提示词的 Skill 索引；没有可见 Skill 时返回空串，不产生空标题。 */
 export function buildSkillCatalogPrompt(): string {
-  const skills = listModelInvocableSkills().slice(0, SKILL_CATALOG_LIMITS.maxIndexEntries);
+  const allSkills = listModelInvocableSkills();
+  const skills = allSkills.slice(0, SKILL_CATALOG_LIMITS.maxIndexEntries);
   if (skills.length === 0) return '';
 
   const entries: string[] = [];
@@ -99,7 +195,10 @@ export function buildSkillCatalogPrompt(): string {
   for (const skill of skills) {
     const name = sanitizeSkillLabel(skill.name) || '未命名 Skill';
     const purpose = skillPurpose(skill);
-    const entry = `- ${name}（skillId: ${skill.id}）：${purpose || '（未声明用途）'}`;
+    const origin = isAgentPackageSkill(skill)
+      ? `；智能体: ${sanitizeSkillLabel(skill.packageName)}`
+      : '';
+    const entry = `- ${name}（skillId: ${skill.id}${origin}）：${purpose || '（未声明用途）'}`;
     const entryTokens = estimateTokens(entry);
     if (usedTokens + entryTokens > SKILL_CATALOG_LIMITS.indexTokenBudget) break;
     usedTokens += entryTokens;
@@ -107,7 +206,10 @@ export function buildSkillCatalogPrompt(): string {
   }
 
   if (entries.length === 0) return '';
-  return [CATALOG_HEADER, ...entries].join('\n');
+  const searchNotice = allSkills.length > entries.length
+    ? '提示：还有更多 Skill 未列入摘要；需要时用 skill_search 按名称或用途检索。'
+    : '';
+  return [CATALOG_HEADER, ...entries, searchNotice].filter(Boolean).join('\n');
 }
 
 /**

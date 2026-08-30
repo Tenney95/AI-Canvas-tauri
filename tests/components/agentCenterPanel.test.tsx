@@ -38,6 +38,7 @@ function installation(
     health: 'ready',
     contentHash: 'hash-1',
     enabled: true,
+    mcpSkillReadEnabled: false,
     installedAt: 1,
     updatedAt: 1,
     ...partial,
@@ -50,6 +51,7 @@ beforeEach(() => {
     agentPackages: [],
     agentCatalogStatus: 'ready',
     agentCatalogErrorCode: undefined,
+    agentPackageSkillCatalogErrorCode: undefined,
   });
 });
 
@@ -74,6 +76,7 @@ describe('AgentCenterPanel', () => {
         busy={false}
         allowInstall
         onToggle={() => {}}
+        onToggleMcpSkillRead={() => {}}
         onRemove={() => {}}
       />,
     );
@@ -85,6 +88,9 @@ describe('AgentCenterPanel', () => {
     expect(markup).toContain('534 个文件');
     expect(markup).toContain('文档记录的 Skill 数量与扫描结果不一致');
     expect(markup).toContain('aria-checked="true"');
+    expect(markup).toContain('MCP 只读');
+    expect(markup).toContain('允许 MCP 读取智能体 短剧制作助手 的 Skill');
+    expect(markup).toContain('aria-checked="false"');
     expect(markup).toContain('移除智能体 短剧制作助手');
   });
 
@@ -95,6 +101,7 @@ describe('AgentCenterPanel', () => {
         busy={false}
         allowInstall={false}
         onToggle={() => {}}
+        onToggleMcpSkillRead={() => {}}
         onRemove={() => {}}
       />,
     );

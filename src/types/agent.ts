@@ -296,6 +296,12 @@ export interface AgentSkillBinding {
   name: string;
   version?: string;
   content: string;
+  origin?: 'user' | 'agent-package';
+  packageId?: string;
+  packageName?: string;
+  packageVersion?: string;
+  entryPath?: string;
+  contentHash?: string;
   /** 存在时只能缩小任务可见工具集合；空数组表示该 Skill 不允许任何工具。 */
   allowedTools?: string[];
 }

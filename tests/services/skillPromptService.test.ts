@@ -8,6 +8,7 @@ import {
   truncateSkillContent,
 } from '../../src/services/skillPromptService';
 import type { UserSkill } from '../../src/types';
+import type { AgentPackageSkill } from '../../src/types/agentPackage';
 
 function skill(partial: Partial<UserSkill> = {}): UserSkill {
   return {
@@ -127,6 +128,7 @@ describe('explicit Skill task bindings', () => {
       name: 'Canvas audit',
       version: '1.2.3',
       content: '# Bound instructions',
+      origin: 'user',
       allowedTools: ['canvas_get_state', 'canvas_list_nodes'],
     }]);
 
@@ -139,6 +141,55 @@ describe('explicit Skill task bindings', () => {
       '检查画布 @skill{skill-1|Canvas audit}',
       bindings,
     )).not.toContain('# Changed later');
+  });
+
+  it('captures package origin metadata without binding sibling Skills', () => {
+    const packageSkill: AgentPackageSkill = {
+      id: 'ap-skill-1',
+      name: '海外剧本优化',
+      description: '优化海外短剧剧本',
+      fileName: 'SKILL.md',
+      content: '---\nversion: 2.1.0\n---\n# Package instructions',
+      sourceType: 'agent-package',
+      manifest: { version: '2.1.0', allowedTools: ['canvas_get_state'] },
+      createdAt: 2,
+      installationId: 'installation-1',
+      packageId: 'legacy.package',
+      packageName: 'AI短剧知识库',
+      packageVersion: '0.0.0-legacy',
+      packageContentHash: 'a'.repeat(64),
+      sourceId: 'source:opaque',
+      entryPath: '海外短剧/02-剧本创作/overseas-script-optimizer/SKILL.md',
+      skillRoot: '海外短剧/02-剧本创作/overseas-script-optimizer',
+      contentHash: 'b'.repeat(64),
+      branch: 'overseas',
+      packageUserInvocable: true,
+      packageAutoInvoke: false,
+      mcpSkillReadEnabled: false,
+      readOnly: true,
+    };
+
+    const bindings = captureExplicitSkillBindings(
+      '优化剧本 @skill{ap-skill-1|海外剧本优化}',
+      [packageSkill],
+    );
+
+    expect(bindings).toEqual([{
+      skillId: 'ap-skill-1',
+      name: '海外剧本优化',
+      version: '2.1.0',
+      content: '# Package instructions',
+      origin: 'agent-package',
+      packageId: 'legacy.package',
+      packageName: 'AI短剧知识库',
+      packageVersion: '0.0.0-legacy',
+      entryPath: '海外短剧/02-剧本创作/overseas-script-optimizer/SKILL.md',
+      contentHash: 'b'.repeat(64),
+      allowedTools: ['canvas_get_state'],
+    }]);
+    packageSkill.content = '# Changed after task creation';
+    expect(expandSkillBindings('优化剧本', bindings)).toContain('# Package instructions');
+    expect(expandSkillBindings('优化剧本', bindings)).not.toContain('Changed after');
   });
 
   it('caps explicit bindings and their captured content budget', () => {

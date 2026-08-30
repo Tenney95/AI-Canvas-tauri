@@ -52,6 +52,30 @@ describe('skillManifest', () => {
     expect(parsed.content).toBe('# Instructions\nReview the canvas.');
   });
 
+  it('parses folded and literal multiline scalar fields', () => {
+    const parsed = parseSkillDocument([
+      '---',
+      'name: overseas-short-drama-workflow',
+      'description: >',
+      '  【海外短剧工作流】海外版短剧总控入口。',
+      '  用于短剧选题、剧本评估和海外本地化。',
+      'when-to-use: |-',
+      '  用户明确要求海外版时使用。',
+      '  处理前先确认目标市场。',
+      'version: "1.0"',
+      '---',
+      '# Instructions',
+    ].join('\n'));
+
+    expect(parsed.manifest).toEqual({
+      name: 'overseas-short-drama-workflow',
+      description: '【海外短剧工作流】海外版短剧总控入口。 用于短剧选题、剧本评估和海外本地化。',
+      whenToUse: '用户明确要求海外版时使用。\n处理前先确认目标市场。',
+      version: '1.0',
+    });
+    expect(parsed.content).toBe('# Instructions');
+  });
+
   it('keeps legacy Skill files compatible', () => {
     const source = '# Legacy Skill\nDo the work.';
     expect(parseSkillDocument(source)).toEqual({ content: source });
@@ -76,6 +100,20 @@ describe('skillManifest', () => {
       '---',
       'Bad manifest',
     ].join('\n'))).toThrow('必须是 true 或 false');
+    expect(() => parseSkillDocument([
+      '---',
+      'user-invocable: >',
+      '  true',
+      '---',
+      'Bad manifest',
+    ].join('\n'))).toThrow('user-invocable 不支持多行标量');
+    expect(() => parseSkillDocument([
+      '---',
+      'allowed-tools: |',
+      '  canvas_query',
+      '---',
+      'Bad manifest',
+    ].join('\n'))).toThrow('allowed-tools 不支持多行标量');
   });
 
   it('strips frontmatter before prompt expansion and resolves tool limits', () => {

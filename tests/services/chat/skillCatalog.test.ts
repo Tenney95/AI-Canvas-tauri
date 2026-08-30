@@ -6,11 +6,18 @@ import {
   clearSkillCatalogTask,
   consumeSkillContentBudget,
   isSkillModelInvocable,
+  listMcpReadableSkills,
   listModelInvocableSkills,
+  listUserInvocableSkills,
+  projectSkillPickerOptions,
   resolveModelInvocableSkill,
   SKILL_CATALOG_LIMITS,
 } from '../../../src/services/chat/skillCatalog';
 import type { UserSkill } from '../../../src/types';
+import type {
+  AgentPackageInstallation,
+  AgentPackageSkill,
+} from '../../../src/types/agentPackage';
 
 function skill(partial: Partial<UserSkill> = {}): UserSkill {
   return {
@@ -26,7 +33,74 @@ function skill(partial: Partial<UserSkill> = {}): UserSkill {
 }
 
 function setSkills(skills: UserSkill[]): void {
-  useAppStore.setState({ userSkills: skills });
+  useAppStore.setState({ userSkills: skills, agentPackages: [], agentPackageSkills: [] });
+}
+
+function packageSkill(partial: Partial<AgentPackageSkill> = {}): AgentPackageSkill {
+  return {
+    id: 'ap-skill-1',
+    name: '短剧总控',
+    description: '路由短剧创作任务',
+    fileName: 'SKILL.md',
+    content: '# Package Skill',
+    sourceType: 'agent-package',
+    createdAt: 2,
+    installationId: 'installation-1',
+    packageId: 'legacy.drama',
+    packageName: 'AI短剧知识库',
+    packageVersion: '0.0.0-legacy',
+    packageContentHash: 'a'.repeat(64),
+    sourceId: 'source:opaque-secret',
+    entryPath: '00-工作流/short-drama-showrunner/SKILL.md',
+    skillRoot: '00-工作流/short-drama-showrunner',
+    contentHash: 'b'.repeat(64),
+    branch: 'domestic',
+    packageUserInvocable: true,
+    packageAutoInvoke: false,
+    mcpSkillReadEnabled: false,
+    readOnly: true,
+    ...partial,
+  };
+}
+
+function packageInstallation(
+  skill: AgentPackageSkill,
+  partial: Partial<AgentPackageInstallation> = {},
+): AgentPackageInstallation {
+  return {
+    id: skill.installationId,
+    packageId: skill.packageId,
+    manifest: {
+      schemaVersion: 1,
+      id: skill.packageId,
+      name: skill.packageName,
+      version: skill.packageVersion,
+      entrypoints: { instructions: 'AGENTS.md' },
+      supportedScopes: ['global'],
+      supportedSurfaces: ['assistant', 'mcp'],
+      routing: {
+        userInvocable: skill.packageUserInvocable,
+        autoInvoke: skill.packageAutoInvoke,
+      },
+    },
+    source: {
+      sourceId: skill.sourceId,
+      sourceType: 'folder',
+      displayName: skill.packageName,
+    },
+    entrypoints: [skill.entryPath],
+    skillCount: 1,
+    fileCount: 1,
+    totalBytes: skill.content.length,
+    warnings: [],
+    health: 'ready',
+    contentHash: skill.packageContentHash,
+    enabled: true,
+    mcpSkillReadEnabled: skill.mcpSkillReadEnabled,
+    installedAt: 1,
+    updatedAt: 1,
+    ...partial,
+  };
 }
 
 beforeEach(() => {
@@ -50,6 +124,58 @@ describe('模型可见性', () => {
     setSkills([skill({ id: 'auto', manifest: { userInvocable: false } })]);
     expect(listModelInvocableSkills().map((item) => item.id)).toEqual(['auto']);
     expect(resolveModelInvocableSkill('auto')?.id).toBe('auto');
+  });
+
+  it('legacy 包 Skill 只允许用户显式选择，不自动进入模型目录', () => {
+    useAppStore.setState({ agentPackageSkills: [packageSkill()] });
+
+    expect(listModelInvocableSkills()).toEqual([]);
+    expect(listUserInvocableSkills().map((item) => item.id)).toEqual(['ap-skill-1']);
+  });
+
+  it('显式 autoInvoke 的包 Skill 可进入模型目录，但提示词不泄露来源句柄或路径', () => {
+    useAppStore.setState({ agentPackageSkills: [packageSkill({ packageAutoInvoke: true })] });
+
+    expect(listModelInvocableSkills().map((item) => item.id)).toEqual(['ap-skill-1']);
+    const prompt = buildSkillCatalogPrompt();
+    expect(prompt).toContain('AI短剧知识库');
+    expect(prompt).not.toContain('source:opaque-secret');
+    expect(prompt).not.toContain('00-工作流/short-drama-showrunner/SKILL.md');
+  });
+
+  it('MCP 目录只包含显式授权的包 Skill', () => {
+    const privateSkill = packageSkill();
+    const readableSkill = packageSkill({ id: 'ap-skill-2', mcpSkillReadEnabled: true });
+    useAppStore.setState({
+      agentPackages: [packageInstallation(readableSkill)],
+      agentPackageSkills: [privateSkill, readableSkill],
+    });
+
+    expect(listMcpReadableSkills().map((item) => item.id)).toEqual(['ap-skill-2']);
+  });
+
+  it('MCP 授权关闭后不等待运行时目录刷新就立即撤权', () => {
+    const runtimeSkill = packageSkill({ mcpSkillReadEnabled: true });
+    const installation = packageInstallation(runtimeSkill);
+    useAppStore.setState({
+      agentPackages: [{ ...installation, mcpSkillReadEnabled: false }],
+      // 模拟异步 refresh 完成前仍在内存中的旧快照。
+      agentPackageSkills: [runtimeSkill],
+    });
+
+    expect(listMcpReadableSkills()).toEqual([]);
+  });
+
+  it('聊天选择器投影不包含正文、sourceId 或入口路径', () => {
+    const options = projectSkillPickerOptions([skill()], [packageSkill()]);
+    expect(options).toEqual([
+      expect.objectContaining({ sourceKind: 'user', sourceLabel: '我的 Skill' }),
+      expect.objectContaining({ sourceKind: 'agent-package', sourceLabel: 'AI短剧知识库' }),
+    ]);
+    const serialized = JSON.stringify(options);
+    expect(serialized).not.toContain('# Package Skill');
+    expect(serialized).not.toContain('source:opaque-secret');
+    expect(serialized).not.toContain('00-工作流/short-drama-showrunner/SKILL.md');
   });
 });
 

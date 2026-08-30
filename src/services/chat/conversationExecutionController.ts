@@ -245,11 +245,12 @@ function startAgentMessageExecution({
 
   try {
     ensureAgentToolsRegistered();
-    const referencedSkills = resolveReferencedSkills(text, store.userSkills);
+    const runtimeSkills = [...store.userSkills, ...store.agentPackageSkills];
+    const referencedSkills = resolveReferencedSkills(text, runtimeSkills);
     if (referencedSkills.length > SKILL_CONTENT_LIMITS.maxExplicitBindings) {
       throw new Error(`单个任务最多注入 ${SKILL_CONTENT_LIMITS.maxExplicitBindings} 个 Skill`);
     }
-    const skillBindings = captureExplicitSkillBindings(text, store.userSkills);
+    const skillBindings = captureExplicitSkillBindings(text, runtimeSkills);
     const task = store.createAgentTask({
       projectId,
       conversationId,
@@ -388,7 +389,7 @@ function driveAgentTask(
             includeCanvasContext: useAppStore.getState().currentProjectId === projectId,
           }),
           userMessage: task.skillBindings === undefined
-            ? expandSkillReferences(text, store.userSkills)
+            ? expandSkillReferences(text, [...store.userSkills, ...store.agentPackageSkills])
             : expandSkillBindings(text, task.skillBindings),
           excludeMessageIds: [userMessageId, assistantMessageId],
           signal,

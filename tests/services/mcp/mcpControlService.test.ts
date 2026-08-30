@@ -12,6 +12,77 @@ import {
   resetAgentToolsRegistrationForTests,
 } from '../../../src/services/chat/tools';
 import { useAppStore } from '../../../src/store/useAppStore';
+import type {
+  AgentPackageInstallation,
+  AgentPackageSkill,
+} from '../../../src/types/agentPackage';
+
+function packageSkill(partial: Partial<AgentPackageSkill> = {}): AgentPackageSkill {
+  return {
+    id: 'ap-skill-mcp-runtime',
+    name: '短剧节奏设计',
+    description: '用于设计开场钩子',
+    fileName: 'SKILL.md',
+    content: '# 短剧节奏\n先检查核心冲突。',
+    sourceType: 'agent-package',
+    createdAt: 1,
+    installationId: 'agent-package-mcp',
+    packageId: 'legacy.mcp-demo',
+    packageName: 'AI短剧知识库',
+    packageVersion: '0.0.0-legacy',
+    packageContentHash: 'a'.repeat(64),
+    sourceId: 'opaque-source-mcp',
+    entryPath: 'skills/drama/SKILL.md',
+    skillRoot: 'skills/drama',
+    contentHash: 'b'.repeat(64),
+    branch: 'shared',
+    packageUserInvocable: true,
+    packageAutoInvoke: false,
+    mcpSkillReadEnabled: true,
+    readOnly: true,
+    ...partial,
+  };
+}
+
+function packageInstallation(
+  skill: AgentPackageSkill,
+  partial: Partial<AgentPackageInstallation> = {},
+): AgentPackageInstallation {
+  return {
+    id: skill.installationId,
+    packageId: skill.packageId,
+    manifest: {
+      schemaVersion: 1,
+      id: skill.packageId,
+      name: skill.packageName,
+      version: skill.packageVersion,
+      entrypoints: { instructions: 'AGENTS.md' },
+      supportedScopes: ['global'],
+      supportedSurfaces: ['assistant', 'mcp'],
+      routing: {
+        userInvocable: skill.packageUserInvocable,
+        autoInvoke: skill.packageAutoInvoke,
+      },
+    },
+    source: {
+      sourceId: skill.sourceId,
+      sourceType: 'folder',
+      displayName: skill.packageName,
+    },
+    entrypoints: [skill.entryPath],
+    skillCount: 1,
+    fileCount: 1,
+    totalBytes: skill.content.length,
+    warnings: [],
+    health: 'ready',
+    contentHash: skill.packageContentHash,
+    enabled: true,
+    mcpSkillReadEnabled: skill.mcpSkillReadEnabled,
+    installedAt: 1,
+    updatedAt: 1,
+    ...partial,
+  };
+}
 
 beforeEach(() => {
   resetAgentToolsRegistrationForTests();
@@ -41,6 +112,14 @@ describe('MCP control service', () => {
     expect(tools.some((tool) => tool.name === 'app_get_state')).toBe(true);
     expect(tools.some((tool) => tool.name === 'project_list')).toBe(true);
     expect(tools.some((tool) => tool.name === 'project_delete')).toBe(true);
+    // 通用 Skill 只读工具必须保持稳定发现；客户端通常会缓存首次 tools/list。
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      'skill_search',
+      'skill_load',
+      'skill_read_file',
+      'skill_list',
+      'skill_get',
+    ]));
     expect(tools.every((tool) => tool.inputSchema.type === 'object')).toBe(true);
     expect(useAppStore.getState().conversations).toContainEqual(
       expect.objectContaining({
@@ -146,6 +225,88 @@ describe('MCP control service', () => {
       expect.objectContaining({ role: 'user', content: expect.stringContaining('MCP 请求') }),
       expect.objectContaining({ role: 'assistant', status: 'done', agentTaskId: expect.any(String) }),
     ]));
+  });
+
+  it('通过统一执行链读取已授权智能体包 Skill，且不暴露原生定位字段', async () => {
+    const skill = packageSkill();
+    useAppStore.setState({
+      agentPackages: [packageInstallation(skill)],
+      agentPackageSkills: [skill],
+    });
+
+    const result = await handleMcpBridgeRequest({
+      sessionId: 'session-package-skill',
+      requestId: 'session-package-skill:load',
+      method: 'tools/call',
+      params: {
+        name: 'skill_load',
+        arguments: { skillId: skill.id },
+      },
+    }) as { isError: boolean; content: Array<{ type: 'text'; text: string }> };
+
+    expect(result.isError).toBe(false);
+    expect(result.content[0].text).toContain('先检查核心冲突。');
+    expect(result.content[0].text).toContain('不可信');
+    expect(JSON.stringify(result)).not.toContain(skill.sourceId);
+    expect(JSON.stringify(result)).not.toContain(skill.entryPath);
+  });
+
+  it('直接 tools/call 也不能绕过智能体包 MCP 只读授权', async () => {
+    const privateSkill = packageSkill({
+      id: 'ap-skill-mcp-private',
+      name: '未授权 Skill',
+      description: '不应被 MCP 读取',
+      content: 'private-package-content',
+      installationId: 'agent-package-private',
+      packageId: 'legacy.private',
+      packageName: '私有知识库',
+      packageContentHash: 'c'.repeat(64),
+      sourceId: 'opaque-source-private',
+      entryPath: 'skills/private/SKILL.md',
+      skillRoot: 'skills/private',
+      contentHash: 'd'.repeat(64),
+      mcpSkillReadEnabled: false,
+    });
+    useAppStore.setState({
+      agentPackages: [packageInstallation(privateSkill)],
+      agentPackageSkills: [privateSkill],
+    });
+
+    const result = await handleMcpBridgeRequest({
+      sessionId: 'session-package-private',
+      requestId: 'session-package-private:load',
+      method: 'tools/call',
+      params: {
+        name: 'skill_load',
+        arguments: { skillId: 'ap-skill-mcp-private' },
+      },
+    }) as { isError: boolean; content: Array<{ type: 'text'; text: string }> };
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('private-package-content');
+    expect(JSON.stringify(result)).not.toContain('opaque-source-private');
+  });
+
+  it('直接 tools/call 在授权关闭后立即拒绝仍未刷新的旧 Skill 快照', async () => {
+    const staleSkill = packageSkill({ id: 'ap-skill-mcp-stale' });
+    useAppStore.setState({
+      agentPackages: [packageInstallation(staleSkill, { mcpSkillReadEnabled: false })],
+      agentPackageSkills: [staleSkill],
+    });
+
+    const result = await handleMcpBridgeRequest({
+      sessionId: 'session-package-stale',
+      requestId: 'session-package-stale:load',
+      method: 'tools/call',
+      params: {
+        name: 'skill_load',
+        arguments: { skillId: staleSkill.id },
+      },
+    }) as { isError: boolean; content: Array<{ type: 'text'; text: string }> };
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('先检查核心冲突。');
+    expect(JSON.stringify(result)).not.toContain(staleSkill.sourceId);
   });
 
   it('keeps a structured tool failure distinct from a failed response', async () => {

@@ -3,6 +3,7 @@ import type { AppState } from '../../src/store/useAppStore';
 import type {
   AgentPackageInstallation,
   AgentPackageManifest,
+  AgentPackageSkill,
   AgentSourcePreview,
 } from '../../src/types/agentPackage';
 
@@ -11,8 +12,12 @@ const dbMocks = vi.hoisted(() => ({
   getAllAgentInstallations: vi.fn(),
   putAgentInstallation: vi.fn(),
 }));
+const skillCatalogMocks = vi.hoisted(() => ({
+  loadAgentPackageSkillCatalog: vi.fn(),
+}));
 
 vi.mock('../../src/services/agentPackages/agentCatalogDb', () => dbMocks);
+vi.mock('../../src/services/agentPackages/agentPackageSkillService', () => skillCatalogMocks);
 
 import { createAgentPackageSlice } from '../../src/store/store.agentPackages';
 
@@ -68,24 +73,66 @@ function installation(partial: Partial<AgentPackageInstallation> = {}): AgentPac
     health: 'ready',
     contentHash: HASH,
     enabled: true,
+    mcpSkillReadEnabled: false,
     installedAt: 1,
     updatedAt: 1,
     ...partial,
   };
 }
 
-function createSlice(initial: AgentPackageInstallation[] = []) {
+function runtimeSkill(
+  source: AgentPackageInstallation = installation(),
+  partial: Partial<AgentPackageSkill> = {},
+): AgentPackageSkill {
+  return {
+    id: 'ap-skill-existing',
+    name: '短剧 Skill',
+    description: '短剧创作资料',
+    fileName: 'SKILL.md',
+    content: '# 短剧 Skill',
+    sourceType: 'agent-package',
+    createdAt: 1,
+    installationId: source.id,
+    packageId: source.packageId,
+    packageName: source.manifest.name,
+    packageVersion: source.manifest.version,
+    packageContentHash: source.contentHash,
+    sourceId: source.source.sourceId,
+    entryPath: 'skills/drama/SKILL.md',
+    skillRoot: 'skills/drama',
+    contentHash: 'd'.repeat(64),
+    branch: 'shared',
+    packageUserInvocable: true,
+    packageAutoInvoke: false,
+    mcpSkillReadEnabled: source.mcpSkillReadEnabled,
+    readOnly: true,
+    ...partial,
+  };
+}
+
+function createSlice(
+  initial: AgentPackageInstallation[] = [],
+  initialSkills: AgentPackageSkill[] = [],
+) {
   let state = {
     agentPackages: initial,
     agentCatalogStatus: 'idle',
     agentCatalogErrorCode: undefined,
+    agentPackageSkills: initialSkills,
+    agentPackageSkillCatalogStatus: 'idle',
+    agentPackageSkillCatalogRevision: '',
   } as unknown as AppState;
   const set = (next: Partial<AppState> | ((current: AppState) => Partial<AppState>)) => {
     const patch = typeof next === 'function' ? next(state) : next;
     state = { ...state, ...patch };
   };
   const slice = createAgentPackageSlice(set as never, () => state, {} as never);
-  state = { ...state, ...slice, agentPackages: initial };
+  state = {
+    ...state,
+    ...slice,
+    agentPackages: initial,
+    agentPackageSkills: initialSkills,
+  };
   return { slice, getState: () => state };
 }
 
@@ -94,6 +141,7 @@ beforeEach(() => {
   dbMocks.getAllAgentInstallations.mockResolvedValue([]);
   dbMocks.putAgentInstallation.mockResolvedValue(undefined);
   dbMocks.deleteAgentInstallation.mockResolvedValue(undefined);
+  skillCatalogMocks.loadAgentPackageSkillCatalog.mockResolvedValue({ skills: [], failures: [] });
 });
 
 describe('Agent Package Store', () => {
@@ -105,6 +153,7 @@ describe('Agent Package Store', () => {
     expect(result).toMatchObject({
       packageId: 'com.example.agent',
       enabled: true,
+      mcpSkillReadEnabled: false,
       source: {
         sourceId: 'agent-source:1',
         sourceType: 'folder',
@@ -134,6 +183,89 @@ describe('Agent Package Store', () => {
     expect(result.id).toBe(current.id);
     expect(result.enabled).toBe(false);
     expect(result.manifest.version).toBe('1.1.0');
+    expect(result.mcpSkillReadEnabled).toBe(false);
+  });
+
+  it('persists an explicit MCP read grant and revokes it when the package is disabled', async () => {
+    const current = installation();
+    const currentSkill = runtimeSkill(current);
+    const { slice, getState } = createSlice([current], [currentSkill]);
+
+    await slice.setAgentPackageMcpSkillReadEnabled(current.id, true);
+    expect(getState().agentPackages[0].mcpSkillReadEnabled).toBe(true);
+    expect(dbMocks.putAgentInstallation).toHaveBeenLastCalledWith(expect.objectContaining({
+      id: current.id,
+      mcpSkillReadEnabled: true,
+    }));
+
+    await slice.setAgentPackageEnabled(current.id, false);
+    expect(getState().agentPackages[0]).toMatchObject({
+      enabled: false,
+      mcpSkillReadEnabled: false,
+    });
+    expect(getState().agentPackageSkills).toEqual([]);
+  });
+
+  it('revokes an MCP Skill snapshot before the asynchronous catalog rebuild finishes', async () => {
+    const current = installation({ mcpSkillReadEnabled: true });
+    const staleSkill = runtimeSkill(current, { mcpSkillReadEnabled: true });
+    let finishCatalog!: (value: { skills: AgentPackageSkill[]; failures: [] }) => void;
+    skillCatalogMocks.loadAgentPackageSkillCatalog.mockReturnValueOnce(new Promise((resolve) => {
+      finishCatalog = resolve;
+    }));
+    const { slice, getState } = createSlice([current], [staleSkill]);
+
+    const revoke = slice.setAgentPackageMcpSkillReadEnabled(current.id, false);
+    await vi.waitFor(() => {
+      expect(getState().agentPackages[0].mcpSkillReadEnabled).toBe(false);
+    });
+    expect(getState().agentPackageSkills[0].mcpSkillReadEnabled).toBe(false);
+
+    finishCatalog({ skills: [], failures: [] });
+    await revoke;
+  });
+
+  it('removes package Skill snapshots immediately when disabling the installation', async () => {
+    const current = installation({ mcpSkillReadEnabled: true });
+    const staleSkill = runtimeSkill(current, { mcpSkillReadEnabled: true });
+    let finishCatalog!: (value: { skills: AgentPackageSkill[]; failures: [] }) => void;
+    skillCatalogMocks.loadAgentPackageSkillCatalog.mockReturnValueOnce(new Promise((resolve) => {
+      finishCatalog = resolve;
+    }));
+    const { slice, getState } = createSlice([current], [staleSkill]);
+
+    const disable = slice.setAgentPackageEnabled(current.id, false);
+    await vi.waitFor(() => {
+      expect(getState().agentPackages[0].enabled).toBe(false);
+    });
+    expect(getState().agentPackageSkills).toEqual([]);
+
+    finishCatalog({ skills: [], failures: [] });
+    await disable;
+  });
+
+  it('reuses a legacy installation by sourceId but revokes MCP access after content changes', async () => {
+    const current = installation({
+      packageId: `legacy.${HASH.slice(0, 16)}`,
+      manifest: {
+        ...manifest(),
+        id: `legacy.${HASH.slice(0, 16)}`,
+        version: '0.0.0-legacy',
+      },
+      mcpSkillReadEnabled: true,
+    });
+    const { slice, getState } = createSlice([current]);
+    const nextHash = 'c'.repeat(64);
+
+    const result = await slice.installAgentPackagePreview(preview({
+      manifest: null,
+      contentHash: nextHash,
+    }));
+
+    expect(result.id).toBe(current.id);
+    expect(result.packageId).toBe(`legacy.${nextHash.slice(0, 16)}`);
+    expect(result.mcpSkillReadEnabled).toBe(false);
+    expect(getState().agentPackages).toHaveLength(1);
   });
 
   it('creates an enabled host-side manifest for a ready manifestless folder', async () => {

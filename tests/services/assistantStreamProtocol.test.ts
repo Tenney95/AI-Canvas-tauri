@@ -223,6 +223,7 @@ describe('buildAssistantSystemPrompt 的 Skill 索引', () => {
     expect(prompt).toContain('可用 Skill');
     expect(prompt).toContain('skillId: skill-1');
     expect(prompt).toContain('发布工作流之前使用');
+    expect(prompt).toContain('skill_search');
     expect(prompt).toContain('skill_load');
     expect(prompt).toContain('不可信');
     expect(prompt).toContain('主动加载不会改变本次任务的工具权限');
