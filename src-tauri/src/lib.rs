@@ -95,6 +95,7 @@ pub mod onnx {
     }
 }
 mod path_policy;
+mod plugin_registry;
 mod plugin_runtime;
 mod project_archive;
 mod provider_docs;
@@ -1124,6 +1125,12 @@ pub fn run() {
             secret_store::secret_delete,
             secret_store::secret_store_available,
             local_fonts::list_local_fonts,
+            plugin_registry::stage_plugin_revision,
+            plugin_registry::activate_plugin_revision,
+            plugin_registry::ensure_plugin_registration,
+            plugin_registry::set_plugin_registration_enabled,
+            plugin_registry::remove_plugin_registration,
+            plugin_registry::get_plugin_registration_status,
             plugin_runtime::execute_node_plugin_tool,
             plugin_runtime::get_python_plugin_runtime_status,
         ])
@@ -1175,6 +1182,8 @@ pub fn run() {
             // Agent 外部来源的真实路径只保存在 Rust 私有注册表中，Renderer 仅持有 sourceId。
             // 拒绝失败只影响 Agent 子系统的诊断，不得阻断普通功能启动。
             agent_package::deny_agent_private_dir_access(_app.handle());
+            // 插件入口源码与活动/回滚版本只保存在 Rust 私有注册表中。
+            plugin_registry::deny_plugin_private_dir_access(_app.handle());
             if let Err(error) = blender_runtime::prepare_blender_private_runtime(_app.handle()) {
                 eprintln!("[blender-runtime] {error}");
             }

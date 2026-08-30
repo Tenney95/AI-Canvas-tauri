@@ -69,6 +69,12 @@ commands.allow = [
   "secret_delete",
   "secret_store_available",
   "list_local_fonts",
+  "stage_plugin_revision",
+  "activate_plugin_revision",
+  "ensure_plugin_registration",
+  "set_plugin_registration_enabled",
+  "remove_plugin_registration",
+  "get_plugin_registration_status",
   "execute_node_plugin_tool",
   "get_python_plugin_runtime_status",
 ]
