@@ -26,7 +26,7 @@ const JOB_SCRIPT_BYTES: &[u8] =
 
 const SCHEMA_VERSION: u32 = 1;
 const PACKAGE_ID: &str = "ai-canvas-blender-runtime";
-const PACKAGE_VERSION: &str = "1.2.0";
+const PACKAGE_VERSION: &str = "1.2.1";
 const TEMPLATE_ID: &str = "ai_canvas_director";
 const TEMPLATE_VERSION: u32 = 1;
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
@@ -47,12 +47,12 @@ const TEMPLATE_STARTUP_BLEND_PATH: &str =
 const JOB_SCRIPT_PATH: &str = "jobs/ai_canvas_director_job_v1.py";
 
 const TEMPLATE_INIT_SHA256: &str =
-    "a1586bd43ee9398a341e130a38f24c1b80b31ff863a836f77604100209edd372";
+    "50544e2485a948226fea2206e72e09568ea3790d35a39277ab69edb77df31c99";
 const TEMPLATE_STARTUP_BLEND_SHA256: &str =
     "a3e806fc2b910598b5f24c90127d02494fcbaf79a53f7e2eb7aee95f7f85e340";
 const JOB_SCRIPT_SHA256: &str = "3173845adb71ab01f718864353c8cfa92abd5d2aba6440f4fa1a1c5d782dbb19";
 
-const TEMPLATE_INIT_SIZE: u64 = 73_713;
+const TEMPLATE_INIT_SIZE: u64 = 73_705;
 const TEMPLATE_STARTUP_BLEND_SIZE: u64 = 91_348;
 const JOB_SCRIPT_SIZE: u64 = 40_364;
 
@@ -658,7 +658,7 @@ mod tests {
             .expect("second resource install should be idempotent");
 
         assert_eq!(first, second);
-        assert!(first.runtime_root.ends_with("blender-runtime/1.2.0"));
+        assert!(first.runtime_root.ends_with("blender-runtime/1.2.1"));
         assert_eq!(
             fs::read(previous_marker).expect("previous runtime should remain readable"),
             b"previous runtime"

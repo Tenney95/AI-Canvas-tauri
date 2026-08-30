@@ -583,7 +583,7 @@ def _draw_camera_preview_centered_text(
     font_id = 0
     blf.size(font_id, size)
     _text_width, text_height = blf.dimensions(font_id, text)
-    baseline_compensation = size * 0.15
+    baseline_compensation = 3.0
     text_y = y + (height - text_height) * 0.5 + baseline_compensation
     _draw_camera_preview_text(text, x, text_y, size, color)
 
