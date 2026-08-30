@@ -411,6 +411,27 @@
   backdrop-filter: none;
 }
 
+/*
+ * 重型图片编辑器的静态景深层：中心约 86%、边缘约 92% 遮暗。
+ * 通过多层纯色渐变保留“磨砂”层级，但不采样底层画布，避免整窗 backdrop blur 的离屏纹理。
+ */
+body > :is(
+  .matting-overlay,
+  .point-edit-overlay.point-edit-overlay,
+  .fullscreen-overlay--transparent.customgrid-overlay,
+  .fullscreen-overlay--transparent.crop-overlay,
+  .fullscreen-overlay--transparent.composer-overlay,
+  .fullscreen-overlay.camera-studio-overlay,
+  .fullscreen-overlay--transparent.image-node-fullscreen-overlay
+) {
+  background:
+    radial-gradient(ellipse at center, var(--black-alpha-30) 0%, var(--black-alpha-60) 100%),
+    linear-gradient(var(--black-alpha-50), var(--black-alpha-50)),
+    var(--black-alpha-60);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 /* Viewport — relative wrapper so canvas overlays image exactly */
 .matting-viewport {
   position: relative;

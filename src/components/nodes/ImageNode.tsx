@@ -858,6 +858,19 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           <div className="node-preview compact">
             {displaySrc ? (
               <div className="image-preview-container">
+                {shouldSuspendCanvasPreview && (
+                  <div
+                    className="image-preview-suspended pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 overflow-hidden rounded-xl bg-gradient-to-br from-canvas-card via-canvas-bg to-canvas-surface text-canvas-text-muted"
+                    aria-hidden="true"
+                  >
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.25" opacity="0.42">
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
+                      <polyline points="21 15 16 10 5 21" />
+                    </svg>
+                    <span className="text-[10px] tracking-[0.16em] opacity-50">{t('编辑中')}</span>
+                  </div>
+                )}
                 {!shouldSuspendCanvasPreview && (
                   <>
                 {imgLoadError ? (
@@ -1126,7 +1139,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         onClose={handleCloseFullscreen}
         data-tooltip={(data.label as string) || t('图片预览')}
         hidePanel
-        className="fullscreen-overlay--image-preview"
+        className="fullscreen-overlay--image-preview image-node-fullscreen-overlay"
       >
         {isFullscreen && (fullscreenError ? (
           <div className="flex flex-col items-center justify-center gap-3 text-canvas-text-muted" style={{ height: '100vh' }}>
