@@ -24,6 +24,8 @@ site/app
 .codegraph/*
 .claude/*
 doc/测试报告.md
+.planning
+.cargo
 
 generated-images/*
 
