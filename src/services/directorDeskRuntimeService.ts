@@ -39,8 +39,10 @@ export function getDirectorDeskRuntimeStatus(): Promise<DirectorDeskRuntimeStatu
   return invoke<DirectorDeskRuntimeStatus>('director_desk_runtime_status');
 }
 
-export function installDirectorDeskRuntime(): Promise<DirectorDeskRuntimeStatus> {
-  return invoke<DirectorDeskRuntimeStatus>('install_director_desk_runtime');
+export function installDirectorDeskRuntime(archivePath?: string): Promise<DirectorDeskRuntimeStatus> {
+  return invoke<DirectorDeskRuntimeStatus>('install_director_desk_runtime', {
+    archivePath: archivePath ?? null,
+  });
 }
 
 export function cancelDirectorDeskInstall(): Promise<void> {

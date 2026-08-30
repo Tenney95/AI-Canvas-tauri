@@ -15,6 +15,7 @@ interface DirectorDeskDownloadDialogProps {
   error: string | null;
   cancelling: boolean;
   onConfirm: () => void;
+  onSelectArchive: () => void;
   onCancel: () => void;
   onRetry: () => void;
 }
@@ -27,6 +28,7 @@ export default function DirectorDeskDownloadDialog({
   error,
   cancelling,
   onConfirm,
+  onSelectArchive,
   onCancel,
   onRetry,
 }: DirectorDeskDownloadDialogProps) {
@@ -48,7 +50,7 @@ export default function DirectorDeskDownloadDialog({
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-canvas-text">
-              {phase === 'error' ? '3D 导演台下载失败' : '下载 3D 导演台'}
+              {phase === 'error' ? '3D 导演台安装失败' : '下载 3D 导演台'}
             </h2>
             <p className="mt-1 text-xs leading-5 text-canvas-text-secondary">
               {phase === 'prompt'
@@ -82,8 +84,18 @@ export default function DirectorDeskDownloadDialog({
             onClick={onCancel}
             disabled={cancelling}
           >
-            {isDownloading ? (cancelling ? '正在取消...' : '取消下载') : '取消'}
+            {isDownloading ? (cancelling ? '正在取消...' : '取消安装') : '取消'}
           </button>
+          {(phase === 'prompt' || phase === 'error') && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-canvas-hover px-3 py-2 text-xs text-canvas-text-secondary transition-colors hover:bg-canvas-border"
+              onClick={onSelectArchive}
+            >
+              <Icon icon="lucide:folder-open" width="14" height="14" />
+              选择安装包
+            </button>
+          )}
           {phase === 'prompt' && (
             <button
               type="button"

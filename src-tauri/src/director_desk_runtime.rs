@@ -245,10 +245,67 @@ fn download_archive<R: Runtime>(
     ensure_not_cancelled()?;
     emit_progress(app, "verifying", downloaded, downloaded.max(1));
     let digest = format!("{:x}", hasher.finalize());
-    if digest != manifest.sha256.to_ascii_lowercase() {
-        return Err("导演台下载包 SHA-256 校验失败".to_string());
+    validate_archive_digest(manifest, &digest)
+}
+
+fn validate_archive_digest(
+    manifest: &DirectorDeskReleaseManifest,
+    digest: &str,
+) -> Result<(), String> {
+    if digest.eq_ignore_ascii_case(&manifest.sha256) {
+        Ok(())
+    } else {
+        Err("导演台安装包 SHA-256 校验失败，请选择当前版本的官方发布包".to_string())
     }
-    Ok(())
+}
+
+fn copy_local_archive<R: Runtime>(
+    app: &AppHandle<R>,
+    manifest: &DirectorDeskReleaseManifest,
+    source: &Path,
+    destination: &Path,
+) -> Result<(), String> {
+    let mut input =
+        File::open(source).map_err(|error| format!("打开本地导演台安装包失败: {error}"))?;
+    let source_bytes = input
+        .metadata()
+        .map_err(|error| format!("读取本地导演台安装包信息失败: {error}"))?
+        .len();
+    if source_bytes == 0 || source_bytes > MAX_ARCHIVE_BYTES {
+        return Err("本地导演台安装包大小无效或超过 100 MB 限制".to_string());
+    }
+
+    let mut output = File::create(destination)
+        .map_err(|error| format!("创建导演台安装临时文件失败: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; DOWNLOAD_BUFFER_SIZE];
+    let mut copied = 0_u64;
+    loop {
+        ensure_not_cancelled()?;
+        let read = input
+            .read(&mut buffer)
+            .map_err(|error| format!("读取本地导演台安装包失败: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        copied = copied.saturating_add(read as u64);
+        if copied > MAX_ARCHIVE_BYTES {
+            return Err("本地导演台安装包超过 100 MB 限制".to_string());
+        }
+        output
+            .write_all(&buffer[..read])
+            .map_err(|error| format!("复制本地导演台安装包失败: {error}"))?;
+        hasher.update(&buffer[..read]);
+        emit_progress(app, "verifying", copied, source_bytes);
+    }
+    output
+        .sync_all()
+        .map_err(|error| format!("同步导演台安装临时文件失败: {error}"))?;
+    if copied != source_bytes {
+        return Err("本地导演台安装包在读取过程中发生变化，请重新选择".to_string());
+    }
+    ensure_not_cancelled()?;
+    validate_archive_digest(manifest, &format!("{:x}", hasher.finalize()))
 }
 
 fn normalize_archive_path(path: &Path) -> Result<PathBuf, String> {
@@ -383,7 +440,10 @@ fn prune_old_versions(root: &Path, current_version: &str) {
     }
 }
 
-fn install_runtime<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+fn install_runtime<R: Runtime>(
+    app: &AppHandle<R>,
+    local_archive_path: Option<PathBuf>,
+) -> Result<(), String> {
     let manifest = release_manifest()?;
     let root = runtime_root(app)?;
     fs::create_dir_all(&root).map_err(|error| format!("创建导演台运行目录失败: {error}"))?;
@@ -405,7 +465,11 @@ fn install_runtime<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .map_err(|error| format!("创建导演台安装临时目录失败: {error}"))?;
 
     let result = (|| {
-        download_archive(app, &manifest, &archive_path)?;
+        if let Some(local_archive_path) = local_archive_path.as_deref() {
+            copy_local_archive(app, &manifest, local_archive_path, &archive_path)?;
+        } else {
+            download_archive(app, &manifest, &archive_path)?;
+        }
         extract_archive(app, &manifest, &archive_path, &staging_directory)?;
         ensure_not_cancelled()?;
         if !validate_installed_directory(&staging_directory, &manifest) {
@@ -438,8 +502,13 @@ fn install_runtime<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 pub async fn install_director_desk_runtime(
     webview: Webview,
     app: AppHandle,
+    archive_path: Option<String>,
 ) -> Result<DirectorDeskRuntimeStatus, String> {
     crate::path_policy::ensure_trusted_caller(&webview)?;
+    let local_archive_path = archive_path
+        .as_deref()
+        .map(|path| crate::path_policy::authorize_existing_plain_file(&app, path))
+        .transpose()?;
     if INSTALLING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -448,8 +517,10 @@ pub async fn install_director_desk_runtime(
     }
     CANCELLED.store(false, Ordering::Release);
     let worker_app = app.clone();
-    let worker_result =
-        tauri::async_runtime::spawn_blocking(move || install_runtime(&worker_app)).await;
+    let worker_result = tauri::async_runtime::spawn_blocking(move || {
+        install_runtime(&worker_app, local_archive_path)
+    })
+    .await;
     INSTALLING.store(false, Ordering::Release);
     CANCELLED.store(false, Ordering::Release);
     let result = worker_result.map_err(|error| format!("导演台安装任务执行失败: {error}"))?;
@@ -737,5 +808,12 @@ mod tests {
         assert_eq!(manifest.version, "0.3.1");
         assert_eq!(manifest.protocol, "tauri-event-v1");
         assert!(manifest.download_bytes < MAX_ARCHIVE_BYTES);
+    }
+
+    #[test]
+    fn only_accepts_the_pinned_archive_digest() {
+        let manifest = release_manifest().unwrap();
+        assert!(validate_archive_digest(&manifest, &manifest.sha256).is_ok());
+        assert!(validate_archive_digest(&manifest, &"0".repeat(64)).is_err());
     }
 }

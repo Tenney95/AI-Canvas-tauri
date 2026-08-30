@@ -46,6 +46,19 @@ describe('directorDeskRuntimeService', () => {
       'cancel_director_desk_install',
       'remove_director_desk_runtime',
     ]);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, 'install_director_desk_runtime', {
+      archivePath: null,
+    });
+  });
+
+  it('passes a user-selected archive to the native installer', async () => {
+    mocks.invoke.mockResolvedValue({ installed: true });
+
+    await installDirectorDeskRuntime('D:\\Downloads\\director-desk-v0.3.2.tar.gz');
+
+    expect(mocks.invoke).toHaveBeenCalledWith('install_director_desk_runtime', {
+      archivePath: 'D:\\Downloads\\director-desk-v0.3.2.tar.gz',
+    });
   });
 
   it('subscribes to typed install progress events', async () => {
