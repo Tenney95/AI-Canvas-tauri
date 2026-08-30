@@ -151,15 +151,16 @@ impl NativeBlenderJobRunner {
         cancellation: &BlenderJobCancellation,
     ) -> Result<(), BlenderJobRunnerFailure> {
         let background = job.request.operation != BlenderJobOperation::OpenEditor;
-        // Windows `canonicalize` returns an extended-length path (`\\?\...`). Keep that
-        // exact representation for trust checks and CreateProcessW's lpApplicationName,
-        // but do not expose it as argv[0]: Blender 5.2 derives its bundled
-        // `datafiles/locale` directory from argv[0] and fails to load translation catalogs
-        // through the extended prefix.
-        let argument_executable =
+        // Windows `canonicalize` returns an extended-length path (`\\?\...`). Trust
+        // checks keep that canonical identity, but Blender 5.2 also exposes the exact
+        // CreateProcessW application path through `bpy.app.binary_path`. Passing the
+        // extended representation there prevents its bundled translation catalogs from
+        // loading even when argv[0] is simplified. Re-canonicalize and remove only the
+        // Windows verbatim spelling, then use that same trusted target for both fields.
+        let launch_executable =
             canonicalize_simplified(&job.trusted.executable).map_err(startup_failure)?;
         let arguments = build_blender_arguments(
-            &argument_executable,
+            &launch_executable,
             &job.trusted
                 .resources
                 .application_template_root
@@ -174,7 +175,7 @@ impl NativeBlenderJobRunner {
 
         let environment = build_windows_environment_for(background).map_err(startup_failure)?;
         let process = spawn_managed_process(
-            &job.trusted.executable,
+            &launch_executable,
             &arguments,
             environment.as_deref(),
             &layout.job_directory,

@@ -26,7 +26,7 @@ const JOB_SCRIPT_BYTES: &[u8] =
 
 const SCHEMA_VERSION: u32 = 1;
 const PACKAGE_ID: &str = "ai-canvas-blender-runtime";
-const PACKAGE_VERSION: &str = "1.0.4";
+const PACKAGE_VERSION: &str = "1.2.0";
 const TEMPLATE_ID: &str = "ai_canvas_director";
 const TEMPLATE_VERSION: u32 = 1;
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
@@ -47,12 +47,12 @@ const TEMPLATE_STARTUP_BLEND_PATH: &str =
 const JOB_SCRIPT_PATH: &str = "jobs/ai_canvas_director_job_v1.py";
 
 const TEMPLATE_INIT_SHA256: &str =
-    "7a0f046866d5a442561d52ee0bcdc3e5aa28bcb7a6c2aa3661f88372cdd1c23e";
+    "a1586bd43ee9398a341e130a38f24c1b80b31ff863a836f77604100209edd372";
 const TEMPLATE_STARTUP_BLEND_SHA256: &str =
     "a3e806fc2b910598b5f24c90127d02494fcbaf79a53f7e2eb7aee95f7f85e340";
 const JOB_SCRIPT_SHA256: &str = "3173845adb71ab01f718864353c8cfa92abd5d2aba6440f4fa1a1c5d782dbb19";
 
-const TEMPLATE_INIT_SIZE: u64 = 9_664;
+const TEMPLATE_INIT_SIZE: u64 = 73_713;
 const TEMPLATE_STARTUP_BLEND_SIZE: u64 = 91_348;
 const JOB_SCRIPT_SIZE: u64 = 40_364;
 
@@ -646,13 +646,23 @@ mod tests {
     #[test]
     fn install_is_idempotent_and_returns_trusted_paths() {
         let root = TestDirectory::create();
+        let previous_runtime_root = root.0.join(INSTALL_VENDOR_DIRECTORY).join("1.1.0");
+        fs::create_dir_all(&previous_runtime_root)
+            .expect("previous runtime directory should be created");
+        let previous_marker = previous_runtime_root.join("preserved.txt");
+        fs::write(&previous_marker, b"previous runtime")
+            .expect("previous runtime marker should be written");
         let first = install_embedded_blender_runtime(&root.0)
             .expect("first resource install should succeed");
         let second = install_embedded_blender_runtime(&root.0)
             .expect("second resource install should be idempotent");
 
         assert_eq!(first, second);
-        assert!(first.runtime_root.ends_with("blender-runtime/1.0.4"));
+        assert!(first.runtime_root.ends_with("blender-runtime/1.2.0"));
+        assert_eq!(
+            fs::read(previous_marker).expect("previous runtime should remain readable"),
+            b"previous runtime"
+        );
         assert!(first
             .application_templates_root
             .ends_with("scripts/startup/bl_app_templates_system"));

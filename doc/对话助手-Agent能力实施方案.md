@@ -2499,6 +2499,33 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - 回滚时把 `blender` descriptor 恢复为 unavailable，移除原生 commands、Job State 和固定资源安装入口；保留 `lightweight-web`、既有 Scene/Result、`.blend` 与已验证媒体，不删除用户产物。
 - 当前产品/测试范围为 Rust runtime 与 5 个子模块、4 份固定资源、Tauri 注册/ACL/路径边界、前端节点/设置/运行时服务与两份定向测试；不包含数据库迁移、Agent/MCP 工具、通用 Shell/Python 能力或 `tauri.conf.json` 安全配置放宽。
 
+### 8.37 Blender 新手导演操作台（Phase 2-A）
+
+**状态：** `[~]`
+
+#### 本期实施边界
+
+- 继续使用唯一 `ai-director` / 3D 导演台节点；只有 AI Canvas 固定 editor session 才显示右侧 Properties/Scene「AI Canvas 导演操作台」，3D View 侧栏保留紧凑入口。普通 Blender 启动不进入该 session，不安装全局插件，也不覆盖用户配置。
+- 首批操作包含方块、球体、地面、桌子、人物占位，摄影棚、室内、办公室、街道、绿幕场景，所选对象落地，近景/中景/全景/过肩/俯拍/仰拍，24/35/50/85 mm 焦段、所选对焦、三点/柔光/日景/夜景灯光，以及用户通过 Blender 原生文件选择器导入 OBJ/FBX/GLB/GLTF。
+- 主 3D View 右下角增加 session-only 的实时摄像机预览：相机画面继续由 Blender `GPUOffScreen.draw_view3d` 与真实相机矩阵生成，只自绘圆角叠层、标题和关闭交互；约 8 FPS 刷新，关闭后可从 Properties 导演操作台重新显示。未拆分第二个 Blender 编辑区，也未新增节点。
+- 本期导入只写入当前 `.blend`，不进入项目素材库；FBX/OBJ 贴图可能继续引用外部文件。Blender 内不冒充节点端截图或视频 Job，保存返回后仍由同一节点执行「同步当前帧」和「导出参考视频」。
+- 所有场景写操作要求 Object mode 和活动 editor session。操作台只清理由固定 owner 标记且位于专属 collection 的基础模型、场景与灯光；同名用户 collection/material、Director Scene 原对象、协议相机、用户导入模型与用户手动切换的 World 均不跨域删除或覆盖。
+- 模型路径只来自 Blender 原生文件选择器；Tauri、Agent、MCP 和插件仍不能传入任意 Python、脚本路径、argv、cwd、env、模型路径或输出路径。固定资源包升级为 `1.2.0`，template/job schema 和 `startup.blend` 不变，旧 `1.1.0` / `1.0.4` 目录保留为回滚点。
+
+#### 当前验证证据
+
+- Blender 5.2.1 后台真实操作符冒烟已覆盖人物占位、办公室、三点布光、中景镜头、OBJ 导入、时间轴/活动相机恢复、所有权隔离、专属 World 恢复、协议相机不随普通对象落地，以及桌子根级整体移动和清理；最终模板脚本 UTF-8 编译与 `git diff --check` 通过。
+- 真实 AI Canvas 节点已安装并启动 `1.1.0`，Properties/Scene 专属操作台可见，「保存并返回 AI Canvas」返回 `FINISHED` 并关闭 Blender。该次实机同时暴露 `CreateProcessW.lpApplicationName` 仍使用 `\\?\` canonical spelling，导致 `bpy.app.binary_path` 带扩展前缀、翻译 catalog 未加载；runner 已改为把重新 canonicalize 且只去除 verbatim spelling 的同一可信路径同时用于 application name 与 `argv[0]`。用户随后确认从同一节点重开后菜单、工作区与操作台均恢复中文。
+- Blender 5.2.1 可见测试确认圆角预览使用协议相机真实显示测试方块，`last_error=null`、纹理有效；离屏重绘实测约 8.1 FPS。连续关闭/重开 50 次均返回 `FINISHED`；关闭时 draw handler、应用 timer、GPU OffScreen 与 owner window/area/region 指针全部清理，重新打开只保留一套活动状态。旧版 X 按钮已做真实鼠标点击关闭；最终圆角与字体居中版的 Windows 鼠标复测被用户按 Esc 停止，随后只以 Blender MCP 验证命中矩形、hide/show 和资源释放。
+- Blender runtime 32 项（含固定资源 4 项，以 `--no-default-features` 隔离无关 ONNX 链接）、前端导演台 4 文件 26 项、`cargo check --lib`、`npm run typecheck` 与两个改动 Rust 文件的 `rustfmt --check` 通过。默认特性 Rust test 在本机 VS2019 链接器与当前 ONNX Runtime 预编译库之间出现范围外 `__std_find_trivial_*` 未解析；同一 Blender runtime 测试关闭无关 `local-onnx` 后 32/32 通过。全仓 `cargo fmt -- --check` 被范围外既有 Rust 格式差异阻断，没有为此格式化无关文件。
+- 固定资源升级为 `1.2.0`，模板 init 的 canonical LF 长度 `73713`、SHA-256 `a1586bd43ee9398a341e130a38f24c1b80b31ff863a836f77604100209edd372` 已重新锁定；标题按 Blender 当前字体实际高度与基线补偿计算，不依赖写死的垂直偏移。最终后台冒烟、严格 UTF-8/Python 编译、固定哈希与 `git diff --check` 均通过。
+
+#### 剩余门、限制与回滚
+
+- 下一次真机补做最终 `1.2.0` 圆角版本 X 按钮鼠标点击与节点「保存并返回」即可；Phase 1-C 的超时、崩溃和应用退出进程树故障注入仍是独立未完成门。
+- Phase 2-A 尚不包含正式人物/道具资产库、项目模型资产化、简化时间轴、基础运镜、Blender 内直接截图/视频同步或 Director Scene JSON 双向同步。
+- 回滚时恢复 `1.0.4` 固定包引用并停用本期面板即可；旧资源目录、用户 `.blend` 与既有 artifact 不自动删除，`lightweight-web` 继续可用。
+
 ## 9. 测试与验证策略
 
 ### 9.1 当前仓库事实
@@ -2739,6 +2766,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-30 | Blender 新手导演操作台（Phase 2-A，进行中） | 同一 `ai-director` 增加 AI Canvas session-only 的 Properties 导演操作台、基础模型/场景/镜头/灯光/本地导入和保存返回，并在主 3D View 右下角增加 Blender 原生离屏相机画面的圆角实时预览、关闭与重开；固定包升级 `1.2.0` 并保留旧目录，owner collection/material/World、原生文件选择器及固定脚本边界不变。Blender 5.2.1 实测约 8.1 FPS、50 次开关清理通过；最终圆角版鼠标点击因用户停止 Windows UI 控制留作一次补充真机项。 |
 | 2026-08-30 | 导演台界面与工作区本地化 | 固定运行资源升级为 `1.0.4`，按 Blender 官方 `WorkSpace` 上下文和用户“翻译新建数据”开关动态本地化工作区；随后通过同机 A/B 定位到 Rust 把 `\\?\` canonical executable 直接作为 `argv[0]`，导致 Blender 5.2 bundled locale catalog 加载失败。Native runner 继续以 canonical 路径作为 `CreateProcessW.lpApplicationName`，只把命令行 `argv[0]` 转成标准 Windows 路径；信任校验与后台 Job 隔离边界不变。用户确认同一 3D 导演台真实打开后菜单与工作区均为中文；Blender runtime 32 项与 `cargo check --lib` 通过。 |
 | 2026-08-30 | 导演台安装发现与资源修复 | Windows Blender 自动发现扩展到 App Paths、卸载注册表、PATH、Steam 和官方布局，便携版保留手选；固定运行资源升级为 `1.0.3`，在固定哈希校验前严格规范化受信文本 CRLF→LF，解决既有 checkout 跨电脑完整性失败。真实私有目录四项资源核验一致，Blender runtime 32 项与 `cargo check --lib` 通过。 |
 | 2026-08-29 | 导演台 1-C 修复 | 真机对照确认 `1.0.1` 系统 Application Template 仍未继承正常简体中文界面；固定运行资源升级为 `1.0.2`，高级编辑移除 `--app-template`，改为正常读取用户配置、脚本、扩展和已启用插件后直接加载固定 `startup.blend` 与固定初始化/Job 脚本。后台截图/视频继续使用工厂设置保持隔离；外部 Blender/Python 路径注入仍被过滤。Blender runtime 25 项与 `cargo check --locked --lib` 通过。 |
