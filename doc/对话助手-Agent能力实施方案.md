@@ -2480,7 +2480,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - 固定 Application Template、`startup.blend`、运行 manifest 与 Blender 内 `bpy` 适配脚本通过 `include_bytes!` / `include_str!` 编译内嵌并在安装前校验，不修改 `tauri.conf.json` resources。Python 只执行该固定脚本，不负责启动进程，也不接收源码、脚本路径、自由 argv、cwd、环境变量或输出路径。
 - Windows native runner 使用固定参数序列。高级编辑不再使用 `--app-template`：Blender 先按官网安装、Steam、便携版等自身规则读取正常用户配置、脚本和扩展，复用语言、主题、键位及已启用插件，再加载固定 `startup.blend` 并依次执行固定初始化脚本和 Job 脚本。后台截图/视频显式使用 `--factory-startup`，不读取用户首选项或加载用户插件，但仍加载同一组固定启动资源。全部子进程纳入 Windows Job Object，结果回收前由 Rust 独立校验 manifest、目录包含关系、类型、大小与哈希。
 - 前端 `directorBlenderRuntimeService.ts` 把 Scene/Manifest 引用映射为固定 Job 请求，统一处理轮询、Abort 取消、grant 清理与 Tauri 字符串错误；节点继续通过 canvas derivation guard 拒绝已切换项目、节点或 Scene 的过期结果。
-- 设置页增加共享 Blender 选择入口。标准安装可受限发现，Steam/便携安装由系统文件对话框手选 `blender.exe`；只显示脱敏候选摘要。Windows canonical verbatim 路径在登记时统一，避免 `F:\...` 与 `\\?\F:\...` 被误判为不同候选。
+- 设置页增加共享 Blender 选择入口。Windows 自动发现组合 App Paths、卸载注册表、PATH、Steam library/app manifest 与 Program Files 官方布局；所有直接候选重新经过本地盘、普通文件/目录、canonical parent、固定文件名和 x64 PE 校验，只显示脱敏候选摘要。无系统登记的便携版继续由系统文件对话框手选 `blender.exe`。Windows canonical verbatim 路径在登记时统一，避免 `F:\...` 与 `\\?\F:\...` 被误判为不同候选。
 
 #### 当前验证证据
 
@@ -2488,6 +2488,9 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - Blender 5.2.1 真机完成 Application Template 加载、单帧、8 帧 MP4、高级编辑两次保存返回、同 Scene `.blend` 续接、内容寻址 artifact、篡改 base hash 拒绝和已有结果不覆盖验证。
 - Steam 手选路径回归后，AI Canvas 原 `ai-director` 节点真实启动私有 Job 目录中的 Blender 5.2.1 `project.blend`，节点进入载入阶段，用户确认现场可用；没有创建第二种节点。
 - 修复 Job 临时 `BLENDER_USER_CONFIG` 与固定 `BLENDER_USER_SCRIPTS` 覆盖导致 Quick Setup 重复、正常首选项及用户插件不可用的问题。真机对照进一步确认：`1.0.1` 系统 Application Template 已生效，但 AI Canvas 窗口仍为英文，同版本正常窗口为简体中文。因此固定运行资源继续升级为 `1.0.2`，移除 `--app-template` 上下文，改为正常启动后直接加载经哈希校验的 `startup.blend`、初始化脚本和 Job 脚本；旧 `1.0.0` / `1.0.1` 私有资源保留但不再被新 Job 使用。环境与参数回归确认编辑器保留 `APPDATA` 且不覆盖用户脚本，后台 Job 使用工厂设置；外部 `BLENDER_*` / `PYTHON*` 路径覆盖仍被过滤。Blender runtime 定向测试 25 项与 `cargo check --locked --lib` 通过；`1.0.2` 真机简体中文与插件界面复核留给本轮应用手测。
+- 修复既有 Windows checkout 中固定 Job Python 保留 CRLF、`include_bytes!` 嵌入原始工作树字节而与 LF 清单不一致的问题。固定运行资源升级为 `1.0.3`：受信 UTF-8 文本在哈希校验和安装前确定性规范化为 LF，孤立 CR 仍失败关闭，`.blend` 二进制保持原始字节，清单固定 SHA 不放宽。真实应用私有目录已生成 `1.0.3`，四项安装资源长度与 SHA 均逐项匹配；Blender runtime 32 项和 `cargo check --lib` 通过。完整编辑器窗口交互仍以本轮应用手测为准。
+- 官方手册、5.2 release 源码与 Blender MCP 可见窗口对照确认：高级编辑器已正确读取标准 `userpref.blend`，实际语言、界面翻译开关和活动 locale 均为 `zh_HANS`；残留英文仅是固定自定义 `.blend` 中的 `Layout`、`Modeling` 等 WorkSpace 数据块名称。固定运行资源升级为 `1.0.4`，初始化脚本仅在可见编辑器且用户启用“翻译新建数据”时，使用 Blender 官方 `WorkSpace` 翻译上下文本地化全部工作区名称；不写死中文、不修改用户偏好，后台 Job 不执行该本地化。真机结果为“布局、建模、雕刻、UV编辑、纹理绘制、着色、动画、渲染、合成、几何节点、脚本”；Blender runtime 32 项与 `cargo check --lib` 通过。
+- 真实 AI Canvas 节点复核进一步发现：Rust 安全登记保留的 Windows canonical 路径以 `\\?\` 开头，并同时作为 `CreateProcessW` 的应用路径和 `argv[0]` 传给 Blender；Blender 5.2 因而把 bundled locale 解析为 `\\?\...\5.2\datafiles\locale`，语言偏好仍显示 `zh_HANS`，但翻译 catalog 加载失败，菜单与 WorkSpace 翻译均回退英文。同机同版本 A/B 已稳定复现普通路径为“文件/布局”、扩展路径为 `File/Layout`。Native runner 继续把已复核 canonical executable 作为 `CreateProcessW.lpApplicationName`，仅将命令行 `argv[0]` 转为标准 Windows 路径；信任登记、真实进程映像、身份校验和目录边界均不变。用户确认从同一 3D 导演台重新打开后界面与工作区均恢复中文。Blender runtime 32 项、`cargo check --lib`、定向 rustfmt 与 `git diff --check` 通过。
 - 最新范围检查通过：Rust `blender_runtime::` 23 项、前端 Blender service/registry 17 项、`cargo check --lib`、`npm run typecheck`、定向 ESLint、定向 rustfmt、临时目录 Vite 生产构建、严格 UTF-8 与 `git diff --check`。生产构建仅保留既有动态导入和大 chunk 警告。
 
 #### 剩余门与回滚
@@ -2736,6 +2739,8 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-08-30 | 导演台界面与工作区本地化 | 固定运行资源升级为 `1.0.4`，按 Blender 官方 `WorkSpace` 上下文和用户“翻译新建数据”开关动态本地化工作区；随后通过同机 A/B 定位到 Rust 把 `\\?\` canonical executable 直接作为 `argv[0]`，导致 Blender 5.2 bundled locale catalog 加载失败。Native runner 继续以 canonical 路径作为 `CreateProcessW.lpApplicationName`，只把命令行 `argv[0]` 转成标准 Windows 路径；信任校验与后台 Job 隔离边界不变。用户确认同一 3D 导演台真实打开后菜单与工作区均为中文；Blender runtime 32 项与 `cargo check --lib` 通过。 |
+| 2026-08-30 | 导演台安装发现与资源修复 | Windows Blender 自动发现扩展到 App Paths、卸载注册表、PATH、Steam 和官方布局，便携版保留手选；固定运行资源升级为 `1.0.3`，在固定哈希校验前严格规范化受信文本 CRLF→LF，解决既有 checkout 跨电脑完整性失败。真实私有目录四项资源核验一致，Blender runtime 32 项与 `cargo check --lib` 通过。 |
 | 2026-08-29 | 导演台 1-C 修复 | 真机对照确认 `1.0.1` 系统 Application Template 仍未继承正常简体中文界面；固定运行资源升级为 `1.0.2`，高级编辑移除 `--app-template`，改为正常读取用户配置、脚本、扩展和已启用插件后直接加载固定 `startup.blend` 与固定初始化/Job 脚本。后台截图/视频继续使用工厂设置保持隔离；外部 Blender/Python 路径注入仍被过滤。Blender runtime 25 项与 `cargo check --locked --lib` 通过。 |
 | 2026-08-28 | 导演台 1-C | 接通固定 Blender 5.2.1 Application Template、Rust native Job、项目内存 grant、Windows Job Object、同一 `ai-director` 的高级编辑/截图/视频和结果回收预览；修复 Steam 手选 canonical 路径与原生错误透传。核心真机流程已通过，超时/崩溃/应用退出等故障注入门仍进行中。 |
 | 2026-08-28 | 导演台 1-B | 新增用途单一的 Rust Blender 安装候选发现：固定 Program Files 标准层级、main-only 双层 guard、reparse/canonical 边界、有界稳定 opaque ID、非穷尽结果状态与进程内记录；Blender 继续 unavailable，未扫描或启动真实 Blender。 |

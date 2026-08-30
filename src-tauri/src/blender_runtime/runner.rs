@@ -151,8 +151,15 @@ impl NativeBlenderJobRunner {
         cancellation: &BlenderJobCancellation,
     ) -> Result<(), BlenderJobRunnerFailure> {
         let background = job.request.operation != BlenderJobOperation::OpenEditor;
+        // Windows `canonicalize` returns an extended-length path (`\\?\...`). Keep that
+        // exact representation for trust checks and CreateProcessW's lpApplicationName,
+        // but do not expose it as argv[0]: Blender 5.2 derives its bundled
+        // `datafiles/locale` directory from argv[0] and fails to load translation catalogs
+        // through the extended prefix.
+        let argument_executable =
+            canonicalize_simplified(&job.trusted.executable).map_err(startup_failure)?;
         let arguments = build_blender_arguments(
-            &job.trusted.executable,
+            &argument_executable,
             &job.trusted
                 .resources
                 .application_template_root

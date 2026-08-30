@@ -1,6 +1,7 @@
 //! Blender 原生运行时的受限安装候选发现。
 //!
-//! 本阶段只读取固定 Program Files 层级，不执行候选，也不向前端暴露绝对路径。
+//! Windows 端只读取固定的应用注册位置、PATH、Steam 元数据和 Program Files 标准层级；
+//! 不执行候选、不扫描整块磁盘，也不向前端暴露绝对路径。
 
 mod job;
 pub mod project_grant;
@@ -26,8 +27,13 @@ use tauri::{AppHandle, Manager, Runtime, State, Webview};
 
 const BLENDER_VENDOR_DIRECTORY: &str = "Blender Foundation";
 const BLENDER_EXECUTABLE_NAME: &str = "blender.exe";
+const STEAM_BLENDER_APP_ID: &str = "365670";
 const INSTALLATION_ID_DOMAIN: &[u8] = b"ai-canvas/blender-installation/v1\0";
 const MAX_DISCOVERY_ROOTS: usize = 3;
+const MAX_DIRECT_DISCOVERY_HINTS: usize = 64;
+const MAX_PATH_ENTRIES: usize = 256;
+const MAX_STEAM_LIBRARY_ROOTS: usize = 32;
+const MAX_STEAM_METADATA_BYTES: u64 = 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 128;
 const MAX_RETURNED_CANDIDATES: usize = 16;
 const MAX_DISPLAY_NAME_CHARS: usize = 80;
@@ -46,6 +52,14 @@ pub enum BlenderInstallationSource {
     ProgramFiles,
     #[serde(rename = "program-files-x86")]
     ProgramFilesX86,
+    #[serde(rename = "windows-app-paths")]
+    WindowsAppPaths,
+    #[serde(rename = "windows-uninstall")]
+    WindowsUninstall,
+    #[serde(rename = "environment-path")]
+    EnvironmentPath,
+    #[serde(rename = "steam")]
+    Steam,
     #[serde(rename = "user-selected")]
     UserSelected,
 }
@@ -65,7 +79,7 @@ pub struct BlenderInstallationCandidate {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BlenderDiscoveryScope {
-    WindowsProgramFilesStandardLayout,
+    WindowsKnownInstallLocations,
     #[cfg(not(windows))]
     UnsupportedPlatform,
 }
@@ -104,6 +118,21 @@ struct InstallationRecord {
 struct DiscoveryRoot {
     source: BlenderInstallationSource,
     path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct DirectDiscoveryHint {
+    source: BlenderInstallationSource,
+    executable_path: PathBuf,
+    display_name: String,
+    version_hint: Option<String>,
+}
+
+#[derive(Default)]
+struct DirectDiscoveryHints {
+    hints: Vec<DirectDiscoveryHint>,
+    partial: bool,
+    truncated: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -275,12 +304,417 @@ fn platform_discovery_roots() -> Vec<DiscoveryRoot> {
 
 #[cfg(windows)]
 fn platform_discovery_scope() -> BlenderDiscoveryScope {
-    BlenderDiscoveryScope::WindowsProgramFilesStandardLayout
+    BlenderDiscoveryScope::WindowsKnownInstallLocations
 }
 
 #[cfg(not(windows))]
 fn platform_discovery_scope() -> BlenderDiscoveryScope {
     BlenderDiscoveryScope::UnsupportedPlatform
+}
+
+#[cfg(windows)]
+fn platform_direct_discovery_hints() -> DirectDiscoveryHints {
+    windows_discovery::collect_direct_hints()
+}
+
+#[cfg(not(windows))]
+fn platform_direct_discovery_hints() -> DirectDiscoveryHints {
+    DirectDiscoveryHints::default()
+}
+
+#[cfg(windows)]
+mod windows_discovery {
+    use super::*;
+    use std::{
+        ffi::{OsStr, OsString},
+        os::windows::ffi::{OsStrExt, OsStringExt},
+    };
+    use windows::{
+        core::{PCWSTR, PWSTR},
+        Win32::{
+            Foundation::{
+                ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS,
+            },
+            System::Registry::{
+                RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER,
+                HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_SAM_FLAGS,
+                RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RRF_ZEROONFAILURE,
+            },
+        },
+    };
+
+    const APP_PATHS_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\App Paths\blender.exe";
+    const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
+    const STEAM_KEY: &str = r"Software\Valve\Steam";
+    const MAX_REGISTRY_VALUE_BYTES: u32 = 32 * 1024;
+    const MAX_UNINSTALL_SUBKEYS: u32 = 4096;
+    const MAX_REGISTRY_SUBKEY_CHARS: usize = 256;
+
+    #[derive(Clone, Copy)]
+    struct RegistryLocation {
+        hive: HKEY,
+        view: REG_SAM_FLAGS,
+    }
+
+    struct OwnedRegistryKey(HKEY);
+
+    impl Drop for OwnedRegistryKey {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = RegCloseKey(self.0);
+            }
+        }
+    }
+
+    fn registry_locations() -> [RegistryLocation; 4] {
+        [
+            RegistryLocation {
+                hive: HKEY_CURRENT_USER,
+                view: KEY_WOW64_64KEY,
+            },
+            RegistryLocation {
+                hive: HKEY_CURRENT_USER,
+                view: KEY_WOW64_32KEY,
+            },
+            RegistryLocation {
+                hive: HKEY_LOCAL_MACHINE,
+                view: KEY_WOW64_64KEY,
+            },
+            RegistryLocation {
+                hive: HKEY_LOCAL_MACHINE,
+                view: KEY_WOW64_32KEY,
+            },
+        ]
+    }
+
+    fn wide_null(value: &OsStr) -> Vec<u16> {
+        value.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    fn open_key(location: RegistryLocation, subkey: &str) -> Result<Option<OwnedRegistryKey>, ()> {
+        let subkey = wide_null(OsStr::new(subkey));
+        let mut opened = HKEY(std::ptr::null_mut());
+        let status = unsafe {
+            RegOpenKeyExW(
+                location.hive,
+                PCWSTR(subkey.as_ptr()),
+                0,
+                KEY_READ | location.view,
+                &mut opened,
+            )
+        };
+        if status == ERROR_SUCCESS {
+            Ok(Some(OwnedRegistryKey(opened)))
+        } else if status == ERROR_FILE_NOT_FOUND {
+            Ok(None)
+        } else {
+            Err(())
+        }
+    }
+
+    fn query_string(
+        key: &OwnedRegistryKey,
+        subkey: Option<&str>,
+        value_name: Option<&str>,
+    ) -> Result<Option<OsString>, ()> {
+        let subkey_wide = subkey.map(|value| wide_null(OsStr::new(value)));
+        let value_wide = value_name.map(|value| wide_null(OsStr::new(value)));
+        let subkey_pointer = subkey_wide
+            .as_ref()
+            .map_or(PCWSTR(std::ptr::null()), |value| PCWSTR(value.as_ptr()));
+        let value_pointer = value_wide
+            .as_ref()
+            .map_or(PCWSTR(std::ptr::null()), |value| PCWSTR(value.as_ptr()));
+        let flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_ZEROONFAILURE;
+        let mut byte_count = 0u32;
+        let first_status = unsafe {
+            RegGetValueW(
+                key.0,
+                subkey_pointer,
+                value_pointer,
+                flags,
+                None,
+                None,
+                Some(&mut byte_count),
+            )
+        };
+        if first_status == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+        if first_status != ERROR_SUCCESS
+            || byte_count == 0
+            || byte_count > MAX_REGISTRY_VALUE_BYTES
+            || byte_count % 2 != 0
+        {
+            return Err(());
+        }
+
+        let mut buffer = vec![0u16; (byte_count / 2) as usize];
+        let second_status = unsafe {
+            RegGetValueW(
+                key.0,
+                subkey_pointer,
+                value_pointer,
+                flags,
+                None,
+                Some(buffer.as_mut_ptr().cast()),
+                Some(&mut byte_count),
+            )
+        };
+        if second_status != ERROR_SUCCESS || byte_count % 2 != 0 {
+            return Err(());
+        }
+        let written = (byte_count / 2) as usize;
+        if written > buffer.len() {
+            return Err(());
+        }
+        buffer.truncate(written);
+        while buffer.last() == Some(&0) {
+            buffer.pop();
+        }
+        if buffer.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(OsString::from_wide(&buffer)))
+    }
+
+    fn enumerate_subkeys(key: &OwnedRegistryKey) -> (Vec<String>, bool, bool) {
+        let mut names = Vec::new();
+        let mut partial = false;
+        let mut truncated = false;
+        for index in 0..MAX_UNINSTALL_SUBKEYS {
+            let mut buffer = [0u16; MAX_REGISTRY_SUBKEY_CHARS];
+            let mut length = (buffer.len() - 1) as u32;
+            let status = unsafe {
+                RegEnumKeyExW(
+                    key.0,
+                    index,
+                    PWSTR(buffer.as_mut_ptr()),
+                    &mut length,
+                    None,
+                    PWSTR(std::ptr::null_mut()),
+                    None,
+                    None,
+                )
+            };
+            if status == ERROR_NO_MORE_ITEMS {
+                return (names, partial, truncated);
+            }
+            if status == ERROR_MORE_DATA {
+                partial = true;
+                continue;
+            }
+            if status != ERROR_SUCCESS {
+                partial = true;
+                return (names, partial, truncated);
+            }
+            let Ok(name) = String::from_utf16(&buffer[..length as usize]) else {
+                partial = true;
+                continue;
+            };
+            names.push(name);
+        }
+        truncated = true;
+        (names, partial, truncated)
+    }
+
+    fn push_hint(result: &mut DirectDiscoveryHints, hint: DirectDiscoveryHint) {
+        if result.hints.len() >= MAX_DIRECT_DISCOVERY_HINTS {
+            result.truncated = true;
+            return;
+        }
+        result.hints.push(hint);
+    }
+
+    fn collect_app_paths(result: &mut DirectDiscoveryHints) {
+        for location in registry_locations() {
+            let key = match open_key(location, APP_PATHS_KEY) {
+                Ok(Some(key)) => key,
+                Ok(None) => continue,
+                Err(()) => {
+                    result.partial = true;
+                    continue;
+                }
+            };
+            match query_string(&key, None, None) {
+                Ok(Some(path)) => push_hint(
+                    result,
+                    DirectDiscoveryHint {
+                        source: BlenderInstallationSource::WindowsAppPaths,
+                        executable_path: PathBuf::from(path),
+                        display_name: "Blender（Windows 应用注册）".to_string(),
+                        version_hint: None,
+                    },
+                ),
+                Ok(None) => {}
+                Err(()) => result.partial = true,
+            }
+        }
+    }
+
+    fn collect_uninstall_entries(result: &mut DirectDiscoveryHints) {
+        for location in registry_locations() {
+            let key = match open_key(location, UNINSTALL_KEY) {
+                Ok(Some(key)) => key,
+                Ok(None) => continue,
+                Err(()) => {
+                    result.partial = true;
+                    continue;
+                }
+            };
+            let (subkeys, partial, truncated) = enumerate_subkeys(&key);
+            result.partial |= partial;
+            result.truncated |= truncated;
+            for subkey in subkeys {
+                let display_name = match query_string(&key, Some(&subkey), Some("DisplayName")) {
+                    Ok(Some(value)) => match value.into_string() {
+                        Ok(value) if is_blender_product_display_name(&value) => value,
+                        _ => continue,
+                    },
+                    Ok(None) => continue,
+                    Err(()) => {
+                        result.partial = true;
+                        continue;
+                    }
+                };
+                let install_location =
+                    match query_string(&key, Some(&subkey), Some("InstallLocation")) {
+                        Ok(Some(value)) => value,
+                        Ok(None) => continue,
+                        Err(()) => {
+                            result.partial = true;
+                            continue;
+                        }
+                    };
+                let version_hint = query_string(&key, Some(&subkey), Some("DisplayVersion"))
+                    .ok()
+                    .flatten()
+                    .and_then(|value| value.into_string().ok())
+                    .and_then(|value| normalize_numeric_version_hint(&value));
+                push_hint(
+                    result,
+                    DirectDiscoveryHint {
+                        source: BlenderInstallationSource::WindowsUninstall,
+                        executable_path: PathBuf::from(install_location)
+                            .join(BLENDER_EXECUTABLE_NAME),
+                        display_name,
+                        version_hint,
+                    },
+                );
+            }
+        }
+    }
+
+    fn collect_path_entries(result: &mut DirectDiscoveryHints) {
+        let Some(path) = std::env::var_os("PATH") else {
+            return;
+        };
+        let mut paths = std::env::split_paths(&path);
+        for directory in paths.by_ref().take(MAX_PATH_ENTRIES) {
+            push_hint(
+                result,
+                DirectDiscoveryHint {
+                    source: BlenderInstallationSource::EnvironmentPath,
+                    executable_path: directory.join(BLENDER_EXECUTABLE_NAME),
+                    display_name: "Blender（PATH）".to_string(),
+                    version_hint: None,
+                },
+            );
+        }
+        if paths.next().is_some() {
+            result.truncated = true;
+        }
+    }
+
+    fn collect_steam_roots(result: &mut DirectDiscoveryHints) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        for location in registry_locations() {
+            let key = match open_key(location, STEAM_KEY) {
+                Ok(Some(key)) => key,
+                Ok(None) => continue,
+                Err(()) => {
+                    result.partial = true;
+                    continue;
+                }
+            };
+            for value_name in ["InstallPath", "SteamPath"] {
+                match query_string(&key, None, Some(value_name)) {
+                    Ok(Some(path)) => roots.push(PathBuf::from(path)),
+                    Ok(None) => {}
+                    Err(()) => result.partial = true,
+                }
+            }
+        }
+        if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+            roots.push(PathBuf::from(program_files_x86).join("Steam"));
+        }
+        roots.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+        roots.dedup_by(|left, right| left.as_os_str().eq_ignore_ascii_case(right.as_os_str()));
+        roots
+    }
+
+    fn collect_steam_entries(result: &mut DirectDiscoveryHints) {
+        let steam_roots = collect_steam_roots(result);
+        for steam_root in steam_roots {
+            let mut library_roots = vec![steam_root.clone()];
+            let library_file = steam_root.join("steamapps").join("libraryfolders.vdf");
+            if let Some(body) = read_bounded_utf8_file(&library_file, MAX_STEAM_METADATA_BYTES) {
+                for value in vdf_values(&body, "path") {
+                    if library_roots.len() >= MAX_STEAM_LIBRARY_ROOTS {
+                        result.truncated = true;
+                        break;
+                    }
+                    library_roots.push(PathBuf::from(value));
+                }
+            }
+            library_roots.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+            library_roots
+                .dedup_by(|left, right| left.as_os_str().eq_ignore_ascii_case(right.as_os_str()));
+
+            for library_root in library_roots {
+                let steamapps = library_root.join("steamapps");
+                let manifest = steamapps.join(format!("appmanifest_{STEAM_BLENDER_APP_ID}.acf"));
+                let Some(body) = read_bounded_utf8_file(&manifest, MAX_STEAM_METADATA_BYTES) else {
+                    continue;
+                };
+                if vdf_values(&body, "appid")
+                    .first()
+                    .is_none_or(|value| value != STEAM_BLENDER_APP_ID)
+                {
+                    continue;
+                }
+                let Some(install_directory) = vdf_values(&body, "installdir")
+                    .into_iter()
+                    .next()
+                    .filter(|value| is_safe_single_path_component(value))
+                else {
+                    result.partial = true;
+                    continue;
+                };
+                push_hint(
+                    result,
+                    DirectDiscoveryHint {
+                        source: BlenderInstallationSource::Steam,
+                        executable_path: steamapps
+                            .join("common")
+                            .join(install_directory)
+                            .join(BLENDER_EXECUTABLE_NAME),
+                        display_name: "Blender（Steam）".to_string(),
+                        version_hint: None,
+                    },
+                );
+            }
+        }
+    }
+
+    pub(super) fn collect_direct_hints() -> DirectDiscoveryHints {
+        let mut result = DirectDiscoveryHints::default();
+        collect_app_paths(&mut result);
+        collect_uninstall_entries(&mut result);
+        collect_path_entries(&mut result);
+        collect_steam_entries(&mut result);
+        result
+    }
 }
 
 #[cfg(windows)]
@@ -403,12 +837,16 @@ fn version_hint(display_name: &str) -> Option<String> {
         return None;
     }
 
-    let hint = display_name.get(PREFIX.len()..)?;
-    if hint.chars().count() > MAX_VERSION_HINT_CHARS {
+    normalize_numeric_version_hint(display_name.get(PREFIX.len()..)?)
+}
+
+fn normalize_numeric_version_hint(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.chars().count() > MAX_VERSION_HINT_CHARS {
         return None;
     }
 
-    let segments: Vec<_> = hint.split('.').collect();
+    let segments: Vec<_> = value.split('.').collect();
     if !(2..=4).contains(&segments.len())
         || segments.iter().any(|segment| {
             segment.is_empty() || !segment.chars().all(|value| value.is_ascii_digit())
@@ -417,7 +855,7 @@ fn version_hint(display_name: &str) -> Option<String> {
         return None;
     }
 
-    Some(hint.to_string())
+    Some(value.to_string())
 }
 
 fn display_summary(directory_name: &OsStr) -> (String, Option<String>) {
@@ -430,6 +868,84 @@ fn display_summary(directory_name: &OsStr) -> (String, Option<String>) {
     } else {
         ("Blender candidate".to_string(), None)
     }
+}
+
+fn is_blender_product_display_name(value: &str) -> bool {
+    const PREFIX: &str = "Blender ";
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("Blender") {
+        return true;
+    }
+    value
+        .get(..PREFIX.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PREFIX))
+        && value
+            .get(PREFIX.len()..)
+            .and_then(|suffix| suffix.chars().next())
+            .is_some_and(|value| value.is_ascii_digit())
+        && value.chars().count() <= MAX_DISPLAY_NAME_CHARS
+        && !value.chars().any(char::is_control)
+}
+
+fn vdf_quoted_fields(line: &str) -> Option<Vec<String>> {
+    let mut fields = Vec::new();
+    let mut characters = line.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '"' {
+            continue;
+        }
+        let mut field = String::new();
+        let mut terminated = false;
+        while let Some(value) = characters.next() {
+            match value {
+                '"' => {
+                    terminated = true;
+                    break;
+                }
+                '\\' => match characters.next() {
+                    Some('\\') => field.push('\\'),
+                    Some('"') => field.push('"'),
+                    Some(next) => {
+                        field.push('\\');
+                        field.push(next);
+                    }
+                    None => return None,
+                },
+                value => field.push(value),
+            }
+        }
+        if !terminated {
+            return None;
+        }
+        fields.push(field);
+    }
+    Some(fields)
+}
+
+fn vdf_values(body: &str, expected_key: &str) -> Vec<String> {
+    body.lines()
+        .filter_map(vdf_quoted_fields)
+        .filter(|fields| fields.len() >= 2 && fields[0].eq_ignore_ascii_case(expected_key))
+        .map(|fields| fields[1].clone())
+        .collect()
+}
+
+fn is_safe_single_path_component(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.chars().count() <= MAX_DISPLAY_NAME_CHARS
+        && !matches!(value, "." | "..")
+        && !value
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\' | ':'))
+}
+
+fn read_bounded_utf8_file(path: &Path, max_bytes: u64) -> Option<String> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !is_plain_file(&metadata) || metadata.len() > max_bytes {
+        return None;
+    }
+    String::from_utf8(fs::read(path).ok()?).ok()
 }
 
 fn validate_pe_x64(path: &Path) -> Result<(), String> {
@@ -731,6 +1247,73 @@ fn discover_in_root(root: DiscoveryRoot) -> RootDiscovery {
     discovery
 }
 
+fn discover_direct_hint(hint: DirectDiscoveryHint) -> Option<DiscoveredInstallation> {
+    if !root_hint_is_allowed(&hint.executable_path)
+        || hint
+            .executable_path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_none_or(|name| !name.eq_ignore_ascii_case(BLENDER_EXECUTABLE_NAME))
+    {
+        return None;
+    }
+    let root_path = hint.executable_path.parent()?;
+    let root_metadata = fs::symlink_metadata(root_path).ok()?;
+    let executable_metadata = fs::symlink_metadata(&hint.executable_path).ok()?;
+    if !is_plain_directory(&root_metadata) || !is_plain_file(&executable_metadata) {
+        return None;
+    }
+    let canonical_root = root_path.canonicalize().ok()?;
+    let canonical_executable = hint.executable_path.canonicalize().ok()?;
+    if !canonical_root_is_allowed(&canonical_root)
+        || canonical_executable.parent() != Some(canonical_root.as_path())
+        || validate_pe_x64(&canonical_executable).is_err()
+    {
+        return None;
+    }
+
+    let identity_key = path_identity(&canonical_executable);
+    let display_name = safe_directory_name(OsStr::new(&hint.display_name))
+        .unwrap_or_else(|| "Blender candidate".to_string());
+    let version_hint = hint
+        .version_hint
+        .as_deref()
+        .and_then(normalize_numeric_version_hint)
+        .or_else(|| version_hint(&display_name));
+    Some(DiscoveredInstallation {
+        candidate: BlenderInstallationCandidate {
+            installation_id: installation_id(&identity_key),
+            display_name,
+            source: hint.source,
+            version_hint,
+            version_hint_is_verified: false,
+        },
+        canonical_root,
+        canonical_executable,
+        identity_key,
+    })
+}
+
+fn finalize_discovery_snapshot(mut snapshot: DiscoverySnapshot) -> DiscoverySnapshot {
+    snapshot.installations.sort_by(|left, right| {
+        left.candidate
+            .display_name
+            .to_lowercase()
+            .cmp(&right.candidate.display_name.to_lowercase())
+            .then(left.candidate.source.cmp(&right.candidate.source))
+            .then(
+                left.candidate
+                    .installation_id
+                    .cmp(&right.candidate.installation_id),
+            )
+    });
+    if snapshot.installations.len() > MAX_RETURNED_CANDIDATES {
+        snapshot.truncated = true;
+        snapshot.installations.truncate(MAX_RETURNED_CANDIDATES);
+    }
+    snapshot
+}
+
 fn scan_from_roots(roots: Vec<DiscoveryRoot>) -> DiscoverySnapshot {
     let mut snapshot = DiscoverySnapshot {
         truncated: roots.len() > MAX_DISCOVERY_ROOTS,
@@ -748,25 +1331,30 @@ fn scan_from_roots(roots: Vec<DiscoveryRoot>) -> DiscoverySnapshot {
         }
     }
 
-    let mut installations: Vec<_> = unique.into_values().collect();
-    installations.sort_by(|left, right| {
-        left.candidate
-            .display_name
-            .to_lowercase()
-            .cmp(&right.candidate.display_name.to_lowercase())
-            .then(left.candidate.source.cmp(&right.candidate.source))
-            .then(
-                left.candidate
-                    .installation_id
-                    .cmp(&right.candidate.installation_id),
-            )
-    });
-    if installations.len() > MAX_RETURNED_CANDIDATES {
-        snapshot.truncated = true;
-        installations.truncate(MAX_RETURNED_CANDIDATES);
+    snapshot.installations = unique.into_values().collect();
+    finalize_discovery_snapshot(snapshot)
+}
+
+fn merge_direct_hints(
+    mut snapshot: DiscoverySnapshot,
+    direct: DirectDiscoveryHints,
+) -> DiscoverySnapshot {
+    snapshot.partial |= direct.partial;
+    snapshot.truncated |= direct.truncated || direct.hints.len() > MAX_DIRECT_DISCOVERY_HINTS;
+    let mut unique: BTreeMap<Vec<u8>, DiscoveredInstallation> = snapshot
+        .installations
+        .into_iter()
+        .map(|installation| (installation.identity_key.clone(), installation))
+        .collect();
+    for hint in direct.hints.into_iter().take(MAX_DIRECT_DISCOVERY_HINTS) {
+        if let Some(installation) = discover_direct_hint(hint) {
+            unique
+                .entry(installation.identity_key.clone())
+                .or_insert(installation);
+        }
     }
-    snapshot.installations = installations;
-    snapshot
+    snapshot.installations = unique.into_values().collect();
+    finalize_discovery_snapshot(snapshot)
 }
 
 #[cfg(test)]
@@ -805,7 +1393,10 @@ pub fn discover_blender_installations(
     crate::path_policy::ensure_trusted_caller(&webview)?;
     ensure_main_window_label(webview.label())?;
 
-    let snapshot = scan_from_roots(platform_discovery_roots());
+    let snapshot = merge_direct_hints(
+        scan_from_roots(platform_discovery_roots()),
+        platform_direct_discovery_hints(),
+    );
     state.replace_installations(&snapshot.installations)?;
     let private_directory = prepare_blender_private_runtime(webview.app_handle())?;
     let selected_candidate = restore_manual_installation(&private_directory)?
@@ -1198,6 +1789,112 @@ mod tests {
     }
 
     #[test]
+    fn accepts_blender_products_but_rejects_similarly_named_plugins() {
+        assert!(is_blender_product_display_name("Blender"));
+        assert!(is_blender_product_display_name("Blender 5.2"));
+        assert!(is_blender_product_display_name("blender 4.5 LTS"));
+        assert!(!is_blender_product_display_name(
+            "Blender Pipeline Plug-in v2.2 for Character Creator 4"
+        ));
+        assert!(!is_blender_product_display_name("Blender Launcher"));
+    }
+
+    #[test]
+    fn parses_bounded_steam_vdf_fields_without_accepting_path_escape() {
+        let body = r#"
+"libraryfolders"
+{
+    "0"
+    {
+        "path"      "F:\\Program Files (x86)\\Steam"
+        "apps"
+        {
+            "365670"    "944579836"
+        }
+    }
+}
+"appid"        "365670"
+"installdir"   "Blender"
+"#;
+        assert_eq!(
+            vdf_values(body, "path"),
+            vec![r"F:\Program Files (x86)\Steam"]
+        );
+        assert_eq!(vdf_values(body, "appid"), vec![STEAM_BLENDER_APP_ID]);
+        assert_eq!(vdf_values(body, "installdir"), vec!["Blender"]);
+        assert!(is_safe_single_path_component("Blender"));
+        assert!(!is_safe_single_path_component("../Blender"));
+        assert!(!is_safe_single_path_component(r"..\Blender"));
+        assert!(!is_safe_single_path_component(r"C:\Blender"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn discovers_and_deduplicates_direct_registered_candidate() {
+        let root = TestDirectory::new("direct-registered");
+        let executable = root.create_manual_x64_candidate();
+        let direct = DirectDiscoveryHints {
+            hints: vec![
+                DirectDiscoveryHint {
+                    source: BlenderInstallationSource::WindowsUninstall,
+                    executable_path: executable.clone(),
+                    display_name: "Blender 5.2".to_string(),
+                    version_hint: Some("5.2.1".to_string()),
+                },
+                DirectDiscoveryHint {
+                    source: BlenderInstallationSource::Steam,
+                    executable_path: executable,
+                    display_name: "Blender（Steam）".to_string(),
+                    version_hint: None,
+                },
+            ],
+            ..DirectDiscoveryHints::default()
+        };
+
+        let snapshot = merge_direct_hints(DiscoverySnapshot::default(), direct);
+        assert_eq!(snapshot.installations.len(), 1);
+        let candidate = &snapshot.installations[0].candidate;
+        assert_eq!(
+            candidate.source,
+            BlenderInstallationSource::WindowsUninstall
+        );
+        assert_eq!(candidate.display_name, "Blender 5.2");
+        assert_eq!(candidate.version_hint.as_deref(), Some("5.2.1"));
+        let serialized = serde_json::to_string(candidate).expect("候选应可序列化");
+        assert!(!serialized.contains(&root.path.to_string_lossy().to_string()));
+        assert!(!serialized.contains(BLENDER_EXECUTABLE_NAME));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn platform_direct_discovery_returns_only_revalidated_opaque_candidates() {
+        let snapshot = merge_direct_hints(
+            DiscoverySnapshot::default(),
+            platform_direct_discovery_hints(),
+        );
+        for installation in &snapshot.installations {
+            assert_eq!(
+                validate_installation_record(&InstallationRecord {
+                    candidate: installation.candidate.clone(),
+                    canonical_root: installation.canonical_root.clone(),
+                    canonical_executable: installation.canonical_executable.clone(),
+                })
+                .expect("平台自动发现的候选必须通过启动前复核"),
+                installation.canonical_executable
+            );
+        }
+        let public_candidates: Vec<_> = snapshot
+            .installations
+            .iter()
+            .map(|installation| &installation.candidate)
+            .collect();
+        println!(
+            "platform_blender_candidates={}",
+            serde_json::to_string(&public_candidates).expect("公开候选应可序列化")
+        );
+    }
+
+    #[test]
     fn rejects_symbolic_link_escape_when_supported() {
         let root = TestDirectory::new("link-root");
         let outside = TestDirectory::new("link-outside");
@@ -1346,7 +2043,7 @@ mod tests {
     fn empty_result_explicitly_reports_non_exhaustive_scope() {
         let result = public_discovery_result(
             DiscoverySnapshot::default(),
-            BlenderDiscoveryScope::WindowsProgramFilesStandardLayout,
+            BlenderDiscoveryScope::WindowsKnownInstallLocations,
             None,
         );
 
@@ -1355,7 +2052,7 @@ mod tests {
         assert!(!result.partial);
         assert!(!result.truncated);
         let serialized = serde_json::to_string(&result).expect("结果应可序列化");
-        assert!(serialized.contains("\"scope\":\"windows-program-files-standard-layout\""));
+        assert!(serialized.contains("\"scope\":\"windows-known-install-locations\""));
         assert!(serialized.contains("\"exhaustive\":false"));
     }
 }

@@ -6,14 +6,15 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     fmt, fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
-const RUNTIME_MANIFEST_JSON: &str =
-    include_str!("../../resources/blender-runtime/v1/runtime-manifest.json");
+const RUNTIME_MANIFEST_BYTES: &[u8] =
+    include_bytes!("../../resources/blender-runtime/v1/runtime-manifest.json");
 const TEMPLATE_INIT_BYTES: &[u8] = include_bytes!(
     "../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/__init__.py"
 );
@@ -25,7 +26,7 @@ const JOB_SCRIPT_BYTES: &[u8] =
 
 const SCHEMA_VERSION: u32 = 1;
 const PACKAGE_ID: &str = "ai-canvas-blender-runtime";
-const PACKAGE_VERSION: &str = "1.0.2";
+const PACKAGE_VERSION: &str = "1.0.4";
 const TEMPLATE_ID: &str = "ai_canvas_director";
 const TEMPLATE_VERSION: u32 = 1;
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
@@ -46,16 +47,22 @@ const TEMPLATE_STARTUP_BLEND_PATH: &str =
 const JOB_SCRIPT_PATH: &str = "jobs/ai_canvas_director_job_v1.py";
 
 const TEMPLATE_INIT_SHA256: &str =
-    "ade7fbd05ba52976905aaf7fbed8199c99985056d49aff208e155d9192f52123";
+    "7a0f046866d5a442561d52ee0bcdc3e5aa28bcb7a6c2aa3661f88372cdd1c23e";
 const TEMPLATE_STARTUP_BLEND_SHA256: &str =
     "a3e806fc2b910598b5f24c90127d02494fcbaf79a53f7e2eb7aee95f7f85e340";
 const JOB_SCRIPT_SHA256: &str = "3173845adb71ab01f718864353c8cfa92abd5d2aba6440f4fa1a1c5d782dbb19";
 
-const TEMPLATE_INIT_SIZE: u64 = 9_054;
+const TEMPLATE_INIT_SIZE: u64 = 9_664;
 const TEMPLATE_STARTUP_BLEND_SIZE: u64 = 91_348;
 const JOB_SCRIPT_SIZE: u64 = 40_364;
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy)]
+enum EmbeddedResourceEncoding {
+    CanonicalLfText,
+    Binary,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct EmbeddedResource {
@@ -64,6 +71,7 @@ struct EmbeddedResource {
     bytes: u64,
     sha256: &'static str,
     content: &'static [u8],
+    encoding: EmbeddedResourceEncoding,
 }
 
 const EMBEDDED_RESOURCES: [EmbeddedResource; 3] = [
@@ -73,6 +81,7 @@ const EMBEDDED_RESOURCES: [EmbeddedResource; 3] = [
         bytes: TEMPLATE_INIT_SIZE,
         sha256: TEMPLATE_INIT_SHA256,
         content: TEMPLATE_INIT_BYTES,
+        encoding: EmbeddedResourceEncoding::CanonicalLfText,
     },
     EmbeddedResource {
         id: "template-startup-blend",
@@ -80,6 +89,7 @@ const EMBEDDED_RESOURCES: [EmbeddedResource; 3] = [
         bytes: TEMPLATE_STARTUP_BLEND_SIZE,
         sha256: TEMPLATE_STARTUP_BLEND_SHA256,
         content: TEMPLATE_STARTUP_BLEND_BYTES,
+        encoding: EmbeddedResourceEncoding::Binary,
     },
     EmbeddedResource {
         id: "job-script",
@@ -87,6 +97,7 @@ const EMBEDDED_RESOURCES: [EmbeddedResource; 3] = [
         bytes: JOB_SCRIPT_SIZE,
         sha256: JOB_SCRIPT_SHA256,
         content: JOB_SCRIPT_BYTES,
+        encoding: EmbeddedResourceEncoding::CanonicalLfText,
     },
 ];
 
@@ -171,6 +182,46 @@ fn sha256_hex(content: &[u8]) -> String {
     format!("{:x}", Sha256::digest(content))
 }
 
+/// 将受信文本确定性规范化为清单使用的 LF 字节。
+///
+/// Git 的 `eol=lf` 不会主动重写既有工作树，而 `include_bytes!` 会读取工作树原始
+/// 字节。这里只接受 UTF-8、LF 或 CRLF；孤立 CR 继续作为资源损坏拒绝，避免把任意
+/// 字节变化掩盖成合法资源。
+fn canonicalize_lf_text(content: &[u8]) -> Result<Cow<'_, [u8]>, BlenderResourceError> {
+    if std::str::from_utf8(content).is_err() {
+        return Err(BlenderResourceError::EmbeddedResourceMismatch);
+    }
+    if !content.contains(&b'\r') {
+        return Ok(Cow::Borrowed(content));
+    }
+
+    let mut normalized = Vec::with_capacity(content.len());
+    let mut index = 0;
+    while index < content.len() {
+        match content[index] {
+            b'\r' if content.get(index + 1) == Some(&b'\n') => {
+                normalized.push(b'\n');
+                index += 2;
+            }
+            b'\r' => return Err(BlenderResourceError::EmbeddedResourceMismatch),
+            byte => {
+                normalized.push(byte);
+                index += 1;
+            }
+        }
+    }
+    Ok(Cow::Owned(normalized))
+}
+
+fn canonical_resource_content(
+    resource: EmbeddedResource,
+) -> Result<Cow<'static, [u8]>, BlenderResourceError> {
+    match resource.encoding {
+        EmbeddedResourceEncoding::CanonicalLfText => canonicalize_lf_text(resource.content),
+        EmbeddedResourceEncoding::Binary => Ok(Cow::Borrowed(resource.content)),
+    }
+}
+
 fn validate_manifest_resource(
     manifest: &RuntimeManifest,
     expected: EmbeddedResource,
@@ -190,8 +241,9 @@ fn validate_manifest_resource(
         return Err(BlenderResourceError::InvalidEmbeddedManifest);
     }
 
-    if expected.content.len() as u64 != expected.bytes
-        || sha256_hex(expected.content) != expected.sha256
+    let canonical_content = canonical_resource_content(expected)?;
+    if canonical_content.len() as u64 != expected.bytes
+        || sha256_hex(canonical_content.as_ref()) != expected.sha256
     {
         return Err(BlenderResourceError::EmbeddedResourceMismatch);
     }
@@ -200,7 +252,9 @@ fn validate_manifest_resource(
 
 /// 严格验证编译内嵌的 runtime manifest 与全部固定资源。
 pub fn validate_embedded_blender_runtime() -> Result<(), BlenderResourceError> {
-    let manifest: RuntimeManifest = serde_json::from_str(RUNTIME_MANIFEST_JSON)
+    let manifest_bytes = canonicalize_lf_text(RUNTIME_MANIFEST_BYTES)
+        .map_err(|_| BlenderResourceError::InvalidEmbeddedManifest)?;
+    let manifest: RuntimeManifest = serde_json::from_slice(manifest_bytes.as_ref())
         .map_err(|_| BlenderResourceError::InvalidEmbeddedManifest)?;
 
     let has_fixed_header = manifest.schema_version == SCHEMA_VERSION
@@ -497,20 +551,22 @@ pub fn install_embedded_blender_runtime(
 
     let manifest_relative = runtime_relative_path(INSTALLED_MANIFEST_PATH)?;
     let mut install_entries = Vec::with_capacity(EMBEDDED_RESOURCES.len() + 1);
-    install_entries.push((manifest_relative.clone(), RUNTIME_MANIFEST_JSON.as_bytes()));
+    let manifest_content = canonicalize_lf_text(RUNTIME_MANIFEST_BYTES)
+        .map_err(|_| BlenderResourceError::InvalidEmbeddedManifest)?;
+    install_entries.push((manifest_relative.clone(), manifest_content));
     for resource in EMBEDDED_RESOURCES {
         install_entries.push((
             runtime_relative_path(resource.relative_path)?,
-            resource.content,
+            canonical_resource_content(resource)?,
         ));
     }
 
     // 在第一次写入前检查所有已存在目标，避免发现冲突时留下新的部分安装。
     for (relative, content) in &install_entries {
-        preflight_file(&private_root, relative, content)?;
+        preflight_file(&private_root, relative, content.as_ref())?;
     }
     for (relative, content) in &install_entries {
-        install_file(&private_root, relative, content)?;
+        install_file(&private_root, relative, content.as_ref())?;
     }
 
     let runtime_root = ensure_directory_tree(
@@ -568,6 +624,26 @@ mod tests {
     }
 
     #[test]
+    fn trusted_text_is_canonicalized_without_weakening_the_pinned_hash() {
+        assert_eq!(
+            canonicalize_lf_text(b"first\r\nsecond\r\n")
+                .expect("CRLF text should be canonicalized")
+                .as_ref(),
+            b"first\nsecond\n"
+        );
+        assert_eq!(
+            canonicalize_lf_text(b"first\nsecond\n")
+                .expect("LF text should remain valid")
+                .as_ref(),
+            b"first\nsecond\n"
+        );
+        assert_eq!(
+            canonicalize_lf_text(b"first\rsecond").expect_err("bare CR must be rejected"),
+            BlenderResourceError::EmbeddedResourceMismatch
+        );
+    }
+
+    #[test]
     fn install_is_idempotent_and_returns_trusted_paths() {
         let root = TestDirectory::create();
         let first = install_embedded_blender_runtime(&root.0)
@@ -576,13 +652,15 @@ mod tests {
             .expect("second resource install should be idempotent");
 
         assert_eq!(first, second);
-        assert!(first.runtime_root.ends_with("blender-runtime/1.0.2"));
+        assert!(first.runtime_root.ends_with("blender-runtime/1.0.4"));
         assert!(first
             .application_templates_root
             .ends_with("scripts/startup/bl_app_templates_system"));
+        let expected_job_script =
+            canonicalize_lf_text(JOB_SCRIPT_BYTES).expect("job script fixture should normalize");
         assert_eq!(
             fs::read(&first.job_script).expect("job script should be readable"),
-            JOB_SCRIPT_BYTES
+            expected_job_script.as_ref()
         );
         assert_eq!(
             fs::read(first.application_template_root.join("startup.blend"))

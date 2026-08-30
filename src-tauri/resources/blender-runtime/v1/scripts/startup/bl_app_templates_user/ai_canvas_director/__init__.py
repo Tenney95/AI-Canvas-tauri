@@ -231,11 +231,30 @@ def _configure_scene(scene):
     scene.render.resolution_percentage = 50
 
 
+def _localize_workspace_names():
+    if bpy.app.background:
+        return
+    preferences = bpy.context.preferences.view
+    if not preferences.use_translate_new_dataname:
+        return
+
+    translations = bpy.app.translations
+    workspace_context = translations.contexts.id_workspace
+    for workspace in bpy.data.workspaces:
+        translated_name = translations.pgettext_data(
+            workspace.name,
+            workspace_context,
+        )
+        if translated_name != workspace.name:
+            workspace.name = translated_name
+
+
 @persistent
 def _load_factory_startup(_):
     bpy.app.driver_namespace.pop(EDITOR_SESSION_KEY, None)
     for scene in bpy.data.scenes:
         _configure_scene(scene)
+    _localize_workspace_names()
 
     for screen in bpy.data.screens:
         for area in screen.areas:
@@ -252,6 +271,7 @@ def register():
         bpy.utils.register_class(class_type)
     if _load_factory_startup not in bpy.app.handlers.load_factory_startup_post:
         bpy.app.handlers.load_factory_startup_post.append(_load_factory_startup)
+    _localize_workspace_names()
 
 
 def unregister():
