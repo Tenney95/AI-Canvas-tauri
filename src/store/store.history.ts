@@ -305,10 +305,12 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
 
     // Restore files BEFORE updating state so React renders with files already on disk.
     const currentNodeIds = new Set(nodes.map((node) => node.id));
-    const revivedPaths = entry.nodes.flatMap((node) => {
-      const filePath = node.data.filePath;
-      return filePath && !currentNodeIds.has(node.id) ? [filePath] : [];
-    });
+    const revivedPathGroups = await Promise.all(entry.nodes.map((node) => (
+      currentNodeIds.has(node.id)
+        ? Promise.resolve([])
+        : fileService.resolveNodeUndoTrashPaths(node.data, get().currentProjectId)
+    )));
+    const revivedPaths = [...new Set(revivedPathGroups.flat())];
     if (revivedPaths.length > 0) {
       await Promise.allSettled(revivedPaths.map((filePath) => fileService.restoreFromUndoTrash(filePath)));
       // 节点复活但文件没回来时，界面上只会表现为"打不开"，必须明说，别让用户以为撤销成功了
@@ -349,15 +351,24 @@ export const createHistorySlice: StateCreator<AppState, [], [], HistorySlice> = 
     const entry = history[targetIndex];
     const targetNodeIds = new Set(entry.nodes.map((node) => node.id));
     const projectId = get().currentProjectId;
-    // 只回收本项目目录内的文件：跨项目粘贴的副本 filePath 仍指向源项目，误删会丢源项目素材
-    const trashPromises = nodes.flatMap((node) => {
-      const filePath = node.data.filePath;
-      if (!filePath || targetNodeIds.has(node.id)) return [];
-      return [fileService.isProjectOwnedFile(filePath, projectId).then((owned) => (
-        owned ? fileService.moveToUndoTrash(filePath) : undefined
-      ))];
+    const keepReferences = new Set<string>();
+    entry.nodes.forEach((node) => {
+      fileService.collectNodeFileReferences(node.data).forEach((reference) => keepReferences.add(reference));
     });
-    if (trashPromises.length > 0) await Promise.allSettled(trashPromises);
+    get().messages.forEach((message) => {
+      const filePath = message.mediaResult?.filePath;
+      if (filePath) keepReferences.add(filePath);
+    });
+    // 只回收本项目目录内的文件：跨项目粘贴的副本 filePath 仍指向源项目，误删会丢源项目素材
+    const trashPathGroups = await Promise.all(nodes.map((node) => (
+      targetNodeIds.has(node.id)
+        ? Promise.resolve([])
+        : fileService.resolveNodeUndoTrashPaths(node.data, projectId, keepReferences)
+    )));
+    const trashPaths = [...new Set(trashPathGroups.flat())];
+    if (trashPaths.length > 0) {
+      await Promise.allSettled(trashPaths.map((filePath) => fileService.moveToUndoTrash(filePath)));
+    }
 
     const latest = get();
     const latestSnapshot = createSnapshot(latest.nodes, latest.edges, latest.groups);

@@ -4,7 +4,120 @@
  */
 import { mkdir, exists, rename } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
+import {
+  normalizeDirectorResultManifestReference,
+  normalizeDirectorSceneReference,
+} from '../directorSceneSchema';
 import { isTauriEnv, joinPath, notifyProjectDiskChanged, getProjectDataDir } from './core';
+
+interface NodeFileReferences {
+  filePath?: unknown;
+  directorCaptureFilePaths?: unknown;
+  directorScene?: unknown;
+  directorResultManifest?: unknown;
+  storyboardOverrides?: unknown;
+}
+
+const DIRECTOR_SCENE_REFERENCE_PREFIX = 'director-scene:';
+
+function stringPath(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function collectDirectorSceneIds(nodeData: NodeFileReferences): string[] {
+  const sceneIds = new Set<string>();
+  try {
+    sceneIds.add(normalizeDirectorSceneReference(nodeData.directorScene).sceneId);
+  } catch {
+    // 兼容轻量导演台与旧节点；无合法 Scene 引用时只处理普通文件路径。
+  }
+  try {
+    sceneIds.add(normalizeDirectorResultManifestReference(nodeData.directorResultManifest).sceneId);
+  } catch {
+    // 同上。损坏或不完整引用不得扩大删除范围。
+  }
+  // 同一节点声明两个不同 sceneId 时视为数据冲突，失败关闭目录回收。
+  return sceneIds.size <= 1 ? [...sceneIds] : [];
+}
+
+function directorSceneReferenceKey(sceneId: string): string {
+  return `${DIRECTOR_SCENE_REFERENCE_PREFIX}${sceneId}`;
+}
+
+/**
+ * 收集节点仍在使用的文件/Director Scene 引用键。
+ * Scene 使用逻辑键而非绝对路径，避免共享判断依赖异步项目目录解析。
+ */
+export function collectNodeFileReferences(nodeData: NodeFileReferences): Set<string> {
+  const references = new Set<string>();
+  const filePath = stringPath(nodeData.filePath);
+  if (filePath) references.add(filePath);
+  if (Array.isArray(nodeData.directorCaptureFilePaths)) {
+    nodeData.directorCaptureFilePaths.forEach((value) => {
+      const path = stringPath(value);
+      if (path) references.add(path);
+    });
+  }
+  if (Array.isArray(nodeData.storyboardOverrides)) {
+    nodeData.storyboardOverrides.forEach((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+      const path = stringPath((value as { filePath?: unknown }).filePath);
+      if (path) references.add(path);
+    });
+  }
+  collectDirectorSceneIds(nodeData).forEach((sceneId) => {
+    references.add(directorSceneReferenceKey(sceneId));
+  });
+  return references;
+}
+
+/**
+ * 将节点引用解析成真正需要暂存/恢复的路径。
+ * Blender Scene bundle 按目录处理，目录内的截图、视频与 .blend 不再逐文件重复移动。
+ */
+export async function resolveNodeUndoTrashPaths(
+  nodeData: NodeFileReferences,
+  projectId?: string | null,
+  keepReferences?: ReadonlySet<string>,
+): Promise<string[]> {
+  const directPaths = [...collectNodeFileReferences(nodeData)]
+    .filter((reference) => !reference.startsWith(DIRECTOR_SCENE_REFERENCE_PREFIX));
+
+  // 未提供项目时保持旧兼容行为，但不扩大到 Director capture 数组或目录。
+  if (projectId === undefined) {
+    const filePath = stringPath(nodeData.filePath);
+    return filePath && !keepReferences?.has(filePath) ? [filePath] : [];
+  }
+  if (!projectId) return [];
+
+  const projectRoot = await getProjectDataDir(projectId).catch(() => null);
+  if (!projectRoot) return [];
+
+  const sceneDirs = collectDirectorSceneIds(nodeData).map((sceneId) => ({
+    sceneId,
+    path: joinPath(projectRoot, 'director', 'scenes', sceneId),
+  }));
+  const paths = new Set<string>();
+
+  for (const sceneDir of sceneDirs) {
+    const shared = keepReferences?.has(directorSceneReferenceKey(sceneDir.sceneId))
+      || [...(keepReferences ?? [])].some((reference) => (
+        !reference.startsWith(DIRECTOR_SCENE_REFERENCE_PREFIX)
+        && isPathInsideDir(reference, sceneDir.path)
+      ));
+    if (!shared && isPathInsideDir(sceneDir.path, projectRoot)) paths.add(sceneDir.path);
+  }
+
+  for (const filePath of directPaths) {
+    if (keepReferences?.has(filePath)) continue;
+    // Scene bundle 始终作为一个不可变整体保留或回收，不能只抽走其中某个 artifact。
+    if (sceneDirs.some((sceneDir) => isPathInsideDir(filePath, sceneDir.path))) continue;
+    if (isPathInsideDir(filePath, projectRoot)) paths.add(filePath);
+    else console.warn('[fileService] 跳过删除非本项目文件:', filePath);
+  }
+
+  return [...paths];
+}
 
 /** 将文件或目录移动到系统回收站（Tauri 端），浏览器环境无操作 */
 export async function moveToTrash(filePath: string): Promise<void> {
@@ -160,18 +273,13 @@ export async function isProjectOwnedFile(
  *  keepPaths：仍被存活节点引用的 filePath 集合 —— 命中则跳过，避免复制节点删除时连累原节点文件。
  *  projectId：当前项目 —— 文件不在该项目目录内时一律不删，避免误删其他项目的素材。 */
 export function deleteNodeFile(
-  nodeData: { filePath?: string },
-  keepPaths?: Set<string>,
+  nodeData: NodeFileReferences,
+  keepPaths?: ReadonlySet<string>,
   projectId?: string | null,
 ): Promise<void> {
   const operation = (async () => {
-    const fp = nodeData.filePath;
-    if (!fp || typeof fp !== 'string' || keepPaths?.has(fp)) return;
-    if (projectId !== undefined && !(await isProjectOwnedFile(fp, projectId))) {
-      console.warn('[fileService] 跳过删除非本项目文件:', fp);
-      return;
-    }
-    await moveToUndoTrash(fp);
+    const paths = await resolveNodeUndoTrashPaths(nodeData, projectId, keepPaths);
+    await Promise.all(paths.map((path) => moveToUndoTrash(path)));
   })();
   // 删除是即发即忘的（节点退场动画不等文件系统），撤销必须能等它落定，
   // 否则还原会跑在暂存前面：节点回来了，文件随后才被搬进 .trash，成了死节点
