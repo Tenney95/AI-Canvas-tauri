@@ -42,6 +42,31 @@ function createInstallationId(): string {
   return `agent-package-${generateId()}`;
 }
 
+const OBSOLETE_MANIFESTLESS_WARNING = '未找到 ai-canvas-agent.json，已按兼容目录模式载入';
+
+/**
+ * v1 首批切片曾把所有无根清单来源标成 degraded。仅迁移带有精确旧提示的
+ * legacy 记录，避免把其他真实受限状态误提升为 ready；用户的启停选择保持不变。
+ */
+function migrateManifestlessInstallation(
+  installation: AgentPackageInstallation,
+): AgentPackageInstallation {
+  if (
+    installation.health !== 'degraded'
+    || !installation.packageId.startsWith('legacy.')
+    || !installation.warnings.includes(OBSOLETE_MANIFESTLESS_WARNING)
+  ) {
+    return installation;
+  }
+  return {
+    ...installation,
+    warnings: installation.warnings.filter(
+      (warning) => warning !== OBSOLETE_MANIFESTLESS_WARNING,
+    ),
+    health: 'ready',
+  };
+}
+
 export const createAgentPackageSlice: StateCreator<AppState, [], [], AgentPackageSlice> = (
   set,
   get,
@@ -132,9 +157,21 @@ export const createAgentPackageSlice: StateCreator<AppState, [], [], AgentPackag
       const records = await getAllAgentInstallations();
       const valid: AgentPackageInstallation[] = [];
       let rejectedRecord = false;
+      let migrationWriteFailed = false;
       for (const record of records) {
         try {
-          valid.push(normalizeAgentPackageInstallation(record));
+          const normalized = normalizeAgentPackageInstallation(record);
+          const migrated = migrateManifestlessInstallation(normalized);
+          valid.push(migrated);
+          if (migrated !== normalized) {
+            try {
+              await putAgentInstallation(migrated);
+            } catch (error) {
+              // 内存态仍使用修正后的语义；下次启动可再次尝试持久化。
+              migrationWriteFailed = true;
+              console.warn('[Agent Catalog] 无清单目录兼容状态迁移保存失败', error);
+            }
+          }
         } catch (error) {
           rejectedRecord = true;
           console.warn('[Agent Catalog] 已忽略损坏的安装记录', error);
@@ -142,10 +179,12 @@ export const createAgentPackageSlice: StateCreator<AppState, [], [], AgentPackag
       }
       set({
         agentPackages: sortInstallations(valid),
-        agentCatalogStatus: rejectedRecord ? 'degraded' : 'ready',
+        agentCatalogStatus: rejectedRecord || migrationWriteFailed ? 'degraded' : 'ready',
         agentCatalogErrorCode: rejectedRecord
           ? 'AGENT_CATALOG_RECORD_INVALID'
-          : undefined,
+          : migrationWriteFailed
+            ? 'AGENT_CATALOG_MIGRATION_WRITE_FAILED'
+            : undefined,
       });
     } catch (error) {
       console.warn('[Agent Catalog] 读取失败，已退化为空目录', error);

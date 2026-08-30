@@ -2268,7 +2268,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - 建立用户安装的 Agent Package v1 合同、严格 Manifest 校验和独立 `ai-canvas-agent-catalog` IndexedDB；可选目录加载失败时退化为空目录，不参与项目、画布和配置的启动 readiness。
 - 全局安装记录只持有 Manifest、包内相对入口、健康信息和不透明 `sourceId`；不保存真实路径、入口正文、API Key 或包内容。没有外部智能体时，默认助手、画布、工作流和模型发送链保持原样。
 - AI 助手 Header 和空态新增“智能体中心”，支持选择文件夹与压缩包、查看预检结果、启停和移除。写操作只在主窗口提供，独立助手窗口不成为第二个写入源。
-- 文件夹采用只读 linked 来源；没有 `ai-canvas-agent.json` 的旧目录由宿主生成 `legacy.<hash>` 兼容清单，标记 `degraded` 并默认停用，不写回用户源目录。
+- 文件夹采用只读 linked 来源；`ai-canvas-agent.json` 是可选增强清单。没有该清单但能识别有效 `AGENTS.md` / `SKILL.md` 入口的通用目录，由宿主生成 `legacy.<hash>` 兼容清单并按 `ready` 正常载入，不写回用户源目录；旧版留下的缺清单提醒会被精确迁移，同时保留用户原有启停选择。
 - 压缩包采用 managed 导入，首批支持 `.aicanvas-agent`、`.tgz`、`.tar.gz`。归档在空 staging 中完成条目数、体积、重复路径、路径逃逸、链接和设备文件检查，通过后再原子迁入托管目录；失败清理半安装来源。
 - Rust 私有注册表保存 `sourceId` 到真实路径的映射，并从 Renderer 的通用 fs/asset 与自定义路径命令中拒绝访问；包内资源只允许通过 `sourceId + 相对路径` 有界读取，不执行包内脚本。
 - 卸载 linked 来源只解除注册、不删除外部目录；卸载 managed 来源删除托管副本。同一包升级并更换来源后会清理旧来源，避免孤儿副本。
@@ -2284,6 +2284,8 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - Fork 同步：绕过失效的本机代理获取 `myfork/master`，确认远端只改 3 个无重叠文件后，把本地 `master` 从 `4622b35` 快进到 `dc85e67`；当前实现保留且快进后重新通过类型、测试和生产构建。
 - 本阶段未新增依赖，未修改 `tauri.conf.json`、capability、核心 IndexedDB schema、Agent Policy 或媒体确认策略；未执行真实外部目录的 Tauri 对话框端到端手测。
 - 普通 `.zip` 尚未支持；其安全实现需要增加直接 Rust 依赖，必须在用户单独确认新增依赖后进入后续阶段。
+- 2026-08-30 修正通用目录兼容语义：`ai-canvas-agent.json` 不再作为健康门槛；有效无清单目录按 `ready` 载入且首次默认启用。旧 `legacy.*` 记录仅在命中精确历史提醒时迁移，保留用户启停状态和其他真实提醒；迁移写回失败会保留修正后的内存记录并将 Catalog 标记为受限。
+- 本次回归：Agent Package 相关 Vitest 5 个文件、37 项通过；Rust `agent_package::tests` 11 项通过；`npm run typecheck`、`npm run test:typecheck`、改动 TypeScript 定向 ESLint、`cargo check --lib` 和目标 `agent_package.rs` rustfmt 检查通过。全 crate `cargo fmt --check` 仍被多个未改 Rust 文件的既有格式差异阻断，未格式化无关文件。
 
 #### 回滚
 

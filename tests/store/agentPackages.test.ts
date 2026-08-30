@@ -136,23 +136,142 @@ describe('Agent Package Store', () => {
     expect(result.manifest.version).toBe('1.1.0');
   });
 
-  it('creates a disabled host-side manifest for legacy folders without writing to source', async () => {
+  it('creates an enabled host-side manifest for a ready manifestless folder', async () => {
     const { slice } = createSlice();
 
     const result = await slice.installAgentPackagePreview(preview({
       manifest: null,
-      health: 'degraded',
+      health: 'ready',
     }));
 
     expect(result).toMatchObject({
       packageId: `legacy.${HASH.slice(0, 16)}`,
-      enabled: false,
+      enabled: true,
+      health: 'ready',
       manifest: {
         entrypoints: { instructions: 'AGENTS.md' },
         routing: { userInvocable: true, autoInvoke: false },
       },
     });
     expect(dbMocks.putAgentInstallation).toHaveBeenCalledTimes(1);
+  });
+
+  it('migrates the obsolete manifest warning without changing the user enable state', async () => {
+    const legacyId = `legacy.${HASH.slice(0, 16)}`;
+    const unrelatedDegradedId = 'legacy.unrelated-degraded';
+    const obsoleteWarning = '未找到 ai-canvas-agent.json，已按兼容目录模式载入';
+    const existingWarning = '指令入口预览已截断';
+    const legacy = installation({
+      packageId: legacyId,
+      manifest: {
+        ...manifest(),
+        id: legacyId,
+        version: '0.0.0-legacy',
+      },
+      warnings: [obsoleteWarning, existingWarning],
+      health: 'degraded',
+      enabled: false,
+    });
+    const unrelatedDegraded = installation({
+      id: 'agent-package-unrelated-degraded',
+      packageId: unrelatedDegradedId,
+      manifest: {
+        ...manifest(),
+        id: unrelatedDegradedId,
+        version: '0.0.0-legacy',
+      },
+      warnings: [existingWarning],
+      health: 'degraded',
+      enabled: true,
+    });
+    dbMocks.getAllAgentInstallations.mockResolvedValue([legacy, unrelatedDegraded]);
+    const { slice, getState } = createSlice();
+
+    await slice.loadAgentPackages();
+
+    expect(getState().agentPackages.find((item) => item.packageId === legacyId)).toMatchObject({
+      warnings: [existingWarning],
+      health: 'ready',
+      enabled: false,
+    });
+    expect(getState().agentPackages.find(
+      (item) => item.packageId === unrelatedDegradedId,
+    )).toMatchObject({
+      warnings: [existingWarning],
+      health: 'degraded',
+      enabled: true,
+    });
+    expect(dbMocks.putAgentInstallation).toHaveBeenCalledTimes(1);
+    expect(dbMocks.putAgentInstallation).toHaveBeenCalledWith(expect.objectContaining({
+      packageId: legacyId,
+      warnings: [existingWarning],
+      health: 'ready',
+      enabled: false,
+    }));
+  });
+
+  it.each(['invalid', 'missing'] as const)(
+    'does not migrate a manifestless record whose health is %s',
+    async (health) => {
+      const legacyId = `legacy.${health}`;
+      const obsoleteWarning = '未找到 ai-canvas-agent.json，已按兼容目录模式载入';
+      const record = installation({
+        packageId: legacyId,
+        manifest: {
+          ...manifest(),
+          id: legacyId,
+          version: '0.0.0-legacy',
+        },
+        warnings: [obsoleteWarning],
+        health,
+        enabled: false,
+      });
+      dbMocks.getAllAgentInstallations.mockResolvedValue([record]);
+      const { slice, getState } = createSlice();
+
+      await slice.loadAgentPackages();
+
+      expect(getState().agentPackages[0]).toMatchObject({
+        packageId: legacyId,
+        warnings: [obsoleteWarning],
+        health,
+        enabled: false,
+      });
+      expect(dbMocks.putAgentInstallation).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps migrated records visible but reports a failed migration write', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const legacyId = `legacy.${HASH.slice(0, 16)}`;
+    const record = installation({
+      packageId: legacyId,
+      manifest: {
+        ...manifest(),
+        id: legacyId,
+        version: '0.0.0-legacy',
+      },
+      warnings: ['未找到 ai-canvas-agent.json，已按兼容目录模式载入'],
+      health: 'degraded',
+      enabled: false,
+    });
+    dbMocks.getAllAgentInstallations.mockResolvedValue([record]);
+    dbMocks.putAgentInstallation.mockRejectedValue(new Error('write failed'));
+    const { slice, getState } = createSlice();
+
+    await slice.loadAgentPackages();
+
+    expect(getState().agentPackages[0]).toMatchObject({
+      packageId: legacyId,
+      warnings: [],
+      health: 'ready',
+      enabled: false,
+    });
+    expect(getState()).toMatchObject({
+      agentCatalogStatus: 'degraded',
+      agentCatalogErrorCode: 'AGENT_CATALOG_MIGRATION_WRITE_FAILED',
+    });
+    warning.mockRestore();
   });
 
   it('rejects invalid package previews before persistence', async () => {

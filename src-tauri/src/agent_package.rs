@@ -774,12 +774,9 @@ fn inspect_source(
     };
 
     let mut warnings = Vec::new();
-    let health = if manifest.is_some() {
-        "ready"
-    } else {
-        warnings.push("未找到 ai-canvas-agent.json，已按兼容目录模式载入".to_string());
-        "degraded"
-    };
+    // ai-canvas-agent.json 是可选增强清单。执行到这里时已经确认存在可读的
+    // AGENTS.md、SKILL.md 或清单指令入口，因此无清单本身不构成健康风险。
+    let health = "ready";
     if scan.ignored_directory_count > 0 {
         warnings.push(format!(
             "已跳过 {} 个构建、缓存或依赖目录",
@@ -1445,8 +1442,8 @@ mod tests {
     }
 
     #[test]
-    fn scans_legacy_agent_without_executing_scripts() {
-        let root = temporary_directory("legacy");
+    fn scans_manifestless_agent_without_executing_scripts() {
+        let root = temporary_directory("manifestless");
         fs::write(root.join("AGENTS.md"), "# Agent\n只读说明").unwrap();
         fs::write(root.join("VERSION"), "1.2.3\n").unwrap();
         fs::create_dir_all(root.join("skills/demo")).unwrap();
@@ -1454,13 +1451,62 @@ mod tests {
         fs::write(root.join("run.py"), "raise RuntimeError('must not run')").unwrap();
 
         let preview = inspect_source(&root, "src_test123", AgentSourceType::Folder, "测试智能体")
-            .expect("legacy 目录应可预检");
-        assert_eq!(preview.health, "degraded");
+            .expect("无清单目录应可预检");
+        assert_eq!(preview.health, "ready");
+        assert!(!preview
+            .warnings
+            .iter()
+            .any(|warning| warning.contains(MANIFEST_FILE_NAME)));
         assert_eq!(preview.version, "1.2.3");
         assert_eq!(preview.skill_count, 1);
         assert!(preview.entrypoints.contains(&"AGENTS.md".to_string()));
         assert!(root.join("run.py").is_file(), "扫描不得执行或删除脚本");
         fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn manifestless_readiness_does_not_relax_invalid_source_checks() {
+        let invalid_manifest = temporary_directory("invalid-manifest");
+        fs::write(
+            invalid_manifest.join(MANIFEST_FILE_NAME),
+            "{ definitely not json",
+        )
+        .unwrap();
+        fs::write(invalid_manifest.join("AGENTS.md"), "# Agent").unwrap();
+        assert!(inspect_source(
+            &invalid_manifest,
+            "src_invalid_manifest",
+            AgentSourceType::Folder,
+            "测试智能体",
+        )
+        .is_err_and(|error| error.contains("智能体清单不是有效 JSON")));
+
+        let missing_entrypoint = temporary_directory("missing-entrypoint");
+        fs::write(
+            missing_entrypoint.join(MANIFEST_FILE_NAME),
+            r#"{"schemaVersion":1,"entrypoints":{"instructions":"missing.md"}}"#,
+        )
+        .unwrap();
+        assert!(inspect_source(
+            &missing_entrypoint,
+            "src_missing_entrypoint",
+            AgentSourceType::Folder,
+            "测试智能体",
+        )
+        .is_err_and(|error| error.contains("智能体清单入口不存在")));
+
+        let missing_instruction = temporary_directory("missing-instruction");
+        assert!(inspect_source(
+            &missing_instruction,
+            "src_missing_instruction",
+            AgentSourceType::Folder,
+            "测试智能体",
+        )
+        .is_err_and(|error| error.contains("智能体目录缺少 AGENTS.md、SKILL.md 或清单指令入口")));
+
+        fs::remove_dir_all(invalid_manifest).ok();
+        fs::remove_dir_all(missing_entrypoint).ok();
+        fs::remove_dir_all(missing_instruction).ok();
     }
 
     #[test]
