@@ -1,7 +1,7 @@
 /**
  * ImageNode 图像节点 — 在画布上渲染图像内容，支持上传/粘贴图片、遮罩编辑、工具栏、全屏预览
  */
-import { memo, lazy, Suspense, useCallback, useRef, useState } from 'react';
+import { memo, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
 import type {
@@ -43,6 +43,7 @@ import {
 } from '../../services/canvasDerivationGuard';
 import { useImageNodeOnnxActions } from './shared/image/useImageNodeOnnxActions';
 import { useT } from '../../i18n';
+import { getImageLoadRetryDelay, isRetryableImageSource } from '../../utils/imageLoadRetry';
 
 const MattingEditor = lazy(() => import('./shared/image/MattingEditor'));
 const CustomGridEditor = lazy(() => import('./shared/image/CustomGridEditor'));
@@ -160,7 +161,15 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   const [isCameraStudio, setIsCameraStudio] = useState(false);
   // 加载状态按来源记账：来源一变旧状态自然失效，无需 effect 逐个重置
-  const [imgState, setImgState] = useState<{ src?: string; loaded?: boolean; failed?: boolean }>({});
+  const [imgState, setImgState] = useState<{
+    src?: string;
+    loaded?: boolean;
+    failed?: boolean;
+    retryAttempt?: number;
+    retrying?: boolean;
+  }>({});
+  const imageRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const imageRetryRef = useRef<{ src?: string; scheduledAttempts: number }>({ scheduledAttempts: 0 });
   const [fullscreenFailedSrc, setFullscreenFailedSrc] = useState<string | undefined>();
   const [mattingFailedSrc, setMattingFailedSrc] = useState<string | undefined>();
   const [annotateFailedSrc, setAnnotateFailedSrc] = useState<string | undefined>();
@@ -177,9 +186,62 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   // imageUrl 或外部文件版本变化后，下面这些标记自动回到初始态
   const imgLoaded = imgState.src === displaySrc && !!imgState.loaded;
   const imgLoadError = imgState.src === displaySrc && !!imgState.failed;
+  const imgRetrying = imgState.src === displaySrc && !!imgState.retrying;
+  const imgRetryAttempt = imgState.src === displaySrc ? (imgState.retryAttempt ?? 0) : 0;
   const fullscreenError = !!displaySrc && fullscreenFailedSrc === displaySrc;
   const mattingError = !!data.mattingMask && mattingFailedSrc === data.mattingMask;
   const annotateError = !!data.annotation && annotateFailedSrc === data.annotation;
+
+  useEffect(() => {
+    imageRetryRef.current = { src: displaySrc, scheduledAttempts: 0 };
+    return () => {
+      if (imageRetryTimerRef.current) clearTimeout(imageRetryTimerRef.current);
+      imageRetryTimerRef.current = null;
+    };
+  }, [displaySrc]);
+
+  const handlePreviewImageLoad = useCallback(() => {
+    if (!displaySrc) return;
+    if (imageRetryTimerRef.current) clearTimeout(imageRetryTimerRef.current);
+    imageRetryTimerRef.current = null;
+    imageRetryRef.current = { src: displaySrc, scheduledAttempts: 0 };
+    setImgState({ src: displaySrc, loaded: true });
+  }, [displaySrc]);
+
+  const handlePreviewImageError = useCallback(() => {
+    if (!displaySrc) return;
+
+    if (imageRetryTimerRef.current) clearTimeout(imageRetryTimerRef.current);
+    imageRetryTimerRef.current = null;
+
+    if (imageRetryRef.current.src !== displaySrc) {
+      imageRetryRef.current = { src: displaySrc, scheduledAttempts: 0 };
+    }
+    const scheduledAttempts = imageRetryRef.current.scheduledAttempts;
+    const retryDelay = isRetryableImageSource(displaySrc)
+      ? getImageLoadRetryDelay(scheduledAttempts)
+      : null;
+    if (retryDelay === null) {
+      setImgState({ src: displaySrc, failed: true, retryAttempt: scheduledAttempts });
+      return;
+    }
+
+    const nextAttempt = scheduledAttempts + 1;
+    imageRetryRef.current.scheduledAttempts = nextAttempt;
+    setImgState({ src: displaySrc, retryAttempt: scheduledAttempts, retrying: true });
+    imageRetryTimerRef.current = setTimeout(() => {
+      imageRetryTimerRef.current = null;
+      if (imageRetryRef.current.src !== displaySrc) return;
+      setImgState({ src: displaySrc, retryAttempt: nextAttempt, retrying: true });
+    }, retryDelay);
+  }, [displaySrc]);
+
+  const handlePreviewImageReload = useCallback(() => {
+    if (imageRetryTimerRef.current) clearTimeout(imageRetryTimerRef.current);
+    imageRetryTimerRef.current = null;
+    imageRetryRef.current = { src: displaySrc, scheduledAttempts: 0 };
+    setImgState({});
+  }, [displaySrc]);
 
   const handleOpenCameraStudio = useCallback(() => setIsCameraStudio(true), []);
   const handleCloseCameraStudio = useCallback(() => setIsCameraStudio(false), []);
@@ -804,7 +866,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                     </svg>
                     <span className="text-xs">{t('图片加载失败')}</span>
                     <button
-                      onClick={(e) => { e.stopPropagation(); setImgState({}); }}
+                      onClick={(e) => { e.stopPropagation(); handlePreviewImageReload(); }}
                       className="text-[10px] px-2 py-0.5 rounded bg-canvas-hover hover:bg-canvas-border transition-colors"
                     >
                       {t('重新加载')}
@@ -812,15 +874,21 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                   </div>
                 ) : (
                   <img
+                    key={`${displaySrc}:${imgRetryAttempt}`}
                     ref={imagePreviewRef}
                     src={displaySrc}
                     alt="Generated"
                     className={`image-preview-img compact img-reveal${imgLoaded ? ' is-loaded' : ''}`}
                     data-source-url={data.sourceUrl}
-                    onLoad={() => setImgState({ src: displaySrc, loaded: true })}
-                    onError={() => setImgState({ src: displaySrc, failed: true })}
+                    onLoad={handlePreviewImageLoad}
+                    onError={handlePreviewImageError}
                     onDoubleClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
                   />
+                )}
+                {imgRetrying && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-canvas-card" aria-hidden="true">
+                    <div className="spinner" />
+                  </div>
                 )}
                 {data.mattingMask && !mattingError && (
                   <img
