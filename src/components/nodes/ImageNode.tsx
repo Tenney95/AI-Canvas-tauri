@@ -171,10 +171,9 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const imageRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const imageRetryRef = useRef<{ src?: string; scheduledAttempts: number }>({ scheduledAttempts: 0 });
   const [fullscreenFailedSrc, setFullscreenFailedSrc] = useState<string | undefined>();
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [mattingFailedSrc, setMattingFailedSrc] = useState<string | undefined>();
   const [annotateFailedSrc, setAnnotateFailedSrc] = useState<string | undefined>();
-  const imagePreviewRef = useRef<HTMLImageElement>(null);
-  const [fullscreenOrigin, setFullscreenOrigin] = useState<{ left: number; top: number; width: number; height: number } | undefined>();
 
   // 文件被外部工具覆盖时只刷新本地预览，不修改节点数据或撤销历史。
   const revisionFor = useReferencedImageRevisions([data.filePath]);
@@ -772,16 +771,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   /* ════════════════════════════════════════════
      Fullscreen State
      ════════════════════════════════════════════ */
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const handleOpenFullscreen = useCallback(() => {
-    const rect = imagePreviewRef.current?.getBoundingClientRect();
-    setFullscreenOrigin(rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined);
-    setIsFullscreen(true);
-  }, []);
-  const handleCloseFullscreen = useCallback(() => {
-    setIsFullscreen(false);
-    setFullscreenOrigin(undefined);
-  }, []);
+  const handleOpenFullscreen = useCallback(() => setIsFullscreen(true), []);
+  const handleCloseFullscreen = useCallback(() => setIsFullscreen(false), []);
 
   /** 重绘 — 打开 PromptPanel 对话框 */
   const handleRepaint = useCallback(() => {
@@ -857,6 +848,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           <div className="node-preview compact">
             {displaySrc ? (
               <div className="image-preview-container">
+                {!isFullscreen && (
+                  <>
                 {imgLoadError ? (
                   <div className="flex flex-col items-center justify-center gap-2 h-full min-h-[80px] text-canvas-text-muted">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.5">
@@ -875,7 +868,6 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                 ) : (
                   <img
                     key={`${displaySrc}:${imgRetryAttempt}`}
-                    ref={imagePreviewRef}
                     src={displaySrc}
                     alt="Generated"
                     className={`image-preview-img compact img-reveal${imgLoaded ? ' is-loaded' : ''}`}
@@ -944,6 +936,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                       {t('主体识别中...')}
                     </span>
                   </div>
+                )}
+                  </>
                 )}
               </div>
             ) : isUploading ? (
@@ -1121,6 +1115,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         onClose={handleCloseFullscreen}
         data-tooltip={(data.label as string) || t('图片预览')}
         hidePanel
+        className="fullscreen-overlay--image-preview"
       >
         {fullscreenError ? (
           <div className="flex flex-col items-center justify-center gap-3 text-canvas-text-muted" style={{ height: '100vh' }}>
@@ -1137,16 +1132,15 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               {t('重新加载')}
             </button>
           </div>
-        ) : (
+        ) : displaySrc ? (
           <ZoomableImage
-            src={(data.imageUrl || data.thumbnailUrl) as string}
+            src={displaySrc}
             alt={(data.label as string) || t('预览')}
             className="fullscreen-img-view"
-            originRect={fullscreenOrigin}
             onClose={handleCloseFullscreen}
             onError={() => setFullscreenFailedSrc(displaySrc)}
           />
-        )}
+        ) : null}
       </FullscreenOverlay>
 
       {/* ── 超分模型下载弹窗（Portal → body）── */}
