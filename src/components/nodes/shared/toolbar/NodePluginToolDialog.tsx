@@ -1,7 +1,11 @@
 import { Icon } from '@iconify/react';
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import type { AvailableNodePluginTool, PluginJsonValue } from '../../../../types/plugin';
 import { executeNodePluginTool } from '../../../../services/plugins/pluginRuntime';
+import {
+  buildPluginModelCatalog,
+  collectDeclaredModelCategories,
+} from '../../../../services/plugins/pluginModelCatalog';
 import { useAppStore } from '../../../../store/useAppStore';
 import AnimatedButton from '../../../shared/AnimatedButton';
 import ModalOverlay from '../../../shared/ModalOverlay';
@@ -27,7 +31,18 @@ function initialFormValues(pluginTool: AvailableNodePluginTool): Record<string, 
 
 export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: NodePluginToolDialogProps) {
   const showToast = useAppStore((state) => state.showToast);
+  const config = useAppStore((state) => state.config);
   const dialog = pluginTool.tool.dialog;
+  // 只有声明 models.read 的插件才拿得到模型目录，且目录不含任何厂商凭据。
+  const models = useMemo(
+    () => (pluginTool.permissions.includes('models.read')
+      ? buildPluginModelCatalog(
+        config,
+        collectDeclaredModelCategories(pluginTool.tool.dialog?.fields ?? []),
+      )
+      : []),
+    [config, pluginTool],
+  );
   const [values, setValues] = useState<Record<string, FormValue>>(() => initialFormValues(pluginTool));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -166,6 +181,24 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
                     >
                       <option value="">{field.placeholder || '请选择'}</option>
                       {field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  ) : field.type === 'model' ? (
+                    <select
+                      value={String(values[field.id] ?? '')}
+                      required={field.required}
+                      disabled={busy}
+                      className={inputClassName}
+                      onChange={(event) => {
+                        const nextValue = event.currentTarget.value;
+                        setValues((current) => ({ ...current, [field.id]: nextValue }));
+                      }}
+                    >
+                      <option value="">
+                        {models.length > 0 ? (field.placeholder || '选择可调用模型') : '暂无可调用模型'}
+                      </option>
+                      {models
+                        .filter((model) => !field.modelCategories || field.modelCategories.includes(model.category))
+                        .map((model) => <option key={model.id} value={model.id}>{model.name} · {model.category}</option>)}
                     </select>
                   ) : (
                     <input

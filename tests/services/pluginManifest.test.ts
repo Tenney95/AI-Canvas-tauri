@@ -273,4 +273,84 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
     expect(updated.installedAt).toBe(first.installedAt);
     expect(updated.source).toBe('second');
   });
+
+  it('accepts model fields in node tool dialogs from API v2 and gates them on models.read', () => {
+    const modelTool = {
+      id: 'summarize',
+      title: '模型总结',
+      placements: ['node-toolbar'],
+      icon: 'lucide:sparkles',
+      dialog: {
+        fields: [{ id: 'model', label: '模型', type: 'model', modelCategories: ['text'] }],
+      },
+      nodeTypes: ['ai-text'],
+      inputFields: ['output'],
+      output: { mode: 'create-node', nodeType: 'ai-markdown', fields: ['output'] },
+    };
+    const parsed = parsePluginBundle(manifest({
+      apiVersion: 2,
+      permissions: ['node.read', 'node.write', 'models.read', 'models.invoke'],
+      contributes: { nodeTools: [modelTool] },
+    }), 'definePlugin({});');
+
+    expect(parsed.contributes.nodeTools[0].dialog?.fields[0]).toMatchObject({
+      id: 'model',
+      type: 'model',
+      modelCategories: ['text'],
+    });
+
+    expect(() => parsePluginBundle(manifest({
+      apiVersion: 2,
+      permissions: ['node.read', 'node.write'],
+      contributes: { nodeTools: [modelTool] },
+    }), 'definePlugin({});')).toThrow('models.read');
+
+    expect(() => parsePluginBundle(manifest({
+      apiVersion: 1,
+      permissions: ['node.read', 'node.write', 'models.read'],
+      contributes: { nodeTools: [modelTool] },
+    }), 'definePlugin({});')).toThrow('apiVersion: 2 或 3');
+  });
+
+  it('rejects model categories on non-model dialog fields and unknown categories', () => {
+    const baseTool = {
+      id: 'summarize',
+      title: '模型总结',
+      placements: ['node-toolbar'],
+      icon: 'lucide:sparkles',
+      nodeTypes: ['ai-text'],
+      inputFields: ['output'],
+      output: { mode: 'update-current', fields: ['output'] },
+    };
+
+    expect(() => parsePluginBundle(manifest({
+      apiVersion: 2,
+      permissions: ['node.read', 'node.write', 'models.read'],
+      contributes: {
+        nodeTools: [{
+          ...baseTool,
+          dialog: {
+            fields: [{
+              id: 'mode',
+              label: '模式',
+              type: 'select',
+              options: [{ label: '快速', value: 'fast' }],
+              modelCategories: ['text'],
+            }],
+          },
+        }],
+      },
+    }), 'definePlugin({});')).toThrow('只有 model 字段可以配置 modelCategories');
+
+    expect(() => parsePluginBundle(manifest({
+      apiVersion: 2,
+      permissions: ['node.read', 'node.write', 'models.read'],
+      contributes: {
+        nodeTools: [{
+          ...baseTool,
+          dialog: { fields: [{ id: 'model', label: '模型', type: 'model', modelCategories: ['embedding'] }] },
+        }],
+      },
+    }), 'definePlugin({});')).toThrow('不支持的模型分类');
+  });
 });

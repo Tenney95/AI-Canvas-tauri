@@ -15,6 +15,7 @@ import type {
   PluginNodeInvocationInput,
   PluginJsonValue,
   PluginNodePortType,
+  PluginPermission,
   PluginPlacement,
   PythonPluginRuntimeStatus,
 } from '../../types/plugin';
@@ -31,6 +32,7 @@ import { generateVideo } from '../ai/generateVideo';
 import { generateAudio } from '../ai/generateAudio';
 import { saveAgentTextOutput } from '../fileService';
 import { readPluginGrantedTextFile } from './pluginFileGrantService';
+import { buildPluginModelCatalog, collectDeclaredModelCategories } from './pluginModelCatalog';
 
 const MAX_STRING_LENGTH = 256_000;
 const MAX_ARRAY_ITEMS = 256;
@@ -173,8 +175,20 @@ export function getAvailableNodePluginTools(
         runtime: plugin.manifest.runtime ?? 'javascript',
         source: plugin.source,
         tool,
+        permissions: plugin.manifest.permissions,
       }));
   });
+}
+
+/** 节点工具的模型目录：只在声明 models.read 时给出，且始终不含凭据。 */
+export function buildNodeToolModelCatalog(
+  pluginTool: AvailableNodePluginTool,
+): PluginModelSummary[] {
+  if (!pluginTool.permissions.includes('models.read')) return [];
+  return buildPluginModelCatalog(
+    useAppStore.getState().config,
+    collectDeclaredModelCategories(pluginTool.tool.dialog?.fields ?? []),
+  );
 }
 
 export function getAvailablePluginNodes(plugins: InstalledPlugin[]): AvailablePluginNode[] {
@@ -224,6 +238,11 @@ function buildInvocationInput(
   node: Node<BaseNodeData>,
   fields: string[],
   parameters: Record<string, PluginJsonValue>,
+  options: {
+    iteration: number;
+    models: PluginModelSummary[];
+    effectResult?: PluginNodeHostEffectResult;
+  },
 ): NodePluginInvocationInput {
   const data: Record<string, PluginJsonValue> = {};
   for (const field of fields) {
@@ -232,12 +251,15 @@ function buildInvocationInput(
   }
   return {
     projectId,
+    iteration: options.iteration,
     parameters,
     node: {
       id: node.id,
       type: node.data.type,
       data,
     },
+    models: options.models,
+    effectResult: options.effectResult,
   };
 }
 
@@ -249,6 +271,11 @@ function validateResult(
 ): NodePluginExecutionResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('插件必须返回对象');
   const record = value as Record<string, unknown>;
+  const message = typeof record.message === 'string' ? record.message.slice(0, 240) : undefined;
+  // 请求宿主操作时不写入画布；宿主完成后会携带 effectResult 再次调用同一工具。
+  if (record.effect !== undefined) {
+    return { effect: parseHostEffect(record.effect, trustedMediaReferences), message };
+  }
   if (!record.data || typeof record.data !== 'object' || Array.isArray(record.data)) {
     throw new Error('插件返回值必须包含 data 对象');
   }
@@ -266,10 +293,7 @@ function validateResult(
     assertSafeCanvasNoteColors(data);
     assertTrustedNodeMediaReferences(data, trustedMediaReferences, outputNodeType);
   }
-  return {
-    data,
-    message: typeof record.message === 'string' ? record.message.slice(0, 240) : undefined,
-  };
+  return { data, message };
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -447,6 +471,63 @@ function addTrustedModelEffectReference(
   if (typeof url === 'string') addTrustedMediaString(references, url);
 }
 
+/**
+ * 解析插件请求的宿主操作。
+ *
+ * `model.generate.imageUrls` 只接受本次输入中已存在的媒体引用或本轮宿主模型结果，
+ * JavaScript 沙箱不能借模型调用构造新的远程地址；可信 Python 本身具备当前用户的
+ * 联网能力，来源集合对它没有沙箱意义，因此不做该校验。
+ */
+function parseHostEffect(
+  rawEffect: unknown,
+  trustedMediaReferences?: ReadonlySet<string>,
+): PluginNodeHostEffect {
+  const raw = recordValue(rawEffect);
+  const type = raw.type;
+  if (type === 'model.generate') {
+    const rawImageUrls = Array.isArray(raw.imageUrls) ? raw.imageUrls : [];
+    const imageUrls = rawImageUrls.filter((item): item is string => typeof item === 'string');
+    if (imageUrls.length !== rawImageUrls.length) {
+      throw new Error('模型调用的 imageUrls 必须是字符串数组');
+    }
+    if (imageUrls.length > MAX_ARRAY_ITEMS) {
+      throw new Error(`模型调用的参考图不能超过 ${MAX_ARRAY_ITEMS} 张`);
+    }
+    if (trustedMediaReferences) {
+      for (const url of imageUrls) assertTrustedMediaString(url, trustedMediaReferences);
+    }
+    const effect: Extract<PluginNodeHostEffect, { type: 'model.generate' }> = {
+      type,
+      modelId: String(raw.modelId ?? '').slice(0, 256),
+      prompt: String(raw.prompt ?? '').slice(0, MAX_STRING_LENGTH),
+      parameters: raw.parameters === undefined
+        ? undefined
+        : toPluginJson(recordValue(raw.parameters)) as Record<string, PluginJsonValue>,
+    };
+    if (!effect.modelId || !effect.prompt.trim()) throw new Error('模型调用必须包含 modelId 和 prompt');
+    if (imageUrls.length > 0) effect.imageUrls = imageUrls;
+    return effect;
+  }
+  if (type === 'file.readText') {
+    const effect: Extract<PluginNodeHostEffect, { type: 'file.readText' }> = {
+      type,
+      grantId: String(raw.grantId ?? '').slice(0, 160),
+    };
+    if (!effect.grantId) throw new Error('文件读取必须包含 grantId');
+    return effect;
+  }
+  if (type === 'file.saveText') {
+    return {
+      type,
+      content: String(raw.content ?? '').slice(0, MAX_STRING_LENGTH),
+      suggestedName: typeof raw.suggestedName === 'string'
+        ? raw.suggestedName.slice(0, 120)
+        : undefined,
+    };
+  }
+  throw new Error('插件请求了不支持的宿主操作');
+}
+
 function connectedInputValue(data: BaseNodeData, type: string): PluginJsonValue | undefined {
   const value = type === 'image'
     ? data.imageUrl ?? data.thumbnailUrl ?? data.output
@@ -520,32 +601,7 @@ function validatePluginNodeResult(
   const message = typeof result.message === 'string' ? result.message.slice(0, 240) : undefined;
   let effect: PluginNodeHostEffect | undefined;
   if (result.effect !== undefined) {
-    const rawEffect = recordValue(result.effect);
-    const type = rawEffect.type;
-    if (type === 'model.generate') {
-      effect = {
-        type,
-        modelId: String(rawEffect.modelId ?? '').slice(0, 256),
-        prompt: String(rawEffect.prompt ?? '').slice(0, MAX_STRING_LENGTH),
-        parameters: rawEffect.parameters === undefined
-          ? undefined
-          : toPluginJson(recordValue(rawEffect.parameters)) as Record<string, PluginJsonValue>,
-      };
-      if (!effect.modelId || !effect.prompt.trim()) throw new Error('模型调用必须包含 modelId 和 prompt');
-    } else if (type === 'file.readText') {
-      effect = { type, grantId: String(rawEffect.grantId ?? '').slice(0, 160) };
-      if (!effect.grantId) throw new Error('文件读取必须包含 grantId');
-    } else if (type === 'file.saveText') {
-      effect = {
-        type,
-        content: String(rawEffect.content ?? '').slice(0, MAX_STRING_LENGTH),
-        suggestedName: typeof rawEffect.suggestedName === 'string'
-          ? rawEffect.suggestedName.slice(0, 120)
-          : undefined,
-      };
-    } else {
-      throw new Error('插件请求了不支持的宿主操作');
-    }
+    effect = parseHostEffect(result.effect, trustedMediaReferences);
   }
 
   let data: PluginNodeExecutionResult['data'];
@@ -591,29 +647,22 @@ async function executeModelEffect(
   effect: Extract<PluginNodeHostEffect, { type: 'model.generate' }>,
   models: PluginModelSummary[],
   nodeId: string,
-  pluginNode: AvailablePluginNode,
-  inputs: Record<string, PluginJsonValue>,
+  /** 已通过来源校验的参考图：连线输入与插件显式提交的 imageUrls。 */
+  imageUrls: string[],
 ): Promise<PluginJsonValue> {
   const model = models.find((item) => item.id === effect.modelId);
   if (!model) throw new Error('插件请求的模型不在当前可调用列表中');
   const parameters = effect.parameters ?? {};
   const common = { prompt: effect.prompt, model: model.id, provider: model.provider, nodeId };
-  const connectedValues = (type: string): string[] => pluginNode.node.inputs
-    .filter((port) => port.type === type)
-    .flatMap((port) => {
-      const value = inputs[port.id];
-      return (Array.isArray(value) ? value : [value])
-        .filter((item): item is string => typeof item === 'string');
-    });
   if (model.category === 'text') {
-    return { text: await generateText({ ...common, imageUrls: connectedValues('image') }) };
+    return { text: await generateText({ ...common, imageUrls }) };
   }
   if (model.category === 'image') {
     const result = await generateImage({
       ...common,
       imageSize: stringParameter(parameters, 'imageSize'),
       aspectRatio: stringParameter(parameters, 'aspectRatio'),
-      image_urls: connectedValues('image'),
+      image_urls: imageUrls,
     });
     return { url: result.url };
   }
@@ -643,32 +692,62 @@ async function executeModelEffect(
   return { url: result.url, title: result.title ?? null, lyrics: result.lyrics ?? null };
 }
 
-async function executeHostEffect(
+/**
+ * 宿主操作的执行上下文。节点工具没有输入端口，因此连线输入是可选的；
+ * 缺少连线时参考图只来自插件显式提交并通过来源校验的 imageUrls。
+ */
+interface PluginHostEffectContext {
+  pluginId: string;
+  title: string;
+  permissions: PluginPermission[];
+  pluginNode?: AvailablePluginNode;
+  inputs?: Record<string, PluginJsonValue>;
+}
+
+function connectedImageValues(
   pluginNode: AvailablePluginNode,
+  inputs: Record<string, PluginJsonValue>,
+): string[] {
+  return pluginNode.node.inputs
+    .filter((port) => port.type === 'image')
+    .flatMap((port) => {
+      const value = inputs[port.id];
+      return (Array.isArray(value) ? value : [value])
+        .filter((item): item is string => typeof item === 'string');
+    });
+}
+
+async function executeHostEffect(
+  context: PluginHostEffectContext,
   nodeId: string,
   effect: PluginNodeHostEffect,
   models: PluginModelSummary[],
-  inputs: Record<string, PluginJsonValue>,
 ): Promise<PluginNodeHostEffectResult> {
   try {
     if (effect.type === 'model.generate') {
-      if (!pluginNode.permissions.includes('models.invoke')) throw new Error('插件未声明 models.invoke 权限');
+      if (!context.permissions.includes('models.invoke')) throw new Error('插件未声明 models.invoke 权限');
+      const imageUrls = [
+        ...(context.pluginNode && context.inputs
+          ? connectedImageValues(context.pluginNode, context.inputs)
+          : []),
+        ...(effect.imageUrls ?? []),
+      ];
       return {
         type: effect.type,
         ok: true,
-        value: await executeModelEffect(effect, models, nodeId, pluginNode, inputs),
+        value: await executeModelEffect(effect, models, nodeId, imageUrls),
       };
     }
     if (effect.type === 'file.readText') {
-      if (!pluginNode.permissions.includes('files.read')) throw new Error('插件未声明 files.read 权限');
-      const value = await readPluginGrantedTextFile(pluginNode.pluginId, nodeId, effect.grantId);
+      if (!context.permissions.includes('files.read')) throw new Error('插件未声明 files.read 权限');
+      const value = await readPluginGrantedTextFile(context.pluginId, nodeId, effect.grantId);
       return { type: effect.type, ok: true, value: toPluginJson(value) };
     }
-    if (!pluginNode.permissions.includes('files.write')) throw new Error('插件未声明 files.write 权限');
+    if (!context.permissions.includes('files.write')) throw new Error('插件未声明 files.write 权限');
     const value = await saveAgentTextOutput(
       effect.content,
       effect.suggestedName || 'plugin-output.txt',
-      `保存「${pluginNode.node.title}」输出`,
+      `保存「${context.title}」输出`,
     );
     return { type: effect.type, ok: true, value: value ?? { cancelled: true } };
   } catch (error) {
@@ -747,7 +826,18 @@ export async function executePluginNode(
       const result = validatePluginNodeResult(rawResult, pluginNode, trustedMediaReferences);
       if (result.effect) {
         if (iteration === MAX_HOST_EFFECTS) throw new Error(`插件宿主操作不能超过 ${MAX_HOST_EFFECTS} 次`);
-        effectResult = await executeHostEffect(pluginNode, nodeId, result.effect, models, inputs);
+        effectResult = await executeHostEffect(
+          {
+            pluginId: pluginNode.pluginId,
+            title: pluginNode.node.title,
+            permissions: pluginNode.permissions,
+            pluginNode,
+            inputs,
+          },
+          nodeId,
+          result.effect,
+          models,
+        );
         requireCurrentPluginRevision(pluginNode.pluginId, sourceDigest);
         if (trustedMediaReferences && result.effect.type === 'model.generate') {
           addTrustedModelEffectReference(result.effect, effectResult, models, trustedMediaReferences);
@@ -795,59 +885,91 @@ export async function executeNodePluginTool(
     const normalized = toPluginJson(value);
     if (normalized !== undefined) normalizedParameters[key] = normalized;
   }
-  const input = buildInvocationInput(
-    projectId,
-    sourceNode,
-    pluginTool.tool.inputFields,
-    normalizedParameters,
-  );
-  const trustedMediaReferences = pluginTool.runtime === 'javascript'
-    ? collectNodeToolMediaReferences(input)
-    : undefined;
+  const models = buildNodeToolModelCatalog(pluginTool);
+  // JavaScript 沙箱没有任意网络能力，媒体引用只能来自本次输入与本轮宿主模型结果。
+  // 该集合跨 effect 轮次累积，让后续轮次可以引用前面模型生成的媒体。
+  const trustedMediaReferences = pluginTool.runtime === 'javascript' ? new Set<string>() : undefined;
+  let effectResult: PluginNodeHostEffectResult | undefined;
 
   try {
-    requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest);
-    const rawResult = await invoke<unknown>('execute_node_plugin_tool', {
-      pluginId: pluginTool.pluginId,
-      sourceDigest,
-      toolId: pluginTool.tool.id,
-      invocationId,
-      input,
-    });
-    requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest);
-    const outputNodeType = pluginTool.tool.output.mode === 'create-node'
-      ? pluginTool.tool.output.nodeType ?? sourceNode.data.type
-      : sourceNode.data.type;
-    const result = validateResult(
-      rawResult,
-      pluginTool.tool.output.fields,
-      trustedMediaReferences,
-      outputNodeType,
-    );
-    const current = requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest);
-    if (!isCanvasDerivationFresh(guard, current)) throw new Error('画布已变化，插件结果未写入');
-
-    if (pluginTool.tool.output.mode === 'update-current') {
-      current.updateNodeData(nodeId, result.data as Partial<BaseNodeData>);
-    } else {
-      const nodeType = pluginTool.tool.output.nodeType ?? sourceNode.data.type;
-      const placement = derivedNodePlacement(sourceNode);
-      current.addNode({
-        id: `node-${generateId()}`,
-        type: nodeType,
-        ...placement,
-        data: {
-          label: typeof result.data.label === 'string'
-            ? result.data.label
-            : `${sourceNode.data.label} · ${pluginTool.tool.title}`,
-          type: nodeType,
-          role: 'source',
-          status: 'success',
-          ...result.data,
-        } as BaseNodeData,
+    for (let iteration = 0; iteration <= MAX_HOST_EFFECTS; iteration += 1) {
+      requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest);
+      const input = buildInvocationInput(
+        projectId,
+        sourceNode,
+        pluginTool.tool.inputFields,
+        normalizedParameters,
+        { iteration, models, effectResult },
+      );
+      if (trustedMediaReferences) {
+        for (const reference of collectNodeToolMediaReferences(input)) {
+          trustedMediaReferences.add(reference);
+        }
+      }
+      const rawResult = await invoke<unknown>('execute_node_plugin_tool', {
+        pluginId: pluginTool.pluginId,
+        sourceDigest,
+        toolId: pluginTool.tool.id,
+        invocationId,
+        input,
       });
+      requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest);
+      const outputNodeType = pluginTool.tool.output.mode === 'create-node'
+        ? pluginTool.tool.output.nodeType ?? sourceNode.data.type
+        : sourceNode.data.type;
+      const result = validateResult(
+        rawResult,
+        pluginTool.tool.output.fields,
+        trustedMediaReferences,
+        outputNodeType,
+      );
+      if (result.effect) {
+        if (iteration === MAX_HOST_EFFECTS) throw new Error(`插件宿主操作不能超过 ${MAX_HOST_EFFECTS} 次`);
+        effectResult = await executeHostEffect(
+          {
+            pluginId: pluginTool.pluginId,
+            title: pluginTool.tool.title,
+            permissions: pluginTool.permissions,
+          },
+          nodeId,
+          result.effect,
+          models,
+        );
+        requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest);
+        if (trustedMediaReferences && result.effect.type === 'model.generate') {
+          addTrustedModelEffectReference(result.effect, effectResult, models, trustedMediaReferences);
+        }
+        continue;
+      }
+
+      const current = requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest);
+      if (!isCanvasDerivationFresh(guard, current)) throw new Error('画布已变化，插件结果未写入');
+      const data = result.data ?? {};
+
+      if (pluginTool.tool.output.mode === 'update-current') {
+        current.updateNodeData(nodeId, data as Partial<BaseNodeData>);
+      } else {
+        const nodeType = pluginTool.tool.output.nodeType ?? sourceNode.data.type;
+        const placement = derivedNodePlacement(sourceNode);
+        current.addNode({
+          id: `node-${generateId()}`,
+          type: nodeType,
+          ...placement,
+          data: {
+            label: typeof data.label === 'string'
+              ? data.label
+              : `${sourceNode.data.label} · ${pluginTool.tool.title}`,
+            type: nodeType,
+            role: 'source',
+            status: 'success',
+            ...data,
+          } as BaseNodeData,
+        });
+      }
+      current.showToast(result.message || `插件工具「${pluginTool.tool.title}」执行完成`);
+      return;
     }
-    current.showToast(result.message || `插件工具「${pluginTool.tool.title}」执行完成`);
+    throw new Error(`插件宿主操作不能超过 ${MAX_HOST_EFFECTS} 次`);
   } finally {
     completeCanvasDerivation(guard);
   }

@@ -9,12 +9,17 @@ const mocks = vi.hoisted(() => ({
   showToast: vi.fn(),
   generateText: vi.fn(),
   generateImage: vi.fn(),
+  buildModelCatalog: vi.fn(() => [] as Array<Record<string, unknown>>),
   state: {} as Record<string, unknown>,
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: { getState: () => mocks.state },
+}));
+vi.mock('../../src/services/plugins/pluginModelCatalog', () => ({
+  buildPluginModelCatalog: mocks.buildModelCatalog,
+  collectDeclaredModelCategories: () => ['text'],
 }));
 vi.mock('../../src/services/ai/generateText', () => ({ generateText: mocks.generateText }));
 vi.mock('../../src/services/ai/generateImage', () => ({ generateImage: mocks.generateImage }));
@@ -170,6 +175,59 @@ const pythonMediaToolPlugin: InstalledPlugin = {
   },
 };
 
+const modelCatalog = [
+  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', category: 'text' as const, inputModalities: ['text', 'image'] },
+];
+
+const modelToolPlugin: InstalledPlugin = {
+  ...plugin,
+  id: 'com.example.model-tool',
+  manifest: {
+    ...plugin.manifest,
+    apiVersion: 2,
+    id: 'com.example.model-tool',
+    permissions: ['node.read', 'node.write', 'models.read', 'models.invoke'],
+    contributes: {
+      nodeTools: [{
+        id: 'summarize',
+        title: '模型总结',
+        placements: ['node-context-menu', 'node-toolbar'],
+        icon: 'lucide:sparkles',
+        dialog: {
+          fields: [{ id: 'model', label: '模型', type: 'model', modelCategories: ['text'] }],
+        },
+        nodeTypes: ['ai-text'],
+        inputFields: ['label', 'output'],
+        output: { mode: 'create-node', nodeType: 'ai-markdown', fields: ['output'] },
+      }],
+    },
+  },
+};
+
+/** 只声明 models.read：能拿到目录，但不允许发起模型调用。 */
+const modelReadToolPlugin: InstalledPlugin = {
+  ...modelToolPlugin,
+  id: 'com.example.model-read-tool',
+  manifest: {
+    ...modelToolPlugin.manifest,
+    id: 'com.example.model-read-tool',
+    permissions: ['node.read', 'node.write', 'models.read'],
+  },
+};
+
+const pythonModelToolPlugin: InstalledPlugin = {
+  ...modelToolPlugin,
+  id: 'com.example.python-model-tool',
+  source: 'define_plugin({"tools": {}})',
+  manifest: {
+    ...modelToolPlugin.manifest,
+    apiVersion: 3,
+    runtime: 'python',
+    entry: 'main.py',
+    id: 'com.example.python-model-tool',
+  },
+};
+
 const shotlistToolPlugin: InstalledPlugin = {
   ...plugin,
   id: 'com.example.shotlist-tool',
@@ -252,6 +310,7 @@ beforeEach(() => {
   };
   mocks.invoke.mockResolvedValue({ data: { output: 'after' }, message: '完成' });
   mocks.generateText.mockResolvedValue('模型结果');
+  mocks.buildModelCatalog.mockReturnValue(modelCatalog);
   mocks.generateImage.mockResolvedValue({ url: 'https://example.com/result.png', width: 1024, height: 1024 });
 });
 
@@ -328,12 +387,14 @@ describe('node plugin runtime', () => {
       invocationId: expect.any(String),
       input: {
         projectId: 'project-1',
+        iteration: 0,
         parameters: { tone: 'brief' },
         node: {
           id: 'node-1',
           type: 'ai-text',
           data: { label: '文本', output: 'before' },
         },
+        models: [],
       },
     }));
     expect(mocks.updateNodeData).toHaveBeenCalledWith('node-1', { output: 'after' });
@@ -1078,5 +1139,112 @@ describe('node plugin runtime', () => {
     }]);
 
     expect(mocks.generateImage).toHaveBeenCalledWith(expect.objectContaining({ image_urls: [] }));
+  });
+});
+
+describe('node plugin tool model effects', () => {
+  it('exposes the model catalog only to tools declaring models.read', async () => {
+    mocks.state = { ...mocks.state, installedPlugins: [modelToolPlugin] };
+    await executeNodePluginTool(getAvailableNodePluginTools([modelToolPlugin], 'ai-text')[0], 'node-1');
+    const withModels = mocks.invoke.mock.calls[0][1] as { input: { models: unknown[] } };
+    expect(withModels.input.models).toEqual(modelCatalog);
+
+    mocks.invoke.mockClear();
+    mocks.state = { ...mocks.state, installedPlugins: [plugin] };
+    await executeNodePluginTool(getAvailableNodePluginTools([plugin], 'ai-text')[0], 'node-1');
+    const withoutModels = mocks.invoke.mock.calls[0][1] as { input: { models: unknown[] } };
+    expect(withoutModels.input.models).toEqual([]);
+  });
+
+  it('runs a host model effect and hands the result back on the next invocation', async () => {
+    mocks.state = { ...mocks.state, installedPlugins: [modelToolPlugin] };
+    mocks.invoke
+      .mockResolvedValueOnce({ effect: { type: 'model.generate', modelId: 'gpt-4o', prompt: '总结这段文本' } })
+      .mockResolvedValueOnce({ data: { output: '# 模型总结' }, message: '完成' });
+
+    await executeNodePluginTool(getAvailableNodePluginTools([modelToolPlugin], 'ai-text')[0], 'node-1');
+
+    expect(mocks.generateText).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'gpt-4o',
+      prompt: '总结这段文本',
+      imageUrls: [],
+    }));
+    expect(mocks.invoke).toHaveBeenCalledTimes(2);
+    const second = mocks.invoke.mock.calls[1][1] as {
+      input: { iteration: number; effectResult: { ok: boolean; value: unknown } };
+    };
+    expect(second.input.iteration).toBe(1);
+    expect(second.input.effectResult).toEqual({
+      type: 'model.generate',
+      ok: true,
+      value: { text: '模型结果' },
+    });
+    expect(mocks.addNode).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects unauthorized remote image references from a JavaScript node tool', async () => {
+    mocks.state = { ...mocks.state, installedPlugins: [modelToolPlugin] };
+    mocks.invoke.mockResolvedValueOnce({
+      effect: {
+        type: 'model.generate',
+        modelId: 'gpt-4o',
+        prompt: '看图说话',
+        imageUrls: ['https://evil.example.com/frame.png'],
+      },
+    });
+
+    await expect(
+      executeNodePluginTool(getAvailableNodePluginTools([modelToolPlugin], 'ai-text')[0], 'node-1'),
+    ).rejects.toThrow('未经宿主授权的远程媒体引用');
+    expect(mocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it('does not constrain image references for trusted Python tools', async () => {
+    mocks.state = { ...mocks.state, installedPlugins: [pythonModelToolPlugin] };
+    mocks.invoke
+      .mockResolvedValueOnce({
+        effect: {
+          type: 'model.generate',
+          modelId: 'gpt-4o',
+          prompt: '看图说话',
+          imageUrls: ['https://cdn.example.com/frame.png'],
+        },
+      })
+      .mockResolvedValueOnce({ data: { output: 'ok' } });
+
+    await executeNodePluginTool(getAvailableNodePluginTools([pythonModelToolPlugin], 'ai-text')[0], 'node-1');
+
+    expect(mocks.generateText).toHaveBeenCalledWith(expect.objectContaining({
+      imageUrls: ['https://cdn.example.com/frame.png'],
+    }));
+  });
+
+  it('reports a rejected effect back to the tool instead of throwing', async () => {
+    mocks.state = { ...mocks.state, installedPlugins: [modelReadToolPlugin] };
+    mocks.invoke
+      .mockResolvedValueOnce({ effect: { type: 'model.generate', modelId: 'gpt-4o', prompt: '总结' } })
+      .mockResolvedValueOnce({ data: { output: '插件降级结果' } });
+
+    await executeNodePluginTool(getAvailableNodePluginTools([modelReadToolPlugin], 'ai-text')[0], 'node-1');
+
+    expect(mocks.generateText).not.toHaveBeenCalled();
+    const second = mocks.invoke.mock.calls[1][1] as {
+      input: { effectResult: { ok: boolean; error: string } };
+    };
+    expect(second.input.effectResult.ok).toBe(false);
+    expect(second.input.effectResult.error).toContain('models.invoke');
+  });
+
+  it('stops a node tool that keeps requesting host effects', async () => {
+    mocks.state = { ...mocks.state, installedPlugins: [modelToolPlugin] };
+    mocks.invoke.mockResolvedValue({
+      effect: { type: 'model.generate', modelId: 'gpt-4o', prompt: '再来一次' },
+    });
+
+    await expect(
+      executeNodePluginTool(getAvailableNodePluginTools([modelToolPlugin], 'ai-text')[0], 'node-1'),
+    ).rejects.toThrow('宿主操作不能超过 4 次');
+    expect(mocks.addNode).not.toHaveBeenCalled();
+    expect(mocks.updateNodeData).not.toHaveBeenCalled();
   });
 });

@@ -5,13 +5,14 @@ import type {
   PluginCustomNodeFieldManifest,
   PluginCustomNodeFieldType,
   PluginCustomNodeManifest,
-  PluginDialogFieldType,
+  PluginDialogFieldManifest,
   PluginManifest,
   PluginNodePortType,
   PluginNodeOutputMode,
   PluginPermission,
   PluginPlacement,
   PluginRuntime,
+  PluginNodeToolDialogFieldType,
   PluginToolDialogManifest,
 } from '../../types/plugin';
 
@@ -93,7 +94,7 @@ const PERMISSIONS = new Set<PluginPermission>([
 const OUTPUT_MODES = new Set<PluginNodeOutputMode>(['update-current', 'create-node']);
 const CATEGORIES = new Set<PluginCategory>(['content', 'media', 'workflow', 'utility']);
 const PLACEMENTS = new Set<PluginPlacement>(['node-context-menu', 'node-toolbar']);
-const DIALOG_FIELD_TYPES = new Set<PluginDialogFieldType>(['text', 'textarea', 'number', 'select', 'boolean']);
+const DIALOG_FIELD_TYPES = new Set<PluginNodeToolDialogFieldType>(['text', 'textarea', 'number', 'select', 'boolean', 'model']);
 const CUSTOM_NODE_FIELD_TYPES = new Set<PluginCustomNodeFieldType>([
   ...DIALOG_FIELD_TYPES,
   'model',
@@ -166,7 +167,7 @@ function parseToolDialog(value: unknown, toolId: string): PluginToolDialogManife
     if (!FIELD_RE.test(id)) throw new Error(`${toolId} 的弹窗字段 id 无效: ${id}`);
     if (seenFieldIds.has(id)) throw new Error(`${toolId} 的弹窗字段 id 重复: ${id}`);
     seenFieldIds.add(id);
-    const type = nonEmptyString(field.type, `${toolId}.${id}.type`, 16) as PluginDialogFieldType;
+    const type = nonEmptyString(field.type, `${toolId}.${id}.type`, 16) as PluginNodeToolDialogFieldType;
     if (!DIALOG_FIELD_TYPES.has(type)) throw new Error(`${toolId}.${id} 使用了不支持的弹窗字段类型`);
     if (field.required !== undefined && typeof field.required !== 'boolean') {
       throw new Error(`${toolId}.${id}.required 必须是布尔值`);
@@ -190,6 +191,19 @@ function parseToolDialog(value: unknown, toolId: string): PluginToolDialogManife
       });
     } else if (field.options !== undefined) {
       throw new Error(`${toolId}.${id} 只有 select 字段可以配置 options`);
+    }
+
+    let modelCategories: PluginDialogFieldManifest['modelCategories'];
+    if (type === 'model') {
+      const rawCategories = field.modelCategories === undefined
+        ? ['text', 'image', 'video', 'audio']
+        : stringArray(field.modelCategories, `${toolId}.${id}.modelCategories`, 4);
+      if (rawCategories.some((category) => !MODEL_CATEGORIES.has(category))) {
+        throw new Error(`${toolId}.${id} 包含不支持的模型分类`);
+      }
+      modelCategories = [...new Set(rawCategories)] as PluginDialogFieldManifest['modelCategories'];
+    } else if (field.modelCategories !== undefined) {
+      throw new Error(`${toolId}.${id} 只有 model 字段可以配置 modelCategories`);
     }
 
     let defaultValue: string | number | boolean | undefined;
@@ -217,6 +231,7 @@ function parseToolDialog(value: unknown, toolId: string): PluginToolDialogManife
       required: field.required as boolean | undefined,
       defaultValue,
       options,
+      modelCategories,
     };
   });
 
@@ -462,6 +477,15 @@ function parseManifest(value: unknown): PluginManifest {
   }
   if (nodeTools.length > 0 && !permissions.includes('node.write')) {
     throw new Error('节点工具插件必须声明 node.write');
+  }
+  const nodeToolUsesModelField = nodeTools.some(
+    (tool) => (tool.dialog?.fields ?? []).some((field) => field.type === 'model'),
+  );
+  if (nodeToolUsesModelField && !permissions.includes('models.read')) {
+    throw new Error('使用模型字段的节点工具必须声明 models.read');
+  }
+  if (root.apiVersion === 1 && (nodeToolUsesModelField || permissions.includes('models.invoke'))) {
+    throw new Error('节点工具调用宿主模型需要 apiVersion: 2 或 3');
   }
   if (customNodes.length > 0 && !permissions.includes('node.write')) {
     throw new Error('自定义节点插件必须声明 node.write');
