@@ -221,7 +221,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       if (!liveSource || liveStore.currentProjectId !== projectId) return;
 
       const newNodeId = `node-${generateId()}`;
-      const sourceWidth = Number(liveSource.data.nodeWidth) || 260;
+      const sourceWidth = Number(liveSource.data.nodeWidth) || 280;
       const estimatedLines = transcript.split(/\r?\n/).reduce(
         (count, line) => count + Math.max(1, Math.ceil(line.length / 36)),
         0,
@@ -411,7 +411,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   // ── Render ──
   return (
-    <div className="node-wrapper" style={{ width: 260 }} onContextMenu={(e) => e.preventDefault()}>
+    <div className="node-wrapper" style={{ width: 280 }} onContextMenu={(e) => e.preventDefault()}>
       <NodeLabel
         kind="ai-audio"
         label={displayLabel}
