@@ -1491,10 +1491,13 @@ button.wf-ionode-badge.is-default {
 }
 
 /* 项目选择下拉（仅项目文件 Tab） */
-.assets-project-select {
+.assets-project-select-wrap {
   flex-shrink: 0;
   max-width: 200px;
-  padding: 7px 10px;
+}
+.ui-select--custom .assets-project-select.ui-select__trigger {
+  width: 100%;
+  padding: 7px 26px 7px 10px;
   background: var(--theme-card);
   border: 1px solid var(--theme-border);
   border-radius: 9px;
@@ -1505,18 +1508,20 @@ button.wf-ionode-badge.is-default {
   outline: none;
   transition: border-color var(--transition-base), background var(--transition-base);
 }
-.assets-project-select:hover { background: var(--theme-surface); }
-.assets-project-select:focus { border-color: var(--border-focus); }
+.ui-select--custom .assets-project-select.ui-select__trigger:hover { background: var(--theme-surface); }
+.ui-select--custom .assets-project-select.ui-select__trigger:focus-visible { border-color: var(--border-focus); }
 
 /* 资产面板顶部工具栏保持紧凑，不影响独立资源搜索窗口的同名控件。 */
 .assets-panel .assets-toolbar {
   gap: 6px;
   padding: 2px 8px 0;
 }
-.assets-panel .assets-project-select {
+.assets-panel .assets-project-select-wrap {
   width: clamp(140px, 14vw, 168px);
+}
+.assets-panel .ui-select--custom .assets-project-select.ui-select__trigger {
   height: 30px;
-  padding: 4px 8px;
+  padding: 4px 22px 4px 8px;
   border-radius: 7px;
   font-size: 12px;
 }
@@ -1761,19 +1766,19 @@ button.wf-ionode-badge.is-default {
 [data-theme='light'] .assets-filter-more,
 [data-theme='light'] .assets-search,
 [data-theme='light'] .assets-column-stepper,
-[data-theme='light'] .assets-project-select,
+[data-theme='light'] .ui-select--custom .assets-project-select.ui-select__trigger,
 [data-theme='light'] .assets-folder-chip {
   background-color: var(--assets-light-control-bg);
   border-color: var(--assets-light-control-border);
 }
 [data-theme='light'] .assets-cat-chip:hover:not(:disabled),
 [data-theme='light'] .assets-filter-more:hover,
-[data-theme='light'] .assets-project-select:hover {
+[data-theme='light'] .ui-select--custom .assets-project-select.ui-select__trigger:hover {
   background-color: var(--theme-surface);
   border-color: color-mix(in srgb, var(--theme-text-secondary) 58%, var(--theme-surface));
 }
 [data-theme='light'] .assets-search:focus-within,
-[data-theme='light'] .assets-project-select:focus {
+[data-theme='light'] .ui-select--custom .assets-project-select.ui-select__trigger:focus-visible {
   background-color: var(--theme-surface);
   border-color: var(--brand);
 }

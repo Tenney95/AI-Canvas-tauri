@@ -39,6 +39,7 @@ import { startAssetDrag, prepareDragIcon } from '../utils/assetDrag';
 import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetFormat';
 import AssetThumb from './shared/AssetThumb';
 import PopupCloseButton from './shared/PopupCloseButton';
+import Select from './shared/Select';
 import { springSmooth, fadeFast } from '../utils/motion';
 import { countUnreadDramaAssets } from '../store/store.dramaAssets';
 import { distributeToColumns } from './assets/waterfallColumns';
@@ -508,17 +509,16 @@ export default function AssetsPanel() {
                 {/* Toolbar: 搜索 + 添加 */}
               {visibleTab !== 'drama' ? <div className="assets-toolbar ml-auto">
                 {activeTab === 'project' && (
-                  <select
-                    className="assets-project-select"
+                  <Select
+                    className="assets-project-select-wrap"
+                    triggerClassName="assets-project-select"
                     value={selectedProjectId ?? currentProjectId ?? ''}
-                    onChange={(e) => setSelectedProjectId(e.target.value || null)}
-                  >
-                    {projects.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.id === currentProjectId ? `${p.name}（当前）` : p.name}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(value) => setSelectedProjectId(value || null)}
+                    options={projects.map((p) => ({
+                      value: p.id,
+                      label: p.id === currentProjectId ? `${p.name}（当前）` : p.name,
+                    }))}
+                  />
                 )}
                 <div className="assets-search">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

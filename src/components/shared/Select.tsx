@@ -7,7 +7,8 @@
  * 支持普通选项与 optgroup 分组两种数据形式。
  * 尺寸不强制：通过 size prop 提供 sm/md/lg 三档，也可传 className / triggerClassName 完全自定义。
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 export interface SelectOption<T extends string = string> {
   value: T;
@@ -33,9 +34,13 @@ interface SelectProps<T extends string = string> {
   className?: string;
   /** 单独控制触发器样式，用于覆盖默认高度/字号等 */
   triggerClassName?: string;
+  /** 直接设置触发器内联样式，可精确覆盖高度等 */
+  triggerStyle?: CSSProperties;
   id?: string;
   title?: string;
   'aria-label'?: string;
+  /** 菜单使用 fixed 定位，可突破父级 overflow:hidden 裁剪 */
+  fixedMenu?: boolean;
 }
 
 function isOptionGroup<T extends string>(
@@ -61,12 +66,15 @@ export default function Select<T extends string = string>({
   size = 'md',
   className = '',
   triggerClassName = '',
+  triggerStyle,
   id,
   title,
   'aria-label': ariaLabel,
+  fixedMenu = false,
 }: SelectProps<T>) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const selected = options.flatMap((item) => (isOptionGroup(item) ? item.options : [item]))
     .find((o) => o.value === value);
@@ -74,11 +82,40 @@ export default function Select<T extends string = string>({
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      const insideTrigger = wrapRef.current?.contains(target) ?? false;
+      const insideMenu = menuRef.current?.contains(target) ?? false;
+      if (!insideTrigger && !insideMenu) setOpen(false);
     };
     document.addEventListener('mousedown', onPointerDown);
     return () => document.removeEventListener('mousedown', onPointerDown);
   }, [open]);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!open || !fixedMenu || !menu) {
+      menu?.removeAttribute('style');
+      return;
+    }
+    const updatePosition = () => {
+      const rect = wrapRef.current?.getBoundingClientRect();
+      if (!rect || !menu) return;
+      menu.style.position = 'fixed';
+      menu.style.top = `${rect.bottom + 4}px`;
+      menu.style.left = `${rect.left}px`;
+      menu.style.minWidth = `${rect.width}px`;
+      menu.style.maxHeight = `calc(100vh - ${rect.bottom + 12}px)`;
+      menu.style.zIndex = '300';
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    document.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      document.removeEventListener('scroll', updatePosition, true);
+      menu.removeAttribute('style');
+    };
+  }, [open, fixedMenu]);
 
   const sizeClass = size === 'sm' ? 'ui-select--sm' : size === 'lg' ? 'ui-select--lg' : '';
   const rootClass = `ui-select ui-select--custom ${sizeClass} ${className}`.trim();
@@ -101,12 +138,29 @@ export default function Select<T extends string = string>({
     </button>
   );
 
+  const menu = open ? (
+    <div className="ui-menu" role="listbox" ref={menuRef}>
+      {options.map((item, index) => {
+        if (isOptionGroup(item)) {
+          return (
+            <div key={`group-${index}`}>
+              <span className="ui-menu__label">{item.label}</span>
+              {item.options.map((option, optIndex) => renderOption(option, `${index}-${optIndex}`))}
+            </div>
+          );
+        }
+        return renderOption(item, index);
+      })}
+    </div>
+  ) : null;
+
   return (
     <div className={rootClass} ref={wrapRef} title={title}>
       <button
         id={id}
         type="button"
         className={triggerClass}
+        style={triggerStyle}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}
@@ -154,21 +208,7 @@ export default function Select<T extends string = string>({
           );
         })}
       </select>
-      {open ? (
-        <div className="ui-menu" role="listbox">
-          {options.map((item, index) => {
-            if (isOptionGroup(item)) {
-              return (
-                <div key={`group-${index}`}>
-                  <span className="ui-menu__label">{item.label}</span>
-                  {item.options.map((option, optIndex) => renderOption(option, `${index}-${optIndex}`))}
-                </div>
-              );
-            }
-            return renderOption(item, index);
-          })}
-        </div>
-      ) : null}
+      {fixedMenu ? (menu ? createPortal(menu, document.body) : null) : menu}
     </div>
   );
 }

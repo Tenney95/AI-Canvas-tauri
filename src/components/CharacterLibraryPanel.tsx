@@ -27,6 +27,7 @@ import type {
 } from '../types/dramaAssets';
 import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
+import Select from './shared/Select';
 import ViewportImage from './shared/ViewportImage';
 import ViewportVideo from './shared/ViewportVideo';
 import { useT } from '../i18n';
@@ -1045,28 +1046,31 @@ export default function CharacterLibraryPanel() {
                 </div>
                 <label className="flex items-center gap-2 text-[10px] text-canvas-text-secondary">
                   {t('角色')}
-                  <select
+                  <Select
                     value={selectedCharacter.id}
-                    onChange={(event) => setSelectedCharacterId(event.target.value)}
-                    className="h-8 min-w-32 max-w-44 rounded-lg border border-canvas-border bg-canvas-card px-2 text-xs text-canvas-text outline-none focus:border-indigo-400"
-                  >
-                    {characters.map((character) => (
-                      <option key={character.id} value={character.id}>{character.name}</option>
-                    ))}
-                  </select>
+                    onChange={(value) => setSelectedCharacterId(value)}
+                    className="min-w-32 max-w-44"
+                    triggerStyle={{ height: 32 }}
+                    fixedMenu
+                    options={characters.map((character) => ({ value: character.id, label: character.name }))}
+                  />
                 </label>
                 <label className="flex items-center gap-2 text-[10px] text-canvas-text-secondary">
                   {t('筛选')}
-                  <select
+                  <Select
                     value={actionFilter}
-                    onChange={(event) => setActionFilter(event.target.value as CharacterActionCategory | 'all')}
-                    className="h-8 min-w-32 rounded-lg border border-canvas-border bg-canvas-card px-2 text-xs text-canvas-text outline-none focus:border-indigo-400"
-                  >
-                    <option value="all">{t('全部类别')}</option>
-                    {CHARACTER_ACTION_CATEGORIES.map((category) => (
-                      <option key={category.id} value={category.id}>{t(category.label)}</option>
-                    ))}
-                  </select>
+                    onChange={(value) => setActionFilter(value as CharacterActionCategory | 'all')}
+                    className="min-w-32"
+                    triggerStyle={{ height: 32 }}
+                    fixedMenu
+                    options={[
+                      { value: 'all', label: t('全部类别') },
+                      ...CHARACTER_ACTION_CATEGORIES.map((category) => ({
+                        value: category.id,
+                        label: t(category.label),
+                      })),
+                    ]}
+                  />
                 </label>
               </div>
 
@@ -1255,15 +1259,16 @@ export default function CharacterLibraryPanel() {
 
                 <label className="mt-4 grid gap-1 text-[10px] text-canvas-text-secondary">
                   {t('动作类别')}
-                  <select
+                  <Select
                     value={actionCategory}
-                    onChange={(event) => setActionCategory(event.target.value as CharacterActionCategory)}
-                    className="h-9 rounded-lg border border-canvas-border bg-canvas-surface px-3 text-xs text-canvas-text outline-none focus:border-indigo-400"
-                  >
-                    {CHARACTER_ACTION_CATEGORIES.map((category) => (
-                      <option key={category.id} value={category.id}>{t(category.label)}</option>
-                    ))}
-                  </select>
+                    onChange={(value) => setActionCategory(value as CharacterActionCategory)}
+                    triggerStyle={{ height: 36 }}
+                    fixedMenu
+                    options={CHARACTER_ACTION_CATEGORIES.map((category) => ({
+                      value: category.id,
+                      label: t(category.label),
+                    }))}
+                  />
                 </label>
 
                 {actionCategory === 'custom' ? (

@@ -13,6 +13,7 @@ import * as fileService from '../services/fileService';
 import { calcFixedPosition } from '../utils/popupPosition';
 import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
+import Select from './shared/Select';
 import { useT } from '../i18n';
 
 type ProjectSort = 'updated' | 'created' | 'name';
@@ -354,23 +355,19 @@ export default function ProjectLibraryModal({ isOpen, onClose }: ProjectLibraryM
                 width="16"
                 height="16"
                 aria-hidden="true"
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-canvas-text-muted"
+                className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-canvas-text-muted"
               />
-              <select
+              <Select
                 value={sort}
-                onChange={(event) => setSort(event.target.value as ProjectSort)}
-                className="h-9 appearance-none rounded-lg border border-canvas-border bg-canvas-card pl-9 pr-8 text-xs text-canvas-text outline-none transition-colors hover:border-border-secondary focus:border-indigo-400/70 focus:ring-2 focus:ring-indigo-500/15"
-              >
-                <option value="updated">{t('最近更新')}</option>
-                <option value="created">{t('创建时间')}</option>
-                <option value="name">{t('项目名称')}</option>
-              </select>
-              <Icon
-                icon="mdi:chevron-down"
-                width="16"
-                height="16"
-                aria-hidden="true"
-                className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-canvas-text-muted"
+                onChange={(value) => setSort(value as ProjectSort)}
+                className="w-32"
+                triggerStyle={{ height: 36, paddingLeft: 36 }}
+                fixedMenu
+                options={[
+                  { value: 'updated', label: t('最近更新') },
+                  { value: 'created', label: t('创建时间') },
+                  { value: 'name', label: t('项目名称') },
+                ]}
               />
             </label>
 

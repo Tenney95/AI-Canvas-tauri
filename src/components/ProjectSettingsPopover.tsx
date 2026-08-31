@@ -655,7 +655,8 @@ export default function ProjectSettingsPopover({
                           value={selectedModel}
                           onChange={(value) => handleModelChange(row.kind, value)}
                           className="w-full"
-                          triggerClassName="h-9"
+                          triggerStyle={{ height: 36 }}
+                          fixedMenu
                           options={[
                             { value: '', label: t('跟随应用默认') },
                             ...(!selectedModelVisible
@@ -685,7 +686,8 @@ export default function ProjectSettingsPopover({
                         visionModelId: value || undefined,
                       }))}
                       className="w-full"
-                      triggerClassName="h-9"
+                      triggerStyle={{ height: 36 }}
+                      fixedMenu
                       options={[
                         { value: '', label: t('自动选择可看图模型') },
                         ...visionModelGroups.map((group) => ({
