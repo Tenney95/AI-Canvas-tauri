@@ -20,7 +20,7 @@ export const PROVIDER_LINKS: Record<string, string> = {
   volcengine: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
   'runninghub-model': 'https://www.runninghub.cn?inviteCode=iadc40jt',
   grsai: 'https://grsai.com/zh/dashboard/api-keys',
-  dreamina: 'https://www.dreamina.com',
+  dreamina: 'https://jimeng.jianying.com/ai-tool/home/',
   tavily: 'https://app.tavily.com',
   bocha: 'https://open.bochaai.com/dashboard',
   'zhipu-search': 'https://open.bigmodel.cn/usercenter/apikeys',
