@@ -1,7 +1,7 @@
 /**
  * 应用主侧栏，集中承载节点创建、项目入口、功能面板切换、更新状态与快捷操作。
  */
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { createPortal } from 'react-dom';
 import type { JSX } from 'react';
@@ -22,12 +22,17 @@ import LazyLoadBoundary, { LazyLoadFallback } from './shared/LazyLoadBoundary';
 import ProjectLibraryModal from './ProjectLibraryModal';
 import { invoke } from '@tauri-apps/api/core';
 import { useT } from '../i18n';
+import { openStyleGuideWindow } from '../utils/styleGuideWindow';
 import {
   createPluginNode,
   getAvailablePluginNodes,
 } from '../services/plugins/pluginRuntime';
 
 const HelpCenterDialog = lazy(() => import('./HelpCenterDialog'));
+
+/** 「关于」弹窗里连点 logo 打开样式预览窗口：阈值与连点重置间隔 */
+const STYLE_GUIDE_LOGO_TAPS = 4;
+const STYLE_GUIDE_LOGO_RESET_MS = 1200;
 
 /**
  * Sidebar 侧边栏面板 — 左侧节点类型列表、上传入口、项目切换、拖拽添加节点
@@ -344,6 +349,9 @@ function AvatarMenu() {
   );
   const menuRef = useRef<HTMLDivElement>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
+  /** 「关于」里连点 logo 的计数与重置计时器；纯交互状态，不参与渲染所以用 ref */
+  const logoTapsRef = useRef(0);
+  const logoTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [appVersion, setAppVersion] = useState('0.1.0');
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'no-update' | 'available' | 'updating' | 'error'>('idle');
   const [updateMsg, setUpdateMsg] = useState('');
@@ -380,6 +388,31 @@ function AvatarMenu() {
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => {});
+  }, []);
+
+  // 连点 logo 达到阈值时打开样式预览窗口；超过间隔没有下一次点击就重新计数
+  const handleLogoClick = useCallback(() => {
+    const taps = logoTapsRef.current + 1;
+    logoTapsRef.current = taps;
+    if (logoTapTimerRef.current) clearTimeout(logoTapTimerRef.current);
+
+    if (taps >= STYLE_GUIDE_LOGO_TAPS) {
+      logoTapsRef.current = 0;
+      logoTapTimerRef.current = null;
+      setAboutOpen(false);
+      void openStyleGuideWindow();
+      useAppStore.getState().showToast(t('已打开样式预览窗口'));
+      return;
+    }
+
+    logoTapTimerRef.current = setTimeout(() => {
+      logoTapsRef.current = 0;
+      logoTapTimerRef.current = null;
+    }, STYLE_GUIDE_LOGO_RESET_MS);
+  }, [t]);
+
+  useEffect(() => () => {
+    if (logoTapTimerRef.current) clearTimeout(logoTapTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -474,9 +507,14 @@ function AvatarMenu() {
         <div className="p-3 space-y-3">
           {/* Header */}
           <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-500/20">
+            <button
+              type="button"
+              onClick={handleLogoClick}
+              className="flex h-12 w-12 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-indigo-500/20 transition-transform active:scale-95"
+              aria-label={t('AI Canvas')}
+            >
               <img src="/icons.svg" alt="" />
-            </div>
+            </button>
             <div>
               <h2 className="text-lg font-semibold text-canvas-text">AI Canvas</h2>
               <p className="text-xs text-canvas-text-secondary">v{appVersion} · {t('开发预览版')}</p>

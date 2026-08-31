@@ -10,6 +10,8 @@ const AssetSearchWindow = lazy(() => import('./components/AssetSearchWindow'));
 const ChatWindow = lazy(() => import('./components/chat/ChatWindow'));
 // 懒加载：视频编辑器引入 mediabunny（体积大户），只有编辑器窗口才加载
 const VideoEditorWindow = lazy(() => import('./components/videoEditor/VideoEditorWindow'));
+// 懒加载：样式预览只在开发者/设计手动唤起时用到，不进主窗口首屏
+const StyleGuideWindow = lazy(() => import('./components/styleGuide/StyleGuideWindow'));
 
 interface RootViewProps {
   view: string | null;
@@ -19,6 +21,7 @@ const VIEW_LABELS: Record<string, string> = {
   assets: '资产搜索窗口',
   chat: '独立聊天窗口',
   'video-editor': '视频编辑器窗口',
+  'style-guide': '样式预览窗口',
 };
 
 export default function RootView({ view }: RootViewProps) {
@@ -34,7 +37,9 @@ export default function RootView({ view }: RootViewProps) {
               ? <ChatWindow />
               : view === 'video-editor'
                 ? <VideoEditorWindow />
-                : <App />}
+                : view === 'style-guide'
+                  ? <StyleGuideWindow />
+                  : <App />}
         </Suspense>
       </LazyLoadBoundary>
       <OverlayScrollbarLayer />

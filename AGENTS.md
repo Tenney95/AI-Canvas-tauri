@@ -210,6 +210,9 @@ AI-Canvas-tauri/
 - 浅色主题是低饱和马卡龙配色，统一由 `src/styles/base.css` 中的 `[data-theme='light']` 覆盖；新增可见面板必须同时确认两种主题
 - `src/index.css` 只做入口聚合；React Flow 样式覆盖统一放在 `src/styles/reactflow.css`，新增功能样式在 `src/styles/` 新建 partial 并在入口 `@import`
 - 新增节点类型时，Header 区域使用对应语义色：文本=indigo、图像=green、视频=blue、音频=orange、全景=cyan
+- 公用控件（按钮、输入框、卡片、下拉、开关、徽标、提示条、表格等）优先复用 `src/styles/ui-kit.css` 里的 `ui-*` 类，不要另造一套；写新界面前先看一遍它们的命名与变体
+- 新增或修改 `ui-*` 类时继续只引用 `base.css` 的 CSS 变量，并在样式预览窗口补一个样例
+- 样式预览窗口（UI Kit 一览，含可复制类名）由「关于 → 连点 logo 4 次」打开；入口工具是 `src/utils/styleGuideWindow.ts`，内容在 `src/components/styleGuide/`
 
 ### 类型定义
 

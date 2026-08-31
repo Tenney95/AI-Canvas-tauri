@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for AI Canvas",
-  "windows": ["main", "asset-search", "chat-assistant", "video-editor"],
+  "windows": ["main", "asset-search", "chat-assistant", "video-editor", "style-guide"],
   "permissions": [
     "allow-first-party-app-commands",
     "core:default",

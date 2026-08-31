@@ -462,57 +462,25 @@
   border-color: color-mix(in srgb, var(--brand) 40%, transparent);
   background: var(--brand-alpha-12);
 }
-
-/* 拖放上传区 */
-.wf-dropzone {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 18px 14px;
-  text-align: center;
-  border: 1.5px dashed var(--separator-color);
-  border-radius: 14px;
-  background: var(--white-alpha-02);
-  cursor: var(--cursor-pointer, pointer);
-  transition: border-color var(--transition-base), background var(--transition-base);
+.wf-cat-chip--text.active {
+  color: var(--node-text-light);
+  border-color: color-mix(in srgb, var(--node-text) 40%, transparent);
+  background: var(--node-text-bg);
 }
-.wf-dropzone:hover,
-.wf-dropzone:focus-visible,
-.wf-dropzone.is-dragover {
-  border-color: color-mix(in srgb, var(--brand) 55%, transparent);
-  background: var(--brand-alpha-04);
-  outline: none;
+.wf-cat-chip--image.active {
+  color: var(--node-image-light);
+  border-color: color-mix(in srgb, var(--node-image) 40%, transparent);
+  background: var(--node-image-bg);
 }
-.wf-dropzone-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--theme-text);
+.wf-cat-chip--video.active {
+  color: var(--node-video-light);
+  border-color: color-mix(in srgb, var(--node-video) 40%, transparent);
+  background: var(--node-video-bg);
 }
-.wf-dropzone-icon {
-  display: grid;
-  place-items: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  color: var(--brand-light);
-  background:
-    radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--brand) 26%, transparent), transparent 70%),
-    var(--white-alpha-04);
-  box-shadow:
-    0 6px 18px color-mix(in srgb, var(--brand) 22%, transparent),
-    inset 0 0 0 1px var(--white-alpha-08);
-  transition: transform var(--transition-base);
-}
-.wf-dropzone:hover .wf-dropzone-icon,
-.wf-dropzone.is-dragover .wf-dropzone-icon {
-  transform: translateY(-2px) scale(1.04);
-}
-.wf-dropzone-hint {
-  max-width: 240px;
-  font-size: 11px;
-  line-height: 1.55;
-  color: var(--theme-text-muted);
+.wf-cat-chip--audio.active {
+  color: var(--node-audio-light);
+  border-color: color-mix(in srgb, var(--node-audio) 40%, transparent);
+  background: var(--node-audio-bg);
 }
 
 /* 已选文件卡片 */
@@ -911,12 +879,10 @@ button.wf-ionode-badge.is-default {
     var(--glass-bevel-border) border-box;
 }
 [data-theme='light'] .wf-section-title,
-[data-theme='light'] .wf-dropzone-hint,
 [data-theme='light'] .wf-file-card-meta,
 [data-theme='light'] .wf-empty {
   color: var(--theme-text-secondary);
 }
-[data-theme='light'] .wf-dropzone,
 [data-theme='light'] .wf-file-card {
   background: var(--theme-surface);
   border-color: color-mix(in srgb, var(--theme-text-secondary) 44%, var(--theme-surface));
@@ -939,9 +905,25 @@ button.wf-ionode-badge.is-default {
   color: color-mix(in srgb, var(--brand) 82%, var(--theme-text));
   border-color: color-mix(in srgb, var(--brand) 68%, var(--theme-surface));
 }
-[data-theme='light'] .wf-dropzone:hover,
-[data-theme='light'] .wf-dropzone.is-dragover {
-  border-color: var(--brand);
+[data-theme='light'] .wf-cat-chip--text.active {
+  color: color-mix(in srgb, var(--node-text) 82%, var(--theme-text));
+  border-color: color-mix(in srgb, var(--node-text) 68%, var(--theme-surface));
+  background: var(--node-text-bg);
+}
+[data-theme='light'] .wf-cat-chip--image.active {
+  color: color-mix(in srgb, var(--node-image) 82%, var(--theme-text));
+  border-color: color-mix(in srgb, var(--node-image) 68%, var(--theme-surface));
+  background: var(--node-image-bg);
+}
+[data-theme='light'] .wf-cat-chip--video.active {
+  color: color-mix(in srgb, var(--node-video) 82%, var(--theme-text));
+  border-color: color-mix(in srgb, var(--node-video) 68%, var(--theme-surface));
+  background: var(--node-video-bg);
+}
+[data-theme='light'] .wf-cat-chip--audio.active {
+  color: color-mix(in srgb, var(--node-audio) 82%, var(--theme-text));
+  border-color: color-mix(in srgb, var(--node-audio) 68%, var(--theme-surface));
+  background: var(--node-audio-bg);
 }
 [data-theme='light'] .wf-btn-primary {
   color: color-mix(in srgb, var(--brand) 82%, var(--theme-text));

@@ -437,7 +437,7 @@ export default function PluginSettings() {
             </p>
           </div>
           <motion.div
-            className={`wf-dropzone mt-3${dragOver ? ' is-dragover' : ''}${busy ? ' pointer-events-none opacity-60' : ''}`}
+            className={`ui-dropzone mt-3${dragOver ? ' is-dragover' : ''}${busy ? ' pointer-events-none opacity-60' : ''}`}
             role="button"
             tabIndex={busy ? -1 : 0}
             aria-disabled={busy}
@@ -457,17 +457,17 @@ export default function PluginSettings() {
             onDrop={(event) => void handleDrop(event)}
             whileTap={busy ? undefined : { scale: 0.995 }}
           >
-            <span className="wf-dropzone-title">
+            <span className="ui-dropzone__title">
               {busy ? '正在校验并安装插件…' : '把插件文件夹拖到这里'}
             </span>
-            <span className="wf-dropzone-icon" aria-hidden="true">
+            <span className="ui-dropzone__icon" aria-hidden="true">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                 <polyline points="17 8 12 3 7 8" />
                 <line x1="12" y1="3" x2="12" y2="15" />
               </svg>
             </span>
-            <span className="wf-dropzone-hint">
+            <span className="ui-dropzone__hint">
               支持 manifest.json + main.js 或 main.py，点击这里也可以选择。
             </span>
           </motion.div>

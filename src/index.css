@@ -4,6 +4,7 @@
    ============================================ */
 
 @import './styles/base.css';
+@import './styles/ui-kit.css';
 @import './styles/cursors.css';
 @import './styles/reactflow.css';
 @import './styles/nodes.css';
