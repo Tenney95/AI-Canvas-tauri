@@ -16,6 +16,7 @@ import {
   selectAgentPackageArchive,
   selectAgentPackageFolder,
 } from '../../services/agentPackages/agentPackageImportService';
+import { confirmAction } from '../../services/confirmDialog';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import AnimatedButton from '../shared/AnimatedButton';
 import { useT } from '../../i18n';
@@ -254,7 +255,7 @@ export default function AgentCenterPanel({ onClose, allowInstall = false }: Agen
   const removePackage = async (installation: AgentPackageInstallation) => {
     if (!allowInstall || busyKey) return;
     const name = installation.manifest.name || installation.source.displayName;
-    if (!window.confirm(t('确定从软件中移除智能体「{name}」？外部文件不会被删除。', { name }))) return;
+    if (!(await confirmAction(t('确定从软件中移除智能体「{name}」？外部文件不会被删除。', { name }), { title: '移除智能体' }))) return;
     setBusyKey(`remove:${installation.id}`);
     setLocalError('');
     try {

@@ -17,6 +17,7 @@ import { Icon } from '@iconify/react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
 import type { BaseNodeData, ShotFrameCandidate, ShotlistColumnKey, ShotRow } from '../../types';
+import { confirmAction } from '../../services/confirmDialog';
 import {
   SHOT_CAMERA_OPTIONS,
   SHOT_SIZE_OPTIONS,
@@ -302,7 +303,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     try {
       // 分镜表是时间轴的源，每次推送都按当前表重建，会覆盖上次在剪辑窗口里的调整
       if (await hasShotlistTimeline(projectId, id)) {
-        const confirmed = window.confirm('这张分镜表已经推送过时间轴。继续将按当前表重建，剪辑窗口里的调整会丢失。');
+        const confirmed = await confirmAction('这张分镜表已经推送过时间轴。继续将按当前表重建，剪辑窗口里的调整会丢失。', { title: '重新推送时间轴' });
         if (!confirmed) return;
       }
       await openVideoEditorForShotlist({

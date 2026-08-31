@@ -9,6 +9,7 @@ import { useAppStore } from '../store/useAppStore';
 import type { DramaAsset, DramaAssetKind } from '../types/dramaAssets';
 import { DRAMA_ASSET_KIND_LABEL } from '../types/dramaAssets';
 import { formatDramaAssetTextBrief } from '../services/dramaAssetPrompt';
+import { confirmAction } from '../services/confirmDialog';
 import ViewportImage from './shared/ViewportImage';
 
 const KIND_TABS: Array<{ key: DramaAssetKind | 'all'; label: string }> = [
@@ -369,8 +370,9 @@ export default function DramaAssetsPanel() {
   const handleClearTab = useCallback(() => {
     if (tab === 'all') return;
     const label = DRAMA_ASSET_KIND_LABEL[tab];
-    if (!window.confirm(`清空全部「${label}」资产？此操作不可撤销。`)) return;
-    clearDramaAssetsByKind(tab);
+    void confirmAction(`清空全部「${label}」资产？此操作不可撤销。`, { title: '清空资产' }).then((confirmed) => {
+      if (confirmed) clearDramaAssetsByKind(tab);
+    });
   }, [tab, clearDramaAssetsByKind]);
 
   const copyBrief = useCallback(
@@ -496,9 +498,9 @@ export default function DramaAssetsPanel() {
                       setEditingId((cur) => (cur === asset.id ? null : asset.id))
                     }
                     onDelete={() => {
-                      if (window.confirm(`删除「${asset.name}」？`)) {
-                        deleteDramaAsset(asset.kind, asset.id);
-                      }
+                      void confirmAction(`删除「${asset.name}」？`, { title: '删除资产' }).then((confirmed) => {
+                        if (confirmed) deleteDramaAsset(asset.kind, asset.id);
+                      });
                     }}
                     onSaveFields={(patch) => {
                       updateDramaAssetFields(asset.kind, asset.id, {

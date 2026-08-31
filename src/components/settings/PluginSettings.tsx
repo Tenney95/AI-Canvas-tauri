@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import pluginDeveloperGuide from '../../../doc/插件开发规范.md?raw';
 import { isTauriEnv, saveBinaryToLocalFile } from '../../services/fileService';
+import { confirmAction } from '../../services/confirmDialog';
 import {
   comparePluginVersions,
   loadPluginMarketplace,
@@ -179,25 +180,27 @@ async function reviewPluginInstall(
 ): Promise<string | null> {
   const sourceDigest = await computeSourceDigest(source);
   if (manifest.runtime !== 'python') return sourceDigest;
-  const confirmed = window.confirm(
+  const confirmed = await confirmAction(
     `${action}可信 Python 插件「${manifest.name}」？\n\n`
     + `来源：${sourceLabel}\n`
     + `代码 SHA-256：${sourceDigest}\n`
     + `宿主代办权限：${permissionSummary(manifest) || '无'}\n\n`
     + 'Python 插件会以你的当前系统权限运行，可以读取或修改本机文件、访问网络和环境变量，也可以启动其他程序。'
     + '\n\n只对你信任并已审查源码的插件继续。下一步 Rust 原生确认必须显示相同的完整摘要。',
+    { title: `${action}可信 Python 插件` },
   );
   return confirmed ? sourceDigest : null;
 }
 
-function confirmTrustedPythonEnable(manifest: PluginManifest, sourceDigest?: string): boolean {
+async function confirmTrustedPythonEnable(manifest: PluginManifest, sourceDigest?: string): Promise<boolean> {
   if (manifest.runtime !== 'python') return true;
-  return window.confirm(
+  return confirmAction(
     `启用可信 Python 插件「${manifest.name}」？\n\n`
     + `已登记代码 SHA-256：${sourceDigest ?? '旧记录待原生迁移'}\n`
     + `宿主代办权限：${permissionSummary(manifest) || '无'}\n\n`
     + '启用后插件会以你的当前系统权限运行，可以读取或修改本机文件、访问网络和环境变量，也可以启动其他程序。'
     + '\n\n继续后还必须通过 Rust 原生确认，且完整摘要应与这里一致。',
+    { title: '启用可信 Python 插件' },
   );
 }
 
@@ -250,6 +253,31 @@ async function droppedPluginFiles(dataTransfer: DataTransfer): Promise<PluginUpl
   const files: PluginUploadFile[] = [];
   for (const entry of entries) await collectDroppedEntry(entry, '', files);
   return files;
+}
+
+// ── Tauri 原生拖拽：外部拖入时 webview 的 DataTransfer 是空的，只能走全局事件 ──
+
+type PluginFsModule = typeof import('@tauri-apps/plugin-fs');
+
+/** 统一成正斜杠，Windows 拖拽路径可能带反斜杠 */
+function normalizePluginPath(path: string): string {
+  return path.replace(/\\/g, '/');
+}
+
+async function collectPathFiles(
+  fs: PluginFsModule,
+  targetPath: string,
+  output: string[],
+): Promise<void> {
+  const info = await fs.stat(targetPath);
+  if (!info.isDirectory) {
+    output.push(targetPath);
+    return;
+  }
+  for (const entry of await fs.readDir(targetPath)) {
+    if (output.length >= MAX_DROPPED_PLUGIN_FILES) throw new Error('插件文件夹包含的文件过多');
+    await collectPathFiles(fs, `${targetPath.replace(/[\\/]+$/, '')}/${entry.name}`, output);
+  }
 }
 
 export default function PluginSettings() {
@@ -407,9 +435,66 @@ export default function PluginSettings() {
     }
   };
 
+  // Tauri 原生拖拽：全局事件只给出本机路径，需要自己把文件夹读出来
+  const installFromPaths = async (paths: string[]) => {
+    if (busy || paths.length === 0) return;
+    setBusy(true);
+    try {
+      const fs = await import('@tauri-apps/plugin-fs');
+      const filePaths: string[] = [];
+      for (const target of paths) await collectPathFiles(fs, target, filePaths);
+      const normalized = filePaths.map((raw) => ({ raw, path: normalizePluginPath(raw) }));
+      const manifests = normalized.filter(({ path }) => path.endsWith('/manifest.json'));
+      // 全局事件在窗口任何位置都会到达：不是插件包（例如拖到画布的素材）就静默忽略
+      if (manifests.length === 0) return;
+      if (manifests.length > 1) throw new Error('插件文件夹必须且只能包含一个 manifest.json');
+      const manifestFile = manifests[0];
+      const manifestText = new TextDecoder().decode(await fs.readFile(manifestFile.raw));
+      const manifest = parsePluginManifest(manifestText);
+      const prefix = manifestFile.path.slice(0, manifestFile.path.length - 'manifest.json'.length);
+      const entry = normalized.find(({ path }) => path === `${prefix}${manifest.entry}`);
+      if (!entry) throw new Error(`manifest.json 同级目录缺少 ${manifest.entry}`);
+      const action = plugins.some((installed) => installed.id === manifest.id) ? '更新' : '安装';
+      const source = new TextDecoder().decode(await fs.readFile(entry.raw));
+      const sourceDigest = await reviewPluginInstall(manifest, source, action, '本地文件夹');
+      if (!sourceDigest) return;
+      await installPluginBundle(manifestText, source, {
+        trustedPythonConfirmed: manifest.runtime === 'python',
+        expectedSourceDigest: sourceDigest,
+      });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 监听器只注册一次，但始终调用最新闭包（busy / plugins）
+  const installFromPathsRef = useRef(installFromPaths);
+  useEffect(() => {
+    installFromPathsRef.current = installFromPaths;
+  });
+
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      if (cancelled) return;
+      unlisten = await listen<{ paths: string[] }>('tauri://drag-drop', (event) => {
+        void installFromPathsRef.current(event.payload?.paths ?? []);
+      });
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   const togglePlugin = async (plugin: (typeof plugins)[number]) => {
     const enabled = !plugin.enabled;
-    if (enabled && !confirmTrustedPythonEnable(plugin.manifest, plugin.sourceDigest)) return;
+    if (enabled && !(await confirmTrustedPythonEnable(plugin.manifest, plugin.sourceDigest))) return;
     await setPluginEnabled(plugin.id, enabled, {
       trustedPythonConfirmed: enabled && plugin.manifest.runtime === 'python',
     });
@@ -420,7 +505,10 @@ export default function PluginSettings() {
     setDragOver(false);
     if (busy) return;
     try {
-      await installFiles(await droppedPluginFiles(event.dataTransfer));
+      const files = await droppedPluginFiles(event.dataTransfer);
+      // Tauri 原生拖拽下 DataTransfer 是空的，交给全局事件处理，避免误报和重复安装
+      if (files.length === 0) return;
+      await installFiles(files);
     } catch (error) {
       showToast(error instanceof Error ? error.message : '无法读取插件文件夹', 'error');
     }
@@ -787,9 +875,11 @@ export default function PluginSettings() {
                     aria-label={`卸载 ${plugin.manifest.name}`}
                     className="rounded-md p-1.5 text-canvas-text-muted hover:bg-red-500/10 hover:text-red-400"
                     onClick={() => {
-                      if (!window.confirm(`确定卸载插件「${plugin.manifest.name}」吗？`)) return;
-                      void deletePlugin(plugin.id).catch((error) => {
-                        showToast(error instanceof Error ? error.message : '插件卸载失败', 'error');
+                      void confirmAction(`确定卸载插件「${plugin.manifest.name}」吗？`, { title: '卸载插件' }).then((confirmed) => {
+                        if (!confirmed) return;
+                        void deletePlugin(plugin.id).catch((error) => {
+                          showToast(error instanceof Error ? error.message : '插件卸载失败', 'error');
+                        });
                       });
                     }}
                   >
