@@ -813,7 +813,11 @@
 .wf-item-cat {
   flex-shrink: 0;
   margin-left: 2px;
-  padding: 0 4px;
+}
+.ui-select__trigger.wf-item-cat-trigger {
+  height: auto;
+  min-height: 18px;
+  padding: 0 14px 0 4px;
   border: 1px solid var(--white-alpha-08);
   border-radius: 5px;
   background: var(--white-alpha-04);
@@ -823,9 +827,14 @@
   cursor: var(--cursor-pointer, pointer);
   transition: var(--transition-colors);
 }
-.wf-item-cat:hover {
+.ui-select__trigger.wf-item-cat-trigger:hover {
   color: var(--theme-text);
   border-color: var(--border-secondary);
+}
+.ui-select__trigger.wf-item-cat-trigger .ui-select__chevron {
+  right: 2px;
+  width: 10px;
+  height: 10px;
 }
 
 /* 列表里的徽章是按钮：点一下把该节点设为对应类型的默认注入目标 */

@@ -531,10 +531,54 @@
   pointer-events: none;
 }
 .ui-select--custom .ui-menu {
-  right: 0;
   left: 0;
-  width: auto;
-  min-width: 100%;
+  min-width: auto;
+  width: max-content;
+  /* 不固定 right，也不强制与触发器等宽；宽度由最长菜单项撑开 */
+}
+.ui-select--custom .ui-menu .ui-menu__item {
+  white-space: nowrap;
+}
+.ui-select__trigger:disabled {
+  opacity: 0.45;
+  cursor: var(--cursor-not-allowed, not-allowed);
+}
+.ui-select--sm .ui-select__trigger {
+  height: var(--ui-control-h-sm);
+  padding: 0 24px 0 8px;
+  font-size: var(--ui-font-sm);
+}
+.ui-select--sm .ui-select__chevron { right: 7px; }
+.ui-select--lg .ui-select__trigger {
+  height: var(--ui-control-h-lg);
+  padding: 0 32px 0 14px;
+  font-size: var(--ui-font-lg);
+}
+.ui-select--lg .ui-select__chevron { right: 12px; }
+
+/* 全局原生 select 兜底美化
+   只同步视觉（底色、描边、圆角、明暗主题），不强制尺寸，保留系统下拉箭头
+   （color-scheme 会让箭头跟随明暗主题）。
+   带自定义 class 的 select（.wf-item-cat / .assets-project-select 等）优先级更高，
+   仍以自身样式为准，这里只补充它们未定义的属性。
+   需要完全一致的展开面板时，改用 <Select> 组件。 */
+select:not(.ui-select__control):not(.ui-select__native) {
+  border: 1px solid var(--white-alpha-08);
+  border-radius: 5px;
+  background-color: var(--white-alpha-04);
+  color: inherit;
+  cursor: var(--cursor-pointer, pointer);
+  color-scheme: dark;
+}
+[data-theme='light'] select:not(.ui-select__control):not(.ui-select__native) {
+  color-scheme: light;
+}
+select:not(.ui-select__control):not(.ui-select__native):hover:not(:disabled) {
+  border-color: var(--white-alpha-12);
+}
+select:not(.ui-select__control):not(.ui-select__native):disabled {
+  opacity: 0.45;
+  cursor: var(--cursor-not-allowed, not-allowed);
 }
 
 .ui-select__chevron {

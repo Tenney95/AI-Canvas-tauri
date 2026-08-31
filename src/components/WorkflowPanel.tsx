@@ -10,6 +10,7 @@ import type { WorkflowDefinition, WorkflowCategory, WorkflowIONode, WorkflowIONo
 import { extractComfyUIIONodes, openComfyUIWorkflowEditor } from '../services/comfyUIWindowService';
 import { comfyBaseUrlFor, DEFAULT_COMFY_URL } from '../services/comfyServers';
 import PopupCloseButton from './shared/PopupCloseButton';
+import Select from './shared/Select';
 
 const CATEGORIES: { value: WorkflowCategory; label: string }[] = [
   { value: 'ai-text', label: '生成文本' },
@@ -643,37 +644,36 @@ export default function WorkflowPanel() {
                               <span className="wf-item-sep">·</span>
                               <span>{new Date(wf.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}</span>
                               {/* 从 ComfyUI 存回来的分类是猜的，猜错了在这里改 */}
-                              <select
+                              <Select
                                 className="wf-item-cat"
+                                triggerClassName="wf-item-cat-trigger"
                                 value={wf.category}
                                 title="修改分类"
-                                onChange={(e) => {
-                                  updateWorkflow(wf.id, { category: e.target.value as WorkflowCategory })
+                                options={CATEGORIES.map((cat) => ({ value: cat.value, label: cat.label }))}
+                                onChange={(value) => {
+                                  updateWorkflow(wf.id, { category: value as WorkflowCategory })
                                     .catch(() => showToast('修改分类失败', 'error'));
                                 }}
-                              >
-                                {CATEGORIES.map((cat) => (
-                                  <option key={cat.value} value={cat.value}>{cat.label}</option>
-                                ))}
-                              </select>
+                              />
                               {/* 只有配了多台服务端才需要选：单台时这一栏是纯噪音 */}
                               {(comfyServers?.length ?? 0) > 0 && (
-                                <select
+                                <Select
                                   className="wf-item-cat"
+                                  triggerClassName="wf-item-cat-trigger"
                                   value={wf.serverId ?? ''}
                                   title="选择执行这个工作流的 ComfyUI 服务端"
-                                  onChange={(e) => {
-                                    updateWorkflow(wf.id, { serverId: e.target.value || undefined })
+                                  options={[
+                                    { value: '', label: '默认服务端' },
+                                    ...(comfyServers ?? []).map((server) => ({
+                                      value: server.id,
+                                      label: server.name || server.url,
+                                    })),
+                                  ]}
+                                  onChange={(value) => {
+                                    updateWorkflow(wf.id, { serverId: value || undefined })
                                       .catch(() => showToast('绑定服务端失败', 'error'));
                                   }}
-                                >
-                                  <option value="">默认服务端</option>
-                                  {(comfyServers ?? []).map((server) => (
-                                    <option key={server.id} value={server.id}>
-                                      {server.name || server.url}
-                                    </option>
-                                  ))}
-                                </select>
+                                />
                               )}
                             </span>
                           </div>

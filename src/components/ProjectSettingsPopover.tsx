@@ -33,6 +33,7 @@ import QualityRatioSelector from './nodes/shared/QualityRatioSelector';
 import StyleSelector from './nodes/shared/StyleSelector';
 import VideoParamSelector from './nodes/shared/VideoParamSelector';
 import PopupCloseButton from './shared/PopupCloseButton';
+import Select from './shared/Select';
 import {
   PROJECT_STYLE_OPTIONS,
 } from '../services/projectSettingsService';
@@ -650,35 +651,25 @@ export default function ProjectSettingsPopover({
                           <Icon icon={row.icon} className={`h-3.5 w-3.5 ${row.colorClass}`} />
                           {row.label}
                         </span>
-                        <span className="relative">
-                          <select
-                            value={selectedModel}
-                            onChange={(event) => handleModelChange(row.kind, event.target.value)}
-                            className="h-9 w-full appearance-none rounded-md border border-canvas-border
-                                       bg-canvas-card px-3 pr-8 text-xs text-canvas-text outline-none
-                                       transition-colors hover:border-border-secondary focus:border-indigo-500"
-                          >
-                            <option value="">{t('跟随应用默认')}</option>
-                            {!selectedModelVisible && (
-                              <option value={selectedModel} disabled>{t('已隐藏')} · {selectedModel}</option>
-                            )}
-                            {modelGroups[row.kind].map((group) => (
-                              <optgroup key={group.id} label={group.name}>
-                                {group.options.map((option) => (
-                                  <option key={option.value} value={option.value}>
-                                    {option.hint ? `${option.label}（${option.hint}）` : option.label}
-                                  </option>
-                                ))}
-                              </optgroup>
-                            ))}
-                          </select>
-                          <Icon
-                            icon="lucide:chevron-down"
-                            aria-hidden="true"
-                            className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5
-                                       -translate-y-1/2 text-canvas-text-muted"
-                          />
-                        </span>
+                        <Select
+                          value={selectedModel}
+                          onChange={(value) => handleModelChange(row.kind, value)}
+                          className="w-full"
+                          triggerClassName="h-9"
+                          options={[
+                            { value: '', label: t('跟随应用默认') },
+                            ...(!selectedModelVisible
+                              ? [{ value: selectedModel, label: `${t('已隐藏')} · ${selectedModel}`, disabled: true }]
+                              : []),
+                            ...modelGroups[row.kind].map((group) => ({
+                              label: group.name,
+                              options: group.options.map((option) => ({
+                                value: option.value,
+                                label: option.hint ? `${option.label}（${option.hint}）` : option.label,
+                              })),
+                            })),
+                          ]}
+                        />
                       </label>
                     );
                   })}
@@ -687,28 +678,25 @@ export default function ProjectSettingsPopover({
                       <Icon icon="lucide:scan-eye" className="h-3.5 w-3.5 text-cyan-400" />
                       {t('视觉理解')}
                     </span>
-                    <span className="relative">
-                      <select
-                        value={draft.visionModelId ?? ''}
-                        onChange={(event) => setDraft((current) => ({
-                          ...current,
-                          visionModelId: event.target.value || undefined,
-                        }))}
-                        className="h-9 w-full appearance-none rounded-md border border-canvas-border bg-canvas-card px-3 pr-8 text-xs text-canvas-text outline-none transition-colors hover:border-border-secondary focus:border-indigo-500"
-                      >
-                        <option value="">{t('自动选择可看图模型')}</option>
-                        {visionModelGroups.map((group) => (
-                          <optgroup key={group.id} label={group.name}>
-                            {group.options.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.hint ? `${option.label}（${option.hint}）` : option.label}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </select>
-                      <Icon icon="lucide:chevron-down" aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-canvas-text-muted" />
-                    </span>
+                    <Select
+                      value={draft.visionModelId ?? ''}
+                      onChange={(value) => setDraft((current) => ({
+                        ...current,
+                        visionModelId: value || undefined,
+                      }))}
+                      className="w-full"
+                      triggerClassName="h-9"
+                      options={[
+                        { value: '', label: t('自动选择可看图模型') },
+                        ...visionModelGroups.map((group) => ({
+                          label: group.name,
+                          options: group.options.map((option) => ({
+                            value: option.value,
+                            label: option.hint ? `${option.label}（${option.hint}）` : option.label,
+                          })),
+                        })),
+                      ]}
+                    />
                   </label>
                   <label className="flex items-center justify-between gap-3 rounded-md border border-canvas-border bg-canvas-card px-3 py-2.5 text-xs text-canvas-text-secondary">
                     <span>
