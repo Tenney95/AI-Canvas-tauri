@@ -20,12 +20,28 @@ import type { Node as RFNode } from '@xyflow/react';
 import { isEligibleCharacterReferenceNode } from '../store/store.dramaAssets';
 import { useT } from '../i18n';
 import { executeNodePluginTool, getAvailableNodePluginTools } from '../services/plugins/pluginRuntime';
+import type { AvailableNodePluginTool } from '../types/plugin';
 
 export interface NodeContextMenuState {
   visible: boolean;
   position: { x: number; y: number };
   nodeId: string | null;
   textSelection: ActiveTextSelection | null;
+}
+
+/** 右键入口改为弹窗执行的插件工具。 */
+export interface PendingPluginTool {
+  tool: AvailableNodePluginTool;
+  nodeId: string;
+}
+
+/**
+ * 右键菜单是直接执行入口，`input.parameters` 为空对象。
+ * 声明了必填字段的工具（例如必选模型）在这种情况下必然拿到空值，
+ * 因此改为打开同一个宿主弹窗，让用户先补齐参数再执行。
+ */
+function requiresDialogParameters(tool: AvailableNodePluginTool): boolean {
+  return (tool.tool.dialog?.fields ?? []).some((field) => field.required === true);
 }
 
 export function useNodeContextMenu() {
@@ -48,7 +64,10 @@ export function useNodeContextMenu() {
     textSelection: null,
   });
   const [characterCaptureNodeId, setCharacterCaptureNodeId] = useState<string | null>(null);
+  const [pendingPluginTool, setPendingPluginTool] = useState<PendingPluginTool | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const closePluginToolDialog = useCallback(() => setPendingPluginTool(null), []);
 
   const closeMenu = useCallback(() => {
     setMenu({ visible: false, position: { x: 0, y: 0 }, nodeId: null, textSelection: null });
@@ -468,8 +487,9 @@ export function useNodeContextMenu() {
 
   const handlePluginTool = useCallback((pluginId: string, toolId: string) => {
     if (!menu.nodeId) return;
+    const nodeId = menu.nodeId;
     const state = useAppStore.getState();
-    const current = state.nodes.find((node) => node.id === menu.nodeId);
+    const current = state.nodes.find((node) => node.id === nodeId);
     const available = getAvailableNodePluginTools(
       state.installedPlugins,
       current?.data.type,
@@ -479,7 +499,11 @@ export function useNodeContextMenu() {
       state.showToast(t('插件工具已不可用'), 'error');
       return;
     }
-    void executeNodePluginTool(available, menu.nodeId).catch((error) => {
+    if (requiresDialogParameters(available)) {
+      setPendingPluginTool({ tool: available, nodeId });
+      return;
+    }
+    void executeNodePluginTool(available, nodeId).catch((error) => {
       useAppStore.getState().showToast(
         error instanceof Error ? error.message : t('插件工具执行失败'),
         'error',
@@ -526,5 +550,7 @@ export function useNodeContextMenu() {
     showAddToCharacter,
     pluginTools,
     handlePluginTool,
+    pendingPluginTool,
+    closePluginToolDialog,
   };
 }
