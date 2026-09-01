@@ -318,7 +318,7 @@ export default function SeriesRail() {
                 disabled={!ready}
                 onClick={() => setWorkbenchMode('editor')}
                 className="flex h-9 items-center justify-center gap-2 rounded-lg border border-indigo-400/30
-                           bg-indigo-500/10 text-[11px] font-medium text-indigo-200 transition-colors
+                           bg-indigo-500/10 text-[11px] font-medium text-indigo-400 transition-colors
                            hover:border-indigo-400/50 hover:bg-indigo-500/15 disabled:cursor-not-allowed
                            disabled:opacity-40"
               >
