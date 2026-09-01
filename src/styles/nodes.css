@@ -1164,10 +1164,9 @@
 
 /* 全屏视频预览（hidePanel 模式） */
 .fullscreen-video-view {
-  max-width: 92vw;
-  max-height: 92vh;
-  width: auto;
-  height: auto;
+  width: 92vw;
+  height: 92vh;
+  object-fit: contain;
   border-radius: 4px;
   background: #000;
   outline: none;

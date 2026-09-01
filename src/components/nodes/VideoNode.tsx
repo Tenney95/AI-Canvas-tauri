@@ -389,6 +389,9 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     setIsFullscreen(false);
   }, [data.videoUrl]);
   const setFullscreenVideoElement = useCallback((video: HTMLVideoElement | null) => {
+    // React StrictMode 会额外执行一次 callback ref 的 detach/attach。
+    // detach 时不能移除 src，否则同一 DOM 节点重新 attach 后会停在 0:00。
+    if (!video) return;
     if (fullscreenVideoRef.current && fullscreenVideoRef.current !== video) {
       releaseVideoElement(fullscreenVideoRef.current);
     }

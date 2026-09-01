@@ -115,6 +115,9 @@ describe('media preview memory guards', () => {
     expect(videoNodeSource).toMatch(
       /className="fullscreen-overlay--image-preview"[\s\S]*?ref=\{setFullscreenVideoElement\}/,
     );
+    expect(videoNodeSource).toMatch(
+      /const setFullscreenVideoElement[\s\S]*?if \(!video\) return;[\s\S]*?fullscreenVideoRef\.current = video;/,
+    );
     expect(videoNodeSource).toContain('const VIDEO_FRAME_MAX_DIMENSION = 1280;');
     expect(videoNodeSource).toMatch(
       /async function captureVideoFrame[\s\S]*?fitVideoFrameDimensions\(video, VIDEO_FRAME_MAX_DIMENSION\)/,
@@ -148,6 +151,9 @@ describe('media preview memory guards', () => {
     expect(composerCssSource.match(/@keyframes composerRootBloom\s*\{[\s\S]*?\n\}/)?.[0]).not.toContain('filter:');
     expect(nodesCssSource).toMatch(
       /\.fullscreen-overlay--image-preview \.fullscreen-video-view\s*\{[^}]*animation:\s*none/s,
+    );
+    expect(nodesCssSource).toMatch(
+      /\.fullscreen-video-view\s*\{(?=[^}]*width:\s*92vw)(?=[^}]*height:\s*92vh)(?=[^}]*object-fit:\s*contain)[^}]*\}/s,
     );
     expect(cameraStudioCssSource).toMatch(
       /\.fullscreen-overlay\.camera-studio-overlay\s*\{[^}]*backdrop-filter:\s*none/s,
