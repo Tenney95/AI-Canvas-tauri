@@ -17,6 +17,7 @@ use url::Url;
 
 mod agent_package;
 mod assistant_web;
+#[cfg_attr(not(windows), allow(dead_code, unused_imports))]
 mod blender_runtime;
 mod clipboard;
 mod comfyui;
