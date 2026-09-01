@@ -47,25 +47,28 @@ export async function readText(): Promise<string> {
 export async function copyImage(imageUrl: string): Promise<boolean> {
   if (!imageUrl) return false;
   try {
-    let blob: Blob;
-    if (imageUrl.startsWith('data:')) {
-      const resp = await fetch(imageUrl);
-      blob = await resp.blob();
-    } else if (isTauriEnv()) {
-      // Tauri: asset:// 或 http://，直接 fetch
-      const resp = await fetch(imageUrl);
-      blob = await resp.blob();
-    } else {
-      const resp = await fetch(imageUrl);
-      blob = await resp.blob();
-    }
     const mime = mimeFromUrl(imageUrl);
-    // 部分浏览器/WebView2 对 image/svg+xml 不支持 ClipboardItem，回退 png
-    const supportedMime = ClipboardItem.supports(mime) ? mime : 'image/png';
-    const item = new ClipboardItem({ [supportedMime]: blob });
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+      throw new Error('当前 WebView 不支持图片剪贴板');
+    }
+    if (typeof ClipboardItem.supports === 'function' && !ClipboardItem.supports(mime)) {
+      throw new Error(`当前 WebView 不支持复制 ${mime}`);
+    }
+
+    // WebKit 要求 write() 在用户手势内立即调用；图片读取作为 Promise 延后完成。
+    const blobPromise = fetch(imageUrl).then(async (response) => {
+      if (!response.ok) throw new Error(`图片读取失败 (${response.status})`);
+      const blob = await response.blob();
+      if (blob.type && blob.type !== 'application/octet-stream' && blob.type !== mime) {
+        throw new Error(`图片类型不匹配 (${blob.type})`);
+      }
+      return blob.type === mime ? blob : new Blob([blob], { type: mime });
+    });
+    const item = new ClipboardItem({ [mime]: blobPromise });
     await navigator.clipboard.write([item]);
     return true;
-  } catch {
+  } catch (error) {
+    console.error('[剪贴板] 复制图片失败:', error);
     return false;
   }
 }
