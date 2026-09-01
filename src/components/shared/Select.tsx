@@ -139,7 +139,12 @@ export default function Select<T extends string = string>({
   );
 
   const menu = open ? (
-    <div className="ui-menu" role="listbox" ref={menuRef}>
+    <div
+      className="ui-menu"
+      role="listbox"
+      ref={menuRef}
+      data-ui-select-portal={fixedMenu ? '' : undefined}
+    >
       {options.map((item, index) => {
         if (isOptionGroup(item)) {
           return (

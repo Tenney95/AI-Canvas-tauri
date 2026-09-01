@@ -213,7 +213,11 @@ export default function ProjectSettingsPopover({
     const handlePointerDown = (event: PointerEvent) => {
       if (nestedModalOpenRef.current) return;
       const target = event.target as Node;
-      if (panelRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
+      if (
+        panelRef.current?.contains(target)
+        || anchorRef.current?.contains(target)
+        || (event.target instanceof Element && event.target.closest('[data-ui-select-portal]'))
+      ) return;
       onClose();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
