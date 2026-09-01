@@ -264,6 +264,19 @@ function normalizePluginPath(path: string): string {
   return path.replace(/\\/g, '/');
 }
 
+/** 声明了 ui 的插件必须同时带上界面产物，否则 Rust 侧会以「缺少界面产物」拒绝暂存。 */
+async function resolveUiSource(
+  files: PluginUploadFile[],
+  prefix: string,
+  manifest: PluginManifest,
+): Promise<string | undefined> {
+  if (!manifest.ui) return undefined;
+  const target = `${prefix}${manifest.ui.entry}`;
+  const found = files.find(({ path }) => path === target);
+  if (!found) throw new Error(`插件声明了自定义界面，但同级目录缺少 ${manifest.ui.entry}`);
+  return found.file.text();
+}
+
 async function collectPathFiles(
   fs: PluginFsModule,
   targetPath: string,
@@ -421,11 +434,13 @@ export default function PluginSettings() {
       if (!entryFile) throw new Error(`manifest.json 同级目录缺少 ${manifest.entry}`);
       const action = plugins.some((installed) => installed.id === manifest.id) ? '更新' : '安装';
       const source = await entryFile.file.text();
+      const uiSource = await resolveUiSource(files, prefix, manifest);
       const sourceDigest = await reviewPluginInstall(manifest, source, action, '本地文件夹');
       if (!sourceDigest) return;
       await installPluginBundle(manifestText, source, {
         trustedPythonConfirmed: manifest.runtime === 'python',
         expectedSourceDigest: sourceDigest,
+        uiSource,
       });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
@@ -456,11 +471,21 @@ export default function PluginSettings() {
       if (!entry) throw new Error(`manifest.json 同级目录缺少 ${manifest.entry}`);
       const action = plugins.some((installed) => installed.id === manifest.id) ? '更新' : '安装';
       const source = new TextDecoder().decode(await fs.readFile(entry.raw));
+      const uiManifest = manifest.ui;
+      let uiSource: string | undefined;
+      if (uiManifest) {
+        const uiEntry = normalized.find(({ path }) => path === `${prefix}${uiManifest.entry}`);
+        if (!uiEntry) {
+          throw new Error(`插件声明了自定义界面，但同级目录缺少 ${uiManifest.entry}`);
+        }
+        uiSource = new TextDecoder().decode(await fs.readFile(uiEntry.raw));
+      }
       const sourceDigest = await reviewPluginInstall(manifest, source, action, '本地文件夹');
       if (!sourceDigest) return;
       await installPluginBundle(manifestText, source, {
         trustedPythonConfirmed: manifest.runtime === 'python',
         expectedSourceDigest: sourceDigest,
+        uiSource,
       });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '插件安装失败', 'error');

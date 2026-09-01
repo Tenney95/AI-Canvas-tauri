@@ -19,6 +19,8 @@ export interface PluginSlice {
     options?: {
       trustedPythonConfirmed?: boolean;
       expectedSourceDigest?: string;
+      /** 自定义界面产物源码；manifest 声明了 ui 时必填。 */
+      uiSource?: string;
     },
   ) => Promise<InstalledPlugin>;
   setPluginEnabled: (
@@ -59,11 +61,17 @@ function normalizeSourceDigest(value: unknown, label: string): string {
   return digest;
 }
 
+function normalizeUiIntegrity(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  return normalized.startsWith('sha256-') ? normalized.slice(7) : normalized;
+}
+
 async function stagePluginRevision(
   manifest: PluginManifest,
   source: string,
+  uiSource?: string,
 ): Promise<StagedPluginRevision> {
-  const raw = await invoke<unknown>('stage_plugin_revision', { manifest, source });
+  const raw = await invoke<unknown>('stage_plugin_revision', { manifest, source, uiSource });
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('原生插件注册未返回有效结果');
   }
@@ -133,18 +141,26 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
     options?: {
       trustedPythonConfirmed?: boolean;
       expectedSourceDigest?: string;
+      uiSource?: string;
     },
   ): Promise<InstalledPlugin> => {
     if (manifest.runtime === 'python' && options?.trustedPythonConfirmed !== true) {
       throw new Error('安装可信 Python 插件前必须确认其可访问本机资源');
     }
+    // 产物摘要由 Rust 侧逐字节核对，这里只保证声明了 ui 就一定带着产物。
+    if (manifest.ui && !options?.uiSource) {
+      throw new Error('插件声明了自定义界面，但缺少界面产物');
+    }
     const previous = get().installedPlugins.find((plugin) => plugin.id === manifest.id);
     let previousLeaseRevoked = false;
     try {
-      const staged = await stagePluginRevision(manifest, source);
+      const staged = await stagePluginRevision(manifest, source, options?.uiSource);
       const plugin = {
         ...createInstalledPlugin(manifest, source, previous),
         sourceDigest: staged.sourceDigest,
+        ...(manifest.ui
+          ? { uiDigest: normalizeUiIntegrity(manifest.ui.integrity) }
+          : {}),
       };
       if (options?.expectedSourceDigest !== undefined) {
         const expected = normalizeSourceDigest(options.expectedSourceDigest, '用户确认的插件源码摘要');

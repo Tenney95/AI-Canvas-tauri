@@ -35,13 +35,19 @@ const MAX_DECLARED_TOOL_IDS: usize = 96;
 const MAX_TOOL_ID_BYTES: usize = 64;
 const MAX_REGISTRY_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_PLUGIN_REGISTRATIONS: usize = 512;
-const SUPPORTED_PERMISSIONS: [&str; 6] = [
+/// 自定义界面产物上限。产物是打包后的 JS，通常比入口源码大，但不该无节制。
+const MAX_UI_SOURCE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_UI_ENTRY_BYTES: usize = 128;
+const MAX_UI_EXPORT_KEY_BYTES: usize = 64;
+const MAX_UI_EXPORTS: usize = 32;
+const SUPPORTED_PERMISSIONS: [&str; 7] = [
     "node.read",
     "node.write",
     "models.read",
     "models.invoke",
     "files.read",
     "files.write",
+    "ui.custom",
 ];
 
 static REGISTRY_LOCK: Mutex<()> = Mutex::new(());
@@ -57,6 +63,12 @@ struct PluginRevision {
     declared_tool_ids: Vec<String>,
     #[serde(default)]
     native_approved: bool,
+    /// 自定义界面产物的 SHA-256（manifest.ui.integrity 归一化后的 hex）；未声明 ui 时为 None。
+    #[serde(default)]
+    ui_digest: Option<String>,
+    /// 自定义界面产物在版本目录内的相对文件名。
+    #[serde(default)]
+    ui_entry: Option<String>,
     staged_at: u64,
 }
 
@@ -279,7 +291,117 @@ fn declared_tool_ids(contributes: &Map<String, Value>) -> Result<Vec<String>, St
     Ok(ids.into_iter().collect())
 }
 
-fn parse_revision(manifest: &Value, source: &str) -> Result<(String, PluginRevision), String> {
+/// 界面产物文件名只能是版本目录内的相对 .js 路径，杜绝 `..`、绝对路径与分隔符穿越。
+fn validate_ui_entry(entry: &str) -> Result<(), String> {
+    if entry.is_empty() || entry.len() > MAX_UI_ENTRY_BYTES {
+        return Err("ui.entry 长度无效".to_string());
+    }
+    if !entry.ends_with(".js") {
+        return Err("ui.entry 必须是 .js 文件".to_string());
+    }
+    if entry.starts_with('/') || entry.starts_with('\\') {
+        return Err("ui.entry 不能是绝对路径".to_string());
+    }
+    let mut segments = entry.split('/').peekable();
+    while let Some(segment) = segments.next() {
+        if segment.is_empty() && segments.peek().is_some() {
+            return Err("ui.entry 包含空路径段".to_string());
+        }
+        if segment == "." || segment == ".." {
+            return Err("ui.entry 不能包含 . 或 .. 路径段".to_string());
+        }
+        if !segment
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
+        {
+            return Err("ui.entry 包含非法字符".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_ui_export_key(key: &str) -> Result<(), String> {
+    if key.is_empty() || key.len() > MAX_UI_EXPORT_KEY_BYTES {
+        return Err("ui.exports 的键长度无效".to_string());
+    }
+    let mut characters = key.chars();
+    let first = characters
+        .next()
+        .ok_or_else(|| "ui.exports 的键不能为空".to_string())?;
+    if !first.is_ascii_alphabetic() {
+        return Err("ui.exports 的键必须以字母开头".to_string());
+    }
+    if !characters.all(|character| character.is_ascii_alphanumeric() || character == '_') {
+        return Err("ui.exports 的键只能包含字母、数字和下划线".to_string());
+    }
+    Ok(())
+}
+
+fn normalize_ui_integrity(value: &str) -> Option<String> {
+    let trimmed = value.trim().to_ascii_lowercase();
+    let hex = trimmed.strip_prefix("sha256-").unwrap_or(&trimmed);
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(hex.to_string())
+}
+
+/// 解析 manifest.ui，并当场核对产物摘要。
+///
+/// 界面代码虽然跑在独立 webview 进程里，却仍属于本应用，因此这里比入口源码更严格：
+/// 必须显式声明 ui.custom，且产物必须与 integrity 逐字节一致。
+fn parse_ui_declaration(
+    root: &Map<String, Value>,
+    permissions: &[String],
+    api_version: u64,
+    ui_source: Option<&str>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let Some(ui) = root.get("ui") else {
+        if ui_source.is_some() {
+            return Err("插件未提供 manifest.ui 却上传了界面产物".to_string());
+        }
+        return Ok((None, None));
+    };
+    if api_version == 1 {
+        return Err("自定义界面需要 apiVersion: 2 或 3".to_string());
+    }
+    if !permissions.iter().any(|item| item == "ui.custom") {
+        return Err("声明 manifest.ui 的插件必须声明 ui.custom 权限".to_string());
+    }
+    let ui_object = object(ui, "ui")?;
+    let entry = required_string(ui_object, "entry", "ui.entry", MAX_UI_ENTRY_BYTES)?;
+    validate_ui_entry(&entry)?;
+    let declared = required_string(ui_object, "integrity", "ui.integrity", 128)?;
+    let expected = normalize_ui_integrity(&declared)
+        .ok_or_else(|| "ui.integrity 必须是 sha256 摘要".to_string())?;
+    let exports = object(
+        ui_object
+            .get("exports")
+            .ok_or_else(|| "插件缺少 ui.exports".to_string())?,
+        "ui.exports",
+    )?;
+    if exports.is_empty() || exports.len() > MAX_UI_EXPORTS {
+        return Err(format!("ui.exports 需要 1-{MAX_UI_EXPORTS} 项"));
+    }
+    for key in exports.keys() {
+        validate_ui_export_key(key)?;
+    }
+    let source = ui_source.ok_or_else(|| "插件声明了 manifest.ui 但缺少界面产物".to_string())?;
+    if source.is_empty() || source.len() > MAX_UI_SOURCE_BYTES {
+        return Err("插件界面产物为空或超过 2 MiB 上限".to_string());
+    }
+    let actual = format!("{:x}", Sha256::digest(source.as_bytes()));
+    if actual != expected {
+        return Err("插件界面产物与 ui.integrity 不一致".to_string());
+    }
+    Ok((Some(expected), Some(entry)))
+}
+
+fn parse_revision(
+    manifest: &Value,
+    source: &str,
+    ui_source: Option<&str>,
+) -> Result<(String, PluginRevision), String> {
     let manifest_size = serde_json::to_vec(manifest)
         .map_err(|_| "插件 Manifest 无法序列化".to_string())?
         .len();
@@ -340,6 +462,7 @@ fn parse_revision(manifest: &Value, source: &str) -> Result<(String, PluginRevis
         "contributes",
     )?;
     let declared_tool_ids = declared_tool_ids(contributes)?;
+    let (ui_digest, ui_entry) = parse_ui_declaration(root, &permissions, api_version, ui_source)?;
     Ok((
         plugin_id,
         PluginRevision {
@@ -350,6 +473,8 @@ fn parse_revision(manifest: &Value, source: &str) -> Result<(String, PluginRevis
             permissions,
             declared_tool_ids,
             native_approved: false,
+            ui_digest,
+            ui_entry,
             staged_at: unix_now_millis(),
         },
     ))
@@ -360,49 +485,82 @@ fn build_python_approval_prompt(
     plugin_id: &str,
     revision: &PluginRevision,
 ) -> NativeApprovalPrompt {
+    let has_ui = revision.permissions.iter().any(|item| item == "ui.custom");
+    let is_python = revision.runtime == "python";
+    let kind = match (is_python, has_ui) {
+        (true, true) => "可信 Python + 自定义界面插件",
+        (true, false) => "可信 Python 插件",
+        (false, true) => "带自定义界面的插件",
+        (false, false) => "插件",
+    };
     let (title, action_text, approve_label, final_action) = match action {
         NativeApprovalAction::Stage => (
-            "高风险：安装可信 Python 插件",
-            "即将安装可信 Python 插件",
-            "继续安装",
-            "继续安装",
+            format!("高风险：安装{kind}"),
+            format!("即将安装{kind}"),
+            "继续安装".to_string(),
+            "继续安装".to_string(),
         ),
         NativeApprovalAction::EnableOrSwitch => (
-            "高风险：授权 Python 插件版本",
-            "即将授权并启用或切换可信 Python 插件版本",
-            "授权并继续",
-            "授权并启用或切换此 Python 版本",
+            format!("高风险：授权{kind}版本"),
+            format!("即将授权并启用或切换{kind}版本"),
+            "授权并继续".to_string(),
+            if is_python && !has_ui {
+                "授权并启用或切换此 Python 版本".to_string()
+            } else {
+                "授权并启用或切换此版本".to_string()
+            },
         ),
     };
     let permissions = if revision.permissions.is_empty() {
-        "无（但 Python 代码仍拥有当前用户的完整系统权限）".to_string()
+        "无".to_string()
     } else {
         revision.permissions.join("、")
     };
+    let python_risk = if is_python {
+        "\n\n该 Python 代码将以当前登录用户的完整系统权限运行，可以读取或修改本机文件、访问网络、读取环境变量并启动其他程序。"
+    } else {
+        ""
+    };
+    let ui_digest = revision
+        .ui_digest
+        .clone()
+        .unwrap_or_else(|| "缺失".to_string());
+    let ui_risk = if has_ui {
+        format!(
+            "\n\n该插件带有自定义界面代码（界面产物 SHA-256：{ui_digest}），会在应用打开的独立窗口中运行。\
+它虽然与宿主界面进程隔离，仍可在该窗口内发起网络请求，并看到你授权给它的数据。"
+        )
+    } else {
+        String::new()
+    };
     NativeApprovalPrompt {
-        title: title.to_string(),
+        title,
         message: format!(
             "{action_text}。\n\n\
 插件 ID：{plugin_id}\n\
 版本：{}\n\
 运行时：{}\n\
 代码 SHA-256：{}\n\
-声明的宿主权限：{permissions}\n\n\
-该 Python 代码将以当前登录用户的完整系统权限运行，可以读取或修改本机文件、访问网络、读取环境变量并启动其他程序。\n\n\
+声明的宿主权限：{permissions}{python_risk}{ui_risk}\n\n\
 只有在你已经审阅并信任上述完整 64 位 SHA-256 对应的源码时，才{final_action}。",
             revision.version, revision.runtime, revision.source_digest
         ),
-        approve_label: approve_label.to_string(),
+        approve_label,
         cancel_label: "取消".to_string(),
     }
 }
 
+/// 需要原生确认的高风险特征：可信 Python（本机权限）或自定义界面（在应用内运行界面代码）。
+fn revision_requests_native_approval(revision: &PluginRevision) -> bool {
+    revision.runtime == "python"
+        || revision.permissions.iter().any(|item| item == "ui.custom")
+}
+
 fn native_stage_decision(revision: &PluginRevision, approval: Option<bool>) -> bool {
-    match revision.runtime.as_str() {
-        "javascript" => true,
-        "python" => approval == Some(true),
-        _ => false,
+    if revision_requests_native_approval(revision) {
+        return approval == Some(true);
     }
+    revision.runtime == "javascript"
 }
 
 async fn request_python_revision_approval(
@@ -411,8 +569,8 @@ async fn request_python_revision_approval(
     plugin_id: &str,
     revision: &PluginRevision,
 ) -> Result<bool, String> {
-    if revision.runtime != "python" {
-        return Err("原生高风险确认仅适用于 Python 插件".to_string());
+    if !revision_requests_native_approval(revision) {
+        return Err("该插件不需要原生高风险确认".to_string());
     }
     let prompt = build_python_approval_prompt(action, plugin_id, revision);
     let dialog_app = app.clone();
@@ -763,6 +921,107 @@ fn write_source_snapshot_at(
     Ok(true)
 }
 
+/// UI 产物按摘要内容寻址，与入口源码目录彻底分离。
+/// 这样「仅更新 UI、主源码不变」时不会覆盖活动版本的 UI 文件，也不会让
+/// active/previous/staged 因共享 source_digest 而产生回滚歧义。
+fn ui_directory(private_dir: &Path, plugin_id: &str) -> PathBuf {
+    private_dir.join("ui-revisions").join(plugin_id)
+}
+
+fn ui_snapshot_path(
+    private_dir: &Path,
+    plugin_id: &str,
+    revision: &PluginRevision,
+) -> Option<PathBuf> {
+    let digest = revision.ui_digest.as_deref()?;
+    Some(ui_directory(private_dir, plugin_id).join(format!("{digest}.js")))
+}
+
+fn write_ui_snapshot_at(
+    private_dir: &Path,
+    plugin_id: &str,
+    revision: &PluginRevision,
+    ui_source: &str,
+) -> Result<(), String> {
+    let Some(digest) = revision.ui_digest.as_deref() else {
+        return Ok(());
+    };
+    let directory = ui_directory(private_dir, plugin_id);
+    ensure_private_directory(&directory)?;
+    let target = directory.join(format!("{digest}.js"));
+    if target.exists() {
+        // 内容寻址：同一摘要的字节必然一致，直接复用，绝不覆盖其它版本。
+        return Ok(());
+    }
+    let temporary = directory.join(format!("{digest}.js.tmp"));
+    let _ = fs::remove_file(&temporary);
+    fs::write(&temporary, ui_source.as_bytes()).map_err(|_| "无法写入插件界面产物".to_string())?;
+    fs::rename(&temporary, &target).map_err(|_| "无法提交插件界面产物".to_string())?;
+    Ok(())
+}
+
+/// 读取界面产物时重新核对摘要：磁盘上的文件可能被用户或其他程序改动过。
+fn read_verified_ui_source_at(
+    private_dir: &Path,
+    plugin_id: &str,
+    revision: &PluginRevision,
+) -> Result<Option<String>, String> {
+    let Some(expected) = revision.ui_digest.as_deref() else {
+        return Ok(None);
+    };
+    let Some(path) = ui_snapshot_path(private_dir, plugin_id, revision) else {
+        return Ok(None);
+    };
+    let metadata = fs::symlink_metadata(&path).map_err(|_| "插件界面产物不存在".to_string())?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() as usize > MAX_UI_SOURCE_BYTES
+    {
+        return Err("插件界面产物不安全或超过大小限制".to_string());
+    }
+    let bytes = fs::read(&path).map_err(|_| "无法读取插件界面产物".to_string())?;
+    let actual = format!("{:x}", Sha256::digest(&bytes));
+    if actual != expected {
+        return Err("插件界面产物摘要不匹配".to_string());
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "插件界面产物不是 UTF-8".to_string())
+}
+
+/// 供 plugin-ui 协议使用：取出已启用插件当前版本的界面产物。
+///
+/// 校验链与执行入口源码一致——必须已启用、活动版本的 ui_digest 与请求一致、
+/// 确实声明了 ui.custom，且磁盘字节摘要逐字匹配。
+pub(crate) fn read_active_ui_source(
+    private_dir: &Path,
+    plugin_id: &str,
+    ui_digest: &str,
+) -> Result<String, String> {
+    validate_plugin_id(plugin_id)?;
+    validate_source_digest(ui_digest)?;
+    let registry = read_registry_at(private_dir)?;
+    let record = registry
+        .plugins
+        .get(plugin_id)
+        .ok_or_else(|| "插件未安装".to_string())?;
+    if !record.enabled {
+        return Err("插件已停用".to_string());
+    }
+    let active = record
+        .active
+        .as_ref()
+        .ok_or_else(|| "插件没有已激活版本".to_string())?;
+    if active.ui_digest.as_deref() != Some(ui_digest) {
+        return Err("插件界面摘要与活动版本不一致".to_string());
+    }
+    if !active.permissions.iter().any(|item| item == "ui.custom") {
+        return Err("插件未声明 ui.custom 权限".to_string());
+    }
+    read_verified_ui_source_at(private_dir, plugin_id, active)?
+        .ok_or_else(|| "插件界面产物缺失".to_string())
+}
+
 fn remove_revision_snapshot(private_dir: &Path, plugin_id: &str, revision: &PluginRevision) {
     let directory = revision_directory(private_dir, plugin_id, &revision.source_digest);
     let _ = fs::remove_dir_all(directory);
@@ -817,6 +1076,8 @@ fn revision_security_manifest_matches(left: &PluginRevision, right: &PluginRevis
         && left.entry == right.entry
         && left.permissions == right.permissions
         && left.declared_tool_ids == right.declared_tool_ids
+        && left.ui_digest == right.ui_digest
+        && left.ui_entry == right.ui_entry
 }
 
 fn activation_candidate<'a>(
@@ -855,7 +1116,7 @@ fn activation_requires_native_approval(
     candidate: &PluginRevision,
     enabled: bool,
 ) -> bool {
-    if !enabled || candidate.runtime != "python" {
+    if !enabled || !revision_requests_native_approval(candidate) {
         return false;
     }
     match slot {
@@ -874,7 +1135,7 @@ fn set_enabled_requires_native_approval(record: &PluginRegistration, enabled: bo
         && record
             .active
             .as_ref()
-            .is_some_and(|revision| revision.runtime == "python")
+            .is_some_and(revision_requests_native_approval)
 }
 
 fn activation_approval_snapshot_matches(
@@ -968,8 +1229,8 @@ fn cancel_committed_plugin_invocations(plugin_id: &str) {
 }
 
 fn ensure_native_execution_approved(revision: &PluginRevision) -> Result<(), String> {
-    if revision.runtime == "python" && !revision.native_approved {
-        return Err("Python 插件尚未完成原生高风险授权，请停用后重新启用".to_string());
+    if revision_requests_native_approval(revision) && !revision.native_approved {
+        return Err("插件尚未完成原生高风险授权，请停用后重新启用".to_string());
     }
     Ok(())
 }
@@ -1010,8 +1271,8 @@ fn commit_activation_at(
         let candidate = revision_in_slot_mut(record, slot)
             .filter(|revision| revision.source_digest == source_digest)
             .ok_or_else(|| "插件候选版本已变化，请重新操作".to_string())?;
-        if candidate.runtime != "python" {
-            return Err("原生高风险授权不能应用到非 Python 插件".to_string());
+        if !revision_requests_native_approval(candidate) {
+            return Err("该插件不需要原生高风险授权".to_string());
         }
         candidate.native_approved = true;
     }
@@ -1059,8 +1320,8 @@ fn commit_enabled_at(
             .active
             .as_mut()
             .ok_or_else(|| "插件没有可授权的活动版本".to_string())?;
-        if active.runtime != "python" {
-            return Err("原生高风险授权不能应用到非 Python 插件".to_string());
+        if !revision_requests_native_approval(active) {
+            return Err("该插件不需要原生高风险授权".to_string());
         }
         active.native_approved = true;
     }
@@ -1078,6 +1339,7 @@ fn stage_revision_at(
     plugin_id: String,
     revision: PluginRevision,
     source: &str,
+    ui_source: Option<&str>,
 ) -> Result<StagedPluginRevision, String> {
     ensure_native_execution_approved(&revision)?;
     let mut registry = read_registry_at(private_dir)?;
@@ -1103,6 +1365,15 @@ fn stage_revision_at(
     }
 
     let created_snapshot = write_source_snapshot_at(private_dir, &plugin_id, &revision, source)?;
+    // 界面产物与入口源码同属一个版本目录；写失败时把刚建的快照整体回收，避免留下半截版本。
+    if let Some(ui) = ui_source {
+        if let Err(error) = write_ui_snapshot_at(private_dir, &plugin_id, &revision, ui) {
+            if created_snapshot {
+                remove_revision_snapshot(private_dir, &plugin_id, &revision);
+            }
+            return Err(error);
+        }
+    }
     let replaced_staged = record.staged.replace(revision.clone());
     record.updated_at = now;
     if let Err(error) = write_registry_at(private_dir, &registry) {
@@ -1145,10 +1416,11 @@ pub async fn stage_plugin_revision(
     webview: Webview,
     manifest: Value,
     source: String,
+    ui_source: Option<String>,
 ) -> Result<StagedPluginRevision, String> {
     ensure_trusted_caller(&webview)?;
-    let (plugin_id, mut revision) = parse_revision(&manifest, &source)?;
-    let native_approval = if revision.runtime == "python" {
+    let (plugin_id, mut revision) = parse_revision(&manifest, &source, ui_source.as_deref())?;
+    let native_approval = if revision_requests_native_approval(&revision) {
         Some(
             request_python_revision_approval(
                 &app,
@@ -1169,7 +1441,7 @@ pub async fn stage_plugin_revision(
     let _guard = REGISTRY_LOCK
         .lock()
         .map_err(|_| "插件信任注册表锁异常".to_string())?;
-    stage_revision_at(&private_dir, plugin_id, revision, &source)
+    stage_revision_at(&private_dir, plugin_id, revision, &source, ui_source.as_deref())
 }
 
 #[tauri::command]
@@ -1358,8 +1630,10 @@ pub async fn remove_plugin_registration(
         }
         cancel_committed_plugin_invocations(&plugin_id);
         // 快照删除也受注册表锁保护，避免卸载与同 ID 的重新安装互相穿插。
-        let directory = private_dir.join(REVISIONS_DIR_NAME).join(record.plugin_id);
+        let directory = private_dir.join(REVISIONS_DIR_NAME).join(&record.plugin_id);
         let _ = fs::remove_dir_all(directory);
+        let ui_directory = private_dir.join("ui-revisions").join(&record.plugin_id);
+        let _ = fs::remove_dir_all(ui_directory);
     }
     Ok(true)
 }
@@ -1455,7 +1729,7 @@ mod tests {
     #[test]
     fn parses_manifest_and_hashes_exact_utf8_source() {
         let source = "definePlugin({ tools: {} });\n";
-        let (plugin_id, revision) = parse_revision(&manifest("javascript"), source).unwrap();
+        let (plugin_id, revision) = parse_revision(&manifest("javascript"), source, None).unwrap();
         assert_eq!(plugin_id, "example.plugin");
         assert_eq!(revision.source_digest, source_digest(source));
         assert!(is_valid_digest(&revision.source_digest));
@@ -1466,7 +1740,7 @@ mod tests {
     #[test]
     fn native_prompt_binds_exact_python_revision_and_action() {
         let (plugin_id, revision) =
-            parse_revision(&manifest("python"), "define_plugin({'tools': {}})").unwrap();
+            parse_revision(&manifest("python"), "define_plugin({'tools': {}})", None).unwrap();
         let stage =
             build_python_approval_prompt(NativeApprovalAction::Stage, &plugin_id, &revision);
         assert_eq!(stage.title, "高风险：安装可信 Python 插件");
@@ -1490,7 +1764,7 @@ mod tests {
             &plugin_id,
             &revision,
         );
-        assert_eq!(enable.title, "高风险：授权 Python 插件版本");
+        assert_eq!(enable.title, "高风险：授权可信 Python 插件版本");
         assert_eq!(enable.approve_label, "授权并继续");
         assert!(enable.message.contains("启用或切换可信 Python 插件版本"));
         assert!(enable
@@ -1500,8 +1774,8 @@ mod tests {
 
     #[test]
     fn native_stage_gate_requires_positive_python_approval_only() {
-        let (_, javascript) = parse_revision(&manifest("javascript"), "source").unwrap();
-        let (_, python) = parse_revision(&manifest("python"), "source").unwrap();
+        let (_, javascript) = parse_revision(&manifest("javascript"), "source", None).unwrap();
+        let (_, python) = parse_revision(&manifest("python"), "source", None).unwrap();
         assert!(native_stage_decision(&javascript, None));
         assert!(native_stage_decision(&javascript, Some(false)));
         assert!(!native_stage_decision(&python, None));
@@ -1511,9 +1785,9 @@ mod tests {
 
     #[test]
     fn native_enable_gate_covers_reenable_and_previous_but_not_approved_staged() {
-        let (_, mut active) = parse_revision(&manifest("python"), "active").unwrap();
-        let (_, mut previous) = parse_revision(&manifest("python"), "previous").unwrap();
-        let (_, mut staged) = parse_revision(&manifest("python"), "staged").unwrap();
+        let (_, mut active) = parse_revision(&manifest("python"), "active", None).unwrap();
+        let (_, mut previous) = parse_revision(&manifest("python"), "previous", None).unwrap();
+        let (_, mut staged) = parse_revision(&manifest("python"), "staged", None).unwrap();
         active.native_approved = true;
         previous.native_approved = true;
         staged.native_approved = true;
@@ -1576,9 +1850,9 @@ mod tests {
 
     #[test]
     fn native_approval_snapshot_rejects_role_digest_or_status_changes() {
-        let (_, mut active) = parse_revision(&manifest("python"), "active").unwrap();
-        let (_, mut previous) = parse_revision(&manifest("python"), "previous").unwrap();
-        let (_, mut staged) = parse_revision(&manifest("python"), "staged").unwrap();
+        let (_, mut active) = parse_revision(&manifest("python"), "active", None).unwrap();
+        let (_, mut previous) = parse_revision(&manifest("python"), "previous", None).unwrap();
+        let (_, mut staged) = parse_revision(&manifest("python"), "staged", None).unwrap();
         active.native_approved = true;
         previous.native_approved = true;
         staged.native_approved = true;
@@ -1646,7 +1920,7 @@ mod tests {
 
     #[test]
     fn restaged_same_digest_preserves_native_approval() {
-        let (_, mut active) = parse_revision(&manifest("python"), "same source").unwrap();
+        let (_, mut active) = parse_revision(&manifest("python"), "same source", None).unwrap();
         let mut staged = active.clone();
         staged.native_approved = true;
         staged.staged_at = staged.staged_at.saturating_add(1);
@@ -1671,8 +1945,8 @@ mod tests {
 
     #[test]
     fn switching_to_current_active_discards_different_staged_revision() {
-        let (_, active) = parse_revision(&manifest("javascript"), "active-a").unwrap();
-        let (_, staged) = parse_revision(&manifest("javascript"), "staged-b").unwrap();
+        let (_, active) = parse_revision(&manifest("javascript"), "active-a", None).unwrap();
+        let (_, staged) = parse_revision(&manifest("javascript"), "staged-b", None).unwrap();
         let mut record = PluginRegistration {
             plugin_id: "example.plugin".to_string(),
             enabled: true,
@@ -1694,7 +1968,7 @@ mod tests {
     fn same_digest_native_reapproval_upgrades_legacy_revision_without_manifest_conflict() {
         let directory = temporary_directory("native-reapproval");
         let source = "define_plugin({'tools': {'upper': lambda value: value}})";
-        let (_, legacy) = parse_revision(&manifest("python"), source).unwrap();
+        let (_, legacy) = parse_revision(&manifest("python"), source, None).unwrap();
         write_source_snapshot_at(&directory, "example.plugin", &legacy, source).unwrap();
         let mut registry = PluginRegistry::default();
         registry.plugins.insert(
@@ -1719,6 +1993,7 @@ mod tests {
             "example.plugin".to_string(),
             approved.clone(),
             source,
+            None,
         )
         .unwrap();
 
@@ -1733,9 +2008,9 @@ mod tests {
     fn rejects_runtime_entry_mismatch_and_excessive_source() {
         let mut value = manifest("javascript");
         value["entry"] = json!("main.py");
-        assert!(parse_revision(&value, "print('x')").is_err());
+        assert!(parse_revision(&value, "print('x')", None).is_err());
         assert!(
-            parse_revision(&manifest("javascript"), &"x".repeat(MAX_SOURCE_BYTES + 1)).is_err()
+            parse_revision(&manifest("javascript"), &"x".repeat(MAX_SOURCE_BYTES + 1), None).is_err()
         );
     }
 
@@ -1787,12 +2062,13 @@ mod tests {
 
         let mut overflow_manifest = manifest("javascript");
         overflow_manifest["id"] = json!("overflow.plugin");
-        let (plugin_id, revision) = parse_revision(&overflow_manifest, "overflow source").unwrap();
+        let (plugin_id, revision) = parse_revision(&overflow_manifest, "overflow source", None).unwrap();
         assert!(stage_revision_at(
             &directory,
             plugin_id.clone(),
             revision.clone(),
-            "overflow source"
+            "overflow source",
+            None
         )
         .is_err());
 
@@ -1832,6 +2108,8 @@ mod tests {
             permissions: vec!["node.read".to_string(), "node.write".to_string()],
             declared_tool_ids,
             native_approved: false,
+            ui_digest: None,
+            ui_entry: None,
             staged_at: 1,
         };
         let mut oversized = PluginRegistry::default();
@@ -1940,7 +2218,7 @@ mod tests {
     fn source_snapshot_detects_tampering() {
         let directory = temporary_directory("tamper");
         let source = "definePlugin({ tools: {} });";
-        let (_, revision) = parse_revision(&manifest("javascript"), source).unwrap();
+        let (_, revision) = parse_revision(&manifest("javascript"), source, None).unwrap();
         write_source_snapshot_at(&directory, "example.plugin", &revision, source).unwrap();
         assert_eq!(
             read_verified_source_at(&directory, "example.plugin", &revision).unwrap(),
@@ -1957,9 +2235,9 @@ mod tests {
 
     #[test]
     fn activation_keeps_current_previous_and_supports_rollback() {
-        let (_, first) = parse_revision(&manifest("javascript"), "first").unwrap();
-        let (_, old_previous) = parse_revision(&manifest("javascript"), "old").unwrap();
-        let (_, next) = parse_revision(&manifest("javascript"), "next").unwrap();
+        let (_, first) = parse_revision(&manifest("javascript"), "first", None).unwrap();
+        let (_, old_previous) = parse_revision(&manifest("javascript"), "old", None).unwrap();
+        let (_, next) = parse_revision(&manifest("javascript"), "next", None).unwrap();
         let mut record = PluginRegistration {
             plugin_id: "example.plugin".to_string(),
             enabled: true,

@@ -2,6 +2,7 @@ import { Icon } from '@iconify/react';
 import { useMemo, useState, type FormEvent } from 'react';
 import type { AvailableNodePluginTool, PluginJsonValue } from '../../../../types/plugin';
 import { executeNodePluginTool } from '../../../../services/plugins/pluginRuntime';
+import { openPluginUiSurface } from '../../../../services/plugins/pluginUiBridge';
 import {
   buildPluginModelCatalog,
   collectDeclaredModelCategories,
@@ -53,40 +54,63 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
     if (!busy) onClose();
   };
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const collectParameters = (strict: boolean): Record<string, PluginJsonValue> | null => {
     const parameters: Record<string, PluginJsonValue> = {};
     for (const field of dialog.fields) {
       const value = values[field.id];
       if (field.type === 'boolean') {
-        if (field.required && value !== true) {
+        if (strict && field.required && value !== true) {
           setError(`请勾选“${field.label}”`);
-          return;
+          return null;
         }
         parameters[field.id] = value === true;
         continue;
       }
       const textValue = typeof value === 'string' ? value : '';
-      if (field.required && !textValue.trim()) {
+      if (strict && field.required && !textValue.trim()) {
         setError(`请填写“${field.label}”`);
-        return;
+        return null;
       }
       if (!textValue && !field.required) continue;
       if (field.type === 'number') {
         const numberValue = Number(textValue);
         if (!Number.isFinite(numberValue)) {
           setError(`“${field.label}”必须是有效数字`);
-          return;
+          return null;
         }
         parameters[field.id] = numberValue;
       } else {
         parameters[field.id] = textValue;
       }
     }
+    return parameters;
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    // L1 富 UI 下字段只充当初始值契约，必填校验交给插件组件自己处理。
+    const parameters = collectParameters(!dialog.ui);
+    if (!parameters) return;
 
     setError(null);
     setBusy(true);
     try {
+      if (dialog.ui) {
+        const plugin = useAppStore
+          .getState()
+          .installedPlugins.find((item) => item.id === pluginTool.pluginId);
+        if (!plugin) throw new Error('找不到已安装的插件');
+        await openPluginUiSurface({
+          plugin,
+          tool: pluginTool.tool,
+          nodeId,
+          surface: 'tool-dialog',
+          exportName: dialog.ui,
+          parameters,
+        });
+        onClose();
+        return;
+      }
       await executeNodePluginTool(pluginTool, nodeId, parameters);
       onClose();
     } catch (executionError) {

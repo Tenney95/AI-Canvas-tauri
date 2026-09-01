@@ -22,7 +22,16 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    // 插件自定义界面是第二个入口：它跑在独立的 Tauri webview 进程里。
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        pluginUiHost: "plugin-ui-host.html",
+      },
+    },
+  },
   optimizeDeps: {
-    entries: ["index.html"],
+    entries: ["index.html", "plugin-ui-host.html"],
   },
 });

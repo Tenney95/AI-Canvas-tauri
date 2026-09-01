@@ -14,6 +14,7 @@ import type {
   PluginRuntime,
   PluginNodeToolDialogFieldType,
   PluginToolDialogManifest,
+  PluginUIManifest,
 } from '../../types/plugin';
 
 const PLUGIN_ID_RE = /^[a-z0-9](?:[a-z0-9._-]{1,126}[a-z0-9])?$/;
@@ -27,6 +28,11 @@ const MAX_NODES = 32;
 const MAX_FIELDS = 64;
 const MAX_DIALOG_FIELDS = 16;
 const MAX_DIALOG_OPTIONS = 32;
+const MAX_UI_EXPORTS = 32;
+/** 自定义界面产物：只允许插件目录内的相对 .js 路径。 */
+const UI_ENTRY_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,126}\.js$/;
+const UI_INTEGRITY_RE = /^(sha256-)?[0-9a-f]{64}$/;
+const UI_EXPORT_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const MAX_NODE_PORTS = 16;
 
 export function normalizeGithubRepository(value: string): string {
@@ -90,6 +96,7 @@ const PERMISSIONS = new Set<PluginPermission>([
   'models.invoke',
   'files.read',
   'files.write',
+  'ui.custom',
 ]);
 const OUTPUT_MODES = new Set<PluginNodeOutputMode>(['update-current', 'create-node']);
 const CATEGORIES = new Set<PluginCategory>(['content', 'media', 'workflow', 'utility']);
@@ -153,6 +160,33 @@ function stringArray(value: unknown, label: string, maxItems: number): string[] 
 function optionalString(value: unknown, label: string, maxLength: number): string | undefined {
   if (value === undefined) return undefined;
   return nonEmptyString(value, label, maxLength);
+}
+
+function parsePluginUI(value: unknown): PluginUIManifest | undefined {
+  if (value === undefined) return undefined;
+  const ui = objectValue(value, 'ui');
+  const entry = nonEmptyString(ui.entry, 'ui.entry', 128);
+  if (!UI_ENTRY_RE.test(entry)) {
+    throw new Error('ui.entry 必须是插件目录内的相对 .js 路径');
+  }
+  if (entry.split('/').includes('..')) {
+    throw new Error('ui.entry 不能包含 .. 路径段');
+  }
+  const integrity = nonEmptyString(ui.integrity, 'ui.integrity', 128).toLowerCase();
+  if (!UI_INTEGRITY_RE.test(integrity)) {
+    throw new Error('ui.integrity 必须是 sha256 摘要（sha256-<hex> 或 64 位十六进制）');
+  }
+  const exportsRaw = objectValue(ui.exports, 'ui.exports');
+  const keys = Object.keys(exportsRaw);
+  if (keys.length === 0) throw new Error('ui.exports 至少要声明一个组件');
+  if (keys.length > MAX_UI_EXPORTS) throw new Error(`ui.exports 不能超过 ${MAX_UI_EXPORTS} 项`);
+  const exports: Record<string, string> = {};
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(exportsRaw, key)) continue;
+    if (!UI_EXPORT_KEY_RE.test(key)) throw new Error(`ui.exports 的键无效: ${key}`);
+    exports[key] = nonEmptyString(exportsRaw[key], `ui.exports.${key}`, 128);
+  }
+  return { entry, integrity, exports };
 }
 
 function parseToolDialog(value: unknown, toolId: string): PluginToolDialogManifest {
@@ -240,6 +274,7 @@ function parseToolDialog(value: unknown, toolId: string): PluginToolDialogManife
     description: optionalString(dialog.description, `${toolId}.dialog.description`, 240),
     submitLabel: optionalString(dialog.submitLabel, `${toolId}.dialog.submitLabel`, 40),
     fields,
+    ui: optionalString(dialog.ui, `${toolId}.dialog.ui`, 64),
   };
 }
 
@@ -374,6 +409,7 @@ function parseCustomNodes(value: unknown): PluginCustomNodeManifest[] {
       inputs: parsePorts(node.inputs, 'inputs'),
       outputs: parsePorts(node.outputs, 'outputs'),
       fields,
+      ui: optionalString(node.ui, `${id}.ui`, 64),
     };
   });
 }
@@ -500,6 +536,33 @@ function parseManifest(value: unknown): PluginManifest {
     throw new Error('使用文件字段的自定义节点必须声明 files.read');
   }
 
+  // 自定义界面在独立 webview 进程里运行，权限与产物声明必须成对出现。
+  const ui = parsePluginUI(root.ui);
+  const uiReferences = new Set<string>();
+  for (const tool of nodeTools) {
+    if (tool.dialog?.ui) uiReferences.add(tool.dialog.ui);
+  }
+  for (const node of customNodes) {
+    if (node.ui) uiReferences.add(node.ui);
+  }
+  if (uiReferences.size > 0) {
+    if (!ui) throw new Error('使用自定义界面时必须声明 manifest.ui');
+    if (!permissions.includes('ui.custom')) {
+      throw new Error('使用自定义界面的插件必须声明 ui.custom 权限');
+    }
+    for (const key of uiReferences) {
+      if (!Object.prototype.hasOwnProperty.call(ui.exports, key)) {
+        throw new Error(`自定义界面引用了 ui.exports 中未声明的组件: ${key}`);
+      }
+    }
+  }
+  if (ui && !permissions.includes('ui.custom')) {
+    throw new Error('声明 manifest.ui 的插件必须同时声明 ui.custom 权限');
+  }
+  if (permissions.includes('ui.custom') && root.apiVersion === 1) {
+    throw new Error('自定义界面需要 apiVersion: 2 或 3');
+  }
+
   const category = nonEmptyString(root.category, '插件分类', 32) as PluginCategory;
   if (!CATEGORIES.has(category)) throw new Error('插件分类不受支持');
   const keywords = root.keywords === undefined ? undefined : stringArray(root.keywords, 'keywords', 12);
@@ -522,6 +585,7 @@ function parseManifest(value: unknown): PluginManifest {
     keywords,
     entry: entry as PluginManifest['entry'],
     permissions: [...new Set(permissions)] as PluginPermission[],
+    ui,
     contributes: { nodeTools, nodes: customNodes },
   };
 }

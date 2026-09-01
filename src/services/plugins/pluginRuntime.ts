@@ -17,6 +17,7 @@ import type {
   PluginNodePortType,
   PluginPermission,
   PluginPlacement,
+  PluginRuntime,
   PythonPluginRuntimeStatus,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
@@ -977,4 +978,38 @@ export async function executeNodePluginTool(
 
 export async function getPythonPluginRuntimeStatus(): Promise<PythonPluginRuntimeStatus> {
   return invoke<PythonPluginRuntimeStatus>('get_python_plugin_runtime_status');
+}
+
+/**
+ * 供插件自定义界面使用：先按宿主规则校验 effect，再执行。
+ *
+ * 界面组件跑在独立 webview 进程里，传来的 effect 是未经信任的 JSON，所以必须走与
+ * 插件返回值完全相同的 parseHostEffect 校验；权限检查留在 executeHostEffect 内部。
+ * JavaScript 没有任意网络能力，媒体来源校验对它生效；可信 Python 本身就能联网，
+ * 不在此约束范围内——这与直接执行入口的处理保持一致。
+ */
+export async function executePluginUiHostEffect(options: {
+  pluginId: string;
+  title: string;
+  permissions: PluginPermission[];
+  runtime: PluginRuntime;
+  nodeId: string;
+  effect: unknown;
+  models: PluginModelSummary[];
+  trustedMediaReferences?: ReadonlySet<string>;
+}): Promise<PluginNodeHostEffectResult> {
+  const trusted = options.runtime === 'javascript'
+    ? options.trustedMediaReferences
+    : undefined;
+  const parsed = parseHostEffect(options.effect, trusted);
+  return executeHostEffect(
+    {
+      pluginId: options.pluginId,
+      title: options.title,
+      permissions: options.permissions,
+    },
+    options.nodeId,
+    parsed,
+    options.models,
+  );
 }

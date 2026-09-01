@@ -98,6 +98,7 @@ pub mod onnx {
 mod path_policy;
 mod plugin_registry;
 mod plugin_runtime;
+mod plugin_ui;
 mod project_archive;
 mod provider_docs;
 mod secret_store;
@@ -1051,6 +1052,7 @@ pub fn run() {
         .manage(mcp_bridge::McpBridgeState::default())
         .manage(path_policy::UserStorageRoot::default())
         .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)
+        .register_uri_scheme_protocol("plugin-ui", plugin_ui::handle_protocol)
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -1134,6 +1136,8 @@ pub fn run() {
             plugin_registry::get_plugin_registration_status,
             plugin_runtime::execute_node_plugin_tool,
             plugin_runtime::get_python_plugin_runtime_status,
+            plugin_ui::open_plugin_ui_window,
+            plugin_ui::close_plugin_ui_window,
         ])
         .on_window_event(|window, event| {
             // 用户把文件拖进自有窗口 = 一次显式授权，登记后复制/读取命令才放行。

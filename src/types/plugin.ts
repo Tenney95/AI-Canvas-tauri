@@ -1,3 +1,4 @@
+import type { ComponentType } from 'react';
 import type { GeneralModelCategory, NodeType } from './index';
 
 export type PluginPermission =
@@ -6,7 +7,9 @@ export type PluginPermission =
   | 'models.read'
   | 'models.invoke'
   | 'files.read'
-  | 'files.write';
+  | 'files.write'
+  /** 允许插件提供自定义界面组件。该组件在独立 webview 进程中运行，仍需显式授权。 */
+  | 'ui.custom';
 export type PluginRuntime = 'javascript' | 'python';
 export type PluginNodeOutputMode = 'update-current' | 'create-node';
 export type PluginCategory = 'content' | 'media' | 'workflow' | 'utility';
@@ -56,6 +59,11 @@ export interface PluginToolDialogManifest {
   description?: string;
   submitLabel?: string;
   fields: PluginDialogFieldManifest[];
+  /**
+   * 引用 `manifest.ui.exports` 中的键，用插件组件替换声明式表单。
+   * `fields` 仍然保留：它定义 `parameters` 的契约，并在组件不可用时作为兜底表单。
+   */
+  ui?: string;
 }
 
 export interface PluginNodeToolManifest {
@@ -102,7 +110,67 @@ export interface PluginCustomNodeManifest {
   inputs: PluginCustomNodePortManifest[];
   outputs: PluginCustomNodePortManifest[];
   fields: PluginCustomNodeFieldManifest[];
+  /** 引用 `manifest.ui.exports` 中的键，用插件组件渲染节点主体。 */
+  ui?: string;
 }
+
+/**
+ * 插件自定义界面产物的声明。
+ *
+ * 产物必须是自包含的 IIFE/UMD bundle：React 由宿主通过全局桥注入，不重复打进产物，
+ * 否则会出现 React 双实例并导致 hooks 报错。
+ */
+export interface PluginUIManifest {
+  /** 产物相对插件根目录的路径，例如 `ui.js`。 */
+  entry: string;
+  /** 产物 SHA-256，形如 `sha256-<hex>` 或裸 hex；变更时需要用户重新授权。 */
+  integrity: string;
+  /** 逻辑名 → 产物在全局桥上暴露的导出名。 */
+  exports: Record<string, string>;
+}
+
+/** 自定义界面可以挂载的位置。 */
+export type PluginUISurface =
+  | 'tool-dialog'
+  | 'node-body'
+  | 'settings-panel'
+  | 'side-panel';
+
+/**
+ * 宿主注入给插件组件的接口。
+ *
+ * 插件组件运行在独立 webview 进程里，只能通过这里的回调与宿主交互——拿不到宿主的
+ * DOM、store 或凭据；写回画布仍要过 output.fields 白名单与媒体来源校验。
+ */
+export interface PluginUISurfaceProps {
+  /** 当前挂载点，便于同一个组件复用到多个位置。 */
+  surface: PluginUISurface;
+  /** 已按 inputFields 白名单裁剪的节点数据。 */
+  node: { id: string; type: NodeType; data: Record<string, PluginJsonValue> };
+  /** 声明 models.read 时填充的模型目录，不含任何凭据。 */
+  models: PluginModelSummary[];
+  /** 弹窗字段当前值；tool-dialog 挂载点使用。 */
+  parameters: Record<string, PluginJsonValue>;
+  /** 自定义节点字段当前值；node-body 挂载点使用。 */
+  values: Record<string, PluginJsonValue>;
+  /** 请求宿主代执行模型或文件能力；受插件权限与每轮 effect 配额约束。 */
+  runEffect: (effect: PluginNodeHostEffect) => Promise<PluginNodeHostEffectResult>;
+  /** 合并更新弹窗参数，宿主会在提交时把它们交给插件。 */
+  setParameters: (patch: Record<string, PluginJsonValue>) => void;
+  /**
+   * 提交并关闭。当前实现等价于声明式弹窗点「执行」：宿主以最终 parameters 重新执行
+   * 插件工具，写回仍走 output.fields 白名单校验。`data`/`message` 暂未直接写回，
+   * 保留给未来的直接提交通道——需要把结果落到节点时，请通过 `setParameters` 把结果
+   * 放进 parameters，再由插件工具读取。
+   */
+  submit: (data: Record<string, PluginJsonValue>, message?: string) => Promise<void>;
+  close: () => void;
+  toast: (message: string, type?: 'success' | 'error') => void;
+  /** 宿主正在执行 effect 或提交。 */
+  busy: boolean;
+}
+
+export type PluginUIComponent = ComponentType<PluginUISurfaceProps>;
 
 export interface PluginManifest {
   apiVersion: 1 | 2 | 3;
@@ -120,6 +188,8 @@ export interface PluginManifest {
   keywords?: string[];
   entry: 'main.js' | 'main.py';
   permissions: PluginPermission[];
+  /** 自定义界面产物；需配合 nodeTools[].dialog.ui 或 nodes[].ui 使用。 */
+  ui?: PluginUIManifest;
   contributes: {
     nodeTools: PluginNodeToolManifest[];
     nodes?: PluginCustomNodeManifest[];
@@ -132,6 +202,8 @@ export interface InstalledPlugin {
   source: string;
   /** Rust 原生注册表计算的入口源码 SHA-256；旧记录在加载时补齐。 */
   sourceDigest?: string;
+  /** 自定义界面产物的实际 SHA-256，与 manifest.ui.integrity 比对，不一致则拒绝挂载。 */
+  uiDigest?: string;
   enabled: boolean;
   installedAt: number;
   updatedAt: number;

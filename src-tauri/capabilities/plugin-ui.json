@@ -1,0 +1,15 @@
+{
+  "identifier": "plugin-ui",
+  "description": "插件自定义界面窗口。只授予与主窗口通信所需的事件能力：不给文件系统、shell、网络命令或新建窗口的权限。",
+  "windows": [
+    "plugin-ui-*"
+  ],
+  "permissions": [
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "core:event:allow-emit-to",
+    "core:window:allow-close"
+  ]
+}
