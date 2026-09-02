@@ -7,7 +7,7 @@ import type { BatchImageResult, ImageGenerationResult } from '../types/aiTypes';
 import { MAX_IMAGE_BATCH_COUNT } from '../types/aiTypes';
 import { generateId } from '../store/store.utils';
 import { useAppStore } from '../store/useAppStore';
-import { downloadUrlAndSave } from './fileService';
+import { persistMediaUrlToProjectData, type PersistedProjectMedia } from './fileService';
 import { runBatchTasks } from './ai/batchUtils';
 
 interface ApplyImageBatchParams {
@@ -34,7 +34,7 @@ export interface PreparedImageBatchNodes {
 
 interface SavedBatchItem {
   result: ImageGenerationResult;
-  saved: { filePath: string; assetUrl: string } | null;
+  persisted: PersistedProjectMedia;
 }
 
 const BATCH_NODE_GAP = 40;
@@ -170,15 +170,15 @@ export async function applyImageBatchResults({
 
   const savedBatch = await runBatchTasks(batch.results.length, 3, async (index): Promise<SavedBatchItem> => {
     const result = batch.results[index];
-    const saved = projectId
-      ? await downloadUrlAndSave(
+    const persisted = projectId
+      ? await persistMediaUrlToProjectData(
           result.url,
           projectId,
           'ai-image',
           `${sourceData.label}-${index + 1}`,
-        ).catch(() => null)
-      : null;
-    return { result, saved };
+        )
+      : { mediaUrl: result.url, sourceUrl: result.url };
+    return { result, persisted };
   });
 
   let store = useAppStore.getState();
@@ -203,17 +203,17 @@ export async function applyImageBatchResults({
     const targetNodeId = resolvedTargetNodeIds[index];
     if (!targetNodeId || !liveNodeIds.has(targetNodeId)) return;
     store.updateNodeDataTransient(targetNodeId, {
-      imageUrl: item.saved?.assetUrl || item.result.url,
-      sourceUrl: item.result.url,
-      filePath: item.saved?.filePath,
+      imageUrl: item.persisted.mediaUrl,
+      sourceUrl: item.persisted.sourceUrl,
+      filePath: item.persisted.filePath,
       assetId: undefined,
       relativePath: undefined,
       artifactId: undefined,
       fileName: undefined,
       mattingMask: undefined,
       annotation: undefined,
-      thumbnailUrl: item.result.url,
-      output: item.result.url,
+      thumbnailUrl: item.persisted.mediaUrl,
+      output: item.persisted.sourceUrl,
       status: 'success',
       error: undefined,
       imageWidth: item.result.width,
@@ -238,13 +238,13 @@ export async function applyImageBatchResults({
       nodeLabel: index === 0 ? sourceData.label : `${sourceData.label} ${index + 1}`,
       timestamp: Date.now(),
       prompt,
-      output: item.result.url,
+      output: item.persisted.sourceUrl,
       nodeType: 'ai-image',
       model: (sourceData.model as string) || '',
       provider: (sourceData.provider as string) || '',
       status: 'success',
-      mediaUrl: item.result.url,
-      filePath: item.saved?.filePath,
+      mediaUrl: item.persisted.mediaUrl,
+      filePath: item.persisted.filePath,
       params: { imageSize, aspectRatio, batchCount: batch.requestedCount, batchIndex: index + 1 },
     });
   }));

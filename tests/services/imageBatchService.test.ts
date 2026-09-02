@@ -15,7 +15,7 @@ interface TestStore {
 let store: TestStore;
 let generatedId = 0;
 
-const downloadUrlAndSave = vi.fn();
+const persistMediaUrlToProjectData = vi.fn();
 
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: {
@@ -28,7 +28,7 @@ vi.mock('../../src/store/store.utils', () => ({
 }));
 
 vi.mock('../../src/services/fileService', () => ({
-  downloadUrlAndSave,
+  persistMediaUrlToProjectData,
 }));
 
 function createStore(): TestStore {
@@ -70,7 +70,10 @@ function createStore(): TestStore {
 
 beforeEach(() => {
   generatedId = 0;
-  downloadUrlAndSave.mockReset().mockResolvedValue(null);
+  persistMediaUrlToProjectData.mockImplementation(async (url: string) => ({
+    mediaUrl: url,
+    sourceUrl: url,
+  }));
   store = createStore();
 });
 
@@ -144,5 +147,40 @@ describe('imageBatchService', () => {
     expect(store.nodes[2].data.error).toContain('未返回结果');
     expect(store.recordOutputHistory).toHaveBeenCalledTimes(2);
     expect(store.showToast).toHaveBeenCalledWith('批量生成完成：成功 2/4 张', 'error');
+  });
+
+  it('stores inline batch results as local project references only', async () => {
+    const { applyImageBatchResults } = await import('../../src/services/imageBatchService');
+    const inline = 'data:image/png;base64,AQID';
+    persistMediaUrlToProjectData.mockResolvedValueOnce({
+      filePath: '/project/data/原图节点-1.png',
+      assetUrl: 'asset:///project/data/原图节点-1.png',
+      mediaUrl: 'asset:///project/data/原图节点-1.png',
+      sourceUrl: 'asset:///project/data/原图节点-1.png',
+    });
+
+    await applyImageBatchResults({
+      nodeId: 'source',
+      targetNodeIds: ['source'],
+      batch: {
+        requestedCount: 1,
+        failedCount: 0,
+        results: [{ url: inline, width: 10, height: 10 }],
+      },
+      projectId: 'project-a',
+      prompt: 'a cat',
+      imageSize: '2K',
+      aspectRatio: '1:1',
+    });
+
+    expect(JSON.stringify(store.nodes[0].data)).not.toContain('data:image');
+    expect(store.nodes[0].data).toMatchObject({
+      imageUrl: 'asset:///project/data/原图节点-1.png',
+      sourceUrl: 'asset:///project/data/原图节点-1.png',
+      thumbnailUrl: 'asset:///project/data/原图节点-1.png',
+      output: 'asset:///project/data/原图节点-1.png',
+      filePath: '/project/data/原图节点-1.png',
+    });
+    expect(JSON.stringify(store.recordOutputHistory.mock.calls[0][1])).not.toContain('data:image');
   });
 });

@@ -5,8 +5,8 @@ import { resolveNodeReferences } from '../nodeReferenceService';
 import { executeComfyUIAudioGenerate } from '../comfyWorkflowService';
 import {
   createMediaDataUrlBudget,
-  downloadUrlAndSave,
   isTauriEnv,
+  persistMediaUrlToProjectData,
   saveBinaryToProjectData,
 } from '../fileService';
 import { resolveMediaReferenceUrl } from '../uploadService';
@@ -93,7 +93,7 @@ export async function persistAudioGenerationResult(
   label: string,
 ): Promise<PersistedAudioGenerationResult> {
   const shouldPersist = !!projectId && isTauriEnv();
-  let saved: { filePath: string; assetUrl: string } | null = null;
+  let saved: { filePath?: string; assetUrl?: string; sourceUrl?: string } | null = null;
   let persistError: string | undefined;
   if (shouldPersist) {
     try {
@@ -103,8 +103,8 @@ export async function persistAudioGenerationResult(
             projectId!,
             buildSafeAudioFileName(label, result.format || 'wav'),
           )
-        : await downloadUrlAndSave(result.url, projectId!, 'ai-audio', label);
-      if (!saved) persistError = AUDIO_PERSIST_FAILED_MESSAGE;
+        : await persistMediaUrlToProjectData(result.url, projectId!, 'ai-audio', label);
+      if (!saved?.filePath) persistError = AUDIO_PERSIST_FAILED_MESSAGE;
     } catch (error) {
       persistError = error instanceof Error ? error.message : AUDIO_PERSIST_FAILED_MESSAGE;
     }
@@ -112,13 +112,14 @@ export async function persistAudioGenerationResult(
 
   const mediaUrl = saved?.assetUrl || result.url;
   // 只有落盘成功才回收 blob，失败时保留它，用户仍能在本次会话里重试保存
-  if (saved && result.url.startsWith('blob:')) URL.revokeObjectURL(result.url);
+  if (saved?.filePath && result.url.startsWith('blob:')) URL.revokeObjectURL(result.url);
   return {
     mediaUrl,
-    outputUrl: result.bytes ? mediaUrl : result.url,
-    sourceUrl: result.bytes ? undefined : result.url,
+    // 落盘成功后来源要改指项目文件，否则节点会把临时地址一起持久化
+    outputUrl: result.bytes ? mediaUrl : (saved?.sourceUrl ?? result.url),
+    sourceUrl: result.bytes ? undefined : (saved?.sourceUrl ?? result.url),
     filePath: saved?.filePath,
-    persistence: saved ? 'saved' : shouldPersist ? 'failed' : 'skipped',
+    persistence: saved?.filePath ? 'saved' : shouldPersist ? 'failed' : 'skipped',
     persistError,
   };
 }

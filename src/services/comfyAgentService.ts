@@ -11,7 +11,7 @@ import type {
   MediaGenerationResult,
   MediaKind,
 } from '../types/media';
-import { downloadUrlAndSave, isTauriEnv } from './fileService';
+import { isTauriEnv, persistMediaUrlToProjectData } from './fileService';
 import { comfyFetch, pollComfyHistory } from './comfyPolling';
 import { resolveComfyOutputUrl, type ComfyOutputKind } from './comfyOutputs';
 import { formatComfyPromptError } from './comfyWorkflowService';
@@ -572,20 +572,22 @@ export async function executeValidatedComfyUIWorkflow(args: {
 
     const id = `media-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     let url = output.url;
+    let sourceUrl = output.url;
     let filePath: string | undefined;
     let persistence: MediaGenerationResult['persistence'] = 'skipped';
     let persistError: string | undefined;
     if (isTauriEnv()) {
       try {
-        const saved = await downloadUrlAndSave(output.url, args.projectId, entry.kind, `助手-ComfyUI-${id}`);
-        if (saved?.filePath) {
-          url = saved.assetUrl || output.url;
-          filePath = saved.filePath;
-          persistence = 'saved';
-        } else {
-          persistence = 'failed';
-          persistError = 'ComfyUI 已生成内容，但未能保存到项目目录';
-        }
+        const persisted = await persistMediaUrlToProjectData(
+          output.url,
+          args.projectId,
+          entry.kind,
+          `助手-ComfyUI-${id}`,
+        );
+        url = persisted.mediaUrl;
+        sourceUrl = persisted.sourceUrl;
+        filePath = persisted.filePath;
+        persistence = 'saved';
       } catch (error) {
         persistence = 'failed';
         persistError = error instanceof Error ? error.message : 'ComfyUI 已生成内容，但保存失败';
@@ -596,7 +598,7 @@ export async function executeValidatedComfyUIWorkflow(args: {
       kind: entry.kind,
       deliveryMode: args.deliveryMode,
       url,
-      sourceUrl: output.url,
+      sourceUrl,
       filePath,
       persistence,
       persistError,

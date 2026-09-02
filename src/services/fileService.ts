@@ -669,7 +669,7 @@ export async function saveDataUrlToProjectData(
 
   try {
     // Parse data URL to binary
-    const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
+    const match = dataUrl.match(/^data:(.+?);base64,(.+)$/i);
     let bytes: Uint8Array;
     if (match) {
       const b64 = match[2];
@@ -730,6 +730,20 @@ export async function saveBinaryToProjectData(
 }
 
 /**
+ * 为会自行写入结果的本地处理器（如 ONNX）分配项目目录内的唯一输出路径。
+ * 只返回路径，不预先创建文件。
+ */
+export async function resolveProjectOutputPath(
+  projectId: string,
+  fileName: string,
+): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+  const dataDir = await ensureProjectDataDir(projectId);
+  if (!dataDir) return null;
+  return resolveUniqueDestPath(dataDir, sanitizeFileName(fileName));
+}
+
+/**
  * 把已生成的二进制结果另存到用户选择的本地位置。
  * 路径只来自系统保存对话框，文件写入仍统一收口在 fileService。
  */
@@ -785,6 +799,51 @@ function guessExtension(url: string, mime: string | undefined, fallbackPrefix: s
   return '.png';
 }
 
+/** Data URL / Blob URL 只是内存载体，不能进入项目、历史或对话持久化。 */
+export function isTransientMediaUrl(url: string | undefined): boolean {
+  return Boolean(url && (/^data:/i.test(url) || /^blob:/i.test(url)));
+}
+
+export interface PersistedProjectMedia {
+  filePath?: string;
+  assetUrl?: string;
+  /** 展示用 URL；落盘成功时指向项目文件。 */
+  mediaUrl: string;
+  /** 可持久化的来源 URL；内嵌/临时 URL 会被本地 asset URL 替换。 */
+  sourceUrl: string;
+}
+
+/**
+ * 将一次媒体生成结果收敛为可持久化的项目文件引用。
+ * 没有项目目录时（浏览器环境）无法落盘：远程 URL 仍可展示，但内嵌媒体一旦进入
+ * 持久化就是死数据，只能失败关闭。有项目目录时落盘失败同样必须失败关闭，
+ * data:/blob: 落盘后还会把来源改为 asset URL，避免把完整媒体正文回写进 IndexedDB。
+ */
+export async function persistMediaUrlToProjectData(
+  url: string,
+  projectId: string,
+  fallbackPrefix: string,
+  baseName?: string,
+  options?: FileTransferOptions,
+): Promise<PersistedProjectMedia> {
+  if (!isTauriEnv()) {
+    if (isTransientMediaUrl(url)) throw new Error('当前环境没有项目目录，无法保存内嵌媒体');
+    return { mediaUrl: url, sourceUrl: url };
+  }
+  const saved = await downloadUrlAndSave(url, projectId, fallbackPrefix, baseName, options);
+  if (!saved?.filePath || !saved.assetUrl) {
+    throw new Error('生成媒体未能写入项目目录');
+  }
+  if (isTransientMediaUrl(url)) {
+    return { ...saved, mediaUrl: saved.assetUrl, sourceUrl: saved.assetUrl };
+  }
+  return {
+    ...saved,
+    mediaUrl: saved.assetUrl,
+    sourceUrl: url,
+  };
+}
+
 /**
  * 下载远程 URL 文件并保存到项目数据目录
  * @param baseName 可选，优先用作文件名主体（通常为节点名）；为空时从 URL 提取或用 fallbackPrefix
@@ -799,6 +858,25 @@ export async function downloadUrlAndSave(
 ): Promise<{ filePath: string; assetUrl: string } | null> {
   if (!isTauriEnv()) return null;
   try {
+    if (isMediaDataUrl(url)) {
+      const mime = /^data:([^;,]+)/i.exec(url)?.[1];
+      const fileName = baseName && baseName.trim()
+        ? buildNodeFileName(baseName, guessExtension(url, mime, fallbackPrefix), fallbackPrefix)
+        : `${sanitizeFileName(fallbackPrefix)}-${Date.now()}${guessExtension('', mime, fallbackPrefix)}`;
+      return saveDataUrlToProjectData(url, projectId, fileName);
+    }
+
+    if (/^blob:/i.test(url)) {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`读取临时媒体失败：HTTP ${response.status}`);
+      const mime = response.headers.get('content-type') || undefined;
+      const fileName = baseName && baseName.trim()
+        ? buildNodeFileName(baseName, guessExtension(url, mime, fallbackPrefix), fallbackPrefix)
+        : `${sanitizeFileName(fallbackPrefix)}-${Date.now()}${guessExtension('', mime, fallbackPrefix)}`;
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      return saveBinaryToProjectData(bytes, projectId, fileName);
+    }
+
     // 优先用节点名命名；否则沿用从 URL 提取文件名的旧逻辑
     const fileName = baseName && baseName.trim()
       ? buildNodeFileName(baseName, guessExtension(url, undefined, fallbackPrefix), fallbackPrefix)

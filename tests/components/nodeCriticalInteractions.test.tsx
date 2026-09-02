@@ -552,7 +552,12 @@ describe('critical canvas node interactions', () => {
       buildPanoramaPrompt: vi.fn(),
     }));
     vi.doMock('../../src/services/ai/generateAudio', () => ({ persistAudioGenerationResult: vi.fn() }));
-    vi.doMock('../../src/services/fileService', () => ({ downloadUrlAndSave: vi.fn().mockResolvedValue(null) }));
+    vi.doMock('../../src/services/fileService', () => ({
+      persistMediaUrlToProjectData: vi.fn(async (url: string) => ({
+        mediaUrl: url,
+        sourceUrl: url,
+      })),
+    }));
     vi.doMock('../../src/services/imageBatchService', () => ({ applyImageBatchResults: vi.fn() }));
     vi.doMock('../../src/services/onnxService', () => ({
       checkModelExists: vi.fn(), createCharacterDirectionGrid: vi.fn(), downloadModel: vi.fn(),
@@ -666,7 +671,12 @@ describe('critical canvas node interactions', () => {
       buildPanoramaPrompt: vi.fn(),
     }));
     vi.doMock('../../src/services/ai/generateAudio', () => ({ persistAudioGenerationResult: vi.fn() }));
-    vi.doMock('../../src/services/fileService', () => ({ downloadUrlAndSave: vi.fn() }));
+    vi.doMock('../../src/services/fileService', () => ({
+      persistMediaUrlToProjectData: vi.fn(async (url: string) => ({
+        mediaUrl: url,
+        sourceUrl: url,
+      })),
+    }));
     vi.doMock('../../src/services/imageBatchService', () => ({ applyImageBatchResults: vi.fn() }));
     vi.doMock('../../src/services/onnxService', () => ({
       checkModelExists: vi.fn(), createCharacterDirectionGrid: vi.fn(), downloadModel: vi.fn(),

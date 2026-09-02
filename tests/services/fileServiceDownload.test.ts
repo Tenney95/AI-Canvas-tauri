@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   ensureProjectDataDir: vi.fn(),
   invoke: vi.fn(),
+  isTauriEnv: vi.fn(() => true),
   notifyProjectDiskChanged: vi.fn(),
   resolveUniqueDestPath: vi.fn(),
+  writeFile: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
@@ -14,7 +16,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   readFile: vi.fn(),
   rename: vi.fn(),
   stat: vi.fn(),
-  writeFile: vi.fn(),
+  writeFile: mocks.writeFile,
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({
@@ -32,7 +34,7 @@ vi.mock('../../src/services/fs/core', () => ({
   getFileCategory: vi.fn(),
   getMimeType: vi.fn(),
   getProjectDataDir: vi.fn(),
-  isTauriEnv: () => true,
+  isTauriEnv: () => mocks.isTauriEnv(),
   joinPath: (...parts: string[]) => parts.join('/'),
   notifyProjectDiskChanged: mocks.notifyProjectDiskChanged,
   resolveUniqueDestPath: mocks.resolveUniqueDestPath,
@@ -40,12 +42,20 @@ vi.mock('../../src/services/fs/core', () => ({
   sanitizeFolderName: (name: string) => name,
 }));
 
-import { downloadUrlAndSave } from '../../src/services/fileService';
+import {
+  downloadUrlAndSave,
+  persistMediaUrlToProjectData,
+  resolveProjectOutputPath,
+} from '../../src/services/fileService';
 
 describe('downloadUrlAndSave', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.isTauriEnv.mockReturnValue(true);
     mocks.ensureProjectDataDir.mockResolvedValue('/project/data');
+    mocks.resolveUniqueDestPath.mockImplementation(async (dataDir: string, fileName: string) => (
+      `${dataDir}/${fileName}`
+    ));
   });
 
   it('serializes same-name downloads until the first destination exists', async () => {
@@ -100,5 +110,105 @@ describe('downloadUrlAndSave', () => {
       { filePath: '/project/data/AI 图片_1.png', assetUrl: 'asset:///project/data/AI 图片_1.png' },
     ]);
     expect(mocks.resolveUniqueDestPath).toHaveBeenCalledTimes(2);
+  });
+
+  it('writes base64 image results directly into the project directory', async () => {
+    const result = await downloadUrlAndSave(
+      'data:image/png;base64,AQID',
+      'project-1',
+      'ai-image',
+      '自定义接口图片',
+    );
+
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      '/project/data/自定义接口图片.png',
+      new Uint8Array([1, 2, 3]),
+    );
+    expect(result).toEqual({
+      filePath: '/project/data/自定义接口图片.png',
+      assetUrl: 'asset:///project/data/自定义接口图片.png',
+    });
+  });
+
+  it('writes blob video results directly into the project directory', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      new Uint8Array([4, 5, 6]),
+      { headers: { 'content-type': 'video/mp4' } },
+    ));
+
+    const result = await downloadUrlAndSave(
+      'blob:http://localhost/generated-video',
+      'project-1',
+      'ai-video',
+      '自定义接口视频',
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith('blob:http://localhost/generated-video');
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      '/project/data/自定义接口视频.mp4',
+      new Uint8Array([4, 5, 6]),
+    );
+    expect(result).toEqual({
+      filePath: '/project/data/自定义接口视频.mp4',
+      assetUrl: 'asset:///project/data/自定义接口视频.mp4',
+    });
+
+    fetchMock.mockRestore();
+  });
+
+  it('allocates local processor outputs inside the project directory', async () => {
+    await expect(resolveProjectOutputPath('project-1', '主体识别.png'))
+      .resolves.toBe('/project/data/主体识别.png');
+    expect(mocks.resolveUniqueDestPath).toHaveBeenCalledWith('/project/data', '主体识别.png');
+  });
+});
+
+describe('persistMediaUrlToProjectData', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.isTauriEnv.mockReturnValue(true);
+    mocks.ensureProjectDataDir.mockResolvedValue('/project/data');
+    mocks.resolveUniqueDestPath.mockImplementation(async (dataDir: string, fileName: string) => (
+      `${dataDir}/${fileName}`
+    ));
+  });
+
+  it('keeps the source url when there is no project directory to write into', async () => {
+    mocks.isTauriEnv.mockReturnValue(false);
+
+    await expect(persistMediaUrlToProjectData(
+      'https://cdn.example/generated.png',
+      'project-1',
+      'ai-image',
+      '自定义接口图片',
+    )).resolves.toEqual({
+      mediaUrl: 'https://cdn.example/generated.png',
+      sourceUrl: 'https://cdn.example/generated.png',
+    });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('refuses inline media when there is no project directory to write into', async () => {
+    mocks.isTauriEnv.mockReturnValue(false);
+
+    await expect(persistMediaUrlToProjectData(
+      'data:image/png;base64,AQID',
+      'project-1',
+      'ai-image',
+      '自定义接口图片',
+    )).rejects.toThrow('当前环境没有项目目录');
+  });
+
+  it('fails closed instead of returning a temporary media url', async () => {
+    mocks.ensureProjectDataDir.mockResolvedValueOnce(null);
+
+    await expect(persistMediaUrlToProjectData(
+      'https://cdn.example/generated.png',
+      'project-1',
+      'ai-image',
+      '自定义接口图片',
+    )).rejects.toThrow('生成媒体未能写入项目目录');
   });
 });

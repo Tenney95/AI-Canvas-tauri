@@ -21,6 +21,8 @@ import {
 } from '../services/indexedDbService';
 import type { HistoryPageCursor, HistoryQuery } from '../services/indexedDbService';
 import { tagGeneratedProjectAssetSafely } from '../services/fs/generatedAssetTags';
+import { getAssetUrlFromPath } from '../services/fs/core';
+import { isTransientMediaUrl, persistMediaUrlToProjectData } from '../services/fileService';
 
 const HISTORY_PAGE_SIZE = 16;
 
@@ -38,6 +40,80 @@ function matchesHistoryQuery(record: OutputHistoryEntry, query: HistoryQuery): b
   if (!search) return true;
   return [record.prompt, record.output, record.model, record.nodeLabel]
     .some((value) => value.toLowerCase().includes(search));
+}
+
+interface NormalizedHistoryRecord {
+  record: OutputHistoryEntry;
+  /** 记录是否被改写；落盘失败的改写不回写 IndexedDB。 */
+  changed: boolean;
+  failed: boolean;
+}
+
+async function normalizeHistoryMediaRecord(
+  record: OutputHistoryEntry,
+  projectId: string,
+  nodes: AppState['nodes'],
+): Promise<NormalizedHistoryRecord> {
+  if (!isTransientMediaUrl(record.output) && !isTransientMediaUrl(record.mediaUrl)) {
+    return { record, changed: false, failed: false };
+  }
+  try {
+    const node = nodes.find((candidate) => candidate.id === record.nodeId);
+    const nodeFilePath = node?.data.filePath as string | undefined;
+    const persisted = nodeFilePath
+      ? {
+          filePath: nodeFilePath,
+          mediaUrl: await getAssetUrlFromPath(nodeFilePath),
+        }
+      : await persistMediaUrlToProjectData(
+          (isTransientMediaUrl(record.mediaUrl) ? record.mediaUrl : record.output)!,
+          projectId,
+          record.nodeType,
+          `${record.nodeLabel}-历史`,
+        );
+    return {
+      record: {
+        ...record,
+        output: isTransientMediaUrl(record.output) ? persisted.mediaUrl : record.output,
+        mediaUrl: isTransientMediaUrl(record.mediaUrl) ? persisted.mediaUrl : record.mediaUrl,
+        filePath: persisted.filePath || record.filePath,
+      },
+      changed: true,
+      failed: false,
+    };
+  } catch (error) {
+    console.warn('[输出历史] 内嵌媒体迁移失败，已清除持久化正文', {
+      projectId,
+      recordId: record.id,
+      error,
+    });
+    return {
+      record: {
+        ...record,
+        output: isTransientMediaUrl(record.output) ? '媒体未能迁移到项目目录' : record.output,
+        mediaUrl: isTransientMediaUrl(record.mediaUrl) ? undefined : record.mediaUrl,
+        status: 'error',
+      },
+      changed: true,
+      failed: true,
+    };
+  }
+}
+
+async function normalizeHistoryPage(
+  records: OutputHistoryEntry[],
+  projectId: string,
+  nodes: AppState['nodes'],
+): Promise<OutputHistoryEntry[]> {
+  const normalized = await Promise.all(
+    records.map((record) => normalizeHistoryMediaRecord(record, projectId, nodes)),
+  );
+  // 迁移失败多半是磁盘暂时不可用：把成功记录改写成 error 再回写，会永久丢掉这次生成
+  const migrated = normalized
+    .filter((entry) => entry.changed && !entry.failed)
+    .map((entry) => entry.record);
+  if (migrated.length > 0) await putHistoryEntries(migrated);
+  return normalized.map((entry) => entry.record);
 }
 
 export interface HistoryRecordSlice {
@@ -102,10 +178,11 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
         getHistoryEntriesPage(projectId, HISTORY_PAGE_SIZE, null, query),
         getHistoryEntryCount(projectId),
       ]);
+      const records = await normalizeHistoryPage(page.records as OutputHistoryEntry[], projectId, get().nodes);
       if (requestId !== historyLoadRequestId || get().currentProjectId !== projectId) return;
       historyCursor = page.nextCursor;
       set({
-        outputHistoryRecords: page.records as OutputHistoryEntry[],
+        outputHistoryRecords: records,
         historyProjectId: projectId,
         historyTotalCount: totalCount,
         historyHasMore: page.hasMore,
@@ -134,10 +211,11 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
     set({ historyLoading: true });
     try {
       const page = await getHistoryEntriesPage(projectId, HISTORY_PAGE_SIZE, historyCursor, query);
+      const records = await normalizeHistoryPage(page.records as OutputHistoryEntry[], projectId, get().nodes);
       if (requestId !== historyLoadRequestId || get().currentProjectId !== projectId) return;
       historyCursor = page.nextCursor;
       set((state) => ({
-        outputHistoryRecords: [...state.outputHistoryRecords, ...page.records] as OutputHistoryEntry[],
+        outputHistoryRecords: [...state.outputHistoryRecords, ...records],
         historyHasMore: page.hasMore,
         historyLoading: false,
       }));
@@ -204,14 +282,14 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
     const projectId = get().currentProjectId;
     if (!projectId) return;
     const id = `hist-${generateId()}`;
-    const record: OutputHistoryEntry = { ...entry, id, projectId };
+    const { record } = await normalizeHistoryMediaRecord({ ...entry, id, projectId }, projectId, get().nodes);
     // Persist to IndexedDB first, then update store
     await putHistoryEntry(record).catch((e) => console.warn('Failed to persist history entry:', e));
-    if (entry.status === 'success' && entry.filePath && entry.prompt.trim()) {
+    if (record.status === 'success' && record.filePath && record.prompt.trim()) {
       await tagGeneratedProjectAssetSafely({
-        filePath: entry.filePath,
+        filePath: record.filePath,
         projectId,
-        prompt: entry.prompt,
+        prompt: record.prompt,
       });
     }
     set((state) => {

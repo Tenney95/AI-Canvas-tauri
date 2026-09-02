@@ -13,10 +13,9 @@
  */
 import { useAppStore } from '../../store/useAppStore';
 import {
-  downloadUrlAndSave,
   isTauriEnv,
-  saveBinaryToProjectData,
-  saveDataUrlToProjectData,
+  isTransientMediaUrl,
+  persistMediaUrlToProjectData,
 } from '../fileService';
 import { comfyBaseUrlFor } from '../comfyServers';
 import type {
@@ -47,12 +46,6 @@ const MEDIA_LABELS: Record<MediaKind, string> = {
   image: '图片',
   video: '视频',
   audio: '音频',
-};
-
-const MEDIA_FALLBACK_EXTENSIONS: Record<MediaKind, string> = {
-  image: 'png',
-  video: 'mp4',
-  audio: 'mp3',
 };
 
 export const MEDIA_PERSIST_FAILED_MESSAGE = '产物未能写入项目目录，当前是临时地址，重启后可能失效';
@@ -137,24 +130,14 @@ async function saveGeneratedMedia(
   artifactId: string,
 ) {
   const baseName = `对话${MEDIA_LABELS[kind]}-${artifactId}`;
-  const fileName = `${baseName}.${MEDIA_FALLBACK_EXTENSIONS[kind]}`;
-  if (url.startsWith('data:')) {
-    return saveDataUrlToProjectData(url, projectId, fileName);
-  }
-  // blob: 进不了原生下载通道，先在前端取回字节再落盘
-  if (url.startsWith('blob:')) {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`读取临时媒体数据失败：HTTP ${response.status}`);
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    return saveBinaryToProjectData(bytes, projectId, fileName);
-  }
-  return downloadUrlAndSave(url, projectId, MEDIA_NODE_TYPES[kind], baseName);
+  return persistMediaUrlToProjectData(url, projectId, MEDIA_NODE_TYPES[kind], baseName);
 }
 
 interface MediaPersistOutcome {
   status: MediaPersistenceStatus;
   filePath?: string;
   assetUrl?: string;
+  sourceUrl?: string;
   error?: string;
 }
 
@@ -173,7 +156,12 @@ async function persistGeneratedMedia(
   try {
     const saved = await saveGeneratedMedia(url, projectId, kind, artifactId);
     if (!saved?.filePath) return { status: 'failed', error: MEDIA_PERSIST_FAILED_MESSAGE };
-    return { status: 'saved', filePath: saved.filePath, assetUrl: saved.assetUrl };
+    return {
+      status: 'saved',
+      filePath: saved.filePath,
+      assetUrl: saved.mediaUrl,
+      sourceUrl: saved.sourceUrl,
+    };
   } catch (error) {
     return {
       status: 'failed',
@@ -239,6 +227,9 @@ export async function runMediaGeneration(
     }, signal);
     throwIfAborted(signal);
     const persisted = await persistGeneratedMedia(result.url, projectId, intent.kind, id);
+    if (persisted.status === 'failed' && isTransientMediaUrl(result.url)) {
+      throw new Error(persisted.error || MEDIA_PERSIST_FAILED_MESSAGE);
+    }
     await tagSavedGeneratedMedia(persisted.filePath, projectId, effectivePrompt);
     throwIfAborted(signal);
     return {
@@ -246,7 +237,7 @@ export async function runMediaGeneration(
       kind: intent.kind,
       deliveryMode: intent.deliveryMode,
       url: persisted.assetUrl || result.url,
-      sourceUrl: result.url,
+      sourceUrl: persisted.sourceUrl || result.url,
       filePath: persisted.filePath,
       persistence: persisted.status,
       persistError: persisted.error,
@@ -280,6 +271,9 @@ export async function runMediaGeneration(
     }, signal);
     throwIfAborted(signal);
     const persisted = await persistGeneratedMedia(result.url, projectId, intent.kind, id);
+    if (persisted.status === 'failed' && isTransientMediaUrl(result.url)) {
+      throw new Error(persisted.error || MEDIA_PERSIST_FAILED_MESSAGE);
+    }
     await tagSavedGeneratedMedia(persisted.filePath, projectId, effectivePrompt);
     throwIfAborted(signal);
     return {
@@ -287,7 +281,7 @@ export async function runMediaGeneration(
       kind: intent.kind,
       deliveryMode: intent.deliveryMode,
       url: persisted.assetUrl || result.url,
-      sourceUrl: result.url,
+      sourceUrl: persisted.sourceUrl || result.url,
       filePath: persisted.filePath,
       persistence: persisted.status,
       persistError: persisted.error,
@@ -357,6 +351,7 @@ export async function retryMediaArtifactPersist(
   return {
     ...artifact,
     url: persisted.assetUrl || artifact.url,
+    sourceUrl: persisted.sourceUrl || artifact.sourceUrl,
     filePath: persisted.filePath,
     persistence: 'saved',
     persistError: undefined,

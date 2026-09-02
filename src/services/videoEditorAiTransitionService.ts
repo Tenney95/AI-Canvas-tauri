@@ -8,7 +8,7 @@
 import { useAppStore } from '../store/useAppStore';
 import { getMediaModelOptions } from '../components/nodes/shared/defaultModels';
 import { generateVideo } from './ai/generateVideo';
-import { downloadUrlAndSave, saveBinaryToProjectData } from './fileService';
+import { persistMediaUrlToProjectData } from './fileService';
 import type { MediaReference } from '../types/aiTypes';
 import type {
   VideoEditorAiTransitionRequest,
@@ -85,19 +85,11 @@ export async function runVideoEditorAiTransition(
   }, signal);
 
   const baseName = `AI转场-${Date.now().toString(36)}`;
-  const saved = result.url.startsWith('blob:')
-    ? await saveBinaryToProjectData(
-      new Uint8Array(await (await fetch(result.url)).arrayBuffer()),
-      projectId,
-      `${baseName}.mp4`,
-    )
-    : await downloadUrlAndSave(result.url, projectId, 'ai-video', baseName);
-
-  if (!saved?.filePath) throw new Error('转场已生成，但写入项目目录失败');
+  const persisted = await persistMediaUrlToProjectData(result.url, projectId, 'ai-video', baseName);
 
   return {
-    videoUrl: saved.assetUrl || result.url,
-    filePath: saved.filePath,
-    fileName: `${baseName}.mp4`,
+    videoUrl: persisted.mediaUrl,
+    filePath: persisted.filePath,
+    fileName: persisted.filePath?.replace(/\\/g, '/').split('/').pop() || `${baseName}.mp4`,
   };
 }

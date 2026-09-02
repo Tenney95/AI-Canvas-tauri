@@ -9,7 +9,7 @@ vi.mock('../../src/services/comfyPolling', () => ({
 }));
 vi.mock('../../src/services/fileService', () => ({
   isTauriEnv: () => false,
-  downloadUrlAndSave: vi.fn(),
+  persistMediaUrlToProjectData: vi.fn(),
   saveWorkflow: vi.fn(),
 }));
 vi.mock('../../src/services/comfyWorkflowService', () => ({

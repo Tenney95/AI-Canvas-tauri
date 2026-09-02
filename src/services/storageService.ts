@@ -28,9 +28,17 @@ import {
   type SkillRecord,
   type CustomStyleRecord,
 } from './indexedDbService';
-import { exists } from '@tauri-apps/plugin-fs';
+import { exists, writeFile } from '@tauri-apps/plugin-fs';
 import type { BaseNodeData, ProjectSettings, StoryboardCellOverride } from '../types';
-import { getAssetUrlFromPath, getProjectDataDir, joinPath, stripVerbatimPrefix } from './fs/core';
+import {
+  buildNodeFileName,
+  getAssetUrlFromPath,
+  getProjectDataDir,
+  joinPath,
+  notifyProjectDiskChanged,
+  resolveUniqueDestPath,
+  stripVerbatimPrefix,
+} from './fs/core';
 import { walkDirectoryFiles } from './fs/assetLibrary';
 import { identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
 import type { DramaAssetLibrary } from '../types/dramaAssets';
@@ -56,6 +64,85 @@ interface AssetReferenceLike {
   url?: string;
   label?: string;
   fileName?: string;
+}
+
+const NODE_MEDIA_URL_KEYS = [
+  'imageUrl',
+  'videoUrl',
+  'audioUrl',
+  'thumbnailUrl',
+  'sourceUrl',
+  'output',
+] as const;
+
+function isTransientMediaValue(value: unknown): value is string {
+  return typeof value === 'string' && (/^data:(?:image|video|audio)\//i.test(value) || /^blob:/i.test(value));
+}
+
+function inlineMediaExtension(source: string, data: BaseNodeData): string {
+  const mime = /^data:([^;,]+)/i.exec(source)?.[1]?.toLowerCase();
+  const byMime: Record<string, string> = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/webp': '.webp',
+    'image/gif': '.gif',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm',
+    'video/quicktime': '.mov',
+    'audio/mpeg': '.mp3',
+    'audio/wav': '.wav',
+    'audio/ogg': '.ogg',
+  };
+  if (mime && byMime[mime]) return byMime[mime];
+  if (data.type === 'ai-video' || data.type === 'source-video') return '.mp4';
+  if (data.type === 'ai-audio' || data.type === 'source-audio') return '.mp3';
+  return '.png';
+}
+
+async function inlineMediaBytes(source: string): Promise<Uint8Array> {
+  const match = /^data:[^,]*;base64,([\s\S]*)$/i.exec(source);
+  if (match) {
+    const binary = atob(match[1].replace(/\s/g, ''));
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  }
+  const response = await fetch(source);
+  if (!response.ok) throw new Error(`读取已存储媒体失败：HTTP ${response.status}`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+/** 将旧项目节点中的内嵌媒体迁移到项目目录，防止它再次写入 IndexedDB。 */
+async function materializeInlineNodeMedia(
+  data: BaseNodeData,
+  projectDir: string,
+): Promise<BaseNodeData> {
+  const source = NODE_MEDIA_URL_KEYS
+    .map((key) => data[key])
+    .find(isTransientMediaValue);
+  if (!source) return data;
+
+  let filePath = data.filePath as string | undefined;
+  if (!filePath && data.relativePath) {
+    const relativeCandidate = joinPath(projectDir, data.relativePath);
+    if (await exists(relativeCandidate).catch(() => false)) filePath = relativeCandidate;
+  }
+  if (!filePath || !filePath.replace(/\\/g, '/').toLowerCase().startsWith(`${projectDir.replace(/\\/g, '/').toLowerCase()}/`)) {
+    const extension = inlineMediaExtension(source, data);
+    const fallback = data.type === 'ai-video' ? 'generated-video' : 'generated-image';
+    const fileName = buildNodeFileName(data.label, extension, fallback);
+    filePath = await resolveUniqueDestPath(projectDir, fileName);
+    await writeFile(filePath, await inlineMediaBytes(source));
+    notifyProjectDiskChanged();
+  }
+
+  const assetUrl = await getAssetUrlFromPath(filePath);
+  const migrated = { ...data, filePath } as BaseNodeData & Record<string, unknown>;
+  for (const key of NODE_MEDIA_URL_KEYS) {
+    const value = migrated[key];
+    if (!isTransientMediaValue(value)) continue;
+    // 同一份生成结果的重复字段统一指向本地文件；旧的独立临时缩略图无法恢复时直接清除。
+    migrated[key] = value === source ? assetUrl : undefined;
+  }
+  return migrated;
 }
 
 async function serializeAssetReference<T extends AssetReferenceLike>(
@@ -97,7 +184,8 @@ async function serializeProjectNodes(nodes: unknown, projectId: string): Promise
   if (!projectDir) return nodes;
   return Promise.all((nodes as PersistedNodeLike[]).map(async (node) => {
     if (!node.data) return node;
-    let data = await serializeAssetReference(node.data, projectId, projectDir);
+    let data = await materializeInlineNodeMedia(node.data, projectDir);
+    data = await serializeAssetReference(data, projectId, projectDir);
     if (Array.isArray(data.storyboardOverrides)) {
       const storyboardOverrides = await Promise.all(data.storyboardOverrides.map(async (override) => (
         override ? serializeAssetReference(override as StoryboardCellOverride, projectId, projectDir) : null
@@ -106,6 +194,12 @@ async function serializeProjectNodes(nodes: unknown, projectId: string): Promise
     }
     return { ...node, data };
   }));
+}
+
+function projectNodesContainInlineMedia(nodes: unknown): boolean {
+  return Array.isArray(nodes) && (nodes as PersistedNodeLike[]).some((node) => (
+    node.data && NODE_MEDIA_URL_KEYS.some((key) => isTransientMediaValue(node.data?.[key]))
+  ));
 }
 
 /** 从展示用的 asset URL 还原本地路径（convertFileSrc 的逆运算），非本地 URL 返回 undefined。 */
@@ -376,8 +470,17 @@ export async function loadProjectData(id: string): Promise<ProjectSaveData | nul
     const record = await getProjectById(id);
     if (!record) return null;
     let nodes = record.nodes;
+    if (projectNodesContainInlineMedia(nodes)) {
+      try {
+        nodes = await serializeProjectNodes(nodes, id);
+        await saveProjectToDb({ ...record, nodes });
+        console.log('[项目加载] 已将旧的内嵌媒体迁移到项目目录:', id);
+      } catch (error) {
+        console.warn('[项目加载] 内嵌媒体迁移失败，未覆盖原项目数据', { projectId: id, error });
+      }
+    }
     try {
-      nodes = await restoreProjectNodes(record.nodes, id);
+      nodes = await restoreProjectNodes(nodes, id);
     } catch {
       console.warn('[项目加载] 资产恢复未完成，已使用原始画布数据', { projectId: id });
     }

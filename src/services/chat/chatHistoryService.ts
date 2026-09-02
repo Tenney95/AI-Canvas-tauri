@@ -23,6 +23,7 @@ import type {
   MediaGenerationResult,
   MediaGenerationStatus,
 } from '../../types/media';
+import { isTransientMediaUrl, persistMediaUrlToProjectData } from '../fileService';
 
 // ============================================
 // Type converters
@@ -38,6 +39,51 @@ function fromMediaResultRecord(value: unknown): MediaGenerationResult | undefine
   const artifact = value as MediaGenerationResult;
   if (artifact.persistence) return artifact;
   return { ...artifact, persistence: artifact.filePath ? 'saved' : 'skipped' };
+}
+
+async function normalizeMessageMediaRecord(record: ChatMessageRecord): Promise<ChatMessageRecord> {
+  const artifact = fromMediaResultRecord(record.mediaResult);
+  if (!artifact || (!isTransientMediaUrl(artifact.url) && !isTransientMediaUrl(artifact.sourceUrl))) {
+    return record;
+  }
+
+  const source = isTransientMediaUrl(artifact.sourceUrl) ? artifact.sourceUrl : artifact.url;
+  try {
+    const persisted = await persistMediaUrlToProjectData(
+      source!,
+      record.projectId,
+      `ai-${artifact.kind}`,
+      `对话${artifact.kind}-${artifact.id}`,
+    );
+    return {
+      ...record,
+      mediaResult: {
+        ...artifact,
+        url: persisted.mediaUrl,
+        sourceUrl: persisted.sourceUrl,
+        filePath: persisted.filePath,
+        persistence: 'saved',
+        persistError: undefined,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '内嵌媒体未能迁移到项目目录';
+    console.warn('[对话历史] 内嵌媒体迁移失败，已清除持久化正文', {
+      projectId: record.projectId,
+      messageId: record.id,
+      error,
+    });
+    return {
+      ...record,
+      mediaResult: {
+        ...artifact,
+        url: isTransientMediaUrl(artifact.url) ? '' : artifact.url,
+        sourceUrl: isTransientMediaUrl(artifact.sourceUrl) ? undefined : artifact.sourceUrl,
+        persistence: 'failed',
+        persistError: message,
+      },
+    };
+  }
 }
 
 function fromConversationRecord(r: ChatConversationRecord): ChatConversation {
@@ -153,7 +199,8 @@ export async function persistMessage(
   projectId: string,
   conversationId: string,
 ): Promise<void> {
-  await putChatMessageWithSequence(toMessageRecord(message, projectId, conversationId, 0));
+  const record = await normalizeMessageMediaRecord(toMessageRecord(message, projectId, conversationId, 0));
+  await putChatMessageWithSequence(record);
 }
 
 /** 按分页加载消息（倒序：最新的先返回） */
@@ -163,8 +210,12 @@ export async function loadMessages(
   limit: number = 50,
 ): Promise<{ messages: ChatMessage[]; total: number }> {
   const result = await getConversationMessages(conversationId, offset, limit);
+  const records = await Promise.all(result.messages.map(normalizeMessageMediaRecord));
+  await Promise.all(records.map((record, index) => (
+    record === result.messages[index] ? Promise.resolve() : putChatMessageWithSequence(record)
+  )));
   return {
-    messages: result.messages.map(fromMessageRecord).reverse(), // 反转回正序
+    messages: records.map(fromMessageRecord).reverse(), // 反转回正序
     total: result.total,
   };
 }

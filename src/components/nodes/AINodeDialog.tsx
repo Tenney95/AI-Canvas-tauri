@@ -14,7 +14,7 @@ import { buildShotlistGenerationPrompt, carryOverShotFrames, parseShotlistRows }
 import { MAX_IMAGE_BATCH_COUNT, type AudioOutputFormat, type AudioTtsVoice, type VideoReferenceItem } from '../../types/aiTypes';
 import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
 import { persistAudioGenerationResult } from '../../services/ai/generateAudio';
-import { downloadUrlAndSave } from '../../services/fileService';
+import { persistMediaUrlToProjectData } from '../../services/fileService';
 import {
   applyImageBatchResults,
   failImageBatchNodes,
@@ -389,16 +389,16 @@ function AINodeDialog() {
         });
         if (!isStillCurrentSubmission()) return;
         // 下载远程 URL 到本地项目目录
-        const saved = currentProjectId
-          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-image', nodeLabel).catch(() => null)
-          : null;
-        const mediaUrl = saved?.assetUrl || result.url;
+        const persisted = currentProjectId
+          ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-image', nodeLabel)
+          : { mediaUrl: result.url, sourceUrl: result.url };
+        const mediaUrl = persisted.mediaUrl;
         updateNodeData(activeNodeId!, {
           imageUrl: mediaUrl,
-          sourceUrl: result.url,
-          filePath: saved?.filePath,
-          thumbnailUrl: result.url,
-          output: result.url,
+          sourceUrl: persisted.sourceUrl,
+          filePath: persisted.filePath,
+          thumbnailUrl: mediaUrl,
+          output: persisted.sourceUrl,
           status: 'success',
           imageWidth: result.width,
           imageHeight: result.height,
@@ -410,26 +410,26 @@ function AINodeDialog() {
           nodeLabel: nodeLabel,
           timestamp: Date.now(),
           prompt: effectivePrompt,
-          output: result.url,
+          output: persisted.sourceUrl,
           nodeType: isAnimation ? 'ai-animation' : 'ai-image',
           model: nodeModel,
           provider: nodeProvider,
           status: 'success',
-          mediaUrl: result.url,
-          filePath: saved?.filePath,
+          mediaUrl,
+          filePath: persisted.filePath,
           params: isAnimation
             ? { imageSize, aspectRatio, animationAction, animationFrames, grid: ANIMATION_FRAME_GRIDS[animationFrames] }
             : { imageSize, aspectRatio, cameraSettings: latestData.cameraSettings },
         });
         if (postProcess === 'character-8-direction-grid') {
-          if (!saved?.filePath) {
+          if (!persisted.filePath) {
             showToast(t('原图已生成，但未能保存到本地，无法自动生成 8 向宫格'), 'error');
           } else {
             showToast(t('图片生成完成，正在后台切图生成 8 向宫格'));
             try {
               if (!isStillCurrentSubmission()) return;
 
-              const gridResult = await createCharacterDirectionGrid(saved.filePath);
+              const gridResult = await createCharacterDirectionGrid(persisted.filePath);
               if (!isStillCurrentSubmission()) return;
 
               const store2 = useAppStore.getState();
@@ -482,16 +482,16 @@ function AINodeDialog() {
           nodeId: activeNodeId ?? undefined,
         });
         if (!isStillCurrentSubmission()) return;
-        const saved = currentProjectId
-          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-panorama', nodeLabel).catch(() => null)
-          : null;
-        const mediaUrl = saved?.assetUrl || result.url;
+        const persisted = currentProjectId
+          ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-panorama', nodeLabel)
+          : { mediaUrl: result.url, sourceUrl: result.url };
+        const mediaUrl = persisted.mediaUrl;
         updateNodeData(activeNodeId!, {
           imageUrl: mediaUrl,
-          sourceUrl: result.url,
-          filePath: saved?.filePath,
-          thumbnailUrl: result.url,
-          output: result.url,
+          sourceUrl: persisted.sourceUrl,
+          filePath: persisted.filePath,
+          thumbnailUrl: mediaUrl,
+          output: persisted.sourceUrl,
           status: 'success',
           imageWidth: result.width,
           imageHeight: result.height,
@@ -501,13 +501,13 @@ function AINodeDialog() {
           nodeLabel: nodeLabel,
           timestamp: Date.now(),
           prompt: effectivePrompt,
-          output: result.url,
+          output: persisted.sourceUrl,
           nodeType: 'ai-panorama',
           model: nodeModel,
           provider: nodeProvider,
           status: 'success',
-          mediaUrl: result.url,
-          filePath: saved?.filePath,
+          mediaUrl,
+          filePath: persisted.filePath,
           params: { imageSize, aspectRatio },
         });
         showToast(t('全景图生成完成'));
@@ -547,16 +547,16 @@ function AINodeDialog() {
         });
         if (!isStillCurrentSubmission()) return;
         // 下载远程 URL 到本地项目目录
-        const saved = currentProjectId
-          ? await downloadUrlAndSave(result.url, currentProjectId, 'ai-video', nodeLabel).catch(() => null)
-          : null;
-        const mediaUrl = saved?.assetUrl || result.url;
+        const persisted = currentProjectId
+          ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-video', nodeLabel)
+          : { mediaUrl: result.url, sourceUrl: result.url };
+        const mediaUrl = persisted.mediaUrl;
         updateNodeData(activeNodeId!, {
           videoUrl: mediaUrl,
-          sourceUrl: result.url,
-          filePath: saved?.filePath,
-          thumbnailUrl: result.url,
-          output: result.url,
+          sourceUrl: persisted.sourceUrl,
+          filePath: persisted.filePath,
+          thumbnailUrl: mediaUrl,
+          output: persisted.sourceUrl,
           status: 'success',
         });
         recordOutputHistory(activeNodeId!, {
@@ -564,13 +564,13 @@ function AINodeDialog() {
           nodeLabel: nodeLabel,
           timestamp: Date.now(),
           prompt: effectivePrompt,
-          output: result.url,
+          output: persisted.sourceUrl,
           nodeType: 'ai-video',
           model: nodeModel,
           provider: nodeProvider,
           status: 'success',
-          mediaUrl: result.url,
-          filePath: saved?.filePath,
+          mediaUrl,
+          filePath: persisted.filePath,
           params: { videoResolution, videoFps, videoFrames, seedanceResolution, seedanceRatio, seedanceDuration, generateAudio, cameraSettings: latestData.cameraSettings },
         });
         showToast(t('视频生成完成'));

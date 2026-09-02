@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  downloadUrlAndSave: vi.fn(),
+  persistMediaUrlToProjectData: vi.fn(),
   saveBinaryToProjectData: vi.fn(),
   isTauriEnv: vi.fn(() => true),
   resolveGeneralModel: vi.fn(),
@@ -15,7 +15,7 @@ vi.mock('../../src/services/fileService', () => ({
     maxBytes: 128 * 1024 * 1024,
     label: '测试音频参考',
   }),
-  downloadUrlAndSave: mocks.downloadUrlAndSave,
+  persistMediaUrlToProjectData: mocks.persistMediaUrlToProjectData,
   saveBinaryToProjectData: mocks.saveBinaryToProjectData,
   isTauriEnv: mocks.isTauriEnv,
 }));
@@ -52,9 +52,11 @@ import {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.isTauriEnv.mockReturnValue(true);
-  mocks.downloadUrlAndSave.mockResolvedValue({
+  mocks.persistMediaUrlToProjectData.mockResolvedValue({
     filePath: '/projects/p1/生成音频.mp3',
     assetUrl: 'asset://生成音频.mp3',
+    mediaUrl: 'asset://生成音频.mp3',
+    sourceUrl: 'https://cdn.example/audio.mp3',
   });
   mocks.saveBinaryToProjectData.mockResolvedValue({
     filePath: '/projects/p1/生成音频.wav',
@@ -105,7 +107,7 @@ describe('persistAudioGenerationResult', () => {
   });
 
   it('reports failed instead of passing the temporary url off as persisted', async () => {
-    mocks.downloadUrlAndSave.mockResolvedValue(null);
+    mocks.persistMediaUrlToProjectData.mockRejectedValue(new Error('生成媒体未能写入项目目录'));
 
     const persisted = await persistAudioGenerationResult(
       { url: 'https://cdn.example/audio.mp3' },
@@ -114,9 +116,28 @@ describe('persistAudioGenerationResult', () => {
     );
 
     expect(persisted.persistence).toBe('failed');
-    expect(persisted.persistError).toBe(AUDIO_PERSIST_FAILED_MESSAGE);
+    expect(persisted.persistError).toContain('项目目录');
     expect(persisted.mediaUrl).toBe('https://cdn.example/audio.mp3');
     expect(persisted.filePath).toBeUndefined();
+  });
+
+  it('points the persisted source at the project file instead of the temporary url', async () => {
+    mocks.persistMediaUrlToProjectData.mockResolvedValueOnce({
+      filePath: '/projects/p1/生成音频.mp3',
+      assetUrl: 'asset://生成音频.mp3',
+      mediaUrl: 'asset://生成音频.mp3',
+      sourceUrl: 'asset://生成音频.mp3',
+    });
+
+    const persisted = await persistAudioGenerationResult(
+      { url: 'blob:local/audio' },
+      'p1',
+      '生成音频',
+    );
+
+    expect(persisted.persistence).toBe('saved');
+    expect(persisted.outputUrl).toBe('asset://生成音频.mp3');
+    expect(persisted.sourceUrl).toBe('asset://生成音频.mp3');
   });
 
   it('surfaces the thrown reason from the save call', async () => {
@@ -145,6 +166,7 @@ describe('persistAudioGenerationResult', () => {
 
     expect(revoke).not.toHaveBeenCalled();
     expect(persisted.mediaUrl).toBe('blob:local/audio');
+    expect(persisted.persistError).toBe(AUDIO_PERSIST_FAILED_MESSAGE);
     vi.unstubAllGlobals();
   });
 
@@ -163,6 +185,6 @@ describe('persistAudioGenerationResult', () => {
       '生成音频',
     );
     expect(inBrowser.persistence).toBe('skipped');
-    expect(mocks.downloadUrlAndSave).not.toHaveBeenCalled();
+    expect(mocks.persistMediaUrlToProjectData).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,7 @@ import {
   subjectMatting,
 } from '../../../../services/onnxService';
 import { computeImageNodeDimensions } from './imageUtils';
+import { buildNodeFileName, resolveProjectOutputPath } from '../../../../services/fileService';
 
 const UPSCALE_MODEL = 'realesrgan-x4.onnx';
 const MATTING_MODEL = 'rmbg-1.4.onnx';
@@ -94,8 +95,14 @@ export function useImageNodeOnnxActions({
 
     try {
       const extension = filePath.split('.').pop() || 'png';
-      const baseName = filePath.replace(/\.[^.]+$/, '');
-      const result = await imageUpscale(filePath, `${baseName}_upscaled.${extension}`, UPSCALE_MODEL, taskId);
+      const projectId = useAppStore.getState().currentProjectId;
+      if (!projectId || projectId === 'default') throw new Error('请先在已保存项目中使用高清超分');
+      const outputPath = await resolveProjectOutputPath(
+        projectId,
+        buildNodeFileName(`${(data.label as string) || '图像'} 高清`, extension, 'upscaled'),
+      );
+      if (!outputPath) throw new Error('无法在项目目录中创建超分结果');
+      const result = await imageUpscale(filePath, outputPath, UPSCALE_MODEL, taskId);
       await createResultNode(convertFileSrc(result.output_path), result.output_path, '高清');
       updateNodeDataTransient(id, { status: 'success' });
       useAppStore.getState().showToast(`超分完成 ${result.input_size} → ${result.output_size}`);
@@ -108,7 +115,7 @@ export function useImageNodeOnnxActions({
       setIsUpscaling(false);
       setUpscaleProgress(0);
     }
-  }, [createResultNode, id, updateNodeDataTransient]);
+  }, [createResultNode, data.label, id, updateNodeDataTransient]);
 
   const handleUpscale = useCallback(async () => {
     const filePath = data.filePath as string | undefined;
@@ -149,8 +156,14 @@ export function useImageNodeOnnxActions({
     const taskId = `matting-${id}-${Date.now()}`;
 
     try {
-      const baseName = filePath.replace(/\.[^.]+$/, '');
-      const result = await subjectMatting(filePath, `${baseName}_subject.png`, MATTING_MODEL, taskId);
+      const projectId = useAppStore.getState().currentProjectId;
+      if (!projectId || projectId === 'default') throw new Error('请先在已保存项目中使用主体识别');
+      const outputPath = await resolveProjectOutputPath(
+        projectId,
+        buildNodeFileName(`${(data.label as string) || '图像'} 主体`, 'png', 'subject'),
+      );
+      if (!outputPath) throw new Error('无法在项目目录中创建主体识别结果');
+      const result = await subjectMatting(filePath, outputPath, MATTING_MODEL, taskId);
       await createResultNode(convertFileSrc(result.subject_path), result.subject_path, '主体');
       updateNodeDataTransient(id, { status: 'success' });
       useAppStore.getState().showToast(`主体识别完成，已创建新节点 (${result.input_size})`);
@@ -161,7 +174,7 @@ export function useImageNodeOnnxActions({
     } finally {
       setIsMattingRunning(false);
     }
-  }, [createResultNode, id, updateNodeDataTransient]);
+  }, [createResultNode, data.label, id, updateNodeDataTransient]);
 
   const handleSubjectMatting = useCallback(async () => {
     const filePath = data.filePath as string | undefined;

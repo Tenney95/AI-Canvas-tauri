@@ -9,7 +9,7 @@
  */
 import { pollTask } from './pollTask';
 import { useAppStore } from '../store/useAppStore';
-import { downloadUrlAndSave } from './fileService';
+import { persistMediaUrlToProjectData } from './fileService';
 import { applyImageBatchResults } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './ai/helpers';
@@ -232,16 +232,16 @@ async function applyNodeResult(
   const currentProjectId = store.currentProjectId;
 
   // 下载远程 URL 到本地
-  const saved = currentProjectId
-    ? await downloadUrlAndSave(resultUrl, currentProjectId, nodeType, nodeLabel).catch(() => null)
-    : null;
-  const mediaUrl = saved?.assetUrl || resultUrl;
+  const persisted = currentProjectId
+    ? await persistMediaUrlToProjectData(resultUrl, currentProjectId, nodeType, nodeLabel)
+    : { mediaUrl: resultUrl, sourceUrl: resultUrl };
+  const mediaUrl = persisted.mediaUrl;
 
   const updateData: Partial<BaseNodeData> = {
-    output: resultUrl,
-    sourceUrl: resultUrl,
-    filePath: saved?.filePath,
-    thumbnailUrl: resultUrl,
+    output: persisted.sourceUrl,
+    sourceUrl: persisted.sourceUrl,
+    filePath: persisted.filePath,
+    thumbnailUrl: mediaUrl,
     status: 'success',
   };
 
@@ -263,13 +263,13 @@ async function applyNodeResult(
     nodeLabel,
     timestamp: Date.now(),
     prompt: (data.prompt as string) || '',
-    output: resultUrl,
+    output: persisted.sourceUrl,
     nodeType,
     model: (data.model as string) || '',
     provider: (data.provider as string) || '',
     status: 'success',
-    mediaUrl: resultUrl,
-    filePath: saved?.filePath,
+    mediaUrl,
+    filePath: persisted.filePath,
   });
   store.showToast(`${nodeLabel} 生成已完成`);
 }

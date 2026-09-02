@@ -6,9 +6,7 @@ const mocks = vi.hoisted(() => ({
   generateVideo: vi.fn(),
   generateAudio: vi.fn(),
   persistAudioGenerationResult: vi.fn(),
-  downloadUrlAndSave: vi.fn(),
-  saveDataUrlToProjectData: vi.fn(),
-  saveBinaryToProjectData: vi.fn(),
+  persistMediaUrlToProjectData: vi.fn(),
   isTauriEnv: vi.fn(() => true),
   tagGeneratedProjectAssetSafely: vi.fn(),
   storeState: {
@@ -48,10 +46,9 @@ vi.mock('../../src/services/ai/generateAudio', () => ({
   persistAudioGenerationResult: mocks.persistAudioGenerationResult,
 }));
 vi.mock('../../src/services/fileService', () => ({
-  downloadUrlAndSave: mocks.downloadUrlAndSave,
+  isTransientMediaUrl: (url?: string) => Boolean(url && (/^data:/i.test(url) || /^blob:/i.test(url))),
+  persistMediaUrlToProjectData: mocks.persistMediaUrlToProjectData,
   isTauriEnv: mocks.isTauriEnv,
-  saveBinaryToProjectData: mocks.saveBinaryToProjectData,
-  saveDataUrlToProjectData: mocks.saveDataUrlToProjectData,
 }));
 vi.mock('../../src/services/fs/generatedAssetTags', () => ({
   tagGeneratedProjectAssetSafely: mocks.tagGeneratedProjectAssetSafely,
@@ -80,9 +77,11 @@ beforeEach(() => {
     persistence: 'saved',
   });
   mocks.isTauriEnv.mockReturnValue(true);
-  mocks.downloadUrlAndSave.mockResolvedValue({
+  mocks.persistMediaUrlToProjectData.mockResolvedValue({
     filePath: '/projects/project-1/对话图片.png',
     assetUrl: 'asset://对话图片.png',
+    mediaUrl: 'asset://对话图片.png',
+    sourceUrl: 'https://cdn.example/image.png',
   });
 });
 
@@ -283,7 +282,7 @@ describe('media artifact persistence', () => {
   });
 
   it('reports failed persistence instead of silently returning the temporary url', async () => {
-    mocks.downloadUrlAndSave.mockResolvedValue(null);
+    mocks.persistMediaUrlToProjectData.mockResolvedValue(null);
 
     const result = await runMediaGeneration({
       kind: 'video',
@@ -299,7 +298,7 @@ describe('media artifact persistence', () => {
   });
 
   it('surfaces the download error message when saving throws', async () => {
-    mocks.downloadUrlAndSave.mockRejectedValue(new Error('磁盘空间不足'));
+    mocks.persistMediaUrlToProjectData.mockRejectedValue(new Error('磁盘空间不足'));
 
     const result = await runMediaGeneration({
       kind: 'image',
@@ -320,9 +319,46 @@ describe('media artifact persistence', () => {
       deliveryMode: 'chat',
     }, null);
 
-    expect(mocks.downloadUrlAndSave).not.toHaveBeenCalled();
+    expect(mocks.persistMediaUrlToProjectData).not.toHaveBeenCalled();
     expect(result.persistence).toBe('skipped');
     expect(result.url).toBe('https://cdn.example/image.png');
+  });
+
+  it('replaces an inline custom-provider result with local references only', async () => {
+    mocks.generateImage.mockResolvedValue({
+      url: 'data:image/png;base64,AQID',
+      width: 1,
+      height: 1,
+    });
+    mocks.persistMediaUrlToProjectData.mockResolvedValue({
+      filePath: '/projects/project-1/对话图片.png',
+      assetUrl: 'asset://对话图片.png',
+      mediaUrl: 'asset://对话图片.png',
+      sourceUrl: 'asset://对话图片.png',
+    });
+
+    const result = await runMediaGeneration({
+      kind: 'image',
+      prompt: '一只猫',
+      modelRef: 'openai/image-model',
+      deliveryMode: 'chat',
+    }, 'project-1');
+
+    expect(result.url).toBe('asset://对话图片.png');
+    expect(result.sourceUrl).toBe('asset://对话图片.png');
+    expect(JSON.stringify(result)).not.toContain('data:image');
+  });
+
+  it('fails closed when an inline result cannot be written to the project', async () => {
+    mocks.generateVideo.mockResolvedValue({ url: 'data:video/mp4;base64,AQID' });
+    mocks.persistMediaUrlToProjectData.mockRejectedValue(new Error('磁盘空间不足'));
+
+    await expect(runMediaGeneration({
+      kind: 'video',
+      prompt: '一段风景',
+      modelRef: 'openai/video-model',
+      deliveryMode: 'chat',
+    }, 'project-1')).rejects.toThrow('磁盘空间不足');
   });
 
   it('carries the audio persistence state through from the audio persister', async () => {
@@ -364,7 +400,7 @@ describe('retryMediaArtifactPersist', () => {
   it('re-downloads from the source url and returns a saved artifact', async () => {
     const result = await retryMediaArtifactPersist(unsaved, 'project-1');
 
-    expect(mocks.downloadUrlAndSave).toHaveBeenCalledWith(
+    expect(mocks.persistMediaUrlToProjectData).toHaveBeenCalledWith(
       'https://cdn.example/image.png',
       'project-1',
       'ai-image',
@@ -377,7 +413,7 @@ describe('retryMediaArtifactPersist', () => {
   });
 
   it('throws with the underlying reason when the retry also fails', async () => {
-    mocks.downloadUrlAndSave.mockRejectedValue(new Error('签名地址已过期'));
+    mocks.persistMediaUrlToProjectData.mockRejectedValue(new Error('签名地址已过期'));
 
     await expect(retryMediaArtifactPersist(unsaved, 'project-1')).rejects.toThrow('签名地址已过期');
   });

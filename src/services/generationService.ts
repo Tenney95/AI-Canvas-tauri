@@ -7,7 +7,7 @@ import type { BaseNodeData, ImagePostProcess } from '../types';
 import { MAX_IMAGE_BATCH_COUNT } from '../types/aiTypes';
 import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from './aiService';
 import { persistAudioGenerationResult } from './ai/generateAudio';
-import { downloadUrlAndSave } from './fileService';
+import { persistMediaUrlToProjectData } from './fileService';
 import {
   applyImageBatchResults,
   failImageBatchNodes,
@@ -115,27 +115,27 @@ export async function executeGeneration(
       });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
 
-      const saved = submittingProjectId
-        ? await downloadUrlAndSave(result.url, submittingProjectId, 'ai-image', data.label).catch(() => null)
-        : null;
-      const mediaUrl = saved?.assetUrl || result.url;
+      const persisted = submittingProjectId
+        ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-image', data.label)
+        : { mediaUrl: result.url, sourceUrl: result.url };
+      const mediaUrl = persisted.mediaUrl;
       store.updateNodeData(nodeId, {
-        imageUrl: mediaUrl, sourceUrl: result.url, filePath: saved?.filePath,
-        thumbnailUrl: result.url, output: result.url, status: 'success',
+        imageUrl: mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
+        thumbnailUrl: mediaUrl, output: persisted.sourceUrl, status: 'success',
         imageWidth: result.width, imageHeight: result.height,
       });
       store.syncDramaAssetImageFromNode?.(nodeId, mediaUrl);
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
-        output: result.url, nodeType: 'ai-image', model: nodeModel, provider: nodeProvider,
-        status: 'success', mediaUrl: result.url, filePath: saved?.filePath,
+        output: persisted.sourceUrl, nodeType: 'ai-image', model: nodeModel, provider: nodeProvider,
+        status: 'success', mediaUrl, filePath: persisted.filePath,
         params: { imageSize, aspectRatio },
       });
 
-      if (postProcess === 'character-8-direction-grid' && saved?.filePath) {
+      if (postProcess === 'character-8-direction-grid' && persisted.filePath) {
         const { createCharacterDirectionGrid } = await import('./onnxService');
         try {
-          const gridResult = await createCharacterDirectionGrid(saved.filePath);
+          const gridResult = await createCharacterDirectionGrid(persisted.filePath);
           if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
 
           const sourceNode = useAppStore.getState().nodes.find((item) => item.id === nodeId);
@@ -163,19 +163,19 @@ export async function executeGeneration(
         workflowId: data.workflowId, workflowInputs: data.workflowInputs,
       });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
-      const saved = submittingProjectId
-        ? await downloadUrlAndSave(result.url, submittingProjectId, 'ai-panorama', data.label).catch(() => null)
-        : null;
-      const mediaUrl = saved?.assetUrl || result.url;
+      const persisted = submittingProjectId
+        ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-panorama', data.label)
+        : { mediaUrl: result.url, sourceUrl: result.url };
+      const mediaUrl = persisted.mediaUrl;
       store.updateNodeData(nodeId, {
-        imageUrl: mediaUrl, sourceUrl: result.url, filePath: saved?.filePath,
-        thumbnailUrl: result.url, output: result.url, status: 'success',
+        imageUrl: mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
+        thumbnailUrl: mediaUrl, output: persisted.sourceUrl, status: 'success',
         imageWidth: result.width, imageHeight: result.height,
       });
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
-        output: result.url, nodeType: 'ai-panorama', model: nodeModel, provider: nodeProvider,
-        status: 'success', mediaUrl: result.url, filePath: saved?.filePath,
+        output: persisted.sourceUrl, nodeType: 'ai-panorama', model: nodeModel, provider: nodeProvider,
+        status: 'success', mediaUrl, filePath: persisted.filePath,
         params: { imageSize, aspectRatio },
       });
       store.showToast('全景图生成完成');
@@ -205,17 +205,17 @@ export async function executeGeneration(
         workflowId: data.workflowId, workflowInputs: data.workflowInputs,
       });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
-      const saved = submittingProjectId
-        ? await downloadUrlAndSave(result.url, submittingProjectId, 'ai-video', data.label).catch(() => null)
-        : null;
+      const persisted = submittingProjectId
+        ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-video', data.label)
+        : { mediaUrl: result.url, sourceUrl: result.url };
       store.updateNodeData(nodeId, {
-        videoUrl: saved?.assetUrl || result.url, sourceUrl: result.url, filePath: saved?.filePath,
-        thumbnailUrl: result.url, output: result.url, status: 'success',
+        videoUrl: persisted.mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
+        thumbnailUrl: persisted.mediaUrl, output: persisted.sourceUrl, status: 'success',
       });
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
-        output: result.url, nodeType: 'ai-video', model: nodeModel, provider: nodeProvider,
-        status: 'success', mediaUrl: result.url, filePath: saved?.filePath,
+        output: persisted.sourceUrl, nodeType: 'ai-video', model: nodeModel, provider: nodeProvider,
+        status: 'success', mediaUrl: persisted.mediaUrl, filePath: persisted.filePath,
         params: { videoResolution, videoFps, videoFrames, seedanceResolution, seedanceRatio, seedanceDuration, generateAudio: genAudio },
       });
       store.showToast('视频生成完成');

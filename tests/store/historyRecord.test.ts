@@ -2,6 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OutputHistoryEntry } from '../../src/types';
 import type { HistoryPage } from '../../src/services/indexedDbService';
 
+const fileServiceMocks = vi.hoisted(() => ({
+  persistMediaUrlToProjectData: vi.fn(async () => ({
+    filePath: '/project/data/generated.png',
+    mediaUrl: 'asset:///project/data/generated.png',
+    sourceUrl: 'asset:///project/data/generated.png',
+  })),
+}));
+
 const historyMocks = vi.hoisted(() => ({
   putHistoryEntry: vi.fn(async () => undefined),
   putHistoryEntries: vi.fn(async () => undefined),
@@ -21,6 +29,13 @@ const historyMocks = vi.hoisted(() => ({
 vi.mock('../../src/services/indexedDbService', () => historyMocks);
 vi.mock('../../src/services/fs/generatedAssetTags', () => ({
   tagGeneratedProjectAssetSafely: vi.fn(async () => undefined),
+}));
+vi.mock('../../src/services/fs/core', () => ({
+  getAssetUrlFromPath: vi.fn(async (path: string) => `asset://${path}`),
+}));
+vi.mock('../../src/services/fileService', () => ({
+  isTransientMediaUrl: (url?: string) => Boolean(url && (/^data:/i.test(url) || /^blob:/i.test(url))),
+  persistMediaUrlToProjectData: fileServiceMocks.persistMediaUrlToProjectData,
 }));
 
 import { useAppStore } from '../../src/store/useAppStore';
@@ -114,6 +129,71 @@ describe('project output history', () => {
     ]);
     expect(useAppStore.getState().historyTotalCount).toBe(1);
     expect(useAppStore.getState().historyProjectId).toBe('project-b');
+  });
+
+  it('replaces inline history media with the node project-file reference', async () => {
+    const inline = 'data:image/png;base64,AQID';
+    useAppStore.setState({
+      currentProjectId: 'project-a',
+      nodes: [{
+        id: 'node-inline',
+        type: 'ai-image',
+        position: { x: 0, y: 0 },
+        data: {
+          label: 'Inline image',
+          type: 'ai-image',
+          status: 'success',
+          filePath: '/project/data/generated.png',
+          imageUrl: 'asset:///project/data/generated.png',
+        },
+      }],
+    });
+
+    await useAppStore.getState().recordOutputHistory('node-inline', {
+      ...historyEntry(1),
+      nodeId: 'node-inline',
+      nodeType: 'ai-image',
+      output: inline,
+      mediaUrl: inline,
+      filePath: '/project/data/generated.png',
+    });
+
+    expect(historyMocks.putHistoryEntry).toHaveBeenCalledWith(expect.objectContaining({
+      output: 'asset:///project/data/generated.png',
+      mediaUrl: 'asset:///project/data/generated.png',
+      filePath: '/project/data/generated.png',
+    }));
+    expect(JSON.stringify(historyMocks.putHistoryEntry.mock.calls[0][0])).not.toContain('data:image');
+  });
+
+  it('keeps the successful record intact when the inline media migration fails', async () => {
+    const inline = 'data:image/png;base64,AQID';
+    const record: OutputHistoryEntry = {
+      ...historyEntry(1),
+      id: 'history-inline',
+      projectId: 'project-a',
+      nodeId: 'node-inline',
+      nodeType: 'ai-image',
+      output: inline,
+      mediaUrl: inline,
+    };
+    historyMocks.getHistoryEntriesPage.mockResolvedValueOnce({
+      records: [record],
+      nextCursor: null,
+      hasMore: false,
+    });
+    historyMocks.getHistoryEntryCount.mockResolvedValueOnce(1);
+    fileServiceMocks.persistMediaUrlToProjectData.mockRejectedValueOnce(new Error('磁盘不可写'));
+    useAppStore.setState({ currentProjectId: 'project-a', nodes: [] });
+
+    await useAppStore.getState().loadHistoryFromDb();
+
+    // 磁盘暂时不可写不该把成功记录永久改成 error，下次打开还能再迁一次
+    expect(historyMocks.putHistoryEntries).not.toHaveBeenCalled();
+    expect(useAppStore.getState().outputHistoryRecords[0]).toMatchObject({
+      status: 'error',
+      mediaUrl: undefined,
+    });
   });
 
   it('does not persist history without a current project', async () => {

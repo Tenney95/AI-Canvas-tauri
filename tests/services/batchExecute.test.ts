@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   buildAnimationSpritePrompt: vi.fn(),
   resolveAnimationSheetAspectRatio: vi.fn(),
   persistAudioGenerationResult: vi.fn(),
-  downloadUrlAndSave: vi.fn(),
+  persistMediaUrlToProjectData: vi.fn(),
   syncDramaAssetImageFromNode: vi.fn(),
 }));
 
@@ -34,7 +34,7 @@ vi.mock('../../src/services/ai/generateAudio', () => ({
 }));
 
 vi.mock('../../src/services/fileService', () => ({
-  downloadUrlAndSave: mocks.downloadUrlAndSave,
+  persistMediaUrlToProjectData: mocks.persistMediaUrlToProjectData,
 }));
 
 vi.mock('../../src/store/useAppStore', () => ({
@@ -94,7 +94,10 @@ beforeEach(() => {
   mocks.buildAnimationSpritePrompt.mockReset().mockImplementation((prompt: string) => `animation:${prompt}`);
   mocks.resolveAnimationSheetAspectRatio.mockReset().mockReturnValue('2:1');
   mocks.persistAudioGenerationResult.mockReset();
-  mocks.downloadUrlAndSave.mockReset().mockResolvedValue(null);
+  mocks.persistMediaUrlToProjectData.mockImplementation(async (url: string) => ({
+    mediaUrl: url,
+    sourceUrl: url,
+  }));
   mocks.syncDramaAssetImageFromNode.mockReset();
 });
 
