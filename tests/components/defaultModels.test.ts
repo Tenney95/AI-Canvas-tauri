@@ -238,6 +238,51 @@ describe('Sora2U 独立模型分组', () => {
   });
 });
 
+describe('CCC API 独立模型分组', () => {
+  const config: AppConfig = {
+    providers: {
+      cccapi: { name: 'CCC API', apiKey: 'k', catalogId: 'cccapi', selectedModels: [] },
+    },
+    theme: 'dark',
+  };
+  const generalModels = [
+    {
+      id: 'ccc-image',
+      name: 'GPT Image 2',
+      modelId: 'gpt-image-2',
+      category: 'image' as const,
+      providerConfigId: 'cccapi',
+    },
+  ];
+
+  it('节点菜单显示独立的 CCC API 厂商分组', () => {
+    const groups = getGeneralModelGroups(generalModels, config, 'ai-image');
+
+    expect(groups).toEqual([
+      expect.objectContaining({
+        id: 'general-provider-cccapi',
+        name: 'CCC API',
+        badgeText: 'CCC',
+        models: [expect.objectContaining({
+          value: 'general/ccc-image',
+          provider: 'general',
+          label: 'GPT Image 2',
+        })],
+      }),
+    ]);
+  });
+
+  it('对话媒体目录沿用 CCC API 分组', () => {
+    const option = getMediaModelOptions(generalModels, config)
+      .find((model) => model.value === 'general/ccc-image');
+
+    expect(option).toMatchObject({
+      groupId: 'general-provider-cccapi',
+      groupName: 'CCC API',
+    });
+  });
+});
+
 describe('自定义连接模型的来源标注', () => {
   const config: AppConfig = {
     providers: {

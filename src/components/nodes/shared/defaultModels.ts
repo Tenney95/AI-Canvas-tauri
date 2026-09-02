@@ -1133,13 +1133,24 @@ function dedicatedGeneralModelGroup(
   config?: ProviderModelVisibilityConfig,
 ): GeneralModelGroupPresentation | null {
   const provider = config?.providers[model.providerConfigId];
-  if (provider?.catalogId !== 'sora2u' && model.providerConfigId !== 'sora2u') return null;
-  return {
-    id: `general-provider-${model.providerConfigId}`,
-    name: 'Sora2U',
-    description: 'Seedance 视频与图片模型',
-    badgeText: 'S2U',
-  };
+  const catalogId = provider?.catalogId || model.providerConfigId;
+  if (catalogId === 'sora2u') {
+    return {
+      id: `general-provider-${model.providerConfigId}`,
+      name: 'Sora2U',
+      description: 'Seedance 视频与图片模型',
+      badgeText: 'S2U',
+    };
+  }
+  if (catalogId === 'cccapi') {
+    return {
+      id: `general-provider-${model.providerConfigId}`,
+      name: 'CCC API',
+      description: 'OpenAI 兼容文本与图片模型',
+      badgeText: 'CCC',
+    };
+  }
+  return null;
 }
 
 function createGeneralModelOption(model: GeneralModelConfig): ModelOption {

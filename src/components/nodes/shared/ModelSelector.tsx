@@ -98,7 +98,7 @@ export default function ModelSelector({
     [config, groups, modelNodeType],
   );
 
-  /** 通用执行协议保持不变，只把内置 Sora2U 连接拆成独立厂商分组。 */
+  /** 通用执行协议保持不变，只把有独立品牌展示的内置连接拆成厂商分组。 */
   const generalModelGroups = useMemo(() => getGeneralModelGroups(
     generalModels,
     config,

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchProviderModelCatalog } from '../../src/services/ai/providerCatalogService';
+import {
+  fetchProviderModelCatalog,
+  getProviderDefinition,
+} from '../../src/services/ai/providerCatalogService';
 import { SORA2U_MODEL_MANIFEST } from '../../src/services/ai/providers/sora2uModelManifest';
 
 function jsonResponse(body: unknown): Response {
@@ -99,6 +102,72 @@ describe('providerCatalogService 模型分类推断', () => {
     expect(categoryOf('tts-1')).toBe('audio');
     expect(categoryOf('dall-e-3')).toBe('image');
     expect(categoryOf('minimax-text-01')).toBe('text');
+  });
+});
+
+describe('CCC API 内置厂商目录', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('使用 OpenAI 兼容地址读取当前 Key 可用的模型', async () => {
+    expect(getProviderDefinition('cccapi')).toMatchObject({
+      id: 'cccapi',
+      name: 'CCC API',
+      catalogAdapter: 'openai-compatible',
+      defaultBaseUrl: 'https://cccapi.cn/v1',
+      modelsPath: '/models',
+      allowCustomBaseUrl: false,
+      externalUrl: 'https://cccapi.cn',
+      models: [
+        expect.objectContaining({
+          id: 'gpt-4o-mini',
+          category: 'text',
+          provider: 'cccapi',
+          inputModalities: ['text', 'image'],
+        }),
+        expect.objectContaining({
+          id: 'gpt-image-2',
+          category: 'image',
+          provider: 'cccapi',
+        }),
+      ],
+    });
+
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      object: 'list',
+      data: [
+        { id: 'gpt-4o-mini', object: 'model' },
+        { id: 'gpt-image-2', object: 'model' },
+      ],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchProviderModelCatalog({
+      providerId: 'cccapi',
+      config: {
+        name: 'CCC API',
+        apiKey: 'sk-ccc-test',
+        catalogId: 'cccapi',
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://cccapi.cn/v1/models',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { Authorization: 'Bearer sk-ccc-test' },
+      }),
+    );
+    expect(result).toMatchObject({
+      source: 'remote',
+      resolvedBaseUrl: 'https://cccapi.cn/v1',
+    });
+    expect(result.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'gpt-4o-mini', category: 'text', provider: 'cccapi' }),
+      expect.objectContaining({ id: 'gpt-image-2', category: 'image', provider: 'cccapi' }),
+    ]));
   });
 });
 

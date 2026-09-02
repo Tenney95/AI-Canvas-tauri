@@ -6,6 +6,7 @@
 import {
   APIMART_BASE_URL,
   BOCHA_SEARCH_BASE_URL,
+  CCCAPI_BASE_URL,
   EXA_SEARCH_BASE_URL,
   GRSAI_BASE_URL,
   RUNNINGHUB_MODEL_BASE_URL,
@@ -92,6 +93,25 @@ const API_KEY_FIELD: ProviderCredentialField = {
   secret: true,
 };
 
+/** 未填写 API Key 时展示的最小目录；填写后仍以远端 /models 为准。 */
+const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
+  {
+    id: 'gpt-4o-mini',
+    name: 'GPT-4o mini',
+    category: 'text',
+    provider: 'cccapi',
+    description: 'OpenAI 兼容文本与多模态模型',
+    inputModalities: ['text', 'image'],
+  },
+  {
+    id: 'gpt-image-2',
+    name: 'GPT Image 2',
+    category: 'image',
+    provider: 'cccapi',
+    description: 'OpenAI 兼容图片生成模型',
+  },
+];
+
 const SORA2U_HIDDEN_MODEL_IDS = [
   'seedance-2.5',
   'seedance-2.5-character',
@@ -121,6 +141,22 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
       API_KEY_FIELD,
       { key: 'baseUrl', label: '接口地址', required: false, placeholder: APIMART_BASE_URL },
     ],
+  },
+  {
+    id: 'cccapi',
+    name: 'CCC API',
+    description: 'OpenAI 兼容的多模型中转服务，按当前 API Key 动态获取模型',
+    badgeText: 'CCC',
+    authType: 'api-key',
+    catalogAdapter: 'openai-compatible',
+    defaultBaseUrl: CCCAPI_BASE_URL,
+    modelsPath: '/models',
+    allowCustomBaseUrl: false,
+    externalUrl: 'https://cccapi.cn',
+    credentials: [
+      { ...API_KEY_FIELD, placeholder: 'sk-...' },
+    ],
+    models: CCCAPI_MODEL_MANIFEST,
   },
   {
     id: 'xai',
