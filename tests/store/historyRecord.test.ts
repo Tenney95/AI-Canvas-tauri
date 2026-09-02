@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OutputHistoryEntry } from '../../src/types';
-import type { HistoryPage } from '../../src/services/indexedDbService';
+import type { HistoryPage, HistoryRecord } from '../../src/services/indexedDbService';
 
 const fileServiceMocks = vi.hoisted(() => ({
   persistMediaUrlToProjectData: vi.fn(async () => ({
@@ -11,8 +11,8 @@ const fileServiceMocks = vi.hoisted(() => ({
 }));
 
 const historyMocks = vi.hoisted(() => ({
-  putHistoryEntry: vi.fn(async () => undefined),
-  putHistoryEntries: vi.fn(async () => undefined),
+  putHistoryEntry: vi.fn(async (_record: HistoryRecord) => undefined),
+  putHistoryEntries: vi.fn(async (_records: HistoryRecord[]) => undefined),
   deleteHistoryEntryFromDb: vi.fn(async () => undefined),
   getHistoryEntriesPage: vi.fn(async (): Promise<HistoryPage> => ({
     records: [], nextCursor: null, hasMore: false,
