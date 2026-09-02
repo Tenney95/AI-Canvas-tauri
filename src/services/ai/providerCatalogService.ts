@@ -145,7 +145,7 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
   {
     id: 'cccapi',
     name: 'CCC API',
-    description: 'OpenAI 兼容的多模型中转服务，按当前 API Key 动态获取模型',
+    description: '群内大佬自建自用中转！平价对接，纯公益不赚一分钱✅，稳定、速度快、出图质量高',
     badgeText: 'CCC',
     authType: 'api-key',
     catalogAdapter: 'openai-compatible',
