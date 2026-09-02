@@ -111,8 +111,9 @@ describe('CCC API 内置厂商目录', () => {
     vi.restoreAllMocks();
   });
 
-  it('使用 OpenAI 兼容地址读取当前 Key 可用的模型', async () => {
-    expect(getProviderDefinition('cccapi')).toMatchObject({
+  it('内置目录覆盖监控页列出的全部 openai 渠道模型', () => {
+    const definition = getProviderDefinition('cccapi');
+    expect(definition).toMatchObject({
       id: 'cccapi',
       name: 'CCC API',
       catalogAdapter: 'openai-compatible',
@@ -120,21 +121,30 @@ describe('CCC API 内置厂商目录', () => {
       modelsPath: '/models',
       allowCustomBaseUrl: false,
       externalUrl: 'https://cccapi.cn',
-      models: [
-        expect.objectContaining({
-          id: 'gpt-4o-mini',
-          category: 'text',
-          provider: 'cccapi',
-          inputModalities: ['text', 'image'],
-        }),
-        expect.objectContaining({
-          id: 'gpt-image-2',
-          category: 'image',
-          provider: 'cccapi',
-        }),
-      ],
     });
 
+    const models = definition?.models ?? [];
+    const findModel = (id: string) => models.find((model) => model.id === id);
+    for (const id of [
+      'gpt-image-2', 'gpt-5.5', 'gpt-5.4', 'gpt-5.6-terra', 'o4-mini', 'codex-auto-review',
+      'gpt-4', 'gpt-4-turbo', 'gpt-4.1', 'gpt-4.1-nano', 'gpt-4o', 'gpt-5.6', 'gpt-5.6-sol',
+      'gpt-5.3-codex-spark', 'gpt-5.2', 'o3', 'gpt-5', 'gpt-5.4-mini', 'gpt-5.6-luna',
+      'gpt-image-1', 'o3-mini', 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-5.2-pro',
+    ]) {
+      expect(findModel(id), `缺少模型 ${id}`).toBeDefined();
+    }
+    expect(models.every((model) => model.provider === 'cccapi')).toBe(true);
+
+    expect(findModel('gpt-image-1')?.category).toBe('image');
+    expect(findModel('gpt-image-2')?.category).toBe('image');
+    expect(findModel('gpt-5.6')?.category).toBe('text');
+    // 纯文本模型要显式声明，不能落进按 ID 猜模态的兜底分支
+    expect(findModel('gpt-4')?.inputModalities).toEqual(['text']);
+    expect(findModel('o3-mini')?.inputModalities).toEqual(['text']);
+    expect(findModel('gpt-4o-mini')?.inputModalities).toEqual(['text', 'image']);
+  });
+
+  it('使用 OpenAI 兼容地址读取当前 Key 可用的模型', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       object: 'list',
       data: [

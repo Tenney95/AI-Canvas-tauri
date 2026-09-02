@@ -93,8 +93,31 @@ const API_KEY_FIELD: ProviderCredentialField = {
   secret: true,
 };
 
-/** 未填写 API Key 时展示的最小目录；填写后仍以远端 /models 为准。 */
+/**
+ * 未填写 API Key 时展示的目录；填写后仍以远端 /models 为准。
+ * 模型 ID 取自 CCC API 监控页 https://cccapi.cn/monitor 的 openai 渠道。
+ * inputModalities 只在与按 ID 猜模态的兜底规则不一致时才显式声明，
+ * 避免把 gpt-4 / o3-mini 这类纯文本模型误判成能吃图。
+ */
 const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
+  { id: 'gpt-5.6', name: 'GPT-5.6', category: 'text', provider: 'cccapi', description: 'GPT-5.6 通用文本与多模态模型' },
+  { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', category: 'text', provider: 'cccapi', description: 'GPT-5.6 Sol 文本与多模态模型' },
+  { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', category: 'text', provider: 'cccapi', description: 'GPT-5.6 Luna 文本与多模态模型' },
+  { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', category: 'text', provider: 'cccapi', description: 'GPT-5.6 Terra 文本与多模态模型' },
+  { id: 'gpt-5.5', name: 'GPT-5.5', category: 'text', provider: 'cccapi', description: 'GPT-5.5 通用文本与多模态模型' },
+  { id: 'gpt-5.4', name: 'GPT-5.4', category: 'text', provider: 'cccapi', description: 'GPT-5.4 通用文本与多模态模型' },
+  { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini', category: 'text', provider: 'cccapi', description: 'GPT-5.4 mini 轻量文本与多模态模型' },
+  { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', category: 'text', provider: 'cccapi', description: 'GPT-5.3 Codex Spark 编码模型' },
+  { id: 'gpt-5.2', name: 'GPT-5.2', category: 'text', provider: 'cccapi', description: 'GPT-5.2 通用文本与多模态模型' },
+  { id: 'gpt-5.2-pro', name: 'GPT-5.2 Pro', category: 'text', provider: 'cccapi', description: 'GPT-5.2 Pro 高能力文本与多模态模型' },
+  { id: 'gpt-5', name: 'GPT-5', category: 'text', provider: 'cccapi', description: 'GPT-5 通用文本与多模态模型' },
+  { id: 'o4-mini', name: 'o4-mini', category: 'text', provider: 'cccapi', description: 'o4-mini 轻量推理模型，支持多模态输入' },
+  { id: 'o3', name: 'o3', category: 'text', provider: 'cccapi', description: 'o3 强推理模型，支持多模态输入' },
+  { id: 'o3-mini', name: 'o3-mini', category: 'text', provider: 'cccapi', description: 'o3-mini 轻量推理模型', inputModalities: ['text'] },
+  { id: 'gpt-4.1', name: 'GPT-4.1', category: 'text', provider: 'cccapi', description: 'GPT-4.1 通用文本与多模态模型' },
+  { id: 'gpt-4.1-mini', name: 'GPT-4.1 mini', category: 'text', provider: 'cccapi', description: 'GPT-4.1 mini 轻量文本与多模态模型' },
+  { id: 'gpt-4.1-nano', name: 'GPT-4.1 nano', category: 'text', provider: 'cccapi', description: 'GPT-4.1 nano 极轻量文本与多模态模型' },
+  { id: 'gpt-4o', name: 'GPT-4o', category: 'text', provider: 'cccapi', description: 'GPT-4o 通用文本与多模态模型' },
   {
     id: 'gpt-4o-mini',
     name: 'GPT-4o mini',
@@ -103,13 +126,11 @@ const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
     description: 'OpenAI 兼容文本与多模态模型',
     inputModalities: ['text', 'image'],
   },
-  {
-    id: 'gpt-image-2',
-    name: 'GPT Image 2',
-    category: 'image',
-    provider: 'cccapi',
-    description: 'OpenAI 兼容图片生成模型',
-  },
+  { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', category: 'text', provider: 'cccapi', description: 'GPT-4 Turbo 通用文本与多模态模型' },
+  { id: 'gpt-4', name: 'GPT-4', category: 'text', provider: 'cccapi', description: 'GPT-4 通用文本模型', inputModalities: ['text'] },
+  { id: 'codex-auto-review', name: 'Codex Auto Review', category: 'text', provider: 'cccapi', description: 'Codex 自动代码评审模型' },
+  { id: 'gpt-image-2', name: 'GPT Image 2', category: 'image', provider: 'cccapi', description: 'OpenAI 兼容图片生成模型' },
+  { id: 'gpt-image-1', name: 'GPT Image 1', category: 'image', provider: 'cccapi', description: 'OpenAI 兼容图片生成模型（上一代）' },
 ];
 
 const SORA2U_HIDDEN_MODEL_IDS = [
