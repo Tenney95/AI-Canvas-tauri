@@ -99,13 +99,13 @@ definePlugin({
 - 暂不支持：代码签名、静默自动更新、压缩包、异步 JS、第三方模块、任意网络、自定义 React 节点、任意插件 UI/HTML 面板、Agent 工具注册。
 - 后续扩展必须继续走 capability API，不得把 Store、Tauri API 或密钥直接交给插件。
 
-## Plugin API v2 扩展（已实施）
+## Plugin API v1 自定义节点与宿主能力（已实施）
 
 - `contributes.nodes` 可声明宿主渲染的自定义节点、字段及输入输出端口；画布统一使用 `plugin-node` 渲染器，不加载插件 React/HTML。
 - 自定义节点继续复用同步 QuickJS 函数，通过最多 4 次受控 effect 请求异步宿主能力。
 - `models.read` 只提供脱敏模型目录，`models.invoke` 由现有文本、图片、视频和音频生成服务代为调用，插件拿不到密钥或连接地址。
-- `files.read` 只读取用户通过系统选择器授权的 UTF-8 文本，绝对路径仅存在内存；`files.write` 每次通过系统保存弹窗写出文本。
-- API v1 插件保持兼容；插件停用或卸载后自定义节点保留为不可用占位，不删除项目数据。
+- `files.connected.read` 只通过调用级不透明资源句柄读取当前节点或直接入边项目文件；`files.output.create` 由宿主创建派生输出。
+- 插件停用或卸载后自定义节点保留为不可用占位，不删除项目数据。
 
 ## GitHub 插件市场扩展（已实施）
 
@@ -116,9 +116,9 @@ definePlugin({
 - 插件页自动检查更新并做 15 分钟内存缓存；安装和更新都必须由用户点击，不静默执行。
 - 当前不提供代码签名或市场服务端代理；规模超过匿名 GitHub API 限额后，再增加可信聚合服务。
 
-## Plugin API v3 可信 Python 扩展（已实施）
+## Plugin API v1 可信 Python 运行时（已实施）
 
-- v3 通过 `runtime: "python"` 与 `entry: "main.py"` 显式声明可信 Python 代码；v1/v2 继续归一化为 JavaScript，不迁移已有记录。
+- v1 通过 `runtime: "python"` 与 `entry: "main.py"` 显式声明可信 Python 代码；JavaScript 使用 `runtime: "javascript"` 与 `main.js`。
 - Python 使用本机 Python 3 与当前环境已安装包，每次调用独立子进程，通过有界 JSON stdin/stdout 协议执行 `define_plugin` 注册的同步工具。
 - Rust 使用固定参数数组启动解释器，不经过 Shell；提供 30 秒超时、进程终止、512 KiB 源码、1 MiB 输出和 64 KiB 错误上限。
 - Python 插件不是沙箱，可以以当前用户权限访问文件、网络、环境变量和系统 API；安装、更新与重新启用时均显示不可混淆的高风险确认。

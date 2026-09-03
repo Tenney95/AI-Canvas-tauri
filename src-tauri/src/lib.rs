@@ -1149,10 +1149,9 @@ pub fn run() {
             plugin_registry::set_plugin_registration_enabled,
             plugin_registry::remove_plugin_registration,
             plugin_registry::get_plugin_registration_status,
+            plugin_registry::read_plugin_package_resource,
             plugin_runtime::execute_node_plugin_tool,
             plugin_runtime::get_python_plugin_runtime_status,
-            plugin_ui::open_plugin_ui_window,
-            plugin_ui::close_plugin_ui_window,
         ])
         .on_window_event(|window, event| {
             // 用户把文件拖进自有窗口 = 一次显式授权，登记后复制/读取命令才放行。

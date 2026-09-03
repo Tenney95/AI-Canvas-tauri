@@ -80,7 +80,7 @@ AI-Canvas-tauri/
 │   │   ├── chat/              # Agent Runtime、Registry、Policy、子智能体、上下文、记忆、历史
 │   │   │   └── tools/         # 画布、媒体、预设、联网、文件、Skill、厂商配置、短剧资产、剧集分集、记忆工具
 │   │   ├── mcp/               # MCP 控制服务、双传输 bridge 客户端、会话配置与令牌生命周期
-│   │   ├── plugins/           # 插件清单、市场、文件 grant 与执行租约
+│   │   ├── plugins/           # 插件清单、市场、不透明资源 grant、UI 会话与执行租约
 │   │   ├── fs/                # 文件基础设施、资产索引、回收站、资产库、存储健康
 │   │   ├── fileService.ts     # 文件能力统一前端入口
 │   │   ├── providerSecretService.ts # API Key、MCP 固定令牌与 Rust 凭据存储的桥接
@@ -138,9 +138,9 @@ AI-Canvas-tauri/
 - 异步画布派生结果回写前必须经过 `canvasDerivationGuard`，防止过期结果写入已切换的项目
 - 项目切换必须同步加载项目对话、AgentTask、短剧资产、项目记忆和项目数据
 - 非持久化运行时对象，例如 `AbortController`、文件 grant 路径和窗口句柄，禁止写入 IndexedDB；MCP 固定令牌只允许进入 Rust `secret_store`，不得进入 Store 持久化
-- `InstalledPlugin.sourceDigest` 只允许为旧记录迁移而暂时缺失；插件完成加载后，没有有效原生摘要必须失败关闭
-- 插件工具或节点捕获的 `sourceDigest` 是整次调用的版本租约；每轮原生执行、宿主 effect 和最终写回前都必须复核当前启用版本
-- 插件摘要切换、停用和卸载必须先撤销前端租约并清理内存文件 grant；旧版本结果不得写入新版本状态
+- `InstalledPlugin.sourceDigest` 与 `revisionDigest` 都是已安装插件的必需执行身份；缺少任一有效原生摘要必须失败关闭，不做旧记录迁移执行
+- 插件工具、节点或 UI 会话捕获的 `revisionDigest` 是整次调用的版本租约；每轮原生执行、资源读取、宿主 effect 和最终写回前都必须复核当前启用 revision
+- 插件摘要切换、停用和卸载必须先撤销前端租约并清理调用级资源 grant；旧 revision 结果不得写入新 revision 状态
 
 ### 组件职责
 
@@ -246,7 +246,8 @@ AI-Canvas-tauri/
 - 新增接收路径参数的自定义 command 必须经过 `path_policy.rs` 的调用方窗口校验和真实路径授权校验；自定义命令不走 fs 插件 scope，漏掉这一步等于任意文件读写
 - API Key 与 MCP 固定令牌只经 `secret_store.rs` 读写；`{appData}/secrets/` 在 fs scope、asset scope 和 `path_policy` 三条路径上都必须保持拒绝
 - `agent-private`、`plugin-private` 与 Blender 原生私有目录同样不得通过 fs scope、asset scope 或通用路径 command 暴露；递归读取、归档、解包和删除还必须拒绝这些私有目录的祖先
-- 插件普通执行 IPC 只接受 `pluginId + sourceDigest + toolId + invocationId + input`；`plugin_registry.rs` 是插件 ID、启用状态、活动 revision、工具归属和实际源码的执行权威，运行前必须重新读取私有快照并计算摘要；禁止重新接收 Renderer 提交的 `runtime` 或 `source`
+- 插件普通执行 IPC 只接受 `pluginId + sourceDigest + revisionDigest + toolId + invocationId + input`；`plugin_registry.rs` 是插件 ID、启用状态、活动 revision、工具归属和实际源码/资源的执行权威，运行前必须重新读取私有快照并计算摘要；禁止重新接收 Renderer 提交的 `runtime` 或 `source`
+- 插件 UI 只允许在主窗口 `ModalOverlay` 内的 `<iframe sandbox="allow-scripts">` 运行；界面产物通过私有协议按活动 revision 摘要读取，CSP 禁止网络，跨边界通信必须绑定 iframe Window、随机 sessionId、双摘要、项目、节点和 canvas revision
 - QuickJS 插件只拥有声明的宿主能力；可信 Python 插件拥有当前用户权限。Windows Job Object、macOS/Linux 进程组、原生确认、超时和进程树回收都只是生命周期边界，不等于 OS 沙箱
 - 插件安装或更新必须走按插件 ID 串行的 `stage → IndexedDB persist → 撤销旧租约 → activate`；已有摘要记录只做原生 registration 校验，私有快照缺失或损坏时不得回退到 Renderer 源码执行
 - Python 插件暂存、重新启用和回切上一版本必须经过原生高风险确认，Renderer 布尔值不得代替原生授权；停用、卸载和摘要切换必须取消活动 Python invocation
@@ -266,7 +267,7 @@ AI-Canvas-tauri/
 
 - IndexedDB 当前 schema 版本为 20，并以 `src/services/indexedDb/schema.ts` 的 `DB_VERSION` 为唯一真值
 - 已持久化项目、工作流、配置、预设、历史、资产索引、风格、Skill、对话、消息、AgentTask、项目记忆、工具栏布局、元数据、全局角色、子智能体配置、视频剪辑工程、项目视觉描述和插件安装记录
-- 插件安装记录持久化在 `plugins` object store，并保存 `sourceDigest`；完整源码仍只用于管理、迁移和旧版本兼容，不能成为运行阶段的执行权威
+- 插件安装记录持久化在 `plugins` object store，并保存 `sourceDigest` 与 `revisionDigest`；完整源码只用于管理展示，不能成为运行阶段的执行权威
 - 新 object store 或索引必须提升 `DB_VERSION`，并保持旧数据可升级读取
 - 删除会话时同步清理消息和 AgentTask；删除项目时同步清理项目域数据
 - 分集是带 `parentId` 的项目记录，不新建 Store；素材目录、角色库和项目记忆按 `seriesOwnerId` 统一挂在剧集记录上，分集不得各存一份副本

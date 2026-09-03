@@ -10,7 +10,7 @@
 
 需求同时要求：
 
-- JavaScript 插件和已有持久化数据继续兼容；
+- JavaScript 插件继续保持 QuickJS 强沙箱；
 - Python 插件能使用本机解释器及现有 site-packages；
 - 不把任意 Shell/Python 能力注册给 Agent 或 MCP；
 - 插件结果仍受字段声明、宿主 effect、项目 ID、canvas revision 和 Store Action 约束；
@@ -19,7 +19,7 @@
 
 ## 决策
 
-1. Plugin API v3 增加显式 `runtime: "python"`，入口固定为 `main.py`；v1/v2 继续归一化为 `runtime: "javascript"` 与 `main.js`。
+1. Plugin API v1 使用显式 `runtime` 区分执行环境：Python 入口固定为 `main.py`，JavaScript 使用 `main.js`。
 2. Python 插件被定义为“可信本机代码”，不是沙箱。安装、更新和从停用状态重新启用时，宿主必须显示高风险确认。
 3. Rust 每次调用创建独立 CPython 子进程，不使用 Shell。按平台探测 `python`、`python3` 和 Windows `py -3`，通过 JSON stdin/stdout 信封传递源码、toolId 和受裁剪输入。
 4. 子进程保留本机 Python 的导入能力和 site-packages；宿主仅提供超时、进程终止、输入输出上限、错误脱敏和协议隔离，不宣称限制 Python 对操作系统的访问。
@@ -31,7 +31,7 @@
 ### 正向
 
 - Python 作者可以复用本机标准库和已安装包。
-- JavaScript 强沙箱不降级，旧插件不迁移。
+- JavaScript 强沙箱不降级；当前插件格式统一使用 API v1。
 - 运行失败限定在一次性子进程，超时可终止，不阻塞 QuickJS Runtime。
 - 不新增依赖、数据库 schema、Tauri capability 或 Agent 工具。
 
@@ -68,7 +68,7 @@
 
 - 未找到 Python：插件保持可安装但不可执行，设置页显示检测失败；JavaScript 插件不受影响。
 - 超时或协议错误：终止子进程并返回有限错误，不写回画布。
-- 回滚：移除 API v3/Python 分支、环境检测和风险 UI；IndexedDB 中旧 JavaScript 记录不变，Python 记录由旧版本自然忽略或显示为不兼容，不需要数据库降级。
+- 回滚：移除 API v1 中的 Python runtime 分支、环境检测和风险 UI；不需要数据库降级。
 
 ## 参考
 

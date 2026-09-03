@@ -14,7 +14,12 @@ import { parsePluginManifest } from '../../services/plugins/pluginManifest';
 import { getPythonPluginRuntimeStatus } from '../../services/plugins/pluginRuntime';
 import { useAppStore } from '../../store/useAppStore';
 import { getNodeTypeConfig } from '../../types';
-import type { PluginCategory, PluginManifest, PythonPluginRuntimeStatus } from '../../types/plugin';
+import type {
+  PluginCategory,
+  PluginManifest,
+  PluginPackageResourcePayload,
+  PythonPluginRuntimeStatus,
+} from '../../types/plugin';
 import ChatMarkdown from '../chat/ChatMarkdown';
 import AnimatedButton from '../shared/AnimatedButton';
 import ModalOverlay from '../shared/ModalOverlay';
@@ -36,7 +41,7 @@ function isUpdateAvailable(latest: string, current: string): boolean {
 }
 
 const EXAMPLE_MANIFEST = JSON.stringify({
-  apiVersion: 2,
+  apiVersion: 1,
   id: 'com.ai-canvas.example-uppercase',
   name: '文本大写示例',
   version: '1.0.0',
@@ -111,7 +116,7 @@ const EXAMPLE_SOURCE = `definePlugin({
 });`;
 
 const PYTHON_EXAMPLE_MANIFEST = JSON.stringify({
-  apiVersion: 3,
+  apiVersion: 1,
   runtime: 'python',
   id: 'com.ai-canvas.example-python-uppercase',
   name: 'Python 文本大写示例',
@@ -157,8 +162,10 @@ const PLUGIN_PERMISSION_LABELS: Record<string, string> = {
   'node.write': '修改节点或创建插件节点',
   'models.read': '读取脱敏模型目录',
   'models.invoke': '调用可能产生费用的模型',
-  'files.read': '读取用户明确选择的文本文件',
-  'files.write': '通过保存窗口写出文本文件',
+  'files.connected.read': '读取当前节点及直接输入连线的项目资源',
+  'files.output.create': '在当前项目目录创建新的文本输出',
+  'plugin.resources.read': '读取当前插件 revision 声明的包资源',
+  'ui.custom': '在主窗口隔离弹窗中运行自定义界面代码（可能影响界面响应）',
 };
 
 function permissionSummary(manifest: PluginManifest): string {
@@ -277,6 +284,20 @@ async function resolveUiSource(
   return found.file.text();
 }
 
+async function resolveResourcePayloads(
+  files: PluginUploadFile[],
+  prefix: string,
+  manifest: PluginManifest,
+): Promise<PluginPackageResourcePayload[]> {
+  return Promise.all((manifest.resources ?? []).map(async (resource) => {
+    const target = `${prefix}${resource.path}`;
+    const found = files.find(({ path }) => path === target);
+    if (!found) throw new Error(`插件包缺少资源 ${resource.path}`);
+    if (found.file.size !== resource.bytes) throw new Error(`插件包资源 ${resource.path} 字节数不匹配`);
+    return { id: resource.id, bytes: Array.from(new Uint8Array(await found.file.arrayBuffer())) };
+  }));
+}
+
 async function collectPathFiles(
   fs: PluginFsModule,
   targetPath: string,
@@ -384,6 +405,8 @@ export default function PluginSettings() {
       await installPluginBundle(plugin.manifestText, plugin.source, {
         trustedPythonConfirmed: plugin.manifest.runtime === 'python',
         expectedSourceDigest: sourceDigest,
+        uiSource: plugin.uiSource,
+        resourcePayloads: plugin.resourcePayloads,
       });
       setRepositoryInput('');
       await refreshMarketplace(true);
@@ -435,12 +458,14 @@ export default function PluginSettings() {
       const action = plugins.some((installed) => installed.id === manifest.id) ? '更新' : '安装';
       const source = await entryFile.file.text();
       const uiSource = await resolveUiSource(files, prefix, manifest);
+      const resourcePayloads = await resolveResourcePayloads(files, prefix, manifest);
       const sourceDigest = await reviewPluginInstall(manifest, source, action, '本地文件夹');
       if (!sourceDigest) return;
       await installPluginBundle(manifestText, source, {
         trustedPythonConfirmed: manifest.runtime === 'python',
         expectedSourceDigest: sourceDigest,
         uiSource,
+        resourcePayloads,
       });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
@@ -480,12 +505,20 @@ export default function PluginSettings() {
         }
         uiSource = new TextDecoder().decode(await fs.readFile(uiEntry.raw));
       }
+      const resourcePayloads = await Promise.all((manifest.resources ?? []).map(async (resource) => {
+        const entry = normalized.find(({ path }) => path === `${prefix}${resource.path}`);
+        if (!entry) throw new Error(`插件包缺少资源 ${resource.path}`);
+        const bytes = await fs.readFile(entry.raw);
+        if (bytes.byteLength !== resource.bytes) throw new Error(`插件包资源 ${resource.path} 字节数不匹配`);
+        return { id: resource.id, bytes: Array.from(bytes) };
+      }));
       const sourceDigest = await reviewPluginInstall(manifest, source, action, '本地文件夹');
       if (!sourceDigest) return;
       await installPluginBundle(manifestText, source, {
         trustedPythonConfirmed: manifest.runtime === 'python',
         expectedSourceDigest: sourceDigest,
         uiSource,
+        resourcePayloads,
       });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
@@ -935,7 +968,7 @@ export default function PluginSettings() {
           </span>
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-canvas-text">AI Canvas 插件开发规范</h2>
-            <p className="mt-0.5 text-[11px] text-canvas-text-muted">Plugin API v1 / v2 / v3 · 与当前插件运行时同步</p>
+            <p className="mt-0.5 text-[11px] text-canvas-text-muted">Plugin API v1 · 与当前插件运行时同步</p>
           </div>
           <AnimatedButton
             type="button"

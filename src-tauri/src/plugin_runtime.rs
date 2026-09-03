@@ -920,6 +920,7 @@ pub async fn execute_node_plugin_tool(
     webview: Webview,
     plugin_id: String,
     source_digest: String,
+    revision_digest: String,
     tool_id: String,
     invocation_id: String,
     input: Value,
@@ -930,6 +931,7 @@ pub async fn execute_node_plugin_tool(
         &app,
         &plugin_id,
         &source_digest,
+        &revision_digest,
         &tool_id,
     )?;
     let active_invocation = if executable.runtime == "python" {
@@ -941,6 +943,7 @@ pub async fn execute_node_plugin_tool(
             &app,
             &plugin_id,
             &source_digest,
+            &revision_digest,
             &tool_id,
         )?;
         Some(active)

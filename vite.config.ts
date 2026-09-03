@@ -23,7 +23,7 @@ export default defineConfig({
     },
   },
   build: {
-    // 插件自定义界面是第二个入口：它跑在独立的 Tauri webview 进程里。
+    // 插件自定义界面是第二个入口：它跑在主窗口内的 sandboxed iframe 中。
     rollupOptions: {
       input: {
         main: "index.html",

@@ -36,12 +36,10 @@ export interface PendingPluginTool {
 }
 
 /**
- * 右键菜单是直接执行入口，`input.parameters` 为空对象。
- * 声明了必填字段的工具（例如必选模型）在这种情况下必然拿到空值，
- * 因此改为打开同一个宿主弹窗，让用户先补齐参数再执行。
+ * 声明了 dialog 的工具统一打开宿主弹窗：自定义 UI 与声明式表单均保持一致的主窗口交互。
  */
-function requiresDialogParameters(tool: AvailableNodePluginTool): boolean {
-  return (tool.tool.dialog?.fields ?? []).some((field) => field.required === true);
+function requiresPluginDialog(tool: AvailableNodePluginTool): boolean {
+  return Boolean(tool.tool.dialog);
 }
 
 export function useNodeContextMenu() {
@@ -499,7 +497,7 @@ export function useNodeContextMenu() {
       state.showToast(t('插件工具已不可用'), 'error');
       return;
     }
-    if (requiresDialogParameters(available)) {
+    if (requiresPluginDialog(available)) {
       setPendingPluginTool({ tool: available, nodeId });
       return;
     }

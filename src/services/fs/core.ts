@@ -33,8 +33,17 @@ export function notifyProjectDiskChanged(): void {
 }
 
 export function getMimeType(ext: string): string {
-  const mimeMap: Record<string, string> = {
-    png: 'image/png',
+    const mimeMap: Record<string, string> = {
+      txt: 'text/plain',
+      md: 'text/markdown',
+      csv: 'text/csv',
+      json: 'application/json',
+      yaml: 'application/yaml',
+      yml: 'application/yaml',
+      xml: 'application/xml',
+      html: 'text/html',
+      css: 'text/css',
+      png: 'image/png',
     jpg: 'image/jpeg',
     jpeg: 'image/jpeg',
     gif: 'image/gif',

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { InstalledPlugin } from '../../src/types/plugin';
+import type { InstalledPlugin, PluginInvocationResources } from '../../src/types/plugin';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   updateNodeData: vi.fn(),
   addNode: vi.fn(),
   showToast: vi.fn(),
+  saveBinaryToProjectData: vi.fn(),
   generateText: vi.fn(),
   generateImage: vi.fn(),
   buildModelCatalog: vi.fn(() => [] as Array<Record<string, unknown>>),
@@ -25,15 +26,22 @@ vi.mock('../../src/services/ai/generateText', () => ({ generateText: mocks.gener
 vi.mock('../../src/services/ai/generateImage', () => ({ generateImage: mocks.generateImage }));
 vi.mock('../../src/services/ai/generateVideo', () => ({ generateVideo: vi.fn() }));
 vi.mock('../../src/services/ai/generateAudio', () => ({ generateAudio: vi.fn() }));
-vi.mock('../../src/services/plugins/pluginFileGrantService', () => ({ readPluginGrantedTextFile: vi.fn() }));
-vi.mock('../../src/services/fileService', () => ({ saveAgentTextOutput: vi.fn() }));
+vi.mock('../../src/services/fileService', () => ({
+  saveBinaryToProjectData: mocks.saveBinaryToProjectData,
+}));
 
 import {
   executeNodePluginTool,
+  executePluginUiHostEffect,
   executePluginNode,
   getAvailablePluginNodes,
   getAvailableNodePluginTools,
 } from '../../src/services/plugins/pluginRuntime';
+import {
+  completeCanvasDerivation,
+  isCanvasDerivationFresh,
+  registerCanvasDerivation,
+} from '../../src/services/canvasDerivationGuard';
 
 const plugin: InstalledPlugin = {
   id: 'com.example.text',
@@ -42,6 +50,7 @@ const plugin: InstalledPlugin = {
   updatedAt: 1,
   source: 'definePlugin({ tools: {} });',
   sourceDigest: 'a'.repeat(64),
+  revisionDigest: 'b'.repeat(64),
   manifest: {
     apiVersion: 1,
     runtime: 'javascript',
@@ -71,7 +80,7 @@ const customNodePlugin: InstalledPlugin = {
   id: 'com.example.custom-node',
   manifest: {
     ...plugin.manifest,
-    apiVersion: 2,
+    apiVersion: 1,
     id: 'com.example.custom-node',
     permissions: ['node.read', 'node.write', 'models.read', 'models.invoke'],
     contributes: {
@@ -93,7 +102,7 @@ const routingPlugin: InstalledPlugin = {
   id: 'com.example.routing',
   manifest: {
     ...plugin.manifest,
-    apiVersion: 2,
+    apiVersion: 1,
     id: 'com.example.routing',
     contributes: {
       nodeTools: [],
@@ -125,7 +134,7 @@ const mediaNodePlugin: InstalledPlugin = {
   id: 'com.example.media-node',
   manifest: {
     ...plugin.manifest,
-    apiVersion: 2,
+    apiVersion: 1,
     id: 'com.example.media-node',
     permissions: ['node.read', 'node.write', 'models.read', 'models.invoke'],
     contributes: {
@@ -169,7 +178,7 @@ const pythonMediaToolPlugin: InstalledPlugin = {
   source: 'define_plugin({"tools": {}})',
   manifest: {
     ...mediaToolPlugin.manifest,
-    apiVersion: 3,
+    apiVersion: 1,
     runtime: 'python',
     entry: 'main.py',
   },
@@ -184,7 +193,7 @@ const modelToolPlugin: InstalledPlugin = {
   id: 'com.example.model-tool',
   manifest: {
     ...plugin.manifest,
-    apiVersion: 2,
+    apiVersion: 1,
     id: 'com.example.model-tool',
     permissions: ['node.read', 'node.write', 'models.read', 'models.invoke'],
     contributes: {
@@ -221,7 +230,7 @@ const pythonModelToolPlugin: InstalledPlugin = {
   source: 'define_plugin({"tools": {}})',
   manifest: {
     ...modelToolPlugin.manifest,
-    apiVersion: 3,
+    apiVersion: 1,
     runtime: 'python',
     entry: 'main.py',
     id: 'com.example.python-model-tool',
@@ -285,6 +294,16 @@ const noteToolPlugin: InstalledPlugin = {
   },
 };
 
+const outputToolPlugin: InstalledPlugin = {
+  ...plugin,
+  id: 'com.example.output-tool',
+  manifest: {
+    ...plugin.manifest,
+    id: 'com.example.output-tool',
+    permissions: ['node.read', 'node.write', 'files.output.create'],
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.revision = 3;
@@ -310,6 +329,10 @@ beforeEach(() => {
   };
   mocks.invoke.mockResolvedValue({ data: { output: 'after' }, message: '完成' });
   mocks.generateText.mockResolvedValue('模型结果');
+  mocks.saveBinaryToProjectData.mockResolvedValue({
+    filePath: 'G:\\project\\plugin-output.txt',
+    assetUrl: 'asset://localhost/plugin-output.txt',
+  });
   mocks.buildModelCatalog.mockReturnValue(modelCatalog);
   mocks.generateImage.mockResolvedValue({ url: 'https://example.com/result.png', width: 1024, height: 1024 });
 });
@@ -329,6 +352,7 @@ describe('node plugin runtime', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('execute_node_plugin_tool', expect.objectContaining({
       pluginId: plugin.id,
       sourceDigest: plugin.sourceDigest,
+      revisionDigest: plugin.revisionDigest,
       invocationId: expect.any(String),
       input: expect.objectContaining({ parameters: {} }),
     }));
@@ -337,10 +361,40 @@ describe('node plugin runtime', () => {
     expect(invocation).not.toHaveProperty('source');
   });
 
+  it('reuses a custom UI execution lease without revoking it after submit', async () => {
+    const tool = getAvailableNodePluginTools([plugin], 'ai-text', 'node-context-menu')[0];
+    const guard = registerCanvasDerivation(mocks.state as never, 'node-1');
+    expect(guard).not.toBeNull();
+    const resources: PluginInvocationResources = {
+      self: [],
+      incoming: [],
+      inputs: {},
+      package: [],
+    };
+    const trustedMediaReferences = new Set<string>();
+
+    try {
+      await executeNodePluginTool(tool, 'node-1', {}, {
+        invocationId: 'ui-session-1',
+        guard: guard!,
+        resources,
+        trustedMediaReferences,
+      });
+
+      expect(mocks.invoke).toHaveBeenCalledWith('execute_node_plugin_tool', expect.objectContaining({
+        invocationId: 'ui-session-1',
+        input: expect.objectContaining({ resources }),
+      }));
+      expect(isCanvasDerivationFresh(guard!, mocks.state as never)).toBe(true);
+    } finally {
+      completeCanvasDerivation(guard!);
+    }
+  });
+
   it('fails before native invocation when the installed plugin has no registered source digest', async () => {
-    const legacyPlugin = { ...plugin, sourceDigest: undefined };
-    mocks.state = { ...mocks.state, installedPlugins: [legacyPlugin] };
-    const tool = getAvailableNodePluginTools([legacyPlugin], 'ai-text')[0];
+    const incompletePlugin = { ...plugin, sourceDigest: undefined };
+    mocks.state = { ...mocks.state, installedPlugins: [incompletePlugin] };
+    const tool = getAvailableNodePluginTools([incompletePlugin], 'ai-text')[0];
 
     await expect(executeNodePluginTool(tool, 'node-1')).rejects.toThrow('源码摘要');
     expect(mocks.invoke).not.toHaveBeenCalled();
@@ -395,10 +449,49 @@ describe('node plugin runtime', () => {
           data: { label: '文本', output: 'before' },
         },
         models: [],
+        resources: { self: [], incoming: [], inputs: {}, package: [] },
+        effectResult: undefined,
       },
     }));
     expect(mocks.updateNodeData).toHaveBeenCalledWith('node-1', { output: 'after' });
     expect(mocks.showToast).toHaveBeenCalledWith('完成');
+  });
+
+  it('redacts protected fields and nested local references even from a forged descriptor', async () => {
+    mocks.state = {
+      ...mocks.state,
+      nodes: [{
+        id: 'node-1',
+        type: 'ai-text',
+        position: { x: 10, y: 20 },
+        data: {
+          label: '文本',
+          type: 'ai-text',
+          output: 'before',
+          filePath: 'G:\\project\\secret.txt',
+          note: {
+            label: '保留',
+            previewUrl: 'asset://localhost/private.png',
+            filePath: 'G:\\project\\nested-secret.txt',
+          },
+        },
+      }],
+    };
+    const available = getAvailableNodePluginTools([plugin], 'ai-text')[0];
+    const forged = {
+      ...available,
+      tool: { ...available.tool, inputFields: ['filePath', 'note', 'output'] },
+    };
+
+    await executeNodePluginTool(forged, 'node-1');
+
+    const nativeInput = mocks.invoke.mock.calls[0][1] as {
+      input: { node: { data: Record<string, unknown> } };
+    };
+    expect(nativeInput.input.node.data).toEqual({
+      note: { label: '保留' },
+      output: 'before',
+    });
   });
 
   it('drops a result when the canvas revision changes during execution', async () => {
@@ -634,6 +727,40 @@ describe('node plugin runtime', () => {
     }));
   });
 
+  it('does not route a custom-node edge whose target handle is missing', async () => {
+    mocks.state = {
+      ...mocks.state,
+      nodes: [{
+        id: 'text-source',
+        type: 'ai-text',
+        position: { x: 0, y: 0 },
+        data: { label: '文本来源', type: 'ai-text', output: '不应透传' },
+      }, {
+        id: 'plugin-target',
+        type: 'plugin-node',
+        position: { x: 400, y: 0 },
+        data: {
+          label: '目标节点',
+          type: 'plugin-node',
+          pluginId: routingPlugin.id,
+          pluginNodeId: 'target',
+          pluginValues: {},
+        },
+      }],
+      installedPlugins: [routingPlugin],
+      edges: [{ id: 'edge-missing-handle', source: 'text-source', target: 'plugin-target' }],
+    };
+    mocks.invoke.mockResolvedValue({ data: { outputs: { result: '完成' } } });
+    const available = getAvailablePluginNodes([routingPlugin])
+      .find((item) => item.node.id === 'target');
+
+    await executePluginNode(available!, 'plugin-target', []);
+
+    expect(mocks.invoke).toHaveBeenCalledWith('execute_node_plugin_tool', expect.objectContaining({
+      input: expect.objectContaining({ inputs: {} }),
+    }));
+  });
+
   it('rejects incompatible declared plugin port types before invoking the plugin', async () => {
     mocks.state = {
       ...mocks.state,
@@ -720,7 +847,7 @@ describe('node plugin runtime', () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
-  it('keeps the legacy generic-value fallback for ordinary source nodes', async () => {
+  it('keeps the generic-value fallback for ordinary source nodes', async () => {
     mocks.state = {
       ...mocks.state,
       nodes: [{
@@ -834,7 +961,7 @@ describe('node plugin runtime', () => {
   });
 
   it('allows a media URL issued by a successful host model effect', async () => {
-    const generatedUrl = 'https://example.com/result.png';
+    const generatedUrl = 'asset://localhost/generated/result.png';
     mocks.state = {
       ...mocks.state,
       nodes: [{
@@ -857,6 +984,7 @@ describe('node plugin runtime', () => {
         effect: { type: 'model.generate', modelId: 'general/image-1', prompt: '生成图片' },
       })
       .mockResolvedValueOnce({ data: { outputs: { image: generatedUrl } } });
+    mocks.generateImage.mockResolvedValueOnce({ url: generatedUrl, width: 1024, height: 1024 });
     const available = getAvailablePluginNodes([mediaNodePlugin])[0];
 
     await executePluginNode(available, 'plugin-media', [{
@@ -887,6 +1015,25 @@ describe('node plugin runtime', () => {
 
     await expect(executeNodePluginTool(tool, 'image-node'))
       .rejects.toThrow('未经宿主授权的远程媒体引用');
+    expect(mocks.updateNodeData).not.toHaveBeenCalled();
+  });
+
+  it('rejects an untrusted local asset reference from a JavaScript node tool', async () => {
+    mocks.state = {
+      ...mocks.state,
+      nodes: [{
+        id: 'image-node',
+        type: 'ai-image',
+        position: { x: 10, y: 20 },
+        data: { label: '图片', type: 'ai-image' },
+      }],
+      installedPlugins: [mediaToolPlugin],
+    };
+    mocks.invoke.mockResolvedValue({ data: { imageUrl: 'asset://localhost/private.png' } });
+    const tool = getAvailableNodePluginTools([mediaToolPlugin], 'ai-image')[0];
+
+    await expect(executeNodePluginTool(tool, 'image-node'))
+      .rejects.toThrow('未经宿主授权的本地媒体引用');
     expect(mocks.updateNodeData).not.toHaveBeenCalled();
   });
 
@@ -1143,6 +1290,63 @@ describe('node plugin runtime', () => {
 });
 
 describe('node plugin tool model effects', () => {
+  it('applies JavaScript media-source restrictions to every custom UI effect', async () => {
+    await expect(executePluginUiHostEffect({
+      pluginId: plugin.id,
+      projectId: 'project-1',
+      title: '自定义界面',
+      permissions: ['models.invoke'],
+      nodeId: 'node-1',
+      effect: {
+        type: 'model.generate',
+        modelId: 'image-model',
+        prompt: '处理图片',
+        imageUrls: ['https://untrusted.example/frame.png'],
+      },
+      models: [{
+        id: 'image-model',
+        name: '图像模型',
+        provider: 'general',
+        category: 'image',
+      }],
+      trustedMediaReferences: new Set(),
+    })).rejects.toThrow('未经宿主授权的远程媒体引用');
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+  });
+
+  it('adds a successful custom UI model result to the current trusted media set', async () => {
+    const generatedUrl = 'asset://localhost/generated/ui-result.png';
+    const trustedMediaReferences = new Set<string>();
+    mocks.generateImage.mockResolvedValueOnce({ url: generatedUrl, width: 1024, height: 1024 });
+
+    const result = await executePluginUiHostEffect({
+      pluginId: plugin.id,
+      projectId: 'project-1',
+      title: '自定义界面',
+      permissions: ['models.invoke'],
+      nodeId: 'node-1',
+      effect: {
+        type: 'model.generate',
+        modelId: 'image-model',
+        prompt: '生成图片',
+      },
+      models: [{
+        id: 'image-model',
+        name: '图像模型',
+        provider: 'general',
+        category: 'image',
+      }],
+      trustedMediaReferences,
+    });
+
+    expect(result).toEqual({
+      type: 'model.generate',
+      ok: true,
+      value: { url: generatedUrl },
+    });
+    expect(trustedMediaReferences).toContain(generatedUrl);
+  });
+
   it('exposes the model catalog only to tools declaring models.read', async () => {
     mocks.state = { ...mocks.state, installedPlugins: [modelToolPlugin] };
     await executeNodePluginTool(getAvailableNodePluginTools([modelToolPlugin], 'ai-text')[0], 'node-1');
@@ -1180,6 +1384,38 @@ describe('node plugin tool model effects', () => {
       value: { text: '模型结果' },
     });
     expect(mocks.addNode).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates text only inside the current project and returns no local path', async () => {
+    mocks.state = { ...mocks.state, installedPlugins: [outputToolPlugin] };
+    mocks.saveBinaryToProjectData.mockResolvedValueOnce({
+      filePath: 'G:\\project\\_secret_.md',
+      assetUrl: 'asset://localhost/_secret_.md',
+    });
+    mocks.invoke
+      .mockResolvedValueOnce({
+        effect: { type: 'resource.createText', content: 'hello', suggestedName: '../secret?.md' },
+      })
+      .mockResolvedValueOnce({ data: { output: 'done' } });
+
+    await executeNodePluginTool(
+      getAvailableNodePluginTools([outputToolPlugin], 'ai-text')[0],
+      'node-1',
+    );
+
+    expect(mocks.saveBinaryToProjectData).toHaveBeenCalledWith(
+      new TextEncoder().encode('hello'),
+      'project-1',
+      '_secret_.md',
+    );
+    const second = mocks.invoke.mock.calls[1][1] as { input: { effectResult: unknown } };
+    expect(second.input.effectResult).toEqual({
+      type: 'resource.createText',
+      ok: true,
+      value: { fileName: '_secret_.md', bytes: 5 },
+    });
+    expect(JSON.stringify(second.input.effectResult)).not.toContain('G:\\project');
+    expect(JSON.stringify(second.input.effectResult)).not.toContain('asset://');
   });
 
   it('rejects unauthorized remote image references from a JavaScript node tool', async () => {

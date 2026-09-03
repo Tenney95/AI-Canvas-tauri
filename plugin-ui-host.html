@@ -3,10 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' http://plugin-ui.localhost plugin-ui:; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
     <title>插件界面</title>
+    <style>
+      html, body, #root { min-height: 100%; margin: 0; }
+      html { color-scheme: dark; }
+      html[data-theme='light'] { color-scheme: light; }
+      body { background: transparent; }
+      .plugin-ui-status {
+        padding: 24px;
+        color: CanvasText;
+        font: 13px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+        opacity: 0.72;
+      }
+      .plugin-ui-status-error { font-weight: 600; opacity: 1; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/plugin-ui/host.tsx"></script>
+    <script src="/plugin-ui-bootstrap.js"></script>
   </body>
 </html>

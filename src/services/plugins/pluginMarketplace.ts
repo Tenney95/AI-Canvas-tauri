@@ -1,4 +1,4 @@
-import type { PluginManifest } from '../../types/plugin';
+import type { PluginManifest, PluginPackageResourcePayload } from '../../types/plugin';
 import {
   normalizeGithubRepository,
   parsePluginBundle,
@@ -31,6 +31,8 @@ export interface ResolvedGithubPlugin {
   manifest: PluginManifest;
   manifestText: string;
   source: string;
+  uiSource?: string;
+  resourcePayloads: PluginPackageResourcePayload[];
 }
 
 export type PluginMarketplaceItem =
@@ -68,6 +70,25 @@ async function fetchText(fetcher: Fetcher, url: string, maxBytes: number, accept
     const text = await response.text();
     if (new Blob([text]).size > maxBytes) throw new Error('下载内容过大');
     return text;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('请求超时', { cause: error });
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBytes(fetcher: Fetcher, url: string, maxBytes: number): Promise<Uint8Array> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetcher(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`请求失败（HTTP ${response.status}）`);
+    const contentLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) throw new Error('下载内容过大');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxBytes) throw new Error('下载内容过大');
+    return bytes;
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw new Error('请求超时', { cause: error });
     throw error;
@@ -151,6 +172,13 @@ export async function resolveGithubPlugin(
   if (manifest.version !== tagMatch[1]) {
     throw new Error(`Manifest 版本 ${manifest.version} 与 Release 标签 ${releaseTag} 不一致`);
   }
+  const uiSource = manifest.ui
+    ? await fetchText(fetcher, `${rawBase}/${manifest.ui.entry}`, 2 * 1024 * 1024)
+    : undefined;
+  const resourcePayloads = await Promise.all((manifest.resources ?? []).map(async (resource) => ({
+    id: resource.id,
+    bytes: Array.from(await fetchBytes(fetcher, `${rawBase}/${resource.path}`, resource.bytes)),
+  })));
 
   const plugin: ResolvedGithubPlugin = {
     repository,
@@ -160,6 +188,8 @@ export async function resolveGithubPlugin(
     manifest,
     manifestText,
     source,
+    uiSource,
+    resourcePayloads,
   };
   releaseCache.set(repository, { expiresAt: Date.now() + CACHE_TTL_MS, plugin });
   return plugin;

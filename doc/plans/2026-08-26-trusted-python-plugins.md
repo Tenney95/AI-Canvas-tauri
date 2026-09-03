@@ -1,16 +1,16 @@
-# 可信 Python 插件兼容实施计划
+# 可信 Python 插件运行时实施计划
 
 > 本计划在当前仓库直接执行；每个任务完成后运行对应的定向检查。
 
 **目标：** 在保留 JavaScript QuickJS 强沙箱的前提下，让用户插件可选择本机 Python 运行时，并对其完整本机权限做显式、不可混淆的风险提示。
 
-**架构：** Plugin API v3 增加 `runtime: "python"` 与 `entry: "main.py"`，v1/v2 JavaScript 插件继续按原协议运行。前端仍负责裁剪输入、校验输出、宿主 effect、canvas revision 与 Store 写回；Rust 仅为 Python 分支启动一次性子进程，通过 stdin/stdout JSON 信封通信并限制时间、输入、输出和错误长度。Python 是“可信代码”而不是安全沙箱，安装和重新启用都必须由用户确认。
+**架构：** Plugin API v1 通过 `runtime: "python"` 与 `entry: "main.py"` 声明 Python，JavaScript 使用 `main.js`。前端仍负责裁剪输入、校验输出、宿主 effect、canvas revision 与 Store 写回；Rust 仅为 Python 分支启动一次性子进程，通过 stdin/stdout JSON 信封通信并限制时间、输入、输出和错误长度。Python 是“可信代码”而不是安全沙箱，安装和重新启用都必须由用户确认。
 
 **技术栈：** React 19、TypeScript、Zustand、Tauri 2、Rust `std::process`、Vitest、Rust 单元测试。
 
 ---
 
-### 任务 1：固定 Manifest 与兼容边界
+### 任务 1：固定 Manifest 与运行时边界
 
 **文件：**
 
@@ -20,9 +20,9 @@
 
 **步骤：**
 
-1. 先增加失败测试：v3 Python Manifest 被接受，v1/v2 仍只接受 `main.js`，runtime/entry 不匹配时拒绝。
+1. 先增加失败测试：v1 Python Manifest 被接受，JavaScript 使用 `main.js`，runtime/entry 不匹配时拒绝。
 2. 运行 `npx vitest run tests/services/pluginManifest.test.ts`，确认新用例先失败。
-3. 增加 `PluginRuntime`、API v3、可选向后兼容 runtime 归一化以及动态入口错误信息。
+3. 增加 `PluginRuntime`、API v1 的双运行时解析以及动态入口错误信息。
 4. 再运行同一测试，确认通过。
 
 ### 任务 2：兼容本地导入与 GitHub Release
