@@ -44,13 +44,29 @@ export interface CharacterDirectionGridResult {
   grid_size: number;
 }
 
+/** 本地语音转文本结果 */
+export interface SpeechToTextResult {
+  text: string;
+  duration_seconds: number;
+}
+
 /** 模型注册表：模型名 → 下载 URL */
 const MODEL_REGISTRY: Record<string, string> = {
   'realesrgan-x4.onnx':
     'https://huggingface.co/AXERA-TECH/Real-ESRGAN/resolve/main/onnx/realesrgan-x4.onnx',
   'rmbg-1.4.onnx':
     'https://huggingface.co/briaai/RMBG-1.4/resolve/main/onnx/model.onnx',
+  // SenseVoice Small 的 int8 量化导出（约 230MB）+ SentencePiece 词表
+  'sensevoice-small-int8.onnx':
+    'https://huggingface.co/OpenVoiceOS/sensevoice-small-onnx/resolve/main/model_int8.onnx',
+  'sensevoice-vocab.txt':
+    'https://huggingface.co/OpenVoiceOS/sensevoice-small-onnx/resolve/main/vocab.txt',
 };
+
+/** 语音转文本用的模型文件名 */
+export const ASR_MODEL = 'sensevoice-small-int8.onnx';
+/** 语音转文本用的词表文件名 */
+export const ASR_VOCAB = 'sensevoice-vocab.txt';
 
 function createModelDownloadTaskId(): string {
   return globalThis.crypto?.randomUUID?.()
@@ -195,6 +211,32 @@ export async function subjectMatting(
     taskId,
   });
   return JSON.parse(json) as MattingResult;
+}
+
+/**
+ * 调用本地 SenseVoice 模型做语音转文本（离线，不需要 API Key）。
+ * @param inputPath 输入音频文件路径（绝对路径）
+ * @param modelName 模型文件名
+ * @param vocabName 词表文件名
+ * @param taskId 进度事件关联的任务 id
+ * @param language 语言提示：'auto' | 'zh' | 'en' | 'yue' | 'ja' | 'ko'
+ * @returns 识别文本与音频时长（秒）
+ */
+export async function speechToText(
+  inputPath: string,
+  modelName: string,
+  vocabName: string,
+  taskId: string,
+  language = 'auto',
+): Promise<SpeechToTextResult> {
+  const json: string = await invoke('speech_to_text', {
+    inputPath,
+    modelName,
+    vocabName,
+    taskId,
+    language,
+  });
+  return JSON.parse(json) as SpeechToTextResult;
 }
 
 /**

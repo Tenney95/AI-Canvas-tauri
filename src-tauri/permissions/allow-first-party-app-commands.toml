@@ -56,6 +56,7 @@ commands.allow = [
   "check_model_exists",
   "image_upscale",
   "subject_matting",
+  "speech_to_text",
   "character_direction_grid",
   "export_sprite_frames",
   "download_onnx_model",

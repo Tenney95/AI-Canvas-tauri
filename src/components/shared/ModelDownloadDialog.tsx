@@ -17,7 +17,7 @@ interface ModelInfo {
   sizeText: string;
 }
 
-const MODEL_MAP: Record<'upscale' | 'matting', ModelInfo> = {
+const MODEL_MAP: Record<'upscale' | 'matting' | 'asr', ModelInfo> = {
   upscale: {
     title: '超分模型未安装',
     description:
@@ -32,10 +32,19 @@ const MODEL_MAP: Record<'upscale' | 'matting', ModelInfo> = {
     loadingText: '正在下载模型...',
     sizeText: '首次下载约 176MB，请耐心等待',
   },
+  asr: {
+    title: '语音识别模型未安装',
+    description:
+      '首次使用语音转文本需要下载 SenseVoice Small 语音识别模型（约 230MB，int8 量化）。'
+      + '模型保存在本地，之后无需重复下载，也不需要联网或配置 API Key。'
+      + '模型来自阿里 FunASR 团队，已按其开源协议保留署名。',
+    loadingText: '正在下载语音识别模型...',
+    sizeText: '首次下载约 230MB，请耐心等待',
+  },
 };
 
 export interface ModelDownloadDialogProps {
-  type: 'upscale' | 'matting';
+  type: 'upscale' | 'matting' | 'asr';
   showPrompt: boolean;
   showDownloading: boolean;
   onConfirm: () => void;

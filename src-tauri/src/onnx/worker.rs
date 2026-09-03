@@ -3,11 +3,14 @@
 //! # 职责
 //! - 对主进程完全隔离：即使 DirectML 初始化驱动级死锁，也只杀死本进程
 //! - stdin/stdout JSON lines 协议与主进程通信
-//! - 处理四类请求：probe（GPU 探测）、upscale（超分）、matting（主体识别）、quit（退出）
+//! - 处理五类请求：probe（GPU 探测）、upscale（超分）、matting（主体识别）、
+//!   asr（本地语音转文本）、quit（退出）
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+
+use crate::onnx::asr;
 
 mod gpu {
     pub use super::super::gpu::*;
@@ -50,6 +53,7 @@ pub fn run() {
             "probe" => handle_probe(&request, &id),
             "upscale" => handle_upscale(&request, &id),
             "matting" => handle_matting(&request, &id),
+            "asr" => handle_asr(&request, &id),
             "quit" => {
                 emit(&json!({"type":"ok","id":id,"result":"bye"}));
                 break;
@@ -458,6 +462,93 @@ fn handle_matting(request: &Value, id: &Value) {
             "subject_path": output_path
         }
     }));
+}
+
+// ════════════════════════════════════════════════
+// ASR handler（本地语音转文本 / SenseVoice）
+// ════════════════════════════════════════════════
+
+fn handle_asr(request: &Value, id: &Value) {
+    let model_path = request.get("model_path").and_then(|v| v.as_str()).unwrap_or("");
+    let vocab_path = request.get("vocab_path").and_then(|v| v.as_str()).unwrap_or("");
+    let input_path = request.get("input_path").and_then(|v| v.as_str()).unwrap_or("");
+    let language = request.get("language").and_then(|v| v.as_str());
+    let ep = request.get("ep").and_then(|v| v.as_str()).unwrap_or("cpu");
+    let device_id: Option<i32> = request.get("device_id").and_then(|v| v.as_i64()).map(|v| v as i32);
+
+    let mp = Path::new(model_path);
+    let vp = Path::new(vocab_path);
+    let input = Path::new(input_path);
+
+    if !mp.is_file() {
+        emit(&json!({"id":id,"type":"error","error":format!("模型文件不存在: {model_path}")}));
+        return;
+    }
+    if !vp.is_file() {
+        emit(&json!({"id":id,"type":"error","error":format!("词表文件不存在: {vocab_path}")}));
+        return;
+    }
+    if !input.is_file() {
+        emit(&json!({"id":id,"type":"error","error":format!("输入文件不存在: {input_path}")}));
+        return;
+    }
+
+    let vocab = match asr::Vocab::load(vp) {
+        Ok(vocab) => vocab,
+        Err(error) => {
+            emit(&json!({"id":id,"type":"error","error":error}));
+            return;
+        }
+    };
+    eprintln!(
+        "[onnx-worker] 语音转文本: {}（词表 {} 条）",
+        input.display(),
+        vocab.len()
+    );
+
+    let session_result = if ep == "directml" {
+        create_dml_session(mp, device_id)
+    } else {
+        create_cpu_session(mp)
+    };
+    let mut session = match session_result {
+        Ok(session) => session,
+        Err(error) => {
+            emit(&json!({"id":id,"type":"error","error":error}));
+            return;
+        }
+    };
+
+    let transcription = asr::transcribe(
+        &mut session,
+        &vocab,
+        input,
+        asr::LanguageId::parse(language),
+        |done, total| {
+            emit(&json!({"id":id,"type":"progress","done":done,"total":total}));
+        },
+    );
+
+    match transcription {
+        Ok(result) => {
+            eprintln!(
+                "[onnx-worker] 语音转文本完成: {:.1}s 音频，{} 字",
+                result.duration_seconds,
+                result.text.chars().count()
+            );
+            emit(&json!({
+                "id": id,
+                "type": "ok",
+                "result": {
+                    "text": result.text,
+                    "duration_seconds": result.duration_seconds
+                }
+            }));
+        }
+        Err(error) => {
+            emit(&json!({"id":id,"type":"error","error":error}));
+        }
+    }
 }
 
 // ════════════════════════════════════════════════

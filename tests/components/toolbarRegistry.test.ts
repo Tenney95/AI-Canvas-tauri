@@ -183,6 +183,43 @@ describe('toolbar layout migration', () => {
     expect(hidden.map((button) => button.key)).toContain('example.plugin:uppercase');
   });
 
+  it('adds the local speech-to-text button to legacy audio layouts', () => {
+    const migrated = migrateToolbarLayout('ai-audio', {
+      version: 2,
+      zones: [{ id: 'primary', name: '常用', buttonKeys: ['togglePlay', 'transcribe', 'more'] }],
+    });
+    expect(migrated).toEqual({
+      version: 3,
+      zones: [{
+        id: 'primary',
+        name: '常用',
+        buttonKeys: ['togglePlay', 'speechToText', 'transcribe', 'more'],
+      }],
+    });
+  });
+
+  it('does not re-add a speech-to-text button the user removed', () => {
+    const migrated = migrateToolbarLayout('ai-audio', {
+      version: 3,
+      zones: [{ id: 'primary', name: '常用', buttonKeys: ['togglePlay', 'more'] }],
+    });
+    expect(migrated.version).toBe(3);
+    expect(migrated.zones[0].buttonKeys).not.toContain('speechToText');
+  });
+
+  it('places speech-to-text right after play/pause in the default audio layout', () => {
+    expect(getDefaultLayout('ai-audio')).toEqual({
+      version: 3,
+      zones: [{
+        id: 'zone-0',
+        name: '常用',
+        buttonKeys: [
+          'togglePlay', 'speechToText', 'transcribe', 'copyFile', 'upload', 'fullscreen', 'more',
+        ],
+      }],
+    });
+  });
+
   it('registers More in every editable node toolbar', () => {
     for (const nodeType of ['ai-text', 'ai-image', 'ai-video', 'ai-audio', 'ai-panorama']) {
       expect(getButtonRegistry(nodeType).map((button) => button.key)).toContain('more');

@@ -23,8 +23,12 @@ interface AudioNodeToolbarProps {
   nodeId: string;
   isPlaying?: boolean;
   isTranscribing?: boolean;
+  isAsrRunning?: boolean;
+  /** 本地语音转文本进度百分比（0–100），仅在转写过程中有意义 */
+  asrProgress?: number;
   onTogglePlay: (e: React.MouseEvent) => void;
   onTranscribe: () => void;
+  onSpeechToText: () => void;
   onUpload: () => void;
   onCopyFile: () => void;
 }
@@ -33,8 +37,11 @@ function AudioNodeToolbar({
   nodeId,
   isPlaying,
   isTranscribing,
+  isAsrRunning,
+  asrProgress = 0,
   onTogglePlay,
   onTranscribe,
+  onSpeechToText,
   onUpload,
   onCopyFile,
 }: AudioNodeToolbarProps) {
@@ -66,6 +73,7 @@ function AudioNodeToolbar({
   const actionMap: Record<string, (e: React.MouseEvent) => void> = {
     togglePlay: (e) => { e.stopPropagation(); onTogglePlay(e); },
     transcribe: (e) => { e.stopPropagation(); onTranscribe(); },
+    speechToText: (e) => { e.stopPropagation(); if (!isAsrRunning) onSpeechToText(); },
     copyFile:   (e) => { e.stopPropagation(); onCopyFile(); },
     upload:     (e) => { e.stopPropagation(); onUpload(); },
   };
@@ -113,6 +121,26 @@ function AudioNodeToolbar({
     }
 
     if (key === 'transcribe') return renderTranscribeButton(key);
+
+    if (key === 'speechToText') {
+      const tooltip = isAsrRunning
+        ? `正在识别语音${asrProgress > 0 ? ` ${asrProgress}%` : '...'}`
+        : resolvedDef.label;
+      return (
+        <AnimatedButton key={key} className="ftb-btn icon-only rounded-[6px]"
+          data-tooltip={tooltip}
+          aria-label={tooltip}
+          disabled={isAsrRunning}
+          onClick={clickHandler}>
+          <Icon
+            icon={isAsrRunning ? 'mdi:loading' : resolvedDef.icon}
+            className={isAsrRunning ? 'animate-spin' : undefined}
+            width={14}
+            height={14}
+          />
+        </AnimatedButton>
+      );
+    }
 
     return (
       <AnimatedButton key={key} className={`ftb-btn icon-only${isPreset ? ' act-preset' : ''} rounded-[6px]`}

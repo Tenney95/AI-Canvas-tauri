@@ -88,6 +88,7 @@ export const IMAGE_BUTTONS: ToolbarButtonDef[] = [
 /** 音频节点按钮 */
 export const AUDIO_BUTTONS: ToolbarButtonDef[] = [
   { key: 'togglePlay',     label: '播放/暂停',   icon: 'mdi:play-pause',                defaultZone: '常用' },
+  { key: 'speechToText',   label: '语音转文本',  icon: 'mdi:microphone-message',         defaultZone: '常用' },
   { key: 'transcribe',     label: '转录音频',    icon: 'mdi:text-box-search-outline',   defaultZone: '常用' },
   { key: 'copyFile',      label: '复制音频',    icon: 'mdi:content-copy',             defaultZone: '常用' },
   { key: 'upload',         label: '上传音频',    icon: 'mdi:upload',                     defaultZone: '常用' },
@@ -116,7 +117,7 @@ export const DEFAULT_TEXT_LAYOUT      = buildLayout(TEXT_BUTTONS, 2);
 export const DEFAULT_VIDEO_LAYOUT     = buildLayout(VIDEO_BUTTONS, 2);
 export const DEFAULT_PANORAMA_LAYOUT  = buildLayout(PANORAMA_BUTTONS, 2);
 export const DEFAULT_IMAGE_LAYOUT     = buildLayout(IMAGE_BUTTONS, 8);
-export const DEFAULT_AUDIO_LAYOUT     = buildLayout(AUDIO_BUTTONS, 2);
+export const DEFAULT_AUDIO_LAYOUT     = buildLayout(AUDIO_BUTTONS, 3);
 
 /**
  * 迁移图像工具栏的新内置能力与默认分区。
@@ -206,17 +207,46 @@ function migrateImageLayoutToV7(layout: ToolbarLayout): ToolbarLayout {
 }
 
 /**
+ * 为音频工具栏补入一次本地「语音转文本」按钮。
+ * 只插入用户还没手动移除过的布局，插入位置紧跟播放/暂停。
+ * 这里不升版本号，留给下面统一的“更多”按钮迁移去收尾。
+ */
+function migrateAudioLayout(layout: ToolbarLayout): ToolbarLayout {
+  if (layout.zones.some((zone) => zone.buttonKeys.includes('speechToText'))) return layout;
+
+  const zones = layout.zones.map((zone) => ({ ...zone, buttonKeys: [...zone.buttonKeys] }));
+  const zoneIndex = zones.findIndex((zone) => zone.buttonKeys.includes('togglePlay'));
+  if (zoneIndex >= 0) {
+    const insertAt = zones[zoneIndex].buttonKeys.indexOf('togglePlay') + 1;
+    zones[zoneIndex].buttonKeys.splice(insertAt, 0, 'speechToText');
+    return { ...layout, zones };
+  }
+  if (zones.length > 0) {
+    zones[0].buttonKeys.unshift('speechToText');
+    return { ...layout, zones };
+  }
+  return { ...layout, zones: [{ id: 'zone-audio-asr', name: '常用', buttonKeys: ['speechToText'] }] };
+}
+
+/**
  * 为旧布局补入一次“更多”按钮。布局升到当前版本后，用户主动隐藏“更多”不会再被补回。
  */
 export function migrateToolbarLayout(nodeType: string, layout: ToolbarLayout): ToolbarLayout {
+  // 版本号按节点类型各自推进：给音频加按钮不该把文本、视频的布局也重新迁移一遍
   const targetVersion = nodeType === 'ai-image'
     ? 8
-    : ['ai-text', 'ai-video', 'ai-panorama', 'ai-audio'].includes(nodeType)
-      ? 2
-      : layout.version;
+    : nodeType === 'ai-audio'
+      ? 3
+      : ['ai-text', 'ai-video', 'ai-panorama'].includes(nodeType)
+        ? 2
+        : layout.version;
   if (layout.version >= targetVersion) return layout;
 
-  const migrated = nodeType === 'ai-image' ? migrateImageLayoutToV7(layout) : layout;
+  const migrated = nodeType === 'ai-image'
+    ? migrateImageLayoutToV7(layout)
+    : nodeType === 'ai-audio'
+      ? migrateAudioLayout(layout)
+      : layout;
   if (migrated.version >= targetVersion) return migrated;
 
   const moreButton = getButtonRegistry(nodeType).find((button) => button.key === TOOLBAR_MORE_KEY);

@@ -16,6 +16,8 @@ mod config;
 mod gpu;
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 pub mod worker;
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+mod asr;
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 pub mod worker {
@@ -110,15 +112,26 @@ fn is_dir_writable(dir: &Path) -> bool {
 
 // ── Tauri 命令：查询 / 下载 ──
 
+/// 除 `.onnx` 之外允许下载的模型附带文件。
+///
+/// 语音识别除了权重还需要词表才能把 token id 还原成文字，这里按文件名逐个登记，
+/// 不开放任意扩展名，避免把模型目录变成任意文件落盘点。
+const AUX_MODEL_ASSETS: [&str; 1] = ["sensevoice-vocab.txt"];
+
 fn validate_model_name(model_name: &str) -> Result<(), String> {
     let mut components = Path::new(model_name).components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()
-        || !model_name.to_ascii_lowercase().ends_with(".onnx")
     {
-        return Err("模型文件名必须是单个 .onnx 文件名".to_string());
+        return Err("模型文件名必须是单个文件名，不能包含路径".to_string());
     }
-    Ok(())
+    if model_name.to_ascii_lowercase().ends_with(".onnx") {
+        return Ok(());
+    }
+    if AUX_MODEL_ASSETS.contains(&model_name) {
+        return Ok(());
+    }
+    Err("模型文件名必须是单个 .onnx 文件，或已登记的辅助文件".to_string())
 }
 
 fn validate_onnx_file(path: &Path, content_type: Option<&str>) -> Result<u64, String> {
@@ -195,7 +208,49 @@ pub async fn download_onnx_model(
         }
     }
 
-    let download = tauri::async_runtime::spawn_blocking(move || {
+    // 国内直连 HuggingFace 时好时坏，先选一个源；失败就翻到另一个源重试一次
+    let resolved = crate::model_mirror::resolve(&url, None).await;
+    let first = download_to_models_dir(
+        app.clone(),
+        task_id.clone(),
+        resolved.url.clone(),
+        dest.clone(),
+    )
+    .await;
+
+    let download = match first {
+        Ok(result) => result,
+        Err(error) => {
+            let Some(flipped) = crate::model_mirror::alternate(resolved.source) else {
+                return Err(error);
+            };
+            let retry = crate::model_mirror::resolve(&url, Some(flipped)).await;
+            eprintln!(
+                "[onnxrt] {} 下载失败（{}），改用 {} 重试",
+                resolved.source.label(),
+                error,
+                retry.source.label()
+            );
+            download_to_models_dir(app, task_id, retry.url, dest).await?
+        }
+    };
+
+    let j = json!({
+        "path": download.path,
+        "size_bytes": download.total_bytes,
+        "cached": false,
+    });
+    Ok(j.to_string())
+}
+
+/// 下载到模型目录，过程中用 `validate_onnx_file` 逐块校验，防止下到 HTML 错误页。
+async fn download_to_models_dir(
+    app: tauri::AppHandle,
+    task_id: String,
+    url: String,
+    dest: std::path::PathBuf,
+) -> Result<crate::file_transfer::FileTransferResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
         crate::file_transfer::download_to_file(
             &app,
             &task_id,
@@ -208,14 +263,7 @@ pub async fn download_onnx_model(
         )
     })
     .await
-    .map_err(|e| format!("模型下载任务执行失败: {e}"))??;
-
-    let j = json!({
-        "path": download.path,
-        "size_bytes": download.total_bytes,
-        "cached": false,
-    });
-    Ok(j.to_string())
+    .map_err(|e| format!("模型下载任务执行失败: {e}"))?
 }
 
 // ── Tauri 命令：GPU 状态查询 ──
@@ -856,6 +904,116 @@ pub async fn subject_matting(
 }
 
 // ════════════════════════════════════════════════
+// Tauri 命令：本地语音转文本（SenseVoice）
+// ════════════════════════════════════════════════
+
+/// 语音转文本的 Worker 超时：20 分钟音频按 25 秒切片是 48 段，还要留出模型加载时间。
+const ASR_TIMEOUT_SECS: u64 = 900;
+
+fn parse_asr_result(value: &Value) -> Result<String, String> {
+    let result = value
+        .get("result")
+        .ok_or("语音转文本响应缺少 result 字段")?;
+    let text = result.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let duration_seconds = result
+        .get("duration_seconds")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    Ok(json!({
+        "text": text,
+        "duration_seconds": duration_seconds,
+    })
+    .to_string())
+}
+
+/// 本地语音转文本：用 SenseVoice Small 把音频文件识别成文字，全程离线。
+#[tauri::command]
+pub async fn speech_to_text(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    input_path: String,
+    model_name: String,
+    vocab_name: String,
+    task_id: String,
+    language: Option<String>,
+) -> Result<String, String> {
+    crate::path_policy::ensure_trusted_caller(&webview)?;
+    let input = crate::path_policy::authorize_path(
+        &app,
+        &input_path,
+        crate::path_policy::PathAccess::Read,
+    )?;
+    if !input.is_file() {
+        return Err(format!("输入文件不存在: {input_path}"));
+    }
+
+    validate_model_name(&model_name)?;
+    validate_model_name(&vocab_name)?;
+
+    let models = models_dir()?;
+    let model_path = models.join(&model_name);
+    let vocab_path = models.join(&vocab_name);
+    for (label, path) in [("模型", &model_path), ("词表", &vocab_path)] {
+        if !path.is_file() {
+            return Err(format!(
+                "{label}文件不存在: {}\n请重新下载模型组件",
+                path.display()
+            ));
+        }
+    }
+
+    let mut config = get_or_probe_gpu_config(&model_path).await;
+
+    let extra = json!({
+        "input_path": input_path,
+        "vocab_path": vocab_path.to_string_lossy(),
+        "language": language.unwrap_or_default(),
+    });
+
+    match run_in_worker(
+        &app,
+        &config,
+        "asr",
+        &model_path,
+        &extra,
+        &task_id,
+        Some("speech-to-text-progress"),
+        ASR_TIMEOUT_SECS,
+    )
+    .await
+    {
+        Ok(value) => parse_asr_result(&value),
+        Err((is_worker_err, error)) => {
+            if is_worker_err && config.ep == "directml" {
+                eprintln!("[onnxrt] DirectML ASR Worker 失败: {error} → 标记 CPU 并重试");
+                config.ep = "cpu".to_string();
+                config.device_id = None;
+                config.device_name = None;
+                let _ = config.save();
+
+                match run_in_worker(
+                    &app,
+                    &config,
+                    "asr",
+                    &model_path,
+                    &extra,
+                    &task_id,
+                    Some("speech-to-text-progress"),
+                    ASR_TIMEOUT_SECS,
+                )
+                .await
+                {
+                    Ok(value) => parse_asr_result(&value),
+                    Err((_, retry_error)) => Err(retry_error),
+                }
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+// ════════════════════════════════════════════════
 // Tauri 命令：角色 8 向图自动拆分
 // ════════════════════════════════════════════════
 
@@ -1253,6 +1411,12 @@ mod direction_grid_tests {
         assert!(validate_model_name("rmbg-1.4.onnx").is_ok());
         assert!(validate_model_name("../rmbg-1.4.onnx").is_err());
         assert!(validate_model_name("rmbg-1.4.bin").is_err());
+        assert!(validate_model_name("nested/model.onnx").is_err());
+
+        // 辅助文件只允许逐个登记过的名字
+        assert!(validate_model_name("sensevoice-vocab.txt").is_ok());
+        assert!(validate_model_name("sensevoice-tokens.txt").is_err());
+        assert!(validate_model_name("../../secrets/mcp/token").is_err());
 
         let directory = test_directory("validation");
         let model_path = directory.join("model.onnx");

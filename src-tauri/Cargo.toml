@@ -40,6 +40,8 @@ sha2 = "0.10"
 tar = "0.4"
 image = "0.25"
 rquickjs = "0.12.2"
+# 本地语音转文本：解码 mp3 / wav / m4a / flac / ogg。默认已含 wav、flac、ogg、vorbis、pcm
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4"] }
 
 # Intel macOS 没有 ort 2.0.0-rc.12 的预编译 ONNX Runtime，因此该目标不编译 ONNX Worker。
 # 其他平台继续使用当前版本；DirectML EP 仅由 Windows Worker 初始化。

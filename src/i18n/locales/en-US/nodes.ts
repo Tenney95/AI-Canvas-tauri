@@ -89,6 +89,14 @@ const nodes = {
   '上传音频文件': 'Upload audio file',
   'TTS 文本转语音': 'TTS text-to-speech',
 
+  // ── 本地语音转文本（SenseVoice）──
+  '该音频没有本地文件，无法转写': 'This audio has no local file, cannot transcribe',
+  '没有识别出语音内容': 'No speech detected',
+  '{name} 转写': '{name} transcript',
+  '语音转文本完成（{seconds}秒）': 'Speech-to-text done ({seconds}s)',
+  '语音转文本失败': 'Speech-to-text failed',
+  '模型下载完成，开始转写...': 'Model downloaded, transcribing…',
+
   // ── AnimationNode ──
   '生成动画': 'Generate animation',
   '该节点没有本地文件，无法切帧导出': 'This node has no local file, cannot export frames',
