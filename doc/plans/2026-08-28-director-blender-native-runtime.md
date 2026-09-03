@@ -31,7 +31,7 @@
 - 自动安装 Blender、修改用户 Blender 配置或覆盖用户默认工作区；
 - 执行用户、模型、插件、网页、Agent 或 MCP 提供的 Python；
 - 接收自由 executable path、argv、cwd、env、script path 或 output path；
-- 复用 Plugin API v3 可信 Python Runtime、前端 Shell capability、`open_with_app` 或 ComfyUI 启动器；
+- 复用 Plugin API v1 可信 Python Runtime、前端 Shell capability、`open_with_app` 或 ComfyUI 启动器；
 - 在未建立 Scene/Result 校验前启动 Blender；
 - 承诺 Director Scene JSON 与任意 `.blend` 无损双向转换；
 - 在同一批次猜测修复旧 Director 多媒体的跨项目 URL/path 配对。

@@ -2,9 +2,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { StateCreator } from 'zustand';
 import type { AppState } from './useAppStore';
-import type { InstalledPlugin, PluginManifest } from '../types/plugin';
+import type {
+  InstalledPlugin,
+  PluginManifest,
+  PluginPackageResourcePayload,
+} from '../types/plugin';
 import { createInstalledPlugin, parsePluginBundle } from '../services/plugins/pluginManifest';
-import { clearPluginFileGrants } from '../services/plugins/pluginFileGrantService';
+import { clearPluginResources } from '../services/plugins/pluginResourceService';
 import {
   deletePluginFromDb,
   getAllPlugins,
@@ -21,6 +25,8 @@ export interface PluginSlice {
       expectedSourceDigest?: string;
       /** 自定义界面产物源码；manifest 声明了 ui 时必填。 */
       uiSource?: string;
+      /** Manifest 声明的包资源字节；仅进入 Rust 私有快照。 */
+      resourcePayloads?: PluginPackageResourcePayload[];
     },
   ) => Promise<InstalledPlugin>;
   setPluginEnabled: (
@@ -35,6 +41,7 @@ export interface PluginSlice {
 interface StagedPluginRevision {
   pluginId: string;
   sourceDigest: string;
+  revisionDigest: string;
 }
 
 const SOURCE_DIGEST_RE = /^[0-9a-f]{64}$/u;
@@ -70,8 +77,14 @@ async function stagePluginRevision(
   manifest: PluginManifest,
   source: string,
   uiSource?: string,
+  resourcePayloads: PluginPackageResourcePayload[] = [],
 ): Promise<StagedPluginRevision> {
-  const raw = await invoke<unknown>('stage_plugin_revision', { manifest, source, uiSource });
+  const raw = await invoke<unknown>('stage_plugin_revision', {
+    manifest,
+    source,
+    uiSource,
+    resourcePayloads,
+  });
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('原生插件注册未返回有效结果');
   }
@@ -82,14 +95,17 @@ async function stagePluginRevision(
   return {
     pluginId: manifest.id,
     sourceDigest: normalizeSourceDigest(result.sourceDigest, '原生插件源码摘要'),
+    revisionDigest: normalizeSourceDigest(result.revisionDigest, '原生插件 revision 摘要'),
   };
 }
 
 async function activatePluginRevision(plugin: InstalledPlugin): Promise<void> {
   if (!plugin.sourceDigest) throw new Error('插件源码摘要缺失');
+  if (!plugin.revisionDigest) throw new Error('插件 revision 摘要缺失');
   await invoke('activate_plugin_revision', {
     pluginId: plugin.id,
     sourceDigest: plugin.sourceDigest,
+    revisionDigest: plugin.revisionDigest,
     enabled: plugin.enabled,
   });
 }
@@ -98,7 +114,7 @@ async function restoreNativePluginRevision(
   previous: InstalledPlugin | undefined,
   pluginId: string,
 ): Promise<void> {
-  if (previous?.sourceDigest) {
+  if (previous?.sourceDigest && previous.revisionDigest) {
     await activatePluginRevision(previous);
     return;
   }
@@ -142,6 +158,7 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
       trustedPythonConfirmed?: boolean;
       expectedSourceDigest?: string;
       uiSource?: string;
+      resourcePayloads?: PluginPackageResourcePayload[];
     },
   ): Promise<InstalledPlugin> => {
     if (manifest.runtime === 'python' && options?.trustedPythonConfirmed !== true) {
@@ -154,10 +171,16 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
     const previous = get().installedPlugins.find((plugin) => plugin.id === manifest.id);
     let previousLeaseRevoked = false;
     try {
-      const staged = await stagePluginRevision(manifest, source, options?.uiSource);
+      const staged = await stagePluginRevision(
+        manifest,
+        source,
+        options?.uiSource,
+        options?.resourcePayloads,
+      );
       const plugin = {
         ...createInstalledPlugin(manifest, source, previous),
         sourceDigest: staged.sourceDigest,
+        revisionDigest: staged.revisionDigest,
         ...(manifest.ui
           ? { uiDigest: normalizeUiIntegrity(manifest.ui.integrity) }
           : {}),
@@ -176,7 +199,7 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
           )),
         }));
         previousLeaseRevoked = true;
-        if (previous.sourceDigest !== plugin.sourceDigest) clearPluginFileGrants(plugin.id);
+        if (previous.revisionDigest !== plugin.revisionDigest) clearPluginResources(plugin.id);
       }
       await activatePluginRevision(plugin);
       set((state) => ({
@@ -197,7 +220,7 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
           )),
         }));
         previousLeaseRevoked = true;
-        clearPluginFileGrants(manifest.id);
+        clearPluginResources(manifest.id);
       }
       try {
         await restoreNativePluginRevision(previous, manifest.id);
@@ -239,7 +262,7 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
       set((state) => ({
         installedPlugins: state.installedPlugins.map((item) => item.id === id ? updated : item),
       }));
-      clearPluginFileGrants(id);
+      clearPluginResources(id);
     }
     try {
       if (enabled) {
@@ -282,7 +305,7 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
   };
 
   const deletePluginCore = async (id: string): Promise<void> => {
-    clearPluginFileGrants(id);
+    clearPluginResources(id);
     set((state) => ({
       installedPlugins: state.installedPlugins.filter((plugin) => plugin.id !== id),
     }));
@@ -333,21 +356,23 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
           },
         };
         try {
-          if (plugin.sourceDigest) {
+          if (plugin.manifest.apiVersion !== 1) {
+            throw new Error('已安装插件不符合当前 API v1，请重新安装');
+          }
+          if (plugin.sourceDigest && plugin.revisionDigest) {
             plugin = {
               ...plugin,
               sourceDigest: normalizeSourceDigest(plugin.sourceDigest, '已安装插件源码摘要'),
+              revisionDigest: normalizeSourceDigest(plugin.revisionDigest, '已安装插件 revision 摘要'),
             };
             await invoke('ensure_plugin_registration', {
               pluginId: plugin.id,
               sourceDigest: plugin.sourceDigest,
+              revisionDigest: plugin.revisionDigest,
               enabled: plugin.enabled,
             });
           } else {
-            const staged = await stagePluginRevision(plugin.manifest, plugin.source);
-            plugin = { ...plugin, sourceDigest: staged.sourceDigest };
-            await savePluginToDb(plugin);
-            await activatePluginRevision(plugin);
+            throw new Error('已安装插件缺少完整 revision 摘要，请重新安装');
           }
         } catch {
           plugin = await failClosedPlugin(plugin);

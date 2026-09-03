@@ -78,6 +78,4 @@ commands.allow = [
   "get_plugin_registration_status",
   "execute_node_plugin_tool",
   "get_python_plugin_runtime_status",
-  "open_plugin_ui_window",
-  "close_plugin_ui_window",
 ]

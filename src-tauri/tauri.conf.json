@@ -49,7 +49,7 @@
         "withGlobalTauri": true,
         "macOSPrivateApi": true,
         "security": {
-            "csp": "default-src 'self'; script-src 'self' http://plugin-ui.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost http: https:; media-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost http: https:; connect-src 'self' data: blob: ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost http: https: ws: wss:; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'",
+            "csp": "default-src 'self'; script-src 'self' http://plugin-ui.localhost plugin-ui:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost http: https:; media-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost http: https:; connect-src 'self' data: blob: ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost http: https: ws: wss:; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'",
             "assetProtocol": {
                 "enable": true,
                 "scope": [

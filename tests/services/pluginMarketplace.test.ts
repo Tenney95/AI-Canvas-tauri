@@ -31,7 +31,7 @@ function pluginManifest(repository: string, version = '1.2.0'): string {
 
 function pythonPluginManifest(repository: string): string {
   return JSON.stringify({
-    apiVersion: 3,
+    apiVersion: 1,
     runtime: 'python',
     id: 'com.example.python-tool',
     name: 'Python 插件',
@@ -100,7 +100,7 @@ describe('GitHub plugin marketplace', () => {
     expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
-  it('downloads the Python entry declared by a trusted v3 plugin', async () => {
+  it('downloads the Python entry declared by a trusted Plugin API v1 plugin', async () => {
     const repository = 'https://github.com/example/python-tool';
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

@@ -32,7 +32,6 @@ import { cancelNodePolling } from '../services/pollManager';
 import { applyProjectDefaultsToNodeData } from '../services/projectSettingsService';
 import { getCanvasPointerPosition } from '../services/canvasPointerService';
 import { resolveDirectorRuntime } from '../services/directorRuntimeRegistry';
-import { clearPluginFileGrants } from '../services/plugins/pluginFileGrantService';
 
 interface GroupNodeDataAccess {
   groupId: string;
@@ -851,8 +850,6 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         q.push(c.id);
       });
     }
-    clearPluginFileGrants(undefined, idsToDelete);
-
     // Cancel any active polling for all deleted nodes
     for (const id of idsToDelete) {
       cancelNodePolling(id);
@@ -897,8 +894,6 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         q.push(c.id);
       });
     }
-    clearPluginFileGrants(undefined, idsToDelete);
-
     // 取消所有轮询
     for (const id of idsToDelete) {
       cancelNodePolling(id);

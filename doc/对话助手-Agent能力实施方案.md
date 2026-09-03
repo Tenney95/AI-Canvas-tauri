@@ -2332,7 +2332,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 #### 目标与边界
 
-- 现有 Python 能力仅指 Plugin API v3 的受信本机插件运行时：它执行用户明确安装并启用的 `main.py`，沿用既有高风险提示、宿主 effect、canvas revision 和输出校验；它不是导演台安装器，也不作为未来 Blender 适配器的通用脚本执行入口。
+- 现有 Python 能力仅指 Plugin API v1 的受信本机插件运行时：它执行用户明确安装并启用的 `main.py`，沿用既有高风险提示、宿主 effect、canvas revision 和输出校验；它不是导演台安装器，也不作为未来 Blender 适配器的通用脚本执行入口。
 - 当前 3D 导演台的轻量网页运行时继续由 Rust `director_desk_runtime` 按固定发布清单下载、校验 SHA-256、限制并解包归档、校验发布元数据，再通过 `director-desk://` 提供静态资源；该链路不调用 Python、Shell 或任意脚本进程。
 - 后续 Blender 运行时只能调用应用自带、版本固定且可校验的脚本，并只接受结构化场景清单和固定参数；不得接收模型、插件、网页、Agent/MCP 或普通用户输入的任意 Python 源码、脚本路径、自由命令行参数或任意工作目录。Blender 接入仍属于后续阶段，本阶段不实现或宣称已接通。
 - 本阶段在 Phase 0-A 外层 ACL 之外，为任意插件源码执行、Python 环境探测以及轻量导演台资源状态、安装、取消和删除命令增加 Rust `ensure_trusted_caller` 校验；只接受 AI Canvas 自有本地窗口，第三方 `director-desk`、远程登录页与其他未授权窗口即使未来 capability 配置漂移也会被命令本身拒绝。
@@ -2400,7 +2400,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - `.blend` 是绑定 Scene revision/hash 的 Blender 工作产物，不得自动覆盖 JSON，也不承诺与 JSON 无损双向转换。
 - Scene 中的项目文件引用必须同时绑定相对路径、大小和 SHA-256；仅有相对路径的引用无效，跨项目复制在完成哈希校验和引用重写前失败关闭。
 - Result Manifest 是截图、参考视频和 `.blend` 等不可变结果文件的清单权威，不负责场景编辑状态，也不能自行创建或覆盖 Scene；新的 Scene revision 只能来自独立通过白名单和父 revision/hash 校验的 portable Scene proposal。
-- Blender 内只允许由 Rust 第一方信任根解析、版本固定且通过哈希或签名校验的 AI Canvas 脚本；具体资源交付方式留到 Phase 1-C 检查点。不得复用 Plugin API v3 的可信 Python 入口，也不得接收 Python 源码、脚本路径、`--python-expr`、自由 argv、cwd、env 或绝对输出路径。
+- Blender 内只允许由 Rust 第一方信任根解析、版本固定且通过哈希或签名校验的 AI Canvas 脚本；具体资源交付方式留到 Phase 1-C 检查点。不得复用 Plugin API v1 的可信 Python 入口，也不得接收 Python 源码、脚本路径、`--python-expr`、自由 argv、cwd、env 或绝对输出路径。
 - 项目目录必须先由 `main` 窗口建立绑定 `projectId` 的 Rust 进程内 grant；Job 只接收不透明 `projectGrantId`。`installationId` 只作查找键，每次启动前重新验证；`jobId` 由 Rust 生成并只用于状态表查找。真实可执行文件、模板、脚本、参数和 Job 目录均由 Rust 从受信状态派生。
 
 #### 下一阶段范围
@@ -2675,7 +2675,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - [x] Rust 新增独立 QuickJS 沙箱，每次调用创建新 Runtime，不安装模块加载器、文件、网络、Shell、Tauri 或凭据宿主函数；设置 64 MiB 内存、512 KiB 栈、2 秒执行上限，以及 512 KiB 源码和 1 MiB 输入/输出上限。
 - [x] 节点输入只投影 manifest 声明字段并做 JSON 深度/数量/长度裁剪；插件输出再次校验声明字段和受保护字段。
 - [x] 异步结果写回前复核插件仍启用、项目 ID、源节点和 canvas revision；更新当前节点走 `updateNodeData()`，创建结果节点走 `addNode()`，均只提交一次历史快照。
-- [x] v1 支持 `update-current`、`create-node` 与声明式宿主弹窗；异步 JS、第三方模块、网络、文件 grant、自定义 React 节点、任意插件 HTML/React 面板、Agent 工具和市场留待后续 capability 扩展。
+- [x] 初始 v1 支持 `update-current`、`create-node` 与声明式宿主弹窗；后续资源句柄、主窗口隔离 UI、可信 Python 与市场能力仍直接收敛进同一 v1，见 12.2.1 与 12.2.2。
 
 实际检查：
 
@@ -2689,11 +2689,11 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 本阶段经用户确认新增 `rquickjs 0.12.2` Rust 依赖，未修改 `tauri.conf.json` 或 capability，未开放文件、网络、Shell 或凭据权限。回滚时移除插件设置/节点菜单入口、Plugin Store、QuickJS command 与依赖即可；IndexedDB 保留 v20 和空 `plugins` store，不降版本且不影响项目数据。
 
-### 12.2.1 平台补充：可信 Python 插件兼容
+### 12.2.1 平台补充：可信 Python 插件运行时
 
 目标：在不降低 JavaScript QuickJS 沙箱的前提下，让用户明确选择以本机权限运行 Python 插件，复用本机 Python 3 与已安装依赖。
 
-- [x] Plugin API v3 增加 `runtime: "python"` 与固定 `main.py` 入口；v1/v2 和旧 IndexedDB 记录继续归一化为 `javascript` / `main.js`。
+- [x] Plugin API v1 增加 `runtime: "python"` 与固定 `main.py` 入口；JavaScript 使用 `javascript` / `main.js`。
 - [x] 本地文件夹与 GitHub Release 都先解析 Manifest，再读取其声明入口；源码继续使用 512 KiB 上限和现有身份、权限、字段校验。
 - [x] Python 使用一次性子进程和固定参数数组，不经过 Shell；源码、toolId 与裁剪输入通过 JSON stdin 传入，结果经 stdout 返回并复用前端输出校验。
 - [x] Rust 自动探测 `python`、`python3` 与 Windows `py -3`，提供解释器状态、30 秒超时、终止回收、1 MiB 输出及 64 KiB 错误上限。
@@ -2702,7 +2702,28 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - [x] Manifest 权限继续约束宿主 effect、输入投影、输出字段、canvas revision 和 Store Action；文档明确 Python 本身是可信代码而非操作系统沙箱。
 - [x] Python 能力未注册为 Agent/MCP 工具，未新增依赖、IndexedDB schema、Tauri Shell capability 或安全配置。
 
-实际检查将在本阶段最终验证后记录。回滚时移除 v3 解析、Python command、环境状态和风险 UI 即可；JavaScript 插件、v20 `plugins` store 与现有画布节点无需迁移。
+实际检查将在本阶段最终验证后记录。回滚时移除 Python runtime 分支、Python command、环境状态和风险 UI 即可；JavaScript 插件、v20 `plugins` store 与现有画布节点无需迁移。
+
+### 12.2.2 平台补充：资源句柄与主窗口隔离 UI
+
+**状态：** `[implemented]`
+
+目标：让节点工具和自定义节点只访问当前节点、直接输入连线及插件包内明确声明的文件，并把插件自定义操作界面收回主窗口 Modal，同时保持宿主 DOM、真实路径、Tauri IPC、网络和凭据不可达。
+
+- [x] Plugin API 统一为单一 v1；不实现旧格式解析、迁移执行或运行兜底。
+- [x] 新增 `resourceAccess`、`resource` 端口、`manifest.resources` 与调用级 `input.resources`；句柄绑定插件双摘要、invocation、项目、节点、canvas revision、连线和端口。
+- [x] 当前节点/入边项目文件读取前重新核对项目目录、普通文件、符号链接、大小、修改时间、边和端口；包资源进入 Rust 私有 revision 快照并按字节数与 SHA-256 复核。
+- [x] 宿主 effect 收敛为 `resource.readText`、`resource.readRange`、`resource.createText`；本地图片通过 `model.generate.resourceIds` 由宿主解析，插件不接触路径或 asset URL。
+- [x] Manifest、入口源码、UI bundle 与包资源共同形成 `revisionDigest`；普通执行与资源读取同时校验 `sourceDigest` 和 `revisionDigest`。
+- [x] 节点工具自定义 UI 改为主窗口 `ModalOverlay` 内的 `<iframe sandbox="allow-scripts">`；CSP 禁止联网，通信绑定 iframe Window、随机 sessionId、双摘要、项目、节点与 canvas revision。
+- [x] 右键入口只要声明 `dialog` 就打开同一个主窗口弹窗；声明式表单与自定义 UI 不再出现交互差异。
+- [x] 自定义 UI 获得深浅主题、裁剪节点数据、安全模型目录、不透明资源和有限宿主回调；关闭、提交、停用、卸载或 revision 变化会撤销会话资源。
+- [x] 经用户确认，删除旧独立窗口 Bridge/React host、旧文本文件 grant 服务与测试、专用 `plugin-ui` capability 共 6 个文件；原生命令、ACL 和生成 schema 已同步清理。
+- [x] 完成应用/测试 TypeScript、目标 ESLint、6 个插件测试文件 99 项、临时目录 Vite 生产构建、Rust 注册表 20 项、插件 runtime 13 项、UI 协议 1 项及 `cargo check --lib --no-default-features`。
+- [x] 经用户确认，在全局 `script-src` 精确加入 `plugin-ui:`，与 Windows 的 `http://plugin-ui.localhost` 一起覆盖全平台专用 UI 协议；其它 CSP 指令保持不变。
+- [-] 真实 Tauri 主窗口插件 UI 手测按用户要求不执行；因此代码与静态验证已完成，但真实窗口加载、交互和故障注入没有本轮验收证据。
+
+本阶段未新增 npm/Cargo 依赖、IndexedDB schema 或 Agent/MCP 权限矩阵；`tauri.conf.json` 只在 `script-src` 增加应用自有 `plugin-ui:` 协议，不修改网络、文件、Shell 或 IPC capability。全量 `npm run check` 的 lint、应用类型和测试类型阶段通过；全量 Vitest 有 239 个文件、2033 项通过，剩余 2 个未改动 MCP suite 在收集阶段报既有 `SyntaxError: Invalid or unexpected token`。回滚以本阶段文件清单为边界；资源句柄与 revision 身份不可拆开回退，已删除文件可从 Git 基线恢复；CSP 回滚只需移除 `plugin-ui:`。
 
 ### 12.3 平台补充：Sora2U 内置图片与视频厂商
 
@@ -2777,6 +2798,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-09-03 | Plugin API v1 资源与主窗口 UI | 节点工具/插件节点获得绑定 invocation、双摘要、项目、画布 revision、精确连线/端口的不透明资源句柄；包资源进入原生私有 revision；插件工具 UI 改为主窗口 Modal 内 sandboxed iframe，并沿用同一资源租约完成 effect 与提交。经确认删除旧独立窗口和旧 grant 链路，并为全平台专用协议补充精确 CSP 白名单；静态、前端、Rust 与构建验证通过，真实 Tauri 手测按用户要求跳过。 |
 | 2026-08-30 | Blender 新手导演操作台（Phase 2-A，进行中） | 同一 `ai-director` 增加 AI Canvas session-only 的 Properties 导演操作台、基础模型/场景/镜头/灯光/本地导入和保存返回，并在主 3D View 右下角增加 Blender 原生离屏相机画面的圆角实时预览、关闭与重开；固定包升级 `1.2.0` 并保留旧目录，owner collection/material/World、原生文件选择器及固定脚本边界不变。Blender 5.2.1 实测约 8.1 FPS、50 次开关清理通过；最终圆角版鼠标点击因用户停止 Windows UI 控制留作一次补充真机项。 |
 | 2026-08-30 | 导演台界面与工作区本地化 | 固定运行资源升级为 `1.0.4`，按 Blender 官方 `WorkSpace` 上下文和用户“翻译新建数据”开关动态本地化工作区；随后通过同机 A/B 定位到 Rust 把 `\\?\` canonical executable 直接作为 `argv[0]`，导致 Blender 5.2 bundled locale catalog 加载失败。Native runner 继续以 canonical 路径作为 `CreateProcessW.lpApplicationName`，只把命令行 `argv[0]` 转成标准 Windows 路径；信任校验与后台 Job 隔离边界不变。用户确认同一 3D 导演台真实打开后菜单与工作区均为中文；Blender runtime 32 项与 `cargo check --lib` 通过。 |
 | 2026-08-30 | 导演台安装发现与资源修复 | Windows Blender 自动发现扩展到 App Paths、卸载注册表、PATH、Steam 和官方布局，便携版保留手选；固定运行资源升级为 `1.0.3`，在固定哈希校验前严格规范化受信文本 CRLF→LF，解决既有 checkout 跨电脑完整性失败。真实私有目录四项资源核验一致，Blender runtime 32 项与 `cargo check --lib` 通过。 |
@@ -2791,7 +2813,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 | 2026-08-28 | 安全前置 0-A | 为 61 个 Tauri 应用 commands 增加只由首方 default capability 引用的外层 ACL；未修改 Agent/MCP Policy、数据库、UI、导演台运行时或 Blender 行为。 |
 | 2026-08-30 | 8.29 Skill/MCP 兼容 | 将已安装 Agent Package 的包内 Skill 接入聊天分组选择、不可变任务快照和显式授权的 MCP 只读工具；补齐运行期目录、受限跨根资料、独立窗口脱敏及停用/撤权立即 fail-closed，不复制进 UserSkill 数据库。 |
 | 2026-08-27 | 8.29 | 完成全局 Agent Package 首批纵向切片：助手内上传与管理、linked 文件夹、managed tar.gz、独立目录库、私有 sourceId 注册和无智能体旁路；任务级按需绑定与普通 zip 留待后续。 |
-| 2026-08-26 | Python 插件兼容 | Plugin API v3 增加可信 `main.py` 运行时，复用本机 Python 与现有依赖；独立子进程执行并加入高风险确认、环境检测、协议限长和超时终止，JavaScript QuickJS 沙箱保持不变。 |
+| 2026-08-26 | Python 插件运行时 | Plugin API v1 增加可信 `main.py` 运行时，复用本机 Python 与现有依赖；独立子进程执行并加入高风险确认、环境检测、协议限长和超时终止，JavaScript QuickJS 沙箱保持不变。 |
 | 2026-08-26 | Sora2U 输入校验 | 视频模型能力新增声明式提交前约束；Sora2U 拦截 Prompt、Base64 总量、参考视频宽度/时长和参考音频时长，自定义通用接口可编辑同类规则。 |
 | 2026-08-25 | 平台补充 | 内置 Sora2U 的 9 个公开图片/视频模型与动态能力目录，接通多模态参考、异步轮询、统一模型同步和合作专属站点入口；不新增依赖或安全权限。 |
 | 2026-08-24 | 插件上传体验统一 | 插件设置页复用 ComfyUI 工作流 `wf-dropzone` 上传区，支持点击目录选择和拖入插件文件夹；递归读取目录并限制最多 256 个文件，继续校验唯一 `manifest.json` 与同级 `main.js`。 |
