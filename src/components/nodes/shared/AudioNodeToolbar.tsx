@@ -48,7 +48,7 @@ function AudioNodeToolbar({
   const nodeType = 'ai-audio';
   const edit = useToolbarEdit({ nodeType });
   const registry = edit.registry;
-  const pluginToolbar = useNodePluginToolbar({ nodeId, rounded: true });
+  const pluginToolbar = useNodePluginToolbar({ nodeId });
   const userPresets = useAppStore((s) => s.userPresets);
   const addNodeWithEdge = useAppStore((s) => s.addNodeWithEdge);
 
@@ -81,7 +81,7 @@ function AudioNodeToolbar({
   const renderTranscribeButton = (key: string) => (
     <AnimatedButton
       key={key}
-      className="ftb-btn icon-only rounded-[6px]"
+      className="ftb-btn icon-only"
       data-tooltip={isTranscribing ? '正在转录' : '转录音频'}
       aria-label={isTranscribing ? '正在转录音频' : '转录音频'}
       disabled={isTranscribing}
@@ -112,7 +112,7 @@ function AudioNodeToolbar({
 
     if (key === 'togglePlay') {
       return (
-        <AnimatedButton key={key} className="ftb-btn icon-only act-toggle-play rounded-[6px]"
+        <AnimatedButton key={key} className="ftb-btn icon-only act-toggle-play"
           data-tooltip={isPlaying ? '暂停' : '播放'} aria-label={isPlaying ? '暂停' : '播放'}
           onClick={clickHandler}>
           <Icon icon={isPlaying ? 'mdi:pause' : 'mdi:play'} width={14} height={14} />
@@ -127,7 +127,7 @@ function AudioNodeToolbar({
         ? `正在识别语音${asrProgress > 0 ? ` ${asrProgress}%` : '...'}`
         : resolvedDef.label;
       return (
-        <AnimatedButton key={key} className="ftb-btn icon-only rounded-[6px]"
+        <AnimatedButton key={key} className="ftb-btn icon-only"
           data-tooltip={tooltip}
           aria-label={tooltip}
           disabled={isAsrRunning}
@@ -143,7 +143,7 @@ function AudioNodeToolbar({
     }
 
     return (
-      <AnimatedButton key={key} className={`ftb-btn icon-only${isPreset ? ' act-preset' : ''} rounded-[6px]`}
+      <AnimatedButton key={key} className={`ftb-btn icon-only${isPreset ? ' act-preset' : ''}`}
         data-tooltip={resolvedDef.label} aria-label={resolvedDef.label} onClick={clickHandler}>
         <Icon icon={resolvedDef.icon} width={14} height={14} />
       </AnimatedButton>
@@ -156,23 +156,25 @@ function AudioNodeToolbar({
 
   return (
     <>
-      <div className="node-floating-toolbar text-toolbar nodrag" {...edit.longPressHandlers}>
-        {edit.layout.zones.map((zone, zi) => (
-          <div key={zone.id} className="img-toolbar-zone nodrag">
-            {zone.buttonKeys.map((key) => (
-              key === TOOLBAR_MORE_KEY
-                ? (
-                  <ToolbarMoreMenu
-                    key={key}
-                    items={hiddenDefaultButtons}
-                    renderItem={renderActionButton}
-                  />
-                )
-                : renderActionButton(key)
-            ))}
-            {zi < edit.layout.zones.length - 1 && <div className="ftb-divider img-toolbar-main-divider" />}
-          </div>
-        ))}
+      <div className="node-floating-toolbar img-toolbar nodrag" {...edit.longPressHandlers}>
+        <div className="img-toolbar-main nodrag">
+          {edit.layout.zones.map((zone, zi) => (
+            <div key={zone.id} className="img-toolbar-zone nodrag">
+              {zone.buttonKeys.map((key) => (
+                key === TOOLBAR_MORE_KEY
+                  ? (
+                    <ToolbarMoreMenu
+                      key={key}
+                      items={hiddenDefaultButtons}
+                      renderItem={renderActionButton}
+                    />
+                  )
+                  : renderActionButton(key)
+              ))}
+              {zi < edit.layout.zones.length - 1 && <div className="ftb-divider img-toolbar-main-divider" />}
+            </div>
+          ))}
+        </div>
       </div>
       {pluginToolbar.dialog}
     </>
