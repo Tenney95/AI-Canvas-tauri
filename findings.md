@@ -19,6 +19,7 @@
 - `Cargo.toml` 的 working blob 与 `HEAD` blob 均为 `5643b42b...`，已确认字节内容完全相同。
 - `tests/components/toolbarRegistry.test.ts` 在暂存刷新后也与 `HEAD` blob 完全一致，因此它与 `Cargo.toml` 都不是实际提交内容；最终真实 staged 文件数为 47。
 - 仓库 `core.hooksPath=scripts`，`pre-commit` 只执行版本徽章同步与暂存 TS/TSX 的 ESLint，不运行测试或构建；本次可正常保留门禁，无需 `--no-verify`。
+- 新 PR 已创建为 `Tenney95/AI-Canvas-tauri#16`，head/base 精确为 `luckcatlin2000:master` → `Tenney95:master`，状态为 open。
 
 ## 2026-09-03 关联资源与主窗口 UI 实施发现
 

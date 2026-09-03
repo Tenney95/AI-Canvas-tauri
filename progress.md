@@ -19,6 +19,13 @@
 - 已确认 `toolbarRegistry.test.ts` 与 `Cargo.toml` 的工作区 blob 均精确等于 `HEAD`；两者只是索引/行尾假修改，不制造空提交，真实提交范围为 47 个文件。
 - 最终暂存状态已核对：47 个文件全部在 staged 区，无额外未暂存文件；统计为 4303 行新增、1259 行删除，`git diff --cached --check` 通过。
 - 已核对 pre-commit：只同步 README 版本徽章并运行 staged TS/TSX ESLint，不含测试；将正常提交，不绕过仓库门禁。
+- 已在本地 `master` 创建提交 `40b230b feat(plugin): 完成资源授权与主窗口内插件界面`，共 47 个文件、4306 行新增、1259 行删除。
+- pre-commit 正常完成版本徽章同步和 staged TS/TSX ESLint；没有运行测试或构建。发布阶段 2 完成，开始推送 `myfork/master`。
+- 已使用命令级空代理把 `master` 从 `6bd898c` 快进推送到 `myfork/master` 的 `40b230b`，未使用 `127.0.0.1:7892`。
+- GitHub API 确认没有同 head/base 的开放 PR；发布阶段 3 完成，开始创建新的上游 PR。
+- 沙箱内首次凭据可用性检查无法访问 Windows Credential Manager；宿主权限下重试成功，只核对到用户名/令牌存在，未输出或持久化凭据正文。
+- 已通过 GitHub API（`-NoProxy`）创建上游 PR #16：`feat(plugin): 增加资源授权与主窗口内插件界面`，head/base 为 `luckcatlin2000:master` → `Tenney95:master`。
+- 四个发布阶段均已完成；接下来仅把本段最终发布记录提交并推送到同一 PR，然后做只读终检。
 
 ## 2026-09-03 关联资源与主窗口 UI
 

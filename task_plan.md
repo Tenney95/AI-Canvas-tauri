@@ -207,9 +207,16 @@
 ### 阶段
 
 1. [completed] 核对工作区、分支、远程、现有开放 PR 与待提交文件
-2. [in_progress] 使用显式暂存清单提交当前全部改动
-3. [pending] 推送 fork 的 `master`
-4. [pending] 创建或更新 fork `master` 到上游 `master` 的 PR，并复核链接与提交范围
+2. [completed] 使用显式暂存清单提交当前全部改动
+3. [completed] 推送 fork 的 `master`
+4. [completed] 创建或更新 fork `master` 到上游 `master` 的 PR，并复核链接与提交范围
+
+### 发布结果
+
+- 实现提交：`40b230b feat(plugin): 完成资源授权与主窗口内插件界面`
+- fork 分支：`luckcatlin2000/AI-Canvas-tauri:master`
+- 上游 PR：`Tenney95/AI-Canvas-tauri#16`
+- 本轮没有运行新的测试或启动应用；Git 提交钩子仅执行版本同步与 staged TS/TSX ESLint。
 
 ### 边界
 
@@ -224,3 +231,4 @@
 | `gh pr view 15` | 当前系统没有安装 `gh`，命令未执行 | 不新增依赖，改用现有 Git 凭据与 GitHub API/网页完成 PR 核对和创建 |
 | 首次显式 `git add` | 沙箱对 `.git/index.lock` 无写权限，未暂存任何内容 | 按同一显式清单申请 Git 索引写权限后成功暂存，不改变文件范围 |
 | 暂存 allowlist 首次比对 | 预期清单 48 项、实际暂存 47 项，`tests/components/toolbarRegistry.test.ts` 在 `git add` 后不再有差异 | 提交前核对该文件 working/HEAD blob；若一致则从真实提交清单排除，不制造空变更 |
+| 首次读取 GitHub 凭据可用性 | 沙箱内 Git Credential Manager 无法访问 Windows 凭据存储，未取得凭据 | 在批准的宿主权限下重试，只输出存在性布尔值，确认用户名与令牌均可用且未泄露内容 |
