@@ -502,6 +502,7 @@ const settings = {
   '路径解析结果': 'Path parsing results',
   '未匹配': 'No match',
   '可用变量': 'Available variables',
+  '（鼠标在变量上悬浮可查看详细说明）': '(Hover over a variable to see the detailed description)',
   '本地请求预览': 'Local request preview',
   '示例变量 JSON': 'Example variables JSON',
   '请求路径不可用': 'Request path unavailable',

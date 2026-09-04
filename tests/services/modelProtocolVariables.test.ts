@@ -1,13 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import {
   PROTOCOL_VARIABLE_NAMES,
+  PROTOCOL_VARIABLES,
   REFERENCE_PROTOCOL_VARIABLES,
   getCategoryProtocolVariables,
+  getProtocolVariableDescription,
   resolveProtocolFieldTemplate,
 } from '../../src/services/ai/modelProtocolVariables';
 import { buildGeneralVideoProtocolVariables } from '../../src/services/ai/generateVideo';
 
 describe('protocol variable table', () => {
+  it('provides hover help for every configurable variable', () => {
+    const missingDescriptions = PROTOCOL_VARIABLES
+      .map((spec) => spec.name)
+      .filter((name) => !getProtocolVariableDescription(name)?.trim());
+
+    expect(missingDescriptions).toEqual([]);
+  });
+
   it('picks the most specific rule for fields that mean different things', () => {
     // 同名字段按取值分流
     expect(resolveProtocolFieldTemplate('size', '16:9', 'image')).toBe('{{aspectRatio}}');

@@ -245,6 +245,65 @@ export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
   { name: 'disableAudio', supplied: VIDEO },
 ];
 
+/**
+ * 设置页中变量标签的悬浮说明。说明描述运行时真正注入的值，避免用户按接口字段名猜语义。
+ * 新增协议变量时，定向测试会要求同步补充这里的说明。
+ */
+const PROTOCOL_VARIABLE_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  model: '实际请求使用的模型 ID',
+  prompt: '节点中的提示词（已解析文本引用）',
+  messages: '发送给对话模型的消息数组',
+  stream: '是否启用流式响应',
+  tools: '当前可供对话模型调用的工具定义数组',
+  toolChoice: '对话模型的工具选择策略',
+  size: '输出宽高尺寸字符串，如 1280x720',
+  aspectRatio: '输出宽高比，如 16:9',
+  imageSize: '图片分辨率或质量档位，如 2K',
+  seedanceResolution: '视频分辨率档位，如 720p',
+  width: '输出宽度（像素）',
+  height: '输出高度（像素）',
+  n: '本次请求生成的结果数量',
+  frames8n1: '按 8 × n + 1 规则对齐后的视频帧数',
+  fps: '视频帧率（每秒帧数）',
+  duration: '视频或音频时长（秒，数值）',
+  generateAudio: '是否让视频模型同时生成音频',
+  audioVoice: '语音模型使用的音色或声音 ID',
+  audioFormat: '音频输出格式，如 mp3 或 wav',
+  audioSpeed: '语音播放速度倍率',
+  musicLyrics: '音乐生成使用的歌词文本',
+  musicTitle: '音乐生成使用的歌曲标题',
+  musicBpm: '音乐速度（每分钟节拍数）',
+  imageWithRoles: '带角色的参考图数组，元素包含 url 和 role',
+  firstImage: '视频首帧图片 URL',
+  lastImage: '视频尾帧图片 URL',
+  referenceImageUrls: '普通参考图 URL 数组（不含首尾帧）',
+  videoUrls: '输入视频 URL 数组',
+  referenceVideoUrl: '第一条参考视频 URL',
+  referenceVideoUrls: '参考视频 URL 数组',
+  audioUrls: '输入音频 URL 数组',
+  audioUrl: '第一条输入音频 URL',
+  referenceAudioUrls: '参考音频 URL 数组',
+  imageUrls: '输入或参考图片 URL 数组',
+  referenceUrls: '所有 HTTP(S) 参考素材 URL 数组',
+  inlineReferences: '所有 data: 内联参考素材数组',
+  batchCount: '批量生成数量，与 n 的值相同',
+  frames: '视频总帧数',
+  resolution: '视频分辨率档位，如 720p',
+  videoResolution: '由宽高计算的视频长边像素值',
+  videoFrames: '视频总帧数，与 frames 的值相同',
+  videoFps: '视频帧率，与 fps 的值相同',
+  seedanceRatio: '视频宽高比，与 aspectRatio 的值相同',
+  seedanceDuration: '视频时长（秒），与 duration 的值相同',
+  videoOperation: '视频任务类型，如文生视频或图生视频',
+  videoInputMode: '视频输入模式：text、keyframe 或 reference',
+  durationText: '字符串形式的视频时长（秒）',
+  disableAudio: '是否明确要求视频静音；静音时为 true',
+};
+
+export function getProtocolVariableDescription(name: string): string | undefined {
+  return PROTOCOL_VARIABLE_DESCRIPTIONS[name];
+}
+
 interface CompiledRule extends ProtocolFieldRule {
   template: string;
   /** 该变量在哪些类别下真的有值 */

@@ -35,7 +35,10 @@ import {
   type ModelProtocolResponsePreviewEntry,
   type ModelProtocolVariables,
 } from '../../services/ai/modelProtocol';
-import { getCategoryProtocolVariables } from '../../services/ai/modelProtocolVariables';
+import {
+  getCategoryProtocolVariables,
+  getProtocolVariableDescription,
+} from '../../services/ai/modelProtocolVariables';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import { describeProtocolTestRunBlocker, type ProtocolChoice } from './modelProtocolTestRun';
 import { useT } from '../../i18n';
@@ -96,6 +99,12 @@ const CATEGORY_VARIABLES: Record<GeneralModelCategory, string[]> = {
   video: getCategoryProtocolVariables('video'),
   audio: getCategoryProtocolVariables('audio'),
 };
+
+const SUBMIT_TASK_ID_DESCRIPTION = '仅用于轮询请求：提交响应中解析出的任务 ID';
+
+function getVariableTooltip(variable: string): string {
+  return getProtocolVariableDescription(variable) ?? '调用时替换为节点中的实际值';
+}
 
 function createPreviewVariables(model: ProviderModelSelection): ModelProtocolVariables {
   const common = {
@@ -1317,9 +1326,13 @@ export default function ModelProtocolEditor({
             <summary>{t('可用变量')}</summary>
             <div>
               {CATEGORY_VARIABLES[model.category].map((variable) => (
-                <code key={variable}>{`{{${variable}}}`}</code>
+                <code key={variable} data-tooltip={t(getVariableTooltip(variable))}>
+                  {`{{${variable}}}`}
+                </code>
               ))}
-              {protocol.mode === 'async' ? <code>{'{{submit.task_id}}'}</code> : null}
+              {protocol.mode === 'async' ? (
+                <code data-tooltip={t(SUBMIT_TASK_ID_DESCRIPTION)}>{'{{submit.task_id}}'}</code>
+              ) : null}
             </div>
           </details>
 
@@ -1382,13 +1395,16 @@ export default function ModelProtocolEditor({
               <Icon icon="mdi:code-braces" width="13" />
               <strong>{t('可用变量')}</strong>
               <span>{t('可放入 path、query、headers 或 body，调用时会替换为节点中的实际值')}</span>
+              <span>{t('（鼠标在变量上悬浮可查看详细说明）')}</span>
             </div>
             <div className="provider-protocol-json-variable-list">
               {CATEGORY_VARIABLES[model.category].map((variable) => (
-                <code key={variable}>{`{{${variable}}}`}</code>
+                <code key={variable} data-tooltip={t(getVariableTooltip(variable))}>
+                  {`{{${variable}}}`}
+                </code>
               ))}
               {protocol.mode === 'async' ? (
-                <code title={t('仅用于 poll：提交响应中解析出的任务 ID')}>{'{{submit.task_id}}'}</code>
+                <code data-tooltip={t(SUBMIT_TASK_ID_DESCRIPTION)}>{'{{submit.task_id}}'}</code>
               ) : null}
             </div>
           </div>
