@@ -84,13 +84,28 @@ function AINodeDialog() {
     let disposed = false;
     let trackedNodeElement: HTMLElement | null = null;
 
-    const positionDialog = (anchor: { x: number; y: number }) => {
+    // 浮层与节点的纵向偏移：
+    // - 节点无内容（空预览）时上移 20px，让浮层顶部覆盖在节点底边一点，符合"贴在节点下方"的紧凑观感；
+    // - 节点已有图片/视频/音频等产物时改为下移 12px，避免浮层遮住刚生成的画面。
+    const computeVerticalOffset = (nodeHasMedia: boolean) => (nodeHasMedia ? 12 : -20);
+
+    const positionDialog = (anchor: { x: number; y: number }, nodeHasMedia: boolean) => {
+      const offsetY = computeVerticalOffset(nodeHasMedia);
       panel.style.left = `${anchor.x}px`;
-      panel.style.top = `${anchor.y - 20}px`;
+      panel.style.top = `${anchor.y + offsetY}px`;
       if (preview) {
         preview.style.left = `${anchor.x}px`;
-        preview.style.top = `${anchor.y - 10 - 42}px`;
+        preview.style.top = `${anchor.y + offsetY - 42}px`;
       }
+    };
+
+    const readNodeHasMedia = (): boolean => {
+      if (!activeNodeId) return false;
+      const latestData = useAppStore.getState().nodes.find((n) => n.id === activeNodeId)?.data as BaseNodeData | undefined;
+      return !!(
+        latestData?.imageUrl || latestData?.thumbnailUrl ||
+        latestData?.videoUrl || latestData?.audioUrl
+      );
     };
 
     const syncDialogToNode = () => {
@@ -106,7 +121,7 @@ function AINodeDialog() {
         x: nodeRect.left + nodeRect.width / 2,
         y: nodeRect.bottom,
       };
-      positionDialog(anchor);
+      positionDialog(anchor, readNodeHasMedia());
       return anchor;
     };
 
@@ -122,6 +137,8 @@ function AINodeDialog() {
         return;
       }
 
+      // 平移过程中也要按节点当前是否有内容来决定偏移，否则空节点和有内容节点之间会跳变
+      const nodeHasMediaDuringPan = readNodeHasMedia();
       requestCanvasPanBy({
         deltaX,
         deltaY,
@@ -131,7 +148,7 @@ function AINodeDialog() {
           positionDialog({
             x: startAnchor.x + progress.deltaX,
             y: startAnchor.y + progress.deltaY,
-          });
+          }, nodeHasMediaDuringPan);
         },
         onComplete: (progress) => {
           if (disposed) return;
@@ -139,7 +156,7 @@ function AINodeDialog() {
             x: startAnchor.x + progress.deltaX,
             y: startAnchor.y + progress.deltaY,
           };
-          positionDialog(finalAnchor);
+          positionDialog(finalAnchor, nodeHasMediaDuringPan);
           useAppStore.getState().openNodeDialog(activeNodeId, finalAnchor);
           releaseTransitionFrame = requestAnimationFrame(() => {
             panel.style.removeProperty('transition');
@@ -921,6 +938,13 @@ function AINodeDialog() {
   const audioPurpose = data.audioPurpose
     ?? (data.model ? findMediaModelOption(data.model)?.audioPurpose : undefined);
 
+  // 节点已有图片/视频/音频等产物时浮层下移，避免遮住画面；空节点保持原 -20px 覆盖
+  const nodeHasMedia = !!(
+    data.imageUrl || data.thumbnailUrl ||
+    data.videoUrl || data.audioUrl
+  );
+  const dialogOffsetY = nodeHasMedia ? 12 : -20;
+
   const handleInsertMention = (mentionStr: string) => {
     // 优先在编辑器的「当前光标位置」插入引用芯片（点击 float 时编辑器焦点仍在）
     const m = mentionStr.match(/^@\{([^:]+):([^}]+)\}$/);
@@ -944,7 +968,7 @@ function AINodeDialog() {
           className="ai-dialog-preview-float"
           style={dialogPosition ? {
             left: `${dialogPosition.x}px`,
-            top: `${dialogPosition.y - 10 - 42}px`,
+            top: `${dialogPosition.y + dialogOffsetY - 42}px`,
             transform: 'translateX(-50%)',
           } : undefined}
         >
@@ -969,7 +993,7 @@ function AINodeDialog() {
         aria-label={isExpanded ? t('节点生成对话框') : undefined}
         style={isExpanded ? undefined : {
           left: dialogPosition ? `${dialogPosition.x}px` : '50%',
-          top: dialogPosition ? `${dialogPosition.y - 20}px` : '50%',
+          top: dialogPosition ? `${dialogPosition.y + dialogOffsetY}px` : '50%',
           transform: dialogPosition ? 'translateX(-50%)' : 'translate(-50%, -50%)',
         }}
         onMouseDown={(e) => e.stopPropagation()}

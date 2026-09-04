@@ -914,20 +914,44 @@ function CanvasInner() {
         }, INLINE_EDIT_DOUBLE_CLICK_DELAY_MS);
         return;
       }
-      // Non-generative canvas elements have no AI dialog.
-      if (liveNode.type === 'group') return;
-      if (liveNode.type === 'canvas-note') return;
-      if (liveNode.data?.type === 'ai-markdown') return;
-      if (liveNode.data?.role === 'source') return;
-      if (liveNode.data?.type === 'ai-text' && liveNode.data?.output) return;
-      if (liveNode.data?.type === 'ai-image' && liveNode.data?.imageUrl) return;
-      if (liveNode.data?.type === 'ai-animation' && liveNode.data?.imageUrl) return;
-      if (liveNode.data?.type === 'ai-panorama' && liveNode.data?.imageUrl) return;
-      if (liveNode.data?.type === 'ai-video' && liveNode.data?.videoUrl) return;
+      // 硬边界：这几类节点没有任何可用的 AI 对话框。
+      // group / ai-markdown 与空格键（useKeyboardShortcuts.ts）的 canOpen 规则一致；
+      // canvas-note 的 data.type 是 'canvas-note'，一旦唤起会让 AINodeDialog 给 PromptPanel 传入
+      // 未知 nodeType，所以点击路径上一律不打开，只能走它自己的绘图/文本交互。
+      const isNeverDialogNode =
+        liveNode.type === 'group' ||
+        liveNode.type === 'canvas-note' ||
+        liveNode.data?.type === 'ai-markdown';
+      if (isNeverDialogNode) {
+        // 用户已经切换了选中节点，关闭可能仍停留在上一个节点上的对话框，避免浮层卡在错处。
+        closeNodeDialog();
+        return;
+      }
+
+      // 对话框已开启时直接切到被点击的节点：已有产物的节点也一视同仁，不必再按空格。
+      // 这里读 getState() 而非订阅 activeNodeId，避免对话框开关导致 onNodeClick 反复重建。
+      const isDialogOpen = useAppStore.getState().activeNodeId !== null;
+      if (isDialogOpen) {
+        openDialogForNode(liveNode);
+        return;
+      }
+
+      // 对话框未开启：已有产物的节点与源节点保持「不自动弹窗」，需要空格键唤起。
+      const isSilentOnFirstClick =
+        liveNode.data?.role === 'source' ||
+        (liveNode.data?.type === 'ai-text' && liveNode.data?.output) ||
+        (liveNode.data?.type === 'ai-image' && liveNode.data?.imageUrl) ||
+        (liveNode.data?.type === 'ai-animation' && liveNode.data?.imageUrl) ||
+        (liveNode.data?.type === 'ai-panorama' && liveNode.data?.imageUrl) ||
+        (liveNode.data?.type === 'ai-video' && liveNode.data?.videoUrl);
+      if (isSilentOnFirstClick) {
+        closeNodeDialog();
+        return;
+      }
 
       openDialogForNode(liveNode);
     },
-    [openDialogForNode],
+    [openDialogForNode, closeNodeDialog],
   );
 
   // ── Selection sync ──
