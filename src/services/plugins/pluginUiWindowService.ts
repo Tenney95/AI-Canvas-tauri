@@ -126,7 +126,7 @@ async function receive(record: WindowRecord, event: PluginUiWindowEvent): Promis
 function nativeOpenOptions(record: WindowRecord, options: OpenWindowOptions) {
   if (!record.session?.isActive()) throw new Error('插件窗口会话已失效');
   return {
-    binding: record.session.binding, exportName: options.exportName,
+    binding: record.session.binding, exportName: record.session.globalExport,
     title: (options.tool.dialog?.title ?? options.tool.title).slice(0, 80),
   };
 }

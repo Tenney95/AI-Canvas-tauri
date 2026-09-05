@@ -529,7 +529,7 @@ export async function createPluginUiFrameSession(options: CreatePluginUiSessionO
 
 /** 仅交给主窗口窗口服务；不在 window、事件总线或持久化状态上暴露。 */
 export async function createPluginUiNativeSession(options: CreatePluginUiSessionOptions) {
-  const { session } = await createSession(options, 'native');
+  const { session, globalExport } = await createSession(options, 'native');
   const binding: PluginUiWindowBinding = Object.freeze({
     sessionId: session.sessionId,
     identity: Object.freeze({
@@ -540,6 +540,7 @@ export async function createPluginUiNativeSession(options: CreatePluginUiSession
   });
   return {
     binding,
+    globalExport,
     isActive: () => sessions.get(session.sessionId) === session,
     request: (kind: PluginUiRequestKind, payload: unknown) => dispatchRequest(session, { kind, payload }),
     finishRequest: () => finishRequest(session),

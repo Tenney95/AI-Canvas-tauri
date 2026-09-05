@@ -27,6 +27,7 @@ const plugin: InstalledPlugin = {
   manifest: {
     apiVersion: 1, id: 'com.example.review', name: '逐帧拉片', version: '1.0.0', category: 'utility',
     runtime: 'javascript', entry: 'main.js', permissions: ['ui.custom'], contributes: { nodeTools: [tool] },
+    ui: { entry: 'ui.js', integrity: `sha256-${'c'.repeat(64)}`, exports: { dialog: 'VideoFrameReview' } },
   },
 };
 const options = { plugin, tool, nodeId: 'video-1', exportName: 'dialog' };
@@ -64,7 +65,7 @@ beforeEach(() => {
   request.mockResolvedValue({ ok: true, value: { theme: 'dark' } });
   mocks.create.mockImplementation(async ({ onClose }: { onClose: () => void }) => {
     revoke = onClose;
-    return { binding, request, dispose, finishRequest, isActive: () => active };
+    return { binding, globalExport: 'VideoFrameReview', request, dispose, finishRequest, isActive: () => active };
   });
   let openingCount = 0;
   mocks.invoke.mockImplementation(async (command: string) => {
@@ -96,8 +97,9 @@ describe('pluginUiWindowService', () => {
   it('opens via the exact native command and binding, then forwards only through its registered Channel', async () => {
     expect(await openPluginUiWindow(options)).toEqual(binding);
     expect(opens()[0]).toEqual(['open_plugin_ui_window', {
-      options: { binding, exportName: 'dialog', title: '逐帧拉片' }, channel: mocks.channels[0],
+      options: { binding, exportName: 'VideoFrameReview', title: '逐帧拉片' }, channel: mocks.channels[0],
     }]);
+    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ exportName: 'dialog' }));
     const event = send();
     await vi.waitFor(() => expect(replies()).toHaveLength(1));
     expect(request).toHaveBeenCalledWith('context', {});
@@ -111,6 +113,7 @@ describe('pluginUiWindowService', () => {
     expect(mocks.create).toHaveBeenCalledOnce();
     expect(opens()).toHaveLength(2);
     expect(opens()[1][1].channel).toBe(opens()[0][1].channel);
+    expect(opens()[1][1].options.exportName).toBe('VideoFrameReview');
     expect(mocks.channels).toHaveLength(1);
     expect(dispose).not.toHaveBeenCalled();
   });

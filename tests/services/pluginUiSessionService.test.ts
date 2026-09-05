@@ -121,6 +121,14 @@ function request(sessionId: string, requestId: string, kind: string, payload: un
 }
 
 describe('pluginUiSessionService', () => {
+  it('resolves the native mount name from the active manifest UI alias', async () => {
+    const session = await createPluginUiNativeSession({
+      plugin, tool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    });
+    expect(session).toHaveProperty('globalExport', 'Dialog');
+    session.dispose();
+  });
+
   afterEach(() => {
     mocks.getState.mockReturnValue({ installedPlugins: [] });
     for (const listener of mocks.subscribers) listener();
