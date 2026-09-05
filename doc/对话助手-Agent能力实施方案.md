@@ -2831,12 +2831,26 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 本阶段未新增依赖、未修改 Tauri 安全配置、Agent/MCP Policy 或媒体确认策略，也未启动真实 Tauri 应用做含大项目的交互性能采样。v21 首次升级仍需逐条读取每个旧项目一次，后续启动才只读摘要；旧版 v20 应用不能直接打开已升级数据库。回滚代码必须与数据库备份配套，不能把 v21 数据库直接降版本。聊天附件、跨项目重命名/导入后的稳定 `assetId + relativePath` 与引用计数删除属于后续阶段，不在本次范围。
 
+### 12.6 平台补充：Rust 原生源目录领域归类
+
+**状态：** `[implemented]`
+
+目标：降低 `src-tauri/src` 根目录的平铺维护成本，同时保持 Tauri command、crate 根模块名、安全调用链、测试过滤器和运行行为不变。
+
+- [x] `lib.rs`、`main.rs`、`path_policy.rs` 与 `secret_store.rs` 保留根层；其余原生源文件按 `agent/`、`mcp/`、`plugins/`、`files/`、`media/`、`director/` 六个领域归类。
+- [x] 31 个既有源文件完成物理移动；29 个纯移动文件的新旧 Git blob 哈希一致，Director 清单与 Blender 内嵌资源两处只调整新增目录层级所需的相对 `include_*` 路径。
+- [x] `lib.rs` 使用显式 `#[path]` 继续暴露原有 crate 根模块名；Blender 使用 `director/blender_runtime/mod.rs` 作为标准目录入口，子模块名和 command 注册不变。
+- [x] ComfyUI 桥脚本的直接读取测试与当前架构、开发指南、项目规则同步到新路径；历史 `doc/plans/` 证据、依赖、`tauri.conf.json`、权限清单、生成 schema 和 README 未改。
+- [x] 插件 35 项、Agent/MCP/文件安全链 54 项、媒体 26 项、Blender 35 项、Director 非漂移断言 5 项及 ComfyUI Bridge 8 项测试通过；默认/无 ONNX `cargo check --lib`、应用/测试 TypeScript 类型、目标 ESLint 和本批 Rust 定向 rustfmt 检查通过。
+- [x] 全量无 ONNX Rust 测试仍有 1 个既有失败：固定 Release 清单实际为 `0.3.2`，`director_desk_runtime` 测试仍断言 `0.3.1`；157 项通过、1 项忽略。本次不越界修改版本数据。全 crate `cargo fmt --check` 也仍被多份既有格式差异阻断，本次未格式化纯移动文件。
+
 ## 13. 变更日志
 
 | 2026-08-14 | 媒体参数映射第一阶段 | 新增图片、视频、音频三类统一参数映射注册表；图片标准/APIMart/火山/RunningHub、APIMart 视频 Seedance、APIMart TTS/Flow Music 与通用异步媒体入口接入映射函数；新增 `tests/services/mediaParameterMappings.test.ts` 定向测试。保留现有 URL、鉴权、轮询和响应解析边界，未新增依赖。已执行 `npm run typecheck`、5 个受影响服务测试（68 项）与改动文件定向 ESLint；`npm run check` 仍被仓库既有 ESLint 10 / parser 错误 `scopeManager.addGlobals is not a function` 阻断。 |
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-09-05 | Rust 原生源目录领域归类 | 将 31 个既有原生源文件按 Agent、MCP、插件、文件、媒体和导演台分类；通过 `#[path]` 保持 crate 根模块名、IPC 与安全调用不变，并同步当前规范和 ComfyUI 测试路径。默认/无 ONNX 编译、分域 Rust 测试、类型与目标静态检查通过；保留 Director 清单版本断言和全仓 Rust 格式两项既有基线问题。 |
 | 2026-09-04 | 本地项目媒体引用持久化第一阶段 | IndexedDB v21 增加轻量项目摘要并移除启动全项目克隆；项目、角色库和输出历史中的已知 transient 媒体统一按内容落入项目目录，迁移失败保留原记录；项目导入与分集复制接入统一保存入口。相关回归 17 文件 147 项、类型、目标 ESLint 与生产构建通过。 |
 | 2026-09-03 | Plugin API v1 资源与主窗口 UI | 节点工具/插件节点获得绑定 invocation、双摘要、项目、画布 revision、精确连线/端口的不透明资源句柄；包资源进入原生私有 revision；插件工具 UI 改为主窗口 Modal 内 sandboxed iframe，并沿用同一资源租约完成 effect 与提交。经确认删除旧独立窗口和旧 grant 链路，并为全平台专用协议补充精确 CSP 白名单；静态、前端、Rust 与构建验证通过，真实 Tauri 手测按用户要求跳过。 |
 | 2026-08-30 | Blender 新手导演操作台（Phase 2-A，进行中） | 同一 `ai-director` 增加 AI Canvas session-only 的 Properties 导演操作台、基础模型/场景/镜头/灯光/本地导入和保存返回，并在主 3D View 右下角增加 Blender 原生离屏相机画面的圆角实时预览、关闭与重开；固定包升级 `1.2.0` 并保留旧目录，owner collection/material/World、原生文件选择器及固定脚本边界不变。Blender 5.2.1 实测约 8.1 FPS、50 次开关清理通过；最终圆角版鼠标点击因用户停止 Windows UI 控制留作一次补充真机项。 |

@@ -15,19 +15,31 @@ use tauri::{
 use tauri_plugin_fs::FsExt;
 use url::Url;
 
+#[path = "agent/package.rs"]
 mod agent_package;
+#[path = "agent/web.rs"]
 mod assistant_web;
 #[cfg_attr(not(windows), allow(dead_code, unused_imports))]
+#[path = "director/blender_runtime/mod.rs"]
 mod blender_runtime;
+#[path = "files/clipboard.rs"]
 mod clipboard;
+#[path = "media/comfyui/mod.rs"]
 mod comfyui;
+#[path = "director/desk_runtime.rs"]
 mod director_desk_runtime;
+#[path = "media/dreamina.rs"]
 mod dreamina;
+#[path = "files/transfer.rs"]
 mod file_transfer;
+#[path = "media/local_fonts.rs"]
 mod local_fonts;
+#[path = "mcp/bridge.rs"]
 mod mcp_bridge;
+#[path = "media/model_mirror.rs"]
 mod model_mirror;
 #[cfg(feature = "local-onnx")]
+#[path = "media/onnx/mod.rs"]
 pub mod onnx;
 #[cfg(not(feature = "local-onnx"))]
 pub mod onnx {
@@ -110,12 +122,19 @@ pub mod onnx {
     }
 }
 mod path_policy;
+// 源文件按领域归类；crate 根模块名保持稳定，避免改变 IPC、测试与安全调用路径。
+#[path = "plugins/registry.rs"]
 mod plugin_registry;
+#[path = "plugins/runtime.rs"]
 mod plugin_runtime;
+#[path = "plugins/ui.rs"]
 mod plugin_ui;
+#[path = "files/project_archive.rs"]
 mod project_archive;
+#[path = "agent/provider_docs.rs"]
 mod provider_docs;
 mod secret_store;
+#[path = "media/sprite_export.rs"]
 mod sprite_export;
 
 static CHAT_WINDOW_LOCKED: AtomicBool = AtomicBool::new(false);

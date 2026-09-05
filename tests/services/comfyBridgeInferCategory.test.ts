@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 // bridge.js 是原样注入 ComfyUI 页面的 IIFE，没法 import，直接把 inferCategory 抠出来求值
-const source = readFileSync(new URL('../../src-tauri/src/comfyui/bridge.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../../src-tauri/src/media/comfyui/bridge.js', import.meta.url), 'utf8');
 const match = source.match(/const inferCategory = \(output\) => \{[\s\S]*?\r?\n {2}\};/);
 if (!match) throw new Error('bridge.js 里找不到 inferCategory');
 const inferCategory = new Function(`${match[0]}\nreturn inferCategory;`)() as (

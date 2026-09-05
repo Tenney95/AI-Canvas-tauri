@@ -19,7 +19,7 @@ use tauri::{
 };
 use url::Url;
 
-const RELEASE_MANIFEST_JSON: &str = include_str!("../../scripts/director-desk-release.json");
+const RELEASE_MANIFEST_JSON: &str = include_str!("../../../scripts/director-desk-release.json");
 const RUNTIME_DIRECTORY: &str = "director-desk";
 const RELEASE_METADATA_FILE: &str = "director-desk-release.json";
 const INSTALL_MARKER_FILE: &str = ".ai-canvas-director-desk.json";

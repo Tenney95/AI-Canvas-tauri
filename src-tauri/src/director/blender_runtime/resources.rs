@@ -14,24 +14,24 @@ use std::{
 };
 
 const RUNTIME_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../../resources/blender-runtime/v1/runtime-manifest.json");
+    include_bytes!("../../../resources/blender-runtime/v1/runtime-manifest.json");
 const TEMPLATE_INIT_BYTES: &[u8] = include_bytes!(
-    "../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/__init__.py"
+    "../../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/__init__.py"
 );
 const TEMPLATE_STARTUP_BLEND_BYTES: &[u8] = include_bytes!(
-    "../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/startup.blend"
+    "../../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/startup.blend"
 );
 const CHARACTER_FEMALE_BLEND_BYTES: &[u8] = include_bytes!(
-    "../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/assets/characters/ai_canvas_female_white.blend"
+    "../../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/assets/characters/ai_canvas_female_white.blend"
 );
 const CHARACTER_MALE_BLEND_BYTES: &[u8] = include_bytes!(
-    "../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/assets/characters/ai_canvas_male_white.blend"
+    "../../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/assets/characters/ai_canvas_male_white.blend"
 );
 const CHARACTER_LICENSE_BYTES: &[u8] = include_bytes!(
-    "../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/assets/characters/License_Standard.txt"
+    "../../../resources/blender-runtime/v1/scripts/startup/bl_app_templates_user/ai_canvas_director/assets/characters/License_Standard.txt"
 );
 const JOB_SCRIPT_BYTES: &[u8] =
-    include_bytes!("../../resources/blender-runtime/v1/jobs/ai_canvas_director_job_v1.py");
+    include_bytes!("../../../resources/blender-runtime/v1/jobs/ai_canvas_director_job_v1.py");
 
 const SCHEMA_VERSION: u32 = 1;
 const PACKAGE_ID: &str = "ai-canvas-blender-runtime";
