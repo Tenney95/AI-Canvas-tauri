@@ -77,6 +77,7 @@ import {
   HemisphereLight,
   DirectionalLight,
   AmbientLight,
+  BackSide,
   Group,
   MeshPhysicalMaterial,
   ShaderMaterial,
@@ -507,6 +508,20 @@ export default function Mascot({
     fur.computeBoundingSphere();
     fur.renderOrder = 2;
     head.add(fur);
+
+    // 绒毛不写深度，背面彩带原先会从内核与毛尖之间透出来。
+    // 在绒毛绘制之后补后半球深度，将交接处推到毛尖附近；前方彩带和眼睛不受影响。
+    const ribbonOcclusionMat = new MeshBasicMaterial({
+      colorWrite: false,
+      depthWrite: true,
+      transparent: true,
+      side: BackSide,
+    });
+    const ribbonOccluder = new Mesh(sphere.geometry, ribbonOcclusionMat);
+    ribbonOccluder.scale.setScalar(1 + FUR_LENGTH * 0.85);
+    ribbonOccluder.renderOrder = 2.5;
+    ribbonOccluder.visible = false;
+    head.add(ribbonOccluder);
 
     const shadowShape = new Shape();
     shadowShape.absellipse(0, 0, 0.58, 0.11, 0, Math.PI * 2, false, 0);
@@ -987,8 +1002,8 @@ export default function Mascot({
         loadTween?.kill();
         loadTween = gsap.to(loadObj, {
           val: loadTarget,
-          duration: 1.1,
-          ease: 'power2.inOut',
+          duration: loadTarget ? 0.45 : 0.6,
+          ease: loadTarget ? 'power2.out' : 'power2.inOut',
         });
       }
       const ribbonIntensity = loadObj.val;
@@ -1008,6 +1023,7 @@ export default function Mascot({
       // 彩带绕到球体背面的部分由深度测试自动遮挡，不需要像 2D 那样手动分前后段
       if (orbitRibbons) {
         const show = ribbonIntensity > 0.002;
+        ribbonOccluder.visible = show;
         orbitRibbons.group.visible = show;
         orbitRibbons.setIntensity(ribbonIntensity);
         if (show && motionEnabled) orbitRibbons.update(deltaSeconds, camera.position);
@@ -1038,6 +1054,7 @@ export default function Mascot({
       sphereMat.dispose();
       furGeometry.dispose();
       furMat.dispose();
+      ribbonOcclusionMat.dispose();
       furNoise.dispose();
       shadowGeo.dispose();
       shadowMat.dispose();
