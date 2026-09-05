@@ -457,13 +457,16 @@
         z-index: 9999;
       }
       .actionbar-container {
-        --ai-canvas-action-size: 28px;
-        --ai-canvas-action-radius: 8px;
+        --ai-canvas-action-size: 24px;
+        --ai-canvas-action-icon-size: 14px;
+        --ai-canvas-action-chevron-width: 7px;
+        --ai-canvas-action-chevron-height: 4px;
+        --ai-canvas-action-radius: 6px;
         box-sizing: border-box;
-        gap: 4px;
-        padding: 4px;
+        gap: 3px;
+        padding: 6px;
         border-color: transparent;
-        border-radius: 14px;
+        border-radius: 11px;
         background:
           linear-gradient(
             var(--ai-canvas-floating-surface),
@@ -488,8 +491,8 @@
         touch-action: none;
       }
       .actionbar-container.ai-canvas-actionbar-docked {
-        height: 36px;
-        padding: 2px 4px;
+        height: 32px;
+        padding: 4px 6px;
         border-width: 0;
         border-radius: 0;
         background: transparent;
@@ -519,54 +522,140 @@
         display: none;
       }
       .actionbar-container [data-testid="action-bar-buttons"] {
+        align-items: center;
         gap: 2px;
       }
+      .actionbar-container > [data-testid="action-bar-buttons"],
+      .actionbar-container > [data-testid="legacy-topbar-container"],
+      .actionbar-container > .flex.h-full.items-center,
+      .actionbar-container [data-testid="legacy-topbar-container"] > div,
+      .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button-group,
+      .actionbar-container [data-testid="legacy-topbar-container"] .rgthree-comfybar-top-button-group,
+      .actionbar-container [data-testid="legacy-topbar-container"] .crystools-monitors-container,
+      .actionbar-container .actionbar,
+      .actionbar-container .actionbar [data-pc-section="contentcontainer"],
+      .actionbar-container .actionbar [data-pc-section="content"],
+      .actionbar-container .actionbar [data-pc-section="content"] > div {
+        box-sizing: border-box;
+        min-height: var(--ai-canvas-action-size);
+        height: var(--ai-canvas-action-size);
+        max-height: var(--ai-canvas-action-size);
+        align-items: center;
+      }
+      .actionbar-container .drag-handle {
+        height: var(--ai-canvas-action-size);
+        align-self: center;
+      }
       .actionbar-container button {
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        vertical-align: middle;
         border-radius: var(--ai-canvas-action-radius);
-        padding-inline: 6px;
+        padding: 0 6px;
+        line-height: 1;
       }
       .actionbar-container button:not(.batch-count button) {
         min-height: var(--ai-canvas-action-size);
         height: var(--ai-canvas-action-size);
+        max-height: var(--ai-canvas-action-size);
+      }
+      .actionbar-container button > span,
+      .actionbar-container button .p-button-label {
+        display: inline-flex;
+        align-items: center;
+        line-height: 1;
+      }
+      .actionbar-container button > i,
+      .actionbar-container button > svg,
+      .actionbar-container button .p-button-icon {
+        flex: 0 0 var(--ai-canvas-action-icon-size);
+        width: var(--ai-canvas-action-icon-size);
+        height: var(--ai-canvas-action-icon-size);
+        margin: 0;
+        line-height: 1;
       }
       .actionbar-container button[aria-label][data-testid="queue-button"],
-      .actionbar-container button[aria-label][data-testid="queue-mode-menu-trigger"],
       .actionbar-container button[aria-label]:not([data-testid]):not(.batch-count button) {
         min-width: var(--ai-canvas-action-size);
       }
       .actionbar-container button:not(:has(span)):not(.batch-count button) {
         width: var(--ai-canvas-action-size);
         min-width: var(--ai-canvas-action-size);
-        padding-inline: 0;
+        max-width: var(--ai-canvas-action-size);
+        padding: 0;
       }
       .actionbar-container .queue-button-group {
+        min-height: var(--ai-canvas-action-size);
         height: var(--ai-canvas-action-size);
+        max-height: var(--ai-canvas-action-size);
+        align-items: center;
         border-radius: var(--ai-canvas-action-radius);
       }
       .actionbar-container .batch-count > div {
         width: 44px;
+        min-height: var(--ai-canvas-action-size);
+        height: var(--ai-canvas-action-size);
+        max-height: var(--ai-canvas-action-size);
+        display: flex;
+        align-items: center;
         border-radius: var(--ai-canvas-action-radius) 0 0 var(--ai-canvas-action-radius);
       }
+      .actionbar-container .batch-count,
+      .actionbar-container .batch-count > div > div:last-child {
+        min-height: var(--ai-canvas-action-size);
+        height: var(--ai-canvas-action-size);
+        max-height: var(--ai-canvas-action-size);
+      }
+      .actionbar-container .batch-count > div > div:last-child {
+        width: 16px;
+        min-width: 16px;
+      }
       .actionbar-container .batch-count input {
+        height: 100%;
         padding-inline: 4px 0;
+        padding-block: 0;
         font-size: 12px;
+        line-height: 1;
+      }
+      .actionbar-container .batch-count button {
+        width: 100%;
+        min-width: 0;
+        min-height: calc(var(--ai-canvas-action-size) / 2);
+        height: calc(var(--ai-canvas-action-size) / 2);
+        max-height: calc(var(--ai-canvas-action-size) / 2);
+        gap: 0;
+        padding: 0;
+        border-radius: 0;
       }
       .actionbar-container [data-testid="queue-button"] {
         width: var(--ai-canvas-action-size);
         min-width: var(--ai-canvas-action-size);
         gap: 0;
-        padding-inline: 0;
+        padding: 0;
         overflow: hidden;
         font-size: 0;
       }
       .actionbar-container [data-testid="queue-mode-menu-trigger"] {
-        width: 22px;
-        min-width: 22px;
-        padding-inline: 0;
+        width: 20px;
+        min-width: 20px;
+        padding: 0;
         border-radius: 0 var(--ai-canvas-action-radius) var(--ai-canvas-action-radius) 0;
       }
+      .actionbar-container .batch-count button > svg,
+      .actionbar-container [data-testid="queue-mode-menu-trigger"] > svg {
+        flex: 0 0 auto;
+        width: var(--ai-canvas-action-chevron-width);
+        min-width: var(--ai-canvas-action-chevron-width);
+        max-width: var(--ai-canvas-action-chevron-width);
+        height: var(--ai-canvas-action-chevron-height);
+        min-height: var(--ai-canvas-action-chevron-height);
+        max-height: var(--ai-canvas-action-chevron-height);
+      }
       .actionbar-container [data-testid="queue-overlay-toggle"] {
-        padding-inline: 8px;
+        padding-inline: 6px;
       }
       .actionbar-container [data-testid="legacy-topbar-container"] {
         font-size: 12px;
@@ -575,10 +664,46 @@
       .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button-group,
       .actionbar-container [data-testid="legacy-topbar-container"] .rgthree-comfybar-top-button-group {
         align-items: center;
-        gap: 4px;
+        gap: 3px;
       }
       .actionbar-container [data-testid="legacy-topbar-container"] > div {
-        margin-inline: 4px;
+        margin-inline: 3px;
+      }
+      .actionbar-container [data-testid="legacy-topbar-container"] .crystools-monitor,
+      .actionbar-container [data-testid="legacy-topbar-container"] .crystools-text,
+      .actionbar-container [data-testid="legacy-topbar-container"] .crystools-content {
+        box-sizing: border-box;
+        min-height: var(--ai-canvas-action-size);
+        height: var(--ai-canvas-action-size);
+        max-height: var(--ai-canvas-action-size);
+        align-items: center;
+        padding-block: 0;
+        line-height: 1;
+      }
+      .actionbar-container [data-testid="legacy-topbar-container"] .crystools-monitor {
+        display: flex;
+        overflow: hidden;
+      }
+      .actionbar-container [data-testid="legacy-topbar-container"] .crystools-text,
+      .actionbar-container [data-testid="legacy-topbar-container"] .crystools-content {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .actionbar-container [data-testid="legacy-topbar-container"] .crystools-slider {
+        right: 0;
+        left: auto;
+      }
+      .actionbar-container [data-testid="legacy-topbar-container"] .crystools-label {
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        width: 100%;
+        height: 100%;
+        padding-right: 3px;
+        text-align: right;
+        line-height: 1;
       }
       .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button,
       .actionbar-container [data-testid="legacy-topbar-container"] .rgthree-comfybar-top-button {
@@ -590,7 +715,7 @@
         height: var(--ai-canvas-action-size);
         max-height: var(--ai-canvas-action-size);
         margin-block: 0;
-        padding-inline: 6px;
+        padding-inline: 5px;
         padding-block: 0;
         line-height: 1;
         overflow: hidden;
@@ -598,9 +723,10 @@
       }
       .actionbar-container [data-testid="legacy-topbar-container"] .rgthree-comfybar-top-button,
       .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button:not(:has(span)),
-      .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button[title="ComfyUI Manager"] {
+      .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button[aria-label="ComfyUI Manager"] {
         width: var(--ai-canvas-action-size);
         min-width: var(--ai-canvas-action-size);
+        max-width: var(--ai-canvas-action-size);
         padding-inline: 0;
       }
       .actionbar-container [data-testid="legacy-topbar-container"] .rgthree-comfybar-top-button {
@@ -612,35 +738,58 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 14px;
-        height: 14px;
+        flex: 0 0 var(--ai-canvas-action-icon-size);
+        width: var(--ai-canvas-action-icon-size);
+        height: var(--ai-canvas-action-icon-size);
         margin: 0;
         line-height: 1;
       }
       .actionbar-container [data-testid="legacy-topbar-container"] i,
       .actionbar-container [data-testid="legacy-topbar-container"] svg {
         display: block;
-        width: 14px;
-        height: 14px;
-        font-size: 14px;
+        width: var(--ai-canvas-action-icon-size);
+        height: var(--ai-canvas-action-icon-size);
+        font-size: var(--ai-canvas-action-icon-size);
       }
       /* Manager 只留图标 */
-      .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button[title="ComfyUI Manager"] span {
+      .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button[aria-label="ComfyUI Manager"] span {
         display: none;
       }
       /* Image Feed 与其他扩展入口一样使用纯图标 tiny 按钮 */
-      .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button[title^="Show Image Feed"] {
+      .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button[aria-label^="Show Image Feed"] {
         width: var(--ai-canvas-action-size);
         min-width: var(--ai-canvas-action-size);
+        max-width: var(--ai-canvas-action-size);
         padding-inline: 0;
       }
-      .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button[title^="Show Image Feed"] span {
+      .actionbar-container [data-testid="legacy-topbar-container"] .comfyui-button[aria-label^="Show Image Feed"] span {
         display: none;
+      }
+      /* K Monitor 只保留 K 标识，收敛为纯图标按钮 */
+      .actionbar-container button.comfyui-button[aria-label$="Monitor"],
+      .actionbar-container button.comfyui-button[title$="Monitor"] {
+        width: var(--ai-canvas-action-size) !important;
+        min-width: var(--ai-canvas-action-size) !important;
+        max-width: var(--ai-canvas-action-size) !important;
+        padding-inline: 0 !important;
+        font-size: 0 !important;
+      }
+      .actionbar-container button.comfyui-button[aria-label$="Monitor"] span,
+      .actionbar-container button.comfyui-button[title$="Monitor"] span {
+        display: none !important;
+      }
+      .actionbar-container button.comfyui-button[aria-label$="Monitor"]::before,
+      .actionbar-container button.comfyui-button[title$="Monitor"]::before {
+        content: "𝙆";
+        font-size: var(--ai-canvas-action-icon-size);
+        line-height: 1;
       }
       .actionbar-container .ai-canvas-save-action {
         min-height: var(--ai-canvas-action-size);
         height: var(--ai-canvas-action-size);
+        max-height: var(--ai-canvas-action-size);
         padding-inline: 8px;
+        line-height: 1;
         border-radius: var(--ai-canvas-action-radius);
         color: white;
         background-color: var(--ai-canvas-brand);
@@ -662,6 +811,10 @@
       .actionbar-container .ai-canvas-save-action:focus-visible {
         outline: 2px solid color-mix(in srgb, var(--ai-canvas-brand-hover) 72%, white);
         outline-offset: 2px;
+      }
+      [data-testid="current-user-button"],
+      [data-testid="login-button"] {
+        display: none !important;
       }
       #ai-canvas-comfy-window-chrome {
         position: fixed;
@@ -765,7 +918,7 @@
       .side-toolbar-container {
         /* 同步 sidebar-floating 的悬浮位置：左侧 12px、顶部 20% 起始（不居中偏移） */
         position: fixed !important;
-        top: 20% !important;
+        top:15% !important;
         bottom: auto !important;
         left: 12px !important;
         right: auto !important;
@@ -866,6 +1019,9 @@
       .side-toolbar-container .side-bar-button-content {
         gap: 0;
         flex: none;
+      }
+      .side-toolbar-container .side-bar-button-label {
+        display: none !important;
       }
       /* 图标容器去掉相对定位残留 */
       .side-toolbar-container .sidebar-icon-wrapper {

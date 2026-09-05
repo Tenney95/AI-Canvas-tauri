@@ -3,7 +3,7 @@
  * 配置 ComfyUI 服务地址、启动 / 停止本地 ComfyUI、探测服务状态，
  * 并提供工作流面板入口与相关目录选择。
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -12,10 +12,47 @@ import { useAppStore } from '../../store/useAppStore';
 import type { ComfyServer } from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
 import { useT } from '../../i18n';
+import {
+  DEFAULT_COMFY_URL,
+  probeComfyServer,
+  type ComfyServerAvailability,
+} from '../../services/comfyServers';
 
 type ComfyStatus = 'idle' | 'starting' | 'ready' | 'failed';
 
 const INPUT_CLASS = 'text-xs bg-canvas-surface border border-canvas-border rounded-md px-2.5 py-1.5 text-canvas-text placeholder-canvas-text-muted focus:outline-none focus:border-indigo-500 transition-colors';
+const DEFAULT_SERVER_STATUS_KEY = '__default__';
+const STATUS_REFRESH_INTERVAL_MS = 15_000;
+const STATUS_DEBOUNCE_MS = 250;
+
+interface ServerStatusEntry {
+  url: string;
+  availability: ComfyServerAvailability;
+}
+
+function ServerStatusLight({
+  availability,
+  label,
+}: {
+  availability: ComfyServerAvailability;
+  label: string;
+}) {
+  const colorClass = availability === 'available'
+    ? 'bg-emerald-400 ring-emerald-400/25'
+    : availability === 'unavailable'
+      ? 'bg-red-400 ring-red-400/25'
+      : 'bg-amber-400 ring-amber-400/25 animate-pulse';
+
+  return (
+    <span
+      className="pointer-events-none absolute inset-y-0 right-0 z-10 inline-flex w-9 items-center justify-center"
+      aria-label={label}
+      role="status"
+    >
+      <span className={`h-2.5 w-2.5 rounded-full ring-2 shadow-sm ${colorClass}`} />
+    </span>
+  );
+}
 
 export default function ComfyUISettings() {
   const {
@@ -39,7 +76,65 @@ export default function ComfyUISettings() {
   const [launching, setLaunching] = useState(false);
   const [opening, setOpening] = useState(false);
   const [status, setStatus] = useState<ComfyStatus>('idle');
+  const [serverStatuses, setServerStatuses] = useState<Record<string, ServerStatusEntry>>({});
   const comfyUIPath = config.comfyUIPath;
+  const servers = useMemo(() => config.comfyServers ?? [], [config.comfyServers]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let refreshTimer: number | undefined;
+    const targets = [
+      {
+        key: DEFAULT_SERVER_STATUS_KEY,
+        url: config.comfyUIUrl?.trim() || DEFAULT_COMFY_URL,
+      },
+      ...servers.map((server) => ({ key: server.id, url: server.url.trim() })),
+    ];
+
+    const refresh = async (showChecking: boolean) => {
+      if (showChecking) {
+        setServerStatuses((current) => ({
+          ...current,
+          ...Object.fromEntries(targets.map(({ key, url }) => [
+            key,
+            { url, availability: 'checking' as const },
+          ])),
+        }));
+      }
+      await Promise.all(targets.map(async ({ key, url }) => {
+        const available = await probeComfyServer(url, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setServerStatuses((current) => {
+          if (current[key]?.url !== url) return current;
+          return {
+            ...current,
+            [key]: { url, availability: available ? 'available' : 'unavailable' },
+          };
+        });
+      }));
+      if (!controller.signal.aborted) {
+        refreshTimer = window.setTimeout(() => void refresh(false), STATUS_REFRESH_INTERVAL_MS);
+      }
+    };
+
+    const debounceTimer = window.setTimeout(() => void refresh(true), STATUS_DEBOUNCE_MS);
+    return () => {
+      controller.abort();
+      window.clearTimeout(debounceTimer);
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    };
+  }, [config.comfyUIUrl, servers]);
+
+  const statusLabel = (availability: ComfyServerAvailability) => {
+    if (availability === 'available') return t('ComfyUI 服务已就绪');
+    if (availability === 'unavailable') return t('服务未就绪，请查看弹出的终端窗口中的日志');
+    return t('正在等待 ComfyUI 服务就绪，首次启动可能需要几分钟时间…');
+  };
+
+  const availabilityFor = (key: string, url: string): ComfyServerAvailability => {
+    const entry = serverStatuses[key];
+    return entry?.url === url ? entry.availability : 'checking';
+  };
 
   const openComfyUI = async () => {
     const comfyUrl = config.comfyUIUrl?.trim() || 'http://127.0.0.1:8188';
@@ -102,8 +197,6 @@ export default function ComfyUISettings() {
       setLaunching(false);
     }
   };
-
-  const servers = config.comfyServers ?? [];
 
   const saveServers = async (next: ComfyServer[]) => {
     updateConfig({ comfyServers: next });
@@ -189,16 +282,28 @@ export default function ComfyUISettings() {
         <h3 className="text-sm font-medium text-canvas-text mb-2">{t('ComfyUI 服务地址')}</h3>
         <div className="bg-canvas-card border border-canvas-border rounded-lg p-2">
           <div className="text-xs text-canvas-text-muted mb-1.5">{t('默认地址')}</div>
-          <input
-            type="text"
-            className={`${INPUT_CLASS} w-full`}
-            placeholder="http://127.0.0.1:8188"
-            defaultValue={config.comfyUIUrl || ''}
-            onBlur={async (event) => {
-              updateConfig({ comfyUIUrl: event.target.value });
-              await saveConfig();
-            }}
-          />
+          <div className="relative">
+            <input
+              type="text"
+              className={`${INPUT_CLASS} w-full pr-9`}
+              placeholder="http://127.0.0.1:8188"
+              defaultValue={config.comfyUIUrl || ''}
+              onBlur={async (event) => {
+                updateConfig({ comfyUIUrl: event.target.value });
+                await saveConfig();
+              }}
+            />
+            <ServerStatusLight
+              availability={availabilityFor(
+                DEFAULT_SERVER_STATUS_KEY,
+                config.comfyUIUrl?.trim() || DEFAULT_COMFY_URL,
+              )}
+              label={statusLabel(availabilityFor(
+                DEFAULT_SERVER_STATUS_KEY,
+                config.comfyUIUrl?.trim() || DEFAULT_COMFY_URL,
+              ))}
+            />
+          </div>
           <p className="text-[11px] text-canvas-text-muted mt-2">{t('ComfyUI 后端服务的地址，用于执行导入的工作流。默认端口为 8188')}</p>
 
           <div className="mt-3 pt-3 border-t border-canvas-border">
@@ -228,13 +333,19 @@ export default function ComfyUISettings() {
                       defaultValue={server.name}
                       onBlur={(event) => void patchServer(server.id, { name: event.target.value.trim() })}
                     />
-                    <input
-                      type="text"
-                      className={`${INPUT_CLASS} min-w-0 flex-1`}
-                      placeholder="http://127.0.0.1:8189"
-                      defaultValue={server.url}
-                      onBlur={(event) => void patchServer(server.id, { url: event.target.value.trim() })}
-                    />
+                    <div className="relative min-w-0 flex-1">
+                      <input
+                        type="text"
+                        className={`${INPUT_CLASS} w-full pr-9`}
+                        placeholder="http://127.0.0.1:8189"
+                        defaultValue={server.url}
+                        onBlur={(event) => void patchServer(server.id, { url: event.target.value.trim() })}
+                      />
+                      <ServerStatusLight
+                        availability={availabilityFor(server.id, server.url.trim())}
+                        label={statusLabel(availabilityFor(server.id, server.url.trim()))}
+                      />
+                    </div>
                     <button
                       type="button"
                       className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-canvas-text-muted hover:bg-red-500/10 hover:text-red-400 transition-colors"

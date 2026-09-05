@@ -29,7 +29,7 @@ vi.mock('../../src/services/nodeReferenceService', () => ({
   resolveNodeReferences: (value: string) => value,
 }));
 
-import { comfyBaseUrlFor } from '../../src/services/comfyServers';
+import { comfyBaseUrlFor, probeComfyServer } from '../../src/services/comfyServers';
 import { executeComfyUIVideoGenerate } from '../../src/services/comfyWorkflowService';
 
 function jsonResponse(body: unknown) {
@@ -103,5 +103,39 @@ describe('工作流绑定的 ComfyUI 服务端', () => {
     const urls = mocks.corsSafeFetch.mock.calls.map(([url]) => String(url));
     expect(urls.some((url) => url === 'http://video-server:8189/prompt')).toBe(true);
     expect(urls.every((url) => !url.includes('image-server'))).toBe(true);
+  });
+
+  it('通过 system_stats 探测 ComfyUI 服务，并规范化末尾斜杠', async () => {
+    mocks.corsSafeFetch.mockResolvedValueOnce(jsonResponse({ system: {}, devices: [] }));
+
+    await expect(probeComfyServer('  http://video-server:8189/  ')).resolves.toBe(true);
+    expect(mocks.corsSafeFetch).toHaveBeenCalledWith(
+      'http://video-server:8189/system_stats',
+      expect.objectContaining({ cache: 'no-store', signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it('非法地址、非成功响应或请求失败都判定为不可用', async () => {
+    await expect(probeComfyServer('')).resolves.toBe(false);
+    await expect(probeComfyServer('file:///tmp/comfyui')).resolves.toBe(false);
+    expect(mocks.corsSafeFetch).not.toHaveBeenCalled();
+
+    mocks.corsSafeFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+      text: async () => '',
+    });
+    await expect(probeComfyServer('http://video-server:8189')).resolves.toBe(false);
+
+    mocks.corsSafeFetch.mockRejectedValueOnce(new Error('offline'));
+    await expect(probeComfyServer('http://video-server:8189')).resolves.toBe(false);
+
+    mocks.corsSafeFetch.mockImplementationOnce(async (_url: string, init?: RequestInit) => (
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      })
+    ));
+    await expect(probeComfyServer('http://video-server:8189', { timeoutMs: 1 })).resolves.toBe(false);
   });
 });
