@@ -173,38 +173,11 @@ export async function executeRegisteredAgentToolCall({
     const approvalId = step.approval!.id;
     const resolution = await waitForApproval(approvalId, signal);
     round.assertAgentTaskActive(taskId, signal);
-    let approvalError: ToolResultSummary | undefined;
-    const selectedModelRef = resolution.inputValues?.modelRef?.trim();
-    if (resolution.approved && approvalInput.inputRequest) {
-      if (!selectedModelRef) {
-        approvalError = deniedResult(call, '确认生成前必须选择一个可用模型');
-      } else {
-        resolvedCall = {
-          ...call,
-          input: {
-            ...(prepared.input as Record<string, unknown>),
-            modelRef: selectedModelRef,
-          },
-        };
-        const selected = prepareAgentToolCall(resolvedCall, context);
-        if (!selected.ok) {
-          approvalError = selected.result;
-        } else {
-          const authorization = selected.prepared.definition.authorize?.(
-            context,
-            selected.prepared.input,
-          );
-          if (authorization && !authorization.allowed) {
-            approvalError = deniedResult(
-              call,
-              authorization.reason || '所选模型当前不可用',
-            );
-          } else {
-            prepared = selected.prepared;
-          }
-        }
-      }
-    }
+    context.mode = readCurrentMode();
+    const selection = round.resolveApprovalSelection(call, prepared, approvalInput.inputRequest, resolution, context);
+    const approvalError = selection.error;
+    resolvedCall = selection.call;
+    prepared = selection.prepared;
     const canExecute = resolution.approved && !approvalError;
     appendAgentEvent(taskId, 'approval_resolved', {
       toolId: call.toolId,
@@ -243,9 +216,7 @@ export async function executeRegisteredAgentToolCall({
                   ...item.approval,
                   status: resolution.approved ? 'approved' : 'rejected',
                   resolvedAt,
-                  inputRequest: item.approval.inputRequest
-                    ? { ...item.approval.inputRequest, selectedModelRef }
-                    : undefined,
+                  inputRequest: selection.inputRequest,
                 }
               : undefined,
           }

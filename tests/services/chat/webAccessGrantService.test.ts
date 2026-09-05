@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { WebSource } from '../../../src/types/chat';
+import { readWebSession } from '../../../src/services/chat/webReadSessionService';
 import {
   assignWebSourceCitations,
   clearWebAccessGrantsForTests,
@@ -26,6 +27,15 @@ beforeEach(() => {
 });
 
 describe('web access task grants', () => {
+  it('invalidates cached bodies when clearing task access even for otherwise public HTTPS URLs', async () => {
+    const url = 'https://example.com/docs';
+    const options = { scope: { taskId: 'clear', projectId: 'p', conversationId: 'c' }, kind: 'web' as const, url, authorize: () => true };
+    const load = async () => ({ readMethod: 'static' as const, complete: true, issues: [],
+      pages: [{ source: source(url), text: 'test body', links: [], truncated: false }] });
+    const first = await readWebSession(options, load);
+    clearWebAccessTask('clear');
+    await expect(readWebSession({ ...options, readSessionId: first.readSessionId }, load)).rejects.toThrow('失效');
+  });
   it('accepts public standard-port URLs and strips fragments', () => {
     expect(normalizePublicWebUrl('https://example.com/docs?q=1#section'))
       .toBe('https://example.com/docs?q=1');

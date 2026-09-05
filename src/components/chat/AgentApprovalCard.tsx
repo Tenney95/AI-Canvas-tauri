@@ -4,7 +4,7 @@
  * 展示等待确认的工具操作（画布写入、文件写入、媒体生成、永久删除、项目记忆、API 配置），
  * 提供确认 / 拒绝。键盘可操作，类别用文字标签而非仅颜色表达。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '@iconify/react';
 import type {
   AgentApprovalKind,
@@ -15,6 +15,7 @@ import type {
 import type { MediaModelOption } from '../nodes/shared/defaultModels';
 import AgentToolDetails from './AgentToolDetails';
 import { useT } from '../../i18n';
+import { MAX_PROVIDER_MODEL_SELECTION, queryProviderModels, toggleProviderModelSelection } from '../../services/chat/providerModelCatalogService';
 
 interface AgentApprovalCardProps {
   step: AgentStep;
@@ -48,7 +49,11 @@ const MEDIA_KIND_LABELS = {
   audio: '音频',
 } as const;
 
-export default function AgentApprovalCard({
+export default function AgentApprovalCard(props: AgentApprovalCardProps) {
+  return <ApprovalCardContent key={props.step.approval?.id ?? props.step.id} {...props} />;
+}
+
+function ApprovalCardContent({
   step,
   mediaModelOptions,
   mediaModelAvailability,
@@ -64,9 +69,23 @@ export default function AgentApprovalCard({
   );
   // 中转站接入：默认不预选，由用户明确勾选要接入哪几个
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
+  const [query, setQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [page, setPage] = useState(1);
+  const maxSelection = Math.min(providerModelsRequest?.maxSelection ?? MAX_PROVIDER_MODEL_SELECTION, MAX_PROVIDER_MODEL_SELECTION);
+  const providerPage = useMemo(() => queryProviderModels(providerModelsRequest?.options ?? [], query, categoryFilter, page),
+    [providerModelsRequest, query, categoryFilter, page]);
+  const expiresAt = providerModelsRequest?.catalog?.expiresAt;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!expiresAt) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, expiresAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [expiresAt]);
+  const catalogExpired = !!expiresAt && expiresAt <= now;
   const providerGroups = useMemo(() => {
     const groups = new Map<string, ProviderModelChoice[]>();
-    for (const option of providerModelsRequest?.options ?? []) {
+    for (const option of providerPage.options) {
       const list = groups.get(option.category) ?? [];
       list.push(option);
       groups.set(option.category, list);
@@ -75,16 +94,12 @@ export default function AgentApprovalCard({
       .flatMap((category) => (groups.has(category)
         ? [[category, groups.get(category)!] as const]
         : []));
-  }, [providerModelsRequest]);
+  }, [providerPage]);
   const toggleModelId = (id: string) => {
-    setSelectedModelIds((current) => (current.includes(id)
-      ? current.filter((item) => item !== id)
-      : [...current, id]));
+    setSelectedModelIds((current) => toggleProviderModelSelection(current, [id], maxSelection));
   };
   const toggleCategory = (ids: string[]) => {
-    setSelectedModelIds((current) => (ids.every((id) => current.includes(id))
-      ? current.filter((id) => !ids.includes(id))
-      : [...new Set([...current, ...ids])]));
+    setSelectedModelIds((current) => toggleProviderModelSelection(current, ids, maxSelection));
   };
   const groupedModels = useMemo(() => {
     if (!mediaModelRequest) return [];
@@ -108,6 +123,8 @@ export default function AgentApprovalCard({
     && !!mediaModelAvailability[selectedModelRef];
 
   const handleConfirm = () => {
+    if (approval.status !== 'pending' || (providerModelsRequest?.catalog && providerModelsRequest.catalog.expiresAt <= Date.now())
+      || (needsProviderSelection && (!selectedModelIds.length || selectedModelIds.length > maxSelection))) return;
     onResolve(approval.id, {
       approved: true,
       ...(needsModelSelection ? { inputValues: { modelRef: selectedModelRef } } : {}),
@@ -190,6 +207,22 @@ export default function AgentApprovalCard({
           <p className="mb-2 text-[11px] font-medium text-canvas-text">
             {t('勾选要接入的模型（已选 {selected} / {total}）', { selected: selectedModelIds.length, total: providerModelsRequest.options.length })}
           </p>
+          <p className="mb-2 text-xs text-canvas-text-muted" role="status">
+            {t('每批最多 {count} 个；筛选和翻页会保留已选项。', { count: maxSelection })}
+          </p>
+          {catalogExpired && <p role="alert" className="mb-2 text-xs text-canvas-text-secondary">{t('模型目录已过期，请拒绝本次选择并重新读取目录。')}</p>}
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <input className="ui-input min-w-0 flex-1" aria-label={t('搜索模型名称或 ID')} placeholder={t('搜索模型名称或 ID')}
+              value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} />
+            <select className="ui-select__control" aria-label={t('模型分类')} value={categoryFilter}
+              onChange={(event) => { setCategoryFilter(event.target.value); setPage(1); }}>
+              <option value="">{t('全部分类')}</option>
+              {Object.entries(PROVIDER_CATEGORY_LABELS).map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
+            </select>
+            <button type="button" className="ui-btn ui-btn--sm" disabled={!selectedModelIds.length}
+              onClick={() => setSelectedModelIds([])}>{t('清空已选')}</button>
+          </div>
+          {providerPage.total === 0 && <p className="py-2 text-xs text-canvas-text-muted">{t('没有匹配的模型')}</p>}
           <div className="max-h-64 space-y-2.5 overflow-y-auto pr-1">
             {providerGroups.map(([category, options]) => {
               const ids = options.map((option) => option.id);
@@ -203,9 +236,10 @@ export default function AgentApprovalCard({
                     <button
                       type="button"
                       onClick={() => toggleCategory(ids)}
+                      disabled={catalogExpired || (!allSelected && selectedModelIds.length >= maxSelection)}
                       className="min-h-6 rounded px-1.5 text-[10px] text-canvas-text-secondary hover:text-amber-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50"
                     >
-                      {allSelected ? t('取消全选') : t('全选')}
+                      {allSelected ? t('取消本页此类选择') : t('选取本页此类（受批次上限限制）')}
                     </button>
                   </div>
                   <div className="space-y-1">
@@ -223,6 +257,7 @@ export default function AgentApprovalCard({
                           <input
                             type="checkbox"
                             checked={selected}
+                            disabled={catalogExpired || (!selected && selectedModelIds.length >= maxSelection)}
                             onChange={() => toggleModelId(option.id)}
                             className="mt-0.5 shrink-0 accent-amber-400"
                           />
@@ -238,6 +273,15 @@ export default function AgentApprovalCard({
               );
             })}
           </div>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-canvas-text-secondary">
+            <span>{t('筛选结果 {count} 个', { count: providerPage.total })} · {providerPage.page} / {providerPage.pageCount}</span>
+            <div className="flex gap-2">
+              <button type="button" className="ui-btn ui-btn--sm" disabled={providerPage.page <= 1}
+                onClick={() => setPage(providerPage.page - 1)}>{t('上一页')}</button>
+              <button type="button" className="ui-btn ui-btn--sm" disabled={providerPage.page >= providerPage.pageCount}
+                onClick={() => setPage(providerPage.page + 1)}>{t('下一页')}</button>
+            </div>
+          </div>
         </div>
       )}
       <div className="mt-3 flex justify-end gap-2">
@@ -251,7 +295,8 @@ export default function AgentApprovalCard({
         <button
           type="button"
           disabled={(needsModelSelection && !selectedModelAvailable)
-            || (needsProviderSelection && selectedModelIds.length === 0)}
+            || approval.status !== 'pending' || catalogExpired
+            || (needsProviderSelection && (selectedModelIds.length === 0 || selectedModelIds.length > maxSelection))}
           onClick={handleConfirm}
           className="min-h-8 rounded-md bg-amber-500 px-3 py-1 text-xs font-medium text-black hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
         >

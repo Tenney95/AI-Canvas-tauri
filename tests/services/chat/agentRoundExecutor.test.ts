@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentApprovalResolution, AgentMode, AgentTask } from '../../../src/types/agent';
 import type { ProposedToolCall, ToolResultSummary } from '../../../src/types/chat';
 
@@ -23,7 +23,7 @@ vi.mock('../../../src/services/chat/contextManager', () => ({
   resolveAssistantContextSpec: vi.fn(() => ({ inputBudget: 100_000 })),
 }));
 
-import { executeAgentRound, type AgentRoundCallbacks } from '../../../src/services/chat/agentRoundExecutor';
+import { executeAgentRound, prepareApprovalInput, resolveApprovalSelection, type AgentRoundCallbacks } from '../../../src/services/chat/agentRoundExecutor';
 import { transitionAgentTask } from '../../../src/services/chat/agentRuntime';
 import { registerCanvasAgentTools } from '../../../src/services/chat/tools/canvasTools';
 import { registerMediaAgentTools } from '../../../src/services/chat/tools/mediaTools';
@@ -31,8 +31,77 @@ import {
   clearAgentToolRegistryForTests,
   getAgentTool,
   registerAgentTool,
+  prepareAgentToolCall,
 } from '../../../src/services/chat/toolRegistry';
 import { useAppStore } from '../../../src/store/useAppStore';
+import { registerProviderConfigAgentTools } from '../../../src/services/chat/tools/providerConfigTools';
+import { clearProviderModelCatalogsForTests, clearProviderModelCatalogsForTask, createProviderModelCatalog } from '../../../src/services/chat/providerModelCatalogService';
+
+afterEach(() => { clearProviderModelCatalogsForTests(); vi.restoreAllMocks(); });
+
+describe('provider approval round parity', () => {
+  function arrangeSelection(catalog = false) {
+    registerProviderConfigAgentTools();
+    const options = Array.from({ length: catalog ? 1000 : 20 }, (_, index) => ({ id: `m-${index}`, name: `Model ${index}`, category: 'text' as const }));
+    const input = catalog ? { catalogId: createProviderModelCatalog({ taskId: 'task-round', projectId: 'project-1', conversationId: 'conversation-1' }, options).catalogId } : { models: options };
+    arrangeCalls([{ callId: 'choice', toolId: 'provider_models_select', input }]);
+    return vi.spyOn(getAgentTool('provider_models_select')!, 'execute');
+  }
+  it.each([false, true])('returns only approved choices without media-only metadata (catalog %s)', async (catalog) => {
+    const execute = arrangeSelection(catalog);
+    const chosen = catalog ? 'm-999' : 'm-19';
+    const onResult = vi.fn();
+    await runRound(undefined, { onToolResult: onResult }, async () => ({ approved: true, inputValues: { selectedModelIds: [chosen] } }));
+    expect(execute).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ selectedIds: [chosen] }));
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }));
+    expect(useAppStore.getState().agentTasks[0].steps[0].approval?.inputRequest).not.toHaveProperty('selectedModelRef');
+  });
+  it.each([[], ['fake'], ['m-0', 'm-0'], Array.from({ length: 17 }, (_, index) => `m-${index}`)].map((ids) => ({ ids })))('rejects invalid choices before execute: $ids', async ({ ids }) => {
+    const execute = arrangeSelection();
+    const onResult = vi.fn();
+    await runRound(undefined, { onToolResult: onResult }, async () => ({ approved: true, inputValues: { selectedModelIds: ids } }));
+    expect(execute).not.toHaveBeenCalled();
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: 'denied' }));
+  });
+  it('rejects expired catalogs before invoking the tool', async () => {
+    const execute = arrangeSelection(true);
+    const onResult = vi.fn();
+    await runRound(undefined, { onToolResult: onResult }, async () => {
+      clearProviderModelCatalogsForTask('task-round');
+      return { approved: true, inputValues: { selectedModelIds: ['m-999'] } };
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ summary: expect.stringContaining('失效') }));
+  });
+
+  it.each([undefined, '', 42, { model: 'x' }])('rejects missing or malformed media selections: %j', (value) => {
+    const execute = arrangeMedia();
+    const context = { taskId: 'task-round', projectId: 'project-1', conversationId: 'conversation-1', mode: 'collaborative' as const };
+    const call = { callId: 'media-choice', toolId: 'media_generate', input: { kind: 'image', prompt: 'a cat', deliveryMode: 'chat' } };
+    const prepared = prepareAgentToolCall(call, context);
+    if (!prepared.ok) throw new Error('media preparation failed');
+    const approval = prepareApprovalInput(prepared.prepared, 'generate', 'collaborative');
+    const selected = resolveApprovalSelection(call, approval.prepared, approval.inputRequest,
+      { approved: true, inputValues: { modelRef: value } } as AgentApprovalResolution, context);
+    expect(selected.error?.status).toBe('denied');
+    expect(selected.error?.summary).toContain('必须选择');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects a registry definition replaced while the user was choosing', () => {
+    registerProviderConfigAgentTools();
+    const context = { taskId: 'task-round', projectId: 'project-1', conversationId: 'conversation-1', mode: 'autonomous' as const };
+    const call = { callId: 'changed', toolId: 'provider_models_select', input: { models: [{ id: 'm', name: 'M', category: 'text' }] } };
+    const result = prepareAgentToolCall(call, context);
+    if (!result.ok) throw new Error('provider preparation failed');
+    const approval = prepareApprovalInput(result.prepared, 'select');
+    clearAgentToolRegistryForTests();
+    registerProviderConfigAgentTools();
+    const selected = resolveApprovalSelection(call, approval.prepared, approval.inputRequest,
+      { approved: true, inputValues: { selectedModelIds: ['m'] } }, context);
+    expect(selected.error?.summary).toContain('工具定义已变化');
+  });
+});
 
 function createTask(): AgentTask {
   return {

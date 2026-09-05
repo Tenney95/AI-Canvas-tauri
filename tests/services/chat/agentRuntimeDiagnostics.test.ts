@@ -16,6 +16,8 @@ vi.mock('../../../src/services/chat/contextManager', () => ({
 }));
 
 import { runAgentLoop } from '../../../src/services/chat/agentRuntime';
+import { clearWebReadSessionsForTests, readWebSession } from '../../../src/services/chat/webReadSessionService';
+import { clearProviderModelCatalogsForTests, createProviderModelCatalog, getProviderModelCatalog } from '../../../src/services/chat/providerModelCatalogService';
 import { fingerprintToolInput } from '../../../src/services/chat/agentCheckpointService';
 import { enqueueAgentInterjection } from '../../../src/services/chat/agentInterjection';
 import {
@@ -90,6 +92,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearWebReadSessionsForTests();
+  clearProviderModelCatalogsForTests();
   clearAgentToolRegistryForTests();
   clearAgentLifecycleListenersForTests();
 });
@@ -119,6 +123,27 @@ function restoreCheckpointTask() {
 }
 
 describe('agent runtime diagnostics', () => {
+  it.each(['completed', 'paused', 'context_error', 'aborted'] as const)('clears document snapshots and catalogs on %s', async (outcome) => {
+    const task = createTask();
+    const options = { scope: { taskId: task.id, projectId: task.projectId, conversationId: task.conversationId },
+      kind: 'web' as const, url: 'https://example.com/docs', authorize: () => true };
+    const load = async () => ({ readMethod: 'static' as const, complete: true, issues: [], pages: [{
+      source: { id: 's', title: 'doc', url: options.url, domain: 'example.com', fetchedAt: 1, sourceType: 'page' as const },
+      text: 'temporary body', links: [], truncated: false }] });
+    const snapshot = await readWebSession(options, load);
+    const catalog = createProviderModelCatalog(options.scope, [{ id: 'm', name: 'M', category: 'text' }]);
+    streamAssistantReplyMock.mockResolvedValue(undefined);
+    if (outcome === 'paused') useAppStore.setState({ agentTasks: [{ ...task, budget: { ...task.budget, maxModelRounds: 0 } }] });
+    const controller = new AbortController();
+    if (outcome === 'aborted') controller.abort();
+    if (outcome === 'context_error') assembleAgentContextMock.mockRejectedValue(new Error('context failed'));
+    const result = runAgentLoop({ taskId: task.id, systemPrompt: 'system', userMessage: 'done', signal: controller.signal });
+    if (outcome === 'completed') await result;
+    else if (outcome === 'paused') await expect(result).resolves.toBe('paused');
+    else await expect(result).rejects.toThrow();
+    expect(() => getProviderModelCatalog(options.scope, catalog.catalogId)).toThrow('失效');
+    await expect(readWebSession({ ...options, readSessionId: snapshot.readSessionId }, load)).rejects.toThrow('失效');
+  });
   it('marks older conversation requests as context outside the current task boundary', async () => {
     assembleAgentContextMock.mockResolvedValue({
       messages: [

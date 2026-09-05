@@ -84,7 +84,8 @@ export interface ConfigSlice {
   addGeneralModel: (model: Omit<GeneralModelConfig, 'id'>) => void;
   updateGeneralModel: (id: string, model: Partial<GeneralModelConfig>) => void;
   removeGeneralModel: (id: string) => void;
-  saveConfig: (options?: { silent?: boolean }) => Promise<void>;
+  /** 严格调用方可要求失败抛出脱敏错误；普通设置按钮保持仅 Toast 的兼容行为。 */
+  saveConfig: (options?: { silent?: boolean; throwOnError?: boolean }) => Promise<void>;
   loadConfig: () => Promise<void>;
 }
 
@@ -524,23 +525,40 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
     const { config, configHydrated, showToast } = get();
     if (!configHydrated) {
       console.warn('[设置] 配置尚未完成加载，已阻止默认值覆盖持久化配置');
+      if (options?.throwOnError) throw new Error('配置尚未完成加载，不能保存设置');
       return;
     }
+    let persisted = false;
+    let unstored: string[] = [];
     try {
       const normalizedConfig = migrateLegacyGeneralModels(config);
       // 凭据由持久化层写入 Rust 侧凭据存储；写不进去时不会落明文，只能本次会话有效
-      const unstored = await fileService.saveConfig(normalizedConfig);
-      if (normalizedConfig !== config) set({ config: normalizedConfig });
+      unstored = await fileService.saveConfig(normalizedConfig);
+      if (!Array.isArray(unstored)) throw new Error('配置保存结果无效');
+      persisted = true;
+      // 保存期间可能有其他配置更新，旧快照的归一化结果不能覆盖后来修改。
+      if (normalizedConfig !== config && get().config === config) set({ config: normalizedConfig });
       // 同步 baseDataDir 到 fileService
-      setBaseDataDir(normalizedConfig.baseDataDir);
-      await syncAuthorizedDirectories(normalizedConfig);
-      if (unstored.length > 0) {
-        showToast('凭据存储不可用，API Key 仅本次会话有效，重启后需重新填写', 'error');
-      } else if (!options?.silent) {
-        showToast('设置已保存');
+      if (get().config === config || get().config === normalizedConfig) {
+        setBaseDataDir(normalizedConfig.baseDataDir);
+        await syncAuthorizedDirectories(normalizedConfig);
       }
     } catch {
-      showToast('设置保存失败', 'error');
+      const message = (persisted
+        ? '配置已保存，但目录授权同步失败，请检查设置后重试'
+        : '设置保存失败，当前修改尚未确认持久化')
+        + (persisted && unstored.length > 0 ? '；凭据存储也不可用，API Key 仅本次会话有效' : '');
+      showToast(persisted ? message : '设置保存失败', 'error');
+      // 不传播原始存储错误，避免本地路径或凭据进入 Agent 消息。
+      if (options?.throwOnError) throw new Error(message);
+      return;
+    }
+    if (unstored.length > 0) {
+      const message = '配置已保存，但凭据存储不可用，API Key 仅本次会话有效，重启后需重新填写';
+      showToast('凭据存储不可用，API Key 仅本次会话有效，重启后需重新填写', 'error');
+      if (options?.throwOnError) throw new Error(message);
+    } else if (!options?.silent) {
+      showToast('设置已保存');
     }
   },
 

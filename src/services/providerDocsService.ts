@@ -2,22 +2,18 @@
  * 通过原生受限读取接口获取 Provider 文档，并提取标题、正文与同源候选链接。
  */
 import { invoke } from '@tauri-apps/api/core';
+import type { NativeWebReadResponse, WebReadStatus, WebSource, WebReadAccessScope, WebReadContinuation, WebReadDocument, WebReadSection, WebReadPage } from '../types/chat';
+import type { ProviderModelCatalogSummary, ProviderModelChoice } from '../types/agent';
+import { readWebSession } from './chat/webReadSessionService';
+import { createProviderModelCatalog } from './chat/providerModelCatalogService';
 import { normalizeProviderDocUrl } from './chat/providerDocsGrantService';
-import { shouldRenderDynamicHtml } from './webPageService';
-
-interface NativeProviderDocsResponse {
-  url: string;
-  status: number;
-  contentType: string;
-  body: string;
-  fetchedAt: number;
-}
+import { extractWebReadResponse, shouldRenderDynamicHtml } from './webPageService';
 export interface ProviderDocLink {
   label: string;
   url: string;
 }
 
-export interface ProviderDocsPage {
+export interface ProviderDocsPage extends WebReadStatus {
   title: string;
   url: string;
   text: string;
@@ -28,8 +24,16 @@ export interface ProviderDocsPage {
   totalTextChars: number;
   /** 续读时应传的下一个 offset；已读完为 undefined。 */
   nextOffset?: number;
+  readSessionId?: string;
+  nextCursor?: string;
+  sections?: WebReadSection[];
+  catalog?: ProviderModelCatalogSummary;
+  /** 当前返回的片段，不进入持久化来源元数据。 */
+  pages?: WebReadPage[];
   /** 站点公开模型清单按分类分好组的可直接转述文本；非中转站为 undefined。 */
   modelCatalog?: string;
+  /** 仅来源元数据，不携带整页正文。 */
+  sources: WebSource[];
 }
 
 /**
@@ -55,23 +59,7 @@ export function sliceDocText(text: string, offset: number, limit: number): {
   };
 }
 
-const BLOCK_TAGS = new Set([
-  'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DD', 'DIV', 'DL', 'DT',
-  'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3',
-  'H4', 'H5', 'H6', 'HEADER', 'HR', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE',
-  'SECTION', 'TABLE', 'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
-]);
-const IGNORED_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'CANVAS', 'IFRAME', 'FORM']);
 const LINK_HINT_RE = /api|model|endpoint|reference|image|video|audio|chat|模型|接口|图片|视频|音频|对话/i;
-
-function structuredText(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? '';
-  if (!(node instanceof Element) || IGNORED_TAGS.has(node.tagName)) return '';
-  if (node.tagName === 'BR') return '\n';
-  if (node.tagName === 'PRE') return `\n\`\`\`\n${node.textContent ?? ''}\n\`\`\`\n`;
-  const content = [...node.childNodes].map(structuredText).join('');
-  return BLOCK_TAGS.has(node.tagName) ? `\n${content}\n` : content;
-}
 
 function normalizeText(value: string): string {
   return value
@@ -80,36 +68,6 @@ function normalizeText(value: string): string {
     .replace(/\n[\t ]+/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-}
-
-function extractHtmlPage(body: string, finalUrl: string): {
-  title: string;
-  text: string;
-  links: ProviderDocLink[];
-} {
-  const parser = new DOMParser();
-  const document = parser.parseFromString(body, 'text/html');
-  const title = normalizeText(document.querySelector('title')?.textContent ?? '')
-    || new URL(finalUrl).hostname;
-  const linksByUrl = new Map<string, ProviderDocLink>();
-  for (const anchor of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
-    let resolved: string;
-    try {
-      resolved = new URL(anchor.getAttribute('href') || '', finalUrl).toString();
-    } catch {
-      continue;
-    }
-    const normalized = normalizeProviderDocUrl(resolved);
-    if (!normalized || normalized.length > 512) continue;
-    const label = normalizeText(anchor.textContent ?? '').slice(0, 100) || new URL(normalized).pathname;
-    if (!linksByUrl.has(normalized)) linksByUrl.set(normalized, { label, url: normalized });
-  }
-  const root = document.querySelector('article, main') ?? document.body;
-  const text = root ? normalizeText(structuredText(root)) : '';
-  const links = [...linksByUrl.values()]
-    .sort((left, right) => Number(LINK_HINT_RE.test(right.label + right.url))
-      - Number(LINK_HINT_RE.test(left.label + left.url)));
-  return { title, text, links };
 }
 
 // ---- new-api（New API）中转站识别 ----
@@ -196,7 +154,7 @@ export function buildRelayCatalogContent(
   const title = status?.systemName || hostname;
   const lines = [
     `这是 new-api（New API）中转站「${title}」的公开模型清单。`,
-    '该站文档页是登录后台，无法匿名读取正文；以下信息来自公开接口 /api/pricing 与 /api/status，可直接用于生成配置草稿。',
+    '未读取到目标文档（可能需要登录或渲染失败）；以下信息来自公开接口 /api/pricing 与 /api/status，只是模型目录，不能代替目标模型的接口文档。',
     '',
     `模型清单（共 ${pricing.length} 个）：`,
   ];
@@ -252,7 +210,7 @@ async function probeNewApiPricing(
 ): Promise<NewApiPricingItem[] | null> {
   if (signal?.aborted) return null;
   try {
-    const response = await invoke<NativeProviderDocsResponse>(
+    const response = await invoke<NativeWebReadResponse>(
       'provider_docs_read',
       { url: `${origin}/api/pricing` },
     );
@@ -269,7 +227,7 @@ async function probeNewApiStatus(
 ): Promise<NewApiStatusInfo | null> {
   if (signal?.aborted) return null;
   try {
-    const response = await invoke<NativeProviderDocsResponse>(
+    const response = await invoke<NativeWebReadResponse>(
       'provider_docs_read',
       { url: `${origin}/api/status` },
     );
@@ -315,79 +273,128 @@ export function buildGroupedModelChoiceList(pricing: NewApiPricingItem[]): strin
 async function readNewApiRelayCatalog(
   rawUrl: string,
   signal?: AbortSignal,
+  scope?: WebReadAccessScope,
+  authorize?: () => boolean,
 ): Promise<ProviderDocsPage | null> {
   const origin = new URL(rawUrl).origin;
   const pricing = await probeNewApiPricing(origin, signal);
   if (!pricing) return null;
   const status = await probeNewApiStatus(origin, signal);
-  const content = buildRelayCatalogContent(rawUrl, pricing, status);
+  if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+  if (scope && !authorize?.()) throw new Error('厂商文档授权已失效');
+  const catalog = scope ? catalogFromPricing(scope, pricing) : undefined;
+  const content = catalog
+    ? { title: status?.systemName || new URL(rawUrl).hostname,
+        text: `公开模型目录共 ${catalog.total} 个候选。目录不是接口文档；选择后必须核对每个模型的请求、响应与轮询字段。` }
+    : buildRelayCatalogContent(rawUrl, pricing, status);
+  const fetchedAt = Date.now();
   return {
     title: content.title,
-    url: rawUrl,
+    catalog,
+    url: `${origin}/api/pricing`,
     text: content.text,
     links: [],
-    fetchedAt: Date.now(),
+    fetchedAt,
     truncated: false,
     totalTextChars: content.text.length,
+    readMethod: 'catalog',
+    complete: false,
+    issues: ['catalog_fallback'],
+    sources: ['pricing', ...(status ? ['status'] : [])].map((endpoint) => ({
+      id: `catalog-${fetchedAt}-${endpoint}`, title: `公开 ${endpoint} 接口`,
+      url: `${origin}/api/${endpoint}`, domain: new URL(origin).hostname, fetchedAt, sourceType: 'page',
+    })),
+    ...(catalog && status ? { pages: [{
+      source: { id: `catalog-${fetchedAt}-status`, title: '站点状态与公告', url: `${origin}/api/status`,
+        domain: new URL(origin).hostname, fetchedAt, sourceType: 'page' as const },
+      text: [`站点名称：${status.systemName || new URL(origin).hostname}`,
+        ...status.announcements.slice(0, 15).map((text) => normalizeText(text).slice(0, 400))].join('\n'),
+      links: [], truncated: status.announcements.length > 15,
+    }] } : {}),
   };
 }
 
-export async function readProviderDocsPage(
+function catalogFromPricing(scope: WebReadAccessScope, pricing: NewApiPricingItem[]) {
+  const categories: Record<string, ProviderModelChoice['category']> = { 文本: 'text', 图片: 'image', 视频: 'video', 音频: 'audio' };
+  return createProviderModelCatalog(scope, pricing.map((item) => ({ id: String(item.model_name).trim(),
+    name: typeof item.display_name === 'string' && item.display_name.trim() ? item.display_name.trim() : String(item.model_name).trim(),
+    category: categories[inferRelayModelCategory(item)] })));
+}
+
+interface ProviderDocsReadOptions extends WebReadContinuation {
+  signal?: AbortSignal;
+  maxTextChars?: number;
+  scope?: WebReadAccessScope;
+  authorize?: () => boolean;
+}
+
+export async function readProviderDocsPage(rawUrl: string, options: ProviderDocsReadOptions = {}): Promise<ProviderDocsPage> {
+  if (options.scope) {
+    const result = await readWebSession({ ...options, scope: options.scope, url: rawUrl, kind: 'docs',
+      limit: Math.max(1, Math.min(options.maxTextChars ?? 10_000, 10_000)), authorize: options.authorize ?? (() => false) },
+    () => loadProviderDocsDocument(rawUrl, options));
+    return { ...result, title: result.source.title, url: result.source.url, fetchedAt: result.source.fetchedAt,
+      totalTextChars: result.totalTextChars!, sources: result.pages.map((page) => page.source),
+      links: result.links.map((link) => ({ label: link.title, url: link.url })) };
+  }
+  const document = await loadProviderDocsDocument(rawUrl, options);
+  return clipProviderDocsDocument(document, options);
+}
+
+async function loadProviderDocsDocument(
   rawUrl: string,
-  options: { signal?: AbortSignal; maxTextChars?: number; offset?: number } = {},
-): Promise<ProviderDocsPage> {
+  options: ProviderDocsReadOptions,
+): Promise<WebReadDocument & { modelCatalog?: string; legacyRelay?: ProviderDocsPage }> {
   const normalized = normalizeProviderDocUrl(rawUrl);
   if (!normalized) throw new Error('厂商文档 URL 未通过本地安全校验');
-  if (typeof window === 'undefined' || !('__TAURI__' in window)) {
+  if (typeof window === 'undefined' || !('__TAURI__' in window || '__TAURI_INTERNALS__' in window)) {
     throw new Error('厂商文档读取仅在 Tauri 桌面环境可用');
   }
   if (options.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
-  let response = await invoke<NativeProviderDocsResponse>('provider_docs_read', { url: normalized });
+  let response = await invoke<NativeWebReadResponse>('provider_docs_read', { url: normalized });
   if (options.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
-  let finalUrl = normalizeProviderDocUrl(response.url);
+  const finalUrl = normalizeProviderDocUrl(response.url);
   if (!finalUrl || new URL(finalUrl).origin !== new URL(normalized).origin) {
     throw new Error('厂商文档最终地址未通过同站安全校验');
   }
 
-  let extracted = response.contentType.startsWith('application/json')
-    ? { title: new URL(finalUrl).hostname, text: normalizeText(response.body), links: [] }
-    : extractHtmlPage(response.body, finalUrl);
+  const expectedOrigin = new URL(normalized).origin;
+  let extracted = extractWebReadResponse(response, { expectedOrigin, linkLimit: 200 });
 
   // SPA 文档站先走受控渲染，拿到真实正文与同站链接。
   //
   // 顺序很重要：/api/pricing 兜底是按 origin 探测的，一旦排在渲染之前，同一站点下
   // 任何读不到正文的页面（包括 /docs/videos/{模型ID} 这种单模型文档页）都会被换成
   // 那份只有模型 ID 的清单，助手永远看不到真实字段名，只能自己编请求体。
-  if (!extracted.text && shouldRenderDynamicHtml(response.body, response.contentType, extracted.text)) {
+  if (!response.pages && shouldRenderDynamicHtml(response.body, response.contentType, extracted.pages[0]?.text ?? '')) {
     // 渲染是尽力而为：SPA 首屏偶尔会超时，此时应退到下面的公开清单兜底，
     // 而不是让整次文档读取失败（渲染排到兜底之前后，抛错会直接吞掉兜底路径）。
-    let rendered: NativeProviderDocsResponse | undefined;
+    let rendered: NativeWebReadResponse | undefined;
     try {
-      rendered = await invoke<NativeProviderDocsResponse>('assistant_web_render', { url: finalUrl });
-    } catch (error) {
-      console.warn('[providerDocs] 动态渲染失败，退回公开清单兜底', finalUrl, error);
+      rendered = await invoke<NativeWebReadResponse>('assistant_web_render', { url: finalUrl });
+    } catch {
+      extracted.complete = false;
+      extracted.issues.push('render_failed');
       rendered = undefined;
     }
     if (options.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
-    const renderedUrl = rendered ? normalizeProviderDocUrl(rendered.url) : null;
-    if (rendered && (!renderedUrl || new URL(renderedUrl).origin !== new URL(normalized).origin)) {
-      throw new Error('厂商文档渲染后的最终地址未通过同站安全校验');
-    }
-    if (rendered && renderedUrl) {
+    if (rendered) {
       response = rendered;
-      finalUrl = renderedUrl;
-      extracted = response.contentType.startsWith('application/json')
-        ? { title: new URL(finalUrl).hostname, text: normalizeText(response.body), links: [] }
-        : extractHtmlPage(response.body, finalUrl);
+      extracted = extractWebReadResponse(response, { expectedOrigin, linkLimit: 200, readMethod: 'rendered' });
     }
   }
 
   // 渲染后仍读不到正文（如需要登录的后台 SPA），最后才退回公开模型清单与公告。
-  if (!extracted.text) {
-    const relay = await readNewApiRelayCatalog(finalUrl, options.signal);
+  const readablePages = extracted.pages.filter((page) => page.text);
+  if (!readablePages.length) {
+    const relay = await readNewApiRelayCatalog(finalUrl, options.signal, options.scope, options.authorize);
+    if (options.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
     if (relay) {
-      const limit = Math.max(1, Math.min(options.maxTextChars ?? 10_000, 10_000));
-      return { ...relay, ...sliceDocText(relay.text, options.offset ?? 0, limit) };
+      return {
+        readMethod: relay.readMethod, complete: relay.complete, issues: relay.issues, catalog: relay.catalog,
+        pages: [{ source: relay.sources[0], text: relay.text, links: [], truncated: false }, ...(relay.pages ?? [])],
+        legacyRelay: options.scope ? undefined : relay,
+      };
     }
     throw new Error(
       '厂商文档页面没有可读取的正文；该页面可能是需要登录的后台 SPA，无法匿名读取。'
@@ -395,18 +402,58 @@ export async function readProviderDocsPage(
     );
   }
   // 文档首页额外附一份分好类的模型清单：让助手转述现成结构，而不是从长正文里自己归纳
-  const pricing = isDocsIndexUrl(finalUrl)
+  const directPricing = response.contentType.startsWith('application/json') ? parseNewApiPricingPayload(response.body) : null;
+  const pricing = directPricing ?? (isDocsIndexUrl(finalUrl)
     ? await probeNewApiPricing(new URL(finalUrl).origin, options.signal)
-    : null;
-  const modelCatalog = pricing ? buildGroupedModelChoiceList(pricing) : '';
+    : null);
+  const modelCatalog = pricing && !options.scope ? buildGroupedModelChoiceList(pricing) : '';
+  if (options.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+  if (options.scope && !options.authorize?.()) throw new Error('厂商文档授权已失效');
+  const catalog = pricing && options.scope ? catalogFromPricing(options.scope, pricing) : undefined;
+  const pages = directPricing && catalog
+    ? [{ ...readablePages[0], text: `公开模型目录共 ${catalog.total} 个候选。目录不是接口文档，选择后需要读取对应接口页。` }]
+    : readablePages;
+  return { ...extracted, pages, catalog, modelCatalog: modelCatalog || undefined };
+}
 
+function clipProviderDocsDocument(document: WebReadDocument & { modelCatalog?: string; legacyRelay?: ProviderDocsPage }, options: ProviderDocsReadOptions): ProviderDocsPage {
+  if (document.legacyRelay) {
+    const sliced = sliceDocText(document.legacyRelay.text, options.offset ?? 0, Math.max(1, Math.min(options.maxTextChars ?? 10_000, 10_000)));
+    return { ...document.legacyRelay, ...sliced,
+      issues: [...document.issues, ...(sliced.truncated || (options.offset ?? 0) > 0 ? ['text_limit' as const] : [])] };
+  }
+  const readablePages = document.pages;
+  const expectedOrigin = new URL(readablePages[0].source.url).origin;
   const limit = Math.max(1, Math.min(options.maxTextChars ?? 10_000, 10_000));
+  let position = 0;
+  const sections = readablePages.map((page) => {
+    const text = `标题: ${page.source.title}\nURL: ${page.source.url}\n${page.text}`;
+    const start = position;
+    position += text.length + 2;
+    return { text, source: page.source, start, end: position - 2 };
+  });
+  const content = sections.map((section) => section.text).join('\n\n');
+  const start = Math.min(Math.max(0, Math.floor(options.offset ?? 0)), content.length);
+  const sliced = sliceDocText(content, start, limit);
+  const sources = sections.filter((section) => section.start < start + sliced.text.length && section.end > start)
+    .map((section) => section.source);
+  const firstSource = sources[0] ?? readablePages[0].source;
+  const links = [...new Map(readablePages.flatMap((page) => page.links)
+    .filter((link) => link.url.length <= 512 && new URL(link.url).origin === expectedOrigin && normalizeProviderDocUrl(link.url))
+    .map((link) => [link.url, { label: link.title.slice(0, 100), url: link.url }])).values()]
+    .sort((left, right) => Number(LINK_HINT_RE.test(right.label + right.url))
+      - Number(LINK_HINT_RE.test(left.label + left.url)));
   return {
-    title: extracted.title,
-    url: finalUrl,
-    links: extracted.links.slice(0, 24),
-    fetchedAt: response.fetchedAt,
-    ...sliceDocText(extracted.text, options.offset ?? 0, limit),
-    ...(modelCatalog ? { modelCatalog } : {}),
+    title: firstSource.title,
+    url: firstSource.url,
+    sources,
+    links: links.slice(0, 24),
+    fetchedAt: firstSource.fetchedAt,
+    ...sliced,
+    truncated: sliced.truncated || readablePages.some((page) => page.truncated),
+    readMethod: document.readMethod,
+    complete: document.complete && !sliced.truncated && start === 0,
+    issues: [...document.issues, ...(sliced.truncated || start > 0 ? ['text_limit' as const] : [])],
+    ...(document.modelCatalog ? { modelCatalog: document.modelCatalog } : {}),
   };
 }

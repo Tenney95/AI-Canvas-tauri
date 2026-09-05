@@ -3,10 +3,57 @@ import {
   clearProviderConfigDraftsForTests,
   createProviderConfigDraft,
   getProviderConfigDraft,
+  mergeProviderModels,
   type ProviderConfigDraftInput,
 } from '../../../src/services/chat/providerConfigDraftService';
 import { buildModelProtocolRequest } from '../../../src/services/ai/modelProtocol';
 import type { ModelExecutionProtocol, VideoModelCapability } from '../../../src/types/aiTypes';
+import type { ProviderModelSelection } from '../../../src/types';
+
+describe('provider model field merge', () => {
+  const existing: ProviderModelSelection = {
+    id: 'chat-a', name: 'My Chat', category: 'text', provider: 'custom-current',
+    description: 'Manual description', descriptionManual: true,
+    inputModalities: ['text', 'image'], inputModalitiesManual: true, contextWindow: 128000,
+  };
+
+  it('preserves omitted and undefined fields while applying explicitly changed fields', () => {
+    const draft = { id: existing.id, name: 'Updated Chat', category: 'text' as const,
+      provider: existing.provider, description: undefined };
+    const result = mergeProviderModels([existing], [draft]);
+    expect(result.merged[0]).toEqual({ ...existing, name: 'Updated Chat' });
+    expect(result.updatedIds).toEqual([existing.id]);
+    expect(existing.name).toBe('My Chat');
+  });
+
+  it('treats an otherwise identical partial draft as unchanged', () => {
+    const draft = { id: existing.id, name: existing.name, category: existing.category, provider: existing.provider };
+    const result = mergeProviderModels([existing], [draft]);
+    expect(result.unchangedIds).toEqual([existing.id]);
+    expect(result.merged[0]).toBe(existing);
+  });
+
+  it('honors an explicitly empty description without deleting unrelated settings', () => {
+    const result = mergeProviderModels([existing], [{ ...existing, description: '' }]);
+    expect(result.merged[0]).toEqual({ ...existing, description: '' });
+  });
+
+  it('does not overwrite a manual category using only an inferred category', () => {
+    expect(() => mergeProviderModels([existing], [{ ...existing, category: 'image' }], {
+      [existing.id]: ['provider', 'executionProfile'],
+    })).toThrow('请明确 category 后重新预览');
+  });
+
+  it('replaces explicitly supplied execution profiles atomically instead of mixing old fields', () => {
+    const previous = { ...existing, executionProfile: {
+      preset: 'custom' as const, protocol: structuredClone(DECLARATIVE_VIDEO_PROTOCOL),
+    } };
+    const next = { ...existing, executionProfile: { preset: 'openai-chat' as const } };
+    const result = mergeProviderModels([previous], [next]);
+    expect(result.merged[0].executionProfile).toEqual(next.executionProfile);
+    expect(result.fieldChanges[0].updated).toEqual(['executionProfile']);
+  });
+});
 
 const IMAGE_REQUEST = `
 curl https://gateway.example.com/v1/images/generations \\

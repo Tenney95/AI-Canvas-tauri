@@ -226,6 +226,14 @@ export interface ProviderModelChoice {
   category: 'text' | 'image' | 'video' | 'audio';
 }
 
+export interface ProviderModelCatalogSummary {
+  catalogId: string;
+  total: number;
+  categoryCounts: Record<ProviderModelChoice['category'], number>;
+  expiresAt: number;
+  maxSelection: number;
+}
+
 export type AgentApprovalInputRequest =
   | {
     kind: 'media_model';
@@ -235,7 +243,10 @@ export type AgentApprovalInputRequest =
   | {
     /** 中转站接入：让用户从清单里勾选要接入哪几个模型 */
     kind: 'provider_models';
+    /** 受限候选元数据快照供主/独立窗口展示；最终仍由宿主复核目录。 */
     options: ProviderModelChoice[];
+    catalog?: ProviderModelCatalogSummary;
+    maxSelection?: number;
   };
 
 export interface AgentApprovalInputValues {

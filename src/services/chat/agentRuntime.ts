@@ -18,6 +18,7 @@ import { buildAgentResumeContext } from './agentCheckpointService';
 import { clearProviderDocsTask } from './providerDocsGrantService';
 import { clearWebAccessTask } from './webAccessGrantService';
 import { clearSkillCatalogTask } from './skillCatalog';
+import { clearProviderModelCatalogsForTask } from './providerModelCatalogService';
 import {
   executeAgentRound,
   type AgentRoundCallbacks,
@@ -91,6 +92,9 @@ export async function runAgentLoop({
       content: CURRENT_TASK_BOUNDARY,
     });
   } catch (error) {
+    clearProviderDocsTask(taskId);
+    clearWebAccessTask(taskId);
+    clearProviderModelCatalogsForTask(taskId);
     if (signal.aborted) throw error;
     if (error instanceof ContextBudgetError) {
       transitionAgentTask(taskId, 'paused', {
@@ -128,5 +132,6 @@ export async function runAgentLoop({
     clearProviderDocsTask(taskId);
     clearWebAccessTask(taskId);
     clearSkillCatalogTask(taskId);
+    clearProviderModelCatalogsForTask(taskId);
   }
 }

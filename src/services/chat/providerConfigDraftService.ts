@@ -123,6 +123,8 @@ export interface ProviderConfigDraft {
   connectionName: string;
   baseUrl: string;
   config: ProviderConfigDraftConfig;
+  /** 更新已有模型时允许覆盖的字段；新模型使用完整校验后的配置。 */
+  modelUpdateFields: Record<string, Array<keyof ProviderModelSelection>>;
   summary: string;
   createdAt: number;
   expiresAt: number;
@@ -134,6 +136,8 @@ export interface ProviderConfigDraftAccessScope {
 }
 
 const drafts = new Map<string, ProviderConfigDraft>();
+// 仅用于比较的内存基线，不暴露给模型、不进入草稿摘要或持久化。
+const draftTargets = new WeakMap<ProviderConfigDraft, { connectionId: string; snapshot: string }>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -717,7 +721,7 @@ function createModelSelection(
   connectionId: string,
   examples: ProviderConfigModelExamples,
   declaredBaseUrl?: string,
-): { selection: ProviderModelSelection; baseUrl: string } {
+): { selection: ProviderModelSelection; baseUrl: string; updateFields: Array<keyof ProviderModelSelection> } {
   const result = resolveDraftModelProtocol(examples, declaredBaseUrl);
   const displayName = examples.name?.trim() || result.modelId;
   const executionProfile: ModelExecutionProfile = {
@@ -776,8 +780,17 @@ function createModelSelection(
   if (contextWindow && category !== 'text') {
     throw new Error(`模型“${displayName || result.modelId}”只有文本分类可以声明 contextWindow`);
   }
+  const updateFields: Array<keyof ProviderModelSelection> = ['provider', 'executionProfile'];
+  if (examples.name?.trim()) updateFields.push('name');
+  if (examples.category) updateFields.push('category', 'categoryManual');
+  if (examples.description !== undefined) updateFields.push('description', 'descriptionManual');
+  if (inputModalities) updateFields.push('inputModalities', 'inputModalitiesManual');
+  if (contextWindow) updateFields.push('contextWindow');
+  if (examples.imageReferenceRequestMode) updateFields.push('imageReferenceRequestMode');
+  if (examples.videoCapability) updateFields.push('videoCapability');
   return {
     baseUrl: normalizeBaseUrl(result.baseUrl),
+    updateFields,
     selection: {
       id: result.modelId,
       name: displayName || result.modelId,
@@ -786,7 +799,7 @@ function createModelSelection(
       executionProfile,
       // 助手按文档定下的分类比拉取目录时的 ID 正则更准，标成手动避免下次刷新被改回去
       ...(examples.category ? { categoryManual: true } : {}),
-      ...(description ? { description, descriptionManual: true } : {}),
+      ...(description !== undefined ? { description, descriptionManual: true } : {}),
       ...(inputModalities ? { inputModalities, inputModalitiesManual: true } : {}),
       ...(contextWindow ? { contextWindow } : {}),
       ...(imageReferenceRequestMode ? { imageReferenceRequestMode } : {}),
@@ -796,16 +809,18 @@ function createModelSelection(
 }
 
 export interface ProviderModelMergeResult {
-  /** 合并后的模型列表：保留原有模型，同 ID 由草稿覆盖，新模型追加在后。 */
+  /** 合并后的模型列表：同 ID 仅更新明确提供字段，新模型追加在后。 */
   merged: ProviderModelSelection[];
   /** 草稿中原本不存在的模型 ID。 */
   addedIds: string[];
-  /** 草稿覆盖了同 ID 原有模型的模型 ID。 */
+  /** 草稿明确提供的字段产生变化的模型 ID。 */
   updatedIds: string[];
   /** 同 ID 且配置逐字段相同、原样跳过的模型 ID。 */
   unchangedIds: string[];
   /** 本次未涉及、原样保留的模型 ID。 */
   keptIds: string[];
+  /** 仅包含字段名，不包含协议正文、配置值或凭据。 */
+  fieldChanges: Array<{ id: string; updated: string[]; preserved: string[] }>;
 }
 
 /** 键序无关的稳定序列化，用于判断草稿模型与已有模型是否逐字段相同。 */
@@ -821,6 +836,38 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+function targetSnapshot(provider: ApiProviderConfig | undefined): string {
+  // 显式白名单：apiKey、apiKeyRef 和目录刷新时间不进入基线。
+  return stableStringify(provider ? {
+    name: provider.name,
+    baseUrl: provider.baseUrl,
+    catalogId: provider.catalogId,
+    selectedModels: provider.selectedModels,
+    catalogModels: provider.catalogModels,
+    visibleModelCategories: provider.visibleModelCategories,
+  } : null);
+}
+
+/** 仅供受信预览/写入代码登记本次已确定的目标，不接收模型输入的基线。 */
+export function bindProviderConfigDraftTarget(
+  draft: ProviderConfigDraft,
+  connectionId: string,
+  provider: ApiProviderConfig | undefined,
+): void {
+  draftTargets.set(draft, { connectionId, snapshot: targetSnapshot(provider) });
+}
+
+export function assertProviderConfigDraftTarget(
+  draft: ProviderConfigDraft,
+  connectionId: string,
+  provider: ApiProviderConfig | undefined,
+): void {
+  const target = draftTargets.get(draft);
+  if (!target || target.connectionId !== connectionId || target.snapshot !== targetSnapshot(provider)) {
+    throw new Error('目标连接或模型配置在预览后已变化，草稿已保留，请重新预览后再保存');
+  }
+}
+
 /**
  * 把草稿模型并入已有连接，而不是整体替换。
  *
@@ -831,19 +878,40 @@ function stableStringify(value: unknown): string {
 export function mergeProviderModels(
   existingModels: ProviderModelSelection[] | undefined,
   draftModels: ProviderModelSelection[],
+  fieldsById?: ProviderConfigDraft['modelUpdateFields'],
 ): ProviderModelMergeResult {
   const existing = existingModels ?? [];
   const draftById = new Map(draftModels.map((model) => [model.id, model]));
   const existingById = new Map(existing.map((model) => [model.id, model]));
 
-  const isUnchanged = (model: ProviderModelSelection) => {
-    const previous = existingById.get(model.id);
-    return previous !== undefined && stableStringify(previous) === stableStringify(model);
-  };
-
+  const updatedIds: string[] = [];
+  const unchangedIds: string[] = [];
+  const fieldChanges: ProviderModelMergeResult['fieldChanges'] = [];
   const merged = existing.map((model) => {
     const draft = draftById.get(model.id);
-    return draft && !isUnchanged(draft) ? draft : model;
+    if (!draft) return model;
+    const fields = fieldsById && Object.hasOwn(fieldsById, model.id) ? fieldsById[model.id] : undefined;
+    if (fields && !fields.includes('category') && draft.category !== model.category) {
+      throw new Error(`模型“${model.id}”的推断分类与现有分类不同，请明确 category 后重新预览`);
+    }
+    const entries = Object.entries(draft).filter(([key, value]) => (
+      key !== 'id' && value !== undefined && (!fields || fields.includes(key as keyof ProviderModelSelection))
+    ));
+    const patch = Object.fromEntries(entries) as Partial<ProviderModelSelection>;
+    const updated = entries
+      .filter(([key, value]) => stableStringify(model[key as keyof ProviderModelSelection]) !== stableStringify(value))
+      .map(([key]) => key);
+    fieldChanges.push({
+      id: model.id,
+      updated,
+      preserved: Object.keys(model).filter((key) => key !== 'id' && !Object.hasOwn(patch, key)),
+    });
+    if (updated.length === 0) {
+      unchangedIds.push(model.id);
+      return model;
+    }
+    updatedIds.push(model.id);
+    return { ...model, ...patch };
   });
   const addedIds: string[] = [];
   for (const model of draftModels) {
@@ -855,12 +923,17 @@ export function mergeProviderModels(
   return {
     merged,
     addedIds,
-    updatedIds: draftModels
-      .filter((model) => existingById.has(model.id) && !isUnchanged(model))
-      .map((model) => model.id),
-    unchangedIds: draftModels.filter(isUnchanged).map((model) => model.id),
+    updatedIds,
+    unchangedIds,
     keptIds: existing.filter((model) => !draftById.has(model.id)).map((model) => model.id),
+    fieldChanges,
   };
+}
+
+export function describeProviderModelFields(result: ProviderModelMergeResult): string {
+  return result.fieldChanges.map(({ id, updated, preserved }) => (
+    `字段变更 ${id}：更新 ${updated.join('、') || '无'}；保留未指定字段 ${preserved.join('、') || '无'}`
+  )).join('\n');
 }
 
 /** 合并结果的中文说明，用于审批卡与回传模型的观察结果。 */
@@ -960,6 +1033,7 @@ export function createProviderConfigDraft(
     connectionId,
     connectionName,
     baseUrl,
+    modelUpdateFields: Object.fromEntries(analyzed.map(({ selection, updateFields }) => [selection.id, updateFields])),
     config: {
       name: connectionName,
       baseUrl,

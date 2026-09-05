@@ -197,6 +197,32 @@ pub struct AssistantWebReadResponse {
     content_type: String,
     body: String,
     fetched_at: u64,
+    read_method: &'static str,
+    complete: bool,
+    issues: Vec<WebReadIssue>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pages: Vec<CapturedWebPage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WebReadIssue {
+    PageLimit,
+    BodyLimit,
+    Timeout,
+    NavigationFailed,
+    DuplicatePage,
+    EmptyPage,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CapturedWebPage {
+    url: String,
+    title: Option<String>,
+    content_type: &'static str,
+    body: String,
+    truncated: bool,
 }
 
 #[derive(Deserialize)]
@@ -205,6 +231,86 @@ struct RenderedPagePayload {
     url: String,
     html: String,
     error: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+/// 放在超时 future 之外，后续页失败或取消 future 时仍保留已完成的页面。
+#[derive(Default)]
+struct RenderedPageCapture {
+    pages: Vec<CapturedWebPage>,
+    body_bytes: usize,
+    issues: Vec<WebReadIssue>,
+}
+
+impl RenderedPageCapture {
+    fn note(&mut self, issue: WebReadIssue) {
+        if !self.issues.contains(&issue) {
+            self.issues.push(issue);
+        }
+    }
+
+    fn push(&mut self, page: RenderedPagePayload, origin: &Url) -> Result<(), WebReadIssue> {
+        if self.pages.len() >= RENDER_TRAVERSE_MAX_PAGES {
+            return Err(WebReadIssue::PageLimit);
+        }
+        if page
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.trim().is_empty())
+        {
+            return Err(WebReadIssue::NavigationFailed);
+        }
+        let url = validate_url_shape(&page.url).map_err(|_| WebReadIssue::NavigationFailed)?;
+        if !same_origin(origin, &url) {
+            return Err(WebReadIssue::NavigationFailed);
+        }
+        if page.html.trim().is_empty() {
+            return Err(WebReadIssue::EmptyPage);
+        }
+        if self
+            .pages
+            .iter()
+            .any(|saved| saved.url == url.as_str() && saved.body == page.html)
+        {
+            return Err(WebReadIssue::DuplicatePage);
+        }
+        let remaining = MAX_RESPONSE_BYTES.saturating_sub(self.body_bytes);
+        let truncated = page.truncated || page.html.len() > remaining;
+        let body = truncate_utf8_bytes(page.html, remaining);
+        if body.trim().is_empty() {
+            return Err(WebReadIssue::BodyLimit);
+        }
+        self.body_bytes += body.len();
+        self.pages.push(CapturedWebPage {
+            url: url.to_string(),
+            title: page.title.map(|title| title.chars().take(300).collect()),
+            content_type: "text/html; charset=utf-8",
+            body,
+            truncated,
+        });
+        if truncated {
+            self.note(WebReadIssue::BodyLimit);
+        }
+        Ok(())
+    }
+
+    fn into_response(self) -> Result<AssistantWebReadResponse, String> {
+        let first = self.pages.first().ok_or("动态网页渲染后没有可读取的正文")?;
+        Ok(AssistantWebReadResponse {
+            url: first.url.clone(),
+            content_type: "text/html; charset=utf-8".to_string(),
+            // 新响应只在 pages 中携带正文，不重复拼接以免突破总量预算或错配来源。
+            body: String::new(),
+            fetched_at: now_millis(),
+            read_method: "rendered",
+            complete: self.issues.is_empty(),
+            issues: self.issues,
+            pages: self.pages,
+        })
+    }
 }
 
 fn now_millis() -> u64 {
@@ -568,6 +674,10 @@ fn read_public_page(raw_url: String) -> Result<AssistantWebReadResponse, String>
             content_type,
             body,
             fetched_at: now_millis(),
+            read_method: "static",
+            complete: true,
+            issues: Vec::new(),
+            pages: Vec::new(),
         });
     }
     Err("网页读取失败".to_string())
@@ -675,9 +785,12 @@ async fn extract_rendered_payload(webview: &WebviewWindow) -> Result<RenderedPag
                 }
               }
             });
+            const html = `<!doctype html>${clone.outerHTML}`;
             return {
               url: location.href,
-              html: `<!doctype html>${clone.outerHTML}`.slice(0, 1000000),
+              title: (document.title || '').slice(0, 300),
+              html: html.slice(0, 1000000),
+              truncated: html.length > 1000000,
               error: null,
             };
           } catch (error) {
@@ -709,7 +822,11 @@ async fn interact_and_expand(webview: &WebviewWindow) -> Result<(), String> {
         tokio::time::sleep(RENDER_SCROLL_INTERVAL).await;
     }
     // 回到顶部，避免滚动位置影响后续抓取。
-    let _ = evaluate_webview_json::<bool>(webview, "(() => { try { window.scrollTo(0, 0); return true; } catch { return false; } })()").await;
+    let _ = evaluate_webview_json::<bool>(
+        webview,
+        "(() => { try { window.scrollTo(0, 0); return true; } catch { return false; } })()",
+    )
+    .await;
 
     // 点击展开/折叠类元素，最多 RENDER_EXPAND_MAX_CLICKS 次。
     for _ in 0..RENDER_EXPAND_MAX_CLICKS {
@@ -749,31 +866,36 @@ async fn interact_and_expand(webview: &WebviewWindow) -> Result<(), String> {
 
 /// 尝试点击同源的“下一页”链接并等待内容变化，返回是否成功翻页。
 /// 仅跟随同源链接；SPA 内部切换会直接更新 DOM，真跳转则由 on_navigation 的同源约束兜底。
-async fn click_next_page(webview: &WebviewWindow) -> Result<bool, String> {
-    let clicked = evaluate_webview_json::<bool>(
-        webview,
-        r#"(() => {
+async fn click_next_page(webview: &WebviewWindow, follow: bool) -> Result<bool, String> {
+    // 达到页数上限时只检查是否还有下一页，不导航到未经读取的第六页。
+    let script = r#"(() => {
           try {
             const anchors = [...document.querySelectorAll('a[href]')];
             const next = anchors.find((a) => {
               const text = (a.textContent || '').trim();
-              const rel = (a.getAttribute('rel') || '').toLowerCase();
-              return rel === 'next' || /^(下一页|下一頁|next|›|»|>)$/i.test(text);
+              const rel = (a.getAttribute('rel') || '').toLowerCase().split(/\s+/);
+              return (rel.includes('next') || /^(下一页|下一頁|next|›|»|>)$/i.test(text))
+                && a.getAttribute('aria-disabled') !== 'true';
             });
             if (!next) return false;
             const url = new URL(next.getAttribute('href'), location.href);
-            if (url.origin !== location.origin) return false;
-            next.click();
+            if (url.origin !== location.origin) return null;
+            if (__FOLLOW_NEXT_PAGE__) next.click();
             return true;
-          } catch { return false; }
-        })()"#,
-    )
-    .await?;
+          } catch { return null; }
+        })()"#
+        .replace(
+            "__FOLLOW_NEXT_PAGE__",
+            if follow { "true" } else { "false" },
+        );
+    let clicked = evaluate_webview_json::<bool>(webview, &script).await?;
     if !clicked {
         return Ok(false);
     }
     // 等新页内容加载。
-    tokio::time::sleep(RENDER_SETTLE_INTERVAL).await;
+    if follow {
+        tokio::time::sleep(RENDER_SETTLE_INTERVAL).await;
+    }
     Ok(true)
 }
 
@@ -853,75 +975,49 @@ async fn render_public_page(
             .map_err(|_| "动态网页加载监听已关闭".to_string())?;
 
         // 受控交互（滚动 + 展开折叠）与同源页内遍历，统一受 180 秒硬超时约束。
-        // 该步骤失败不致命：退回已抓到的首屏正文，保证渲染路径仍可用。
+        // 该步骤失败不致命：保留每一份已抓到的正文，并准确报告部分读取。
+        let mut capture = RenderedPageCapture::default();
         let enriched = tokio::time::timeout(RENDER_INTERACT_TIMEOUT, async {
-            let mut merged_html = String::new();
-            let mut final_url = initial_url.to_string();
-            let mut page_count = 0usize;
-
             loop {
-                interact_and_expand(&webview).await?;
-                let page = collect_rendered_page(&webview).await?;
-                if page.error.as_deref().is_some_and(|value| !value.trim().is_empty()) {
+                interact_and_expand(&webview)
+                    .await
+                    .map_err(|_| WebReadIssue::NavigationFailed)?;
+                let page = collect_rendered_page(&webview)
+                    .await
+                    .map_err(|_| WebReadIssue::NavigationFailed)?;
+                capture.push(page, &initial_url)?;
+                if capture.issues.contains(&WebReadIssue::BodyLimit) {
                     break;
                 }
-                let page_url = match validate_url_shape(&page.url) {
-                    Ok(value) => value,
-                    Err(_) => break,
-                };
-                if !same_origin(&initial_url, &page_url) {
+                let at_page_limit = capture.pages.len() >= RENDER_TRAVERSE_MAX_PAGES;
+                let has_next = click_next_page(&webview, !at_page_limit)
+                    .await
+                    .map_err(|_| WebReadIssue::NavigationFailed)?;
+                if !has_next {
                     break;
                 }
-                if page.html.trim().is_empty() {
-                    break;
-                }
-                if !merged_html.is_empty() {
-                    merged_html.push_str("\n<!-- page-break -->\n");
-                }
-                merged_html.push_str(&page.html);
-                final_url = page_url.to_string();
-                page_count += 1;
-
-                if page_count >= RENDER_TRAVERSE_MAX_PAGES {
-                    break;
-                }
-                if !click_next_page(&webview).await? {
+                if at_page_limit {
+                    capture.note(WebReadIssue::PageLimit);
                     break;
                 }
             }
-
-            if merged_html.trim().is_empty() {
-                return Err("动态网页渲染后没有可读取的正文".to_string());
-            }
-            Ok((merged_html, final_url))
+            Ok::<(), WebReadIssue>(())
         })
         .await;
 
-        let (body, final_url) = match enriched {
-            Ok(Ok((merged_html, url))) => (merged_html, url),
-            // 交互/遍历失败或超时，退回首屏单页正文。
-            _ => {
-                let first = collect_rendered_page(&webview).await?;
-                if let Some(error) = first.error.filter(|value| !value.trim().is_empty()) {
-                    return Err(format!("动态网页渲染失败: {error}"));
-                }
-                let url = validate_url_shape(&first.url)?;
-                if !same_origin(&initial_url, &url) {
-                    return Err("动态网页渲染发生了跨域跳转".to_string());
-                }
-                if first.html.trim().is_empty() {
-                    return Err("动态网页渲染后没有可读取的正文".to_string());
-                }
-                (first.html, url.to_string())
-            }
-        };
-
-        Ok(AssistantWebReadResponse {
-            url: final_url,
-            content_type: "text/html; charset=utf-8".to_string(),
-            body: truncate_utf8_bytes(body, MAX_RESPONSE_BYTES),
-            fetched_at: now_millis(),
-        })
+        match enriched {
+            Ok(Ok(())) => {}
+            Ok(Err(issue)) => capture.note(issue),
+            Err(_) => capture.note(WebReadIssue::Timeout),
+        }
+        // 只有一页都没取到时才尝试一次受限提取；不再用末页覆盖此前成功页。
+        if capture.pages.is_empty() {
+            let page = extract_rendered_payload(&webview).await?;
+            capture
+                .push(page, &initial_url)
+                .map_err(|_| "动态网页渲染后没有可读取的安全正文".to_string())?;
+        }
+        capture.into_response()
     }
     .await;
 
@@ -1007,6 +1103,173 @@ pub async fn assistant_web_render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rendered_fixture(index: usize, html: String) -> RenderedPagePayload {
+        RenderedPagePayload {
+            url: format!("https://example.com/chapter-{index}/page"),
+            title: Some(format!("Chapter {index}")),
+            html,
+            error: None,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn rendered_pages_keep_independent_bodies_urls_and_titles_without_duplicate_body() {
+        let origin = Url::parse("https://example.com/start").unwrap();
+        for count in 2..=RENDER_TRAVERSE_MAX_PAGES {
+            let mut capture = RenderedPageCapture::default();
+            for index in 1..=count {
+                capture
+                    .push(
+                        rendered_fixture(index, format!("<main>PAGE_{index}</main>")),
+                        &origin,
+                    )
+                    .unwrap();
+            }
+            let response = capture.into_response().unwrap();
+            assert!(response.complete);
+            assert!(response.body.is_empty());
+            assert_eq!(response.url, "https://example.com/chapter-1/page");
+            let serialized = serde_json::to_value(response).unwrap();
+            assert_eq!(serialized["readMethod"], "rendered");
+            assert_eq!(serialized["pages"].as_array().unwrap().len(), count);
+            for index in 1..=count {
+                assert_eq!(
+                    serialized["pages"][index - 1]["url"],
+                    format!("https://example.com/chapter-{index}/page")
+                );
+                assert_eq!(
+                    serialized["pages"][index - 1]["body"],
+                    format!("<main>PAGE_{index}</main>")
+                );
+                assert_eq!(
+                    serialized["pages"][index - 1]["title"],
+                    format!("Chapter {index}")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rendered_body_budget_is_shared_across_pages_and_utf8_safe() {
+        let origin = Url::parse("https://example.com/start").unwrap();
+        let mut capture = RenderedPageCapture::default();
+        capture
+            .push(rendered_fixture(1, "文".repeat(200_000)), &origin)
+            .unwrap();
+        capture
+            .push(rendered_fixture(2, "字".repeat(200_000)), &origin)
+            .unwrap();
+        let response = capture.into_response().unwrap();
+        assert!(!response.complete);
+        assert_eq!(response.issues, vec![WebReadIssue::BodyLimit]);
+        assert!(
+            response
+                .pages
+                .iter()
+                .map(|page| page.body.len())
+                .sum::<usize>()
+                <= MAX_RESPONSE_BYTES
+        );
+        assert!(!response.pages[0].truncated);
+        assert!(response.pages[1].truncated);
+        assert!(response
+            .pages
+            .iter()
+            .all(|page| std::str::from_utf8(page.body.as_bytes()).is_ok()));
+    }
+
+    #[test]
+    fn javascript_clipping_is_not_reported_as_complete_even_under_rust_byte_limit() {
+        let origin = Url::parse("https://example.com/start").unwrap();
+        let mut page = rendered_fixture(1, "CLIPPED".to_string());
+        page.truncated = true;
+        let mut capture = RenderedPageCapture::default();
+        capture.push(page, &origin).unwrap();
+        let response = capture.into_response().unwrap();
+        assert!(!response.complete);
+        assert!(response.pages[0].truncated);
+        assert_eq!(response.issues, vec![WebReadIssue::BodyLimit]);
+    }
+
+    #[test]
+    fn failed_unsafe_or_empty_later_pages_never_replace_successful_pages() {
+        let origin = Url::parse("https://example.com/start").unwrap();
+        for url in [
+            "http://127.0.0.1/private",
+            "https://other.example.com/page",
+            "https://example.com/page?token=secret",
+        ] {
+            let mut capture = RenderedPageCapture::default();
+            capture
+                .push(rendered_fixture(1, "SAVED".to_string()), &origin)
+                .unwrap();
+            let mut later = rendered_fixture(2, "UNSAFE".to_string());
+            later.url = url.to_string();
+            let issue = capture.push(later, &origin).unwrap_err();
+            capture.note(issue);
+            let response = capture.into_response().unwrap();
+            assert!(!response.complete);
+            assert_eq!(response.pages.len(), 1);
+            assert_eq!(response.pages[0].body, "SAVED");
+            assert_eq!(response.issues, vec![WebReadIssue::NavigationFailed]);
+        }
+        let mut capture = RenderedPageCapture::default();
+        assert_eq!(
+            capture.push(rendered_fixture(1, String::new()), &origin),
+            Err(WebReadIssue::EmptyPage)
+        );
+        assert!(capture.into_response().is_err());
+    }
+
+    #[test]
+    fn duplicate_and_page_limit_results_remain_bounded_and_explicitly_partial() {
+        let origin = Url::parse("https://example.com/start").unwrap();
+        let mut capture = RenderedPageCapture::default();
+        capture
+            .push(rendered_fixture(1, "SAVED".to_string()), &origin)
+            .unwrap();
+        assert_eq!(
+            capture.push(rendered_fixture(1, "SAVED".to_string()), &origin),
+            Err(WebReadIssue::DuplicatePage)
+        );
+        for index in 2..=5 {
+            capture
+                .push(rendered_fixture(index, format!("PAGE_{index}")), &origin)
+                .unwrap();
+        }
+        let issue = capture
+            .push(rendered_fixture(6, "NOT_READ".to_string()), &origin)
+            .unwrap_err();
+        capture.note(issue);
+        let response = capture.into_response().unwrap();
+        assert_eq!(response.pages.len(), 5);
+        assert_eq!(response.issues, vec![WebReadIssue::PageLimit]);
+        assert!(!response.complete);
+    }
+
+    #[tokio::test]
+    async fn timeout_drops_only_inflight_work_and_keeps_captured_pages() {
+        let origin = Url::parse("https://example.com/start").unwrap();
+        let mut capture = RenderedPageCapture::default();
+        let timeout = tokio::time::timeout(Duration::from_millis(1), async {
+            capture
+                .push(
+                    rendered_fixture(1, "SAVED_BEFORE_TIMEOUT".to_string()),
+                    &origin,
+                )
+                .unwrap();
+            std::future::pending::<()>().await;
+        })
+        .await;
+        assert!(timeout.is_err());
+        capture.note(WebReadIssue::Timeout);
+        let response = capture.into_response().unwrap();
+        assert_eq!(response.pages[0].body, "SAVED_BEFORE_TIMEOUT");
+        assert_eq!(response.issues, vec![WebReadIssue::Timeout]);
+        assert!(!response.complete);
+    }
 
     #[test]
     fn rejects_private_non_http_custom_port_and_sensitive_urls() {

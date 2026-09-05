@@ -3,6 +3,7 @@
  * 任务预算、审批等待和步骤快照在此轮次边界内统一更新。
  */
 import { useAppStore } from '../../store/useAppStore';
+import { getPreparedProviderCatalogApproval, MAX_PROVIDER_MODEL_SELECTION, validateProviderModelSelection } from './providerModelCatalogService';
 import {
   streamAssistantReply,
   type AssistantModelMessage,
@@ -603,9 +604,11 @@ export function prepareApprovalInput(
 } {
   // 中转站接入：把候选模型交给审批卡渲染成勾选列表，选择结果随确认回传
   if (prepared.definition.id === 'provider_models_select') {
+    const catalogRequest = getPreparedProviderCatalogApproval(prepared.input);
+    if (catalogRequest) return { prepared, inputRequest: catalogRequest };
     const options = (prepared.input as { models?: ProviderModelChoice[] }).models ?? [];
     return options.length > 0
-      ? { prepared, inputRequest: { kind: 'provider_models', options } }
+      ? { prepared, inputRequest: { kind: 'provider_models', options: structuredClone(options), maxSelection: MAX_PROVIDER_MODEL_SELECTION } }
       : { prepared };
   }
 
@@ -645,6 +648,58 @@ export function prepareApprovalInput(
       mediaKind,
     },
   };
+}
+
+/** Shared by model rounds and single-tool/MCP execution; only user-returned fields are injected. */
+export function resolveApprovalSelection(
+  call: ProposedToolCall,
+  prepared: PreparedAgentToolCall,
+  inputRequest: AgentApprovalInputRequest | undefined,
+  resolution: AgentApprovalResolution,
+  context: Omit<AgentToolContext, 'signal'>,
+): { call: ProposedToolCall; prepared: PreparedAgentToolCall; inputRequest?: AgentApprovalInputRequest; error?: ToolResultSummary } {
+  const original = { call, prepared, inputRequest };
+  const deny = (summary: string) => ({ ...original, error: {
+    callId: call.callId, toolId: call.toolId, status: 'denied' as const,
+    summary: sanitizePersistentSummary(summary), truncated: false,
+  } });
+  if (!resolution.approved || !inputRequest) return original;
+  if (context.mode === 'plan') {
+    const policy = evaluateAgentToolPolicy(prepared.definition, prepared.input, context);
+    if (policy.outcome === 'deny') return deny(policy.reason);
+  }
+  let selectedInput: Record<string, unknown>;
+  let request = inputRequest;
+  try {
+    if (inputRequest.kind === 'provider_models') {
+      const ids = resolution.inputValues?.selectedModelIds;
+      if (resolution.inputValues?.modelRef !== undefined) return deny('厂商模型勾选不能使用媒体 modelRef');
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) return deny('厂商模型选择必须是模型 ID 数组');
+      if (inputRequest.catalog && inputRequest.catalog.expiresAt <= Date.now()) return deny('模型目录已失效，请重新读取目录');
+      if (ids.length > (inputRequest.maxSelection ?? MAX_PROVIDER_MODEL_SELECTION)) return deny('选择数量超过本次审批上限');
+      validateProviderModelSelection(inputRequest.options, ids);
+      selectedInput = { ...(prepared.input as Record<string, unknown>), selectedIds: [...ids] };
+    } else if (inputRequest.kind === 'media_model') {
+      if (resolution.inputValues?.selectedModelIds !== undefined) return deny('媒体模型选择不能使用厂商模型 ID 列表');
+      const value = resolution.inputValues?.modelRef;
+      if (typeof value !== 'string' || !value.trim()) return deny('确认生成前必须选择一个可用模型');
+      const modelRef = value.trim();
+      selectedInput = { ...(prepared.input as Record<string, unknown>), modelRef };
+      request = { ...inputRequest, selectedModelRef: modelRef };
+    } else {
+      return deny('不支持的审批输入类型，请重新提出操作');
+    }
+    const resolvedCall = { ...call, input: selectedInput };
+    // Registry re-resolves catalog leases/defaults and validates the resulting local schema.
+    const selected = prepareAgentToolCall(resolvedCall, context);
+    if (!selected.ok) return deny(selected.result.summary);
+    if (selected.prepared.definition !== prepared.definition) return deny('工具定义已变化，请重新提出操作并确认');
+    const authorization = selected.prepared.definition.authorize?.(context, selected.prepared.input);
+    if (authorization && !authorization.allowed) return deny(authorization.reason || '所选模型当前不可用');
+    return { call: resolvedCall, prepared: selected.prepared, inputRequest: request };
+  } catch (error) {
+    return deny(error instanceof Error ? error.message : '审批选择校验失败');
+  }
 }
 
 export async function executeAgentRound({
@@ -941,67 +996,11 @@ export async function executeAgentRound({
       const approvalId = step.approval!.id;
       const resolution = await waitForApproval(approvalId, signal);
       assertAgentTaskActive(taskId, signal);
-      let approvalError: ToolResultSummary | undefined;
-      const selectedModelRef = resolution.inputValues?.modelRef?.trim();
-      const selectedModelIds = resolution.inputValues?.selectedModelIds ?? [];
-      if (resolution.approved && approvalInput.inputRequest?.kind === 'provider_models') {
-        if (selectedModelIds.length === 0) {
-          approvalError = {
-            callId: call.callId,
-            toolId: call.toolId,
-            status: 'denied',
-            summary: '没有选择任何模型',
-            truncated: false,
-          };
-        } else {
-          // 选择结果回灌成工具输入，execute 直接把它交回给模型
-          resolvedCall = {
-            ...call,
-            input: { ...(prepared.input as Record<string, unknown>), selectedIds: selectedModelIds },
-          };
-          const selectedPrepared = prepareAgentToolCall(resolvedCall, roundContext);
-          if (!selectedPrepared.ok) approvalError = selectedPrepared.result;
-          else prepared = selectedPrepared.prepared;
-        }
-      } else if (resolution.approved && approvalInput.inputRequest) {
-        if (!selectedModelRef) {
-          approvalError = {
-            callId: call.callId,
-            toolId: call.toolId,
-            status: 'denied',
-            summary: '确认生成前必须选择一个可用模型',
-            truncated: false,
-          };
-        } else {
-          resolvedCall = {
-            ...call,
-            input: {
-              ...(prepared.input as Record<string, unknown>),
-              modelRef: selectedModelRef,
-            },
-          };
-          const selectedPreparedResult = prepareAgentToolCall(resolvedCall, roundContext);
-          if (!selectedPreparedResult.ok) {
-            approvalError = selectedPreparedResult.result;
-          } else {
-            const authorization = selectedPreparedResult.prepared.definition.authorize?.(
-              roundContext,
-              selectedPreparedResult.prepared.input,
-            );
-            if (authorization && !authorization.allowed) {
-              approvalError = {
-                callId: call.callId,
-                toolId: call.toolId,
-                status: 'denied',
-                summary: authorization.reason || '所选模型当前不可用',
-                truncated: false,
-              };
-            } else {
-              prepared = selectedPreparedResult.prepared;
-            }
-          }
-        }
-      }
+      roundContext.mode = resolveAgentExecutionMode(getTask(taskId));
+      const selection = resolveApprovalSelection(call, prepared, approvalInput.inputRequest, resolution, roundContext);
+      const approvalError = selection.error;
+      resolvedCall = selection.call;
+      prepared = selection.prepared;
       const canExecute = resolution.approved && !approvalError;
       appendAgentEvent(taskId, 'approval_resolved', {
         toolId: call.toolId,
@@ -1040,12 +1039,7 @@ export async function executeAgentRound({
                     ...item.approval,
                     status: resolution.approved ? 'approved' : 'rejected',
                     resolvedAt,
-                    inputRequest: item.approval.inputRequest
-                      ? {
-                          ...item.approval.inputRequest,
-                          selectedModelRef,
-                        }
-                      : undefined,
+                    inputRequest: selection.inputRequest,
                   }
                 : undefined,
             }

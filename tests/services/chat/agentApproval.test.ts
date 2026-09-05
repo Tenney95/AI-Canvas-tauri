@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentTask } from '../../../src/types/agent';
+import type { McpBridgeRequestEvent } from '../../../src/types/mcp';
 
 const streamAssistantReplyMock = vi.hoisted(() => vi.fn());
+// Each fixture registers the real provider tool explicitly; no unrelated tool initialization.
+vi.mock('../../../src/services/chat/tools', () => ({ ensureAgentToolsRegistered: vi.fn() }));
 
 vi.mock('../../../src/services/ai/assistantStream', () => ({
   streamAssistantReply: streamAssistantReplyMock,
@@ -29,6 +32,10 @@ import {
   type AgentToolDefinition,
 } from '../../../src/services/chat/toolRegistry';
 import { useAppStore } from '../../../src/store/useAppStore';
+import { registerProviderConfigAgentTools } from '../../../src/services/chat/tools/providerConfigTools';
+import { getAgentTool } from '../../../src/services/chat/toolRegistry';
+import { clearProviderModelCatalogsForTests, createProviderModelCatalog } from '../../../src/services/chat/providerModelCatalogService';
+import { handleMcpBridgeRequest } from '../../../src/services/mcp/mcpControlService';
 
 function createTask(): AgentTask {
   const now = Date.now();
@@ -77,6 +84,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearProviderModelCatalogsForTests();
+  vi.restoreAllMocks();
   clearAgentToolRegistryForTests();
 });
 
@@ -111,6 +120,71 @@ function arrangeToolCall(execute: AgentToolDefinition['execute']) {
 }
 
 describe('Agent approval lifecycle', () => {
+  const choices = [{ id: 'one', name: 'One', category: 'text' as const }, { id: 'two', name: 'Two', category: 'image' as const }];
+  it.each(['collaborative', 'autonomous', 'plan'] as const)('keeps provider selection as a user choice in %s', async (mode) => {
+    registerProviderConfigAgentTools();
+    useAppStore.getState().updateConversation('conversation-approval', { agentMode: mode });
+    const execute = vi.spyOn(getAgentTool('provider_models_select')!, 'execute');
+    let rounds = 0;
+    streamAssistantReplyMock.mockImplementation(async ({ onEvent }) => {
+      if (rounds++ === 0) onEvent({ type: 'tool.call.final', call: {
+        callId: 'provider', toolId: 'provider_models_select', input: { models: choices, selectedIds: ['one'] },
+      } });
+    });
+    let pendingId: string | undefined;
+    let finished = false;
+    const run = runAgentLoop({ taskId: 'task-approval', systemPrompt: 'system', userMessage: 'select models',
+      signal: new AbortController().signal, callbacks: { onApprovalRequired: (step) => {
+        expect(step.approval?.kind).toBe('user_choice');
+        expect(step.approval?.inputRequest?.kind).toBe('provider_models');
+        pendingId = step.approval!.id;
+      } } }).then((result) => { finished = true; return result; });
+    if (mode === 'plan') {
+      await run;
+      expect(pendingId).toBeUndefined();
+      expect(execute).not.toHaveBeenCalled();
+    } else {
+      await vi.waitFor(() => expect(pendingId).toBeDefined());
+      expect(finished).toBe(false);
+      expect(execute).not.toHaveBeenCalled();
+      expect(resolveAgentApproval(pendingId!, { approved: true, inputValues: { selectedModelIds: ['two'] } })).toBe(true);
+      await run;
+      expect(execute).toHaveBeenCalledWith(expect.anything(), { models: choices, selectedIds: ['two'] });
+    }
+  });
+
+  it.each(['approve', 'reject', 'cancel'] as const)('waits for real user approval through the MCP bridge: %s', async (action) => {
+    registerProviderConfigAgentTools();
+    const scope = { projectId: 'project-approval', conversationId: 'mcp-control-project-approval', taskId: 'catalog-loader' };
+    const catalog = createProviderModelCatalog(scope, choices);
+    const execute = vi.spyOn(getAgentTool('provider_models_select')!, 'execute');
+    const request: McpBridgeRequestEvent = { sessionId: 'test-session', requestId: `provider-${action}`, method: 'tools/call',
+      params: { name: 'provider_models_select', arguments: { catalogId: catalog.catalogId, selectedIds: ['one'] } } };
+    let finished = false;
+    const run = handleMcpBridgeRequest(request).then((result) => { finished = true; return result; });
+    const pending = () => useAppStore.getState().agentTasks.find((task) => task.conversationId === scope.conversationId && task.status === 'waiting_approval');
+    await vi.waitFor(() => expect(pending()).toBeDefined());
+    const approval = pending()!.steps[0].approval!;
+    expect(approval.inputRequest?.kind).toBe('provider_models');
+    expect(finished).toBe(false);
+    expect(execute).not.toHaveBeenCalled();
+    // The bridge exposes no resolution method; spoofed MCP attempts cannot release the wait.
+    await expect(handleMcpBridgeRequest({ ...request, method: 'approval/resolve' as McpBridgeRequestEvent['method'],
+      params: { approvalId: approval.id, approved: true, selectedModelIds: ['one'] } })).rejects.toThrow('不支持');
+    expect(finished).toBe(false);
+    expect(resolveAgentApproval(approval.id, { approved: true, inputValues: { selectedModelIds: ['one'] } })).toBe(false);
+    useAppStore.setState({ activeConversationId: scope.conversationId });
+    if (action === 'cancel') {
+      expect(await handleMcpBridgeRequest({ ...request, method: 'requests/cancel', params: { requestId: request.requestId } })).toEqual({ cancelled: true });
+    } else {
+      expect(resolveAgentApproval(approval.id, { approved: action === 'approve', inputValues: { selectedModelIds: ['two'] } })).toBe(true);
+    }
+    const result = await run;
+    expect(result).toMatchObject({ isError: action !== 'approve' });
+    if (action === 'approve') expect(execute).toHaveBeenCalledWith(expect.anything(), { catalogId: catalog.catalogId, selectedIds: ['two'] });
+    else expect(execute).not.toHaveBeenCalled();
+    expect(resolveAgentApproval(approval.id, { approved: true })).toBe(false);
+  });
   it('executes a protected tool only after approval', async () => {
     const execute = vi.fn(async () => ({
       status: 'success' as const,

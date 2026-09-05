@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   beginProviderDocRead,
+  clearProviderDocsTask,
+  getProviderDocRemainingTextChars,
   clearProviderDocsGrantsForTests,
   completeProviderDocRead,
   extractExplicitProviderDocUrls,
@@ -12,6 +14,41 @@ import {
 afterEach(() => clearProviderDocsGrantsForTests());
 
 describe('providerDocsGrantService', () => {
+  it('allows an explicitly restarted evicted snapshot without refunding page or character usage', () => {
+    const url = 'https://docs.example.com/api';
+    completeProviderDocRead(beginProviderDocRead('restart', url, url), 1000, []);
+    const restart = beginProviderDocRead('restart', url, url, undefined, 0, undefined, true);
+    expect(completeProviderDocRead(restart, 1000, [])).toMatchObject({ remainingPages: 23, remainingTextChars: 78_000 });
+  });
+  it('reserves concurrent character budgets and ignores stale reservation releases', () => {
+    const url = 'https://docs.example.com/api';
+    const reservations = Array.from({ length: 8 }, (_, index) => beginProviderDocRead('budget', url, url, undefined, index * 10_000));
+    expect(getProviderDocRemainingTextChars('budget')).toBe(0);
+    expect(() => beginProviderDocRead('budget', url, url, undefined, 80_000)).toThrow('上限');
+    releaseProviderDocRead(reservations[0]);
+    expect(getProviderDocRemainingTextChars('budget')).toBe(10_000);
+    const replacement = beginProviderDocRead('budget', url, url);
+    releaseProviderDocRead(reservations[0]);
+    expect(() => completeProviderDocRead(reservations[0], 100, [])).toThrow('失效');
+    expect(() => beginProviderDocRead('budget', url, url)).toThrow('正在读取');
+    expect(completeProviderDocRead(replacement, 100, []).remainingTextChars).toBe(9_900);
+    clearProviderDocsTask('budget');
+    const next = beginProviderDocRead('budget', url, url, undefined, 10_000);
+    releaseProviderDocRead(reservations[1]);
+    expect(() => completeProviderDocRead(reservations[1], 100, [])).toThrow('失效');
+    expect(() => completeProviderDocRead(next, 100, [])).not.toThrow();
+  });
+
+  it('does not count multiple fragments as new pages and refuses oversized completion', () => {
+    const url = 'https://docs.example.com/api';
+    for (let offset = 0; offset < 30; offset++) {
+      const read = beginProviderDocRead('fragments', url, url, undefined, offset);
+      expect(completeProviderDocRead(read, 10, []).remainingPages).toBe(23);
+    }
+    const oversized = beginProviderDocRead('fragments', url, url, undefined, 100);
+    expect(() => completeProviderDocRead(oversized, 10_001, [])).toThrow('上限');
+    releaseProviderDocRead(oversized);
+  });
   it('extracts only safe explicit HTTPS URLs from the task goal', () => {
     expect(extractExplicitProviderDocUrls([
       '读取 https://docs.example.com/api#models。',
@@ -35,7 +72,7 @@ describe('providerDocsGrantService', () => {
     const continuation = beginProviderDocRead(taskId, goal, url, undefined, 10_000);
     expect(continuation.readKey).toBe(`${url}#10000`);
     expect(completeProviderDocRead(continuation, 10_000, []))
-      .toMatchObject({ remainingPages: 22, remainingTextChars: 60_000 });
+      .toMatchObject({ remainingPages: 23, remainingTextChars: 60_000 });
   });
 
   it('grants the explicit root and same-origin links discovered by a completed read', () => {
