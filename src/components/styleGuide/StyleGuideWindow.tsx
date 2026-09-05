@@ -33,6 +33,7 @@ const SECTIONS: GuideSection[] = [
   { id: 'sg-cards', title: '卡片' },
   { id: 'sg-badges', title: '徽标与表格' },
   { id: 'sg-feedback', title: '反馈与状态' },
+  { id: 'sg-mascot', title: '吉祥物' },
   { id: 'sg-layout', title: '布局辅助' },
 ];
 
@@ -175,7 +176,7 @@ export default function StyleGuideWindow() {
         {/* 内容区 */}
         <main ref={mainRef} onScroll={handleScroll} className="ui-scroll relative flex-1 px-6 py-5">
           <div className="mx-auto max-w-[860px]">
-            <StyleGuideContent />
+            <StyleGuideContent theme={theme} />
           </div>
         </main>
       </div>

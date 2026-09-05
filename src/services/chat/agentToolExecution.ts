@@ -61,10 +61,9 @@ export async function executeRegisteredAgentToolCall({
   onApprovalRequired,
 }: RegisteredAgentToolCallOptions): Promise<ExecutedToolCall> {
   const round = await import('./agentRoundExecutor');
+  round.assertAgentTaskActive(taskId, signal);
   const initialTask = round.getTask(taskId);
-  const readCurrentMode = () => policyMode ?? useAppStore.getState().conversations.find(
-    (conversation) => conversation.id === initialTask.conversationId,
-  )?.agentMode ?? initialTask.mode;
+  const readCurrentMode = () => round.resolveAgentExecutionMode(round.getTask(taskId), policyMode);
   const context: AgentToolContext = {
     taskId,
     projectId: initialTask.projectId,
@@ -95,6 +94,7 @@ export async function executeRegisteredAgentToolCall({
   const approvalInput = round.prepareApprovalInput(
     preparedResult.prepared,
     initialTask.goal,
+    readCurrentMode(),
   );
   let prepared = approvalInput.prepared;
   let resolvedCall = call;
@@ -172,6 +172,7 @@ export async function executeRegisteredAgentToolCall({
     onApprovalRequired?.(step);
     const approvalId = step.approval!.id;
     const resolution = await waitForApproval(approvalId, signal);
+    round.assertAgentTaskActive(taskId, signal);
     let approvalError: ToolResultSummary | undefined;
     const selectedModelRef = resolution.inputValues?.modelRef?.trim();
     if (resolution.approved && approvalInput.inputRequest) {
@@ -266,5 +267,6 @@ export async function executeRegisteredAgentToolCall({
     prepared,
     context,
     step,
+    policyMode,
   );
 }

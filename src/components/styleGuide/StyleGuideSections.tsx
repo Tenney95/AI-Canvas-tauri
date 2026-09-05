@@ -8,6 +8,7 @@
  * 与 AssetSearchWindow 一样不做逐条 i18n。
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import StyleGuideMascot from './StyleGuideMascot';
 
 /* ── 分区 id 约定 ──────────────────────────────────────────────────────────
    每个 <Section> 的 id 同时是左侧目录的锚点，目录列表在 StyleGuideWindow.tsx
@@ -1050,7 +1051,7 @@ function LayoutSection() {
 /* ==========================================================================
    内容装配
    ========================================================================== */
-export function StyleGuideContent() {
+export function StyleGuideContent({ theme }: { theme: 'dark' | 'light' }) {
   return (
     <>
       <header className="mb-7">
@@ -1073,6 +1074,9 @@ export function StyleGuideContent() {
       <CardsSection />
       <BadgesSection />
       <FeedbackSection />
+      <Section id="sg-mascot" title="吉祥物" desc="预览真实吉祥物的状态、表情与身体动作，支持循环演示和不同尺寸查看。">
+        <StyleGuideMascot theme={theme} />
+      </Section>
       <LayoutSection />
     </>
   );

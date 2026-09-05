@@ -286,7 +286,7 @@ button.shot-frame:hover {
 .shot-frame-img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
   cursor: var(--cursor-pointer, pointer);
   user-select: none;

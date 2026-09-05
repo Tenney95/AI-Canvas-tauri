@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentTask } from '../../../src/types/agent';
+import type { AgentApprovalResolution, AgentMode, AgentTask } from '../../../src/types/agent';
+import type { ProposedToolCall, ToolResultSummary } from '../../../src/types/chat';
 
 const streamAssistantReplyMock = vi.hoisted(() => vi.fn());
+const executeGenerationMock = vi.hoisted(() => vi.fn(async () => ({ success: true })));
+
+vi.mock('../../../src/services/generationService', () => ({ executeGeneration: executeGenerationMock }));
 
 vi.mock('../../../src/services/ai/assistantStream', () => ({
   streamAssistantReply: streamAssistantReplyMock,
@@ -19,10 +23,13 @@ vi.mock('../../../src/services/chat/contextManager', () => ({
   resolveAssistantContextSpec: vi.fn(() => ({ inputBudget: 100_000 })),
 }));
 
-import { executeAgentRound } from '../../../src/services/chat/agentRoundExecutor';
+import { executeAgentRound, type AgentRoundCallbacks } from '../../../src/services/chat/agentRoundExecutor';
 import { transitionAgentTask } from '../../../src/services/chat/agentRuntime';
+import { registerCanvasAgentTools } from '../../../src/services/chat/tools/canvasTools';
+import { registerMediaAgentTools } from '../../../src/services/chat/tools/mediaTools';
 import {
   clearAgentToolRegistryForTests,
+  getAgentTool,
   registerAgentTool,
 } from '../../../src/services/chat/toolRegistry';
 import { useAppStore } from '../../../src/store/useAppStore';
@@ -71,9 +78,299 @@ beforeEach(() => {
     agentTasks: [createTask()],
   });
   streamAssistantReplyMock.mockReset();
+  executeGenerationMock.mockClear();
 });
 
+function arrangeCanvas() {
+  useAppStore.setState({
+    nodes: ['a', 'b'].map((id, index) => ({
+      id,
+      type: 'ai-text',
+      position: { x: index * 400, y: 0 },
+      data: { type: 'ai-text', label: id, status: 'idle', prompt: 'initial', role: 'generator' },
+    })),
+    edges: [],
+  });
+  registerCanvasAgentTools();
+}
+
+function arrangeCalls(calls: ProposedToolCall[], duringStream?: () => void) {
+  streamAssistantReplyMock.mockImplementation(async ({ onEvent }) => {
+    duringStream?.();
+    calls.forEach((call) => onEvent({ type: 'tool.call.final', call }));
+  });
+}
+
+function runRound(
+  controller = new AbortController(),
+  callbacks: AgentRoundCallbacks = {},
+  waitForApproval: () => Promise<AgentApprovalResolution> = async () => ({ approved: true }),
+) {
+  return executeAgentRound({
+    taskId: 'task-round',
+    signal: controller.signal,
+    messages: [{ role: 'user', content: 'update canvas' }],
+    fullText: '',
+    totalToolResultChars: 0,
+    callbacks,
+    transitionTask: transitionAgentTask,
+    waitForApproval,
+  });
+}
+
+function arrangeRead(beforeReturn: () => void) {
+  registerAgentTool({
+    id: 'round_read_boundary',
+    title: 'Read boundary',
+    description: 'Read boundary',
+    effect: 'read',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    execute: async () => {
+      beforeReturn();
+      return { status: 'success', summary: 'read complete', modelContent: 'read complete' };
+    },
+  });
+}
+
+function nodePrompt(id: string) {
+  return useAppStore.getState().nodes.find((node) => node.id === id)?.data.prompt;
+}
+
+function arrangeMedia(kind: 'image' | 'video' | 'audio' = 'image') {
+  registerMediaAgentTools();
+  useAppStore.setState((state) => ({
+    config: {
+      ...state.config,
+      providers: { ...state.config.providers, audit: { name: 'Audit', baseUrl: 'https://example.invalid', apiKey: 'test-only-key' } },
+      generalModels: [
+        { id: `audit-${kind}`, name: 'Default', modelId: 'media-a', category: kind, providerConfigId: 'audit' },
+        { id: 'audit-style', name: 'Style', description: 'cinematic', modelId: 'media-b', category: kind, providerConfigId: 'audit' },
+      ],
+    },
+    projects: [{
+      id: 'project-1', name: 'Audit', createdAt: 1, updatedAt: 1,
+      settings: { defaultModels: { [kind]: `general/audit-${kind}` } },
+    }],
+  }));
+  // 复用真实 schema、默认值解析和 authorize，只替换最终付费调用。
+  return vi.spyOn(getAgentTool('media_generate')!, 'execute').mockResolvedValue({
+    status: 'success', summary: 'generated', modelContent: 'generated',
+  });
+}
+
 describe('agent round executor', () => {
+  it.each(['paused', 'stopped'] as const)('does not execute queued writes after a task is %s during a read', async (status) => {
+    arrangeCanvas();
+    const controller = new AbortController();
+    arrangeRead(() => {
+      controller.abort();
+      transitionAgentTask('task-round', status);
+    });
+    arrangeCalls([
+      { callId: 'read-stop', toolId: 'round_read_boundary', input: {} },
+      { callId: 'write-after-stop', toolId: 'canvas_update_nodes', input: { nodeIds: ['b'], prompt: 'too late' } },
+    ]);
+
+    await expect(runRound(controller)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(nodePrompt('b')).toBe('initial');
+    expect(useAppStore.getState().agentTasks[0].status).toBe(status);
+  });
+
+  it('checks task state even when its caller has not aborted the signal', async () => {
+    arrangeCanvas();
+    arrangeRead(() => transitionAgentTask('task-round', 'paused'));
+    arrangeCalls([
+      { callId: 'read-pause', toolId: 'round_read_boundary', input: {} },
+      { callId: 'write-after-pause', toolId: 'canvas_update_nodes', input: { nodeIds: ['b'], prompt: 'too late' } },
+    ]);
+    await expect(runRound()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(nodePrompt('b')).toBe('initial');
+  });
+
+  it.each(['plan', 'collaborative'] satisfies AgentMode[])('rechecks %s mode before executing queued writes', async (mode) => {
+    arrangeCanvas();
+    arrangeRead(() => useAppStore.getState().updateConversation('conversation-1', { agentMode: mode }));
+    arrangeCalls([
+      { callId: 'read-mode', toolId: 'round_read_boundary', input: {} },
+      { callId: 'write-mode', toolId: 'canvas_update_nodes', input: { nodeIds: ['b'], prompt: 'not authorized' } },
+    ]);
+    const results: ToolResultSummary[] = [];
+    await runRound(undefined, { onToolResult: (result) => results.push(result) });
+    expect(nodePrompt('b')).toBe('initial');
+    expect(results.at(-1)?.status).toBe('denied');
+  });
+
+  it('rejects the entire stale write batch without overwriting a user edit', async () => {
+    arrangeCanvas();
+    arrangeCalls([
+      { callId: 'stale-a', toolId: 'canvas_update_nodes', input: { nodeIds: ['a'], prompt: 'stale A' } },
+      { callId: 'stale-b', toolId: 'canvas_update_nodes', input: { nodeIds: ['b'], prompt: 'stale B' } },
+    ], () => {
+      useAppStore.getState().updateNodesDataBatch(['b'], { prompt: 'user B' });
+      useAppStore.getState().incrementRevision();
+    });
+    await runRound();
+    expect(nodePrompt('a')).toBe('initial');
+    expect(nodePrompt('b')).toBe('user B');
+    expect(useAppStore.getState().agentTasks[0].steps.map((step) => step.status))
+      .toEqual(['failed', 'failed']);
+  });
+
+  it('does not absorb an edit made after one write returns into the next write baseline', async () => {
+    arrangeCanvas();
+    arrangeCalls([
+      { callId: 'write-a', toolId: 'canvas_update_nodes', input: { nodeIds: ['a'], prompt: 'agent A' } },
+      { callId: 'write-b', toolId: 'canvas_update_nodes', input: { nodeIds: ['b'], prompt: 'stale B' } },
+    ]);
+    await runRound(undefined, { onToolResult: (result) => {
+      if (result.callId === 'write-a') {
+        useAppStore.getState().updateNodesDataBatch(['b'], { prompt: 'user B' });
+        useAppStore.getState().incrementRevision();
+      }
+    } });
+    expect(nodePrompt('a')).toBe('agent A');
+    expect(nodePrompt('b')).toBe('user B');
+  });
+
+  it('cancels dependent writes after a preceding write fails without automatically retrying it', async () => {
+    arrangeCanvas();
+    const execute = vi.fn(async () => ({ status: 'error' as const, retryable: true, summary: 'write failed', modelContent: 'write failed' }));
+    registerAgentTool({
+      id: 'failed_write', title: 'Failed write', description: 'Failed write', effect: 'canvas_write',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false }, execute,
+    });
+    arrangeCalls([
+      { callId: 'fail', toolId: 'failed_write', input: {} },
+      { callId: 'dependent', toolId: 'canvas_update_nodes', input: { nodeIds: ['b'], prompt: 'depends on failed write' } },
+    ]);
+    await runRound();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(nodePrompt('b')).toBe('initial');
+    expect(useAppStore.getState().agentTasks[0].steps.at(-1)?.errorCode).toBe('AGENT_WRITE_BATCH_ABORTED');
+  });
+
+  it('does not treat external canvas changes during a successful file operation as its own writes', async () => {
+    arrangeCanvas();
+    registerAgentTool({
+      id: 'file_wait', title: 'File wait', description: 'File wait', effect: 'file_write',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: async () => {
+        useAppStore.getState().updateNodesDataBatch(['b'], { prompt: 'user B' });
+        useAppStore.getState().incrementRevision();
+        return { status: 'success', summary: 'file saved', modelContent: 'file saved' };
+      },
+    });
+    arrangeCalls([
+      { callId: 'file', toolId: 'file_wait', input: {} },
+      { callId: 'stale-after-file', toolId: 'canvas_update_nodes', input: { nodeIds: ['b'], prompt: 'stale' } },
+    ]);
+    await runRound();
+    expect(nodePrompt('b')).toBe('user B');
+  });
+
+  it('does not start the model for an already stopped task', async () => {
+    transitionAgentTask('task-round', 'stopped');
+    await expect(runRound()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(streamAssistantReplyMock).not.toHaveBeenCalled();
+  });
+
+  it('does not report a late model response as completed after cancellation', async () => {
+    const controller = new AbortController();
+    arrangeCalls([], () => controller.abort());
+    const onComplete = vi.fn();
+    await expect(runRound(controller, { onComplete })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(onComplete).not.toHaveBeenCalled();
+  });
+
+  it('really regenerates the same node after its prompt changes within the task', async () => {
+    arrangeCanvas();
+    arrangeCalls([{ callId: 'generate-1', toolId: 'canvas_run_nodes', input: { nodeIds: ['b'] } }]);
+    await runRound();
+    arrangeCalls([{ callId: 'change-prompt', toolId: 'canvas_update_nodes', input: { nodeIds: ['b'], prompt: 'new prompt' } }]);
+    await runRound();
+    arrangeCalls([{ callId: 'generate-2', toolId: 'canvas_run_nodes', input: { nodeIds: ['b'] } }]);
+    await runRound();
+    expect(executeGenerationMock).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().agentTasks[0].steps.at(-1)?.outputSummary).not.toContain('复用');
+  });
+
+  it('distinguishes replay of one generation request from a new request with identical parameters', async () => {
+    arrangeCanvas();
+    arrangeCalls([{ callId: 'generation-original', toolId: 'canvas_run_nodes', input: { nodeIds: ['b'] } }]);
+    await runRound();
+    await runRound();
+    expect(executeGenerationMock).toHaveBeenCalledTimes(1);
+    arrangeCalls([{ callId: 'generation-new', toolId: 'canvas_run_nodes', input: { nodeIds: ['b'] } }]);
+    await runRound();
+    expect(executeGenerationMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows two intentional relative moves with identical parameters', async () => {
+    arrangeCanvas();
+    arrangeCalls([{ callId: 'move-1', toolId: 'canvas_update_nodes', input: { nodeIds: ['b'], dx: 40 } }]);
+    await runRound();
+    arrangeCalls([{ callId: 'move-2', toolId: 'canvas_update_nodes', input: { nodeIds: ['b'], dx: 40 } }]);
+    await runRound();
+    expect(useAppStore.getState().nodes.find((node) => node.id === 'b')?.position.x).toBe(480);
+  });
+
+  it.each(['image', 'video', 'audio'] as const)('preserves a valid project default %s model in autonomous mode', async (kind) => {
+    const execute = arrangeMedia(kind);
+    arrangeCalls([{
+      callId: 'media-default', toolId: 'media_generate',
+      input: { kind, prompt: 'a cat', deliveryMode: 'chat', ...(kind === 'audio' ? { audioPurpose: 'music' } : {}) },
+    }]);
+    await runRound();
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ mode: 'autonomous' }), expect.objectContaining({ modelRef: `general/audit-${kind}` }));
+  });
+
+  it('preserves the actual autonomous model-routing result', async () => {
+    const execute = arrangeMedia();
+    useAppStore.setState((state) => ({
+      projects: state.projects.map((project) => ({ ...project, settings: { ...project.settings, modelAutoRouting: true } })),
+    }));
+    arrangeCalls([{ callId: 'media-route', toolId: 'media_generate', input: { kind: 'image', prompt: 'cinematic', deliveryMode: 'chat' } }]);
+    await runRound();
+    expect(execute).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ modelRef: 'general/audit-style' }));
+  });
+
+  it('still requires the user to choose a media model in collaborative mode', async () => {
+    const execute = arrangeMedia();
+    useAppStore.getState().updateConversation('conversation-1', { agentMode: 'collaborative' });
+    arrangeCalls([{ callId: 'media-approval', toolId: 'media_generate', input: { kind: 'image', prompt: 'a cat', deliveryMode: 'chat' } }]);
+    const waitForApproval = vi.fn(async () => ({ approved: true, inputValues: { modelRef: 'general/audit-style' } }));
+    const onApprovalRequired = vi.fn();
+    await runRound(undefined, { onApprovalRequired }, waitForApproval);
+    expect(onApprovalRequired).toHaveBeenCalledWith(expect.objectContaining({
+      approval: expect.objectContaining({ inputRequest: { kind: 'media_model', mediaKind: 'image' } }),
+    }));
+    expect(waitForApproval).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ mode: 'collaborative' }), expect.objectContaining({ modelRef: 'general/audit-style' }));
+  });
+
+  it('does not replace an unavailable default model with an arbitrary model', async () => {
+    const execute = arrangeMedia();
+    useAppStore.setState((state) => ({ projects: state.projects.map((project) => ({
+      ...project, settings: { defaultModels: { image: 'general/missing' } },
+    })) }));
+    arrangeCalls([{ callId: 'media-missing', toolId: 'media_generate', input: { kind: 'image', prompt: 'a cat', deliveryMode: 'chat' } }]);
+    const onToolResult = vi.fn();
+    await runRound(undefined, { onToolResult });
+    expect(execute).not.toHaveBeenCalled();
+    expect(onToolResult).toHaveBeenCalledWith(expect.objectContaining({ status: 'denied' }));
+  });
+
+  it('rejects a model that conflicts with the explicit model mention', async () => {
+    const execute = arrangeMedia();
+    useAppStore.getState().updateAgentTask('task-round', { goal: 'Generate @model{general/audit-style|Style}' });
+    arrangeCalls([{
+      callId: 'media-mismatch', toolId: 'media_generate',
+      input: { kind: 'image', prompt: 'a cat', deliveryMode: 'chat', modelRef: 'general/audit-image' },
+    }]);
+    await runRound();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('runs one model round and returns a terminal response without owning the loop', async () => {
     streamAssistantReplyMock.mockImplementation(async ({ onEvent }) => {
       onEvent({ type: 'text.delta', delta: 'round complete' });

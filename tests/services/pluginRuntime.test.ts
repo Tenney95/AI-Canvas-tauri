@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { InstalledPlugin, PluginInvocationResources } from '../../src/types/plugin';
 
 const mocks = vi.hoisted(() => ({
@@ -327,6 +328,8 @@ const outputToolPlugin: InstalledPlugin = {
   },
 };
 
+afterEach(() => vi.unstubAllGlobals());
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.revision = 3;
@@ -353,7 +356,7 @@ beforeEach(() => {
   };
   mocks.invoke.mockResolvedValue({ data: { output: 'after' }, message: '完成' });
   mocks.generateText.mockResolvedValue('模型结果');
-  mocks.saveBinaryToProjectData.mockResolvedValue({
+  mocks.saveBinaryToProjectData.mockReset().mockResolvedValue({
     filePath: 'G:\\project\\plugin-output.txt',
     assetUrl: 'asset://localhost/plugin-output.txt',
   });
@@ -507,7 +510,28 @@ describe('node plugin runtime', () => {
     expect(mocks.showToast).toHaveBeenCalledWith('完成');
   });
 
-  it('materializes a bounded node set with real shotlist frame bindings in one Store action', async () => {
+  it.each([
+    { name: '横图', width: 1280, height: 720, expireOnLoad: false },
+    { name: '竖图', width: 720, height: 1280, expireOnLoad: false },
+    { name: '方图', width: 1024, height: 1024, expireOnLoad: false },
+    { name: '读取尺寸时画布过期', width: 720, height: 1280, expireOnLoad: true },
+  ])('materializes proportional frames with guarded shotlist bindings ($name)', async ({ width, height, expireOnLoad }) => {
+    const loadedImages: string[] = [];
+    vi.stubGlobal('Image', class {
+      naturalWidth = width;
+      naturalHeight = height;
+      onload: (() => void) | null = null;
+      set src(value: string) {
+        loadedImages.push(value);
+        // 首张保持横图，验证行高取整行最大值而非只取第一张。
+        if (value.endsWith('frame-1.jpg')) {
+          this.naturalWidth = 1280;
+          this.naturalHeight = 720;
+        }
+        if (expireOnLoad) mocks.revision += 1;
+        this.onload?.();
+      }
+    });
     const nodeSetPlugin: InstalledPlugin = {
       ...plugin,
       id: 'com.example.frame-review',
@@ -525,7 +549,7 @@ describe('node plugin runtime', () => {
             output: {
               mode: 'create-node-set',
               nodeTypes: ['ai-image', 'ai-shotlist'],
-              maxNodes: 3,
+              maxNodes: 6,
               fields: ['label', 'imageWidth', 'imageHeight', 'frameAnalysis', 'shotlistRows'],
             },
           }],
@@ -538,33 +562,25 @@ describe('node plugin runtime', () => {
         id: 'video-1',
         type: 'ai-video',
         position: { x: 10, y: 20 },
+        parentId: 'group-1',
         data: { label: '样片', type: 'ai-video', nodeWidth: 320 },
       }],
       installedPlugins: [nodeSetPlugin],
     };
     mocks.invoke.mockResolvedValueOnce({
       data: {
-        nodes: [{
-          key: 'frame-1',
+        nodes: [...Array.from({ length: 5 }, (_, index) => ({
+          key: `frame-${index + 1}`,
           nodeType: 'ai-image',
-          resourceId: 'derived-1',
+          resourceId: `derived-${index + 1}`,
           data: {
-            label: '00:00:01.000 · 全景',
+            label: `画面 ${index + 1}`,
+            // 故意都声明横图；展示比例必须来自保存的实际图像，而不是插件声明。
             imageWidth: 1280,
             imageHeight: 720,
-            frameAnalysis: { requestedTime: 1, actualTime: 0.96, shotSize: '全景' },
+            frameAnalysis: { requestedTime: index + 1, actualTime: index + 0.96, shotSize: '全景' },
           },
-        }, {
-          key: 'frame-2',
-          nodeType: 'ai-image',
-          resourceId: 'derived-2',
-          data: {
-            label: '00:00:02.000 · 近景',
-            imageWidth: 1280,
-            imageHeight: 720,
-            frameAnalysis: { requestedTime: 2, actualTime: 2.04, shotSize: '近景' },
-          },
-        }, {
+        })), {
           key: 'shotlist',
           nodeType: 'ai-shotlist',
           data: {
@@ -574,31 +590,29 @@ describe('node plugin runtime', () => {
                 aiOriginal: { content: 'AI 原文', confidence: 0.5 }, overrideFields: ['content'], reviewStatus: 'reviewed' } }],
           },
         }],
-        edges: [
-          { sourceKey: 'frame-1', targetKey: 'shotlist' },
-          { sourceKey: 'frame-2', targetKey: 'shotlist' },
-        ],
+        edges: Array.from({ length: 5 }, (_, index) => ({ sourceKey: `frame-${index + 1}`, targetKey: 'shotlist' })),
       },
       message: '已生成拉片节点',
     });
-    mocks.saveBinaryToProjectData
-      .mockResolvedValueOnce({ filePath: 'G:\\project\\frame-1.jpg', assetUrl: 'asset://localhost/frame-1.jpg' })
-      .mockResolvedValueOnce({ filePath: 'G:\\project\\frame-2.jpg', assetUrl: 'asset://localhost/frame-2.jpg' });
+    for (let index = 1; index <= 5; index += 1) {
+      mocks.saveBinaryToProjectData.mockResolvedValueOnce({
+        filePath: `G:\\project\\frame-${index}.jpg`, assetUrl: `asset://localhost/frame-${index}.jpg`,
+      });
+    }
     const resources: PluginInvocationResources = {
       self: [],
       incoming: [],
       inputs: {},
       package: [],
-      derived: [{
-        resourceId: 'derived-1', origin: 'derived', displayName: 'frame-1.jpg', mediaType: 'image/jpeg', size: 3, access: 'read',
-      }, {
-        resourceId: 'derived-2', origin: 'derived', displayName: 'frame-2.jpg', mediaType: 'image/jpeg', size: 3, access: 'read',
-      }],
+      derived: Array.from({ length: 5 }, (_, index) => ({
+        resourceId: `derived-${index + 1}`, origin: 'derived', displayName: `frame-${index + 1}.jpg`,
+        mediaType: 'image/jpeg', size: 3, access: 'read',
+      })),
     };
     const guard = registerCanvasDerivation(mocks.state as never, 'video-1');
     expect(guard).not.toBeNull();
 
-    await executeNodePluginTool(
+    const execution = executeNodePluginTool(
       getAvailableNodePluginTools([nodeSetPlugin], 'ai-video')[0],
       'video-1',
       {},
@@ -610,17 +624,36 @@ describe('node plugin runtime', () => {
       },
     );
 
+    if (expireOnLoad) {
+      await expect(execution).rejects.toThrow('画布已变化，插件结果未写入');
+      expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+      expect(mocks.saveBinaryToProjectData).toHaveBeenCalledTimes(1);
+      expect(mocks.moveToTrash).toHaveBeenCalledWith('G:\\project\\frame-1.jpg');
+      return;
+    }
+    await execution;
     expect(mocks.addNodesWithEdges).toHaveBeenCalledTimes(1);
     const [createdNodes, createdEdges] = mocks.addNodesWithEdges.mock.calls[0] as [
-      Array<{ id: string; type: string; data: Record<string, unknown> }>,
+      Array<{ id: string; type: string; parentId?: string; position: { x: number; y: number }; data: Record<string, unknown> }>,
       Array<{ source: string; target: string }>,
     ];
     const firstFrame = createdNodes.find((node) => node.type === 'ai-image')!;
     const shotlist = createdNodes.find((node) => node.type === 'ai-shotlist')!;
     expect(firstFrame.data).toMatchObject({
       imageUrl: 'asset://localhost/frame-1.jpg',
+      nodeWidth: 280,
+      nodeHeight: 159,
       frameAnalysis: { sourceVideoNodeId: 'video-1', actualTime: 0.96 },
     });
+    expect(loadedImages).toEqual(Array.from({ length: 5 }, (_, index) => `asset://localhost/frame-${index + 1}.jpg`));
+    const frameHeight = Math.max(120, Math.round(276 * height / width) + 4);
+    expect(createdNodes[1].data).toMatchObject({ nodeWidth: 280, nodeHeight: frameHeight });
+    expect(createdNodes.every((node) => node.parentId === 'group-1')).toBe(true);
+    expect(createdNodes[0].position).toEqual({ x: 370, y: 20 });
+    expect(createdNodes[3].position.y).toBe(20);
+    expect(createdNodes[4].position).toEqual({ x: 370, y: 20 + Math.max(280, frameHeight + 80) });
+    expect(createdNodes[5].position.y).toBe(createdNodes[4].position.y);
+    expect(createdNodes[4].position.y).toBeGreaterThan(createdNodes[1].position.y + frameHeight);
     expect(shotlist.data).toMatchObject({
       shotlistRows: [{
         id: 'shot-1',
@@ -638,10 +671,16 @@ describe('node plugin runtime', () => {
         },
       }],
     });
-    expect(createdEdges).toHaveLength(2);
+    expect(createdEdges).toHaveLength(5);
     expect(JSON.stringify(shotlist.data)).not.toContain('forged');
     expect(JSON.stringify(shotlist.data)).not.toContain('伪造来源');
     expect(mocks.showToast).toHaveBeenCalledWith('已生成拉片节点');
+  });
+
+  it('shows the entire shotlist frame without cropping its aspect ratio', () => {
+    const styles = readFileSync(new URL('../../src/styles/nodes-shotlist.css', import.meta.url), 'utf8');
+    const imageRule = styles.match(/(?:^|\n)\.shot-frame-img\s*\{([^}]*)\}/)?.[1];
+    expect(imageRule).toMatch(/object-fit:\s*contain\s*;/);
   });
 
   it('redacts protected fields and nested local references even from a forged descriptor', async () => {

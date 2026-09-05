@@ -23,7 +23,7 @@ import type {
   PythonPluginRuntimeStatus,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
-import { derivedNodePlacement, generateId } from '../../store/store.utils';
+import { computeImageNodeDimensions, derivedNodePlacement, generateId } from '../../store/store.utils';
 import {
   completeCanvasDerivation,
   isCanvasDerivationFresh,
@@ -1287,6 +1287,7 @@ async function preparePluginNodeSet(options: {
     assetUrl: string;
     filePath: string;
     fileName: string;
+    dimensions: { nodeWidth: number; nodeHeight: number };
   }>();
   const nodeIds = new Map(options.nodeSet.nodes.map((item) => [item.key, `node-${generateId()}`]));
   const rollback = async () => {
@@ -1305,18 +1306,29 @@ async function preparePluginNodeSet(options: {
       const saved = await saveBinaryToProjectData(derived.bytes, options.projectId, fileName);
       if (!saved?.assetUrl) throw new Error(`无法保存抽帧图像「${item.key}」`);
       savedPaths.push(saved.filePath);
+      // 像素尺寸不是节点展示尺寸；从宿主保存的图像计算，避免竖图落入默认横框。
+      const dimensions = await computeImageNodeDimensions(saved.assetUrl);
+      options.assertFresh();
       savedImages.set(item.key, {
         nodeId: nodeIds.get(item.key)!,
         assetUrl: saved.assetUrl,
         filePath: saved.filePath,
         fileName: saved.filePath.replace(/\\/gu, '/').split('/').at(-1) ?? fileName,
+        dimensions,
       });
     }
 
     options.assertFresh();
     const base = derivedNodePlacement(options.sourceNode);
     const columns = Math.min(4, Math.max(1, options.nodeSet.nodes.length));
+    let rowY = base.position.y;
+    let rowHeight = 0;
     const nodes = options.nodeSet.nodes.map((item, index) => {
+      if (index > 0 && index % columns === 0) {
+        // 为节点标题与间距留白，按上一整行最大高度排布，防止竖图/方图重叠。
+        rowY += Math.max(280, rowHeight + 80);
+        rowHeight = 0;
+      }
       const image = savedImages.get(item.key);
       const data = { ...item.data } as Record<string, unknown>;
       if (data.frameAnalysis && typeof data.frameAnalysis === 'object' && !Array.isArray(data.frameAnalysis)) {
@@ -1355,13 +1367,18 @@ async function preparePluginNodeSet(options: {
         data.imageUrl = image.assetUrl;
         data.filePath = image.filePath;
         data.fileName = image.fileName;
+        data.nodeWidth = image.dimensions.nodeWidth;
+        data.nodeHeight = image.dimensions.nodeHeight;
       }
+      const nodeHeight = typeof data.nodeHeight === 'number' && Number.isFinite(data.nodeHeight) && data.nodeHeight > 0
+        ? data.nodeHeight : item.nodeType === 'ai-shotlist' ? 380 : 158;
+      rowHeight = Math.max(rowHeight, nodeHeight);
       return {
         id: nodeIds.get(item.key)!,
         type: item.nodeType,
         position: {
           x: base.position.x + (index % columns) * 320,
-          y: base.position.y + Math.floor(index / columns) * 280,
+          y: rowY,
         },
         ...(base.parentId ? { parentId: base.parentId } : {}),
         data: {

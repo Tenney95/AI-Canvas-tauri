@@ -17,6 +17,7 @@ vi.mock('../../../src/services/chat/contextManager', () => ({
 
 import { runAgentLoop } from '../../../src/services/chat/agentRuntime';
 import { fingerprintToolInput } from '../../../src/services/chat/agentCheckpointService';
+import { enqueueAgentInterjection } from '../../../src/services/chat/agentInterjection';
 import {
   clearAgentLifecycleListenersForTests,
   subscribeAgentLifecycle,
@@ -107,6 +108,16 @@ function arrangeStream() {
   });
 }
 
+function restoreCheckpointTask() {
+  const restoredTask = createTask(true);
+  restoredTask.resumeCount = 1;
+  restoredTask.steps[0].toolCall!.canvasCheckpoint = {
+    historyIndexBefore: 0, historyIndexAfter: 1, revisionBefore: 0, revisionAfter: 1,
+  };
+  useAppStore.setState({ agentTasks: [restoredTask], historyIndex: 1, canvasRevision: 1 });
+  return restoredTask;
+}
+
 describe('agent runtime diagnostics', () => {
   it('marks older conversation requests as context outside the current task boundary', async () => {
     assembleAgentContextMock.mockResolvedValue({
@@ -185,7 +196,7 @@ describe('agent runtime diagnostics', () => {
   });
 
   it('does not re-execute an identical succeeded write after resume', async () => {
-    useAppStore.setState({ agentTasks: [createTask(true)] });
+    restoreCheckpointTask();
     arrangeStream();
     const execute = vi.fn();
     registerAgentTool({
@@ -209,5 +220,87 @@ describe('agent runtime diagnostics', () => {
       status: 'succeeded',
       outputSummary: expect.stringContaining('已复用先前成功结果'),
     });
+  });
+
+  it.each(['unchanged', 'changed', 'interjected', 'legacy'] as const)('validates checkpoint recovery after a read-only round: %s', async (scenario) => {
+    const restoredTask = restoreCheckpointTask();
+    if (scenario === 'legacy') {
+      const legacyStep = { ...restoredTask.steps[0], toolCall: { ...restoredTask.steps[0].toolCall!, canvasCheckpoint: undefined } };
+      useAppStore.getState().updateAgentTask(restoredTask.id, { steps: [legacyStep] });
+    }
+    registerAgentTool({
+      id: 'resume_read', title: 'Read', description: 'Read', effect: 'read',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      execute: async () => {
+        if (scenario === 'changed') useAppStore.getState().incrementRevision();
+        if (scenario === 'interjected') enqueueAgentInterjection('task-diagnostics', '请再次执行这项修改');
+        return { status: 'success', summary: 'read', modelContent: 'read' };
+      },
+    });
+    const execute = vi.fn(async () => {
+      useAppStore.getState().incrementRevision();
+      return { status: 'success' as const, summary: 'new write', modelContent: 'new write' };
+    });
+    registerAgentTool({
+      id: 'canvas_write_test', title: 'Write', description: 'Write', effect: 'canvas_write',
+      inputSchema: { type: 'object', additionalProperties: true, properties: {} }, execute,
+    });
+    let round = 0;
+    streamAssistantReplyMock.mockImplementation(async ({ onEvent }) => {
+      round += 1;
+      if (round === 1) onEvent({ type: 'tool.call.final', call: { callId: 'resume-read', toolId: 'resume_read', input: {} } });
+      if (round === 2) onEvent({ type: 'tool.call.final', call: { callId: 'resume-write', toolId: 'canvas_write_test', input } });
+    });
+    await runAgentLoop({
+      taskId: 'task-diagnostics', systemPrompt: 'system', userMessage: 'update canvas', signal: new AbortController().signal,
+    });
+    expect(execute).toHaveBeenCalledTimes(scenario === 'unchanged' ? 0 : 1);
+    expect(useAppStore.getState().agentTasks[0].steps.at(-1)?.status).toBe('succeeded');
+  });
+
+  it('does not add newly completed operations to the resumed-step replay candidates', async () => {
+    restoreCheckpointTask();
+    const execute = vi.fn(async () => {
+      useAppStore.getState().incrementRevision();
+      return { status: 'success' as const, summary: 'new write', modelContent: 'new write' };
+    });
+    registerAgentTool({
+      id: 'canvas_write_test', title: 'Write', description: 'Write', effect: 'canvas_write',
+      inputSchema: { type: 'object', additionalProperties: true, properties: {} }, execute,
+    });
+    let round = 0;
+    streamAssistantReplyMock.mockImplementation(async ({ onEvent }) => {
+      round += 1;
+      if (round <= 2) onEvent({ type: 'tool.call.final', call: {
+        callId: `new-write-${round}`, toolId: 'canvas_write_test', input: { nodeIds: ['node-1'], dx: 40 },
+      } });
+    });
+    await runAgentLoop({
+      taskId: 'task-diagnostics', systemPrompt: 'system', userMessage: 'update canvas', signal: new AbortController().signal,
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('checks replay eligibility after the preceding write in the same round has executed', async () => {
+    restoreCheckpointTask();
+    const execute = vi.fn(async () => {
+      useAppStore.getState().incrementRevision();
+      return { status: 'success' as const, summary: 'write', modelContent: 'write' };
+    });
+    registerAgentTool({
+      id: 'canvas_write_test', title: 'Write', description: 'Write', effect: 'canvas_write',
+      inputSchema: { type: 'object', additionalProperties: true, properties: {} }, execute,
+    });
+    let round = 0;
+    streamAssistantReplyMock.mockImplementation(async ({ onEvent }) => {
+      round += 1;
+      if (round !== 1) return;
+      onEvent({ type: 'tool.call.final', call: { callId: 'change-first', toolId: 'canvas_write_test', input: { ...input, label: 'different' } } });
+      onEvent({ type: 'tool.call.final', call: { callId: 'restore-second', toolId: 'canvas_write_test', input } });
+    });
+    await runAgentLoop({
+      taskId: 'task-diagnostics', systemPrompt: 'system', userMessage: 'update canvas', signal: new AbortController().signal,
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 });
