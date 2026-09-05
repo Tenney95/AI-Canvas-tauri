@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Node } from '@xyflow/react';
+import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData, NodeType } from '../../types';
 import type {
   AvailablePluginNode,
@@ -13,6 +13,8 @@ import type {
   PluginNodeHostEffect,
   PluginNodeHostEffectResult,
   PluginNodeInvocationInput,
+  PluginNodeSetData,
+  PluginNodeToolOutputManifest,
   PluginJsonValue,
   PluginNodePortType,
   PluginPermission,
@@ -32,16 +34,19 @@ import { generateText } from '../ai/generateText';
 import { generateImage } from '../ai/generateImage';
 import { generateVideo } from '../ai/generateVideo';
 import { generateAudio } from '../ai/generateAudio';
-import { saveBinaryToProjectData } from '../fileService';
+import { moveToTrash, saveBinaryToProjectData } from '../fileService';
 import {
   clearPluginInvocationResources,
   mintPluginInvocationResources,
   readPluginResourceRange,
   readPluginResourceText,
+  readPluginDerivedResourceForOutput,
+  registerPluginDerivedResource,
   resolvePluginResourceHostUrl,
   type PluginResourceReadContext,
 } from './pluginResourceService';
 import { buildPluginModelCatalog, collectDeclaredModelCategories } from './pluginModelCatalog';
+import { extractPluginVideoFrames } from './pluginVideoFrameService';
 
 const MAX_STRING_LENGTH = 256_000;
 const MAX_ARRAY_ITEMS = 256;
@@ -49,6 +54,8 @@ const MAX_OBJECT_KEYS = 128;
 const MAX_DEPTH = 8;
 const DANGEROUS_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_HOST_EFFECTS = 4;
+const NODE_SET_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
+const MAX_NODE_SET_EDGES = 64;
 const FORBIDDEN_INPUT_FIELDS = new Set([
   '__proto__',
   'constructor',
@@ -311,9 +318,73 @@ function buildInvocationInput(
   };
 }
 
+function validateNodeSetData(
+  rawData: Record<string, unknown>,
+  output: PluginNodeToolOutputManifest,
+  trustedMediaReferences?: ReadonlySet<string>,
+): PluginNodeSetData {
+  const rawNodes = rawData.nodes;
+  if (!Array.isArray(rawNodes) || rawNodes.length === 0 || rawNodes.length > (output.maxNodes ?? 0)) {
+    throw new Error(`节点集必须包含 1-${output.maxNodes ?? 0} 个节点`);
+  }
+  const allowedNodeTypes = new Set(output.nodeTypes ?? []);
+  const allowedFields = new Set(output.fields);
+  const keys = new Set<string>();
+  const nodes = rawNodes.map((rawNode) => {
+    const node = recordValue(rawNode);
+    const key = typeof node.key === 'string' ? node.key : '';
+    const nodeType = typeof node.nodeType === 'string' ? node.nodeType as NodeType : undefined;
+    if (!NODE_SET_KEY_RE.test(key) || keys.has(key)) throw new Error('节点集 key 无效或重复');
+    if (!nodeType || !allowedNodeTypes.has(nodeType)) throw new Error('节点集包含未声明的节点类型');
+    keys.add(key);
+
+    const rawFields = recordValue(node.data);
+    const data: Record<string, PluginJsonValue> = {};
+    for (const [field, rawValue] of Object.entries(rawFields)) {
+      if (!allowedFields.has(field)) throw new Error(`节点集返回了未声明字段: ${field}`);
+      if (FORBIDDEN_OUTPUT_FIELDS.has(field)) throw new Error(`节点集不能修改受保护字段: ${field}`);
+      const normalized = toPluginJson(rawValue);
+      if (normalized === undefined) throw new Error(`节点集字段不可 JSON 序列化: ${field}`);
+      data[field] = normalized;
+    }
+    const resourceId = typeof node.resourceId === 'string' ? node.resourceId.slice(0, 160) : undefined;
+    const imageNode = nodeType === 'ai-image' || nodeType === 'source-image';
+    if (imageNode && !resourceId) throw new Error('节点集图像节点必须绑定派生 resourceId');
+    if (!imageNode && resourceId) throw new Error('只有图像节点可以绑定派生 resourceId');
+    if (trustedMediaReferences) {
+      assertSafeCanvasNoteColors(data);
+      assertTrustedNodeMediaReferences(data, trustedMediaReferences, nodeType);
+    }
+    return { key, nodeType, resourceId, data };
+  });
+
+  const rawEdges = rawData.edges === undefined ? [] : rawData.edges;
+  if (!Array.isArray(rawEdges) || rawEdges.length > MAX_NODE_SET_EDGES) {
+    throw new Error(`节点集连线不能超过 ${MAX_NODE_SET_EDGES} 条`);
+  }
+  const seenEdges = new Set<string>();
+  const edges = rawEdges.map((rawEdge) => {
+    const edge = recordValue(rawEdge);
+    const sourceKey = typeof edge.sourceKey === 'string' ? edge.sourceKey : '';
+    const targetKey = typeof edge.targetKey === 'string' ? edge.targetKey : '';
+    const signature = `${sourceKey}\0${targetKey}`;
+    if (
+      !keys.has(sourceKey)
+      || !keys.has(targetKey)
+      || sourceKey === targetKey
+      || seenEdges.has(signature)
+    ) {
+      throw new Error('节点集连线引用无效、重复或形成自连线');
+    }
+    seenEdges.add(signature);
+    return { sourceKey, targetKey };
+  });
+  return { nodes, edges };
+}
+
 function validateResult(
   value: unknown,
-  allowedFields: string[],
+  output: PluginNodeToolOutputManifest,
   trustedMediaReferences?: ReadonlySet<string>,
   outputNodeType?: NodeType,
 ): NodePluginExecutionResult {
@@ -327,7 +398,13 @@ function validateResult(
   if (!record.data || typeof record.data !== 'object' || Array.isArray(record.data)) {
     throw new Error('插件返回值必须包含 data 对象');
   }
-  const allowed = new Set(allowedFields);
+  if (output.mode === 'create-node-set') {
+    return {
+      nodeSet: validateNodeSetData(record.data as Record<string, unknown>, output, trustedMediaReferences),
+      message,
+    };
+  }
+  const allowed = new Set(output.fields);
   const data: Record<string, PluginJsonValue> = {};
   for (const [field, rawValue] of Object.entries(record.data)) {
     if (!allowed.has(field)) throw new Error(`插件返回了未声明字段: ${field}`);
@@ -616,6 +693,38 @@ function parseHostEffect(
         : undefined,
     };
   }
+  if (type === 'video.extractFrames') {
+    const resourceId = typeof raw.resourceId === 'string' ? raw.resourceId.slice(0, 160) : '';
+    const mode = raw.mode === 'preview' || raw.mode === 'analysis' ? raw.mode : undefined;
+    if (!resourceId || !mode) throw new Error('视频抽帧必须包含 resourceId 和有效 mode');
+    if (mode === 'preview') {
+      const count = Number(raw.count ?? 12);
+      if (!Number.isSafeInteger(count) || count < 1 || count > 48) {
+        throw new Error('视频预览帧数量必须在 1-48 之间');
+      }
+      return { type, resourceId, mode, count };
+    }
+    if (!Array.isArray(raw.samples) || raw.samples.length < 1 || raw.samples.length > 24) {
+      throw new Error('视频分析帧数量必须在 1-24 之间');
+    }
+    const keys = new Set<string>();
+    let previousTime = -1;
+    const samples = raw.samples.map((rawSample) => {
+      const sample = recordValue(rawSample);
+      const key = typeof sample.key === 'string' ? sample.key : '';
+      const time = Number(sample.time);
+      if (!NODE_SET_KEY_RE.test(key) || keys.has(key) || !Number.isFinite(time) || time < 0) {
+        throw new Error('视频分析帧参数无效');
+      }
+      if (time <= previousTime) {
+        throw new Error('视频分析帧时间点必须严格递增');
+      }
+      keys.add(key);
+      previousTime = time;
+      return { key, time };
+    });
+    return { type, resourceId, mode, samples };
+  }
   throw new Error('插件请求了不支持的宿主操作');
 }
 
@@ -796,6 +905,7 @@ interface PluginHostEffectContext {
   resourceReadContext?: PluginResourceReadContext;
   pluginNode?: AvailablePluginNode;
   inputs?: Record<string, PluginJsonValue>;
+  signal?: AbortSignal;
 }
 
 function allResourceRefs(resources: PluginInvocationResources | undefined) {
@@ -804,6 +914,7 @@ function allResourceRefs(resources: PluginInvocationResources | undefined) {
     ...resources.self,
     ...resources.incoming,
     ...resources.package,
+    ...resources.derived,
   ];
 }
 
@@ -867,6 +978,68 @@ async function executeHostEffect(
         effect.length,
       );
       return { type: effect.type, ok: true, value: toPluginJson(value) };
+    }
+    if (effect.type === 'video.extractFrames') {
+      if (
+        !context.permissions.includes('files.connected.read')
+        || !context.permissions.includes('files.output.create')
+      ) {
+        throw new Error('视频抽帧要求 files.connected.read 与 files.output.create 权限');
+      }
+      if (!context.resources || !context.resourceReadContext) throw new Error('插件资源会话已失效');
+      const source = context.resources.self.find((resource) => resource.resourceId === effect.resourceId);
+      if (
+        !source
+        || source.origin !== 'node-self'
+        || source.source?.nodeId !== nodeId
+        || !source.mediaType.startsWith('video/')
+      ) {
+        throw new Error('视频抽帧只能读取当前节点的 self 视频资源');
+      }
+      const url = await resolvePluginResourceHostUrl(context.resourceReadContext, effect.resourceId);
+      const batch = await extractPluginVideoFrames({
+        url,
+        mode: effect.mode,
+        count: effect.count,
+        samples: effect.samples,
+        signal: context.signal,
+      });
+      const frames = batch.frames.map((frame) => {
+        if ('error' in frame) return frame;
+        const resource = frame.bytes
+          ? registerPluginDerivedResource(context.resourceReadContext!, context.resources!, {
+              displayName: `${frame.key}.jpg`,
+              mediaType: frame.mediaType,
+              bytes: frame.bytes,
+            })
+          : undefined;
+        return {
+          key: frame.key,
+          requestedTime: frame.requestedTime,
+          actualTime: frame.actualTime,
+          frameDuration: frame.frameDuration,
+          width: frame.width,
+          height: frame.height,
+          previewDataUrl: frame.previewDataUrl,
+          resourceId: resource?.resourceId,
+        };
+      });
+      const contactSheet = batch.contactSheet
+        ? registerPluginDerivedResource(context.resourceReadContext, context.resources, {
+            displayName: 'frame-contact-sheet.jpg',
+            mediaType: batch.contactSheet.mediaType,
+            bytes: batch.contactSheet.bytes,
+          })
+        : undefined;
+      return {
+        type: effect.type,
+        ok: true,
+        value: toPluginJson({
+          video: batch.video,
+          frames,
+          contactSheetResourceId: contactSheet?.resourceId,
+        }),
+      };
     }
     if (!context.permissions.includes('files.output.create')) {
       throw new Error('插件未声明 files.output.create 权限');
@@ -1050,6 +1223,115 @@ export async function executePluginNode(
   }
 }
 
+interface PreparedPluginNodeSet {
+  nodes: Node<BaseNodeData>[];
+  edges: Edge[];
+  rollback: () => Promise<void>;
+}
+
+async function preparePluginNodeSet(options: {
+  nodeSet: PluginNodeSetData;
+  sourceNode: Node<BaseNodeData>;
+  projectId: string;
+  resourceContext: PluginResourceReadContext;
+  assertFresh: () => void;
+}): Promise<PreparedPluginNodeSet> {
+  const savedPaths: string[] = [];
+  const savedImages = new Map<string, {
+    nodeId: string;
+    assetUrl: string;
+    filePath: string;
+    fileName: string;
+  }>();
+  const nodeIds = new Map(options.nodeSet.nodes.map((item) => [item.key, `node-${generateId()}`]));
+  const rollback = async () => {
+    await Promise.all(savedPaths.map((filePath) => moveToTrash(filePath)));
+  };
+
+  try {
+    for (const item of options.nodeSet.nodes) {
+      if (!item.resourceId) continue;
+      options.assertFresh();
+      const derived = readPluginDerivedResourceForOutput(options.resourceContext, item.resourceId);
+      const extension = derived.resource.mediaType === 'image/png'
+        ? 'png'
+        : derived.resource.mediaType === 'image/webp' ? 'webp' : 'jpg';
+      const fileName = `video-frame-${item.key}.${extension}`;
+      const saved = await saveBinaryToProjectData(derived.bytes, options.projectId, fileName);
+      if (!saved?.assetUrl) throw new Error(`无法保存抽帧图像「${item.key}」`);
+      savedPaths.push(saved.filePath);
+      savedImages.set(item.key, {
+        nodeId: nodeIds.get(item.key)!,
+        assetUrl: saved.assetUrl,
+        filePath: saved.filePath,
+        fileName: saved.filePath.replace(/\\/gu, '/').split('/').at(-1) ?? fileName,
+      });
+    }
+
+    options.assertFresh();
+    const base = derivedNodePlacement(options.sourceNode);
+    const columns = Math.min(4, Math.max(1, options.nodeSet.nodes.length));
+    const nodes = options.nodeSet.nodes.map((item, index) => {
+      const image = savedImages.get(item.key);
+      const data = { ...item.data } as Record<string, unknown>;
+      if (data.frameAnalysis && typeof data.frameAnalysis === 'object' && !Array.isArray(data.frameAnalysis)) {
+        data.frameAnalysis = {
+          ...(data.frameAnalysis as Record<string, unknown>),
+          sourceVideoNodeId: options.sourceNode.id,
+        };
+      }
+      if (Array.isArray(data.shotlistRows)) {
+        data.shotlistRows = data.shotlistRows.map((rawRow) => {
+          const row = recordValue(rawRow);
+          const frameKey = typeof row.frameKey === 'string' ? row.frameKey : undefined;
+          const frameImage = frameKey ? savedImages.get(frameKey) : undefined;
+          if (frameKey && !frameImage) throw new Error(`分镜行引用了无效画面 key: ${frameKey}`);
+          const { frameKey: _frameKey, ...cleanRow } = row;
+          return {
+            ...cleanRow,
+            frame: frameImage ? {
+              nodeId: frameImage.nodeId,
+              kind: 'image',
+              url: frameImage.assetUrl,
+              filePath: frameImage.filePath,
+            } : null,
+          };
+        });
+      }
+      if (image) {
+        data.imageUrl = image.assetUrl;
+        data.filePath = image.filePath;
+        data.fileName = image.fileName;
+      }
+      return {
+        id: nodeIds.get(item.key)!,
+        type: item.nodeType,
+        position: {
+          x: base.position.x + (index % columns) * 320,
+          y: base.position.y + Math.floor(index / columns) * 280,
+        },
+        ...(base.parentId ? { parentId: base.parentId } : {}),
+        data: {
+          label: typeof data.label === 'string' ? data.label : item.key,
+          type: item.nodeType,
+          role: 'source',
+          status: 'success',
+          ...data,
+        } as BaseNodeData,
+      };
+    });
+    const edges = (options.nodeSet.edges ?? []).map((edge) => ({
+      id: `edge-${generateId()}`,
+      source: nodeIds.get(edge.sourceKey)!,
+      target: nodeIds.get(edge.targetKey)!,
+    }));
+    return { nodes, edges, rollback };
+  } catch (error) {
+    await rollback();
+    throw error;
+  }
+}
+
 export async function executeNodePluginTool(
   pluginTool: AvailableNodePluginTool,
   nodeId: string,
@@ -1154,7 +1436,7 @@ export async function executeNodePluginTool(
         : sourceNode.data.type;
       const result = validateResult(
         rawResult,
-        pluginTool.tool.output.fields,
+        pluginTool.tool.output,
         trustedMediaReferences,
         outputNodeType,
       );
@@ -1186,7 +1468,7 @@ export async function executeNodePluginTool(
 
       if (pluginTool.tool.output.mode === 'update-current') {
         current.updateNodeData(nodeId, data as Partial<BaseNodeData>);
-      } else {
+      } else if (pluginTool.tool.output.mode === 'create-node') {
         const nodeType = pluginTool.tool.output.nodeType ?? sourceNode.data.type;
         const placement = derivedNodePlacement(sourceNode);
         current.addNode({
@@ -1203,6 +1485,27 @@ export async function executeNodePluginTool(
             ...data,
           } as BaseNodeData,
         });
+      } else {
+        if (!result.nodeSet) throw new Error('插件没有返回有效节点集');
+        const assertFresh = () => {
+          const live = requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest, revisionDigest);
+          if (!isCanvasDerivationFresh(guard, live)) throw new Error('画布已变化，插件结果未写入');
+        };
+        const prepared = await preparePluginNodeSet({
+          nodeSet: result.nodeSet,
+          sourceNode,
+          projectId,
+          resourceContext: resourceReadContext(),
+          assertFresh,
+        });
+        try {
+          assertFresh();
+          requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest, revisionDigest)
+            .addNodesWithEdges(prepared.nodes, prepared.edges);
+        } catch (error) {
+          await prepared.rollback();
+          throw error;
+        }
       }
       current.showToast(result.message || `插件工具「${pluginTool.tool.title}」执行完成`);
       return;
@@ -1239,6 +1542,7 @@ export async function executePluginUiHostEffect(options: {
   trustedMediaReferences: Set<string>;
   resources?: PluginInvocationResources;
   resourceReadContext?: PluginResourceReadContext;
+  signal?: AbortSignal;
 }): Promise<PluginNodeHostEffectResult> {
   const parsed = parseHostEffect(options.effect, options.trustedMediaReferences);
   const result = await executeHostEffect(
@@ -1249,6 +1553,7 @@ export async function executePluginUiHostEffect(options: {
       permissions: options.permissions,
       resources: options.resources,
       resourceReadContext: options.resourceReadContext,
+      signal: options.signal,
     },
     options.nodeId,
     parsed,

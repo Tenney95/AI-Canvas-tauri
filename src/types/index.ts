@@ -173,6 +173,24 @@ export interface CharacterLibraryNodeLink {
   referenceImageId: string;
 }
 
+/** 视频拉片插件写入图片节点的结构化结果；不包含本地路径或调用级 resourceId。 */
+export interface VideoFrameAnalysisData {
+  sourceVideoNodeId: string;
+  requestedTime: number;
+  actualTime: number;
+  frameDuration?: number;
+  approximateFrame?: number;
+  shotSize?: string;
+  camera?: string;
+  content?: string;
+  dialogue?: string;
+  audio?: string;
+  transition?: string;
+  duration?: number;
+  note?: string;
+  confidence?: number;
+}
+
 // 节点数据接口
 export interface BaseNodeData {
   label: string;
@@ -258,6 +276,7 @@ export interface BaseNodeData {
   // ── 分镜表（ai-shotlist）──
   shotlistRows?: ShotRow[];                 // 逐行镜头
   shotlistColumns?: ShotlistColumnKey[];    // 当前显示的列（常驻列恒在其中）
+  frameAnalysis?: VideoFrameAnalysisData;   // 视频拉片抽帧及画面分析结果
   // ── 3D 导演台（ai-director）──
   directorRuntimeKind?: DirectorRuntimeKind; // 缺失=lightweight-web；未知运行时必须失败关闭
   directorInstanceId?: string;           // 导演台 localStorage 隔离实例 ID

@@ -743,7 +743,15 @@ fn native_stage_decision(revision: &PluginRevision, approval: Option<bool>) -> b
     revision.runtime == "javascript"
 }
 
-async fn request_python_revision_approval(
+fn apply_native_stage_approval(revision: &mut PluginRevision, approval: Option<bool>) -> bool {
+    if !native_stage_decision(revision, approval) {
+        return false;
+    }
+    revision.native_approved = revision_requests_native_approval(revision);
+    true
+}
+
+async fn request_native_revision_approval(
     app: &AppHandle,
     action: NativeApprovalAction,
     plugin_id: &str,
@@ -767,7 +775,7 @@ async fn request_python_revision_approval(
             .blocking_show()
     })
     .await
-    .map_err(|_| "无法显示 Python 插件原生授权确认".to_string())?;
+    .map_err(|_| "无法显示插件原生高风险授权确认".to_string())?;
     Ok(approved)
 }
 
@@ -867,8 +875,8 @@ fn validate_stored_revision(revision: &PluginRevision) -> Result<(), String> {
         ("javascript", "main.js") | ("python", "main.py") => {}
         _ => return Err("插件信任注册表包含无效运行时".to_string()),
     }
-    if revision.runtime == "javascript" && revision.native_approved {
-        return Err("JavaScript 插件不能携带 Python 原生授权标记".to_string());
+    if revision.native_approved && !revision_requests_native_approval(revision) {
+        return Err("不需要原生高风险授权的插件不能携带授权标记".to_string());
     }
     if revision.permissions.len() > MAX_PERMISSION_COUNT
         || revision
@@ -1732,7 +1740,7 @@ pub async fn stage_plugin_revision(
     )?;
     let native_approval = if revision_requests_native_approval(&revision) {
         Some(
-            request_python_revision_approval(
+            request_native_revision_approval(
                 &app,
                 NativeApprovalAction::Stage,
                 &plugin_id,
@@ -1743,10 +1751,9 @@ pub async fn stage_plugin_revision(
     } else {
         None
     };
-    if !native_stage_decision(&revision, native_approval) {
-        return Err("用户已取消 Python 插件原生授权，未写入任何插件数据".to_string());
+    if !apply_native_stage_approval(&mut revision, native_approval) {
+        return Err("用户已取消插件原生高风险授权，未写入任何插件数据".to_string());
     }
-    revision.native_approved = revision.runtime == "python";
     let private_dir = plugin_private_dir(&app)?;
     let _guard = REGISTRY_LOCK
         .lock()
@@ -1803,7 +1810,7 @@ pub async fn activate_plugin_revision(
         (record.clone(), slot, candidate.clone())
     };
 
-    let approved = request_python_revision_approval(
+    let approved = request_native_revision_approval(
         &app,
         NativeApprovalAction::EnableOrSwitch,
         &plugin_id,
@@ -1908,7 +1915,7 @@ pub async fn set_plugin_registration_enabled(
         (record.clone(), active.clone())
     };
 
-    let approved = request_python_revision_approval(
+    let approved = request_native_revision_approval(
         &app,
         NativeApprovalAction::EnableOrSwitch,
         &plugin_id,
@@ -2212,14 +2219,57 @@ mod tests {
     }
 
     #[test]
-    fn native_stage_gate_requires_positive_python_approval_only() {
-        let (_, javascript) = parse_revision(&manifest("javascript"), "source", None).unwrap();
+    fn native_stage_gate_records_approval_for_python_and_custom_ui() {
+        let (_, mut javascript) = parse_revision(&manifest("javascript"), "source", None).unwrap();
         let (_, python) = parse_revision(&manifest("python"), "source", None).unwrap();
         assert!(native_stage_decision(&javascript, None));
         assert!(native_stage_decision(&javascript, Some(false)));
         assert!(!native_stage_decision(&python, None));
         assert!(!native_stage_decision(&python, Some(false)));
         assert!(native_stage_decision(&python, Some(true)));
+
+        javascript.permissions.push("ui.custom".to_string());
+        javascript.permissions.sort();
+        assert!(!apply_native_stage_approval(&mut javascript, None));
+        assert!(!apply_native_stage_approval(&mut javascript, Some(false)));
+        assert!(apply_native_stage_approval(&mut javascript, Some(true)));
+        assert!(javascript.native_approved);
+    }
+
+    #[test]
+    fn approved_javascript_custom_ui_revision_can_be_staged_and_reloaded() {
+        let directory = temporary_directory("javascript-custom-ui-approval");
+        let source = "definePlugin({ tools: {} });";
+        let ui_source = "globalThis.VideoFrameReview = () => null;";
+        let ui_digest = format!("{:x}", Sha256::digest(ui_source.as_bytes()));
+        let mut value = manifest("javascript");
+        value["permissions"] = json!(["node.read", "node.write", "ui.custom"]);
+        value["ui"] = json!({
+            "entry": "ui.js",
+            "integrity": format!("sha256-{ui_digest}"),
+            "exports": { "frameReview": "VideoFrameReview" }
+        });
+        let (plugin_id, mut revision) = parse_revision(&value, source, Some(ui_source)).unwrap();
+
+        assert!(apply_native_stage_approval(&mut revision, Some(true)));
+        stage_revision_at(
+            &directory,
+            plugin_id.clone(),
+            revision.clone(),
+            source,
+            Some(ui_source),
+        )
+        .unwrap();
+
+        let loaded = read_registry_at(&directory).unwrap();
+        assert_eq!(
+            loaded
+                .plugins
+                .get(&plugin_id)
+                .and_then(|record| record.staged.as_ref()),
+            Some(&revision),
+        );
+        fs::remove_dir_all(directory).ok();
     }
 
     #[test]

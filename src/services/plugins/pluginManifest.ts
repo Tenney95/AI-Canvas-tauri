@@ -28,6 +28,7 @@ const MAX_SOURCE_BYTES = 512 * 1024;
 const MAX_TOOLS = 64;
 const MAX_NODES = 32;
 const MAX_FIELDS = 64;
+const MAX_NODE_SET_NODES = 25;
 const MAX_DIALOG_FIELDS = 16;
 const MAX_DIALOG_OPTIONS = 32;
 const MAX_UI_EXPORTS = 32;
@@ -109,7 +110,7 @@ const PERMISSIONS = new Set<PluginPermission>([
   ...RESOURCE_PERMISSIONS,
   'ui.custom',
 ]);
-const OUTPUT_MODES = new Set<PluginNodeOutputMode>(['update-current', 'create-node']);
+const OUTPUT_MODES = new Set<PluginNodeOutputMode>(['update-current', 'create-node', 'create-node-set']);
 const CATEGORIES = new Set<PluginCategory>(['content', 'media', 'workflow', 'utility']);
 const PLACEMENTS = new Set<PluginPlacement>(['node-context-menu', 'node-toolbar']);
 const DIALOG_FIELD_TYPES = new Set<PluginNodeToolDialogFieldType>(['text', 'textarea', 'number', 'select', 'boolean', 'model']);
@@ -592,6 +593,22 @@ function parseManifest(value: unknown): PluginManifest {
       ? undefined
       : nonEmptyString(output.nodeType, `${toolId}.output.nodeType`, 32) as NodeType;
     if (outputNodeType && !NODE_TYPES.has(outputNodeType)) throw new Error(`${toolId} 的输出节点类型不受支持`);
+    const outputNodeTypes = output.nodeTypes === undefined
+      ? undefined
+      : stringArray(output.nodeTypes, `${toolId}.output.nodeTypes`, MAX_NODE_SET_NODES) as NodeType[];
+    if (outputNodeTypes?.some((nodeType) => !NODE_TYPES.has(nodeType))) {
+      throw new Error(`${toolId} 的节点集包含不支持的节点类型`);
+    }
+    const maxNodes = output.maxNodes === undefined ? undefined : Number(output.maxNodes);
+    if (mode === 'create-node-set') {
+      if (outputNodeType) throw new Error(`${toolId} 的 create-node-set 不能声明 nodeType`);
+      if (!outputNodeTypes?.length) throw new Error(`${toolId} 的 create-node-set 必须声明 nodeTypes`);
+      if (!Number.isSafeInteger(maxNodes) || maxNodes! < 1 || maxNodes! > MAX_NODE_SET_NODES) {
+        throw new Error(`${toolId} 的 create-node-set maxNodes 必须在 1-${MAX_NODE_SET_NODES} 之间`);
+      }
+    } else if (outputNodeTypes !== undefined || maxNodes !== undefined) {
+      throw new Error(`${toolId} 只有 create-node-set 可以声明 nodeTypes 和 maxNodes`);
+    }
 
     return {
       id: toolId,
@@ -603,7 +620,13 @@ function parseManifest(value: unknown): PluginManifest {
       nodeTypes: nodeTypes as NodeType[],
       inputFields,
       resourceAccess,
-      output: { mode, nodeType: outputNodeType, fields },
+      output: {
+        mode,
+        nodeType: outputNodeType,
+        nodeTypes: outputNodeTypes,
+        maxNodes,
+        fields,
+      },
     };
   });
 

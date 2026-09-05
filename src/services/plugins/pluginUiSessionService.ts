@@ -76,6 +76,7 @@ interface PluginUiSession {
   effectBudget: number;
   requestCount: number;
   requestInFlight: boolean;
+  effectAbortController?: AbortController;
   trustedMediaReferences: Set<string>;
   onClose: () => void;
 }
@@ -212,6 +213,7 @@ function closeSession(sessionId: string, notify: boolean): void {
   const session = sessions.get(sessionId);
   if (!session) return;
   sessions.delete(sessionId);
+  session.effectAbortController?.abort();
   clearPluginInvocationResources(session.sessionId);
   completeCanvasDerivation(session.guard);
   if (notify) queueMicrotask(session.onClose);
@@ -269,6 +271,8 @@ async function handleRequest(event: MessageEvent): Promise<void> {
       case 'effect': {
         if (session.effectBudget >= MAX_UI_EFFECTS) throw new Error(`宿主操作不能超过 ${MAX_UI_EFFECTS} 次`);
         session.effectBudget += 1;
+        const controller = new AbortController();
+        session.effectAbortController = controller;
         const result = await executePluginUiHostEffect({
           pluginId: plugin.id,
           projectId: session.projectId,
@@ -280,6 +284,9 @@ async function handleRequest(event: MessageEvent): Promise<void> {
           trustedMediaReferences: session.trustedMediaReferences,
           resources: session.resources,
           resourceReadContext: resourceReadContext(session, plugin),
+          signal: controller.signal,
+        }).finally(() => {
+          if (session.effectAbortController === controller) session.effectAbortController = undefined;
         });
         resolveLivePlugin(session);
         postResponse(session, request.requestId, { ok: true, value: result });

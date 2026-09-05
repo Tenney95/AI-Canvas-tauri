@@ -174,6 +174,16 @@ function permissionSummary(manifest: PluginManifest): string {
     .join('；');
 }
 
+function pluginOperationErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
+  }
+  return fallback;
+}
+
 async function computeSourceDigest(source: string): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -411,7 +421,7 @@ export default function PluginSettings() {
       setRepositoryInput('');
       await refreshMarketplace(true);
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'GitHub 插件安装失败', 'error');
+      showToast(pluginOperationErrorMessage(error, 'GitHub 插件安装失败'), 'error');
     } finally {
       setInstallingRepository('');
     }
@@ -468,7 +478,7 @@ export default function PluginSettings() {
         resourcePayloads,
       });
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
+      showToast(pluginOperationErrorMessage(error, '插件安装失败'), 'error');
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = '';
@@ -521,7 +531,7 @@ export default function PluginSettings() {
         resourcePayloads,
       });
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
+      showToast(pluginOperationErrorMessage(error, '插件安装失败'), 'error');
     } finally {
       setBusy(false);
     }
@@ -695,7 +705,7 @@ export default function PluginSettings() {
               type="button"
               className="rounded-md px-2.5 py-1.5 text-xs text-indigo-400 hover:bg-indigo-500/10"
               onClick={() => void installPluginBundle(EXAMPLE_MANIFEST, EXAMPLE_SOURCE).catch((error) => {
-                showToast(error instanceof Error ? error.message : '示例插件安装失败', 'error');
+                showToast(pluginOperationErrorMessage(error, '示例插件安装失败'), 'error');
               })}
             >
               JavaScript
@@ -717,7 +727,7 @@ export default function PluginSettings() {
                   expectedSourceDigest: sourceDigest,
                 });
               })().catch((error) => {
-                showToast(error instanceof Error ? error.message : 'Python 示例安装失败', 'error');
+                showToast(pluginOperationErrorMessage(error, 'Python 示例安装失败'), 'error');
               })}
             >
               Python

@@ -63,6 +63,61 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
     });
   });
 
+  it('accepts a bounded v1 node-set output and preserves its whitelist', () => {
+    const parsed = parsePluginBundle(manifest({
+      permissions: ['node.read', 'node.write', 'files.connected.read', 'files.output.create'],
+      contributes: {
+        nodeTools: [{
+          id: 'frame-review',
+          title: '逐帧拉片',
+          placements: ['node-context-menu'],
+          nodeTypes: ['ai-video', 'source-video'],
+          inputFields: ['label'],
+          resourceAccess: { self: true },
+          output: {
+            mode: 'create-node-set',
+            nodeTypes: ['ai-image', 'ai-shotlist'],
+            maxNodes: 25,
+            fields: ['label', 'imageWidth', 'imageHeight', 'frameAnalysis', 'shotlistRows'],
+          },
+        }],
+      },
+    }), 'definePlugin({ tools: {} });');
+
+    expect(parsed.contributes.nodeTools[0].output).toEqual({
+      mode: 'create-node-set',
+      nodeType: undefined,
+      nodeTypes: ['ai-image', 'ai-shotlist'],
+      maxNodes: 25,
+      fields: ['label', 'imageWidth', 'imageHeight', 'frameAnalysis', 'shotlistRows'],
+    });
+  });
+
+  it('rejects unbounded or malformed v1 node-set output contracts', () => {
+    const baseTool = {
+      id: 'frame-review',
+      title: '逐帧拉片',
+      placements: ['node-context-menu'],
+      nodeTypes: ['ai-video'],
+      inputFields: ['label'],
+      output: {
+        mode: 'create-node-set',
+        nodeTypes: ['ai-image'],
+        maxNodes: 25,
+        fields: ['label'],
+      },
+    };
+    const parseTool = (output: Record<string, unknown>) => parsePluginBundle(manifest({
+      contributes: { nodeTools: [{ ...baseTool, output }] },
+    }), 'definePlugin({ tools: {} });');
+
+    expect(() => parseTool({ ...baseTool.output, nodeTypes: undefined })).toThrow('必须声明 nodeTypes');
+    expect(() => parseTool({ ...baseTool.output, maxNodes: 26 })).toThrow('1-25');
+    expect(() => parseTool({ ...baseTool.output, nodeType: 'ai-image' })).toThrow('不能声明 nodeType');
+    expect(() => parseTool({ mode: 'create-node', nodeTypes: ['ai-image'], fields: ['label'] }))
+      .toThrow('只有 create-node-set');
+  });
+
   it('limits custom UI to a node-tool modal in Plugin API v1', () => {
     const toolUiManifest = JSON.parse(manifest()) as {
       permissions: string[];

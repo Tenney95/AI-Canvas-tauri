@@ -6,8 +6,14 @@ const mocks = vi.hoisted(() => ({
   revision: 3,
   updateNodeData: vi.fn(),
   addNode: vi.fn(),
+  addNodesWithEdges: vi.fn(),
   showToast: vi.fn(),
   saveBinaryToProjectData: vi.fn(),
+  moveToTrash: vi.fn(),
+  readDerivedResource: vi.fn(),
+  registerDerivedResource: vi.fn(),
+  resolveResourceHostUrl: vi.fn(),
+  extractVideoFrames: vi.fn(),
   generateText: vi.fn(),
   generateImage: vi.fn(),
   buildModelCatalog: vi.fn(() => [] as Array<Record<string, unknown>>),
@@ -28,6 +34,19 @@ vi.mock('../../src/services/ai/generateVideo', () => ({ generateVideo: vi.fn() }
 vi.mock('../../src/services/ai/generateAudio', () => ({ generateAudio: vi.fn() }));
 vi.mock('../../src/services/fileService', () => ({
   saveBinaryToProjectData: mocks.saveBinaryToProjectData,
+  moveToTrash: mocks.moveToTrash,
+}));
+vi.mock('../../src/services/plugins/pluginResourceService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/plugins/pluginResourceService')>();
+  return {
+    ...actual,
+    readPluginDerivedResourceForOutput: mocks.readDerivedResource,
+    registerPluginDerivedResource: mocks.registerDerivedResource,
+    resolvePluginResourceHostUrl: mocks.resolveResourceHostUrl,
+  };
+});
+vi.mock('../../src/services/plugins/pluginVideoFrameService', () => ({
+  extractPluginVideoFrames: mocks.extractVideoFrames,
 }));
 
 import {
@@ -325,6 +344,7 @@ beforeEach(() => {
     getCurrentRevision: () => mocks.revision,
     updateNodeData: mocks.updateNodeData,
     addNode: mocks.addNode,
+    addNodesWithEdges: mocks.addNodesWithEdges,
     showToast: mocks.showToast,
   };
   mocks.invoke.mockResolvedValue({ data: { output: 'after' }, message: '完成' });
@@ -332,6 +352,31 @@ beforeEach(() => {
   mocks.saveBinaryToProjectData.mockResolvedValue({
     filePath: 'G:\\project\\plugin-output.txt',
     assetUrl: 'asset://localhost/plugin-output.txt',
+  });
+  mocks.moveToTrash.mockResolvedValue(undefined);
+  mocks.readDerivedResource.mockImplementation((_context, resourceId: string) => ({
+    resource: {
+      resourceId,
+      origin: 'derived',
+      displayName: `${resourceId}.jpg`,
+      mediaType: 'image/jpeg',
+      size: 3,
+      access: 'read',
+    },
+    bytes: new Uint8Array([1, 2, 3]),
+  }));
+  mocks.resolveResourceHostUrl.mockResolvedValue('asset://localhost/video.mp4');
+  mocks.registerDerivedResource.mockImplementation((_context, resources: PluginInvocationResources, options) => {
+    const ref = {
+      resourceId: `derived-${resources.derived.length + 1}`,
+      origin: 'derived' as const,
+      displayName: options.displayName,
+      mediaType: options.mediaType,
+      size: options.bytes.byteLength,
+      access: 'read' as const,
+    };
+    resources.derived.push(ref);
+    return ref;
   });
   mocks.buildModelCatalog.mockReturnValue(modelCatalog);
   mocks.generateImage.mockResolvedValue({ url: 'https://example.com/result.png', width: 1024, height: 1024 });
@@ -370,6 +415,7 @@ describe('node plugin runtime', () => {
       incoming: [],
       inputs: {},
       package: [],
+      derived: [],
     };
     const trustedMediaReferences = new Set<string>();
 
@@ -449,12 +495,141 @@ describe('node plugin runtime', () => {
           data: { label: '文本', output: 'before' },
         },
         models: [],
-        resources: { self: [], incoming: [], inputs: {}, package: [] },
+        resources: { self: [], incoming: [], inputs: {}, package: [], derived: [] },
         effectResult: undefined,
       },
     }));
     expect(mocks.updateNodeData).toHaveBeenCalledWith('node-1', { output: 'after' });
     expect(mocks.showToast).toHaveBeenCalledWith('完成');
+  });
+
+  it('materializes a bounded node set with real shotlist frame bindings in one Store action', async () => {
+    const nodeSetPlugin: InstalledPlugin = {
+      ...plugin,
+      id: 'com.example.frame-review',
+      manifest: {
+        ...plugin.manifest,
+        id: 'com.example.frame-review',
+        permissions: ['node.read', 'node.write', 'files.connected.read', 'files.output.create'],
+        contributes: {
+          nodeTools: [{
+            id: 'frame-review',
+            title: '逐帧拉片',
+            placements: ['node-context-menu'],
+            nodeTypes: ['ai-video'],
+            inputFields: ['label'],
+            output: {
+              mode: 'create-node-set',
+              nodeTypes: ['ai-image', 'ai-shotlist'],
+              maxNodes: 3,
+              fields: ['label', 'imageWidth', 'imageHeight', 'frameAnalysis', 'shotlistRows'],
+            },
+          }],
+        },
+      },
+    };
+    mocks.state = {
+      ...mocks.state,
+      nodes: [{
+        id: 'video-1',
+        type: 'ai-video',
+        position: { x: 10, y: 20 },
+        data: { label: '样片', type: 'ai-video', nodeWidth: 320 },
+      }],
+      installedPlugins: [nodeSetPlugin],
+    };
+    mocks.invoke.mockResolvedValueOnce({
+      data: {
+        nodes: [{
+          key: 'frame-1',
+          nodeType: 'ai-image',
+          resourceId: 'derived-1',
+          data: {
+            label: '00:00:01.000 · 全景',
+            imageWidth: 1280,
+            imageHeight: 720,
+            frameAnalysis: { requestedTime: 1, actualTime: 0.96, shotSize: '全景' },
+          },
+        }, {
+          key: 'frame-2',
+          nodeType: 'ai-image',
+          resourceId: 'derived-2',
+          data: {
+            label: '00:00:02.000 · 近景',
+            imageWidth: 1280,
+            imageHeight: 720,
+            frameAnalysis: { requestedTime: 2, actualTime: 2.04, shotSize: '近景' },
+          },
+        }, {
+          key: 'shotlist',
+          nodeType: 'ai-shotlist',
+          data: {
+            label: '样片 · 拉片分镜表',
+            shotlistRows: [{ id: 'shot-1', shotNo: '1', frameKey: 'frame-1', content: '建立环境' }],
+          },
+        }],
+        edges: [
+          { sourceKey: 'frame-1', targetKey: 'shotlist' },
+          { sourceKey: 'frame-2', targetKey: 'shotlist' },
+        ],
+      },
+      message: '已生成拉片节点',
+    });
+    mocks.saveBinaryToProjectData
+      .mockResolvedValueOnce({ filePath: 'G:\\project\\frame-1.jpg', assetUrl: 'asset://localhost/frame-1.jpg' })
+      .mockResolvedValueOnce({ filePath: 'G:\\project\\frame-2.jpg', assetUrl: 'asset://localhost/frame-2.jpg' });
+    const resources: PluginInvocationResources = {
+      self: [],
+      incoming: [],
+      inputs: {},
+      package: [],
+      derived: [{
+        resourceId: 'derived-1', origin: 'derived', displayName: 'frame-1.jpg', mediaType: 'image/jpeg', size: 3, access: 'read',
+      }, {
+        resourceId: 'derived-2', origin: 'derived', displayName: 'frame-2.jpg', mediaType: 'image/jpeg', size: 3, access: 'read',
+      }],
+    };
+    const guard = registerCanvasDerivation(mocks.state as never, 'video-1');
+    expect(guard).not.toBeNull();
+
+    await executeNodePluginTool(
+      getAvailableNodePluginTools([nodeSetPlugin], 'ai-video')[0],
+      'video-1',
+      {},
+      {
+        invocationId: 'frame-review-invocation',
+        guard: guard!,
+        resources,
+        trustedMediaReferences: new Set(),
+      },
+    );
+
+    expect(mocks.addNodesWithEdges).toHaveBeenCalledTimes(1);
+    const [createdNodes, createdEdges] = mocks.addNodesWithEdges.mock.calls[0] as [
+      Array<{ id: string; type: string; data: Record<string, unknown> }>,
+      Array<{ source: string; target: string }>,
+    ];
+    const firstFrame = createdNodes.find((node) => node.type === 'ai-image')!;
+    const shotlist = createdNodes.find((node) => node.type === 'ai-shotlist')!;
+    expect(firstFrame.data).toMatchObject({
+      imageUrl: 'asset://localhost/frame-1.jpg',
+      frameAnalysis: { sourceVideoNodeId: 'video-1', actualTime: 0.96 },
+    });
+    expect(shotlist.data).toMatchObject({
+      shotlistRows: [{
+        id: 'shot-1',
+        shotNo: '1',
+        content: '建立环境',
+        frame: {
+          nodeId: firstFrame.id,
+          kind: 'image',
+          url: 'asset://localhost/frame-1.jpg',
+          filePath: 'G:\\project\\frame-1.jpg',
+        },
+      }],
+    });
+    expect(createdEdges).toHaveLength(2);
+    expect(mocks.showToast).toHaveBeenCalledWith('已生成拉片节点');
   });
 
   it('redacts protected fields and nested local references even from a forged descriptor', async () => {
@@ -1290,6 +1465,88 @@ describe('node plugin runtime', () => {
 });
 
 describe('node plugin tool model effects', () => {
+  it('extracts video frames only from the current self resource and registers analysis bytes opaquely', async () => {
+    const resources: PluginInvocationResources = {
+      self: [{
+        resourceId: 'video-self',
+        origin: 'node-self',
+        displayName: 'video.mp4',
+        mediaType: 'video/mp4',
+        size: 1024,
+        access: 'read',
+        source: { nodeId: 'node-1' },
+      }],
+      incoming: [],
+      inputs: {},
+      package: [],
+      derived: [],
+    };
+    mocks.extractVideoFrames.mockResolvedValueOnce({
+      video: { duration: 5, width: 1920, height: 1080, videoCodec: 'avc1' },
+      frames: [{
+        key: 'frame-1',
+        requestedTime: 1,
+        actualTime: 0.96,
+        frameDuration: 0.04,
+        width: 1280,
+        height: 720,
+        mediaType: 'image/jpeg',
+        previewDataUrl: 'data:image/jpeg;base64,AQ==',
+        bytes: new Uint8Array([1, 2, 3]),
+      }],
+      contactSheet: {
+        mediaType: 'image/jpeg',
+        width: 360,
+        height: 233,
+        bytes: new Uint8Array([4, 5, 6]),
+      },
+    });
+
+    const result = await executePluginUiHostEffect({
+      pluginId: plugin.id,
+      projectId: 'project-1',
+      title: '逐帧拉片',
+      permissions: ['files.connected.read', 'files.output.create'],
+      nodeId: 'node-1',
+      effect: {
+        type: 'video.extractFrames',
+        resourceId: 'video-self',
+        mode: 'analysis',
+        samples: [{ key: 'frame-1', time: 1 }],
+      },
+      models: [],
+      trustedMediaReferences: new Set(),
+      resources,
+      resourceReadContext: {
+        pluginId: plugin.id,
+        sourceDigest: plugin.sourceDigest!,
+        revisionDigest: plugin.revisionDigest!,
+        invocationId: 'invoke-frames',
+        projectId: 'project-1',
+        nodeId: 'node-1',
+        baseRevision: 3,
+        permissions: ['files.connected.read', 'files.output.create'],
+        state: mocks.state as never,
+      },
+    });
+
+    expect(mocks.extractVideoFrames).toHaveBeenCalledWith(expect.objectContaining({
+      url: 'asset://localhost/video.mp4',
+      mode: 'analysis',
+      samples: [{ key: 'frame-1', time: 1 }],
+    }));
+    expect(result).toMatchObject({
+      type: 'video.extractFrames',
+      ok: true,
+      value: {
+        frames: [{ key: 'frame-1', resourceId: 'derived-1' }],
+        contactSheetResourceId: 'derived-2',
+      },
+    });
+    expect(resources.derived).toHaveLength(2);
+    expect(JSON.stringify(result)).not.toContain('1,2,3');
+  });
+
   it('applies JavaScript media-source restrictions to every custom UI effect', async () => {
     await expect(executePluginUiHostEffect({
       pluginId: plugin.id,

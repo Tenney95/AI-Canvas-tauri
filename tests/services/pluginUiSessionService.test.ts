@@ -61,6 +61,7 @@ const resources: PluginInvocationResources = {
   }],
   inputs: {},
   package: [],
+  derived: [],
 };
 
 const tool: PluginNodeToolManifest = {
@@ -208,7 +209,14 @@ describe('pluginUiSessionService', () => {
       source: frame,
     } as MessageEvent);
     await vi.waitFor(() => expect(mocks.executeEffect).toHaveBeenCalledTimes(1));
-    expect(mocks.executeEffect).toHaveBeenCalledWith(expect.objectContaining({ resources }));
+    expect(mocks.executeEffect).toHaveBeenCalledWith(expect.objectContaining({
+      resources,
+      signal: expect.any(AbortSignal),
+    }));
+    await vi.waitFor(() => expect(frame.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'effect', ok: true }),
+      '*',
+    ));
 
     mocks.messageHandler?.({
       data: request(session.sessionId, 'submit', 'submit', { data: { prompt: 'final' } }),

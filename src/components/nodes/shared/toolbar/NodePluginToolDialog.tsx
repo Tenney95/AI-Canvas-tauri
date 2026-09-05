@@ -1,5 +1,6 @@
 import { Icon } from '@iconify/react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import pluginUiHostDocument from '../../../../../plugin-ui-host.html?raw';
 import type {
   AvailableNodePluginTool,
   PluginJsonValue,
@@ -25,6 +26,46 @@ interface NodePluginToolDialogProps {
 }
 
 type FormValue = string | boolean;
+
+interface PluginUiFrameDocument {
+  objectUrl: string;
+  src: string;
+}
+
+const PLUGIN_UI_BOOTSTRAP_MARKUP = 'src="/plugin-ui-bootstrap.js"';
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+function createPluginUiFrameDocument(sessionSrc: string): PluginUiFrameDocument {
+  const sessionUrl = new URL(sessionSrc, window.location.href);
+  const sessionParameters = sessionUrl.searchParams.toString();
+  if (!sessionParameters) throw new Error('插件界面会话参数缺失');
+
+  const bootstrapUrl = escapeHtmlAttribute(
+    new URL('/plugin-ui-bootstrap.js', window.location.href).href,
+  );
+  const documentHtml = pluginUiHostDocument.replace(
+    PLUGIN_UI_BOOTSTRAP_MARKUP,
+    `src="${bootstrapUrl}"`,
+  );
+  if (documentHtml === pluginUiHostDocument) {
+    throw new Error('插件界面宿主页无效');
+  }
+
+  const objectUrl = URL.createObjectURL(new Blob([documentHtml], {
+    type: 'text/html;charset=utf-8',
+  }));
+  return {
+    objectUrl,
+    src: `${objectUrl}#${sessionParameters}`,
+  };
+}
 
 function initialFormValues(pluginTool: AvailableNodePluginTool): Record<string, FormValue> {
   const values: Record<string, FormValue> = {};
@@ -65,8 +106,10 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [frameSession, setFrameSession] = useState<PluginUiFrameSession | null>(null);
+  const [frameDocument, setFrameDocument] = useState<PluginUiFrameDocument | null>(null);
   const [uiLoading, setUiLoading] = useState(Boolean(dialog?.ui));
   const frameSessionRef = useRef<PluginUiFrameSession | null>(null);
+  const frameDocumentRef = useRef<PluginUiFrameDocument | null>(null);
   const onCloseRef = useRef(onClose);
 
   useEffect(() => {
@@ -107,8 +150,17 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
         session.dispose();
         return;
       }
+      let nextFrameDocument: PluginUiFrameDocument;
+      try {
+        nextFrameDocument = createPluginUiFrameDocument(session.src);
+      } catch (cause) {
+        session.dispose();
+        throw cause;
+      }
       frameSessionRef.current = session;
+      frameDocumentRef.current = nextFrameDocument;
       setFrameSession(session);
+      setFrameDocument(nextFrameDocument);
       setError(null);
       setUiLoading(false);
     }).catch((cause) => {
@@ -123,6 +175,10 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
       cancelled = true;
       frameSessionRef.current?.dispose();
       frameSessionRef.current = null;
+      if (frameDocumentRef.current) {
+        URL.revokeObjectURL(frameDocumentRef.current.objectUrl);
+        frameDocumentRef.current = null;
+      }
     };
   }, [dialog?.ui, nodeId, pluginTool, showToast]);
 
@@ -224,10 +280,10 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
               {error}
             </div>
           )}
-          {frameSession && !error && (
+          {frameSession && frameDocument && !error && (
             <iframe
               ref={(element) => frameSession.attach(element?.contentWindow ?? null)}
-              src={frameSession.src}
+              src={frameDocument.src}
               title={`${pluginTool.pluginName} · ${dialog.title || pluginTool.tool.title}`}
               sandbox="allow-scripts"
               referrerPolicy="no-referrer"

@@ -2675,7 +2675,7 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - [x] Rust 新增独立 QuickJS 沙箱，每次调用创建新 Runtime，不安装模块加载器、文件、网络、Shell、Tauri 或凭据宿主函数；设置 64 MiB 内存、512 KiB 栈、2 秒执行上限，以及 512 KiB 源码和 1 MiB 输入/输出上限。
 - [x] 节点输入只投影 manifest 声明字段并做 JSON 深度/数量/长度裁剪；插件输出再次校验声明字段和受保护字段。
 - [x] 异步结果写回前复核插件仍启用、项目 ID、源节点和 canvas revision；更新当前节点走 `updateNodeData()`，创建结果节点走 `addNode()`，均只提交一次历史快照。
-- [x] 初始 v1 支持 `update-current`、`create-node` 与声明式宿主弹窗；后续资源句柄、主窗口隔离 UI、可信 Python 与市场能力仍直接收敛进同一 v1，见 12.2.1 与 12.2.2。
+- [x] 初始 v1 支持 `update-current`、`create-node` 与声明式宿主弹窗；后续资源句柄、主窗口隔离 UI、可信 Python、节点集输出与视频抽帧仍直接收敛进同一 v1，见 12.2.1、12.2.2 与 12.2.3。
 
 实际检查：
 
@@ -2724,6 +2724,23 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 - [-] 真实 Tauri 主窗口插件 UI 手测按用户要求不执行；因此代码与静态验证已完成，但真实窗口加载、交互和故障注入没有本轮验收证据。
 
 本阶段未新增 npm/Cargo 依赖、IndexedDB schema 或 Agent/MCP 权限矩阵；`tauri.conf.json` 只在 `script-src` 增加应用自有 `plugin-ui:` 协议，不修改网络、文件、Shell 或 IPC capability。全量 `npm run check` 的 lint、应用类型和测试类型阶段通过；全量 Vitest 有 239 个文件、2033 项通过，剩余 2 个未改动 MCP suite 在收集阶段报既有 `SyntaxError: Invalid or unexpected token`。回滚以本阶段文件清单为边界；资源句柄与 revision 身份不可拆开回退，已删除文件可从 Git 基线恢复；CSP 回滚只需移除 `plugin-ui:`。
+
+### 12.2.3 平台补充：视频节点逐帧拉片插件宿主能力
+
+**状态：** `[implemented]`
+
+目标：在 Plugin API v1 中为视频节点工具提供受控批量抽帧和原子节点集输出，使独立插件可以在主窗口弹窗内选择时间点、调用视觉模型完成逐帧拉片，并一次生成图片节点及可选分镜表节点。
+
+- [x] `video.extractFrames` 只读取当前视频节点的 `self` 资源，要求同时声明 `files.connected.read` 与 `files.output.create`；预览最多 48 帧，分析最多 24 帧。
+- [x] 抽帧复用内部视频编辑器的 mediabunny 有序批量解码路径，保存请求时间、实际帧时间和帧时长；v1 不承诺可变帧率或长 GOP 视频的绝对第 N 帧精度。
+- [x] 抽取的 JPEG 帧和联系表登记为 invocation 内存派生资源，不向插件暴露路径；单项、总量和数量均有上限，并继续绑定插件双摘要、项目、节点和 canvas revision。
+- [x] `create-node-set` 由 Manifest 声明允许的节点类型、字段和最大节点数；本阶段上限为 25 个节点和 64 条内部连线。
+- [x] 最终提交由宿主落盘派生图片、生成真实 nodeId、把分镜行 `frameKey` 解析为图片节点绑定，再通过 `addNodesWithEdges()` 一次写入和一次历史提交；准备或写回失败时回收本次新建文件。
+- [x] UI effect 和最终提交使用 180 秒有界等待；关闭弹窗时会中止可取消的批量抽帧并撤销派生资源租约，换项目、节点消失、插件停用或 revision 变化会拒绝晚到结果。现有文本模型入口尚未统一接收 AbortSignal，已发出的厂商请求可能继续到网络层结束，但不会再写回插件会话或画布。
+- [x] 独立插件仓 `ai-canvas-video-frame-review-plugin` 已完成均匀/区间/手动时间码/胶片点击选帧、视觉模型筛选、联系表结构化分析、结果编辑和“生成分镜表 / 仅生成图片”两种输出；本地 `master` 首次提交为 `b36185e`，未配置远程、未推送或发布。
+- [x] 修复 JavaScript 自定义 UI 插件安装授权状态未落账的问题：原生确认通过后按 `ui.custom`/Python 的统一高风险规则记录 `native_approved`，注册表持久化校验接受已授权的自定义 UI revision；插件设置页同时保留 Tauri 返回的字符串错误，不再退化为笼统的“插件安装失败”。
+
+本阶段不新增 npm/Cargo 依赖，不提升 IndexedDB schema，不修改 Tauri CSP、文件 scope、Shell 或 IPC capability，也不把抽帧开放成 Agent/MCP 工具。实际检查：应用 `npm run typecheck` 通过；目标 ESLint 通过；8 个宿主定向 Vitest 文件 91 项通过；AI-Canvas 自身解析器与 UI bundle 协议临时集成检查 2 项通过；独立仓 `npm test` 5 项及 `npm run build` 的入口语法、权限、体积、路径、网络和 SHA-256 integrity 检查通过；37 个本阶段文本文件严格 UTF-8 解码及乱码扫描通过。安装故障修复另通过 `cargo check --lib`、`cargo check --tests`、两条 `--no-default-features` 原生回归测试、Rust 格式检查、前端类型检查和插件设置页定向 ESLint。`npm run test:typecheck` 被另一并行任务的 `projectTransferService.test.ts` mock 缺少 `saveProjectToDb` 六处错误阻断，本阶段未越界修复；真实 Tauri 主窗口的视频解码、模型付费调用和暗/浅主题视觉手测未启动，因此仍缺运行态 UI 验收证据。回滚以新增的 effect、派生资源来源和节点集输出分支为边界；现有视频编辑器缩略图调用继续复用同一批量采样函数，已有单节点插件输出不迁移。
 
 ### 12.3 平台补充：Sora2U 内置图片与视频厂商
 
