@@ -4,6 +4,7 @@
  */
 import type {
   ApiProviderConfig,
+  ChatApiProtocol,
   GeneralModelCategory,
   ImageReferenceRequestMode,
   ProviderModelSelection,
@@ -35,6 +36,10 @@ import {
 } from '../ai/modelProtocolVariables';
 import { findModelProtocolForEachCapabilityConflicts } from '../ai/modelProtocolRuntime';
 import { normalizeBaseUrl as normalizeUrlInput } from '../ai/providerBaseUrl';
+import {
+  CHAT_API_PROTOCOL_LABELS,
+  resolveChatApiProtocol,
+} from '../ai/chatApiProtocol';
 import { assertVideoModelCapability } from '../ai/videoRequestResolver';
 
 const PROVIDER_CONFIG_DRAFT_TTL_MS = 30 * 60 * 1_000;
@@ -109,6 +114,8 @@ export interface ProviderConfigDraftInput {
   connectionId?: string;
   connectionName: string;
   baseUrl?: string;
+  /** 文本/对话请求协议；旧调用缺省为 OpenAI 兼容。 */
+  chatApiProtocol?: ChatApiProtocol;
   models: ProviderConfigModelExamples[];
 }
 
@@ -691,8 +698,8 @@ function normalizeConnectionId(value?: string): string {
  * 安全校验——助手的输入来自它读到的网页，比用户手输的更不可信，
  * 所以 HTTPS、默认端口、非文档站这几条限制一条都不放宽。
  */
-function normalizeBaseUrl(value: string): string {
-  const url = new URL(normalizeUrlInput(value) || value);
+function normalizeBaseUrl(value: string, chatApiProtocol: ChatApiProtocol): string {
+  const url = new URL(normalizeUrlInput(value, chatApiProtocol) || value);
   if (url.protocol !== 'https:' || url.username || url.password) {
     throw new Error('厂商 Base URL 必须是无凭据的 HTTPS 地址');
   }
@@ -721,14 +728,19 @@ function createModelSelection(
   connectionId: string,
   examples: ProviderConfigModelExamples,
   declaredBaseUrl?: string,
+  chatApiProtocol: ChatApiProtocol = 'openai-compatible',
 ): { selection: ProviderModelSelection; baseUrl: string; updateFields: Array<keyof ProviderModelSelection> } {
   const result = resolveDraftModelProtocol(examples, declaredBaseUrl);
   const displayName = examples.name?.trim() || result.modelId;
-  const executionProfile: ModelExecutionProfile = {
-    preset: 'custom',
-    protocol: result.protocol,
-  };
   const category = result.category;
+  // 文本模型由连接级标准聊天协议统一处理。仍先解析文档示例以验证模型 ID、
+  // Base URL 和文档证据，但不把一次性 OpenAI 风格模板写进模型配置。
+  const executionProfile: ModelExecutionProfile | undefined = category === 'text'
+    ? undefined
+    : {
+        preset: 'custom',
+        protocol: result.protocol,
+      };
   const imageReferenceRequestMode = examples.imageReferenceRequestMode
     ?? result.imageReferenceRequestMode;
   if (imageReferenceRequestMode && category !== 'image') {
@@ -789,7 +801,7 @@ function createModelSelection(
   if (examples.imageReferenceRequestMode) updateFields.push('imageReferenceRequestMode');
   if (examples.videoCapability) updateFields.push('videoCapability');
   return {
-    baseUrl: normalizeBaseUrl(result.baseUrl),
+    baseUrl: normalizeBaseUrl(result.baseUrl, chatApiProtocol),
     updateFields,
     selection: {
       id: result.modelId,
@@ -841,6 +853,7 @@ function targetSnapshot(provider: ApiProviderConfig | undefined): string {
   return stableStringify(provider ? {
     name: provider.name,
     baseUrl: provider.baseUrl,
+    chatApiProtocol: resolveChatApiProtocol(provider.chatApiProtocol),
     catalogId: provider.catalogId,
     selectedModels: provider.selectedModels,
     catalogModels: provider.catalogModels,
@@ -894,9 +907,12 @@ export function mergeProviderModels(
     if (fields && !fields.includes('category') && draft.category !== model.category) {
       throw new Error(`模型“${model.id}”的推断分类与现有分类不同，请明确 category 后重新预览`);
     }
-    const entries = Object.entries(draft).filter(([key, value]) => (
-      key !== 'id' && value !== undefined && (!fields || fields.includes(key as keyof ProviderModelSelection))
-    ));
+    const entries = Object.entries(draft).filter(([key, value]) => {
+      const field = key as keyof ProviderModelSelection;
+      return key !== 'id'
+        && (!fields || fields.includes(field))
+        && (value !== undefined || Boolean(fields?.includes(field)));
+    });
     const patch = Object.fromEntries(entries) as Partial<ProviderModelSelection>;
     const updated = entries
       .filter(([key, value]) => stableStringify(model[key as keyof ProviderModelSelection]) !== stableStringify(value))
@@ -978,6 +994,7 @@ export function summarizeProviderConfigDraft(draft: ProviderConfigDraft): string
   return [
     `连接：${draft.connectionName}`,
     `地址：${draft.baseUrl}`,
+    `聊天协议：${CHAT_API_PROTOCOL_LABELS[resolveChatApiProtocol(draft.config.chatApiProtocol)]}`,
     `模型：${models.map((model) => (
       `${model.name}（${GENERAL_MODEL_CATEGORY_LABELS[model.category]}${model.inputModalities?.includes('image')
         ? '，可读图'
@@ -1007,9 +1024,12 @@ export function createProviderConfigDraft(
   }
 
   const connectionId = normalizeConnectionId(input.connectionId);
-  const declaredBaseUrl = input.baseUrl?.trim() ? normalizeBaseUrl(input.baseUrl) : undefined;
+  const chatApiProtocol = resolveChatApiProtocol(input.chatApiProtocol);
+  const declaredBaseUrl = input.baseUrl?.trim()
+    ? normalizeBaseUrl(input.baseUrl, chatApiProtocol)
+    : undefined;
   const analyzed = input.models.map((examples) => (
-    createModelSelection(connectionId, examples, declaredBaseUrl)
+    createModelSelection(connectionId, examples, declaredBaseUrl, chatApiProtocol)
   ));
   const baseUrl = analyzed[0].baseUrl;
   if (analyzed.some((item) => item.baseUrl !== baseUrl)) {
@@ -1037,6 +1057,7 @@ export function createProviderConfigDraft(
     config: {
       name: connectionName,
       baseUrl,
+      chatApiProtocol,
       catalogId: 'custom-openai',
       selectedModels,
       catalogModels: selectedModels.map((model) => ({ ...model })),

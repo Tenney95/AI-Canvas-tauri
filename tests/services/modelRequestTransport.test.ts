@@ -11,6 +11,7 @@ import { generateImagesBatch } from '../../src/services/ai/generateImage';
 import { generateText } from '../../src/services/ai/generateText';
 import { parseResponseError } from '../../src/services/ai/httpUtils';
 import { resolveImageDataUrlArray } from '../../src/services/ai/imageUtils';
+import { getProviderDefinition } from '../../src/services/ai/providerCatalogService';
 import { generateImageStandard } from '../../src/services/ai/providers/standardImage';
 import { useAppStore } from '../../src/store/useAppStore';
 
@@ -308,6 +309,73 @@ describe('model request transport boundary', () => {
     expect(transportMocks.corsSafeFetch).not.toHaveBeenCalledWith(
       'https://realmrouter.cn/v1/images/generations',
       expect.anything(),
+    );
+  });
+
+  it('routes CCC API GPT Image 2 references through image edits while keeping text-only generations', async () => {
+    const cccModel = (getProviderDefinition('cccapi')?.models ?? [])
+      .find((item) => item.id === 'gpt-image-2');
+    expect(cccModel?.imageReferenceRequestMode).toBe('edits-multipart');
+    useAppStore.setState((state) => ({
+      config: {
+        ...state.config,
+        providers: {
+          ...state.config.providers,
+          'cccapi-image': {
+            name: 'CCC API 图片',
+            apiKey: 'secret',
+            baseUrl: 'https://cccapi.cn/v1',
+            catalogId: 'cccapi',
+          },
+        },
+        generalModels: [{
+          id: 'cccapi-gpt-image-2',
+          name: cccModel?.name ?? 'GPT Image 2',
+          modelId: cccModel?.id ?? 'gpt-image-2',
+          category: 'image',
+          providerConfigId: 'cccapi-image',
+          imageReferenceRequestMode: cccModel?.imageReferenceRequestMode,
+        }],
+      },
+    }));
+    transportMocks.corsSafeFetch.mockImplementation(async (url: string) => {
+      if (url === 'https://cdn.example/reference.png') {
+        return new Response(Uint8Array.from([137, 80, 78, 71]), {
+          status: 200,
+          headers: { 'Content-Type': 'image/png' },
+        });
+      }
+      if (url === 'https://cccapi.cn/v1/images/edits') {
+        return jsonResponse({ data: [{ url: 'https://cdn.example/edited.png' }] });
+      }
+      return jsonResponse({ data: [{ url: 'https://cdn.example/generated.png' }] });
+    });
+
+    await expect(generateImagesBatch({
+      provider: 'general',
+      model: 'general/cccapi-gpt-image-2',
+      prompt: '保持人物设定生成新场景',
+      imageSize: '1K',
+      aspectRatio: '1:1',
+      image_urls: ['https://cdn.example/reference.png'],
+    }, 1)).resolves.toMatchObject({ results: [{ url: 'https://cdn.example/edited.png' }] });
+
+    const editsCall = transportMocks.corsSafeFetch.mock.calls.find(
+      ([url]) => url === 'https://cccapi.cn/v1/images/edits',
+    ) as [string, RequestInit] | undefined;
+    expect(editsCall?.[1].body).toBeInstanceOf(FormData);
+    expect((editsCall?.[1].body as FormData).getAll('image[]')).toHaveLength(1);
+
+    await expect(generateImagesBatch({
+      provider: 'general',
+      model: 'general/cccapi-gpt-image-2',
+      prompt: '纯文本生成一张图',
+      imageSize: '1K',
+      aspectRatio: '1:1',
+    }, 1)).resolves.toMatchObject({ results: [{ url: 'https://cdn.example/generated.png' }] });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith(
+      'https://cccapi.cn/v1/images/generations',
+      expect.objectContaining({ method: 'POST' }),
     );
   });
 

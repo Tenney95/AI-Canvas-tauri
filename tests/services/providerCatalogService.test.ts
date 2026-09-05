@@ -137,6 +137,7 @@ describe('CCC API 内置厂商目录', () => {
 
     expect(findModel('gpt-image-1')?.category).toBe('image');
     expect(findModel('gpt-image-2')?.category).toBe('image');
+    expect(findModel('gpt-image-2')?.imageReferenceRequestMode).toBe('edits-multipart');
     expect(findModel('gpt-5.6')?.category).toBe('text');
     // 纯文本模型要显式声明，不能落进按 ID 猜模态的兜底分支
     expect(findModel('gpt-4')?.inputModalities).toEqual(['text']);
@@ -161,6 +162,7 @@ describe('CCC API 内置厂商目录', () => {
         apiKey: 'sk-ccc-test',
         catalogId: 'cccapi',
       },
+      fallbackModels: [...(getProviderDefinition('cccapi')?.models ?? [])],
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -176,8 +178,71 @@ describe('CCC API 内置厂商目录', () => {
     });
     expect(result.models).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'gpt-4o-mini', category: 'text', provider: 'cccapi' }),
-      expect.objectContaining({ id: 'gpt-image-2', category: 'image', provider: 'cccapi' }),
+      expect.objectContaining({
+        id: 'gpt-image-2',
+        category: 'image',
+        provider: 'cccapi',
+        imageReferenceRequestMode: 'edits-multipart',
+      }),
     ]));
+  });
+});
+
+describe('自定义连接原生模型目录', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('uses Anthropic headers for an Anthropic-compatible catalog', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      data: [{ id: 'claude-sonnet', display_name: 'Claude Sonnet' }],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchProviderModelCatalog({
+      providerId: 'custom-openai',
+      config: {
+        name: 'Anthropic 中转',
+        apiKey: 'secret',
+        baseUrl: 'https://relay.example/v1',
+        catalogId: 'custom-openai',
+        chatApiProtocol: 'anthropic-compatible',
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://relay.example/v1/models',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'x-api-key': 'secret', 'anthropic-version': '2023-06-01' },
+      }),
+    );
+    expect(result.models[0]).toMatchObject({ id: 'claude-sonnet', name: 'Claude Sonnet' });
+  });
+
+  it('parses Gemini models[].name and strips the models/ prefix', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      models: [{ name: 'models/gemini-2.5-pro', displayName: 'Gemini 2.5 Pro' }],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchProviderModelCatalog({
+      providerId: 'custom-openai',
+      config: {
+        name: 'Gemini 中转',
+        apiKey: 'secret',
+        baseUrl: 'https://relay.example/v1beta',
+        catalogId: 'custom-openai',
+        chatApiProtocol: 'gemini-native',
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://relay.example/v1beta/models',
+      expect.objectContaining({ headers: { 'x-goog-api-key': 'secret' } }),
+    );
+    expect(result.models[0]).toMatchObject({ id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' });
   });
 });
 

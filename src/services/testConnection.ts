@@ -2,10 +2,11 @@
  * testConnection 连接测试服务 — 只调用无生成副作用的目录、鉴权或账户端点。
  */
 import { APIMART_BASE_URL, VOLCENGINE_BASE_URL } from '../constants/api';
-import type { WebSearchProviderId } from '../types';
+import type { ChatApiProtocol, WebSearchProviderId } from '../types';
 import { corsSafeFetch } from './ai/httpTransport';
 import { getProviderDefinition } from './ai/providerCatalogService';
 import { baseUrlCandidates } from './ai/providerBaseUrl';
+import { getChatApiHeaders, resolveChatApiProtocol } from './ai/chatApiProtocol';
 import { invoke } from '@tauri-apps/api/core';
 
 export interface TestResult {
@@ -40,15 +41,17 @@ function readErrorMessage(payload: unknown): string | undefined {
 async function testModelCatalog(
   apiKey: string,
   baseUrl: string,
+  protocolValue?: ChatApiProtocol,
 ): Promise<TestResult> {
-  const candidates = baseUrlCandidates(baseUrl);
+  const protocol = resolveChatApiProtocol(protocolValue);
+  const candidates = baseUrlCandidates(baseUrl, protocol);
   if (candidates.length === 0) return { success: false, error: '请先填写接口地址' };
 
   let failure: TestResult = { success: false, error: '接口地址不可达' };
   for (const candidate of candidates) {
     const response = await corsSafeFetch(`${candidate}/models`, {
       method: 'GET',
-      headers: { Authorization: `Bearer ${apiKey}` },
+      headers: getChatApiHeaders(protocol, apiKey, false),
     });
     if (response.ok) return { success: true, baseUrl: candidate };
 
@@ -173,6 +176,7 @@ export async function testProviderConnection(
   provider: ProviderTestKey | string,
   apiKey: string,
   baseUrl?: string,
+  chatApiProtocol?: ChatApiProtocol,
 ): Promise<TestResult> {
   if (!apiKey) return { success: false, error: '请先填写 API 密钥' };
   const fn = testFns[provider as ProviderTestKey];
@@ -192,7 +196,7 @@ export async function testProviderConnection(
         definition.requestQuery,
       );
     }
-    return await testModelCatalog(apiKey, target);
+    return await testModelCatalog(apiKey, target, chatApiProtocol);
   } catch (e) {
     return { success: false, error: `网络错误: ${e instanceof Error ? e.message : String(e)}` };
   }

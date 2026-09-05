@@ -434,6 +434,12 @@ export interface ProjectSettings {
 // API 配置
 export type GeneralModelCategory = 'text' | 'image' | 'audio' | 'video';
 
+/** 连接级文本/对话 API 协议；缺省保持 OpenAI Chat Completions 兼容。 */
+export type ChatApiProtocol =
+  | 'openai-compatible'
+  | 'anthropic-compatible'
+  | 'gemini-native';
+
 export type ImageReferenceRequestMode =
   | 'generation-json-image-urls'
   | 'generation-json-image-data-urls'
@@ -481,6 +487,8 @@ export interface ApiProviderConfig {
   /** 凭据在凭据存储中的条目名；由持久化层维护，业务代码不要直接读写。 */
   apiKeyRef?: string;
   baseUrl?: string;
+  /** 文本/对话请求协议；旧配置缺失时按 openai-compatible 处理。 */
+  chatApiProtocol?: ChatApiProtocol;
   /** 内置目录定义 ID；自定义连接的配置 key 与目录定义 ID 不同。 */
   catalogId?: string;
   /** undefined 表示旧配置尚未选择；空数组表示用户明确未启用任何模型。 */

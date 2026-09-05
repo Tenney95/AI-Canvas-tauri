@@ -10,6 +10,7 @@
 import { useAppStore } from '../../store/useAppStore';
 import { parseStream, parseNonStream } from './streamParsers';
 import type { AssistantStreamEvent } from '../../types/chat';
+import type { ChatApiProtocol } from '../../types';
 import type { ModelExecutionProtocol, ProtocolJsonValue } from '../../types/aiTypes';
 import {
   findMediaModelOption,
@@ -29,6 +30,7 @@ import {
 } from './modelProtocol';
 import { getAssistantTextModelCandidates } from '../projectSettingsService';
 import { prepareAssistantVisualMessages } from '../chat/assistantVisualContext';
+import { buildChatApiRequest, resolveChatApiProtocol } from './chatApiProtocol';
 
 // ============================================
 // Config resolution
@@ -40,6 +42,8 @@ interface ResolvedModelConfig {
   apiKey: string;
   modelName: string;
   protocol: ModelExecutionProtocol;
+  chatApiProtocol: ChatApiProtocol;
+  usesConnectionProtocol: boolean;
   supportsVision: boolean;
 }
 
@@ -89,6 +93,8 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
       apiKey: provider.apiKey || '',
       modelName: gm.modelId,
       protocol,
+      chatApiProtocol: resolveChatApiProtocol(provider.chatApiProtocol),
+      usesConnectionProtocol: !gm.executionProfile,
       supportsVision: hasVisionInputCapability(gm),
     };
   }
@@ -108,6 +114,8 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
     apiKey: provider.apiKey,
     modelName,
     protocol: getModelProtocolPreset('openai-chat'),
+    chatApiProtocol: resolveChatApiProtocol(provider.chatApiProtocol),
+    usesConnectionProtocol: true,
     supportsVision: provider.selectedModels?.find((model) => (
       `${builtInModel.provider}/${model.id}` === assistantModelId || model.id === modelName
     ))?.inputModalities?.includes('image') ?? isVisionCapableTextModel(assistantModelId),
@@ -234,7 +242,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   if (!modelConfig) {
     throw new Error('未配置助手模型，请在「设置 → API Key」中添加');
   }
-  if (modelConfig.protocol.streamFormat !== 'openai-sse') {
+  if (!modelConfig.usesConnectionProtocol && modelConfig.protocol.streamFormat !== 'openai-sse') {
     throw new Error('当前助手模型协议未声明 OpenAI SSE 兼容能力，不能用于对话助手或 Agent 工具调用');
   }
 
@@ -281,24 +289,38 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
       supportsVision: modelConfig.supportsVision,
       signal: controller.signal,
     });
-    const builtRequest = buildModelProtocolRequest({
-      apiKey: modelConfig.apiKey,
-      baseUrl: modelConfig.baseUrl,
-      protocol: modelConfig.protocol,
-      signal: controller.signal,
-      variables: {
-        model: modelConfig.modelName,
-        prompt: userMessage,
-        messages: requestMessages as unknown as ProtocolJsonValue,
-        stream: !nonStream,
-        tools: tools.length > 0 ? tools as unknown as ProtocolJsonValue : undefined,
-        toolChoice: tools.length > 0 ? 'auto' : undefined,
-      },
-    });
+    const builtRequest = modelConfig.usesConnectionProtocol
+      ? buildChatApiRequest({
+          protocol: modelConfig.chatApiProtocol,
+          apiKey: modelConfig.apiKey,
+          baseUrl: modelConfig.baseUrl,
+          model: modelConfig.modelName,
+          messages: requestMessages,
+          tools,
+          stream: !nonStream,
+          signal: controller.signal,
+        })
+      : buildModelProtocolRequest({
+          apiKey: modelConfig.apiKey,
+          baseUrl: modelConfig.baseUrl,
+          protocol: modelConfig.protocol,
+          signal: controller.signal,
+          variables: {
+            model: modelConfig.modelName,
+            prompt: userMessage,
+            messages: requestMessages as unknown as ProtocolJsonValue,
+            stream: !nonStream,
+            tools: tools.length > 0 ? tools as unknown as ProtocolJsonValue : undefined,
+            toolChoice: tools.length > 0 ? 'auto' : undefined,
+          },
+        });
     const response = await corsSafeFetch(builtRequest.url, builtRequest.init);
+    const responseProtocol = modelConfig.usesConnectionProtocol
+      ? modelConfig.chatApiProtocol
+      : 'openai-compatible';
 
     if (nonStream) {
-      return await parseNonStream(response, { onEvent });
+      return await parseNonStream(response, { onEvent, protocol: responseProtocol });
     }
 
     return await parseStream(response, {
@@ -306,6 +328,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
       modelId: modelConfig.modelName,
       onEvent,
       signal: controller.signal,
+      protocol: responseProtocol,
     });
   } catch (error: unknown) {
     if ((error as { name?: string }).name === 'AbortError') {

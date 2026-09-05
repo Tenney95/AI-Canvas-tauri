@@ -17,6 +17,7 @@ import {
 import type {
   ApiProviderConfig,
   AppConfig,
+  ChatApiProtocol,
   GeneralModelCategory,
   ProviderCatalogAdapter,
   ProviderModelSelection,
@@ -24,6 +25,7 @@ import type {
 } from '../../types';
 import { corsSafeFetch } from './httpTransport';
 import { baseUrlCandidates } from './providerBaseUrl';
+import { getChatApiHeaders, normalizeGeminiModelId, resolveChatApiProtocol } from './chatApiProtocol';
 import { XAI_BASE_URL, XAI_MODEL_MANIFEST } from './providers/xaiModelManifest';
 import {
   GOOGLE_GEMINI_BASE_URL,
@@ -129,7 +131,14 @@ const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', category: 'text', provider: 'cccapi', description: 'GPT-4 Turbo 通用文本与多模态模型' },
   { id: 'gpt-4', name: 'GPT-4', category: 'text', provider: 'cccapi', description: 'GPT-4 通用文本模型', inputModalities: ['text'] },
   { id: 'codex-auto-review', name: 'Codex Auto Review', category: 'text', provider: 'cccapi', description: 'Codex 自动代码评审模型' },
-  { id: 'gpt-image-2', name: 'GPT Image 2', category: 'image', provider: 'cccapi', description: 'OpenAI 兼容图片生成模型' },
+  {
+    id: 'gpt-image-2',
+    name: 'GPT Image 2',
+    category: 'image',
+    provider: 'cccapi',
+    description: 'OpenAI 兼容图片生成模型',
+    imageReferenceRequestMode: 'edits-multipart',
+  },
   { id: 'gpt-image-1', name: 'GPT Image 1', category: 'image', provider: 'cccapi', description: 'OpenAI 兼容图片生成模型（上一代）' },
 ];
 
@@ -477,7 +486,11 @@ function parseVideoCapability(
   return Object.values(capability).some((value) => value !== undefined) ? capability : undefined;
 }
 
-function parseCatalogItem(item: unknown, providerId: string): ProviderModelSelection | null {
+function parseCatalogItem(
+  item: unknown,
+  providerId: string,
+  protocol: ChatApiProtocol,
+): ProviderModelSelection | null {
   if (typeof item === 'string') {
     const id = item.trim();
     return id ? { id, name: id, category: inferModelCategory(id), provider: providerId } : null;
@@ -485,10 +498,15 @@ function parseCatalogItem(item: unknown, providerId: string): ProviderModelSelec
   if (!item || typeof item !== 'object') return null;
 
   const record = item as Record<string, unknown>;
-  const rawId = record.id ?? record.model ?? record.model_id;
+  const rawId = record.id ?? record.model ?? record.model_id
+    ?? (protocol === 'gemini-native' ? record.name : undefined);
   if (typeof rawId !== 'string' || !rawId.trim()) return null;
-  const id = rawId.trim();
-  const rawName = record.name ?? record.display_name ?? record.displayName;
+  const id = protocol === 'gemini-native'
+    ? normalizeGeminiModelId(rawId)
+    : rawId.trim();
+  const rawName = protocol === 'gemini-native'
+    ? record.display_name ?? record.displayName
+    : record.name ?? record.display_name ?? record.displayName;
   const name = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : id;
   const category = inferModelCategory(id);
   const supportsImageInput = record.supports_image === true || record.supportsImage === true;
@@ -556,9 +574,10 @@ function safeCatalogError(error: unknown): string {
 async function fetchCatalogResponse(
   url: string,
   apiKey: string,
+  protocol: ChatApiProtocol,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+  const headers = apiKey ? getChatApiHeaders(protocol, apiKey, false) : undefined;
   return corsSafeFetch(url, { method: 'GET', headers, signal });
 }
 
@@ -576,13 +595,14 @@ async function fetchCatalogAt(
   const response = await fetchCatalogResponse(
     url.toString(),
     config.apiKey,
+    resolveChatApiProtocol(config.chatApiProtocol),
     signal,
   );
   if (!response.ok) throw new Error(`模型列表拉取失败 (HTTP ${response.status})`);
 
   const payload: unknown = await response.json().catch(() => null);
   const models = readCatalogItems(payload)
-    .map((item) => parseCatalogItem(item, providerId))
+    .map((item) => parseCatalogItem(item, providerId, resolveChatApiProtocol(config.chatApiProtocol)))
     .filter((item): item is ProviderModelSelection => (
       item !== null && isProviderModelVisible(definition.id, item.id)
     ));
@@ -596,7 +616,10 @@ async function fetchOpenAiCompatibleCatalog(
   config: ApiProviderConfig,
   signal?: AbortSignal,
 ): Promise<{ models: ProviderModelSelection[]; baseUrl: string }> {
-  const candidates = baseUrlCandidates(config.baseUrl || definition.defaultBaseUrl);
+  const candidates = baseUrlCandidates(
+    config.baseUrl || definition.defaultBaseUrl,
+    resolveChatApiProtocol(config.chatApiProtocol),
+  );
   if (candidates.length === 0) throw new Error('请填写接口地址');
 
   let lastError: unknown;

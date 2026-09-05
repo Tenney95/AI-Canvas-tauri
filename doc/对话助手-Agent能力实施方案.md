@@ -3132,3 +3132,18 @@ Rust：`cargo test assistant_web::tests --lib --locked --offline --no-default-fe
 验收边界：代表帧已在 Blender 渲染后查看，未逐帧复查编码后的视频。导出后重新打开保存工程已收到运行回执，但用户随后确认流程已通并要求停止测试，未继续检查重开后的场景状态，也未关闭当前编辑窗口。未调用付费媒体模型，不将启动回执单独作为完成证据。
 
 提交范围：双 MCP 共享任务入口、固定保存工程模式、打开兼容修复、相关测试及文档共 23 文件；提交到本地 `master`，不推送。沿用上文已通过的定向检查，提交前仅复核暂存范围、编码、差异及仓库提交钩子要求；其他任务的原生入口、样式、生成 schema 和 vendor 修改保留未提交。没有新增依赖、放宽安全配置或修改持久 MCP 配置，验收资产与临时脚本不纳入源码提交。
+
+## CCCAPI 三种对话协议与 GPT Image 2 参考图修复（2026-09-05）
+
+**状态：连接级协议与图片参考图路由已实现并通过离线自动化验证；真实 CCCAPI Key、桌面交互及付费生成尚未验收。** 用户确认按 CCCAPI 当前文档兼容 OpenAI、Anthropic、Gemini 三种对话协议，并修复 `gpt-image-2` 参考图未生效问题。
+
+- [x] 自定义接口新增连接级 `chatApiProtocol` 固定枚举，设置页可选择 OpenAI 兼容、Anthropic 兼容或 Gemini 原生；旧配置和缺失字段继续解释为 OpenAI 兼容。相同 Base URL 只有协议也相同时才判重或由 Agent 自动合并。
+- [x] 建立受信协议适配边界：应用内部继续使用统一消息/工具结构，提交时分别映射 Chat Completions、Messages 与 `generateContent`；同步处理 Bearer、`x-api-key + anthropic-version`、`x-goog-api-key`、系统消息、图片、工具调用、工具结果、非流式响应及 SSE 流式事件。Anthropic/Gemini 流内错误不会再被当成空成功。
+- [x] 模型目录、只读连接验证、Base URL 端点清理与候选补全、连接导入导出、设置页助手提示、Agent 配置草稿/审批/保存共用同一协议字段；外部非法枚举失败回退 OpenAI，不加载任意 adapter。文本模型由连接协议执行，媒体模型继续保留逐模型声明式协议。
+- [x] CCCAPI `gpt-image-2` 本地 manifest 明确声明 `edits-multipart`：有参考图时走 `/v1/images/edits` 并以重复 `image[]` 文件字段提交，无参考图时仍走 `/v1/images/generations` JSON，不修改其他图片模型。
+
+范围：14 个源码、10 个测试及本实施记录，共 25 个文件。未新增 npm/Cargo 依赖，未修改 Tauri 安全配置、IndexedDB schema、Agent Policy 或 API Key 存储边界。
+
+验证：协议相关 11 个测试文件 141 项通过；应用 TypeScript、测试 TypeScript 与所有改动 TS/TSX 文件定向 ESLint 通过；临时目录 Vite 生产构建通过，仅保留既有的大 chunk 与动静态混合导入提示；差异检查在文档追加前已通过，提交前再次复核。构建产物已从专用系统临时目录删除，可由同一命令重建。
+
+验收边界：协议与媒体请求均使用 mock/本地 fixture 验证；没有启动桌面应用、填写或读取真实 Key、调用 CCCAPI、执行付费生成或验证真实参考图结果。真实网关可能还有账号级路由或模型权限差异，需用户在应用内补 Key 后分别做三协议对话、工具调用和 `gpt-image-2` 单/多参考图手测。回滚只需撤销本阶段 25 文件差异；连接字段为可选且旧值缺省 OpenAI，无数据库降级。

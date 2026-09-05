@@ -2,7 +2,12 @@
  * 注册 Provider 文档读取、配置草稿生成与确认写入工具，文档内容不能直接修改正式配置。
  */
 import { useAppStore } from '../../../store/useAppStore';
-import type { ApiProviderConfig, GeneralModelCategory, ImageReferenceRequestMode } from '../../../types';
+import type {
+  ApiProviderConfig,
+  ChatApiProtocol,
+  GeneralModelCategory,
+  ImageReferenceRequestMode,
+} from '../../../types';
 import type { ProviderModelChoice } from '../../../types/agent';
 import type { WebReadContinuation } from '../../../types/chat';
 import { hasWebReadSession } from '../webReadSessionService';
@@ -10,6 +15,10 @@ import { getProviderModelCatalog, MAX_PROVIDER_MODEL_SELECTION, prepareProviderC
 import { readProviderDocsPage } from '../../providerDocsService';
 import { describeWebReadStatus } from '../../webPageService';
 import { normalizeBaseUrl } from '../../ai/providerBaseUrl';
+import {
+  CHAT_API_PROTOCOL_LABELS,
+  resolveChatApiProtocol,
+} from '../../ai/chatApiProtocol';
 import {
   createProviderConfigDraft,
   assertProviderConfigDraftTarget,
@@ -53,6 +62,11 @@ interface ProviderModelsSelectInput {
 }
 
 const MODEL_CATEGORIES: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
+const CHAT_API_PROTOCOLS: ChatApiProtocol[] = [
+  'openai-compatible',
+  'anthropic-compatible',
+  'gemini-native',
+];
 const applyingDrafts = new WeakSet<ProviderConfigDraft>();
 const IMAGE_REFERENCE_REQUEST_MODES: ImageReferenceRequestMode[] = [
   'generation-json-image-urls',
@@ -153,8 +167,11 @@ function createProviderConfigDraftWithConversationFallback(
  * 否则 `gw.example.com/v1/` 与 `https://gw.example.com/v1` 会被当成两个中转站，
  * 用户界面上就多出一条重复连接。
  */
-function normalizeBaseUrlForMatch(value: string | undefined): string {
-  return normalizeBaseUrl(value).toLowerCase();
+function normalizeBaseUrlForMatch(
+  value: string | undefined,
+  chatApiProtocol: ChatApiProtocol,
+): string {
+  return normalizeBaseUrl(value, chatApiProtocol).toLowerCase();
 }
 
 /**
@@ -168,10 +185,12 @@ function resolveTargetConnection(draft: ProviderConfigDraft) {
   const providers = useAppStore.getState().config.providers;
   const byId = providers[draft.connectionId];
   if (byId) return { connectionId: draft.connectionId, existing: byId };
-  const draftBaseUrl = normalizeBaseUrlForMatch(draft.baseUrl);
+  const draftProtocol = resolveChatApiProtocol(draft.config.chatApiProtocol);
+  const draftBaseUrl = normalizeBaseUrlForMatch(draft.baseUrl, draftProtocol);
   const matched = Object.entries(providers).find(([, provider]) => (
     provider.catalogId === 'custom-openai'
-    && normalizeBaseUrlForMatch(provider.baseUrl) === draftBaseUrl
+    && resolveChatApiProtocol(provider.chatApiProtocol) === draftProtocol
+    && normalizeBaseUrlForMatch(provider.baseUrl, draftProtocol) === draftBaseUrl
   ));
   return matched
     ? { connectionId: matched[0], existing: matched[1] }
@@ -186,12 +205,24 @@ function resolveTargetConnection(draft: ProviderConfigDraft) {
  */
 function planProviderConfigMerge(draft: ProviderConfigDraft) {
   const { connectionId, existing } = resolveTargetConnection(draft);
+  const draftProtocol = resolveChatApiProtocol(draft.config.chatApiProtocol);
   // Base URL 匹配到的连接 ID 可能不同于草稿新建时生成的 ID。
   const draftModels = (draft.config.selectedModels ?? []).map((model) => ({ ...model, provider: connectionId }));
   if (!existing) {
     return { connectionId, existing: undefined, merge: mergeProviderModels([], draftModels, draft.modelUpdateFields) };
   }
-  if (existing.baseUrl && normalizeBaseUrlForMatch(existing.baseUrl) !== normalizeBaseUrlForMatch(draft.baseUrl)) {
+  const existingProtocol = resolveChatApiProtocol(existing.chatApiProtocol);
+  if (existingProtocol !== draftProtocol) {
+    throw new Error(
+      `连接“${existing.name}”当前使用${CHAT_API_PROTOCOL_LABELS[existingProtocol]}，`
+      + `与本次草稿的${CHAT_API_PROTOCOL_LABELS[draftProtocol]}不一致；不同聊天协议不能并入同一个连接`,
+    );
+  }
+  if (
+    existing.baseUrl
+    && normalizeBaseUrlForMatch(existing.baseUrl, draftProtocol)
+      !== normalizeBaseUrlForMatch(draft.baseUrl, draftProtocol)
+  ) {
     throw new Error(
       `连接“${existing.name}”当前的 Base URL 是 ${existing.baseUrl}，与本次草稿的 ${draft.baseUrl} 不一致；`
       + '不同网关的模型不能并入同一个连接，请改用新连接名称，或先在设置里调整该连接地址',
@@ -424,6 +455,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
         'OpenAPI 文档中的 string、0、空对象和空数组是有效的结构占位符，不要因此拒绝调用。',
         'Gemini 图片 generateContent 会自动规范化 IMAGE、contents 和 inlineData.data，不要求真实 Base64 响应样例。',
         '图片接口若使用 image 字段接收 data:image/...;base64,... 数组，应把 imageReferenceRequestMode 设为 generation-json-image-data-urls。',
+        '文本接口必须按文档设置 chatApiProtocol：OpenAI Chat Completions 用 openai-compatible，Anthropic Messages 用 anthropic-compatible，Gemini generateContent 用 gemini-native；文档未说明时缺省为 openai-compatible。该字段不改变图片、视频或音频的逐模型执行协议。',
         '文档写明模型用途、擅长场景或限制时，把这句话填进 description（不超过 500 字），模型选择器会显示它。',
         '文本模型的文档若写明支持图片/多模态输入，把 inputModalities 设为 ["text","image"]，画布才允许把图片连进该模型；只支持纯文本就不要填。',
         '文档写明上下文窗口时把 token 数填进 contextWindow（如 128000）；中转站的自定义模型名推断不出窗口大小，不填会按 32000 保守压缩上下文。',
@@ -444,6 +476,11 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
           connectionId: { type: 'string', minLength: 8, maxLength: 64 },
           connectionName: { type: 'string', minLength: 1, maxLength: 80 },
           baseUrl: { type: 'string', minLength: 8, maxLength: 2048 },
+          chatApiProtocol: {
+            type: 'string',
+            enum: CHAT_API_PROTOCOLS,
+            description: '文本/对话接口协议；缺省为 openai-compatible。图片、视频、音频仍使用各模型执行协议。',
+          },
           models: {
             type: 'array',
             minItems: 1,
@@ -611,7 +648,8 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
       },
       effect: 'read',
       summarizeInput: (input) => (
-        `分析 API 配置：${input.connectionName.trim()}（${input.models.length} 个模型，不含 API Key）`
+        `分析 API 配置：${input.connectionName.trim()}（${input.models.length} 个模型，`
+        + `${CHAT_API_PROTOCOL_LABELS[resolveChatApiProtocol(input.chatApiProtocol)]}，不含 API Key）`
       ),
       execute: async (context, input) => {
         try {
@@ -623,7 +661,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
             bindProviderConfigDraftTarget(draft, connectionId, existing);
             plan = [
               existing
-                ? `落点：Base URL 与已有连接“${existing.name}”相同，保存时会并入该连接，不会新建。`
+                ? `落点：Base URL 与聊天协议均和已有连接“${existing.name}”相同，保存时会并入该连接，不会新建。`
                 : '落点：将新建连接。',
               `合并预览：${describeProviderModelMerge(merge)}。`,
               describeProviderModelFields(merge),
@@ -656,7 +694,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
       description: [
         '把 provider_config_preview 生成的任务级草稿保存到 API Key 设置。',
         '输入只允许 draftId；应在预览成功后立即调用，该操作会由本地 Policy 自动请求用户确认。',
-        'Base URL 与已有自定义连接相同时会自动并入那个连接（保留原连接名与原有模型），不会重复新建；',
+        'Base URL 与聊天协议均和已有自定义连接相同时会自动并入那个连接（保留原连接名与原有模型），不会重复新建；',
         '同 ID 且配置完全相同的模型会被跳过并在结果中列出，不必也不要为它们重新对接。',
         '未指定字段保留原值；预览后目标配置变化必须重新预览。保存失败保留草稿，不自动重试。',
         '不会写入 API Key：新连接的密钥保持空白，更新已有连接时保留原密钥。',
@@ -698,7 +736,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
           const plan = planProviderConfigMerge(draft);
           assertProviderConfigDraftTarget(draft, plan.connectionId, plan.existing);
           const target = plan.existing
-            ? `并入已有连接“${plan.existing.name}”（Base URL 相同）`
+            ? `并入已有连接“${plan.existing.name}”（Base URL 与聊天协议相同）`
             : '新建连接';
           return [draft.summary, `${target}：${describeProviderModelMerge(plan.merge)}`,
             describeProviderModelFields(plan.merge), '已通过本地协议校验；未验证实际调用'].filter(Boolean).join('\n');
@@ -717,6 +755,10 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
             fields: [
               { label: '目标连接', value: plan.existing?.name ?? draft.connectionName },
               { label: '操作', value: plan.existing ? '并入已有连接' : '新建连接' },
+              {
+                label: '聊天协议',
+                value: CHAT_API_PROTOCOL_LABELS[resolveChatApiProtocol(draft.config.chatApiProtocol)],
+              },
               { label: '合并结果', value: describeProviderModelMerge(plan.merge) },
               { label: '验证状态', value: '已通过本地协议校验；尚未保存，未验证实际调用' },
             ],
@@ -771,6 +813,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
             ...existing,
             name: connectionName,
             apiKey: existing?.apiKey ?? '',
+            chatApiProtocol: resolveChatApiProtocol(draft.config.chatApiProtocol),
             selectedModels: merge.merged,
             catalogModels: mergeProviderModels(existing?.catalogModels, draftCatalog, draft.modelUpdateFields).merged,
             visibleModelCategories: existing ? existing.visibleModelCategories : draft.config.visibleModelCategories,
@@ -792,7 +835,7 @@ export function registerProviderConfigAgentTools(): Array<() => void> {
             summary: `已保存“${connectionName}”API 厂商配置（${mergeNote}），API Key 未被修改`,
             modelContent: [
               existing
-                ? `Base URL 与已有连接“${connectionName}”相同，已并入该连接而不是新建：${mergeNote}，该连接现有 ${merge.merged.length} 个模型。`
+                ? `Base URL 与聊天协议均和已有连接“${connectionName}”相同，已并入该连接而不是新建：${mergeNote}，该连接现有 ${merge.merged.length} 个模型。`
                 : `已新建连接“${connectionName}”：${mergeNote}，该连接现有 ${merge.merged.length} 个模型。`,
               merge.unchangedIds.length > 0
                 ? `以下模型已存在且配置相同，本次未改动：${merge.unchangedIds.join('、')}。不要为它们重复生成草稿。`

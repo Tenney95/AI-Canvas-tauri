@@ -17,6 +17,11 @@ describe('normalizeBaseUrl', () => {
     expect(normalizeBaseUrl('https://api.foo.com/v1/chat/completions')).toBe('https://api.foo.com/v1');
     expect(normalizeBaseUrl('https://api.foo.com/v1/models')).toBe('https://api.foo.com/v1');
     expect(normalizeBaseUrl('https://api.foo.com/images/generations')).toBe('https://api.foo.com');
+    expect(normalizeBaseUrl('https://api.foo.com/v1/messages')).toBe('https://api.foo.com/v1');
+    expect(normalizeBaseUrl(
+      'https://api.foo.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse',
+      'gemini-native',
+    )).toBe('https://api.foo.com/v1beta');
   });
 
   it('空值返回空串', () => {
@@ -38,6 +43,13 @@ describe('baseUrlCandidates', () => {
     expect(baseUrlCandidates('https://generativelanguage.googleapis.com/v1beta/openai'))
       .toEqual(['https://generativelanguage.googleapis.com/v1beta/openai']);
   });
+
+  it('Gemini 原生缺版本段时补 /v1beta 而不是 /v1', () => {
+    expect(baseUrlCandidates('https://api.foo.com', 'gemini-native')).toEqual([
+      'https://api.foo.com',
+      'https://api.foo.com/v1beta',
+    ]);
+  });
 });
 
 describe('provider connection transfer', () => {
@@ -47,6 +59,7 @@ describe('provider connection transfer', () => {
     apiKeyRef: 'secret:provider/custom-1',
     baseUrl: 'https://gw.example.com/v1',
     catalogId: 'custom-openai',
+    chatApiProtocol: 'anthropic-compatible',
     selectedModels: [
       { id: 'gpt-x', name: 'GPT X', category: 'text', provider: 'custom-1' },
     ],
@@ -64,6 +77,7 @@ describe('provider connection transfer', () => {
     expect(parsed?.catalogId).toBe('custom-openai');
     expect(parsed?.config.apiKey).toBe('');
     expect(parsed?.config.baseUrl).toBe('https://gw.example.com/v1');
+    expect(parsed?.config.chatApiProtocol).toBe('anthropic-compatible');
     expect(parsed?.config.selectedModels?.[0].id).toBe('gpt-x');
     expect(parsed?.config.visibleModelCategories).toEqual(['text', 'image']);
   });
@@ -82,6 +96,7 @@ describe('provider connection transfer', () => {
         apiKey: 'sk-injected',
         apiKeyRef: 'secret:provider/victim',
         baseUrl: 'evil.example.com/v1/chat/completions',
+        chatApiProtocol: 'execute-arbitrary-code',
         selectedModels: [
           {
             id: 'm1',
@@ -96,6 +111,7 @@ describe('provider connection transfer', () => {
     expect(parsed?.config.apiKey).toBe('');
     expect(parsed?.config).not.toHaveProperty('apiKeyRef');
     expect(parsed?.config.baseUrl).toBe('https://evil.example.com/v1');
+    expect(parsed?.config.chatApiProtocol).toBe('openai-compatible');
     expect(parsed?.config.selectedModels?.[0].executionProfile).toBeUndefined();
   });
 });

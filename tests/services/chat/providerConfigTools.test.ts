@@ -360,6 +360,16 @@ describe('provider config agent tools', () => {
     expect(result).toMatchObject({ ok: false, result: { status: 'error' } });
   });
 
+  it('exposes only the three supported connection-level chat protocols', () => {
+    const schema = getAgentTool('provider_config_preview')!.inputSchema.properties?.chatApiProtocol;
+
+    expect(schema).toMatchObject({
+      type: 'string',
+      enum: ['openai-compatible', 'anthropic-compatible', 'gemini-native'],
+    });
+    expect(getAgentTool('provider_config_preview')!.description).toContain('chatApiProtocol');
+  });
+
   it('exposes the canonical video capability fields through the preview tool schema', () => {
     const tool = getAgentTool('provider_config_preview')!;
     const modelsSchema = tool.inputSchema.properties?.models;
@@ -724,6 +734,46 @@ curl https://gateway.example.com/v1/images/generations \\
     });
     expect(providers['custom-relay'].selectedModels?.map((model) => model.id))
       .toEqual(['text-a', 'image-pro']);
+  });
+
+  it('同一 Base URL 的不同聊天协议保持为独立连接并显示在审批卡', async () => {
+    useAppStore.getState().saveProviderConfig('custom-openai-relay', {
+      name: 'OpenAI 网关',
+      apiKey: 'relay-secret-value',
+      baseUrl: 'https://gateway.example.com/v1',
+      catalogId: 'custom-openai',
+      selectedModels: [],
+    });
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, {
+      ...previewInput(),
+      chatApiProtocol: 'anthropic-compatible',
+    });
+    const draftId = readDraftId(preview.modelContent);
+    expect(preview.modelContent).toContain('落点：将新建连接');
+
+    const applyTool = getAgentTool('provider_config_apply')!;
+    const summary = applyTool.summarizeInput!({ draftId });
+    expect(summary).toContain('聊天协议：Anthropic 兼容');
+    const prepared = prepareAgentToolCall({
+      callId: 'display-native-protocol',
+      toolId: 'provider_config_apply',
+      input: { draftId },
+    }, context);
+    if (!prepared.ok) throw new Error('Expected a valid native protocol apply input');
+    expect(buildToolInputDisplay(prepared.prepared, context)?.fields).toContainEqual({
+      label: '聊天协议',
+      value: 'Anthropic 兼容',
+      source: undefined,
+    });
+
+    const result = await applyTool.execute(context, { draftId });
+    expect(result.status).toBe('success');
+    const providers = Object.values(useAppStore.getState().config.providers);
+    expect(providers).toHaveLength(2);
+    expect(providers.find((provider) => provider.chatApiProtocol === 'anthropic-compatible'))
+      .toMatchObject({ baseUrl: 'https://gateway.example.com/v1', apiKey: '' });
+    expect(useAppStore.getState().config.providers['custom-openai-relay'].apiKey)
+      .toBe('relay-secret-value');
   });
 
   it('同 ID 且配置相同的模型直接跳过并给出提示', async () => {
