@@ -164,6 +164,75 @@ describe('canvas agent tools', () => {
     expect(generator.data.output).toBeUndefined();
   });
 
+  it('materializes prompt mentions as de-duplicated edges in the same history entry', async () => {
+    useAppStore.setState({
+      nodes: [
+        ...useAppStore.getState().nodes,
+        node('grid', { type: 'ai-storyboard', label: '分镜宫格' }, { x: 800, y: 100 }),
+      ],
+    });
+    const result = await getAgentTool('canvas_create_nodes')!.execute(context(), {
+      nodes: [
+        {
+          type: 'ai-image',
+          label: '合成画面',
+          prompt: '参考 @{n1:主图}，再次参考 @{n1:主图副本}，并使用 @{grid/cell/2:第三格}',
+        },
+        {
+          type: 'ai-text',
+          label: '改写结果',
+          prompt: '根据 @{n2:剧本正文} 改写',
+        },
+        {
+          type: 'source-text',
+          label: '引用说明',
+          content: '正文中提到 @{n1:主图}，但它不是生成依赖',
+        },
+      ],
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.summary).toContain('自动连接 3 条引用');
+    const created = useAppStore.getState().nodes.slice(3);
+    const addedEdges = useAppStore.getState().edges.slice(1);
+    expect(addedEdges.map((edge) => ({
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle,
+      targetHandle: edge.targetHandle,
+    }))).toEqual([
+      { source: 'n1', target: created[0].id, sourceHandle: 'right', targetHandle: 'left' },
+      { source: 'grid', target: created[0].id, sourceHandle: 'right', targetHandle: 'left' },
+      { source: 'n2', target: created[1].id, sourceHandle: 'right', targetHandle: 'left' },
+    ]);
+    expect(JSON.parse(result.modelContent).edges).toEqual(addedEdges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+    })));
+
+    await expect(useAppStore.getState().undo()).resolves.toBe(true);
+    expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['n1', 'n2', 'grid']);
+    expect(useAppStore.getState().edges.map((edge) => edge.id)).toEqual(['e1']);
+  });
+
+  it('rejects missing prompt references before creating any nodes or edges', async () => {
+    const beforeNodes = useAppStore.getState().nodes;
+    const beforeEdges = useAppStore.getState().edges;
+    const result = await getAgentTool('canvas_create_nodes')!.execute(context(), {
+      nodes: [{
+        type: 'ai-image',
+        label: '坏引用节点',
+        prompt: '使用 @{missing-node:已删除节点} 作为参考',
+      }],
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.summary).toContain('missing-node');
+    expect(useAppStore.getState().nodes).toBe(beforeNodes);
+    expect(useAppStore.getState().edges).toBe(beforeEdges);
+  });
+
   it('refuses to write content into media nodes whose output holds a path', async () => {
     const result = await getAgentTool('canvas_create_nodes')!.execute(context(), {
       nodes: [{ type: 'ai-image', label: '角色·林默', content: '不该写进图片节点' }],

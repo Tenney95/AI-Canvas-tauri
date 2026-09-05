@@ -1,9 +1,10 @@
 /**
  * 注册画布查询与写入工具，并通过命令注册表、项目校验和 revision 防护执行节点操作。
  */
-import type { Node } from '@xyflow/react';
+import type { Edge, Node } from '@xyflow/react';
 import { getLastCanvasPointerPosition } from '../../canvasPointerService';
 import { useAppStore } from '../../../store/useAppStore';
+import { generateId } from '../../../store/store.utils';
 import type { BaseNodeData, NodeType } from '../../../types';
 import type {
   AgentToolDisplayChange,
@@ -716,6 +717,61 @@ function createCanvasNode(
   };
 }
 
+/** 宫格分镜单元格是虚拟引用，画布连线仍连接到真实的分镜节点。 */
+function resolvePromptReferenceSourceId(rawNodeId: string): string {
+  const nodeId = rawNodeId.trim();
+  if (!nodeId.includes('/cell/')) return nodeId;
+  const parts = nodeId.split('/cell/');
+  const sourceId = parts[0]?.trim();
+  const cellIndex = Number.parseInt(parts[1] ?? '', 10);
+  return sourceId && !Number.isNaN(cellIndex) ? sourceId : nodeId;
+}
+
+/**
+ * 把新生成节点 prompt 中的稳定引用物化为画布边。
+ * 必须在 Store 写入前完成全部校验，避免坏引用留下孤立节点或部分连线。
+ */
+function buildPromptReferenceEdges(
+  createdNodes: Node<BaseNodeData>[],
+  existingNodes: Node<BaseNodeData>[],
+): { edges: Edge[]; error?: string } {
+  const existingById = new Map(existingNodes.map((node) => [node.id, node]));
+  const seenConnections = new Set<string>();
+  const edges: Edge[] = [];
+
+  for (const targetNode of createdNodes) {
+    // 正文节点里的 @ 只是正文；只有会实际运行生成的 prompt 才表达画布依赖。
+    if (isSourceOnlyNode(targetNode)) continue;
+    const prompt = typeof targetNode.data.prompt === 'string' ? targetNode.data.prompt : '';
+    for (const match of prompt.matchAll(NODE_REFERENCE_PATTERN)) {
+      const rawSourceId = match[1]?.trim() ?? '';
+      const sourceId = resolvePromptReferenceSourceId(rawSourceId);
+      const sourceNode = existingById.get(sourceId);
+      if (!sourceNode) {
+        const message = `新节点「${targetNode.data.label}」引用的节点「${rawSourceId}」不存在，请重新查询画布后再创建`;
+        return { edges: [], error: message };
+      }
+      if ((sourceNode.type ?? sourceNode.data.type) === 'group') {
+        const message = `新节点「${targetNode.data.label}」引用的「${sourceNode.data.label}」是分组，不能作为内容来源`;
+        return { edges: [], error: message };
+      }
+
+      const connectionKey = `${sourceId}:${targetNode.id}`;
+      if (seenConnections.has(connectionKey)) continue;
+      seenConnections.add(connectionKey);
+      edges.push({
+        id: `edge-${generateId()}`,
+        source: sourceId,
+        target: targetNode.id,
+        sourceHandle: 'right',
+        targetHandle: 'left',
+      });
+    }
+  }
+
+  return { edges };
+}
+
 export function registerCanvasAgentTools(): Array<() => void> {
   return [
     registerAgentTool<QueryNodesInput>({
@@ -777,7 +833,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
       title: '新建画布节点',
       description: [
         '在画布上原子创建一个或多个节点；不会自动运行节点模型。',
-        'prompt 里可写 @{nodeId:label} 或 @drama{assetId:name} 引用已有节点输出与资产库设定，生成时自动展开。',
+        'prompt 里可写 @{nodeId:label} 或 @drama{assetId:name} 引用已有节点输出与资产库设定；节点引用会在创建时自动连线，生成时自动展开，不要再重复调用 canvas_connect_nodes。',
         'type 按这个节点最终要产出什么来选，不要因为内容是文字描述就一律建文本节点：',
         '产物是画面的（角色设定图、场景图、道具图、关键帧、单张分镜）用 ai-image，把画面描述写进 prompt；',
         '产物是镜头的用 ai-video，配乐旁白用 ai-audio，多宫格图片也用 ai-image，镜头表用 ai-shotlist。',
@@ -844,7 +900,11 @@ export function registerCanvasAgentTools(): Array<() => void> {
           index,
           positions[index],
         ));
-        useAppStore.getState().addNodes(nodes);
+        const edgePlan = buildPromptReferenceEdges(nodes, useAppStore.getState().nodes);
+        if (edgePlan.error) {
+          return { status: 'error', summary: edgePlan.error, modelContent: edgePlan.error };
+        }
+        useAppStore.getState().addNodesWithEdges(nodes, edgePlan.edges);
         useAppStore.getState().incrementRevision();
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('canvas-focus-nodes', {
@@ -853,13 +913,20 @@ export function registerCanvasAgentTools(): Array<() => void> {
         }
         return {
           status: 'success',
-          summary: `已新建 ${nodes.length} 个节点`,
+          summary: edgePlan.edges.length > 0
+            ? `已新建 ${nodes.length} 个节点并自动连接 ${edgePlan.edges.length} 条引用`
+            : `已新建 ${nodes.length} 个节点`,
           modelContent: JSON.stringify({
             nodes: nodes.map((node) => ({
               id: node.id,
               type: node.type,
               label: node.data.label,
               position: node.position,
+            })),
+            edges: edgePlan.edges.map((edge) => ({
+              id: edge.id,
+              source: edge.source,
+              target: edge.target,
             })),
             revision: useAppStore.getState().getCurrentRevision(),
           }),
