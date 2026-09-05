@@ -1310,6 +1310,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
       }
 
       set({
+        projects: get().projects.map((item) => (
+          item.id === id ? { ...item, settings: data.settings } : item
+        )),
         currentProjectId: id,
         projectName: project.name,
         projectLoadStatus: 'ready',
@@ -1426,6 +1429,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           const ownerId = seriesOwnerId(mapped, targetId);
           const ownerData = ownerId === targetId ? data : await fileService.loadProjectData(ownerId);
           set({
+            projects: mapped.map((project) => (
+              project.id === targetId ? { ...project, settings: data.settings } : project
+            )),
             currentProjectId: targetId,
             projectName: data.name || '已加载项目',
             nodes: data.nodes as Node<BaseNodeData>[],
@@ -1485,7 +1491,9 @@ export const createProjectSlice: StateCreator<AppState, [], [], ProjectSlice> = 
           const ownerId = seriesOwnerId(mapped, targetId);
           const ownerData = ownerId === targetId ? data : await fileService.loadProjectData(ownerId);
           set({
-            projects: mapped,
+            projects: mapped.map((project) => (
+              project.id === targetId ? { ...project, settings: data.settings } : project
+            )),
             currentProjectId: targetId,
             projectName: data.name || '新项目',
             nodes: data.nodes as Node<BaseNodeData>[],

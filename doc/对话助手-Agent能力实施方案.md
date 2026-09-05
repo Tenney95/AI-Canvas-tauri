@@ -2792,12 +2792,35 @@ P4-C 只完成了 Skill Manifest 的解析与工具上限，Skill 对模型仍�
 
 本阶段未新增依赖，未修改 Tauri 安全配置、IndexedDB schema、Agent Policy 或媒体确认策略。回滚时可移除 canonical resolver、能力新增字段和有限协议指令，并恢复旧 V2 兼容入口；无数据迁移或数据库降级。
 
+### 12.5 平台补充：本地项目媒体引用持久化第一阶段
+
+**状态：** `[implemented]`
+
+目标：解决大型 Data URL / Blob 随项目和输出历史进入 IndexedDB 后造成的启动结构化克隆、自动保存重复写入和旧历史串代问题；项目媒体正文落到项目目录，数据库只保存轻量摘要或可恢复引用。
+
+- [x] IndexedDB 升级到 v21，新增 `projectSummaries` store；完整项目与摘要在同一事务双写、删除时双删，项目列表只读取摘要，不再对完整 `projects` store 执行 `getAll()`。
+- [x] v21 升级通过 cursor 逐条回填摘要，避免一次同时克隆全部旧画布；摘要显式排除 nodes、edges、groups、角色库以及项目风格母图中的 transient URL 和绝对路径，项目快照继续受 480×270、350,000 字符上限约束。
+- [x] 项目保存显式覆盖节点主媒体、缩略图、抠图蒙版、旧标注、分镜覆盖、镜头表帧、视频参考、导演台截图、项目风格母图，以及人物参考图/声音/动作、场景和道具媒体；不对任意未知对象做递归扫描。
+- [x] Data URL 在解码前按媒体类型校验上限，以 256 KiB 分块解码并定期让出事件循环；迁移文件按 SHA-256 内容摘要命名，同一正文重试或自动保存复用已有项目文件。
+- [x] 项目加载只在整条记录序列化成功后回写 IndexedDB；目录不可用或任一媒体迁移失败时保留旧记录，避免用半迁移数据覆盖可恢复正文。启动和项目切换成功后以完整记录刷新当前项目 settings。
+- [x] 旧输出历史逐条迁移，不再借用节点当前最新文件；只复用该历史记录自身、真实存在且位于当前项目目录内的文件，不同代 transient 正文分别按内容落盘。任一旧记录失败时不删除节点内旧历史、不标记迁移完成。
+- [x] 项目归档导入和分集复制改走统一 `fileService.saveProject`，不再绕过媒体序列化直接写 IndexedDB。
+
+实际检查（2026-09-04）：
+
+- 本阶段相关回归 17 个文件、147 项通过；`npm run typecheck`、`npm run test:typecheck` 和本批目标 ESLint 通过。
+- `npm run check` 的全仓 lint、应用类型和测试类型阶段通过；全量 Vitest 249 个文件中 246 个通过、2085 项中 2084 项通过。剩余为本阶段未修改的既有基线：两个 MCP suite 收集阶段 `SyntaxError: Invalid or unexpected token`，以及一个 i18n 孤儿词条。
+- `npx vite build --outDir <系统临时目录>` 生产构建通过；仅有既有动态导入无效和大 chunk 警告。
+
+本阶段未新增依赖、未修改 Tauri 安全配置、Agent/MCP Policy 或媒体确认策略，也未启动真实 Tauri 应用做含大项目的交互性能采样。v21 首次升级仍需逐条读取每个旧项目一次，后续启动才只读摘要；旧版 v20 应用不能直接打开已升级数据库。回滚代码必须与数据库备份配套，不能把 v21 数据库直接降版本。聊天附件、跨项目重命名/导入后的稳定 `assetId + relativePath` 与引用计数删除属于后续阶段，不在本次范围。
+
 ## 13. 变更日志
 
 | 2026-08-14 | 媒体参数映射第一阶段 | 新增图片、视频、音频三类统一参数映射注册表；图片标准/APIMart/火山/RunningHub、APIMart 视频 Seedance、APIMart TTS/Flow Music 与通用异步媒体入口接入映射函数；新增 `tests/services/mediaParameterMappings.test.ts` 定向测试。保留现有 URL、鉴权、轮询和响应解析边界，未新增依赖。已执行 `npm run typecheck`、5 个受影响服务测试（68 项）与改动文件定向 ESLint；`npm run check` 仍被仓库既有 ESLint 10 / parser 错误 `scopeManager.addGlobals is not a function` 阻断。 |
 
 | 日期 | 阶段 | 变更 |
 |---|---|---|
+| 2026-09-04 | 本地项目媒体引用持久化第一阶段 | IndexedDB v21 增加轻量项目摘要并移除启动全项目克隆；项目、角色库和输出历史中的已知 transient 媒体统一按内容落入项目目录，迁移失败保留原记录；项目导入与分集复制接入统一保存入口。相关回归 17 文件 147 项、类型、目标 ESLint 与生产构建通过。 |
 | 2026-09-03 | Plugin API v1 资源与主窗口 UI | 节点工具/插件节点获得绑定 invocation、双摘要、项目、画布 revision、精确连线/端口的不透明资源句柄；包资源进入原生私有 revision；插件工具 UI 改为主窗口 Modal 内 sandboxed iframe，并沿用同一资源租约完成 effect 与提交。经确认删除旧独立窗口和旧 grant 链路，并为全平台专用协议补充精确 CSP 白名单；静态、前端、Rust 与构建验证通过，真实 Tauri 手测按用户要求跳过。 |
 | 2026-08-30 | Blender 新手导演操作台（Phase 2-A，进行中） | 同一 `ai-director` 增加 AI Canvas session-only 的 Properties 导演操作台、基础模型/场景/镜头/灯光/本地导入和保存返回，并在主 3D View 右下角增加 Blender 原生离屏相机画面的圆角实时预览、关闭与重开；固定包升级 `1.2.0` 并保留旧目录，owner collection/material/World、原生文件选择器及固定脚本边界不变。Blender 5.2.1 实测约 8.1 FPS、50 次开关清理通过；最终圆角版鼠标点击因用户停止 Windows UI 控制留作一次补充真机项。 |
 | 2026-08-30 | 导演台界面与工作区本地化 | 固定运行资源升级为 `1.0.4`，按 Blender 官方 `WorkSpace` 上下文和用户“翻译新建数据”开关动态本地化工作区；随后通过同机 A/B 定位到 Rust 把 `\\?\` canonical executable 直接作为 `argv[0]`，导致 Blender 5.2 bundled locale catalog 加载失败。Native runner 继续以 canonical 路径作为 `CreateProcessW.lpApplicationName`，只把命令行 `argv[0]` 转成标准 Windows 路径；信任校验与后台 Job 隔离边界不变。用户确认同一 3D 导演台真实打开后菜单与工作区均为中文；Blender runtime 32 项与 `cargo check --lib` 通过。 |

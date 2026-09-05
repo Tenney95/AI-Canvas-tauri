@@ -206,11 +206,18 @@ describe('project switching', () => {
       }],
       edges: [],
       groups: [],
+      settings: { visualStyle: { styleName: '完整记录风格' } },
     });
     useAppStore.setState({
       projects: [
         { id: 'project-old', name: 'Old project', createdAt: 1, updatedAt: 1 },
-        { id: 'project-new', name: 'New project', createdAt: 2, updatedAt: 3 },
+        {
+          id: 'project-new',
+          name: 'New project',
+          createdAt: 2,
+          updatedAt: 3,
+          settings: { visualStyle: { styleName: '摘要旧风格' } },
+        },
       ],
       currentProjectId: 'project-old',
       projectName: 'Old project',
@@ -247,6 +254,8 @@ describe('project switching', () => {
       historyIndex: -1,
     });
     expect(useAppStore.getState().nodes.map((item) => item.id)).toEqual(['new-node']);
+    expect(useAppStore.getState().projects.find((project) => project.id === 'project-new')?.settings)
+      .toEqual({ visualStyle: { styleName: '完整记录风格' } });
     expect(pollMocks.resumePendingTasks).toHaveBeenCalledWith('project-new');
     expect(loadConversationsForProject).toHaveBeenCalledWith('project-new');
     expect(repairInterruptedForProject).toHaveBeenCalledWith('project-new');
@@ -860,7 +869,11 @@ describe('project switching', () => {
         id: 'project-newest', name: 'Newest', createdAt: 2, updatedAt: 20, nodes: [], edges: [],
       },
       {
-        id: 'project-remembered', name: 'Remembered', createdAt: 1, updatedAt: 10, nodes: [], edges: [],
+        id: 'project-remembered',
+        name: 'Remembered',
+        createdAt: 1,
+        updatedAt: 10,
+        settings: { visualStyle: { styleName: '摘要旧风格' } },
       },
     ]);
     fileMocks.loadProjectData.mockResolvedValue({
@@ -876,6 +889,7 @@ describe('project switching', () => {
       }],
       edges: [],
       groups: [],
+      settings: { visualStyle: { styleName: '完整记录风格' } },
     });
 
     await useAppStore.getState().initFromDb();
@@ -886,6 +900,9 @@ describe('project switching', () => {
       projectLoadStatus: 'ready',
     });
     expect(useAppStore.getState().nodes.map((node) => node.id)).toEqual(['remembered-node']);
+    expect(useAppStore.getState().projects.find(
+      (project) => project.id === 'project-remembered',
+    )?.settings).toEqual({ visualStyle: { styleName: '完整记录风格' } });
     expect(metadataMocks.setLastActiveProjectId).toHaveBeenCalledWith('project-remembered');
   });
 

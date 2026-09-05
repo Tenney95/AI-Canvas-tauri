@@ -21,7 +21,6 @@ import {
   putChatConversation,
   putChatMessage,
   putProjectMemory,
-  saveProjectToDb,
   type ChatConversationRecord,
   type ChatMessageRecord,
   type ProjectMemoryRecord,
@@ -346,7 +345,7 @@ async function restoreProjectArchive(
       .filter((reference) => reference.relativePath && !extractedAssets.has(reference.relativePath))
       .length;
     detachSourceAssetIdentity(record);
-    await saveProjectToDb(record);
+    await fileService.saveProject(record);
 
     const { conversationCount, memoryCount } = await restoreChatPayload(chat, projectId);
     fileService.notifyProjectDiskChanged();
@@ -416,7 +415,7 @@ async function duplicateEpisodes(episodeIds: string[], target: ProjectImportResu
         dataFolder: target.dataFolder,
         updatedAt: Date.now(),
       };
-      await saveProjectToDb(next);
+      await fileService.saveProject(next);
       await restoreChatPayload(await collectChatPayload(episodeId), nextId);
       created.push({
         id: nextId,

@@ -16,7 +16,11 @@ import {
   GRSAI_LEGACY_BASE_URL,
 } from '../constants/api';
 import * as fileService from '../services/fileService';
-import { setBaseDataDir, syncAuthorizedDirectories } from '../services/fileService';
+import {
+  setBaseDataDir,
+  syncAuthorizedDirectories,
+  type ProjectSaveData,
+} from '../services/fileService';
 import { deleteProviderSecret } from '../services/providerSecretService';
 import { setLocale } from '../i18n';
 
@@ -454,17 +458,20 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
       await get().saveCurrentProjectSilent();
     }
 
-    const records = await fileService.loadProjectsList();
-    const changedRecords = records.flatMap((record) => {
-      if (record.id === currentProjectId || !Array.isArray(record.nodes)) return [];
+    const summaries = await fileService.loadProjectsList();
+    const changedRecords: ProjectSaveData[] = [];
+    for (const summary of summaries) {
+      if (summary.id === currentProjectId) continue;
+      const record = await fileService.loadProjectData(summary.id);
+      if (!record || !Array.isArray(record.nodes)) continue;
       const settings = clearProjectModelReferences(record.settings, references);
       const nodes = clearNodeModelReferences(
         record.nodes as Array<{ data: BaseNodeData }>,
         references,
       );
-      if (settings === record.settings && !nodes.changed) return [];
-      return [{ ...record, settings, nodes: nodes.nodes, updatedAt: now }];
-    });
+      if (settings === record.settings && !nodes.changed) continue;
+      changedRecords.push({ ...record, settings, nodes: nodes.nodes, updatedAt: now });
+    }
     if (changedRecords.length === 0) return;
 
     const results = await Promise.allSettled(

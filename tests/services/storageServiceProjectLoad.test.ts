@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  exists: vi.fn(async () => true),
+  exists: vi.fn(async (_path: string) => true),
+  getProjectDataDir: vi.fn(async (_projectId: string): Promise<string | null> => '/project/data'),
   identifyAsset: vi.fn(),
   walkDirectoryFiles: vi.fn(),
   writeFile: vi.fn(),
@@ -13,7 +14,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({ exists: mocks.exists, writeFile: mocks
 vi.mock('../../src/services/fs/core', () => ({
   buildNodeFileName: (label: string | undefined, ext: string, fallback: string) => `${label || fallback}${ext}`,
   getAssetUrlFromPath: vi.fn(async (path: string) => `asset://${path}`),
-  getProjectDataDir: vi.fn(async () => '/project/data'),
+  getProjectDataDir: mocks.getProjectDataDir,
   joinPath: (...parts: string[]) => parts.join('/'),
   notifyProjectDiskChanged: mocks.notifyProjectDiskChanged,
   resolveUniqueDestPath: mocks.resolveUniqueDestPath,
@@ -38,9 +39,11 @@ import { loadProjectData, saveProject } from '../../src/services/storageService'
 describe('project loading tolerates asset recovery failures', () => {
   beforeEach(() => {
     mocks.exists.mockResolvedValue(true);
+    mocks.getProjectDataDir.mockResolvedValue('/project/data');
     mocks.identifyAsset.mockRejectedValue(new Error('asset index unavailable'));
     mocks.walkDirectoryFiles.mockRejectedValue(new Error('directory scan unavailable'));
     mocks.resolveUniqueDestPath.mockImplementation(async (dir: string, name: string) => `${dir}/${name}`);
+    mocks.writeFile.mockResolvedValue(undefined);
   });
 
   it('returns the persisted canvas when scanning and indexing an asset fail', async () => {
@@ -282,10 +285,11 @@ describe('project loading tolerates asset recovery failures', () => {
   });
 
   it('moves legacy inline generated media to a project file before saving', async () => {
-    mocks.identifyAsset.mockResolvedValue({
+    mocks.exists.mockResolvedValueOnce(false).mockResolvedValue(true);
+    mocks.identifyAsset.mockImplementation(async (path: string) => ({
       assetId: 'asset-generated',
-      relativePath: '自定义接口图片.png',
-    });
+      relativePath: path.split('/').pop(),
+    }));
     const projectId = `project-inline-${Date.now()}`;
     const inline = 'data:image/png;base64,AQID';
 
@@ -308,28 +312,28 @@ describe('project loading tolerates asset recovery failures', () => {
       edges: [],
     });
 
-    expect(mocks.writeFile).toHaveBeenCalledWith(
-      '/project/data/自定义接口图片.png',
-      new Uint8Array([1, 2, 3]),
-    );
+    const writtenPath = mocks.writeFile.mock.calls[0][0] as string;
+    expect(writtenPath).toMatch(/^\/project\/data\/embedded-image-[a-f0-9]{20}\.png$/);
+    expect(mocks.writeFile).toHaveBeenCalledWith(writtenPath, new Uint8Array([1, 2, 3]));
     const record = await getProjectById(projectId) as { nodes: Array<{ data: Record<string, unknown> }> };
     expect(record.nodes[0].data).toMatchObject({
       assetId: 'asset-generated',
-      relativePath: '自定义接口图片.png',
-      imageUrl: 'asset:///project/data/自定义接口图片.png',
-      sourceUrl: 'asset:///project/data/自定义接口图片.png',
-      thumbnailUrl: 'asset:///project/data/自定义接口图片.png',
-      output: 'asset:///project/data/自定义接口图片.png',
+      relativePath: writtenPath.split('/').pop(),
+      imageUrl: `asset://${writtenPath}`,
+      sourceUrl: `asset://${writtenPath}`,
+      thumbnailUrl: `asset://${writtenPath}`,
+      output: `asset://${writtenPath}`,
     });
     expect(record.nodes[0].data).not.toHaveProperty('filePath');
     expect(JSON.stringify(record.nodes[0])).not.toContain('data:image');
   });
 
   it('automatically migrates inline media when an existing project is loaded', async () => {
-    mocks.identifyAsset.mockResolvedValue({
+    mocks.exists.mockResolvedValueOnce(false).mockResolvedValue(true);
+    mocks.identifyAsset.mockImplementation(async (path: string) => ({
       assetId: 'asset-loaded',
-      relativePath: '旧生成视频.mp4',
-    });
+      relativePath: path.split('/').pop(),
+    }));
     const projectId = `project-inline-load-${Date.now()}`;
     const inline = 'data:video/mp4;base64,AQID';
     await saveProjectToDb({
@@ -353,17 +357,115 @@ describe('project loading tolerates asset recovery failures', () => {
     const loaded = await loadProjectData(projectId);
     const stored = await getProjectById(projectId) as { nodes: Array<{ data: Record<string, unknown> }> };
 
-    expect(mocks.writeFile).toHaveBeenCalledWith(
-      '/project/data/旧生成视频.mp4',
-      new Uint8Array([1, 2, 3]),
-    );
+    const writtenPath = mocks.writeFile.mock.calls[0][0] as string;
+    expect(writtenPath).toMatch(/^\/project\/data\/embedded-video-[a-f0-9]{20}\.mp4$/);
+    expect(mocks.writeFile).toHaveBeenCalledWith(writtenPath, new Uint8Array([1, 2, 3]));
     expect((loaded?.nodes as Array<{ data: Record<string, unknown> }>)[0].data).toMatchObject({
-      filePath: '/project/data/旧生成视频.mp4',
-      videoUrl: 'asset:///project/data/旧生成视频.mp4',
-      sourceUrl: 'asset:///project/data/旧生成视频.mp4',
-      output: 'asset:///project/data/旧生成视频.mp4',
+      filePath: writtenPath,
+      videoUrl: `asset://${writtenPath}`,
+      sourceUrl: `asset://${writtenPath}`,
+      output: `asset://${writtenPath}`,
     });
     expect(JSON.stringify(stored.nodes[0])).not.toContain('data:video');
+  });
+
+  it('migrates every explicit nested media field and reuses content-addressed files', async () => {
+    const existingPaths = new Set<string>();
+    mocks.exists.mockImplementation(async (path: string) => existingPaths.has(path));
+    mocks.writeFile.mockImplementation(async (path: string) => {
+      existingPaths.add(path);
+    });
+    mocks.identifyAsset.mockImplementation(async (path: string) => ({
+      assetId: `asset-${path.split('/').pop()}`,
+      relativePath: path.split('/').pop(),
+    }));
+    const projectId = `project-nested-inline-${Date.now()}`;
+    const first = 'data:image/png;base64,AQID';
+    const second = 'data:image/png;base64,BAUG';
+    const project = {
+      id: projectId,
+      name: 'Nested inline media',
+      createdAt: 1,
+      updatedAt: 2,
+      nodes: [{
+        id: 'nested-node',
+        data: {
+          type: 'ai-image',
+          imageUrl: first,
+          filePath: '/project/data/missing.png',
+          mattingMask: first,
+          annotation: second,
+          storyboardOverrides: [{ url: first }],
+          shotlistRows: [{
+            id: 'shot-1',
+            shotNo: '1',
+            frame: { nodeId: 'source-1', kind: 'image', url: second },
+          }],
+          videoReferences: [{
+            id: 'reference-1',
+            url: first,
+            kind: 'frame',
+            role: 'reference',
+          }],
+          directorCaptureUrls: [second],
+        },
+      }],
+      edges: [],
+      settings: {
+        visualStyle: {
+          styleReference: { imageUrl: first, fileName: 'style.png' },
+        },
+      },
+    } as Parameters<typeof saveProject>[0];
+
+    await saveProject(project);
+    await saveProject(project);
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(2);
+    const record = await getProjectById(projectId) as unknown as {
+      nodes: Array<{ data: {
+        filePath?: string;
+        storyboardOverrides: Array<Record<string, unknown>>;
+        shotlistRows: Array<{ frame: Record<string, unknown> }>;
+        videoReferences: Array<{ url: string }>;
+        directorCaptureUrls: string[];
+      } }>;
+      settings: { visualStyle: { styleReference: Record<string, unknown> } };
+    };
+    expect(JSON.stringify(record)).not.toContain('data:image');
+    expect(record.nodes[0].data.filePath).not.toBe('/project/data/missing.png');
+    expect(record.nodes[0].data.storyboardOverrides[0]).toEqual(expect.objectContaining({
+      assetId: expect.any(String),
+      relativePath: expect.stringMatching(/^embedded-image-/),
+      url: expect.stringMatching(/^asset:\/\/\/project\/data\/embedded-image-/),
+    }));
+    expect(record.nodes[0].data.shotlistRows[0].frame).toEqual(expect.objectContaining({
+      assetId: expect.any(String),
+      relativePath: expect.stringMatching(/^embedded-image-/),
+    }));
+    expect(record.nodes[0].data.videoReferences[0].url)
+      .toMatch(/^asset:\/\/\/project\/data\/embedded-image-/);
+    expect(record.nodes[0].data.directorCaptureUrls[0])
+      .toMatch(/^asset:\/\/\/project\/data\/embedded-image-/);
+    expect(record.settings.visualStyle.styleReference).toEqual(expect.objectContaining({
+      assetId: expect.any(String),
+      relativePath: expect.stringMatching(/^embedded-image-/),
+    }));
+  });
+
+  it('refuses to persist inline media when no project directory is available', async () => {
+    mocks.getProjectDataDir.mockResolvedValue(null);
+    const projectId = `project-no-directory-${Date.now()}`;
+
+    await expect(saveProject({
+      id: projectId,
+      name: 'No directory',
+      createdAt: 1,
+      updatedAt: 2,
+      nodes: [{ id: 'inline-node', data: { imageUrl: 'data:image/png;base64,AQID' } }],
+      edges: [],
+    })).rejects.toThrow('没有项目目录');
+    await expect(getProjectById(projectId)).resolves.toBeUndefined();
   });
 
   it('persists the last successfully opened project in metadata', async () => {

@@ -29,14 +29,12 @@ import {
   type CustomStyleRecord,
 } from './indexedDbService';
 import { exists, writeFile } from '@tauri-apps/plugin-fs';
-import type { BaseNodeData, ProjectSettings, StoryboardCellOverride } from '../types';
+import type { BaseNodeData, ProjectSettings } from '../types';
 import {
-  buildNodeFileName,
   getAssetUrlFromPath,
   getProjectDataDir,
   joinPath,
   notifyProjectDiskChanged,
-  resolveUniqueDestPath,
   stripVerbatimPrefix,
 } from './fs/core';
 import { walkDirectoryFiles } from './fs/assetLibrary';
@@ -44,6 +42,11 @@ import { identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
 import type { DramaAssetLibrary } from '../types/dramaAssets';
 import { normalizeDramaAssetLibrary } from '../types/dramaAssets';
 import { restoreConfigSecrets, stripConfigSecrets } from './providerSecretService';
+import {
+  decodeDataUrlBytesAsync,
+  MEDIA_DATA_URL_BYTE_LIMITS,
+  sha256BytesHex,
+} from './mediaDataUrl';
 
 interface PersistedNodeLike {
   data?: BaseNodeData;
@@ -73,13 +76,45 @@ const NODE_MEDIA_URL_KEYS = [
   'thumbnailUrl',
   'sourceUrl',
   'output',
+  'mattingMask',
+  'annotation',
 ] as const;
+
+const ASSET_REFERENCE_URL_KEYS = ['imageUrl', 'videoUrl', 'audioUrl', 'url'] as const;
+const NODE_PRIMARY_MEDIA_KEYS = new Set<string>(['imageUrl', 'videoUrl', 'audioUrl', 'output']);
+
+interface MaterializedInlineMedia {
+  filePath: string;
+  assetUrl: string;
+}
+
+interface MediaSerializationContext {
+  projectId: string;
+  projectDir: string;
+  cache: Map<string, Promise<MaterializedInlineMedia>>;
+}
+
+type InlineMediaKind = keyof typeof MEDIA_DATA_URL_BYTE_LIMITS;
 
 function isTransientMediaValue(value: unknown): value is string {
   return typeof value === 'string' && (/^data:(?:image|video|audio)\//i.test(value) || /^blob:/i.test(value));
 }
 
-function inlineMediaExtension(source: string, data: BaseNodeData): string {
+function inferInlineMediaKind(
+  source: string,
+  key: string,
+  data: Record<string, unknown>,
+): InlineMediaKind {
+  if (/^data:image\//i.test(source)) return 'image';
+  if (/^data:video\//i.test(source)) return 'video';
+  if (/^data:audio\//i.test(source)) return 'audio';
+  const hint = `${key} ${String(data.type ?? '')} ${String(data.kind ?? '')}`.toLowerCase();
+  if (hint.includes('video')) return 'video';
+  if (hint.includes('audio') || hint.includes('voice')) return 'audio';
+  return 'image';
+}
+
+function inlineMediaExtension(source: string, kind: InlineMediaKind): string {
   const mime = /^data:([^;,]+)/i.exec(source)?.[1]?.toLowerCase();
   const byMime: Record<string, string> = {
     'image/png': '.png',
@@ -94,55 +129,94 @@ function inlineMediaExtension(source: string, data: BaseNodeData): string {
     'audio/ogg': '.ogg',
   };
   if (mime && byMime[mime]) return byMime[mime];
-  if (data.type === 'ai-video' || data.type === 'source-video') return '.mp4';
-  if (data.type === 'ai-audio' || data.type === 'source-audio') return '.mp3';
+  if (kind === 'video') return '.mp4';
+  if (kind === 'audio') return '.mp3';
   return '.png';
 }
 
-async function inlineMediaBytes(source: string): Promise<Uint8Array> {
-  const match = /^data:[^,]*;base64,([\s\S]*)$/i.exec(source);
-  if (match) {
-    const binary = atob(match[1].replace(/\s/g, ''));
-    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+async function inlineMediaBytes(source: string, kind: InlineMediaKind): Promise<Uint8Array> {
+  if (/^data:/i.test(source)) {
+    return decodeDataUrlBytesAsync(source, {
+      maxBytes: MEDIA_DATA_URL_BYTE_LIMITS[kind],
+      label: '项目内嵌媒体',
+    });
   }
   const response = await fetch(source);
   if (!response.ok) throw new Error(`读取已存储媒体失败：HTTP ${response.status}`);
-  return new Uint8Array(await response.arrayBuffer());
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > MEDIA_DATA_URL_BYTE_LIMITS[kind]) {
+    throw new Error('项目内嵌媒体超过允许的内存迁移上限');
+  }
+  return bytes;
 }
 
-/** 将旧项目节点中的内嵌媒体迁移到项目目录，防止它再次写入 IndexedDB。 */
-async function materializeInlineNodeMedia(
-  data: BaseNodeData,
-  projectDir: string,
-): Promise<BaseNodeData> {
-  const source = NODE_MEDIA_URL_KEYS
-    .map((key) => data[key])
-    .find(isTransientMediaValue);
-  if (!source) return data;
+function inlineMediaPrefix(kind: InlineMediaKind): string {
+  if (kind === 'video') return 'embedded-video';
+  if (kind === 'audio') return 'embedded-audio';
+  return 'embedded-image';
+}
 
-  let filePath = data.filePath as string | undefined;
-  if (!filePath && data.relativePath) {
-    const relativeCandidate = joinPath(projectDir, data.relativePath);
-    if (await exists(relativeCandidate).catch(() => false)) filePath = relativeCandidate;
+async function persistTransientMedia(
+  source: string,
+  context: MediaSerializationContext,
+  kind: InlineMediaKind,
+): Promise<MaterializedInlineMedia> {
+  const cached = context.cache.get(source);
+  if (cached) return cached;
+  const pending = (async () => {
+    const bytes = await inlineMediaBytes(source, kind);
+    const digest = await sha256BytesHex(bytes);
+    const fileName = `${inlineMediaPrefix(kind)}-${digest.slice(0, 20)}${inlineMediaExtension(source, kind)}`;
+    const filePath = joinPath(context.projectDir, fileName);
+    if (!await exists(filePath).catch(() => false)) {
+      await writeFile(filePath, bytes);
+      notifyProjectDiskChanged();
+    }
+    return { filePath, assetUrl: await getAssetUrlFromPath(filePath) };
+  })();
+  context.cache.set(source, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    context.cache.delete(source);
+    throw error;
   }
-  if (!filePath || !filePath.replace(/\\/g, '/').toLowerCase().startsWith(`${projectDir.replace(/\\/g, '/').toLowerCase()}/`)) {
-    const extension = inlineMediaExtension(source, data);
-    const fallback = data.type === 'ai-video' ? 'generated-video' : 'generated-image';
-    const fileName = buildNodeFileName(data.label, extension, fallback);
-    filePath = await resolveUniqueDestPath(projectDir, fileName);
-    await writeFile(filePath, await inlineMediaBytes(source));
-    notifyProjectDiskChanged();
-  }
+}
 
-  const assetUrl = await getAssetUrlFromPath(filePath);
-  const migrated = { ...data, filePath } as BaseNodeData & Record<string, unknown>;
-  for (const key of NODE_MEDIA_URL_KEYS) {
-    const value = migrated[key];
+async function materializeMediaFields<T extends Record<string, unknown>>(
+  data: T,
+  keys: readonly string[],
+  context: MediaSerializationContext,
+  primaryKeys: ReadonlySet<string> = new Set(),
+): Promise<T> {
+  let migrated: Record<string, unknown> | null = null;
+  let primaryFilePath: string | undefined;
+  for (const key of keys) {
+    const value = (migrated ?? data)[key];
     if (!isTransientMediaValue(value)) continue;
-    // 同一份生成结果的重复字段统一指向本地文件；旧的独立临时缩略图无法恢复时直接清除。
-    migrated[key] = value === source ? assetUrl : undefined;
+    const persisted = await persistTransientMedia(
+      value,
+      context,
+      inferInlineMediaKind(value, key, data),
+    );
+    if (!migrated) migrated = { ...data };
+    migrated[key] = persisted.assetUrl;
+    if (!primaryFilePath && primaryKeys.has(key)) primaryFilePath = persisted.filePath;
   }
-  return migrated;
+  if (migrated && primaryFilePath) migrated.filePath = primaryFilePath;
+  return (migrated ?? data) as T;
+}
+
+async function materializeAssetReference<T extends AssetReferenceLike>(
+  data: T,
+  context: MediaSerializationContext,
+): Promise<T> {
+  return materializeMediaFields(
+    data as T & Record<string, unknown>,
+    ASSET_REFERENCE_URL_KEYS,
+    context,
+    new Set(ASSET_REFERENCE_URL_KEYS),
+  );
 }
 
 async function serializeAssetReference<T extends AssetReferenceLike>(
@@ -154,6 +228,7 @@ async function serializeAssetReference<T extends AssetReferenceLike>(
   const normalizedPath = data.filePath.replace(/\\/g, '/');
   const normalizedDir = projectDir.replace(/\\/g, '/').replace(/\/+$/, '');
   if (!normalizedPath.toLowerCase().startsWith(`${normalizedDir.toLowerCase()}/`)) return data;
+  if (!await exists(normalizedPath).catch(() => false)) return data;
 
   // ponytail: 文件仍停在记录的相对路径上时直接沿用旧身份，省掉每次自动保存对每个节点的
   // stat + 索引读写；代价是索引里的 size/mtime 不会被保存刷新（加载扫描和资产库列举会刷）。
@@ -178,28 +253,141 @@ async function serializeAssetReference<T extends AssetReferenceLike>(
   return serialized;
 }
 
-async function serializeProjectNodes(nodes: unknown, projectId: string): Promise<unknown> {
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
+
+function assetReferenceContainsInlineMedia(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const record = data as Record<string, unknown>;
+  return ASSET_REFERENCE_URL_KEYS.some((key) => isTransientMediaValue(record[key]));
+}
+
+function nodeDataContainsInlineMedia(data: BaseNodeData | undefined): boolean {
+  if (!data) return false;
+  if (NODE_MEDIA_URL_KEYS.some((key) => isTransientMediaValue(data[key]))) return true;
+  if ((data.storyboardOverrides ?? []).some(assetReferenceContainsInlineMedia)) return true;
+  if ((data.shotlistRows ?? []).some((row) => assetReferenceContainsInlineMedia(row.frame))) return true;
+  if ((data.videoReferences ?? []).some(assetReferenceContainsInlineMedia)) return true;
+  return Array.isArray(data.directorCaptureUrls) && data.directorCaptureUrls.some(isTransientMediaValue);
+}
+
+async function serializeProjectNodes(
+  nodes: unknown,
+  context: MediaSerializationContext,
+): Promise<unknown> {
   if (!Array.isArray(nodes)) return nodes;
-  const projectDir = await getProjectDataDir(projectId);
-  if (!projectDir) return nodes;
-  return Promise.all((nodes as PersistedNodeLike[]).map(async (node) => {
+  const concurrency = projectNodesContainInlineMedia(nodes) ? 1 : 4;
+  return mapWithConcurrency(nodes as PersistedNodeLike[], concurrency, async (node) => {
     if (!node.data) return node;
-    let data = await materializeInlineNodeMedia(node.data, projectDir);
-    data = await serializeAssetReference(data, projectId, projectDir);
+    let data = await materializeMediaFields(
+      node.data as BaseNodeData & Record<string, unknown>,
+      NODE_MEDIA_URL_KEYS,
+      context,
+      NODE_PRIMARY_MEDIA_KEYS,
+    );
+    data = await serializeAssetReference(data, context.projectId, context.projectDir);
     if (Array.isArray(data.storyboardOverrides)) {
-      const storyboardOverrides = await Promise.all(data.storyboardOverrides.map(async (override) => (
-        override ? serializeAssetReference(override as StoryboardCellOverride, projectId, projectDir) : null
-      )));
+      const storyboardOverrides = await mapWithConcurrency(data.storyboardOverrides, 4, async (override) => {
+        if (!override) return null;
+        const materialized = await materializeAssetReference(override, context);
+        return serializeAssetReference(materialized, context.projectId, context.projectDir);
+      });
       data = { ...data, storyboardOverrides };
     }
+    if (Array.isArray(data.shotlistRows)) {
+      const shotlistRows = await mapWithConcurrency(data.shotlistRows, 4, async (row) => {
+        if (!row.frame) return row;
+        const materialized = await materializeAssetReference(row.frame, context);
+        const frame = await serializeAssetReference(materialized, context.projectId, context.projectDir);
+        return { ...row, frame };
+      });
+      data = { ...data, shotlistRows };
+    }
+    if (Array.isArray(data.videoReferences)) {
+      const videoReferences = await mapWithConcurrency(data.videoReferences, 4, async (reference) => {
+        const materialized = await materializeAssetReference(reference, context);
+        return serializeAssetReference(materialized, context.projectId, context.projectDir);
+      });
+      data = { ...data, videoReferences };
+    }
+    if (Array.isArray(data.directorCaptureUrls)) {
+      const existingPaths = Array.isArray(data.directorCaptureFilePaths)
+        ? data.directorCaptureFilePaths as string[]
+        : [];
+      const captures = await mapWithConcurrency(data.directorCaptureUrls, 2, async (url, index) => {
+        if (!isTransientMediaValue(url)) return { url, filePath: existingPaths[index] };
+        const persisted = await persistTransientMedia(url, context, 'image');
+        return { url: persisted.assetUrl, filePath: persisted.filePath };
+      });
+      data = {
+        ...data,
+        directorCaptureUrls: captures.map((capture) => capture.url),
+        directorCaptureFilePaths: captures.map((capture) => capture.filePath),
+      };
+    }
     return { ...node, data };
-  }));
+  });
 }
 
 function projectNodesContainInlineMedia(nodes: unknown): boolean {
-  return Array.isArray(nodes) && (nodes as PersistedNodeLike[]).some((node) => (
-    node.data && NODE_MEDIA_URL_KEYS.some((key) => isTransientMediaValue(node.data?.[key]))
-  ));
+  return Array.isArray(nodes)
+    && (nodes as PersistedNodeLike[]).some((node) => nodeDataContainsInlineMedia(node.data));
+}
+
+function projectSettingsContainInlineMedia(settings: ProjectSettings | undefined): boolean {
+  return assetReferenceContainsInlineMedia(settings?.visualStyle?.styleReference);
+}
+
+async function serializeProjectSettings(
+  settings: ProjectSettings | undefined,
+  context: MediaSerializationContext,
+): Promise<ProjectSettings | undefined> {
+  const reference = settings?.visualStyle?.styleReference;
+  if (!settings?.visualStyle || !reference) return settings;
+  const materialized = await materializeAssetReference(reference, context);
+  const styleReference = await serializeAssetReference(
+    materialized,
+    context.projectId,
+    context.projectDir,
+  );
+  return {
+    ...settings,
+    visualStyle: { ...settings.visualStyle, styleReference },
+  };
+}
+
+function dramaAssetsContainInlineMedia(library: DramaAssetLibrary | undefined): boolean {
+  if (!library) return false;
+  return library.characters.some((character) => (
+    isTransientMediaValue(character.imageUrl)
+    || (character.referenceImages ?? []).some(assetReferenceContainsInlineMedia)
+    || (character.voiceClips ?? []).some(assetReferenceContainsInlineMedia)
+    || (character.actions ?? []).some((action) => (
+      (action.media ?? []).some(assetReferenceContainsInlineMedia)
+    ))
+  )) || library.scenes.some((scene) => isTransientMediaValue(scene.imageUrl))
+    || library.props.some((prop) => isTransientMediaValue(prop.imageUrl));
+}
+
+function projectRecordContainsInlineMedia(record: ProjectSaveData): boolean {
+  return projectNodesContainInlineMedia(record.nodes)
+    || projectSettingsContainInlineMedia(record.settings)
+    || dramaAssetsContainInlineMedia(record.dramaAssets);
 }
 
 /** 从展示用的 asset URL 还原本地路径（convertFileSrc 的逆运算），非本地 URL 返回 undefined。 */
@@ -338,9 +526,18 @@ async function refreshProjectAssetIndex(projectId: string, projectDir: string): 
 }
 
 /** 节点记录了资产身份却没解析出磁盘文件 —— 文件多半被外部改名/移动了。 */
+function nodeAssetReferences(node: PersistedNodeLike): AssetReferenceLike[] {
+  if (!node.data) return [];
+  const overrides = Array.isArray(node.data.storyboardOverrides) ? node.data.storyboardOverrides : [];
+  const frames = Array.isArray(node.data.shotlistRows)
+    ? node.data.shotlistRows.map((row) => row.frame).filter(Boolean)
+    : [];
+  const videoReferences = Array.isArray(node.data.videoReferences) ? node.data.videoReferences : [];
+  return [node.data, ...overrides, ...frames, ...videoReferences] as AssetReferenceLike[];
+}
+
 function hasUnresolvedAsset(node: PersistedNodeLike): boolean {
-  const overrides = Array.isArray(node.data?.storyboardOverrides) ? node.data.storyboardOverrides : [];
-  return [node.data as AssetReferenceLike | undefined, ...overrides].some((reference) => (
+  return nodeAssetReferences(node).some((reference) => (
     Boolean(reference && !reference.filePath && (reference.assetId || reference.relativePath))
   ));
 }
@@ -354,10 +551,38 @@ async function restoreProjectNodes(nodes: unknown, projectId: string): Promise<u
     if (!node.data) return node;
     let data = await restoreAssetReferenceSafely(node.data, projectId, projectDir);
     if (Array.isArray(data.storyboardOverrides)) {
-      const storyboardOverrides = await Promise.all(data.storyboardOverrides.map(async (override) => (
+      const storyboardOverrides = await mapWithConcurrency(data.storyboardOverrides, 4, async (override) => (
         override ? restoreAssetReferenceSafely(override, projectId, projectDir) : null
-      )));
+      ));
       data = { ...data, storyboardOverrides };
+    }
+    if (Array.isArray(data.shotlistRows)) {
+      const shotlistRows = await mapWithConcurrency(data.shotlistRows, 4, async (row) => ({
+        ...row,
+        frame: row.frame
+          ? await restoreAssetReferenceSafely(row.frame, projectId, projectDir)
+          : row.frame,
+      }));
+      data = { ...data, shotlistRows };
+    }
+    if (Array.isArray(data.videoReferences)) {
+      const videoReferences = await mapWithConcurrency(data.videoReferences, 4, (reference) => (
+        restoreAssetReferenceSafely(reference, projectId, projectDir)
+      ));
+      data = { ...data, videoReferences };
+    }
+    if (Array.isArray(data.directorCaptureUrls) && Array.isArray(data.directorCaptureFilePaths)) {
+      const directorCaptureUrls = await mapWithConcurrency(
+        data.directorCaptureUrls,
+        2,
+        async (url, index) => {
+          const filePath = data.directorCaptureFilePaths?.[index];
+          return filePath && await exists(filePath).catch(() => false)
+            ? getAssetUrlFromPath(filePath)
+            : url;
+        },
+      );
+      data = { ...data, directorCaptureUrls };
     }
     return { ...node, data };
   };
@@ -370,47 +595,112 @@ async function restoreProjectNodes(nodes: unknown, projectId: string): Promise<u
   return Promise.all((nodes as PersistedNodeLike[]).map(restoreNode));
 }
 
+async function restoreProjectSettings(
+  settings: ProjectSettings | undefined,
+  projectId: string,
+  projectDir: string,
+): Promise<ProjectSettings | undefined> {
+  const reference = settings?.visualStyle?.styleReference;
+  if (!settings?.visualStyle || !reference) return settings;
+  const styleReference = await restoreAssetReferenceSafely(reference, projectId, projectDir);
+  return {
+    ...settings,
+    visualStyle: { ...settings.visualStyle, styleReference },
+  };
+}
+
 /** 角色库参考图与角色声音与画布节点共用本地文件，落库时同样只保留 assetId + relativePath */
 async function serializeProjectDramaAssets(
   library: DramaAssetLibrary | undefined,
-  projectId: string,
+  context: MediaSerializationContext,
 ): Promise<DramaAssetLibrary | undefined> {
-  if (!library?.characters.length) return library;
-  const projectDir = await getProjectDataDir(projectId);
-  if (!projectDir) return library;
-  const characters = await Promise.all(library.characters.map(async (character) => ({
-    ...character,
-    referenceImages: await Promise.all((character.referenceImages ?? []).map((reference) =>
-      serializeAssetReference(reference, projectId, projectDir))),
-    voiceClips: await Promise.all((character.voiceClips ?? []).map((clip) =>
-      serializeAssetReference(clip, projectId, projectDir))),
-  })));
-  return { ...library, characters };
+  if (!library) return library;
+  const serializeReference = async <T extends AssetReferenceLike>(reference: T): Promise<T> => {
+    const materialized = await materializeAssetReference(reference, context);
+    return serializeAssetReference(materialized, context.projectId, context.projectDir);
+  };
+  const characters = await mapWithConcurrency(library.characters, 2, async (character) => {
+    const topLevel = await serializeReference(character);
+    const referenceImages = await mapWithConcurrency(
+      character.referenceImages ?? [],
+      2,
+      serializeReference,
+    );
+    const voiceClips = await mapWithConcurrency(character.voiceClips ?? [], 2, serializeReference);
+    const actions = await mapWithConcurrency(character.actions ?? [], 2, async (action) => ({
+      ...action,
+      media: await mapWithConcurrency(action.media ?? [], 2, serializeReference),
+    }));
+    const primaryReference = referenceImages.find(
+      (reference) => reference.id === character.primaryReferenceImageId,
+    ) ?? referenceImages[0];
+    return {
+      ...topLevel,
+      referenceImages,
+      voiceClips,
+      actions,
+      imageUrl: primaryReference?.imageUrl ?? topLevel.imageUrl,
+    };
+  });
+  const scenes = await mapWithConcurrency(library.scenes, 2, serializeReference);
+  const props = await mapWithConcurrency(library.props, 2, serializeReference);
+  return { ...library, characters, scenes, props };
+}
+
+async function serializeProjectRecord(data: ProjectSaveData): Promise<ProjectSaveData> {
+  const projectDir = await getProjectDataDir(data.id);
+  if (!projectDir) {
+    if (projectRecordContainsInlineMedia(data)) {
+      throw new Error('当前环境没有项目目录，无法将内嵌媒体写入 IndexedDB');
+    }
+    return data;
+  }
+  const context: MediaSerializationContext = {
+    projectId: data.id,
+    projectDir,
+    cache: new Map(),
+  };
+  const nodes = await serializeProjectNodes(data.nodes, context);
+  const settings = await serializeProjectSettings(data.settings, context);
+  const dramaAssets = await serializeProjectDramaAssets(data.dramaAssets, context);
+  return { ...data, nodes, settings, dramaAssets };
 }
 
 async function restoreProjectDramaAssets(
   library: DramaAssetLibrary,
   projectId: string,
 ): Promise<DramaAssetLibrary> {
-  if (!library.characters.length) return library;
   const projectDir = await getProjectDataDir(projectId);
   if (!projectDir) return library;
-  const characters = await Promise.all(library.characters.map(async (character) => {
-    const referenceImages = await Promise.all((character.referenceImages ?? []).map((reference) =>
-      restoreAssetReferenceSafely(reference, projectId, projectDir)));
-    const voiceClips = await Promise.all((character.voiceClips ?? []).map((clip) =>
-      restoreAssetReferenceSafely(clip, projectId, projectDir)));
+  const restoreReference = <T extends AssetReferenceLike>(reference: T): Promise<T> => (
+    restoreAssetReferenceSafely(reference, projectId, projectDir)
+  );
+  const characters = await mapWithConcurrency(library.characters, 2, async (character) => {
+    const topLevel = await restoreReference(character);
+    const referenceImages = await mapWithConcurrency(
+      character.referenceImages ?? [],
+      2,
+      restoreReference,
+    );
+    const voiceClips = await mapWithConcurrency(character.voiceClips ?? [], 2, restoreReference);
+    const actions = await mapWithConcurrency(character.actions ?? [], 2, async (action) => ({
+      ...action,
+      media: await mapWithConcurrency(action.media ?? [], 2, restoreReference),
+    }));
     const primaryReference = referenceImages.find(
       (reference) => reference.id === character.primaryReferenceImageId,
     ) ?? referenceImages[0];
     return {
-      ...character,
+      ...topLevel,
       referenceImages,
       voiceClips,
-      imageUrl: primaryReference?.imageUrl ?? character.imageUrl,
+      actions,
+      imageUrl: primaryReference?.imageUrl ?? topLevel.imageUrl,
     };
-  }));
-  return { ...library, characters };
+  });
+  const scenes = await mapWithConcurrency(library.scenes, 2, restoreReference);
+  const props = await mapWithConcurrency(library.props, 2, restoreReference);
+  return { ...library, characters, scenes, props };
 }
 
 export interface ProjectSaveData {
@@ -437,14 +727,12 @@ export interface ProjectSaveData {
   series?: import('../types').ProjectSeriesInfo;
 }
 
+export type ProjectSummaryData = Omit<ProjectSaveData, 'nodes' | 'edges' | 'groups' | 'dramaAssets'>;
+
 /** 保存项目到 IndexedDB */
 export async function saveProject(data: ProjectSaveData): Promise<string> {
   try {
-    const payload: ProjectSaveData = {
-      ...data,
-      nodes: await serializeProjectNodes(data.nodes, data.id),
-      dramaAssets: await serializeProjectDramaAssets(data.dramaAssets, data.id),
-    };
+    const payload = await serializeProjectRecord(data);
     await saveProjectToDb(payload);
     console.log('Project saved to IndexedDB:', data.id);
     return data.id;
@@ -455,7 +743,7 @@ export async function saveProject(data: ProjectSaveData): Promise<string> {
 }
 
 /** 从 IndexedDB 加载所有项目元数据 */
-export async function loadProjectsList(): Promise<ProjectSaveData[]> {
+export async function loadProjectsList(): Promise<ProjectSummaryData[]> {
   try {
     return await getAllProjects();
   } catch (error) {
@@ -469,28 +757,38 @@ export async function loadProjectData(id: string): Promise<ProjectSaveData | nul
   try {
     const record = await getProjectById(id);
     if (!record) return null;
-    let nodes = record.nodes;
-    if (projectNodesContainInlineMedia(nodes)) {
+    let persistedRecord = record as ProjectSaveData;
+    if (projectRecordContainsInlineMedia(persistedRecord)) {
       try {
-        nodes = await serializeProjectNodes(nodes, id);
-        await saveProjectToDb({ ...record, nodes });
+        persistedRecord = await serializeProjectRecord(persistedRecord);
+        await saveProjectToDb(persistedRecord);
         console.log('[项目加载] 已将旧的内嵌媒体迁移到项目目录:', id);
       } catch (error) {
         console.warn('[项目加载] 内嵌媒体迁移失败，未覆盖原项目数据', { projectId: id, error });
       }
     }
+    let nodes = persistedRecord.nodes;
     try {
       nodes = await restoreProjectNodes(nodes, id);
     } catch {
       console.warn('[项目加载] 资产恢复未完成，已使用原始画布数据', { projectId: id });
     }
-    let dramaAssets = normalizeDramaAssetLibrary((record as ProjectSaveData).dramaAssets);
+    const projectDir = await getProjectDataDir(id);
+    let settings = persistedRecord.settings;
+    if (projectDir) {
+      try {
+        settings = await restoreProjectSettings(settings, id, projectDir);
+      } catch {
+        console.warn('[项目加载] 项目风格参考图恢复失败，已保留原始设置', { projectId: id });
+      }
+    }
+    let dramaAssets = normalizeDramaAssetLibrary(persistedRecord.dramaAssets);
     try {
       dramaAssets = await restoreProjectDramaAssets(dramaAssets, id);
     } catch {
       console.warn('[项目加载] 角色库本地文件恢复未完成，已使用原始角色数据', { projectId: id });
     }
-    return { ...record, nodes, dramaAssets } as ProjectSaveData;
+    return { ...persistedRecord, nodes, settings, dramaAssets };
   } catch (error) {
     console.error('Load project data failed:', error);
     return null;

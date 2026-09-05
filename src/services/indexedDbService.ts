@@ -19,17 +19,18 @@ import {
   STORE_METADATA,
   STORE_PROJECT_MEMORIES,
   STORE_PROJECT_VISUAL_DESCRIPTIONS,
+  STORE_PROJECT_SUMMARIES,
   STORE_PROJECTS,
   STORE_TOOLBAR_LAYOUTS,
 } from './indexedDb/schema';
+import {
+  toProjectSummaryRecord,
+  type ProjectSummaryRecord,
+} from './indexedDb/projectSummary';
 
 const LAST_ACTIVE_PROJECT_KEY = 'last-active-project';
 
-interface ProjectRecord {
-  id: string;
-  name: string;
-  createdAt: number;
-  updatedAt: number;
+export interface ProjectRecord extends ProjectSummaryRecord {
   nodes: unknown;
   edges: unknown;
 }
@@ -39,18 +40,21 @@ export * from './indexedDb/videoEditorRepository';
 
 /** 保存整个项目（含 nodes/edges）到 IndexedDB */
 export async function saveProjectToDb(record: ProjectRecord): Promise<void> {
+  const summary = toProjectSummaryRecord(record);
+  if (!summary) throw new Error('项目摘要无效，无法写入 IndexedDB');
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_PROJECTS, 'readwrite');
-    const store = tx.objectStore(STORE_PROJECTS);
-    const request = store.put(record);
+    const tx = db.transaction([STORE_PROJECTS, STORE_PROJECT_SUMMARIES], 'readwrite');
+    const projectRequest = tx.objectStore(STORE_PROJECTS).put(record);
+    const summaryRequest = tx.objectStore(STORE_PROJECT_SUMMARIES).put(summary);
     let settled = false;
     const fail = (error: DOMException | null) => {
       if (settled) return;
       settled = true;
       reject(error ?? new Error(`项目 ${record.id} 的 IndexedDB 写入失败`));
     };
-    request.onerror = () => fail(request.error);
+    projectRequest.onerror = () => fail(projectRequest.error);
+    summaryRequest.onerror = () => fail(summaryRequest.error);
     tx.oncomplete = () => {
       if (settled) return;
       settled = true;
@@ -113,6 +117,7 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction([
       STORE_PROJECTS,
+      STORE_PROJECT_SUMMARIES,
       STORE_CHAT_CONVERSATIONS,
       STORE_CHAT_MESSAGES,
       STORE_AGENT_TASKS,
@@ -122,6 +127,7 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
     ], 'readwrite');
 
     tx.objectStore(STORE_PROJECTS).delete(id);
+    tx.objectStore(STORE_PROJECT_SUMMARIES).delete(id);
 
     const conversationStore = tx.objectStore(STORE_CHAT_CONVERSATIONS);
     const conversationRange = IDBKeyRange.bound([id, 0], [id, Infinity]);
@@ -194,12 +200,12 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
   });
 }
 
-/** 获取全部项目列表（只含元数据，不含 nodes/edges） */
-export async function getAllProjects(): Promise<ProjectRecord[]> {
+/** 获取全部项目列表摘要；不会读取 projects store 中的 nodes/edges。 */
+export async function getAllProjects(): Promise<ProjectSummaryRecord[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_PROJECTS, 'readonly');
-    const store = tx.objectStore(STORE_PROJECTS);
+    const tx = db.transaction(STORE_PROJECT_SUMMARIES, 'readonly');
+    const store = tx.objectStore(STORE_PROJECT_SUMMARIES);
     const request = store.getAll();
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);

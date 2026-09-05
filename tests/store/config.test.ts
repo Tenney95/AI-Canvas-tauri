@@ -11,6 +11,7 @@ const fileMocks = vi.hoisted(() => {
       missingSecrets: [] as string[],
     })),
     loadProjectsList: vi.fn(async () => [] as Array<Record<string, unknown>>),
+    loadProjectData: vi.fn(async () => null as Record<string, unknown> | null),
     saveProject: vi.fn(async (record: { id: string }) => record.id),
     saveConfig: vi.fn<(config: unknown) => Promise<string[]>>(async () => []),
     setBaseDataDir: vi.fn(),
@@ -34,6 +35,8 @@ beforeEach(() => {
   fileMocks.saveConfig.mockResolvedValue([]);
   fileMocks.loadProjectsList.mockReset();
   fileMocks.loadProjectsList.mockResolvedValue([]);
+  fileMocks.loadProjectData.mockReset();
+  fileMocks.loadProjectData.mockResolvedValue(null);
   fileMocks.saveProject.mockClear();
   fileMocks.setBaseDataDir.mockClear();
   fileMocks.syncAuthorizedDirectories.mockReset();
@@ -509,7 +512,7 @@ describe('config hydration guard', () => {
       'ai-image': 'apimart/image-model',
       'ai-video': 'other/video-model',
     }));
-    fileMocks.loadProjectsList.mockResolvedValue([{
+    const otherProjectRecord = {
       id: 'other-project',
       name: '其他项目',
       createdAt: 2,
@@ -531,7 +534,15 @@ describe('config hydration guard', () => {
         },
       ],
       edges: [],
+    };
+    fileMocks.loadProjectsList.mockResolvedValue([{
+      id: otherProjectRecord.id,
+      name: otherProjectRecord.name,
+      createdAt: otherProjectRecord.createdAt,
+      updatedAt: otherProjectRecord.updatedAt,
+      settings: otherProjectRecord.settings,
     }]);
+    fileMocks.loadProjectData.mockResolvedValue(otherProjectRecord);
     useAppStore.setState({
       config: {
         providers: {
@@ -662,6 +673,7 @@ describe('config hydration guard', () => {
         }),
       ]),
     }));
+    expect(fileMocks.loadProjectData).toHaveBeenCalledWith('other-project');
   });
 
   it('keeps RunningHub standard model references when only workflow credentials are removed', async () => {
