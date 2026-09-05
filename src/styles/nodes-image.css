@@ -412,7 +412,7 @@
 }
 
 /*
- * 重型图片编辑器的静态景深层：中心约 86%、边缘约 92% 遮暗。
+ * 重型图片编辑器的静态景深层：中心约 94%、边缘约 97% 遮暗。
  * 通过多层纯色渐变保留“磨砂”层级，但不采样底层画布，避免整窗 backdrop blur 的离屏纹理。
  */
 body > :is(
@@ -427,6 +427,7 @@ body > :is(
   background:
     radial-gradient(ellipse at center, var(--black-alpha-30) 0%, var(--black-alpha-60) 100%),
     linear-gradient(var(--black-alpha-50), var(--black-alpha-50)),
+    linear-gradient(var(--black-alpha-60), var(--black-alpha-60)),
     var(--black-alpha-60);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
