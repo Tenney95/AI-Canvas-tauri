@@ -36,6 +36,7 @@ mod file_transfer;
 mod local_fonts;
 #[path = "mcp/bridge.rs"]
 mod mcp_bridge;
+#[cfg(feature = "local-onnx")]
 #[path = "media/model_mirror.rs"]
 mod model_mirror;
 #[cfg(feature = "local-onnx")]
