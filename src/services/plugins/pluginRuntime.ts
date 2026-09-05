@@ -872,6 +872,7 @@ async function executeModelEffect(
   nodeId: string,
   /** 已通过来源校验的参考图：连线输入与插件显式提交的 imageUrls。 */
   imageUrls: string[],
+  signal?: AbortSignal,
 ): Promise<PluginJsonValue> {
   const model = models.find((item) => item.id === effect.modelId);
   if (!model) throw new Error('插件请求的模型不在当前可调用列表中');
@@ -886,7 +887,7 @@ async function executeModelEffect(
       imageSize: stringParameter(parameters, 'imageSize'),
       aspectRatio: stringParameter(parameters, 'aspectRatio'),
       image_urls: imageUrls,
-    });
+    }, signal);
     return { url: result.url };
   }
   if (model.category === 'video') {
@@ -899,7 +900,7 @@ async function executeModelEffect(
       seedanceRatio: stringParameter(parameters, 'aspectRatio'),
       seedanceDuration: numberParameter(parameters, 'duration'),
       generateAudio: typeof parameters.generateAudio === 'boolean' ? parameters.generateAudio : undefined,
-    });
+    }, signal);
     return { url: result.url };
   }
   const result = await generateAudio({
@@ -911,7 +912,7 @@ async function executeModelEffect(
     musicLyrics: stringParameter(parameters, 'lyrics'),
     musicBpm: numberParameter(parameters, 'bpm'),
     musicDuration: numberParameter(parameters, 'duration'),
-  });
+  }, signal);
   return { url: result.url, title: result.title ?? null, lyrics: result.lyrics ?? null };
 }
 
@@ -969,6 +970,7 @@ async function executeHostEffect(
       || !current.nodes.some((node) => node.id === nodeId)) throw new Error('画布已变化，插件操作已撤销');
   };
   try {
+    if (context.signal?.aborted) throw new Error('插件操作已取消');
     if (effect.type === 'model.generate') {
       if (!context.permissions.includes('models.invoke')) throw new Error('插件未声明 models.invoke 权限');
       const resourceImageUrls = await Promise.all((effect.resourceIds ?? []).map(async (resourceId) => {
@@ -985,10 +987,13 @@ async function executeHostEffect(
         ...(effect.imageUrls ?? []),
         ...resourceImageUrls,
       ];
+      assertFresh();
+      const value = await executeModelEffect(effect, models, nodeId, imageUrls, context.signal);
+      assertFresh();
       return {
         type: effect.type,
         ok: true,
-        value: await executeModelEffect(effect, models, nodeId, imageUrls),
+        value,
       };
     }
     if (effect.type === 'resource.readText') {
@@ -1394,6 +1399,8 @@ async function preparePluginNodeSet(options: {
       id: `edge-${generateId()}`,
       source: nodeIds.get(edge.sourceKey)!,
       target: nodeIds.get(edge.targetKey)!,
+      sourceHandle: 'right',
+      targetHandle: 'left',
     }));
     return { nodes, edges, rollback };
   } catch (error) {
@@ -1411,6 +1418,7 @@ export async function executeNodePluginTool(
     guard: CanvasDerivationGuard;
     resources: PluginInvocationResources;
     trustedMediaReferences?: Set<string>;
+    signal?: AbortSignal;
   },
 ): Promise<void> {
   const before = useAppStore.getState();
@@ -1453,8 +1461,15 @@ export async function executeNodePluginTool(
     ? executionLease?.trustedMediaReferences ?? new Set<string>()
     : undefined;
   let effectResult: PluginNodeHostEffectResult | undefined;
+  const assertExecutionFresh = () => {
+    if (executionLease?.signal?.aborted) throw new Error('插件操作已取消');
+    const current = requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest, revisionDigest);
+    if (!isCanvasDerivationFresh(guard, current)) throw new Error('画布已变化，插件结果未写入');
+    return current;
+  };
 
   try {
+    assertExecutionFresh();
     const resources = executionLease?.resources ?? await mintPluginInvocationResources({
       pluginId: pluginTool.pluginId,
       sourceDigest,
@@ -1479,7 +1494,7 @@ export async function executeNodePluginTool(
       state: useAppStore.getState(),
     });
     for (let iteration = 0; iteration <= MAX_HOST_EFFECTS; iteration += 1) {
-      requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest, revisionDigest);
+      assertExecutionFresh();
       const input = buildInvocationInput(
         projectId,
         sourceNode,
@@ -1500,7 +1515,7 @@ export async function executeNodePluginTool(
         invocationId,
         input,
       });
-      requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest, revisionDigest);
+      assertExecutionFresh();
       const outputNodeType = pluginTool.tool.output.mode === 'create-node'
         ? pluginTool.tool.output.nodeType ?? sourceNode.data.type
         : sourceNode.data.type;
@@ -1520,20 +1535,20 @@ export async function executeNodePluginTool(
             permissions: pluginTool.permissions,
             resources,
             resourceReadContext: resourceReadContext(),
+            signal: executionLease?.signal,
           },
           nodeId,
           result.effect,
           models,
         );
-        requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest, revisionDigest);
+        assertExecutionFresh();
         if (trustedMediaReferences && result.effect.type === 'model.generate') {
           addTrustedModelEffectReference(result.effect, effectResult, models, trustedMediaReferences);
         }
         continue;
       }
 
-      const current = requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest, revisionDigest);
-      if (!isCanvasDerivationFresh(guard, current)) throw new Error('画布已变化，插件结果未写入');
+      const current = assertExecutionFresh();
       const data = result.data ?? {};
 
       if (pluginTool.tool.output.mode === 'update-current') {
@@ -1558,8 +1573,7 @@ export async function executeNodePluginTool(
       } else {
         if (!result.nodeSet) throw new Error('插件没有返回有效节点集');
         const assertFresh = () => {
-          const live = requireCurrentPluginRevision(pluginTool.pluginId, sourceDigest, revisionDigest);
-          if (!isCanvasDerivationFresh(guard, live)) throw new Error('画布已变化，插件结果未写入');
+          assertExecutionFresh();
         };
         const prepared = await preparePluginNodeSet({
           nodeSet: result.nodeSet,

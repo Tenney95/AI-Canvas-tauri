@@ -10,12 +10,19 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 default = ["local-onnx"]
 local-onnx = ["dep:ort"]
+# 仅供离线 MockRuntime 安全回归；普通构建不包含测试支架。
+tauri-channel-tests = ["tauri/test"]
+
+[[test]]
+name = "tauri-channel-security"
+path = "vendor/tauri/tests/channel-security.rs"
+required-features = ["tauri-channel-tests"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "protocol-asset", "devtools"] }
+tauri = { version = "=2.11.2", features = ["macos-private-api", "protocol-asset", "devtools"] }
 tauri-plugin-fs = { version = "2", features = ["watch"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
@@ -61,3 +68,7 @@ windows = { version = "0.58", features = [
   "Win32_Security",
   "Win32_Foundation",
 ] }
+
+# 保留锁定版本，以本地小补丁补齐 Channel 的 WebView 归属与 ACL 校验。
+[patch.crates-io]
+tauri = { path = "vendor/tauri" }

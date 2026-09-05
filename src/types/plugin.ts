@@ -90,6 +90,8 @@ export interface PluginToolDialogManifest {
    * `fields` 仍然定义 `parameters` 的默认值与数据契约；未声明 ui 时由宿主渲染这些字段。
    */
   ui?: string;
+  /** 缺省为 modal；window 仅用于自定义 UI，实际开放由宿主隔离验收控制。 */
+  presentation?: 'modal' | 'window';
 }
 
 export interface PluginNodeToolManifest {
@@ -189,19 +191,47 @@ export interface PluginPackageResourcePayload {
   bytes: number[];
 }
 
-/** Plugin API v1 的自定义界面只挂载在节点工具弹窗内部。 */
+/** Plugin API v1 的逻辑挂载点，与弹窗或原生窗口的展示方式无关。 */
 export type PluginUISurface = 'tool-dialog';
+
+/** 宿主与原生层的内存会话契约，不属于插件可选择的权限或持久化数据。 */
+export interface PluginUiWindowBinding {
+  readonly sessionId: string;
+  readonly identity: {
+    readonly pluginId: string;
+    readonly sourceDigest: string;
+    readonly revisionDigest: string;
+    readonly uiDigest: string;
+    readonly toolId: string;
+  };
+  readonly projectId: string;
+  readonly nodeId: string;
+  readonly canvasRevision: number;
+}
+
+export type PluginUiRequestKind = 'context' | 'effect' | 'set-parameters' | 'submit' | 'close' | 'toast';
+
+export interface PluginUiReply {
+  ok: boolean;
+  value?: unknown;
+  error?: string;
+}
+
+/** 只能由创建窗口时登记的原生 Channel 投递，不接受通用事件。 */
+export type PluginUiWindowEvent =
+  | { type: 'request'; binding: PluginUiWindowBinding; requestId: string; kind: PluginUiRequestKind; payload: unknown }
+  | { type: 'closed'; binding: PluginUiWindowBinding; reason: string };
 
 /**
  * 宿主注入给插件自定义视图的接口。
  *
- * 插件视图运行在主窗口内的 sandboxed iframe 中，只能通过这里的回调与宿主交互——拿不到宿主的
+ * 插件视图运行在 sandboxed iframe 或经隔离验证的专用 WebView 中，只能通过这里的回调与宿主交互——拿不到宿主的
  * DOM、store 或凭据；写回画布仍要过 output.fields 白名单与媒体来源校验。
  */
 export interface PluginUISurfaceProps {
   /** 当前挂载点；v1 固定为节点工具弹窗。 */
   surface: PluginUISurface;
-  /** 与主窗口一致的实时主题；插件还会收到 ai-canvas-theme-change 事件。 */
+  /** 宿主主题；内嵌时实时同步，原生窗口重新聚焦时刷新，并派发 ai-canvas-theme-change。 */
   theme: 'dark' | 'light';
   /** 已按 inputFields 白名单裁剪的节点数据。 */
   node: { id: string; type: NodeType; data: Record<string, PluginJsonValue> };

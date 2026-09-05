@@ -241,7 +241,9 @@ AI-Canvas-tauri/
 - API Key 与 MCP 固定令牌只经 `secret_store.rs` 读写；`{appData}/secrets/` 在 fs scope、asset scope 和 `path_policy` 三条路径上都必须保持拒绝
 - `agent-private`、`plugin-private` 与 Blender 原生私有目录同样不得通过 fs scope、asset scope 或通用路径 command 暴露；递归读取、归档、解包和删除还必须拒绝这些私有目录的祖先
 - 插件普通执行 IPC 只接受 `pluginId + sourceDigest + revisionDigest + toolId + invocationId + input`；`plugins/registry.rs` 是插件 ID、启用状态、活动 revision、工具归属和实际源码/资源的执行权威，运行前必须重新读取私有快照并计算摘要；禁止重新接收 Renderer 提交的 `runtime` 或 `source`
-- 插件 UI 只允许在主窗口 `ModalOverlay` 内的 `<iframe sandbox="allow-scripts">` 运行；界面产物通过私有协议按活动 revision 摘要读取，CSP 禁止网络，跨边界通信必须绑定 iframe Window、随机 sessionId、双摘要、项目、节点和 canvas revision
+- 插件 UI 仅由宿主管理：内嵌展示仍使用主窗口 `ModalOverlay` 内的 `<iframe sandbox="allow-scripts">`；已确认的独立展示方向为专用 Tauri WebView 直接承载 UI，无须 iframe，但必须使用独立来源/存储和最小 capability，不加载主应用入口、Store 或主应用 IndexedDB。原生窗口/页面/会话隔离未完成并通过验证前，不得开放该入口
+- 两种展示都只能按活动 revision 摘要读取私有 UI 产物，并在插件代码加载前施加严格 CSP。跨边界通信绑定真实 iframe Window 或原生登记 WebView、随机 sessionId、双摘要、项目、节点和 canvas revision；独立窗口不得使用通用事件总线冒充受信调用方，模型/文件 effect 与画布写回仍由主窗口执行
+- 应用自定义命令的注册与 `src-tauri/permissions/*.toml` 的显式 allow/deny 声明必须一致，构建失败时补齐或移除准确的声明，不自动赋权。自定义权限文件已可启用 Tauri 应用 ACL，不以是否调用 `AppManifest::commands` 判断 ACL 是否生效；窗口 capability 与命令内部调用方/路径/资源校验缺一不可
 - QuickJS 插件只拥有声明的宿主能力；可信 Python 插件拥有当前用户权限。Windows Job Object、macOS/Linux 进程组、原生确认、超时和进程树回收都只是生命周期边界，不等于 OS 沙箱
 - 插件安装或更新必须走按插件 ID 串行的 `stage → IndexedDB persist → 撤销旧租约 → activate`；已有摘要记录只做原生 registration 校验，私有快照缺失或损坏时不得回退到 Renderer 源码执行
 - Python 插件暂存、重新启用和回切上一版本必须经过原生高风险确认，Renderer 布尔值不得代替原生授权；停用、卸载和摘要切换必须取消活动 Python invocation

@@ -129,6 +129,8 @@ mod plugin_registry;
 mod plugin_runtime;
 #[path = "plugins/ui.rs"]
 mod plugin_ui;
+#[path = "plugins/window.rs"]
+mod plugin_window;
 #[path = "files/project_archive.rs"]
 mod project_archive;
 #[path = "agent/provider_docs.rs"]
@@ -1086,6 +1088,7 @@ pub fn run() {
         .manage(path_policy::UserStorageRoot::default())
         .register_uri_scheme_protocol("director-desk", director_desk_runtime::handle_protocol)
         .register_uri_scheme_protocol("plugin-ui", plugin_ui::handle_protocol)
+        .register_uri_scheme_protocol("plugin-window", plugin_window::handle_protocol)
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -1169,10 +1172,15 @@ pub fn run() {
             plugin_registry::remove_plugin_registration,
             plugin_registry::get_plugin_registration_status,
             plugin_registry::read_plugin_package_resource,
+            plugin_window::open_plugin_ui_window,
+            plugin_window::close_plugin_ui_window,
+            plugin_window::respond_plugin_ui_window_request,
+            plugin_window::plugin_ui_window_request,
             plugin_runtime::execute_node_plugin_tool,
             plugin_runtime::get_python_plugin_runtime_status,
         ])
         .on_window_event(|window, event| {
+            plugin_window::on_window_event(window, event);
             // 用户把文件拖进自有窗口 = 一次显式授权，登记后复制/读取命令才放行。
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 if window.label() == "main" || window.label() == "chat-assistant" {
@@ -1232,6 +1240,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                plugin_window::revoke_all_sessions();
                 app_handle
                     .state::<blender_runtime::BlenderJobCore>()
                     .shutdown();

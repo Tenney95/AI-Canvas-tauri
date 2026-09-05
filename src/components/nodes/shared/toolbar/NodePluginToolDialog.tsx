@@ -6,6 +6,7 @@ import type {
   PluginJsonValue,
 } from '../../../../types/plugin';
 import { executeNodePluginTool } from '../../../../services/plugins/pluginRuntime';
+import { openPluginUiWindow, pluginUiWindowUnavailableReason } from '../../../../services/plugins/pluginUiWindowService';
 import {
   createPluginUiFrameSession,
   type PluginUiFrameSession,
@@ -92,6 +93,8 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
   const showToast = useAppStore((state) => state.showToast);
   const config = useAppStore((state) => state.config);
   const dialog = pluginTool.tool.dialog;
+  const windowFallback = dialog?.presentation === 'window' ? pluginUiWindowUnavailableReason() : null;
+  const useNativeWindow = dialog?.presentation === 'window' && windowFallback === null;
   // 只有声明 models.read 的插件才拿得到模型目录，且目录不含任何厂商凭据。
   const models = useMemo(
     () => (pluginTool.permissions.includes('models.read')
@@ -138,6 +141,21 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
         cancelled = true;
       };
     }
+    if (useNativeWindow) {
+      // 延后启动以消除 StrictMode 的已取消挂载；启动后由会话服务持有，不随入口组件卸载关闭。
+      queueMicrotask(() => {
+        if (cancelled) return;
+        void openPluginUiWindow({
+          plugin, tool: pluginTool.tool, nodeId, exportName,
+          parameters: initialPluginParameters(pluginTool),
+        }).catch((cause) => {
+          if (!cancelled) showToast(cause instanceof Error ? cause.message : '插件窗口打开失败', 'error');
+        }).finally(() => {
+          if (!cancelled) onCloseRef.current();
+        });
+      });
+      return () => { cancelled = true; };
+    }
     void createPluginUiFrameSession({
       plugin,
       tool: pluginTool.tool,
@@ -180,9 +198,9 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
         frameDocumentRef.current = null;
       }
     };
-  }, [dialog?.ui, nodeId, pluginTool, showToast]);
+  }, [dialog?.ui, nodeId, pluginTool, showToast, useNativeWindow]);
 
-  if (!dialog) return null;
+  if (!dialog || useNativeWindow) return null;
 
   const close = () => {
     if (busy) return;
@@ -268,6 +286,11 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
           </div>
           <PopupCloseButton onClick={close} />
         </header>
+        {windowFallback && (
+          <p role="status" className="shrink-0 border-b border-canvas-border px-4 py-1 text-xs text-canvas-text-secondary">
+            {windowFallback}
+          </p>
+        )}
         <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-canvas-surface">
           {uiLoading && (
             <div className="flex h-full items-center justify-center gap-2 text-xs text-canvas-text-secondary">

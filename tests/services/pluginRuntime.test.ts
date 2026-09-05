@@ -672,6 +672,13 @@ describe('node plugin runtime', () => {
       }],
     });
     expect(createdEdges).toHaveLength(5);
+    expect(createdEdges).toEqual(createdNodes.filter((node) => node.type === 'ai-image').map((node) => ({
+      id: expect.any(String),
+      source: node.id,
+      target: shotlist.id,
+      sourceHandle: 'right',
+      targetHandle: 'left',
+    })));
     expect(JSON.stringify(shotlist.data)).not.toContain('forged');
     expect(JSON.stringify(shotlist.data)).not.toContain('伪造来源');
     expect(mocks.showToast).toHaveBeenCalledWith('已生成拉片节点');
@@ -1511,7 +1518,7 @@ describe('node plugin runtime', () => {
       category: 'image',
     }]);
 
-    expect(mocks.generateImage).toHaveBeenCalledWith(expect.objectContaining({ image_urls: [] }));
+    expect(mocks.generateImage).toHaveBeenCalledWith(expect.objectContaining({ image_urls: [] }), undefined);
   });
 });
 
@@ -1668,6 +1675,7 @@ describe('node plugin tool model effects', () => {
     mocks.generateImage.mockResolvedValueOnce({ url: generatedUrl, width: 1024, height: 1024 });
 
     const result = await executePluginUiHostEffect({
+      resourceReadContext: uiContext().resourceReadContext,
       pluginId: plugin.id,
       projectId: 'project-1',
       title: '自定义界面',
@@ -1693,6 +1701,42 @@ describe('node plugin tool model effects', () => {
       value: { url: generatedUrl },
     });
     expect(trustedMediaReferences).toContain(generatedUrl);
+  });
+
+  it('passes media cancellation through and does not trust a model result after revocation', async () => {
+    const controller = new AbortController();
+    const context = uiContext();
+    mocks.generateImage.mockImplementationOnce(async () => {
+      controller.abort();
+      return { url: 'https://example.com/late.png' };
+    });
+    const result = await executePluginUiHostEffect({
+      ...context, permissions: ['models.invoke'], signal: controller.signal,
+      models: [{ id: 'image-model', name: '图像', provider: 'general', category: 'image' }],
+      effect: { type: 'model.generate', modelId: 'image-model', prompt: '生成' },
+    });
+    expect(mocks.generateImage).toHaveBeenCalledWith(expect.anything(), controller.signal);
+    expect(result).toMatchObject({ ok: false, error: '插件操作已取消' });
+    expect(context.trustedMediaReferences.size).toBe(0);
+  });
+
+  it.each(['abort', 'canvas'])('does not run a host effect from a late native tool result after %s', async (reason) => {
+    const controller = new AbortController();
+    const guard = registerCanvasDerivation(mocks.state as never, 'node-1')!;
+    mocks.invoke.mockImplementationOnce(async () => {
+      if (reason === 'abort') controller.abort();
+      else mocks.revision += 1;
+      return { effect: { type: 'model.generate', modelId: 'general/text-1', prompt: '迟到请求' } };
+    });
+    try {
+      await expect(executeNodePluginTool(getAvailableNodePluginTools([plugin], 'ai-text')[0], 'node-1', {}, {
+        invocationId: 'cancelled-ui', guard, resources: { self: [], incoming: [], inputs: {}, package: [], derived: [] },
+        signal: controller.signal,
+      })).rejects.toThrow(reason === 'abort' ? '已取消' : '画布已变化');
+      expect(mocks.generateText).not.toHaveBeenCalled();
+      expect(mocks.updateNodeData).not.toHaveBeenCalled();
+      expect(mocks.invoke).toHaveBeenCalledOnce();
+    } finally { completeCanvasDerivation(guard); }
   });
 
   it('exposes the model catalog only to tools declaring models.read', async () => {

@@ -1310,6 +1310,59 @@ pub(crate) fn read_active_ui_source(
         .ok_or_else(|| "插件界面产物缺失".to_string())
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginUiIdentity {
+    pub plugin_id: String,
+    pub source_digest: String,
+    pub revision_digest: String,
+    pub ui_digest: String,
+    pub tool_id: String,
+}
+
+/// UI 产物不变也不能跨主源码/manifest revision 继续使用旧会话。
+/// operation 在 registry 锁内执行，只允许短暂操作原生会话表，不执行宿主 effect。
+pub(crate) fn with_active_window_ui<T>(
+    private_dir: &Path,
+    identity: &PluginUiIdentity,
+    operation: impl FnOnce(&str) -> Result<T, String>,
+) -> Result<T, String> {
+    validate_plugin_id(&identity.plugin_id)?;
+    validate_source_digest(&identity.source_digest)?;
+    validate_source_digest(&identity.revision_digest)?;
+    validate_source_digest(&identity.ui_digest)?;
+    validate_tool_id(&identity.tool_id)?;
+    let _lock = REGISTRY_LOCK.lock().map_err(|_| "插件信任注册表不可用")?;
+    let registry = read_registry_at(private_dir)?;
+    let record = registry
+        .plugins
+        .get(&identity.plugin_id)
+        .ok_or("插件未安装")?;
+    if !record.enabled {
+        return Err("插件已停用".into());
+    }
+    let active = record.active.as_ref().ok_or("插件没有活动版本")?;
+    if active.source_digest != identity.source_digest
+        || active.revision_digest != identity.revision_digest
+        || active.ui_digest.as_deref() != Some(identity.ui_digest.as_str())
+        || active
+            .declared_tool_ids
+            .binary_search(&identity.tool_id)
+            .is_err()
+        || !active
+            .permissions
+            .iter()
+            .any(|permission| permission == "ui.custom")
+    {
+        return Err("插件窗口版本或工具归属已失效".into());
+    }
+    ensure_native_execution_approved(active)?;
+    let _ = read_verified_source_at(private_dir, &identity.plugin_id, active)?;
+    let source = read_verified_ui_source_at(private_dir, &identity.plugin_id, active)?
+        .ok_or("插件没有自定义界面产物")?;
+    operation(&source)
+}
+
 fn remove_revision_snapshot(private_dir: &Path, plugin_id: &str, revision: &PluginRevision) {
     let directory = revision_directory(private_dir, plugin_id, &revision.revision_digest);
     let _ = fs::remove_dir_all(directory);
@@ -1517,6 +1570,7 @@ fn activation_requires_cancel(
 /// 再读取注册表，因此这里采用 registry -> invocation 的锁顺序不会形成反向等待。
 fn cancel_committed_plugin_invocations(plugin_id: &str) {
     crate::plugin_runtime::cancel_plugin_invocations(plugin_id);
+    crate::plugin_window::revoke_plugin_sessions(plugin_id);
 }
 
 fn ensure_native_execution_approved(revision: &PluginRevision) -> Result<(), String> {
@@ -2269,6 +2323,128 @@ mod tests {
                 .and_then(|record| record.staged.as_ref()),
             Some(&revision),
         );
+        fs::remove_dir_all(directory).ok();
+    }
+
+    fn activate_window_fixture(directory: &Path, source: &str) -> PluginUiIdentity {
+        let ui_source = "globalThis.Review = () => null;";
+        let ui_digest = format!("{:x}", Sha256::digest(ui_source.as_bytes()));
+        let mut value = manifest("javascript");
+        value["permissions"] = json!(["node.read", "node.write", "ui.custom"]);
+        value["ui"] = json!({ "entry": "ui.js", "integrity": format!("sha256-{ui_digest}"),
+            "exports": { "review": "Review" } });
+        let (plugin_id, mut revision) = parse_revision(&value, source, Some(ui_source)).unwrap();
+        assert!(apply_native_stage_approval(&mut revision, Some(true)));
+        stage_revision_at(
+            directory,
+            plugin_id.clone(),
+            revision.clone(),
+            source,
+            Some(ui_source),
+        )
+        .unwrap();
+        let mut registry = read_registry_at(directory).unwrap();
+        commit_activation_at(
+            directory,
+            &mut registry,
+            &plugin_id,
+            &revision.revision_digest,
+            true,
+            false,
+        )
+        .unwrap();
+        PluginUiIdentity {
+            plugin_id,
+            source_digest: revision.source_digest,
+            revision_digest: revision.revision_digest,
+            ui_digest,
+            tool_id: "upper".into(),
+        }
+    }
+
+    #[test]
+    fn window_ui_requires_all_active_digests_tool_ownership_and_approval() {
+        let directory = temporary_directory("window-ui-identity");
+        let identity = activate_window_fixture(&directory, "first source");
+        assert!(with_active_window_ui(&directory, &identity, |source| {
+            assert_eq!(source, "globalThis.Review = () => null;");
+            Ok(())
+        })
+        .is_ok());
+        let mut encoded = serde_json::to_value(&identity).unwrap();
+        for key in [
+            "pluginId",
+            "sourceDigest",
+            "revisionDigest",
+            "uiDigest",
+            "toolId",
+        ] {
+            let old = encoded[key].clone();
+            encoded[key] = if key.ends_with("Digest") {
+                json!("0".repeat(64))
+            } else {
+                json!("unknown")
+            };
+            let forged = serde_json::from_value(encoded.clone()).unwrap();
+            assert!(with_active_window_ui::<()>(&directory, &forged, |_| panic!(
+                "invalid identity reached operation"
+            ))
+            .is_err());
+            encoded[key] = old;
+        }
+        let mut registry = read_registry_at(&directory).unwrap();
+        registry
+            .plugins
+            .get_mut(&identity.plugin_id)
+            .unwrap()
+            .active
+            .as_mut()
+            .unwrap()
+            .native_approved = false;
+        write_registry_at(&directory, &registry).unwrap();
+        assert!(with_active_window_ui(&directory, &identity, |_| Ok(())).is_err());
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn unchanged_ui_bundle_cannot_keep_a_stale_source_revision_alive() {
+        let directory = temporary_directory("window-ui-source-revision");
+        let previous = activate_window_fixture(&directory, "first source");
+        let current = activate_window_fixture(&directory, "second source");
+        assert_eq!(previous.ui_digest, current.ui_digest);
+        assert_ne!(previous.revision_digest, current.revision_digest);
+        assert!(with_active_window_ui(&directory, &previous, |_| Ok(())).is_err());
+        assert!(with_active_window_ui(&directory, &current, |_| Ok(())).is_ok());
+        let mut registry = read_registry_at(&directory).unwrap();
+        registry
+            .plugins
+            .get_mut(&current.plugin_id)
+            .unwrap()
+            .enabled = false;
+        write_registry_at(&directory, &registry).unwrap();
+        assert!(with_active_window_ui(&directory, &current, |_| Ok(())).is_err());
+        registry.plugins.clear();
+        write_registry_at(&directory, &registry).unwrap();
+        assert!(with_active_window_ui(&directory, &current, |_| Ok(())).is_err());
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn window_ui_rehashes_both_private_sources_before_each_operation() {
+        let directory = temporary_directory("window-ui-tamper");
+        let identity = activate_window_fixture(&directory, "first source");
+        let registry = read_registry_at(&directory).unwrap();
+        let revision = registry.plugins[&identity.plugin_id]
+            .active
+            .as_ref()
+            .unwrap();
+        let source_path = revision_file(&directory, &identity.plugin_id, revision);
+        fs::write(&source_path, "changed source").unwrap();
+        assert!(with_active_window_ui(&directory, &identity, |_| Ok(())).is_err());
+        fs::write(source_path, "first source").unwrap();
+        let ui_path = ui_snapshot_path(&directory, &identity.plugin_id, revision).unwrap();
+        fs::write(ui_path, "changed ui").unwrap();
+        assert!(with_active_window_ui(&directory, &identity, |_| Ok(())).is_err());
         fs::remove_dir_all(directory).ok();
     }
 

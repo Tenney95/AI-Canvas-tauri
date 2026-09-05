@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   InstalledPlugin,
   PluginInvocationResources,
@@ -7,6 +7,7 @@ import type {
 
 const mocks = vi.hoisted(() => ({
   getState: vi.fn(),
+  subscribers: new Set<() => void>(),
   registerCanvasDerivation: vi.fn(),
   isCanvasDerivationFresh: vi.fn(),
   completeCanvasDerivation: vi.fn(),
@@ -22,7 +23,13 @@ vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: (path: string, protocol: string) => `http://${protocol}.localhost/${path}`,
 }));
 vi.mock('../../src/store/useAppStore', () => ({
-  useAppStore: { getState: mocks.getState },
+  useAppStore: {
+    getState: mocks.getState,
+    subscribe: (listener: () => void) => {
+      mocks.subscribers.add(listener);
+      return () => mocks.subscribers.delete(listener);
+    },
+  },
 }));
 vi.mock('../../src/services/canvasDerivationGuard', () => ({
   registerCanvasDerivation: mocks.registerCanvasDerivation,
@@ -43,7 +50,7 @@ vi.mock('../../src/services/plugins/pluginRuntime', () => ({
   executePluginUiHostEffect: mocks.executeEffect,
 }));
 
-import { createPluginUiFrameSession } from '../../src/services/plugins/pluginUiSessionService';
+import { createPluginUiFrameSession, createPluginUiNativeSession } from '../../src/services/plugins/pluginUiSessionService';
 
 const SOURCE_DIGEST = 'a'.repeat(64);
 const REVISION_DIGEST = 'b'.repeat(64);
@@ -114,6 +121,126 @@ function request(sessionId: string, requestId: string, kind: string, payload: un
 }
 
 describe('pluginUiSessionService', () => {
+  afterEach(() => {
+    mocks.getState.mockReturnValue({ installedPlugins: [] });
+    for (const listener of mocks.subscribers) listener();
+  });
+
+  const native = (onClose = vi.fn()) => createPluginUiNativeSession({
+    plugin, tool, nodeId: 'target', exportName: 'dialog', onClose,
+  });
+  const notify = () => { for (const listener of mocks.subscribers) listener(); };
+
+  it('keeps native sessions inaccessible to iframe messages and retains the v1 context', async () => {
+    const frame = await createPluginUiFrameSession({ plugin, tool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn() });
+    frame.dispose();
+    const session = await native();
+    expect(session.binding).toMatchObject({
+      identity: { pluginId: plugin.id, toolId: tool.id, sourceDigest: SOURCE_DIGEST, revisionDigest: REVISION_DIGEST, uiDigest: UI_DIGEST },
+      projectId: 'project-1', nodeId: 'target', canvasRevision: 7,
+    });
+    for (const source of [null, undefined, {}]) {
+      mocks.messageHandler?.({ data: request(session.binding.sessionId, 'spoof', 'effect', {}), source } as MessageEvent);
+    }
+    expect(mocks.executeEffect).not.toHaveBeenCalled();
+    expect(await session.request('context', null)).toMatchObject({ ok: true, value: { surface: 'tool-dialog', theme: 'light', resources } });
+    session.dispose();
+    expect(await session.request('effect', {})).toMatchObject({ ok: false });
+    expect(mocks.executeEffect).not.toHaveBeenCalled();
+  });
+
+  it.each(['project', 'node', 'disabled', 'uninstalled', 'source', 'revision', 'ui', 'canvas'])(
+    'revokes a native lease immediately on %s changes', async (change) => {
+      const onClose = vi.fn();
+      const session = await native(onClose);
+      const state = mocks.getState();
+      if (change === 'project') state.currentProjectId = 'project-2';
+      else if (change === 'node') state.nodes = [];
+      else if (change === 'uninstalled') state.installedPlugins = [];
+      else if (change === 'canvas') mocks.isCanvasDerivationFresh.mockReturnValue(false);
+      else state.installedPlugins = [{ ...plugin, ...({
+        disabled: { enabled: false }, source: { sourceDigest: 'd'.repeat(64) },
+        revision: { revisionDigest: 'd'.repeat(64) }, ui: { uiDigest: 'd'.repeat(64) },
+      }[change]) }];
+      notify();
+      expect(session.isActive()).toBe(false);
+      expect(mocks.clearResources).toHaveBeenCalledWith(session.binding.sessionId);
+      expect(mocks.subscribers.size).toBe(0);
+      await Promise.resolve();
+      expect(onClose).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('aborts in-flight effects on close and refuses late results', async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    mocks.executeEffect.mockImplementationOnce(async () => { await gate; return { ok: true }; });
+    const session = await native();
+    const pending = session.request('effect', { type: 'model.generate' });
+    const signal = mocks.executeEffect.mock.calls[0][0].signal as AbortSignal;
+    session.dispose();
+    expect(signal.aborted).toBe(true);
+    finish();
+    expect(await pending).toMatchObject({ ok: false, error: expect.stringContaining('关闭') });
+  });
+
+  it('does not resurrect a session when resource minting finishes after invalidation', async () => {
+    let finish!: (value: PluginInvocationResources) => void;
+    mocks.mintResources.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const pending = native();
+    const state = mocks.getState();
+    state.currentProjectId = 'project-2';
+    notify();
+    state.currentProjectId = 'project-1';
+    finish(resources);
+    await expect(pending).rejects.toThrow('关闭');
+    expect(mocks.clearResources).toHaveBeenCalledTimes(2);
+    expect(mocks.subscribers.size).toBe(0);
+  });
+
+  it('counts pending resource sessions towards the shared four-session limit', async () => {
+    let finish!: (value: PluginInvocationResources) => void;
+    const gate = new Promise<PluginInvocationResources>((resolve) => { finish = resolve; });
+    mocks.mintResources.mockReturnValue(gate);
+    const pending = Array.from({ length: 4 }, () => native());
+    await expect(native()).rejects.toThrow('最多打开 4');
+    finish(resources);
+    const sessions = await Promise.all(pending);
+    sessions.forEach((session) => session.dispose());
+  });
+
+  it('uses the live tool definition and rejects stale launcher revisions before minting', async () => {
+    await expect(createPluginUiNativeSession({
+      plugin: { ...plugin, revisionDigest: 'd'.repeat(64) }, tool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    })).rejects.toThrow('revision');
+    expect(mocks.mintResources).not.toHaveBeenCalled();
+    const session = await createPluginUiNativeSession({
+      plugin, tool: { ...tool, resourceAccess: { self: true } }, nodeId: 'target', exportName: 'dialog', onClose: vi.fn(),
+    });
+    expect(mocks.mintResources).toHaveBeenCalledWith(expect.objectContaining({ access: { incoming: true } }));
+    session.dispose();
+  });
+
+  it('acknowledges its own canvas commit before cleanup, without relaxing later writes', async () => {
+    const session = await native();
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    mocks.executeTool.mockImplementationOnce(async () => {
+      await gate;
+      mocks.isCanvasDerivationFresh.mockReturnValue(false);
+      notify();
+    });
+    const pending = session.request('submit', { data: { prompt: 'save' } });
+    expect(await session.request('context', null)).toMatchObject({ ok: true });
+    expect(await session.request('effect', {})).toMatchObject({ ok: false });
+    finish();
+    expect(await pending).toEqual({ ok: true, value: true });
+    expect(session.isActive()).toBe(true);
+    expect(mocks.executeTool).toHaveBeenCalledWith(expect.anything(), 'target', { prompt: 'save' }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(await session.request('submit', {})).toMatchObject({ ok: false });
+    session.finishRequest();
+    expect(session.isActive()).toBe(false);
+  });
   it('keeps local media, exports and paid effects in separate bounded budgets', async () => {
     const session = await createPluginUiFrameSession({ plugin, tool, nodeId: 'target', exportName: 'dialog', parameters: {}, onClose: vi.fn() });
     const frame = { postMessage: vi.fn() } as unknown as Window;

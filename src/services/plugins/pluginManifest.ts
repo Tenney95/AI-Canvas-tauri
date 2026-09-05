@@ -263,6 +263,14 @@ function parsePluginUI(value: unknown): PluginUIManifest | undefined {
 
 function parseToolDialog(value: unknown, toolId: string): PluginToolDialogManifest {
   const dialog = objectValue(value, `${toolId}.dialog`);
+  const ui = optionalString(dialog.ui, `${toolId}.dialog.ui`, 64);
+  const presentation = dialog.presentation;
+  if (presentation !== undefined && presentation !== 'modal' && presentation !== 'window') {
+    throw new Error(`${toolId}.dialog.presentation 只允许 modal 或 window`);
+  }
+  if (presentation === 'window' && !ui) {
+    throw new Error(`${toolId}.dialog.presentation=window 必须声明自定义 ui`);
+  }
   if (!Array.isArray(dialog.fields) || dialog.fields.length > MAX_DIALOG_FIELDS) {
     throw new Error(`${toolId}.dialog.fields 必须是数组且不能超过 ${MAX_DIALOG_FIELDS} 项`);
   }
@@ -346,7 +354,8 @@ function parseToolDialog(value: unknown, toolId: string): PluginToolDialogManife
     description: optionalString(dialog.description, `${toolId}.dialog.description`, 240),
     submitLabel: optionalString(dialog.submitLabel, `${toolId}.dialog.submitLabel`, 40),
     fields,
-    ui: optionalString(dialog.ui, `${toolId}.dialog.ui`, 64),
+    ui,
+    ...(presentation === undefined ? {} : { presentation }),
   };
 }
 
