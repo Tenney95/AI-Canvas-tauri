@@ -20,6 +20,7 @@ import GooeyBtn from './shared/GooeyBtn';
 import ResizeHandle from './shared/ResizeHandle';
 import { useNodeRename } from './shared/useNodeRename';
 import { useT } from '../../i18n';
+import NodeGenerationProgress from './shared/NodeGenerationProgress';
 
 const pageVisibilityListeners = new Set<() => void>();
 let listeningForPageVisibility = false;
@@ -244,16 +245,17 @@ function AnimationNode({ id, data, selected }: { id: string; data: BaseNodeData;
               <img className="animation-sheet" src={displaySrc} alt={t('{action} Sprite Sheet', { action: t(ANIMATION_ACTION_LABELS[action]) })} draggable={false} />
             )
           ) : data.status === 'loading' ? (
-            <div className="animation-empty">
-              <div className="spinner large" />
-              <span>{t('正在生成 Sprite Sheet')}</span>
-            </div>
+            <NodeGenerationProgress nodeId={id} fallbackLabel={t('正在生成 Sprite Sheet')} />
           ) : (
             <div className="animation-empty">
               <Icon icon="mdi:animation-play-outline" width="38" height="38" />
               <span>{t('点击节点描述角色并生成')}</span>
               <small>{t(ANIMATION_ACTION_LABELS[action])} · {t('{count} 帧', { count: frameCount })} · {grid.cols}×{grid.rows}</small>
             </div>
+          )}
+
+          {displaySrc && data.status === 'loading' && (
+            <NodeGenerationProgress nodeId={id} fallbackLabel={t('正在生成 Sprite Sheet')} overlay />
           )}
 
           <div className="animation-preview-switch nodrag nopan" aria-label={t('预览模式')}>
