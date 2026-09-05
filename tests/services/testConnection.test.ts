@@ -65,6 +65,50 @@ describe('provider connection tests', () => {
     ]);
   });
 
+  it('uses Anthropic catalog authentication without sending a generation request', async () => {
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(testProviderConnection(
+      'custom-openai',
+      'secret',
+      'https://relay.example/v1',
+      'anthropic-compatible',
+    )).resolves.toEqual({ success: true, baseUrl: 'https://relay.example/v1' });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith(
+      'https://relay.example/v1/models',
+      {
+        method: 'GET',
+        headers: { 'x-api-key': 'secret', 'anthropic-version': '2023-06-01' },
+      },
+    );
+  });
+
+  it('uses Gemini authentication and /v1beta fallback for the model catalog', async () => {
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(new Response('not found', { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ models: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+
+    await expect(testProviderConnection(
+      'custom-openai',
+      'secret',
+      'https://relay.example',
+      'gemini-native',
+    )).resolves.toEqual({ success: true, baseUrl: 'https://relay.example/v1beta' });
+    expect(transportMocks.corsSafeFetch.mock.calls.map((call) => call[0])).toEqual([
+      'https://relay.example/models',
+      'https://relay.example/v1beta/models',
+    ]);
+    expect(transportMocks.corsSafeFetch.mock.calls[0]?.[1]?.headers).toEqual({
+      'x-goog-api-key': 'secret',
+    });
+  });
+
   it('stops probing on an authentication failure instead of trying more addresses', async () => {
     transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({
       error: { message: 'invalid api key' },

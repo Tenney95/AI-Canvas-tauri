@@ -1,8 +1,7 @@
 /**
  * 主窗口内插件 UI 会话 Broker。
  *
- * 第三方界面运行在 sandboxed iframe 中，不进入宿主 React DOM；所有宿主能力都通过
- * 绑定 frame Window、sessionId、插件 revision、项目、节点和画布 revision 的消息通道。
+ * iframe 与专用原生 Channel 使用不同的来源验证，共用同一个资源/effect/写回权威。
  */
 import { convertFileSrc } from '@tauri-apps/api/core';
 import type { NodeType } from '../../types';
@@ -11,6 +10,9 @@ import type {
   PluginInvocationResources,
   PluginJsonValue,
   PluginNodeToolManifest,
+  PluginUiReply,
+  PluginUiRequestKind,
+  PluginUiWindowBinding,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
 import {
@@ -33,8 +35,10 @@ import {
 
 const MESSAGE_CHANNEL = 'ai-canvas-plugin-ui-v1';
 const MAX_UI_EFFECTS = 4;
+const MAX_UI_MEDIA_EFFECTS = 96;
+const MAX_UI_EXPORT_EFFECTS = 12;
 const MAX_UI_SESSIONS = 4;
-const MAX_UI_REQUESTS = 64;
+const MAX_UI_REQUESTS = 192;
 const MAX_REQUEST_ID_LENGTH = 64;
 const MAX_KIND_LENGTH = 32;
 const MAX_JSON_DEPTH = 8;
@@ -73,9 +77,17 @@ interface PluginUiSession {
   resources: PluginInvocationResources;
   guard: CanvasDerivationGuard;
   frameWindow?: Window;
+  transport: 'frame' | 'native';
+  ready: boolean;
+  submitting: boolean;
+  completed: boolean;
+  unsubscribe?: () => void;
   effectBudget: number;
+  mediaEffectBudget?: number;
+  exportEffectBudget?: number;
   requestCount: number;
   requestInFlight: boolean;
+  effectAbortController?: AbortController;
   trustedMediaReferences: Set<string>;
   onClose: () => void;
 }
@@ -145,7 +157,8 @@ function safeNodeData(
   return data;
 }
 
-function resolveLivePlugin(session: PluginUiSession): InstalledPlugin {
+function resolveLivePlugin(session: PluginUiSession, checkCanvas = true): InstalledPlugin {
+  if (sessions.get(session.sessionId) !== session) throw new Error('插件界面会话已关闭');
   const state = useAppStore.getState();
   const plugin = state.installedPlugins.find((item) => item.id === session.pluginId);
   if (!plugin?.enabled) throw new Error('插件已停用或卸载');
@@ -155,7 +168,10 @@ function resolveLivePlugin(session: PluginUiSession): InstalledPlugin {
   if (normalizeDigest(plugin.uiDigest ?? plugin.manifest.ui?.integrity, '插件界面摘要') !== session.uiDigest) {
     throw new Error('插件界面已更新');
   }
-  if (!isCanvasDerivationFresh(session.guard, state)) throw new Error('画布或项目已变化，插件界面会话已失效');
+  if (state.currentProjectId !== session.projectId || !state.nodes.some((node) => node.id === session.nodeId)
+    || (checkCanvas && !isCanvasDerivationFresh(session.guard, state))) {
+    throw new Error('画布或项目已变化，插件界面会话已失效');
+  }
   return plugin;
 }
 
@@ -212,6 +228,8 @@ function closeSession(sessionId: string, notify: boolean): void {
   const session = sessions.get(sessionId);
   if (!session) return;
   sessions.delete(sessionId);
+  session.unsubscribe?.();
+  session.effectAbortController?.abort();
   clearPluginInvocationResources(session.sessionId);
   completeCanvasDerivation(session.guard);
   if (notify) queueMicrotask(session.onClose);
@@ -231,18 +249,33 @@ async function handleRequest(event: MessageEvent): Promise<void> {
   const request = parseRequest(event.data);
   if (!request) return;
   const session = sessions.get(request.sessionId);
-  if (!session || event.source !== session.frameWindow) return;
+  if (!session || session.transport !== 'frame' || !session.frameWindow || event.source !== session.frameWindow) return;
+  const reply = await dispatchRequest(session, request);
+  if (sessions.get(session.sessionId) !== session) return;
+  postResponse(session, request.requestId, reply);
+  finishRequest(session);
+}
+
+function finishRequest(session: PluginUiSession): void {
+  if (session.completed) closeSession(session.sessionId, true);
+}
+
+async function dispatchRequest(
+  session: PluginUiSession,
+  request: { kind: string; payload: unknown },
+): Promise<PluginUiReply> {
+  if (!session.ready || session.completed || sessions.get(session.sessionId) !== session) {
+    return { ok: false, error: '插件界面会话不可用' };
+  }
   if (request.kind !== 'close' && session.requestCount >= MAX_UI_REQUESTS) {
-    postResponse(session, request.requestId, { ok: false, error: '插件界面请求次数已达上限' });
-    return;
+    return { ok: false, error: '插件界面请求次数已达上限' };
   }
   if (request.kind !== 'close') session.requestCount += 1;
   const exclusive = request.kind === 'effect'
     || request.kind === 'set-parameters'
     || request.kind === 'submit';
   if (exclusive && session.requestInFlight) {
-    postResponse(session, request.requestId, { ok: false, error: '插件界面已有操作正在执行' });
-    return;
+    return { ok: false, error: '插件界面已有操作正在执行' };
   }
   if (exclusive) session.requestInFlight = true;
   try {
@@ -253,7 +286,7 @@ async function handleRequest(event: MessageEvent): Promise<void> {
         const node = state.nodes.find((item) => item.id === session.nodeId);
         if (!node) throw new Error('源节点已不存在');
         const data = safeNodeData(session.tool, node.data);
-        postResponse(session, request.requestId, {
+        return {
           ok: true,
           value: {
             surface: session.surface,
@@ -263,12 +296,23 @@ async function handleRequest(event: MessageEvent): Promise<void> {
             parameters: session.parameters,
             resources: session.resources,
           },
-        });
-        return;
+        };
       }
       case 'effect': {
-        if (session.effectBudget >= MAX_UI_EFFECTS) throw new Error(`宿主操作不能超过 ${MAX_UI_EFFECTS} 次`);
-        session.effectBudget += 1;
+        const effectType = request.payload && typeof request.payload === 'object' && 'type' in request.payload
+          ? request.payload.type : undefined;
+        if (effectType === 'video.extractFrames' || effectType === 'video.detectShots' || effectType === 'video.inspectFrame') {
+          if ((session.mediaEffectBudget ?? 0) >= MAX_UI_MEDIA_EFFECTS) throw new Error('本地视频操作达到 96 次上限，请重新打开插件');
+          session.mediaEffectBudget = (session.mediaEffectBudget ?? 0) + 1;
+        } else if (effectType === 'resource.export' || effectType === 'resource.createText') {
+          if ((session.exportEffectBudget ?? 0) >= MAX_UI_EXPORT_EFFECTS) throw new Error('本次会话导出达到 12 次上限');
+          session.exportEffectBudget = (session.exportEffectBudget ?? 0) + 1;
+        } else {
+          if (session.effectBudget >= MAX_UI_EFFECTS) throw new Error(`宿主操作不能超过 ${MAX_UI_EFFECTS} 次`);
+          session.effectBudget += 1;
+        }
+        const controller = new AbortController();
+        session.effectAbortController = controller;
         const result = await executePluginUiHostEffect({
           pluginId: plugin.id,
           projectId: session.projectId,
@@ -280,17 +324,18 @@ async function handleRequest(event: MessageEvent): Promise<void> {
           trustedMediaReferences: session.trustedMediaReferences,
           resources: session.resources,
           resourceReadContext: resourceReadContext(session, plugin),
+          signal: controller.signal,
+        }).finally(() => {
+          if (session.effectAbortController === controller) session.effectAbortController = undefined;
         });
         resolveLivePlugin(session);
-        postResponse(session, request.requestId, { ok: true, value: result });
-        return;
+        return { ok: true, value: result };
       }
       case 'set-parameters': {
         const patch = normalizeJson(request.payload);
         if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('参数更新必须是对象');
         session.parameters = { ...session.parameters, ...patch };
-        postResponse(session, request.requestId, { ok: true, value: true });
-        return;
+        return { ok: true, value: true };
       }
       case 'submit': {
         const payload = normalizeJson(request.payload);
@@ -302,6 +347,9 @@ async function handleRequest(event: MessageEvent): Promise<void> {
           }
           session.parameters = { ...session.parameters, ...submitted };
         }
+        const controller = new AbortController();
+        session.effectAbortController = controller;
+        session.submitting = true;
         await executeNodePluginTool(
           availableTool(plugin, session),
           session.nodeId,
@@ -311,35 +359,42 @@ async function handleRequest(event: MessageEvent): Promise<void> {
             guard: session.guard,
             resources: session.resources,
             trustedMediaReferences: session.trustedMediaReferences,
+            signal: controller.signal,
           },
         );
-        postResponse(session, request.requestId, { ok: true, value: true });
-        closeSession(session.sessionId, true);
-        return;
+        // 工具自身已在提交前检查 guard；成功写回会推进 revision，不能把自己的提交误判为过期。
+        resolveLivePlugin(session, false);
+        session.completed = true;
+        return { ok: true, value: true };
       }
       case 'close': {
-        postResponse(session, request.requestId, { ok: true, value: true });
-        closeSession(session.sessionId, true);
-        return;
+        session.completed = true;
+        return { ok: true, value: true };
       }
       case 'toast': {
         const payload = normalizeJson(request.payload);
         const record = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
         const message = typeof record.message === 'string' ? record.message.slice(0, 240) : '';
         useAppStore.getState().showToast(message, record.type === 'error' ? 'error' : 'success');
-        postResponse(session, request.requestId, { ok: true, value: true });
-        return;
+        return { ok: true, value: true };
       }
       default:
         throw new Error(`未知请求: ${request.kind}`);
     }
   } catch (error) {
-    postResponse(session, request.requestId, {
+    return {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
-    });
+    };
   } finally {
     if (exclusive) session.requestInFlight = false;
+    if (request.kind === 'submit') {
+      session.submitting = false;
+      session.effectAbortController = undefined;
+    }
+    if (!session.completed) {
+      try { resolveLivePlugin(session, !session.submitting); } catch { closeSession(session.sessionId, true); }
+    }
   }
 }
 
@@ -349,21 +404,33 @@ function ensureListener(): void {
   window.addEventListener('message', (event) => void handleRequest(event));
 }
 
-export async function createPluginUiFrameSession(options: {
+interface CreatePluginUiSessionOptions {
   plugin: InstalledPlugin;
   tool: PluginNodeToolManifest;
   nodeId: string;
   exportName: string;
   parameters?: Record<string, PluginJsonValue>;
   onClose: () => void;
-}): Promise<PluginUiFrameSession> {
+}
+
+async function createSession(
+  options: CreatePluginUiSessionOptions,
+  transport: PluginUiSession['transport'],
+): Promise<{ session: PluginUiSession; globalExport: string }> {
   if (sessions.size >= MAX_UI_SESSIONS) throw new Error(`同时最多打开 ${MAX_UI_SESSIONS} 个插件界面`);
-  ensureListener();
   const state = useAppStore.getState();
   const plugin = state.installedPlugins.find((item) => item.id === options.plugin.id);
   if (!plugin?.enabled) throw new Error('插件已停用或卸载');
   const sourceDigest = normalizeDigest(plugin.sourceDigest, '插件源码摘要');
   const revisionDigest = normalizeDigest(plugin.revisionDigest, '插件 revision 摘要');
+  if (normalizeDigest(options.plugin.sourceDigest, '插件源码摘要') !== sourceDigest
+    || normalizeDigest(options.plugin.revisionDigest, '插件 revision 摘要') !== revisionDigest) {
+    throw new Error('插件 revision 已变化');
+  }
+  const tool = plugin.manifest.contributes.nodeTools.find((item) => item.id === options.tool.id);
+  if (!tool || tool.dialog?.ui !== options.exportName || !plugin.manifest.permissions.includes('ui.custom')) {
+    throw new Error('插件工具界面声明不匹配');
+  }
   const ui = plugin.manifest.ui;
   if (!ui) throw new Error('插件没有声明自定义界面');
   const globalExport = ui.exports[options.exportName];
@@ -371,11 +438,38 @@ export async function createPluginUiFrameSession(options: {
   const uiDigest = normalizeDigest(plugin.uiDigest ?? ui.integrity, '插件界面摘要');
   const projectId = state.currentProjectId;
   if (!projectId) throw new Error('当前项目不存在');
-  const guard = registerCanvasDerivation(state, options.nodeId);
-  if (!guard) throw new Error('无法创建插件界面保护');
   const sessionId = crypto.randomUUID();
+  const guard = registerCanvasDerivation(state, options.nodeId, {
+    onCancel: () => closeSession(sessionId, true),
+  });
+  if (!guard) throw new Error('无法创建插件界面保护');
   try {
-    const resources = await mintPluginInvocationResources({
+    const parameters = normalizeJson(options.parameters ?? {});
+    if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) {
+      throw new Error('插件界面初始参数无效');
+    }
+    const targetNode = state.nodes.find((node) => node.id === options.nodeId);
+    if (!targetNode || !tool.nodeTypes.includes(targetNode.data.type as NodeType)) throw new Error('插件目标节点无效');
+    const session: PluginUiSession = {
+      sessionId, surface: 'tool-dialog', pluginId: plugin.id, sourceDigest, revisionDigest, uiDigest,
+      tool, nodeId: options.nodeId, projectId, parameters, guard, transport,
+      resources: { self: [], incoming: [], inputs: {}, package: [], derived: [] },
+      ready: false, submitting: false, completed: false,
+      effectBudget: 0, requestCount: 0, requestInFlight: false,
+      trustedMediaReferences: collectTrustedNodeMediaReferences(
+        targetNode.data.type as NodeType, safeNodeData(tool, targetNode.data),
+      ),
+      onClose: options.onClose,
+    };
+    // 在异步 mint 前占用配额并监听失效，避免关闭/切项目后再注册一个迟到会话。
+    sessions.set(sessionId, session);
+    session.unsubscribe = useAppStore.subscribe(() => {
+      try {
+        // 提交中的普通 revision 变更由执行链每轮/写回前的 guard 检查负责。
+        resolveLivePlugin(session, !session.submitting && !session.completed);
+      } catch { closeSession(sessionId, true); }
+    });
+    session.resources = await mintPluginInvocationResources({
       pluginId: plugin.id,
       sourceDigest,
       revisionDigest,
@@ -383,41 +477,28 @@ export async function createPluginUiFrameSession(options: {
       projectId,
       nodeId: options.nodeId,
       baseRevision: guard.baseRevision,
-      access: options.tool.resourceAccess,
+      access: tool.resourceAccess,
       packageResources: plugin.manifest.resources,
       state,
     });
-    const parameters = normalizeJson(options.parameters ?? {});
-    if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) {
-      throw new Error('插件界面初始参数无效');
-    }
-    const targetNode = state.nodes.find((node) => node.id === options.nodeId);
-    if (!targetNode) throw new Error('插件目标节点不存在');
-    const trustedMediaReferences = collectTrustedNodeMediaReferences(
-      targetNode.data.type as NodeType,
-      safeNodeData(options.tool, targetNode.data),
-    );
-    const session: PluginUiSession = {
-      sessionId,
-      surface: 'tool-dialog',
-      pluginId: plugin.id,
-      sourceDigest,
-      revisionDigest,
-      uiDigest,
-      tool: options.tool,
-      nodeId: options.nodeId,
-      projectId,
-      parameters,
-      resources,
-      guard,
-      effectBudget: 0,
-      requestCount: 0,
-      requestInFlight: false,
-      trustedMediaReferences,
-      onClose: options.onClose,
-    };
-    sessions.set(sessionId, session);
-    const bundleUrl = new URL(convertFileSrc(plugin.id, 'plugin-ui'));
+    resolveLivePlugin(session);
+    session.ready = true;
+    return { session, globalExport };
+  } catch (error) {
+    closeSession(sessionId, false);
+    // mint 可能在撤销之后才返回，必须再清理一次新增的 grant。
+    clearPluginInvocationResources(sessionId);
+    completeCanvasDerivation(guard);
+    throw error;
+  }
+}
+
+export async function createPluginUiFrameSession(options: CreatePluginUiSessionOptions): Promise<PluginUiFrameSession> {
+  ensureListener();
+  const { session, globalExport } = await createSession(options, 'frame');
+  const { sessionId, uiDigest, pluginId } = session;
+  try {
+    const bundleUrl = new URL(convertFileSrc(pluginId, 'plugin-ui'));
     bundleUrl.searchParams.set('digest', uiDigest);
     const bundle = bundleUrl.toString();
     const query = new URLSearchParams({ session: sessionId, export: globalExport, bundle });
@@ -441,8 +522,28 @@ export async function createPluginUiFrameSession(options: {
       dispose: () => closeSession(sessionId, false),
     };
   } catch (error) {
-    clearPluginInvocationResources(sessionId);
-    completeCanvasDerivation(guard);
+    closeSession(sessionId, false);
     throw error;
   }
+}
+
+/** 仅交给主窗口窗口服务；不在 window、事件总线或持久化状态上暴露。 */
+export async function createPluginUiNativeSession(options: CreatePluginUiSessionOptions) {
+  const { session, globalExport } = await createSession(options, 'native');
+  const binding: PluginUiWindowBinding = Object.freeze({
+    sessionId: session.sessionId,
+    identity: Object.freeze({
+      pluginId: session.pluginId, sourceDigest: session.sourceDigest, revisionDigest: session.revisionDigest,
+      uiDigest: session.uiDigest, toolId: session.tool.id,
+    }),
+    projectId: session.projectId, nodeId: session.nodeId, canvasRevision: session.guard.baseRevision,
+  });
+  return {
+    binding,
+    globalExport,
+    isActive: () => sessions.get(session.sessionId) === session,
+    request: (kind: PluginUiRequestKind, payload: unknown) => dispatchRequest(session, { kind, payload }),
+    finishRequest: () => finishRequest(session),
+    dispose: () => closeSession(session.sessionId, false),
+  };
 }

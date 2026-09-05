@@ -72,4 +72,65 @@ describe('custom text model protocol', () => {
       input: '你好',
     });
   });
+
+  it.each([
+    {
+      protocol: 'anthropic-compatible' as const,
+      expectedUrl: 'https://gateway.example/v1/messages',
+      response: { content: [{ type: 'text', text: 'Anthropic 结果' }] },
+      expectedText: 'Anthropic 结果',
+      expectedHeader: ['x-api-key', 'secret'],
+      expectedBody: { model: 'vendor-chat', max_tokens: 4096, messages: [{ role: 'user' }] },
+    },
+    {
+      protocol: 'gemini-native' as const,
+      expectedUrl: 'https://gateway.example/v1/models/vendor-chat:generateContent',
+      response: { candidates: [{ content: { parts: [{ text: 'Gemini 结果' }] } }] },
+      expectedText: 'Gemini 结果',
+      expectedHeader: ['x-goog-api-key', 'secret'],
+      expectedBody: { contents: [{ role: 'user', parts: [{ text: '你好' }] }] },
+    },
+  ])('uses $protocol for non-stream text generation', async ({
+    protocol,
+    expectedUrl,
+    response,
+    expectedText,
+    expectedHeader,
+    expectedBody,
+  }) => {
+    useAppStore.setState((state) => ({
+      config: {
+        ...state.config,
+        providers: {
+          ...state.config.providers,
+          'native-text-provider': {
+            name: '原生文本连接',
+            apiKey: 'secret',
+            baseUrl: 'https://gateway.example/v1',
+            catalogId: 'custom-openai',
+            chatApiProtocol: protocol,
+          },
+        },
+        generalModels: [{
+          id: 'native-text',
+          name: '原生文本',
+          modelId: 'vendor-chat',
+          category: 'text',
+          providerConfigId: 'native-text-provider',
+        }],
+      },
+    }));
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(response));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(generateText({
+      provider: 'general',
+      model: 'general/native-text',
+      prompt: '你好',
+    })).resolves.toBe(expectedText);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(expectedUrl);
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ [expectedHeader[0]]: expectedHeader[1] });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject(expectedBody);
+  });
 });

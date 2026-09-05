@@ -10,6 +10,7 @@ import type { PluginModelSummary } from '../../types/plugin';
 import {
   defaultModelGroups,
   getConfiguredModelGroups,
+  hasVisionInputCapability,
   isProviderCategoryVisible,
 } from '../../components/nodes/shared/defaultModels';
 
@@ -23,6 +24,16 @@ const CATEGORY_NODE_TYPES: Record<GeneralModelCategory, NodeType> = {
 };
 
 export const ALL_MODEL_CATEGORIES: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
+
+/** 旧目录没有显式模态时复用宿主既有视觉能力判断，让插件不用复制模型 ID 规则。 */
+export function resolvePluginModelInputModalities(
+  category: GeneralModelCategory,
+  modelId: string,
+  declared: PluginModelSummary['inputModalities'],
+): PluginModelSummary['inputModalities'] {
+  if (declared !== undefined || category !== 'text') return declared;
+  return hasVisionInputCapability({ modelId }) ? ['text', 'image'] : ['text'];
+}
 
 /** 汇总自定义节点字段或节点工具弹窗字段声明的模型分类；未声明时视为不限分类。 */
 export function collectDeclaredModelCategories(
@@ -52,7 +63,7 @@ export function buildPluginModelCatalog(
       provider: model.provider,
       category,
       description: model.description,
-      inputModalities: model.inputModalities,
+      inputModalities: resolvePluginModelInputModalities(category, model.value, model.inputModalities),
     })));
     const general = (config.generalModels ?? [])
       .filter((model) => (
@@ -66,7 +77,7 @@ export function buildPluginModelCatalog(
         provider: 'general',
         category,
         description: model.description || `ID: ${model.modelId}`,
-        inputModalities: model.inputModalities,
+        inputModalities: resolvePluginModelInputModalities(category, model.modelId, model.inputModalities),
       }));
     return [...builtIn, ...general];
   });

@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BLINK_DURATION,
   REACTION_DURATIONS,
+  getBlinkOpenness,
+  getPointerGaze,
   getReactionPose,
   getSquashWidth,
   pickNextGazeIndex,
+  samplePerformancePose,
+  type MascotPerformancePose,
 } from '../../src/components/shared/mascot/mascotMotion';
+import { MASCOT_CLIPS, type MascotClipId } from '../../src/components/shared/mascot/mascotClips';
+
+const createPerformancePose = (): MascotPerformancePose => ({
+  x: 0, lift: 0, tilt: 0, pitch: 0, yaw: 0, squashY: 1, eyeOpen: 1,
+});
 
 describe('mascotMotion', () => {
   it('starts and ends every reaction at the neutral pose', () => {
@@ -28,6 +38,69 @@ describe('mascotMotion', () => {
     // 起跳前下蹲、落地压扁：两端都比原始高度矮
     expect(getReactionPose('hop', 0.09).squashY).toBeLessThan(1);
     expect(getReactionPose('hop', 0.91).squashY).toBeLessThan(1);
+  });
+
+  it('keeps the lower body planted during anticipation and landing', () => {
+    for (const progress of [0.04, 0.09, 0.14, 0.86, 0.91, 0.96]) {
+      const pose = getReactionPose('hop', progress);
+      expect(pose.lift).toBeLessThan(0);
+      // 半径为 1，压缩时球心下降量必须等于半径变化，不能一边下蹲一边上浮。
+      expect(pose.lift - pose.squashY).toBeCloseTo(-1, 6);
+    }
+  });
+
+  it.each([30, 60, 120])('fully closes a blink at %i fps, then reopens without overshoot', (fps) => {
+    const frames = Array.from({ length: Math.ceil(BLINK_DURATION * fps) + 1 }, (_, i) => getBlinkOpenness(i / fps));
+    expect(Math.min(...frames)).toBe(0);
+    expect(Math.max(...frames)).toBe(1);
+    expect(frames.at(-1)).toBe(1);
+    expect(getBlinkOpenness(-1)).toBe(1);
+  });
+
+  it('responds to a nearby pointer without exceeding the diagonal gaze range', () => {
+    expect(getPointerGaze(0, 0, 100)).toEqual({ x: 0, y: 0 });
+    expect(getPointerGaze(50, 0, 100).x).toBeGreaterThan(0.25);
+    const diagonal = getPointerGaze(1000, -1000, 100);
+    expect(diagonal.x).toBeGreaterThan(0);
+    expect(diagonal.y).toBeLessThan(0);
+    expect(Math.hypot(diagonal.x, diagonal.y)).toBeLessThanOrEqual(1);
+    expect(getPointerGaze(100, 0, 200).x).toBeCloseTo(getPointerGaze(50, 0, 100).x, 6);
+  });
+
+  it('returns transient performances to ambient motion at the end of the clip', () => {
+    for (const clip of Object.values(MASCOT_CLIPS)) {
+      if (!Number.isFinite(clip.duration)) continue;
+      const ambient = samplePerformancePose('idle', null, 0, 2, createPerformancePose());
+      const final = samplePerformancePose('idle', clip.id, clip.duration, 2, createPerformancePose());
+      for (const key of Object.keys(ambient) as (keyof MascotPerformancePose)[]) {
+        expect(final[key], `${clip.id}.${key}`).toBeCloseTo(ambient[key], 6);
+      }
+    }
+  });
+
+  it('gives reaction clips distinct body gestures and lets a sleepy nod recover', () => {
+    const sample = (id: MascotClipId, elapsed: number) => samplePerformancePose('idle', id, elapsed, 0, createPerformancePose());
+    expect(sample('excited', 0.4).lift).toBeGreaterThan(0.1);
+    expect(sample('surprised', 0.2).pitch).toBeLessThan(-0.05);
+    expect(sample('suspicious', 0.4).yaw).toBeLessThan(-0.05);
+    expect(sample('sleepy', 3.1).eyeOpen).toBeLessThan(0.2);
+    expect(sample('sleepy', 4).eyeOpen).toBe(1);
+    expect(sample('sleepy', 4).pitch).toBe(0);
+  });
+
+  it('keeps every performance bounded through several cycles', () => {
+    const buffer = createPerformancePose();
+    for (const clip of Object.values(MASCOT_CLIPS)) {
+      for (let frame = 0; frame <= 600; frame += 1) {
+        samplePerformancePose('idle', clip.id, frame / 30, frame / 30, buffer);
+        for (const value of Object.values(buffer)) expect(Number.isFinite(value)).toBe(true);
+        expect(buffer.squashY).toBeGreaterThan(0.8);
+        expect(buffer.squashY).toBeLessThan(1.15);
+        expect(Math.abs(buffer.lift)).toBeLessThan(0.3);
+        expect(buffer.eyeOpen).toBeGreaterThanOrEqual(0);
+        expect(buffer.eyeOpen).toBeLessThanOrEqual(1);
+      }
+    }
   });
 
   it('swings the head both ways and decays over a shake', () => {

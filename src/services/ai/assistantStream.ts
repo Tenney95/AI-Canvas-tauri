@@ -10,6 +10,7 @@
 import { useAppStore } from '../../store/useAppStore';
 import { parseStream, parseNonStream } from './streamParsers';
 import type { AssistantStreamEvent } from '../../types/chat';
+import type { ChatApiProtocol } from '../../types';
 import type { ModelExecutionProtocol, ProtocolJsonValue } from '../../types/aiTypes';
 import {
   findMediaModelOption,
@@ -29,6 +30,7 @@ import {
 } from './modelProtocol';
 import { getAssistantTextModelCandidates } from '../projectSettingsService';
 import { prepareAssistantVisualMessages } from '../chat/assistantVisualContext';
+import { buildChatApiRequest, resolveChatApiProtocol } from './chatApiProtocol';
 
 // ============================================
 // Config resolution
@@ -40,6 +42,8 @@ interface ResolvedModelConfig {
   apiKey: string;
   modelName: string;
   protocol: ModelExecutionProtocol;
+  chatApiProtocol: ChatApiProtocol;
+  usesConnectionProtocol: boolean;
   supportsVision: boolean;
 }
 
@@ -89,6 +93,8 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
       apiKey: provider.apiKey || '',
       modelName: gm.modelId,
       protocol,
+      chatApiProtocol: resolveChatApiProtocol(provider.chatApiProtocol),
+      usesConnectionProtocol: !gm.executionProfile,
       supportsVision: hasVisionInputCapability(gm),
     };
   }
@@ -108,6 +114,8 @@ function resolveAssistantModelById(assistantModelId: string): ResolvedModelConfi
     apiKey: provider.apiKey,
     modelName,
     protocol: getModelProtocolPreset('openai-chat'),
+    chatApiProtocol: resolveChatApiProtocol(provider.chatApiProtocol),
+    usesConnectionProtocol: true,
     supportsVision: provider.selectedModels?.find((model) => (
       `${builtInModel.provider}/${model.id}` === assistantModelId || model.id === modelName
     ))?.inputModalities?.includes('image') ?? isVisionCapableTextModel(assistantModelId),
@@ -234,7 +242,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
   if (!modelConfig) {
     throw new Error('未配置助手模型，请在「设置 → API Key」中添加');
   }
-  if (modelConfig.protocol.streamFormat !== 'openai-sse') {
+  if (!modelConfig.usesConnectionProtocol && modelConfig.protocol.streamFormat !== 'openai-sse') {
     throw new Error('当前助手模型协议未声明 OpenAI SSE 兼容能力，不能用于对话助手或 Agent 工具调用');
   }
 
@@ -281,24 +289,38 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
       supportsVision: modelConfig.supportsVision,
       signal: controller.signal,
     });
-    const builtRequest = buildModelProtocolRequest({
-      apiKey: modelConfig.apiKey,
-      baseUrl: modelConfig.baseUrl,
-      protocol: modelConfig.protocol,
-      signal: controller.signal,
-      variables: {
-        model: modelConfig.modelName,
-        prompt: userMessage,
-        messages: requestMessages as unknown as ProtocolJsonValue,
-        stream: !nonStream,
-        tools: tools.length > 0 ? tools as unknown as ProtocolJsonValue : undefined,
-        toolChoice: tools.length > 0 ? 'auto' : undefined,
-      },
-    });
+    const builtRequest = modelConfig.usesConnectionProtocol
+      ? buildChatApiRequest({
+          protocol: modelConfig.chatApiProtocol,
+          apiKey: modelConfig.apiKey,
+          baseUrl: modelConfig.baseUrl,
+          model: modelConfig.modelName,
+          messages: requestMessages,
+          tools,
+          stream: !nonStream,
+          signal: controller.signal,
+        })
+      : buildModelProtocolRequest({
+          apiKey: modelConfig.apiKey,
+          baseUrl: modelConfig.baseUrl,
+          protocol: modelConfig.protocol,
+          signal: controller.signal,
+          variables: {
+            model: modelConfig.modelName,
+            prompt: userMessage,
+            messages: requestMessages as unknown as ProtocolJsonValue,
+            stream: !nonStream,
+            tools: tools.length > 0 ? tools as unknown as ProtocolJsonValue : undefined,
+            toolChoice: tools.length > 0 ? 'auto' : undefined,
+          },
+        });
     const response = await corsSafeFetch(builtRequest.url, builtRequest.init);
+    const responseProtocol = modelConfig.usesConnectionProtocol
+      ? modelConfig.chatApiProtocol
+      : 'openai-compatible';
 
     if (nonStream) {
-      return await parseNonStream(response, { onEvent });
+      return await parseNonStream(response, { onEvent, protocol: responseProtocol });
     }
 
     return await parseStream(response, {
@@ -306,6 +328,7 @@ export async function streamAssistantReply(options: StreamingCallOptions): Promi
       modelId: modelConfig.modelName,
       onEvent,
       signal: controller.signal,
+      protocol: responseProtocol,
     });
   } catch (error: unknown) {
     if ((error as { name?: string }).name === 'AbortError') {
@@ -401,7 +424,7 @@ export function buildAssistantSystemPrompt(
         `- 需要节点 ID、坐标、尺寸、模型或现有提示词时，用 canvas_query 带 detail=true 查询，不要凭编号猜 ID`,
         `- canvas_update_nodes 可改名称、提示词、模型、画面比例、批量数量，也可移动（单个用 x/y，批量用 dx/dy）和调整尺寸；模型 ID 取自 app_get_state`,
         `- 让画布上已有节点按自身提示词和模型出图/出文用 canvas_run_nodes；它是付费调用且每次都要确认，一次最多 5 个节点`,
-        `- 连线用 canvas_connect_nodes / canvas_disconnect_nodes，分组用 canvas_group_nodes / canvas_ungroup_nodes`,
+        `- canvas_create_nodes 会把新节点 prompt 中的 @{nodeId:label} 自动物化为「已有节点 → 新节点」连线；给两个已存在节点连线或显式补线时才用 canvas_connect_nodes，删除连线用 canvas_disconnect_nodes；分组用 canvas_group_nodes / canvas_ungroup_nodes`,
         `- 用户可用 @{nodeId:label} 引用当前画布节点；不得编造、改写或删除其中的 nodeId`,
         `- 媒体 prompt 必须原样保留节点引用，由本地 Runtime 解析`,
         `- 你自己写节点提示词时也可以主动加引用：@{nodeId:label} 引用画布节点的输出，@drama{assetId:name} 引用资产库人物/场景/道具，生成时由本地 Runtime 展开为正文或参考图`,

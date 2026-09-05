@@ -14,7 +14,7 @@ export type PluginPermission =
   /** 允许插件提供自定义界面组件。该组件在主窗口 sandboxed iframe 中运行，仍需显式授权。 */
   | 'ui.custom';
 export type PluginRuntime = 'javascript' | 'python';
-export type PluginNodeOutputMode = 'update-current' | 'create-node';
+export type PluginNodeOutputMode = 'update-current' | 'create-node' | 'create-node-set';
 export type PluginCategory = 'content' | 'media' | 'workflow' | 'utility';
 export type PluginPlacement = 'node-context-menu' | 'node-toolbar';
 export type PluginDialogFieldType = 'text' | 'textarea' | 'number' | 'select' | 'boolean';
@@ -35,8 +35,31 @@ export interface PluginNodeToolOutputManifest {
   mode: PluginNodeOutputMode;
   /** create-node 缺省时沿用源节点类型。 */
   nodeType?: NodeType;
+  /** create-node-set 允许创建的节点类型白名单。 */
+  nodeTypes?: NodeType[];
+  /** create-node-set 单次允许创建的节点总数，宿主上限为 25。 */
+  maxNodes?: number;
   /** 插件返回 data 时允许写入的 BaseNodeData 顶层字段。 */
   fields: string[];
+}
+
+export interface PluginNodeSetItem {
+  /** 调用内稳定键；宿主用它解析边与分镜行的 frameKey。 */
+  key: string;
+  nodeType: NodeType;
+  /** ai-image 节点绑定本次 invocation 的派生图像资源。 */
+  resourceId?: string;
+  data: Record<string, PluginJsonValue>;
+}
+
+export interface PluginNodeSetEdge {
+  sourceKey: string;
+  targetKey: string;
+}
+
+export interface PluginNodeSetData {
+  nodes: PluginNodeSetItem[];
+  edges?: PluginNodeSetEdge[];
 }
 
 export interface PluginDialogFieldOption {
@@ -67,6 +90,8 @@ export interface PluginToolDialogManifest {
    * `fields` 仍然定义 `parameters` 的默认值与数据契约；未声明 ui 时由宿主渲染这些字段。
    */
   ui?: string;
+  /** 缺省为 modal；window 仅用于自定义 UI，实际开放由宿主隔离验收控制。 */
+  presentation?: 'modal' | 'window';
 }
 
 export interface PluginNodeToolManifest {
@@ -166,19 +191,47 @@ export interface PluginPackageResourcePayload {
   bytes: number[];
 }
 
-/** Plugin API v1 的自定义界面只挂载在节点工具弹窗内部。 */
+/** Plugin API v1 的逻辑挂载点，与弹窗或原生窗口的展示方式无关。 */
 export type PluginUISurface = 'tool-dialog';
+
+/** 宿主与原生层的内存会话契约，不属于插件可选择的权限或持久化数据。 */
+export interface PluginUiWindowBinding {
+  readonly sessionId: string;
+  readonly identity: {
+    readonly pluginId: string;
+    readonly sourceDigest: string;
+    readonly revisionDigest: string;
+    readonly uiDigest: string;
+    readonly toolId: string;
+  };
+  readonly projectId: string;
+  readonly nodeId: string;
+  readonly canvasRevision: number;
+}
+
+export type PluginUiRequestKind = 'context' | 'effect' | 'set-parameters' | 'submit' | 'close' | 'toast';
+
+export interface PluginUiReply {
+  ok: boolean;
+  value?: unknown;
+  error?: string;
+}
+
+/** 只能由创建窗口时登记的原生 Channel 投递，不接受通用事件。 */
+export type PluginUiWindowEvent =
+  | { type: 'request'; binding: PluginUiWindowBinding; requestId: string; kind: PluginUiRequestKind; payload: unknown }
+  | { type: 'closed'; binding: PluginUiWindowBinding; reason: string };
 
 /**
  * 宿主注入给插件自定义视图的接口。
  *
- * 插件视图运行在主窗口内的 sandboxed iframe 中，只能通过这里的回调与宿主交互——拿不到宿主的
+ * 插件视图运行在 sandboxed iframe 或经隔离验证的专用 WebView 中，只能通过这里的回调与宿主交互——拿不到宿主的
  * DOM、store 或凭据；写回画布仍要过 output.fields 白名单与媒体来源校验。
  */
 export interface PluginUISurfaceProps {
   /** 当前挂载点；v1 固定为节点工具弹窗。 */
   surface: PluginUISurface;
-  /** 与主窗口一致的实时主题；插件还会收到 ai-canvas-theme-change 事件。 */
+  /** 宿主主题；内嵌时实时同步，原生窗口重新聚焦时刷新，并派发 ai-canvas-theme-change。 */
   theme: 'dark' | 'light';
   /** 已按 inputFields 白名单裁剪的节点数据。 */
   node: { id: string; type: NodeType; data: Record<string, PluginJsonValue> };
@@ -268,6 +321,7 @@ export interface NodePluginInvocationInput {
 
 export interface NodePluginExecutionResult {
   data?: Record<string, PluginJsonValue>;
+  nodeSet?: PluginNodeSetData;
   message?: string;
   /** 请求宿主代执行模型或文件能力；宿主完成后会携带 effectResult 再次调用。 */
   effect?: PluginNodeHostEffect;
@@ -304,7 +358,7 @@ export interface PluginModelSummary {
   inputModalities?: Array<'text' | 'image'>;
 }
 
-export type PluginResourceOrigin = 'node-self' | 'connection' | 'package';
+export type PluginResourceOrigin = 'node-self' | 'connection' | 'package' | 'derived';
 
 export interface PluginResourceRef {
   resourceId: string;
@@ -326,6 +380,8 @@ export interface PluginInvocationResources {
   incoming: PluginResourceRef[];
   inputs: Record<string, PluginResourceRef[]>;
   package: PluginResourceRef[];
+  /** 宿主 effect 在当前 invocation 内生成的内存资源；会话结束即撤销。 */
+  derived: PluginResourceRef[];
 }
 
 export type PluginNodeHostEffect =
@@ -345,7 +401,23 @@ export type PluginNodeHostEffect =
     }
   | { type: 'resource.readText'; resourceId: string; maxBytes?: number }
   | { type: 'resource.readRange'; resourceId: string; offset: number; length: number }
-  | { type: 'resource.createText'; content: string; suggestedName?: string };
+  | { type: 'resource.createText'; content: string; suggestedName?: string }
+  | { type: 'resource.export'; resourceId: string; suggestedName?: string }
+  | { type: 'video.detectShots'; resourceId: string; start: number; end: number; threshold?: number; minShotDuration?: number }
+  | { type: 'video.inspectFrame'; resourceId: string; time: number; direction: -1 | 0 | 1; boundary?: boolean }
+  | {
+      type: 'video.extractFrames';
+      /** 必须是当前节点 self 中的视频资源。 */
+      resourceId: string;
+      /** preview 只返回小图；analysis 还登记派生帧与联系表资源。 */
+      mode: 'preview' | 'analysis';
+      /** preview 模式均匀采样数量，范围 1-48。 */
+      count?: number;
+      /** analysis 模式显式选帧，必须按 time 单调递增，最多 24 项。 */
+      samples?: Array<{ key: string; time: number }>;
+      /** 原子替换当前派生批次，使反复选帧不累积资源。 */
+      replaceDerived?: boolean;
+    };
 
 export interface PluginNodeHostEffectResult {
   type: PluginNodeHostEffect['type'];

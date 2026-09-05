@@ -1,0 +1,6 @@
+{
+  "identifier": "plugin-ui-window",
+  "description": "Dedicated session bridge only; native registration is required in addition to the label scope.",
+  "webviews": ["plugin-window-*"],
+  "permissions": ["allow-plugin-ui-window-request"]
+}

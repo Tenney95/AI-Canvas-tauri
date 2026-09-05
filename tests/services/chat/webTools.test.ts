@@ -70,6 +70,23 @@ afterEach(() => {
 });
 
 describe('web agent tools', () => {
+  it('passes continuation and live scope checks to the reader without persisting body metadata', async () => {
+    const url = 'https://example.com/docs';
+    const source = { id: 's', title: 'Docs', url, domain: 'example.com', fetchedAt: 1, sourceType: 'page' };
+    readWebPageMock.mockResolvedValue({ source, pages: [{ source, text: 'TEMPORARY_BODY', links: [], truncated: true }],
+      text: 'TEMPORARY_BODY', links: [], truncated: true, complete: false, readMethod: 'static', issues: ['text_limit'],
+      readSessionId: 'snapshot', nextCursor: 'next-cursor', nextOffset: 10000, totalTextChars: 40000 });
+    const result = await getAgentTool('web_extract')!.execute(context, { url, cursor: 'old-cursor' });
+    expect(result.modelContent).toContain('next-cursor');
+    expect(JSON.stringify(result.sources)).not.toContain('TEMPORARY_BODY');
+    const options = readWebPageMock.mock.calls[0][1];
+    expect(options).toMatchObject({ cursor: 'old-cursor', scope: context });
+    expect(options.authorize()).toBe(true);
+    useAppStore.setState({ agentTasks: [{ ...task(), status: 'stopped' }] });
+    expect(options.authorize()).toBe(false);
+    useAppStore.setState({ agentTasks: [{ ...task(), conversationId: 'other' }] });
+    expect(options.authorize()).toBe(false);
+  });
   it('normalizes relative page links and filters unsafe or duplicate targets', () => {
     expect(normalizePageLinks([
       { href: '/docs#intro', title: ' Documentation ' },
@@ -365,5 +382,34 @@ describe('web agent tools', () => {
       title: 'Public documentation',
       url: 'https://example.com/docs',
     })]);
+  });
+
+  it('assigns a citation to each page and keeps text paired with its own source', async () => {
+    const pages = [1, 2, 3].map((i) => ({
+      source: { id: `page-${i}`, title: `Chapter ${i}`, url: `https://example.com/docs/${i}`, domain: 'example.com', fetchedAt: 20, sourceType: 'page' },
+      text: `BODY_${i}`, links: [], truncated: false,
+    }));
+    readWebPageMock.mockResolvedValue({ source: pages[0].source, pages, text: 'BODY_1\nBODY_2\nBODY_3', links: [], truncated: false, complete: false, issues: ['timeout'], readMethod: 'rendered' });
+    const result = await getAgentTool('web_extract')!.execute(context, { url: pages[0].source.url });
+    expect(result.sources).toHaveLength(3);
+    for (let i = 1; i <= 3; i += 1) {
+      expect(result.sources?.[i - 1]).toMatchObject({ citationId: `S${i}`, url: `https://example.com/docs/${i}` });
+      expect(result.modelContent).toContain(`URL: https://example.com/docs/${i}\n--- 外部内容开始 ---\nBODY_${i}`);
+    }
+    expect(result.summary).toContain('部分');
+    expect(result.modelContent).toContain('超时');
+    expect(JSON.stringify(result.sources)).not.toContain('BODY_');
+  });
+
+  it('never cites a search navigation page mixed into rendered page results', async () => {
+    const pages = ['https://example.com/research', 'https://www.bing.com/search?q=ai'].map((url, index) => ({
+      source: { id: `page-${index}`, title: 'Page', url, domain: new URL(url).hostname, fetchedAt: 1, sourceType: 'page' },
+      text: index === 0 ? 'FACT_BODY' : 'SEARCH_SNIPPET', links: [], truncated: false,
+    }));
+    readWebPageMock.mockResolvedValue({ source: pages[0].source, pages, text: 'FACT_BODY\nSEARCH_SNIPPET', links: [], truncated: false, complete: true, issues: [], readMethod: 'rendered' });
+    const result = await getAgentTool('web_extract')!.execute(context, { url: pages[0].source.url });
+    expect(result.sources).toEqual([expect.objectContaining({ url: 'https://example.com/research' })]);
+    expect(result.modelContent).not.toContain('SEARCH_SNIPPET');
+    expect(result.modelContent).toContain('搜索导航页');
   });
 });

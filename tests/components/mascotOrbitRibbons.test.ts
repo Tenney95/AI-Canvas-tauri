@@ -5,18 +5,18 @@ import { createOrbitRibbons } from '../../src/components/shared/mascot/mascotOrb
 
 /** 与 Mascot.tsx 中的相机设置保持一致，改相机参数时必须同步这里。 */
 const CAMERA_FOV = 35;
-const CAMERA_DISTANCE = 5;
-/** 球体半径，彩带轨道必须完全在它之外，否则会与球体穿模。 */
-const SPHERE_RADIUS = 1;
+const CAMERA_DISTANCE = 5.35;
+/** 内核半径 1 + 绒毛长度 0.22，彩带也要为绒毛留出间隙。 */
+const FUR_RADIUS = 1.22;
 
 const CAMERA_POSITION = new Vector3(0, 0, CAMERA_DISTANCE);
 
 /** 推进足够长时间让拖尾完全长出来。 */
-function warmUp(ribbons: ReturnType<typeof createOrbitRibbons>, seconds = 3) {
+function warmUp(ribbons: ReturnType<typeof createOrbitRibbons>, seconds = 3, fps = 60) {
   ribbons.setIntensity(1);
-  const dt = 1 / 60;
-  for (let elapsed = 0; elapsed < seconds; elapsed += dt) {
-    ribbons.update(dt, CAMERA_POSITION);
+  const frames = Math.round(seconds * fps);
+  for (let frame = 0; frame < frames; frame += 1) {
+    ribbons.update(seconds / frames, CAMERA_POSITION);
   }
 }
 
@@ -37,8 +37,9 @@ function vertices(ribbons: ReturnType<typeof createOrbitRibbons>): number[][] {
 }
 
 /** 取第一条带子每对顶点的中点，即拖尾的中心线。 */
-function centerline(ribbons: ReturnType<typeof createOrbitRibbons>): number[][] {
-  const mesh = ribbons.group.children[0] as Mesh;
+function centerline(ribbons: ReturnType<typeof createOrbitRibbons>, belt = 0): number[][] {
+  const mesh = ribbons.group.children[belt] as Mesh;
+  if (mesh.geometry.drawRange.count === 0) return [];
   const position = mesh.geometry.getAttribute('position');
   const usedVertices = ((mesh.geometry.drawRange.count / 6) + 1) * 2;
   const points: number[][] = [];
@@ -50,6 +51,28 @@ function centerline(ribbons: ReturnType<typeof createOrbitRibbons>): number[][] 
     ]);
   }
   return points;
+}
+
+function pathLength(points: number[][]): number {
+  return points.slice(1).reduce((length, point, index) => length + Math.hypot(
+    point[0] - points[index][0],
+    point[1] - points[index][1],
+    point[2] - points[index][2],
+  ), 0);
+}
+
+function ribbonWidths(mesh: Mesh): number[] {
+  const position = mesh.geometry.getAttribute('position');
+  if (mesh.geometry.drawRange.count === 0) return [];
+  const pairCount = mesh.geometry.drawRange.count / 6 + 1;
+  return Array.from({ length: pairCount }, (_, pair) => {
+    const index = pair * 2;
+    return Math.hypot(
+      position.getX(index) - position.getX(index + 1),
+      position.getY(index) - position.getY(index + 1),
+      position.getZ(index) - position.getZ(index + 1),
+    );
+  });
 }
 
 describe('mascotOrbitRibbons', () => {
@@ -78,26 +101,30 @@ describe('mascotOrbitRibbons', () => {
 
   it('stays inside the camera frustum so no ribbon gets clipped', () => {
     // 相机是透视投影，可视半高由 FOV 与距离决定；超出的部分会被画布切掉
-    const halfHeight = CAMERA_DISTANCE * Math.tan((CAMERA_FOV / 2) * (Math.PI / 180));
     const ribbons = createOrbitRibbons();
     warmUp(ribbons);
-    const points = vertices(ribbons);
-    expect(points.length).toBeGreaterThan(0);
-    for (const [x, y] of points) {
-      expect(Math.abs(y)).toBeLessThan(halfHeight);
-      expect(Math.abs(x)).toBeLessThan(halfHeight);
+    for (let frame = 0; frame < 360; frame += 1) {
+      ribbons.update(1 / 30, CAMERA_POSITION);
+      const points = vertices(ribbons);
+      expect(points.length).toBeGreaterThan(0);
+      // 前景比后景的可视范围小，必须把每个顶点的深度带入透视投影。
+      const overflow = points.some(([x, y, z]) => {
+        const halfHeight = (CAMERA_DISTANCE - z) * Math.tan(CAMERA_FOV * Math.PI / 360);
+        return Math.abs(x) >= halfHeight || Math.abs(y) >= halfHeight;
+      });
+      expect(overflow).toBe(false);
     }
     ribbons.dispose();
   });
 
-  it('orbits outside the sphere so ribbons never intersect it', () => {
+  it('orbits outside the fur so ribbons keep a gap at the silhouette', () => {
     const ribbons = createOrbitRibbons();
     warmUp(ribbons);
     const points = vertices(ribbons);
     expect(points.length).toBeGreaterThan(0);
     for (const [x, y, z] of points) {
-      // 轨道半径大于球体半径，带子的宽度向内也不会吃到球里
-      expect(Math.hypot(x, y, z)).toBeGreaterThan(SPHERE_RADIUS);
+      // 包含彩带宽度和圆头的最内侧顶点也必须落在绒毛之外。
+      expect(Math.hypot(x, y, z)).toBeGreaterThan(FUR_RADIUS);
     }
     ribbons.dispose();
   });
@@ -154,16 +181,9 @@ describe('mascotOrbitRibbons', () => {
       ribbons.setIntensity(intensity);
       for (let i = 0; i < 180; i += 1) ribbons.update(1 / 60, CAMERA_POSITION);
       const mesh = ribbons.group.children[0] as Mesh;
-      const position = mesh.geometry.getAttribute('position');
-      // 只统计 drawRange 覆盖到的顶点，缓冲区尾部的空闲槽位全是 0
-      const usedVertices = ((mesh.geometry.drawRange.count / 6) + 1) * 2;
-      // 取头部（最后一对）顶点的间距，那里是带子最宽的位置
-      const index = Math.max(0, usedVertices - 2);
-      const dx = position.getX(index) - position.getX(index + 1);
-      const dy = position.getY(index) - position.getY(index + 1);
-      const dz = position.getZ(index) - position.getZ(index + 1);
+      const width = Math.max(...ribbonWidths(mesh));
       ribbons.dispose();
-      return Math.hypot(dx, dy, dz);
+      return width;
     };
     expect(widthAt(1)).toBeGreaterThan(widthAt(0.25));
   });
@@ -176,6 +196,76 @@ describe('mascotOrbitRibbons', () => {
     ribbons.update(0.5, CAMERA_POSITION);
     const points = vertices(ribbons);
     expect(points.length).toBeGreaterThan(2);
+    ribbons.dispose();
+  });
+
+  it('keeps the same trail length and pose at 30, 60 and 144 fps', () => {
+    const versions = [30, 60, 144].map((fps) => {
+      const ribbons = createOrbitRibbons();
+      warmUp(ribbons, 3, fps);
+      return ribbons;
+    });
+    const baseline = vertices(versions[0]);
+    for (const ribbons of versions.slice(1)) {
+      const points = vertices(ribbons);
+      expect(points.length).toBe(baseline.length);
+      const maxError = Math.max(...points.flatMap((point, index) => point.map(
+        (coordinate, axis) => Math.abs(coordinate - baseline[index][axis]),
+      )));
+      expect(maxError).toBeLessThan(0.00001);
+    }
+    for (const ribbons of versions) ribbons.dispose();
+  });
+
+  it('rounds both ends instead of leaving a flat cut', () => {
+    const ribbons = createOrbitRibbons();
+    warmUp(ribbons);
+    for (const child of ribbons.group.children) {
+      const widths = ribbonWidths(child as Mesh);
+      expect(widths[0]).toBeCloseTo(0, 6);
+      expect(widths[widths.length - 1]).toBeCloseTo(0, 6);
+      expect(widths[2]).toBeGreaterThan(widths[1]);
+      expect(widths[widths.length - 3]).toBeGreaterThan(widths[widths.length - 2]);
+      expect(Math.max(...widths)).toBeGreaterThan(0.05);
+    }
+    ribbons.dispose();
+  });
+
+  it('retracts the tail toward the head while fading out', () => {
+    const ribbons = createOrbitRibbons();
+    warmUp(ribbons);
+    const fullLength = pathLength(centerline(ribbons));
+    ribbons.setIntensity(0.35);
+    ribbons.update(0, CAMERA_POSITION);
+    const reducedLength = pathLength(centerline(ribbons));
+    expect(reducedLength).toBeGreaterThan(0);
+    expect(reducedLength).toBeLessThan(fullLength * 0.5);
+    ribbons.dispose();
+  });
+
+  it('clears a hidden trail and grows a fresh one on the next request', () => {
+    const ribbons = createOrbitRibbons();
+    warmUp(ribbons);
+    const fullLength = pathLength(centerline(ribbons));
+    ribbons.setIntensity(0);
+    expect(vertices(ribbons)).toHaveLength(0);
+    ribbons.setIntensity(1);
+    ribbons.update(1 / 60, CAMERA_POSITION);
+    expect(pathLength(centerline(ribbons))).toBeLessThan(fullLength * 0.1);
+    ribbons.dispose();
+  });
+
+  it('moves the gradient over time while retaining a gradient along the trail', () => {
+    const ribbons = createOrbitRibbons();
+    warmUp(ribbons);
+    const mesh = ribbons.group.children[0] as Mesh;
+    const colors = mesh.geometry.getAttribute('color');
+    const initialTail = Array.from(colors.array.slice(0, 3));
+    ribbons.update(0.5, CAMERA_POSITION);
+    expect(Array.from(colors.array.slice(0, 3))).not.toEqual(initialTail);
+    const headIndex = (mesh.geometry.drawRange.count / 6) * 6;
+    expect(Array.from(colors.array.slice(headIndex, headIndex + 3)))
+      .not.toEqual(Array.from(colors.array.slice(0, 3)));
     ribbons.dispose();
   });
 

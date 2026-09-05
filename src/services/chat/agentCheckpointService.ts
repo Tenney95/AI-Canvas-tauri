@@ -34,14 +34,39 @@ export function findSucceededDuplicateWrite(
   task: AgentTask,
   toolId: string,
   inputFingerprint: string,
-  excludeStepId?: string,
+  context: {
+    callId: string;
+    excludeStepId?: string;
+    projectId: string | null;
+    historyIndex: number;
+    revision: number;
+    checkpointReplayStepIds?: ReadonlySet<string>;
+  },
 ): AgentStep | undefined {
-  return task.steps.find((step) =>
-    step.id !== excludeStepId
-    && step.status === 'succeeded'
-    && step.toolCall?.toolId === toolId
-    && step.toolCall.inputFingerprint === inputFingerprint
-    && step.toolCall.effect !== 'read');
+  if (context.projectId !== task.projectId) return undefined;
+  return task.steps.find((step) => {
+    const call = step.toolCall;
+    if (
+      step.id === context.excludeStepId
+      || step.status !== 'succeeded'
+      || call?.toolId !== toolId
+      || call.inputFingerprint !== inputFingerprint
+      || !call.effect
+      || call.effect === 'read'
+    ) return false;
+
+    // 同一个请求重放可以复用；参数相同但 callId 不同，是新的操作（尤其是重新生成）。
+    if (context.callId && call.callId === context.callId) return true;
+
+    // 仅恢复前的步骤可以利用仍处于当前历史尾部的画布检查点，避免重做已完成步骤。
+    // 旧记录缺少检查点、画布已变化、媒体生成或普通后续轮次均不得按参数猜测成功。
+    const checkpoint = call.canvasCheckpoint;
+    return context.checkpointReplayStepIds?.has(step.id) === true
+      && call.effect === 'canvas_write'
+      && !!checkpoint
+      && checkpoint.historyIndexAfter === context.historyIndex
+      && checkpoint.revisionAfter === context.revision;
+  });
 }
 
 const REPLAN_TRIGGER_LINES: Record<AgentReplanReason, string> = {
@@ -56,7 +81,7 @@ function buildReplanDirective(task: AgentTask): string {
     REPLAN_TRIGGER_LINES[task.replanRequest.reason],
     '放弃此前的计划，不要接着上一步继续执行。',
     '先读取当前画布与下方步骤摘要的真实状态，输出一份新的计划并说明与原计划的差异，再开始执行。',
-    '已经成功的写操作保持有效，不得重复执行。',
+    '已经完成的同一请求不得重复提交；新的修改或重新生成不等同于重放旧请求。',
   ].join('\n');
 }
 
@@ -74,7 +99,7 @@ export function buildAgentResumeContext(task: AgentTask): string {
       return `- ${state}：${step.title}（${step.toolCall?.toolId ?? step.kind}）— ${result}`;
     });
     sections.push([
-      '这是该任务恢复前已经持久化的步骤摘要。成功的写操作不得重复执行；继续前先确认当前画布状态，再接着未完成的部分推进。',
+      '这是该任务恢复前已经持久化的步骤摘要。不要重放已成功的同一请求；继续前先确认当前画布状态，再接着未完成的部分推进。新的修改或重新生成应作为新请求执行。',
       ...lines,
     ].join('\n'));
   }

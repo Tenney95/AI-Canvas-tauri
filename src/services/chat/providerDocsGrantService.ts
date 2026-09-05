@@ -3,6 +3,8 @@
  */
 // 中转站每个模型一个接口页，逐个读才能拿到真实字段名；页数放宽到能覆盖一站的模型数，
 // 真正的安全边界是下面的字符总量（单页最多 10k，超出 80k 一律停读）。
+import { clearWebReadSessionsForTask } from './webReadSessionService';
+
 const MAX_PROVIDER_DOC_PAGES = 24;
 const MAX_PROVIDER_DOC_DEPTH = 2;
 const MAX_PROVIDER_DOC_TEXT_CHARS = 80_000;
@@ -17,8 +19,8 @@ interface ProviderDocGrant {
 interface ProviderDocsTaskState {
   grants: Map<string, ProviderDocGrant>;
   readUrls: Set<string>;
-  reservedUrls: Set<string>;
-  completedPages: number;
+  reservedUrls: Map<string, ProviderDocReadReservation>;
+  completedUrls: Set<string>;
   totalTextChars: number;
 }
 
@@ -27,6 +29,7 @@ export interface ProviderDocReadReservation extends ProviderDocGrant {
   conversationId?: string;
   /** 去重键：同一 URL 的不同 offset 段算不同次读取，续读长文档才不会被当成重复。 */
   readKey: string;
+  maxTextChars: number;
 }
 
 export interface ProviderDocReadCompletion {
@@ -58,8 +61,8 @@ function createTaskState(): ProviderDocsTaskState {
   return {
     grants: new Map(),
     readUrls: new Set(),
-    reservedUrls: new Set(),
-    completedPages: 0,
+    reservedUrls: new Map(),
+    completedUrls: new Set(),
     totalTextChars: 0,
   };
 }
@@ -193,6 +196,8 @@ export function beginProviderDocRead(
   rawUrl: string,
   conversationId?: string,
   offset = 0,
+  segmentKey?: string,
+  restart = false,
 ): ProviderDocReadReservation {
   const normalized = normalizeProviderDocUrl(rawUrl);
   if (!normalized) throw new Error('文档 URL 无效或不满足 HTTPS 安全要求');
@@ -200,29 +205,35 @@ export function beginProviderDocRead(
   const grant = resolveGrant(state, normalized, conversationId);
   if (!grant) throw new Error('只能读取用户本轮提供或已读页面发现的同站文档链接');
   // 续读（offset>0）读的是同一页的后半段，按 URL 去重会把它当成重复读取直接拒掉；
-  // 用 URL#offset 作键：重复读同一段仍然被挡住，页数与字符预算照旧计入。
+  // 用 URL#片段作键：重复读同一段仍被挡住，字符预算照常计入，同页只计一次页数。
   const safeOffset = Math.max(0, Math.floor(offset));
-  const readKey = safeOffset > 0 ? `${normalized}#${safeOffset}` : normalized;
+  const readKey = segmentKey ? `${normalized}#${segmentKey}` : safeOffset > 0 ? `${normalized}#${safeOffset}` : normalized;
+  if (restart && safeOffset === 0 && !segmentKey) state.readUrls.delete(normalized);
   if (state.readUrls.has(readKey) || state.reservedUrls.has(readKey)) {
     throw new Error('该文档页面已读取或正在读取');
   }
-  if (state.completedPages + state.reservedUrls.size >= MAX_PROVIDER_DOC_PAGES) {
+  const pageUrls = new Set([...state.completedUrls, ...[...state.reservedUrls.values()].map((item) => item.url)]);
+  if (!pageUrls.has(normalized) && pageUrls.size >= MAX_PROVIDER_DOC_PAGES) {
     throw new Error(`单个任务最多读取 ${MAX_PROVIDER_DOC_PAGES} 个文档页面`);
   }
-  if (state.totalTextChars >= MAX_PROVIDER_DOC_TEXT_CHARS) {
+  const remaining = getProviderDocRemainingTextChars(taskId);
+  if (remaining <= 0) {
     throw new Error('文档正文累计长度已达到任务上限');
   }
-  state.reservedUrls.add(readKey);
-  return { taskId, conversationId, readKey, ...grant };
+  const reservation = { taskId, conversationId, readKey, maxTextChars: Math.min(10_000, remaining), ...grant };
+  state.reservedUrls.set(readKey, reservation);
+  return reservation;
 }
 
 export function releaseProviderDocRead(reservation: ProviderDocReadReservation): void {
-  taskStates.get(reservation.taskId)?.reservedUrls.delete(reservation.readKey);
+  const state = taskStates.get(reservation.taskId);
+  if (state?.reservedUrls.get(reservation.readKey) === reservation) state.reservedUrls.delete(reservation.readKey);
 }
 
 export function getProviderDocRemainingTextChars(taskId: string): number {
   const state = taskStates.get(taskId);
-  return Math.max(0, MAX_PROVIDER_DOC_TEXT_CHARS - (state?.totalTextChars ?? 0));
+  const reserved = [...(state?.reservedUrls.values() ?? [])].reduce((sum, item) => sum + item.maxTextChars, 0);
+  return Math.max(0, MAX_PROVIDER_DOC_TEXT_CHARS - (state?.totalTextChars ?? 0) - reserved);
 }
 
 export function completeProviderDocRead(
@@ -231,15 +242,16 @@ export function completeProviderDocRead(
   discoveredUrls: string[],
 ): ProviderDocReadCompletion {
   const state = taskStates.get(reservation.taskId);
-  if (!state || !state.reservedUrls.delete(reservation.readKey)) {
+  if (!state || state.reservedUrls.get(reservation.readKey) !== reservation) {
     throw new Error('文档读取授权已失效');
   }
   const safeTextChars = Math.max(0, Math.floor(textChars));
-  if (state.totalTextChars + safeTextChars > MAX_PROVIDER_DOC_TEXT_CHARS) {
+  if (!Number.isFinite(safeTextChars) || safeTextChars > reservation.maxTextChars) {
     throw new Error('文档正文累计长度超过任务上限');
   }
+  state.reservedUrls.delete(reservation.readKey);
   state.readUrls.add(reservation.readKey);
-  state.completedPages += 1;
+  state.completedUrls.add(reservation.url);
   state.totalTextChars += safeTextChars;
 
   const nextDepth = reservation.depth + 1;
@@ -259,8 +271,8 @@ export function completeProviderDocRead(
   return {
     depth: reservation.depth,
     discoveredUrls: [...new Set(granted)],
-    remainingPages: Math.max(0, MAX_PROVIDER_DOC_PAGES - state.completedPages),
-    remainingTextChars: Math.max(0, MAX_PROVIDER_DOC_TEXT_CHARS - state.totalTextChars),
+    remainingPages: Math.max(0, MAX_PROVIDER_DOC_PAGES - new Set([...state.completedUrls, ...[...state.reservedUrls.values()].map((item) => item.url)]).size),
+    remainingTextChars: getProviderDocRemainingTextChars(reservation.taskId),
   };
 }
 
@@ -276,6 +288,7 @@ export function listProviderDocGrants(
 
 export function clearProviderDocsTask(taskId: string): void {
   taskStates.delete(taskId);
+  clearWebReadSessionsForTask(taskId);
 }
 
 export function clearProviderDocsGrantsForTests(): void {

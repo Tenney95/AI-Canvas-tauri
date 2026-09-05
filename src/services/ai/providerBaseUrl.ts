@@ -6,12 +6,17 @@
  * 既重复又有遗漏，所以统一在写进配置前收敛一次。
  */
 
+import type { ChatApiProtocol } from '../../types';
+
 /** 用户常误贴的完整端点后缀；只剥端点本身，保留 /v1 之类的版本段。 */
 const PASTED_ENDPOINT_RE =
-  /\/(?:chat\/completions|completions|responses|models|embeddings|images\/generations|videos|audio\/(?:speech|transcriptions))\/?$/i;
+  /\/(?:chat\/completions|completions|responses|messages(?:\/count_tokens)?|models(?:\/[^/]+:(?:streamGenerateContent|generateContent))?|embeddings|images\/generations|videos|audio\/(?:speech|transcriptions))\/?$/i;
 
 /** 去掉首尾空白、补全协议、剥掉查询与误贴的端点后缀，并统一去掉尾斜杠。 */
-export function normalizeBaseUrl(raw: string | null | undefined): string {
+export function normalizeBaseUrl(
+  raw: string | null | undefined,
+  _protocol: ChatApiProtocol = 'openai-compatible',
+): string {
   const value = (raw ?? '').trim();
   if (!value) return '';
   const withScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(value) ? value : `https://${value}`;
@@ -30,11 +35,14 @@ export function normalizeBaseUrl(raw: string | null | undefined): string {
 
 /**
  * 拉取模型目录 / 验证连接时的探测顺序。
- * 地址里已有版本段（/v1、/v1beta/openai）就不再猜；否则补一个 `/v1` 候选 ——
+ * 地址里已有版本段（/v1、/v1beta/openai）就不再猜；否则按协议补 `/v1` 或 `/v1beta` 候选 ——
  * 中转站只给根域名是最常见的填写遗漏。
  */
-export function baseUrlCandidates(raw: string | null | undefined): string[] {
-  const base = normalizeBaseUrl(raw);
+export function baseUrlCandidates(
+  raw: string | null | undefined,
+  protocol: ChatApiProtocol = 'openai-compatible',
+): string[] {
+  const base = normalizeBaseUrl(raw, protocol);
   if (!base) return [];
   let pathname: string;
   try {
@@ -42,5 +50,6 @@ export function baseUrlCandidates(raw: string | null | undefined): string[] {
   } catch {
     return [base];
   }
-  return /\/v\d/i.test(pathname) ? [base] : [base, `${base}/v1`];
+  if (/\/v\d/i.test(pathname)) return [base];
+  return [base, `${base}/${protocol === 'gemini-native' ? 'v1beta' : 'v1'}`];
 }

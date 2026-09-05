@@ -207,6 +207,75 @@ export async function probeVideoSource(input: Input): Promise<VideoEditorSourceP
   };
 }
 
+export interface VideoFrameCanvasSample {
+  requestedTime: number;
+  actualTime: number;
+  duration: number;
+  width: number;
+  height: number;
+  canvas: HTMLCanvasElement | OffscreenCanvas;
+}
+
+/** 顺序处理小尺寸视频帧；调用方必须在下一轮前消费 canvas，不保留池中的画布。 */
+export async function* iterateVideoFrames(
+  input: Input,
+  options: { start: number; end: number; height: number; signal?: AbortSignal },
+): AsyncGenerator<VideoFrameCanvasSample> {
+  const track = await input.getPrimaryVideoTrack();
+  if (!track || !(await track.canDecode())) throw new Error('视频轨无法解码');
+  const sink = new CanvasSink(track, { height: options.height, fit: 'contain', poolSize: 2 });
+  for await (const frame of sink.canvases(options.start, options.end)) {
+    if (options.signal?.aborted) throw new Error('抽帧已取消');
+    yield {
+      requestedTime: frame.timestamp, actualTime: frame.timestamp, duration: frame.duration,
+      width: frame.canvas.width, height: frame.canvas.height, canvas: frame.canvas,
+    };
+  }
+}
+
+/**
+ * 按显式时间点批量解码视频帧。
+ *
+ * 时间点必须单调递增，才能让 mediabunny 复用同一条有序解码管线；调用方用
+ * requestedTime 与 WrappedCanvas.timestamp 同时记录请求位置和实际样本时间。
+ */
+export async function extractFramesAtTimestamps(
+  input: Input,
+  options: { timestamps: readonly number[]; height: number; signal?: AbortSignal },
+): Promise<Array<VideoFrameCanvasSample | null>> {
+  const { timestamps, height, signal } = options;
+  if (!Number.isInteger(height) || height <= 0) throw new Error('抽帧高度必须是正整数');
+  if (timestamps.length === 0) return [];
+  for (let index = 0; index < timestamps.length; index += 1) {
+    const timestamp = timestamps[index];
+    if (!Number.isFinite(timestamp) || timestamp < 0) throw new Error('抽帧时间点无效');
+    if (index > 0 && timestamp < timestamps[index - 1]) {
+      throw new Error('批量抽帧时间点必须单调递增');
+    }
+  }
+  if (signal?.aborted) throw new Error('抽帧已取消');
+
+  const videoTrack = await input.getPrimaryVideoTrack();
+  if (!videoTrack || !(await videoTrack.canDecode())) return timestamps.map(() => null);
+  const sink = new CanvasSink(videoTrack, { height, fit: 'contain', poolSize: 0 });
+  const frames: Array<VideoFrameCanvasSample | null> = [];
+  let index = 0;
+  for await (const wrapped of sink.canvasesAtTimestamps(timestamps)) {
+    if (signal?.aborted) throw new Error('抽帧已取消');
+    frames.push(wrapped ? {
+      requestedTime: timestamps[index],
+      actualTime: wrapped.timestamp,
+      duration: wrapped.duration,
+      width: wrapped.canvas.width,
+      height: wrapped.canvas.height,
+      canvas: wrapped.canvas,
+    } : null);
+    index += 1;
+  }
+  while (frames.length < timestamps.length) frames.push(null);
+  return frames;
+}
+
 /**
  * 沿时间轴均匀抽取缩略图。
  * 用 canvasesAtTimestamps 的有序批量解码，避免逐帧 seek 造成重复解包。
@@ -215,32 +284,17 @@ export async function extractThumbnails(
   input: Input,
   options: { count: number; height: number; duration: number },
 ): Promise<string[]> {
-  const videoTrack = await input.getPrimaryVideoTrack();
-  if (!videoTrack || !(await videoTrack.canDecode())) return [];
-
   const { count, height, duration } = options;
   if (count <= 0 || duration <= 0) return [];
-
-  const sink = new CanvasSink(videoTrack, { height, fit: 'contain' });
   const timestamps = Array.from(
     { length: count },
     (_, index) => (duration * index) / count,
   );
-
-  const thumbnails: string[] = [];
-  for await (const wrapped of sink.canvasesAtTimestamps(timestamps)) {
-    if (!wrapped) {
-      thumbnails.push('');
-      continue;
-    }
-    const canvas = wrapped.canvas;
-    thumbnails.push(
-      canvas instanceof HTMLCanvasElement
-        ? canvas.toDataURL('image/jpeg', 0.82)
-        : '',
-    );
-  }
-  return thumbnails;
+  return (await extractFramesAtTimestamps(input, { timestamps, height })).map((frame) => (
+    frame?.canvas instanceof HTMLCanvasElement
+      ? frame.canvas.toDataURL('image/jpeg', 0.82)
+      : ''
+  ));
 }
 
 /**

@@ -38,6 +38,11 @@ function task(steps: AgentStep[]): AgentTask {
   };
 }
 
+const replayContext = {
+  callId: 'new-call', projectId: 'project-1', historyIndex: 3, revision: 5,
+  checkpointReplayStepIds: new Set(['step-0']),
+};
+
 describe('agent canvas checkpoints', () => {
   it('builds a bounded resume context from persisted step summaries', () => {
     const existing = step(0, {
@@ -83,8 +88,49 @@ describe('agent canvas checkpoints', () => {
     const existing = step(0, {
       historyIndexBefore: 2, historyIndexAfter: 3, revisionBefore: 4, revisionAfter: 5,
     });
-    expect(findSucceededDuplicateWrite(task([existing]), 'canvas_update_nodes', 'fingerprint-1'))
+    expect(findSucceededDuplicateWrite(task([existing]), 'canvas_update_nodes', 'fingerprint-1', replayContext))
       .toBe(existing);
+  });
+
+  it('does not equate a new operation with identical parameters outside checkpoint recovery', () => {
+    const existing = step(0, { historyIndexBefore: 2, historyIndexAfter: 3, revisionBefore: 4, revisionAfter: 5 });
+    expect(findSucceededDuplicateWrite(task([existing]), 'canvas_update_nodes', 'fingerprint-1', {
+      ...replayContext, checkpointReplayStepIds: undefined,
+    })).toBeUndefined();
+  });
+
+  it('still suppresses replay of the same succeeded request identity', () => {
+    const existing = step(0, { historyIndexBefore: 2, historyIndexAfter: 3, revisionBefore: 4, revisionAfter: 5 });
+    expect(findSucceededDuplicateWrite(task([existing]), 'canvas_update_nodes', 'fingerprint-1', {
+      ...replayContext, callId: 'call-0', checkpointReplayStepIds: undefined,
+    })).toBe(existing);
+  });
+
+  it.each([
+    { revision: 6 },
+    { historyIndex: 4 },
+    { projectId: 'project-2' },
+    { excludeStepId: 'step-0' },
+  ])('does not reuse an obsolete or inapplicable checkpoint: %j', (override) => {
+    const existing = step(0, { historyIndexBefore: 2, historyIndexAfter: 3, revisionBefore: 4, revisionAfter: 5 });
+    expect(findSucceededDuplicateWrite(task([existing]), 'canvas_update_nodes', 'fingerprint-1', {
+      ...replayContext, ...override,
+    })).toBeUndefined();
+  });
+
+  it('does not infer successful recovery from legacy records lacking checkpoint evidence', () => {
+    const existing = step(0, { historyIndexBefore: 2, historyIndexAfter: 3, revisionBefore: 4, revisionAfter: 5 });
+    delete existing.toolCall!.canvasCheckpoint;
+    expect(findSucceededDuplicateWrite(task([existing]), 'canvas_update_nodes', 'fingerprint-1', replayContext))
+      .toBeUndefined();
+  });
+
+  it('does not reuse a new media-generation request by matching its parameters', () => {
+    const existing = step(0, { historyIndexBefore: 2, historyIndexAfter: 3, revisionBefore: 4, revisionAfter: 5 });
+    existing.toolCall!.toolId = 'canvas_run_nodes';
+    existing.toolCall!.effect = 'media_generation';
+    expect(findSucceededDuplicateWrite(task([existing]), 'canvas_run_nodes', 'fingerprint-1', replayContext))
+      .toBeUndefined();
   });
 
   it('allows rewind only for a continuous current history tail', () => {

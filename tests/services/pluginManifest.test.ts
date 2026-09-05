@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { Script } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import {
   createInstalledPlugin,
@@ -42,6 +44,22 @@ function manifest(overrides: Record<string, unknown> = {}): string {
 }
 
 describe('AI Canvas Plugin Manifest Standard v1', () => {
+  it('keeps the documented minimal plugin installable with the v1 parser', () => {
+    const guide = readFileSync(new URL('../../doc/插件开发规范.md', import.meta.url), 'utf8');
+    const example = guide.split('## 3. 最小可运行示例')[1]?.split('## 4.')[0] ?? '';
+    const manifestSource = /```json\r?\n([\s\S]*?)```/.exec(example)?.[1] ?? '';
+    const toolSource = /```javascript\r?\n([\s\S]*?)```/.exec(example)?.[1] ?? '';
+
+    expect(manifestSource).not.toBe('');
+    expect(toolSource).not.toBe('');
+    // Compile only: documentation is never executed in the test process.
+    expect(() => new Script(toolSource)).not.toThrow();
+    const parsed = parsePluginBundle(manifestSource, toolSource);
+    expect(parsed.apiVersion).toBe(1);
+    expect(parsed.contributes.nodeTools[0]?.id).toBe('uppercase-output');
+    expect(parsed.permissions).toEqual(['node.read', 'node.write']);
+  });
+
   it('describes what a plugin does and where its tools appear', () => {
     const parsed = parsePluginBundle(manifest(), 'definePlugin({ tools: {} });');
 
@@ -63,7 +81,62 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
     });
   });
 
-  it('limits custom UI to a node-tool modal in Plugin API v1', () => {
+  it('accepts a bounded v1 node-set output and preserves its whitelist', () => {
+    const parsed = parsePluginBundle(manifest({
+      permissions: ['node.read', 'node.write', 'files.connected.read', 'files.output.create'],
+      contributes: {
+        nodeTools: [{
+          id: 'frame-review',
+          title: '逐帧拉片',
+          placements: ['node-context-menu'],
+          nodeTypes: ['ai-video', 'source-video'],
+          inputFields: ['label'],
+          resourceAccess: { self: true },
+          output: {
+            mode: 'create-node-set',
+            nodeTypes: ['ai-image', 'ai-shotlist'],
+            maxNodes: 25,
+            fields: ['label', 'imageWidth', 'imageHeight', 'frameAnalysis', 'shotlistRows'],
+          },
+        }],
+      },
+    }), 'definePlugin({ tools: {} });');
+
+    expect(parsed.contributes.nodeTools[0].output).toEqual({
+      mode: 'create-node-set',
+      nodeType: undefined,
+      nodeTypes: ['ai-image', 'ai-shotlist'],
+      maxNodes: 25,
+      fields: ['label', 'imageWidth', 'imageHeight', 'frameAnalysis', 'shotlistRows'],
+    });
+  });
+
+  it('rejects unbounded or malformed v1 node-set output contracts', () => {
+    const baseTool = {
+      id: 'frame-review',
+      title: '逐帧拉片',
+      placements: ['node-context-menu'],
+      nodeTypes: ['ai-video'],
+      inputFields: ['label'],
+      output: {
+        mode: 'create-node-set',
+        nodeTypes: ['ai-image'],
+        maxNodes: 25,
+        fields: ['label'],
+      },
+    };
+    const parseTool = (output: Record<string, unknown>) => parsePluginBundle(manifest({
+      contributes: { nodeTools: [{ ...baseTool, output }] },
+    }), 'definePlugin({ tools: {} });');
+
+    expect(() => parseTool({ ...baseTool.output, nodeTypes: undefined })).toThrow('必须声明 nodeTypes');
+    expect(() => parseTool({ ...baseTool.output, maxNodes: 26 })).toThrow('1-25');
+    expect(() => parseTool({ ...baseTool.output, nodeType: 'ai-image' })).toThrow('不能声明 nodeType');
+    expect(() => parseTool({ mode: 'create-node', nodeTypes: ['ai-image'], fields: ['label'] }))
+      .toThrow('只有 create-node-set');
+  });
+
+  it('limits custom UI to a node-tool surface in Plugin API v1', () => {
     const toolUiManifest = JSON.parse(manifest()) as {
       permissions: string[];
       ui?: Record<string, unknown>;
@@ -82,6 +155,7 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
       'definePlugin({ tools: {} });',
     );
     expect(parsed.contributes.nodeTools[0].dialog?.ui).toBe('toolDialog');
+    expect(parsed.contributes.nodeTools[0].dialog?.presentation).toBeUndefined();
 
     const unusedUiManifest = structuredClone(toolUiManifest);
     delete unusedUiManifest.contributes.nodeTools[0].dialog.ui;
@@ -108,6 +182,26 @@ describe('AI Canvas Plugin Manifest Standard v1', () => {
       JSON.stringify(nodeUiManifest),
       'definePlugin({ tools: {} });',
     )).toThrow('自定义 UI 仅用于节点工具 dialog.ui');
+  });
+
+  it('validates v1 presentation without silently accepting unsupported windows', () => {
+    const value = JSON.parse(manifest());
+    value.permissions.push('ui.custom');
+    value.ui = { entry: 'ui.js', integrity: `sha256-${'a'.repeat(64)}`, exports: { panel: 'Panel' } };
+    const dialog = value.contributes.nodeTools[0].dialog;
+    dialog.ui = 'panel';
+    const parse = () => parsePluginBundle(JSON.stringify(value), 'definePlugin({ tools: {} });');
+    for (const presentation of ['modal', 'window']) {
+      dialog.presentation = presentation;
+      expect(parse().contributes.nodeTools[0].dialog?.presentation).toBe(presentation);
+    }
+    for (const presentation of ['popup', '', 1, null, {}, true]) {
+      dialog.presentation = presentation;
+      expect(parse).toThrow('presentation 只允许');
+    }
+    dialog.presentation = 'window';
+    delete dialog.ui;
+    expect(parse).toThrow('必须声明自定义 ui');
   });
 
   it('normalizes GitHub publishing metadata', () => {

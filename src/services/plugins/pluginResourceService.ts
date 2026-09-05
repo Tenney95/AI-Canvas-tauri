@@ -27,6 +27,10 @@ import { assertSafeProjectRelativePath } from '../fs/projectFiles';
 const MAX_TEXT_BYTES = 256 * 1024;
 const MAX_RANGE_BYTES = 256 * 1024;
 const MAX_RANGE_FALLBACK_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_DERIVED_RESOURCE_BYTES = 4 * 1024 * 1024;
+const MAX_DERIVED_TOTAL_BYTES = 48 * 1024 * 1024;
+const MAX_DERIVED_RESOURCES = 25;
+const DERIVED_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 export interface PluginResourceStateSnapshot {
   currentProjectId: string | null;
@@ -86,6 +90,8 @@ interface PluginResourceLease {
   sourceNodeId?: string;
   edgeId?: string;
   portId?: string;
+  /** invocation 内宿主生成的派生资源；不落盘、不暴露真实路径。 */
+  bytes?: Uint8Array;
 }
 
 const resourceLeases = new Map<string, PluginResourceLease>();
@@ -238,7 +244,13 @@ export async function mintPluginInvocationResources(
   const targetNode = options.state.nodes.find((node) => node.id === options.nodeId);
   if (!targetNode) throw new Error('插件目标节点不存在');
 
-  const result: PluginInvocationResources = { self: [], incoming: [], inputs: {}, package: [] };
+  const result: PluginInvocationResources = {
+    self: [],
+    incoming: [],
+    inputs: {},
+    package: [],
+    derived: [],
+  };
   if (options.access?.self) {
     const identity = await resolveNodeProjectResource(options.projectId, targetNode);
     if (identity) result.self.push(addLease(options, 'node-self', identity, { nodeId: targetNode.id }));
@@ -317,11 +329,103 @@ function requireLease(context: PluginResourceReadContext, resourceId: string): P
   if (lease.sourceNodeId && !context.state.nodes.some((node) => node.id === lease.sourceNodeId)) {
     throw new Error('插件资源来源节点已删除，授权已撤销');
   }
-  const requiredPermission = lease.packageResourceId ? 'plugin.resources.read' : 'files.connected.read';
-  if (!context.permissions.includes(requiredPermission)) {
-    throw new Error(`插件未声明 ${requiredPermission} 权限`);
+  if (lease.packageResourceId) {
+    if (!context.permissions.includes('plugin.resources.read')) {
+      throw new Error('插件未声明 plugin.resources.read 权限');
+    }
+  } else if (lease.bytes) {
+    if (
+      !context.permissions.includes('files.connected.read')
+      || !context.permissions.includes('files.output.create')
+    ) {
+      throw new Error('派生资源要求 files.connected.read 与 files.output.create 权限');
+    }
+  } else if (!context.permissions.includes('files.connected.read')) {
+    throw new Error('插件未声明 files.connected.read 权限');
   }
   return lease;
+}
+
+/** 把宿主 effect 生成的图像登记为当前 invocation 的内存资源。 */
+export function registerPluginDerivedResource(
+  context: PluginResourceReadContext,
+  resources: PluginInvocationResources,
+  options: {
+    displayName: string;
+    mediaType: string;
+    bytes: Uint8Array;
+  },
+): PluginResourceRef {
+  if (
+    context.state.currentProjectId !== context.projectId
+    || context.state.getCurrentRevision() !== context.baseRevision
+    || !context.state.nodes.some((node) => node.id === context.nodeId)
+  ) {
+    throw new Error('画布已变化，不能登记派生资源');
+  }
+  if (
+    !context.permissions.includes('files.connected.read')
+    || !context.permissions.includes('files.output.create')
+  ) {
+    throw new Error('派生资源要求 files.connected.read 与 files.output.create 权限');
+  }
+  if (!DERIVED_MEDIA_TYPES.has(options.mediaType)) throw new Error('派生资源必须是受支持的图像');
+  if (options.bytes.byteLength <= 0 || options.bytes.byteLength > MAX_DERIVED_RESOURCE_BYTES) {
+    throw new Error('单个派生资源不能超过 4 MiB');
+  }
+  if (resources.derived.length >= MAX_DERIVED_RESOURCES) {
+    throw new Error(`单次调用最多登记 ${MAX_DERIVED_RESOURCES} 个派生资源`);
+  }
+  const invocationBytes = resources.derived.reduce((total, resource) => total + resource.size, 0);
+  if (invocationBytes + options.bytes.byteLength > MAX_DERIVED_TOTAL_BYTES) {
+    throw new Error('单次调用的派生资源总量不能超过 48 MiB');
+  }
+
+  const ref: PluginResourceRef = {
+    resourceId: createResourceId(),
+    origin: 'derived',
+    displayName: options.displayName.slice(0, 120) || 'derived-image.jpg',
+    mediaType: options.mediaType,
+    size: options.bytes.byteLength,
+    access: 'read',
+  };
+  resourceLeases.set(ref.resourceId, {
+    ref,
+    pluginId: context.pluginId,
+    sourceDigest: context.sourceDigest,
+    revisionDigest: context.revisionDigest,
+    invocationId: context.invocationId,
+    projectId: context.projectId,
+    nodeId: context.nodeId,
+    baseRevision: context.baseRevision,
+    bytes: options.bytes.slice(),
+  });
+  resources.derived.push(ref);
+  return ref;
+}
+
+/** 先验证完整批次，再同步替换，失败时恢复原批次，避免半批资源和配额泄漏。 */
+export function replacePluginDerivedResources(
+  context: PluginResourceReadContext,
+  resources: PluginInvocationResources,
+  entries: Array<{ displayName: string; mediaType: string; bytes: Uint8Array }>,
+): PluginResourceRef[] {
+  for (const resource of resources.derived) readPluginDerivedResourceForOutput(context, resource.resourceId);
+  if (entries.length > MAX_DERIVED_RESOURCES
+    || entries.reduce((sum, entry) => sum + entry.bytes.byteLength, 0) > MAX_DERIVED_TOTAL_BYTES) {
+    throw new Error('派生资源批次超过 25 个或 48 MiB 上限');
+  }
+  const previous = resources.derived;
+  resources.derived = [];
+  try {
+    const next = entries.map((entry) => registerPluginDerivedResource(context, resources, entry));
+    for (const resource of previous) resourceLeases.delete(resource.resourceId);
+    return next;
+  } catch (error) {
+    for (const resource of resources.derived) resourceLeases.delete(resource.resourceId);
+    resources.derived = previous;
+    throw error;
+  }
 }
 
 async function revalidateProjectLease(
@@ -405,9 +509,11 @@ export async function readPluginResourceRange(
   const lease = requireLease(context, resourceId);
   if (offset >= lease.ref.size) throw new Error('资源读取 offset 超出文件范围');
   const safeLength = Math.min(length, lease.ref.size - offset);
-  const bytes = lease.packageResourceId
-    ? await readPackageRange(context, lease, offset, safeLength)
-    : await readProjectRange(await revalidateProjectLease(context, lease), offset, safeLength);
+  const bytes = lease.bytes
+    ? lease.bytes.slice(offset, offset + safeLength)
+    : lease.packageResourceId
+      ? await readPackageRange(context, lease, offset, safeLength)
+      : await readProjectRange(await revalidateProjectLease(context, lease), offset, safeLength);
   return { resource: lease.ref, offset, bytes: bytes.byteLength, base64: bytesToBase64(bytes) };
 }
 
@@ -422,9 +528,14 @@ export async function readPluginResourceText(
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error('文本资源读取上限无效');
   const lease = requireLease(context, resourceId);
   if (lease.ref.size > maxBytes) throw new Error('文本资源超过本次读取上限');
-  const bytes = lease.packageResourceId
-    ? await readPackageRange(context, lease, 0, lease.ref.size)
-    : await readFile((await revalidateProjectLease(context, lease)).path);
+  if (lease.bytes && !lease.ref.mediaType.startsWith('text/')) {
+    throw new Error('派生图像资源不能按文本读取');
+  }
+  const bytes = lease.bytes
+    ? lease.bytes
+    : lease.packageResourceId
+      ? await readPackageRange(context, lease, 0, lease.ref.size)
+      : await readFile((await revalidateProjectLease(context, lease)).path);
   let content: string;
   try {
     content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -441,10 +552,23 @@ export async function resolvePluginResourceHostUrl(
 ): Promise<string> {
   const lease = requireLease(context, resourceId);
   if (lease.packageResourceId) throw new Error('插件包资源不能直接作为本地媒体引用');
+  if (lease.bytes) {
+    return `data:${lease.ref.mediaType};base64,${bytesToBase64(lease.bytes)}`;
+  }
   const identity = await revalidateProjectLease(context, lease);
   const convert = getConvertFileSrc();
   if (!convert) throw new Error('当前环境不能解析本地媒体资源');
   return convert(identity.path);
+}
+
+/** 最终节点集写回使用；只返回宿主登记的派生字节副本。 */
+export function readPluginDerivedResourceForOutput(
+  context: PluginResourceReadContext,
+  resourceId: string,
+): { resource: PluginResourceRef; bytes: Uint8Array } {
+  const lease = requireLease(context, resourceId);
+  if (lease.ref.origin !== 'derived' || !lease.bytes) throw new Error('节点集只能绑定宿主派生资源');
+  return { resource: lease.ref, bytes: lease.bytes.slice() };
 }
 
 export function clearPluginInvocationResources(invocationId: string): void {

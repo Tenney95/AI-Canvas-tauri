@@ -24,6 +24,17 @@ interface TestStore {
   customStyles: Array<Record<string, unknown>>;
   workflows: unknown[];
   selectedNodeIds: string[];
+  comfyNodeProgress: Record<string, {
+    projectId: string;
+    nodeId: string;
+    requestId: string;
+    clientId: string;
+    stage: string;
+    value?: number;
+    max?: number;
+    percent?: number;
+    updatedAt: number;
+  }>;
   getCurrentRevision: () => number;
   setNodes: (nodes: TestNode[]) => void;
   addNode: ReturnType<typeof vi.fn>;
@@ -112,6 +123,7 @@ function createStore(nodes: TestNode[], getRevision: () => number): TestStore {
     customStyles: [{ id: 'style-project', name: 'Project style' }],
     workflows: [],
     selectedNodeIds: [],
+    comfyNodeProgress: {},
     getCurrentRevision: getRevision,
     setNodes: (nextNodes: TestNode[]) => { store.nodes = nextNodes; },
     addNode: vi.fn((node: TestNode) => { store.nodes = [...store.nodes, node]; }),
@@ -175,6 +187,31 @@ beforeEach(() => {
 });
 
 describe('critical canvas node interactions', () => {
+  it('NodeGenerationProgress renders real ComfyUI value and percent for the current project', async () => {
+    await installReactHookDriver();
+    const store = createStore([], () => 1);
+    store.comfyNodeProgress['node-1'] = {
+      projectId: 'project-a',
+      nodeId: 'node-1',
+      requestId: 'request-1',
+      clientId: 'client-1',
+      stage: 'running',
+      value: 6,
+      max: 12,
+      percent: 50,
+      updatedAt: 1,
+    };
+    installStoreMock(store);
+    const { default: NodeGenerationProgress } = await import('../../src/components/nodes/shared/NodeGenerationProgress');
+
+    const rendered = NodeGenerationProgress({ nodeId: 'node-1', fallbackLabel: '生成图像中...' });
+    const progressbar = findElement(rendered, (element) => element.props.role === 'progressbar');
+    const detail = findElement(rendered, (element) => element.props.children === '6 / 12 · 50%');
+
+    expect(progressbar.props['aria-valuenow']).toBe(50);
+    expect(detail).toBeTruthy();
+  });
+
   it('NodeContextMenu exposes character capture only when the callback is available', async () => {
     await installReactHookDriver();
     vi.stubGlobal('window', { innerWidth: 1280, innerHeight: 800 });

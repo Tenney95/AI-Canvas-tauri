@@ -1,3 +1,229 @@
+use std::collections::BTreeSet;
+
+// 构建期防漂移：注册命令必须显式出现在应用权限中，不能靠修改 capability 临时放行。
+// 这里只校验项目受控的平铺命令声明；遇到宏、别名或不支持的写法直接失败。
+fn is_identifier(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn registered_commands(source: &str) -> Result<BTreeSet<String>, String> {
+    let source = source
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let marker = "tauri::generate_handler![";
+    if source.matches(marker).count() != 1 {
+        return Err("应用命令必须由唯一的 tauri::generate_handler! 平铺注册".into());
+    }
+    let body = source
+        .split_once(marker)
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(body, _)| body)
+        .ok_or("应用命令列表未闭合")?;
+    let mut commands = BTreeSet::new();
+    for entry in body
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        let path = entry.split("::").collect::<Vec<_>>();
+        if !path.iter().all(|segment| is_identifier(segment)) {
+            return Err(format!("应用命令注册写法不受支持: {entry}"));
+        }
+        let command = path.last().ok_or("应用命令名称为空")?.to_string();
+        if !commands.insert(command.clone()) {
+            return Err(format!("应用命令重复注册: {command}"));
+        }
+    }
+    if commands.is_empty() {
+        return Err("应用命令列表不能为空".into());
+    }
+    Ok(commands)
+}
+
+fn permission_commands(source: &str) -> Result<BTreeSet<String>, String> {
+    let source = source
+        .lines()
+        .map(|line| line.split_once('#').map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut lines = source.lines();
+    let mut commands = BTreeSet::new();
+    while let Some(line) = lines.next() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !matches!(key.trim(), "commands.allow" | "commands.deny") {
+            continue;
+        }
+        let mut value = value.trim().to_string();
+        while !value.contains(']') {
+            value.push_str(lines.next().ok_or("应用权限命令列表未闭合")?);
+        }
+        let body = value
+            .strip_prefix('[')
+            .and_then(|value| value.trim_end().strip_suffix(']'))
+            .ok_or("应用权限命令必须使用字符串数组")?;
+        let mut listed = BTreeSet::new();
+        for entry in body
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+        {
+            let command = entry
+                .strip_prefix('"')
+                .and_then(|entry| entry.strip_suffix('"'))
+                .filter(|entry| is_identifier(entry))
+                .ok_or_else(|| format!("应用权限命令写法不受支持: {entry}"))?;
+            if !listed.insert(command.to_string()) {
+                return Err(format!("同一应用权限列表重复声明命令: {command}"));
+            }
+        }
+        commands.extend(listed);
+    }
+    Ok(commands)
+}
+
+fn verify_command_coverage(
+    registered: &BTreeSet<String>,
+    declared: &BTreeSet<String>,
+) -> Result<(), String> {
+    let missing = registered.difference(declared).cloned().collect::<Vec<_>>();
+    let stale = declared.difference(registered).cloned().collect::<Vec<_>>();
+    if !missing.is_empty() || !stale.is_empty() {
+        return Err(format!(
+            "应用命令 ACL 不一致；未声明权限: [{}]；未注册命令: [{}]",
+            missing.join(", "),
+            stale.join(", "),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
 fn main() {
-    tauri_build::build()
+    // 仅 MockRuntime 安全测试需要；集成测试不会继承主程序的 Windows manifest。
+    // 不把测试链接参数传播到正式二进制、库或其他平台。
+    if std::env::var_os("CARGO_FEATURE_TAURI_CHANNEL_TESTS").is_some()
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg-tests=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'");
+    }
+    println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=permissions");
+    let registered =
+        registered_commands(include_str!("src/lib.rs")).expect("无法读取应用命令注册列表");
+    let mut declared = BTreeSet::new();
+    for entry in std::fs::read_dir("permissions").expect("应用权限目录缺失") {
+        let path = entry.expect("无法读取应用权限目录").path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "toml")
+        {
+            let source = std::fs::read_to_string(path).expect("应用权限文件必须为 UTF-8");
+            declared.extend(permission_commands(&source).expect("应用权限声明无效"));
+        }
+    }
+    verify_command_coverage(&registered, &declared).expect("请同步命令注册与显式应用权限清单");
+    // 自定义 TOML 已可启用应用 ACL；无需生成一份重复的逐命令 permissions/autogenerated。
+    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
+        tauri_build::AppManifest::new().permissions_path_pattern("./permissions/*.toml"),
+    ))
+    .expect("Tauri 构建配置失败");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn registered_commands_preserve_leaf_names_and_ignore_comments() {
+        let commands = registered_commands(
+            "tauri::generate_handler![ foo, module::bar, // note\n nested::module::baz, ]",
+        )
+        .unwrap();
+        assert_eq!(commands, set(&["foo", "bar", "baz"]));
+    }
+
+    #[test]
+    fn invalid_or_ambiguous_registration_fails_closed() {
+        for source in [
+            "",
+            "tauri::generate_handler![]",
+            "tauri::generate_handler![foo",
+            "tauri::generate_handler![a::foo,b::foo]",
+            "tauri::generate_handler![foo()]",
+            "tauri::generate_handler![foo as bar]",
+            "tauri::generate_handler![foo] tauri::generate_handler![bar]",
+            "tauri::generate_handler![#[cfg(test)] foo]",
+        ] {
+            assert!(registered_commands(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn allow_and_deny_lists_are_both_explicit_declarations() {
+        let source =
+            "commands.allow = [\n \"foo\", # note\n \"bar\",\n]\ncommands.deny = [\"baz\"]";
+        assert_eq!(
+            permission_commands(source).unwrap(),
+            set(&["foo", "bar", "baz"])
+        );
+    }
+
+    #[test]
+    fn same_command_in_different_permissions_is_valid() {
+        assert_eq!(
+            permission_commands(
+                "commands.allow = [\"foo\"]\n[[permission]]\ncommands.deny = [\"foo\"]",
+            )
+            .unwrap(),
+            set(&["foo"])
+        );
+    }
+
+    #[test]
+    fn malformed_permission_lists_fail_closed() {
+        for source in [
+            "commands.allow = [\"foo\"",
+            "commands.allow = \"foo\"",
+            "commands.allow = [foo]",
+            "commands.allow = [\"foo\",\"foo\"]",
+            "commands.allow = [\"*\"]",
+            "commands.allow = [\"foo\"] extra",
+        ] {
+            assert!(permission_commands(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn missing_and_stale_permissions_are_reported() {
+        let error = verify_command_coverage(&set(&["expected"]), &set(&["obsolete"])).unwrap_err();
+        assert!(error.contains("未声明权限: [expected]"));
+        assert!(error.contains("未注册命令: [obsolete]"));
+    }
+
+    #[test]
+    fn repository_commands_match_explicit_acl() {
+        let registered = registered_commands(include_str!("src/lib.rs")).unwrap();
+        let mut declared = permission_commands(include_str!(
+            "permissions/allow-first-party-app-commands.toml",
+        ))
+        .unwrap();
+        assert!(!declared.contains("plugin_ui_window_request"));
+        declared.extend(
+            permission_commands(include_str!("permissions/plugin-ui-window.toml")).unwrap(),
+        );
+        verify_command_coverage(&registered, &declared).unwrap();
+        assert!(declared.contains("read_plugin_package_resource"));
+    }
 }

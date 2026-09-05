@@ -18,6 +18,7 @@ import { useCompletionFlash } from '../../hooks/useCompletionFlash';
 import { transcribeAudio } from '../../services/ai/transcribeAudio';
 import { textNodeHeight } from '../../utils/num';
 import { useT } from '../../i18n';
+import NodeGenerationProgress from './shared/NodeGenerationProgress';
 
 /* ── Waveform data ── */
 interface WaveformData {
@@ -455,7 +456,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         style={{ minHeight: 88 }}
         onContextMenu={(e) => e.preventDefault()}
       >
-        <div className="node-preview compact">
+        <div className="node-preview compact relative">
           {isSource && (
             <button
               className="node-upload-btn"
@@ -499,10 +500,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               <span>{t('上传中...')}</span>
             </div>
           ) : data.status === 'loading' ? (
-            <div className="node-preview-loading">
-              <div className="spinner" />
-              <span>{t('生成音频中...')}</span>
-            </div>
+            <NodeGenerationProgress nodeId={id} fallbackLabel={t('生成音频中...')} compactSpinner />
           ) : (
             <div className="node-preview-placeholder">
               {isSource ? (
@@ -520,6 +518,9 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               )}
               <span>{isSource ? t('上传音频文件') : t('TTS 文本转语音')}</span>
             </div>
+          )}
+          {data.audioUrl && data.status === 'loading' && (
+            <NodeGenerationProgress nodeId={id} fallbackLabel={t('生成音频中...')} overlay />
           )}
         </div>
         {data.error && <NodeError nodeId={id} message={data.error} />}

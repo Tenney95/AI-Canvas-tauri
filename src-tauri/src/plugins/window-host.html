@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>插件</title>
+    <style>
+      :root { color-scheme: dark light; font-family: system-ui, sans-serif; }
+      :root[data-theme="dark"] { color-scheme: dark; }
+      :root[data-theme="light"] { color-scheme: light; }
+      * { box-sizing: border-box; }
+      html, body, #root { width: 100%; min-width: 0; min-height: 100%; margin: 0; }
+      body { background: Canvas; color: CanvasText; }
+      .plugin-ui-status { padding: 12px; overflow-wrap: anywhere; }
+    </style>
+    <script src="./bootstrap.js" defer></script>
+  </head>
+  <body><main id="root" aria-live="polite"></main></body>
+</html>

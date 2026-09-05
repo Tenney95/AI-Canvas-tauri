@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   ensureProjectDataDir: vi.fn(),
+  exists: vi.fn(async (_path: string) => false),
   invoke: vi.fn(),
   isTauriEnv: vi.fn(() => true),
   notifyProjectDiskChanged: vi.fn(),
@@ -10,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
-  exists: vi.fn(),
+  exists: mocks.exists,
   mkdir: vi.fn(),
   readDir: vi.fn(),
   readFile: vi.fn(),
@@ -46,6 +47,7 @@ import {
   downloadUrlAndSave,
   persistMediaUrlToProjectData,
   resolveProjectOutputPath,
+  saveDataUrlToProjectData,
 } from '../../src/services/fileService';
 
 describe('downloadUrlAndSave', () => {
@@ -53,6 +55,7 @@ describe('downloadUrlAndSave', () => {
     vi.clearAllMocks();
     mocks.isTauriEnv.mockReturnValue(true);
     mocks.ensureProjectDataDir.mockResolvedValue('/project/data');
+    mocks.exists.mockResolvedValue(false);
     mocks.resolveUniqueDestPath.mockImplementation(async (dataDir: string, fileName: string) => (
       `${dataDir}/${fileName}`
     ));
@@ -129,6 +132,32 @@ describe('downloadUrlAndSave', () => {
       filePath: '/project/data/自定义接口图片.png',
       assetUrl: 'asset:///project/data/自定义接口图片.png',
     });
+  });
+
+  it('reuses the same content-addressed file during persistence retries', async () => {
+    const writtenPaths = new Set<string>();
+    mocks.exists.mockImplementation(async (path: string) => writtenPaths.has(path));
+    mocks.writeFile.mockImplementation(async (path: string) => {
+      writtenPaths.add(path);
+    });
+
+    const first = await saveDataUrlToProjectData(
+      'data:image/png;base64,AQID',
+      'project-1',
+      '历史图片.png',
+      { deduplicateByContent: true },
+    );
+    const second = await saveDataUrlToProjectData(
+      'data:image/png;base64,AQID',
+      'project-1',
+      '历史图片.png',
+      { deduplicateByContent: true },
+    );
+
+    expect(first).toEqual(second);
+    expect(first?.filePath).toMatch(/^\/project\/data\/历史图片-[a-f0-9]{20}\.png$/);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(mocks.notifyProjectDiskChanged).toHaveBeenCalledTimes(1);
   });
 
   it('writes blob video results directly into the project directory', async () => {

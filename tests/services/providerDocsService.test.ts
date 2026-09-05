@@ -1,15 +1,86 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearWebReadSessionsForTests } from '../../src/services/chat/webReadSessionService';
+import { clearProviderModelCatalogsForTests, getProviderModelCatalog } from '../../src/services/chat/providerModelCatalogService';
 import {
   buildGroupedModelChoiceList,
   buildRelayCatalogContent,
   inferRelayModelCategory,
   parseNewApiPricingPayload,
   parseNewApiStatusPayload,
+  readProviderDocsPage,
   sliceDocText,
 } from '../../src/services/providerDocsService';
 import { shouldRenderDynamicHtml } from '../../src/services/webPageService';
 
+const invokeMock = vi.hoisted(() => vi.fn());
+afterEach(() => { clearWebReadSessionsForTests(); clearProviderModelCatalogsForTests(); });
+vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+
+// 有意用明确的 DOM fixture 覆盖服务编排，不引入新的 DOM 依赖。
+class DocElement {
+  readonly nodeType = 1;
+  readonly tagName: string;
+  readonly childNodes: Array<DocElement | { nodeType: number; textContent: string }>;
+  constructor(tagName: string, childNodes: DocElement['childNodes']) {
+    this.tagName = tagName;
+    this.childNodes = childNodes;
+  }
+  get textContent(): string { return this.childNodes.map((node) => node.textContent).join(''); }
+}
+const docs = new Map<string, unknown>();
+function docFixture(body: string, text: string, tag = 'P', href = './reference') {
+  const root = new DocElement('MAIN', [new DocElement(tag, [{ nodeType: 3, textContent: text }])]);
+  docs.set(body, {
+    body: root,
+    querySelector: (selector: string) => selector === 'title' ? { textContent: 'Model documentation' } : root,
+    querySelectorAll: () => [{ getAttribute: () => href, textContent: 'API reference' }],
+  });
+  return body;
+}
+const docUrl = 'https://example.com/docs/video/model';
+function response(body: string, url = docUrl, contentType = 'text/html') {
+  return { url, body, contentType, fetchedAt: 1, status: 200 };
+}
+
+beforeEach(() => {
+  invokeMock.mockReset();
+  docs.clear();
+  vi.stubGlobal('window', { __TAURI__: {} });
+  vi.stubGlobal('Node', class { static readonly TEXT_NODE = 3; });
+  vi.stubGlobal('Element', DocElement);
+  vi.stubGlobal('DOMParser', class {
+    parseFromString(body: string) {
+      const document = docs.get(body);
+      if (!document) throw new Error('Missing explicit document fixture');
+      return document;
+    }
+  });
+});
+
 describe('new-api relay catalog parsing', () => {
+  const scope = { projectId: 'p', conversationId: 'c', taskId: 't' };
+  it('returns a 1000-model catalog handle without copying raw pricing into model context', async () => {
+    const body = JSON.stringify({ data: Array.from({ length: 1000 }, (_, index) => ({ model_name: `model-${index}`,
+      display_name: `Model ${index}`, description: 'PRIVATE_RAW_DESCRIPTION', supported_endpoint_types: ['chat'] })) });
+    invokeMock.mockResolvedValue(response(body, 'https://example.com/api/pricing', 'application/json'));
+    const result = await readProviderDocsPage('https://example.com/api/pricing', { scope, authorize: () => true });
+    expect(result.catalog?.total).toBe(1000);
+    expect(result.modelCatalog).toBeUndefined();
+    expect(result.text.length).toBeLessThan(300);
+    expect(result.text).not.toContain('PRIVATE_RAW_DESCRIPTION');
+    expect(getProviderModelCatalog(scope, result.catalog!.catalogId).options).toHaveLength(1000);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+  it('reads the middle from the original documentation snapshot and not a later response', async () => {
+    const body = docFixture('<main>large</main>', 'A'.repeat(20_000) + 'MIDDLE_REQUEST' + 'Z'.repeat(20_000));
+    invokeMock.mockResolvedValue(response(body));
+    const first = await readProviderDocsPage(docUrl, { scope, authorize: () => true });
+    invokeMock.mockRejectedValue(new Error('must not refetch'));
+    const middle = await readProviderDocsPage(docUrl, { scope, authorize: () => true, readSessionId: first.readSessionId, offset: 20_000 });
+    expect(middle.text).toContain('MIDDLE_REQUEST');
+    expect(middle.sources[0].url).toBe(docUrl);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
   const pricingBody = JSON.stringify({
     auto_groups: ['default'],
     data: [
@@ -163,5 +234,106 @@ describe('sliceDocText', () => {
 
   it('clamps an offset past the end instead of throwing', () => {
     expect(sliceDocText('short', 999, 10_000)).toMatchObject({ text: '', truncated: false });
+  });
+});
+
+describe('provider document read orchestration', () => {
+  function loadingShell() {
+    return docFixture('<div id="root"><p>加载中...</p></div><script src="/app.js"></script>', '加载中...');
+  }
+
+  it('renders a short nonempty SPA before probing the catalog and preserves API code', async () => {
+    const code = 'POST /v1/generate\n{\n  "model": "demo",\n  "image_urls": ["{{referenceImages}}"]\n}';
+    invokeMock.mockResolvedValueOnce(response(loadingShell()))
+      .mockResolvedValueOnce(response(docFixture('<main><pre>API_CODE</pre></main>', code, 'PRE')));
+    const result = await readProviderDocsPage(docUrl);
+    expect(invokeMock.mock.calls.map((call) => call[0])).toEqual(['provider_docs_read', 'assistant_web_render']);
+    expect(result.text).toContain(`\`\`\`\n${code}\n\`\`\``);
+    expect(result).toMatchObject({ readMethod: 'rendered', complete: true, truncated: false });
+    expect(result.text).not.toContain('加载中');
+  });
+
+  it('does not rerender a genuine short static article inside an application root', async () => {
+    invokeMock.mockResolvedValueOnce(response(docFixture(
+      '<div id="root"><article><p>请求方法为 POST，请使用公开参数。</p></article></div><script src="/app.js"></script>',
+      '请求方法为 POST，请使用公开参数。',
+    )));
+    const result = await readProviderDocsPage(docUrl);
+    expect(result.text).toContain('请求方法为 POST');
+    expect(result.readMethod).toBe('static');
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps distinct rendered document bodies and resolves each relative link against its page', async () => {
+    const pages = [1, 2, 3].map((i) => ({
+      url: `https://example.com/docs/chapter-${i}/model`, contentType: 'text/html',
+      body: docFixture(`<main>DOC_${i}</main>`, `DOC_${i}`), truncated: false,
+    }));
+    invokeMock.mockResolvedValueOnce(response(loadingShell()))
+      .mockResolvedValueOnce({ ...response('', pages[0].url), pages, complete: false, issues: ['timeout'] });
+    const result = await readProviderDocsPage(docUrl);
+    for (let i = 1; i <= 3; i += 1) {
+      expect(result.text).toContain(`DOC_${i}`);
+      expect(result.text).toContain(`https://example.com/docs/chapter-${i}/model`);
+      expect(result.links).toContainEqual({ label: 'API reference', url: `https://example.com/docs/chapter-${i}/reference` });
+    }
+    expect(result).toMatchObject({ complete: false, issues: ['timeout'] });
+    expect(result.sources.map((source) => source.url)).toEqual(pages.map((page) => page.url));
+  });
+
+  it('falls back to a clearly labeled public catalog after render failure, not the loading text', async () => {
+    invokeMock.mockResolvedValueOnce(response(loadingShell()))
+      .mockRejectedValueOnce(new Error('render timeout'))
+      .mockResolvedValueOnce(response('{"data":[{"model_name":"catalog-model"}]}', 'https://example.com/api/pricing', 'application/json'))
+      .mockResolvedValueOnce(response('{"data":{"system_name":"Demo"}}', 'https://example.com/api/status', 'application/json'));
+    const result = await readProviderDocsPage(docUrl);
+    expect(result.text).toContain('catalog-model');
+    expect(result.text).toContain('公开模型清单');
+    expect(result.text).not.toContain('加载中');
+    expect(result).toMatchObject({ readMethod: 'catalog', complete: false });
+    expect(result.text).toContain('未读取到目标文档');
+  });
+
+  it('rejects login-only rendered pages when no public catalog exists', async () => {
+    invokeMock.mockResolvedValueOnce(response(loadingShell()))
+      .mockResolvedValueOnce(response(docFixture('<main><h1>请登录</h1><form><input type="password"></form></main>', '请登录')))
+      .mockResolvedValueOnce(response('{}', 'https://example.com/api/pricing', 'application/json'));
+    await expect(readProviderDocsPage(docUrl)).rejects.toThrow('没有可读取的正文');
+  });
+
+  it('rechecks the same-origin boundary for every rendered page', async () => {
+    invokeMock.mockResolvedValueOnce(response(loadingShell()))
+      .mockResolvedValueOnce({
+        ...response(''), complete: true,
+        pages: [{ url: 'https://other.example.com/page', body: 'WRONG_ORIGIN', contentType: 'application/json' }],
+      });
+    await expect(readProviderDocsPage(docUrl)).rejects.toThrow('同站安全校验');
+  });
+
+  it('binds a continuation slice to the page it actually contains, not to the entry page', async () => {
+    const pages = [1, 2, 3].map((index) => ({
+      url: `https://example.com/docs/chapter-${index}/model`, contentType: 'application/json',
+      body: `DOC_${index}_` + 'x'.repeat(180), truncated: false,
+    }));
+    invokeMock.mockResolvedValue({ ...response('', pages[0].url), pages, complete: true });
+    const full = await readProviderDocsPage(docUrl);
+    const offset = full.text.indexOf('DOC_2_');
+    const fragment = await readProviderDocsPage(docUrl, { offset, maxTextChars: 40 });
+    expect(fragment.text).toContain('DOC_2_');
+    expect(fragment.url).toBe(pages[1].url);
+    expect(fragment.sources.map((source) => source.url)).toEqual([pages[1].url]);
+    expect(fragment).toMatchObject({ complete: false, truncated: true, nextOffset: offset + 40 });
+    expect(fragment.issues).toContain('text_limit');
+  });
+
+  it('does not return a catalog result after the caller cancels during the fallback probe', async () => {
+    const controller = new AbortController();
+    invokeMock.mockResolvedValueOnce(response(loadingShell()))
+      .mockRejectedValueOnce(new Error('render timeout'))
+      .mockImplementationOnce(async () => {
+        controller.abort();
+        return response('{"data":[{"model_name":"catalog-model"}]}', 'https://example.com/api/pricing', 'application/json');
+      });
+    await expect(readProviderDocsPage(docUrl, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

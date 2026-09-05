@@ -10,6 +10,12 @@
  * - UTF-8 多字节字符的跨 chunk 拼接
  */
 import type { AssistantStreamEvent, FinishReason } from '../../types/chat';
+import type { ChatApiProtocol } from '../../types';
+import {
+  parseChatApiResponse,
+  readChatApiErrorMessage,
+  resolveChatApiProtocol,
+} from './chatApiProtocol';
 
 // ============================================
 // SSE line decoder
@@ -99,6 +105,13 @@ interface BufferedToolCall {
   argumentsJson: string;
 }
 
+interface AnthropicToolCallBuffer extends BufferedToolCall {
+  initialInput?: unknown;
+  finalized?: boolean;
+}
+
+class ProviderStreamPayloadError extends Error {}
+
 function parseOpenAiChunk(json: OpenAiChunk, requestId: string, modelId: string): AssistantStreamEvent[] {
   const events: AssistantStreamEvent[] = [];
 
@@ -152,6 +165,8 @@ export interface StreamParserOptions {
   modelId: string;
   onEvent: (event: AssistantStreamEvent) => void;
   signal?: AbortSignal;
+  /** 缺省保持 OpenAI SSE 兼容。 */
+  protocol?: ChatApiProtocol;
 }
 
 /**
@@ -164,13 +179,13 @@ export async function parseStream(
   options: StreamParserOptions,
 ): Promise<string> {
   const { onEvent, signal } = options;
+  const protocol = resolveChatApiProtocol(options.protocol);
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');
     let errorMsg = `请求失败 (${response.status})`;
     try {
-      const err = JSON.parse(errorBody);
-      errorMsg = err.error?.message || errorMsg;
+      errorMsg = readChatApiErrorMessage(JSON.parse(errorBody)) || errorMsg;
     } catch { /* ignore */ }
     onEvent({ type: 'error', code: 'HTTP_ERROR', message: errorMsg, retryable: response.status >= 500 });
     onEvent({ type: 'done', finishReason: 'error' });
@@ -188,6 +203,12 @@ export async function parseStream(
   let doneSent = false;
   let toolCallsFinalized = false;
   const toolCallBuffer = new Map<number, BufferedToolCall>();
+  const anthropicToolCallBuffer = new Map<number, AnthropicToolCallBuffer>();
+  const geminiToolCalls = new Set<string>();
+  let nativeInputTokens: number | undefined;
+  let nativeOutputTokens: number | undefined;
+  let nativeUsageSent = false;
+  let nativeFinishReason: FinishReason = 'stop';
 
   // SSE buffer
   let sseLines: string[] = [];
@@ -233,11 +254,166 @@ export async function parseStream(
     }
   };
 
+  const emitText = (delta: string) => {
+    if (!delta) return;
+    fullContent += delta;
+    onEvent({ type: 'text.delta', delta });
+  };
+
+  const emitNativeUsage = () => {
+    if (nativeUsageSent || (nativeInputTokens === undefined && nativeOutputTokens === undefined)) return;
+    nativeUsageSent = true;
+    onEvent({ type: 'usage', inputTokens: nativeInputTokens, outputTokens: nativeOutputTokens });
+  };
+
+  const finalizeAnthropicToolCall = (index: number) => {
+    const call = anthropicToolCallBuffer.get(index);
+    if (!call || call.finalized || !call.toolId) return;
+    let input: unknown = call.initialInput ?? {};
+    if (call.argumentsJson) {
+      try {
+        input = JSON.parse(call.argumentsJson) as unknown;
+      } catch {
+        return;
+      }
+    }
+    call.finalized = true;
+    onEvent({
+      type: 'tool.call.final',
+      call: { callId: call.callId, toolId: call.toolId, input },
+    });
+  };
+
+  const finalizeAnthropicToolCalls = () => {
+    for (const index of anthropicToolCallBuffer.keys()) finalizeAnthropicToolCall(index);
+  };
+
+  const processAnthropicEvent = (payload: Record<string, unknown>) => {
+    const type = typeof payload.type === 'string' ? payload.type : '';
+    if (type === 'error') {
+      throw new ProviderStreamPayloadError(
+        readChatApiErrorMessage(payload) || 'Anthropic 流式请求失败',
+      );
+    }
+    if (type === 'message_start') {
+      const message = payload.message && typeof payload.message === 'object'
+        ? payload.message as Record<string, unknown>
+        : {};
+      const usage = message.usage && typeof message.usage === 'object'
+        ? message.usage as Record<string, unknown>
+        : {};
+      if (typeof usage.input_tokens === 'number') nativeInputTokens = usage.input_tokens;
+      if (typeof usage.output_tokens === 'number') nativeOutputTokens = usage.output_tokens;
+      return;
+    }
+    if (type === 'content_block_start') {
+      const index = typeof payload.index === 'number' ? payload.index : 0;
+      const block = payload.content_block && typeof payload.content_block === 'object'
+        ? payload.content_block as Record<string, unknown>
+        : {};
+      if (block.type === 'text' && typeof block.text === 'string') emitText(block.text);
+      if (block.type === 'tool_use' && typeof block.name === 'string') {
+        anthropicToolCallBuffer.set(index, {
+          callId: typeof block.id === 'string' ? block.id : `tool-${options.requestId}-${index}`,
+          toolId: block.name,
+          argumentsJson: '',
+          initialInput: block.input,
+        });
+      }
+      return;
+    }
+    if (type === 'content_block_delta') {
+      const index = typeof payload.index === 'number' ? payload.index : 0;
+      const delta = payload.delta && typeof payload.delta === 'object'
+        ? payload.delta as Record<string, unknown>
+        : {};
+      if (delta.type === 'text_delta' && typeof delta.text === 'string') emitText(delta.text);
+      if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+        const current = anthropicToolCallBuffer.get(index) ?? {
+          callId: `tool-${options.requestId}-${index}`,
+          toolId: '',
+          argumentsJson: '',
+        };
+        current.argumentsJson += delta.partial_json;
+        anthropicToolCallBuffer.set(index, current);
+        onEvent({ type: 'tool.call.delta', callId: current.callId, delta: delta.partial_json });
+      }
+      return;
+    }
+    if (type === 'content_block_stop') {
+      finalizeAnthropicToolCall(typeof payload.index === 'number' ? payload.index : 0);
+      return;
+    }
+    if (type === 'message_delta') {
+      const usage = payload.usage && typeof payload.usage === 'object'
+        ? payload.usage as Record<string, unknown>
+        : {};
+      if (typeof usage.output_tokens === 'number') nativeOutputTokens = usage.output_tokens;
+      const delta = payload.delta && typeof payload.delta === 'object'
+        ? payload.delta as Record<string, unknown>
+        : {};
+      if (delta.stop_reason === 'max_tokens') nativeFinishReason = 'length';
+      return;
+    }
+    if (type === 'message_stop') {
+      finalizeAnthropicToolCalls();
+      emitNativeUsage();
+    }
+  };
+
+  const processGeminiEvent = (payload: Record<string, unknown>) => {
+    if (payload.error) {
+      throw new ProviderStreamPayloadError(
+        readChatApiErrorMessage(payload) || 'Gemini 流式请求失败',
+      );
+    }
+    const usage = payload.usageMetadata && typeof payload.usageMetadata === 'object'
+      ? payload.usageMetadata as Record<string, unknown>
+      : {};
+    if (typeof usage.promptTokenCount === 'number') nativeInputTokens = usage.promptTokenCount;
+    if (typeof usage.candidatesTokenCount === 'number') nativeOutputTokens = usage.candidatesTokenCount;
+    const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+    const first = candidates[0] && typeof candidates[0] === 'object'
+      ? candidates[0] as Record<string, unknown>
+      : {};
+    const content = first.content && typeof first.content === 'object'
+      ? first.content as Record<string, unknown>
+      : {};
+    const parts = Array.isArray(content.parts) ? content.parts : [];
+    for (const [index, item] of parts.entries()) {
+      if (!item || typeof item !== 'object') continue;
+      const part = item as Record<string, unknown>;
+      if (typeof part.text === 'string') emitText(part.text);
+      const call = part.functionCall && typeof part.functionCall === 'object'
+        ? part.functionCall as Record<string, unknown>
+        : undefined;
+      if (!call || typeof call.name !== 'string') continue;
+      const callId = typeof call.id === 'string'
+        ? call.id
+        : `tool-${options.requestId}-${index}-${call.name}`;
+      const signature = `${callId}:${JSON.stringify(call.args ?? {})}`;
+      if (geminiToolCalls.has(signature)) continue;
+      geminiToolCalls.add(signature);
+      const argumentsJson = JSON.stringify(call.args ?? {});
+      onEvent({ type: 'tool.call.delta', callId, delta: argumentsJson });
+      onEvent({
+        type: 'tool.call.final',
+        call: { callId, toolId: call.name, input: call.args ?? {} },
+      });
+    }
+    if (first.finishReason === 'MAX_TOKENS') nativeFinishReason = 'length';
+    if (typeof first.finishReason === 'string') emitNativeUsage();
+  };
+
   const sendDoneIfNeeded = () => {
     if (!doneSent) {
-      finalizeToolCalls();
+      if (protocol === 'openai-compatible') finalizeToolCalls();
+      else {
+        if (protocol === 'anthropic-compatible') finalizeAnthropicToolCalls();
+        emitNativeUsage();
+      }
       doneSent = true;
-      onEvent({ type: 'done', finishReason: 'stop' });
+      onEvent({ type: 'done', finishReason: nativeFinishReason });
     }
   };
 
@@ -275,20 +451,33 @@ export async function parseStream(
                 break;
               }
               try {
-                const json = JSON.parse(event.data) as OpenAiChunk;
-                consumeToolCallDeltas(json);
-                const events = parseOpenAiChunk(json, options.requestId, options.modelId);
-                for (const ev of events) {
-                  if (ev.type === 'done') {
-                    finalizeToolCalls();
-                    doneSent = true;
+                if (protocol === 'anthropic-compatible') {
+                  const json = JSON.parse(event.data) as Record<string, unknown>;
+                  processAnthropicEvent(json);
+                  if (json.type === 'message_stop') sendDoneIfNeeded();
+                } else if (protocol === 'gemini-native') {
+                  const json = JSON.parse(event.data) as Record<string, unknown>;
+                  processGeminiEvent(json);
+                  const candidates = Array.isArray(json.candidates) ? json.candidates : [];
+                  const first = candidates[0] && typeof candidates[0] === 'object'
+                    ? candidates[0] as Record<string, unknown>
+                    : {};
+                  if (typeof first.finishReason === 'string') sendDoneIfNeeded();
+                } else {
+                  const json = JSON.parse(event.data) as OpenAiChunk;
+                  consumeToolCallDeltas(json);
+                  const events = parseOpenAiChunk(json, options.requestId, options.modelId);
+                  for (const ev of events) {
+                    if (ev.type === 'done') {
+                      finalizeToolCalls();
+                      doneSent = true;
+                    }
+                    if (ev.type === 'text.delta') fullContent += ev.delta;
+                    onEvent(ev);
                   }
-                  if (ev.type === 'text.delta') {
-                    fullContent += ev.delta;
-                  }
-                  onEvent(ev);
                 }
-              } catch {
+              } catch (error) {
+                if (error instanceof ProviderStreamPayloadError) throw error;
                 // JSON parse error on non-JSON SSE line → skip silently
               }
             }
@@ -311,7 +500,7 @@ export async function parseStream(
  */
 export async function parseNonStream(
   response: Response,
-  options: Pick<StreamParserOptions, 'onEvent' | 'signal'>,
+  options: Pick<StreamParserOptions, 'onEvent' | 'signal' | 'protocol'>,
 ): Promise<string> {
   const { onEvent } = options;
 
@@ -319,50 +508,22 @@ export async function parseNonStream(
     const errorBody = await response.text().catch(() => '');
     let errorMsg = `请求失败 (${response.status})`;
     try {
-      const err = JSON.parse(errorBody);
-      errorMsg = err.error?.message || errorMsg;
+      errorMsg = readChatApiErrorMessage(JSON.parse(errorBody)) || errorMsg;
     } catch { /* ignore */ }
     onEvent({ type: 'error', code: 'HTTP_ERROR', message: errorMsg, retryable: response.status >= 500 });
     onEvent({ type: 'done', finishReason: 'error' });
     throw new Error(errorMsg);
   }
 
-  const json = await response.json() as Record<string, unknown>;
-  const choices = json.choices as Array<{
-    message?: {
-      content?: string;
-      tool_calls?: Array<{
-        id?: string;
-        function?: { name?: string; arguments?: string };
-      }>;
-    };
-  }> | undefined;
-  const content = choices?.[0]?.message?.content || '';
-
-  for (const [index, call] of (choices?.[0]?.message?.tool_calls ?? []).entries()) {
-    const toolId = call.function?.name;
-    const argumentsJson = call.function?.arguments;
-    if (!toolId || !argumentsJson) continue;
-    try {
-      onEvent({
-        type: 'tool.call.final',
-        call: {
-          callId: call.id || `tool-non-stream-${index}`,
-          toolId,
-          input: JSON.parse(argumentsJson) as unknown,
-        },
-      });
-    } catch {
-      // 非法参数不会触发工具。
-    }
+  const parsed = parseChatApiResponse(await response.json(), options.protocol);
+  for (const call of parsed.toolCalls) onEvent({ type: 'tool.call.final', call });
+  if (parsed.inputTokens !== undefined || parsed.outputTokens !== undefined) {
+    onEvent({
+      type: 'usage',
+      inputTokens: parsed.inputTokens,
+      outputTokens: parsed.outputTokens,
+    });
   }
-
-  // usage
-  const usage = json.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
-  if (usage) {
-    onEvent({ type: 'usage', inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens });
-  }
-
-  onEvent({ type: 'done', finishReason: 'stop' });
-  return typeof content === 'string' ? content : '';
+  onEvent({ type: 'done', finishReason: parsed.finishReason });
+  return parsed.text;
 }

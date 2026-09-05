@@ -11,6 +11,7 @@ const fileMocks = vi.hoisted(() => {
       missingSecrets: [] as string[],
     })),
     loadProjectsList: vi.fn(async () => [] as Array<Record<string, unknown>>),
+    loadProjectData: vi.fn(async () => null as Record<string, unknown> | null),
     saveProject: vi.fn(async (record: { id: string }) => record.id),
     saveConfig: vi.fn<(config: unknown) => Promise<string[]>>(async () => []),
     setBaseDataDir: vi.fn(),
@@ -34,6 +35,8 @@ beforeEach(() => {
   fileMocks.saveConfig.mockResolvedValue([]);
   fileMocks.loadProjectsList.mockReset();
   fileMocks.loadProjectsList.mockResolvedValue([]);
+  fileMocks.loadProjectData.mockReset();
+  fileMocks.loadProjectData.mockResolvedValue(null);
   fileMocks.saveProject.mockClear();
   fileMocks.setBaseDataDir.mockClear();
   fileMocks.syncAuthorizedDirectories.mockReset();
@@ -41,6 +44,54 @@ beforeEach(() => {
 });
 
 describe('config hydration guard', () => {
+  it('returns a sanitized failure to strict callers without changing legacy save behavior', async () => {
+    useAppStore.setState({ configHydrated: true });
+    fileMocks.saveConfig.mockRejectedValue(new Error('private-path-and-secret'));
+    await expect(useAppStore.getState().saveConfig({ throwOnError: true }))
+      .rejects.toThrow('设置保存失败');
+    await expect(useAppStore.getState().saveConfig()).resolves.toBeUndefined();
+  });
+
+  it('rejects strict saves before hydration without writing defaults', async () => {
+    await expect(useAppStore.getState().saveConfig({ throwOnError: true }))
+      .rejects.toThrow('配置尚未完成加载');
+    expect(fileMocks.saveConfig).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes persisted config from credentials that remain session-only', async () => {
+    useAppStore.setState({ configHydrated: true });
+    fileMocks.saveConfig.mockResolvedValue(['private-provider-id']);
+    await expect(useAppStore.getState().saveConfig({ throwOnError: true }))
+      .rejects.toThrow('配置已保存，但凭据存储不可用');
+    await expect(useAppStore.getState().saveConfig()).resolves.toBeUndefined();
+  });
+
+  it('reports a directory synchronization failure after persistence separately', async () => {
+    useAppStore.setState({ configHydrated: true });
+    fileMocks.syncAuthorizedDirectories.mockRejectedValue(new Error('private-directory'));
+    await expect(useAppStore.getState().saveConfig({ throwOnError: true }))
+      .rejects.toThrow('配置已保存，但目录授权同步失败');
+    expect(fileMocks.saveConfig).toHaveBeenCalledOnce();
+  });
+
+  it('does not hide a session-only credential warning when directory synchronization also fails', async () => {
+    useAppStore.setState({ configHydrated: true });
+    fileMocks.saveConfig.mockResolvedValue(['private-ref']);
+    fileMocks.syncAuthorizedDirectories.mockRejectedValue(new Error('private-directory'));
+    await expect(useAppStore.getState().saveConfig({ throwOnError: true }))
+      .rejects.toThrow(/目录授权同步失败.*API Key 仅本次会话有效/);
+  });
+
+  it('does not overwrite edits made while config persistence is pending', async () => {
+    useAppStore.setState({ configHydrated: true });
+    fileMocks.saveConfig.mockImplementationOnce(async () => {
+      useAppStore.getState().updateConfig({ theme: 'light' });
+      return [];
+    });
+    await useAppStore.getState().saveConfig({ throwOnError: true });
+    expect(useAppStore.getState().config.theme).toBe('light');
+  });
+
   it('blocks persistence until the saved config has been loaded', async () => {
     useAppStore.getState().updateConfig({ baseDataDir: 'new-default-path' });
 
@@ -509,7 +560,7 @@ describe('config hydration guard', () => {
       'ai-image': 'apimart/image-model',
       'ai-video': 'other/video-model',
     }));
-    fileMocks.loadProjectsList.mockResolvedValue([{
+    const otherProjectRecord = {
       id: 'other-project',
       name: '其他项目',
       createdAt: 2,
@@ -531,7 +582,15 @@ describe('config hydration guard', () => {
         },
       ],
       edges: [],
+    };
+    fileMocks.loadProjectsList.mockResolvedValue([{
+      id: otherProjectRecord.id,
+      name: otherProjectRecord.name,
+      createdAt: otherProjectRecord.createdAt,
+      updatedAt: otherProjectRecord.updatedAt,
+      settings: otherProjectRecord.settings,
     }]);
+    fileMocks.loadProjectData.mockResolvedValue(otherProjectRecord);
     useAppStore.setState({
       config: {
         providers: {
@@ -662,6 +721,7 @@ describe('config hydration guard', () => {
         }),
       ]),
     }));
+    expect(fileMocks.loadProjectData).toHaveBeenCalledWith('other-project');
   });
 
   it('keeps RunningHub standard model references when only workflow credentials are removed', async () => {

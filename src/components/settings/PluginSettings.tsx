@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import pluginDeveloperGuide from '../../../doc/插件开发规范.md?raw';
 import { isTauriEnv, saveBinaryToLocalFile } from '../../services/fileService';
+import { readLocalPluginPackage, selectNativePluginDirectory } from '../../services/fs/pluginPackageFiles';
 import { confirmAction } from '../../services/confirmDialog';
 import {
   comparePluginVersions,
@@ -151,10 +152,44 @@ define_plugin({"tools": {"python-uppercase-output": uppercase_output}})
 
 const PLUGIN_GUIDE_FILE_NAME = 'AI-Canvas-插件开发规范.md';
 const MAX_DROPPED_PLUGIN_FILES = 256;
+const IGNORED_PLUGIN_METADATA_ENTRIES = new Set(['.git', '.hg', '.svn']);
 
 interface PluginUploadFile {
   file: File;
   path: string;
+}
+
+type PluginDirectoryPickerResult = string | string[] | null;
+
+// 插件安装只消费 Manifest 声明的产物，版本库内部文件不属于插件包。
+// eslint-disable-next-line react-refresh/only-export-components
+export function isIgnoredPluginMetadataEntry(name: string): boolean {
+  return IGNORED_PLUGIN_METADATA_ENTRIES.has(name.trim().toLocaleLowerCase());
+}
+
+// 独立导出用于验证桌面/浏览器分流；无组件状态或模块级副作用。
+// eslint-disable-next-line react-refresh/only-export-components
+export async function routePluginDirectorySelection({
+  tauri,
+  openNativeDirectory,
+  openBrowserDirectory,
+  installFromPaths,
+}: {
+  tauri: boolean;
+  openNativeDirectory: () => Promise<PluginDirectoryPickerResult>;
+  openBrowserDirectory: () => void;
+  installFromPaths: (paths: string[]) => Promise<void>;
+}): Promise<void> {
+  if (!tauri) {
+    openBrowserDirectory();
+    return;
+  }
+
+  const selected = await openNativeDirectory();
+  const directory = Array.isArray(selected) ? selected[0] : selected;
+  if (typeof directory === 'string' && directory.trim()) {
+    await installFromPaths([directory]);
+  }
 }
 
 const PLUGIN_PERMISSION_LABELS: Record<string, string> = {
@@ -172,6 +207,16 @@ function permissionSummary(manifest: PluginManifest): string {
   return manifest.permissions
     .map((permission) => PLUGIN_PERMISSION_LABELS[permission] ?? permission)
     .join('；');
+}
+
+function pluginOperationErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
+  }
+  return fallback;
 }
 
 async function computeSourceDigest(source: string): Promise<string> {
@@ -237,6 +282,7 @@ async function collectDroppedEntry(
   parentPath: string,
   output: PluginUploadFile[],
 ): Promise<void> {
+  if (isIgnoredPluginMetadataEntry(entry.name)) return;
   if (output.length >= MAX_DROPPED_PLUGIN_FILES) throw new Error('插件文件夹包含的文件过多');
   const path = `${parentPath}${entry.name}`;
   if (isFileEntry(entry)) {
@@ -260,15 +306,6 @@ async function droppedPluginFiles(dataTransfer: DataTransfer): Promise<PluginUpl
   const files: PluginUploadFile[] = [];
   for (const entry of entries) await collectDroppedEntry(entry, '', files);
   return files;
-}
-
-// ── Tauri 原生拖拽：外部拖入时 webview 的 DataTransfer 是空的，只能走全局事件 ──
-
-type PluginFsModule = typeof import('@tauri-apps/plugin-fs');
-
-/** 统一成正斜杠，Windows 拖拽路径可能带反斜杠 */
-function normalizePluginPath(path: string): string {
-  return path.replace(/\\/g, '/');
 }
 
 /** 声明了 ui 的插件必须同时带上界面产物，否则 Rust 侧会以「缺少界面产物」拒绝暂存。 */
@@ -296,22 +333,6 @@ async function resolveResourcePayloads(
     if (found.file.size !== resource.bytes) throw new Error(`插件包资源 ${resource.path} 字节数不匹配`);
     return { id: resource.id, bytes: Array.from(new Uint8Array(await found.file.arrayBuffer())) };
   }));
-}
-
-async function collectPathFiles(
-  fs: PluginFsModule,
-  targetPath: string,
-  output: string[],
-): Promise<void> {
-  const info = await fs.stat(targetPath);
-  if (!info.isDirectory) {
-    output.push(targetPath);
-    return;
-  }
-  for (const entry of await fs.readDir(targetPath)) {
-    if (output.length >= MAX_DROPPED_PLUGIN_FILES) throw new Error('插件文件夹包含的文件过多');
-    await collectPathFiles(fs, `${targetPath.replace(/[\\/]+$/, '')}/${entry.name}`, output);
-  }
 }
 
 export default function PluginSettings() {
@@ -411,7 +432,7 @@ export default function PluginSettings() {
       setRepositoryInput('');
       await refreshMarketplace(true);
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'GitHub 插件安装失败', 'error');
+      showToast(pluginOperationErrorMessage(error, 'GitHub 插件安装失败'), 'error');
     } finally {
       setInstallingRepository('');
     }
@@ -468,50 +489,22 @@ export default function PluginSettings() {
         resourcePayloads,
       });
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
+      showToast(pluginOperationErrorMessage(error, '插件安装失败'), 'error');
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = '';
     }
   };
 
-  // Tauri 原生拖拽：全局事件只给出本机路径，需要自己把文件夹读出来
-  const installFromPaths = async (paths: string[]) => {
+  // Tauri 原生目录选择/拖拽共用按 Manifest 读取的安装链。
+  const installFromPaths = async (paths: string[], requireManifest = false) => {
     if (busy || paths.length === 0) return;
     setBusy(true);
     try {
-      const fs = await import('@tauri-apps/plugin-fs');
-      const filePaths: string[] = [];
-      for (const target of paths) await collectPathFiles(fs, target, filePaths);
-      const normalized = filePaths.map((raw) => ({ raw, path: normalizePluginPath(raw) }));
-      const manifests = normalized.filter(({ path }) => path.endsWith('/manifest.json'));
-      // 全局事件在窗口任何位置都会到达：不是插件包（例如拖到画布的素材）就静默忽略
-      if (manifests.length === 0) return;
-      if (manifests.length > 1) throw new Error('插件文件夹必须且只能包含一个 manifest.json');
-      const manifestFile = manifests[0];
-      const manifestText = new TextDecoder().decode(await fs.readFile(manifestFile.raw));
-      const manifest = parsePluginManifest(manifestText);
-      const prefix = manifestFile.path.slice(0, manifestFile.path.length - 'manifest.json'.length);
-      const entry = normalized.find(({ path }) => path === `${prefix}${manifest.entry}`);
-      if (!entry) throw new Error(`manifest.json 同级目录缺少 ${manifest.entry}`);
+      const bundle = await readLocalPluginPackage(paths, requireManifest);
+      if (!bundle) return;
+      const { manifestText, manifest, source, uiSource, resourcePayloads } = bundle;
       const action = plugins.some((installed) => installed.id === manifest.id) ? '更新' : '安装';
-      const source = new TextDecoder().decode(await fs.readFile(entry.raw));
-      const uiManifest = manifest.ui;
-      let uiSource: string | undefined;
-      if (uiManifest) {
-        const uiEntry = normalized.find(({ path }) => path === `${prefix}${uiManifest.entry}`);
-        if (!uiEntry) {
-          throw new Error(`插件声明了自定义界面，但同级目录缺少 ${uiManifest.entry}`);
-        }
-        uiSource = new TextDecoder().decode(await fs.readFile(uiEntry.raw));
-      }
-      const resourcePayloads = await Promise.all((manifest.resources ?? []).map(async (resource) => {
-        const entry = normalized.find(({ path }) => path === `${prefix}${resource.path}`);
-        if (!entry) throw new Error(`插件包缺少资源 ${resource.path}`);
-        const bytes = await fs.readFile(entry.raw);
-        if (bytes.byteLength !== resource.bytes) throw new Error(`插件包资源 ${resource.path} 字节数不匹配`);
-        return { id: resource.id, bytes: Array.from(bytes) };
-      }));
       const sourceDigest = await reviewPluginInstall(manifest, source, action, '本地文件夹');
       if (!sourceDigest) return;
       await installPluginBundle(manifestText, source, {
@@ -521,7 +514,7 @@ export default function PluginSettings() {
         resourcePayloads,
       });
     } catch (error) {
-      showToast(error instanceof Error ? error.message : '插件安装失败', 'error');
+      showToast(pluginOperationErrorMessage(error, '插件安装失败'), 'error');
     } finally {
       setBusy(false);
     }
@@ -549,6 +542,20 @@ export default function PluginSettings() {
       unlisten?.();
     };
   }, []);
+
+  const openPluginDirectory = async () => {
+    if (busy) return;
+    try {
+      await routePluginDirectorySelection({
+        tauri: isTauriEnv(),
+        openNativeDirectory: selectNativePluginDirectory,
+        openBrowserDirectory: () => inputRef.current?.click(),
+        installFromPaths: (paths) => installFromPathsRef.current(paths, true),
+      });
+    } catch (error) {
+      showToast(pluginOperationErrorMessage(error, '无法选择插件文件夹'), 'error');
+    }
+  };
 
   const togglePlugin = async (plugin: (typeof plugins)[number]) => {
     const enabled = !plugin.enabled;
@@ -588,11 +595,11 @@ export default function PluginSettings() {
             tabIndex={busy ? -1 : 0}
             aria-disabled={busy}
             aria-busy={busy}
-            onClick={() => inputRef.current?.click()}
+            onClick={() => void openPluginDirectory()}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
-                inputRef.current?.click();
+                void openPluginDirectory();
               }
             }}
             onDragOver={(event) => {
@@ -695,7 +702,7 @@ export default function PluginSettings() {
               type="button"
               className="rounded-md px-2.5 py-1.5 text-xs text-indigo-400 hover:bg-indigo-500/10"
               onClick={() => void installPluginBundle(EXAMPLE_MANIFEST, EXAMPLE_SOURCE).catch((error) => {
-                showToast(error instanceof Error ? error.message : '示例插件安装失败', 'error');
+                showToast(pluginOperationErrorMessage(error, '示例插件安装失败'), 'error');
               })}
             >
               JavaScript
@@ -717,7 +724,7 @@ export default function PluginSettings() {
                   expectedSourceDigest: sourceDigest,
                 });
               })().catch((error) => {
-                showToast(error instanceof Error ? error.message : 'Python 示例安装失败', 'error');
+                showToast(pluginOperationErrorMessage(error, 'Python 示例安装失败'), 'error');
               })}
             >
               Python

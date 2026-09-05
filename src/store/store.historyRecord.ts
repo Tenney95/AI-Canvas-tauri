@@ -21,8 +21,9 @@ import {
 } from '../services/indexedDbService';
 import type { HistoryPageCursor, HistoryQuery } from '../services/indexedDbService';
 import { tagGeneratedProjectAssetSafely } from '../services/fs/generatedAssetTags';
-import { getAssetUrlFromPath } from '../services/fs/core';
+import { getAssetUrlFromPath, getProjectDataDir } from '../services/fs/core';
 import { isTransientMediaUrl, persistMediaUrlToProjectData } from '../services/fileService';
+import { exists } from '@tauri-apps/plugin-fs';
 
 const HISTORY_PAGE_SIZE = 16;
 
@@ -49,34 +50,68 @@ interface NormalizedHistoryRecord {
   failed: boolean;
 }
 
+function isPathInsideProject(filePath: string, projectDir: string): boolean {
+  const normalizedFile = filePath.replace(/\\/g, '/').toLowerCase();
+  const normalizedDir = projectDir.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return normalizedFile.startsWith(`${normalizedDir}/`);
+}
+
 async function normalizeHistoryMediaRecord(
   record: OutputHistoryEntry,
   projectId: string,
-  nodes: AppState['nodes'],
 ): Promise<NormalizedHistoryRecord> {
   if (!isTransientMediaUrl(record.output) && !isTransientMediaUrl(record.mediaUrl)) {
     return { record, changed: false, failed: false };
   }
   try {
-    const node = nodes.find((candidate) => candidate.id === record.nodeId);
-    const nodeFilePath = node?.data.filePath as string | undefined;
-    const persisted = nodeFilePath
-      ? {
-          filePath: nodeFilePath,
-          mediaUrl: await getAssetUrlFromPath(nodeFilePath),
-        }
-      : await persistMediaUrlToProjectData(
-          (isTransientMediaUrl(record.mediaUrl) ? record.mediaUrl : record.output)!,
+    const outputSource = typeof record.output === 'string' && isTransientMediaUrl(record.output)
+      ? record.output
+      : undefined;
+    const mediaSource = typeof record.mediaUrl === 'string' && isTransientMediaUrl(record.mediaUrl)
+      ? record.mediaUrl
+      : undefined;
+    const transientSources = [...new Set(
+      [mediaSource, outputSource].filter((value): value is string => typeof value === 'string'),
+    )];
+    const persistedBySource = new Map<string, Awaited<ReturnType<typeof persistMediaUrlToProjectData>>>();
+    const existingFilePath = typeof record.filePath === 'string' ? record.filePath : undefined;
+    const projectDir = existingFilePath ? await getProjectDataDir(projectId) : null;
+    const canReuseOwnFile = transientSources.length === 1
+      && Boolean(existingFilePath)
+      && Boolean(projectDir)
+      && isPathInsideProject(existingFilePath!, projectDir!)
+      && await exists(existingFilePath!).catch(() => false);
+    if (canReuseOwnFile && existingFilePath) {
+      const assetUrl = await getAssetUrlFromPath(existingFilePath);
+      persistedBySource.set(transientSources[0], {
+        filePath: existingFilePath,
+        mediaUrl: assetUrl,
+        sourceUrl: assetUrl,
+      });
+    } else {
+      for (const source of transientSources) {
+        persistedBySource.set(source, await persistMediaUrlToProjectData(
+          source,
           projectId,
           record.nodeType,
-          `${record.nodeLabel}-历史`,
-        );
+          `${record.nodeLabel}-历史-${record.id}`,
+          { deduplicateByContent: true },
+        ));
+      }
+    }
+    const outputMedia = outputSource
+      ? persistedBySource.get(outputSource)
+      : undefined;
+    const attachedMedia = mediaSource
+      ? persistedBySource.get(mediaSource)
+      : undefined;
+    const persistedFilePath = attachedMedia?.filePath ?? outputMedia?.filePath ?? record.filePath;
     return {
       record: {
         ...record,
-        output: isTransientMediaUrl(record.output) ? persisted.mediaUrl : record.output,
-        mediaUrl: isTransientMediaUrl(record.mediaUrl) ? persisted.mediaUrl : record.mediaUrl,
-        filePath: persisted.filePath || record.filePath,
+        output: outputMedia?.mediaUrl ?? record.output,
+        mediaUrl: attachedMedia?.mediaUrl ?? record.mediaUrl,
+        filePath: persistedFilePath,
       },
       changed: true,
       failed: false,
@@ -103,11 +138,11 @@ async function normalizeHistoryMediaRecord(
 async function normalizeHistoryPage(
   records: OutputHistoryEntry[],
   projectId: string,
-  nodes: AppState['nodes'],
 ): Promise<OutputHistoryEntry[]> {
-  const normalized = await Promise.all(
-    records.map((record) => normalizeHistoryMediaRecord(record, projectId, nodes)),
-  );
+  const normalized: NormalizedHistoryRecord[] = [];
+  for (const record of records) {
+    normalized.push(await normalizeHistoryMediaRecord(record, projectId));
+  }
   // 迁移失败多半是磁盘暂时不可用：把成功记录改写成 error 再回写，会永久丢掉这次生成
   const migrated = normalized
     .filter((entry) => entry.changed && !entry.failed)
@@ -178,7 +213,7 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
         getHistoryEntriesPage(projectId, HISTORY_PAGE_SIZE, null, query),
         getHistoryEntryCount(projectId),
       ]);
-      const records = await normalizeHistoryPage(page.records as OutputHistoryEntry[], projectId, get().nodes);
+      const records = await normalizeHistoryPage(page.records as OutputHistoryEntry[], projectId);
       if (requestId !== historyLoadRequestId || get().currentProjectId !== projectId) return;
       historyCursor = page.nextCursor;
       set({
@@ -211,7 +246,7 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
     set({ historyLoading: true });
     try {
       const page = await getHistoryEntriesPage(projectId, HISTORY_PAGE_SIZE, historyCursor, query);
-      const records = await normalizeHistoryPage(page.records as OutputHistoryEntry[], projectId, get().nodes);
+      const records = await normalizeHistoryPage(page.records as OutputHistoryEntry[], projectId);
       if (requestId !== historyLoadRequestId || get().currentProjectId !== projectId) return;
       historyCursor = page.nextCursor;
       set((state) => ({
@@ -246,10 +281,18 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
             'outputHistory' in (node.data as Record<string, unknown>)
           ));
 
-          await putHistoryEntries(legacyRecords.map((record) => ({
-            ...record,
-            projectId: currentProjectId,
-          })));
+          const normalizedLegacyRecords: OutputHistoryEntry[] = [];
+          for (const legacyRecord of legacyRecords) {
+            const normalized = await normalizeHistoryMediaRecord({
+              ...legacyRecord,
+              projectId: currentProjectId,
+            }, currentProjectId);
+            if (normalized.failed) {
+              throw new Error(`历史媒体 ${legacyRecord.id} 尚未完成迁移`);
+            }
+            normalizedLegacyRecords.push(normalized.record);
+          }
+          await putHistoryEntries(normalizedLegacyRecords);
           if (get().currentProjectId !== currentProjectId) {
             await get().loadHistoryFromDb();
             return;
@@ -282,7 +325,7 @@ export const createHistoryRecordSlice: StateCreator<AppState, [], [], HistoryRec
     const projectId = get().currentProjectId;
     if (!projectId) return;
     const id = `hist-${generateId()}`;
-    const { record } = await normalizeHistoryMediaRecord({ ...entry, id, projectId }, projectId, get().nodes);
+    const { record } = await normalizeHistoryMediaRecord({ ...entry, id, projectId }, projectId);
     // Persist to IndexedDB first, then update store
     await putHistoryEntry(record).catch((e) => console.warn('Failed to persist history entry:', e));
     if (record.status === 'success' && record.filePath && record.prompt.trim()) {

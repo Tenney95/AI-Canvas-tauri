@@ -2,33 +2,17 @@
  * 通过受限 Tauri 命令读取公开网页，归一化正文、链接与来源并执行体积裁剪。
  */
 import { invoke } from '@tauri-apps/api/core';
-import type { WebSource } from '../types/chat';
+import type { NativeWebReadResponse, WebPageLink, WebPageResult, WebReadAccessScope, WebReadContinuation, WebReadDocument, WebReadIssue, WebReadPage, WebReadStatus } from '../types/chat';
+import { readWebSession } from './chat/webReadSessionService';
 import { normalizePublicWebUrl } from './chat/webAccessGrantService';
 
-interface NativeWebReadResponse {
-  url: string;
-  contentType: string;
-  body: string;
-  fetchedAt: number;
-}
+export type { WebPageLink, WebPageResult } from '../types/chat';
 
 const MIN_STATIC_PAGE_TEXT = 800;
 const SPA_ROOT_PATTERN = /<(?:div|main|section)\b[^>]*(?:\bid=["'](?:root|app|__next|__nuxt|svelte)["']|\bdata-reactroot\b)[^>]*>/i;
 // SPA 入口通常由构建工具产出带 hash 的 JS 文件（例如 /static/js/index.55998905b6.js），
 // 这些脚本不一定是 type="module"，src 也可能不是 .mjs/_next/_nuxt，但同样依赖客户端渲染。
 const SPA_BOOTSTRAP_PATTERN = /<script\b[^>]*\bsrc=["'][^"']+\.js(?:\?[^"']*)?["'][^>]*>/i;
-
-export interface WebPageResult {
-  source: WebSource;
-  text: string;
-  truncated: boolean;
-  links: WebPageLink[];
-}
-
-export interface WebPageLink {
-  title: string;
-  url: string;
-}
 
 export interface PageLinkCandidate {
   href: string;
@@ -42,7 +26,8 @@ const BLOCK_TAGS = new Set([
   'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
 ]);
 const IGNORED_TAGS = new Set([
-  'BUTTON', 'CANVAS', 'FORM', 'IFRAME', 'INPUT', 'NOSCRIPT', 'SCRIPT', 'STYLE', 'SVG',
+  'ASIDE', 'BUTTON', 'CANVAS', 'FOOTER', 'FORM', 'IFRAME', 'INPUT', 'NAV',
+  'NOSCRIPT', 'OBJECT', 'EMBED', 'SCRIPT', 'STYLE', 'SVG',
 ]);
 
 function structuredText(node: Node): string {
@@ -58,9 +43,12 @@ function normalizeText(value: string): string {
   return value
     .replace(/data:image\/[^;\s]+;base64,[a-z0-9+/=\s]+/gi, '[IMAGE]')
     .replace(/\r/g, '')
-    .replace(/[\t ]+\n/g, '\n')
-    .replace(/\n[\t ]+/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
+    .split(/(```[\s\S]*?```)/g)
+    .map((part, index) => index % 2 ? part : part
+      .replace(/[\t ]+\n/g, '\n')
+      .replace(/\n[\t ]+/g, '\n')
+      .replace(/\n{3,}/g, '\n\n'))
+    .join('')
     .trim();
 }
 
@@ -137,7 +125,7 @@ function extractReadableText(
   baseUrl: string,
   linkLimit: number,
 ): { title?: string; text: string; links: WebPageLink[] } {
-  if (contentType.startsWith('application/json')) {
+  if (contentType.startsWith('application/json') || contentType.startsWith('text/plain')) {
     return { text: normalizeText(body), links: [] };
   }
   if (contentType.includes('xml') || /^\s*<\?xml/i.test(body)) {
@@ -164,7 +152,102 @@ export function shouldRenderDynamicHtml(
 ): boolean {
   if (!contentType.includes('html')) return false;
   if (extractedText.trim().length >= MIN_STATIC_PAGE_TEXT) return false;
+  // 有真实语义正文的短 SSR 页面无需再启动 WebView；加载/登录占位仍需尝试渲染。
+  if (hasReadablePageText(body, contentType, extractedText)
+    && /<(?:article|pre|table)\b/i.test(body)) return false;
   return SPA_ROOT_PATTERN.test(body) && SPA_BOOTSTRAP_PATTERN.test(body);
+}
+
+const SHELL_TEXT_PATTERN = /^(?:(?:loading|please\s*wait|sign\s*in|log\s*in|login|to\s*continue|加载中|正在加载|页面加载中|请稍候|请稍后|请登录|登录|注册|首页|文档|帮助|home|docs|documentation|help)|[\s.。…!！:：|/-])*$/i;
+
+/** 只排除明确的壳页，不以篇幅短或没有 API 关键词否定真实文章。 */
+export function hasReadablePageText(body: string, contentType: string, text: string): boolean {
+  const value = text.trim();
+  if (!value) return false;
+  if (!contentType.includes('html')) return true;
+  if (value.length < MIN_STATIC_PAGE_TEXT && SHELL_TEXT_PATTERN.test(value)) return false;
+  return !(value.length < MIN_STATIC_PAGE_TEXT
+    && /<input\b[^>]*\btype\s*=\s*["']?password\b/i.test(body)
+    && !/<(?:article|pre|code|table)\b/i.test(body));
+}
+
+const READ_ISSUE_LABELS: Record<WebReadIssue, string> = {
+  page_limit: '达到 5 页遍历上限',
+  body_limit: '达到原生正文体积上限',
+  text_limit: '正文已按字符预算截断',
+  timeout: '后续读取超时',
+  navigation_failed: '后续页面读取失败',
+  duplicate_page: '下一页未推进或出现重复页面',
+  empty_page: '部分页面只有空白、导航、加载或登录提示',
+  render_failed: '动态渲染失败',
+  catalog_fallback: '未读取到目标文档，仅返回公开模型清单',
+};
+
+export function describeWebReadStatus(status: Partial<WebReadStatus> & { truncated?: boolean }): string {
+  const issues = status.issues ?? [];
+  const partial = status.complete === false || status.truncated || issues.length > 0;
+  const method = status.readMethod === 'rendered' ? '动态渲染' : status.readMethod === 'catalog' ? '公开目录回退' : '静态读取';
+  return `读取状态：${partial ? '部分读取' : '本次提取完整'}（${method}）`
+    + (issues.length ? `；${issues.map((issue) => READ_ISSUE_LABELS[issue]).join('；')}` : '')
+    + (partial ? '。不能声称已读完全部内容。' : '；不代表已遍历整站。');
+}
+
+/** 逐页解析，所有正文、标题和相对链接都绑定当前页；旧单页响应仍可读取。 */
+export function extractWebReadResponse(
+  response: NativeWebReadResponse,
+  options: { linkLimit?: number; expectedOrigin?: string; readMethod?: 'static' | 'rendered' } = {},
+): WebReadStatus & { pages: WebReadPage[] } {
+  if (!response.pages && (options.readMethod === 'rendered' || response.readMethod === 'rendered')
+    && response.body.includes('<!-- page-break -->')) {
+    throw new Error('旧版多页响应缺少逐页来源，无法安全对应正文；请更新桌面后端后重试');
+  }
+  const validate = (rawUrl: string): string => {
+    const url = normalizePublicWebUrl(rawUrl);
+    if (!url) throw new Error('网页最终地址未通过安全校验');
+    if (options.expectedOrigin && new URL(url).origin !== options.expectedOrigin) {
+      throw new Error('厂商文档最终地址未通过同站安全校验');
+    }
+    return url;
+  };
+  validate(response.url);
+  const nativePages = response.pages ?? [response];
+  const issues = new Set<WebReadIssue>((response.issues ?? [])
+    .filter((issue) => Object.hasOwn(READ_ISSUE_LABELS, issue)));
+  if (nativePages.length > 5) issues.add('page_limit');
+  const pages = nativePages.slice(0, 5).map((page, index): WebReadPage => {
+    const url = validate(page.url);
+    const extracted = extractReadableText(page.body, page.contentType.toLowerCase(), url, options.linkLimit ?? 30);
+    const text = hasReadablePageText(page.body, page.contentType.toLowerCase(), extracted.text) ? extracted.text : '';
+    if (!text) issues.add('empty_page');
+    const clipped = 'truncated' in page && page.truncated === true;
+    if (clipped) issues.add('body_limit');
+    const domain = new URL(url).hostname;
+    return {
+      source: {
+        id: `page-${response.fetchedAt}-${index + 1}`,
+        title: normalizeText(('title' in page ? page.title : undefined) || extracted.title || domain).slice(0, 300),
+        url, domain, fetchedAt: response.fetchedAt, sourceType: 'page',
+      },
+      text, links: extracted.links, truncated: clipped,
+    };
+  });
+  if (!pages.length) issues.add('empty_page');
+  if (response.complete === false && !issues.size) issues.add('navigation_failed');
+  return {
+    pages,
+    readMethod: response.readMethod ?? options.readMethod ?? (response.pages ? 'rendered' : 'static'),
+    complete: response.complete !== false && issues.size === 0,
+    issues: [...issues],
+  };
+}
+
+function clipText(content: string, limit: number): { text: string; truncated: boolean } {
+  if (content.length <= limit) return { text: content, truncated: false };
+  const marker = '\n\n[中间内容已省略；请缩小查询范围或读取更具体的页面]\n\n';
+  if (limit <= marker.length) return { text: content.slice(0, limit), truncated: true };
+  const available = limit - marker.length;
+  const headSize = Math.floor(available * 0.75);
+  return { text: content.slice(0, headSize) + marker + content.slice(-(available - headSize)), truncated: true };
 }
 
 export function truncateWebContent(content: string, limit = 15_000): {
@@ -172,21 +255,24 @@ export function truncateWebContent(content: string, limit = 15_000): {
   truncated: boolean;
 } {
   const safeLimit = Math.max(2_000, Math.min(Math.floor(limit), 50_000));
-  if (content.length <= safeLimit) return { text: content, truncated: false };
-  const marker = '\n\n[中间内容已省略；请缩小查询范围或读取更具体的页面]\n\n';
-  const available = Math.max(1, safeLimit - marker.length);
-  const headSize = Math.floor(available * 0.75);
-  const tailSize = available - headSize;
-  return {
-    text: content.slice(0, headSize) + marker + content.slice(-tailSize),
-    truncated: true,
-  };
+  return clipText(content, safeLimit);
 }
 
 export async function readWebPage(
   rawUrl: string,
-  options: { signal?: AbortSignal; charLimit?: number; linkLimit?: number } = {},
+  options: { signal?: AbortSignal; charLimit?: number; linkLimit?: number;
+    scope?: WebReadAccessScope; authorize?: () => boolean } & WebReadContinuation = {},
 ): Promise<WebPageResult> {
+  if (options.scope) {
+    return readWebSession({ ...options, scope: options.scope, kind: 'web', url: rawUrl,
+      limit: options.charLimit, authorize: options.authorize ?? (() => false) },
+    () => loadWebPageDocument(rawUrl, options));
+  }
+  const extracted = await loadWebPageDocument(rawUrl, options);
+  return clipWebPageDocument(extracted, options);
+}
+
+async function loadWebPageDocument(rawUrl: string, options: { signal?: AbortSignal; linkLimit?: number }) {
   const normalized = normalizePublicWebUrl(rawUrl);
   if (!normalized) throw new Error('网页 URL 未通过本地安全校验');
   if (typeof window === 'undefined' || !('__TAURI__' in window || '__TAURI_INTERNALS__' in window)) {
@@ -195,41 +281,53 @@ export async function readWebPage(
   if (options.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
   let response = await invoke<NativeWebReadResponse>('assistant_web_extract', { url: normalized });
   if (options.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
-  let finalUrl = normalizePublicWebUrl(response.url);
+  const finalUrl = normalizePublicWebUrl(response.url);
   if (!finalUrl) throw new Error('网页最终地址未通过安全校验');
   const linkLimit = Math.max(1, Math.min(Math.floor(options.linkLimit ?? 30), 200));
-  let extracted = extractReadableText(
-    response.body,
-    response.contentType,
-    finalUrl,
-    linkLimit,
-  );
-  if (shouldRenderDynamicHtml(response.body, response.contentType, extracted.text)) {
+  let extracted = extractWebReadResponse(response, { linkLimit });
+  if (!response.pages && shouldRenderDynamicHtml(response.body, response.contentType, extracted.pages[0]?.text ?? '')) {
     response = await invoke<NativeWebReadResponse>('assistant_web_render', { url: finalUrl });
     if (options.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
-    finalUrl = normalizePublicWebUrl(response.url);
-    if (!finalUrl) throw new Error('网页渲染后的最终地址未通过安全校验');
-    extracted = extractReadableText(
-      response.body,
-      response.contentType,
-      finalUrl,
-      linkLimit,
-    );
+    extracted = extractWebReadResponse(response, { linkLimit, expectedOrigin: new URL(finalUrl).origin, readMethod: 'rendered' });
   }
-  if (!extracted.text) throw new Error('网页没有可读取的正文');
-  const budgeted = truncateWebContent(extracted.text, options.charLimit);
-  const parsed = new URL(finalUrl);
+  const readablePages = extracted.pages.filter((page) => page.text);
+  if (!readablePages.length) throw new Error('网页没有可读取的正文，可能只有导航、加载或登录提示');
+  return { ...extracted, pages: readablePages };
+}
+
+function clipWebPageDocument(extracted: WebReadDocument, options: { charLimit?: number; linkLimit?: number }): WebPageResult {
+  const readablePages = extracted.pages;
+  const linkLimit = Math.max(1, Math.min(Math.floor(options.linkLimit ?? 30), 200));
+  const limit = Math.max(2_000, Math.min(Math.floor(options.charLimit ?? 15_000), 50_000));
+  let remaining = limit - (readablePages.length - 1) * 2;
+  // 给每个成功页分配正文预算，避免总串头尾裁剪再次吞掉中间页及其来源。
+  // 短页用不到的预算要重新分给长页，否则总正文未超上限也会被不必要地截断。
+  const budgets = readablePages.map(() => 0);
+  let pending = readablePages.map((_, index) => index);
+  while (remaining > 0 && pending.length > 0) {
+    const share = Math.max(1, Math.floor(remaining / pending.length));
+    for (const index of pending) {
+      const allocated = Math.min(share, readablePages[index].text.length - budgets[index], remaining);
+      budgets[index] += allocated;
+      remaining -= allocated;
+    }
+    pending = pending.filter((index) => budgets[index] < readablePages[index].text.length);
+  }
+  const pages = readablePages.map((page, index) => {
+    const budgeted = clipText(page.text, budgets[index]);
+    return { ...page, text: budgeted.text, truncated: page.truncated || budgeted.truncated };
+  });
+  const issues = new Set(extracted.issues);
+  if (pages.some((page, index) => page.text !== readablePages[index].text)) issues.add('text_limit');
+  const links = [...new Map(extracted.pages.flatMap((page) => page.links).map((link) => [link.url, link])).values()].slice(0, linkLimit);
   return {
-    source: {
-      id: `page-${response.fetchedAt}`,
-      title: extracted.title || parsed.hostname,
-      url: finalUrl,
-      domain: parsed.hostname,
-      fetchedAt: response.fetchedAt,
-      sourceType: 'page',
-    },
-    text: budgeted.text,
-    truncated: budgeted.truncated,
-    links: extracted.links,
+    source: pages[0].source,
+    pages,
+    text: pages.map((page) => page.text).join('\n\n'),
+    truncated: pages.some((page) => page.truncated),
+    links,
+    readMethod: extracted.readMethod,
+    complete: extracted.complete && issues.size === 0,
+    issues: [...issues],
   };
 }

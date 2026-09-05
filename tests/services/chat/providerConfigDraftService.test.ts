@@ -3,10 +3,81 @@ import {
   clearProviderConfigDraftsForTests,
   createProviderConfigDraft,
   getProviderConfigDraft,
+  mergeProviderModels,
   type ProviderConfigDraftInput,
 } from '../../../src/services/chat/providerConfigDraftService';
 import { buildModelProtocolRequest } from '../../../src/services/ai/modelProtocol';
 import type { ModelExecutionProtocol, VideoModelCapability } from '../../../src/types/aiTypes';
+import type { ProviderModelSelection } from '../../../src/types';
+
+describe('provider model field merge', () => {
+  const existing: ProviderModelSelection = {
+    id: 'chat-a', name: 'My Chat', category: 'text', provider: 'custom-current',
+    description: 'Manual description', descriptionManual: true,
+    inputModalities: ['text', 'image'], inputModalitiesManual: true, contextWindow: 128000,
+  };
+
+  it('preserves omitted and undefined fields while applying explicitly changed fields', () => {
+    const draft = { id: existing.id, name: 'Updated Chat', category: 'text' as const,
+      provider: existing.provider, description: undefined };
+    const result = mergeProviderModels([existing], [draft]);
+    expect(result.merged[0]).toEqual({ ...existing, name: 'Updated Chat' });
+    expect(result.updatedIds).toEqual([existing.id]);
+    expect(existing.name).toBe('My Chat');
+  });
+
+  it('clears an old per-model execution profile only when the draft explicitly controls that field', () => {
+    const previous: ProviderModelSelection = {
+      ...existing,
+      executionProfile: {
+        preset: 'custom',
+        protocol: {
+          version: 2,
+          mode: 'sync',
+          auth: { type: 'bearer' },
+          submit: { method: 'POST', path: '/chat/completions' },
+          response: { type: 'json', result: { textPath: 'choices.0.message.content' } },
+        },
+      },
+    };
+    const draft: ProviderModelSelection = { ...existing, executionProfile: undefined };
+    const result = mergeProviderModels([previous], [draft], {
+      [existing.id]: ['provider', 'executionProfile'],
+    });
+
+    expect(result.updatedIds).toEqual([existing.id]);
+    expect(result.fieldChanges[0]?.updated).toEqual(['executionProfile']);
+    expect(result.merged[0].executionProfile).toBeUndefined();
+  });
+
+  it('treats an otherwise identical partial draft as unchanged', () => {
+    const draft = { id: existing.id, name: existing.name, category: existing.category, provider: existing.provider };
+    const result = mergeProviderModels([existing], [draft]);
+    expect(result.unchangedIds).toEqual([existing.id]);
+    expect(result.merged[0]).toBe(existing);
+  });
+
+  it('honors an explicitly empty description without deleting unrelated settings', () => {
+    const result = mergeProviderModels([existing], [{ ...existing, description: '' }]);
+    expect(result.merged[0]).toEqual({ ...existing, description: '' });
+  });
+
+  it('does not overwrite a manual category using only an inferred category', () => {
+    expect(() => mergeProviderModels([existing], [{ ...existing, category: 'image' }], {
+      [existing.id]: ['provider', 'executionProfile'],
+    })).toThrow('请明确 category 后重新预览');
+  });
+
+  it('replaces explicitly supplied execution profiles atomically instead of mixing old fields', () => {
+    const previous = { ...existing, executionProfile: {
+      preset: 'custom' as const, protocol: structuredClone(DECLARATIVE_VIDEO_PROTOCOL),
+    } };
+    const next = { ...existing, executionProfile: { preset: 'openai-chat' as const } };
+    const result = mergeProviderModels([previous], [next]);
+    expect(result.merged[0].executionProfile).toEqual(next.executionProfile);
+    expect(result.fieldChanges[0].updated).toEqual(['executionProfile']);
+  });
+});
 
 const IMAGE_REQUEST = `
 curl https://gateway.example.com/v1/images/generations \\
@@ -759,6 +830,30 @@ fetch("https://docs.newapi.pro/v1beta/models/string:generateContent/", {
     oddPort.baseUrl = 'https://gateway.example.com:8443/v1';
     expect(() => createProviderConfigDraft('task-odd-port', oddPort))
       .toThrow('只允许使用 HTTPS 默认端口');
+  });
+
+  it('stores the native chat protocol and routes text models through the connection adapter', () => {
+    const draft = createProviderConfigDraft('task-gemini-chat', {
+      connectionName: 'Gemini Relay',
+      baseUrl: 'https://gateway.example.com/v1beta/models/gemini-2.5-pro:generateContent',
+      chatApiProtocol: 'gemini-native',
+      models: [{
+        modelId: 'gemini-2.5-pro',
+        name: 'Gemini 2.5 Pro',
+        category: 'text',
+        submitRequest: `
+curl https://gateway.example.com/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hello"}]}'`,
+        submitResponse: '{"choices":[{"message":{"content":"hello"}}]}',
+      }],
+    });
+
+    expect(draft.baseUrl).toBe('https://gateway.example.com/v1beta');
+    expect(draft.config.chatApiProtocol).toBe('gemini-native');
+    expect(draft.config.selectedModels?.[0].executionProfile).toBeUndefined();
+    expect(draft.modelUpdateFields['gemini-2.5-pro']).toContain('executionProfile');
+    expect(draft.summary).toContain('聊天协议：Gemini 原生');
   });
 
   it('carries the documented description, vision capability and category into the selection', () => {

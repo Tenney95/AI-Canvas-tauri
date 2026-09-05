@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-plugin-ui-window-request"
+description = "Allows only the native-registered plugin window session bridge."
+commands.allow = ["plugin_ui_window_request"]

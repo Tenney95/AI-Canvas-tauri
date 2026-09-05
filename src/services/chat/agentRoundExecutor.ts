@@ -3,11 +3,13 @@
  * 任务预算、审批等待和步骤快照在此轮次边界内统一更新。
  */
 import { useAppStore } from '../../store/useAppStore';
+import { getPreparedProviderCatalogApproval, MAX_PROVIDER_MODEL_SELECTION, validateProviderModelSelection } from './providerModelCatalogService';
 import {
   streamAssistantReply,
   type AssistantModelMessage,
 } from '../ai/assistantStream';
 import type {
+  AgentMode,
   AgentApprovalInputRequest,
   ProviderModelChoice,
   AgentApprovalResolution,
@@ -18,6 +20,7 @@ import type {
   AgentToolDisplaySnapshot,
   AgentToolDisplayValue,
 } from '../../types/agent';
+import { AGENT_TERMINAL_STATUSES } from '../../types/agent';
 import type {
   AssistantStreamEvent,
   ProposedToolCall,
@@ -47,6 +50,10 @@ import {
   fingerprintToolInput,
 } from './agentCheckpointService';
 import { emitAgentLifecycleEvent } from './agentLifecycle';
+
+// 每次 runAgentLoop 都创建自己的 messages 数组；恢复候选跨只读轮次保留，
+// 不包含当前执行段新完成的步骤，也不写入 Store/IndexedDB。数组释放后自动回收。
+const checkpointReplayCandidates = new WeakMap<AssistantModelMessage[], Set<string>>();
 
 export interface AgentRoundCallbacks {
   onTextDelta?: (delta: string) => void;
@@ -84,6 +91,26 @@ export interface ExecutedToolCall {
   summary: ToolResultSummary;
   modelContent: string;
   mcpContent?: McpContent[];
+  /** 仅供串行编排使用；固定在工具返回时，不吸收后续回调造成的画布变化。 */
+  canvasRevisionAfter?: number;
+}
+
+function isAgentExecutionInactive(taskId: string, signal: AbortSignal): boolean {
+  const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
+  return signal.aborted || !task || task.status === 'paused' || AGENT_TERMINAL_STATUSES.has(task.status);
+}
+
+export function assertAgentTaskActive(taskId: string, signal: AbortSignal): void {
+  if (isAgentExecutionInactive(taskId, signal)) {
+    throw new DOMException('Agent 任务已取消或不再运行', 'AbortError');
+  }
+}
+
+/** policyMode 只由受信的本地调用入口传入，不能来自工具参数。 */
+export function resolveAgentExecutionMode(task: AgentTask, policyMode?: AgentMode): AgentMode {
+  return policyMode ?? useAppStore.getState().conversations.find(
+    (conversation) => conversation.id === task.conversationId,
+  )?.agentMode ?? task.mode;
 }
 
 export function getTask(taskId: string): AgentTask {
@@ -240,83 +267,139 @@ export function maxAutoRetriesForEffect(
   return effect === 'read' ? budget.maxReadRetries : 0;
 }
 
+function rejectPreparedToolCall(
+  taskId: string,
+  call: ProposedToolCall,
+  prepared: PreparedAgentToolCall,
+  step: AgentStep,
+  errorCode: string,
+  reason: string,
+  startedAt = Date.now(),
+  retryCount = 0,
+): ExecutedToolCall {
+  const message = sanitizePersistentSummary(reason);
+  const currentStep = getTask(taskId).steps.find((item) => item.id === step.id) ?? step;
+  updateStep(taskId, step.id, {
+    status: 'failed',
+    errorCode,
+    errorMessage: message,
+    toolCall: {
+      ...currentStep.toolCall!,
+      finishedAt: Date.now(),
+      retryCount,
+      errorCode,
+      resultSummary: message,
+    },
+  });
+  appendAgentEvent(taskId, 'tool_end', {
+    toolId: call.toolId,
+    callId: call.callId,
+    effect: prepared.definition.effect,
+    status: 'failed',
+    errorCode,
+    durationMs: Date.now() - startedAt,
+    retryCount,
+  });
+  emitAgentLifecycleEvent({
+    type: 'tool.execution',
+    taskId,
+    toolId: call.toolId,
+    phase: 'end',
+    status: 'failed',
+    durationMs: Date.now() - startedAt,
+    errorCode,
+  });
+  return {
+    summary: { callId: call.callId, toolId: call.toolId, status: 'denied', summary: message, truncated: false },
+    modelContent: message,
+  };
+}
+
 export async function executePreparedToolCall(
   taskId: string,
   call: ProposedToolCall,
   prepared: PreparedAgentToolCall,
   context: AgentToolContext,
   step: AgentStep,
+  policyMode?: AgentMode,
+  checkpointReplayStepIds?: ReadonlySet<string>,
 ): Promise<ExecutedToolCall> {
+  assertAgentTaskActive(taskId, context.signal);
   const startedAt = Date.now();
-  // 执行前统一重验：审批等待与并发读取期间用户可能切换项目或撤销授权。
-  // revision 相同不能证明项目相同，故此处再次确认项目与工具授权后才真正执行，
-  // 避免文件导入 / 媒体回填 / 画布命令把结果写进已切换的当前项目。
-  const authorization = prepared.definition.authorize?.(context, prepared.input);
-  const reverifyReason = useAppStore.getState().currentProjectId !== context.projectId
-    ? '目标项目已切换，已取消该工具执行'
-    : authorization && !authorization.allowed
-      ? authorization.reason || '当前会话没有执行该工具的授权'
-      : undefined;
-  if (reverifyReason) {
-    const message = sanitizePersistentSummary(reverifyReason);
-    updateStep(taskId, step.id, {
-      status: 'failed',
-      errorCode: 'AGENT_TOOL_REVERIFY_FAILED',
-      errorMessage: message,
-      toolCall: {
-        ...step.toolCall!,
-        finishedAt: Date.now(),
-        errorCode: 'AGENT_TOOL_REVERIFY_FAILED',
-        resultSummary: message,
-      },
-    });
-    appendAgentEvent(taskId, 'tool_end', {
-      toolId: call.toolId,
-      callId: call.callId,
-      effect: prepared.definition.effect,
-      status: 'failed',
-      errorCode: 'AGENT_TOOL_REVERIFY_FAILED',
-      durationMs: Date.now() - startedAt,
-      retryCount: 0,
-    });
-    return {
-      summary: {
-        callId: call.callId,
-        toolId: call.toolId,
-        status: 'denied',
-        summary: message,
-        truncated: false,
-      },
-      modelContent: message,
-    };
-  }
-  const checkpointBefore = prepared.definition.effect === 'canvas_write'
-    ? {
-        historyIndex: useAppStore.getState().historyIndex,
-        revision: useAppStore.getState().getCurrentRevision(),
-      }
-    : undefined;
-  appendAgentEvent(taskId, 'tool_start', {
-    toolId: call.toolId,
-    callId: call.callId,
-    effect: prepared.definition.effect,
-  });
-  emitAgentLifecycleEvent({
-    type: 'tool.execution',
-    taskId,
-    toolId: call.toolId,
-    phase: 'start',
-  });
   const maxRetries = maxAutoRetriesForEffect(
     prepared.definition.effect,
     getTask(taskId).budget,
   );
   let retryCount = 0;
+  let checkpointBefore: { historyIndex: number; revision: number } | undefined;
 
   while (true) {
+    // 审批等待、前序读取和重试退避期间，停止/降级/撤权都必须即时生效。
+    assertAgentTaskActive(taskId, context.signal);
+    const currentTask = getTask(taskId);
+    const executionContext = { ...context, mode: resolveAgentExecutionMode(currentTask, policyMode) };
+    const policy = evaluateAgentToolPolicy(prepared.definition, prepared.input, executionContext);
+    const currentStep = currentTask.steps.find((item) => item.id === step.id);
+    const reverifyReason = useAppStore.getState().currentProjectId !== context.projectId
+      ? '目标项目已切换，已取消该工具执行'
+      : policy.outcome === 'deny'
+        ? policy.reason
+        : policy.outcome === 'require_approval' && currentStep?.approval?.status !== 'approved'
+          ? '当前模式要求用户确认，请重新提出该操作'
+          : undefined;
+    if (reverifyReason) {
+      return rejectPreparedToolCall(taskId, call, prepared, step, 'AGENT_TOOL_REVERIFY_FAILED', reverifyReason, startedAt, retryCount);
+    }
+    // 复用也必须等到实际执行边界才判断，不能在同轮前序写入尚未执行时提前认定成功。
+    if (retryCount === 0 && prepared.definition.effect !== 'read') {
+      const inputFingerprint = fingerprintToolInput(call.toolId, prepared.input);
+      updateStep(taskId, step.id, {
+        toolCall: { ...(currentStep?.toolCall ?? step.toolCall!), inputFingerprint },
+      });
+      const state = useAppStore.getState();
+      const duplicate = findSucceededDuplicateWrite(getTask(taskId), call.toolId, inputFingerprint, {
+        callId: call.callId,
+        excludeStepId: step.id,
+        projectId: state.currentProjectId,
+        historyIndex: state.historyIndex,
+        revision: state.getCurrentRevision(),
+        checkpointReplayStepIds,
+      });
+      if (duplicate) {
+        const summary = `已复用先前成功结果：${sanitizePersistentSummary(
+          duplicate.outputSummary || duplicate.toolCall?.resultSummary || '该请求已成功执行',
+        )}`;
+        updateStep(taskId, step.id, {
+          status: 'succeeded',
+          outputSummary: summary,
+          toolCall: {
+            ...(currentStep?.toolCall ?? step.toolCall!),
+            inputFingerprint,
+            finishedAt: Date.now(),
+            resultSummary: summary,
+            resultDisplay: sanitizeToolDisplay(duplicate.toolCall?.resultDisplay),
+          },
+        });
+        return {
+          summary: { callId: call.callId, toolId: call.toolId, status: 'success', summary, truncated: false },
+          modelContent: summary,
+        };
+      }
+    }
+    if (retryCount === 0) {
+      checkpointBefore = prepared.definition.effect === 'canvas_write'
+        ? { historyIndex: useAppStore.getState().historyIndex, revision: useAppStore.getState().getCurrentRevision() }
+        : undefined;
+      appendAgentEvent(taskId, 'tool_start', { toolId: call.toolId, callId: call.callId, effect: prepared.definition.effect });
+      emitAgentLifecycleEvent({ type: 'tool.execution', taskId, toolId: call.toolId, phase: 'start' });
+    }
     try {
-      const result = await prepared.definition.execute(context, prepared.input);
+      assertAgentTaskActive(taskId, context.signal);
+      const result = await prepared.definition.execute(executionContext, prepared.input);
+      const revisionAfterExecution = useAppStore.getState().getCurrentRevision();
+      const historyIndexAfterExecution = useAppStore.getState().historyIndex;
       if (result.status === 'error' && result.retryable && retryCount < maxRetries) {
+        assertAgentTaskActive(taskId, context.signal);
         retryCount += 1;
         addAgentTaskMetrics(taskId, { retryCount: 1 });
         updateStep(taskId, step.id, {
@@ -335,8 +418,8 @@ export async function executePreparedToolCall(
       const persistentSummary = sanitizePersistentSummary(result.summary);
       const checkpointAfter = checkpointBefore && result.status === 'success'
         ? {
-            historyIndex: useAppStore.getState().historyIndex,
-            revision: useAppStore.getState().getCurrentRevision(),
+            historyIndex: historyIndexAfterExecution,
+            revision: revisionAfterExecution,
           }
         : undefined;
       const canvasCheckpoint = checkpointBefore && checkpointAfter
@@ -407,9 +490,13 @@ export async function executePreparedToolCall(
         },
         modelContent,
         mcpContent: result.mcpContent,
+        canvasRevisionAfter: result.status === 'success'
+          && (prepared.definition.effect === 'canvas_write' || prepared.definition.effect === 'media_generation')
+          ? revisionAfterExecution
+          : undefined,
       };
     } catch (error) {
-      if (context.signal.aborted) {
+      if (isAgentExecutionInactive(taskId, context.signal)) {
         emitAgentLifecycleEvent({
           type: 'tool.execution',
           taskId,
@@ -419,7 +506,7 @@ export async function executePreparedToolCall(
           durationMs: Date.now() - startedAt,
           errorCode: 'AGENT_STOPPED',
         });
-        throw error;
+        throw new DOMException('Agent 任务已取消或不再运行', 'AbortError');
       }
       if (prepared.definition.effect === 'read' && retryCount < maxRetries) {
         retryCount += 1;
@@ -510,15 +597,18 @@ async function runWithConcurrency<T>(
 export function prepareApprovalInput(
   prepared: PreparedAgentToolCall,
   taskGoal: string,
+  mode: AgentMode = 'collaborative',
 ): {
   prepared: PreparedAgentToolCall;
   inputRequest?: AgentApprovalInputRequest;
 } {
   // 中转站接入：把候选模型交给审批卡渲染成勾选列表，选择结果随确认回传
   if (prepared.definition.id === 'provider_models_select') {
+    const catalogRequest = getPreparedProviderCatalogApproval(prepared.input);
+    if (catalogRequest) return { prepared, inputRequest: catalogRequest };
     const options = (prepared.input as { models?: ProviderModelChoice[] }).models ?? [];
     return options.length > 0
-      ? { prepared, inputRequest: { kind: 'provider_models', options } }
+      ? { prepared, inputRequest: { kind: 'provider_models', options: structuredClone(options), maxSelection: MAX_PROVIDER_MODEL_SELECTION } }
       : { prepared };
   }
 
@@ -546,6 +636,9 @@ export function prepareApprovalInput(
     return { prepared };
   }
 
+  // C/MCP 无审批卡：保留 Registry 已解析的默认/自动路由模型，继续交给 Policy 校验。
+  if (mode === 'autonomous') return { prepared };
+
   const inputWithoutModel = { ...input };
   delete inputWithoutModel.modelRef;
   return {
@@ -555,6 +648,58 @@ export function prepareApprovalInput(
       mediaKind,
     },
   };
+}
+
+/** Shared by model rounds and single-tool/MCP execution; only user-returned fields are injected. */
+export function resolveApprovalSelection(
+  call: ProposedToolCall,
+  prepared: PreparedAgentToolCall,
+  inputRequest: AgentApprovalInputRequest | undefined,
+  resolution: AgentApprovalResolution,
+  context: Omit<AgentToolContext, 'signal'>,
+): { call: ProposedToolCall; prepared: PreparedAgentToolCall; inputRequest?: AgentApprovalInputRequest; error?: ToolResultSummary } {
+  const original = { call, prepared, inputRequest };
+  const deny = (summary: string) => ({ ...original, error: {
+    callId: call.callId, toolId: call.toolId, status: 'denied' as const,
+    summary: sanitizePersistentSummary(summary), truncated: false,
+  } });
+  if (!resolution.approved || !inputRequest) return original;
+  if (context.mode === 'plan') {
+    const policy = evaluateAgentToolPolicy(prepared.definition, prepared.input, context);
+    if (policy.outcome === 'deny') return deny(policy.reason);
+  }
+  let selectedInput: Record<string, unknown>;
+  let request = inputRequest;
+  try {
+    if (inputRequest.kind === 'provider_models') {
+      const ids = resolution.inputValues?.selectedModelIds;
+      if (resolution.inputValues?.modelRef !== undefined) return deny('厂商模型勾选不能使用媒体 modelRef');
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) return deny('厂商模型选择必须是模型 ID 数组');
+      if (inputRequest.catalog && inputRequest.catalog.expiresAt <= Date.now()) return deny('模型目录已失效，请重新读取目录');
+      if (ids.length > (inputRequest.maxSelection ?? MAX_PROVIDER_MODEL_SELECTION)) return deny('选择数量超过本次审批上限');
+      validateProviderModelSelection(inputRequest.options, ids);
+      selectedInput = { ...(prepared.input as Record<string, unknown>), selectedIds: [...ids] };
+    } else if (inputRequest.kind === 'media_model') {
+      if (resolution.inputValues?.selectedModelIds !== undefined) return deny('媒体模型选择不能使用厂商模型 ID 列表');
+      const value = resolution.inputValues?.modelRef;
+      if (typeof value !== 'string' || !value.trim()) return deny('确认生成前必须选择一个可用模型');
+      const modelRef = value.trim();
+      selectedInput = { ...(prepared.input as Record<string, unknown>), modelRef };
+      request = { ...inputRequest, selectedModelRef: modelRef };
+    } else {
+      return deny('不支持的审批输入类型，请重新提出操作');
+    }
+    const resolvedCall = { ...call, input: selectedInput };
+    // Registry re-resolves catalog leases/defaults and validates the resulting local schema.
+    const selected = prepareAgentToolCall(resolvedCall, context);
+    if (!selected.ok) return deny(selected.result.summary);
+    if (selected.prepared.definition !== prepared.definition) return deny('工具定义已变化，请重新提出操作并确认');
+    const authorization = selected.prepared.definition.authorize?.(context, selected.prepared.input);
+    if (authorization && !authorization.allowed) return deny(authorization.reason || '所选模型当前不可用');
+    return { call: resolvedCall, prepared: selected.prepared, inputRequest: request };
+  } catch (error) {
+    return deny(error instanceof Error ? error.message : '审批选择校验失败');
+  }
 }
 
 export async function executeAgentRound({
@@ -567,6 +712,7 @@ export async function executeAgentRound({
   transitionTask,
   waitForApproval,
 }: AgentRoundOptions): Promise<AgentRoundResult> {
+  assertAgentTaskActive(taskId, signal);
   const initialTask = getTask(taskId);
   const contextBase = {
     taskId,
@@ -579,15 +725,22 @@ export async function executeAgentRound({
   const task = getTask(taskId);
   // 模型流式返回和逐个工具审批都可能耗时较久，其间用户可能下调模式；
   // 每次策略判定前重新读取当前会话模式，确保降级（如切到 B / Plan）立即生效。
-  const readCurrentMode = () => useAppStore.getState().conversations.find(
-    (conversation) => conversation.id === task.conversationId,
-  )?.agentMode ?? task.mode;
+  const readCurrentMode = () => resolveAgentExecutionMode(getTask(taskId));
   const roundContext = {
     ...contextBase,
     mode: readCurrentMode(),
     baseRevision: useAppStore.getState().getCurrentRevision(),
   };
   const interjections = drainAgentInterjections(taskId);
+  let checkpointReplayStepIds = checkpointReplayCandidates.get(messages);
+  if (!checkpointReplayStepIds) {
+    checkpointReplayStepIds = new Set((task.resumeCount ?? 0) > 0
+      ? task.steps.filter((step) => step.status === 'succeeded').map((step) => step.id)
+      : []);
+    checkpointReplayCandidates.set(messages, checkpointReplayStepIds);
+  }
+  // 用户的新补充要求不属于恢复重放；此执行段后续轮次也不能继续按旧参数复用。
+  if (interjections.length > 0) checkpointReplayStepIds.clear();
   for (const interjection of interjections) {
     addAgentTaskMetrics(taskId, { interjectionCount: 1 });
     appendAgentEvent(taskId, 'interjection_applied', {
@@ -596,7 +749,7 @@ export async function executeAgentRound({
     messages.push({
       role: 'user',
       content: [
-        '用户在任务执行期间补充了以下要求。请结合当前进度处理，不要重复已经成功的写操作：',
+        '用户在任务执行期间补充了以下要求。请结合当前进度处理，不要重放已成功的同一请求；新的修改或重新生成按当前要求执行：',
         interjection.text,
       ].join('\n'),
     });
@@ -695,6 +848,7 @@ export async function executeAgentRound({
     });
   }
 
+  assertAgentTaskActive(taskId, signal);
   if (proposedCalls.length === 0) {
     callbacks.onComplete?.(fullText);
     return { outcome: 'completed', fullText, totalToolResultChars };
@@ -733,6 +887,7 @@ export async function executeAgentRound({
   }> = [];
 
   for (const call of proposedCalls) {
+    assertAgentTaskActive(taskId, signal);
     // 逐个工具判定前刷新模式：前一个工具的审批等待期间用户下调模式也应生效。
     roundContext.mode = readCurrentMode();
     appendAgentEvent(taskId, 'tool_proposed', {
@@ -752,6 +907,7 @@ export async function executeAgentRound({
     const approvalInput = prepareApprovalInput(
       preparedResult.prepared,
       getTask(taskId).goal,
+      roundContext.mode,
     );
     let prepared = approvalInput.prepared;
     let resolvedCall = call;
@@ -839,67 +995,12 @@ export async function executeAgentRound({
       callbacks.onApprovalRequired?.(step);
       const approvalId = step.approval!.id;
       const resolution = await waitForApproval(approvalId, signal);
-      let approvalError: ToolResultSummary | undefined;
-      const selectedModelRef = resolution.inputValues?.modelRef?.trim();
-      const selectedModelIds = resolution.inputValues?.selectedModelIds ?? [];
-      if (resolution.approved && approvalInput.inputRequest?.kind === 'provider_models') {
-        if (selectedModelIds.length === 0) {
-          approvalError = {
-            callId: call.callId,
-            toolId: call.toolId,
-            status: 'denied',
-            summary: '没有选择任何模型',
-            truncated: false,
-          };
-        } else {
-          // 选择结果回灌成工具输入，execute 直接把它交回给模型
-          resolvedCall = {
-            ...call,
-            input: { ...(prepared.input as Record<string, unknown>), selectedIds: selectedModelIds },
-          };
-          const selectedPrepared = prepareAgentToolCall(resolvedCall, roundContext);
-          if (!selectedPrepared.ok) approvalError = selectedPrepared.result;
-          else prepared = selectedPrepared.prepared;
-        }
-      } else if (resolution.approved && approvalInput.inputRequest) {
-        if (!selectedModelRef) {
-          approvalError = {
-            callId: call.callId,
-            toolId: call.toolId,
-            status: 'denied',
-            summary: '确认生成前必须选择一个可用模型',
-            truncated: false,
-          };
-        } else {
-          resolvedCall = {
-            ...call,
-            input: {
-              ...(prepared.input as Record<string, unknown>),
-              modelRef: selectedModelRef,
-            },
-          };
-          const selectedPreparedResult = prepareAgentToolCall(resolvedCall, roundContext);
-          if (!selectedPreparedResult.ok) {
-            approvalError = selectedPreparedResult.result;
-          } else {
-            const authorization = selectedPreparedResult.prepared.definition.authorize?.(
-              roundContext,
-              selectedPreparedResult.prepared.input,
-            );
-            if (authorization && !authorization.allowed) {
-              approvalError = {
-                callId: call.callId,
-                toolId: call.toolId,
-                status: 'denied',
-                summary: authorization.reason || '所选模型当前不可用',
-                truncated: false,
-              };
-            } else {
-              prepared = selectedPreparedResult.prepared;
-            }
-          }
-        }
-      }
+      assertAgentTaskActive(taskId, signal);
+      roundContext.mode = resolveAgentExecutionMode(getTask(taskId));
+      const selection = resolveApprovalSelection(call, prepared, approvalInput.inputRequest, resolution, roundContext);
+      const approvalError = selection.error;
+      resolvedCall = selection.call;
+      prepared = selection.prepared;
       const canExecute = resolution.approved && !approvalError;
       appendAgentEvent(taskId, 'approval_resolved', {
         toolId: call.toolId,
@@ -938,12 +1039,7 @@ export async function executeAgentRound({
                     ...item.approval,
                     status: resolution.approved ? 'approved' : 'rejected',
                     resolvedAt,
-                    inputRequest: item.approval.inputRequest
-                      ? {
-                          ...item.approval.inputRequest,
-                          selectedModelRef,
-                        }
-                      : undefined,
+                    inputRequest: selection.inputRequest,
                   }
                 : undefined,
             }
@@ -977,41 +1073,6 @@ export async function executeAgentRound({
       transitionTask(taskId, 'running');
     }
 
-    const inputFingerprint = fingerprintToolInput(call.toolId, prepared.input);
-    updateStep(taskId, step.id, {
-      toolCall: {
-        ...(getTask(taskId).steps.find((item) => item.id === step.id)?.toolCall ?? step.toolCall!),
-        inputFingerprint,
-      },
-    });
-    const duplicate = prepared.definition.effect !== 'read'
-      ? findSucceededDuplicateWrite(getTask(taskId), call.toolId, inputFingerprint, step.id)
-      : undefined;
-    if (duplicate) {
-      const summary = duplicate.outputSummary
-        || duplicate.toolCall?.resultSummary
-        || '该写操作已成功执行';
-      const reused: ToolResultSummary = {
-        callId: call.callId,
-        toolId: call.toolId,
-        status: 'success',
-        summary: `已复用先前成功结果：${summary}`,
-        truncated: false,
-      };
-      updateStep(taskId, step.id, {
-        status: 'succeeded',
-        outputSummary: reused.summary,
-        toolCall: {
-          ...(getTask(taskId).steps.find((item) => item.id === step.id)?.toolCall ?? step.toolCall!),
-          finishedAt: Date.now(),
-          resultSummary: reused.summary,
-        },
-      });
-      results.set(call.callId, { summary: reused, modelContent: reused.summary });
-      callbacks.onToolResult?.(reused);
-      continue;
-    }
-
     allowedCalls.push({
       call: resolvedCall,
       prepared,
@@ -1022,6 +1083,7 @@ export async function executeAgentRound({
 
   const readCalls = allowedCalls.filter((item) => item.prepared.definition.effect === 'read');
   const writeCalls = allowedCalls.filter((item) => item.prepared.definition.effect !== 'read');
+  assertAgentTaskActive(taskId, signal);
   if (allowedCalls.length > 0) transitionTask(taskId, 'waiting_tool');
   await runWithConcurrency(
     readCalls,
@@ -1038,23 +1100,39 @@ export async function executeAgentRound({
       callbacks.onToolResult?.(result.summary);
     },
   );
-  // 同一轮里的写工具是串行的，前一个写操作自己会 incrementRevision；
-  // 若继续沿用轮次开始时的 baseRevision，后续写操作都会误判为“画布已变更”。
-  // 每次写完把基线推进到自己造成的 revision，外部（用户）改动仍然能被 guard 拦下。
+  // 只接纳成功画布工具在返回时固定的版本；失败或外部变更后整批剩余写入失效。
   let writeBaseRevision = roundContext.baseRevision;
+  let writeBatchFailed = false;
   for (const item of writeCalls) {
-    const result = await executePreparedToolCall(
-      taskId,
-      item.call,
-      item.prepared,
-      { ...item.context, baseRevision: writeBaseRevision },
-      item.step,
-    );
-    writeBaseRevision = useAppStore.getState().getCurrentRevision();
+    assertAgentTaskActive(taskId, signal);
+    const revisionChanged = useAppStore.getState().getCurrentRevision() !== writeBaseRevision;
+    const result = writeBatchFailed || revisionChanged
+      ? rejectPreparedToolCall(
+          taskId, item.call, item.prepared, item.step,
+          revisionChanged ? 'AGENT_CANVAS_REVISION_CHANGED' : 'AGENT_WRITE_BATCH_ABORTED',
+          revisionChanged
+            ? '画布已变更，本轮剩余写操作已取消，请先重新读取画布再规划'
+            : '本轮前序写操作未成功，剩余写操作已取消，请根据实际结果重新规划',
+        )
+      : await executePreparedToolCall(
+          taskId,
+          item.call,
+          item.prepared,
+          { ...item.context, baseRevision: writeBaseRevision },
+          item.step,
+          undefined,
+          checkpointReplayStepIds,
+        );
+    if (result.summary.status === 'success') {
+      writeBaseRevision = result.canvasRevisionAfter ?? writeBaseRevision;
+    } else {
+      writeBatchFailed = true;
+    }
     results.set(item.call.callId, result);
     callbacks.onToolResult?.(result.summary);
   }
 
+  assertAgentTaskActive(taskId, signal);
   for (const call of proposedCalls) {
     const result = results.get(call.callId);
     if (!result) continue;

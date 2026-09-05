@@ -173,6 +173,32 @@ export interface CharacterLibraryNodeLink {
   referenceImageId: string;
 }
 
+/** 视频拉片插件写入图片节点的结构化结果；不包含本地路径或调用级 resourceId。 */
+export interface VideoFrameAnalysisData {
+  sourceVideoNodeId: string;
+  sourceVideoName?: string;
+  shotId?: string;
+  inPoint?: number;
+  outPoint?: number;
+  sampleRole?: 'start' | 'middle' | 'end' | 'custom';
+  reviewStatus?: 'unreviewed' | 'reviewed' | 'edited';
+  overrideFields?: string[];
+  aiOriginal?: Record<string, string | number | null>;
+  requestedTime: number;
+  actualTime: number;
+  frameDuration?: number;
+  approximateFrame?: number;
+  shotSize?: string;
+  camera?: string;
+  content?: string;
+  dialogue?: string;
+  audio?: string;
+  transition?: string;
+  duration?: number;
+  note?: string;
+  confidence?: number | null;
+}
+
 // 节点数据接口
 export interface BaseNodeData {
   label: string;
@@ -258,6 +284,7 @@ export interface BaseNodeData {
   // ── 分镜表（ai-shotlist）──
   shotlistRows?: ShotRow[];                 // 逐行镜头
   shotlistColumns?: ShotlistColumnKey[];    // 当前显示的列（常驻列恒在其中）
+  frameAnalysis?: VideoFrameAnalysisData;   // 视频拉片抽帧及画面分析结果
   // ── 3D 导演台（ai-director）──
   directorRuntimeKind?: DirectorRuntimeKind; // 缺失=lightweight-web；未知运行时必须失败关闭
   directorInstanceId?: string;           // 导演台 localStorage 隔离实例 ID
@@ -407,6 +434,12 @@ export interface ProjectSettings {
 // API 配置
 export type GeneralModelCategory = 'text' | 'image' | 'audio' | 'video';
 
+/** 连接级文本/对话 API 协议；缺省保持 OpenAI Chat Completions 兼容。 */
+export type ChatApiProtocol =
+  | 'openai-compatible'
+  | 'anthropic-compatible'
+  | 'gemini-native';
+
 export type ImageReferenceRequestMode =
   | 'generation-json-image-urls'
   | 'generation-json-image-data-urls'
@@ -454,6 +487,8 @@ export interface ApiProviderConfig {
   /** 凭据在凭据存储中的条目名；由持久化层维护，业务代码不要直接读写。 */
   apiKeyRef?: string;
   baseUrl?: string;
+  /** 文本/对话请求协议；旧配置缺失时按 openai-compatible 处理。 */
+  chatApiProtocol?: ChatApiProtocol;
   /** 内置目录定义 ID；自定义连接的配置 key 与目录定义 ID 不同。 */
   catalogId?: string;
   /** undefined 表示旧配置尚未选择；空数组表示用户明确未启用任何模型。 */

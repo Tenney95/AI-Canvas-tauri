@@ -2,7 +2,7 @@
  * Chat 类型定义 — 对话助手相关的 CommandId、Selector AST、CommandIntent、
  * CommandPlan、CommandResult、ChatMessage、ChatConversation 等核心类型
  */
-import type { AgentMode } from './agent';
+import type { AgentMode, ProviderModelCatalogSummary } from './agent';
 
 import type { NodeType } from './index';
 import type {
@@ -139,6 +139,93 @@ export interface WebSource {
   snippet?: string;
   fetchedAt: number;
   sourceType: 'search' | 'page';
+}
+
+/** 读取完整性只描述本次有界读取，不代表整站内容已遍历完毕。 */
+export type WebReadIssue =
+  | 'page_limit' | 'body_limit' | 'text_limit' | 'timeout'
+  | 'navigation_failed' | 'duplicate_page' | 'empty_page' | 'render_failed'
+  | 'catalog_fallback';
+
+export interface WebReadStatus {
+  readMethod: 'static' | 'rendered' | 'catalog';
+  complete: boolean;
+  issues: WebReadIssue[];
+}
+
+/** 以下正文类型仅用于瞬时读取，不能挂到消息、任务摘要或其他持久化类型上。 */
+export interface NativeWebReadPage {
+  url: string;
+  title?: string | null;
+  contentType: string;
+  body: string;
+  truncated?: boolean;
+}
+
+export interface NativeWebReadResponse {
+  url: string;
+  contentType: string;
+  /** 旧版本或静态读取的单页正文；新动态响应通过 pages 返回，不重复拼接正文。 */
+  body: string;
+  fetchedAt: number;
+  pages?: NativeWebReadPage[];
+  readMethod?: 'static' | 'rendered';
+  complete?: boolean;
+  issues?: WebReadIssue[];
+}
+
+export interface WebPageLink {
+  title: string;
+  url: string;
+}
+
+export interface WebReadPage {
+  source: WebSource;
+  text: string;
+  links: WebPageLink[];
+  truncated: boolean;
+}
+
+/** 宿主提供的读取作用域，不能由工具输入指定。 */
+export interface WebReadAccessScope {
+  projectId: string;
+  conversationId: string;
+  taskId: string;
+}
+
+export interface WebReadSection {
+  id: string;
+  title: string;
+  offset: number;
+  url: string;
+}
+
+/** 完整正文仅供有界内存快照使用，不可持久化。 */
+export interface WebReadDocument extends WebReadStatus {
+  pages: WebReadPage[];
+  catalog?: ProviderModelCatalogSummary;
+}
+
+export interface WebReadContinuation {
+  readSessionId?: string;
+  cursor?: string;
+  offset?: number;
+  section?: string;
+}
+
+export interface WebPageResult extends WebReadStatus {
+  /** 与旧调用方兼容，始终指向第一份有效正文的来源。 */
+  source: WebSource;
+  pages: WebReadPage[];
+  text: string;
+  truncated: boolean;
+  links: WebPageLink[];
+  readSessionId?: string;
+  nextCursor?: string;
+  nextOffset?: number;
+  totalTextChars?: number;
+  sections?: WebReadSection[];
+  catalog?: ProviderModelCatalogSummary;
 }
 
 // ============================================

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 // bridge.js 是原样注入 ComfyUI 页面的 IIFE，没法 import，直接把 inferCategory 抠出来求值
-const source = readFileSync(new URL('../../src-tauri/src/comfyui/bridge.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../../src-tauri/src/media/comfyui/bridge.js', import.meta.url), 'utf8');
 const match = source.match(/const inferCategory = \(output\) => \{[\s\S]*?\r?\n {2}\};/);
 if (!match) throw new Error('bridge.js 里找不到 inferCategory');
 const inferCategory = new Function(`${match[0]}\nreturn inferCategory;`)() as (
@@ -75,15 +75,83 @@ describe('bridge.js inferCategory', () => {
 });
 
 describe('bridge.js actionbar tiny 尺寸', () => {
-  it('统一使用 28px，并且不再整体缩放扩展按钮', () => {
-    expect(source).toContain('--ai-canvas-action-size: 28px;');
+  it('统一使用 24px，并且不再整体缩放扩展按钮', () => {
+    expect(source).toContain('--ai-canvas-action-size: 24px;');
+    expect(source).not.toContain('--ai-canvas-action-size: 28px;');
     expect(source).toContain('height: var(--ai-canvas-action-size);');
+    expect(source).toContain('max-height: var(--ai-canvas-action-size);');
     expect(source).not.toMatch(/legacy-topbar-container"\]\s*\{\s*zoom:/);
   });
 
-  it('扩展图标居中，并隐藏 Image Feed 文字', () => {
+  it('按钮内容居中并按文字、图标类型优化 padding', () => {
+    expect(source).toContain('--ai-canvas-action-icon-size: 14px;');
+    expect(source).toContain('display: inline-flex;');
+    expect(source).toContain('justify-content: center;');
+    expect(source).toContain('padding: 0 6px;');
+    expect(source).toContain('padding: 0;');
+    expect(source).toContain('line-height: 1;');
+  });
+
+  it('所有可见控件与 Crystools 监视块同步 24px 高度', () => {
+    expect(source).toContain('.actionbar-container > [data-testid="action-bar-buttons"],');
+    expect(source).toContain('.actionbar-container .actionbar [data-pc-section="contentcontainer"],');
+    expect(source).toContain('.crystools-monitors-container,');
+    expect(source).toContain('.crystools-monitor,');
+    expect(source).toContain('.crystools-content {');
+    expect(source).toContain('.actionbar-container .batch-count,');
+  });
+
+  it('批次与运行模式箭头使用专用小尺寸，扩展图标保持居中', () => {
+    expect(source).toContain('--ai-canvas-action-chevron-width: 7px;');
+    expect(source).toContain('--ai-canvas-action-chevron-height: 4px;');
+    expect(source).toContain('.actionbar-container .batch-count button > svg,');
+    expect(source).toContain('[data-testid="queue-mode-menu-trigger"] > svg');
     expect(source).toContain('.rgthree-button-icon,');
     expect(source).toContain('align-items: center;');
-    expect(source).toContain('.comfyui-button[title^="Show Image Feed"] span');
+    expect(source).toContain('.actionbar-container .queue-button-group');
+    expect(source).toContain('.actionbar-container .batch-count > div');
+    expect(source).toContain('.comfyui-button[aria-label^="Show Image Feed"] span');
+  });
+
+  it('管理器按钮只保留图标，并使用稳定的 aria-label 匹配', () => {
+    expect(source).toContain('.comfyui-button[aria-label="ComfyUI Manager"] {');
+    expect(source).toContain('.comfyui-button[aria-label="ComfyUI Manager"] span {');
+    expect(source).not.toContain('.comfyui-button[title="ComfyUI Manager"]');
+  });
+
+  it('图像流按钮只保留图标，并兼容本地化标题', () => {
+    expect(source).toContain('.comfyui-button[aria-label^="Show Image Feed"] {');
+    expect(source).toContain('.comfyui-button[aria-label^="Show Image Feed"] span {');
+    expect(source).not.toContain('.comfyui-button[title^="Show Image Feed"]');
+  });
+
+  it('K Monitor 按钮去掉 Monitor 文字，只保留 K 标识', () => {
+    expect(source).toContain('button.comfyui-button[aria-label$="Monitor"] span,');
+    expect(source).toContain('button.comfyui-button[title$="Monitor"] span {');
+    expect(source).toMatch(/button\.comfyui-button\[title\$="Monitor"\] span\s*\{[^}]*display: none !important;/s);
+    expect(source).toContain('button.comfyui-button[aria-label$="Monitor"]::before,');
+    expect(source).toContain('content: "𝙆";');
+  });
+
+  it('Crystools 进度条与占用率数值都在进度块内靠右显示', () => {
+    expect(source).toMatch(/\.crystools-slider\s*\{[^}]*right: 0;[^}]*left: auto;/s);
+    expect(source).toMatch(/\.crystools-label\s*\{[^}]*justify-content: flex-end;/s);
+    expect(source).toMatch(/\.crystools-label\s*\{[^}]*text-align: right;/s);
+    expect(source).toMatch(/\.crystools-label\s*\{[^}]*padding-right: 3px;/s);
+  });
+});
+
+describe('bridge.js ComfyUI 左侧工具栏', () => {
+  it('隐藏按钮文字标题，只保留图标', () => {
+    expect(source).toMatch(/\.side-toolbar-container \.side-bar-button-label\s*\{[^}]*display: none !important;/s);
+  });
+});
+
+describe('bridge.js ComfyUI 顶部用户入口', () => {
+  it('隐藏已登录与未登录用户按钮，且不影响 AI Canvas 窗口控制按钮', () => {
+    expect(source).toMatch(/\[data-testid="current-user-button"\],\s*\[data-testid="login-button"\]\s*\{[^}]*display: none !important;/s);
+    expect(source).toContain('class="ai-canvas-window-button" data-window-action="minimize"');
+    expect(source).toContain('class="ai-canvas-window-button" data-window-action="maximize"');
+    expect(source).toContain('class="ai-canvas-window-button ai-canvas-close" data-window-action="close"');
   });
 });

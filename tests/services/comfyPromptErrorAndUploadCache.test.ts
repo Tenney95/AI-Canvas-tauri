@@ -9,6 +9,14 @@ const mocks = vi.hoisted(() => ({
   },
   cancelNodePolling: vi.fn(),
   getPendingTasksForProject: vi.fn(),
+  progressSession: {
+    clientId: 'client-1',
+    requestId: 'request-1',
+    waitUntilReady: vi.fn(async () => undefined),
+    bindPrompt: vi.fn(),
+    close: vi.fn(),
+  },
+  createComfyProgressSession: vi.fn(),
 }));
 
 vi.mock('../../src/services/ai/httpTransport', () => ({
@@ -28,6 +36,9 @@ vi.mock('../../src/services/pollManager', () => ({
 }));
 vi.mock('../../src/services/nodeReferenceService', () => ({
   resolveNodeReferences: (value: string) => value,
+}));
+vi.mock('../../src/services/comfyProgress', () => ({
+  createComfyProgressSession: mocks.createComfyProgressSession,
 }));
 
 import {
@@ -75,6 +86,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   registerWorkflow();
   mocks.getPendingTasksForProject.mockReturnValue([]);
+  mocks.createComfyProgressSession.mockReturnValue(mocks.progressSession);
   mocks.corsSafeFetch.mockImplementation(async (url: string) => {
     if (url.endsWith('/upload/image')) return jsonResponse({ name: 'upload_x.png', subfolder: '', type: 'input' });
     if (url.endsWith('/prompt')) return jsonResponse({ prompt_id: 'prompt-1' });
@@ -166,6 +178,24 @@ describe('ComfyUI 任务终止', () => {
 });
 
 const baseParams = { prompt: '一只猫', model: 'wf', provider: 'comfyui', workflowId: 'wf-1' };
+
+describe('ComfyUI 节点进度会话', () => {
+  it('提交相同 client_id，并在结果完成后清理进度会话', async () => {
+    await executeComfyUIGenerate({ ...baseParams, nodeId: 'node-1' });
+
+    expect(mocks.createComfyProgressSession).toHaveBeenCalledWith(expect.objectContaining({
+      baseUrl: 'http://comfy.test:8188',
+      projectId: 'p1',
+      nodeId: 'node-1',
+    }));
+    const promptCall = mocks.corsSafeFetch.mock.calls.find(([url]) => String(url).endsWith('/prompt'));
+    const submitted = JSON.parse(String((promptCall?.[1] as RequestInit).body));
+    expect(submitted.client_id).toBe('client-1');
+    expect(mocks.progressSession.waitUntilReady).toHaveBeenCalledOnce();
+    expect(mocks.progressSession.bindPrompt).toHaveBeenCalledWith('prompt-1');
+    expect(mocks.progressSession.close).toHaveBeenCalledOnce();
+  });
+});
 
 describe('ComfyUI 上传缓存', () => {
   it('同一份媒体喂给两个节点只上传一次', async () => {

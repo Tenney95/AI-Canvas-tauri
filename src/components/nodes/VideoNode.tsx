@@ -39,6 +39,7 @@ import {
   runVideoEditorAiTransition,
 } from '../../services/videoEditorAiTransitionService';
 import { useT } from '../../i18n';
+import NodeGenerationProgress from './shared/NodeGenerationProgress';
 
 const DEFAULT_VIDEO_NODE_WIDTH = 280;
 const DEFAULT_VIDEO_NODE_HEIGHT = 158;
@@ -805,10 +806,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               <span>{t('上传中...')}</span>
             </div>
           ) : data.status === 'loading' ? (
-            <div className="node-preview-loading">
-              <div className="spinner large" />
-              <span>{t('生成视频中...')}</span>
-            </div>
+            <NodeGenerationProgress nodeId={id} fallbackLabel={t('生成视频中...')} />
           ) : (
             isSource ? (
               <button
@@ -835,6 +833,9 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                 </svg>
               </div>
             )
+          )}
+          {(data.videoUrl || data.thumbnailUrl) && data.status === 'loading' && (
+            <NodeGenerationProgress nodeId={id} fallbackLabel={t('生成视频中...')} overlay />
           )}
           {data.videoUrl && !isFullscreen && showInitialCover && (
             <img src={initialCoverUrl} alt="" className="video-node-initial-cover" draggable={false} />

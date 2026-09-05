@@ -8,8 +8,7 @@
  * 呼吸浮动上叠了一层轻微的挤压拉伸。
  * 状态切换时给一次肢体反应：成功蹦一下，失败摇头，思考时轻微歪头。
  *
- * 请求模型时（loading=true）球体本体逐面炸裂、飞散成粒子云；
- * 完成后再平滑还原为圆球。
+ * 请求模型时（loading=true）彩带绕着球体旋转，完成后平滑收起。
  *
  * 用法：放进任意有尺寸的容器即可（组件会铺满父级）。
  *   <div style={{ width: 480, height: 480 }}>
@@ -20,14 +19,20 @@ import { useEffect, useRef, type RefObject } from 'react';
 import { gsap } from 'gsap';
 import { createOrbitRibbons, type OrbitRibbons } from './mascotOrbitRibbons';
 import {
+  BLINK_DURATION,
   REACTION_DURATIONS,
+  getBlinkOpenness,
+  getPointerGaze,
   getReactionPose,
   getSquashWidth,
   pickNextGazeIndex,
+  samplePerformancePose,
+  type MascotPerformancePose,
   type MascotReactionKind,
 } from './mascotMotion';
 import {
   SPRING_PRESETS,
+  createSpringConfig,
   createSpringState,
   exponentialApproach,
   rateFromLerp,
@@ -57,6 +62,7 @@ import {
   type ExpressionId,
 } from './mascotExpressions';
 import {
+  MASCOT_CLIPS,
   advanceClip,
   createClipState,
   isGazeLocked,
@@ -71,6 +77,7 @@ import {
   HemisphereLight,
   DirectionalLight,
   AmbientLight,
+  BackSide,
   Group,
   MeshPhysicalMaterial,
   ShaderMaterial,
@@ -91,7 +98,6 @@ import {
   UnsignedByteType,
   RepeatWrapping,
   LinearFilter,
-  Timer,
 } from 'three';
 
 /* ── 可调参数 ── */
@@ -99,12 +105,13 @@ const SPHERE_RADIUS = 1;
 const EYE_MAX_ANGLE = 0.42; // 眼睛跟随鼠标的最大偏转（弧度）
 /** 眼睛在球面上的基准高度，表情里的 offsetY 叠加在它之上。 */
 const EYE_BASE_Y = 0.04;
-const HEAD_MAX_ANGLE = 0.12; // 头部跟随鼠标的轻微转动
+const HEAD_MAX_ANGLE = 0.16; // 身体比眼神慢半拍跟随，保留转头的重量感
 const FOLLOW_LERP = 0.12; // 跟随平滑系数（沿用旧手感，换算成帧率无关的速率后使用）
 const FOLLOW_RATE = rateFromLerp(FOLLOW_LERP);
 const BLINK_MIN = 2.2; // 两次眨眼最小间隔（秒）
 const BLINK_MAX = 5.5; // 两次眨眼最大间隔（秒）
-const BLINK_DURATION = 0.13; // 单次眨眼时长（秒）
+const GAZE_SPRING = createSpringConfig(3, 1);
+const PERFORMANCE_SPRING = createSpringConfig(3.4, 0.78);
 // 限帧：Tauri 透明窗口下 rAF 不受垂直同步限制（实测 ~1700Hz），必须自行限频，
 // 否则渲染循环以每秒上千次全速跑满主线程
 const IDLE_FPS = 30;
@@ -112,8 +119,6 @@ const ACTIVE_FPS = 60;
 const POINTER_ACTIVITY_MS = 250;
 const STATUS_TRANSITION_ACTIVE_MS = 320;
 const THINKING_POINTER_PRIORITY_MS = 900;
-const THINKING_GAZE_LERP = 0.2;
-const THINKING_GAZE_RATE = rateFromLerp(THINKING_GAZE_LERP);
 const THINKING_GAZE_MIN_INTERVAL = 0.8;
 const THINKING_GAZE_MAX_INTERVAL = 1.4;
 const FUR_SHELL_COUNT = 48;
@@ -139,8 +144,6 @@ const THINKING_GAZE_POINTS = [
 const IDLE_GAZE_DELAY_MS = 2600;
 const IDLE_GAZE_MIN_INTERVAL = 1.8;
 const IDLE_GAZE_MAX_INTERVAL = 3.4;
-const IDLE_GAZE_LERP = 0.06;
-const IDLE_GAZE_RATE = rateFromLerp(IDLE_GAZE_LERP);
 // 待机张望比思考时看得更远，视线幅度也更大
 const IDLE_GAZE_POINTS = [
   [-0.62, 0.12],
@@ -154,9 +157,6 @@ const IDLE_TILT_MIN_INTERVAL = 6;
 const IDLE_TILT_MAX_INTERVAL = 11;
 const IDLE_TILT_HOLD = 1.3; // 单次歪头保持时长（秒）
 const IDLE_TILT_ANGLE = 0.09;
-const HEAD_ROLL_LERP = 0.05;
-const HEAD_ROLL_RATE = rateFromLerp(HEAD_ROLL_LERP);
-const BREATH_SQUASH = 0.012;
 const DOUBLE_BLINK_CHANCE = 0.18;
 const DOUBLE_BLINK_GAP = 0.22; // 二连眨的两下之间的间隔（秒）
 const WINK_CHANCE = 0.12;
@@ -350,7 +350,7 @@ export interface MascotHandle {
 }
 
 interface MascotProps {
-  /** 请求模型中 → 球体炸裂成粒子云 */
+  /** 请求模型中 → 彩带环绕球体 */
   loading?: boolean;
   /** 当前助手状态，用于眼神与低强度状态色反馈 */
   status?: MascotStatus;
@@ -422,7 +422,8 @@ export default function Mascot({
     const scene = new Scene();
 
     const camera = new PerspectiveCamera(35, width / height, 0.1, 100);
-    camera.position.set(0, 0, 5);
+    // 为跳跃、表情拉伸和外层绒毛留出运动边距，100px 容器里也不能切掉头顶。
+    camera.position.set(0, 0, 5.35);
 
     const renderer = new WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -508,6 +509,20 @@ export default function Mascot({
     fur.renderOrder = 2;
     head.add(fur);
 
+    // 绒毛不写深度，背面彩带原先会从内核与毛尖之间透出来。
+    // 在绒毛绘制之后补后半球深度，将交接处推到毛尖附近；前方彩带和眼睛不受影响。
+    const ribbonOcclusionMat = new MeshBasicMaterial({
+      colorWrite: false,
+      depthWrite: true,
+      transparent: true,
+      side: BackSide,
+    });
+    const ribbonOccluder = new Mesh(sphere.geometry, ribbonOcclusionMat);
+    ribbonOccluder.scale.setScalar(1 + FUR_LENGTH * 0.85);
+    ribbonOccluder.renderOrder = 2.5;
+    ribbonOccluder.visible = false;
+    head.add(ribbonOccluder);
+
     const shadowShape = new Shape();
     shadowShape.absellipse(0, 0, 0.58, 0.11, 0, Math.PI * 2, false, 0);
     const shadowGeo = new ShapeGeometry(shadowShape, 32);
@@ -554,11 +569,10 @@ export default function Mascot({
 
     /* ── 鼠标 / 悬浮状态 ──
      * 默认监听整个窗口跟随光标；思考态在光标静止后切换为自主微扫视。
-     * look 为相对吉祥物中心的方向 [-1,1]，以半个窗口尺寸为参考归一化。 */
+     * look 为相对吉祥物中心的方向 [-1,1]，以角色尺寸为参考归一化。 */
     const look = new Vector2(0, 0); // 全局视线方向（目标）
     const localPointer = new Vector2(0, 0); // 画布内 NDC，仅用于悬浮检测
     // 自主张望：思考态与待机态共用一套落点调度，只是落点集合与节奏不同
-    const wanderLook = new Vector2(0, 0);
     const wanderLookTarget = new Vector2(0, 0);
     let hovering = false;
     let lastPointerMoveAt = 0;
@@ -597,10 +611,8 @@ export default function Mascot({
       // 全局视线：相对吉祥物中心的方向，归一化并夹紧
       const cx = rect.left + rect.width / 2;
       const cy = rect.top + rect.height / 2;
-      const refX = Math.max(window.innerWidth * 0.5, 1);
-      const refY = Math.max(window.innerHeight * 0.5, 1);
-      look.x = MathUtils.clamp((e.clientX - cx) / refX, -1, 1);
-      look.y = MathUtils.clamp(-(e.clientY - cy) / refY, -1, 1);
+      const gaze = getPointerGaze(e.clientX - cx, cy - e.clientY, Math.min(rect.width, rect.height));
+      look.set(gaze.x, gaze.y);
     };
     const handleWindowLeave = () => {
       look.set(0, 0); // 光标离开窗口 → 视线回正
@@ -629,6 +641,18 @@ export default function Mascot({
       open: 1, curve: 0, slant: 0, width: 1, height: 1, rotationZ: 0, offsetY: 0,
     };
     const scratchBody: BodyPose = { squashY: 1, lift: 0, tilt: 0 };
+    const performancePose: MascotPerformancePose = {
+      x: 0, lift: 0, squashY: 1, tilt: 0, yaw: 0, pitch: 0, eyeOpen: 1,
+    };
+    const performanceKeys = ['x', 'lift', 'squashY', 'tilt', 'yaw', 'pitch'] as const;
+    const performanceSprings = {
+      x: createSpringState(), lift: createSpringState(), squashY: createSpringState(1),
+      tilt: createSpringState(), yaw: createSpringState(), pitch: createSpringState(),
+    };
+    const gazeSprings = { x: createSpringState(), y: createSpringState() };
+    const headSprings = { yaw: createSpringState(), pitch: createSpringState(), roll: createSpringState() };
+    let expressionAnimating = false;
+    let gazeAnimating = false;
     // 把命令对象捕获进局部变量，避免 cleanup 中直接读 handle.current 触发 eslint 警告
     const api = handle.current;
     api.playClip = (id) => requestClip(clipState, id);
@@ -662,7 +686,6 @@ export default function Mascot({
     };
 
     /* ── 歪头与状态转场反应 ── */
-    let headRoll = 0;
     let idleTiltTarget = 0;
     let idleTiltUntil = 0;
     let nextIdleTiltAt = MathUtils.randFloat(IDLE_TILT_MIN_INTERVAL, IDLE_TILT_MAX_INTERVAL);
@@ -677,22 +700,25 @@ export default function Mascot({
     let prevLoadTarget = 0;
     let hoverScale = 1;
     // 头部偏航的「跟随鼠标」分量：过渡自转在 loadAmount 算出后再叠加，避免被自身 lerp 吃掉
-    let headYaw = 0;
     const targetEmissiveColor = new Color(initialPalette.emissive);
     const targetRimColor = new Color(DEFAULT_RIM_COLOR);
     const dragForce = new Vector2(0, 0);
     const dragForceVelocity = new Vector2(0, 0);
 
     /* ── 渲染循环（限帧 + 后台暂停，同 NebulaBackground）── */
-    const clock = new Timer();
     let raf = 0;
-    let lastTime = 0;
+    let lastTime = performance.now();
+    let lastRenderedAt = lastTime;
+    let t = 0;
 
     const render = (now: number) => {
       raf = requestAnimationFrame(render);
-      if (document.hidden) return; // 窗口不可见时不渲染
       // React Flow 交互期间冻结装饰性 WebGL，优先保证节点拖拽与画布缩放帧率。
-      if (document.documentElement.classList.contains('canvas-interacting')) return;
+      if (document.hidden || document.documentElement.classList.contains('canvas-interacting')) {
+        lastRenderedAt = now;
+        lastTime = now;
+        return;
+      }
       const motionEnabled = !reduceMotionRef.current;
       const visualStatus = statusRef.current;
       const isHovering = motionEnabled && finePointerQuery.matches && hovering;
@@ -707,6 +733,9 @@ export default function Mascot({
         || isHovering
         || dragMotionActive
         || blinkStart >= 0
+        || expressionAnimating
+        || gazeAnimating
+        || (clipState.clipId !== null && Number.isFinite(MASCOT_CLIPS[clipState.clipId].duration))
         // 蹦跳/摇头比状态转场的 320ms 活跃窗口更长，不补这条后半段会掉回 30fps
         || reactionKind !== null
         || loadObj.val > 0.002
@@ -717,11 +746,10 @@ export default function Mascot({
       const elapsed = now - lastTime;
       if (elapsed < frameInterval) return;
       lastTime = now - (elapsed % frameInterval);
-      clock.update(); // Timer 必须每帧 update，否则 getElapsed 恒为 0
-      const t = clock.getElapsed();
-
-      // 帧间隔统一换算成秒：拖拽积分、片段推进和表情弹簧都要用同一个值
-      const deltaSeconds = Math.min(elapsed / 1000, 1 / 30);
+      // 限帧余数只用于调度，不能重复计入积分；片段、眨眼、反应共用实际渲染时钟。
+      const deltaSeconds = Math.min((now - lastRenderedAt) / 1000, 1 / 15);
+      lastRenderedAt = now;
+      t += deltaSeconds;
       // 片段进度要在视线逻辑之前推进：睡眠这类片段需要立刻锁住视线，不能晚一帧
       advanceClip(clipState, deltaSeconds);
       if (!motionEnabled) {
@@ -754,10 +782,10 @@ export default function Mascot({
       furUniforms.uDragForce.value.copy(dragForce);
 
       if (visualStatus !== previousVisualStatus) {
-        wanderLook.set(0, 0);
         wanderLookTarget.set(0, 0);
         wanderIndex = -1;
         nextWanderAt = t;
+        reactionKind = null;
         // 光靠眼型和颜色读不出成败，给一次一次性的肢体反应。
         if (motionEnabled && visualStatus === 'success') {
           reactionKind = 'hop';
@@ -788,9 +816,6 @@ export default function Mascot({
             ? MathUtils.randFloat(THINKING_GAZE_MIN_INTERVAL, THINKING_GAZE_MAX_INTERVAL)
             : MathUtils.randFloat(IDLE_GAZE_MIN_INTERVAL, IDLE_GAZE_MAX_INTERVAL));
         }
-        const gazeRate = isThinking ? THINKING_GAZE_RATE : IDLE_GAZE_RATE;
-        wanderLook.x = exponentialApproach(wanderLook.x, wanderLookTarget.x, gazeRate, deltaSeconds);
-        wanderLook.y = exponentialApproach(wanderLook.y, wanderLookTarget.y, gazeRate, deltaSeconds);
       }
 
       const reactionPose = reactionKind
@@ -812,53 +837,37 @@ export default function Mascot({
         furUniforms.uFurColor.value.setHex(palette.body);
         eyeColor.setHex(palette.eyes); // 两只眼共用这一个 Color 实例
         shadowMat.color.setHex(palette.shadow);
-        // 阴影透明度只随主题变化（不再被生成态淡出改写），所以在这里同步
+        // 每帧会在主题基准上叠加离地高度带来的阴影淡化。
         shadowMat.opacity = palette.shadowOpacity;
         rimLight.intensity = palette.rimLightIntensity;
       }
 
       // 鼠标刚移动时仍优先跟随用户，静止够久才交给自主张望。
       const allowGaze = (visualStatus === 'idle' || isThinking) && !gazeLocked;
-      const gazeTarget = wanderActive ? wanderLook : look;
+      const gazeTarget = wanderActive ? wanderLookTarget : look;
       const px = motionEnabled && allowGaze ? gazeTarget.x : 0;
       const py = motionEnabled && allowGaze ? gazeTarget.y : 0;
       // 头部跟随也要一起停，否则头转了眼睛不转，看着很别扭
-      const headPx = motionEnabled && visualStatus === 'idle' && !gazeLocked ? look.x : 0;
-      const headPy = motionEnabled && visualStatus === 'idle' && !gazeLocked ? look.y : 0;
+      const headPx = px * (isThinking ? 0.6 : 1);
+      const headPy = py * (isThinking ? 0.6 : 1);
 
       if (motionEnabled) {
-        // 用帧率无关的指数逼近：渲染循环会在 30/60fps 之间切换，
-        // 直接 lerp 会让两种帧率下的跟随快慢不一致
-        eyeGroup.rotation.y = exponentialApproach(
-          eyeGroup.rotation.y,
-          px * EYE_MAX_ANGLE,
-          FOLLOW_RATE,
-          deltaSeconds,
-        );
-        eyeGroup.rotation.x = exponentialApproach(
-          eyeGroup.rotation.x,
-          -py * EYE_MAX_ANGLE,
-          FOLLOW_RATE,
-          deltaSeconds,
-        );
-        // 偏航只更新「跟随分量」，过渡自转在 loadAmount 算出后再叠加到 head.rotation.y
-        headYaw = exponentialApproach(headYaw, headPx * HEAD_MAX_ANGLE, FOLLOW_RATE, deltaSeconds);
-        head.rotation.x = exponentialApproach(
-          head.rotation.x,
-          -headPy * HEAD_MAX_ANGLE,
-          FOLLOW_RATE,
-          deltaSeconds,
-        );
+        // 眼睛先锁定落点，身体随后跟上；直接追赶同一目标，避免两次滤波拖慢扫视。
+        const gazeXRest = stepSpring(gazeSprings.x, px, GAZE_SPRING, deltaSeconds);
+        const gazeYRest = stepSpring(gazeSprings.y, py, GAZE_SPRING, deltaSeconds);
+        const yawRest = stepSpring(headSprings.yaw, headPx * HEAD_MAX_ANGLE, SPRING_PRESETS.head, deltaSeconds);
+        const pitchRest = stepSpring(headSprings.pitch, -headPy * HEAD_MAX_ANGLE, SPRING_PRESETS.head, deltaSeconds);
+        gazeAnimating = !(gazeXRest && gazeYRest && yawRest && pitchRest);
       } else {
-        eyeGroup.rotation.set(0, 0, 0);
-        headYaw = 0;
-        head.rotation.x = 0;
+        for (const spring of [...Object.values(gazeSprings), ...Object.values(headSprings)]) resetSpring(spring, 0);
+        gazeAnimating = false;
       }
+      eyeGroup.rotation.set(-gazeSprings.y.value * EYE_MAX_ANGLE, gazeSprings.x.value * EYE_MAX_ANGLE, 0);
 
       // 歪头：待机时每隔几秒歪一下再回正。
       // 思考态的歪头交给 thinking 表情自带的 tilt，避免两处叠加把头歪过头。
       let headRollTarget = 0;
-      if (motionEnabled && visualStatus === 'idle') {
+      if (motionEnabled && visualStatus === 'idle' && clipState.clipId === null) {
         if (t >= nextIdleTiltAt) {
           idleTiltTarget = (Math.random() < 0.5 ? -1 : 1)
             * MathUtils.randFloat(IDLE_TILT_ANGLE * 0.5, IDLE_TILT_ANGLE);
@@ -866,17 +875,15 @@ export default function Mascot({
           nextIdleTiltAt = idleTiltUntil
             + MathUtils.randFloat(IDLE_TILT_MIN_INTERVAL, IDLE_TILT_MAX_INTERVAL);
         }
-        headRollTarget = t < idleTiltUntil ? idleTiltTarget : 0;
+        headRollTarget = (t < idleTiltUntil ? idleTiltTarget : 0) - px * 0.09;
       }
-      headRoll = motionEnabled
-        ? exponentialApproach(headRoll, headRollTarget, HEAD_ROLL_RATE, deltaSeconds)
-        : 0;
+      if (motionEnabled) stepSpring(headSprings.roll, headRollTarget, SPRING_PRESETS.head, deltaSeconds);
       // head.rotation.z 与 head.position.y 在表情求出之后统一赋值，
       // 因为要把表情自带的 tilt / lift 叠上去 —— 见下方「写入身体姿态」。
 
       // 状态表情期间暂停随机眨眼，避免与眼神姿态互相覆盖。
       // 片段播放期间同样不眨：睡眠本来就是闭眼，反应片段又太短，插一次眨眼反而乱。
-      const canBlink = motionEnabled && visualStatus === 'idle' && clipState.clipId === null;
+      const canBlink = motionEnabled && (visualStatus === 'idle' || isThinking) && clipState.clipId === null;
       if (!canBlink) {
         blink = 1;
         blinkStart = -1;
@@ -885,35 +892,45 @@ export default function Mascot({
         startBlink(t);
       }
       if (canBlink && blinkStart >= 0) {
-        const k = (t - blinkStart) / BLINK_DURATION; // 0→1→2
-        blink = k < 1 ? 1 - k : Math.min(k - 1, 1); // 下闭上睁，三角波
-        if (k >= 2) {
+        blink = getBlinkOpenness(t - blinkStart);
+        if (t - blinkStart >= BLINK_DURATION) {
           blink = 1;
           blinkStart = -1;
           scheduleBlink(t);
         }
       }
-      // 取当前片段的目标表情；眨眼乘在 open 上 —— 闭眼就是眼睑合拢，
-      // 比原来压扁整个几何体更接近真实的眨眼
+      // 表情负责眼型，眨眼在插值完成后独立合成，确保眼睑真的闭合。
       sampleClipVector(clipState, STATUS_EXPRESSIONS[visualStatus], expressionTarget);
-      for (let index = 0; index < eyes.length; index += 1) {
-        // 眨单眼时另一只保持睁开
-        const eyeBlink = blinkEye < 0 || blinkEye === index ? blink : 1;
-        expressionTarget[index * EYE_STRIDE] *= eyeBlink;
+      if (motionEnabled && visualStatus === 'idle' && clipState.clipId === null) {
+        // 打量时两眼稍有先后和大小差异，与侧倾使用同一个注视方向。
+        expressionTarget[0] *= 1 + px * 0.14;
+        expressionTarget[EYE_STRIDE] *= 1 - px * 0.14;
       }
+      expressionAnimating = false;
       for (let index = 0; index < EXPRESSION_LENGTH; index += 1) {
         const target = expressionTarget[index];
         if (motionEnabled) {
-          stepSpring(expressionSprings[index], target, springConfigFor(index), deltaSeconds);
+          const atRest = stepSpring(expressionSprings[index], target, springConfigFor(index), deltaSeconds);
+          if (!atRest) expressionAnimating = true;
         } else {
           // 减弱动态：不做过渡，但表情本身要立刻呈现，状态反馈不能丢
           resetSpring(expressionSprings[index], target);
         }
         expressionCurrent[index] = expressionSprings[index].value;
       }
+      samplePerformancePose(visualStatus, clipState.clipId, clipState.elapsed, t, performancePose);
+      for (const key of performanceKeys) {
+        if (motionEnabled) {
+          stepSpring(performanceSprings[key], performancePose[key], PERFORMANCE_SPRING, deltaSeconds);
+        } else {
+          resetSpring(performanceSprings[key], key === 'squashY' ? 1 : 0);
+        }
+      }
       for (let index = 0; index < eyes.length; index += 1) {
         const eye = eyes[index];
         readEyeExpression(expressionCurrent, index, scratchEye);
+        const eyeBlink = blinkEye < 0 || blinkEye === index ? blink : 1;
+        scratchEye.open *= eyeBlink * (motionEnabled ? performancePose.eyeOpen : 1);
         applyEyeShape(eyeUniformsList[index], scratchEye);
         eye.rotation.z = scratchEye.rotationZ;
         eye.position.y = EYE_BASE_Y + scratchEye.offsetY;
@@ -921,9 +938,11 @@ export default function Mascot({
       readBodyPose(expressionCurrent, scratchBody);
 
       // 写入身体姿态：表情自带的侧倾与起伏，叠在待机歪头、呼吸和状态反应之上
-      head.rotation.z = headRoll + scratchBody.tilt;
+      head.rotation.z = motionEnabled ? headSprings.roll.value + scratchBody.tilt + performanceSprings.tilt.value : 0;
+      head.rotation.x = headSprings.pitch.value + performanceSprings.pitch.value;
+      head.position.x = performanceSprings.x.value;
       head.position.y = motionEnabled
-        ? Math.sin(t * 1.1) * 0.04 + (reactionPose?.lift ?? 0) + scratchBody.lift
+        ? performanceSprings.lift.value + (reactionPose?.lift ?? 0) + scratchBody.lift
         : 0;
 
       // 状态色只进入低强度自发光和侧缘光，悬浮反馈仍保持更高优先级。
@@ -958,7 +977,7 @@ export default function Mascot({
         0.1,
       );
       hoverScale = motionEnabled
-        ? MathUtils.lerp(hoverScale, isHovering ? 1.015 : 1, 0.1)
+        ? exponentialApproach(hoverScale, isHovering ? 1.015 : 1, FOLLOW_RATE, deltaSeconds)
         : 1;
 
       /* ── LOADING 形态：彩带环绕，球体与绒毛保持原样 ── */
@@ -983,24 +1002,28 @@ export default function Mascot({
         loadTween?.kill();
         loadTween = gsap.to(loadObj, {
           val: loadTarget,
-          duration: 1.1,
-          ease: 'power2.inOut',
+          duration: loadTarget ? 0.45 : 0.6,
+          ease: loadTarget ? 'power2.out' : 'power2.inOut',
         });
       }
       const ribbonIntensity = loadObj.val;
 
       // 头部：跟随偏航 + 摇头。生成时球体不再自转，让彩带成为唯一的运动焦点
-      head.rotation.y = headYaw + (reactionPose?.yaw ?? 0);
-      // 呼吸的挤压拉伸叠上蹦跳的挤压，横向按等体积换算，免得看起来像整体缩放。
-      const breathSquash = motionEnabled ? 1 + Math.sin(t * 1.1) * BREATH_SQUASH : 1;
+      head.rotation.y = headSprings.yaw.value + performanceSprings.yaw.value + (reactionPose?.yaw ?? 0);
       // 三层挤压叠乘：呼吸、状态反应（蹦跳落地）、表情自带的胖瘦
-      const squashY = breathSquash * (reactionPose?.squashY ?? 1) * scratchBody.squashY;
+      const squashY = motionEnabled
+        ? performanceSprings.squashY.value * (reactionPose?.squashY ?? 1) * scratchBody.squashY
+        : 1;
       const squashWidth = getSquashWidth(squashY);
       head.scale.set(hoverScale * squashWidth, hoverScale * squashY, hoverScale * squashWidth);
+      const shadowLift = Math.max(head.position.y, 0);
+      groundShadow.scale.setScalar(1 - Math.min(shadowLift * 0.5, 0.18));
+      shadowMat.opacity = activePalette.shadowOpacity * (1 - Math.min(shadowLift * 1.4, 0.45));
 
       // 彩带绕到球体背面的部分由深度测试自动遮挡，不需要像 2D 那样手动分前后段
       if (orbitRibbons) {
         const show = ribbonIntensity > 0.002;
+        ribbonOccluder.visible = show;
         orbitRibbons.group.visible = show;
         orbitRibbons.setIntensity(ribbonIntensity);
         if (show && motionEnabled) orbitRibbons.update(deltaSeconds, camera.position);
@@ -1031,6 +1054,7 @@ export default function Mascot({
       sphereMat.dispose();
       furGeometry.dispose();
       furMat.dispose();
+      ribbonOcclusionMat.dispose();
       furNoise.dispose();
       shadowGeo.dispose();
       shadowMat.dispose();

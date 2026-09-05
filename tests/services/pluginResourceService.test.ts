@@ -40,8 +40,12 @@ vi.mock('../../src/services/fs/projectFiles', () => ({
 import {
   clearPluginResources,
   mintPluginInvocationResources,
+  readPluginDerivedResourceForOutput,
   readPluginResourceRange,
   readPluginResourceText,
+  registerPluginDerivedResource,
+  replacePluginDerivedResources,
+  resolvePluginResourceHostUrl,
 } from '../../src/services/plugins/pluginResourceService';
 
 const SOURCE_DIGEST = 'a'.repeat(64);
@@ -92,6 +96,20 @@ function readContext(state: PluginResourceStateSnapshot, invocationId = 'invoke-
 }
 
 describe('pluginResourceService', () => {
+  it('replaces full derived batches without accumulating quota and restores old leases on failure', () => {
+    const { state } = createState();
+    const context = { ...readContext(state), permissions: ['files.connected.read', 'files.output.create'] as const };
+    const resources = { self: [], incoming: [], inputs: {}, package: [], derived: [] };
+    const entries = Array.from({ length: 25 }, (_, i) => ({ displayName: `frame-${i}.jpg`, mediaType: 'image/jpeg', bytes: new Uint8Array([1, 2, 3]) }));
+    const first = replacePluginDerivedResources(context, resources, entries);
+    const second = replacePluginDerivedResources(context, resources, entries);
+    expect(resources.derived).toHaveLength(25);
+    expect(() => readPluginDerivedResourceForOutput(context, first[0].resourceId)).toThrow();
+    expect(readPluginDerivedResourceForOutput(context, second[0].resourceId).bytes).toEqual(new Uint8Array([1, 2, 3]));
+    expect(() => replacePluginDerivedResources(context, resources, [entries[0], { ...entries[1], mediaType: 'text/plain' }])).toThrow();
+    expect(resources.derived).toEqual(second);
+    expect(() => readPluginDerivedResourceForOutput(context, second[0].resourceId)).not.toThrow();
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -246,6 +264,61 @@ describe('pluginResourceService', () => {
       offset: 0,
       length: 3,
     });
+  });
+
+  it('keeps derived images in the current invocation and never exposes bytes in resource metadata', async () => {
+    const { state } = createState();
+    const resources = await mintPluginInvocationResources({
+      pluginId: 'plugin-a',
+      sourceDigest: SOURCE_DIGEST,
+      revisionDigest: REVISION_DIGEST,
+      invocationId: 'invoke-1',
+      projectId: 'project-1',
+      nodeId: 'target',
+      baseRevision: 7,
+      state,
+    });
+    const context = {
+      ...readContext(state),
+      permissions: ['files.connected.read', 'files.output.create'] as const,
+    };
+    const ref = registerPluginDerivedResource(context, resources, {
+      displayName: 'frame-1.jpg',
+      mediaType: 'image/jpeg',
+      bytes: new Uint8Array([1, 2, 3, 4]),
+    });
+
+    expect(resources.derived).toEqual([ref]);
+    expect(JSON.stringify(resources)).not.toContain('1,2,3,4');
+    await expect(readPluginResourceRange(context, ref.resourceId, 1, 2))
+      .resolves.toMatchObject({ bytes: 2, base64: 'AgM=' });
+    await expect(resolvePluginResourceHostUrl(context, ref.resourceId))
+      .resolves.toBe('data:image/jpeg;base64,AQIDBA==');
+    expect(readPluginDerivedResourceForOutput(context, ref.resourceId).bytes)
+      .toEqual(new Uint8Array([1, 2, 3, 4]));
+
+    clearPluginResources('plugin-a');
+    expect(() => readPluginDerivedResourceForOutput(context, ref.resourceId))
+      .toThrow('已失效');
+  });
+
+  it('rejects derived resources without both connected-read and output-create permissions', async () => {
+    const { state } = createState();
+    const resources = await mintPluginInvocationResources({
+      pluginId: 'plugin-a',
+      sourceDigest: SOURCE_DIGEST,
+      revisionDigest: REVISION_DIGEST,
+      invocationId: 'invoke-1',
+      projectId: 'project-1',
+      nodeId: 'target',
+      baseRevision: 7,
+      state,
+    });
+    expect(() => registerPluginDerivedResource(readContext(state), resources, {
+      displayName: 'frame.jpg',
+      mediaType: 'image/jpeg',
+      bytes: new Uint8Array([1]),
+    })).toThrow('files.connected.read 与 files.output.create');
   });
 
   it('does not buffer a large project file when the asset protocol ignores Range', async () => {

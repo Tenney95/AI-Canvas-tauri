@@ -8,10 +8,12 @@ import { Icon } from '@iconify/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type {
+  ChatApiProtocol,
   GeneralModelCategory,
   ImageReferenceRequestMode,
   ProviderModelSelection,
 } from '../../types';
+import { resolveChatApiProtocol } from '../../services/ai/chatApiProtocol';
 import type { VideoModelCapability } from '../../types/aiTypes';
 import {
   capCatalogModels,
@@ -69,6 +71,9 @@ export default function ProviderConnectionDialog({
   const initialLocalModels = initialDefinition ? (fallbackModels[initialDefinition.id] || []) : [];
   const [definitionId, setDefinitionId] = useState(initialDefinitionId);
   const [connectionName, setConnectionName] = useState(initialConfig?.name || initialDefinition?.name || '');
+  const [chatApiProtocol, setChatApiProtocol] = useState<ChatApiProtocol>(
+    () => resolveChatApiProtocol(initialConfig?.chatApiProtocol),
+  );
   const [apiKey, setApiKey] = useState(initialConfig?.apiKey || '');
   const [baseUrl, setBaseUrl] = useState(initialConfig?.baseUrl || initialDefinition?.defaultBaseUrl || '');
   const [workflowApiKey, setWorkflowApiKey] = useState(runninghubWorkflowApiKey);
@@ -144,19 +149,21 @@ export default function ProviderConnectionDialog({
   );
 
   /**
-   * 新建自定义连接时，若接口地址和已有连接重合，多半是忘了自己加过。
-   * Agent 那条路会按 Base URL 并进已有连接，手动添加不便直接改写用户填的模型清单，
+   * 新建自定义连接时，若接口地址和对话协议都与已有连接重合，多半是忘了自己加过。
+   * Agent 那条路会按 Base URL + 协议并进已有连接，手动添加不便直接改写用户填的模型清单，
    * 所以只提示，由用户决定是新建还是回去编辑。
    */
   const duplicateConnectionName = useMemo(() => {
     if (editing || definition?.id !== 'custom-openai') return '';
-    const target = normalizeBaseUrl(baseUrl);
+    const target = normalizeBaseUrl(baseUrl, chatApiProtocol);
     if (!target) return '';
     const match = Object.values(providerConfigs).find((item) => (
-      item.catalogId === 'custom-openai' && normalizeBaseUrl(item.baseUrl) === target
+      item.catalogId === 'custom-openai'
+      && resolveChatApiProtocol(item.chatApiProtocol) === chatApiProtocol
+      && normalizeBaseUrl(item.baseUrl, chatApiProtocol) === target
     ));
     return match?.name?.trim() || '';
-  }, [baseUrl, definition, editing, providerConfigs]);
+  }, [baseUrl, chatApiProtocol, definition, editing, providerConfigs]);
 
   const missingCredentials = useMemo(() => {
     if (!definition) return true;
@@ -173,6 +180,7 @@ export default function ProviderConnectionDialog({
       : undefined;
     setDefinitionId(nextDefinition.id);
     setConnectionName(savedConfig?.name || nextDefinition.name);
+    setChatApiProtocol(resolveChatApiProtocol(savedConfig?.chatApiProtocol));
     setApiKey(savedConfig?.apiKey || '');
     setBaseUrl(savedConfig?.baseUrl || nextDefinition.defaultBaseUrl || '');
     setWorkflowApiKey('');
@@ -200,7 +208,7 @@ export default function ProviderConnectionDialog({
    * 输入框为空说明走的是厂商默认地址，没什么可更正的，也不该把默认值钉进配置。
    */
   const adoptResolvedBaseUrl = (resolved: string | undefined): string | undefined => {
-    const current = normalizeBaseUrl(baseUrl);
+    const current = normalizeBaseUrl(baseUrl, chatApiProtocol);
     if (!resolved || !current || resolved === current) return undefined;
     setBaseUrl(resolved);
     return resolved;
@@ -225,6 +233,7 @@ export default function ProviderConnectionDialog({
           apiKey: apiKey.trim(),
           baseUrl: baseUrl.trim() || undefined,
           catalogId: definition.id,
+          chatApiProtocol,
         },
         fallbackModels: fallbackModels[definition.id] || [],
         signal: controller.signal,
@@ -252,7 +261,11 @@ export default function ProviderConnectionDialog({
     const store = useAppStore.getState();
     if (store.chatPanelDetached) await emitCloseChatWindow();
     store.openChatWithDraft(
-      buildRelayAssistantPrompt(connectionName.trim(), normalizeBaseUrl(baseUrl)),
+      buildRelayAssistantPrompt(
+        connectionName.trim(),
+        normalizeBaseUrl(baseUrl, chatApiProtocol),
+        chatApiProtocol,
+      ),
     );
   };
 
@@ -264,6 +277,7 @@ export default function ProviderConnectionDialog({
       definition.id,
       apiKey.trim(),
       baseUrl.trim() || undefined,
+      chatApiProtocol,
     );
     if (result.success) {
       const corrected = adoptResolvedBaseUrl(result.baseUrl);
@@ -529,8 +543,9 @@ export default function ProviderConnectionDialog({
       {
         name: connectionName.trim() || definition.name,
         apiKey: definition.authType === 'oauth' ? '' : apiKey.trim(),
-        baseUrl: normalizeBaseUrl(baseUrl) || undefined,
+        baseUrl: normalizeBaseUrl(baseUrl, chatApiProtocol) || undefined,
         catalogId: definition.id,
+        ...(definition.id === 'custom-openai' ? { chatApiProtocol } : {}),
         ...modelConfig,
       },
       definition.id === 'runninghub-model'
@@ -596,6 +611,8 @@ export default function ProviderConnectionDialog({
               isWebSearchProvider={isWebSearchProvider}
               connectionName={connectionName}
               setConnectionName={setConnectionName}
+              chatApiProtocol={chatApiProtocol}
+              setChatApiProtocol={setChatApiProtocol}
               apiKey={apiKey}
               setApiKey={setApiKey}
               baseUrl={baseUrl}

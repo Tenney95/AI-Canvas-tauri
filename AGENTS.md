@@ -103,20 +103,13 @@ AI-Canvas-tauri/
 │       ├── main.rs            # Rust 入口
 │       ├── lib.rs             # Tauri Builder、窗口与命令注册
 │       ├── path_policy.rs     # 原生文件命令的调用方与路径校验
-│       ├── plugin_registry.rs # 插件活动版本、源码摘要与私有快照信任注册表
-│       ├── plugin_runtime.rs  # QuickJS 与可信 Python 插件执行、超时和取消
-│       ├── blender_runtime.rs # Blender 候选、项目 grant 与 Job commands
-│       ├── blender_runtime/   # 固定资源、Job、runner、结果清单与 artifact 校验
 │       ├── secret_store.rs    # Rust 独占的本地凭据存储
-│       ├── mcp_bridge.rs      # MCP stdio loopback 与 Streamable HTTP 双传输控制桥
-│       ├── project_archive.rs # 项目归档打包与解包
-│       ├── assistant_web.rs   # 固定搜索端点与受限网页读取
-│       ├── provider_docs.rs   # 受限厂商文档读取
-│       ├── director_desk_runtime.rs # 导演台下载、校验、安装与本地协议
-│       ├── file_transfer.rs   # 可取消文件传输
-│       ├── clipboard.rs       # 系统剪贴板文件写入
-│       ├── dreamina.rs / comfyui/
-│       └── onnx/              # ONNX 主进程与 Worker 隔离
+│       ├── agent/             # AgentPackage、受限网页与厂商文档读取
+│       ├── mcp/               # stdio loopback 与 Streamable HTTP 双传输控制桥
+│       ├── plugins/           # 插件注册表、QuickJS/可信 Python runtime 与私有 UI 协议
+│       ├── files/             # 剪贴板、可取消传输与项目归档
+│       ├── media/             # Dreamina、字体、模型镜像、Sprite、ComfyUI 与 ONNX
+│       └── director/          # 轻量导演台与 Blender 固定 Job 运行时
 ├── tests/                     # Vitest 测试
 ├── doc/                       # 架构、开发、ADR、发版与功能方案
 ├── scripts/                   # Hook、版本同步、MCP 适配器等工程脚本
@@ -237,6 +230,7 @@ AI-Canvas-tauri/
 本项目使用 Tauri 2（Rust 后端），不是 Electron：
 
 - Rust 后端代码在 `src-tauri/src/`：`main.rs` 是入口，`lib.rs` 负责 Builder、窗口和命令注册
+- Rust 源文件按 `agent/`、`mcp/`、`plugins/`、`files/`、`media/`、`director/` 领域归类；`lib.rs` 用显式 `#[path]` 保持既有 crate 根模块名，禁止在普通功能修改中顺手改成另一套逻辑命名空间
 - 插件包括 fs、dialog、global-shortcut、shell、drag、updater 和 process；以 `lib.rs` 为准
 - 前端文件能力统一经过 `src/services/fileService.ts` 或其 `services/fs/` 子域
 - `tauri.conf.json` 管理窗口大小、安全策略等配置
@@ -246,21 +240,23 @@ AI-Canvas-tauri/
 - 新增接收路径参数的自定义 command 必须经过 `path_policy.rs` 的调用方窗口校验和真实路径授权校验；自定义命令不走 fs 插件 scope，漏掉这一步等于任意文件读写
 - API Key 与 MCP 固定令牌只经 `secret_store.rs` 读写；`{appData}/secrets/` 在 fs scope、asset scope 和 `path_policy` 三条路径上都必须保持拒绝
 - `agent-private`、`plugin-private` 与 Blender 原生私有目录同样不得通过 fs scope、asset scope 或通用路径 command 暴露；递归读取、归档、解包和删除还必须拒绝这些私有目录的祖先
-- 插件普通执行 IPC 只接受 `pluginId + sourceDigest + revisionDigest + toolId + invocationId + input`；`plugin_registry.rs` 是插件 ID、启用状态、活动 revision、工具归属和实际源码/资源的执行权威，运行前必须重新读取私有快照并计算摘要；禁止重新接收 Renderer 提交的 `runtime` 或 `source`
-- 插件 UI 只允许在主窗口 `ModalOverlay` 内的 `<iframe sandbox="allow-scripts">` 运行；界面产物通过私有协议按活动 revision 摘要读取，CSP 禁止网络，跨边界通信必须绑定 iframe Window、随机 sessionId、双摘要、项目、节点和 canvas revision
+- 插件普通执行 IPC 只接受 `pluginId + sourceDigest + revisionDigest + toolId + invocationId + input`；`plugins/registry.rs` 是插件 ID、启用状态、活动 revision、工具归属和实际源码/资源的执行权威，运行前必须重新读取私有快照并计算摘要；禁止重新接收 Renderer 提交的 `runtime` 或 `source`
+- 插件 UI 仅由宿主管理：内嵌展示仍使用主窗口 `ModalOverlay` 内的 `<iframe sandbox="allow-scripts">`；已确认的独立展示方向为专用 Tauri WebView 直接承载 UI，无须 iframe，但必须使用独立来源/存储和最小 capability，不加载主应用入口、Store 或主应用 IndexedDB。原生窗口/页面/会话隔离未完成并通过验证前，不得开放该入口
+- 两种展示都只能按活动 revision 摘要读取私有 UI 产物，并在插件代码加载前施加严格 CSP。跨边界通信绑定真实 iframe Window 或原生登记 WebView、随机 sessionId、双摘要、项目、节点和 canvas revision；独立窗口不得使用通用事件总线冒充受信调用方，模型/文件 effect 与画布写回仍由主窗口执行
+- 应用自定义命令的注册与 `src-tauri/permissions/*.toml` 的显式 allow/deny 声明必须一致，构建失败时补齐或移除准确的声明，不自动赋权。自定义权限文件已可启用 Tauri 应用 ACL，不以是否调用 `AppManifest::commands` 判断 ACL 是否生效；窗口 capability 与命令内部调用方/路径/资源校验缺一不可
 - QuickJS 插件只拥有声明的宿主能力；可信 Python 插件拥有当前用户权限。Windows Job Object、macOS/Linux 进程组、原生确认、超时和进程树回收都只是生命周期边界，不等于 OS 沙箱
 - 插件安装或更新必须走按插件 ID 串行的 `stage → IndexedDB persist → 撤销旧租约 → activate`；已有摘要记录只做原生 registration 校验，私有快照缺失或损坏时不得回退到 Renderer 源码执行
 - Python 插件暂存、重新启用和回切上一版本必须经过原生高风险确认，Renderer 布尔值不得代替原生授权；停用、卸载和摘要切换必须取消活动 Python invocation
 - Blender 只执行应用内固定资源和固定 operation，Renderer 不得提交 executable、脚本、argv、cwd、env 或输出路径；运行包清单、内嵌资源、大小和 SHA-256 必须同步
 - Blender `open-editor` 保存返回只有在恰好生成当前活动摄影机 PNG 与 `.blend`、且 Rust 完成绑定、摘要、文件头和 Result Manifest 校验后才算成功；缺少摄影机、渲染失败或 artifact 集合异常必须失败关闭
 - Blender 结果只有在项目、导演节点、instanceId、Scene revision 和 canvas derivation guard 仍匹配时才能投影回 Store；进程退出本身不是成功证据
-- 通用 `proxy_fetch` 不能注册为 Agent 工具；Agent 网页读取必须经过 `assistant_web.rs`、厂商文档读取必须经过 `provider_docs.rs` 的协议、DNS/IP、重定向和体积校验
+- 通用 `proxy_fetch` 不能注册为 Agent 工具；Agent 网页读取必须经过 `agent/web.rs`、厂商文档读取必须经过 `agent/provider_docs.rs` 的协议、DNS/IP、重定向和体积校验
 - MCP 默认关闭；只有用户手动开启或显式启用 `mcpAutoStart` 才启动。stdio 传输只绑定 `127.0.0.1` 并通过 `scripts/ai-canvas-mcp.mjs` 适配，Streamable HTTP 在用户完成高风险传输确认后绑定 `0.0.0.0` 的 `/mcp`；两者都支持固定端口或系统随机端口
 - MCP 令牌必须是密码学随机的 256-bit 值，可轮换；固定令牌唯一允许持久化到 Rust `secret_store` 的 `mcp/token` 条目，凭据存储不可用时才退化为当前会话内存令牌。令牌不得进入普通配置、IndexedDB、Tauri Event 负载、消息或日志；stdio 通过子进程环境变量传递，HTTP 使用 Bearer 鉴权
 - Streamable HTTP 必须保留 Bearer、Host 与同源 Origin 校验、1 MiB 请求体上限和有界并发；它当前是明文 HTTP，持有令牌的客户端按自主模式执行，因此只能用于受信网络或隔离环境，不能把 Token 当作传输加密
 - stdio 与 Streamable HTTP 都固定映射为 C 自主模式，对安全矩阵中的八类 effect 不逐次审批；切换远程传输时的高风险确认是配置授权，不是工具审批，`user_choice` 仍必须等待用户作答
-- 长时间文件传输使用 `file_transfer.rs`，必须支持取消信号和进度
-- ONNX 推理使用 `onnx/worker.rs` 子进程隔离；禁止把 DirectML Session 移回主进程
+- 长时间文件传输使用 `files/transfer.rs`，必须支持取消信号和进度
+- ONNX 推理使用 `media/onnx/worker.rs` 子进程隔离；禁止把 DirectML Session 移回主进程
 - 修改 Rust 后运行与范围匹配的 `cargo test` 和 `cargo check`
 
 ### IndexedDB 与持久化

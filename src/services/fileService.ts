@@ -3,12 +3,17 @@
  * 节点输出另存为、系统文件管理器定位。基础设施见 ./fs/core，删除域见 ./fs/trash，
  * 全局资产库见 ./fs/assetLibrary（均通过本模块统一对外导出）。
  */
-import { writeFile, readFile as tauriReadFile, stat, rename } from '@tauri-apps/plugin-fs';
+import { exists, writeFile, readFile as tauriReadFile, stat, rename } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { identifyAsset } from './fs/assetIndex';
 import { walkDirectoryFiles } from './fs/assetLibrary';
+import {
+  decodeDataUrlBytesAsync,
+  MEDIA_DATA_URL_BYTE_LIMITS,
+  sha256BytesHex,
+} from './mediaDataUrl';
 import {
   isTauriEnv,
   getMimeType,
@@ -19,6 +24,7 @@ import {
   getConvertFileSrc,
   ensureProjectDataDir,
   getProjectDataDir,
+  joinPath,
   resolveUniqueDestPath,
   buildNodeFileName,
   notifyProjectDiskChanged,
@@ -35,6 +41,8 @@ export interface FileTransferProgress {
 export interface FileTransferOptions {
   signal?: AbortSignal;
   onProgress?: (progress: FileTransferProgress) => void;
+  /** Data URL 按内容摘要复用确定路径，供持久化迁移重试使用。 */
+  deduplicateByContent?: boolean;
 }
 
 interface NativeFileTransferResult {
@@ -52,10 +60,7 @@ export type MediaDataUrlKind = 'image' | 'video' | 'audio' | 'other';
  * 正常项目文件走原生流式拷贝，不受这些上限影响。
  */
 export const MEDIA_DATA_URL_MAX_BYTES: Readonly<Record<MediaDataUrlKind, number>> = {
-  image: 32 * 1024 * 1024,
-  video: 64 * 1024 * 1024,
-  audio: 32 * 1024 * 1024,
-  other: 8 * 1024 * 1024,
+  ...MEDIA_DATA_URL_BYTE_LIMITS,
 };
 
 /** 单次模型请求内允许同时保留的 Data URL 原始字节总量。 */
@@ -617,6 +622,19 @@ export async function readFileToDataUrl(
 // Project data files — 项目媒体文件读写
 // ============================================
 
+async function resolveContentAddressedProjectPath(
+  dataDir: string,
+  fileName: string,
+  bytes: Uint8Array,
+): Promise<string> {
+  const digest = await sha256BytesHex(bytes);
+  const normalizedName = sanitizeFileName(fileName);
+  const dotIndex = normalizedName.lastIndexOf('.');
+  const stem = dotIndex > 0 ? normalizedName.slice(0, dotIndex) : normalizedName;
+  const extension = dotIndex > 0 ? normalizedName.slice(dotIndex) : '';
+  return joinPath(dataDir, `${stem}-${digest.slice(0, 20)}${extension}`);
+}
+
 /**
  * 将文件拷贝到项目数据目录，返回本地路径和 asset URL
  * 如文件已存在于目标目录则跳过拷贝
@@ -661,6 +679,7 @@ export async function saveDataUrlToProjectData(
   dataUrl: string,
   projectId: string,
   fileName: string,
+  options: Pick<FileTransferOptions, 'deduplicateByContent'> = {},
 ): Promise<{ filePath: string; assetUrl: string } | null> {
   if (!isTauriEnv()) return null;
 
@@ -668,26 +687,24 @@ export async function saveDataUrlToProjectData(
   if (!dataDir) return null;
 
   try {
-    // Parse data URL to binary
-    const match = dataUrl.match(/^data:(.+?);base64,(.+)$/i);
-    let bytes: Uint8Array;
-    if (match) {
-      const b64 = match[2];
-      const binaryStr = atob(b64);
-      bytes = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) {
-        bytes[i] = binaryStr.charCodeAt(i);
-      }
-    } else {
-      // Non-base64 data URL: fetch and convert
-      const resp = await fetch(dataUrl);
-      const buffer = await resp.arrayBuffer();
-      bytes = new Uint8Array(buffer);
-    }
+    const kind = inferMediaDataUrlKind(dataUrl);
+    const expectedBytes = await assertMediaDataUrlWithinLimitAsync(dataUrl, kind, fileName);
+    const bytes = await decodeDataUrlBytesAsync(dataUrl, {
+      expectedBytes,
+      maxBytes: MEDIA_DATA_URL_MAX_BYTES[kind],
+      label: fileName,
+    });
 
-    const destPath = await resolveUniqueDestPath(dataDir, fileName);
-    await writeFile(destPath, bytes);
-    notifyProjectDiskChanged();
+    let destPath: string;
+    if (options.deduplicateByContent) {
+      destPath = await resolveContentAddressedProjectPath(dataDir, fileName, bytes);
+    } else {
+      destPath = await resolveUniqueDestPath(dataDir, fileName);
+    }
+    if (!options.deduplicateByContent || !await exists(destPath).catch(() => false)) {
+      await writeFile(destPath, bytes);
+      notifyProjectDiskChanged();
+    }
 
     const convertFileSrc = await getConvertFileSrc();
     const assetUrl = convertFileSrc ? convertFileSrc(destPath) : '';
@@ -863,17 +880,37 @@ export async function downloadUrlAndSave(
       const fileName = baseName && baseName.trim()
         ? buildNodeFileName(baseName, guessExtension(url, mime, fallbackPrefix), fallbackPrefix)
         : `${sanitizeFileName(fallbackPrefix)}-${Date.now()}${guessExtension('', mime, fallbackPrefix)}`;
-      return saveDataUrlToProjectData(url, projectId, fileName);
+      return saveDataUrlToProjectData(url, projectId, fileName, options);
     }
 
     if (/^blob:/i.test(url)) {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`读取临时媒体失败：HTTP ${response.status}`);
       const mime = response.headers.get('content-type') || undefined;
+      const kind = inferMediaDataUrlKind(mime ?? fallbackPrefix);
       const fileName = baseName && baseName.trim()
         ? buildNodeFileName(baseName, guessExtension(url, mime, fallbackPrefix), fallbackPrefix)
         : `${sanitizeFileName(fallbackPrefix)}-${Date.now()}${guessExtension('', mime, fallbackPrefix)}`;
+      const contentLength = Number(response.headers.get('content-length'));
+      if (Number.isFinite(contentLength) && contentLength >= 0) {
+        assertMediaDataUrlSize(contentLength, kind, fileName);
+      }
       const bytes = new Uint8Array(await response.arrayBuffer());
+      assertMediaDataUrlSize(bytes.byteLength, kind, fileName);
+      if (options?.deduplicateByContent) {
+        const dataDir = await ensureProjectDataDir(projectId);
+        if (!dataDir) return null;
+        const destPath = await resolveContentAddressedProjectPath(dataDir, fileName, bytes);
+        if (!await exists(destPath).catch(() => false)) {
+          await writeFile(destPath, bytes);
+          notifyProjectDiskChanged();
+        }
+        const convertFileSrc = await getConvertFileSrc();
+        return {
+          filePath: destPath,
+          assetUrl: convertFileSrc ? convertFileSrc(destPath) : '',
+        };
+      }
       return saveBinaryToProjectData(bytes, projectId, fileName);
     }
 

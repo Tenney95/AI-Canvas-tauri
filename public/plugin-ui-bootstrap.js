@@ -3,7 +3,12 @@
 
   const CHANNEL = 'ai-canvas-plugin-ui-v1';
   const REQUEST_TIMEOUT_MS = 30_000;
-  const params = new URLSearchParams(window.location.search);
+  const LONG_REQUEST_TIMEOUT_MS = 180_000;
+  const params = new URLSearchParams(
+    window.location.protocol === 'blob:'
+      ? window.location.hash.slice(1)
+      : window.location.search,
+  );
   const sessionId = params.get('session');
   const exportName = params.get('export');
   const bundleUrl = params.get('bundle');
@@ -35,10 +40,13 @@
     if (!sessionId) return Promise.reject(new Error('缺少插件界面会话'));
     const requestId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
+      const timeoutMs = kind === 'effect' || kind === 'submit'
+        ? LONG_REQUEST_TIMEOUT_MS
+        : REQUEST_TIMEOUT_MS;
       const timeoutId = window.setTimeout(() => {
         if (!pending.delete(requestId)) return;
         reject(new Error('宿主请求超时'));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       pending.set(requestId, { resolve, reject, timeoutId });
       window.parent.postMessage({
         channel: CHANNEL,
@@ -140,11 +148,17 @@
     if (!root || !sessionId || !exportName || !bundleUrl) {
       throw new Error('插件界面参数缺失');
     }
+    let parentDocumentAccessible = true;
+    try {
+      void window.parent.document;
+    } catch {
+      parentDocumentAccessible = false;
+    }
     if (
       window.parent === window
-      || '__TAURI__' in window
-      || '__TAURI_INTERNALS__' in window
-      || 'isTauri' in window
+      || window.location.protocol !== 'blob:'
+      || window.origin !== 'null'
+      || parentDocumentAccessible
     ) {
       throw new Error('插件界面隔离边界无效');
     }

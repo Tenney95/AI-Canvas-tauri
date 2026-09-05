@@ -10,11 +10,18 @@ import {
   resolveGeneralModel,
   resolveGeneralModelConnection,
 } from './helpers';
-import { parseResponseError, buildAuthHeaders } from './httpUtils';
+import { parseResponseError } from './httpUtils';
 import { corsSafeFetch } from './httpTransport';
 import { resolvePromptToChatContent } from './promptResolver';
 import { resolveChatContentImageDataUrls } from './imageUtils';
 import { executeModelProtocol, resolveModelExecutionProfile } from './modelProtocol';
+import {
+  buildChatApiRequest,
+  parseChatApiResponse,
+  resolveChatApiProtocol,
+  type ChatApiMessage,
+} from './chatApiProtocol';
+import type { ChatApiProtocol } from '../../types';
 
 // aiService 内部仍保留 runninghubwf 的默认 URL
 (DEFAULT_BASE_URLS as Record<string, string>).runninghubwf = 'https://api.runninghub.cn';
@@ -28,6 +35,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   let apiKey: string;
   let modelName = '';
   let generalModel: ReturnType<typeof resolveGeneralModel> = undefined;
+  let chatApiProtocol: ChatApiProtocol;
 
   // ── 通用模型 ──
   if (provider === 'general') {
@@ -40,6 +48,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
     baseUrl = connection.baseUrl;
     modelName = gm.modelId;
     generalModel = gm;
+    chatApiProtocol = resolveChatApiProtocol(connection.provider.chatApiProtocol);
   } else if (provider === 'localllm') {
     // 已合并到通用模型，此处保留兼容旧数据
     throw new Error('本地大模型已迁移到「通用模型」，请重新选择模型\n请在「设置 → API Key」中添加通用模型');
@@ -50,6 +59,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
       throw new Error(`未配置 ${provider} 的 API Key\n请在「设置 → API Key」中配置`);
     }
     baseUrl = providerConfig?.baseUrl || DEFAULT_BASE_URLS[provider] || '';
+    chatApiProtocol = resolveChatApiProtocol(providerConfig?.chatApiProtocol);
   }
 
   if (!baseUrl) {
@@ -77,7 +87,7 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
   // 文本/VLM 请求使用 OpenAI 兼容的 Base64 data URL，不经第三方图床泄露视觉素材。
   const resolvedContent = await resolveChatContentImageDataUrls(contentWithImages);
 
-  const messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [];
+  const messages: ChatApiMessage[] = [];
   messages.push({ role: 'user', content: resolvedContent });
 
   if (generalModel?.executionProfile) {
@@ -98,31 +108,30 @@ export async function generateText(params: AIGenerateParams): Promise<string> {
     return result.text;
   }
 
-  // 未配置模型级协议时保持原 OpenAI Chat Completions 兼容方式。
-  const apiUrl = baseUrl.replace(/\/+$/, '') + '/chat/completions';
-
-  const headers = buildAuthHeaders(apiKey);
-
-  // 不设超时（仅 ComfyUI 才设超时）
-  const response = await corsSafeFetch(apiUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model: modelName,
-      messages,
-      stream: false,
-    }),
+  // 未配置模型级协议时按连接协议执行；旧连接缺省仍是 OpenAI Chat Completions。
+  const request = buildChatApiRequest({
+    protocol: chatApiProtocol,
+    apiKey,
+    baseUrl,
+    model: modelName,
+    messages,
+    stream: false,
   });
+  // 不设超时（仅 ComfyUI 才设超时）
+  const response = await corsSafeFetch(request.url, request.init);
 
   if (!response.ok) {
     await parseResponseError(response, `API 请求失败 (${response.status})`);
   }
 
   const json = await response.json();
-  // 通用模型使用灵活的响应解析
-  const replyText = provider === 'general'
-    ? parseGeneralTextResponse(json)
-    : (json.choices?.[0]?.message?.content);
+  const parsed = parseChatApiResponse(json, chatApiProtocol);
+  // OpenAI 兼容通用模型保留既有宽松响应提取，原生协议只接受各自规范结构。
+  const replyText = parsed.text || (
+    provider === 'general' && chatApiProtocol === 'openai-compatible'
+      ? parseGeneralTextResponse(json)
+      : ''
+  );
   if (!replyText) {
     throw new Error('模型返回结果为空');
   }

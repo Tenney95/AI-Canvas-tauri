@@ -12,6 +12,7 @@
  */
 import type {
   ApiProviderConfig,
+  ChatApiProtocol,
   GeneralModelCategory,
   ImageReferenceRequestMode,
   ProviderModelSelection,
@@ -19,6 +20,7 @@ import type {
 import { GENERAL_MODEL_CATEGORY_LABELS } from '../../types';
 import { validateModelExecutionProtocol } from './modelProtocol';
 import { normalizeBaseUrl } from './providerBaseUrl';
+import { isChatApiProtocol, resolveChatApiProtocol } from './chatApiProtocol';
 
 const SHARE_KIND = 'ai-canvas/provider-connection';
 const SHARE_VERSION = 1;
@@ -47,6 +49,7 @@ export function serializeConnection(config: ApiProviderConfig): string {
       name: config.name,
       catalogId: config.catalogId,
       baseUrl: config.baseUrl,
+      chatApiProtocol: resolveChatApiProtocol(config.chatApiProtocol),
       selectedModels: config.selectedModels,
       catalogModels: config.catalogModels,
       visibleModelCategories: config.visibleModelCategories,
@@ -128,6 +131,9 @@ export function parseConnectionShare(text: string): ParsedConnectionShare | null
   if (!source) return null;
 
   const catalogId = asString(source.catalogId) || 'custom-openai';
+  const chatApiProtocol: ChatApiProtocol = isChatApiProtocol(source.chatApiProtocol)
+    ? source.chatApiProtocol
+    : 'openai-compatible';
   const visible = Array.isArray(source.visibleModelCategories)
     ? CATEGORIES.filter((item) => (source.visibleModelCategories as unknown[]).includes(item))
     : undefined;
@@ -138,7 +144,8 @@ export function parseConnectionShare(text: string): ParsedConnectionShare | null
       name: asString(source.name) || '导入的连接',
       // 凭据永远不随配置流转，由用户重新填写
       apiKey: '',
-      baseUrl: normalizeBaseUrl(asString(source.baseUrl)) || undefined,
+      baseUrl: normalizeBaseUrl(asString(source.baseUrl), chatApiProtocol) || undefined,
+      chatApiProtocol,
       catalogId,
       selectedModels: parseModels(source.selectedModels),
       catalogModels: parseModels(source.catalogModels),

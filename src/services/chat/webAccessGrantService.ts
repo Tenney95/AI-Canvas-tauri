@@ -2,6 +2,7 @@
  * 管理 Agent 任务级网页访问授权与引用编号，仅允许读取搜索结果或用户目标中明确出现的公开 URL。
  */
 import type { WebSource } from '../../types/chat';
+import { clearWebReadSessionsForTask } from './webReadSessionService';
 
 const SENSITIVE_QUERY_KEYS = new Set([
   'apikey',
@@ -142,6 +143,7 @@ export function isWebUrlAllowed(taskId: string, rawUrl: string, goal: string): b
 
 export function clearWebAccessTask(taskId: string): void {
   taskStates.delete(taskId);
+  clearWebReadSessionsForTask(taskId);
 }
 
 export function clearWebAccessGrantsForTests(): void {

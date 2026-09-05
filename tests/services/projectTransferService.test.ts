@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   open: vi.fn(),
   save: vi.fn(),
   getProjectById: vi.fn(),
-  saveProjectToDb: vi.fn(),
+  saveProject: vi.fn(),
   getProjectConversations: vi.fn(),
   getConversationMessages: vi.fn(),
   getProjectMemories: vi.fn(),
@@ -29,7 +29,6 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open, save: mocks.save
 vi.mock('@tauri-apps/plugin-fs', () => ({ remove: mocks.remove }));
 vi.mock('../../src/services/indexedDbService', () => ({
   getProjectById: mocks.getProjectById,
-  saveProjectToDb: mocks.saveProjectToDb,
   getProjectConversations: mocks.getProjectConversations,
   getConversationMessages: mocks.getConversationMessages,
   getProjectMemories: mocks.getProjectMemories,
@@ -45,6 +44,7 @@ vi.mock('../../src/services/fileService', () => ({
   deleteProjectDataDir: mocks.deleteProjectDataDir,
   notifyProjectDiskChanged: mocks.notifyProjectDiskChanged,
   getBaseDir: mocks.getBaseDir,
+  saveProject: mocks.saveProject,
   joinPath: (...parts: string[]) => parts.join('/'),
   buildProjectFolderName: (name: string, id: string) => `${name}-${id.slice(0, 8)}`,
   sanitizeFileName: (name: string) => name,
@@ -107,7 +107,7 @@ describe('projectTransferService', () => {
       dataFolder,
       renamed: true,
     }));
-    mocks.saveProjectToDb.mockResolvedValue(undefined);
+    mocks.saveProject.mockImplementation(async (record: { id: string }) => record.id);
     mocks.putChatConversation.mockResolvedValue(undefined);
     mocks.putChatMessage.mockResolvedValue(undefined);
     mocks.putProjectMemory.mockResolvedValue(undefined);
@@ -177,7 +177,7 @@ describe('projectTransferService', () => {
       result!.dataFolder,
     );
 
-    const saved = mocks.saveProjectToDb.mock.calls[0][0];
+    const saved = mocks.saveProject.mock.calls[0][0];
     expect(saved.id).toBe(result!.projectId);
     expect(saved.dataFolder).toBe(result!.dataFolder);
     // 源机器的 assetId 是本机资产索引主键，导入副本不能沿用
@@ -242,7 +242,7 @@ describe('projectTransferService', () => {
     const result = await importProjectArchive();
 
     expect(result!.missingAssetCount).toBe(1);
-    const saved = mocks.saveProjectToDb.mock.calls[0][0];
+    const saved = mocks.saveProject.mock.calls[0][0];
     expect(saved.nodes[0].data.directorScene).toEqual(project.nodes[0].data.directorScene);
     expect(saved.nodes[0].data.directorResultManifest).toEqual(
       project.nodes[0].data.directorResultManifest,
@@ -272,7 +272,7 @@ describe('projectTransferService', () => {
     const result = await importProjectArchive();
 
     expect(result!.missingAssetCount).toBe(0);
-    const savedData = mocks.saveProjectToDb.mock.calls[0][0].nodes[0].data;
+    const savedData = mocks.saveProject.mock.calls[0][0].nodes[0].data;
     expect(savedData.directorCaptureUrls).toEqual(project.nodes[0].data.directorCaptureUrls);
     expect(savedData.directorCaptureFilePaths).toEqual(project.nodes[0].data.directorCaptureFilePaths);
     expect(savedData.directorScene).toBeUndefined();
@@ -314,7 +314,7 @@ describe('projectTransferService', () => {
     expect(episode.parentId).toBe(result.projectId);
     // 分集共用剧集素材目录，必须跟着副本的新目录走
     expect(episode.dataFolder).toBe(result.dataFolder);
-    const savedEpisode = mocks.saveProjectToDb.mock.calls[1][0];
+    const savedEpisode = mocks.saveProject.mock.calls[1][0];
     expect(savedEpisode.id).toBe(episode.id);
     expect(savedEpisode.nodes[0].data.assetId).toBeUndefined();
   });
@@ -338,7 +338,7 @@ describe('projectTransferService', () => {
 
     // 记录里的 dataFolder 必须跟磁盘上的实际目录一致，否则重启后找不到素材
     expect(result!.dataFolder).toContain('导入中-');
-    expect(mocks.saveProjectToDb.mock.calls[0][0].dataFolder).toBe(result!.dataFolder);
+    expect(mocks.saveProject.mock.calls[0][0].dataFolder).toBe(result!.dataFolder);
     expect(mocks.registerProjectFolder).toHaveBeenLastCalledWith(result!.projectId, result!.dataFolder);
   });
 
@@ -352,7 +352,7 @@ describe('projectTransferService', () => {
     mocks.deleteProjectDataDir.mockResolvedValue(undefined);
 
     await expect(importProjectArchive()).rejects.toThrow('请先升级应用');
-    expect(mocks.saveProjectToDb).not.toHaveBeenCalled();
+    expect(mocks.saveProject).not.toHaveBeenCalled();
     expect(mocks.deleteProjectDataDir).toHaveBeenCalledTimes(1);
   });
 

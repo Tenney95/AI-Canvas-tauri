@@ -1,23 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fileMocks = vi.hoisted(() => ({
-  saveConfig: vi.fn(async () => undefined),
+  saveConfig: vi.fn<() => Promise<string[]>>(async () => []),
   loadConfig: vi.fn(),
   setBaseDataDir: vi.fn(),
   syncAuthorizedDirectories: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../../src/services/fileService', () => fileMocks);
+const readDocsMock = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/services/providerDocsService', () => ({ readProviderDocsPage: readDocsMock }));
 
 import { useAppStore } from '../../../src/store/useAppStore';
+import { createProviderModelCatalog, clearProviderModelCatalogsForTests, clearProviderModelCatalogsForTask } from '../../../src/services/chat/providerModelCatalogService';
 import {
   clearProviderConfigDraftsForTests,
   getProviderConfigDraft,
   type ProviderConfigDraftInput,
 } from '../../../src/services/chat/providerConfigDraftService';
 import { registerProviderConfigAgentTools } from '../../../src/services/chat/tools/providerConfigTools';
+import { clearProviderDocsGrantsForTests } from '../../../src/services/chat/providerDocsGrantService';
 import { evaluateAgentToolPolicy } from '../../../src/services/chat/policyEngine';
-import { prepareApprovalInput } from '../../../src/services/chat/agentRoundExecutor';
+import { buildToolInputDisplay, prepareApprovalInput } from '../../../src/services/chat/agentRoundExecutor';
 import {
   clearAgentToolRegistryForTests,
   getAgentTool,
@@ -41,7 +45,7 @@ function previewInput(connectionId?: string) {
     models: [{
       modelId: 'image-pro',
       name: 'Image Pro',
-      category: 'image',
+      category: 'image' as const,
       submitRequest: `
 curl https://gateway.example.com/v1/images/generations \\
   -H "Authorization: Bearer <token>" \\
@@ -123,19 +127,229 @@ fetch("https://docs.newapi.pro/v1beta/models/string:generateContent/", {
 }`;
 
 beforeEach(() => {
+  readDocsMock.mockReset();
   useAppStore.setState(useAppStore.getInitialState(), true);
   useAppStore.setState({ configHydrated: true });
-  fileMocks.saveConfig.mockClear();
-  fileMocks.syncAuthorizedDirectories.mockClear();
+  fileMocks.saveConfig.mockReset().mockResolvedValue([]);
+  fileMocks.syncAuthorizedDirectories.mockReset().mockResolvedValue(undefined);
   registerProviderConfigAgentTools();
 });
 
 afterEach(() => {
+  clearProviderModelCatalogsForTests();
   clearAgentToolRegistryForTests();
   clearProviderConfigDraftsForTests();
+  clearProviderDocsGrantsForTests();
 });
 
 describe('provider config agent tools', () => {
+  it('reports partial document reads without logging page text and continues from the original entry', async () => {
+    const entryUrl = 'https://docs.example.com/start';
+    useAppStore.setState({ agentTasks: [{
+      id: context.taskId, projectId: context.projectId, conversationId: context.conversationId,
+      userMessageId: 'message-docs', mode: context.mode, goal: `读取 ${entryUrl}`,
+      status: 'running', steps: [], modelRounds: 0, toolCallCount: 0,
+      budget: { maxModelRounds: 12, maxToolCalls: 24, maxParallelReadTools: 3, maxReadRetries: 3 },
+      createdAt: 1, updatedAt: 1,
+    }] });
+    readDocsMock.mockResolvedValue({
+      title: '第二页', url: 'https://docs.example.com/chapter-2', text: 'PRIVATE_DOC_BODY', links: [], fetchedAt: 2,
+      truncated: true, nextOffset: 150, totalTextChars: 350,
+      readMethod: 'rendered', complete: false, issues: ['timeout', 'text_limit'], sources: [],
+    });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const result = await getAgentTool('provider_docs_read')!.execute(context, { url: entryUrl });
+    expect(result.status).toBe('success');
+    expect(result.summary).toContain('已部分读取');
+    expect(result.modelContent).toContain('后续读取超时');
+    expect(result.modelContent).toContain('正文已按字符预算截断');
+    expect(result.modelContent).toContain(`原始入口 url=${entryUrl}`);
+    expect(result.modelContent).toContain('PRIVATE_DOC_BODY');
+    expect(result.summary).not.toContain('PRIVATE_DOC_BODY');
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it('keeps a failed draft available for an explicit retry and never reports a failed save as success', async () => {
+    const openSettings = vi.fn();
+    useAppStore.setState({ openApiKeySettings: openSettings });
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, previewInput('custom-failure'));
+    const draftId = readDraftId(preview.modelContent);
+    fileMocks.saveConfig.mockRejectedValueOnce(new Error('private-disk-path-and-secret'));
+    const failed = await getAgentTool('provider_config_apply')!.execute(context, { draftId });
+    expect(failed.status).toBe('error');
+    expect(failed.summary).toContain('草稿已保留');
+    expect(failed.modelContent).not.toContain('private-disk-path-and-secret');
+    expect(failed.retryable).toBe(false);
+    expect(getProviderConfigDraft(context.taskId, draftId)).toBeDefined();
+    expect(openSettings).not.toHaveBeenCalled();
+    const retried = await getAgentTool('provider_config_apply')!.execute(context, { draftId });
+    expect(retried.status).toBe('success');
+    expect(fileMocks.saveConfig).toHaveBeenCalledTimes(2);
+    expect(openSettings).toHaveBeenCalledOnce();
+    expect(() => getProviderConfigDraft(context.taskId, draftId)).toThrow('不存在或已失效');
+  });
+
+  it('preserves existing optional fields and the real connection identity when merging by base URL', async () => {
+    useAppStore.getState().saveProviderConfig('custom-existing', {
+      name: 'My connection', apiKey: 'secret-kept', apiKeyRef: 'ref-kept',
+      baseUrl: 'https://gateway.example.com/v1', catalogId: 'custom-openai',
+      visibleModelCategories: [],
+      selectedModels: [{ id: 'image-pro', name: 'Manual image name', category: 'image',
+        provider: 'custom-existing', description: 'Manual description', descriptionManual: true,
+        imageReferenceRequestMode: 'edits-multipart' }],
+    });
+    const input: ProviderConfigDraftInput = previewInput();
+    delete input.models[0].name;
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, input);
+    const draftId = readDraftId(preview.modelContent);
+    expect(getAgentTool('provider_config_apply')!.summarizeInput!({ draftId })).toContain('字段变更');
+    expect(JSON.stringify(getProviderConfigDraft(context.taskId, draftId))).not.toContain('secret-kept');
+    const prepared = prepareAgentToolCall({ callId: 'display', toolId: 'provider_config_apply', input: { draftId } }, context);
+    if (!prepared.ok) throw new Error('Expected a valid apply input');
+    const display = buildToolInputDisplay(prepared.prepared, context);
+    expect(display?.entities?.[0]?.fields).toContainEqual({ label: '更新字段', value: 'executionProfile、categoryManual', source: undefined });
+    expect(JSON.stringify(display)).not.toContain('secret-kept');
+    expect(JSON.stringify(display)).not.toContain('ref-kept');
+    const result = await getAgentTool('provider_config_apply')!.execute(context, { draftId });
+    expect(result.status).toBe('success');
+    const saved = useAppStore.getState().config.providers['custom-existing'];
+    expect(saved.apiKeyRef).toBe('ref-kept');
+    expect(saved.visibleModelCategories).toEqual([]);
+    expect(saved.selectedModels?.[0]).toMatchObject({ name: 'Manual image name',
+      provider: 'custom-existing', description: 'Manual description', descriptionManual: true,
+      imageReferenceRequestMode: 'edits-multipart' });
+    expect(result.modelContent).toContain('未验证实际调用');
+  });
+
+  it('rejects manual target changes after preview without writing or discarding the draft', async () => {
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, previewInput('custom-conflict'));
+    const draftId = readDraftId(preview.modelContent);
+    useAppStore.getState().saveProviderConfig('custom-conflict', {
+      name: 'Created manually after preview', apiKey: '',
+      baseUrl: 'https://gateway.example.com/v1', catalogId: 'custom-openai', selectedModels: [],
+    });
+    const before = useAppStore.getState().config;
+    const tool = getAgentTool('provider_config_apply')!;
+    expect(tool.authorize?.(context, { draftId })?.allowed).toBe(false);
+    const result = await tool.execute(context, { draftId });
+    expect(result.status).toBe('error');
+    expect(result.summary).toContain('重新预览');
+    expect(fileMocks.saveConfig).not.toHaveBeenCalled();
+    expect(useAppStore.getState().config).toBe(before);
+    expect(getProviderConfigDraft(context.taskId, draftId)).toBeDefined();
+  });
+
+  it('rejects target model edits after preview but allows an API Key update', async () => {
+    useAppStore.getState().saveProviderConfig('custom-existing', {
+      name: 'Existing', apiKey: 'old-secret', baseUrl: 'https://gateway.example.com/v1',
+      catalogId: 'custom-openai', selectedModels: [{ id: 'image-pro', name: 'Old',
+        category: 'image', provider: 'custom-existing' }],
+    });
+    const first = await getAgentTool('provider_config_preview')!.execute(context, previewInput('custom-existing'));
+    const draftId = readDraftId(first.modelContent);
+    const existing = useAppStore.getState().config.providers['custom-existing'];
+    useAppStore.getState().saveProviderConfig('custom-existing', { ...existing,
+      selectedModels: existing.selectedModels!.map(model => ({ ...model, description: 'New manual setting' })) });
+    const rejected = await getAgentTool('provider_config_apply')!.execute(context, { draftId });
+    expect(rejected.status).toBe('error');
+    expect(fileMocks.saveConfig).not.toHaveBeenCalled();
+    const second = await getAgentTool('provider_config_preview')!.execute(context, previewInput('custom-existing'));
+    const secondId = readDraftId(second.modelContent);
+    useAppStore.getState().setProviderKey('custom-existing', 'new-secret');
+    const applied = await getAgentTool('provider_config_apply')!.execute(context, { draftId: secondId });
+    expect(applied.status).toBe('success');
+    expect(useAppStore.getState().config.providers['custom-existing'].apiKey).toBe('new-secret');
+    expect(useAppStore.getState().config.providers['custom-existing'].selectedModels?.[0]?.description)
+      .toBe('New manual setting');
+  });
+
+  it.each(['credentials', 'directories'] as const)('keeps the draft and reports partial %s failures accurately', async (failure) => {
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, previewInput('custom-partial'));
+    const draftId = readDraftId(preview.modelContent);
+    if (failure === 'credentials') fileMocks.saveConfig.mockResolvedValueOnce(['private-credential-ref']);
+    else fileMocks.syncAuthorizedDirectories.mockRejectedValueOnce(new Error('private-directory'));
+    const result = await getAgentTool('provider_config_apply')!.execute(context, { draftId });
+    expect(result.status).toBe('error');
+    expect(result.summary).toContain(failure === 'credentials'
+      ? '配置已保存，但凭据存储不可用' : '配置已保存，但目录授权同步失败');
+    expect(result.summary).toContain('草稿已保留');
+    expect(result.summary).not.toContain('private-');
+    expect(getProviderConfigDraft(context.taskId, draftId)).toBeDefined();
+  });
+
+  it('does not adopt target changes made while a failing save is pending as a retry baseline', async () => {
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, previewInput('custom-inflight'));
+    const draftId = readDraftId(preview.modelContent);
+    fileMocks.saveConfig.mockImplementationOnce(async () => {
+      useAppStore.getState().setProviderConfig('custom-inflight', { name: 'Manual change during save' });
+      throw new Error('synthetic failure');
+    });
+    const tool = getAgentTool('provider_config_apply')!;
+    expect((await tool.execute(context, { draftId })).status).toBe('error');
+    const retry = await tool.execute(context, { draftId });
+    expect(retry.status).toBe('error');
+    expect(retry.summary).toContain('重新预览');
+    expect(fileMocks.saveConfig).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().config.providers['custom-inflight'].name).toBe('Manual change during save');
+  });
+
+  it('rechecks the target after successful persistence and never rolls back concurrent user edits', async () => {
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, previewInput('custom-inflight'));
+    const draftId = readDraftId(preview.modelContent);
+    fileMocks.saveConfig.mockImplementationOnce(async () => {
+      useAppStore.getState().setProviderConfig('custom-inflight', { name: 'Changed during save' });
+      return [];
+    });
+    const result = await getAgentTool('provider_config_apply')!.execute(context, { draftId });
+    expect(result.status).toBe('error');
+    expect(result.summary).toContain('重新预览');
+    expect(useAppStore.getState().config.providers['custom-inflight'].name).toBe('Changed during save');
+    expect(getProviderConfigDraft(context.taskId, draftId)).toBeDefined();
+  });
+
+  it('allows unrelated config edits without overwriting them or declaring a target conflict', async () => {
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, previewInput('custom-inflight'));
+    const draftId = readDraftId(preview.modelContent);
+    fileMocks.saveConfig.mockImplementationOnce(async () => {
+      useAppStore.getState().updateConfig({ theme: 'light' });
+      useAppStore.getState().saveProviderConfig('custom-unrelated', { name: 'Unrelated', apiKey: '', selectedModels: [] });
+      return [];
+    });
+    const result = await getAgentTool('provider_config_apply')!.execute(context, { draftId });
+    expect(result.status).toBe('success');
+    expect(useAppStore.getState().config.theme).toBe('light');
+    expect(useAppStore.getState().config.providers['custom-unrelated'].name).toBe('Unrelated');
+  });
+
+  it('serializes duplicate apply calls for the same draft without retrying a write automatically', async () => {
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, previewInput('custom-concurrent'));
+    const draftId = readDraftId(preview.modelContent);
+    let finishSave!: (value: string[]) => void;
+    fileMocks.saveConfig.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+    const tool = getAgentTool('provider_config_apply')!;
+    const pending = tool.execute(context, { draftId });
+    const duplicate = await tool.execute(context, { draftId });
+    expect(duplicate.status).toBe('error');
+    expect(duplicate.summary).toContain('正在保存');
+    expect(fileMocks.saveConfig).toHaveBeenCalledOnce();
+    finishSave([]);
+    expect((await pending).status).toBe('success');
+  });
+
+  it('does not claim an expired draft is still retryable after a delayed save', async () => {
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, previewInput('custom-expired'));
+    const draftId = readDraftId(preview.modelContent);
+    const expiresAt = getProviderConfigDraft(context.taskId, draftId).expiresAt;
+    fileMocks.saveConfig.mockImplementationOnce(async () => {
+      vi.spyOn(Date, 'now').mockReturnValue(expiresAt + 1);
+      return [];
+    });
+    const result = await getAgentTool('provider_config_apply')!.execute(context, { draftId });
+    expect(result.status).toBe('error');
+    expect(result.summary).toContain('草稿已失效');
+    expect(result.summary).not.toContain('草稿已保留');
+  });
+
   it('rejects API Key fields at the local tool schema boundary', () => {
     const result = prepareAgentToolCall({
       callId: 'call-preview',
@@ -144,6 +358,16 @@ describe('provider config agent tools', () => {
     }, context);
 
     expect(result).toMatchObject({ ok: false, result: { status: 'error' } });
+  });
+
+  it('exposes only the three supported connection-level chat protocols', () => {
+    const schema = getAgentTool('provider_config_preview')!.inputSchema.properties?.chatApiProtocol;
+
+    expect(schema).toMatchObject({
+      type: 'string',
+      enum: ['openai-compatible', 'anthropic-compatible', 'gemini-native'],
+    });
+    expect(getAgentTool('provider_config_preview')!.description).toContain('chatApiProtocol');
   });
 
   it('exposes the canonical video capability fields through the preview tool schema', () => {
@@ -512,6 +736,46 @@ curl https://gateway.example.com/v1/images/generations \\
       .toEqual(['text-a', 'image-pro']);
   });
 
+  it('同一 Base URL 的不同聊天协议保持为独立连接并显示在审批卡', async () => {
+    useAppStore.getState().saveProviderConfig('custom-openai-relay', {
+      name: 'OpenAI 网关',
+      apiKey: 'relay-secret-value',
+      baseUrl: 'https://gateway.example.com/v1',
+      catalogId: 'custom-openai',
+      selectedModels: [],
+    });
+    const preview = await getAgentTool('provider_config_preview')!.execute(context, {
+      ...previewInput(),
+      chatApiProtocol: 'anthropic-compatible',
+    });
+    const draftId = readDraftId(preview.modelContent);
+    expect(preview.modelContent).toContain('落点：将新建连接');
+
+    const applyTool = getAgentTool('provider_config_apply')!;
+    const summary = applyTool.summarizeInput!({ draftId });
+    expect(summary).toContain('聊天协议：Anthropic 兼容');
+    const prepared = prepareAgentToolCall({
+      callId: 'display-native-protocol',
+      toolId: 'provider_config_apply',
+      input: { draftId },
+    }, context);
+    if (!prepared.ok) throw new Error('Expected a valid native protocol apply input');
+    expect(buildToolInputDisplay(prepared.prepared, context)?.fields).toContainEqual({
+      label: '聊天协议',
+      value: 'Anthropic 兼容',
+      source: undefined,
+    });
+
+    const result = await applyTool.execute(context, { draftId });
+    expect(result.status).toBe('success');
+    const providers = Object.values(useAppStore.getState().config.providers);
+    expect(providers).toHaveLength(2);
+    expect(providers.find((provider) => provider.chatApiProtocol === 'anthropic-compatible'))
+      .toMatchObject({ baseUrl: 'https://gateway.example.com/v1', apiKey: '' });
+    expect(useAppStore.getState().config.providers['custom-openai-relay'].apiKey)
+      .toBe('relay-secret-value');
+  });
+
   it('同 ID 且配置相同的模型直接跳过并给出提示', async () => {
     const first = await getAgentTool('provider_config_preview')!.execute(
       context,
@@ -613,6 +877,28 @@ curl https://gateway.example.com/v1/images/generations \\
 });
 
 describe('模型勾选卡片', () => {
+  it('uses a catalog ID through registry, approval preparation and final selection with no copied input list', async () => {
+    const options = Array.from({ length: 1000 }, (_, index) => ({ id: `m-${index}`, name: `Model ${index}`, category: 'text' as const }));
+    const catalog = createProviderModelCatalog(context, options);
+    const call = { callId: 'pick', toolId: 'provider_models_select', input: { catalogId: catalog.catalogId } };
+    const prepared = prepareAgentToolCall(call, context);
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) throw new Error('prepare failed');
+    const approval = prepareApprovalInput(prepared.prepared, '接入模型');
+    expect(approval.inputRequest).toMatchObject({ kind: 'provider_models', options, catalog });
+    expect(approval.prepared.input).toEqual(call.input);
+    const selected = prepareAgentToolCall({ ...call, input: { ...call.input, selectedIds: ['m-999'] } }, context);
+    if (!selected.ok) throw new Error('selection failed');
+    const result = await selected.prepared.definition.execute(context, selected.prepared.input);
+    expect(result.status).toBe('success');
+    expect(result.modelContent).toContain('m-999');
+    expect(result.modelContent).not.toContain('m-998');
+    const forged = await prepared.prepared.definition.execute(context, { ...call.input, selectedIds: ['not-in-catalog'] });
+    expect(forged.status).toBe('error');
+    clearProviderModelCatalogsForTask(context.taskId);
+    expect(prepareAgentToolCall(call, context).ok).toBe(false);
+    expect((await selected.prepared.definition.execute(context, selected.prepared.input)).status).toBe('error');
+  });
   const models = [
     { id: 'lec-grok-4.5', name: 'Grok 4.5', category: 'text' as const },
     { id: 'lec-seed-2-0-900', name: 'Seedance 2.0 900', category: 'video' as const },
@@ -634,7 +920,7 @@ describe('模型勾选卡片', () => {
       { definition: tool, input: { models } } as never,
       '接入中转站',
     );
-    expect(inputRequest).toEqual({ kind: 'provider_models', options: models });
+    expect(inputRequest).toEqual({ kind: 'provider_models', options: models, maxSelection: 16 });
   });
 
   it('只把用户勾中的模型交回给助手', async () => {

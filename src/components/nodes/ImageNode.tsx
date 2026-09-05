@@ -44,6 +44,7 @@ import {
 import { useImageNodeOnnxActions } from './shared/image/useImageNodeOnnxActions';
 import { useT } from '../../i18n';
 import { getImageLoadRetryDelay, isRetryableImageSource } from '../../utils/imageLoadRetry';
+import NodeGenerationProgress from './shared/NodeGenerationProgress';
 
 const MattingEditor = lazy(() => import('./shared/image/MattingEditor'));
 const CustomGridEditor = lazy(() => import('./shared/image/CustomGridEditor'));
@@ -962,6 +963,9 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                 )}
                   </>
                 )}
+                {data.status === 'loading' && (
+                  <NodeGenerationProgress nodeId={id} fallbackLabel={t('生成图像中...')} overlay />
+                )}
               </div>
             ) : isUploading ? (
               <div className="node-preview-loading">
@@ -969,10 +973,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                 <span>{t('上传中...')}</span>
               </div>
             ) : data.status === 'loading' ? (
-              <div className="node-preview-loading">
-                <div className="spinner large" />
-                <span>{t('生成图像中...')}</span>
-              </div>
+              <NodeGenerationProgress nodeId={id} fallbackLabel={t('生成图像中...')} />
             ) : (
               isSource ? (
                 <button

@@ -6,6 +6,7 @@
  * 整表可以按行推送成视频编辑器的时间轴片段。
  */
 import type { VideoEditorTransitionKind } from './videoEditor';
+import type { VideoFrameAnalysisData } from './index';
 
 /** 分镜表的全部列 */
 export type ShotlistColumnKey =
@@ -99,6 +100,8 @@ export interface ShotFrameBinding {
 /** 分镜表的一行 = 一个镜头 */
 export interface ShotRow {
   id: string;
+  /** 拉片来源与修订信息，随分镜行持久化。 */
+  frameAnalysis?: VideoFrameAnalysisData;
   /** 镜号，允许 3a / 3b 这类插入镜，所以是字符串 */
   shotNo: string;
   frame?: ShotFrameBinding | null;

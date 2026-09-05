@@ -16,6 +16,7 @@ const EXPECTED_STORES = [
   'plugins',
   'presets',
   'projectMemories',
+  'projectSummaries',
   'projectVisualDescriptions',
   'projects',
   'skills',
@@ -45,7 +46,7 @@ beforeEach(() => {
 });
 
 describe('indexedDbService schema', () => {
-  it('creates the complete v20 schema for a fresh database', async () => {
+  it('creates the complete v21 schema for a fresh database', async () => {
     const service = await import('../../src/services/indexedDbService');
     await service.saveProjectToDb({
       id: 'project-fresh',
@@ -57,7 +58,7 @@ describe('indexedDbService schema', () => {
     });
 
     const db = await openDatabase(DB_NAME);
-    expect(db.version).toBe(20);
+    expect(db.version).toBe(21);
     expect([...db.objectStoreNames]).toEqual(EXPECTED_STORES);
 
     const taskStore = db.transaction('agentTasks', 'readonly').objectStore('agentTasks');
@@ -78,6 +79,12 @@ describe('indexedDbService schema', () => {
       'projectId_timestamp_id',
       'timestamp_id',
     ]);
+    expect(await service.getAllProjects()).toEqual([{
+      id: 'project-fresh',
+      name: 'Fresh project',
+      createdAt: 1,
+      updatedAt: 1,
+    }]);
     db.close();
   });
 
@@ -98,6 +105,17 @@ describe('indexedDbService schema', () => {
         name: 'Legacy project',
         createdAt: 1,
         updatedAt: 2,
+        settings: {
+          visualStyle: {
+            styleName: '旧风格',
+            styleReference: {
+              assetId: 'style-asset',
+              relativePath: 'styles/reference.png',
+              filePath: 'G:/legacy/reference.png',
+              imageUrl: 'data:image/png;base64,AAAA',
+            },
+          },
+        },
         nodes: [{ id: 'legacy-node' }],
         edges: [],
       });
@@ -109,14 +127,35 @@ describe('indexedDbService schema', () => {
     const service = await import('../../src/services/indexedDbService');
     const projects = await service.getAllProjects();
 
-    expect(projects).toEqual([
-      expect.objectContaining({
-        id: 'legacy-project',
-        nodes: [{ id: 'legacy-node' }],
+    expect(projects).toEqual([{
+      id: 'legacy-project',
+      name: 'Legacy project',
+      createdAt: 1,
+      updatedAt: 2,
+      settings: {
+        visualStyle: {
+          styleName: '旧风格',
+          styleReference: {
+            assetId: 'style-asset',
+            relativePath: 'styles/reference.png',
+          },
+        },
+      },
+    }]);
+    expect(await service.getProjectById('legacy-project')).toEqual(expect.objectContaining({
+      id: 'legacy-project',
+      nodes: [{ id: 'legacy-node' }],
+      settings: expect.objectContaining({
+        visualStyle: expect.objectContaining({
+          styleReference: expect.objectContaining({
+            filePath: 'G:/legacy/reference.png',
+            imageUrl: 'data:image/png;base64,AAAA',
+          }),
+        }),
       }),
-    ]);
+    }));
     const upgradedDb = await openDatabase(DB_NAME);
-    expect(upgradedDb.version).toBe(20);
+    expect(upgradedDb.version).toBe(21);
     expect([...upgradedDb.objectStoreNames]).toEqual(EXPECTED_STORES);
     upgradedDb.close();
   });
@@ -172,5 +211,6 @@ describe('indexedDbService schema', () => {
 
     expect(await service.getProjectVisualDescription('project-visual', 'fingerprint'))
       .toBeUndefined();
+    expect(await service.getAllProjects()).toEqual([]);
   });
 });

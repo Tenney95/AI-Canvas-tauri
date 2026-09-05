@@ -10,6 +10,7 @@ import type {
   DirectorSceneReference,
 } from '../types';
 import type { DirectorBlenderJobStatus } from './directorBlenderRuntimeService';
+import type { DirectorSceneSource } from '../types/directorOperation';
 import type { DirectorDeskProtocolMessage } from './directorDeskWindowService';
 
 export const DEFAULT_DIRECTOR_RUNTIME_KIND: DirectorRuntimeKind = 'lightweight-web';
@@ -31,8 +32,8 @@ export interface DirectorRuntimeDescriptor {
 }
 
 export type DirectorRuntimeAvailability =
-  | { state: 'ready' }
-  | { state: 'setup-required' }
+  | { state: 'ready'; supportsSavedScene?: boolean }
+  | { state: 'setup-required'; supportsSavedScene?: boolean }
   | { state: 'unavailable'; reason: string };
 
 export interface DirectorRuntimeCapture {
@@ -41,6 +42,7 @@ export interface DirectorRuntimeCapture {
   filePath?: string;
   fileName: string;
   manifestReference?: DirectorResultManifestReference;
+  frame?: number;
 }
 
 export type DirectorRuntimeEvent =
@@ -70,6 +72,7 @@ export interface DirectorRuntimeBlenderContext {
   projectId: string;
   sceneReference: DirectorSceneReference;
   previousManifestReference?: DirectorResultManifestReference;
+  sceneSource?: DirectorSceneSource;
   signal?: AbortSignal;
   onStatus?: (status: DirectorBlenderJobStatus) => void;
 }
@@ -100,6 +103,7 @@ export interface DirectorRuntimeVideoResult {
   fileName?: string;
   filePath?: string;
   manifestReference?: DirectorResultManifestReference;
+  timeline?: { startFrame: number; endFrame: number; fps: number };
 }
 
 const LIGHTWEIGHT_WEB_DESCRIPTOR: DirectorRuntimeDescriptor = {
@@ -217,6 +221,7 @@ export async function openDirectorRuntime(
   const { runDirectorBlenderOperation } = await import('./directorBlenderRuntimeService');
   const result = await runDirectorBlenderOperation({
     operation: 'open-editor',
+    sceneSource: context.sceneSource,
     projectId: context.projectId,
     directorInstanceId: request.instanceId,
     sceneReference: context.sceneReference,
@@ -233,6 +238,7 @@ export async function openDirectorRuntime(
       mediaUrl: result.frame.mediaUrl,
       filePath: result.frame.filePath,
       fileName: result.frame.fileName,
+      frame: result.frame.artifact.frame,
       manifestReference: result.manifestReference,
     },
   };
@@ -300,12 +306,14 @@ export async function exportDirectorRuntimeFrame(
   const kind = requireSupportedRuntime(value);
   if (kind === 'blender') {
     const context = requireBlenderContext(options.blender);
-    if (!Number.isSafeInteger(options.targetFrame) || (options.targetFrame as number) <= 0) {
+    if (!(context.sceneSource === 'saved-blender' && options.targetFrame === undefined)
+      && (!Number.isSafeInteger(options.targetFrame) || (options.targetFrame as number) < 0 || (options.targetFrame as number) > 10_000_000)) {
       throw new Error('Blender 当前帧缺少有效目标帧');
     }
     const { runDirectorBlenderOperation } = await import('./directorBlenderRuntimeService');
     const result = await runDirectorBlenderOperation({
       operation: 'render-frame',
+      sceneSource: context.sceneSource,
       projectId: context.projectId,
       directorInstanceId: instanceId,
       sceneReference: context.sceneReference,
@@ -320,6 +328,7 @@ export async function exportDirectorRuntimeFrame(
       mediaUrl: result.frame.mediaUrl,
       filePath: result.frame.filePath,
       fileName: result.frame.fileName,
+      frame: result.frame.artifact.frame,
       manifestReference: result.manifestReference,
     };
   }
@@ -355,6 +364,7 @@ export async function exportDirectorRuntimeVideo(
     const { runDirectorBlenderOperation } = await import('./directorBlenderRuntimeService');
     const result = await runDirectorBlenderOperation({
       operation: 'render-video',
+      sceneSource: context.sceneSource,
       projectId: context.projectId,
       directorInstanceId: instanceId,
       sceneReference: context.sceneReference,
@@ -368,6 +378,11 @@ export async function exportDirectorRuntimeVideo(
       mediaUrl: result.video.mediaUrl,
       fileName: result.video.fileName,
       filePath: result.video.filePath,
+      timeline: {
+        startFrame: result.video.artifact.startFrame,
+        endFrame: result.video.artifact.endFrame,
+        fps: result.video.artifact.fps,
+      },
       manifestReference: result.manifestReference,
     };
   }

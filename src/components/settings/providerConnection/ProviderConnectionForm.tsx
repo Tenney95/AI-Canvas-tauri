@@ -5,6 +5,8 @@
 import { Icon } from '@iconify/react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useT } from '../../../i18n';
+import type { ChatApiProtocol } from '../../../types';
+import { CHAT_API_PROTOCOL_LABELS } from '../../../services/ai/chatApiProtocol';
 import { normalizeBaseUrl } from '../../../services/ai/providerBaseUrl';
 import type { ProviderDefinition } from '../../../services/ai/providerCatalogService';
 import AnimatedButton from '../../shared/AnimatedButton';
@@ -16,6 +18,8 @@ interface ProviderConnectionFormProps {
   isWebSearchProvider: boolean;
   connectionName: string;
   setConnectionName: Dispatch<SetStateAction<string>>;
+  chatApiProtocol: ChatApiProtocol;
+  setChatApiProtocol: Dispatch<SetStateAction<ChatApiProtocol>>;
   apiKey: string;
   setApiKey: Dispatch<SetStateAction<string>>;
   baseUrl: string;
@@ -39,6 +43,8 @@ export default function ProviderConnectionForm({
   isWebSearchProvider,
   connectionName,
   setConnectionName,
+  chatApiProtocol,
+  setChatApiProtocol,
   apiKey,
   setApiKey,
   baseUrl,
@@ -96,6 +102,28 @@ export default function ProviderConnectionForm({
         </label>
       )}
 
+      {definition.id === 'custom-openai' && (
+        <label className="provider-field">
+          <span>{t('对话协议')}</span>
+          <select
+            className="ui-select__control"
+            value={chatApiProtocol}
+            onChange={(event) => setChatApiProtocol(event.target.value as ChatApiProtocol)}
+          >
+            {Object.entries(CHAT_API_PROTOCOL_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>{t(label)}</option>
+            ))}
+          </select>
+          <small>
+            {chatApiProtocol === 'anthropic-compatible'
+              ? t('使用 Messages API、x-api-key 和 Anthropic 流式事件')
+              : chatApiProtocol === 'gemini-native'
+                ? t('使用原生 generateContent、x-goog-api-key 和 Gemini 内容结构')
+                : t('使用 Chat Completions、Bearer Key 和 OpenAI SSE')}
+          </small>
+        </label>
+      )}
+
       {definition.authType === 'oauth' ? (
         <div className="provider-oauth-row">
           <span className={`provider-connection-dot${dreaminaLoggedIn ? ' is-online' : ''}`} />
@@ -134,7 +162,9 @@ export default function ProviderConnectionForm({
                   onBlur={(event) => {
                     // 补协议、去尾斜杠、剥掉误贴的 /chat/completions，
                     // 让用户在保存前就看见真正会被请求的地址
-                    if (field.key === 'baseUrl') setBaseUrl(normalizeBaseUrl(event.target.value));
+                    if (field.key === 'baseUrl') {
+                      setBaseUrl(normalizeBaseUrl(event.target.value, chatApiProtocol));
+                    }
                   }}
                 />
               </label>
@@ -158,7 +188,7 @@ export default function ProviderConnectionForm({
         <div className="provider-catalog-message is-warning">
           <Icon icon="mdi:content-duplicate" width="14" />
           <span>
-            {t('已有连接「{name}」使用相同接口地址。继续保存会新建第二条同网关连接；如果只是想加模型，建议回列表编辑「{name}」。', {
+            {t('已有连接「{name}」使用相同接口地址和对话协议。继续保存会新建第二条同网关连接；如果只是想加模型，建议回列表编辑「{name}」。', {
               name: duplicateConnectionName,
             })}
           </span>
