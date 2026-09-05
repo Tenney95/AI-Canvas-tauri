@@ -335,7 +335,7 @@ fn validate_artifact(
                 && artifact
                     .start_frame
                     .zip(artifact.end_frame)
-                    .is_some_and(|(start, end)| end >= start)
+                    .is_some_and(|(start, end)| end >= start && end - start < 14_400)
                 && artifact.fps.as_ref().is_some_and(|fps| {
                     fps.as_f64()
                         .is_some_and(|value| value.is_finite() && (1.0..=MAX_FPS).contains(&value))
@@ -574,6 +574,30 @@ mod tests {
             validated.collected().manifest_reference.bytes,
             validated.canonical_manifest_bytes().len() as u64
         );
+    }
+
+    #[test]
+    fn video_manifest_cannot_bypass_the_fixed_frame_count_limit() {
+        let mut manifest = manifest();
+        let video = &mut manifest.artifacts[0];
+        video.kind = BlenderResultArtifactKind::ReferenceVideo;
+        video.mime_type = "video/mp4".to_string();
+        video.frame = None;
+        video.start_frame = Some(0);
+        video.end_frame = Some(14_400);
+        video.fps = Some(serde_json::Number::from(24));
+        video.relative_path = expected_artifact_relative_path("scene-1", video);
+        assert!(validate_blender_collect_candidate(
+            &binding(),
+            BlenderCollectCandidate::new(canonical_manifest_bytes(&manifest).unwrap())
+        )
+        .is_err());
+        manifest.artifacts[0].end_frame = Some(14_399);
+        assert!(validate_blender_collect_candidate(
+            &binding(),
+            BlenderCollectCandidate::new(canonical_manifest_bytes(&manifest).unwrap())
+        )
+        .is_ok());
     }
 
     #[test]

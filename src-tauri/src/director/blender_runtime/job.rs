@@ -39,11 +39,21 @@ pub enum BlenderJobOperation {
     RenderVideo,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BlenderSceneSource {
+    #[default]
+    DirectorScene,
+    SavedBlender,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BlenderJobStartRequest {
     pub installation_id: String,
     pub operation: BlenderJobOperation,
+    #[serde(default)]
+    pub scene_source: BlenderSceneSource,
     pub project_grant_id: String,
     pub project_id: String,
     pub director_instance_id: String,
@@ -71,7 +81,9 @@ impl BlenderJobStartRequest {
         }
         match self.operation {
             BlenderJobOperation::RenderFrame
-                if !self.target_frame.is_some_and(|frame| frame <= MAX_FRAME) =>
+                if !self.target_frame.is_some_and(|frame| frame <= MAX_FRAME)
+                    && !(self.scene_source == BlenderSceneSource::SavedBlender
+                        && self.target_frame.is_none()) =>
             {
                 return Err(BlenderJobCoreError::new(
                     BlenderJobCoreErrorCode::InvalidRequest,
@@ -85,6 +97,13 @@ impl BlenderJobStartRequest {
                 ));
             }
             _ => {}
+        }
+        if self.scene_source == BlenderSceneSource::SavedBlender
+            && self.previous_manifest_revision.is_none()
+        {
+            return Err(BlenderJobCoreError::new(
+                BlenderJobCoreErrorCode::InvalidRequest,
+            ));
         }
         match (
             self.previous_manifest_revision,
@@ -117,6 +136,7 @@ impl BlenderJobStartRequest {
     fn has_same_binding(&self, other: &Self) -> bool {
         self.installation_id == other.installation_id
             && self.operation == other.operation
+            && self.scene_source == other.scene_source
             && self.target_frame == other.target_frame
             && self.project_grant_id == other.project_grant_id
             && self.project_id == other.project_id
@@ -1276,6 +1296,7 @@ mod tests {
         BlenderJobStartRequest {
             installation_id: "blender-installation-test".to_string(),
             operation: BlenderJobOperation::RenderFrame,
+            scene_source: BlenderSceneSource::DirectorScene,
             project_grant_id: "project-grant-test".to_string(),
             project_id: "project-1".to_string(),
             director_instance_id: "director-1".to_string(),
@@ -1286,6 +1307,40 @@ mod tests {
             previous_manifest_sha256: None,
             target_frame: Some(1),
         }
+    }
+
+    #[test]
+    fn saved_scene_requests_require_previous_results_and_allow_the_saved_current_frame() {
+        let mut saved = request();
+        saved.scene_source = BlenderSceneSource::SavedBlender;
+        saved.target_frame = None;
+        assert!(saved.validate().is_err());
+        saved.previous_manifest_revision = Some(1);
+        saved.previous_manifest_sha256 = Some("b".repeat(64));
+        assert!(saved.validate().is_ok());
+        let mut portable = saved.clone();
+        portable.scene_source = BlenderSceneSource::DirectorScene;
+        assert!(portable.validate().is_err());
+        portable.target_frame = Some(42);
+        saved.target_frame = Some(42);
+        assert!(!saved.has_same_binding(&portable));
+        saved.target_frame = Some(MAX_FRAME + 1);
+        assert!(saved.validate().is_err());
+    }
+
+    #[test]
+    fn scene_source_is_a_closed_enum_and_old_requests_keep_the_portable_default() {
+        let value = serde_json::json!({
+            "installationId": "installation-1", "operation": "render-frame",
+            "projectGrantId": "grant-1", "projectId": "project-1", "directorInstanceId": "director-1",
+            "sceneId": "scene-1", "sceneRevision": 1, "sceneSha256": "a".repeat(64), "targetFrame": 1
+        });
+        let legacy: BlenderJobStartRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(legacy.scene_source, BlenderSceneSource::DirectorScene);
+        assert!(legacy.validate().is_ok());
+        let mut invalid = value;
+        invalid["sceneSource"] = serde_json::json!("custom-python");
+        assert!(serde_json::from_value::<BlenderJobStartRequest>(invalid).is_err());
     }
 
     fn trusted() -> BlenderJobTrustedContext {

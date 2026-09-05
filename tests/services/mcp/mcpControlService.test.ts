@@ -16,6 +16,11 @@ import type {
   AgentPackageInstallation,
   AgentPackageSkill,
 } from '../../../src/types/agentPackage';
+import * as directorRuntime from '../../../src/services/directorRuntimeRegistry';
+import * as directorScenes from '../../../src/services/directorSceneService';
+import { createDefaultDirectorScene } from '../../../src/services/directorBlenderRuntimeService';
+import { buildDirectorSceneRelativePath } from '../../../src/services/directorSceneSchema';
+import { resetDirectorNodeOperationsForTests } from '../../../src/services/directorNodeOperationService';
 
 function packageSkill(partial: Partial<AgentPackageSkill> = {}): AgentPackageSkill {
   return {
@@ -119,6 +124,13 @@ describe('MCP control service', () => {
       'skill_read_file',
       'skill_list',
       'skill_get',
+      'director_get_state',
+      'director_set_runtime',
+      'director_open_blender',
+      'director_render_frame',
+      'director_render_video',
+      'director_get_operation',
+      'director_cancel_operation',
     ]));
     expect(tools.every((tool) => tool.inputSchema.type === 'object')).toBe(true);
     expect(useAppStore.getState().conversations).toContainEqual(
@@ -225,6 +237,59 @@ describe('MCP control service', () => {
       expect.objectContaining({ role: 'user', content: expect.stringContaining('MCP 请求') }),
       expect.objectContaining({ role: 'assistant', status: 'done', agentTaskId: expect.any(String) }),
     ]));
+  });
+
+  it('returns a director job before Blender exits and accepts subsequent MCP queries and cancellation', async () => {
+    const scene = createDefaultDirectorScene('director-mcp');
+    const sceneReference = {
+      schemaVersion: 1 as const, sceneId: scene.sceneId, revision: scene.revision,
+      sha256: 'a'.repeat(64), bytes: 512,
+      relativePath: buildDirectorSceneRelativePath(scene.sceneId, scene.revision, 'a'.repeat(64)),
+    };
+    useAppStore.setState({ nodes: [{ id: 'director-mcp', type: 'ai-director', position: { x: 0, y: 0 },
+      data: { label: 'MCP 导演台', type: 'ai-director', directorRuntimeKind: 'blender', directorScene: sceneReference, status: 'idle' } }] });
+    const availability = vi.spyOn(directorRuntime, 'getDirectorRuntimeAvailability').mockResolvedValue({ state: 'ready' });
+    const load = vi.spyOn(directorScenes, 'loadDirectorScene').mockResolvedValue(scene);
+    let rejectEditor!: (error: Error) => void;
+    const pending = new Promise<never>((_resolve, reject) => { rejectEditor = reject; });
+    let nativeSignal: AbortSignal | undefined;
+    const open = vi.spyOn(directorRuntime, 'openDirectorRuntime').mockImplementation((_kind, request) => {
+      nativeSignal = request.blender!.signal;
+      request.blender!.onStatus!({ jobId: 'native-job-mcp', operation: 'open-editor', state: 'running',
+        sceneId: scene.sceneId, sceneRevision: scene.revision, createdAtMs: 1, updatedAtMs: 2 });
+      return pending;
+    });
+    let sequence = 0;
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const result = await handleMcpBridgeRequest({ sessionId: 'director-session',
+        requestId: `director-session:${sequence++}`, method: 'tools/call', params: { name, arguments: args } }) as {
+        isError: boolean; content: Array<{ text: string }>;
+      };
+      expect(result.isError).toBe(false);
+      return JSON.parse(result.content[0].text) as {
+        operation: { operationId: string; state: string; jobId: string };
+      };
+    };
+    try {
+      const started = await call('director_open_blender', { nodeId: 'director-mcp' });
+      expect(started.operation).toMatchObject({ state: 'running', jobId: 'native-job-mcp' });
+      expect(useAppStore.getState().agentTasks.at(-1)?.resultSummary).toContain('已受理');
+      expect(nativeSignal?.aborted).toBe(false);
+      const queried = await call('director_get_operation', { operationId: started.operation.operationId });
+      expect(queried.operation.state).toBe('running');
+      const cancelled = await call('director_cancel_operation', { operationId: started.operation.operationId });
+      expect(cancelled.operation.state).toBe('cancelling');
+      expect(nativeSignal?.aborted).toBe(true);
+      rejectEditor(new DOMException('Aborted', 'AbortError'));
+      await vi.waitFor(async () => {
+        expect((await call('director_get_operation', { operationId: started.operation.operationId })).operation.state).toBe('cancelled');
+      });
+      expect(open).toHaveBeenCalledOnce();
+    } finally {
+      rejectEditor(new DOMException('Aborted', 'AbortError'));
+      resetDirectorNodeOperationsForTests();
+      open.mockRestore(); load.mockRestore(); availability.mockRestore();
+    }
   });
 
   it('通过统一执行链读取已授权智能体包 Skill，且不暴露原生定位字段', async () => {

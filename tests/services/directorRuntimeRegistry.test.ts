@@ -229,6 +229,21 @@ describe('directorRuntimeRegistry', () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
+  it('preserves saved-scene current-frame requests and returns actual frame metadata', async () => {
+    mocks.runDirectorBlenderOperation.mockResolvedValueOnce({
+      manifestReference,
+      frame: { mediaUrl: 'asset://saved.png', filePath: 'project/saved.png', fileName: 'saved.png', artifact: { frame: 350 } },
+    });
+    const blender = { projectId: 'project-1', sceneReference, previousManifestReference: manifestReference, sceneSource: 'saved-blender' as const };
+    const result = await exportDirectorRuntimeFrame('blender', 'director-1', {
+      position: 'current', quality: '1080p', fileName: 'frame.png', blender,
+    });
+    expect(result.frame).toBe(350);
+    expect(mocks.runDirectorBlenderOperation.mock.lastCall?.[0]).toMatchObject({
+      sceneSource: 'saved-blender', previousManifestReference: manifestReference, targetFrame: undefined,
+    });
+  });
+
   it('routes Blender prepare, open, frame and video operations only to the native service', async () => {
     const controller = new AbortController();
     const onStatus = vi.fn();
@@ -249,6 +264,7 @@ describe('directorRuntimeRegistry', () => {
         mediaUrl: 'asset://saved-frame.png',
         filePath: 'project/saved-frame.png',
         fileName: 'saved-frame.png',
+        artifact: { frame: 185 },
       },
       blend: {
         mediaUrl: 'asset://director.blend',
@@ -267,6 +283,7 @@ describe('directorRuntimeRegistry', () => {
         mediaUrl: 'asset://saved-frame.png',
         filePath: 'project/saved-frame.png',
         fileName: 'saved-frame.png',
+        frame: 185,
         manifestReference,
       },
     });
@@ -301,6 +318,7 @@ describe('directorRuntimeRegistry', () => {
         mediaUrl: 'asset://frame.png',
         filePath: 'project/frame.png',
         fileName: 'frame.png',
+        artifact: { frame: 42 },
       },
     });
     await expect(exportDirectorRuntimeFrame('blender', 'director-1', {
@@ -313,6 +331,7 @@ describe('directorRuntimeRegistry', () => {
       mediaUrl: 'asset://frame.png',
       filePath: 'project/frame.png',
       fileName: 'frame.png',
+      frame: 42,
       manifestReference,
     });
     expect(mocks.runDirectorBlenderOperation).toHaveBeenLastCalledWith({
@@ -333,6 +352,7 @@ describe('directorRuntimeRegistry', () => {
         mediaUrl: 'asset://reference.mp4',
         filePath: 'project/reference.mp4',
         fileName: 'reference.mp4',
+        artifact: { startFrame: 100, endFrame: 399, fps: 30 / 1.001 },
       },
     });
     await expect(exportDirectorRuntimeVideo('blender', 'director-1', {
@@ -344,6 +364,7 @@ describe('directorRuntimeRegistry', () => {
       mediaUrl: 'asset://reference.mp4',
       filePath: 'project/reference.mp4',
       fileName: 'reference.mp4',
+      timeline: { startFrame: 100, endFrame: 399, fps: 30 / 1.001 },
       manifestReference,
     });
     expect(mocks.runDirectorBlenderOperation).toHaveBeenLastCalledWith({

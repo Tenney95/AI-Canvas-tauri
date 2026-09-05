@@ -35,6 +35,7 @@ MAX_SHOTS = 256
 MAX_KEYFRAMES = 8192
 # Inclusive render span: at most ten minutes at the default 24 fps.
 MAX_VIDEO_FRAMES = 14_400
+MAX_SAVED_VIDEO_SECONDS = 600
 MAX_FRAME = 10_000_000
 MAX_NAME_LENGTH = 200
 MAX_PATH_LENGTH = 512
@@ -52,6 +53,7 @@ REQUEST_KEYS = {
     "protocol",
     "jobId",
     "operation",
+    "sceneSource",
     "sceneId",
     "sceneRevision",
     "sceneSha256",
@@ -263,9 +265,13 @@ def _validate_request(value):
     operation = value.get("operation")
     if operation not in {"open-editor", "render-frame", "render-video"}:
         raise ProtocolError("request operation is unsupported")
+    scene_source = value.get("sceneSource", "director-scene")
+    if scene_source not in {"director-scene", "saved-blender"}:
+        raise ProtocolError("request scene source is unsupported")
     request = {
         "jobId": _identifier(value.get("jobId"), "request.jobId"),
         "operation": operation,
+        "sceneSource": scene_source,
         "sceneId": _identifier(value.get("sceneId"), "request.sceneId"),
         "sceneRevision": _integer(value.get("sceneRevision"), "request.sceneRevision"),
         "sceneSha256": _sha256(value.get("sceneSha256"), "request.sceneSha256"),
@@ -294,6 +300,13 @@ def _validate_request(value):
                 maximum=MAX_BLEND_BYTES,
             ),
         }
+    if scene_source == "saved-blender" and request["baseBlend"] is None:
+        raise ProtocolError("saved Blender scene requires a verified base project")
+    if operation == "render-frame":
+        if scene_source == "director-scene" and request["targetFrame"] is None:
+            raise ProtocolError("Director Scene frame render requires a target frame")
+    elif request["targetFrame"] is not None:
+        raise ProtocolError("target frame is only supported for frame rendering")
     return request
 
 
@@ -427,6 +440,7 @@ def _validate_scene(value, raw_bytes, request):
     fps = _number(timeline.get("fps"), "scene.timeline.fps", 1, 240)
     if (
         request["operation"] == "render-video"
+        and request.get("sceneSource", "director-scene") == "director-scene"
         and end_frame - start_frame + 1 > MAX_VIDEO_FRAMES
     ):
         raise ProtocolError("scene video frame count exceeds the limit")
@@ -816,6 +830,11 @@ def _load_base_scene(job_dir, request, scene_value):
     if any(scene.get(key) != value for key, value in expected_properties.items()):
         raise ProtocolError("base Blender project scene binding is invalid")
 
+    if request["sceneSource"] == "saved-blender":
+        # The managed file binding still applies; artist-created cameras do not
+        # need to copy IDs from the portable Director Scene camera table.
+        return scene, {}, []
+
     expected_camera_ids = {
         _identifier(camera.get("cameraId"), "scene.camera.cameraId")
         for camera in scene_value["cameras"]
@@ -849,6 +868,67 @@ def _reset_camera_markers(scene, cameras, shots):
             scene.timeline_markers.remove(marker)
     for index, (start, _end, camera_id) in enumerate(shots):
         scene.timeline_markers.new(f"AI_CANVAS_SHOT_{index + 1}", frame=start).camera = cameras[camera_id]
+
+
+def _require_scene_camera(scene, camera):
+    if (
+        camera is None
+        or camera.type != "CAMERA"
+        or scene.objects.get(camera.name) != camera
+    ):
+        raise ProtocolError("saved Blender camera does not belong to the managed scene")
+
+
+def _configure_job_scene(scene, cameras, shots, scene_data, request):
+    """Choose a fixed render source without changing a saved animation timeline."""
+    saved = request["sceneSource"] == "saved-blender"
+    operation = request["operation"]
+    if saved:
+        start = _integer(scene.frame_start, "saved scene start frame", minimum=0)
+        end = _integer(scene.frame_end, "saved scene end frame", minimum=0)
+        if end < start:
+            raise ProtocolError("saved Blender timeline is invalid")
+        numerator = _number(scene.render.fps, "saved scene fps", 1, MAX_FRAME)
+        denominator = _number(scene.render.fps_base, "saved scene fps base", 0.000001, MAX_FRAME)
+        fps = _number(numerator / denominator, "saved scene effective fps", 1, 240)
+        if operation == "render-video":
+            frame_count = end - start + 1
+            if frame_count > MAX_VIDEO_FRAMES or frame_count / fps > MAX_SAVED_VIDEO_SECONDS:
+                raise ProtocolError("saved Blender video exceeds frame count or duration limit")
+            if scene.frame_step != 1:
+                raise ProtocolError("saved Blender video requires a frame step of one")
+        scene_cameras = [obj for obj in scene.objects if obj.type == "CAMERA"]
+        camera_markers = [marker for marker in scene.timeline_markers if marker.camera is not None]
+        if len(scene_cameras) > MAX_CAMERAS or len(camera_markers) > MAX_SHOTS:
+            raise ProtocolError("saved Blender camera or shot count exceeds the limit")
+        _require_scene_camera(scene, scene.camera)
+        for marker in camera_markers:
+            _require_scene_camera(scene, marker.camera)
+    else:
+        scene.frame_start = scene_data["startFrame"]
+        scene.frame_end = scene_data["endFrame"]
+        scene.frame_step = 1
+        _configure_fps(scene, scene_data["fps"])
+        _reset_camera_markers(scene, cameras, shots)
+        start, end = scene.frame_start, scene.frame_end
+        fps = scene.render.fps / scene.render.fps_base
+
+    # Output dimensions remain a fixed preview contract, not values from IPC.
+    scene.render.resolution_x = 1280
+    scene.render.resolution_y = 720
+    scene.render.resolution_percentage = 50
+    target_frame = request["targetFrame"]
+    if target_frame is None:
+        target_frame = scene.frame_current if saved and operation != "render-video" else start
+    target_frame = _integer(target_frame, "target frame", minimum=0)
+    if operation != "open-editor" and not start <= target_frame <= end:
+        raise ProtocolError("target frame is outside the selected scene timeline")
+    if not saved:
+        _camera_for_frame(scene, cameras, shots, target_frame)
+    scene.frame_set(target_frame)
+    if saved:
+        _require_scene_camera(scene, scene.camera)
+    return target_frame, fps
 
 
 def _artifact(path, artifact_prefix, kind, mime_type, **metadata):
@@ -934,21 +1014,8 @@ def _run_job(job_dir):
         scene, cameras, shots = _build_scene(scene_data, request)
     else:
         scene, cameras, shots = loaded
-    scene.frame_start = scene_data["startFrame"]
-    scene.frame_end = scene_data["endFrame"]
-    _configure_fps(scene, scene_data["fps"])
-    scene.render.resolution_x = 1280
-    scene.render.resolution_y = 720
-    scene.render.resolution_percentage = 50
-    _reset_camera_markers(scene, cameras, shots)
     operation = request["operation"]
-    target_frame = request["targetFrame"]
-    if target_frame is None:
-        target_frame = scene.frame_start
-    if target_frame < scene_data["startFrame"] or target_frame > scene_data["endFrame"]:
-        raise ProtocolError("target frame is outside the timeline")
-    _camera_for_frame(scene, cameras, shots, target_frame)
-    scene.frame_set(target_frame)
+    target_frame, effective_fps = _configure_job_scene(scene, cameras, shots, scene_data, request)
 
     artifacts = []
     blend_path = output_dir / "project.blend"
@@ -1014,7 +1081,7 @@ def _run_job(job_dir):
             "video/mp4",
             startFrame=scene.frame_start,
             endFrame=scene.frame_end,
-            fps=scene_data["fps"],
+            fps=effective_fps,
         ))
 
     _require_finished(

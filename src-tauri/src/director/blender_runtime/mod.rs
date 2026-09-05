@@ -88,6 +88,7 @@ pub enum BlenderDiscoveryScope {
 #[serde(rename_all = "camelCase")]
 pub struct BlenderDiscoveryResult {
     candidates: Vec<BlenderInstallationCandidate>,
+    supports_saved_scene: bool,
     scope: BlenderDiscoveryScope,
     exhaustive: bool,
     partial: bool,
@@ -1378,6 +1379,7 @@ fn public_discovery_result(
     }
     BlenderDiscoveryResult {
         candidates,
+        supports_saved_scene: true,
         scope,
         exhaustive: false,
         partial: snapshot.partial,
@@ -2049,10 +2051,12 @@ mod tests {
 
         assert!(result.candidates.is_empty());
         assert!(!result.exhaustive);
+        assert!(result.supports_saved_scene);
         assert!(!result.partial);
         assert!(!result.truncated);
         let serialized = serde_json::to_string(&result).expect("结果应可序列化");
         assert!(serialized.contains("\"scope\":\"windows-known-install-locations\""));
         assert!(serialized.contains("\"exhaustive\":false"));
+        assert!(serialized.contains("\"supportsSavedScene\":true"));
     }
 }

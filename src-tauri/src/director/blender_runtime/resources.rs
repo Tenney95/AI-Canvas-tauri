@@ -35,7 +35,7 @@ const JOB_SCRIPT_BYTES: &[u8] =
 
 const SCHEMA_VERSION: u32 = 1;
 const PACKAGE_ID: &str = "ai-canvas-blender-runtime";
-const PACKAGE_VERSION: &str = "1.3.2";
+const PACKAGE_VERSION: &str = "1.3.3";
 const TEMPLATE_ID: &str = "ai_canvas_director";
 const TEMPLATE_VERSION: u32 = 1;
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
@@ -68,14 +68,14 @@ const CHARACTER_MALE_BLEND_SHA256: &str =
     "767911283f1e09295057dc4bdbe5e79e4e80eddd525ad74af1041b35e7425df9";
 const CHARACTER_LICENSE_SHA256: &str =
     "c232257c8a2545520aa120cda96acb23d00a355d2e3339cba20b7ebf56f28a09";
-const JOB_SCRIPT_SHA256: &str = "3173845adb71ab01f718864353c8cfa92abd5d2aba6440f4fa1a1c5d782dbb19";
+const JOB_SCRIPT_SHA256: &str = "101184769ed013e6b3d5a1692cccd0d1b3dc6973fdc77d08f8cf422fb8dd2b8c";
 
 const TEMPLATE_INIT_SIZE: u64 = 93_064;
 const TEMPLATE_STARTUP_BLEND_SIZE: u64 = 91_348;
 const CHARACTER_FEMALE_BLEND_SIZE: u64 = 560_000;
 const CHARACTER_MALE_BLEND_SIZE: u64 = 543_063;
 const CHARACTER_LICENSE_SIZE: u64 = 782;
-const JOB_SCRIPT_SIZE: u64 = 40_364;
+const JOB_SCRIPT_SIZE: u64 = 43_941;
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -708,7 +708,7 @@ mod tests {
             .expect("second resource install should be idempotent");
 
         assert_eq!(first, second);
-        assert!(first.runtime_root.ends_with("blender-runtime/1.3.2"));
+        assert!(first.runtime_root.ends_with("blender-runtime/1.3.3"));
         assert_eq!(
             fs::read(previous_resource).expect("previous runtime should remain readable"),
             previous_bytes

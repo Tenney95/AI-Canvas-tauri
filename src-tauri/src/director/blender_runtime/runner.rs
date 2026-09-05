@@ -6,7 +6,7 @@
 use super::job::{
     BlenderJobCancellation, BlenderJobOperation, BlenderJobProgressPhase,
     BlenderJobProgressReporter, BlenderJobRunner, BlenderJobRunnerFailure,
-    BlenderJobRunnerFailureKind, PreparedBlenderJob,
+    BlenderJobRunnerFailureKind, BlenderSceneSource, PreparedBlenderJob,
 };
 use super::result::{
     canonical_manifest_bytes, expected_artifact_relative_path, validate_blender_collect_candidate,
@@ -330,6 +330,7 @@ struct FixedJobRequest<'a> {
     protocol: &'static str,
     job_id: &'a str,
     operation: BlenderJobOperation,
+    scene_source: BlenderSceneSource,
     scene_id: &'a str,
     scene_revision: u64,
     scene_sha256: &'a str,
@@ -359,6 +360,9 @@ fn prepare_job_layout(job: &PreparedBlenderJob) -> Result<JobLayout, String> {
     }
 
     let (previous_artifacts, base_artifact) = load_previous_manifest(job)?;
+    if job.request.scene_source == BlenderSceneSource::SavedBlender && base_artifact.is_none() {
+        return Err("保存工程模式缺少已验证的 Blender 工程".to_string());
+    }
     let job_directory = create_private_job_directory(&job.trusted.private_root, &job.job_id)?;
     let input_directory = job_directory.join("input");
     let output_directory = job_directory.join("output");
@@ -391,6 +395,7 @@ fn prepare_job_layout(job: &PreparedBlenderJob) -> Result<JobLayout, String> {
         protocol: JOB_PROTOCOL,
         job_id: &job.job_id,
         operation: job.request.operation,
+        scene_source: job.request.scene_source,
         scene_id: &job.request.scene_id,
         scene_revision: job.request.scene_revision,
         scene_sha256: &job.request.scene_sha256,
@@ -511,6 +516,7 @@ fn collect_and_commit(
     }
     validate_operation_artifacts(
         job.request.operation,
+        job.request.scene_source,
         job.request.target_frame,
         &staged.artifact_candidates,
     )?;
@@ -602,11 +608,14 @@ fn append_latest_artifact(
 
 fn validate_operation_artifacts(
     operation: BlenderJobOperation,
+    scene_source: BlenderSceneSource,
     target_frame: Option<u64>,
     artifacts: &[StagedArtifact],
 ) -> Result<(), String> {
     match operation {
-        BlenderJobOperation::RenderFrame if target_frame.is_none() => {
+        BlenderJobOperation::RenderFrame
+            if target_frame.is_none() && scene_source != BlenderSceneSource::SavedBlender =>
+        {
             return Err("Blender Job 产物集合与操作不匹配".to_string());
         }
         BlenderJobOperation::OpenEditor | BlenderJobOperation::RenderVideo
@@ -660,7 +669,13 @@ fn validate_operation_artifacts(
                     BlenderJobOperation::OpenEditor => {
                         artifact.frame.is_some_and(|frame| frame <= MAX_FRAME)
                     }
-                    BlenderJobOperation::RenderFrame => artifact.frame == target_frame,
+                    BlenderJobOperation::RenderFrame => match target_frame {
+                        Some(frame) => artifact.frame == Some(frame),
+                        None => {
+                            scene_source == BlenderSceneSource::SavedBlender
+                                && artifact.frame.is_some_and(|frame| frame <= MAX_FRAME)
+                        }
+                    },
                     BlenderJobOperation::RenderVideo => false,
                 };
                 if !valid_frame
@@ -678,6 +693,23 @@ fn validate_operation_artifacts(
                     || artifact.fps.is_none()
                 {
                     return Err("Blender 视频结果无效".to_string());
+                }
+                if scene_source == BlenderSceneSource::SavedBlender {
+                    let valid_timeline = artifact
+                        .start_frame
+                        .zip(artifact.end_frame)
+                        .zip(artifact.fps.as_ref().and_then(|fps| fps.as_f64()))
+                        .is_some_and(|((start, end), fps)| {
+                            end >= start
+                                && end <= MAX_FRAME
+                                && fps.is_finite()
+                                && (1.0..=240.0).contains(&fps)
+                                && end - start < 14_400
+                                && (end - start + 1) as f64 / fps <= 600.0
+                        });
+                    if !valid_timeline {
+                        return Err("Blender 保存工程视频超出帧数或时长限制".to_string());
+                    }
                 }
             }
             BlenderResultArtifactKind::BlendProject => {
@@ -796,17 +828,25 @@ mod artifact_validation_tests {
             candidate(BlenderResultArtifactKind::FrameImage, Some(42)),
             candidate(BlenderResultArtifactKind::BlendProject, None),
         ];
-        assert!(
-            validate_operation_artifacts(BlenderJobOperation::OpenEditor, None, &valid,).is_ok()
-        );
-        assert!(
-            validate_operation_artifacts(BlenderJobOperation::OpenEditor, Some(42), &valid,)
-                .is_err()
-        );
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::OpenEditor,
+            BlenderSceneSource::DirectorScene,
+            None,
+            &valid,
+        )
+        .is_ok());
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::OpenEditor,
+            BlenderSceneSource::DirectorScene,
+            Some(42),
+            &valid,
+        )
+        .is_err());
 
         let missing_frame = [candidate(BlenderResultArtifactKind::BlendProject, None)];
         assert!(validate_operation_artifacts(
             BlenderJobOperation::OpenEditor,
+            BlenderSceneSource::DirectorScene,
             None,
             &missing_frame,
         )
@@ -819,6 +859,7 @@ mod artifact_validation_tests {
         ];
         assert!(validate_operation_artifacts(
             BlenderJobOperation::OpenEditor,
+            BlenderSceneSource::DirectorScene,
             None,
             &duplicate_frame,
         )
@@ -831,6 +872,7 @@ mod artifact_validation_tests {
         ];
         assert!(validate_operation_artifacts(
             BlenderJobOperation::OpenEditor,
+            BlenderSceneSource::DirectorScene,
             None,
             &video_mixed_in,
         )
@@ -843,17 +885,90 @@ mod artifact_validation_tests {
             candidate(BlenderResultArtifactKind::FrameImage, Some(42)),
             candidate(BlenderResultArtifactKind::BlendProject, None),
         ];
-        assert!(
-            validate_operation_artifacts(BlenderJobOperation::RenderFrame, Some(42), &valid,)
-                .is_ok()
-        );
-        assert!(
-            validate_operation_artifacts(BlenderJobOperation::RenderFrame, Some(41), &valid,)
-                .is_err()
-        );
-        assert!(
-            validate_operation_artifacts(BlenderJobOperation::RenderFrame, None, &valid,).is_err()
-        );
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::RenderFrame,
+            BlenderSceneSource::DirectorScene,
+            Some(42),
+            &valid,
+        )
+        .is_ok());
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::RenderFrame,
+            BlenderSceneSource::DirectorScene,
+            Some(41),
+            &valid,
+        )
+        .is_err());
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::RenderFrame,
+            BlenderSceneSource::DirectorScene,
+            None,
+            &valid,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn saved_scene_frames_allow_current_frame_but_still_bind_explicit_targets() {
+        let valid = [
+            candidate(BlenderResultArtifactKind::FrameImage, Some(185)),
+            candidate(BlenderResultArtifactKind::BlendProject, None),
+        ];
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::RenderFrame,
+            BlenderSceneSource::SavedBlender,
+            None,
+            &valid
+        )
+        .is_ok());
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::RenderFrame,
+            BlenderSceneSource::SavedBlender,
+            Some(42),
+            &valid
+        )
+        .is_err());
+        let invalid = [
+            candidate(BlenderResultArtifactKind::FrameImage, None),
+            candidate(BlenderResultArtifactKind::BlendProject, None),
+        ];
+        assert!(validate_operation_artifacts(
+            BlenderJobOperation::RenderFrame,
+            BlenderSceneSource::SavedBlender,
+            None,
+            &invalid
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn saved_scene_video_checks_duration_and_frame_limits_using_actual_fps() {
+        for (end, fps, accepted) in [
+            (14399, 24.0, true),
+            (14400, 240.0, false),
+            (600, 1.0, false),
+            (299, 30.0 / 1.001, true),
+            (299, 241.0, false),
+        ] {
+            let mut video = candidate(BlenderResultArtifactKind::ReferenceVideo, None);
+            video.start_frame = Some(0);
+            video.end_frame = Some(end);
+            video.fps = serde_json::Number::from_f64(fps);
+            let artifacts = [
+                video,
+                candidate(BlenderResultArtifactKind::BlendProject, None),
+            ];
+            assert_eq!(
+                validate_operation_artifacts(
+                    BlenderJobOperation::RenderVideo,
+                    BlenderSceneSource::SavedBlender,
+                    None,
+                    &artifacts
+                )
+                .is_ok(),
+                accepted
+            );
+        }
     }
 
     #[test]
