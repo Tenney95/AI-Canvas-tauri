@@ -44,6 +44,7 @@ import {
   readPluginResourceRange,
   readPluginResourceText,
   registerPluginDerivedResource,
+  replacePluginDerivedResources,
   resolvePluginResourceHostUrl,
 } from '../../src/services/plugins/pluginResourceService';
 
@@ -95,6 +96,20 @@ function readContext(state: PluginResourceStateSnapshot, invocationId = 'invoke-
 }
 
 describe('pluginResourceService', () => {
+  it('replaces full derived batches without accumulating quota and restores old leases on failure', () => {
+    const { state } = createState();
+    const context = { ...readContext(state), permissions: ['files.connected.read', 'files.output.create'] as const };
+    const resources = { self: [], incoming: [], inputs: {}, package: [], derived: [] };
+    const entries = Array.from({ length: 25 }, (_, i) => ({ displayName: `frame-${i}.jpg`, mediaType: 'image/jpeg', bytes: new Uint8Array([1, 2, 3]) }));
+    const first = replacePluginDerivedResources(context, resources, entries);
+    const second = replacePluginDerivedResources(context, resources, entries);
+    expect(resources.derived).toHaveLength(25);
+    expect(() => readPluginDerivedResourceForOutput(context, first[0].resourceId)).toThrow();
+    expect(readPluginDerivedResourceForOutput(context, second[0].resourceId).bytes).toEqual(new Uint8Array([1, 2, 3]));
+    expect(() => replacePluginDerivedResources(context, resources, [entries[0], { ...entries[1], mediaType: 'text/plain' }])).toThrow();
+    expect(resources.derived).toEqual(second);
+    expect(() => readPluginDerivedResourceForOutput(context, second[0].resourceId)).not.toThrow();
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
   });

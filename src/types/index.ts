@@ -176,6 +176,14 @@ export interface CharacterLibraryNodeLink {
 /** 视频拉片插件写入图片节点的结构化结果；不包含本地路径或调用级 resourceId。 */
 export interface VideoFrameAnalysisData {
   sourceVideoNodeId: string;
+  sourceVideoName?: string;
+  shotId?: string;
+  inPoint?: number;
+  outPoint?: number;
+  sampleRole?: 'start' | 'middle' | 'end' | 'custom';
+  reviewStatus?: 'unreviewed' | 'reviewed' | 'edited';
+  overrideFields?: string[];
+  aiOriginal?: Record<string, string | number | null>;
   requestedTime: number;
   actualTime: number;
   frameDuration?: number;
@@ -188,7 +196,7 @@ export interface VideoFrameAnalysisData {
   transition?: string;
   duration?: number;
   note?: string;
-  confidence?: number;
+  confidence?: number | null;
 }
 
 // 节点数据接口

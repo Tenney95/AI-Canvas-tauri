@@ -42,11 +42,12 @@ import {
   readPluginResourceText,
   readPluginDerivedResourceForOutput,
   registerPluginDerivedResource,
+  replacePluginDerivedResources,
   resolvePluginResourceHostUrl,
   type PluginResourceReadContext,
 } from './pluginResourceService';
 import { buildPluginModelCatalog, collectDeclaredModelCategories } from './pluginModelCatalog';
-import { extractPluginVideoFrames } from './pluginVideoFrameService';
+import { detectPluginVideoShots, extractPluginVideoFrames, inspectPluginVideoFrame } from './pluginVideoFrameService';
 
 const MAX_STRING_LENGTH = 256_000;
 const MAX_ARRAY_ITEMS = 256;
@@ -693,6 +694,28 @@ function parseHostEffect(
         : undefined,
     };
   }
+  if (type === 'resource.export') {
+    const resourceId = typeof raw.resourceId === 'string' ? raw.resourceId.slice(0, 160) : '';
+    if (!resourceId) throw new Error('资源导出必须包含 resourceId');
+    return { type, resourceId, suggestedName: typeof raw.suggestedName === 'string' ? raw.suggestedName.slice(0, 120) : undefined };
+  }
+  if (type === 'video.detectShots' || type === 'video.inspectFrame') {
+    const resourceId = typeof raw.resourceId === 'string' ? raw.resourceId.slice(0, 160) : '';
+    if (!resourceId) throw new Error('视频操作必须包含 resourceId');
+    if (type === 'video.inspectFrame') {
+      const time = Number(raw.time);
+      const direction = Number(raw.direction ?? 0);
+      if (!Number.isFinite(time) || time < 0 || (direction !== -1 && direction !== 0 && direction !== 1)) throw new Error('帧步进参数无效');
+      return { type, resourceId, time, direction, boundary: raw.boundary === true };
+    }
+    const start = Number(raw.start);
+    const end = Number(raw.end);
+    const threshold = Number(raw.threshold ?? 0.28);
+    const minShotDuration = Number(raw.minShotDuration ?? 0.3);
+    if (![start, end, threshold, minShotDuration].every(Number.isFinite) || start < 0 || end <= start || end - start > 300
+      || threshold < 0.05 || threshold > 0.95 || minShotDuration < 0.04 || minShotDuration > 10) throw new Error('镜头检测参数或区间无效');
+    return { type, resourceId, start, end, threshold, minShotDuration };
+  }
   if (type === 'video.extractFrames') {
     const resourceId = typeof raw.resourceId === 'string' ? raw.resourceId.slice(0, 160) : '';
     const mode = raw.mode === 'preview' || raw.mode === 'analysis' ? raw.mode : undefined;
@@ -723,7 +746,7 @@ function parseHostEffect(
       previousTime = time;
       return { key, time };
     });
-    return { type, resourceId, mode, samples };
+    return { type, resourceId, mode, samples, replaceDerived: raw.replaceDerived === true };
   }
   throw new Error('插件请求了不支持的宿主操作');
 }
@@ -937,6 +960,14 @@ async function executeHostEffect(
   effect: PluginNodeHostEffect,
   models: PluginModelSummary[],
 ): Promise<PluginNodeHostEffectResult> {
+  const assertFresh = () => {
+    if (context.signal?.aborted) throw new Error('插件操作已取消');
+    const lease = context.resourceReadContext;
+    if (!lease) throw new Error('插件资源会话已失效');
+    const current = requireCurrentPluginRevision(context.pluginId, lease.sourceDigest, lease.revisionDigest);
+    if (current.currentProjectId !== context.projectId || current.getCurrentRevision() !== lease.baseRevision
+      || !current.nodes.some((node) => node.id === nodeId)) throw new Error('画布已变化，插件操作已撤销');
+  };
   try {
     if (effect.type === 'model.generate') {
       if (!context.permissions.includes('models.invoke')) throw new Error('插件未声明 models.invoke 权限');
@@ -979,7 +1010,7 @@ async function executeHostEffect(
       );
       return { type: effect.type, ok: true, value: toPluginJson(value) };
     }
-    if (effect.type === 'video.extractFrames') {
+    if (effect.type === 'video.extractFrames' || effect.type === 'video.detectShots' || effect.type === 'video.inspectFrame') {
       if (
         !context.permissions.includes('files.connected.read')
         || !context.permissions.includes('files.output.create')
@@ -997,6 +1028,14 @@ async function executeHostEffect(
         throw new Error('视频抽帧只能读取当前节点的 self 视频资源');
       }
       const url = await resolvePluginResourceHostUrl(context.resourceReadContext, effect.resourceId);
+      assertFresh();
+      if (effect.type === 'video.detectShots' || effect.type === 'video.inspectFrame') {
+        const value = effect.type === 'video.detectShots'
+          ? await detectPluginVideoShots({ ...effect, url, signal: context.signal })
+          : await inspectPluginVideoFrame({ ...effect, url, signal: context.signal });
+        assertFresh();
+        return { type: effect.type, ok: true, value: toPluginJson(value) };
+      }
       const batch = await extractPluginVideoFrames({
         url,
         mode: effect.mode,
@@ -1004,15 +1043,18 @@ async function executeHostEffect(
         samples: effect.samples,
         signal: context.signal,
       });
+      assertFresh();
+      const entries = batch.frames.flatMap((frame) => !('error' in frame) && frame.bytes ? [{
+        displayName: `${frame.key}.jpg`, mediaType: frame.mediaType, bytes: frame.bytes,
+      }] : []);
+      if (batch.contactSheet) entries.push({ displayName: 'frame-contact-sheet.jpg', ...batch.contactSheet });
+      const refs = effect.replaceDerived
+        ? replacePluginDerivedResources(context.resourceReadContext, context.resources, entries)
+        : entries.map((entry) => registerPluginDerivedResource(context.resourceReadContext!, context.resources!, entry));
+      let resourceIndex = 0;
       const frames = batch.frames.map((frame) => {
         if ('error' in frame) return frame;
-        const resource = frame.bytes
-          ? registerPluginDerivedResource(context.resourceReadContext!, context.resources!, {
-              displayName: `${frame.key}.jpg`,
-              mediaType: frame.mediaType,
-              bytes: frame.bytes,
-            })
-          : undefined;
+        const resource = frame.bytes ? refs[resourceIndex++] : undefined;
         return {
           key: frame.key,
           requestedTime: frame.requestedTime,
@@ -1024,13 +1066,7 @@ async function executeHostEffect(
           resourceId: resource?.resourceId,
         };
       });
-      const contactSheet = batch.contactSheet
-        ? registerPluginDerivedResource(context.resourceReadContext, context.resources, {
-            displayName: 'frame-contact-sheet.jpg',
-            mediaType: batch.contactSheet.mediaType,
-            bytes: batch.contactSheet.bytes,
-          })
-        : undefined;
+      const contactSheet = batch.contactSheet ? refs[resourceIndex] : undefined;
       return {
         type: effect.type,
         ok: true,
@@ -1044,17 +1080,26 @@ async function executeHostEffect(
     if (!context.permissions.includes('files.output.create')) {
       throw new Error('插件未声明 files.output.create 权限');
     }
+    // 导出只接受当前 invocation 的派生图像，不暴露任意路径读写。
+    if (effect.type === 'resource.export' && !context.resourceReadContext) throw new Error('插件资源会话已失效');
+    if (context.resourceReadContext) assertFresh();
+    const exported = effect.type === 'resource.export' && context.resourceReadContext
+      ? readPluginDerivedResourceForOutput(context.resourceReadContext, effect.resourceId)
+      : undefined;
     const safeCharacters = Array.from(
-      (effect.suggestedName || 'plugin-output.txt').replace(/[<>:"/\\|?*]/gu, '_'),
+      (effect.suggestedName || exported?.resource.displayName || 'plugin-output.txt').replace(/[<>:"/\\|?*]/gu, '_'),
       (character) => (character.codePointAt(0)! <= 0x1f ? '_' : character),
     ).join('');
     const suggestedName = safeCharacters
       .replace(/^\.+/u, '')
       .trim()
       .slice(0, 120) || 'plugin-output.txt';
-    const bytes = new TextEncoder().encode(effect.content);
+    const bytes = exported?.bytes ?? new TextEncoder().encode(effect.type === 'resource.createText' ? effect.content : '');
     const saved = await saveBinaryToProjectData(bytes, context.projectId, suggestedName);
     if (!saved) throw new Error(`无法在当前项目中创建「${context.title}」输出`);
+    if (context.resourceReadContext) {
+      try { assertFresh(); } catch (error) { await moveToTrash(saved.filePath); throw error; }
+    }
     const fileName = saved.filePath.replace(/\\/gu, '/').split('/').at(-1) ?? suggestedName;
     return {
       type: effect.type,
@@ -1278,6 +1323,7 @@ async function preparePluginNodeSet(options: {
         data.frameAnalysis = {
           ...(data.frameAnalysis as Record<string, unknown>),
           sourceVideoNodeId: options.sourceNode.id,
+          sourceVideoName: String(options.sourceNode.data.label || '视频').slice(0, 240),
         };
       }
       if (Array.isArray(data.shotlistRows)) {
@@ -1289,6 +1335,13 @@ async function preparePluginNodeSet(options: {
           const { frameKey: _frameKey, ...cleanRow } = row;
           return {
             ...cleanRow,
+            ...(row.frameAnalysis && typeof row.frameAnalysis === 'object' ? {
+              frameAnalysis: {
+                ...recordValue(row.frameAnalysis),
+                sourceVideoNodeId: options.sourceNode.id,
+                sourceVideoName: String(options.sourceNode.data.label || '视频').slice(0, 240),
+              },
+            } : {}),
             frame: frameImage ? {
               nodeId: frameImage.nodeId,
               kind: 'image',

@@ -250,11 +250,11 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
         isOpen
         onClose={close}
         ariaLabel={dialog.title || pluginTool.tool.title}
-        className="w-[min(780px,calc(100vw-32px))] border-canvas-border"
+        className="h-[calc(100dvh-32px)] max-h-[1100px] w-[calc(100vw-32px)] max-w-[1600px] min-w-0 border-canvas-border"
         closeOnBackdrop
         motionPreset="quick"
       >
-        <header className="flex items-center gap-3 border-b border-canvas-border px-4 py-3">
+        <header className="flex shrink-0 items-center gap-3 border-b border-canvas-border px-4 py-3">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
             <Icon icon={pluginTool.tool.icon || 'lucide:blocks'} width={18} height={18} />
           </span>
@@ -268,7 +268,7 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
           </div>
           <PopupCloseButton onClick={close} />
         </header>
-        <div className="h-[min(640px,calc(100vh-160px))] min-h-80 bg-canvas-surface">
+        <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-canvas-surface">
           {uiLoading && (
             <div className="flex h-full items-center justify-center gap-2 text-xs text-canvas-text-secondary">
               <Icon icon="lucide:loader-circle" width={16} height={16} className="animate-spin" />
@@ -287,7 +287,7 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
               title={`${pluginTool.pluginName} · ${dialog.title || pluginTool.tool.title}`}
               sandbox="allow-scripts"
               referrerPolicy="no-referrer"
-              className="h-full w-full border-0 bg-canvas-surface"
+              className="block h-full w-full min-w-0 border-0 bg-canvas-surface"
             />
           )}
         </div>

@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   registerDerivedResource: vi.fn(),
   resolveResourceHostUrl: vi.fn(),
   extractVideoFrames: vi.fn(),
+  detectShots: vi.fn(),
+  inspectFrame: vi.fn(),
   generateText: vi.fn(),
   generateImage: vi.fn(),
   buildModelCatalog: vi.fn(() => [] as Array<Record<string, unknown>>),
@@ -47,6 +49,8 @@ vi.mock('../../src/services/plugins/pluginResourceService', async (importOrigina
 });
 vi.mock('../../src/services/plugins/pluginVideoFrameService', () => ({
   extractPluginVideoFrames: mocks.extractVideoFrames,
+  detectPluginVideoShots: mocks.detectShots,
+  inspectPluginVideoFrame: mocks.inspectFrame,
 }));
 
 import {
@@ -565,7 +569,9 @@ describe('node plugin runtime', () => {
           nodeType: 'ai-shotlist',
           data: {
             label: '样片 · 拉片分镜表',
-            shotlistRows: [{ id: 'shot-1', shotNo: '1', frameKey: 'frame-1', content: '建立环境' }],
+            shotlistRows: [{ id: 'shot-1', shotNo: '1', frameKey: 'frame-1', content: '建立环境',
+              frameAnalysis: { sourceVideoNodeId: 'forged', sourceVideoName: '伪造来源', shotId: 'stable-1', inPoint: 0, outPoint: 2,
+                aiOriginal: { content: 'AI 原文', confidence: 0.5 }, overrideFields: ['content'], reviewStatus: 'reviewed' } }],
           },
         }],
         edges: [
@@ -620,6 +626,10 @@ describe('node plugin runtime', () => {
         id: 'shot-1',
         shotNo: '1',
         content: '建立环境',
+        frameAnalysis: {
+          sourceVideoNodeId: 'video-1', shotId: 'stable-1', inPoint: 0, outPoint: 2,
+          aiOriginal: { content: 'AI 原文', confidence: 0.5 }, overrideFields: ['content'], reviewStatus: 'reviewed',
+        },
         frame: {
           nodeId: firstFrame.id,
           kind: 'image',
@@ -629,6 +639,8 @@ describe('node plugin runtime', () => {
       }],
     });
     expect(createdEdges).toHaveLength(2);
+    expect(JSON.stringify(shotlist.data)).not.toContain('forged');
+    expect(JSON.stringify(shotlist.data)).not.toContain('伪造来源');
     expect(mocks.showToast).toHaveBeenCalledWith('已生成拉片节点');
   });
 
@@ -1465,6 +1477,46 @@ describe('node plugin runtime', () => {
 });
 
 describe('node plugin tool model effects', () => {
+  function uiContext() {
+    return {
+      pluginId: plugin.id, projectId: 'project-1', nodeId: 'node-1', title: '拉片',
+      permissions: ['files.connected.read', 'files.output.create'] as import('../../src/types/plugin').PluginPermission[],
+      models: [], trustedMediaReferences: new Set<string>(),
+      resources: { self: [{ resourceId: 'self-video', origin: 'node-self', access: 'read', displayName: '视频', mediaType: 'video/mp4', size: 3, source: { nodeId: 'node-1' } }], incoming: [], inputs: {}, package: [], derived: [] } as PluginInvocationResources,
+      resourceReadContext: {
+        pluginId: plugin.id, sourceDigest: plugin.sourceDigest!, revisionDigest: plugin.revisionDigest!,
+        invocationId: 'ui-shots', projectId: 'project-1', nodeId: 'node-1', baseRevision: 3,
+        permissions: ['files.connected.read', 'files.output.create'] as const, state: mocks.state as never,
+      },
+    };
+  }
+
+  it('routes local shot and frame operations through self resource and rejects stale results', async () => {
+    mocks.detectShots.mockResolvedValueOnce({ shots: [{ inPoint: 0, outPoint: 1, score: 0 }], scannedFrames: 25 });
+    const result = await executePluginUiHostEffect({ ...uiContext(), effect: { type: 'video.detectShots', resourceId: 'self-video', start: 0, end: 1 } });
+    expect(result).toMatchObject({ ok: true, value: { scannedFrames: 25 } });
+    expect(mocks.detectShots).toHaveBeenCalledWith(expect.objectContaining({ url: 'asset://localhost/video.mp4' }));
+    const invalid = await executePluginUiHostEffect({ ...uiContext(), effect: { type: 'video.inspectFrame', resourceId: 'foreign', time: 0, direction: 0 } });
+    expect(invalid).toMatchObject({ ok: false });
+    expect(mocks.inspectFrame).not.toHaveBeenCalled();
+    mocks.inspectFrame.mockImplementationOnce(async () => { mocks.revision = 4; return { actualTime: 1 }; });
+    const stale = await executePluginUiHostEffect({ ...uiContext(), effect: { type: 'video.inspectFrame', resourceId: 'self-video', time: 0, direction: 1 } });
+    expect(stale).toMatchObject({ ok: false });
+  });
+
+  it('exports derived bytes without paths, and recycles output if the canvas changes while saving', async () => {
+    mocks.saveBinaryToProjectData.mockResolvedValueOnce({ filePath: 'G:\\project\\sheet.jpg', assetUrl: 'asset://sheet' });
+    const exported = await executePluginUiHostEffect({ ...uiContext(), effect: { type: 'resource.export', resourceId: 'sheet', suggestedName: 'sheet.jpg' } });
+    expect(exported).toMatchObject({ ok: true, value: { fileName: 'sheet.jpg', bytes: 3 } });
+    expect(JSON.stringify(exported)).not.toContain('G:');
+    mocks.saveBinaryToProjectData.mockImplementationOnce(async () => {
+      mocks.revision = 4; return { filePath: 'G:\\project\\stale.json', assetUrl: 'asset://stale' };
+    });
+    const stale = await executePluginUiHostEffect({ ...uiContext(), effect: { type: 'resource.createText', content: '{}', suggestedName: 'stale.json' } });
+    expect(stale).toMatchObject({ ok: false });
+    expect(mocks.moveToTrash).toHaveBeenCalledWith('G:\\project\\stale.json');
+  });
+
   it('extracts video frames only from the current self resource and registers analysis bytes opaquely', async () => {
     const resources: PluginInvocationResources = {
       self: [{

@@ -33,8 +33,10 @@ import {
 
 const MESSAGE_CHANNEL = 'ai-canvas-plugin-ui-v1';
 const MAX_UI_EFFECTS = 4;
+const MAX_UI_MEDIA_EFFECTS = 96;
+const MAX_UI_EXPORT_EFFECTS = 12;
 const MAX_UI_SESSIONS = 4;
-const MAX_UI_REQUESTS = 64;
+const MAX_UI_REQUESTS = 192;
 const MAX_REQUEST_ID_LENGTH = 64;
 const MAX_KIND_LENGTH = 32;
 const MAX_JSON_DEPTH = 8;
@@ -74,6 +76,8 @@ interface PluginUiSession {
   guard: CanvasDerivationGuard;
   frameWindow?: Window;
   effectBudget: number;
+  mediaEffectBudget?: number;
+  exportEffectBudget?: number;
   requestCount: number;
   requestInFlight: boolean;
   effectAbortController?: AbortController;
@@ -269,8 +273,18 @@ async function handleRequest(event: MessageEvent): Promise<void> {
         return;
       }
       case 'effect': {
-        if (session.effectBudget >= MAX_UI_EFFECTS) throw new Error(`宿主操作不能超过 ${MAX_UI_EFFECTS} 次`);
-        session.effectBudget += 1;
+        const effectType = request.payload && typeof request.payload === 'object' && 'type' in request.payload
+          ? request.payload.type : undefined;
+        if (effectType === 'video.extractFrames' || effectType === 'video.detectShots' || effectType === 'video.inspectFrame') {
+          if ((session.mediaEffectBudget ?? 0) >= MAX_UI_MEDIA_EFFECTS) throw new Error('本地视频操作达到 96 次上限，请重新打开插件');
+          session.mediaEffectBudget = (session.mediaEffectBudget ?? 0) + 1;
+        } else if (effectType === 'resource.export' || effectType === 'resource.createText') {
+          if ((session.exportEffectBudget ?? 0) >= MAX_UI_EXPORT_EFFECTS) throw new Error('本次会话导出达到 12 次上限');
+          session.exportEffectBudget = (session.exportEffectBudget ?? 0) + 1;
+        } else {
+          if (session.effectBudget >= MAX_UI_EFFECTS) throw new Error(`宿主操作不能超过 ${MAX_UI_EFFECTS} 次`);
+          session.effectBudget += 1;
+        }
         const controller = new AbortController();
         session.effectAbortController = controller;
         const result = await executePluginUiHostEffect({

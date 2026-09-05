@@ -216,6 +216,23 @@ export interface VideoFrameCanvasSample {
   canvas: HTMLCanvasElement | OffscreenCanvas;
 }
 
+/** 顺序处理小尺寸视频帧；调用方必须在下一轮前消费 canvas，不保留池中的画布。 */
+export async function* iterateVideoFrames(
+  input: Input,
+  options: { start: number; end: number; height: number; signal?: AbortSignal },
+): AsyncGenerator<VideoFrameCanvasSample> {
+  const track = await input.getPrimaryVideoTrack();
+  if (!track || !(await track.canDecode())) throw new Error('视频轨无法解码');
+  const sink = new CanvasSink(track, { height: options.height, fit: 'contain', poolSize: 2 });
+  for await (const frame of sink.canvases(options.start, options.end)) {
+    if (options.signal?.aborted) throw new Error('抽帧已取消');
+    yield {
+      requestedTime: frame.timestamp, actualTime: frame.timestamp, duration: frame.duration,
+      width: frame.canvas.width, height: frame.canvas.height, canvas: frame.canvas,
+    };
+  }
+}
+
 /**
  * 按显式时间点批量解码视频帧。
  *

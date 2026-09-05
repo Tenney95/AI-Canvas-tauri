@@ -372,6 +372,9 @@ export type PluginNodeHostEffect =
   | { type: 'resource.readText'; resourceId: string; maxBytes?: number }
   | { type: 'resource.readRange'; resourceId: string; offset: number; length: number }
   | { type: 'resource.createText'; content: string; suggestedName?: string }
+  | { type: 'resource.export'; resourceId: string; suggestedName?: string }
+  | { type: 'video.detectShots'; resourceId: string; start: number; end: number; threshold?: number; minShotDuration?: number }
+  | { type: 'video.inspectFrame'; resourceId: string; time: number; direction: -1 | 0 | 1; boundary?: boolean }
   | {
       type: 'video.extractFrames';
       /** 必须是当前节点 self 中的视频资源。 */
@@ -382,6 +385,8 @@ export type PluginNodeHostEffect =
       count?: number;
       /** analysis 模式显式选帧，必须按 time 单调递增，最多 24 项。 */
       samples?: Array<{ key: string; time: number }>;
+      /** 原子替换当前派生批次，使反复选帧不累积资源。 */
+      replaceDerived?: boolean;
     };
 
 export interface PluginNodeHostEffectResult {

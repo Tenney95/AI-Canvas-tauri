@@ -404,6 +404,30 @@ export function registerPluginDerivedResource(
   return ref;
 }
 
+/** 先验证完整批次，再同步替换，失败时恢复原批次，避免半批资源和配额泄漏。 */
+export function replacePluginDerivedResources(
+  context: PluginResourceReadContext,
+  resources: PluginInvocationResources,
+  entries: Array<{ displayName: string; mediaType: string; bytes: Uint8Array }>,
+): PluginResourceRef[] {
+  for (const resource of resources.derived) readPluginDerivedResourceForOutput(context, resource.resourceId);
+  if (entries.length > MAX_DERIVED_RESOURCES
+    || entries.reduce((sum, entry) => sum + entry.bytes.byteLength, 0) > MAX_DERIVED_TOTAL_BYTES) {
+    throw new Error('派生资源批次超过 25 个或 48 MiB 上限');
+  }
+  const previous = resources.derived;
+  resources.derived = [];
+  try {
+    const next = entries.map((entry) => registerPluginDerivedResource(context, resources, entry));
+    for (const resource of previous) resourceLeases.delete(resource.resourceId);
+    return next;
+  } catch (error) {
+    for (const resource of resources.derived) resourceLeases.delete(resource.resourceId);
+    resources.derived = previous;
+    throw error;
+  }
+}
+
 async function revalidateProjectLease(
   context: PluginResourceReadContext,
   lease: PluginResourceLease,

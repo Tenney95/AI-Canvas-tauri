@@ -114,9 +114,27 @@ function request(sessionId: string, requestId: string, kind: string, payload: un
 }
 
 describe('pluginUiSessionService', () => {
+  it('keeps local media, exports and paid effects in separate bounded budgets', async () => {
+    const session = await createPluginUiFrameSession({ plugin, tool, nodeId: 'target', exportName: 'dialog', parameters: {}, onClose: vi.fn() });
+    const frame = { postMessage: vi.fn() } as unknown as Window;
+    session.attach(frame);
+    let serial = 0;
+    const send = async (type: string) => {
+      const requestId = `budget-${++serial}`;
+      mocks.messageHandler?.({ data: request(session.sessionId, requestId, 'effect', { type }), source: frame } as MessageEvent);
+      await vi.waitFor(() => expect(frame.postMessage).toHaveBeenCalledWith(expect.objectContaining({ requestId }), '*'), { interval: 1 });
+      return vi.mocked(frame.postMessage).mock.calls.at(-1)?.[0];
+    };
+    for (let i = 0; i < 96; i++) expect(await send('video.inspectFrame')).toMatchObject({ ok: true });
+    expect(await send('video.inspectFrame')).toMatchObject({ ok: false });
+    for (let i = 0; i < 4; i++) expect(await send('model.generate')).toMatchObject({ ok: true });
+    expect(await send('model.generate')).toMatchObject({ ok: false });
+    expect(await send('resource.export')).toMatchObject({ ok: true });
+    session.dispose();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.messageHandler = undefined;
+    // 服务模块只安装一次监听器；后续用例继续使用同一监听器引用。
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       value: {
