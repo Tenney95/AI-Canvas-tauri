@@ -1,4 +1,9 @@
 {
   "schemaVersion": 1,
-  "plugins": []
+  "plugins": [
+    {
+      "repository": "https://github.com/luckcatlin2000/ai-canvas-video-frame-review-plugin",
+      "featured": false
+    }
+  ]
 }
