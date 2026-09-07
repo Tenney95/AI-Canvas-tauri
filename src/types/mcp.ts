@@ -2,8 +2,42 @@
  * MCP bridge、工具描述和调用结果的跨前后端协议类型。
  */
 import type { AgentToolSchema } from '../services/chat/agentToolSchemas';
+import type { AgentToolEffect } from '../services/chat/toolRegistry';
 
 export type McpTransport = 'stdio' | 'streamable-http';
+export type McpToolExposure = 'compact' | 'full';
+
+export interface McpToolSearchInput {
+  query?: string;
+  category?: string;
+  limit?: number;
+  detail?: 'summary' | 'schema';
+}
+
+export interface McpToolDescribeInput {
+  names: string[];
+}
+
+export interface McpToolCallEnvelope {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface McpToolCatalogEntry {
+  name: string;
+  title: string;
+  description: string;
+  category: string;
+  effect: AgentToolEffect;
+  inputSchema?: AgentToolSchema;
+}
+
+export interface McpToolCatalogResult {
+  tools: McpToolCatalogEntry[];
+  total: number;
+  categories?: Array<{ id: string; title: string; count: number }>;
+  hint?: string;
+}
 
 export interface McpBridgeSessionInfo {
   sessionId: string;
@@ -34,6 +68,12 @@ export interface McpToolDescriptor {
   title?: string;
   description: string;
   inputSchema: AgentToolSchema;
+  annotations?: {
+    readOnlyHint: boolean;
+    destructiveHint: boolean;
+    idempotentHint: boolean;
+    openWorldHint: boolean;
+  };
 }
 
 export type McpContent =

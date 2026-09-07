@@ -2,6 +2,11 @@
  * 设置面板：语言与启动 / 画布背景 / 画布交互 / 界面偏好
  */
 const settings = {
+  '工具发现方式': 'Tool discovery',
+  '按需发现（推荐）': 'On demand (recommended)',
+  '完整工具列表': 'Full tool list',
+  '按需模式减少初始工具说明的上下文占用；完整模式适合已支持工具延迟加载的客户端。': 'On-demand discovery reduces the initial tool context. Use the full list for clients that already load tools on demand.',
+  '切换后请在 MCP 客户端刷新工具列表或重新连接；已有对话的上下文不会自动清除。': 'After switching, refresh the tool list or reconnect your MCP client. Existing conversation context is not cleared automatically.',
   // ── 设置 · 语言与启动 ──
   '界面语言': 'Language',
   '启动时打开': 'On startup, open',

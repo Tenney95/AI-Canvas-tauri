@@ -1,10 +1,19 @@
 import net from 'node:net';
+import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+// CLI 适配器由 Node 原生加载；避免 Vite 转换把 shebang 带入执行包装函数。
+const {
   LoopbackClient,
   parseCliArgs,
   toMcpToolResult,
-} from '../../scripts/ai-canvas-mcp.mjs';
+  createMcpServer,
+} = createRequire(import.meta.url)('../../scripts/ai-canvas-mcp.mjs');
+import { handleMcpBridgeRequest } from '../../src/services/mcp/mcpControlService';
+import { useAppStore } from '../../src/store/useAppStore';
+import { registerAgentTool } from '../../src/services/chat/toolRegistry';
+import { resetAgentToolsRegistrationForTests } from '../../src/services/chat/tools';
 
 const TOKEN = 'ab'.repeat(32);
 const servers = [];
@@ -16,6 +25,44 @@ afterEach(async () => {
 });
 
 describe('AI Canvas MCP stdio adapter', () => {
+  it('supports on-demand discovery and rich results through the existing MCP SDK server', async () => {
+    useAppStore.setState(useAppStore.getInitialState(), true);
+    useAppStore.setState({ currentProjectId: 'sdk-project', projects: [{ id: 'sdk-project', name: 'SDK test', createdAt: 1, updatedAt: 1 }] });
+    let sequence = 0;
+    const server = createMcpServer({ request: (method, params) => handleMcpBridgeRequest({
+      sessionId: 'sdk-session', requestId: `sdk:${sequence++}`, method, params,
+    }) });
+    const client = new Client({ name: 'catalog-test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    let unregisterImage;
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const { tools } = await client.listTools();
+      expect(tools.map((tool) => tool.name)).toEqual(['tools_search', 'tools_describe', 'tools_call']);
+      expect(tools[2].annotations.readOnlyHint).toBe(false);
+      const found = await client.callTool({ name: 'tools_search', arguments: { query: 'canvas_query', limit: 1, detail: 'schema' } });
+      const target = JSON.parse(found.content[0].text).tools[0];
+      expect(target.name).toBe('canvas_query');
+      expect(target.inputSchema.type).toBe('object');
+      expect(await client.callTool({ name: 'tools_call', arguments: { name: target.name, arguments: {} } })).toMatchObject({ isError: false });
+
+      unregisterImage = registerAgentTool({ id: 'sdk_image_probe', title: 'SDK image', description: 'SDK rich result probe', effect: 'read',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        execute: async () => ({ status: 'success', summary: '已读取图像', modelContent: '已读取图像', mcpContent: [{ type: 'image', data: 'YWJj', mimeType: 'image/png' }] }),
+      });
+      const image = await client.callTool({ name: 'tools_call', arguments: { name: 'sdk_image_probe', arguments: {} } });
+      expect(image).toMatchObject({ isError: false, content: [{ type: 'image', data: 'YWJj', mimeType: 'image/png' }] });
+      const bad = await client.callTool({ name: 'tools_call', arguments: { name: 'tools_call', arguments: {} } });
+      expect(bad.isError).toBe(true);
+    } finally {
+      await client.close();
+      await server.close();
+      unregisterImage?.();
+      resetAgentToolsRegistrationForTests();
+    }
+  });
+
   it('requires a valid loopback port and 256-bit token', () => {
     expect(parseCliArgs(['--port', '43123', '--token', TOKEN])).toEqual({
       port: 43123,
