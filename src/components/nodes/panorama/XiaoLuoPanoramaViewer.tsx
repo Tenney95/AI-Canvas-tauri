@@ -10,11 +10,8 @@ import {
   useRef,
   useState,
 } from 'react';
-import {
-  PanoramaCore,
-  type PanoramaCoreHandle,
-} from 'xiaoluo-vr-panorama/core';
-import 'xiaoluo-vr-panorama/core.css';
+import { PanoramaCore } from './internal/PanoramaCore';
+import type { PanoramaCoreHandle } from '../../../types/panorama';
 import { useT } from '../../../i18n';
 
 export interface XiaoLuoPanoramaViewerHandle {

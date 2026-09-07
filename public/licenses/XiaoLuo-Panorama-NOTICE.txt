@@ -1,0 +1,6 @@
+AI Canvas includes modified PanoramaCore, PanoramaViewer and associated styles from XiaoLuo-Panorama.
+Source: https://github.com/Tenney95/XiaoLuo-Panorama
+Revision: c743a39041b8049e1edfa3041311ab996aa1ff8f
+License: Apache-2.0 (see XiaoLuo-Panorama-LICENSE.txt).
+Modifications: project-owned types, host theme integration, direct media loading, lifecycle and capture safeguards.
+The source is maintained within AI Canvas; builds do not fetch the upstream repository.

@@ -5,7 +5,7 @@
 import { Icon } from '@iconify/react';
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import type { PanoramaCaptureResult } from 'xiaoluo-vr-panorama';
+import type { PanoramaCaptureResult } from '../../types/panorama';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';

@@ -1,0 +1,22 @@
+/**
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from XiaoLuo-Panorama, commit c743a39041b8049e1edfa3041311ab996aa1ff8f.
+ * Modified for AI Canvas: local types, host styles and lifecycle integration.
+ * License: public/licenses/XiaoLuo-Panorama-LICENSE.txt
+ */
+
+@import "pannellum/src/css/pannellum.css";
+
+.xiaoluo-panorama-core {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.xiaoluo-panorama-core .pnlm-render-container,
+.xiaoluo-panorama-core .pnlm-ui,
+.xiaoluo-panorama-core canvas {
+  width: 100%;
+  height: 100%;
+}

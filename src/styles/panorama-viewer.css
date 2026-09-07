@@ -1,0 +1,747 @@
+/**
+ * SPDX-License-Identifier: Apache-2.0
+ * Derived from XiaoLuo-Panorama, commit c743a39041b8049e1edfa3041311ab996aa1ff8f.
+ * Modified for AI Canvas: local types, host styles and lifecycle integration.
+ * License: public/licenses/XiaoLuo-Panorama-LICENSE.txt
+ */
+
+@layer base {
+  .xiaoluo-panorama-viewer,
+  .xiaoluo-panorama-viewer *,
+  .xiaoluo-panorama-viewer::before,
+  .xiaoluo-panorama-viewer::after,
+  .xiaoluo-panorama-viewer *::before,
+  .xiaoluo-panorama-viewer *::after {
+    box-sizing: border-box;
+    border: 0 solid;
+  }
+
+  .xiaoluo-panorama-viewer {
+    font-family: inherit;
+    line-height: 1.5;
+  }
+
+  .xiaoluo-panorama-viewer button,
+  .xiaoluo-panorama-viewer input {
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+  }
+
+  .xiaoluo-panorama-viewer button {
+    cursor: pointer;
+  }
+
+  .xiaoluo-panorama-viewer svg,
+  .xiaoluo-panorama-viewer canvas {
+    display: block;
+  }
+}
+
+.xiaoluo-panorama-toolbar {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.xiaoluo-panorama-toolbar-actions {
+  display: contents;
+}
+
+.xiaoluo-panorama-toolbar .xiaoluo-panorama-zoom {
+  order: 3;
+}
+
+.xiaoluo-panorama-toolbar .xiaoluo-panorama-exit {
+  order: 4;
+}
+
+.xiaoluo-panorama-viewer .xiaoluo-panorama-zoom-icon-compact {
+  display: none;
+}
+
+.xiaoluo-panorama-loading-icon {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.xiaoluo-panorama-pro-panel {
+  top: 1rem;
+  right: 1rem;
+  width: calc(100% - 2rem);
+  max-width: 18rem;
+  max-height: calc(100% - 6rem);
+}
+
+.xiaoluo-panorama-viewer[data-theme='dark'] .xiaoluo-panorama-exit {
+  color: var(--theme-surface);
+}
+
+.xiaoluo-panorama-viewer[data-theme='dark']
+  .xiaoluo-panorama-pro-panel
+  input[type='range'] {
+  background-color: var(--theme-hover);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-toolbar {
+  gap: 0.5rem;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact {
+  --xiaoluo-compact-surface: color-mix(in srgb, var(--theme-text) 95%, transparent);
+  --xiaoluo-compact-border: color-mix(in srgb, var(--theme-text) 80%, transparent);
+  --xiaoluo-compact-text: var(--theme-text-secondary);
+  --xiaoluo-compact-text-strong: var(--theme-text);
+  --xiaoluo-compact-hover: color-mix(in srgb, var(--black-alpha-60) 8%, transparent);
+  --xiaoluo-compact-brand: var(--brand);
+  --xiaoluo-compact-danger: var(--danger);
+  --xiaoluo-compact-shadow: 0 8px 30px color-mix(in srgb, var(--black-alpha-60) 12%, transparent);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='dark'] {
+  --xiaoluo-compact-surface: color-mix(in srgb, var(--black-alpha-60) 95%, transparent);
+  --xiaoluo-compact-border: color-mix(in srgb, var(--black-alpha-60) 80%, transparent);
+  --xiaoluo-compact-text: var(--theme-text-secondary);
+  --xiaoluo-compact-text-strong: var(--theme-text);
+  --xiaoluo-compact-hover: color-mix(in srgb, var(--theme-text) 8%, transparent);
+  --xiaoluo-compact-brand: var(--brand);
+  --xiaoluo-compact-shadow: 0 8px 30px color-mix(in srgb, var(--black-alpha-60) 42%, transparent);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.5rem;
+  background-color: var(--xiaoluo-compact-surface);
+  border: 1px solid var(--xiaoluo-compact-border);
+  border-radius: 1rem;
+  box-shadow: var(--xiaoluo-compact-shadow);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='dark']
+  .xiaoluo-panorama-toolbar-actions,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='dark']
+  .xiaoluo-panorama-zoom,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='dark']
+  .xiaoluo-panorama-pro-panel {
+  background-color: var(--xiaoluo-compact-surface);
+  border-color: var(--xiaoluo-compact-border);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-button {
+  gap: 0.375rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: 0.375rem;
+  font-size: 0.6875rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-button,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-icon-button {
+  color: var(--xiaoluo-compact-text);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-button:hover,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-icon-button:hover {
+  color: var(--xiaoluo-compact-text-strong);
+  background-color: var(--xiaoluo-compact-hover);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-button[aria-pressed='true'],
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-icon-button[aria-pressed='true'] {
+  color: var(--xiaoluo-compact-brand);
+  background-color: var(--xiaoluo-compact-hover);
+  box-shadow: none;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-button svg,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-icon-button svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-toolbar-icon-button {
+  padding: 0.375rem;
+  border-radius: 0.375rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-zoom {
+  align-self: stretch;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  color: var(--xiaoluo-compact-text);
+  background-color: var(--xiaoluo-compact-surface);
+  border: 1px solid var(--xiaoluo-compact-border);
+  border-radius: 1rem;
+  box-shadow: var(--xiaoluo-compact-shadow);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  font-size: 0.625rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-zoom > button {
+  display: inline-flex;
+  width: 1.625rem;
+  height: 1.625rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 0.375rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-zoom > button:hover {
+  color: var(--xiaoluo-compact-text);
+  background-color: var(--xiaoluo-compact-hover);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-zoom-value {
+  width: auto;
+  color: inherit;
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-zoom-icon-default {
+  display: none;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-zoom-icon-compact {
+  display: block;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-exit {
+  width: 1.625rem;
+  height: 1.625rem;
+  gap: 0;
+  padding: 0;
+  justify-content: center;
+  color: var(--xiaoluo-compact-text);
+  background: transparent;
+  border-radius: 0.375rem;
+  font-size: 0.6875rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-exit:hover {
+  color: var(--xiaoluo-compact-danger);
+  background-color: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-exit span {
+  display: none;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-pro-panel {
+  width: calc(100% - 2rem);
+  max-width: 16rem;
+  padding: 0.875rem;
+  background-color: var(--xiaoluo-compact-surface);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  border-radius: 0.5rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-pro-title,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-shift-title,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-arch-capture {
+  font-size: 0.6875rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-shift-card {
+  padding: 0.625rem;
+  border-radius: 0.375rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-shift-description {
+  font-size: 0.5rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-shift-toggle {
+  width: 2rem;
+  height: 1.125rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-shift-knob {
+  top: 0.125rem;
+  left: 0.125rem;
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-shift-toggle[data-checked='true']
+  .xiaoluo-panorama-shift-knob {
+  left: 1rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-arch-capture {
+  gap: 0.375rem;
+  padding-block: 0.4375rem;
+  border-radius: 0.375rem;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-panel {
+  color: var(--theme-text);
+  background-color: color-mix(in srgb, var(--theme-text) 95%, transparent);
+  border-color: var(--theme-border);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-title,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-shift-title {
+  color: var(--theme-text);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-reset,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-section-icon,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-section-label,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-shift-description,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-hint {
+  color: var(--theme-text-secondary);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-label {
+  color: var(--theme-text-secondary);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-value {
+  color: var(--brand);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-muted-value {
+  color: var(--theme-text-secondary);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-range {
+  background-color: var(--theme-border);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-shift-card {
+  background-color: var(--theme-hover);
+  border-color: var(--theme-border);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-section,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-pro-footer {
+  border-color: var(--theme-border);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-arch-capture {
+  color: var(--theme-text);
+  background-color: var(--brand);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme='light']
+  .xiaoluo-panorama-arch-capture:hover {
+  background-color: var(--brand);
+}
+
+.xiaoluo-panorama-capture-guide {
+  position: absolute;
+  inset: 0.75rem 0.75rem 4.75rem;
+  z-index: 18;
+  container-type: size;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.xiaoluo-panorama-capture-frame {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--theme-text) 90%, transparent);
+  border-radius: 0.375rem;
+  background-image:
+    linear-gradient(to right, transparent 33.1%, color-mix(in srgb, var(--theme-text) 28%, transparent) 33.3%, color-mix(in srgb, var(--theme-text) 28%, transparent) 33.6%, transparent 33.8%, transparent 66.2%, color-mix(in srgb, var(--theme-text) 28%, transparent) 66.4%, color-mix(in srgb, var(--theme-text) 28%, transparent) 66.7%, transparent 66.9%),
+    linear-gradient(to bottom, transparent 33.1%, color-mix(in srgb, var(--theme-text) 28%, transparent) 33.3%, color-mix(in srgb, var(--theme-text) 28%, transparent) 33.6%, transparent 33.8%, transparent 66.2%, color-mix(in srgb, var(--theme-text) 28%, transparent) 66.4%, color-mix(in srgb, var(--theme-text) 28%, transparent) 66.7%, transparent 66.9%);
+  box-shadow:
+    0 0 0 200vmax color-mix(in srgb, var(--black-alpha-60) 48%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--black-alpha-60) 24%, transparent);
+}
+
+.xiaoluo-panorama-capture-frame.is-auto {
+  width: 100%;
+  height: 100%;
+}
+
+.xiaoluo-panorama-capture-frame.is-landscape {
+  width: 100%;
+  height: auto;
+}
+
+.xiaoluo-panorama-capture-frame.is-portrait {
+  width: auto;
+  height: 100%;
+}
+
+@supports (width: 1cqw) {
+  .xiaoluo-panorama-capture-frame:not(.is-auto) {
+    width: min(100%, calc(100cqh * var(--xiaoluo-capture-ratio)));
+    height: min(100%, calc(100cqw / var(--xiaoluo-capture-ratio)));
+  }
+}
+
+.xiaoluo-panorama-capture-frame > span {
+  position: absolute;
+  top: 0.375rem;
+  left: 0.5rem;
+  color: color-mix(in srgb, var(--theme-text) 92%, transparent);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-shadow: 0 1px 3px color-mix(in srgb, var(--black-alpha-60) 70%, transparent);
+}
+
+.xiaoluo-panorama-capture-panel {
+  position: absolute;
+  bottom: 4.75rem;
+  right: 0.5rem;
+  left: 0.5rem;
+  z-index: 30;
+  width: calc(100% - 1rem);
+  max-width: 22rem;
+  max-height: calc(100% - 6rem);
+  margin-inline: auto;
+  padding: 0.625rem;
+  overflow-y: auto;
+  color: var(--theme-text);
+  background-color: color-mix(in srgb, var(--theme-text) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--theme-text) 70%, transparent);
+  border-radius: 0.5rem;
+  box-shadow: 0 16px 48px color-mix(in srgb, var(--black-alpha-60) 18%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(135%);
+  backdrop-filter: blur(18px) saturate(135%);
+}
+
+.xiaoluo-panorama-viewer[data-theme='dark'] .xiaoluo-panorama-capture-panel {
+  color: var(--theme-text);
+  background-color: color-mix(in srgb, var(--black-alpha-60) 82%, transparent);
+  border-color: color-mix(in srgb, var(--theme-text-secondary) 20%, transparent);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-capture-panel {
+  color: var(--xiaoluo-compact-text-strong);
+  background-color: var(--xiaoluo-compact-surface);
+  border-color: var(--xiaoluo-compact-border);
+  box-shadow: var(--xiaoluo-compact-shadow);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+
+.xiaoluo-panorama-capture-header,
+.xiaoluo-panorama-capture-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.xiaoluo-panorama-capture-header {
+  min-height: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.xiaoluo-panorama-capture-header > span {
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.xiaoluo-panorama-capture-header button {
+  display: inline-flex;
+  width: 1.5rem;
+  height: 1.5rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--theme-text-secondary);
+  background: transparent;
+  border-radius: 0.375rem;
+}
+
+.xiaoluo-panorama-capture-header button:hover {
+  color: var(--theme-text);
+  background-color: color-mix(in srgb, var(--theme-text-secondary) 12%, transparent);
+}
+
+.xiaoluo-panorama-viewer[data-theme='dark']
+  .xiaoluo-panorama-capture-header button {
+  color: var(--theme-text-secondary);
+}
+
+.xiaoluo-panorama-viewer[data-theme='dark']
+  .xiaoluo-panorama-capture-header button:hover {
+  color: var(--theme-text);
+  background-color: color-mix(in srgb, var(--theme-text-secondary) 12%, transparent);
+}
+
+.xiaoluo-panorama-capture-header svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.xiaoluo-panorama-ratio-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.25rem;
+}
+
+.xiaoluo-panorama-viewer .xiaoluo-panorama-ratio-option {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  height: 2.75rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  color: var(--theme-text-secondary);
+  background-color: color-mix(in srgb, var(--theme-text) 76%, transparent);
+  border: 1px solid transparent;
+  border-radius: 0.375rem;
+  font-size: 0.625rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
+}
+
+.xiaoluo-panorama-ratio-option:hover {
+  color: var(--theme-text);
+  background-color: color-mix(in srgb, var(--theme-text) 82%, transparent);
+}
+
+.xiaoluo-panorama-ratio-option[data-selected='true'] {
+  color: var(--brand);
+  background-color: color-mix(in srgb, var(--theme-text) 92%, transparent);
+  border-color: var(--brand);
+}
+
+.xiaoluo-panorama-viewer[data-theme='dark'] .xiaoluo-panorama-ratio-option {
+  color: var(--theme-text-secondary);
+  background-color: color-mix(in srgb, var(--black-alpha-60) 68%, transparent);
+}
+
+.xiaoluo-panorama-viewer[data-theme='dark']
+  .xiaoluo-panorama-ratio-option:hover {
+  color: var(--theme-text);
+  background-color: color-mix(in srgb, var(--black-alpha-60) 88%, transparent);
+}
+
+.xiaoluo-panorama-viewer[data-theme='dark']
+  .xiaoluo-panorama-ratio-option[data-selected='true'] {
+  color: var(--brand);
+  background-color: color-mix(in srgb, var(--theme-text-secondary) 30%, transparent);
+  border-color: var(--brand);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-ratio-option {
+  color: var(--xiaoluo-compact-text);
+  background-color: var(--xiaoluo-compact-hover);
+  border-color: transparent;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-ratio-option:hover {
+  color: var(--xiaoluo-compact-text-strong);
+  background-color: var(--xiaoluo-compact-hover);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact
+  .xiaoluo-panorama-ratio-option[data-selected='true'] {
+  color: var(--xiaoluo-compact-brand);
+  background-color: var(--xiaoluo-compact-hover);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.xiaoluo-panorama-ratio-mark {
+  display: block;
+  height: 0.75rem;
+  max-width: 1.25rem;
+  border: 1.5px solid currentColor;
+  border-radius: 1px;
+}
+
+.xiaoluo-panorama-ratio-mark.is-auto {
+  width: 1rem;
+  height: 0.75rem;
+  border-style: dashed;
+}
+
+.xiaoluo-panorama-ratio-check {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  width: 0.625rem;
+  height: 0.625rem;
+}
+
+.xiaoluo-panorama-capture-footer {
+  min-height: 2rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid color-mix(in srgb, var(--theme-text-secondary) 18%, transparent);
+}
+
+.xiaoluo-panorama-capture-footer > span {
+  color: var(--theme-text-secondary);
+  font-family: ui-monospace, monospace;
+  font-size: 0.625rem;
+  font-weight: 700;
+}
+
+.xiaoluo-panorama-viewer[data-theme='dark']
+  .xiaoluo-panorama-capture-footer > span {
+  color: var(--theme-text-secondary);
+}
+
+.xiaoluo-panorama-viewer .xiaoluo-panorama-capture-confirm {
+  display: inline-flex;
+  min-width: 4.25rem;
+  height: 1.875rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding-inline: 0.625rem;
+  color: var(--theme-text);
+  background-color: var(--brand);
+  border-radius: 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  transition: background-color 150ms ease, transform 150ms ease;
+}
+
+.xiaoluo-panorama-capture-confirm:hover {
+  background-color: var(--brand);
+}
+
+.xiaoluo-panorama-capture-confirm:active {
+  transform: scale(0.96);
+}
+
+.xiaoluo-panorama-capture-confirm:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.xiaoluo-panorama-capture-confirm svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.xiaoluo-panorama-toolbar-icon-button[aria-pressed='true'] {
+  color: var(--theme-text);
+  background-color: var(--brand);
+}
+
+@media (min-width: 640px) {
+  .xiaoluo-panorama-pro-panel {
+    top: 6rem;
+    right: 1.5rem;
+    width: 18rem;
+    max-height: calc(100% - 12rem);
+  }
+
+  .xiaoluo-panorama-viewer.xiaoluo-panorama-compact .xiaoluo-panorama-pro-panel {
+    top: 4rem;
+    width: 16rem;
+    max-height: calc(100% - 8rem);
+  }
+
+  .xiaoluo-panorama-ratio-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 639px) {
+  .xiaoluo-panorama-capture-guide {
+    inset: 0.5rem 0.5rem 4rem;
+  }
+
+  .xiaoluo-panorama-capture-panel {
+    bottom: 3.75rem;
+    max-height: calc(100% - 4.5rem);
+  }
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme] {
+  --xiaoluo-compact-surface: color-mix(in srgb, var(--theme-surface) 95%, transparent);
+  --xiaoluo-compact-border: var(--theme-border);
+  --xiaoluo-compact-text: var(--theme-text-secondary);
+  --xiaoluo-compact-text-strong: var(--theme-text);
+  --xiaoluo-compact-hover: var(--theme-hover);
+  --xiaoluo-compact-brand: var(--brand);
+}
+
+/* Host controls must override both the imported compact rules and global inputs. */
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme] .xiaoluo-panorama-pro-panel {
+  color: var(--theme-text);
+  background-color: var(--xiaoluo-compact-surface);
+  border-color: var(--theme-border);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme]
+  .xiaoluo-panorama-pro-panel input.xiaoluo-panorama-pro-range[type='range'] {
+  height: 0.25rem;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background-color: var(--theme-border);
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme] .xiaoluo-panorama-arch-capture,
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme] .xiaoluo-panorama-capture-confirm {
+  @apply text-white;
+}
+
+.xiaoluo-panorama-viewer.xiaoluo-panorama-compact[data-theme]
+  .xiaoluo-panorama-shift-toggle[data-checked='false'] {
+  background-color: var(--theme-border);
+}
