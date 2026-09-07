@@ -772,6 +772,23 @@ describe('可信 Python 插件状态边界', () => {
     });
   });
 
+  it('exposes registry repair when loading detects corrupt native trust data', async () => {
+    const installed = createInstalledPluginFixture('corrupt-registry-plugin');
+    dbMocks.getAllPlugins.mockResolvedValue([installed]);
+    nativeMocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'ensure_plugin_registration') {
+        throw new Error('插件信任注册表损坏');
+      }
+      return null;
+    });
+    const { slice, getState } = createSlice();
+
+    await slice.loadPlugins();
+
+    expect(getState().installedPlugins[0].enabled).toBe(false);
+    expect(getState().pluginRegistryRepairRequired).toBe(true);
+  });
+
   it('activates the persisted digest when re-enabling after an ensure mismatch', async () => {
     const persisted = {
       ...createInstalledPluginFixture('com.example.python-tool'),
@@ -846,7 +863,7 @@ describe('可信 Python 插件状态边界', () => {
     expect(getState().installedPlugins).toHaveLength(0);
   });
 
-  it('removes Store state and clears grants before the native remove responds', async () => {
+  it('fails closed in Store and clears grants before the native remove responds', async () => {
     const plugin = createInstalledPluginFixture('deferred-native-remove');
     const nativeRemoval = createDeferred<void>();
     const grantedPluginIds = new Set([plugin.id]);
@@ -865,7 +882,7 @@ describe('可信 Python 插件状态边界', () => {
       { pluginId: plugin.id },
     ));
 
-    expect(getState().installedPlugins).toHaveLength(0);
+    expect(getState().installedPlugins).toEqual([{ ...plugin, enabled: false }]);
     expect(grantedPluginIds.has(plugin.id)).toBe(false);
     expect(dbMocks.deletePluginFromDb).not.toHaveBeenCalled();
 
@@ -873,18 +890,19 @@ describe('可信 Python 插件状态边界', () => {
     await deletion;
   });
 
-  it('keeps the plugin removed from Store when native removal fails ambiguously', async () => {
+  it('keeps the plugin disabled and persisted when native removal fails ambiguously', async () => {
     const plugin = createInstalledPluginFixture('failed-native-remove');
     nativeMocks.invoke.mockRejectedValue(new Error('原生删除响应丢失'));
     const { slice, getState } = createSlice([plugin]);
 
     await expect(slice.deletePlugin(plugin.id)).rejects.toThrow(
-      '插件已从当前会话移除，但原生注册删除状态未确认',
+      '插件卸载失败，原生注册删除状态未确认',
     );
 
-    expect(getState().installedPlugins).toHaveLength(0);
+    expect(getState().installedPlugins).toEqual([{ ...plugin, enabled: false }]);
     expect(resourceMocks.clearPluginResources).toHaveBeenCalledWith(plugin.id);
     expect(dbMocks.deletePluginFromDb).not.toHaveBeenCalled();
+    expect(dbMocks.savePluginToDb).toHaveBeenCalledWith({ ...plugin, enabled: false });
   });
 
   it('clears grants and removes memory state while IndexedDB deletion is still pending', async () => {
@@ -902,13 +920,34 @@ describe('可信 Python 插件状态边界', () => {
     await vi.waitFor(() => expect(dbMocks.deletePluginFromDb).toHaveBeenCalledWith(plugin.id));
     expect(resourceMocks.clearPluginResources).toHaveBeenCalledWith(plugin.id);
     expect(grantedPluginIds.has(plugin.id)).toBe(false);
-    expect(getState().installedPlugins).toHaveLength(0);
+    expect(getState().installedPlugins).toEqual([{ ...plugin, enabled: false }]);
 
     databaseDeletion.reject(new Error('IndexedDB delete failed'));
     await expect(deletion).rejects.toThrow(
-      '插件已从原生运行时和当前会话移除，但删除持久化记录失败',
+      '插件原生注册已移除，但删除安装记录失败',
     );
     expect(nativeMocks.invoke).toHaveBeenCalledWith('remove_plugin_registration', { pluginId: plugin.id });
+  });
+
+  it('repairs the native registry and persists every installed plugin as disabled', async () => {
+    const first = createInstalledPluginFixture('repair-first');
+    const second = createInstalledPluginFixture('repair-second');
+    nativeMocks.invoke.mockImplementation(async (command: string) => (
+      command === 'repair_plugin_registry' ? true : null
+    ));
+    const { slice, getState } = createSlice([first, second]);
+
+    await slice.repairPluginRegistry();
+
+    expect(nativeMocks.invoke).toHaveBeenCalledWith('repair_plugin_registry');
+    expect(getState().installedPlugins).toEqual([
+      expect.objectContaining({ id: first.id, enabled: false }),
+      expect.objectContaining({ id: second.id, enabled: false }),
+    ]);
+    expect(resourceMocks.clearPluginResources).toHaveBeenCalledWith(first.id);
+    expect(resourceMocks.clearPluginResources).toHaveBeenCalledWith(second.id);
+    expect(dbMocks.savePluginToDb).toHaveBeenCalledTimes(2);
+    expect(getState().pluginRegistryRepairRequired).toBe(false);
   });
 
   it('queues toggle and delete mutations for the same plugin id', async () => {

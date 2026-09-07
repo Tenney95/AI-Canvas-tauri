@@ -17,6 +17,7 @@ import {
 
 export interface PluginSlice {
   installedPlugins: InstalledPlugin[];
+  pluginRegistryRepairRequired: boolean;
   installPluginBundle: (
     manifestText: string,
     source: string,
@@ -35,6 +36,7 @@ export interface PluginSlice {
     options?: { trustedPythonConfirmed?: boolean },
   ) => Promise<void>;
   deletePlugin: (id: string) => Promise<void>;
+  repairPluginRegistry: () => Promise<void>;
   loadPlugins: () => Promise<void>;
 }
 
@@ -59,6 +61,12 @@ function enqueuePluginMutation<T>(pluginId: string, operation: () => Promise<T>)
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isPluginRegistryCorruption(error: unknown): boolean {
+  const message = errorMessage(error);
+  return message.includes('插件信任注册表损坏')
+    || message.includes('插件信任注册表及备份均损坏');
 }
 
 function normalizeSourceDigest(value: unknown, label: string): string {
@@ -305,30 +313,45 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
   };
 
   const deletePluginCore = async (id: string): Promise<void> => {
-    clearPluginResources(id);
+    const plugin = get().installedPlugins.find((item) => item.id === id);
+    const disabled = plugin ? { ...plugin, enabled: false } : undefined;
+    // 先撤销执行租约；两处持久化都删除成功后才隐藏列表项，避免卸载失败被误认为成功。
     set((state) => ({
-      installedPlugins: state.installedPlugins.filter((plugin) => plugin.id !== id),
+      installedPlugins: state.installedPlugins.map((item) => (
+        item.id === id && disabled ? disabled : item
+      )),
     }));
+    clearPluginResources(id);
+    let nativeRemoved = false;
     try {
       await invoke('remove_plugin_registration', { pluginId: id });
-    } catch (error) {
-      throw new Error(
-        `插件已从当前会话移除，但原生注册删除状态未确认：${errorMessage(error)}`,
-        { cause: error },
-      );
-    }
-    try {
+      nativeRemoved = true;
       await deletePluginFromDb(id);
     } catch (error) {
-      throw new Error(
-        `插件已从原生运行时和当前会话移除，但删除持久化记录失败：${errorMessage(error)}`,
-        { cause: error },
-      );
+      if (isPluginRegistryCorruption(error)) {
+        set({ pluginRegistryRepairRequired: true });
+      }
+      let message = nativeRemoved
+        ? `插件原生注册已移除，但删除安装记录失败：${errorMessage(error)}`
+        : `插件卸载失败，原生注册删除状态未确认：${errorMessage(error)}`;
+      if (disabled) {
+        message += '；插件已在当前会话停用并保留在列表中，可重试卸载';
+        try {
+          await savePluginToDb(disabled);
+        } catch (persistError) {
+          message += `；停用状态保存失败：${errorMessage(persistError)}`;
+        }
+      }
+      throw new Error(message, { cause: error });
     }
+    set((state) => ({
+      installedPlugins: state.installedPlugins.filter((item) => item.id !== id),
+    }));
   };
 
   return {
     installedPlugins: [],
+    pluginRegistryRepairRequired: false,
 
     installPluginBundle: async (manifestText, source, options) => {
       const manifest = parsePluginBundle(manifestText, source);
@@ -345,8 +368,34 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
 
     deletePlugin: async (id) => enqueuePluginMutation(id, () => deletePluginCore(id)),
 
+    repairPluginRegistry: async () => {
+      const repaired = await invoke<boolean>('repair_plugin_registry');
+      if (!repaired) {
+        set({ pluginRegistryRepairRequired: false });
+        get().showToast('插件信任注册表状态正常，无需修复');
+        return;
+      }
+      const disabledPlugins = get().installedPlugins.map((plugin) => ({
+        ...plugin,
+        enabled: false,
+        updatedAt: Date.now(),
+      }));
+      for (const plugin of disabledPlugins) clearPluginResources(plugin.id);
+      set({
+        installedPlugins: disabledPlugins,
+        pluginRegistryRepairRequired: false,
+      });
+      const results = await Promise.allSettled(disabledPlugins.map(savePluginToDb));
+      const failed = results.filter((result) => result.status === 'rejected').length;
+      if (failed > 0) {
+        throw new Error(`插件信任注册表已修复，但有 ${failed} 个插件的停用状态保存失败`);
+      }
+      get().showToast('插件信任注册表已修复；请重试卸载或重新安装插件');
+    },
+
     loadPlugins: async () => {
       const plugins: InstalledPlugin[] = [];
+      let repairRequired = false;
       for (const persisted of await getAllPlugins()) {
         let plugin: InstalledPlugin = {
           ...persisted,
@@ -374,12 +423,16 @@ export const createPluginSlice: StateCreator<AppState, [], [], PluginSlice> = (s
           } else {
             throw new Error('已安装插件缺少完整 revision 摘要，请重新安装');
           }
-        } catch {
+        } catch (error) {
+          if (isPluginRegistryCorruption(error)) repairRequired = true;
           plugin = await failClosedPlugin(plugin);
         }
         plugins.push(plugin);
       }
-      set({ installedPlugins: plugins.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name)) });
+      set({
+        installedPlugins: plugins.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name)),
+        pluginRegistryRepairRequired: repairRequired,
+      });
     },
   };
 };

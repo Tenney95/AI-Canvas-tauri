@@ -75,6 +75,7 @@ commands.allow = [
   "ensure_plugin_registration",
   "set_plugin_registration_enabled",
   "remove_plugin_registration",
+  "repair_plugin_registry",
   "get_plugin_registration_status",
   "read_plugin_package_resource",
   "open_plugin_ui_window",

@@ -341,6 +341,8 @@ export default function PluginSettings() {
   const installPluginBundle = useAppStore((state) => state.installPluginBundle);
   const setPluginEnabled = useAppStore((state) => state.setPluginEnabled);
   const deletePlugin = useAppStore((state) => state.deletePlugin);
+  const pluginRegistryRepairRequired = useAppStore((state) => state.pluginRegistryRepairRequired);
+  const repairPluginRegistry = useAppStore((state) => state.repairPluginRegistry);
   const showToast = useAppStore((state) => state.showToast);
   const [busy, setBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -353,6 +355,7 @@ export default function PluginSettings() {
   const [installingRepository, setInstallingRepository] = useState('');
   const [pythonStatus, setPythonStatus] = useState<PythonPluginRuntimeStatus | null>(null);
   const [pythonChecking, setPythonChecking] = useState(false);
+  const [registryRepairing, setRegistryRepairing] = useState(false);
   const installedRepositories = useMemo(
     () => plugins.flatMap((plugin) => plugin.manifest.repository ? [plugin.manifest.repository] : []),
     [plugins],
@@ -563,6 +566,18 @@ export default function PluginSettings() {
     await setPluginEnabled(plugin.id, enabled, {
       trustedPythonConfirmed: enabled && plugin.manifest.runtime === 'python',
     });
+  };
+
+  const handleRegistryRepair = async () => {
+    if (registryRepairing) return;
+    setRegistryRepairing(true);
+    try {
+      await repairPluginRegistry();
+    } catch (error) {
+      showToast(pluginOperationErrorMessage(error, '插件信任注册表修复失败'), 'error');
+    } finally {
+      setRegistryRepairing(false);
+    }
   };
 
   const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
@@ -871,6 +886,28 @@ export default function PluginSettings() {
           )}
         </div>
       </section>
+
+      {pluginRegistryRepairRequired && (
+        <section className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3">
+          <div className="flex items-start gap-3">
+            <Icon icon="lucide:shield-alert" width={18} height={18} className="mt-0.5 shrink-0 text-amber-400" />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium text-canvas-text">插件信任注册表需要修复</div>
+              <p className="mt-1 text-[11px] leading-5 text-canvas-text-muted">
+                原生注册表已损坏，当前插件已失败关闭。修复会停止全部插件调用并清理原生私有快照，安装记录会保留为停用状态。
+              </p>
+            </div>
+            <AnimatedButton
+              type="button"
+              disabled={registryRepairing}
+              className="shrink-0 rounded-md bg-amber-500/10 px-2.5 py-1.5 text-[11px] font-medium text-amber-400 hover:bg-amber-500/15 disabled:opacity-50"
+              onClick={() => void handleRegistryRepair()}
+            >
+              {registryRepairing ? '修复中…' : '修复注册表'}
+            </AnimatedButton>
+          </div>
+        </section>
+      )}
 
       <section className="space-y-2">
         {plugins.map((plugin) => {

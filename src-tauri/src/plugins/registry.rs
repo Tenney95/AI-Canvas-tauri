@@ -25,6 +25,7 @@ const REGISTRY_FILE_NAME: &str = "registry.json";
 const REGISTRY_TEMP_FILE_NAME: &str = "registry.json.tmp";
 const REGISTRY_BACKUP_FILE_NAME: &str = "registry.json.bak";
 const REVISIONS_DIR_NAME: &str = "revisions";
+const UI_REVISIONS_DIR_NAME: &str = "ui-revisions";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_BYTES: usize = 512 * 1024;
 const MAX_PLUGIN_ID_BYTES: usize = 128;
@@ -779,6 +780,26 @@ async fn request_native_revision_approval(
     Ok(approved)
 }
 
+async fn request_registry_repair_approval(app: &AppHandle) -> Result<bool, String> {
+    let dialog_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
+            .dialog()
+            .message(
+                "插件信任注册表已经损坏。修复会重建空注册表、停止全部插件调用并删除原生私有插件快照。\n\n应用内的插件安装记录会保留但全部停用；修复后可逐个卸载或重新安装。此操作无法撤销。",
+            )
+            .title("修复插件信任注册表？")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "修复并停用全部插件".into(),
+                "取消".into(),
+            ))
+            .blocking_show()
+    })
+    .await
+    .map_err(|_| "无法显示插件信任注册表修复确认".to_string())
+}
+
 pub(crate) fn plugin_private_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
@@ -1053,6 +1074,31 @@ fn read_registry_at(private_dir: &Path) -> Result<PluginRegistry, String> {
     }
 }
 
+fn is_repairable_registry_error(error: &str) -> bool {
+    matches!(error, "插件信任注册表损坏" | "插件信任注册表及备份均损坏")
+}
+
+/// 只修复确认属于 JSON 内容损坏的注册表。权限、路径或普通 I/O 错误必须原样失败，
+/// 避免把环境故障误判为可以清空的信任状态。
+fn repair_corrupt_registry_at(private_dir: &Path) -> Result<bool, String> {
+    match read_registry_at(private_dir) {
+        Ok(_) => return Ok(false),
+        Err(error) if is_repairable_registry_error(&error) => {}
+        Err(error) => return Err(error),
+    }
+    write_registry_at(private_dir, &PluginRegistry::default())?;
+    for directory in [
+        private_dir.join(REVISIONS_DIR_NAME),
+        private_dir.join(UI_REVISIONS_DIR_NAME),
+    ] {
+        if directory.exists() {
+            // 注册表已清空后残留快照不再可执行；清理失败不能阻止后续全局调用撤销。
+            let _ = fs::remove_dir_all(directory);
+        }
+    }
+    Ok(true)
+}
+
 fn write_registry_at(private_dir: &Path, registry: &PluginRegistry) -> Result<(), String> {
     ensure_private_directory(private_dir)?;
     validate_registry(registry)?;
@@ -1213,7 +1259,7 @@ fn read_verified_resource_at(
 /// 这样「仅更新 UI、主源码不变」时不会覆盖活动版本的 UI 文件，也不会让
 /// active/previous/staged 因共享 source_digest 而产生回滚歧义。
 fn ui_directory(private_dir: &Path, plugin_id: &str) -> PathBuf {
-    private_dir.join("ui-revisions").join(plugin_id)
+    private_dir.join(UI_REVISIONS_DIR_NAME).join(plugin_id)
 }
 
 fn ui_snapshot_path(
@@ -2019,10 +2065,42 @@ pub async fn remove_plugin_registration(
         // 快照删除也受注册表锁保护，避免卸载与同 ID 的重新安装互相穿插。
         let directory = private_dir.join(REVISIONS_DIR_NAME).join(&record.plugin_id);
         let _ = fs::remove_dir_all(directory);
-        let ui_directory = private_dir.join("ui-revisions").join(&record.plugin_id);
+        let ui_directory = private_dir
+            .join(UI_REVISIONS_DIR_NAME)
+            .join(&record.plugin_id);
         let _ = fs::remove_dir_all(ui_directory);
     }
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn repair_plugin_registry(app: AppHandle, webview: Webview) -> Result<bool, String> {
+    ensure_trusted_caller(&webview)?;
+    let private_dir = plugin_private_dir(&app)?;
+    {
+        let _guard = REGISTRY_LOCK
+            .lock()
+            .map_err(|_| "插件信任注册表锁异常".to_string())?;
+        match read_registry_at(&private_dir) {
+            Ok(_) => return Ok(false),
+            Err(error) if is_repairable_registry_error(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if !request_registry_repair_approval(&app).await? {
+        return Err("用户已取消插件信任注册表修复".to_string());
+    }
+    let repaired = {
+        let _guard = REGISTRY_LOCK
+            .lock()
+            .map_err(|_| "插件信任注册表锁异常".to_string())?;
+        repair_corrupt_registry_at(&private_dir)?
+    };
+    if repaired {
+        crate::plugin_runtime::cancel_all_plugin_invocations();
+        crate::plugin_window::revoke_all_sessions_for_registry_repair();
+    }
+    Ok(repaired)
 }
 
 #[tauri::command]
@@ -2806,6 +2884,33 @@ mod tests {
         assert_eq!(loaded.plugins.len(), 1);
         assert!(loaded.plugins.contains_key("committed.plugin"));
         assert!(!registry_temp_file(&directory).exists());
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn repairs_corrupt_registry_and_removes_private_snapshots() {
+        let directory = temporary_directory("repair-corrupt-registry");
+        fs::create_dir_all(directory.join(REVISIONS_DIR_NAME).join("stale.plugin")).unwrap();
+        fs::create_dir_all(directory.join(UI_REVISIONS_DIR_NAME).join("stale.plugin")).unwrap();
+        fs::write(registry_file(&directory), b"not-json").unwrap();
+
+        assert!(repair_corrupt_registry_at(&directory).unwrap());
+        assert!(read_registry_at(&directory).unwrap().plugins.is_empty());
+        assert!(!directory.join(REVISIONS_DIR_NAME).exists());
+        assert!(!directory.join(UI_REVISIONS_DIR_NAME).exists());
+        assert!(!repair_corrupt_registry_at(&directory).unwrap());
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn repair_does_not_treat_unsafe_registry_path_as_corruption() {
+        let directory = temporary_directory("repair-unsafe-registry");
+        fs::create_dir_all(registry_file(&directory)).unwrap();
+
+        assert_eq!(
+            repair_corrupt_registry_at(&directory).unwrap_err(),
+            "插件信任注册表不安全或超过大小限制"
+        );
         fs::remove_dir_all(directory).ok();
     }
 

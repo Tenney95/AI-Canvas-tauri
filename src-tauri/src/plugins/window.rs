@@ -335,6 +335,14 @@ pub(crate) fn revoke_all_sessions() {
     dispose_sessions(removed, CloseReason::HostExited);
 }
 
+pub(crate) fn revoke_all_sessions_for_registry_repair() {
+    let removed = SESSIONS
+        .lock()
+        .map(|mut sessions| sessions.remove_matching(|_| true))
+        .unwrap_or_default();
+    dispose_sessions(removed, CloseReason::PluginChanged);
+}
+
 fn ensure_profile_directory(path: &Path) -> Result<(), String> {
     match fs::create_dir(path) {
         Ok(()) => {}

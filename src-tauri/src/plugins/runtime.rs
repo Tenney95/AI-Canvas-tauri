@@ -112,6 +112,18 @@ pub fn cancel_plugin_invocations(plugin_id: &str) {
     }
 }
 
+/// 取消所有插件当前仍在运行的 Python 调用。
+///
+/// 信任注册表损坏时无法可靠枚举已注册插件，因此修复流程必须撤销整个运行集合。
+pub fn cancel_all_plugin_invocations() {
+    let invocations = active_python_invocations()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for cancelled in invocations.values() {
+        cancelled.store(true, Ordering::Release);
+    }
+}
+
 #[cfg(windows)]
 struct PythonProcessJob(windows::Win32::Foundation::HANDLE);
 
@@ -1289,5 +1301,16 @@ define_plugin({"tools": {"loop": loop}})
         assert!(first.cancelled.load(Ordering::Acquire));
         assert!(second.cancelled.load(Ordering::Acquire));
         assert!(!other.cancelled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn cancels_every_registered_invocation_during_registry_repair() {
+        let first = ActivePythonInvocation::register("repair-a", "invocation-1").unwrap();
+        let second = ActivePythonInvocation::register("repair-b", "invocation-1").unwrap();
+
+        cancel_all_plugin_invocations();
+
+        assert!(first.cancelled.load(Ordering::Acquire));
+        assert!(second.cancelled.load(Ordering::Acquire));
     }
 }

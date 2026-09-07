@@ -1171,6 +1171,7 @@ pub fn run() {
             plugin_registry::ensure_plugin_registration,
             plugin_registry::set_plugin_registration_enabled,
             plugin_registry::remove_plugin_registration,
+            plugin_registry::repair_plugin_registry,
             plugin_registry::get_plugin_registration_status,
             plugin_registry::read_plugin_package_resource,
             plugin_window::open_plugin_ui_window,
