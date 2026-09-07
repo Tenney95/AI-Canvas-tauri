@@ -3,6 +3,7 @@
  * Tauri 环境下启用自定义窗口装饰和透明圆角窗口
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { MotionConfig, motion, useReducedMotion } from 'framer-motion';
 import Header from './components/Header';
 import Titlebar from './components/Titlebar';
@@ -27,6 +28,7 @@ import { checkForUpdate, downloadAndInstallUpdate, type UpdateInfo } from './ser
 import { DOWNLOAD_MASCOT_EVENT } from './components/shared/ModelDownloadDialog';
 import UpdateBubble from './components/shared/mascot/UpdateBubble';
 import LazyLoadBoundary, { LazyLoadFallback } from './components/shared/LazyLoadBoundary';
+import ModalOverlay from './components/shared/ModalOverlay';
 import { useMascotStatus } from './hooks/useMascotStatus';
 import { useMascotLifecycle } from './hooks/useMascotLifecycle';
 import { useMascotDrag } from './hooks/useMascotDrag';
@@ -121,6 +123,8 @@ export default function App() {
 
   // 开屏动画状态
   const [splashDone, setSplashDone] = useState(false);
+  const [closePhase, setClosePhase] = useState<'saving' | 'closing' | null>(null);
+  const closeInProgress = useRef(false);
   // 首次启动引导（开屏动画结束后才弹）
   const [onboardingOpen, setOnboardingOpen] = useState(
     () => localStorage.getItem(ONBOARDING_SEEN_KEY) !== 'true',
@@ -183,7 +187,18 @@ export default function App() {
     });
   }, [initFromDb, migrateHistoryAndLoad]);
 
-  // Flush undo-trash dirs on app close
+  // 退出期间阻止画布快捷键继续编辑；窗口原生关闭请求由下面的重入锁处理。
+  useEffect(() => {
+    if (!closePhase) return;
+    const blockKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener('keydown', blockKeyDown, true);
+    return () => window.removeEventListener('keydown', blockKeyDown, true);
+  }, [closePhase]);
+
+  // 保存与清理完成后再关闭窗口，全程展示反馈。
   useEffect(() => {
     if (!isTauri) return;
     let unlisten: (() => void) | undefined;
@@ -193,38 +208,61 @@ export default function App() {
         const win = getCurrentWindow();
         unlisten = await win.onCloseRequested(async (event) => {
           event.preventDefault();
-          const store = useAppStore.getState();
+          if (closeInProgress.current) return;
+          closeInProgress.current = true;
           try {
-            await store.captureCurrentProjectSnapshot();
-          } catch (error) {
-            console.warn('[退出] 生成画布快照失败:', error);
-          }
-          try {
-            await store.saveCurrentProjectSilent();
-          } catch (error) {
-            console.warn('[退出] 保存失败:', error);
-          }
+            flushSync(() => setClosePhase('saving'));
+            // 给提示一次绘制机会；窗口隐藏时 rAF 可能暂停，用计时器兜底。
+            await new Promise<void>((resolve) => {
+              const timeout = window.setTimeout(() => {
+                cancelAnimationFrame(frame);
+                resolve();
+              }, 100);
+              const frame = requestAnimationFrame(() => {
+                window.clearTimeout(timeout);
+                window.setTimeout(resolve, 0);
+              });
+            });
+            const store = useAppStore.getState();
+            try {
+              await store.captureCurrentProjectSnapshot();
+            } catch (error) {
+              console.warn('[退出] 生成画布快照失败:', error);
+            }
+            try {
+              await store.saveCurrentProjectSilent();
+            } catch (error) {
+              console.warn('[退出] 保存失败:', error);
+            }
 
-          // 保存一直失败时不能默默销毁窗口，否则这次会话的工作全丢
-          const failure = useAppStore.getState().autoSaveFailure;
-          if (failure) {
-            const { ask } = await import('@tauri-apps/plugin-dialog');
-            const detail = failure.count > 1 ? `已连续失败 ${failure.count} 次。` : '';
-            const quitAnyway = await ask(
-              `${detail}${failure.reason}\n\n现在退出会丢失未保存的改动。建议先取消退出，再用「导出项目」把内容备份出去。`,
-              { title: '保存失败，仍要退出吗？', kind: 'warning', okLabel: '仍然退出', cancelLabel: '取消退出' },
-            ).catch(() => true); // 弹不出对话框时不要把用户关在应用里
-            if (!quitAnyway) return;
-          }
+            // 保存一直失败时不能默默销毁窗口，否则这次会话的工作全丢
+            const failure = useAppStore.getState().autoSaveFailure;
+            if (failure) {
+              const { ask } = await import('@tauri-apps/plugin-dialog');
+              const detail = failure.count > 1 ? `已连续失败 ${failure.count} 次。` : '';
+              const quitAnyway = await ask(
+                `${detail}${failure.reason}\n\n现在退出会丢失未保存的改动。建议先取消退出，再用「导出项目」把内容备份出去。`,
+                { title: '保存失败，仍要退出吗？', kind: 'warning', okLabel: '仍然退出', cancelLabel: '取消退出' },
+              ).catch(() => true); // 弹不出对话框时不要把用户关在应用里
+              if (!quitAnyway) return;
+            }
 
-          try {
-            await fileService.flushUndoTrashDirs();
-            const { stopMcpBridge } = await import('./services/mcp/mcpBridgeService');
-            await stopMcpBridge().catch(() => {});
+            setClosePhase('closing');
+            try {
+              await fileService.flushUndoTrashDirs();
+              const { stopMcpBridge } = await import('./services/mcp/mcpBridgeService');
+              await stopMcpBridge().catch(() => {});
+            } catch (error) {
+              console.warn('[退出] 清理失败:', error);
+            }
+            await win.destroy();
           } catch (error) {
-            console.warn('[退出] 清理失败:', error);
+            console.warn('[退出] 关闭窗口失败:', error);
+            useAppStore.getState().showToast('关闭未完成，请重试', 'error');
+          } finally {
+            closeInProgress.current = false;
+            setClosePhase(null);
           }
-          await win.destroy();
         });
       } catch { /* non-Tauri env */ }
     })();
@@ -589,6 +627,26 @@ export default function App() {
       <>
         {!splashDone && <SplashScreen onComplete={() => setSplashDone(true)} />}
         {appContent}
+        <ModalOverlay
+          isOpen={closePhase !== null}
+          onClose={() => {}}
+          closeOnBackdrop={false}
+          motionPreset="quick"
+          backdropBlur={false}
+          ariaLabel="正在关闭软件"
+          className="w-80 max-w-[calc(100vw-2rem)] p-6"
+        >
+          <div role="status" aria-live="polite" aria-atomic="true" className="flex flex-col items-center gap-3 text-center">
+            <span
+              aria-hidden="true"
+              className="h-7 w-7 animate-spin rounded-full border-2 border-canvas-border border-t-canvas-text-secondary motion-reduce:animate-none"
+            />
+            <p className="text-sm font-medium text-canvas-text">
+              {closePhase === 'closing' ? '正在关闭…' : '正在保存，准备关闭…'}
+            </p>
+            <p className="text-xs text-canvas-text-secondary">完成后将自动退出，请稍候</p>
+          </div>
+        </ModalOverlay>
       </>
     </MotionConfig>
   );
