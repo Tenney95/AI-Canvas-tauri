@@ -12,6 +12,7 @@ export default defineConfig([
     'dist-ssr',
     'src-tauri/target',
     'src-tauri/gen',
+    'src-tauri/vendor',
   ]),
   {
     files: ['**/*.{ts,tsx}'],

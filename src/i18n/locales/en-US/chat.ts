@@ -284,8 +284,6 @@ const chat = {
   '模型未配置或当前不可用': 'Model not configured or currently unavailable',
   '暂无可用模型，请先在设置中完成模型配置。': 'No available models; configure them in Settings first.',
   '勾选要接入的模型（已选 {selected} / {total}）': 'Select models to add ({selected}/{total} selected)',
-  '取消全选': 'Deselect all',
-  '全选': 'Select all',
   '拒绝': 'Reject',
   '确认生成': 'Confirm generate',
   '接入选中的 {count} 个模型': 'Add {count} selected model(s)',
