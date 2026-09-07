@@ -12,6 +12,7 @@ import type {
 } from './directorScene';
 import type { ShotlistColumnKey, ShotRow } from './shotlist';
 import type { Locale } from '../i18n';
+import type { McpToolExposure } from './mcp';
 
 export type {
   CanvasDrawingTool,
@@ -619,6 +620,7 @@ export interface AppConfig {
   mcpAutoStart?: boolean;     // 启动软件时自动开启 MCP 本地控制会话，默认 false
   mcpPort?: number;           // MCP 固定端口，1024-65535；未设置时随机分配
   mcpTransport?: 'stdio' | 'streamable-http'; // 默认 stdio；HTTP 模式监听 0.0.0.0
+  mcpToolExposure?: McpToolExposure; // 默认 compact；full 兼容客户端原生工具发现
 }
 
 // ── 通用模型配置 ──

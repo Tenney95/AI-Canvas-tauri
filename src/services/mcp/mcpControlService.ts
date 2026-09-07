@@ -7,6 +7,7 @@ import type {
   McpBridgeRequestEvent,
   McpToolCallResult,
   McpToolDescriptor,
+  McpToolExposure,
 } from '../../types/mcp';
 import {
   runAgentTask,
@@ -22,6 +23,15 @@ import {
   listenForMcpBridgeRequests,
   respondToMcpBridge,
 } from './mcpBridgeService';
+import {
+  decodeMcpToolCallEnvelope,
+  getConfiguredMcpToolExposure,
+  isMcpDiscoveryTool,
+  MCP_CALL_DESCRIPTOR,
+  MCP_CALL_TOOL_NAME,
+  MCP_DISCOVERY_TOOL_NAMES,
+  toMcpToolDescriptor,
+} from './mcpToolCatalog';
 
 const MCP_CONVERSATION_TITLE = 'MCP 控制';
 const MCP_EXECUTION_MODE = 'autonomous' as const;
@@ -101,8 +111,24 @@ function getCurrentMcpContext(): {
   };
 }
 
-export async function listMcpTools(): Promise<McpToolDescriptor[]> {
+export async function listMcpTools(
+  exposure: McpToolExposure = getConfiguredMcpToolExposure(useAppStore.getState().config.mcpToolExposure),
+): Promise<McpToolDescriptor[]> {
   await ensureToolsRegistered();
+  if (exposure === 'compact') {
+    // 即使项目尚未加载也保持三个入口可发现，避免客户端缓存空目录。
+    return [
+      ...MCP_DISCOVERY_TOOL_NAMES.map((name) => {
+        const definition = getAgentTool(name);
+        if (!definition) throw new Error('MCP 发现工具未注册');
+        return {
+          ...toMcpToolDescriptor(definition),
+          annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        };
+      }),
+      MCP_CALL_DESCRIPTOR,
+    ];
+  }
   const current = getCurrentMcpContext();
   if (!current) return [];
   return getAvailableAgentTools({
@@ -111,12 +137,7 @@ export async function listMcpTools(): Promise<McpToolDescriptor[]> {
     conversationId: current.conversation.id,
     mode: MCP_EXECUTION_MODE,
     baseRevision: useAppStore.getState().getCurrentRevision(),
-  }).map((definition) => ({
-    name: definition.id,
-    title: definition.title,
-    description: definition.description,
-    inputSchema: definition.inputSchema,
-  }));
+  }).filter((definition) => !isMcpDiscoveryTool(definition.id)).map(toMcpToolDescriptor);
 }
 
 function addAuditMessage(message: ChatMessage): void {
@@ -255,6 +276,17 @@ export async function handleMcpBridgeRequest(
     case 'tools/list':
       return { tools: await listMcpTools() };
     case 'tools/call':
+      if (request.params.name === MCP_CALL_TOOL_NAME) {
+        let envelope;
+        try {
+          envelope = decodeMcpToolCallEnvelope(request.params.arguments);
+        } catch (error) {
+          const summary = error instanceof Error ? error.message : 'MCP 调用信封无效';
+          return { isError: true, summary, content: [{ type: 'text', text: summary }] };
+        }
+        // 只解包一次，保留原 requestId 的取消关联。校验、effect 和审计均属于真实工具。
+        return callMcpTool({ ...request, params: { name: envelope.name, arguments: envelope.arguments } });
+      }
       return callMcpTool(request);
     case 'requests/cancel':
       return cancelMcpRequest(request);

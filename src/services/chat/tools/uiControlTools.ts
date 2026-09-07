@@ -1,6 +1,11 @@
 /** MCP 专用的界面、窗口、画布视口与截图工具。 */
 import { useAppStore } from '../../../store/useAppStore';
 import type { SettingsTab } from '../../../store/store.ui';
+import type { NodeType } from '../../../types';
+import type { PluginJsonValue } from '../../../types/plugin';
+import {
+  closePluginUiWindow, getPluginUiWindowStates, openPluginUiWindow, pluginUiWindowUnavailableReason,
+} from '../../plugins/pluginUiWindowService';
 import {
   getCanvasViewportController,
 } from '../../canvasViewportService';
@@ -84,6 +89,30 @@ interface SetLayoutInput {
   closeNodeDialog?: boolean;
 }
 
+interface PluginWindowInput {
+  nodeId: string;
+  pluginId: string;
+  toolId: string;
+}
+
+const PLUGIN_WINDOW_TARGET = {
+  nodeId: { type: 'string', minLength: 1, maxLength: 160 },
+  pluginId: { type: 'string', minLength: 1, maxLength: 160 },
+  toolId: { type: 'string', minLength: 1, maxLength: 160 },
+} as const;
+
+// 不返回原生异常正文：其中可能包含私有快照路径。输入只是插件数据，绝不是 JS/IPC。
+function validWindowParameters(value: unknown, depth = 0): boolean {
+  if (depth > 8) return false;
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.length <= 64 && value.every((item) => validWindowParameters(item, depth + 1));
+  if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const entries = Object.entries(value);
+  return entries.length <= 64 && entries.every(([key, item]) => key.length <= 160
+    && !['__proto__', 'prototype', 'constructor'].includes(key) && validWindowParameters(item, depth + 1));
+}
+
 export function registerUiControlAgentTools(): Array<() => void> {
   const common = { isAvailable: mcpOnly, authorize: authorizeCurrentProject };
   return [
@@ -161,6 +190,106 @@ export function registerUiControlAgentTools(): Array<() => void> {
           useAppStore.getState().openNodeDialog(input.activeNodeId);
         }
         return { status: 'success', summary: '已调整当前界面布局', modelContent: JSON.stringify(getLayout()) };
+      },
+    }),
+    registerAgentTool<{ nodeId?: string }>({
+      id: 'plugin_window_get_state', title: '读取插件窗口会话状态',
+      description: '读取当前项目已登记的插件窗口及已安装的独立窗口工具，可按节点筛选。只返回目标和桥接计数；不是页面截图、DOM、隔离验收报告或原生窗口存活证明。',
+      effect: 'read', ...common,
+      inputSchema: { type: 'object', additionalProperties: false, properties: { nodeId: PLUGIN_WINDOW_TARGET.nodeId } },
+      execute: async (context, input) => {
+        if (!authorizeCurrentProject(context).allowed || context.signal.aborted) {
+          return failure(new Error('当前 MCP 项目已变化或请求已取消'), 'PLUGIN_WINDOW_CONTEXT_INVALID');
+        }
+        const store = useAppStore.getState();
+        const node = input.nodeId ? store.nodes.find((item) => item.id === input.nodeId) : undefined;
+        if (input.nodeId && !node) return failure(new Error('未找到目标节点'), 'PLUGIN_WINDOW_NODE_NOT_FOUND');
+        const tools = store.installedPlugins.flatMap((plugin) => plugin.manifest.contributes.nodeTools
+          .filter((tool) => tool.dialog?.presentation === 'window' && tool.dialog.ui
+            && (!node || tool.nodeTypes.includes(node.data.type as NodeType)))
+          .map((tool) => ({ pluginId: plugin.id, toolId: tool.id, enabled: plugin.enabled,
+            name: plugin.manifest.name, title: tool.title, nodeTypes: tool.nodeTypes })));
+        return {
+          status: 'success', summary: '已读取插件窗口会话状态（非页面验收报告）',
+          modelContent: JSON.stringify({
+            projectId: context.projectId, userEntryAvailable: pluginUiWindowUnavailableReason() === null,
+            developmentAcceptance: import.meta.env.DEV,
+            tools: tools.slice(0, 64), toolsTruncated: tools.length > 64,
+            windows: getPluginUiWindowStates(context.projectId, input.nodeId),
+          }),
+        };
+      },
+    }),
+    registerAgentTool<PluginWindowInput & { parameters?: Record<string, PluginJsonValue> }>({
+      id: 'plugin_window_open', title: '打开已安装插件的独立窗口',
+      description: '为当前项目节点打开或聚焦已安装、启用且声明 window 的插件工具。只接受目标 ID 和最多 16 KiB JSON 初始参数；不安装插件，不接受 URL、源码、导出函数名、原生标签或 invoke。普通入口未验收时仅开发构建可用作第一方验收。不会自动提交插件结果。',
+      effect: 'config_write', ...common,
+      inputSchema: { type: 'object', additionalProperties: false, required: ['nodeId', 'pluginId', 'toolId'],
+        properties: { ...PLUGIN_WINDOW_TARGET, parameters: { type: 'object', additionalProperties: true } } },
+      summarizeInput: (input) => `打开插件工具 ${input.pluginId}/${input.toolId}`,
+      execute: async (context, input) => {
+        if (!authorizeCurrentProject(context).allowed || context.signal.aborted) {
+          return failure(new Error('当前 MCP 项目已变化或请求已取消'), 'PLUGIN_WINDOW_CONTEXT_INVALID');
+        }
+        if (!import.meta.env.DEV && pluginUiWindowUnavailableReason() !== null) {
+          return failure(new Error('原生窗口尚未完成隔离验收，当前构建禁止 MCP 打开'), 'PLUGIN_WINDOW_NOT_ACCEPTED');
+        }
+        const store = useAppStore.getState();
+        const plugin = store.installedPlugins.find((item) => item.id === input.pluginId);
+        if (!plugin?.enabled) return failure(new Error('插件未安装或未启用'), 'PLUGIN_WINDOW_PLUGIN_UNAVAILABLE');
+        const tool = plugin.manifest.contributes.nodeTools.find((item) => item.id === input.toolId);
+        const node = store.nodes.find((item) => item.id === input.nodeId);
+        if (!tool || !node || !tool.nodeTypes.includes(node.data.type as NodeType)) {
+          return failure(new Error('目标节点或插件工具不匹配'), 'PLUGIN_WINDOW_TARGET_INVALID');
+        }
+        const dialog = tool.dialog;
+        if (dialog?.presentation !== 'window' || !dialog.ui || !plugin.manifest.ui?.exports[dialog.ui]
+          || !plugin.manifest.permissions.includes('ui.custom')) {
+          return failure(new Error('工具没有有效的独立窗口声明'), 'PLUGIN_WINDOW_UI_INVALID');
+        }
+        if (input.parameters !== undefined && (!input.parameters || typeof input.parameters !== 'object' || Array.isArray(input.parameters)
+          || !validWindowParameters(input.parameters)
+          || new TextEncoder().encode(JSON.stringify(input.parameters)).byteLength > 16 * 1024)) {
+          return failure(new Error('初始参数必须是深度不超过 8、每层不超过 64 项、总量不超过 16 KiB 的 JSON 对象'), 'PLUGIN_WINDOW_PARAMETERS_INVALID');
+        }
+        const defaults: Record<string, PluginJsonValue> = {};
+        for (const field of dialog.fields) {
+          if (field.defaultValue === undefined) continue;
+          defaults[field.id] = field.type === 'boolean' ? field.defaultValue === true
+            : field.type === 'number' ? Number(field.defaultValue) : String(field.defaultValue);
+        }
+        try {
+          await openPluginUiWindow({ plugin, tool, nodeId: input.nodeId, exportName: dialog.ui,
+            parameters: { ...defaults, ...input.parameters }, signal: context.signal });
+          if (!authorizeCurrentProject(context).allowed || context.signal.aborted) {
+            return failure(new Error('窗口启动期间项目已变化或请求已取消'), 'PLUGIN_WINDOW_CONTEXT_INVALID');
+          }
+          const window = getPluginUiWindowStates(context.projectId, input.nodeId)
+            .find((item) => item.pluginId === input.pluginId && item.toolId === input.toolId);
+          if (!window) return failure(new Error('窗口会话已结束，请查询状态'), 'PLUGIN_WINDOW_SESSION_ENDED');
+          return { status: 'success', summary: '原生创建/聚焦命令已返回；页面与隔离仍需验收',
+            modelContent: JSON.stringify({ window, developmentAcceptance: import.meta.env.DEV }) };
+        } catch {
+          return failure(new Error('插件窗口启动失败或会话已撤销；请检查桌面端提示与插件安装状态'), 'PLUGIN_WINDOW_OPEN_FAILED');
+        }
+      },
+    }),
+    registerAgentTool<PluginWindowInput>({
+      id: 'plugin_window_close', title: '关闭当前项目的插件窗口',
+      description: '按当前项目节点、插件和工具 ID 撤销已登记会话并请求关闭。不能传原生窗口标签或 session binding；关闭命令回执不等于已确认操作系统窗口销毁。',
+      effect: 'config_write', ...common,
+      inputSchema: { type: 'object', additionalProperties: false, required: ['nodeId', 'pluginId', 'toolId'], properties: PLUGIN_WINDOW_TARGET },
+      execute: async (context, input) => {
+        if (!authorizeCurrentProject(context).allowed || context.signal.aborted) {
+          return failure(new Error('当前 MCP 项目已变化或请求已取消'), 'PLUGIN_WINDOW_CONTEXT_INVALID');
+        }
+        try {
+          const result = await closePluginUiWindow(context.projectId, input.nodeId, input.pluginId, input.toolId);
+          return { status: 'success', summary: result.found ? '插件会话已撤销，请核对原生关闭回执' : '当前项目没有该窗口会话',
+            modelContent: JSON.stringify(result) };
+        } catch {
+          return failure(new Error('未确认插件窗口关闭，请查询状态或在桌面端关闭'), 'PLUGIN_WINDOW_CLOSE_FAILED');
+        }
       },
     }),
     registerAgentTool<Record<string, never>>({

@@ -21,6 +21,7 @@ import {
   startConfiguredMcpBridge,
 } from '../../services/mcp/mcpSessionConfig';
 import { getMcpConnectionRequirements } from './mcpConnectionRequirements';
+import { getConfiguredMcpToolExposure } from '../../services/mcp/mcpToolCatalog';
 import { useT } from '../../i18n';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
@@ -199,6 +200,25 @@ export default function McpControlSettings() {
           <Icon icon={session ? 'lucide:power-off' : 'lucide:power'} width="14" height="14" />
           {loading ? t('处理中') : session ? t('停止') : t('开启')}
         </AnimatedButton>
+      </div>
+
+      <div className="ui-field rounded-md border border-canvas-border bg-canvas-card px-3 py-2.5">
+        <label className="ui-label" htmlFor="mcp-tool-exposure">{t('工具发现方式')}</label>
+        <div className="ui-select">
+          <select
+            id="mcp-tool-exposure"
+            className="ui-select__control"
+            aria-describedby="mcp-tool-exposure-hint"
+            value={getConfiguredMcpToolExposure(config.mcpToolExposure)}
+            disabled={loading}
+            onChange={(event) => persistConfig({ mcpToolExposure: getConfiguredMcpToolExposure(event.target.value) })}
+          >
+            <option value="compact">{t('按需发现（推荐）')}</option>
+            <option value="full">{t('完整工具列表')}</option>
+          </select>
+        </div>
+        <p className="ui-hint">{t('按需模式减少初始工具说明的上下文占用；完整模式适合已支持工具延迟加载的客户端。')}</p>
+        <p id="mcp-tool-exposure-hint" className="ui-hint">{t('切换后请在 MCP 客户端刷新工具列表或重新连接；已有对话的上下文不会自动清除。')}</p>
       </div>
 
       <label className="flex items-start gap-3 rounded-md border border-canvas-border bg-canvas-card px-3 py-2.5">

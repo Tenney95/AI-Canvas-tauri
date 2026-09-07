@@ -43,6 +43,7 @@
         "lucide-react": "^0.546.0",
         "mediabunny": "^1.52.1",
         "motion": "^12.43.0",
+        "pannellum": "2.5.7",
         "postprocessing": "^6.39.1",
         "react": "^19.2.6",
         "react-dom": "^19.2.6",
@@ -50,7 +51,6 @@
         "react-konva": "^19.2.5",
         "thinking-orbs": "^0.3.1",
         "three": "^0.184.0",
-        "xiaoluo-vr-panorama": "git+https://github.com/Tenney95/XiaoLuo-Panorama.git#c743a39041b8049e1edfa3041311ab996aa1ff8f",
         "zustand": "^5.0.5"
     },
     "devDependencies": {

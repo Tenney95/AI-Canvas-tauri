@@ -2,11 +2,8 @@
  * 全屏承载小逻全景查看器，并把截图结果和关闭操作回传给全景节点。
  */
 import { memo } from 'react';
-import {
-  PanoramaViewer,
-  type PanoramaCaptureResult,
-} from 'xiaoluo-vr-panorama';
-import 'xiaoluo-vr-panorama/dist/style.css';
+import { PanoramaViewer } from './internal/PanoramaViewer';
+import type { PanoramaCaptureResult } from '../../../types/panorama';
 import { useT } from '../../../i18n';
 
 interface XiaoLuoPanoramaFullscreenProps {
@@ -25,8 +22,8 @@ function XiaoLuoPanoramaFullscreen({
   const t = useT();
   return (
     <PanoramaViewer
+      key={imageUrl}
       imageUrl={imageUrl}
-      imageLoadStrategy="direct"
       captureMode="ratio"
       theme={theme}
       cornerRadius="6px"

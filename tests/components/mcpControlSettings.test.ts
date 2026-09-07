@@ -1,4 +1,30 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { isValidElement, type ReactElement } from 'react';
+import { getConfiguredMcpToolExposure } from '../../src/services/mcp/mcpToolCatalog';
+
+const settingsState = vi.hoisted(() => ({
+  config: {} as { mcpToolExposure?: string }, updateConfig: vi.fn(), saveConfig: vi.fn(),
+}));
+vi.mock('react', async (original) => ({
+  ...await original<typeof import('react')>(),
+  useEffect: () => {},
+  useMemo: <T>(factory: () => T) => factory(),
+  useRef: <T>(value: T) => ({ current: value }),
+  useState: <T>(value: T) => [value, vi.fn()],
+}));
+vi.mock('../../src/store/useAppStore', () => ({
+  useAppStore: Object.assign((selector: (state: unknown) => unknown) => selector(settingsState), { getState: () => settingsState }),
+}));
+vi.mock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
+vi.mock('zustand/react/shallow', () => ({ useShallow: <T>(selector: T) => selector }));
+
+afterEach(() => { vi.unstubAllGlobals(); });
+
+function elements(root: unknown): Array<ReactElement<Record<string, unknown>>> {
+  if (Array.isArray(root)) return root.flatMap(elements);
+  if (!isValidElement<Record<string, unknown>>(root)) return [];
+  return [root, ...elements(root.props.children)];
+}
 import {
   buildMcpClientConfig,
   buildMcpHttpEndpoint,
@@ -12,6 +38,30 @@ import {
 } from '../../src/components/settings/mcpConnectionRequirements';
 
 describe('MCP control settings helpers', () => {
+  it('uses compact discovery for old settings and preserves full mode when selected', () => {
+    expect(getConfiguredMcpToolExposure(undefined)).toBe('compact');
+    expect(getConfiguredMcpToolExposure('invalid')).toBe('compact');
+    expect(getConfiguredMcpToolExposure('full')).toBe('full');
+  });
+
+  it('saves the selected mode through Store actions and explains client refresh', async () => {
+    vi.stubGlobal('window', { __TAURI__: {} });
+    settingsState.config = {};
+    settingsState.updateConfig.mockClear();
+    settingsState.saveConfig.mockClear();
+    const { default: McpControlSettings } = await import('../../src/components/settings/McpControlSettings');
+    const tree = elements(McpControlSettings());
+    const select = tree.find((element) => element.type === 'select' && element.props.id === 'mcp-tool-exposure')!;
+    expect(select.props.value).toBe('compact');
+    expect(select.props.className).toBe('ui-select__control');
+    expect(tree.find((element) => element.props.id === 'mcp-tool-exposure-hint')?.props.children).toContain('刷新工具列表');
+    (select.props.onChange as (event: { target: { value: string } }) => void)({ target: { value: 'full' } });
+    expect(settingsState.updateConfig).toHaveBeenCalledExactlyOnceWith({ mcpToolExposure: 'full' });
+    expect(settingsState.saveConfig).toHaveBeenCalledOnce();
+    settingsState.config = { mcpToolExposure: 'full' };
+    expect(elements(McpControlSettings()).find((element) => element.props.id === 'mcp-tool-exposure')?.props.value).toBe('full');
+  });
+
   it('lists the complete local connection environment requirements', () => {
     expect(MCP_CONNECTION_REQUIREMENTS.map((requirement) => requirement.title)).toEqual([
       'AI Canvas 桌面端',

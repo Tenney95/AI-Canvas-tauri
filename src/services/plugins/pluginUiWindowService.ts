@@ -7,9 +7,10 @@ import type {
 } from '../../types/plugin';
 import { createPluginUiNativeSession } from './pluginUiSessionService';
 
-// 发布门禁，不是权限开关：真实 WebView2 CSP/存储/第一方窗口验收前不得改为 true。
+// Windows WebView2 实机已验证专用窗口、CSP/IPC 拒绝、桥接与写回；详见插件实施记录。
+// 点击入口与 MCP 共用该发布状态；原生注册、会话租约和 capability 校验仍独立执行。
 // 不接受 Manifest、环境变量、URL、localStorage 或插件请求绕过。
-const NATIVE_WINDOW_ACCEPTED = false;
+const NATIVE_WINDOW_ACCEPTED = true;
 export function pluginUiWindowUnavailableReason(): string | null {
   if (!isTauri()) return '当前不是 Tauri 桌面环境，将使用主窗口弹窗';
   return NATIVE_WINDOW_ACCEPTED ? null : '独立窗口尚待真实 WebView 隔离验收，暂用主窗口弹窗';
@@ -22,14 +23,19 @@ interface OpenWindowOptions {
   nodeId: string;
   exportName: string;
   parameters?: Record<string, PluginJsonValue>;
+  signal?: AbortSignal;
 }
 interface WindowRecord {
   key: string;
+  target: Pick<PluginUiWindowBinding, 'projectId' | 'nodeId'>
+    & Pick<PluginUiWindowBinding['identity'], 'pluginId' | 'toolId'>;
   session?: NativeSession;
   channel: Channel<PluginUiWindowEvent>;
   ready: Promise<PluginUiWindowBinding>;
   disposed: boolean;
   nativeStarted: boolean;
+  opened: boolean;
+  contextResponded: boolean;
   seenRequests: Set<string>;
   pending: number;
   awaitingClose?: boolean;
@@ -51,13 +57,15 @@ function sameBinding(value: unknown, expected: PluginUiWindowBinding): boolean {
     && binding.identity?.uiDigest === expected.identity.uiDigest;
 }
 
-async function closeNative(record: WindowRecord): Promise<void> {
-  if (!record.nativeStarted || !record.session) return;
+async function closeNative(record: WindowRecord): Promise<boolean> {
+  if (!record.nativeStarted || !record.session) return false;
   try {
     await invoke('close_plugin_ui_window', { binding: record.session.binding });
+    return true;
   } catch {
     // 前端租约已同步作废；原生请求超时仍会撤销窗口，不能把失败说成关闭成功。
     useAppStore.getState().showToast('插件会话已撤销，但未确认系统窗口关闭，请手动关闭该窗口', 'error');
+    return false;
   }
 }
 
@@ -108,6 +116,7 @@ async function receive(record: WindowRecord, event: PluginUiWindowEvent): Promis
       binding: session.binding, requestId: event.requestId,
       reply: reply.error ? { ...reply, error: reply.error.slice(0, 1024) } : reply,
     });
+    if (!record.disposed && event.kind === 'context' && reply.ok) record.contextResponded = true;
     if (!record.disposed) {
       if (record.awaitingClose) {
         if (event.kind === 'close') disposeRecord(record, true);
@@ -123,6 +132,33 @@ async function receive(record: WindowRecord, event: PluginUiWindowEvent): Promis
   }
 }
 
+/** 只读的主窗口会话投影；不返回绑定秘密、资源、参数或插件页面正文。 */
+export function getPluginUiWindowStates(projectId: string, nodeId?: string) {
+  if (useAppStore.getState().currentProjectId !== projectId) throw new Error('当前项目已变化');
+  return [...windows.values()]
+    .filter((record) => !record.disposed && record.target.projectId === projectId
+      && (nodeId === undefined || record.target.nodeId === nodeId))
+    .map((record) => ({
+      ...record.target,
+      phase: record.awaitingClose ? 'awaiting-close' as const : record.opened ? 'open' as const : 'opening' as const,
+      contextResponded: record.contextResponded,
+      requestCount: record.seenRequests.size,
+      pendingRequests: record.pending,
+    }));
+}
+
+/** 只能按当前项目的已登记目标撤销；调用方不能提供原生标签或 session binding。 */
+export async function closePluginUiWindow(projectId: string, nodeId: string, pluginId: string, toolId: string) {
+  if (useAppStore.getState().currentProjectId !== projectId) throw new Error('当前项目已变化');
+  const record = windows.get(JSON.stringify([projectId, nodeId, pluginId, toolId]));
+  if (!record) return { found: false, revoked: false, closeCommandAccepted: false, pendingOpen: false };
+  const pendingOpen = record.nativeStarted && !record.opened;
+  disposeRecord(record, false);
+  const closeCommandAccepted = await closeNative(record);
+  // 这只是命令回执，不等于操作系统窗口已销毁；迟到 open 仍由原创建链再次关闭。
+  return { found: true, revoked: true, closeCommandAccepted, pendingOpen };
+}
+
 function nativeOpenOptions(record: WindowRecord, options: OpenWindowOptions) {
   if (!record.session?.isActive()) throw new Error('插件窗口会话已失效');
   return {
@@ -131,8 +167,9 @@ function nativeOpenOptions(record: WindowRecord, options: OpenWindowOptions) {
   };
 }
 
-/** 仅供受发布门禁保护的主窗口入口调用；窗口生命周期不随启动组件卸载而结束。 */
+/** 仅供主窗口入口/开发构建 MCP 验收调用；窗口生命周期不随启动组件卸载而结束。 */
 export async function openPluginUiWindow(options: OpenWindowOptions): Promise<PluginUiWindowBinding> {
+  options.signal?.throwIfAborted();
   if (!isTauri()) throw new Error('插件独立窗口仅支持 Tauri 桌面环境');
   const projectId = useAppStore.getState().currentProjectId;
   if (!projectId) throw new Error('当前项目不存在');
@@ -143,6 +180,7 @@ export async function openPluginUiWindow(options: OpenWindowOptions): Promise<Pl
   const existing = windows.get(key);
   if (existing) {
     const binding = await existing.ready;
+    options.signal?.throwIfAborted();
     if (existing.disposed || !existing.session?.isActive()) throw new Error('插件窗口会话已失效');
     try {
       const result = await invoke<{ binding: PluginUiWindowBinding; reused: boolean }>('open_plugin_ui_window', {
@@ -160,10 +198,13 @@ export async function openPluginUiWindow(options: OpenWindowOptions): Promise<Pl
   }
   const channel = new Channel<PluginUiWindowEvent>();
   const record: WindowRecord = {
-    key, channel, disposed: false, nativeStarted: false, seenRequests: new Set(), pending: 0,
+    key, target: { projectId, nodeId: options.nodeId, pluginId: options.plugin.id, toolId: options.tool.id },
+    channel, disposed: false, nativeStarted: false, opened: false, contextResponded: false,
+    seenRequests: new Set(), pending: 0,
     // 推迟到 microtask，先完成登记；重复调用共享同一创建 Promise，不重复 mint。
     ready: Promise.resolve().then(async () => {
       try {
+        if (record.disposed) throw new Error('插件窗口启动已取消');
         if (useAppStore.getState().currentProjectId !== projectId) throw new Error('当前项目已变化');
         const session = await createPluginUiNativeSession({
           ...options, onClose: () => disposeRecord(record, true),
@@ -185,6 +226,7 @@ export async function openPluginUiWindow(options: OpenWindowOptions): Promise<Pl
         if (!sameBinding(result?.binding, session.binding) || result.reused !== false) {
           throw new Error('插件窗口创建身份不匹配，请关闭旧窗口后重试');
         }
+        record.opened = true;
         return session.binding;
       } catch (error) {
         disposeRecord(record, true);
@@ -194,5 +236,9 @@ export async function openPluginUiWindow(options: OpenWindowOptions): Promise<Pl
   };
   channel.onmessage = (event) => { void receive(record, event); };
   windows.set(key, record);
-  return record.ready;
+  const abort = () => disposeRecord(record, true);
+  options.signal?.addEventListener('abort', abort, { once: true });
+  if (options.signal?.aborted) abort();
+  try { return await record.ready; }
+  finally { options.signal?.removeEventListener('abort', abort); }
 }

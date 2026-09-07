@@ -112,6 +112,30 @@ beforeEach(() => {
   dbMocks.deletePluginFromDb.mockResolvedValue(undefined);
 });
 
+describe('插件由用户安装', () => {
+  it('starts with no built-in plugins', () => {
+    const { slice } = createSlice();
+
+    expect(slice.installedPlugins).toEqual([]);
+    expect(nativeMocks.invoke).not.toHaveBeenCalled();
+    expect(dbMocks.savePluginToDb).not.toHaveBeenCalled();
+  });
+
+  it('does not seed plugins when repeatedly loading an empty installation database', async () => {
+    const { slice, getState } = createSlice();
+
+    await slice.loadPlugins();
+    expect(getState().installedPlugins).toEqual([]);
+
+    await slice.loadPlugins();
+    expect(getState().installedPlugins).toEqual([]);
+    expect(dbMocks.getAllPlugins).toHaveBeenCalledTimes(2);
+    expect(nativeMocks.invoke).not.toHaveBeenCalled();
+    expect(dbMocks.savePluginToDb).not.toHaveBeenCalled();
+    expect(dbMocks.deletePluginFromDb).not.toHaveBeenCalled();
+  });
+});
+
 describe('可信 Python 插件状态边界', () => {
   it('requires explicit confirmation before installing Python code', async () => {
     const { slice, getState } = createSlice();

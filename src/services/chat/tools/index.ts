@@ -22,6 +22,7 @@ import { registerStyleAgentTools } from './styleTools';
 import { registerConversationAgentTools } from './conversationTools';
 import { registerHistoryAgentTools } from './historyTools';
 import { registerDirectorAgentTools } from './directorTools';
+import { registerMcpDiscoveryTools } from './mcpDiscoveryTools';
 
 type AgentToolRegistrationFactory = () => Array<() => void>;
 
@@ -63,6 +64,7 @@ function getRegistrationFactories(): AgentToolRegistrationFactory[] {
     registerProviderConfigAgentTools,
     registerWebAgentTools,
     registerAppAgentTools,
+    registerMcpDiscoveryTools,
   ];
 }
 

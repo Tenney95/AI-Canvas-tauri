@@ -93,8 +93,8 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
   const showToast = useAppStore((state) => state.showToast);
   const config = useAppStore((state) => state.config);
   const dialog = pluginTool.tool.dialog;
-  const windowFallback = dialog?.presentation === 'window' ? pluginUiWindowUnavailableReason() : null;
-  const useNativeWindow = dialog?.presentation === 'window' && windowFallback === null;
+  const supportsNativeWindow = dialog?.presentation === 'window' && Boolean(dialog.ui);
+  const windowUnavailableReason = supportsNativeWindow ? pluginUiWindowUnavailableReason() : null;
   // 只有声明 models.read 的插件才拿得到模型目录，且目录不含任何厂商凭据。
   const models = useMemo(
     () => (pluginTool.permissions.includes('models.read')
@@ -108,6 +108,8 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
   const [values, setValues] = useState<Record<string, FormValue>>(() => initialFormValues(pluginTool));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [openingWindow, setOpeningWindow] = useState(false);
+  const openingWindowRef = useRef(false);
   const [frameSession, setFrameSession] = useState<PluginUiFrameSession | null>(null);
   const [frameDocument, setFrameDocument] = useState<PluginUiFrameDocument | null>(null);
   const [uiLoading, setUiLoading] = useState(Boolean(dialog?.ui));
@@ -140,21 +142,6 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
       return () => {
         cancelled = true;
       };
-    }
-    if (useNativeWindow) {
-      // 延后启动以消除 StrictMode 的已取消挂载；启动后由会话服务持有，不随入口组件卸载关闭。
-      queueMicrotask(() => {
-        if (cancelled) return;
-        void openPluginUiWindow({
-          plugin, tool: pluginTool.tool, nodeId, exportName,
-          parameters: initialPluginParameters(pluginTool),
-        }).catch((cause) => {
-          if (!cancelled) showToast(cause instanceof Error ? cause.message : '插件窗口打开失败', 'error');
-        }).finally(() => {
-          if (!cancelled) onCloseRef.current();
-        });
-      });
-      return () => { cancelled = true; };
     }
     void createPluginUiFrameSession({
       plugin,
@@ -198,9 +185,35 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
         frameDocumentRef.current = null;
       }
     };
-  }, [dialog?.ui, nodeId, pluginTool, showToast, useNativeWindow]);
+  }, [dialog?.ui, nodeId, pluginTool, showToast]);
 
-  if (!dialog || useNativeWindow) return null;
+  if (!dialog) return null;
+
+  const openInWindow = async () => {
+    if (!supportsNativeWindow || !dialog.ui || windowUnavailableReason || openingWindowRef.current) return;
+    const plugin = useAppStore.getState().installedPlugins.find((item) => item.id === pluginTool.pluginId);
+    if (!plugin) {
+      showToast('找不到已安装的插件', 'error');
+      return;
+    }
+    openingWindowRef.current = true;
+    setOpeningWindow(true);
+    try {
+      // 原生会话独立持有资源；创建/聚焦成功后才回收内嵌会话，失败时保留编辑。
+      await openPluginUiWindow({
+        plugin, tool: pluginTool.tool, nodeId, exportName: dialog.ui,
+        parameters: initialPluginParameters(pluginTool),
+      });
+      frameSessionRef.current?.dispose();
+      frameSessionRef.current = null;
+      onCloseRef.current();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : '插件窗口打开失败', 'error');
+    } finally {
+      openingWindowRef.current = false;
+      setOpeningWindow(false);
+    }
+  };
 
   const close = () => {
     if (busy) return;
@@ -284,13 +297,28 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
               {pluginTool.pluginName}
             </p>
           </div>
-          <PopupCloseButton onClick={close} />
+          <div className="flex shrink-0 items-center gap-1">
+            {supportsNativeWindow && (
+              <button
+                type="button"
+                className="ui-btn ui-btn--ghost h-8 w-8 shrink-0 px-0"
+                aria-label="在独立窗口打开"
+                title={windowUnavailableReason || '在独立窗口打开（成功后关闭弹窗，未保存编辑不迁移）'}
+                disabled={openingWindow || Boolean(windowUnavailableReason)}
+                onClick={() => void openInWindow()}
+              >
+                <Icon
+                  icon={openingWindow ? 'lucide:loader-circle' : 'lucide:external-link'}
+                  width={16}
+                  height={16}
+                  className={openingWindow ? 'animate-spin' : undefined}
+                  aria-hidden="true"
+                />
+              </button>
+            )}
+            <PopupCloseButton onClick={close} />
+          </div>
         </header>
-        {windowFallback && (
-          <p role="status" className="shrink-0 border-b border-canvas-border px-4 py-1 text-xs text-canvas-text-secondary">
-            {windowFallback}
-          </p>
-        )}
         <div className="min-h-0 min-w-0 flex-1 overflow-auto bg-canvas-surface">
           {uiLoading && (
             <div className="flex h-full items-center justify-center gap-2 text-xs text-canvas-text-secondary">
