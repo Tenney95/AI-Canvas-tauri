@@ -15,7 +15,9 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: mocks.getState } }));
 vi.mock('../../src/services/plugins/pluginUiSessionService', () => ({ createPluginUiNativeSession: mocks.create }));
-import { openPluginUiWindow, pluginUiWindowUnavailableReason } from '../../src/services/plugins/pluginUiWindowService';
+import {
+  closePluginUiWindow, getPluginUiWindowStates, openPluginUiWindow, pluginUiWindowUnavailableReason,
+} from '../../src/services/plugins/pluginUiWindowService';
 
 const tool: PluginNodeToolManifest = {
   id: 'review', title: '逐帧拉片', placements: ['node-toolbar'], nodeTypes: ['ai-video'], inputFields: ['label'],
@@ -80,6 +82,101 @@ afterEach(async () => {
 });
 
 describe('pluginUiWindowService', () => {
+  it('projects only current-project target metadata and distinguishes native open from a context reply', async () => {
+    const pending = openPluginUiWindow({ ...options, parameters: { privateParameter: 'hidden' } });
+    expect(getPluginUiWindowStates('project-1')).toEqual([{
+      projectId: 'project-1', nodeId: 'video-1', pluginId: plugin.id, toolId: tool.id,
+      phase: 'opening', contextResponded: false, requestCount: 0, pendingRequests: 0,
+    }]);
+    await pending;
+    expect(getPluginUiWindowStates('project-1')[0]).toMatchObject({ phase: 'open', contextResponded: false });
+    send();
+    await vi.waitFor(() => expect(getPluginUiWindowStates('project-1')[0]).toMatchObject({ contextResponded: true, pendingRequests: 0 }));
+    const serialized = JSON.stringify(getPluginUiWindowStates('project-1'));
+    for (const secret of [binding.sessionId, binding.identity.sourceDigest, 'hidden', 'privateParameter', 'channel', 'binding']) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(getPluginUiWindowStates('project-1', 'another-node')).toEqual([]);
+    expect(() => getPluginUiWindowStates('project-2')).toThrow('项目已变化');
+    mocks.getState().currentProjectId = 'project-2';
+    expect(getPluginUiWindowStates('project-2')).toEqual([]);
+  });
+
+  it('closes only its registered target, revokes synchronously and returns a command acknowledgement', async () => {
+    await openPluginUiWindow(options);
+    await expect(closePluginUiWindow('project-2', options.nodeId, plugin.id, tool.id)).rejects.toThrow('项目已变化');
+    expect(await closePluginUiWindow('project-1', options.nodeId, plugin.id, 'other-tool')).toMatchObject({ found: false });
+    expect(dispose).not.toHaveBeenCalled();
+    const closing = closePluginUiWindow('project-1', options.nodeId, plugin.id, tool.id);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(getPluginUiWindowStates('project-1')).toEqual([]);
+    expect(await closing).toEqual({ found: true, revoked: true, closeCommandAccepted: true, pendingOpen: false });
+    expect(closes()[0][1]).toEqual({ binding });
+    send('effect');
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('does not report a successful native close on transport failure', async () => {
+    await openPluginUiWindow(options);
+    mocks.invoke.mockRejectedValueOnce(new Error('private-native-path'));
+    expect(await closePluginUiWindow('project-1', options.nodeId, plugin.id, tool.id))
+      .toEqual({ found: true, revoked: true, closeCommandAccepted: false, pendingOpen: false });
+    expect(getPluginUiWindowStates('project-1')).toEqual([]);
+    expect(active).toBe(false);
+  });
+
+  it('closes a pending native open again when it eventually returns', async () => {
+    let finish!: (value: { binding: PluginUiWindowBinding; reused: boolean }) => void;
+    mocks.invoke.mockImplementation((command) => command === 'open_plugin_ui_window'
+      ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve());
+    const pending = openPluginUiWindow(options);
+    await vi.waitFor(() => expect(opens()).toHaveLength(1));
+    expect(await closePluginUiWindow('project-1', options.nodeId, plugin.id, tool.id))
+      .toMatchObject({ revoked: true, closeCommandAccepted: true, pendingOpen: true });
+    finish({ binding, reused: false });
+    await expect(pending).rejects.toThrow('失效');
+    expect(closes()).toHaveLength(2);
+  });
+
+  it('cancels before minting and revokes a late session after cancellation during minting', async () => {
+    const beforeMint = new AbortController();
+    beforeMint.abort();
+    await expect(openPluginUiWindow({ ...options, signal: beforeMint.signal })).rejects.toThrow();
+    expect(mocks.create).not.toHaveBeenCalled();
+    const controller = new AbortController();
+    let finishMint!: () => void;
+    const create = mocks.create.getMockImplementation()!;
+    mocks.create.mockImplementationOnce((input) => new Promise((resolve) => {
+      finishMint = () => { void create(input).then(resolve); };
+    }));
+    const pending = openPluginUiWindow({ ...options, signal: controller.signal });
+    await vi.waitFor(() => expect(mocks.create).toHaveBeenCalledOnce());
+    controller.abort();
+    expect(getPluginUiWindowStates('project-1')).toEqual([]);
+    finishMint();
+    await expect(pending).rejects.toThrow('失效');
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(opens()).toHaveLength(0);
+  });
+
+  it('does not let cancellation of a reused opener revoke the original session', async () => {
+    await openPluginUiWindow(options);
+    const controller = new AbortController();
+    const pending = openPluginUiWindow({ ...options, signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(dispose).not.toHaveBeenCalled();
+    expect(getPluginUiWindowStates('project-1')).toHaveLength(1);
+  });
+
+  it('does not mark a failed context request as a completed bridge reply', async () => {
+    await openPluginUiWindow(options);
+    request.mockResolvedValueOnce({ ok: false, error: 'denied' });
+    send();
+    await vi.waitFor(() => expect(replies()).toHaveLength(1));
+    expect(getPluginUiWindowStates('project-1')[0]).toMatchObject({ contextResponded: false, requestCount: 1 });
+  });
+
   it('keeps native presentation gated until real WebView acceptance and supports web fallback', async () => {
     const launcher = readFileSync(new URL('../../src/components/nodes/shared/toolbar/NodePluginToolDialog.tsx', import.meta.url), 'utf8');
     expect(launcher).toContain("dialog?.presentation === 'window' ? pluginUiWindowUnavailableReason() : null");
