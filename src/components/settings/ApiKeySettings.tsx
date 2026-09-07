@@ -25,6 +25,7 @@ import type {
   WebSearchProviderId,
 } from '../../types';
 import AnimatedButton from '../shared/AnimatedButton';
+import ProviderBadge from '../shared/ProviderBadge';
 import { defaultModelGroups } from '../nodes/shared/defaultModels';
 import { shouldListProviderConnection } from './apiKeySettingsUtils';
 import { isSecretStoreAvailable } from '../../services/providerSecretService';
@@ -543,7 +544,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                     : t('已连接');
               return (
                 <div key={item.id} className="provider-connection-card">
-                  <div className={`provider-badge provider-badge--${definition.id}`}>{definition.badgeText}</div>
+                  <ProviderBadge providerId={item.id} config={item.config} size="large" />
                   <div className="provider-connection-copy">
                     <div className="provider-connection-title-row">
                       <strong>{displayName}</strong>

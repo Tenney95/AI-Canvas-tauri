@@ -175,7 +175,8 @@
   bottom: 100%;
   left: 0;
   margin-bottom: 4px;
-  width: 280px;
+  width: 380px;
+  max-width: calc(100vw - 16px);
   max-height: 360px;
   overflow-y: auto;
   background:
@@ -186,7 +187,8 @@
   border-radius: 10px;
   box-shadow: var(--glass-shadow-menu);
   z-index: 100;
-  padding: 4px;
+  /* 顶部不留滚动内边距，避免模型内容从吸顶标题上方露出。 */
+  padding: 0 4px 4px;
   transform-origin: bottom left;
   animation: popoverIn var(--dur-normal) var(--ease-spring);
 }
@@ -214,6 +216,10 @@
 .model-group {
   border-bottom: 1px solid var(--border-subtle);
 }
+.model-dropdown > .model-group:first-child {
+  /* 初始留白随首个分组滚走，吸顶时不会留下透出内容的缝隙。 */
+  margin-top: 4px;
+}
 .model-group:last-child {
   border-bottom: none;
 }
@@ -226,21 +232,35 @@
 
 /* Group header — clickable for collapse/expand */
 .model-group-header {
+  /* 吸顶范围由所属分组限定，下一厂商滚入时自然顶替。 */
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 8px 6px;
-  background: transparent;
+  padding: 6px;
+  background: var(--theme-surface);
   border: none;
-  border-radius: 6px;
+  /* 底层保持完整遮挡，圆角悬浮效果由独立背景层绘制。 */
+  border-radius: 0;
   color: var(--theme-text);
   cursor: var(--cursor-pointer, pointer);
   text-align: left;
-  transition: background 0.1s;
   font-family: inherit;
 }
-.model-group-header:hover {
+.model-group-header::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: 6px;
+  background: transparent;
+  pointer-events: none;
+  transition: background 0.1s;
+}
+.model-group-header:hover::before {
   background: var(--theme-hover);
 }
 .model-group-info {
@@ -289,7 +309,7 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 7px 8px;
+  padding:4px 8px;
   background: transparent;
   border: none;
   border-radius: 6px;
@@ -331,6 +351,31 @@
   white-space: nowrap;
 }
 
+/* 模型列表：名称在左、说明在右，选中标记独占固定位置。 */
+.model-item-model {
+  min-height: 34px;
+}
+.model-item-model .model-item-info {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  align-items: center;
+  gap: 12px;
+}
+.model-item-model .model-item-name:only-child {
+  grid-column: 1 / -1;
+}
+.model-item-model .model-item-desc {
+  margin-top: 0;
+  text-align: right;
+}
+.model-item-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 14px;
+  height: 14px;
+}
+
 /* Check mark for active item */
 .model-item-check {
   flex-shrink: 0;
@@ -343,7 +388,7 @@
   cursor: var(--cursor-not-allowed, not-allowed);
   pointer-events: auto; /* retain hover for tooltip */
 }
-.model-group-header.disabled:hover {
+.model-group-header.disabled:hover::before {
   background: transparent;
 }
 
@@ -421,9 +466,8 @@
   margin-left: 4px;
 }
 
-/* 下拉面板缩小 */
+/* 对话菜单沿用横向列表宽度，仅限制高度。 */
 .chat-panel-input-toolbar .model-dropdown {
-  width: 240px;
   max-height: 280px;
   transform-origin: bottom left;
   animation: popoverIn var(--dur-normal) var(--ease-out-expo);
@@ -444,6 +488,11 @@
 /* 分组子项缩进减半 */
 .chat-panel-input-toolbar .model-group-items {
   padding-left: 14px;
+}
+
+.model-group-items-models,
+.chat-panel-input-toolbar .model-group-items-models {
+  padding-left: 4px;
 }
 
 /* 模型项缩小 */

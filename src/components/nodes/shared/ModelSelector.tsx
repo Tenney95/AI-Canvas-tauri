@@ -19,6 +19,7 @@ import {
 } from './defaultModels';
 import { useAppStore } from '../../../store/useAppStore';
 import { useT } from '../../../i18n';
+import ProviderBadge from '../../shared/ProviderBadge';
 
 const MODEL_PREF_KEY = 'canvas-model-prefs';
 
@@ -161,7 +162,7 @@ export default function ModelSelector({
       const vw = window.innerWidth;
       const PADDING = 8;
       const DROPDOWN_H = 360;
-      const DROPDOWN_W = 280;
+      const DROPDOWN_W = dropdownRef.current?.getBoundingClientRect().width ?? 380;
 
       // 若上方空间不足 360px → 向下弹出
       const spaceAbove = triggerRect.top - PADDING;
@@ -233,9 +234,30 @@ export default function ModelSelector({
     [selectedModel, nodeType],
   );
 
-  const currentModel = effectiveModel
-    ? filteredGroups.flatMap((g) => g.models).find((m) => m.value === effectiveModel)
+  const currentGroup = effectiveModel
+    ? filteredGroups.find((group) => group.models.some((model) => model.value === effectiveModel))
     : undefined;
+  const currentModel = currentGroup?.models.find((model) => model.value === effectiveModel);
+
+  const renderProviderBadge = (group: ModelGroup, model?: ModelOption, size: 'small' | 'medium' = 'medium') => {
+    const generalModel = model?.provider === 'general'
+      ? generalModels.find((candidate) => `general/${candidate.id}` === model.value)
+      : undefined;
+    const providerId = generalModel?.providerConfigId
+      || (group.id.startsWith('general-provider-')
+        ? group.id.slice('general-provider-'.length)
+        : group.id === 'runninghub' ? 'runninghub-model'
+          : group.id === 'runninghubwf' ? 'runninghub' : group.id);
+    return (
+      <ProviderBadge
+        providerId={providerId}
+        config={configProviders[providerId]}
+        fallbackName={group.name}
+        fallbackBadge={group.badgeText}
+        size={size}
+      />
+    );
+  };
 
   // 匹配当前节点类型的工作流
   const targetCategory = getWorkflowCategory(nodeType);
@@ -279,11 +301,7 @@ export default function ModelSelector({
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
             </svg>
-          ) : currentModel?.badgeText ? (
-            <span className="text-model-icon text-model-icon-mini" data-badge={currentModel.badgeText}>
-              {currentModel.badgeText}
-            </span>
-          ) : null}
+          ) : currentGroup && currentModel ? renderProviderBadge(currentGroup, currentModel) : null}
         </span>
         <span className="model-selector-label">{displayLabel}</span>
         <svg className="caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -312,11 +330,7 @@ export default function ModelSelector({
                     toggleGroup(group.id);
                   }}
                 >
-                  {group.iconType === 'badge' && group.badgeText && (
-                    <span className="text-model-icon text-model-icon-badge" data-badge={group.badgeText}>
-                      {group.badgeText}
-                    </span>
-                  )}
+                  {renderProviderBadge(group, undefined, 'small')}
                   <div className="model-group-info">
                     <div className="model-group-name">{group.name}</div>
                     <div className="model-group-desc">{group.description}</div>
@@ -340,12 +354,12 @@ export default function ModelSelector({
                     </svg>
                   )}
                 </button>
-                <div className={`model-group-items${isCollapsed ? ' collapsed' : ''}`}>
+                <div className={`model-group-items model-group-items-models${isCollapsed ? ' collapsed' : ''}`}>
                   {group.models.map((model) => (
                     <button
                       key={model.value}
                       type="button"
-                      className={`model-item${effectiveModel === model.value ? ' active' : ''}${groupAvailable ? '' : ' disabled'}`}
+                      className={`model-item model-item-model${effectiveModel === model.value ? ' active' : ''}${groupAvailable ? '' : ' disabled'}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         if (!groupAvailable) return;
@@ -355,22 +369,19 @@ export default function ModelSelector({
                         setOpen(false);
                       }}
                     >
-                      {model.iconType === 'badge' && model.badgeText && (
-                        <span className="text-model-icon text-model-icon-mini" data-badge={model.badgeText}>
-                          {model.badgeText}
-                        </span>
-                      )}
                       <div className="model-item-info">
-                        <div className="model-item-name">{model.label}</div>
+                        <div className="model-item-name" title={model.label}>{model.label}</div>
                         {model.description && (
-                          <div className="model-item-desc">{model.description}</div>
+                          <div className="model-item-desc" title={model.description}>{model.description}</div>
                         )}
                       </div>
-                      {effectiveModel === model.value && (
-                        <svg className="model-item-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                      )}
+                      <span className="model-item-status" aria-hidden="true">
+                        {effectiveModel === model.value && (
+                          <svg className="model-item-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        )}
+                      </span>
                     </button>
                   ))}
                 </div>
