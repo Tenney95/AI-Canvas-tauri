@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
 import type { InstalledPlugin, PluginNodeToolManifest, PluginUiWindowBinding, PluginUiWindowEvent } from '../../src/types/plugin';
 
 const mocks = vi.hoisted(() => ({
@@ -177,14 +176,8 @@ describe('pluginUiWindowService', () => {
     expect(getPluginUiWindowStates('project-1')[0]).toMatchObject({ contextResponded: false, requestCount: 1 });
   });
 
-  it('keeps native presentation gated until real WebView acceptance and supports web fallback', async () => {
-    const launcher = readFileSync(new URL('../../src/components/nodes/shared/toolbar/NodePluginToolDialog.tsx', import.meta.url), 'utf8');
-    expect(launcher).toContain("dialog?.presentation === 'window' ? pluginUiWindowUnavailableReason() : null");
-    expect(launcher).toContain("dialog?.presentation === 'window' && windowFallback === null");
-    expect(launcher).toContain('if (useNativeWindow)');
-    expect(launcher).toContain('openPluginUiWindow({');
-    expect(launcher).toContain('sandbox="allow-scripts"');
-    expect(pluginUiWindowUnavailableReason()).toContain('隔离验收');
+  it('makes native windows available on desktop and preserves web fallback', async () => {
+    expect(pluginUiWindowUnavailableReason()).toBeNull();
     mocks.isTauri.mockReturnValue(false);
     expect(pluginUiWindowUnavailableReason()).toContain('不是 Tauri');
     await expect(openPluginUiWindow(options)).rejects.toThrow('仅支持 Tauri');

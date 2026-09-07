@@ -267,6 +267,32 @@ describe('pluginUiSessionService', () => {
     expect(await send('resource.export')).toMatchObject({ ok: true });
     session.dispose();
   });
+  it('bounds range reads separately while preserving model, media and export budgets', async () => {
+    const session = await createPluginUiNativeSession({ plugin, tool, nodeId: 'target', exportName: 'dialog', parameters: {}, onClose: vi.fn() });
+    for (let i = 0; i < 96; i++) {
+      expect(await session.request('effect', { type: 'resource.readRange', resourceId: 'opaque-resource', offset: i, length: 1 })).toMatchObject({ ok: true });
+    }
+    expect(await session.request('effect', { type: 'resource.readRange', length: 1 })).toMatchObject({ ok: false, error: expect.stringContaining('96') });
+    for (let i = 0; i < 4; i++) expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: true });
+    expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: false });
+    expect(await session.request('effect', { type: 'video.inspectFrame' })).toMatchObject({ ok: true });
+    expect(await session.request('effect', { type: 'resource.export' })).toMatchObject({ ok: true });
+    session.dispose();
+  });
+  it('rejects invalid read lengths and enforces the cumulative byte limit even on failed reads', async () => {
+    const session = await createPluginUiNativeSession({ plugin, tool, nodeId: 'target', exportName: 'dialog', parameters: {}, onClose: vi.fn() });
+    for (const length of [0, -1, 0.5, '1', 256 * 1024 + 1, NaN]) {
+      expect(await session.request('effect', { type: 'resource.readRange', length })).toMatchObject({ ok: false });
+    }
+    expect(mocks.executeEffect).not.toHaveBeenCalled();
+    mocks.executeEffect.mockRejectedValue(new Error('资源已失效'));
+    for (let i = 0; i < 64; i++) {
+      expect(await session.request('effect', { type: 'resource.readRange', length: 256 * 1024 })).toMatchObject({ ok: false, error: '资源已失效' });
+    }
+    expect(await session.request('effect', { type: 'resource.readRange', length: 1 })).toMatchObject({ ok: false, error: expect.stringContaining('16 MiB') });
+    expect(mocks.executeEffect).toHaveBeenCalledTimes(64);
+    session.dispose();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     // 服务模块只安装一次监听器；后续用例继续使用同一监听器引用。

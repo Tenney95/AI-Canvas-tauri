@@ -35,6 +35,8 @@ import {
 
 const MESSAGE_CHANNEL = 'ai-canvas-plugin-ui-v1';
 const MAX_UI_EFFECTS = 4;
+const MAX_UI_RANGE_READS = 96;
+const MAX_UI_RANGE_BYTES = 16 * 1024 * 1024;
 const MAX_UI_MEDIA_EFFECTS = 96;
 const MAX_UI_EXPORT_EFFECTS = 12;
 const MAX_UI_SESSIONS = 4;
@@ -83,6 +85,8 @@ interface PluginUiSession {
   completed: boolean;
   unsubscribe?: () => void;
   effectBudget: number;
+  rangeReadBudget?: number;
+  rangeReadBytes?: number;
   mediaEffectBudget?: number;
   exportEffectBudget?: number;
   requestCount: number;
@@ -301,7 +305,19 @@ async function dispatchRequest(
       case 'effect': {
         const effectType = request.payload && typeof request.payload === 'object' && 'type' in request.payload
           ? request.payload.type : undefined;
-        if (effectType === 'video.extractFrames' || effectType === 'video.detectShots' || effectType === 'video.inspectFrame') {
+        if (effectType === 'resource.readRange') {
+          const length = (request.payload as Record<string, unknown>).length;
+          if (typeof length !== 'number' || !Number.isSafeInteger(length) || length <= 0 || length > 256 * 1024) {
+            throw new Error('资源单次读取必须为 1–256 KiB 范围内的整数字节数');
+          }
+          if ((session.rangeReadBudget ?? 0) >= MAX_UI_RANGE_READS
+            || (session.rangeReadBytes ?? 0) + length > MAX_UI_RANGE_BYTES) {
+            throw new Error('本次会话分段读取达到 96 次或 16 MiB 上限');
+          }
+          // 按请求量预留额度，失败也计数；不占用模型调用额度，不改变资源授权校验。
+          session.rangeReadBudget = (session.rangeReadBudget ?? 0) + 1;
+          session.rangeReadBytes = (session.rangeReadBytes ?? 0) + length;
+        } else if (effectType === 'video.extractFrames' || effectType === 'video.detectShots' || effectType === 'video.inspectFrame') {
           if ((session.mediaEffectBudget ?? 0) >= MAX_UI_MEDIA_EFFECTS) throw new Error('本地视频操作达到 96 次上限，请重新打开插件');
           session.mediaEffectBudget = (session.mediaEffectBudget ?? 0) + 1;
         } else if (effectType === 'resource.export' || effectType === 'resource.createText') {

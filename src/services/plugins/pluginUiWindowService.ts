@@ -7,9 +7,10 @@ import type {
 } from '../../types/plugin';
 import { createPluginUiNativeSession } from './pluginUiSessionService';
 
-// 发布门禁，不是权限开关：真实 WebView2 CSP/存储/第一方窗口验收前不得改为 true。
+// Windows WebView2 实机已验证专用窗口、CSP/IPC 拒绝、桥接与写回；详见插件实施记录。
+// 点击入口与 MCP 共用该发布状态；原生注册、会话租约和 capability 校验仍独立执行。
 // 不接受 Manifest、环境变量、URL、localStorage 或插件请求绕过。
-const NATIVE_WINDOW_ACCEPTED = false;
+const NATIVE_WINDOW_ACCEPTED = true;
 export function pluginUiWindowUnavailableReason(): string | null {
   if (!isTauri()) return '当前不是 Tauri 桌面环境，将使用主窗口弹窗';
   return NATIVE_WINDOW_ACCEPTED ? null : '独立窗口尚待真实 WebView 隔离验收，暂用主窗口弹窗';

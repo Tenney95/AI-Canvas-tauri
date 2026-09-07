@@ -90,7 +90,7 @@ export interface PluginToolDialogManifest {
    * `fields` 仍然定义 `parameters` 的默认值与数据契约；未声明 ui 时由宿主渲染这些字段。
    */
   ui?: string;
-  /** 缺省为 modal；window 仅用于自定义 UI，实际开放由宿主隔离验收控制。 */
+  /** 缺省为 modal；window 声明自定义 UI 可由弹窗标题栏手动另开，默认仍显示弹窗。 */
   presentation?: 'modal' | 'window';
 }
 
