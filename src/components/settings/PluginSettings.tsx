@@ -851,17 +851,22 @@ export default function PluginSettings() {
                     <p className="mt-1 text-[11px] leading-4 text-canvas-text-secondary">
                       {item.manifest.description || '未提供说明'}
                     </p>
-                    <a
-                      href={item.repository}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-1 block truncate text-[10px] text-canvas-text-muted hover:text-indigo-400"
-                    >
-                      {item.repository.replace('https://github.com/', '')}
-                    </a>
-                    <div className="mt-1 text-[10px] text-canvas-text-muted">
-                      {CATEGORY_LABELS[item.manifest.category]} · 权限：{item.manifest.permissions.join('、')}
-                    </div>
+                    <details className="mt-2 text-[11px] text-canvas-text-secondary">
+                      <summary className="w-fit cursor-pointer select-none rounded hover:text-canvas-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-canvas-text-muted">
+                        详细信息
+                      </summary>
+                      <a
+                        href={item.repository}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-1 block truncate text-[10px] text-canvas-text-muted hover:text-indigo-400"
+                      >
+                        {item.repository.replace('https://github.com/', '')}
+                      </a>
+                      <div className="mt-1 break-words text-[10px] text-canvas-text-muted">
+                        {CATEGORY_LABELS[item.manifest.category]} · 权限：{item.manifest.permissions.join('、')}
+                      </div>
+                    </details>
                   </div>
                   <AnimatedButton
                     type="button"
@@ -952,13 +957,18 @@ export default function PluginSettings() {
                       </span>
                     ))}
                   </div>
-                  <div className="mt-2 text-[10px] leading-4 text-canvas-text-muted">
-                    API v{plugin.manifest.apiVersion} · {plugin.manifest.entry} · 入口：{placementLabels || (customNodes.length ? '节点选择器' : '未声明')}<br />
-                    工具 {plugin.manifest.contributes.nodeTools.length} 个 · 自定义节点 {customNodes.length} 个<br />
-                    读取：{inputFields.join('、') || '无'} · 写入：{outputFields.join('、') || '无'}<br />
-                    权限：{plugin.manifest.permissions.join('、')}<br />
-                    代码 SHA-256：<span className="break-all font-mono" title={plugin.sourceDigest}>{plugin.sourceDigest ?? '待原生迁移'}</span>
-                  </div>
+                  <details className="mt-2 text-[11px] text-canvas-text-secondary">
+                    <summary className="w-fit cursor-pointer select-none rounded hover:text-canvas-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-canvas-text-muted">
+                      详细信息
+                    </summary>
+                    <div className="mt-1 break-words text-[10px] leading-4 text-canvas-text-muted">
+                      API v{plugin.manifest.apiVersion} · {plugin.manifest.entry} · 入口：{placementLabels || (customNodes.length ? '节点选择器' : '未声明')}<br />
+                      工具 {plugin.manifest.contributes.nodeTools.length} 个 · 自定义节点 {customNodes.length} 个<br />
+                      读取：{inputFields.join('、') || '无'} · 写入：{outputFields.join('、') || '无'}<br />
+                      权限：{plugin.manifest.permissions.join('、')}<br />
+                      代码 SHA-256：<span className="break-all font-mono" title={plugin.sourceDigest}>{plugin.sourceDigest ?? '待原生迁移'}</span>
+                    </div>
+                  </details>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <AnimatedButton
