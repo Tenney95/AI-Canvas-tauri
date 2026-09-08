@@ -1,7 +1,7 @@
 # ComfyUI 工作流集成说明
 
 > 本文档描述 AI Canvas 如何导入、管理和执行 ComfyUI 工作流，包括 IO 节点识别、内容与参数注入规则、结果取回和编辑回写链路。
-> 最后更新：2026-09-08。范围、验证与回滚见[可靠性修复](./plans/2026-09-08-comfyui-reliability.md)和[助手多服务器支持](./plans/2026-09-08-comfyui-assistant-servers.md)。
+> 最后更新：2026-09-08。范围、验证与回滚见[可靠性修复](./plans/2026-09-08-comfyui-reliability.md)、[助手多服务器支持](./plans/2026-09-08-comfyui-assistant-servers.md)和[打开与编辑体验](./plans/2026-09-08-comfyui-editor-experience.md)。
 
 ## 1. 概览
 
@@ -228,9 +228,9 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 工作流列表里点铅笔图标会开一个独立的 ComfyUI 窗口：
 
-1. **先拦缺节点** —— `findMissingNodeClasses` 拉 `/object_info` 比对 class_type。缺节点时 ComfyUI 会中止加载但照样开一个同名标签页，画布上还留着上一个工作流，看起来就像「打开了别的工作流」，所以宁可提前把缺什么说清楚；
-2. **开窗** —— Tauri 命令 `open_comfyui_window`，把 API JSON 和界面 JSON 一起带过去；
-3. **注入桥接脚本** —— `bridge.js` **只对 loopback 地址注入**，远程 ComfyUI 不注入；
+1. **检查数据与缺失节点** —— 先校验 API JSON；`findMissingNodeClasses` 比对 `/object_info`，最多等待 4 秒。缺失检查仅作提示，不阻止 ComfyUI 显示缺失节点；
+2. **开窗与载入** —— `open_comfyui_window` 接收请求 ID 和两份 JSON。`bridge.js` 等待画布与前端启动恢复完成，实际载入已有标签的当前草稿，或为新工作流载入编辑布局。空白、损坏或载入失败的布局尝试从 API 重建；新载入的节点居中，已有草稿保留视口；
+3. **确认结果** —— 原生端最多等待 60 秒，校验同源页面、请求 ID 和非空画布回执后才返回成功。打开请求串行，重复请求合并；面板显示检查、载入、成功或失败状态，失败可重试。桥接**只对 loopback 地址注入**，远程工作流自动载入明确报错，普通远程页面仍可打开；
 4. **保存** —— 桥接脚本把两种格式的 JSON 打包放到 `window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__`，Rust 用 `eval_with_callback` 取回来、校验（分类合法、两份 JSON 都能解析、都不超 16 MiB），再 `emit` 出 `comfyui-workflow-save` 事件；
 5. **落库** —— 前端 `initComfyUIWindowBridge` 收到事件后再校验一次，已存在就更新（重新识别 IO 节点、剪掉失效的默认节点），不存在就新建。
 
@@ -238,7 +238,7 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 保存身份绑定 ComfyUI 的真实标签对象，切换或重命名标签不改变对应记录。未知标签按新工作流命名保存，不按同名文件推断目标。“另存到 AI Canvas”创建新记录。导出期间切换标签时拒绝该次保存；延迟保存回执只绑定发起保存的标签，打开失败不改绑当前标签。前端版本无法提供标签身份时采用新建保存，不回退到最后一次打开的记录。
 
-面板保持打开不关：ComfyUI 那边存回来后列表会实时刷新，方便接着改默认节点。
+面板保持打开不关：ComfyUI 那边存回来后列表会实时刷新，方便接着改默认节点。连接检查失败会返回错误，保留已有编辑窗口及未保存草稿。
 
 ### 11.1 助手动态工作流与服务器绑定
 
@@ -276,5 +276,7 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 | [src-tauri/src/media/comfyui/mod.rs](../src-tauri/src/media/comfyui/mod.rs) | 启动本地 ComfyUI、编辑窗口、保存 payload 校验 |
 | [src-tauri/src/media/comfyui/bridge.js](../src-tauri/src/media/comfyui/bridge.js) | 标签身份绑定、编辑载入与保存握手 |
 | [tests/services/comfyBridgeSaveIdentity.test.ts](../tests/services/comfyBridgeSaveIdentity.test.ts) | 多标签保存和异步身份回归 |
+| [tests/services/comfyWorkflowEditor.test.ts](../tests/services/comfyWorkflowEditor.test.ts) | 打开回执、并发限制与缺节点检查超时 |
+| [tests/components/workflowEditorInteraction.test.tsx](../tests/components/workflowEditorInteraction.test.tsx) | 加载反馈、重复点击与失败重试交互 |
 | [tests/services/comfyTaskRecovery.test.ts](../tests/services/comfyTaskRecovery.test.ts) | 取消、断线、续查与过期回执回归 |
 | [tests/services/comfyVideoParams.test.ts](../tests/services/comfyVideoParams.test.ts) | 视频参数注入的回归用例 |

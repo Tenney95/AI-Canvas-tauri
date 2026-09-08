@@ -133,6 +133,8 @@ export default function WorkflowPanel() {
   );
 
   const [name, setName] = useState('');
+  const [editorOpen, setEditorOpen] = useState<{ workflowId: string; phase: 'checking' | 'opening' | 'ready' | 'error'; detail: string }>();
+  const editorOpeningRef = useRef(false);
   const [category, setCategory] = useState<WorkflowCategory>('ai-text');
   const [fileName, setFileName] = useState('');
   const [fileContent, setFileContent] = useState('');
@@ -296,11 +298,17 @@ export default function WorkflowPanel() {
 
   const handleEdit = useCallback(async (workflow: WorkflowDefinition, event: React.MouseEvent) => {
     event.stopPropagation();
+    if (editorOpeningRef.current) return;
+    editorOpeningRef.current = true;
+    setEditorOpen({ workflowId: workflow.id, phase: 'checking', detail: '正在检查工作流…' });
     try {
-      const missing = await openComfyUIWorkflowEditor(
+      const result = await openComfyUIWorkflowEditor(
         comfyBaseUrlFor(workflow.id) || DEFAULT_COMFY_URL,
         workflow,
+        (phase) => setEditorOpen({ workflowId: workflow.id, phase, detail: phase === 'checking' ? '正在检查工作流…' : '正在载入 ComfyUI 画布，请稍候…' }),
       );
+      const missing = result.missingNodeClasses;
+      setEditorOpen({ workflowId: workflow.id, phase: 'ready', detail: `${result.detail} · ${result.nodeCount} 个画布节点${missing.length ? `；缺少节点：${missing.join('、')}` : ''}` });
       // 缺节点不拦，ComfyUI 会把缺的节点标红；这里只提醒一句缺了什么
       if (missing.length > 0) {
         showToast(`已打开，但 ComfyUI 缺少这些节点：${missing.join('、')}`, 'error');
@@ -311,6 +319,9 @@ export default function WorkflowPanel() {
         ? error
         : error instanceof Error ? error.message : '无法在 ComfyUI 中打开工作流';
       showToast(message, 'error');
+      setEditorOpen({ workflowId: workflow.id, phase: 'error', detail: message });
+    } finally {
+      editorOpeningRef.current = false;
     }
   }, [showToast]);
 
@@ -696,17 +707,20 @@ export default function WorkflowPanel() {
                             )}
                             <motion.button
                               type="button"
-                              className="wf-item-del wf-item-edit"
+                              className="wf-item-del wf-item-edit disabled:opacity-50 disabled:cursor-wait"
                               onClick={(event) => void handleEdit(wf, event)}
+                              disabled={(editorOpen?.phase === 'checking' || editorOpen?.phase === 'opening')}
+                              aria-label={`编辑工作流：${wf.name}`}
+                              aria-busy={editorOpen?.workflowId === wf.id && (editorOpen.phase === 'checking' || editorOpen.phase === 'opening')}
                               data-tooltip="在 ComfyUI 中编辑"
                               data-tooltip-pos="left"
                               whileHover={{ scale: 1.1 }}
                               whileTap={{ scale: 0.9 }}
                             >
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              {editorOpen?.workflowId === wf.id && (editorOpen.phase === 'checking' || editorOpen.phase === 'opening') ? <span className="ui-spinner" aria-hidden="true" /> : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                 <path d="M12 20h9" />
                                 <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                              </svg>
+                              </svg>}
                             </motion.button>
                             <motion.button
                               type="button"
@@ -724,6 +738,13 @@ export default function WorkflowPanel() {
                             </motion.button>
                           </div>
                         </div>{/* /wf-item-row */}
+
+                        {editorOpen?.workflowId === wf.id && (
+                          <div className={`ui-alert mt-2 flex-wrap ${editorOpen.phase === 'error' ? 'ui-alert--danger' : 'ui-alert--info'}`} role={editorOpen.phase === 'error' ? 'alert' : 'status'}>
+                            <span className="min-w-0 flex-1 break-words text-xs">{editorOpen.detail}</span>
+                            {editorOpen.phase === 'error' && <button type="button" className="ui-btn ui-btn--sm" onClick={(event) => void handleEdit(wf, event)}>重试打开</button>}
+                          </div>
+                        )}
 
                         <AnimatePresence initial={false}>
                           {expanded && nodeCount > 0 && (
