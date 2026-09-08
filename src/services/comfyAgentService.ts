@@ -2,7 +2,7 @@
  * 内部助手使用的 ComfyUI 动态工作流边界。
  *
  * 只从 ComfyUI API 发现模型和节点；助手生成的工作流必须先按当前实例的
- * /object_info 完整校验，换取短期、任务绑定的 validationId，才能进入需确认的执行工具。
+ * /object_info 完整校验，换取短期、任务和服务器绑定的 validationId，才能进入执行工具。
  */
 import { generateId, useAppStore } from '../store/useAppStore';
 import type { WorkflowCategory, WorkflowDefinition, WorkflowIONodeType } from '../types';
@@ -16,6 +16,7 @@ import { comfyFetch, pollComfyHistory } from './comfyPolling';
 import { resolveComfyOutputUrl, type ComfyOutputKind } from './comfyOutputs';
 import { formatComfyPromptError } from './comfyWorkflowService';
 import { extractComfyUIIONodes } from './comfyUIWindowService';
+import { listConfiguredComfyServers, resolveComfyServerSelection, type ComfyServerSelection } from './comfyServers';
 
 type ComfyWorkflow = Record<string, ComfyWorkflowNode>;
 
@@ -43,13 +44,14 @@ interface ComfyNodeInfo {
 type ComfyObjectInfo = Record<string, ComfyNodeInfo>;
 
 export interface ComfyDiscoveryOptions {
-  resource: 'models' | 'nodes';
+  resource: 'servers' | 'models' | 'nodes';
+  serverId?: string;
   query?: string;
   nodeClasses?: string[];
   limit?: number;
 }
 
-export interface ComfyWorkflowValidationSummary {
+export interface ComfyWorkflowValidationSummary extends ComfyServerSelection {
   validationId: string;
   kind: MediaKind;
   nodeCount: number;
@@ -68,7 +70,7 @@ interface ValidatedWorkflowEntry extends ComfyWorkflowValidationSummary {
   workflow: ComfyWorkflow;
 }
 
-export interface ComfyWorkflowSaveOfferSummary {
+export interface ComfyWorkflowSaveOfferSummary extends ComfyServerSelection {
   saveOfferId: string;
   suggestedName: string;
   kind: MediaKind;
@@ -79,6 +81,7 @@ export interface ComfyWorkflowSaveOfferSummary {
 interface ComfyWorkflowSaveOfferEntry extends ComfyWorkflowSaveOfferSummary {
   projectId: string;
   conversationId: string;
+  baseUrl: string;
   workflow: ComfyWorkflow;
 }
 
@@ -95,19 +98,41 @@ const MAX_WORKFLOW_NODES = 400;
 const MAX_DISCOVERY_ITEMS = 200;
 const MAX_COMBO_PREVIEW = 100;
 
-let objectInfoCache: { baseUrl: string; fetchedAt: number; value: Promise<ComfyObjectInfo> } | null = null;
-let modelCatalogCache: {
-  baseUrl: string;
-  fetchedAt: number;
-  value: Promise<Record<string, string[]>>;
-} | null = null;
+interface ApiCacheEntry<T> { fetchedAt: number; value: Promise<T> }
+const objectInfoCache = new Map<string, ApiCacheEntry<ComfyObjectInfo>>();
+const modelCatalogCache = new Map<string, ApiCacheEntry<Record<string, string[]>>>();
 const validatedWorkflows = new Map<string, ValidatedWorkflowEntry>();
 const workflowSaveOffers = new Map<string, ComfyWorkflowSaveOfferEntry>();
 
-function getBaseUrl(): string {
-  const value = useAppStore.getState().config.comfyUIUrl?.trim();
-  if (!value) throw new Error('未配置 ComfyUI 服务地址，请先在设置中配置并启动 ComfyUI');
-  return value.replace(/\/+$/, '');
+function isServerSelectionCurrent(target: ComfyServerSelection & { baseUrl: string }): boolean {
+  try {
+    return resolveComfyServerSelection(target.serverId).baseUrl === target.baseUrl;
+  } catch {
+    return false;
+  }
+}
+
+function assertServerSelectionCurrent(target: ComfyServerSelection & { baseUrl: string }): void {
+  if (!isServerSelectionCurrent(target)) {
+    throw new Error('ComfyUI 服务器已删除或地址已变化，请重新选择服务器并校验工作流');
+  }
+}
+
+function cachedApiRequest<T>(cache: Map<string, ApiCacheEntry<T>>, baseUrl: string, read: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  for (const [key, entry] of cache) {
+    if (now - entry.fetchedAt >= API_CACHE_TTL) cache.delete(key);
+  }
+  const existing = cache.get(baseUrl);
+  if (existing) return existing.value;
+  // 少量地址缓存，避免长期切换服务器保留无限量节点清单。
+  if (cache.size >= 16) cache.delete(cache.keys().next().value!);
+  const value = read().catch((error: unknown) => {
+    if (cache.get(baseUrl)?.value === value) cache.delete(baseUrl);
+    throw error;
+  });
+  cache.set(baseUrl, { fetchedAt: now, value });
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -122,23 +147,15 @@ async function readJson(response: Response, action: string): Promise<unknown> {
   return response.json();
 }
 
-async function getObjectInfo(baseUrl = getBaseUrl()): Promise<ComfyObjectInfo> {
-  if (
-    objectInfoCache
-    && objectInfoCache.baseUrl === baseUrl
-    && Date.now() - objectInfoCache.fetchedAt < API_CACHE_TTL
-  ) return objectInfoCache.value;
-
-  const value = (async () => {
+async function getObjectInfo(baseUrl: string): Promise<ComfyObjectInfo> {
+  return cachedApiRequest(objectInfoCache, baseUrl, async () => {
     const payload = await readJson(
       await comfyFetch(`${baseUrl}/object_info`),
       '读取 ComfyUI 节点清单',
     );
     if (!isRecord(payload)) throw new Error('ComfyUI 节点清单格式无效');
     return payload as ComfyObjectInfo;
-  })();
-  objectInfoCache = { baseUrl, fetchedAt: Date.now(), value };
-  return value;
+  });
 }
 
 function inferModelsFromObjectInfo(info: ComfyObjectInfo): Record<string, string[]> {
@@ -162,14 +179,8 @@ function inferModelsFromObjectInfo(info: ComfyObjectInfo): Record<string, string
   );
 }
 
-async function getModelCatalog(baseUrl = getBaseUrl()): Promise<Record<string, string[]>> {
-  if (
-    modelCatalogCache
-    && modelCatalogCache.baseUrl === baseUrl
-    && Date.now() - modelCatalogCache.fetchedAt < API_CACHE_TTL
-  ) return modelCatalogCache.value;
-
-  const value = (async () => {
+async function getModelCatalog(baseUrl: string): Promise<Record<string, string[]>> {
+  return cachedApiRequest(modelCatalogCache, baseUrl, async () => {
     try {
       const foldersPayload = await readJson(
         await comfyFetch(`${baseUrl}/models`),
@@ -197,9 +208,7 @@ async function getModelCatalog(baseUrl = getBaseUrl()): Promise<Record<string, s
       // 旧版没有 /models；下面从 /object_info 的 combo 输入回退发现。
     }
     return inferModelsFromObjectInfo(await getObjectInfo(baseUrl));
-  })();
-  modelCatalogCache = { baseUrl, fetchedAt: Date.now(), value };
-  return value;
+  });
 }
 
 function previewDeclaration(value: unknown): unknown {
@@ -234,20 +243,26 @@ function summarizeNodeInfo(classType: string, node: ComfyNodeInfo) {
 }
 
 export async function discoverComfyUI(options: ComfyDiscoveryOptions): Promise<Record<string, unknown>> {
-  const baseUrl = getBaseUrl();
+  if (options.resource === 'servers') {
+    return { source: 'ComfyUI 设置', servers: listConfiguredComfyServers() };
+  }
+  const target = resolveComfyServerSelection(options.serverId);
+  const { baseUrl, serverId, serverName } = target;
   const query = options.query?.trim().toLowerCase() || '';
   const limit = Math.min(Math.max(options.limit ?? 50, 1), MAX_DISCOVERY_ITEMS);
   if (options.resource === 'models') {
     const catalog = await getModelCatalog(baseUrl);
+    assertServerSelectionCurrent(target);
     const folders = Object.entries(catalog).map(([folder, models]) => ({
       folder,
       models: models.filter((model) => !query || model.toLowerCase().includes(query)).slice(0, limit),
       total: models.length,
     })).filter((entry) => !query || entry.models.length > 0);
-    return { source: 'ComfyUI API', folders, folderCount: folders.length };
+    return { source: 'ComfyUI API', serverId, serverName, folders, folderCount: folders.length };
   }
 
   const info = await getObjectInfo(baseUrl);
+  assertServerSelectionCurrent(target);
   const exact = new Set(options.nodeClasses ?? []);
   const nodes = Object.entries(info)
     .filter(([classType, node]) => (
@@ -260,6 +275,8 @@ export async function discoverComfyUI(options: ComfyDiscoveryOptions): Promise<R
     .map(([classType, node]) => summarizeNodeInfo(classType, node));
   return {
     source: 'ComfyUI /object_info',
+    serverId,
+    serverName,
     nodes,
     returned: nodes.length,
     totalRegistered: Object.keys(info).length,
@@ -328,11 +345,14 @@ export async function validateComfyUIWorkflow(args: {
   kind: MediaKind;
   taskId: string;
   projectId: string;
+  serverId?: string;
 }): Promise<ComfyWorkflowValidationSummary> {
   cleanupExpiredValidations();
-  const baseUrl = getBaseUrl();
+  const target = resolveComfyServerSelection(args.serverId);
+  const { baseUrl, serverId, serverName } = target;
   const workflow = parseWorkflow(args.workflow);
   const info = await getObjectInfo(baseUrl);
+  assertServerSelectionCurrent(target);
   const errors: string[] = [];
   const classTypes = new Set<string>();
   const customClasses = new Set<string>();
@@ -376,6 +396,8 @@ export async function validateComfyUIWorkflow(args: {
   const validationId = `comfy-validation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const summary: ComfyWorkflowValidationSummary = {
     validationId,
+    serverId,
+    serverName,
     kind: args.kind,
     nodeCount: Object.keys(workflow).length,
     outputNodeCount,
@@ -402,9 +424,9 @@ export function getValidatedComfyWorkflowSummary(
 ): ComfyWorkflowValidationSummary | null {
   cleanupExpiredValidations();
   const entry = validatedWorkflows.get(validationId);
-  if (!entry || entry.taskId !== taskId || entry.projectId !== projectId) return null;
-  const { kind, nodeCount, outputNodeCount, nodeClasses, customNodeClasses, modelNames, expiresAt } = entry;
-  return { validationId, kind, nodeCount, outputNodeCount, nodeClasses, customNodeClasses, modelNames, expiresAt };
+  if (!entry || entry.taskId !== taskId || entry.projectId !== projectId || !isServerSelectionCurrent(entry)) return null;
+  const { kind, serverId, serverName, nodeCount, outputNodeCount, nodeClasses, customNodeClasses, modelNames, expiresAt } = entry;
+  return { validationId, kind, serverId, serverName, nodeCount, outputNodeCount, nodeClasses, customNodeClasses, modelNames, expiresAt };
 }
 
 async function cancelPrompt(baseUrl: string, promptId: string): Promise<void> {
@@ -466,6 +488,8 @@ function createSaveOffer(
   const saveOfferId = `comfy-save-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const summary: ComfyWorkflowSaveOfferSummary = {
     saveOfferId,
+    serverId: entry.serverId,
+    serverName: entry.serverName,
     suggestedName: workflowNameFrom(entry),
     kind: entry.kind,
     modelNames: [...entry.modelNames],
@@ -475,6 +499,7 @@ function createSaveOffer(
     ...summary,
     projectId: entry.projectId,
     conversationId,
+    baseUrl: entry.baseUrl,
     workflow: structuredClone(entry.workflow),
   });
   return summary;
@@ -487,9 +512,9 @@ export function getComfyWorkflowSaveOfferSummary(
 ): ComfyWorkflowSaveOfferSummary | null {
   cleanupExpiredValidations();
   const offer = workflowSaveOffers.get(saveOfferId);
-  if (!offer || offer.conversationId !== conversationId || offer.projectId !== projectId) return null;
-  const { suggestedName, kind, modelNames, expiresAt } = offer;
-  return { saveOfferId, suggestedName, kind, modelNames, expiresAt };
+  if (!offer || offer.conversationId !== conversationId || offer.projectId !== projectId || !isServerSelectionCurrent(offer)) return null;
+  const { suggestedName, kind, serverId, serverName, modelNames, expiresAt } = offer;
+  return { saveOfferId, suggestedName, kind, serverId, serverName, modelNames, expiresAt };
 }
 
 export async function saveCompletedComfyUIWorkflow(args: {
@@ -503,6 +528,7 @@ export async function saveCompletedComfyUIWorkflow(args: {
   if (!offer || offer.conversationId !== args.conversationId || offer.projectId !== args.projectId) {
     throw new Error('工作流保存凭证已失效或不属于当前对话，请重新执行工作流');
   }
+  assertServerSelectionCurrent(offer);
   const name = args.name.trim();
   if (!name) throw new Error('工作流名称不能为空');
   const fileContent = JSON.stringify(offer.workflow, null, 2);
@@ -514,6 +540,7 @@ export async function saveCompletedComfyUIWorkflow(args: {
     id: `wf-${generateId()}`,
     name,
     category: WORKFLOW_CATEGORIES[offer.kind],
+    serverId: offer.serverId,
     fileName: sanitizeWorkflowFileName(name),
     fileContent,
     ioNodes,
@@ -540,7 +567,7 @@ export async function executeValidatedComfyUIWorkflow(args: {
   if (!entry || entry.taskId !== args.taskId || entry.projectId !== args.projectId) {
     throw new Error('工作流校验已失效或不属于当前任务，请重新发现并校验');
   }
-  if (entry.baseUrl !== getBaseUrl()) throw new Error('ComfyUI 服务地址已变化，请重新校验工作流');
+  assertServerSelectionCurrent(entry);
   if (args.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
   let promptId = '';
@@ -618,8 +645,8 @@ export async function executeValidatedComfyUIWorkflow(args: {
 }
 
 export function clearComfyAgentCachesForTests(): void {
-  objectInfoCache = null;
-  modelCatalogCache = null;
+  objectInfoCache.clear();
+  modelCatalogCache.clear();
   validatedWorkflows.clear();
   workflowSaveOffers.clear();
 }
