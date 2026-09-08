@@ -3,6 +3,23 @@
  * AI 创作提示词由 seriesCreativeService 统一构造，不放入界面字典。
  */
 const series = {
+  "章节浏览": "Browse chapters",
+  "关闭章节浏览": "Close chapter browser",
+  "素材来源": "Source material",
+  "搜索章节或正文": "Search chapters or text",
+  "重新读取": "Reload source",
+  "正在读取章节…": "Loading chapters…",
+  "章节目录": "Chapter index",
+  "找到 {count} 个章节": "Found {count} chapters",
+  "全文": "Full text",
+  "开篇": "Opening",
+  "更多章节": "More chapters",
+  "没有匹配的章节": "No matching chapters",
+  "上一段": "Previous section",
+  "下一段": "Next section",
+  "让助手分析本章": "Analyze this chapter with the assistant",
+  "读取材料失败": "Could not read source material",
+  "项目已切换，请重新选择章节": "Project changed. Select the chapter again.",
   'AI 诊断': 'AI review',
   'AI 优化本镜': 'Improve this shot with AI',
   '已准备分镜请求，请在助手中发送': 'Shot request prepared. Send it in the assistant.',

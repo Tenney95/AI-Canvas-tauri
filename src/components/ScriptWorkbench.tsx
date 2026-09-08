@@ -17,6 +17,7 @@ import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
 import Select from './shared/Select';
 import { createEpisodeShotlist } from '../services/shotlistService';
+import SeriesSourceBrowser from './SeriesSourceBrowser';
 
 type EditorTab = 'outline' | 'script' | 'creative';
 type PendingAction = { type: 'close' } | { type: 'switch'; episodeId: string };
@@ -261,6 +262,7 @@ export default function ScriptWorkbench({
     series?.series?.script?.trim() ? 'script' : 'original',
   );
   const [targetEpisodeCount, setTargetEpisodeCount] = useState('24');
+  const [sourceOpen, setSourceOpen] = useState(false);
   const [targetDurationSec, setTargetDurationSec] = useState('90');
   const splitSourceAvailable = splitSource === 'script'
     ? Boolean(series?.series?.script?.trim())
@@ -446,6 +448,8 @@ export default function ScriptWorkbench({
             <Icon icon="lucide:wand-sparkles" className="h-3.5 w-3.5" />
             {t('AI 拆分草案')}
           </button>
+          <button type="button" className="ui-btn ui-btn--sm" disabled={projectLoadStatus !== 'ready'}
+            onClick={() => setSourceOpen(true)}>{t('章节浏览')}</button>
           <PopupCloseButton ariaLabel={t('关闭剧本创作工作台')} onClick={requestClose} />
         </header>
 
@@ -797,6 +801,12 @@ export default function ScriptWorkbench({
           </aside>
         </main>
       </div>
+      {sourceOpen && <SeriesSourceBrowser initialPart={splitSource} onClose={() => setSourceOpen(false)}
+        beforeAssistant={async () => {
+          if (isDirty && !await saveDraft()) return false;
+          onClose();
+          return true;
+        }} />}
     </ModalOverlay>
   );
 }
