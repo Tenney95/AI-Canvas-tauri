@@ -260,8 +260,8 @@ describe('pluginUiSessionService', () => {
       await vi.waitFor(() => expect(frame.postMessage).toHaveBeenCalledWith(expect.objectContaining({ requestId }), '*'), { interval: 1 });
       return vi.mocked(frame.postMessage).mock.calls.at(-1)?.[0];
     };
-    for (let i = 0; i < 96; i++) expect(await send('video.inspectFrame')).toMatchObject({ ok: true });
-    expect(await send('video.inspectFrame')).toMatchObject({ ok: false });
+    for (let i = 0; i < 96; i++) expect(await send(i % 2 ? 'image.lineArt' : 'video.inspectFrame')).toMatchObject({ ok: true });
+    expect(await send('image.lineArt')).toMatchObject({ ok: false, error: expect.stringContaining('96') });
     for (let i = 0; i < 4; i++) expect(await send('model.generate')).toMatchObject({ ok: true });
     expect(await send('model.generate')).toMatchObject({ ok: false });
     expect(await send('resource.export')).toMatchObject({ ok: true });
@@ -276,6 +276,9 @@ describe('pluginUiSessionService', () => {
     for (let i = 0; i < 4; i++) expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: true });
     expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: false });
     expect(await session.request('effect', { type: 'video.inspectFrame' })).toMatchObject({ ok: true });
+    for (let i = 0; i < 24; i++) {
+      expect(await session.request('effect', { type: 'image.lineArt', resourceId: `frame-${i}` })).toMatchObject({ ok: true });
+    }
     expect(await session.request('effect', { type: 'resource.export' })).toMatchObject({ ok: true });
     session.dispose();
   });
@@ -291,6 +294,10 @@ describe('pluginUiSessionService', () => {
     }
     expect(await session.request('effect', { type: 'resource.readRange', length: 1 })).toMatchObject({ ok: false, error: expect.stringContaining('16 MiB') });
     expect(mocks.executeEffect).toHaveBeenCalledTimes(64);
+    mocks.executeEffect.mockResolvedValue({ type: 'image.lineArt', ok: true });
+    for (let i = 0; i < 24; i++) {
+      expect(await session.request('effect', { type: 'image.lineArt', resourceId: `frame-${i}` })).toMatchObject({ ok: true });
+    }
     session.dispose();
   });
   beforeEach(() => {

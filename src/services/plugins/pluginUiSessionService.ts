@@ -317,8 +317,9 @@ async function dispatchRequest(
           // 按请求量预留额度，失败也计数；不占用模型调用额度，不改变资源授权校验。
           session.rangeReadBudget = (session.rangeReadBudget ?? 0) + 1;
           session.rangeReadBytes = (session.rangeReadBytes ?? 0) + length;
-        } else if (effectType === 'video.extractFrames' || effectType === 'video.detectShots' || effectType === 'video.inspectFrame') {
-          if ((session.mediaEffectBudget ?? 0) >= MAX_UI_MEDIA_EFFECTS) throw new Error('本地视频操作达到 96 次上限，请重新打开插件');
+        } else if (effectType === 'video.extractFrames' || effectType === 'video.detectShots' || effectType === 'video.inspectFrame'
+          || effectType === 'image.lineArt') {
+          if ((session.mediaEffectBudget ?? 0) >= MAX_UI_MEDIA_EFFECTS) throw new Error('本地媒体操作达到 96 次上限，请重新打开插件');
           session.mediaEffectBudget = (session.mediaEffectBudget ?? 0) + 1;
         } else if (effectType === 'resource.export' || effectType === 'resource.createText') {
           if ((session.exportEffectBudget ?? 0) >= MAX_UI_EXPORT_EFFECTS) throw new Error('本次会话导出达到 12 次上限');
