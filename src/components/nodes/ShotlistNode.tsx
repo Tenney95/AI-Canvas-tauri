@@ -11,7 +11,7 @@
  * 画面有三种来源：把素材节点拖进格子、从连线进来的节点里挑、直接叫 AI 生成
  * （生成出的图仍然是画布上一个正常的图像节点，表里只存引用）。
  */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
@@ -49,7 +49,8 @@ import Select from '../shared/Select';
 import ModalOverlay from '../shared/ModalOverlay';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import { useT } from '../../i18n';
-import { hasShotlistTimeline, openVideoEditorForShotlist } from '../../services/videoEditorService';
+import { hasShotlistTimeline, openVideoEditorForShotlist, resolveShotlistTimelineRows } from '../../services/videoEditorService';
+import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../services/canvasDerivationGuard';
 
 /** 画面格实时解析出的素材 */
 interface ResolvedFrame {
@@ -142,6 +143,10 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const [frameModelRef, setFrameModelRef] = useState('');
   const [frameProgress, setFrameProgress] = useState<{ completed: number; total: number } | null>(null);
   const [revisionOpen, setRevisionOpen] = useState(false);
+  const subtitleInputId = useId();
+  const [includeDialogueCaptions, setIncludeDialogueCaptions] = useState(false);
+  const [timelineBusy, setTimelineBusy] = useState(false);
+  const timelineRunning = useRef(false);
   const episodeScript = useAppStore((state) => state.projects.find((project) => project.id === data.shotlistScriptSource?.episodeId)?.episodeScript);
   const sourceScript = useAppStore((state) => state.nodes.find((node) => node.id === data.shotlistScriptSource?.nodeId)?.data.output);
   const scriptChanged = useMemo(() => typeof sourceScript === 'string' && sourceScript.trim() !== (episodeScript ?? '').trim(), [sourceScript, episodeScript]);
@@ -319,25 +324,48 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   }, [id]);
 
   const pushToTimeline = useCallback(async () => {
+    if (timelineRunning.current) return;
     const store = useAppStore.getState();
     const projectId = store.currentProjectId ?? '';
+    const guard = registerCanvasDerivation(store, id);
+    if (!guard) return;
+    const source = store.nodes.find((node) => node.id === id)!;
+    const timelineRows = resolveShotlistTimelineRows(source.data.shotlistRows ?? [], store.nodes);
+    const snapshot = JSON.stringify(timelineRows);
+    const assertCurrent = () => {
+      const current = useAppStore.getState();
+      const node = current.nodes.find((candidate) => candidate.id === id);
+      if (!isCanvasDerivationFresh(guard, current) || current.projectLoadStatus !== 'ready'
+        || !node || JSON.stringify(resolveShotlistTimelineRows(node.data.shotlistRows ?? [], current.nodes)) !== snapshot) {
+        throw new Error(t('项目或分镜已变化，请重新推送时间轴'));
+      }
+    };
+    timelineRunning.current = true;
+    setTimelineBusy(true);
     try {
       // 分镜表是时间轴的源，每次推送都按当前表重建，会覆盖上次在剪辑窗口里的调整
       if (await hasShotlistTimeline(projectId, id)) {
         const confirmed = await confirmAction('这张分镜表已经推送过时间轴。继续将按当前表重建，剪辑窗口里的调整会丢失。', { title: '重新推送时间轴' });
         if (!confirmed) return;
       }
+      assertCurrent();
       await openVideoEditorForShotlist({
         projectId,
         nodeId: id,
-        label: (data.label as string) || '分镜表',
-        rows,
+        label: source.data.label || '分镜表',
+        rows: timelineRows,
+        includeDialogueCaptions,
+        assertCurrent,
         theme: store.config.theme === 'light' ? 'light' : 'dark',
       });
     } catch (err: unknown) {
       store.showToast(err instanceof Error ? err.message : '推送时间轴失败', 'error');
+    } finally {
+      completeCanvasDerivation(guard);
+      timelineRunning.current = false;
+      setTimelineBusy(false);
     }
-  }, [id, data.label, rows]);
+  }, [id, includeDialogueCaptions, t]);
 
   const handleResize = useCallback(
     (w: number, h: number) => updateNodeDataTransient(id, { nodeWidth: w, nodeHeight: h } as Partial<BaseNodeData>),
@@ -573,10 +601,16 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
                 ))}
               </div>
             )}
+            <div className="text-xs" title={t('对白按镜头时长放置，可在剪辑器中细调')}>
+              <input id={subtitleInputId} type="checkbox" className="ui-checkbox" checked={includeDialogueCaptions}
+                disabled={timelineBusy} onChange={(event) => setIncludeDialogueCaptions(event.target.checked)} />
+              <label htmlFor={subtitleInputId}>{t('附带对白字幕')}</label>
+            </div>
             <button
               type="button"
               className="shotlist-btn shotlist-btn--primary"
               onClick={pushToTimeline}
+              disabled={timelineBusy}
               title="按当前表重建剪辑时间轴"
             >
               <Icon icon="mdi:timeline-plus-outline" width={13} height={13} />

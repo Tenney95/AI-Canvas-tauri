@@ -13,8 +13,9 @@ import { getVideoEditorProject } from '../../src/services/indexedDb/videoEditorR
 import {
   hasShotlistTimeline,
   openVideoEditorForShotlist,
+  resolveShotlistTimelineRows,
 } from '../../src/services/videoEditorService';
-import { computeTimelineDuration, getVideoTrack } from '../../src/types/videoEditor';
+import { computeTimelineDuration, getActiveClips, getOverlayTracks, getVideoTrack, needsCompositing } from '../../src/types/videoEditor';
 import { createShotRow } from '../../src/types/shotlist';
 import type { ShotRow } from '../../src/types/shotlist';
 
@@ -143,5 +144,47 @@ describe('分镜表推送时间轴', () => {
     expect(windowMocks.openVideoEditorWindow).toHaveBeenCalledWith(
       expect.objectContaining({ instanceId: 'proj-1::n-open', nodeId: 'n-open' }),
     );
+  });
+
+  it('对白可选、保留无对白镜头空档，文字轨参与预览和合成', async () => {
+    const rows = [shot('a', { dialogue: '第一句', duration: 2 }), shot('b', { content: '停顿', duration: 4 }),
+      shot('c', { dialogue: '甲：第三句\n乙：回应', duration: 3, transition: '叠化' })];
+    await openVideoEditorForShotlist({ projectId: 'proj-1', nodeId: 'n-captions', label: '对白', rows, includeDialogueCaptions: true });
+    const record = (await getVideoEditorProject('proj-1::n-captions'))!;
+    const overlays = getOverlayTracks(record.tracks);
+    expect(overlays).toHaveLength(1);
+    expect(needsCompositing(record.tracks)).toBe(true);
+    expect(overlays[0].overlay).toBe(true);
+    expect(overlays[0].clips.map((clip) => [clip.timelineStart, clip.sourceOut])).toEqual([[0, 2], [6, 3]]);
+    expect(getActiveClips(overlays[0], 3)).toEqual([]);
+    expect(getActiveClips(overlays[0], 6.1)[0].textStyle?.content).toBe('甲：第三句\n乙：回应');
+    expect(overlays[0].clips.every((clip) => clip.transform?.y === 0.88 && !clip.transitionIn)).toBe(true);
+    await openVideoEditorForShotlist({ projectId: 'proj-1', nodeId: 'n-captions', label: '对白', rows });
+    expect((await getVideoEditorProject('proj-1::n-captions'))!.tracks).toHaveLength(1);
+  });
+
+  it('无对白时不创建空字幕轨，也不把音效列当对白', async () => {
+    await openVideoEditorForShotlist({ projectId: 'proj-1', nodeId: 'n-no-dialogue', label: '音效',
+      rows: [shot('a', { dialogue: '  ', audio: '雷声' })], includeDialogueCaptions: true });
+    expect((await getVideoEditorProject('proj-1::n-no-dialogue'))!.tracks).toHaveLength(1);
+  });
+
+  it('读取工程后来源过期则不落盘或开窗', async () => {
+    const assertCurrent = vi.fn().mockImplementationOnce(() => {}).mockImplementation(() => { throw new Error('已切项目'); });
+    await expect(openVideoEditorForShotlist({ projectId: 'proj-1', nodeId: 'n-stale', label: '旧表',
+      rows: [shot('a', { dialogue: '旧对白' })], assertCurrent })).rejects.toThrow('已切项目');
+    expect(await getVideoEditorProject('proj-1::n-stale')).toBeNull();
+    expect(windowMocks.openVideoEditorWindow).not.toHaveBeenCalled();
+  });
+
+  it('画面取实时视频地址，清空后不复用旧成果，删除来源时才退回快照', () => {
+    const rows = [shot('a', { frame: { nodeId: 'v', kind: 'video', url: 'old.mp4' } })];
+    const latest = resolveShotlistTimelineRows(rows, [{ id: 'v', type: 'ai-video', data: {
+      type: 'ai-video', label: '新版', videoUrl: 'new.mp4', thumbnailUrl: 'cover.png', videoDuration: 9,
+    } }]);
+    expect(latest[0].frame).toMatchObject({ url: 'new.mp4', sourceDuration: 9 });
+    expect(resolveShotlistTimelineRows(rows, [{ id: 'v', type: 'ai-video', data: { type: 'ai-video', label: '已清空' } }])[0].frame).toBeNull();
+    expect(resolveShotlistTimelineRows(rows, [])[0].frame?.url).toBe('old.mp4');
+    expect(rows[0].frame?.url).toBe('old.mp4');
   });
 });

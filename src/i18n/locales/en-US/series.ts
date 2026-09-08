@@ -3,6 +3,9 @@
  * AI 创作提示词由 seriesCreativeService 统一构造，不放入界面字典。
  */
 const series = {
+  '附带对白字幕': 'Include dialogue subtitles',
+  '对白按镜头时长放置，可在剪辑器中细调': 'Dialogue follows shot durations; fine-tune it in the editor',
+  '项目或分镜已变化，请重新推送时间轴': 'Project or shots changed. Push the timeline again.',
   "剧本改动复核": "Review script changes",
   "剧本已修改": "Script has changed",
   "关闭剧本改动复核": "Close script review",
