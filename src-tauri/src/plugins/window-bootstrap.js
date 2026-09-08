@@ -70,6 +70,7 @@
     return Object.freeze({
       surface: context.surface,
       get theme() { return context.theme; },
+      get locale() { return context.locale; },
       node: context.node,
       models: context.models,
       resources: context.resources,
@@ -114,6 +115,8 @@
     showStatus('正在加载插件界面…');
     context = await request('context');
     if (disposed) return;
+    context = { ...context, locale: context.locale ?? 'zh-CN' };
+    document.documentElement.setAttribute('lang', context.locale);
     applyTheme(context.theme);
     await loadBundle();
     if (disposed) return;
@@ -134,14 +137,20 @@
     if (cleanup) cleanup();
   }, { once: true });
 
-  // 不依赖通用事件：窗口重新获得焦点时通过同一会话桥接刷新主题。
+  // 不依赖通用事件：通过同一会话桥接刷新主题与语言，保留编辑中的参数。
   window.addEventListener('focus', () => {
-    if (!context || disposed || busy) return;
+    if (!context || disposed) return;
     void request('context').then((next) => {
-      if (disposed || next.theme === context.theme) return;
+      if (disposed) return;
+      const themeChanged = next.theme !== context.theme;
+      const locale = next.locale ?? 'zh-CN';
+      const localeChanged = locale !== context.locale;
+      if (!['zh-CN', 'en-US', 'ja-JP', 'ko-KR'].includes(locale)) return;
       applyTheme(next.theme);
-      context = { ...context, theme: next.theme };
-      window.dispatchEvent(new CustomEvent('ai-canvas-theme-change', { detail: next.theme }));
+      context = { ...context, theme: next.theme, locale };
+      document.documentElement.setAttribute('lang', locale);
+      if (themeChanged) window.dispatchEvent(new CustomEvent('ai-canvas-theme-change', { detail: next.theme }));
+      if (localeChanged) window.dispatchEvent(new CustomEvent('ai-canvas-locale-change', { detail: locale }));
     }).catch(() => { /* 会话被撤销时由原生层关闭窗口。 */ });
   });
 

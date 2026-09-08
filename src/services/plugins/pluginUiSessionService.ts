@@ -4,6 +4,7 @@
  * iframe 与专用原生 Channel 使用不同的来源验证，共用同一个资源/effect/写回权威。
  */
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { getLocale, type Locale } from '../../i18n';
 import type { NodeType } from '../../types';
 import type {
   InstalledPlugin,
@@ -101,6 +102,7 @@ export interface PluginUiFrameSession {
   src: string;
   attach: (frameWindow: Window | null) => void;
   updateTheme: (theme: 'dark' | 'light') => void;
+  updateLocale: (locale: Locale) => void;
   dispose: () => void;
 }
 
@@ -295,6 +297,7 @@ async function dispatchRequest(
           value: {
             surface: session.surface,
             theme: state.config.theme,
+            locale: getLocale(),
             node: { id: session.nodeId, type: node.data.type as NodeType, data },
             models: modelCatalog(plugin, session.tool),
             parameters: session.parameters,
@@ -537,6 +540,16 @@ export async function createPluginUiFrameSession(options: CreatePluginUiSessionO
         }, '*');
       },
       dispose: () => closeSession(sessionId, false),
+      updateLocale: (locale) => {
+        const current = sessions.get(sessionId);
+        current?.frameWindow?.postMessage({
+          channel: MESSAGE_CHANNEL,
+          direction: 'event',
+          sessionId,
+          kind: 'locale',
+          value: locale,
+        }, '*');
+      },
     };
   } catch (error) {
     closeSession(sessionId, false);

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getLocale } from '../../i18n';
 import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData, NodeType } from '../../types';
 import type {
@@ -310,6 +311,7 @@ function buildInvocationInput(
   }
   return {
     projectId,
+    locale: getLocale(),
     iteration: options.iteration,
     parameters,
     node: {
@@ -1260,6 +1262,7 @@ export async function executePluginNode(
       requireCurrentPluginRevision(pluginNode.pluginId, sourceDigest, revisionDigest);
       const input: PluginNodeInvocationInput = {
         projectId,
+        locale: getLocale(),
         iteration,
         node: { id: nodeId, values: values ?? {} },
         inputs,

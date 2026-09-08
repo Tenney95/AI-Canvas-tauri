@@ -9,12 +9,13 @@ const binding = {
   projectId: 'project-1', nodeId: 'node-1', canvasRevision: 7,
 };
 const pageUrl = `http://plugin-window.localhost/${binding.sessionId}/index.html`;
-const initialContext = { surface: 'tool-dialog', theme: 'dark', node: { id: 'node-1' }, models: [], resources: {}, parameters: {} };
+const initialContext = { surface: 'tool-dialog', theme: 'dark', locale: 'zh-CN', node: { id: 'node-1' }, models: [], resources: {}, parameters: {} };
 type BridgeRequest = { binding: typeof binding; requestId: string; kind: string; payload: unknown };
 type Invoke = (command: string, args: { request: BridgeRequest }) => Promise<unknown>;
 interface Props {
   readonly busy: boolean;
   readonly theme: string;
+  readonly locale: string;
   readonly parameters: Record<string, unknown>;
   runEffect: (effect: unknown) => Promise<unknown>;
   setParameters: (patch: Record<string, unknown>) => Promise<void>;
@@ -86,6 +87,7 @@ describe('dedicated native plugin window bootstrap', () => {
     expect(host.scripts.map((script) => script.src)).toEqual([pageUrl.replace('index.html', 'bundle.js')]);
     expect(host.mount).toHaveBeenCalledOnce();
     expect(host.attributes.get('data-theme')).toBe('dark');
+    expect(host.attributes.get('lang')).toBe('zh-CN');
     expect(Object.isFrozen(host.mount.mock.calls[0][1])).toBe(true);
   });
 
@@ -150,6 +152,27 @@ describe('dedicated native plugin window bootstrap', () => {
     expect(host.attributes.get('data-theme')).toBe('light');
     expect(host.mount.mock.calls[0][1].theme).toBe('light');
     expect(host.listeners.has('message')).toBe(false);
+  });
+
+  it.each(['en-US', 'ja-JP', 'ko-KR', 'zh-CN'])('refreshes %s independently of theme without losing draft parameters', async (locale) => {
+    let currentLocale = 'en-US';
+    const host = harness({ invoke: async () => reply({ ...initialContext, locale: currentLocale }) });
+    await flush();
+    const props = host.mount.mock.calls[0][1];
+    await props.setParameters({ prompt: 'draft' });
+    currentLocale = locale;
+    host.listeners.get('focus')?.();
+    await flush();
+    expect(props.locale).toBe(locale);
+    expect(host.attributes.get('lang')).toBe(locale);
+    expect(props.parameters).toEqual({ prompt: 'draft' });
+    expect(host.mount).toHaveBeenCalledOnce();
+    const events = vi.mocked(host.windowStub.dispatchEvent as ReturnType<typeof vi.fn>);
+    expect(events).toHaveBeenCalledTimes(locale === 'en-US' ? 0 : 1);
+    if (locale !== 'en-US') expect(events).toHaveBeenCalledWith(expect.objectContaining({ type: 'ai-canvas-locale-change' }));
+    host.listeners.get('focus')?.();
+    await flush();
+    expect(events).toHaveBeenCalledTimes(locale === 'en-US' ? 0 : 1);
   });
 
   it('sends close only after the page receives submit success, without turning close teardown into submit failure', async () => {

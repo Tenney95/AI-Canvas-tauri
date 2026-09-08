@@ -16,6 +16,7 @@
   const pending = new Map();
   const bundleExports = Object.create(null);
   let context = null;
+  let latestLocale = null;
   let busy = false;
   let cleanup = null;
 
@@ -63,6 +64,15 @@
     if (event.source !== window.parent) return;
     const response = event.data;
     if (!response || response.channel !== CHANNEL || response.sessionId !== sessionId) return;
+    if (response.direction === 'event' && response.kind === 'locale') {
+      if (!['zh-CN', 'en-US', 'ja-JP', 'ko-KR'].includes(response.value)) return;
+      latestLocale = response.value;
+      if (!context || context.locale === response.value) return;
+      context = { ...context, locale: response.value };
+      document.documentElement.setAttribute('lang', response.value);
+      window.dispatchEvent(new CustomEvent('ai-canvas-locale-change', { detail: response.value }));
+      return;
+    }
     if (response.direction === 'event' && response.kind === 'theme') {
       if (response.value !== 'dark' && response.value !== 'light') return;
       context = context ? { ...context, theme: response.value } : context;
@@ -110,6 +120,9 @@
       surface: context.surface,
       get theme() {
         return context.theme;
+      },
+      get locale() {
+        return context.locale;
       },
       node: context.node,
       models: context.models,
@@ -164,6 +177,8 @@
     }
     showStatus('正在加载插件界面…');
     context = await request('context');
+    context = { ...context, locale: latestLocale ?? context.locale ?? 'zh-CN' };
+    document.documentElement.setAttribute('lang', context.locale);
     document.documentElement.setAttribute('data-theme', context.theme);
     await loadBundle(bundleUrl);
     const mount = bundleExports[exportName];

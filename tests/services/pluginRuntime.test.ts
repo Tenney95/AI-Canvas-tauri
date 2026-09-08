@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { LOCALES, setLocale } from '../../src/i18n';
 import type { InstalledPlugin, PluginInvocationResources } from '../../src/types/plugin';
 
 const mocks = vi.hoisted(() => ({
@@ -339,6 +340,7 @@ const outputToolPlugin: InstalledPlugin = {
 afterEach(() => vi.unstubAllGlobals());
 
 beforeEach(() => {
+  setLocale('zh-CN');
   vi.clearAllMocks();
   mocks.revision = 3;
   mocks.state = {
@@ -427,6 +429,15 @@ describe('node plugin runtime', () => {
     expect(invocation).not.toHaveProperty('source');
   });
 
+  it.each(LOCALES)('passes the effective %s locale to tools without exposing app configuration', async (locale) => {
+    setLocale(locale);
+    const tool = getAvailableNodePluginTools([plugin], 'ai-text', 'node-context-menu')[0];
+    await executeNodePluginTool(tool, 'node-1');
+    const input = mocks.invoke.mock.calls[0][1].input;
+    expect(input.locale).toBe(locale);
+    expect(input).not.toHaveProperty('config');
+  });
+
   it('reuses a custom UI execution lease without revoking it after submit', async () => {
     const tool = getAvailableNodePluginTools([plugin], 'ai-text', 'node-context-menu')[0];
     const guard = registerCanvasDerivation(mocks.state as never, 'node-1');
@@ -508,6 +519,7 @@ describe('node plugin runtime', () => {
       invocationId: expect.any(String),
       input: {
         projectId: 'project-1',
+        locale: 'zh-CN',
         iteration: 0,
         parameters: { tone: 'brief' },
         node: {
@@ -761,6 +773,7 @@ describe('node plugin runtime', () => {
   });
 
   it('runs a custom node through a host-controlled model effect', async () => {
+    setLocale('ja-JP');
     mocks.state = {
       ...mocks.state,
       nodes: [{
@@ -809,6 +822,8 @@ describe('node plugin runtime', () => {
       invocationId: expect.any(String),
     });
     expect(secondInvocation.invocationId).toBe(firstInvocation.invocationId);
+    expect(firstInvocation).toMatchObject({ input: { locale: 'ja-JP' } });
+    expect(secondInvocation).toMatchObject({ input: { locale: 'ja-JP' } });
     expect(firstInvocation).not.toHaveProperty('runtime');
     expect(firstInvocation).not.toHaveProperty('source');
     expect(mocks.updateNodeData).toHaveBeenCalledWith('plugin-node-1', expect.objectContaining({

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LOCALES, setLocale } from '../../src/i18n';
 import type {
   InstalledPlugin,
   PluginInvocationResources,
@@ -138,6 +139,13 @@ describe('pluginUiSessionService', () => {
     plugin, tool, nodeId: 'target', exportName: 'dialog', onClose,
   });
   const notify = () => { for (const listener of mocks.subscribers) listener(); };
+
+  it.each(LOCALES)('returns the current %s locale through the bound context', async (locale) => {
+    const session = await native();
+    setLocale(locale);
+    expect(await session.request('context', null)).toMatchObject({ ok: true, value: { locale } });
+    session.dispose();
+  });
 
   it('keeps native sessions inaccessible to iframe messages and retains the v1 context', async () => {
     const frame = await createPluginUiFrameSession({ plugin, tool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn() });
@@ -301,6 +309,7 @@ describe('pluginUiSessionService', () => {
     session.dispose();
   });
   beforeEach(() => {
+    setLocale('zh-CN');
     vi.clearAllMocks();
     // 服务模块只安装一次监听器；后续用例继续使用同一监听器引用。
     Object.defineProperty(globalThis, 'window', {
@@ -385,6 +394,11 @@ describe('pluginUiSessionService', () => {
       sessionId: session.sessionId,
       kind: 'theme',
       value: 'dark',
+    }), '*');
+
+    session.updateLocale('ko-KR');
+    expect(frame.postMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      direction: 'event', sessionId: session.sessionId, kind: 'locale', value: 'ko-KR',
     }), '*');
 
     mocks.messageHandler?.({

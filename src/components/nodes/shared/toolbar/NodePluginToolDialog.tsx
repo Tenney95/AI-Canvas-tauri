@@ -1,4 +1,5 @@
 import { Icon } from '@iconify/react';
+import { getLocale } from '../../../../i18n';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import pluginUiHostDocument from '../../../../../plugin-ui-host.html?raw';
 import type {
@@ -124,6 +125,10 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
   useEffect(() => {
     frameSession?.updateTheme(config.theme);
   }, [config.theme, frameSession]);
+
+  useEffect(() => {
+    frameSession?.updateLocale(getLocale());
+  }, [config.language, frameSession]);
 
   useEffect(() => {
     const exportName = dialog?.ui;

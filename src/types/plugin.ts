@@ -1,4 +1,5 @@
 import type { GeneralModelCategory, NodeType } from './index';
+import type { Locale } from '../i18n';
 
 export type PluginPermission =
   | 'node.read'
@@ -237,6 +238,8 @@ export interface PluginUISurfaceProps {
   surface: PluginUISurface;
   /** 宿主主题；内嵌时实时同步，原生窗口重新聚焦时刷新，并派发 ai-canvas-theme-change。 */
   theme: 'dark' | 'light';
+  /** 实际生效的宿主语言；切换后派发 ai-canvas-locale-change，插件自行提供翻译。 */
+  readonly locale: Locale;
   /** 已按 inputFields 白名单裁剪的节点数据。 */
   node: { id: string; type: NodeType; data: Record<string, PluginJsonValue> };
   /** 声明 models.read 时填充的模型目录，不含任何凭据。 */
@@ -306,6 +309,8 @@ export interface InstalledPlugin {
 
 export interface NodePluginInvocationInput {
   projectId: string;
+  /** 本轮执行时实际生效的宿主语言。 */
+  locale: Locale;
   /** 宿主 effect 轮次；0 表示首次调用。 */
   iteration: number;
   /** 宿主弹窗收集的用户参数；右键直接执行时为空对象。 */
@@ -433,6 +438,8 @@ export interface PluginNodeHostEffectResult {
 
 export interface PluginNodeInvocationInput {
   projectId: string;
+  /** 本轮执行时实际生效的宿主语言。 */
+  locale: Locale;
   iteration: number;
   node: {
     id: string;
