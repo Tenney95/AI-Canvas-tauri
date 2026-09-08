@@ -429,8 +429,13 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         provider: newConnectionId,
       })),
     });
-    await saveConfig();
-    if (parsed.workflowApi) await saveAutodlWorkflowTemplate(newConnectionId, parsed.workflowApi.defaults);
+    try {
+      await saveConfig(parsed.workflowApi ? { throwOnError: true } : undefined);
+      if (parsed.workflowApi) await saveAutodlWorkflowTemplate(newConnectionId, parsed.workflowApi.defaults);
+    } catch (error) {
+      useAppStore.getState().showToast(error instanceof Error ? error.message : t('保存失败'), 'error');
+      return;
+    }
     useAppStore.getState().showToast(t('已导入连接，请补填 API Key'));
     setPendingApiKeyConnectionId(newConnectionId);
   };

@@ -2,6 +2,13 @@
  * 设置面板：语言与启动 / 画布背景 / 画布交互 / 界面偏好
  */
 const settings = {
+  'AutoDL ComfyUI 分组 Token': 'AutoDL ComfyUI group Token',
+  '工作流 API 连接地址无效': 'The workflow API URL is invalid',
+  '工作流 API 连接请填写站点根地址': 'Enter the site root URL for the workflow API',
+  '视频时长必须是 1–15 秒的整数': 'Video duration must be a whole number from 1 to 15 seconds',
+  '工作流分辨率只支持 480p 或 768p': 'This workflow supports only 480p or 768p',
+  '工作流比例只支持竖屏、横屏或 1:1': 'This workflow supports portrait, landscape or 1:1 aspect ratios',
+  '随机种子必须是安全整数': 'The seed must be a safe integer',
   "工作流 API · AutoDL": "Workflow API · AutoDL",
   "直接运行 AutoDL 云工作流，支持多图与多音频生成视频": "Run AutoDL cloud workflows with multiple image and audio references",
   "工作流 API": "Workflow API",
