@@ -456,6 +456,28 @@
   z-index: 5;
 }
 
+/* 生成中遮罩浮层（节点已有内容时覆盖预览区，与图片同为 12px 圆角） */
+.generation-progress-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 20px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--theme-card) 90%, transparent);
+  color: var(--theme-text);
+  pointer-events: none;
+}
+.generation-progress-overlay .spinner {
+  width: 44px;
+  height: 44px;
+}
+
 /* 斜向扫描光带，循环掠过图像 */
 .upscale-glow-scan {
   position: absolute;
@@ -690,7 +712,11 @@
 }
 
 .image-node .node-preview.compact {
+  position: relative;
   padding: 2px;
+  /* 与节点卡片同圆角并裁剪，保证生成中遮罩等 inset-0 元素不溢出直角 */
+  overflow: hidden;
+  border-radius: inherit;
 }
 
 .video-node {

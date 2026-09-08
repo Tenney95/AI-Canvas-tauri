@@ -11,6 +11,9 @@
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
+  /* 与节点卡片同圆角并裁剪，生成中遮罩等 inset-0 元素不会露出直角 */
+  overflow: hidden;
+  border-radius: inherit;
 }
 
 [data-theme='light'] .pano-node .node-upload-btn {

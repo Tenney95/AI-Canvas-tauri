@@ -19,7 +19,15 @@ export default function NodeGenerationProgress({
   });
 
   if (!progress) {
-    if (overlay) return null;
+    if (overlay) {
+      // 节点已有内容时以浮层形式保留生成中的可见反馈（含性能模式，仅 spinner 不受降级影响）
+      return (
+        <div className="generation-progress-overlay">
+          <div className="spinner large" />
+          <span className="text-xs">{fallbackLabel}</span>
+        </div>
+      );
+    }
     return (
       <div className="node-preview-loading">
         <div className={compactSpinner ? 'spinner' : 'spinner large'} />
@@ -36,7 +44,7 @@ export default function NodeGenerationProgress({
   return (
     <div
       className={overlay
-        ? 'pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-canvas-card/90 px-5 text-canvas-text'
+        ? 'generation-progress-overlay'
         : 'node-preview-loading px-5'}
       data-comfy-progress={progress.stage}
     >
