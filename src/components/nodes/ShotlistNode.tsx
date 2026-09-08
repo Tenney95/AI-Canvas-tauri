@@ -42,6 +42,7 @@ import { useNodeRename } from './shared/useNodeRename';
 import { resolveEffectiveModel } from './shared/toolbar/presetAction';
 import { useAppStore, generateId } from '../../store/useAppStore';
 import { generateShotlistFrames, MAX_SHOTLIST_FRAME_BATCH } from '../../services/shotlistFrameService';
+import { buildShotlistAssistantPrompt } from '../../services/shotlistService';
 import { getMediaModelOptions } from './shared/defaultModels';
 import Select from '../shared/Select';
 import ModalOverlay from '../shared/ModalOverlay';
@@ -287,6 +288,17 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
 
   const generateFrame = useCallback((rowId: string) => generateFrames([rowId], aiPrompt.trim() ? { [rowId]: aiPrompt.trim() } : undefined, true), [aiPrompt, generateFrames]);
 
+  const askAssistant = useCallback((rowId?: string) => {
+    const state = useAppStore.getState();
+    try {
+      const draft = buildShotlistAssistantPrompt({ projectId: state.currentProjectId ?? '' }, id, rowId);
+      state.openChatWithDraft(draft);
+      state.showToast(t('已准备分镜请求，请在助手中发送'));
+    } catch (error) {
+      state.showToast(error instanceof Error ? error.message : t('准备分镜请求失败'), 'error');
+    }
+  }, [id, t]);
+
   /**
    * 叫模型拆整张表：复用节点通用的 AI 弹窗（模型选择器 + @ 引用 + 提示词），
    * 回答由 AINodeDialog 解析成 shotlistRows 写回来，这里只负责把弹窗开在表底下。
@@ -503,6 +515,11 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             共 {rows.length} 镜 · 总时长 {Number(totalDuration.toFixed(1))}″
           </span>
           <div className="shotlist-toolbar-actions nodrag flex-wrap" ref={columnMenuRef}>
+            <button type="button" className="ui-btn ui-btn--sm" disabled={generating || !rows.length}
+              onClick={() => askAssistant()}>
+              <Icon icon="mdi:clipboard-text-search-outline" width={13} height={13} />
+              {t('AI 诊断')}
+            </button>
             {frameProgress ? (
               <button type="button" className="ui-btn ui-btn--sm" onClick={() => frameController.current?.abort()}>
                 {t('取消补图')} {frameProgress.completed}/{frameProgress.total}
@@ -599,15 +616,23 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
                     <td key={column} className={`shot-col-${column}`}>{renderCell(row, column)}</td>
                   ))}
                   <td className="shot-col-actions">
-                    <button
-                      type="button"
-                      className="shot-row-delete nodrag"
-                      onClick={() => deleteRow(row.id)}
-                      title="删除该镜"
-                      aria-label="删除该镜"
-                    >
-                      <Icon icon="mdi:trash-can-outline" width={13} height={13} />
-                    </button>
+                    <div className="flex flex-col items-center gap-0.5">
+                      <button type="button" className="ui-icon-btn ui-icon-btn--sm nodrag"
+                        disabled={generating || busyRows.includes(row.id)}
+                        onClick={() => askAssistant(row.id)}
+                        title={t('AI 优化本镜')} aria-label={t('AI 优化本镜')}>
+                        <Icon icon="mdi:auto-fix" width={13} height={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="shot-row-delete nodrag"
+                        onClick={() => deleteRow(row.id)}
+                        title="删除该镜"
+                        aria-label="删除该镜"
+                      >
+                        <Icon icon="mdi:trash-can-outline" width={13} height={13} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

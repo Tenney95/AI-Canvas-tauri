@@ -3,6 +3,10 @@
  * AI 创作提示词由 seriesCreativeService 统一构造，不放入界面字典。
  */
 const series = {
+  'AI 诊断': 'AI review',
+  'AI 优化本镜': 'Improve this shot with AI',
+  '已准备分镜请求，请在助手中发送': 'Shot request prepared. Send it in the assistant.',
+  '准备分镜请求失败': 'Could not prepare the shot request',
   "创建本集分镜失败": "Could not create the episode shot list",
   "用已保存的本集剧本创建分镜表，并选择模型生成": "Create a shot list from the saved episode script, then choose a model",
   "生成本集分镜": "Create episode shots",

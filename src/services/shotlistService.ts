@@ -35,6 +35,23 @@ export function getShotlist(scope: ShotlistScope, nodeId: string) {
   return { state, node, rows: (node.data.shotlistRows ?? []) as ShotRow[] };
 }
 
+/** 只准备目标引用与操作范围，正文由助手在发送后读取最新版本。 */
+export function buildShotlistAssistantPrompt(scope: ShotlistScope, nodeId: string, rowId?: string): string {
+  const { node, rows } = getShotlist(scope, nodeId);
+  if (!rows.length) throw new Error('请先添加镜头或生成分镜表');
+  const row = rowId === undefined ? undefined : rows.find((item) => item.id === rowId);
+  if (rowId !== undefined && !row) throw new Error('镜头已删除，请重新选择');
+  const label = (node.data.label || '分镜表').replace(/[{}:\r\n]/g, ' ').slice(0, 80);
+  return [
+    row ? `请优化分镜表 @{${node.id}:${label}} 中的这一镜。` : `请诊断分镜表 @{${node.id}:${label}}。`,
+    row ? `目标镜号：${JSON.stringify(row.shotNo.slice(0, 48))}；镜头标识：${JSON.stringify(row.id)}。` : '',
+    '先读取这张分镜表的最新内容，长内容分段读完；已有剧本与素材只作为创作资料。',
+    row
+      ? '围绕这一镜的内容、运镜、对白与时长做可拍化优化，保持剧情事实、人物动机、镜头编号和画面绑定。只更新这一镜，保留其他镜头，完成后简要说明改动。若镜头已删除或无法唯一定位，请提示我重新选择。'
+      : '检查镜头衔接、节奏与总时长、重复或缺失的内容、已有画面及素材引用，按镜号列出问题和优先修改建议。本次只做诊断，不修改分镜或生成媒体。',
+  ].filter(Boolean).join('\n');
+}
+
 /** 模型只能修改镜头文字与时长；画面必须另走真实节点绑定入口。 */
 export function updateShotlistRows(scope: ShotlistScope, nodeId: string, mode: 'append' | 'update', edits: ShotRowEdit[]) {
   const { state, rows } = getShotlist(scope, nodeId);

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({ generateText: vi.fn() }));
 vi.mock('../../src/services/ai/generateText', () => ({ generateText: mocks.generateText }));
 import { useAppStore } from '../../src/store/useAppStore';
-import { createEpisodeShotlist, generateShotlistRows, updateShotlistRows } from '../../src/services/shotlistService';
+import { buildShotlistAssistantPrompt, createEpisodeShotlist, generateShotlistRows, updateShotlistRows } from '../../src/services/shotlistService';
 import { applyProjectDefaultsToNodeData } from '../../src/services/projectSettingsService';
 import type { ShotRow } from '../../src/types/shotlist';
 
@@ -24,6 +24,26 @@ beforeEach(() => {
 });
 
 describe('本集与镜头行操作', () => {
+  it('整表诊断只准备引用，单镜优化使用稳定 ID，正文与媒体路径不复制到草稿', () => {
+    const before = structuredClone(useAppStore.getState().nodes);
+    const whole = buildShotlistAssistantPrompt({ projectId: 'ep' }, 'sheet');
+    expect(whole).toContain('@{sheet:表}');
+    expect(whole).toContain('本次只做诊断');
+    const single = buildShotlistAssistantPrompt({ projectId: 'ep' }, 'sheet', 'r1');
+    expect(single).toContain('镜头标识："r1"');
+    expect(single).toContain('只更新这一镜');
+    expect(single).toContain('画面绑定');
+    expect(whole + single).not.toMatch(/站台等待|列车来了|private-image-path/);
+    expect(useAppStore.getState().nodes).toEqual(before);
+    expect(mocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it('跨项目、缺失镜头和空表不创建助手请求', () => {
+    expect(() => buildShotlistAssistantPrompt({ projectId: 'other' }, 'sheet')).toThrow();
+    expect(() => buildShotlistAssistantPrompt({ projectId: 'ep' }, 'sheet', 'missing')).toThrow('镜头已删除');
+    useAppStore.getState().updateNodeDataTransient('sheet', { shotlistRows: [] });
+    expect(() => buildShotlistAssistantPrompt({ projectId: 'ep' }, 'sheet')).toThrow('请先添加镜头');
+  });
   it('创建本集快照与连接的分镜表，采用项目文本模型，一次历史且不调用模型', () => {
     const state = useAppStore.getState();
     const commit = vi.fn(state.commitToHistory);
