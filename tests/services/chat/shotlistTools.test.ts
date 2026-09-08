@@ -44,8 +44,8 @@ describe('分镜工具', () => {
     expect(useAppStore.getState().nodes[0].data.shotlistRows?.[0].content).not.toBe('bad');
   });
 
-  it('Plan 只暴露读镜头；MCP 发现不依赖真实 taskId', () => {
-    expect(getAvailableAgentTools({ ...context(), mode: 'plan' }).map((tool) => tool.id)).toEqual(['shotlist_read']);
+  it('Plan 只暴露读取与差异检查；MCP 发现不依赖真实 taskId', () => {
+    expect(getAvailableAgentTools({ ...context(), mode: 'plan' }).map((tool) => tool.id)).toEqual(['shotlist_script_changes', 'shotlist_read']);
     expect(getAvailableAgentTools({ ...context(), taskId: '' }).map((tool) => tool.id)).toContain('shotlist_generate_frames');
     expect(getAgentTool('shotlist_generate_frames')!.effect).toBe('media_generation');
     expect(getAgentTool('shotlist_update_rows')!.effect).toBe('canvas_write');

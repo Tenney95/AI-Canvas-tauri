@@ -8,6 +8,12 @@
 import type { VideoEditorTransitionKind } from './videoEditor';
 import type { VideoFrameAnalysisData } from './index';
 
+/** 分镜最初使用的本集正文快照；引用节点，避免再次复制正文。 */
+export interface ShotlistScriptSource {
+  episodeId: string;
+  nodeId: string;
+}
+
 /** 分镜表的全部列 */
 export type ShotlistColumnKey =
   | 'shotNo'

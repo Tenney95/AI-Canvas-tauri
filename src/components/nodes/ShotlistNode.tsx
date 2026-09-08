@@ -43,6 +43,7 @@ import { resolveEffectiveModel } from './shared/toolbar/presetAction';
 import { useAppStore, generateId } from '../../store/useAppStore';
 import { generateShotlistFrames, MAX_SHOTLIST_FRAME_BATCH } from '../../services/shotlistFrameService';
 import { buildShotlistAssistantPrompt } from '../../services/shotlistService';
+import ShotlistRevisionDialog from './ShotlistRevisionDialog';
 import { getMediaModelOptions } from './shared/defaultModels';
 import Select from '../shared/Select';
 import ModalOverlay from '../shared/ModalOverlay';
@@ -140,6 +141,10 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const [batchOpen, setBatchOpen] = useState(false);
   const [frameModelRef, setFrameModelRef] = useState('');
   const [frameProgress, setFrameProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [revisionOpen, setRevisionOpen] = useState(false);
+  const episodeScript = useAppStore((state) => state.projects.find((project) => project.id === data.shotlistScriptSource?.episodeId)?.episodeScript);
+  const sourceScript = useAppStore((state) => state.nodes.find((node) => node.id === data.shotlistScriptSource?.nodeId)?.data.output);
+  const scriptChanged = useMemo(() => typeof sourceScript === 'string' && sourceScript.trim() !== (episodeScript ?? '').trim(), [sourceScript, episodeScript]);
   const frameController = useRef<AbortController | null>(null);
   const emptyRows = rows.filter((row) => !row.frame && buildShotFramePrompt(row).trim());
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -508,6 +513,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         nodeId={id}
         onRename={handleRename}
       />
+      {revisionOpen && <ShotlistRevisionDialog nodeId={id} onClose={() => setRevisionOpen(false)} />}
       <div className={`node shotlist-node ${selected ? 'selected' : ''}`} style={{ height: nodeHeight }}>
         {/* 工具条本身不加 nodrag：表体几乎被输入框占满，这条带子是节点主要的拖拽手柄 */}
         <div className="shotlist-toolbar flex-wrap">
@@ -520,6 +526,8 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
               <Icon icon="mdi:clipboard-text-search-outline" width={13} height={13} />
               {t('AI 诊断')}
             </button>
+            {data.shotlistScriptSource && <button type="button" className="ui-btn ui-btn--sm" disabled={generating}
+              onClick={() => setRevisionOpen(true)}>{t(scriptChanged ? '剧本已修改' : '剧本改动复核')}</button>}
             {frameProgress ? (
               <button type="button" className="ui-btn ui-btn--sm" onClick={() => frameController.current?.abort()}>
                 {t('取消补图')} {frameProgress.completed}/{frameProgress.total}

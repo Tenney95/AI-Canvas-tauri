@@ -3,6 +3,20 @@
  * AI 创作提示词由 seriesCreativeService 统一构造，不放入界面字典。
  */
 const series = {
+  "剧本改动复核": "Review script changes",
+  "剧本已修改": "Script has changed",
+  "关闭剧本改动复核": "Close script review",
+  "检查剧本变化失败": "Could not compare script changes",
+  "剧本与来源快照不同，请选择需要助手复核的镜头。": "The script differs from its source snapshot. Select shots for the assistant to review.",
+  "剧本与来源快照一致": "The script matches its source snapshot",
+  "来源快照的变化范围": "Changed area in source snapshot",
+  "当前剧本的变化范围": "Changed area in current script",
+  "此处为空": "Empty here",
+  "这里只提示文本变化范围；助手会读取完整正文，判断所选镜头是否需要调整。": "This shows the text change area. The assistant reads the full script to review the selected shots.",
+  "较长差异仅显示开头部分": "Only the beginning of longer changes is shown",
+  "全选或清空": "Select all / clear",
+  "镜头 {number}": "Shot {number}",
+  "让助手调整所选镜头": "Adjust selected shots with the assistant",
   "章节浏览": "Browse chapters",
   "关闭章节浏览": "Close chapter browser",
   "素材来源": "Source material",
