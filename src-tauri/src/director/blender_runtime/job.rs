@@ -207,6 +207,8 @@ pub struct BlenderJobProgress {
 pub enum BlenderJobFailureCode {
     RunnerUnavailable,
     StartupFailed,
+    UnsupportedVersion,
+    MissingCapability,
     ProcessCrashed,
     TimedOut,
     ResultInvalid,
@@ -225,6 +227,12 @@ impl BlenderJobFailure {
         let message = match code {
             BlenderJobFailureCode::RunnerUnavailable => "Blender Job 运行器尚未启用",
             BlenderJobFailureCode::StartupFailed => "Blender Job 启动失败",
+            BlenderJobFailureCode::UnsupportedVersion => {
+                "不支持此 Blender 版本，请选择 4.5、5.0、5.1 或 5.2 稳定版（补丁号不限）"
+            }
+            BlenderJobFailureCode::MissingCapability => {
+                "此 Blender 缺少所需渲染能力，请检查 EEVEE、PNG 和 H.264 视频输出支持"
+            }
             BlenderJobFailureCode::ProcessCrashed => "Blender Job 异常结束",
             BlenderJobFailureCode::TimedOut => "Blender Job 执行超时",
             BlenderJobFailureCode::ResultInvalid => "Blender Job 结果校验失败",
@@ -333,6 +341,8 @@ impl std::error::Error for BlenderJobCoreError {}
 pub enum BlenderJobRunnerFailureKind {
     Unavailable,
     StartupFailed,
+    UnsupportedVersion,
+    MissingCapability,
     Crashed,
     TimedOut,
     Cancelled,
@@ -1135,6 +1145,10 @@ fn runner_failure_to_public(failure: &BlenderJobRunnerFailure) -> BlenderJobFail
     let code = match failure.kind() {
         BlenderJobRunnerFailureKind::Unavailable => BlenderJobFailureCode::RunnerUnavailable,
         BlenderJobRunnerFailureKind::StartupFailed => BlenderJobFailureCode::StartupFailed,
+        BlenderJobRunnerFailureKind::UnsupportedVersion => {
+            BlenderJobFailureCode::UnsupportedVersion
+        }
+        BlenderJobRunnerFailureKind::MissingCapability => BlenderJobFailureCode::MissingCapability,
         BlenderJobRunnerFailureKind::Crashed => BlenderJobFailureCode::ProcessCrashed,
         BlenderJobRunnerFailureKind::TimedOut => BlenderJobFailureCode::TimedOut,
         BlenderJobRunnerFailureKind::Cancelled => {
@@ -1225,6 +1239,29 @@ fn is_valid_scene_id(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compatibility_failures_expose_only_fixed_public_codes_and_messages() {
+        for (kind, code) in [
+            (
+                super::BlenderJobRunnerFailureKind::UnsupportedVersion,
+                super::BlenderJobFailureCode::UnsupportedVersion,
+            ),
+            (
+                super::BlenderJobRunnerFailureKind::MissingCapability,
+                super::BlenderJobFailureCode::MissingCapability,
+            ),
+        ] {
+            let private = super::BlenderJobRunnerFailure::with_private_diagnostic(
+                kind,
+                "private-path token=secret",
+            );
+            let public = super::runner_failure_to_public(&private);
+            assert_eq!(public.code, code);
+            let serialized = serde_json::to_string(&public).expect("failure should serialize");
+            assert!(!serialized.contains("private-path") && !serialized.contains("secret"));
+            assert!(!public.message.is_empty());
+        }
+    }
     use super::super::result::{
         BlenderResultArtifact, BlenderResultManifest, BlenderResultProducer, BlenderResultRuntime,
     };

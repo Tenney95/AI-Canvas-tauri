@@ -1,6 +1,8 @@
 """Fixed-job contract tests. Uses in-memory bpy doubles; never starts Blender."""
 
+import ast
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -42,6 +44,23 @@ class Scene(SimpleNamespace):
     def frame_set(self, frame):
         self.frame_current = frame
         self.frames_set.append(frame)
+
+
+class ShaderNodes(list):
+    def new(self, node_id):
+        types = {"ShaderNodeBsdfPrincipled": "BSDF_PRINCIPLED", "ShaderNodeOutputMaterial": "OUTPUT_MATERIAL",
+                 "ShaderNodeBackground": "BACKGROUND", "ShaderNodeOutputWorld": "OUTPUT_WORLD"}
+        node = SimpleNamespace(type=types[node_id], outputs=[object()], inputs={
+            name: SimpleNamespace(is_linked=False, default_value=None)
+            for name in ["Surface", "Base Color", "Roughness", "Metallic", "Color", "Strength"]})
+        self.append(node)
+        return node
+
+
+def empty_shader_owner():
+    tree = SimpleNamespace(nodes=ShaderNodes(), links=Mock())
+    tree.links.new.side_effect = lambda _source, target: setattr(target, "is_linked", True)
+    return SimpleNamespace(node_tree=tree, use_nodes=False)
 
 
 class MemoryPath:
@@ -95,7 +114,7 @@ class SavedBlenderSceneTests(unittest.TestCase):
             frame_start=100, frame_end=399, frame_current=185, frame_step=1,
             camera=self.camera, objects=Objects([self.camera, self.second]),
             timeline_markers=self.markers, frames_set=[],
-            render=SimpleNamespace(fps=30, fps_base=1.001, resolution_x=1920,
+            render=SimpleNamespace(engine="CYCLES", fps=30, fps_base=1.001, resolution_x=1920,
                 resolution_y=1080, resolution_percentage=100,
                 image_settings=SimpleNamespace(file_format="PNG", media_type="IMAGE"),
                 ffmpeg=SimpleNamespace()),
@@ -108,7 +127,7 @@ class SavedBlenderSceneTests(unittest.TestCase):
             "cameras": [{"cameraId": "camera-1"}], "shots": []}
         bpy.context = SimpleNamespace(scene=self.scene,
             preferences=SimpleNamespace(filepaths=SimpleNamespace(save_version=1)))
-        bpy.app = SimpleNamespace(version=job.EXPECTED_BLENDER_VERSION,
+        bpy.app = SimpleNamespace(version=(5, 2, 1), version_cycle="release",
             version_string="5.2.1", driver_namespace={})
         bpy.ops = SimpleNamespace(
             wm=SimpleNamespace(open_mainfile=Mock(return_value={"FINISHED"}),
@@ -119,6 +138,128 @@ class SavedBlenderSceneTests(unittest.TestCase):
     def configure(self, operation="render-video", frame=None):
         return job._configure_job_scene(self.scene, {}, [], self.portable,
             request(operation, frame=frame))
+
+    def test_supported_stable_series_accept_different_patch_releases(self):
+        for version in [(4, 5, 0), (4, 5, 13), (5, 0, 0), (5, 1, 2), (5, 2, 0), (5, 2, 99)]:
+            with self.subTest(version=version):
+                bpy.app.version = version
+                job._assert_runtime()
+
+    def test_unsupported_or_prerelease_versions_are_rejected(self):
+        for version, cycle in [((4, 4, 3), "release"), ((3, 6, 0), "release"),
+                               ((5, 3, 0), "release"), ((6, 0, 0), "release"),
+                               ((5, 2, 1), "alpha"), ((5, 2, 1), "beta"),
+                               ((5, 2, 1), "rc")]:
+            with self.subTest(version=version, cycle=cycle):
+                bpy.app.version, bpy.app.version_cycle = version, cycle
+                with self.assertRaises(job.UnsupportedVersionError):
+                    job._assert_runtime()
+
+    def test_python_version_policy_matches_the_pinned_runtime_manifest(self):
+        manifest = json.loads((SCRIPT.parent.parent / "runtime-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["compatibility"]["supportedVersionSeries"],
+                         [f"{major}.{minor}" for major, minor in job.SUPPORTED_BLENDER_SERIES])
+
+    def test_saved_eevee_alias_is_remapped_without_replacing_cycles(self):
+        for version, old, expected in [((4, 5, 13), "BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"),
+                                       ((5, 0, 0), "BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"),
+                                       ((4, 5, 13), "CYCLES", "CYCLES")]:
+            bpy.app.version = version
+            self.scene.render.engine = old
+            self.configure()
+            self.assertEqual(self.scene.render.engine, expected)
+            self.assertEqual((self.scene.frame_start, self.scene.frame_end), (100, 399))
+
+    def test_eevee_engine_tracks_the_4_to_5_api_rename(self):
+        for version, expected in [((4, 5, 13), "BLENDER_EEVEE_NEXT"), ((5, 0, 0), "BLENDER_EEVEE"), ((5, 2, 1), "BLENDER_EEVEE")]:
+            bpy.app.version = version
+            job._configure_preview_engine(self.scene)
+            self.assertEqual(self.scene.render.engine, expected)
+
+    def test_video_and_png_work_without_new_media_type_property(self):
+        self.scene.render.image_settings = SimpleNamespace(file_format="PNG")
+        job._configure_output(self.scene, video=True)
+        self.assertEqual(self.scene.render.image_settings.file_format, "FFMPEG")
+        self.assertEqual(self.scene.render.ffmpeg.codec, "H264")
+        job._configure_output(self.scene)
+        self.assertEqual(self.scene.render.image_settings.file_format, "PNG")
+        self.assertFalse(hasattr(self.scene.render.image_settings, "media_type"))
+
+    def test_new_media_type_is_switched_before_setting_format(self):
+        class Settings:
+            media_type = "IMAGE"
+            @property
+            def file_format(self):
+                return self._format
+            @file_format.setter
+            def file_format(self, value):
+                if (value == "FFMPEG") != (self.media_type == "VIDEO"):
+                    raise TypeError("wrong media type")
+                self._format = value
+        self.scene.render.image_settings = Settings()
+        job._configure_output(self.scene, video=True)
+        self.assertEqual(self.scene.render.image_settings.file_format, "FFMPEG")
+        job._configure_output(self.scene)
+        self.assertEqual(self.scene.render.image_settings.file_format, "PNG")
+
+    def test_missing_codec_produces_capability_error(self):
+        del self.scene.render.ffmpeg
+        with self.assertRaises(job.MissingCapabilityError):
+            job._configure_output(self.scene, video=True)
+
+    def test_fixed_errors_have_distinct_process_exit_codes(self):
+        for exception, code in [(job.ProtocolError, 23), (job.UnsupportedVersionError, 24), (job.MissingCapabilityError, 25)]:
+            with patch.object(job, "main", side_effect=exception("test")), patch.object(job.sys, "stderr", Mock()):
+                with self.assertRaises(SystemExit) as caught:
+                    job._entrypoint()
+            self.assertEqual(caught.exception.code, code)
+
+    def test_shader_creation_handles_empty_trees_and_preserves_existing_links(self):
+        for shader, shader_id, output, output_id in [
+            ("BSDF_PRINCIPLED", "ShaderNodeBsdfPrincipled", "OUTPUT_MATERIAL", "ShaderNodeOutputMaterial"),
+            ("BACKGROUND", "ShaderNodeBackground", "OUTPUT_WORLD", "ShaderNodeOutputWorld"),
+        ]:
+            owner = empty_shader_owner()
+            first = job._shader_nodes(owner, shader, shader_id, output, output_id)
+            self.assertTrue(owner.use_nodes)
+            self.assertEqual(len(owner.node_tree.nodes), 2)
+            self.assertTrue(owner.node_tree.nodes[1].inputs["Surface"].is_linked)
+            # Renamed/localized nodes still match by type. Existing shader links are retained.
+            first.name = "renamed shader"
+            self.assertIs(job._shader_nodes(owner, shader, shader_id, output, output_id), first)
+            self.assertEqual(len(owner.node_tree.nodes), 2)
+            owner.node_tree.links.new.assert_called_once()
+
+    def test_console_material_and_world_initialize_empty_5x_node_trees(self):
+        template = SCRIPT.parent.parent / "scripts/startup/bl_app_templates_user/ai_canvas_director/__init__.py"
+        source = ast.parse(template.read_text(encoding="utf-8"))
+        selected = [node for node in source.body if isinstance(node, ast.FunctionDef)
+                    and node.name in {"_ensure_material", "_set_world"}]
+        material = empty_shader_owner()
+        material.get = lambda key: {"owner": "director", "role": "test"}.get(key)
+        world = empty_shader_owner()
+        namespace = {"bpy": SimpleNamespace(data=SimpleNamespace(materials=[material])),
+                     "DIRECTOR_OWNER_KEY": "owner", "DIRECTOR_OWNER_TOKEN": "director",
+                     "DIRECTOR_MATERIAL_ROLE_KEY": "role", "_ensure_console_world": lambda _scene: world}
+        exec(compile(ast.Module(body=selected, type_ignores=[]), str(template), "exec"), namespace)
+        namespace["_ensure_material"]("test", (0.2, 0.4, 0.6))
+        namespace["_set_world"](self.scene, (0.1, 0.2, 0.3), 0.8)
+        self.assertEqual(material.node_tree.nodes[0].inputs["Base Color"].default_value, (0.2, 0.4, 0.6, 1.0))
+        self.assertEqual(world.node_tree.nodes[0].inputs["Strength"].default_value, 0.8)
+        self.assertTrue(world.node_tree.nodes[1].inputs["Surface"].is_linked)
+
+    def test_animation_curves_support_slotted_and_legacy_actions(self):
+        curve = SimpleNamespace(as_pointer=lambda: 42)
+        bag = SimpleNamespace(fcurves=[curve])
+        slot = object()
+        channelbag = Mock(return_value=bag)
+        strip = SimpleNamespace(type="KEYFRAME", channelbag=channelbag)
+        modern = SimpleNamespace(animation_data=SimpleNamespace(action_slot=slot,
+            action=SimpleNamespace(layers=[SimpleNamespace(strips=[strip])], fcurves=[curve])))
+        self.assertEqual(job._action_fcurves(modern), [curve])
+        channelbag.assert_called_once_with(slot, ensure=False)
+        legacy = SimpleNamespace(animation_data=SimpleNamespace(action=SimpleNamespace(fcurves=[curve, curve])))
+        self.assertEqual(job._action_fcurves(legacy), [curve])
 
     def test_saved_video_preserves_timeline_fractional_fps_and_camera_markers(self):
         target, fps = self.configure()

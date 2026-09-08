@@ -163,11 +163,22 @@ def _ensure_material(name, color, roughness=0.65, metallic=0.0):
         material[DIRECTOR_OWNER_KEY] = DIRECTOR_OWNER_TOKEN
         material[DIRECTOR_MATERIAL_ROLE_KEY] = name
     material.diffuse_color = (*color, 1.0)
-    material.use_nodes = True
+    if hasattr(material, "use_nodes"):
+        material.use_nodes = True
     shader = next(
         (node for node in material.node_tree.nodes if node.type == "BSDF_PRINCIPLED"),
         None,
     )
+    if shader is None:
+        shader = material.node_tree.nodes.new("ShaderNodeBsdfPrincipled")
+    output = next(
+        (node for node in material.node_tree.nodes if node.type == "OUTPUT_MATERIAL"),
+        None,
+    )
+    if output is None:
+        output = material.node_tree.nodes.new("ShaderNodeOutputMaterial")
+    if not output.inputs["Surface"].is_linked:
+        material.node_tree.links.new(shader.outputs[0], output.inputs["Surface"])
     if shader is not None:
         base_color = shader.inputs.get("Base Color")
         if base_color is not None:
@@ -1180,14 +1191,24 @@ def _restore_console_world(scene):
 
 def _set_world(scene, color, strength):
     world = _ensure_console_world(scene)
-    world.use_nodes = True
+    if hasattr(world, "use_nodes"):
+        world.use_nodes = True
     background = next(
         (node for node in world.node_tree.nodes if node.type == "BACKGROUND"),
         None,
     )
-    if background is not None:
-        background.inputs["Color"].default_value = (*color, 1.0)
-        background.inputs["Strength"].default_value = strength
+    if background is None:
+        background = world.node_tree.nodes.new("ShaderNodeBackground")
+    output = next(
+        (node for node in world.node_tree.nodes if node.type == "OUTPUT_WORLD"),
+        None,
+    )
+    if output is None:
+        output = world.node_tree.nodes.new("ShaderNodeOutputWorld")
+    if not output.inputs["Surface"].is_linked:
+        world.node_tree.links.new(background.outputs[0], output.inputs["Surface"])
+    background.inputs["Color"].default_value = (*color, 1.0)
+    background.inputs["Strength"].default_value = strength
 
 
 def _configure_director_console_area():

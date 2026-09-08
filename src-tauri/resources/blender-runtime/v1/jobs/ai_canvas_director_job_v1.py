@@ -22,7 +22,7 @@ from mathutils import Vector
 
 PROTOCOL = "ai-canvas-blender-job-v1"
 ADAPTER_VERSION = "1.0.0"
-EXPECTED_BLENDER_VERSION = (5, 2, 1)
+SUPPORTED_BLENDER_SERIES = ((4, 5), (5, 0), (5, 1), (5, 2))
 EXPECTED_TEMPLATE_ID = "ai_canvas_director"
 EXPECTED_TEMPLATE_VERSION = 1
 EDITOR_SESSION_KEY = "ai_canvas_director_editor_session_v1"
@@ -100,7 +100,15 @@ SHOT_KEYS = {"shotId", "name", "startFrame", "endFrame", "cameraId"}
 
 
 class ProtocolError(RuntimeError):
-    pass
+    exit_code = 23
+
+
+class UnsupportedVersionError(ProtocolError):
+    exit_code = 24
+
+
+class MissingCapabilityError(ProtocolError):
+    exit_code = 25
 
 
 def _object(value, label):
@@ -509,8 +517,14 @@ def _clear_scene():
 
 
 def _assert_runtime():
-    if tuple(bpy.app.version) != EXPECTED_BLENDER_VERSION:
-        raise ProtocolError("Blender version is unsupported")
+    version = tuple(bpy.app.version)
+    if (
+        len(version) != 3
+        or any(type(part) is not int or part < 0 for part in version)
+        or version[:2] not in SUPPORTED_BLENDER_SERIES
+        or bpy.app.version_cycle != "release"
+    ):
+        raise UnsupportedVersionError("Blender stable version series is unsupported")
     scene = bpy.context.scene
     if (
         scene is None
@@ -518,6 +532,47 @@ def _assert_runtime():
         or scene.get("ai_canvas_template_version") != EXPECTED_TEMPLATE_VERSION
     ):
         raise ProtocolError("AI Canvas application template is unavailable")
+
+
+def _shader_nodes(owner, shader_type, shader_id, output_type, output_id):
+    # 4.5 requires use_nodes; 5.x may expose an empty node tree even when enabled.
+    if hasattr(owner, "use_nodes"):
+        owner.use_nodes = True
+    tree = owner.node_tree
+    if tree is None:
+        raise MissingCapabilityError("Blender shader nodes are unavailable")
+    shader = next((node for node in tree.nodes if node.type == shader_type), None)
+    if shader is None:
+        shader = tree.nodes.new(shader_id)
+    output = next((node for node in tree.nodes if node.type == output_type), None)
+    if output is None:
+        output = tree.nodes.new(output_id)
+    if not output.inputs["Surface"].is_linked:
+        tree.links.new(shader.outputs[0], output.inputs["Surface"])
+    return shader
+
+
+def _configure_preview_engine(scene):
+    engine = "BLENDER_EEVEE_NEXT" if bpy.app.version < (5, 0, 0) else "BLENDER_EEVEE"
+    try:
+        scene.render.engine = engine
+    except (AttributeError, TypeError, ValueError) as error:
+        raise MissingCapabilityError("Blender EEVEE renderer is unavailable") from error
+
+
+def _configure_output(scene, video=False):
+    try:
+        settings = scene.render.image_settings
+        if hasattr(settings, "media_type"):
+            settings.media_type = "VIDEO" if video else "IMAGE"
+        settings.file_format = "FFMPEG" if video else "PNG"
+        if video:
+            scene.render.ffmpeg.format = "MPEG4"
+            scene.render.ffmpeg.codec = "H264"
+            scene.render.ffmpeg.constant_rate_factor = "MEDIUM"
+            scene.render.ffmpeg.audio_codec = "NONE"
+    except (AttributeError, TypeError, ValueError) as error:
+        raise MissingCapabilityError("Blender PNG or H.264 output is unavailable") from error
 
 
 def _director_collection(scene):
@@ -554,10 +609,10 @@ def _placeholder_mesh(entity, collection):
     collection.objects.link(obj)
     material = bpy.data.materials.new(f"AI_{entity_id}_material")
     material.diffuse_color = (0.2, 0.55, 0.95, 1.0) if kind == "character" else (0.85, 0.45, 0.2, 1.0)
-    shader = material.node_tree.nodes.get("Principled BSDF") if material.node_tree else None
-    if shader is not None:
-        shader.inputs["Base Color"].default_value = material.diffuse_color
-        shader.inputs["Roughness"].default_value = 0.65
+    shader = _shader_nodes(material, "BSDF_PRINCIPLED", "ShaderNodeBsdfPrincipled",
+                           "OUTPUT_MATERIAL", "ShaderNodeOutputMaterial")
+    shader.inputs["Base Color"].default_value = material.diffuse_color
+    shader.inputs["Roughness"].default_value = 0.65
     mesh.materials.append(material)
     _apply_transform(obj, transform)
     obj.hide_render = not visible
@@ -720,24 +775,22 @@ def _build_scene(scene_value, request):
     scene["ai_canvas_template_version"] = EXPECTED_TEMPLATE_VERSION
     scene.unit_settings.system = "METRIC"
     scene.unit_settings.length_unit = "METERS"
-    scene.render.engine = "BLENDER_EEVEE"
+    _configure_preview_engine(scene)
     _configure_fps(scene, scene_value["fps"])
     scene.frame_start = scene_value["startFrame"]
     scene.frame_end = scene_value["endFrame"]
     scene.render.resolution_x = 1280
     scene.render.resolution_y = 720
     scene.render.resolution_percentage = 50
-    if hasattr(scene.render.image_settings, "media_type"):
-        scene.render.image_settings.media_type = "IMAGE"
-    scene.render.image_settings.file_format = "PNG"
+    _configure_output(scene)
 
     world = bpy.data.worlds.new("AI Canvas World") if scene.world is None else scene.world
     scene.world = world
-    background = world.node_tree.nodes.get("Background")
-    if background is not None:
-        color = scene_value["worldColor"]
-        background.inputs["Color"].default_value = (*color, 1.0)
-        background.inputs["Strength"].default_value = 0.8
+    background = _shader_nodes(world, "BACKGROUND", "ShaderNodeBackground",
+                               "OUTPUT_WORLD", "ShaderNodeOutputWorld")
+    color = scene_value["worldColor"]
+    background.inputs["Color"].default_value = (*color, 1.0)
+    background.inputs["Strength"].default_value = 0.8
 
     collection = _director_collection(scene)
     _create_preview_lighting(collection)
@@ -881,6 +934,9 @@ def _require_scene_camera(scene, camera):
 
 def _configure_job_scene(scene, cameras, shots, scene_data, request):
     """Choose a fixed render source without changing a saved animation timeline."""
+    # Remap only EEVEE aliases across 4.5/5.x; preserve an artist's Cycles choice.
+    if scene.render.engine in {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"}:
+        _configure_preview_engine(scene)
     saved = request["sceneSource"] == "saved-blender"
     operation = request["operation"]
     if saved:
@@ -1046,9 +1102,7 @@ def _run_job(job_dir):
     if operation == "render-frame":
         frame_path = output_dir / "frame.png"
         scene.render.filepath = str(frame_path)
-        if hasattr(scene.render.image_settings, "media_type"):
-            scene.render.image_settings.media_type = "IMAGE"
-        scene.render.image_settings.file_format = "PNG"
+        _configure_output(scene)
         _require_finished(
             bpy.ops.render.render(write_still=True),
             "AI Canvas frame render",
@@ -1063,13 +1117,7 @@ def _run_job(job_dir):
     elif operation == "render-video":
         video_path = output_dir / "reference.mp4"
         scene.render.filepath = str(video_path)
-        if hasattr(scene.render.image_settings, "media_type"):
-            scene.render.image_settings.media_type = "VIDEO"
-        scene.render.image_settings.file_format = "FFMPEG"
-        scene.render.ffmpeg.format = "MPEG4"
-        scene.render.ffmpeg.codec = "H264"
-        scene.render.ffmpeg.constant_rate_factor = "MEDIUM"
-        scene.render.ffmpeg.audio_codec = "NONE"
+        _configure_output(scene, video=True)
         _require_finished(
             bpy.ops.render.render(animation=True),
             "AI Canvas video render",
@@ -1107,9 +1155,13 @@ def main():
     _run_job(job_dir)
 
 
-if __name__ == "__main__":
+def _entrypoint():
     try:
         main()
     except ProtocolError as error:
         print(f"AI_CANVAS_JOB_ERROR:{error}", file=sys.stderr)
-        raise SystemExit(23) from error
+        raise SystemExit(error.exit_code) from error
+
+
+if __name__ == "__main__":
+    _entrypoint()

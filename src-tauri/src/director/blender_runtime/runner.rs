@@ -263,6 +263,12 @@ impl NativeBlenderJobRunner {
             23 => Err(BlenderJobRunnerFailure::new(
                 BlenderJobRunnerFailureKind::ResultInvalid,
             )),
+            24 => Err(BlenderJobRunnerFailure::new(
+                BlenderJobRunnerFailureKind::UnsupportedVersion,
+            )),
+            25 => Err(BlenderJobRunnerFailure::new(
+                BlenderJobRunnerFailureKind::MissingCapability,
+            )),
             _ => Err(BlenderJobRunnerFailure::new(
                 BlenderJobRunnerFailureKind::Crashed,
             )),
@@ -510,7 +516,7 @@ fn collect_and_commit(
         || staged.manifest_revision != expected_revision
         || staged.producer.runtime != BlenderResultRuntime::Blender
         || staged.producer.adapter_version != ADAPTER_VERSION
-        || !staged.producer.blender_version.starts_with("5.2.1")
+        || !super::resources::is_supported_blender_version(&staged.producer.blender_version)
     {
         return Err("Blender Job 结果绑定无效".to_string());
     }
