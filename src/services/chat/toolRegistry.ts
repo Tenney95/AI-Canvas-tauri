@@ -107,6 +107,21 @@ export function getAgentTool(toolId: string): AgentToolDefinition | undefined {
   return registry.get(toolId);
 }
 
+/** 注册编排专用：取当前已注册工具 ID 的快照。 */
+export function snapshotAgentToolIds(): Set<string> {
+  return new Set(registry.keys());
+}
+
+/**
+ * 注册编排专用：按 ID 移除工具。
+ *
+ * 仅供失败回滚使用：某个注册函数在中途抛错时，它内部已注册但尚未返回注销函数的
+ * 工具无法通过注销回调回收，只能按注册前快照的差异集合兜底清理。
+ */
+export function removeAgentToolsById(toolIds: Iterable<string>): void {
+  for (const toolId of toolIds) registry.delete(toolId);
+}
+
 export function getAvailableAgentTools(
   context: Omit<AgentToolContext, 'signal'>,
 ): AgentToolDefinition[] {

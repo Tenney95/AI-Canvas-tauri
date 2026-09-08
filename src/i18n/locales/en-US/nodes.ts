@@ -38,7 +38,6 @@ const nodes = {
   '生成失败': 'Generation failed',
   '已终止 ComfyUI 任务': 'ComfyUI task terminated',
   '无法终止 ComfyUI 任务': 'Cannot terminate the ComfyUI task',
-  '已停止本地等待，但{message}': 'Stopped local waiting, but {message}',
   '按 @ 引用素材；连线素材需 @ 后才会传给模型，仅连线不生效；\n描述想要生成的内容；\n/ 呼出指令；\n(Enter 生成，Shift+Enter 换行)':
     '@ to reference assets; connected assets must also be @-mentioned to reach the model;\nDescribe what you want to generate;\n/ for commands;\n(Enter to generate, Shift+Enter for a new line)',
 
@@ -183,7 +182,6 @@ const nodes = {
   '用户自定义的兼容接口模型': 'User-defined compatible interface models',
   '请先在设置中配置 {name} API Key': 'Configure the {name} API key in Settings first',
   'ComfyUI 工作流': 'ComfyUI workflows',
-  '用户导入的本地工作流': 'User-imported local workflows',
   '暂无匹配的工作流，请在设置中导入': 'No matching workflows; import one in Settings',
 
   // ── ReversePromptDialog ──

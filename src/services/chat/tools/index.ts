@@ -25,6 +25,7 @@ import { registerDirectorAgentTools } from './directorTools';
 import { registerMcpDiscoveryTools } from './mcpDiscoveryTools';
 import { registerShotlistAgentTools } from './shotlistTools';
 import { registerSeriesSourceTools } from './seriesSourceTools';
+import { removeAgentToolsById, snapshotAgentToolIds } from '../toolRegistry';
 
 type AgentToolRegistrationFactory = () => Array<() => void>;
 
@@ -109,6 +110,7 @@ export function ensureAgentToolsRegistered(): void {
   if (state.unregisters && sameFactories(state.factories, factories)) return;
   if (state.unregisters) disposeAgentToolsRegistration();
 
+  const before = snapshotAgentToolIds();
   const unregisters: Array<() => void> = [];
   try {
     for (const registerTools of factories) unregisters.push(...registerTools());
@@ -116,6 +118,11 @@ export function ensureAgentToolsRegistered(): void {
     state.unregisters = unregisters;
   } catch (error) {
     unregisterAgentTools(unregisters);
+    // 注册函数抛错时，它内部已注册但还没来得及返回注销函数的工具会残留下来，
+    // 只靠 unregisters 回收不了。按注册前快照找出这些新增项一并清理，
+    // 保证失败后能干净地重新注册，而不是卡在「工具已注册」。
+    const leaked = [...snapshotAgentToolIds()].filter((id) => !before.has(id));
+    if (leaked.length > 0) removeAgentToolsById(leaked);
     throw error;
   }
 }
