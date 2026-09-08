@@ -5,8 +5,7 @@
  */
 import { useAppStore } from '../../../store/useAppStore';
 import { listEpisodes, seriesOwnerId } from '../../../store/store.utils';
-import { getProjectDataDir, joinPath, readAgentAuthorizedTextFile } from '../../fileService';
-import { MAX_AGENT_FILE_READ_BYTES } from '../fileGrantService';
+import { readSeriesSource } from '../../seriesSourceService';
 import { registerAgentTool, type AgentToolExecutionResult } from '../toolRegistry';
 import type { AgentToolSchema } from '../agentToolSchemas';
 import {
@@ -53,20 +52,6 @@ function currentSeries() {
     : null;
   const series = state.projects.find((project) => project.id === seriesId) ?? null;
   return { state, series };
-}
-
-async function readOriginalWork(signal: AbortSignal): Promise<string> {
-  const { series } = currentSeries();
-  const originalWork = series?.series?.originalWork;
-  if (!series || !originalWork) throw new Error('当前剧集还没有添加原著文件');
-  const projectDir = await getProjectDataDir(series.id);
-  if (!projectDir) throw new Error('无法定位项目数据目录');
-  if (signal.aborted) throw new DOMException('读取已取消', 'AbortError');
-  return readAgentAuthorizedTextFile(
-    joinPath(projectDir, originalWork.relativePath),
-    MAX_AGENT_FILE_READ_BYTES,
-    signal,
-  );
 }
 
 /** 正文一律按"不可信资料"回传，防止原著或剧本里的句子被当成指令执行。 */
@@ -406,7 +391,7 @@ export function registerSeriesAgentTools(): Array<() => void> {
 
         if (input.part === 'original') {
           try {
-            const text = await readOriginalWork(context.signal);
+            const { text } = await readSeriesSource(context.projectId, 'original', context.signal);
             return wrapUntrustedText('原著', text, offset);
           } catch (error) {
             return {
