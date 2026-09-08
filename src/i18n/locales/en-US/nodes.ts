@@ -39,8 +39,8 @@ const nodes = {
   '已终止 ComfyUI 任务': 'ComfyUI task terminated',
   '无法终止 ComfyUI 任务': 'Cannot terminate the ComfyUI task',
   '已停止本地等待，但{message}': 'Stopped local waiting, but {message}',
-  '描述任何你想要生成的内容，按 @ 引用素材，/呼出指令\n(Enter 生成，Shift+Enter 换行)':
-    'Describe anything you want to generate. @ to reference assets, / for commands\n(Enter to generate, Shift+Enter for a new line)',
+  '按 @ 引用素材；连线素材需 @ 后才会传给模型，仅连线不生效；\n描述想要生成的内容；\n/ 呼出指令；\n(Enter 生成，Shift+Enter 换行)':
+    '@ to reference assets; connected assets must also be @-mentioned to reach the model;\nDescribe what you want to generate;\n/ for commands;\n(Enter to generate, Shift+Enter for a new line)',
 
   // ── TextNode ──
   '粘贴文本': 'Paste text',

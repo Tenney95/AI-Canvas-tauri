@@ -1048,7 +1048,7 @@ function AINodeDialog() {
           nodeType={nodeType}
           nodeId={activeNodeId}
           prompt={data.prompt || ''}
-          placeholder={t('描述任何你想要生成的内容，按 @ 引用素材，/呼出指令\n(Enter 生成，Shift+Enter 换行)')}
+          placeholder={t('按 @ 引用素材；连线素材需 @ 后才会传给模型，仅连线不生效；\n描述想要生成的内容；\n/ 呼出指令；\n(Enter 生成，Shift+Enter 换行)')}
           selectedModel={data.model}
           selectedProvider={data.provider}
           selectedWorkflowId={data.workflowId}
