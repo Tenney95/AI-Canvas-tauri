@@ -3,6 +3,21 @@
  * AI 创作提示词由 seriesCreativeService 统一构造，不放入界面字典。
  */
 const series = {
+  "从宫格取画面": "Get a frame from a grid",
+  "关闭宫格取画面": "Close grid frame picker",
+  "裁出真实图片并绑定当前镜头，原宫格保持不变。": "Crop a real image and bind it to this shot. The source grid stays unchanged.",
+  "选择宫格节点": "Select a grid node",
+  "选择宫格位置": "Select a grid cell",
+  "第 {row} 行，第 {col} 列": "Row {row}, column {col}",
+  "宫格原图": "Source grid image",
+  "当前画布还没有宫格节点": "This canvas has no grid nodes yet",
+  "宫格分割线无效": "Invalid grid dividers",
+  "将替换当前镜头绑定，原画面节点保留。": "This replaces the shot binding and keeps its original image node.",
+  "正在取画面…": "Cropping frame…",
+  "裁片并替换画面": "Crop and replace frame",
+  "裁片并绑定镜头": "Crop and bind to shot",
+  "已裁出图片并绑定镜头": "Image cropped and bound to the shot",
+  "取画面失败": "Could not get the frame",
   "附带已就绪配音": "Include ready voiceovers",
   "配音按镜头起点放置，超长部分裁到镜头末尾，可在剪辑器中调整": "Voiceovers start with each shot and are trimmed at its end. Adjust them in the editor.",
   "镜头制作准备": "Shot production setup",

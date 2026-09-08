@@ -6,6 +6,7 @@ import { generateShotlistFrames, MAX_SHOTLIST_FRAME_BATCH } from '../../shotlist
 import { getShotlistScriptChange } from '../../shotlistRevisionService';
 import { MAX_SHOTLIST_PRODUCTION_BATCH, prepareShotlistProduction } from '../../shotlistProductionService';
 import type { ShotlistProductionKind } from '../../../types/shotlist';
+import { bindStoryboardCellToShot } from '../../shotlistStoryboardService';
 import { extractModelMention } from '../../ai/generationRuntime';
 import { registerAgentTool, type AgentToolContext, type AgentToolExecutionResult } from '../toolRegistry';
 import type { AgentToolSchema } from '../agentToolSchemas';
@@ -42,6 +43,18 @@ function success(summary: string, value: unknown): AgentToolExecutionResult {
 
 export function registerShotlistAgentTools(): Array<() => void> {
   return [
+    registerAgentTool<{ nodeId: string; rowId: string; storyboardId: string; cellIndex: number; replaceExisting?: boolean }>({
+      id: 'shotlist_bind_storyboard_cell', title: '把宫格裁片放入指定镜头', effect: 'canvas_write',
+      description: '从真实 ai-storyboard 的指定格裁出图片，保存到项目目录并创建来源图片节点，绑定到指定镜头。cellIndex 从 0 开始按行排列；原宫格保留，不调用模型。已有画面必须显式 replaceExisting=true。裁切、保存失败或来源变化不回填。',
+      inputSchema: { type: 'object', required: ['nodeId', 'rowId', 'storyboardId', 'cellIndex'], additionalProperties: false, properties: {
+        nodeId: idSchema, rowId: idSchema, storyboardId: idSchema, cellIndex: { type: 'integer', minimum: 0, maximum: 399 },
+        replaceExisting: { type: 'boolean' },
+      } },
+      authorize,
+      execute: (context, input) => executeSafely(async () => success('已裁出图片并绑定镜头', {
+        ...await bindStoryboardCellToShot({ ...context, ...input }), revision: useAppStore.getState().getCurrentRevision(),
+      })),
+    }),
     registerAgentTool<{ nodeId: string; rowIds: string[]; kind: ShotlistProductionKind }>({
       id: 'shotlist_prepare_production', title: '准备镜头制作节点', effect: 'canvas_write',
       description: '为指定镜头创建 voiceover 配音、video 视频或 director 导演台节点，不调用模型、不启动程序。配音只放对白并标记语音用途，视频继承画面引用；导演台附带可读镜头说明。每镜同类已有节点则复用且不覆盖人工修改。返回真实节点 ID；之后仍须按生成规则选择模型和音色。',

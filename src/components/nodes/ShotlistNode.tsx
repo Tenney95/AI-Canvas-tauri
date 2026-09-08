@@ -45,6 +45,7 @@ import { generateShotlistFrames, MAX_SHOTLIST_FRAME_BATCH } from '../../services
 import { buildShotlistAssistantPrompt } from '../../services/shotlistService';
 import ShotlistRevisionDialog from './ShotlistRevisionDialog';
 import ShotlistProductionDialog from './ShotlistProductionDialog';
+import ShotlistStoryboardDialog from './ShotlistStoryboardDialog';
 import { getMediaModelOptions } from './shared/defaultModels';
 import Select from '../shared/Select';
 import ModalOverlay from '../shared/ModalOverlay';
@@ -145,6 +146,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const [frameProgress, setFrameProgress] = useState<{ completed: number; total: number } | null>(null);
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [production, setProduction] = useState<{ rowId?: string } | null>(null);
+  const [storyboardRowId, setStoryboardRowId] = useState<string | null>(null);
   const subtitleInputId = useId();
   const [includeDialogueCaptions, setIncludeDialogueCaptions] = useState(false);
   const voiceoverInputId = useId();
@@ -550,6 +552,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       />
       {revisionOpen && <ShotlistRevisionDialog nodeId={id} onClose={() => setRevisionOpen(false)} />}
       {production && <ShotlistProductionDialog nodeId={id} rowId={production.rowId} onClose={() => setProduction(null)} />}
+      {storyboardRowId && <ShotlistStoryboardDialog nodeId={id} rowId={storyboardRowId} onClose={() => setStoryboardRowId(null)} />}
       <div className={`node shotlist-node ${selected ? 'selected' : ''}`} style={{ height: nodeHeight }}>
         {/* 工具条本身不加 nodrag：表体几乎被输入框占满，这条带子是节点主要的拖拽手柄 */}
         <div className="shotlist-toolbar flex-wrap">
@@ -751,6 +754,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             <div className="shot-picker-empty">把图像/视频节点连到这张表，这里就能直接挑</div>
           )}
 
+          <button type="button" className="ui-btn ui-btn--sm my-2" onClick={() => { setStoryboardRowId(picker.rowId); setPicker(null); }}>{t('从宫格取画面')}</button>
           <div className="shot-picker-title">AI 生成画面</div>
           <Select value={frameModelRef} onChange={setFrameModelRef}
             options={imageModels.map((model) => ({ value: model.value, label: model.label }))}
