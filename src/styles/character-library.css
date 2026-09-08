@@ -267,23 +267,27 @@
 /* 悬浮在形象参考右下角：自下而上依次是角色卡、角色声音、画布图片节点选择条。
    图片按容器高度等比缩小时四周会留 letterbox 空白，所以这里贴的是 justifiedRows
    算出的图片框（--character-stage-*），而不是 gallery 容器边缘——否则卡片会正好
-   跨在图片与面板底色的分界线上，半深半浅。 */
+   跨在图片与面板底色的分界线上，半深半浅。窄图下卡片保留可读宽度，允许使用
+   图片旁的留白，但始终限制在 gallery 内。 */
 .character-library-dock {
   --stage-w: min(100%, var(--character-stage-width, 100%));
   --stage-h: min(100%, var(--character-stage-height, 100%));
+  --dock-width: min(560px, max(320px, calc(var(--stage-w) - 20px)), calc(100% - 20px));
   position: absolute;
-  right: calc((100% - var(--stage-w)) / 2 + 10px);
+  right: clamp(10px, calc((100% - var(--stage-w)) / 2 + 10px), calc(100% - var(--dock-width) - 10px));
   bottom: calc((100% - var(--stage-h)) / 2 + 10px);
   z-index: 2;
   display: flex;
-  max-width: min(560px, calc(var(--stage-w) - 20px));
+  width: var(--dock-width);
   max-height: calc(var(--stage-h) - 20px);
   flex-direction: column;
   gap: 8px;
 }
 
 .character-library-profile {
+  min-width: 0;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 8px 10px;
   border: 1px solid var(--theme-border);
@@ -323,7 +327,7 @@
 
 .character-library-profile-copy {
   min-width: 0;
-  flex: 1;
+  flex: 1 1 160px;
 }
 
 .character-library-profile-name {
@@ -333,10 +337,15 @@
 }
 
 .character-library-profile-name h3 {
+  min-width: 0;
+  max-width: 100%;
   margin: 0 4px 0 0;
+  overflow: hidden;
   font-size: 15px;
   font-weight: 650;
   letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .character-library-profile-name span {
@@ -359,6 +368,12 @@
 }
 
 .character-library-profile-actions {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
   gap: 4px;
 }
 
@@ -366,6 +381,7 @@
   display: grid;
   width: 30px;
   height: 30px;
+  flex: 0 0 30px;
   place-items: center;
   padding: 0;
   color: var(--theme-text-muted);

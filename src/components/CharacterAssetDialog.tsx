@@ -435,6 +435,7 @@ function CharacterNodeCaptureDialog({
           effectiveCharacterId,
           effectiveActionId,
           [actionMedia],
+          { nodeId: sourceNodeId, hideNode },
         );
       } else {
         const normalizedActionName = actionName.trim();
@@ -454,7 +455,7 @@ function CharacterNodeCaptureDialog({
           name: normalizedActionName,
           prompt: actionPrompt.trim(),
           media: [actionMedia],
-        }));
+        }, { nodeId: sourceNodeId, hideNode }));
       }
       setSaving(false);
       if (!saved) return;
@@ -703,15 +704,6 @@ function CharacterNodeCaptureDialog({
               />
             </label>
           </div>
-
-          <label className="character-capture-hide-option">
-            <input
-              type="checkbox"
-              checked={hideNode}
-              onChange={(event) => setHideNode(event.target.checked)}
-            />
-            <span>添加后隐藏画布节点</span>
-          </label>
             </>
           ) : (
             <>
@@ -815,10 +807,18 @@ function CharacterNodeCaptureDialog({
 
               <div className="flex min-h-10 items-center gap-2 rounded-lg border border-canvas-border bg-canvas-surface px-3 text-[10px] leading-4 text-canvas-text-muted">
                 <Icon icon="lucide:link-2" width="14" height="14" className="shrink-0" aria-hidden="true" />
-                动作素材会绑定到所选角色，原画布节点保持不变。
+                动作素材会绑定到所选角色，可在动作库中切换画布节点的显示与隐藏。
               </div>
             </>
           )}
+          <label className="character-capture-hide-option">
+            <input
+              type="checkbox"
+              checked={hideNode}
+              onChange={(event) => setHideNode(event.target.checked)}
+            />
+            <span>添加后隐藏画布节点</span>
+          </label>
         </section>
       </div>
 

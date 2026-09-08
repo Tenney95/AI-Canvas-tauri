@@ -7,7 +7,7 @@ import {
   isEligibleCharacterVoiceNode,
 } from '../../src/store/store.dramaAssets';
 import { filterHiddenCanvasElements } from '../../src/store/store.nodes';
-import type { DramaCharacter } from '../../src/types/dramaAssets';
+import type { CharacterActionMedia, DramaCharacter } from '../../src/types/dramaAssets';
 import { emptyDramaAssetLibrary } from '../../src/types/dramaAssets';
 import type { BaseNodeData } from '../../src/types';
 
@@ -56,6 +56,143 @@ function deferred<T>() {
   const promise = new Promise<T>((next) => { resolve = next; });
   return { promise, resolve };
 }
+
+const actionMedia: CharacterActionMedia = {
+  id: 'media-1', kind: 'image', name: '站立', url: 'https://cdn/action.png', createdAt: 1, updatedAt: 1,
+};
+
+function setupActionCapture() {
+  useAppStore.setState({
+    dramaAssets: { ...emptyDramaAssetLibrary(), characters: [sampleCharacter()] },
+    globalCharacters: [sampleCharacter()],
+    selectedNodeIds: ['action-node'],
+    nodes: [{
+      id: 'action-node', type: 'source-image', selected: true, position: { x: 0, y: 0 },
+      data: { type: 'source-image', label: '动作素材', imageUrl: actionMedia.url },
+    }],
+  });
+}
+
+describe('character action canvas visibility', () => {
+  it.each([true, false])('captures a new action with hideNode=%s and keeps its node identity', async (hideNode) => {
+    setupActionCapture();
+    const pending = deferred<string>();
+    const save = vi.fn(async () => 'p1').mockImplementationOnce(() => pending.promise);
+    useAppStore.setState({ saveCurrentProjectSilent: save });
+    const result = useAppStore.getState().addCharacterAction('project', 'char_1', {
+      category: 'standing', name: '站立', prompt: '', media: [actionMedia],
+    }, { nodeId: 'action-node', hideNode });
+    expect(useAppStore.getState().nodes[0].data.hiddenByCharacterLibrary).not.toBe(true);
+    pending.resolve('p1');
+    const actionId = await result;
+    expect(actionId).toBeTruthy();
+    expect(useAppStore.getState().nodes[0].data.characterLibraryLinks).toEqual([
+      { scope: 'project', characterId: 'char_1', actionId, mediaId: 'media-1' },
+    ]);
+    expect(useAppStore.getState().nodes[0].data.hiddenByCharacterLibrary === true).toBe(hideNode);
+    expect(useAppStore.getState().selectedNodeIds).toEqual(hideNode ? [] : ['action-node']);
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it('appends media, preserves reference links and supports showing and hiding repeatedly', async () => {
+    setupActionCapture();
+    const store = useAppStore.getState();
+    store.linkNodeToCharacter('action-node', {
+      scope: 'project', characterId: 'char_1', referenceImageId: 'ref-1',
+    }, false);
+    const actionId = await store.addCharacterAction('project', 'char_1', { category: 'standing', name: '站立', prompt: '' });
+    expect(await store.addCharacterActionMedia('project', 'char_1', actionId!, [actionMedia], {
+      nodeId: 'action-node', hideNode: true,
+    })).toBe(true);
+    expect(useAppStore.getState().nodes[0].data.characterLibraryLinks).toHaveLength(2);
+    store.setCharacterLibraryNodeHidden('action-node', false);
+    expect(useAppStore.getState().nodes[0].data.hiddenByCharacterLibrary).toBe(false);
+    store.setCharacterLibraryNodeHidden('action-node', true);
+    expect(useAppStore.getState().nodes[0].data.hiddenByCharacterLibrary).toBe(true);
+    // 再收纳为参考图也不能覆盖动作关联。
+    store.linkNodeToCharacter('action-node', {
+      scope: 'project', characterId: 'char_1', referenceImageId: 'ref-2',
+    }, false);
+    expect(useAppStore.getState().nodes[0].data.characterLibraryLinks).toHaveLength(2);
+    await store.removeCharacterActionMedia('project', 'char_1', actionId!, 'media-1');
+    expect(useAppStore.getState().nodes[0].data.characterLibraryLinks).toEqual([
+      { scope: 'project', characterId: 'char_1', referenceImageId: 'ref-2' },
+    ]);
+    expect(useAppStore.getState().nodes[0].data.hiddenByCharacterLibrary).toBe(true);
+  });
+
+  it.each(['project', 'global'] as const)('does not hide or link a node when %s persistence fails', async (scope) => {
+    setupActionCapture();
+    if (scope === 'project') useAppStore.setState({ saveCurrentProjectSilent: vi.fn(async () => undefined) });
+    else characterLibraryMocks.saveGlobalCharacterCard.mockRejectedValueOnce(new Error('failed'));
+    expect(await useAppStore.getState().addCharacterAction(scope, 'char_1', {
+      category: 'standing', name: '站立', prompt: '', media: [actionMedia],
+    }, { nodeId: 'action-node', hideNode: true })).toBeNull();
+    expect(useAppStore.getState().nodes[0].data.hiddenByCharacterLibrary).not.toBe(true);
+    expect(useAppStore.getState().nodes[0].data.characterLibraryLinks).toBeUndefined();
+    expect(useAppStore.getState().dramaAssets.characters[0].actions).toBeUndefined();
+    expect(useAppStore.getState().selectedNodeIds).toEqual(['action-node']);
+  });
+
+  it.each(['project', 'revision', 'deleted-node'])('does not hide stale nodes after a %s change during saving', async (change) => {
+    setupActionCapture();
+    const pending = deferred<string>();
+    useAppStore.setState({ saveCurrentProjectSilent: vi.fn(() => pending.promise) });
+    const result = useAppStore.getState().addCharacterAction('project', 'char_1', {
+      category: 'standing', name: '站立', prompt: '', media: [actionMedia],
+    }, { nodeId: 'action-node', hideNode: true });
+    if (change === 'project') useAppStore.setState({ currentProjectId: 'p2' });
+    if (change === 'revision') useAppStore.getState().setCanvasRevision(1);
+    if (change === 'deleted-node') useAppStore.setState({ nodes: [] });
+    pending.resolve('p1');
+    expect(await result).toBeTruthy();
+    expect(useAppStore.getState().nodes[0]?.data.hiddenByCharacterLibrary).not.toBe(true);
+    expect(useAppStore.getState().nodes[0]?.data.characterLibraryLinks).toBeUndefined();
+  });
+
+  it('links global media by stable ids even when global storage rewrites the media url', async () => {
+    setupActionCapture();
+    characterLibraryMocks.saveGlobalCharacterCard.mockImplementation(async (character) => ({
+      ...character,
+      actions: character.actions?.map((action) => ({
+        ...action, media: action.media?.map((media) => ({ ...media, url: 'asset://global/action.png' })),
+      })),
+    }));
+    const actionId = await useAppStore.getState().addCharacterAction('global', 'char_1', {
+      category: 'standing', name: '站立', prompt: '', media: [actionMedia],
+    }, { nodeId: 'action-node', hideNode: true });
+    expect(useAppStore.getState().nodes[0].data.characterLibraryLinks).toEqual([
+      { scope: 'global', characterId: 'char_1', actionId, mediaId: 'media-1' },
+    ]);
+    expect(useAppStore.getState().globalCharacters[0].actions?.[0].media?.[0].url).toBe('asset://global/action.png');
+  });
+
+  it.each(['media', 'action', 'character'])('restores the node when its last %s association is removed', async (removal) => {
+    setupActionCapture();
+    const store = useAppStore.getState();
+    const actionId = await store.addCharacterAction('project', 'char_1', {
+      category: 'standing', name: '站立', prompt: '', media: [actionMedia],
+    }, { nodeId: 'action-node', hideNode: true });
+    if (removal === 'media') await store.removeCharacterActionMedia('project', 'char_1', actionId!, 'media-1');
+    if (removal === 'action') await store.removeCharacterAction('project', 'char_1', actionId!);
+    if (removal === 'character') store.deleteDramaAsset('character', 'char_1');
+    expect(useAppStore.getState().nodes[0].data.hiddenByCharacterLibrary).toBe(false);
+    expect(useAppStore.getState().nodes[0].data.characterLibraryLinks).toBeUndefined();
+  });
+
+  it('can undo and redo canvas hiding without deleting the saved action', async () => {
+    setupActionCapture();
+    const store = useAppStore.getState();
+    await store.addCharacterAction('project', 'char_1', {
+      category: 'standing', name: '站立', prompt: '', media: [actionMedia],
+    }, { nodeId: 'action-node', hideNode: true });
+    expect(await store.undo()).toBe(true);
+    expect(useAppStore.getState().nodes[0].data.hiddenByCharacterLibrary).not.toBe(true);
+    expect(useAppStore.getState().dramaAssets.characters[0].actions).toHaveLength(1);
+    expect(await store.redo()).toBe(true);
+    expect(useAppStore.getState().nodes[0].data.hiddenByCharacterLibrary).toBe(true);
+  });
+});
 
 describe('dramaAssets store', () => {
   it('counts only assets created after the library was viewed', () => {

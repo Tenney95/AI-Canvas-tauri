@@ -9,6 +9,7 @@ import type { AppState } from '../../../store/useAppStore';
 import { useAppStore } from '../../../store/useAppStore';
 import { getFileCategory } from '../../../services/fileService';
 import { parseDramaMentionId } from '../../../types/dramaAssets';
+import { resolveDramaActionMediaRef } from '../../../services/dramaAssetPrompt';
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 export const ZWSP = '\u200B';
@@ -273,11 +274,12 @@ export function buildAssetChipEl(path: string, assetUrl?: string): HTMLSpanEleme
 
 export function buildDramaChipEl(dramaId: string, name: string, kind: string, thumbUrl?: string): HTMLSpanElement {
   const span = document.createElement('span');
-  span.className = 'prompt-chip chip-image';
+  span.className = `prompt-chip ${kind === 'action-video' ? 'chip-video' : 'chip-image'}`;
   span.contentEditable = 'false';
   span.setAttribute('data-drama-id', dramaId);
   span.setAttribute('data-drama-label', name);
   span.setAttribute('data-drama-kind', kind);
+  span.title = name;
   if (thumbUrl) span.setAttribute('data-image-ref-key', `drama:${dramaId}`);
   const icon = document.createElement('span');
   icon.className = 'prompt-chip-icon';
@@ -288,7 +290,7 @@ export function buildDramaChipEl(dramaId: string, name: string, kind: string, th
     image.alt = '';
     icon.appendChild(image);
   } else {
-    icon.textContent = kind === 'character' ? '人' : kind === 'scene' ? '场' : '道';
+    icon.textContent = kind.startsWith('action-') ? '动' : kind === 'character' ? '人' : kind === 'scene' ? '场' : '道';
   }
   span.appendChild(icon);
   const label = document.createElement('span');
@@ -399,11 +401,15 @@ export function renderPromptToNodes(text: string, metaMap: Map<string, NodeMeta>
       let thumb: string | undefined;
       try {
         const store = useAppStore.getState();
-        const { assetId, referenceImageId } = parseDramaMentionId(dramaId);
+        const { assetId, referenceImageId, actionId, actionMediaId } = parseDramaMentionId(dramaId);
         const found = store.dramaAssets.characters.find((asset) => asset.id === assetId)
           || store.dramaAssets.scenes.find((asset) => asset.id === assetId)
           || store.dramaAssets.props.find((asset) => asset.id === assetId);
-        if (found) {
+        if (actionId !== undefined) {
+          const media = resolveDramaActionMediaRef(found, actionId, actionMediaId);
+          kind = media?.kind === 'video' ? 'action-video' : 'action-image';
+          thumb = media && media.kind !== 'video' ? media.url : undefined;
+        } else if (found) {
           kind = found.kind;
           const picked = referenceImageId && found.kind === 'character'
             ? found.referenceImages?.find((image) => image.id === referenceImageId)

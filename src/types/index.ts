@@ -168,11 +168,18 @@ export interface StoryboardCellOverride {
   relativePath?: string; // 项目目录内的相对路径（持久化优先）
 }
 
-export interface CharacterLibraryNodeLink {
+export type CharacterLibraryNodeLink = {
   scope: 'project' | 'global';
   characterId: string;
+} & ({
   referenceImageId: string;
-}
+  actionId?: never;
+  mediaId?: never;
+} | {
+  referenceImageId?: never;
+  actionId: string;
+  mediaId: string;
+});
 
 /** 视频拉片插件写入图片节点的结构化结果；不包含本地路径或调用级 resourceId。 */
 export interface VideoFrameAnalysisData {

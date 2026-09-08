@@ -93,6 +93,20 @@ export function formatDramaAssetTextBrief(asset: DramaAsset): string {
   return lines.join('\n');
 }
 
+/** 动作素材使用库内保存的内容，来源节点隐藏、删除或重新生成不改变已选素材。 */
+export function resolveDramaActionMediaRef(asset: DramaAsset | undefined, actionId: string, mediaId?: string) {
+  if (asset?.kind !== 'character' || !actionId || !mediaId) return null;
+  const action = asset.actions?.find((item) => item.id === actionId);
+  const media = action?.media?.find((item) => item.id === mediaId);
+  const url = media?.url?.trim();
+  if (!action || !media || !url) return null;
+  return {
+    ...media,
+    url,
+    label: `${asset.name} · ${action.name} · ${media.name}`,
+  };
+}
+
 /** 已绑图像节点且该节点已有图时，才视为「可引图」；指定 referenceImageId 时引用角色的那一张参考图 */
 export function resolveDramaAssetImageRef(
   asset: DramaAsset,

@@ -524,14 +524,36 @@ export function buildDramaMentionId(assetId: string, pick?: string): string {
   return pick ? `${assetId}#${pick}` : assetId;
 }
 
+/** 动作素材独立于角色参考图，以动作和素材 ID 精确引用。 */
+export function buildDramaActionMentionId(assetId: string, actionId: string, mediaId: string): string {
+  return `${assetId}#action/${encodeURIComponent(actionId)}/${encodeURIComponent(mediaId)}`;
+}
+
 export function parseDramaMentionId(raw: string): {
   assetId: string;
   referenceImageId?: string;
+  actionId?: string;
+  actionMediaId?: string;
   mergeAll: boolean;
 } {
   const separator = raw.indexOf('#');
   if (separator < 0) return { assetId: raw, mergeAll: false };
   const pick = raw.slice(separator + 1);
+  if (pick.startsWith('action/')) {
+    const segments = pick.split('/');
+    try {
+      if (segments.length !== 3) throw new Error('Invalid action mention');
+      return {
+        assetId: raw.slice(0, separator),
+        actionId: decodeURIComponent(segments[1]),
+        actionMediaId: decodeURIComponent(segments[2]),
+        mergeAll: false,
+      };
+    } catch {
+      // 无效动作仍标记为动作引用，禁止误回落到角色主视觉。
+      return { assetId: raw.slice(0, separator), actionId: '', actionMediaId: '', mergeAll: false };
+    }
+  }
   return {
     assetId: raw.slice(0, separator),
     referenceImageId: pick === DRAMA_MENTION_MERGE_ALL ? undefined : pick,

@@ -283,6 +283,7 @@ export default function CharacterLibraryPanel() {
   const [pendingActionMedia, setPendingActionMedia] = useState<CharacterActionMedia[]>([]);
   const [actionMediaTargetId, setActionMediaTargetId] = useState<string | null>(null);
   const [actionNodePickerTargetId, setActionNodePickerTargetId] = useState<string | null>(null);
+  const [hideActionNode, setHideActionNode] = useState(true);
   const [uploadingActionMedia, setUploadingActionMedia] = useState(false);
   const [savingAction, setSavingAction] = useState(false);
   const voicePlayerRef = useRef<HTMLAudioElement>(null);
@@ -558,6 +559,7 @@ export default function CharacterLibraryPanel() {
       selectedCharacter.id,
       action.id,
       [media],
+      { nodeId, hideNode: hideActionNode },
     )) {
       setActionNodePickerTargetId(null);
       showToast(t('画布节点已添加到动作「{name}」', { name: action.name }));
@@ -1118,33 +1120,73 @@ export default function CharacterLibraryPanel() {
                           </p>
 
                           <div className="mt-3 grid grid-cols-2 gap-2">
-                            {(action.media ?? []).map((media) => (
-                              <figure key={media.id} className="group relative m-0 aspect-video overflow-hidden rounded-lg border border-canvas-border bg-canvas-surface">
-                                {media.kind !== 'video' ? (
-                                  <ViewportImage src={media.url} alt={media.name} className="size-full object-cover" draggable={false} />
-                                ) : (
-                                  <ViewportVideo src={media.url} className="size-full object-cover" controls aria-label={media.name} />
-                                )}
-                                <span className="pointer-events-none absolute bottom-1 left-1 max-w-[calc(100%-8px)] truncate rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-white">
-                                  {media.name}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="absolute right-1 top-1 grid size-6 place-items-center rounded-md bg-black/60 text-white transition-[transform,background-color] duration-150 ease-out hover:bg-black/80 active:scale-[.97]"
-                                  aria-label={t('移除媒体「{name}」', { name: media.name })}
-                                  onClick={async () => {
-                                    if (await removeCharacterActionMedia(
-                                      scope,
-                                      selectedCharacter.id,
-                                      action.id,
-                                      media.id,
-                                    )) showToast(t('动作媒体已移除'));
-                                  }}
-                                >
-                                  <Icon icon="lucide:x" width="12" height="12" aria-hidden="true" />
-                                </button>
-                              </figure>
-                            ))}
+                            {(action.media ?? []).map((media) => {
+                              const linkedNodes = nodes.filter((node) => node.data.characterLibraryLinks?.some((link) => (
+                                link.scope === scope && link.characterId === selectedCharacter.id
+                                && link.actionId === action.id && link.mediaId === media.id
+                              )));
+                              // 旧素材没有节点关联时，仅在媒体身份唯一匹配时提供显隐，避免误操作同图副本。
+                              const candidates = linkedNodes.length > 0 ? linkedNodes : nodes.filter((node) => (
+                                Boolean(media.assetId && node.data.assetId === media.assetId)
+                                || Boolean(media.filePath && node.data.filePath === media.filePath)
+                                || Boolean(media.url && (media.kind === 'video'
+                                  ? node.data.videoUrl === media.url
+                                  : node.data.imageUrl === media.url || node.data.thumbnailUrl === media.url))
+                              ));
+                              const mediaNode = candidates.length === 1 ? candidates[0] : undefined;
+                              const hidden = mediaNode?.data.hiddenByCharacterLibrary === true;
+                              const visibilityLabel = !mediaNode
+                                ? t('没有唯一对应的画布节点')
+                                : hidden ? t('显示画布节点') : t('在画布中隐藏');
+                              return (
+                                <figure key={media.id} className="group relative m-0 aspect-video overflow-hidden rounded-lg border border-canvas-border bg-canvas-surface">
+                                  {media.kind !== 'video' ? (
+                                    <ViewportImage src={media.url} alt={media.name} className="size-full object-cover" draggable={false} />
+                                  ) : (
+                                    <ViewportVideo src={media.url} className="size-full object-cover" controls aria-label={media.name} />
+                                  )}
+                                  <span className="pointer-events-none absolute bottom-1 left-1 max-w-[calc(100%-40px)] truncate rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-white">
+                                    {media.name}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="absolute right-1 top-1 grid size-6 place-items-center rounded-md bg-black/60 text-white transition-[transform,background-color] duration-150 ease-out hover:bg-black/80 active:scale-[.97]"
+                                    aria-label={t('移除媒体「{name}」', { name: media.name })}
+                                    onClick={async () => {
+                                      if (await removeCharacterActionMedia(
+                                        scope,
+                                        selectedCharacter.id,
+                                        action.id,
+                                        media.id,
+                                      )) showToast(t('动作媒体已移除'));
+                                    }}
+                                  >
+                                    <Icon icon="lucide:x" width="12" height="12" aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ui-icon-btn ui-icon-btn--sm absolute bottom-1 right-1 border border-canvas-border bg-canvas-surface"
+                                    disabled={!mediaNode}
+                                    data-tooltip={visibilityLabel}
+                                    aria-label={visibilityLabel}
+                                    aria-pressed={Boolean(mediaNode && !hidden)}
+                                    onClick={() => {
+                                      if (!mediaNode) return;
+                                      if (hidden) {
+                                        setCharacterLibraryNodeHidden(mediaNode.id, false);
+                                      } else {
+                                        useAppStore.getState().linkNodeToCharacter(mediaNode.id, {
+                                          scope, characterId: selectedCharacter.id, actionId: action.id, mediaId: media.id,
+                                        }, true);
+                                      }
+                                      showToast(hidden ? t('节点已显示') : t('节点已隐藏'));
+                                    }}
+                                  >
+                                    <Icon icon={hidden ? 'lucide:eye' : 'lucide:eye-off'} width="13" height="13" aria-hidden="true" />
+                                  </button>
+                                </figure>
+                              );
+                            })}
                             <button
                               type="button"
                               disabled={uploadingActionMedia}
@@ -1180,6 +1222,10 @@ export default function CharacterLibraryPanel() {
                                     <Icon icon="lucide:x" width="12" height="12" aria-hidden="true" />
                                   </button>
                                 </div>
+                                <label className="character-capture-hide-option mt-2">
+                                  <input type="checkbox" checked={hideActionNode} onChange={(event) => setHideActionNode(event.target.checked)} />
+                                  <span>{t('添加后隐藏画布节点')}</span>
+                                </label>
                                 {pickableActionNodes.length === 0 ? (
                                   <div className="mt-2 flex min-h-20 flex-col items-center justify-center gap-1 rounded-md border border-dashed border-canvas-border px-3 text-center text-[10px] text-canvas-text-muted">
                                     <Icon icon="lucide:film" width="16" height="16" aria-hidden="true" />
