@@ -30,6 +30,7 @@ import { defaultModelGroups } from '../nodes/shared/defaultModels';
 import { shouldListProviderConnection } from './apiKeySettingsUtils';
 import { isSecretStoreAvailable } from '../../services/providerSecretService';
 import { testProviderConnection } from '../../services/testConnection';
+import { replaceLegacyApimartOmni } from '../../services/ai/apimartVideoModels';
 import DreaminaLoginModal from './DreaminaLoginModal';
 import ProviderConnectionDialog from './ProviderConnectionDialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -223,6 +224,15 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     for (const [connectionId, providerConfig] of Object.entries(config.providers)) {
       const catalogId = providerConfig.catalogId
         || getProviderDefinition(connectionId, providerConfig)?.id;
+      if (catalogId === 'apimart') {
+        const selectedModels = replaceLegacyApimartOmni(providerConfig.selectedModels);
+        const catalogModels = replaceLegacyApimartOmni(providerConfig.catalogModels);
+        if (selectedModels !== providerConfig.selectedModels || catalogModels !== providerConfig.catalogModels) {
+          changed = true;
+          saveProviderConfig(connectionId, { ...providerConfig, selectedModels, catalogModels });
+        }
+        continue;
+      }
       if (catalogId !== 'sora2u') continue;
       const selectedModels = providerConfig.selectedModels?.filter(
         (model) => isProviderModelVisible(catalogId, model.id),
@@ -243,7 +253,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     for (const item of providerItems) {
       const definition = getProviderDefinition(item.id, item.config);
-      if (definition?.id !== 'sora2u' || !item.config.apiKey.trim()) continue;
+      if (!definition || !['sora2u', 'apimart'].includes(definition.id) || !item.config.apiKey.trim()) continue;
       const fingerprint = `${item.id}\u0000${item.config.apiKey}\u0000${item.config.baseUrl || ''}`;
       if (balanceRefreshStartedRef.current.has(fingerprint)) continue;
       balanceRefreshStartedRef.current.add(fingerprint);
@@ -259,6 +269,9 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       ).then((result) => {
         const balance = result.balance;
         if (!balanceRefreshActiveRef.current || !result.success || !balance) return;
+        const latest = useAppStore.getState().config.providers[item.id];
+        if (!latest || latest.apiKey !== item.config.apiKey || latest.baseUrl !== item.config.baseUrl
+          || getProviderDefinition(item.id, latest)?.id !== definition.id) return;
         setProviderBalances((current) => ({ ...current, [item.id]: balance }));
       });
     }

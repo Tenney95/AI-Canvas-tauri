@@ -25,6 +25,7 @@ import type {
 } from '../../types';
 import { corsSafeFetch } from './httpTransport';
 import { baseUrlCandidates } from './providerBaseUrl';
+import { APIMART_OMNI_MODELS, isLegacyApimartOmni } from './apimartVideoModels';
 import { getChatApiHeaders, normalizeGeminiModelId, resolveChatApiProtocol } from './chatApiProtocol';
 import { XAI_BASE_URL, XAI_MODEL_MANIFEST } from './providers/xaiModelManifest';
 import {
@@ -347,6 +348,7 @@ const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
 
 export function isProviderModelVisible(catalogId: string | undefined, modelId: string): boolean {
   if (!catalogId) return true;
+  if (catalogId === 'apimart' && isLegacyApimartOmni(modelId)) return false;
   const definition = BUILT_IN_PROVIDER_DEFINITIONS.find((item) => item.id === catalogId);
   return !definition?.hiddenModelIds?.includes(modelId);
 }
@@ -659,7 +661,20 @@ export async function fetchProviderModelCatalog(
       signal,
     );
     return {
-      models: mergeRemoteCatalogMetadata(models, normalizedFallback),
+      models: mergeRemoteCatalogMetadata(
+        definition.id === 'apimart'
+          ? [
+              ...models.map((remote) => {
+                const omni = APIMART_OMNI_MODELS.find((model) => model.id === remote.id);
+                return omni ? { ...remote, ...omni, provider: providerId } : remote;
+              }),
+              ...APIMART_OMNI_MODELS.filter((model) => normalizedFallback.some((item) => item.id === model.id)
+                && !models.some((remote) => remote.id === model.id))
+                .map((model) => ({ ...model, provider: providerId })),
+            ]
+          : models,
+        normalizedFallback,
+      ),
       source: 'remote',
       resolvedBaseUrl: baseUrl,
     };

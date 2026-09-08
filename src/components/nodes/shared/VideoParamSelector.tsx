@@ -335,7 +335,9 @@ export default function VideoParamSelector({
     && !allowedDurations
     && (generalCapability?.minDuration === undefined || generalCapability?.maxDuration === undefined),
   );
-  const durationTooltip = allowedDurations
+  const durationTooltip = apimartCapability?.durationMode === 'without-video'
+    ? '仅支持 4 / 6 / 8 / 10 秒。使用参考视频时，此时长设置不生效，由模型决定输出时长。'
+    : allowedDurations
     ? `该模型仅支持 ${allowedDurations.join(' / ')} 秒。`
     : useUnboundedDurationInput
       ? generalCapability?.minDuration !== undefined
@@ -393,7 +395,9 @@ export default function VideoParamSelector({
   const showResolutionControl = isNativeSeedance || generalControlSupport.resolution;
   const showRatioControl = showSeedanceRatio && (isNativeSeedance || generalControlSupport.ratio);
   // 自定义 API 只有 capability 声明了时长语义才显示；内置 API 保留原有时长控件。
-  const showDurationControl = generalModel ? generalControlSupport.duration : true;
+  const showDurationControl = apimartCapability?.durationMode === 'automatic'
+    ? false
+    : generalModel ? generalControlSupport.duration : true;
   const showFrameRateControl = Boolean(generalModel && generalControlSupport.frameRate);
   const supportsAudio = isNativeSeedance
     ? Boolean(nativeCapability?.audioField)
@@ -704,6 +708,9 @@ export default function VideoParamSelector({
                 )}
 
                 {/* Seedance 时长 */}
+                {apimartCapability?.durationMode === 'automatic' && (
+                  <div className="text-xs text-canvas-text-secondary">时长由模型自动决定，可在提示词中描述节奏。</div>
+                )}
                 {(showDurationControl || (showGenerateAudio && supportsAudio)) && (
                 <div className="rh-v5-meta-panel">
                   {showDurationControl && <div className="rh-vram-adv-row">

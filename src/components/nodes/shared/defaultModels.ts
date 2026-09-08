@@ -14,6 +14,7 @@ import type {
 } from '../../../types';
 import { CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS } from '../../../types';
 import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from '../../../services/ai/dreaminaModels';
+import { APIMART_OMNI_MODELS, isLegacyApimartOmni, replaceLegacyApimartOmni } from '../../../services/ai/apimartVideoModels';
 
 export type MediaModelKind = 'image' | 'video' | 'audio';
 
@@ -452,15 +453,10 @@ export const defaultModelGroups: ModelGroup[] = [
         badgeText: 'VD',
         nodeTypes: ['ai-video'],
       },
-      {
-        value: 'apimart/Omni-Flash-Ext',
-        provider: 'apimart',
-        label: 'Omni Flash',
-        description: '全模态快速视频生成',
-        iconType: 'badge',
-        badgeText: 'OF',
-        nodeTypes: ['ai-video'],
-      },
+      ...APIMART_OMNI_MODELS.map((model): ModelOption => ({
+        value: `apimart/${model.id}`, provider: 'apimart', label: model.name,
+        description: model.description, iconType: 'badge', badgeText: 'GO', nodeTypes: ['ai-video'],
+      })),
       // ── 音频模型 ──
       {
         value: 'apimart/gpt-4o-mini-tts',
@@ -1072,7 +1068,9 @@ export function getConfiguredModelGroups(
     if (provider && !isProviderCategoryVisible(config, providerConfigId, category)) return [];
 
     const modelProvider = group.models[0]?.provider || group.id;
-    const selectedModels = provider?.selectedModels;
+    const selectedModels = group.id === 'apimart'
+      ? replaceLegacyApimartOmni(provider?.selectedModels)
+      : provider?.selectedModels;
     const selectedIds = selectedModels === undefined
       ? null
       : new Set(selectedModels.map((model) => normalizedCatalogModelId(model.id, modelProvider)));
@@ -1299,6 +1297,9 @@ export function findMediaModelOption(
   config?: ProviderModelVisibilityConfig,
   workflows: WorkflowDefinition[] = [],
 ): MediaModelOption | undefined {
+  if (modelRef.startsWith('apimart/') && isLegacyApimartOmni(modelRef)) {
+    modelRef = 'apimart/gemini-omni-1.1-flash-ext';
+  }
   const normalized = modelRef.startsWith('general/') ? modelRef : `general/${modelRef}`;
   return getMediaModelOptions(generalModels, config, workflows).find(
     (model) => model.value === modelRef || model.value === normalized,

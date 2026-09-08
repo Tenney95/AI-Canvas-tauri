@@ -3,6 +3,7 @@
  */
 import type { VideoGenerationOperation, VideoModelCapability } from '../../types/aiTypes';
 import { mapVideoParameters } from './videoParameterMappings';
+import type { ProviderModelSelection } from '../../types';
 
 export type ApimartSeedanceRatioField = 'aspect_ratio' | 'size';
 export type ApimartSeedanceAudioField = 'audio' | 'generate_audio';
@@ -35,6 +36,35 @@ export interface ApimartSeedanceCapability {
   defaultWatermark?: boolean;
   /** Seedance 2.0/2.5 用 image_with_roles 数组传递首/尾帧（而非独立字段）。 */
   imageWithRoles?: boolean;
+  /** Omni 使用独立的参考素材与时长合同，不套用 Seedance 首尾帧互斥规则。 */
+  omniVariant?: 'flash' | 'ext' | 'preview';
+  durationMode?: 'automatic' | 'without-video';
+  inputConstraints?: VideoModelCapability['inputConstraints'];
+}
+
+export const APIMART_OMNI_MODELS: readonly ProviderModelSelection[] = [
+  { id: 'gemini-omni-1.1-flash', name: 'Gemini Omni 1.1 Flash', category: 'video', provider: 'apimart',
+    description: '最高 4K，时长自动；最多 10 张图片，支持首尾帧和单视频编辑' },
+  { id: 'gemini-omni-1.1-flash-ext', name: 'Gemini Omni 1.1 Flash Ext', category: 'video', provider: 'apimart',
+    description: '最高 4K，4/6/8/10 秒；1 或 3 张参考图，单视频参考时由模型决定时长' },
+  { id: 'gemini-omni-flash-preview', name: 'Gemini Omni Flash Preview', category: 'video', provider: 'apimart',
+    description: '720p，时长自动；最多 16 张参考图和 1 个参考视频' },
+];
+
+export function isLegacyApimartOmni(model: string): boolean {
+  return model.replace(/^apimart\//i, '').toLowerCase() === 'omni-flash-ext';
+}
+
+/** 仅替换已选择的旧条目；保留其它模型和用户有意关闭的新模型。 */
+export function replaceLegacyApimartOmni(
+  models: ProviderModelSelection[] | undefined,
+): ProviderModelSelection[] | undefined {
+  const legacy = models?.find((model) => isLegacyApimartOmni(model.id));
+  if (!models || !legacy) return models;
+  const retained = models.filter((model) => !isLegacyApimartOmni(model.id));
+  return [...retained, ...APIMART_OMNI_MODELS
+    .filter((model) => !retained.some((item) => item.id.replace(/^apimart\//i, '') === model.id))
+    .map((model) => ({ ...model, provider: legacy.provider }))];
 }
 
 export interface ApimartSeedanceRequestParams {
@@ -63,7 +93,31 @@ const SD_2_RESOLUTIONS = ['480p', '720p'] as const;
 const H3_RESOLUTIONS = ['2K', '768P'] as const;
 const H3_RATIOS = ['16:9', '4:3', '1:1', '3:4', '9:16', '21:9'] as const;
 
+const OMNI_CAPABILITY: ApimartSeedanceCapability = {
+  modelId: 'gemini-omni-1.1-flash',
+  resolutions: ['360p', '720p', '1080p', '4k'], defaultResolution: '720p',
+  ratios: ['16:9', '9:16'], defaultRatio: '16:9', ratioField: 'aspect_ratio',
+  minDuration: 3, maxDuration: 10, defaultDuration: 6,
+  operations: ['text-to-video', 'image-to-video', 'video-to-video'],
+  maxImageReferences: 10, maxVideoReferences: 1, maxAudioReferences: 0,
+  frameFields: { first: 'first_frame_image', last: 'last_frame_image' },
+  omniVariant: 'flash', durationMode: 'automatic',
+  inputConstraints: { referenceVideo: { durationSeconds: { max: 10 } } },
+};
+
 const APIMART_SEEDANCE_CAPABILITIES: Record<string, ApimartSeedanceCapability> = {
+  'gemini-omni-1.1-flash': OMNI_CAPABILITY,
+  'gemini-omni-1.1-flash-ext': {
+    ...OMNI_CAPABILITY, modelId: 'gemini-omni-1.1-flash-ext',
+    omniVariant: 'ext', durationMode: 'without-video',
+    inputConstraints: undefined,
+    minDuration: 4, durations: [4, 6, 8, 10], maxImageReferences: 3,
+  },
+  'gemini-omni-flash-preview': {
+    ...OMNI_CAPABILITY, modelId: 'gemini-omni-flash-preview',
+    omniVariant: 'preview', resolutions: ['720p'], maxImageReferences: 16,
+    inputConstraints: { referenceVideo: { durationSeconds: { min: 1, max: 24 } } },
+  },
   'doubao-seedance-1-0-pro-fast': {
     modelId: 'doubao-seedance-1-0-pro-fast',
     resolutions: SD_1_RESOLUTIONS,
@@ -236,6 +290,7 @@ const APIMART_SEEDANCE_CAPABILITIES: Record<string, ApimartSeedanceCapability> =
 };
 
 function normalizeModelId(model: string): string {
+  if (isLegacyApimartOmni(model)) return 'gemini-omni-1.1-flash-ext';
   const stripped = model.startsWith('apimart/') ? model.slice('apimart/'.length) : model;
   // 能力表 key 统一小写，模型 ID（如 MiniMax-H3）大小写不敏感地查找
   return stripped.toLowerCase();
@@ -287,6 +342,7 @@ export function buildApimartSeedanceRequest(
 ): Record<string, unknown> | null {
   const capability = getApimartSeedanceCapability(model);
   if (!capability) return null;
+  if (capability.omniVariant) return buildOmniRequest(capability, prompt, params);
 
   const imageUrls = (params.imageUrls ?? []).filter(Boolean);
   const videoUrls = (params.videoUrls ?? []).filter(Boolean);
@@ -387,5 +443,62 @@ export function buildApimartSeedanceRequest(
   if (capability.watermarkField) {
     body[capability.watermarkField] = params.watermark ?? capability.defaultWatermark ?? false;
   }
+  return body;
+}
+
+function buildOmniRequest(
+  capability: ApimartSeedanceCapability,
+  prompt: string,
+  params: ApimartSeedanceRequestParams,
+): Record<string, unknown> {
+  const images = (params.imageUrls ?? []).filter(Boolean);
+  const videos = (params.videoUrls ?? []).filter(Boolean);
+  const first = params.firstFrameUrl?.trim();
+  const last = params.lastFrameUrl?.trim();
+  if (params.imageWithRoles?.length) throw new Error('Omni 请使用首尾帧字段或普通参考图');
+  if (params.audioUrls?.length) throw new Error('Omni 不支持参考音频');
+  if (params.operation && !capability.operations.includes(params.operation)) throw new Error('Omni 不支持该生成方式');
+  if (videos.length > 1) throw new Error('Omni 最多支持 1 个参考视频');
+  if (!prompt.trim() && !images.length && !videos.length && !first && !last) throw new Error('提示词或参考素材至少提供一项');
+  if (capability.omniVariant === 'ext' && !prompt.trim()) throw new Error('Omni Ext 提示词不能为空');
+  if (last && capability.omniVariant !== 'flash') throw new Error('该 Omni 模型不支持尾帧，请使用 Gemini Omni 1.1 Flash');
+  if (last && !first) throw new Error('Omni 尾帧必须同时提供首帧');
+  if (images.length + Number(Boolean(first)) + Number(Boolean(last)) > capability.maxImageReferences) {
+    throw new Error(`Omni 图片与首尾帧合计最多 ${capability.maxImageReferences} 张`);
+  }
+  const allUrls = [...images, ...videos, ...(first ? [first] : []), ...(last ? [last] : [])];
+  if (allUrls.some((value) => {
+    try { return !['http:', 'https:'].includes(new URL(value).protocol); } catch { return true; }
+  })) throw new Error('Omni 参考素材必须是可访问的 HTTP/HTTPS URL');
+
+  const requestedResolution = params.resolution?.toLowerCase();
+  const resolution = requestedResolution === '2160p' ? '4k' : requestedResolution ?? capability.defaultResolution;
+  if (!capability.resolutions.includes(resolution)) throw new Error(`Omni 分辨率仅支持 ${capability.resolutions.join(' / ')}`);
+  const ratio = params.ratio ?? capability.defaultRatio;
+  if (!capability.ratios.includes(ratio)) throw new Error('Omni 比例仅支持 16:9 / 9:16');
+  const body: Record<string, unknown> = { model: capability.modelId, prompt, resolution };
+  if (!videos.length) body.aspect_ratio = ratio;
+  if (capability.omniVariant === 'ext') {
+    if (first && images.length) throw new Error('Omni Ext 首帧模式不能混用参考图');
+    const referenceImages = first ? [first] : images;
+    if (referenceImages.length && ![1, 3].includes(referenceImages.length)) throw new Error('Omni Ext 参考图只能为 1 张或 3 张');
+    if (referenceImages.length) {
+      body.image_urls = referenceImages;
+      body.generation_type = first ? 'frame' : 'reference';
+    }
+    if (!videos.length) {
+      const duration = params.duration ?? capability.defaultDuration;
+      if (!capability.durations?.includes(duration)) throw new Error('Omni Ext 时长仅支持 4 / 6 / 8 / 10 秒');
+      body.duration = duration;
+    }
+  } else if (capability.omniVariant === 'flash') {
+    if (first) body.first_frame_image = first;
+    if (last) body.last_frame_image = last;
+    if (images.length) body.image_urls = images;
+  } else {
+    if (first && images.length) throw new Error('Omni Preview 请将图片统一作为参考图使用');
+    if (first || images.length) body.image_urls = first ? [first] : images;
+  }
+  if (videos.length) body.video_urls = videos;
   return body;
 }

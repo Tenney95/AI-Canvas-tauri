@@ -100,6 +100,33 @@ async function testReadOnlyEndpoint(
   return { success: true, balance, baseUrl: candidate };
 }
 
+/** APIMart — 验证目录后附带用户账户积分，不把令牌额度当作账户余额。 */
+async function testApimart(apiKey: string, baseUrl = APIMART_BASE_URL): Promise<TestResult> {
+  const result = await testModelCatalog(apiKey, baseUrl || APIMART_BASE_URL);
+  if (!result.success || !result.baseUrl) return result;
+
+  // 跟随用户配置并已验证的地址，兼容代理域名；余额失败不改变连接验证结果。
+  try {
+    const response = await corsSafeFetch(`${result.baseUrl}/user/balance`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) return result;
+    const payload: unknown = await response.json();
+    if (!payload || typeof payload !== 'object') return result;
+    const record = payload as Record<string, unknown>;
+    // remain_balance 的单位依赖服务端配置，使用文档明确标为积分的字段。
+    if (record.success === true
+      && typeof record.remain_credits === 'number'
+      && Number.isFinite(record.remain_credits)) {
+      return { ...result, balance: `${record.remain_credits} 积分` };
+    }
+  } catch {
+    // 自定义地址可能未开放账户接口，也可能暂时无法查询。
+  }
+  return result;
+}
+
 /** RunningHUB — 模型 API 密钥，有余额 */
 async function testRunninghubModel(apiKey: string): Promise<TestResult> {
   const url = 'https://www.runninghub.cn/uc/openapi/accountStatus';
@@ -157,7 +184,7 @@ export type ProviderTestKey =
   | WebSearchProviderId;
 
 const testFns: Record<ProviderTestKey, (apiKey: string, baseUrl?: string) => Promise<TestResult>> = {
-  apimart: (apiKey, baseUrl) => testModelCatalog(apiKey, baseUrl || APIMART_BASE_URL),
+  apimart: testApimart,
   volcengine: (apiKey, baseUrl) => testModelCatalog(apiKey, baseUrl || VOLCENGINE_BASE_URL),
   'runninghub-model': testRunninghubModel,
   grsai: testGRSAI,
