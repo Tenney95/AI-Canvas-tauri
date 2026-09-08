@@ -14,7 +14,8 @@ import { applyImageBatchResults } from './imageBatchService';
 import { mapImageDimensions } from './aiDimensions';
 import { parseMultiPathResponse, splitCommaSeparatedUrls } from './ai/helpers';
 import { resolveComfyOutputUrl, type ComfyOutputKind, type ComfyOutputs } from './comfyOutputs';
-import { pollComfyHistory } from './comfyPolling';
+import { ComfyPendingError, pollComfyHistory } from './comfyPolling';
+import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from './canvasDerivationGuard';
 import { pollResolvedModelProtocol } from './ai/modelProtocol';
 import {
   extractFlowMusicLyrics,
@@ -55,15 +56,17 @@ export function registerNodePolling(nodeId: string): AbortSignal {
 }
 
 /** 取消节点的轮询（节点被删除时调用，同时清理 pending task） */
-export function cancelNodePolling(nodeId: string): void {
+export function cancelNodePolling(nodeId: string, preservePending = false): void {
   abortNodePolling(nodeId);
   // 同时清理 localStorage 中的待续任务记录
-  removePendingTask(nodeId);
+  if (!preservePending) removePendingTask(nodeId);
 }
 
 /** 轮询正常结束/失败后清理注册表（不调用 abort） */
-export function cleanupNodePolling(nodeId: string): void {
+export function cleanupNodePolling(nodeId: string, expectedSignal?: AbortSignal): boolean {
+  if (expectedSignal && abortControllers.get(nodeId)?.signal !== expectedSignal) return false;
   abortControllers.delete(nodeId);
+  return true;
 }
 
 // ═══════════════════════════════════════════
@@ -90,6 +93,8 @@ export interface PendingTask {
   protocolPoll?: ResolvedModelProtocolPoll;
   /** 任务是否已向远端提交（false 表示仅预设了 status=loading 但还未拿到 taskId） */
   submitted: boolean;
+  /** ComfyUI 远端终态尚未确认，保留任务并提供续查/再次取消。 */
+  comfyRecoveryState?: 'disconnected' | 'cancel_pending';
 }
 
 // ═══════════════════════════════════════════
@@ -181,18 +186,20 @@ export function savePendingTask(task: PendingTask): void {
 }
 
 /** 更新已保存的待续任务（如回填 taskId） */
-export function updatePendingTask(nodeId: string, patch: Partial<PendingTask>): void {
+export function updatePendingTask(nodeId: string, patch: Partial<PendingTask>, expectedTaskId?: string): void {
   const tasks = loadAll();
   const idx = tasks.findIndex((t) => t.nodeId === nodeId);
   if (idx === -1) return;
+  if (expectedTaskId !== undefined && tasks[idx].taskId !== expectedTaskId) return;
   tasks[idx] = { ...tasks[idx], ...patch };
   saveAll(tasks);
 }
 
 /** 移除一条待续任务（轮询完成/失败/取消时调用） */
-export function removePendingTask(nodeId: string): void {
+export function removePendingTask(nodeId: string, expectedTaskId?: string): void {
   const tasks = loadAll();
   const task = tasks.find((t) => t.nodeId === nodeId);
+  if (expectedTaskId !== undefined && task?.taskId !== expectedTaskId) return;
   const currentProjectId = useAppStore.getState().currentProjectId;
 
   // 后台请求可能在用户切换到其他项目后才结束。此时不能删除原项目的
@@ -223,7 +230,9 @@ async function applyNodeResult(
   nodeId: string,
   resultUrl: string,
   nodeLabel: string,
+  isCurrent?: () => boolean,
 ): Promise<void> {
+  if (isCurrent && !isCurrent()) throw new ComfyPendingError('任务结果已保留，请回到原项目继续查询');
   const store = useAppStore.getState();
   const node = store.nodes.find((n) => n.id === nodeId);
   if (!node) return;
@@ -232,9 +241,18 @@ async function applyNodeResult(
   const currentProjectId = store.currentProjectId;
 
   // 下载远程 URL 到本地
-  const persisted = currentProjectId
-    ? await persistMediaUrlToProjectData(resultUrl, currentProjectId, nodeType, nodeLabel)
-    : { mediaUrl: resultUrl, sourceUrl: resultUrl };
+  const guard = isCurrent ? registerCanvasDerivation(store, nodeId) : null;
+  let persisted;
+  try {
+    persisted = currentProjectId
+      ? await persistMediaUrlToProjectData(resultUrl, currentProjectId, nodeType, nodeLabel)
+      : { mediaUrl: resultUrl, sourceUrl: resultUrl };
+    if (isCurrent && (!isCurrent() || !guard || !isCanvasDerivationFresh(guard, useAppStore.getState()))) {
+      throw new ComfyPendingError('画布已变化，任务结果已保留，请继续查询');
+    }
+  } finally {
+    if (guard) completeCanvasDerivation(guard);
+  }
   const mediaUrl = persisted.mediaUrl;
 
   const updateData: Partial<BaseNodeData> = {
@@ -696,6 +714,10 @@ async function resumeComfyUI(task: PendingTask): Promise<void> {
   const label = (node?.data as BaseNodeData | undefined)?.label || '';
 
   const signal = registerNodePolling(nodeId);
+  const isCurrent = () => !signal.aborted
+    && useAppStore.getState().currentProjectId === task.projectId
+    && getPendingTasksForProject(task.projectId).some((item) => item.nodeId === nodeId && item.taskId === taskId);
+  updatePendingTask(nodeId, { comfyRecoveryState: undefined }, taskId);
 
   const kinds: ComfyOutputKind[] =
     nodeType === 'ai-video' ? ['video', 'image']
@@ -713,13 +735,32 @@ async function resumeComfyUI(task: PendingTask): Promise<void> {
       extract,
       signal,
     );
-    await applyNodeResult(nodeId, url, label);
-    removePendingTask(nodeId);
+    await applyNodeResult(nodeId, url, label, isCurrent);
+    removePendingTask(nodeId, taskId);
   } catch (err) {
-    await handleResumeError(task, err);
+    // 被删除、取消或新一轮查询替代时，不能清理当前任务或覆盖其界面状态。
+    if (signal.aborted) return;
+    if (err instanceof ComfyPendingError) {
+      updatePendingTask(nodeId, { comfyRecoveryState: 'disconnected' }, taskId);
+      if (isCurrent()) useAppStore.getState().updateNodeDataTransient(nodeId, { status: 'error', error: err.message });
+    } else if (isCurrent()) {
+      await handleResumeError(task, err);
+    }
   } finally {
-    cleanupNodePolling(nodeId);
+    cleanupNodePolling(nodeId, signal);
   }
+}
+
+/** 仅续查这个节点已提交的 ComfyUI 任务，不重新提交工作流。 */
+export async function resumeComfyUINodeTask(nodeId: string): Promise<void> {
+  const store = useAppStore.getState();
+  if (!store.currentProjectId || !store.nodes.some((node) => node.id === nodeId)) return;
+  const task = getPendingTasksForProject(store.currentProjectId).find((item) => (
+    item.nodeId === nodeId && item.taskType === 'comfyui' && item.submitted && item.taskId
+  ));
+  if (!task || abortControllers.has(nodeId)) return;
+  store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined });
+  await resumeComfyUI(task);
 }
 
 /* ── 通用异步 ── */
@@ -982,12 +1023,17 @@ export async function resumePendingTasks(projectId: string): Promise<void> {
       continue;
     }
 
+    if (task.taskType === 'comfyui' && task.comfyRecoveryState === 'cancel_pending') {
+      store.updateNodeDataTransient(task.nodeId, { status: 'error', error: 'ComfyUI 取消尚未确认，请继续查询或再次终止' });
+      continue;
+    }
+
     if (nodeData?.status !== 'loading') {
       if (
         task.submitted
         && task.taskId
         && nodeData?.status === 'error'
-        && isCancellationErrorMessage(nodeData.error)
+        && (isCancellationErrorMessage(nodeData.error) || (task.taskType === 'comfyui' && task.comfyRecoveryState === 'disconnected'))
       ) {
         store.updateNodeDataTransient(task.nodeId, { status: 'loading', error: undefined });
       } else {

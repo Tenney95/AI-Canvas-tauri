@@ -40,6 +40,7 @@ import {
 import { resolveVideoSubmissionControls } from '../../services/ai/videoRequestResolver';
 import { buildGenerationCameraPrompt } from './shared/image/cameraStudio';
 import { cancelComfyUINodeTask } from '../../services/comfyWorkflowService';
+import { getPendingTasksForProject, resumeComfyUINodeTask } from '../../services/pollManager';
 import { useT } from '../../i18n';
 
 const DIALOG_VIEWPORT_MARGIN = 16;
@@ -311,6 +312,12 @@ function AINodeDialog() {
     const latestData = latestNode?.data as BaseNodeData | undefined;
     if (!latestData) {
       showToast(t('节点不存在'), 'error');
+      return;
+    }
+    if (store.currentProjectId && getPendingTasksForProject(store.currentProjectId).some((task) => (
+      task.nodeId === activeNodeId && task.taskType === 'comfyui' && task.comfyRecoveryState
+    ))) {
+      showToast(t('该节点还有未确认结束的 ComfyUI 任务，请先继续查询或终止任务'), 'error');
       return;
     }
     const rawPrompt = overridePrompt ?? (latestData.prompt as string) ?? '';
@@ -717,19 +724,26 @@ function AINodeDialog() {
   const onCancelGeneration = useCallback(async () => {
     if (!activeNodeId || cancellingNodeIdsRef.current.has(activeNodeId)) return;
     const nodeId = activeNodeId;
+    const projectId = currentProjectId;
+    const originalTaskId = projectId ? getPendingTasksForProject(projectId).find((task) => task.nodeId === nodeId)?.taskId : undefined;
+    const isCurrent = () => useAppStore.getState().currentProjectId === projectId
+      && useAppStore.getState().nodes.some((item) => item.id === nodeId)
+      && (!projectId || !getPendingTasksForProject(projectId).some((task) => task.nodeId === nodeId && task.taskId !== originalTaskId));
     cancellingNodeIdsRef.current.add(nodeId);
     try {
       await cancelComfyUINodeTask(nodeId);
+      if (!isCurrent()) return;
       updateNodeDataTransient(nodeId, { status: 'idle', error: undefined });
       showToast(t('已终止 ComfyUI 任务'));
     } catch (error) {
-      updateNodeDataTransient(nodeId, { status: 'idle', error: undefined });
+      if (!isCurrent()) return;
       const message = error instanceof Error ? error.message : t('无法终止 ComfyUI 任务');
-      showToast(t('已停止本地等待，但{message}', { message }), 'error');
+      updateNodeDataTransient(nodeId, { status: 'error', error: t('ComfyUI 取消尚未确认，任务已保留，可继续查询或再次终止') });
+      showToast(t('取消尚未确认，任务已保留：{message}', { message }), 'error');
     } finally {
       cancellingNodeIdsRef.current.delete(nodeId);
     }
-  }, [activeNodeId, showToast, t, updateNodeDataTransient]);
+  }, [activeNodeId, currentProjectId, showToast, t, updateNodeDataTransient]);
 
   /**
    * 「直接输出」只对产物就是文字的节点成立：媒体节点没有模型就没有素材，
@@ -910,6 +924,10 @@ function AINodeDialog() {
   // Early return must come after ALL hooks
   if (!activeNodeId || !node || !data || !nodeType) return null;
 
+  const recoverableComfyTask = currentProjectId && data.status !== 'loading'
+    ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && task.taskType === 'comfyui' && task.comfyRecoveryState)
+    : undefined;
+
   const audioPurpose = data.audioPurpose
     ?? (data.model ? findMediaModelOption(data.model)?.audioPurpose : undefined);
 
@@ -1018,6 +1036,21 @@ function AINodeDialog() {
             </svg>
           )}
         </button>
+        {recoverableComfyTask && (
+          <div className="ui-alert ui-alert--warning mx-3 mb-2 flex-wrap" role="status">
+            <span className="min-w-0 flex-1 text-xs">
+              {recoverableComfyTask.comfyRecoveryState === 'cancel_pending'
+                ? t('ComfyUI 取消尚未确认，任务已保留')
+                : t('ComfyUI 查询中断，任务已保留')}
+            </span>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="ui-btn ui-btn--sm" onClick={() => {
+                void resumeComfyUINodeTask(activeNodeId).catch(() => showToast(t('继续查询失败，任务仍保留'), 'error'));
+              }}>{t('继续查询')}</button>
+              <button type="button" className="ui-btn ui-btn--sm ui-btn--danger" onClick={() => { void onCancelGeneration(); }}>{t('再次终止')}</button>
+            </div>
+          </div>
+        )}
         <PromptPanel
           editorRef={editorApiRef}
           nodeType={nodeType}
@@ -1031,7 +1064,7 @@ function AINodeDialog() {
           onAnimationActionChange={onAnimationActionChange}
           animationFrames={data.animationFrames ?? 8}
           onAnimationFramesChange={onAnimationFramesChange}
-          canGenerate={data.status !== 'loading'}
+          canGenerate={data.status !== 'loading' && !recoverableComfyTask}
           isGenerating={data.status === 'loading'}
           onCancelGeneration={data.provider === 'comfyui' ? () => { void onCancelGeneration(); } : undefined}
           onChange={onPromptChange}

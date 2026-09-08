@@ -34,11 +34,11 @@ const IO_TYPE_RULES: { patterns: RegExp[]; type: WorkflowIONodeType }[] = [
 ];
 
 /**
- * 认得出的工作流 id：手动导入的 `wf-`，以及内置播种的 `builtin-`。
+ * 接受手动/助手保存的 `wf-`、内置 `builtin-` 与 MCP 创建的 `workflow-mcp-`。
  * 不认这个 id 就会当成新工作流入库 —— 内置工作流在 ComfyUI 里改完存回来会变成同名副本，
  * 原来那条纹丝不动，默认节点也得重标一遍。
  */
-const WORKFLOW_ID_PATTERN = /^(wf|builtin)-[A-Za-z0-9._:-]{1,160}$/;
+const WORKFLOW_ID_PATTERN = /^(wf|builtin|workflow-mcp)-[A-Za-z0-9._:-]{1,160}$/;
 const SAVE_REQUEST_ID_PATTERN = /^save-[A-Za-z0-9._:-]{1,120}$/;
 
 const WORKFLOW_CATEGORIES = new Set<WorkflowCategory>([

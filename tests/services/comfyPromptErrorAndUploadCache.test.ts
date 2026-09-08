@@ -120,7 +120,7 @@ describe('ComfyUI 任务终止', () => {
 
     await cancelComfyUINodeTask('node-1');
 
-    expect(mocks.cancelNodePolling).toHaveBeenCalledWith('node-1');
+    expect(mocks.cancelNodePolling).toHaveBeenCalledWith('node-1', true);
     expect(mocks.corsSafeFetch).toHaveBeenCalledTimes(1);
     expect(mocks.corsSafeFetch).toHaveBeenCalledWith(
       'http://comfy.test:8188/api/jobs/prompt-1/cancel',

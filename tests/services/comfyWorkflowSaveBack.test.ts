@@ -101,6 +101,19 @@ describe('ComfyUI 工作流保存回写', () => {
     expect(mocks.storeState.updateWorkflow.mock.calls[0][0]).toBe('wf-imported');
   });
 
+  it('MCP 创建的工作流编辑后原地更新并保留服务器及默认输入', async () => {
+    mocks.storeState.workflows.push({
+      id: 'workflow-mcp-example-1', name: 'MCP 工作流', serverId: 'video-server',
+      defaultNodes: { prompt: '105:104' },
+    });
+    await saveFromComfyUI('workflow-mcp-example-1');
+    expect(mocks.storeState.addWorkflow).not.toHaveBeenCalled();
+    expect(mocks.storeState.updateWorkflow).toHaveBeenCalledWith('workflow-mcp-example-1', expect.objectContaining({
+      fileContent: API_JSON, defaultNodes: { prompt: '105:104' },
+    }));
+    expect(mocks.storeState.updateWorkflow.mock.calls[0][1]).not.toHaveProperty('serverId');
+  });
+
   it('id 不合法时当新工作流入库，不会顶掉别人', async () => {
     await saveFromComfyUI('../../etc/passwd');
 

@@ -77,6 +77,14 @@ const MISSING_ROUNDS_BEFORE_FAIL = 3;
 /** 连着这么多轮连不上 ComfyUI 才判失败，中间的网络抖动照常重试 */
 const FETCH_ERROR_ROUNDS_BEFORE_FAIL = 10;
 
+/** 查询失败不等于远端任务失败；调用方必须保留已提交任务的恢复记录。 */
+export class ComfyPendingError extends Error {
+  constructor(message = 'ComfyUI 连接中断，任务已保留，请继续查询') {
+    super(message);
+    this.name = 'ComfyPendingError';
+  }
+}
+
 const TASK_GONE_MESSAGE = 'ComfyUI 上已找不到该任务（服务重启或队列被清空），请重新生成';
 
 interface ComfyPollState {
@@ -108,6 +116,7 @@ export async function pollComfyHistory<T>(
         const response = await comfyFetch(`${baseUrl}/history/${promptId}`, { signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const history = (await response.json()) as Record<string, unknown>;
+        if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
         errorRounds = 0;
         const entry = history[promptId] as ComfyHistoryEntry | undefined;
         if (entry) {
@@ -117,9 +126,10 @@ export async function pollComfyHistory<T>(
         missingRounds = (await isPromptQueued(baseUrl, promptId, signal)) ? 0 : missingRounds + 1;
         return { gone: missingRounds >= MISSING_ROUNDS_BEFORE_FAIL };
       } catch (error) {
+        if (signal?.aborted) throw error;
         errorRounds += 1;
         // 偶发的网络抖动不该打断一个跑了几分钟的任务，连续失败才上抛
-        if (errorRounds >= FETCH_ERROR_ROUNDS_BEFORE_FAIL) throw error;
+        if (errorRounds >= FETCH_ERROR_ROUNDS_BEFORE_FAIL) throw new ComfyPendingError();
         return {};
       }
     },
@@ -139,5 +149,10 @@ export async function pollComfyHistory<T>(
     maxAttempts: 1200,
     timeoutMsg,
     signal,
+  }).catch((error: unknown) => {
+    if (!signal?.aborted && error instanceof Error && error.message === timeoutMsg) {
+      throw new ComfyPendingError('ComfyUI 查询超时，远端任务可能仍在运行，请继续查询');
+    }
+    throw error;
   });
 }

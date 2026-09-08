@@ -15,7 +15,7 @@ interface TestNode {
 
 interface TestStore {
   activeNodeId: string | null;
-  config: { performanceMode: boolean };
+  config: { performanceMode: boolean; providers: Record<string, never> };
   currentProjectId: string | null;
   dialogPosition?: { x: number; y: number };
   nodes: TestNode[];
@@ -90,6 +90,7 @@ async function installReactHookDriver(
   vi.doMock('react', async () => {
     const actual = await vi.importActual<typeof import('react')>('react');
     let stateIndex = 0;
+    let idIndex = 0;
     return {
       ...actual,
       memo: <T,>(component: T) => component,
@@ -98,6 +99,7 @@ async function installReactHookDriver(
       useCallback: <T,>(callback: T) => callback,
       useEffect: () => undefined,
       useLayoutEffect: () => undefined,
+      useId: () => `test-id-${++idIndex}`,
       useMemo: <T,>(factory: () => T) => factory(),
       useRef: <T,>(initialValue: T) => ({ current: initialValue }),
       useSyncExternalStore: () => 'zh-CN',
@@ -115,7 +117,7 @@ async function installReactHookDriver(
 function createStore(nodes: TestNode[], getRevision: () => number): TestStore {
   const store = {
     activeNodeId: null,
-    config: { performanceMode: false },
+    config: { performanceMode: false, providers: {} },
     currentProjectId: 'project-a',
     nodes,
     edges: [],
@@ -674,7 +676,7 @@ describe('critical canvas node interactions', () => {
     }));
   });
 
-  it('AINodeDialog exposes a ComfyUI stop action while the node is generating', async () => {
+  it.each(['success', 'failure', 'project-switch'])('AINodeDialog ComfyUI stop and recovery: %s', async (outcome) => {
     const store = createStore([{
       id: 'image-node',
       type: 'ai-image',
@@ -690,7 +692,21 @@ describe('critical canvas node interactions', () => {
       },
     }], () => 1);
     store.activeNodeId = 'image-node';
-    const cancelComfyUINodeTask = vi.fn().mockResolvedValue(undefined);
+    let pendingTasks = [{ nodeId: 'image-node', taskId: 'prompt-1', taskType: 'comfyui', comfyRecoveryState: undefined as string | undefined }];
+    const resumeComfyUINodeTask = vi.fn().mockResolvedValue(undefined);
+    const generateImage = vi.fn();
+    const cancelComfyUINodeTask = vi.fn(async () => {
+      if (outcome === 'failure') {
+        pendingTasks[0].comfyRecoveryState = 'cancel_pending';
+        throw new Error('HTTP 503');
+      }
+      pendingTasks = [];
+      if (outcome === 'project-switch') store.currentProjectId = 'project-b';
+    });
+    vi.doMock('../../src/services/pollManager', () => ({
+      getPendingTasksForProject: () => pendingTasks,
+      resumeComfyUINodeTask,
+    }));
 
     await installReactHookDriver();
     installStoreMock(store);
@@ -701,7 +717,7 @@ describe('critical canvas node interactions', () => {
     }));
     vi.doMock('../../src/services/aiService', () => ({
       generateText: vi.fn(),
-      generateImage: vi.fn(),
+      generateImage,
       generateImagesBatch: vi.fn(),
       generateVideo: vi.fn(),
       generateAudio: vi.fn(),
@@ -737,6 +753,23 @@ describe('critical canvas node interactions', () => {
     expect(promptPanel.props.onCancelGeneration).toEqual(expect.any(Function));
     (promptPanel.props.onCancelGeneration as () => void)();
     await vi.waitFor(() => expect(cancelComfyUINodeTask).toHaveBeenCalledWith('image-node'));
+    if (outcome === 'project-switch') {
+      expect(store.updateNodeDataTransient).not.toHaveBeenCalled();
+      return;
+    }
+    if (outcome === 'failure') {
+      await vi.waitFor(() => expect(store.nodes[0].data.status).toBe('error'));
+      const recoveredTree = AINodeDialog();
+      const recoveredPanel = findElement(recoveredTree, (element) => componentName(element) === 'PromptPanelMock');
+      expect(recoveredPanel.props.canGenerate).toBe(false);
+      await (recoveredPanel.props.onSubmit as () => Promise<void>)();
+      expect(generateImage).not.toHaveBeenCalled();
+      const resume = findElement(recoveredTree, (element) => element.type === 'button' && element.props.children === '继续查询');
+      (resume.props.onClick as () => void)();
+      expect(resumeComfyUINodeTask).toHaveBeenCalledWith('image-node');
+      expect(findElement(recoveredTree, (element) => element.type === 'button' && element.props.children === '再次终止')).toBeTruthy();
+      return;
+    }
     await vi.waitFor(() => expect(store.updateNodeDataTransient).toHaveBeenCalledWith(
       'image-node',
       { status: 'idle', error: undefined },
