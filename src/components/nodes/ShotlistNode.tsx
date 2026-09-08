@@ -44,6 +44,7 @@ import { useAppStore, generateId } from '../../store/useAppStore';
 import { generateShotlistFrames, MAX_SHOTLIST_FRAME_BATCH } from '../../services/shotlistFrameService';
 import { buildShotlistAssistantPrompt } from '../../services/shotlistService';
 import ShotlistRevisionDialog from './ShotlistRevisionDialog';
+import ShotlistProductionDialog from './ShotlistProductionDialog';
 import { getMediaModelOptions } from './shared/defaultModels';
 import Select from '../shared/Select';
 import ModalOverlay from '../shared/ModalOverlay';
@@ -143,6 +144,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const [frameModelRef, setFrameModelRef] = useState('');
   const [frameProgress, setFrameProgress] = useState<{ completed: number; total: number } | null>(null);
   const [revisionOpen, setRevisionOpen] = useState(false);
+  const [production, setProduction] = useState<{ rowId?: string } | null>(null);
   const subtitleInputId = useId();
   const [includeDialogueCaptions, setIncludeDialogueCaptions] = useState(false);
   const [timelineBusy, setTimelineBusy] = useState(false);
@@ -542,6 +544,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         onRename={handleRename}
       />
       {revisionOpen && <ShotlistRevisionDialog nodeId={id} onClose={() => setRevisionOpen(false)} />}
+      {production && <ShotlistProductionDialog nodeId={id} rowId={production.rowId} onClose={() => setProduction(null)} />}
       <div className={`node shotlist-node ${selected ? 'selected' : ''}`} style={{ height: nodeHeight }}>
         {/* 工具条本身不加 nodrag：表体几乎被输入框占满，这条带子是节点主要的拖拽手柄 */}
         <div className="shotlist-toolbar flex-wrap">
@@ -556,6 +559,8 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             </button>
             {data.shotlistScriptSource && <button type="button" className="ui-btn ui-btn--sm" disabled={generating}
               onClick={() => setRevisionOpen(true)}>{t(scriptChanged ? '剧本已修改' : '剧本改动复核')}</button>}
+            <button type="button" className="ui-btn ui-btn--sm" disabled={generating || !rows.length}
+              onClick={() => setProduction({})}>{t('镜头制作准备')}</button>
             {frameProgress ? (
               <button type="button" className="ui-btn ui-btn--sm" onClick={() => frameController.current?.abort()}>
                 {t('取消补图')} {frameProgress.completed}/{frameProgress.total}
@@ -664,6 +669,10 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
                         onClick={() => askAssistant(row.id)}
                         title={t('AI 优化本镜')} aria-label={t('AI 优化本镜')}>
                         <Icon icon="mdi:auto-fix" width={13} height={13} />
+                      </button>
+                      <button type="button" className="ui-btn ui-btn--sm" disabled={generating}
+                        onClick={() => setProduction({ rowId: row.id })} title={t('镜头制作准备')} aria-label={t('镜头制作准备')}>
+                        <Icon icon="mdi:movie-open-plus-outline" width={13} height={13} />
                       </button>
                       <button
                         type="button"

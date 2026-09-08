@@ -10,7 +10,7 @@ import type {
   DirectorRuntimeKind,
   DirectorSceneReference,
 } from './directorScene';
-import type { ShotlistColumnKey, ShotRow, ShotlistScriptSource } from './shotlist';
+import type { ShotlistColumnKey, ShotRow, ShotlistScriptSource, ShotlistProductionSource } from './shotlist';
 import type { Locale } from '../i18n';
 import type { McpToolExposure } from './mcp';
 
@@ -293,6 +293,7 @@ export interface BaseNodeData {
   shotlistRows?: ShotRow[];                 // 逐行镜头
   shotlistColumns?: ShotlistColumnKey[];    // 当前显示的列（常驻列恒在其中）
   shotlistScriptSource?: ShotlistScriptSource;
+  shotlistProductionSource?: ShotlistProductionSource;
   frameAnalysis?: VideoFrameAnalysisData;   // 视频拉片抽帧及画面分析结果
   // ── 3D 导演台（ai-director）──
   directorRuntimeKind?: DirectorRuntimeKind; // 缺失=lightweight-web；未知运行时必须失败关闭

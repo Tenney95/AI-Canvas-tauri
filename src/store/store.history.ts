@@ -26,6 +26,7 @@ const STRUCTURAL_NODE_DATA_KEYS = [
   'shotlistRows',
   'shotlistColumns',
   'shotlistScriptSource',
+  'shotlistProductionSource',
   'characterLibraryLinks',
   'hiddenByCharacterLibrary',
   'groupCollapsed',

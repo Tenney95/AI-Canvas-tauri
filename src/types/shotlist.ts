@@ -14,6 +14,14 @@ export interface ShotlistScriptSource {
   nodeId: string;
 }
 
+/** 制作节点到镜头的稳定来源；不持有原文或媒体路径。 */
+export type ShotlistProductionKind = 'voiceover' | 'video' | 'director';
+export interface ShotlistProductionSource {
+  nodeId: string;
+  rowId: string;
+  kind: ShotlistProductionKind;
+}
+
 /** 分镜表的全部列 */
 export type ShotlistColumnKey =
   | 'shotNo'

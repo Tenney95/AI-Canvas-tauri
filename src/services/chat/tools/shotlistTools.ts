@@ -4,6 +4,8 @@ import { useAppStore } from '../../../store/useAppStore';
 import { createEpisodeShotlist, getShotlist, MAX_SHOTLIST_ROWS, SHOTLIST_TEXT_FIELDS, updateShotlistRows } from '../../shotlistService';
 import { generateShotlistFrames, MAX_SHOTLIST_FRAME_BATCH } from '../../shotlistFrameService';
 import { getShotlistScriptChange } from '../../shotlistRevisionService';
+import { MAX_SHOTLIST_PRODUCTION_BATCH, prepareShotlistProduction } from '../../shotlistProductionService';
+import type { ShotlistProductionKind } from '../../../types/shotlist';
 import { extractModelMention } from '../../ai/generationRuntime';
 import { registerAgentTool, type AgentToolContext, type AgentToolExecutionResult } from '../toolRegistry';
 import type { AgentToolSchema } from '../agentToolSchemas';
@@ -40,6 +42,21 @@ function success(summary: string, value: unknown): AgentToolExecutionResult {
 
 export function registerShotlistAgentTools(): Array<() => void> {
   return [
+    registerAgentTool<{ nodeId: string; rowIds: string[]; kind: ShotlistProductionKind }>({
+      id: 'shotlist_prepare_production', title: '准备镜头制作节点', effect: 'canvas_write',
+      description: '为指定镜头创建 voiceover 配音、video 视频或 director 导演台节点，不调用模型、不启动程序。配音只放对白并标记语音用途，视频继承画面引用；导演台附带可读镜头说明。每镜同类已有节点则复用且不覆盖人工修改。返回真实节点 ID；之后仍须按生成规则选择模型和音色。',
+      inputSchema: { type: 'object', required: ['nodeId', 'rowIds', 'kind'], additionalProperties: false, properties: {
+        nodeId: idSchema, rowIds: { type: 'array', minItems: 1, maxItems: MAX_SHOTLIST_PRODUCTION_BATCH, items: idSchema },
+        kind: { type: 'string', enum: ['voiceover', 'video', 'director'] },
+      } },
+      authorize,
+      execute: (context, input) => executeSafely(async () => {
+        if (context.signal.aborted) throw new Error('任务已取消');
+        return success('已准备制作节点，请核对内容后生成', { nodeId: input.nodeId,
+          results: prepareShotlistProduction(context, input.nodeId, input.rowIds, input.kind),
+          revision: useAppStore.getState().getCurrentRevision() });
+      }),
+    }),
     registerAgentTool<{ nodeId: string }>({
       id: 'shotlist_script_changes', title: '检查分镜来源与最新剧本变化', effect: 'read',
       description: '比较分镜创建时的正文来源快照与当前已保存本集剧本，返回文本变化范围与有界预览。不是语义影响判定；继续读取完整正文和镜头后再决定局部更新。没有来源记录的旧表拒绝推断。',
@@ -85,6 +102,9 @@ export function registerShotlistAgentTools(): Array<() => void> {
               id: row.id, duration: row.duration,
               ...Object.fromEntries(SHOTLIST_TEXT_FIELDS.map((key) => [key, row[key]?.slice(textOffset, textOffset + textChunkSize) ?? ''])),
               frame: row.frame ? { nodeId: row.frame.nodeId, kind: row.frame.kind } : null,
+              productionNodes: state.nodes.filter((item) => item.data.shotlistProductionSource?.nodeId === node.id
+                && item.data.shotlistProductionSource.rowId === row.id).slice(0, MAX_SHOTLIST_PRODUCTION_BATCH)
+                .map((item) => ({ nodeId: item.id, kind: item.data.shotlistProductionSource!.kind, status: item.data.status })),
               truncatedFields: SHOTLIST_TEXT_FIELDS.filter((key) => (row[key]?.length ?? 0) > textOffset + textChunkSize),
             })),
           });

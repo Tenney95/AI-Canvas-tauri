@@ -3,6 +3,15 @@
  * AI 创作提示词由 seriesCreativeService 统一构造，不放入界面字典。
  */
 const series = {
+  "镜头制作准备": "Shot production setup",
+  "关闭制作准备": "Close production setup",
+  "每次最多选择 12 镜。仅准备节点，已有同类节点会被定位，内容不会覆盖。": "Select up to 12 shots. Existing nodes of the same kind are reused without replacing their content.",
+  "配音需有对白，生成前选择语音模型和音色。视频沿用参考画面；导演台附带镜头说明，不会自动打开。": "Voiceover requires dialogue. Choose a speech model and voice before generation. Video uses the reference frame; director nodes include a shot brief and stay closed.",
+  "配音节点": "Voiceover node",
+  "视频节点": "Video node",
+  "导演台节点": "Director node",
+  "已创建或定位制作节点，请核对内容后生成": "Production nodes created or located. Review their content before generation.",
+  "准备制作节点失败": "Could not prepare production nodes",
   '附带对白字幕': 'Include dialogue subtitles',
   '对白按镜头时长放置，可在剪辑器中细调': 'Dialogue follows shot durations; fine-tune it in the editor',
   '项目或分镜已变化，请重新推送时间轴': 'Project or shots changed. Push the timeline again.',
