@@ -35,6 +35,9 @@ import ModalOverlay from '../shared/ModalOverlay';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import ProviderConnectionForm from './providerConnection/ProviderConnectionForm';
 import ProviderModelSection from './providerConnection/ProviderModelSection';
+import ProviderWorkflowSection from './providerConnection/ProviderWorkflowSection';
+import type { WorkflowApiInputValues } from '../../types/workflowApi';
+import { normalizeWorkflowApiBaseUrl, resolveWorkflowApiInputValues } from '../../services/workflowApi/autodlWorkflowManifest';
 import ProviderWebSearchPicker from './providerConnection/ProviderWebSearchPicker';
 import {
   assertProviderModelsVideoCapabilities,
@@ -77,6 +80,8 @@ export default function ProviderConnectionDialog({
   const [apiKey, setApiKey] = useState(initialConfig?.apiKey || '');
   const [baseUrl, setBaseUrl] = useState(initialConfig?.baseUrl || initialDefinition?.defaultBaseUrl || '');
   const [workflowApiKey, setWorkflowApiKey] = useState(runninghubWorkflowApiKey);
+  const [workflowDefaults, setWorkflowDefaults] = useState<WorkflowApiInputValues>(() =>
+    useAppStore.getState().workflows.find((workflow) => workflow.adapterType === 'workflow-api' && workflow.workflowApi?.connectionId === connectionId)?.workflowApi?.defaults ?? {});
   const [models, setModels] = useState<ProviderModelSelection[]>(
     mergeModels(mergeModels(initialLocalModels, initialCatalogModels), initialSelectedModels),
   );
@@ -109,6 +114,7 @@ export default function ProviderConnectionDialog({
   const definitions = getProviderDefinitions();
   const webSearchDefinitions = getWebSearchProviderDefinitions();
   const isWebSearchProvider = definition?.kind === 'web-search';
+  const isWorkflowApi = definition?.kind === 'workflow-api';
   const hasWebSearchConnection = webSearchDefinitions.some((item) =>
     Boolean(providerConfigs[item.id]?.apiKey?.trim()),
   );
@@ -304,7 +310,7 @@ export default function ProviderConnectionDialog({
       return;
     }
     setCatalogStatus(result.unsupported ? 'warning' : 'error');
-    setCatalogMessage(result.error || t('{name} 连接验证失败', { name: definition.name }));
+    setCatalogMessage((result.error && (isWorkflowApi ? t(result.error) : result.error)) || t('{name} 连接验证失败', { name: definition.name }));
   };
 
   const closeProtocolEditor = () => {
@@ -530,10 +536,11 @@ export default function ProviderConnectionDialog({
     if (
       !definition
       || missingCredentials
-      || (!isWebSearchProvider && !workflowOnlyConnection && selectedModels.length === 0)
+      || (!isWebSearchProvider && !isWorkflowApi && !workflowOnlyConnection && selectedModels.length === 0)
       || !protocolValid
     ) return;
     try {
+      if (isWorkflowApi) { normalizeWorkflowApiBaseUrl(baseUrl); resolveWorkflowApiInputValues(workflowDefaults); }
       assertProviderModelsVideoCapabilities(selectedModels);
     } catch (error) {
       setCatalogStatus('error');
@@ -543,7 +550,7 @@ export default function ProviderConnectionDialog({
     const nextConnectionId = isWebSearchProvider
       ? definition.id
       : connectionId || createConnectionId(definition.id);
-    const modelConfig = isWebSearchProvider
+    const modelConfig = isWebSearchProvider || isWorkflowApi
       ? {}
       : {
           selectedModels: selectedModels.map((model) => ({ ...model, provider: nextConnectionId })),
@@ -552,20 +559,21 @@ export default function ProviderConnectionDialog({
           visibleModelCategories: CATEGORY_ORDER.filter((item) => visibleModelCategories.has(item)),
           catalogUpdatedAt: Date.now(),
         };
-    await onSave(
+    try { await onSave(
       nextConnectionId,
       {
         name: connectionName.trim() || definition.name,
         apiKey: definition.authType === 'oauth' ? '' : apiKey.trim(),
-        baseUrl: normalizeBaseUrl(baseUrl, chatApiProtocol) || undefined,
+        baseUrl: isWorkflowApi ? normalizeWorkflowApiBaseUrl(baseUrl) : normalizeBaseUrl(baseUrl, chatApiProtocol) || undefined,
         catalogId: definition.id,
         ...(definition.id === 'custom-openai' ? { chatApiProtocol } : {}),
         ...modelConfig,
       },
       definition.id === 'runninghub-model'
         ? { runninghubWorkflowApiKey: workflowApiKey.trim() }
-        : undefined,
+        : isWorkflowApi ? { workflowApiDefaults: workflowDefaults } : undefined,
     );
+    } catch (error) { setCatalogStatus('error'); setCatalogMessage(error instanceof Error ? error.message : t('保存失败')); }
   };
 
   return createPortal(
@@ -579,7 +587,7 @@ export default function ProviderConnectionDialog({
       <header className="provider-dialog-header">
         <div>
           <span className="provider-dialog-kicker">{editing ? t('编辑连接') : t('新建连接')}</span>
-          <h3>{isWebSearchProvider ? t('联网搜索') : definition ? definition.name : t('选择 API 厂商')}</h3>
+          <h3>{isWebSearchProvider ? t('联网搜索') : definition ? isWorkflowApi ? t(definition.name) : definition.name : t('选择 API 厂商')}</h3>
         </div>
         <div className="flex items-center gap-2">
           {definition?.id === 'custom-openai' && (
@@ -608,8 +616,8 @@ export default function ProviderConnectionDialog({
               >
                 <span className={`provider-badge provider-badge--${item.id}`}>{item.badgeText}</span>
                 <span className="provider-picker-copy">
-                  <strong>{item.kind === 'web-search' ? t('联网搜索') : item.name}</strong>
-                  <small>{item.kind === 'web-search' ? t('Tavily、博查、智谱与 Exa') : item.description}</small>
+                  <strong>{item.kind === 'web-search' ? t('联网搜索') : item.kind === 'workflow-api' ? t(item.name) : item.name}</strong>
+                  <small>{item.kind === 'web-search' ? t('Tavily、博查、智谱与 Exa') : item.kind === 'workflow-api' ? t(item.description) : item.description}</small>
                 </span>
                 <Icon icon="mdi:chevron-right" width="18" />
               </button>
@@ -653,7 +661,8 @@ export default function ProviderConnectionDialog({
               />
             )}
 
-            {!isWebSearchProvider && (
+            {isWorkflowApi && <ProviderWorkflowSection values={workflowDefaults} onChange={setWorkflowDefaults} />}
+            {!isWebSearchProvider && !isWorkflowApi && (
               <ProviderModelSection
                 definition={definition}
                 models={models}
@@ -710,7 +719,7 @@ export default function ProviderConnectionDialog({
             <span>
               {isWebSearchProvider
                 ? `当前使用 ${definition.name}`
-                : selectedModels.length > 0
+                : isWorkflowApi ? t('将启用 H3 视频工作流') : selectedModels.length > 0
                   ? t('将启用 {count} 个模型', { count: selectedModels.length })
                   : t('至少选择一个模型')}
             </span>
@@ -723,7 +732,7 @@ export default function ProviderConnectionDialog({
                 className="provider-primary-btn"
                 disabled={
                   missingCredentials
-                  || (!isWebSearchProvider && !workflowOnlyConnection && selectedModels.length === 0)
+                  || (!isWebSearchProvider && !isWorkflowApi && !workflowOnlyConnection && selectedModels.length === 0)
                   || !protocolValid
                 }
                 onClick={() => void handleSave()}

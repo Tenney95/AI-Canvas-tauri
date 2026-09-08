@@ -216,6 +216,11 @@ export async function testProviderConnection(
     if (definition?.authType === 'oauth') {
       return { success: false, unsupported: true, error: `${definition.name} 使用 OAuth 登录，无需验证密钥` };
     }
+    if (definition?.kind === 'workflow-api') {
+      const { normalizeWorkflowApiBaseUrl } = await import('./workflowApi/autodlWorkflowManifest');
+      normalizeWorkflowApiBaseUrl(baseUrl);
+      return { success: false, unsupported: true, error: '配置格式有效；Token 权限需在实际生成时验证。未提交任务。' };
+    }
     const target = baseUrl?.trim() || definition?.defaultBaseUrl;
     if (!target) return { success: false, error: `未知厂商: ${provider}` };
     if (definition?.connectionTestPath) {

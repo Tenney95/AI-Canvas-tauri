@@ -42,6 +42,19 @@ beforeEach(() => {
 });
 
 describe('工作流持久化顺序', () => {
+  it('AutoDL 复用工作流记录，保留执行类型与默认参数并拒绝原始正文', async () => {
+    const cloud: WorkflowDefinition = { ...workflow, category: 'ai-video', fileContent: '', adapterType: 'workflow-api',
+      workflowApi: { version: 1, adapter: 'autodl-comfyui', workflowId: 'minimax_h3_zm_u24', connectionId: 'autodl-test', defaults: { seed: 0 } } };
+    const { slice, getState } = createSlice();
+    await slice.addWorkflow(cloud);
+    expect(fileMocks.saveWorkflow).toHaveBeenLastCalledWith(expect.objectContaining({ adapterType: 'workflow-api', workflowApi: cloud.workflowApi }));
+    fileMocks.loadWorkflows.mockResolvedValue([cloud]); await slice.loadWorkflows();
+    expect(getState().workflows[0].workflowApi).toEqual(cloud.workflowApi);
+    await expect(slice.updateWorkflow(cloud.id, { adapterType: 'comfyui' })).rejects.toThrow('来源');
+    await expect(slice.updateWorkflow(cloud.id, { category: 'ai-image' })).rejects.toThrow('视频');
+    await expect(slice.updateWorkflow(cloud.id, { fileContent: '{"Authorization":"do-not-save"}' })).rejects.toThrow('不保存');
+    expect(JSON.stringify(fileMocks.saveWorkflow.mock.calls)).not.toContain('do-not-save');
+  });
   it('云定义在新增、修改与重启加载后完整保留，原始调用示例不落库', async () => {
     const cloud: WorkflowDefinition = { ...workflow, fileContent: '', adapterType: 'runninghub', runninghub: { version: 1, kind: 'app', remoteId: '1904152026220003329', connectionId: 'runninghub', parameters: [{ nodeId: '3', fieldName: 'count', type: 'number', defaultValue: 0, label: '数量', source: 'value' }] } };
     const { slice, getState } = createSlice();

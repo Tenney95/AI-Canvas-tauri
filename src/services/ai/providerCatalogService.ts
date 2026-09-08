@@ -24,6 +24,7 @@ import type {
   WebSearchProviderId,
 } from '../../types';
 import { corsSafeFetch } from './httpTransport';
+import { AUTODL_BASE_URL } from '../workflowApi/autodlWorkflowManifest';
 import { baseUrlCandidates } from './providerBaseUrl';
 import { APIMART_OMNI_MODELS, isLegacyApimartOmni } from './apimartVideoModels';
 import { getChatApiHeaders, normalizeGeminiModelId, resolveChatApiProtocol } from './chatApiProtocol';
@@ -71,7 +72,7 @@ export interface ProviderDefinition {
   /** 内置厂商随应用发布的模型及声明式执行协议。 */
   models?: readonly ProviderModelSelection[];
   /** web-search connections provide Agent capabilities and do not expose models. */
-  kind?: 'model' | 'web-search';
+  kind?: 'model' | 'web-search' | 'workflow-api';
 }
 
 export interface ProviderCatalogResult {
@@ -158,6 +159,14 @@ export const WEB_SEARCH_PROVIDER_IDS: readonly WebSearchProviderId[] = [
 ];
 
 const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
+  {
+    id: 'autodl-workflow', name: '工作流 API · AutoDL', kind: 'workflow-api',
+    description: '直接运行 AutoDL 云工作流，支持多图与多音频生成视频', badgeText: 'WF',
+    authType: 'api-key', catalogAdapter: 'local-manifest', defaultBaseUrl: AUTODL_BASE_URL,
+    externalUrl: 'https://autodl.art/docs/comfyui_api/',
+    credentials: [{ ...API_KEY_FIELD, label: 'ComfyUI Token', placeholder: 'AutoDL ComfyUI 分组 Token' },
+      { key: 'baseUrl', label: '站点根地址', required: true, placeholder: AUTODL_BASE_URL }],
+  },
   {
     id: 'apimart',
     name: 'APIMart',
@@ -649,6 +658,23 @@ export async function fetchProviderModelCatalog(
   const normalizedFallback = normalizeModels(fallbackModels, providerId)
     .filter((model) => isProviderModelVisible(definition.id, model.id));
 
+  if (definition.id === 'runninghub-model') {
+    const { RUNNINGHUB_MODEL_MANIFEST, RUNNINGHUB_LEGACY_MODELS, getRunningHubModel, normalizeRunningHubModelId } = await import('./providers/runninghubModelManifest');
+    const models = new Map<string, ProviderModelSelection>();
+    for (const id of Object.keys(RUNNINGHUB_LEGACY_MODELS)) {
+      const model = getRunningHubModel(id)!;
+      models.set(id, { id, name: id, provider: 'runninghub', category: model.kind, description: '兼容已有选择；按图片引用自动切换生成或编辑' });
+    }
+    for (const model of normalizedFallback) {
+      const id = normalizeRunningHubModelId(model.id);
+      if (getRunningHubModel(id)) models.set(id, { ...model, id });
+    }
+    for (const model of RUNNINGHUB_MODEL_MANIFEST) models.set(model.id, {
+      id: model.id, name: model.label, provider: 'runninghub', category: model.kind, description: model.id,
+      inputModalities: [...new Set(model.parameters.flatMap((field) => field.binding === 'prompt' ? ['text' as const] : field.mediaKind === 'image' ? ['image' as const] : []))],
+    });
+    return { models: [...models.values()], source: 'local-manifest' };
+  }
   if (definition.catalogAdapter === 'local-manifest') {
     return { models: normalizedFallback, source: 'local-manifest' };
   }

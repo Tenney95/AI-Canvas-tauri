@@ -452,9 +452,9 @@ function resolveModelPatch(
     };
   }
   // ComfyUI 工作流靠 workflowId 走本地执行路径，只写 model 会在生成时找不到工作流
-  if (option.provider === 'runninghubwf') {
-    const workflow = useAppStore.getState().workflows.find((item) => `runninghubwf/${item.id}` === option.id);
-    if (!workflow) return { error: 'RunningHub 工作流未导入' };
+  if (option.provider === 'runninghubwf' || option.provider === 'workflow-api') {
+    const workflow = useAppStore.getState().workflows.find((item) => `${option.provider}/${item.id}` === option.id);
+    if (!workflow) return { error: '云工作流未导入' };
     return { patch: { ...workflowExecution(workflow), workflowInputs: undefined } };
   }
   if (option.provider === 'comfyui') {

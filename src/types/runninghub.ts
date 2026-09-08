@@ -1,5 +1,5 @@
 /** RunningHub 云工作流合同；不含密钥、访问密码或本地文件路径。 */
-export type RunningHubMediaKind = 'image' | 'video' | 'audio';
+export type RunningHubMediaKind = import('./workflowApi').CloudWorkflowMediaKind;
 export type RunningHubValue = string | number | boolean;
 export type RunningHubConnectionId = 'runninghub' | 'runninghub-model';
 export interface RunningHubTaskContext {
@@ -31,13 +31,7 @@ export interface RunningHubWorkflowManifest {
   instanceType?: 'default' | 'plus';
   usePersonalQueue?: boolean;
 }
-export interface RunningHubOutput {
-  url: string;
-  sourceUrl?: string;
-  filePath?: string;
-  kind: RunningHubMediaKind;
-  nodeId?: string;
-}
+export type RunningHubOutput = import('./workflowApi').CloudWorkflowOutput;
 export interface RunningHubConnection {
   apiKey: string;
   baseUrl: string;

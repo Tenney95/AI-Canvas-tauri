@@ -13,6 +13,7 @@ import { resolveDramaAssetImageRef } from '../../../services/dramaAssetPrompt';
 import { getApimartSeedanceCapability } from '../../../services/ai/apimartVideoModels';
 import { getVolcengineSeedanceCapability } from '../../../services/ai/volcengineVideoModels';
 import { getDreaminaVideoCapability } from '../../../services/ai/dreaminaModels';
+import { AUTODL_H3_WORKFLOW } from '../../../services/workflowApi/autodlWorkflowManifest';
 import { getModelProtocolPresetVideoCapability } from '../../../services/ai/modelProtocol';
 import {
   resolveVideoDurationSeconds,
@@ -265,9 +266,10 @@ export default function VideoParamSelector({
   });
   // 原生模型和通用模型共享参数面板，但通用模型不再经过会补齐 Seedance 默认值的能力视图。
   // 这样 capability 未声明的字段会保持未指定，不会被 UI 悄悄写成 720p / 16:9 / 24fps。
+  const workflowApiCapability: VideoModelCapability | undefined = provider === 'workflow-api' ? AUTODL_H3_WORKFLOW.capability : undefined;
   const nativeCapability = apimartCapability ?? volcengineCapability ?? dreaminaCapability;
-  const parameterCapability = nativeCapability ?? generalCapability;
-  const isNativeSeedance = provider === 'volcengine' || provider === 'dreamina' || Boolean(apimartCapability);
+  const parameterCapability = nativeCapability ?? workflowApiCapability ?? generalCapability;
+  const isNativeSeedance = provider === 'volcengine' || provider === 'dreamina' || Boolean(apimartCapability || workflowApiCapability);
   const generalControlSupport = resolveGeneralVideoControlSupport(generalCapability);
   // 本地工作流（ComfyUI / RunningHub）才按像素分辨率 + 帧率走；
   // 其余接口模型使用按秒表达的 API 布局；具体控件仍只由 capability 决定。
@@ -305,6 +307,7 @@ export default function VideoParamSelector({
   const referenceLimits = apimartCapability
     ?? volcengineCapability
     ?? dreaminaCapability
+    ?? workflowApiCapability
     ?? generalCapability;
   const describeLimit = (max: number | undefined, unit: string, kind: string) => {
     if (max === undefined) return '';
@@ -515,7 +518,7 @@ export default function VideoParamSelector({
 
         {open && (
           <div className="img-ratio-popup ui-schema-popup ui-schema-video-params-popup" style={{ display: 'block' }}>
-            {onChangeVideoReferences && (
+            {onChangeVideoReferences && provider !== 'workflow-api' && (
               <div className="img-rp-quality-area mb-2">
                 <div className="img-rp-section-label rh-video-ref-head">
                   <span>

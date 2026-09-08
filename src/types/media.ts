@@ -19,6 +19,7 @@ export interface MediaGenerationIntent {
   duration?: number;
   /** 云工作流按节点/字段映射的本轮参数。 */
   workflowInputs?: Record<string, string>;
+  runninghubModelParameters?: Record<string, string>;
 }
 
 export type MediaGenerationStatus =
@@ -42,6 +43,8 @@ export type CanvasMaterializationStatus =
 export type MediaPersistenceStatus = 'saved' | 'skipped' | 'failed';
 
 export interface MediaGenerationResult {
+  workflowApiOutputs?: import('./workflowApi').CloudWorkflowOutput[];
+  workflowApiTaskId?: string;
   runninghubOutputs?: import('./runninghub').RunningHubOutput[];
   id: string;
   kind: MediaKind;

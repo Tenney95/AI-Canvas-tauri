@@ -222,7 +222,10 @@ export interface BaseNodeData {
   workflowId?: string;        // 选择的工作流 ID
   workflowInputs?: Record<string, string>; // 本地 IO 或云工作流 nodeId/fieldName 赋值
   runninghubOutputs?: import('./runninghub').RunningHubOutput[];
+  runninghubModelParameters?: Record<string, string>;
   runninghubStage?: string;
+  workflowApiOutputs?: import('./workflowApi').CloudWorkflowOutput[];
+  workflowApiStage?: string;
   imageUrl?: string;          // 生成的图片 URL（Tauri: asset://localhost/..., 浏览器: data:...）
   videoUrl?: string;          // 生成的视频 URL
   audioUrl?: string;          // 生成的音频 URL
@@ -729,8 +732,9 @@ export interface WorkflowIONode {
 
 /** 导入的 ComfyUI 工作流 */
 export interface WorkflowDefinition {
-  adapterType?: 'comfyui' | 'runninghub';
+  adapterType?: 'comfyui' | 'runninghub' | 'workflow-api';
   runninghub?: import('./runninghub').RunningHubWorkflowManifest;
+  workflowApi?: import('./workflowApi').WorkflowApiManifest;
   id: string;
   name: string;               // 工作流名称
   category: WorkflowCategory; // 归属分类

@@ -22,7 +22,8 @@ import { ANIMATION_ACTION_LABELS } from '../../../types';
 import type { PresetOverride } from './SlashCommandMenu';
 import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
-import RunningHubParameterFields from './RunningHubParameterFields';
+import RunningHubParameterFields, { RunningHubModelParameterFields } from './RunningHubParameterFields';
+import { getRunningHubModel } from '../../../services/ai/providers/runninghubModelManifest';
 import QualityRatioSelector from './QualityRatioSelector';
 import VideoParamSelector from './VideoParamSelector';
 import AudioParamSelector from './AudioParamSelector';
@@ -321,6 +322,8 @@ interface PromptPanelProps {
   selectedModel?: string;
   selectedProvider?: string;
   selectedWorkflowId?: string;
+  runninghubModelParameters?: Record<string, string>;
+  onRunninghubModelParametersChange?: (values: Record<string, string>) => void;
   workflowInputs?: Record<string, string>;
   onWorkflowInputsChange?: (values: Record<string, string>) => void;
   animationAction?: AnimationAction;
@@ -394,6 +397,8 @@ export default function PromptPanel({
   selectedWorkflowId,
   workflowInputs,
   onWorkflowInputsChange,
+  runninghubModelParameters,
+  onRunninghubModelParametersChange,
   animationAction = 'idle',
   onAnimationActionChange,
   animationFrames = 8,
@@ -513,13 +518,14 @@ export default function PromptPanel({
     }
   }, []);
 
+  const hasGenerationInput = !!prompt.trim() || selectedProvider === 'runninghub' || selectedProvider === 'runninghubwf';
   const batchSupported = nodeType === 'ai-image'
     && Boolean(onChangeBatchCount)
     && selectedProvider !== 'dreamina'
     && !selectedWorkflowId;
 
   const handleBatchPointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    if (!batchSupported || event.button !== 0 || !canGenerate || !prompt.trim()) return;
+    if (!batchSupported || event.button !== 0 || !canGenerate || !hasGenerationInput) return;
     suppressSubmitClickRef.current = false;
     clearBatchLongPress();
     batchLongPressTimerRef.current = setTimeout(() => {
@@ -527,7 +533,7 @@ export default function PromptPanel({
       setBatchMenuOpen(true);
       batchLongPressTimerRef.current = null;
     }, BATCH_LONG_PRESS_MS);
-  }, [batchSupported, canGenerate, clearBatchLongPress, prompt]);
+  }, [batchSupported, canGenerate, clearBatchLongPress, hasGenerationInput]);
 
   const handleSubmitClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
@@ -536,8 +542,8 @@ export default function PromptPanel({
       suppressSubmitClickRef.current = false;
       return;
     }
-    if (canGenerate && prompt.trim()) handleSingleSubmit();
-  }, [canGenerate, clearBatchLongPress, handleSingleSubmit, prompt]);
+    if (canGenerate && hasGenerationInput) handleSingleSubmit();
+  }, [canGenerate, clearBatchLongPress, handleSingleSubmit, hasGenerationInput]);
 
   const handleBatchSelect = useCallback((count: number) => (event: React.MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
@@ -647,7 +653,9 @@ export default function PromptPanel({
     }
   }, [showToast, uploadSkill, t]);
 
+  const runninghubModel = selectedProvider === 'runninghub' ? getRunningHubModel(selectedModel, true) : undefined;
   const runninghubWorkflow = workflows?.find((workflow) => workflow.id === selectedWorkflowId && workflow.adapterType === 'runninghub');
+  const workflowApi = workflows?.find((workflow) => workflow.id === selectedWorkflowId && workflow.adapterType === 'workflow-api');
   return (
     <>
     <div className={`prompt-panel ${focused ? 'focused' : ''}`}>
@@ -669,9 +677,20 @@ export default function PromptPanel({
           onSlashTrigger={handleEditorSlash}
         />
       </div>
+      {runninghubModel && onRunninghubModelParametersChange && <details className="ui-card m-2 p-2">
+        <summary className="cursor-pointer text-xs">模型参数 · {runninghubModel.parameters.filter((field) => field.required && !field.binding && field.defaultValue === undefined).length} 项需填写</summary>
+        <div className="mt-2 max-h-80 overflow-y-auto"><RunningHubModelParameterFields model={runninghubModel} values={runninghubModelParameters} onChange={onRunninghubModelParametersChange} disabled={isGenerating} /></div>
+      </details>}
       {runninghubWorkflow && onWorkflowInputsChange && <details className="m-2 rounded border border-canvas-border p-2">
         <summary className="cursor-pointer text-xs text-canvas-text-secondary">云工作流参数</summary>
         <div className="mt-2 max-h-72 overflow-y-auto"><RunningHubParameterFields parameters={runninghubWorkflow.runninghub?.parameters ?? []} values={workflowInputs} onChange={onWorkflowInputsChange} disabled={isGenerating} /></div>
+      </details>}
+      {workflowApi && onWorkflowInputsChange && <details className="ui-card m-2 p-2 text-xs">
+        <summary className="cursor-pointer text-canvas-text-secondary">{t('工作流输入')}</summary>
+        <p className="my-2 text-canvas-text-secondary">{t('引用 1–9 张图片与最多 3 段音频；按引用顺序发送。')}</p>
+        <label className="flex flex-wrap items-center gap-2">{t('随机种子（可选）')}<input className="ui-input min-w-0 flex-1" type="number" step={1} disabled={isGenerating}
+          value={workflowInputs?.seed ?? ''} placeholder={workflowApi.workflowApi?.defaults?.seed?.toString() ?? t('留空随机')}
+          onChange={(e) => { const values = { ...workflowInputs }; if (e.target.value === '') delete values.seed; else values.seed = e.target.value; onWorkflowInputsChange(values); }} /></label>
       </details>}
       <div className="prompt-footer">
         <ModelSelector
@@ -732,7 +751,7 @@ export default function PromptPanel({
           <CameraSettingsSelector value={cameraSettings} onChange={onChangeCameraSettings} />
         )}
 
-        {nodeType === 'ai-image' && !runninghubWorkflow && (
+        {nodeType === 'ai-image' && !runninghubWorkflow && !runninghubModel && (
           <QualityRatioSelector
             imageSize={imageSize}
             aspectRatio={aspectRatio}
@@ -763,7 +782,7 @@ export default function PromptPanel({
           />
         )}
 
-        {nodeType === 'ai-video' && !runninghubWorkflow && (
+        {nodeType === 'ai-video' && !runninghubWorkflow && !runninghubModel && (
           <VideoParamSelector
             provider={selectedProvider}
             selectedModel={selectedModel}
@@ -787,7 +806,7 @@ export default function PromptPanel({
           />
         )}
 
-        {nodeType === 'ai-audio' && !runninghubWorkflow && (
+        {nodeType === 'ai-audio' && !runninghubWorkflow && !runninghubModel && (
           <AudioParamSelector
             purpose={audioPurpose}
             voice={audioVoice}
@@ -839,7 +858,7 @@ export default function PromptPanel({
             <button
               type="button"
               className={`prompt-btn prompt-pass-through-btn ${!prompt.trim() ? 'disabled' : ''}`}
-              disabled={!canGenerate || !prompt.trim()}
+              disabled={!canGenerate || !hasGenerationInput}
               data-tooltip={t('直接输出（跳过模型调用）')}
               onClick={(e) => {
                 e.stopPropagation();
@@ -857,8 +876,8 @@ export default function PromptPanel({
               <button
                 type="button"
                 className="prompt-btn prompt-stop-btn"
-                data-tooltip={t('终止 ComfyUI 任务')}
-                aria-label={t('终止 ComfyUI 任务')}
+                data-tooltip={selectedProvider === 'workflow-api' ? t('停止等待') : t('终止 ComfyUI 任务')}
+                aria-label={selectedProvider === 'workflow-api' ? t('停止等待') : t('终止 ComfyUI 任务')}
                 onClick={(event) => {
                   event.stopPropagation();
                   onCancelGeneration();
@@ -883,8 +902,8 @@ export default function PromptPanel({
             >
               <button
                 type="button"
-                className={`prompt-btn prompt-submit-btn${isGenerating ? ' is-generating' : ''} ${!canGenerate || !prompt.trim() ? 'disabled' : ''}`}
-                disabled={!canGenerate || !prompt.trim()}
+                className={`prompt-btn prompt-submit-btn${isGenerating ? ' is-generating' : ''} ${!canGenerate || !hasGenerationInput ? 'disabled' : ''}`}
+                disabled={!canGenerate || !hasGenerationInput}
                 aria-haspopup={batchSupported ? 'menu' : undefined}
                 aria-expanded={batchSupported ? batchMenuOpen : undefined}
                 data-tooltip={isGenerating ? t('生成中') : (batchSupported ? t('点击生成 1 张，长按选择数量') : t('调用模型生成'))}

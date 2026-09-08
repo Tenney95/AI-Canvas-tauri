@@ -33,6 +33,7 @@ import { testProviderConnection } from '../../services/testConnection';
 import { replaceLegacyApimartOmni } from '../../services/ai/apimartVideoModels';
 import DreaminaLoginModal from './DreaminaLoginModal';
 import ProviderConnectionDialog from './ProviderConnectionDialog';
+import { saveAutodlWorkflowTemplate } from '../../services/workflowApi/workflowApiConfig';
 import { invoke } from '@tauri-apps/api/core';
 import { useT } from '../../i18n';
 
@@ -388,7 +389,8 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const handleCopyConnection = async (connectionId: string) => {
     const providerConfig = config.providers[connectionId];
     if (!providerConfig) return;
-    const ok = await copyText(serializeConnection(providerConfig));
+    const ok = await copyText(serializeConnection(providerConfig,
+      useAppStore.getState().workflows.filter((workflow) => workflow.workflowApi?.connectionId === connectionId)));
     useAppStore.getState().showToast(
       ok ? t('连接配置已复制（不含 API Key）') : t('复制失败'),
       ok ? 'success' : 'error',
@@ -428,6 +430,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       })),
     });
     await saveConfig();
+    if (parsed.workflowApi) await saveAutodlWorkflowTemplate(newConnectionId, parsed.workflowApi.defaults);
     useAppStore.getState().showToast(t('已导入连接，请补填 API Key'));
     setPendingApiKeyConnectionId(newConnectionId);
   };
@@ -450,7 +453,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const handleSaveConnection = async (
     connectionId: string,
     providerConfig: ApiProviderConfig,
-    related?: { runninghubWorkflowApiKey?: string },
+    related?: { runninghubWorkflowApiKey?: string; workflowApiDefaults?: import('../../types/workflowApi').WorkflowApiInputValues },
   ) => {
     saveProviderConfig(connectionId, providerConfig);
     const definition = getProviderDefinition(connectionId, providerConfig);
@@ -461,10 +464,11 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
         name: 'RunningHub 工作流',
         apiKey: related.runninghubWorkflowApiKey,
       });
-    } else if (related && config.providers.runninghub) {
+    } else if (related && 'runninghubWorkflowApiKey' in related && config.providers.runninghub) {
       await removeProviderConfig('runninghub');
     }
-    await saveConfig();
+    await saveConfig(definition?.kind === 'workflow-api' ? { throwOnError: true } : undefined);
+    if (definition?.kind === 'workflow-api') await saveAutodlWorkflowTemplate(connectionId, related?.workflowApiDefaults);
     closeConnectionDialog();
   };
 
@@ -537,6 +541,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
               const isDreamina = definition.id === 'dreamina';
               const isRunningHub = definition.id === 'runninghub-model';
               const isWebSearchProvider = definition.kind === 'web-search';
+              const isWorkflowApi = definition.kind === 'workflow-api';
               const isPendingApiKey = definition.authType !== 'oauth' && !item.config.apiKey.trim();
               const hasRunningHubModelKey = isRunningHub && !!item.config.apiKey.trim();
               const hasRunningHubWorkflowKey = isRunningHub
@@ -547,14 +552,14 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                 ? t('联网搜索')
                 : definition.id === 'custom-openai'
                   ? item.config.name.trim() || definition.name
-                  : definition.name;
+                  : isWorkflowApi ? t(definition.name) : definition.name;
               const statusLabel = isDreamina
                 ? t('OAuth 已连接')
                 : isRunningHub
                   ? t('{count}/2 密钥已配置', { count: runningHubKeyCount })
                   : isPendingApiKey
                     ? t('待填写 API Key')
-                    : t('已连接');
+                    : isWorkflowApi ? t('已配置') : t('已连接');
               return (
                 <div key={item.id} className="provider-connection-card">
                   <ProviderBadge providerId={item.id} config={item.config} size="large" />
@@ -584,6 +589,8 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                             </span>
                           )}
                         </>
+                      ) : isWorkflowApi ? (
+                        <><span>{t('H3 多图多音频视频工作流')}</span>{summaryUrl && <span>{summaryUrl}</span>}</>
                       ) : isWebSearchProvider ? (
                         <>
                           <span>{t('当前厂商：{name}', { name: definition.name })}</span>

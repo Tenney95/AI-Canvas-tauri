@@ -24,7 +24,8 @@ import { postProcessDramaExtractOutput } from './dramaAssetExtract';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { resolveVideoSubmissionControls } from './ai/videoRequestResolver';
 import { generateShotlistRows } from './shotlistService';
-import { isRunningHubWorkflow } from './workflowExecutionService';
+import { isCloudWorkflow, getCloudWorkflowPersistedOutput } from './workflowExecutionService';
+import { completeWorkflowApiNodeTask } from './workflowApi/workflowApiAdapter';
 import { completeRunningHubNodeTask, getRunningHubPersistedOutput } from './ai/providers/runninghubWorkflow';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from './canvasDerivationGuard';
 
@@ -47,8 +48,8 @@ export async function executeGeneration(
   const nodeType = data?.type;
   const rawPrompt = overridePrompt ?? (data?.prompt as string) ?? '';
 
-  const cloudWorkflow = isRunningHubWorkflow(store.workflows.find((item) => item.id === data.workflowId));
-  if (!rawPrompt.trim() && !cloudWorkflow) {
+  const cloudWorkflow = isCloudWorkflow(store.workflows.find((item) => item.id === data.workflowId));
+  if (!rawPrompt.trim() && !cloudWorkflow && data.provider !== 'runninghub') {
     store.showToast('请输入提示词', 'error');
     return { success: false, message: '提示词为空' };
   }
@@ -75,11 +76,12 @@ export async function executeGeneration(
   }
 
   const submittingProjectId = store.currentProjectId;
-  const cloudGuard = cloudWorkflow ? registerCanvasDerivation(store, nodeId) : null;
+  const runningHubTask = cloudWorkflow || data.provider === 'runninghub';
+  let cloudGuard = runningHubTask ? registerCanvasDerivation(store, nodeId) : null;
   const isStillCurrentSubmission = () => {
     const s = useAppStore.getState();
     return s.currentProjectId === submittingProjectId && s.nodes.some((n) => n.id === nodeId)
-      && (!cloudWorkflow || (!!cloudGuard && isCanvasDerivationFresh(cloudGuard, s)));
+      && (!runningHubTask || (!!cloudGuard && isCanvasDerivationFresh(cloudGuard, s)));
   };
 
   store.updateNodeDataTransient(nodeId, { status: 'loading', error: undefined });
@@ -97,16 +99,19 @@ export async function executeGeneration(
           count: batchCount,
           projectId: submittingProjectId,
         }).nodeIds;
+        if (cloudGuard) completeCanvasDerivation(cloudGuard);
+        cloudGuard = runningHubTask ? registerCanvasDerivation(useAppStore.getState(), nodeId) : null;
         store.showToast(`正在批量生成 ${batchCount} 张图片`);
         const batch = await generateImagesBatch({
           prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
           imageSize, aspectRatio, nodeId,
-          workflowId: data.workflowId, workflowInputs: data.workflowInputs,
+          workflowId: data.workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
         }, batchCount);
         if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
         await applyImageBatchResults({
           nodeId,
           targetNodeIds: batchNodeIds,
+          isCurrent: runningHubTask ? isStillCurrentSubmission : undefined,
           batch,
           projectId: submittingProjectId,
           prompt: effectivePrompt,
@@ -118,21 +123,21 @@ export async function executeGeneration(
       const result = await generateImage({
         prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
         imageSize, aspectRatio, nodeId,
-        workflowId: data.workflowId, workflowInputs: data.workflowInputs,
+        workflowId: data.workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
       });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
 
       const persisted = getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (submittingProjectId
         ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-image', data.label)
         : { mediaUrl: result.url, sourceUrl: result.url });
-      if (cloudWorkflow && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
+      if (runningHubTask && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
       const mediaUrl = persisted.mediaUrl;
       store.updateNodeData(nodeId, {
         imageUrl: mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: mediaUrl, output: persisted.sourceUrl, status: 'success',
         imageWidth: result.width, imageHeight: result.height,
       });
-      if (cloudWorkflow) completeRunningHubNodeTask(nodeId);
+      if (runningHubTask) completeRunningHubNodeTask(nodeId);
       store.syncDramaAssetImageFromNode?.(nodeId, mediaUrl);
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
@@ -169,7 +174,7 @@ export async function executeGeneration(
       const result = await generateImage({
         prompt: buildPanoramaPrompt(effectivePrompt), model: nodeModel, provider: nodeProvider,
         imageSize, aspectRatio, nodeId,
-        workflowId: data.workflowId, workflowInputs: data.workflowInputs,
+        workflowId: data.workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
       });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
       const persisted = submittingProjectId
@@ -211,18 +216,19 @@ export async function executeGeneration(
         prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
         videoResolution, videoFps, videoFrames, seedanceResolution, seedanceRatio,
         seedanceDuration, generateAudio: genAudio, nodeId,
-        workflowId: data.workflowId, workflowInputs: data.workflowInputs,
+        workflowId: data.workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
       });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
-      const persisted = getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (submittingProjectId
+      const persisted = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (submittingProjectId
         ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-video', data.label)
         : { mediaUrl: result.url, sourceUrl: result.url });
-      if (cloudWorkflow && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
+      if (runningHubTask && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
       store.updateNodeData(nodeId, {
         videoUrl: persisted.mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: persisted.mediaUrl, output: persisted.sourceUrl, status: 'success',
       });
-      if (cloudWorkflow) completeRunningHubNodeTask(nodeId);
+      if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
+      if (runningHubTask) completeRunningHubNodeTask(nodeId);
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
         output: persisted.sourceUrl, nodeType: 'ai-video', model: nodeModel, provider: nodeProvider,
@@ -245,14 +251,14 @@ export async function executeGeneration(
         autoGenerateLyrics: data.autoGenerateLyrics,
         nodeId,
         workflowId: data.workflowId,
-        workflowInputs: data.workflowInputs,
+        workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
       });
       if (!isStillCurrentSubmission()) {
         if (result.url.startsWith('blob:')) URL.revokeObjectURL(result.url);
         return { success: false, message: '任务已取消' };
       }
       const persisted = await persistAudioGenerationResult(result, submittingProjectId, data.label);
-      if (cloudWorkflow && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
+      if (runningHubTask && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
       store.updateNodeData(nodeId, {
         audioUrl: persisted.mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: persisted.mediaUrl, output: persisted.outputUrl,
@@ -261,7 +267,7 @@ export async function executeGeneration(
         ...(result.lyrics ? { musicLyrics: result.lyrics } : {}),
         status: 'success',
       });
-      if (cloudWorkflow) completeRunningHubNodeTask(nodeId);
+      if (runningHubTask) completeRunningHubNodeTask(nodeId);
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
         output: persisted.outputUrl, nodeType: 'ai-audio', model: nodeModel, provider: nodeProvider,
@@ -304,7 +310,7 @@ export async function executeGeneration(
         }
       }
     }
-    if (cloudWorkflow && isStillCurrentSubmission()) completeRunningHubNodeTask(nodeId);
+    if (runningHubTask && isStillCurrentSubmission()) completeRunningHubNodeTask(nodeId);
     return { success: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');

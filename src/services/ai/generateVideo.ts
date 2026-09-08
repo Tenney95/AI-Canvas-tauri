@@ -4,6 +4,9 @@
 import { useAppStore } from '../../store/useAppStore';
 import { isRunningHubWorkflow } from '../workflowExecutionService';
 import { executeRunningHubWorkflow } from './providers/runninghubWorkflow';
+import { executeWorkflowApi } from '../workflowApi/workflowApiAdapter';
+import { parseWorkflowApiFields } from '../workflowApi/workflowApiConfig';
+import { getPendingTasksForProject } from '../pollManager';
 import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { resolveNodeReferences } from '../nodeReferenceService';
 import { generateDreaminaVideo } from '../dreaminaService';
@@ -422,10 +425,11 @@ export function buildCanonicalVideoProtocolVariables(
 export async function generateVideo(
   params: AIVideoGenParams,
   signal?: AbortSignal,
-): Promise<{ url: string; runninghubOutputs?: import('../../types/runninghub').RunningHubOutput[] }> {
+): Promise<{ url: string; runninghubOutputs?: import('../../types/runninghub').RunningHubOutput[];
+  workflowApiOutputs?: import('../../types/workflowApi').CloudWorkflowOutput[]; workflowApiTaskId?: string }> {
   // 内置 Provider 与本地工作流暂时保持旧归一化；通用模型交给 capability-aware
   // canonical resolver，避免在读到模型的 30 秒能力前先被全局 15 秒上限截断。
-  if (params.provider !== 'general' || params.workflowId) {
+  if (params.provider !== 'workflow-api' && (!['general', 'runninghub'].includes(params.provider) || params.workflowId)) {
     const videoFps = normalizeVideoFps(params.videoFps);
     const seedanceDuration = resolveVideoDurationSeconds(
       params.seedanceDuration,
@@ -446,10 +450,27 @@ export async function generateVideo(
 
   // ComfyUI 工作流执行路径：连线音频兜底填充工作流的 audio IO 节点（唇形同步等）
   if (params.workflowId) {
-    const referenceInput = await resolveVideoReferenceInput(rawPrompt, params.nodeId, params.referenceMedia ?? []);
+    const referenceInput = await resolveVideoReferenceInput(rawPrompt, params.nodeId, params.referenceMedia ?? [], { preserveDeclaredRoles: provider === 'workflow-api' });
     const references = referenceInput.references ?? [];
     const videoUrls = getMediaReferenceUrls(references, 'video', 'local');
     const workflow = useAppStore.getState().workflows.find((item) => item.id === params.workflowId);
+    if (workflow?.adapterType === 'workflow-api') {
+      const outputs = await executeWorkflowApi({ workflowId: params.workflowId, nodeId: params.nodeId,
+        taskContext: params.workflowApiTaskContext, prompt: referenceInput.prompt, inputs: {
+          ...parseWorkflowApiFields(params.workflowInputs),
+          ...(params.seedanceDuration === undefined ? {} : { duration: params.seedanceDuration }),
+          ...(params.seedanceResolution === undefined ? {} : { resolution: params.seedanceResolution }),
+          ...(params.seedanceRatio === undefined ? {} : { ratio: params.seedanceRatio }),
+        }, references: {
+          image: getMediaReferenceUrls(references, 'image', 'local'), video: videoUrls,
+          audio: getMediaReferenceUrls(references, 'audio', 'local'),
+        } }, signal);
+      const projectId = params.workflowApiTaskContext?.projectId ?? useAppStore.getState().currentProjectId;
+      const trackingId = params.nodeId ?? `workflow-api-message-${params.workflowApiTaskContext?.messageId}`;
+      const task = projectId ? getPendingTasksForProject(projectId).find((item) => item.nodeId === trackingId && item.taskType === 'workflow-api') : undefined;
+      return { url: outputs[0].url, workflowApiOutputs: outputs, workflowApiTaskId: task?.taskId };
+    }
+    if (provider === 'workflow-api' || (workflow?.adapterType && !['comfyui', 'runninghub'].includes(workflow.adapterType))) throw new Error('工作流定义缺失或执行类型不支持');
     if (isRunningHubWorkflow(workflow)) {
       const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, prompt, kind: 'video', references: {
         image: getMediaReferenceUrls(references, 'image', 'local'), video: videoUrls, audio: getMediaReferenceUrls(references, 'audio', 'local'),

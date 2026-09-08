@@ -162,7 +162,7 @@ export async function generateAudio(
 
   const registeredAdapter = mediaProviderRegistry.getAudioAdapter(provider);
   if (registeredAdapter) {
-    return registeredAdapter.generateAudio({ params, prompt, referenceAudioUrls, signal });
+    return registeredAdapter.generateAudio({ params, prompt, referenceAudioUrls, referenceMedia: references, signal });
   }
 
   // ── 通用模型音频生成 ──

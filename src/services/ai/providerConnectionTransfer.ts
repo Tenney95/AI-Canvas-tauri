@@ -16,7 +16,10 @@ import type {
   GeneralModelCategory,
   ImageReferenceRequestMode,
   ProviderModelSelection,
+  WorkflowDefinition,
 } from '../../types';
+import type { WorkflowApiManifest } from '../../types/workflowApi';
+import { createAutodlH3WorkflowManifest, normalizeWorkflowApiBaseUrl, validateWorkflowApiManifest } from '../workflowApi/autodlWorkflowManifest';
 import { GENERAL_MODEL_CATEGORY_LABELS } from '../../types';
 import { validateModelExecutionProtocol } from './modelProtocol';
 import { normalizeBaseUrl } from './providerBaseUrl';
@@ -41,10 +44,14 @@ function asString(value: unknown): string | undefined {
 }
 
 /** 序列化一个连接（不含凭据），用于复制到剪贴板分享。 */
-export function serializeConnection(config: ApiProviderConfig): string {
+export function serializeConnection(config: ApiProviderConfig, workflows: WorkflowDefinition[] = []): string {
+  const manifest = config.catalogId === 'autodl-workflow'
+    ? workflows.find((workflow) => workflow.adapterType === 'workflow-api')?.workflowApi ?? createAutodlH3WorkflowManifest('shared-connection') : undefined;
+  if (manifest) validateWorkflowApiManifest(manifest);
   return JSON.stringify({
     kind: SHARE_KIND,
     version: SHARE_VERSION,
+    ...(manifest ? { workflowApi: { ...manifest, connectionId: 'shared-connection' } } : {}),
     connection: {
       name: config.name,
       catalogId: config.catalogId,
@@ -116,6 +123,7 @@ export interface ParsedConnectionShare {
   /** 目录定义 ID（custom-openai / apimart ...）；缺失时按自定义接口处理。 */
   catalogId: string;
   config: ApiProviderConfig;
+  workflowApi?: WorkflowApiManifest;
 }
 
 /** 解析剪贴板里的连接 JSON；格式不符返回 null。 */
@@ -131,6 +139,15 @@ export function parseConnectionShare(text: string): ParsedConnectionShare | null
   if (!source) return null;
 
   const catalogId = asString(source.catalogId) || 'custom-openai';
+  let workflowApi: WorkflowApiManifest | undefined;
+  if (catalogId === 'autodl-workflow' || payload.workflowApi !== undefined) {
+    try {
+      if (catalogId !== 'autodl-workflow') return null;
+      validateWorkflowApiManifest(payload.workflowApi);
+      normalizeWorkflowApiBaseUrl(asString(source.baseUrl));
+      workflowApi = payload.workflowApi;
+    } catch { return null; }
+  }
   const chatApiProtocol: ChatApiProtocol = isChatApiProtocol(source.chatApiProtocol)
     ? source.chatApiProtocol
     : 'openai-compatible';
@@ -140,15 +157,16 @@ export function parseConnectionShare(text: string): ParsedConnectionShare | null
 
   return {
     catalogId,
+    ...(workflowApi ? { workflowApi } : {}),
     config: {
       name: asString(source.name) || '导入的连接',
       // 凭据永远不随配置流转，由用户重新填写
       apiKey: '',
-      baseUrl: normalizeBaseUrl(asString(source.baseUrl), chatApiProtocol) || undefined,
+      baseUrl: workflowApi ? normalizeWorkflowApiBaseUrl(asString(source.baseUrl)) : normalizeBaseUrl(asString(source.baseUrl), chatApiProtocol) || undefined,
       chatApiProtocol,
       catalogId,
-      selectedModels: parseModels(source.selectedModels),
-      catalogModels: parseModels(source.catalogModels),
+      selectedModels: workflowApi ? [] : parseModels(source.selectedModels),
+      catalogModels: workflowApi ? [] : parseModels(source.catalogModels),
       visibleModelCategories: visible,
     },
   };

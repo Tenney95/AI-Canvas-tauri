@@ -301,6 +301,11 @@ export default function WorkflowPanel() {
 
   const handleEdit = useCallback(async (workflow: WorkflowDefinition, event: React.MouseEvent) => {
     event.stopPropagation();
+    if (workflow.adapterType === 'workflow-api') {
+      useAppStore.getState().setWorkflowPanelOpen(false);
+      useAppStore.getState().setSettingsOpen(true, 'api');
+      useAppStore.getState().showToast('在工作流 API 连接中编辑模板默认参数'); return;
+    }
     if (workflow.adapterType === 'runninghub' && workflow.runninghub) {
       setImportSource(workflow.runninghub.kind); setEditingCloud(workflow); return;
     }
@@ -670,14 +675,14 @@ export default function WorkflowPanel() {
                                 triggerClassName="wf-item-cat-trigger"
                                 value={wf.category}
                                 title="修改分类"
-                                options={CATEGORIES.filter((cat) => wf.adapterType !== 'runninghub' || cat.value !== 'ai-text').map((cat) => ({ value: cat.value, label: cat.label }))}
+                                options={CATEGORIES.filter((cat) => wf.adapterType === 'workflow-api' ? cat.value === 'ai-video' : wf.adapterType !== 'runninghub' || cat.value !== 'ai-text').map((cat) => ({ value: cat.value, label: cat.label }))}
                                 onChange={(value) => {
                                   updateWorkflow(wf.id, { category: value as WorkflowCategory })
                                     .catch(() => showToast('修改分类失败', 'error'));
                                 }}
                               />
                               {/* 只有配了多台服务端才需要选：单台时这一栏是纯噪音 */}
-                              {wf.adapterType !== 'runninghub' && (comfyServers?.length ?? 0) > 0 && (
+                              {!['runninghub', 'workflow-api'].includes(wf.adapterType ?? '') && (comfyServers?.length ?? 0) > 0 && (
                                 <Select
                                   className="wf-item-cat"
                                   triggerClassName="wf-item-cat-trigger"
@@ -722,7 +727,7 @@ export default function WorkflowPanel() {
                               disabled={wf.adapterType !== 'runninghub' && (editorOpen?.phase === 'checking' || editorOpen?.phase === 'opening')}
                               aria-label={`编辑工作流：${wf.name}`}
                               aria-busy={editorOpen?.workflowId === wf.id && (editorOpen.phase === 'checking' || editorOpen.phase === 'opening')}
-                              data-tooltip={wf.adapterType === 'runninghub' ? '编辑云工作流参数' : '在 ComfyUI 中编辑'}
+                              data-tooltip={wf.adapterType === 'workflow-api' ? '编辑工作流 API 连接' : wf.adapterType === 'runninghub' ? '编辑云工作流参数' : '在 ComfyUI 中编辑'}
                               data-tooltip-pos="left"
                               whileHover={{ scale: 1.1 }}
                               whileTap={{ scale: 0.9 }}

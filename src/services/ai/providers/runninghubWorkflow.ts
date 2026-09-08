@@ -1,33 +1,22 @@
 import { useAppStore } from '../../../store/useAppStore';
 import type { RunningHubConnection, RunningHubMediaKind, RunningHubOutput, RunningHubWorkflowManifest } from '../../../types/runninghub';
 import { runningHubFieldValue, runningHubParameterKey, validateRunningHubManifest, isRecord } from '../../runninghubWorkflowService';
-import { runningHubConnection, isRunningHubWorkflow } from '../../workflowExecutionService';
+import { runningHubConnection, isRunningHubWorkflow, saveCloudWorkflowOutputs, getCloudWorkflowPersistedOutput } from '../../workflowExecutionService';
 import { runningHubRequest, uploadRunningHubMedia, RunningHubRequestError } from './runninghubClient';
 import { pollTask } from '../../pollTask';
 import { cancelNodePolling, cleanupNodePolling, getPendingTasksForProject, registerNodePolling, removePendingTask, savePendingTask, updatePendingTask } from '../../pollManager';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../canvasDerivationGuard';
-import { isTauriEnv, persistMediaUrlToProjectData } from '../../fileService';
 
 export class RunningHubTaskFailed extends Error {}
 export type RunningHubReferences = Partial<Record<RunningHubMediaKind, string[]>>;
 
 /** 云适配器已保存全部产物，调用方直接使用保存结果，避免再次下载 asset URL。 */
 export function getRunningHubPersistedOutput(outputs: RunningHubOutput[] | undefined, url: string) {
-  const output = outputs?.find((item) => item.url === url);
-  if (!output) return undefined;
-  return { mediaUrl: output.url, assetUrl: output.url, sourceUrl: output.sourceUrl ?? output.url, outputUrl: output.sourceUrl ?? output.url, filePath: output.filePath, persistence: output.filePath ? 'saved' as const : 'skipped' as const, persistError: undefined };
+  return getCloudWorkflowPersistedOutput(outputs, url);
 }
 
 export async function saveRunningHubOutputs(outputs: RunningHubOutput[], projectId: string | null, label: string, isCurrent: () => boolean): Promise<RunningHubOutput[]> {
-  const saved: RunningHubOutput[] = [];
-  for (const output of outputs) {
-    if (!isCurrent()) throw new Error('画布已变化，任务已保留，请继续查询');
-    const result = projectId ? await persistMediaUrlToProjectData(output.url, projectId, `ai-${output.kind}`, label) : { mediaUrl: output.url, sourceUrl: output.url, filePath: undefined };
-    if (!isCurrent()) throw new Error('画布已变化，任务已保留，请继续查询');
-    if (projectId && isTauriEnv() && !result.filePath) throw new Error('RunningHub 生成已完成，但产物保存失败，可继续查询重试保存');
-    saved.push({ ...output, url: result.mediaUrl, sourceUrl: result.sourceUrl, filePath: result.filePath });
-  }
-  return saved;
+  return saveCloudWorkflowOutputs(outputs, projectId, label, isCurrent, 'RunningHub');
 }
 
 export async function buildRunningHubInputs(
@@ -181,9 +170,9 @@ export async function executeRunningHubWorkflow(params: {
 
 export async function cancelRunningHubNodeTask(nodeId: string): Promise<'cancelled' | 'local-stopped'> {
   const store = useAppStore.getState();
-  const task = store.currentProjectId ? getPendingTasksForProject(store.currentProjectId).find((item) => item.nodeId === nodeId && item.taskType === 'runninghub-workflow') : undefined;
+  const task = store.currentProjectId ? getPendingTasksForProject(store.currentProjectId).find((item) => item.nodeId === nodeId && ['runninghub-workflow', 'runninghub-model'].includes(item.taskType)) : undefined;
   cancelNodePolling(nodeId, true);
-  if (!task) return 'local-stopped';
+  if (!task || task.taskType === 'runninghub-model') return 'local-stopped';
   if (!task.taskId) throw new Error('提交状态未知，请先到 RunningHub 平台确认任务');
   updatePendingTask(nodeId, { runninghubRecoveryState: 'cancel_pending' }, task.taskId);
   const connection = runningHubConnection(store.config.providers, task.providerConfigId === 'runninghub-model' ? 'runninghub-model' : 'runninghub');
@@ -202,8 +191,8 @@ export async function cancelRunningHubNodeTask(nodeId: string): Promise<'cancell
 /** 仅在调用方已完成保存与回填后结束恢复记录；失败时保留任务供保存重试。 */
 export function completeRunningHubNodeTask(nodeId: string): void {
   const store = useAppStore.getState();
-  const task = store.currentProjectId ? getPendingTasksForProject(store.currentProjectId).find((item) => item.nodeId === nodeId && item.taskType === 'runninghub-workflow') : undefined;
-  if (task?.runninghubRecoveryState === 'save_pending') {
+  const task = store.currentProjectId ? getPendingTasksForProject(store.currentProjectId).find((item) => item.nodeId === nodeId && ['runninghub-workflow', 'runninghub-model'].includes(item.taskType)) : undefined;
+  if (task?.runninghubRecoveryState === 'save_pending' && !task.runninghubSubmissionUncertain) {
     removePendingTask(nodeId, task.taskId);
     store.updateNodeDataTransient(nodeId, { runninghubStage: '已完成' });
   }

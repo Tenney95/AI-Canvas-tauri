@@ -6,6 +6,7 @@ import type { AppState } from './useAppStore';
 import type { WorkflowDefinition } from '../types';
 import * as fileService from '../services/fileService';
 import { validateRunningHubManifest } from '../services/runninghubWorkflowService';
+import { validateWorkflowApiManifest } from '../services/workflowApi/autodlWorkflowManifest';
 import {
   pendingBuiltInWorkflows,
   resetBuiltInWorkflows,
@@ -25,7 +26,12 @@ export interface WorkflowSlice {
 }
 
 function validateWorkflow(workflow: WorkflowDefinition) {
-  if (workflow.adapterType && !['comfyui', 'runninghub'].includes(workflow.adapterType)) throw new Error('不支持的工作流来源');
+  if (workflow.adapterType && !['comfyui', 'runninghub', 'workflow-api'].includes(workflow.adapterType)) throw new Error('不支持的工作流来源');
+  if (workflow.adapterType === 'workflow-api') {
+    if (workflow.category !== 'ai-video') throw new Error('此工作流只支持视频输出');
+    validateWorkflowApiManifest(workflow.workflowApi);
+    if (workflow.runninghub || workflow.fileContent || workflow.editableContent || workflow.ioNodes?.length || workflow.defaultNodes || workflow.serverId) throw new Error('工作流 API 不保存原始调用示例或本地工作流正文');
+  } else if (workflow.workflowApi) throw new Error('工作流 API 定义与来源不一致');
   if (workflow.adapterType === 'runninghub') {
     if (!workflow.runninghub || !['ai-image', 'ai-video', 'ai-audio'].includes(workflow.category)) throw new Error('请选择云工作流的图像、视频或音频输出类型');
     validateRunningHubManifest(workflow.runninghub);
@@ -53,6 +59,7 @@ export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> 
       serverId: wf.serverId,
       adapterType: wf.adapterType,
       runninghub: wf.runninghub,
+      workflowApi: wf.workflowApi,
       createdAt: wf.createdAt,
       updatedAt: wf.updatedAt,
     });
@@ -111,6 +118,7 @@ export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> 
       serverId: r.serverId,
       adapterType: r.adapterType,
       runninghub: r.runninghub,
+      workflowApi: r.workflowApi,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     }));

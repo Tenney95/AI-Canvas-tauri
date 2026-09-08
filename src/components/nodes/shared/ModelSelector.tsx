@@ -401,7 +401,7 @@ export default function ModelSelector({
                 </span>
                 <div className="model-group-info">
                   <div className="model-group-name">{t('工作流')}</div>
-                  <div className="model-group-desc">{t('ComfyUI 与 RunningHub 云工作流')}</div>
+                  <div className="model-group-desc">{t('ComfyUI、RunningHub 与工作流 API')}</div>
                 </div>
               </div>
               <div className="model-group-items">

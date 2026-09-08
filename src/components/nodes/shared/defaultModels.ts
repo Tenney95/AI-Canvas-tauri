@@ -13,6 +13,7 @@ import type {
   WorkflowDefinition,
 } from '../../../types';
 import { CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS } from '../../../types';
+import { RUNNINGHUB_MODEL_MANIFEST, isLegacyRunningHubModel, getRunningHubModel, normalizeRunningHubModelId } from '../../../services/ai/providers/runninghubModelManifest';
 import { isRunningHubWorkflow, workflowExecution } from '../../../services/workflowExecutionService';
 import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from '../../../services/ai/dreaminaModels';
 import { APIMART_OMNI_MODELS, isLegacyApimartOmni, replaceLegacyApimartOmni } from '../../../services/ai/apimartVideoModels';
@@ -29,6 +30,12 @@ export interface MediaModelOption extends ModelOption {
   /** ComfyUI 工作流才有；生成入口据此走本地工作流而不是接口模型 */
   workflowId?: string;
 }
+
+const runningHubModelOptions: ModelOption[] = RUNNINGHUB_MODEL_MANIFEST.map((model) => ({
+  value: `runninghub/${model.id}`, provider: 'runninghub', label: model.label,
+  description: `${model.id} · ${model.parameters.filter((field) => field.binding && field.binding !== 'prompt').map((field) => field.name).join(' / ') || '文本输入'}`,
+  iconType: 'badge', badgeText: 'RH', nodeTypes: [`ai-${model.kind}`], audioPurpose: model.audioPurpose,
+}));
 
 const WORKFLOW_MEDIA_KIND: Partial<Record<WorkflowCategory, MediaModelKind>> = {
   'ai-image': 'image',
@@ -864,6 +871,7 @@ export const defaultModelGroups: ModelGroup[] = [
     iconType: 'badge',
     badgeText: 'RH',
     models: [
+      ...runningHubModelOptions,
       {
         value: 'runninghub/nanobanana',
         provider: 'runninghub',
@@ -991,6 +999,7 @@ function modelCategoryForNodeType(nodeType: NodeType): GeneralModelCategory | nu
 }
 
 function normalizedCatalogModelId(value: string, provider: string): string {
+  if (provider === 'runninghub') return normalizeRunningHubModelId(value).toLowerCase();
   const providerPrefix = `${provider}/`;
   const modelId = value.startsWith(providerPrefix) ? value.slice(providerPrefix.length) : value;
   return modelId.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -1076,6 +1085,7 @@ export function getConfiguredModelGroups(
       ? null
       : new Set(selectedModels.map((model) => normalizedCatalogModelId(model.id, modelProvider)));
     const models = group.models.filter((model) => {
+      if (group.id === 'runninghub' && filterSelectedModels && selectedIds === null && !isLegacyRunningHubModel(model.value)) return false;
       if (!model.nodeTypes.includes(modelNodeType)) return false;
       if (!filterSelectedModels || selectedIds === null) return true;
       return selectedIds.has(normalizedCatalogModelId(model.value, modelProvider));
@@ -1099,6 +1109,7 @@ export function getConfiguredModelGroups(
       for (const selectedModel of selectedModels) {
         const normalizedId = normalizedCatalogModelId(selectedModel.id, modelProvider);
         if (selectedModel.category !== category || configuredIds.has(normalizedId)) continue;
+        if (group.id === 'runninghub' && !getRunningHubModel(selectedModel.id)) continue;
         models.push(createConfiguredModelOption(group, selectedModel));
         configuredIds.add(normalizedId);
       }
@@ -1270,22 +1281,23 @@ export function getMediaModelOptions(
   const workflowModels: MediaModelOption[] = workflows.flatMap((workflow) => {
     const mediaKind = WORKFLOW_MEDIA_KIND[workflow.category];
     if (!mediaKind) return [];
-    const cloud = isRunningHubWorkflow(workflow);
-    if (cloud && !workflow.runninghub) return [];
+    const api = workflow.adapterType === 'workflow-api';
+    const cloud = isRunningHubWorkflow(workflow) || api;
+    if (cloud && !(api ? workflow.workflowApi : workflow.runninghub)) return [];
     const execution = workflowExecution(workflow);
     return [{
       value: cloud ? execution.model : `comfyui/${workflow.id}`,
       provider: execution.provider,
       label: workflow.name,
-      description: cloud ? `RunningHub ${workflow.runninghub?.kind === 'app' ? 'AI 应用' : '云工作流'}` : 'ComfyUI 工作流',
+      description: api ? 'AutoDL 视频工作流' : cloud ? `RunningHub ${workflow.runninghub?.kind === 'app' ? 'AI 应用' : '云工作流'}` : 'ComfyUI 工作流',
       iconType: 'badge',
-      badgeText: cloud ? 'RH' : 'CF',
+      badgeText: api ? 'WF' : cloud ? 'RH' : 'CF',
       nodeTypes: [workflow.category],
       mediaKind,
-      groupId: cloud ? 'runninghubwf' : 'comfyui',
-      groupName: cloud ? 'RunningHub 工作流' : 'ComfyUI 工作流',
+      groupId: api ? 'workflow-api' : cloud ? 'runninghubwf' : 'comfyui',
+      groupName: api ? '工作流 API' : cloud ? 'RunningHub 工作流' : 'ComfyUI 工作流',
       workflowId: workflow.id,
-      providerConfigId: cloud ? workflow.runninghub?.connectionId : undefined,
+      providerConfigId: api ? workflow.workflowApi?.connectionId : cloud ? workflow.runninghub?.connectionId : undefined,
     }];
   });
 

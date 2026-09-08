@@ -7,6 +7,7 @@
  * 供参数面板与生成入口消费。
  */
 import type { AudioModelCapability, ImageModelCapability } from '../../types/aiTypes';
+import { getRunningHubModel } from './providers/runninghubModelManifest';
 
 /* ── 生图能力表 ── */
 
@@ -385,6 +386,18 @@ function normalizeImageModelId(model: string): string {
 }
 
 export function getImageCapability(model?: string): ImageCapability | undefined {
+  if (model && /^runninghub(?:-model)?\//.test(model)) {
+    const definition = getRunningHubModel(model, true);
+    if (!definition || definition.kind !== 'image') return undefined;
+    const resolution = definition.parameters.find((field) => field.name === 'resolution');
+    const ratio = definition.parameters.find((field) => ['aspectRatio', 'ratio'].includes(field.name));
+    const references = definition.parameters.filter((field) => field.binding === 'image');
+    return { modelId: definition.id, resolutions: resolution?.schema.enum?.map(String) ?? [], defaultResolution: String(resolution?.defaultValue ?? ''),
+      ratios: ratio?.schema.enum?.map(String) ?? [], defaultRatio: String(ratio?.defaultValue ?? ''), resolutionStyle: resolution ? 'K' : 'none',
+      supportsBatch: true, maxBatchCount: 16, supportsImageReference: references.length > 0,
+      maxImageReferences: references.length ? Math.max(...references.map((field) => field.schema.type === 'array' ? (field.schema.maxItems ?? 64) : (field.referenceIndex ?? 0) + 1)) : 0,
+      supportsDataUrlReference: true };
+  }
   return model ? IMAGE_CAPABILITIES[normalizeImageModelId(model)] : undefined;
 }
 
@@ -483,6 +496,12 @@ const AUDIO_CAPABILITIES: Record<string, AudioModelCapability> = {
 
 /** 结构化音频能力表（含音色列表 / 是否支持音色参考），供参数面板与生成入口消费。 */
 export function getAudioCapabilityDetail(model: string): AudioModelCapability | undefined {
+  if (/^runninghub(?:-model)?\//.test(model)) {
+    const definition = getRunningHubModel(model);
+    if (!definition?.audioPurpose) return undefined;
+    return { kind: definition.audioPurpose, supportsVoiceReference: definition.parameters.some((field) => field.binding === 'audio'),
+      voices: definition.parameters.find((field) => ['voice', 'voice_id', 'speaker'].includes(field.name))?.schema.enum?.map(String) };
+  }
   return AUDIO_CAPABILITIES[normalizeImageModelId(model)];
 }
 

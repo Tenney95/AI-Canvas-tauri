@@ -3,6 +3,8 @@
  * 组件只调用本模块，不直接拼接运行时、调度器或审批流程。
  */
 import { MEDIA_PERSIST_FAILED_MESSAGE, runMediaGeneration } from '../ai/generationRuntime';
+import { workflowExecution } from '../workflowExecutionService';
+import { completeWorkflowApiNodeTask } from '../workflowApi/workflowApiAdapter';
 import {
   buildAssistantSystemPrompt,
   resolveAssistantModel,
@@ -524,12 +526,21 @@ async function triggerMediaGeneration(
   intent: MediaGenerationIntent,
 ): Promise<void> {
   const store = useAppStore.getState();
+  const projectId = store.currentProjectId;
+  const originMessage = store.messages.find((message) => message.id === messageId);
+  const apiWorkflow = store.workflows.find((workflow) => workflow.adapterType === 'workflow-api' && `workflow-api/${workflow.id}` === intent.modelRef);
+  const taskContext = apiWorkflow && projectId && originMessage ? {
+    projectId, conversationId: originMessage.conversationId, messageId, deliveryMode: intent.deliveryMode,
+  } : undefined;
+  const isCurrentApiMessage = () => useAppStore.getState().currentProjectId === projectId
+    && useAppStore.getState().messages.some((message) => message.id === messageId && message.conversationId === originMessage?.conversationId);
   const needsCanvas = intent.deliveryMode === 'canvas' || intent.deliveryMode === 'both';
   let targetNodeId: string | undefined;
   let placeholderLifecycle: MediaPlaceholderLifecycle | null = null;
 
   if (needsCanvas) {
     targetNodeId = store.createMediaPlaceholder(intent);
+    if (apiWorkflow) store.updateNodeDataTransient(targetNodeId, { ...workflowExecution(apiWorkflow), workflowInputs: intent.workflowInputs });
     placeholderLifecycle = registerMediaPlaceholderLifecycle(targetNodeId);
   }
   const mediaLabel = intent.kind === 'image'
@@ -546,7 +557,8 @@ async function triggerMediaGeneration(
   });
   try {
     store.updateMessage(messageId, { mediaStatus: 'generating' });
-    const result = await runMediaGeneration(intent, store.currentProjectId);
+    const result = await runMediaGeneration(intent, projectId, undefined, apiWorkflow ? targetNodeId : undefined, taskContext);
+    if (apiWorkflow && !isCurrentApiMessage()) return;
     const nodeCreated = placeholderLifecycle
       ? settleMediaPlaceholderLifecycle(placeholderLifecycle, result)
       : targetNodeId ? useAppStore.getState().settleMediaPlaceholder(targetNodeId, result) : false;
@@ -558,6 +570,7 @@ async function triggerMediaGeneration(
       canvasNodeId: targetNodeId,
       canvasError: targetNodeId && !nodeCreated ? MEDIA_PLACEHOLDER_STALE_ERROR : undefined,
     });
+    if (result.workflowApiTaskId && (!targetNodeId || nodeCreated)) completeWorkflowApiNodeTask(targetNodeId ?? `workflow-api-message-${messageId}`, result.workflowApiTaskId);
     // 生成成功不代表已可靠保存，落盘失败必须让用户知道并能重试
     if (result.persistence === 'failed') {
       store.showToast(
@@ -566,6 +579,7 @@ async function triggerMediaGeneration(
       );
     }
   } catch (error) {
+    if (apiWorkflow && !isCurrentApiMessage()) return;
     const message = error instanceof Error ? error.message : '未知错误';
     if (placeholderLifecycle) failMediaPlaceholderLifecycle(placeholderLifecycle, message);
     else if (targetNodeId) useAppStore.getState().failMediaPlaceholder(targetNodeId, message);

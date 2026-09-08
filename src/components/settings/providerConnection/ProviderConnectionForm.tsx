@@ -62,13 +62,14 @@ export default function ProviderConnectionForm({
   onTestConnection,
 }: ProviderConnectionFormProps) {
   const t = useT();
+  const isWorkflowApi = definition.kind === 'workflow-api';
 
   return (
     <section className="provider-config-section">
       <div className="provider-section-heading">
         <div>
           <h4>{t('连接信息')}</h4>
-          <p>{definition.description}</p>
+          <p>{isWorkflowApi ? t(definition.description) : definition.description}</p>
         </div>
         {!editing && !isWebSearchProvider && (
           <AnimatedButton
@@ -148,11 +149,11 @@ export default function ProviderConnectionForm({
               && definition.allowCustomBaseUrl === false;
             return (
               <label key={field.key} className="provider-field">
-                <span>{definition.id === 'runninghub-model' && field.key === 'apiKey' ? '模型 API Key（企业级 / 共享）' : field.label}{field.required && definition.id !== 'runninghub-model' ? ' *' : ''}</span>
+                <span>{definition.id === 'runninghub-model' && field.key === 'apiKey' ? '模型 API Key（企业级 / 共享）' : isWorkflowApi ? t(field.label) : field.label}{field.required && definition.id !== 'runninghub-model' ? ' *' : ''}</span>
                 <input
                   type={field.secret ? 'password' : 'text'}
                   value={value}
-                  placeholder={field.placeholder}
+                  placeholder={isWorkflowApi && field.placeholder ? t(field.placeholder) : field.placeholder}
                   readOnly={baseUrlLocked}
                   disabled={baseUrlLocked}
                   onChange={(event) => {
@@ -162,7 +163,7 @@ export default function ProviderConnectionForm({
                   onBlur={(event) => {
                     // 补协议、去尾斜杠、剥掉误贴的 /chat/completions，
                     // 让用户在保存前就看见真正会被请求的地址
-                    if (field.key === 'baseUrl') {
+                    if (field.key === 'baseUrl' && !isWorkflowApi) {
                       setBaseUrl(normalizeBaseUrl(event.target.value, chatApiProtocol));
                     }
                   }}
@@ -185,6 +186,7 @@ export default function ProviderConnectionForm({
         </div>
       )}
 
+      {isWorkflowApi && <p className="mt-2 text-xs text-canvas-text-secondary">{t('请填写 AutoDL ComfyUI 分组的原始 Token。')}</p>}
       {duplicateConnectionName && (
         <div className="provider-catalog-message is-warning">
           <Icon icon="mdi:content-duplicate" width="14" />
@@ -222,15 +224,15 @@ export default function ProviderConnectionForm({
               className={catalogStatus === 'loading' ? 'settings-spin' : undefined}
               width="15"
             />
-            {catalogStatus === 'loading' ? t('验证中') : t('验证连接')}
+            {catalogStatus === 'loading' ? t('验证中') : isWorkflowApi ? t('检查配置') : t('验证连接')}
           </AnimatedButton>
-          {isWebSearchProvider && catalogMessage && (
+          {(isWebSearchProvider || isWorkflowApi) && catalogMessage && (
             <div className={`provider-catalog-message is-${catalogStatus} m-0 flex-1`}>
               <Icon
                 icon={catalogStatus === 'error' ? 'mdi:alert-circle-outline' : 'mdi:information-outline'}
                 width="14"
               />
-              <span>{catalogMessage}</span>
+              <span>{isWorkflowApi ? t(catalogMessage) : catalogMessage}</span>
             </div>
           )}
         </div>

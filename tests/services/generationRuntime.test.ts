@@ -37,7 +37,7 @@ vi.mock('../../src/components/nodes/shared/defaultModels', () => ({
       : modelRef.includes('audio')
         ? 'audio'
         : 'image',
-    provider: modelRef.startsWith('runninghubwf/') ? 'runninghubwf' : modelRef.startsWith('general/') ? 'general' : 'openai',
+    provider: modelRef.startsWith('runninghubwf/') ? 'runninghubwf' : modelRef.startsWith('runninghub/') ? 'runninghub' : modelRef.startsWith('general/') ? 'general' : 'openai',
     ...(modelRef.startsWith('runninghubwf/') ? { workflowId: modelRef.slice('runninghubwf/'.length) } : {}),
   }),
 }));
@@ -119,6 +119,14 @@ describe('media generation cancellation', () => {
 });
 
 describe('media generation project settings', () => {
+  it('RunningHub 使用专属参数与原节点，不注入项目的其他视频默认值', async () => {
+    mocks.storeState.config.providers['runninghub-model'] = { name: 'RH', apiKey: 'fake' };
+    mocks.storeState.projects = [{ id: 'project-1', settings: { generation: { videoAspectRatio: '16:9', videoResolution: '1080p', videoDuration: 10 } } }];
+    const context = { projectId: 'project-1', conversationId: 'c1', messageId: 'm1', deliveryMode: 'both' as const };
+    await runMediaGeneration({ kind: 'video', prompt: '镜头移动', modelRef: 'runninghub/minimax/h3-max-turbo/image-to-video', deliveryMode: 'both', runninghubModelParameters: { duration: '15', firstFrameUrl: 'https://input.test/ref.png' } }, 'project-1', undefined, 'n1', context);
+    expect(mocks.generateVideo).toHaveBeenCalledWith(expect.objectContaining({ provider: 'runninghub', nodeId: 'n1', runninghubTaskContext: context, runninghubModelParameters: { duration: '15', firstFrameUrl: 'https://input.test/ref.png' }, seedanceDuration: undefined, seedanceResolution: undefined, seedanceRatio: undefined }), undefined);
+    await expect(runMediaGeneration({ kind: 'video', prompt: '镜头移动', modelRef: 'runninghub/minimax/h3-max-turbo/image-to-video', deliveryMode: 'chat', duration: 5, runninghubModelParameters: { duration: '15' } }, 'project-1')).rejects.toThrow('冲突');
+  });
   it('applies image style, suffix, size, and aspect ratio without replacing the explicit model', async () => {
     mocks.storeState.projects = [{
       id: 'project-1',

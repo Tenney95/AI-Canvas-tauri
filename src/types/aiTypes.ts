@@ -12,6 +12,7 @@ export interface AIGenerateParams {
 }
 
 export interface AIImageGenParams extends AIGenerateParams {
+  runninghubModelParameters?: Record<string, string>;
   runninghubTaskContext?: import('./runninghub').RunningHubTaskContext;
   imageSize?: string;     // '1K' | '2K' | '4K'
   aspectRatio?: string;   // '1:1' | '16:9' | '9:16' | ...
@@ -432,6 +433,8 @@ export interface VideoGenerationReferenceInput {
 }
 
 export interface AIVideoGenParams {
+  workflowApiTaskContext?: import('./workflowApi').CloudWorkflowTaskContext;
+  runninghubModelParameters?: Record<string, string>;
   runninghubTaskContext?: import('./runninghub').RunningHubTaskContext;
   prompt: string;
   model: string;
@@ -462,6 +465,7 @@ export interface AIVideoGenParams {
 }
 
 export interface AIAudioGenParams {
+  runninghubModelParameters?: Record<string, string>;
   runninghubTaskContext?: import('./runninghub').RunningHubTaskContext;
   prompt: string;
   model: string;
