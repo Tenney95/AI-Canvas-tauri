@@ -8,6 +8,20 @@
 import type { VideoEditorTransitionKind } from './videoEditor';
 import type { VideoFrameAnalysisData } from './index';
 
+/** 分镜最初使用的本集正文快照；引用节点，避免再次复制正文。 */
+export interface ShotlistScriptSource {
+  episodeId: string;
+  nodeId: string;
+}
+
+/** 制作节点到镜头的稳定来源；不持有原文或媒体路径。 */
+export type ShotlistProductionKind = 'voiceover' | 'video' | 'director';
+export interface ShotlistProductionSource {
+  nodeId: string;
+  rowId: string;
+  kind: ShotlistProductionKind;
+}
+
 /** 分镜表的全部列 */
 export type ShotlistColumnKey =
   | 'shotNo'
@@ -115,6 +129,11 @@ export interface ShotRow {
   duration?: number;
   note?: string;
 }
+
+/** 助手可编辑的镜头字段；媒体绑定只接受真实来源节点。 */
+export type ShotRowEdit = Partial<Pick<ShotRow,
+  'id' | 'shotNo' | 'shotSize' | 'camera' | 'content' | 'dialogue' | 'audio' | 'transition' | 'duration' | 'note'
+>>;
 
 /** 可以放进画面格的节点类型 */
 export const SHOTLIST_FRAME_SOURCE_TYPES = ['ai-image', 'source-image', 'ai-video', 'source-video'];

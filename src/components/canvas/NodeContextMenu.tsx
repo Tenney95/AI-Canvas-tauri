@@ -2,8 +2,9 @@
  * NodeContextMenu 节点右键菜单 — 在节点上右键弹出，支持复制、剪切、创建副本、解除分组、删除操作
  * 自动检测屏幕边界，避免溢出
  */
-import { memo } from 'react';
-import { calcFixedPosition } from '../../utils/popupPosition';
+import { memo, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { calcFixedPosition, calcSubmenuPosition } from '../../utils/popupPosition';
 import { useT } from '../../i18n';
 import type { AvailableNodePluginTool } from '../../types/plugin';
 
@@ -29,6 +30,117 @@ const MENU_ITEMS = [
 const MENU_W = 176;
 const MENU_H = 494; // 视频节点最多 13 items + 1 sep
 const TEXT_SELECTION_MENU_EXTRA_H = 78; // 2 text-selection items + separator
+
+function PluginToolsSubmenu({ tools, onSelect }: {
+  tools: AvailableNodePluginTool[];
+  onSelect: (pluginId: string, toolId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const submenuRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusOnOpen = useRef(false);
+  const id = useId();
+  const cancelClose = () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  };
+  const show = (focus = false) => {
+    cancelClose();
+    focusOnOpen.current = focus;
+    setOpen(true);
+    if (open && focus) submenuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+  };
+  const hideLater = () => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => setOpen(false), 180);
+  };
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener('resize', close);
+    return () => window.removeEventListener('resize', close);
+  }, [open]);
+  useLayoutEffect(() => {
+    const trigger = triggerRef.current;
+    const submenu = submenuRef.current;
+    if (!open || !trigger || !submenu) return;
+    const next = calcSubmenuPosition(trigger.getBoundingClientRect(), submenu.offsetWidth, submenu.offsetHeight);
+    setPosition((previous) => previous.left === next.left && previous.top === next.top ? previous : next);
+    if (focusOnOpen.current) {
+      submenu.querySelector<HTMLButtonElement>('button')?.focus();
+      focusOnOpen.current = false;
+    }
+  }, [open, tools]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`menu-row menu-row-split${open ? ' highlight' : ''}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? id : undefined}
+        onMouseEnter={() => show()}
+        onMouseLeave={hideLater}
+        onClick={() => show(true)}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+            event.preventDefault();
+            show(true);
+          }
+        }}
+      >
+        <span>插件工具</span><span className="menu-arrow" aria-hidden="true">›</span>
+      </button>
+      {open && createPortal(
+        <div
+          ref={submenuRef}
+          id={id}
+          role="menu"
+          aria-label="插件工具"
+          className="canvas-ctx-menu submenu max-h-[calc(100vh-16px)] max-w-[calc(100vw-16px)] overflow-y-auto"
+          style={{ left: position.left, top: position.top }}
+          onMouseEnter={cancelClose}
+          onMouseLeave={hideLater}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowLeft') {
+              event.preventDefault();
+              setOpen(false);
+              triggerRef.current?.focus();
+            } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault();
+              const buttons = Array.from(submenuRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? []);
+              const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+              buttons[(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus();
+            }
+          }}
+        >
+          {tools.map((pluginTool) => (
+            <button
+              key={`${pluginTool.pluginId}:${pluginTool.tool.id}`}
+              type="button"
+              role="menuitem"
+              className="menu-row menu-row-split"
+              title={pluginTool.tool.description}
+              onClick={() => {
+                setOpen(false);
+                onSelect(pluginTool.pluginId, pluginTool.tool.id);
+              }}
+            >
+              <span className="min-w-0 truncate">{pluginTool.tool.title}</span>
+              <span className="menu-kbd">{pluginTool.pluginName}</span>
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
 
 interface NodeContextMenuProps {
   visible: boolean;
@@ -99,7 +211,7 @@ export function NodeContextMenu({
     MENU_W,
     MENU_H
       + (hasTextSelection ? TEXT_SELECTION_MENU_EXTRA_H : 0)
-      + (pluginTools.length > 0 ? 28 + pluginTools.length * 32 : 0),
+      + (pluginTools.length > 0 && onPluginTool ? 42 : 0),
   );
 
   const actionMap: Record<string, () => void> = {
@@ -180,18 +292,11 @@ export function NodeContextMenu({
       {pluginTools.length > 0 && onPluginTool && (
         <>
           <div className="menu-sep" />
-          <div className="px-3 py-1 text-[10px] text-canvas-text-muted">插件工具</div>
-          {pluginTools.map((pluginTool) => (
-            <div
-              key={`${pluginTool.pluginId}:${pluginTool.tool.id}`}
-              className="menu-row menu-row-split"
-              title={pluginTool.tool.description}
-              onClick={() => onPluginTool(pluginTool.pluginId, pluginTool.tool.id)}
-            >
-              <span>{pluginTool.tool.title}</span>
-              <span className="menu-kbd">{pluginTool.pluginName}</span>
-            </div>
-          ))}
+          <PluginToolsSubmenu
+            key={`${position.x}:${position.y}`}
+            tools={pluginTools}
+            onSelect={onPluginTool}
+          />
         </>
       )}
       {items.filter((item) => item.danger).map(renderItem)}

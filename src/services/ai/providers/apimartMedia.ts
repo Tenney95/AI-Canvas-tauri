@@ -28,6 +28,7 @@ import {
 import { generateApimartImagesBatch, generateApimartVideo } from '../apimartGen';
 import { getApimartSeedanceCapability, isApimartSeedanceModel } from '../apimartVideoModels';
 import { getMediaReferenceUrl } from '../connectedReferenceMedia';
+import { assertVideoInputConstraints } from '../videoInputValidation';
 import { extractModelName } from '../helpers';
 import { resolveImageUrlArray } from '../imageUtils';
 import { resolveMediaReferenceUrl } from '../../uploadService';
@@ -260,6 +261,16 @@ export const apimartMediaProviderAdapter: MediaProviderAdapter = {
     ) {
       const frameRefs = references.filter((ref) => ref.kind === 'image'
         && (ref.role === 'first_frame' || ref.role === 'last_frame'));
+      if (capability?.omniVariant) {
+        for (const role of ['first_frame', 'last_frame']) {
+          if (frameRefs.filter((ref) => ref.role === role).length > 1) {
+            throw new Error('Omni 每种首尾帧角色只能选择 1 张图片');
+          }
+        }
+        if (capability.omniVariant !== 'flash' && frameRefs.some((ref) => ref.role === 'last_frame')) {
+          throw new Error('该 Omni 模型不支持尾帧，请使用 Gemini Omni 1.1 Flash');
+        }
+      }
       const frameUrls = await resolveImageUrlsSequentially(
         frameRefs.map((ref) => getMediaReferenceUrl(ref)),
         'apimart',
@@ -313,6 +324,14 @@ export const apimartMediaProviderAdapter: MediaProviderAdapter = {
       signal,
     );
     if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+    if (capability?.omniVariant) {
+      await assertVideoInputConstraints(
+        { ...referenceInput, videoUrls, audioUrls },
+        { inputConstraints: capability.inputConstraints },
+        capability.modelId,
+        { signal },
+      );
+    }
     return generateApimartVideo(apiKey, baseUrl, modelName, referenceInput.prompt, params.nodeId, {
       resolution: params.seedanceResolution,
       ratio: params.seedanceRatio,

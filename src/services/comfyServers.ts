@@ -16,6 +16,51 @@ function normalize(url: string | undefined): string {
   return (url ?? '').trim().replace(/\/+$/, '');
 }
 
+export interface ComfyServerSelection {
+  serverId?: string;
+  serverName: string;
+}
+
+function isComfyApiUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/** 供助手选择的已配置目标；不向工具结果暴露地址或凭据。 */
+export function listConfiguredComfyServers(): Array<ComfyServerSelection & { isDefault: boolean }> {
+  const { config } = useAppStore.getState();
+  const servers: Array<ComfyServerSelection & { isDefault: boolean }> = [];
+  if (isComfyApiUrl(normalize(config.comfyUIUrl))) {
+    servers.push({ serverName: '默认服务器', isDefault: true });
+  }
+  for (const server of config.comfyServers ?? []) {
+    if (server.id && isComfyApiUrl(normalize(server.url))) {
+      servers.push({ serverId: server.id, serverName: server.name.trim() || server.id, isDefault: false });
+    }
+  }
+  return servers;
+}
+
+/** 显式服务器选择必须存在且地址有效；与普通工作流的兼容回落策略区分。 */
+export function resolveComfyServerSelection(serverId?: string): ComfyServerSelection & { baseUrl: string } {
+  const { config } = useAppStore.getState();
+  const server = serverId === undefined ? undefined : config.comfyServers?.find((item) => item.id === serverId);
+  if (serverId !== undefined && !server) {
+    throw new Error('指定的 ComfyUI 服务器不存在，请重新读取服务器清单');
+  }
+  const baseUrl = normalize(server ? server.url : config.comfyUIUrl);
+  if (!isComfyApiUrl(baseUrl)) {
+    throw new Error(server
+      ? '指定的 ComfyUI 服务地址无效，请在设置中检查'
+      : '未配置有效的默认 ComfyUI 服务地址，请在设置中配置，或通过 serverId 选择已配置的服务器');
+  }
+  return { serverId, serverName: server ? server.name.trim() || server.id : '默认服务器', baseUrl };
+}
+
 /**
  * 检查指定地址是否确实暴露了 ComfyUI API。
  * 复用生成链的 comfyFetch，确保 Tauri、浏览器开发代理和远程服务的行为一致。

@@ -13,19 +13,29 @@ import type {
   WorkflowDefinition,
 } from '../../../types';
 import { CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS } from '../../../types';
+import { RUNNINGHUB_MODEL_MANIFEST, isLegacyRunningHubModel, getRunningHubModel, normalizeRunningHubModelId } from '../../../services/ai/providers/runninghubModelManifest';
+import { isRunningHubWorkflow, workflowExecution } from '../../../services/workflowExecutionService';
 import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from '../../../services/ai/dreaminaModels';
+import { APIMART_OMNI_MODELS, isLegacyApimartOmni, replaceLegacyApimartOmni } from '../../../services/ai/apimartVideoModels';
 
 export type MediaModelKind = 'image' | 'video' | 'audio';
 
 type ProviderModelVisibilityConfig = Pick<AppConfig, 'providers' | 'dreaminaAuth'>;
 
 export interface MediaModelOption extends ModelOption {
+  providerConfigId?: string;
   mediaKind: MediaModelKind;
   groupId: string;
   groupName: string;
   /** ComfyUI 工作流才有；生成入口据此走本地工作流而不是接口模型 */
   workflowId?: string;
 }
+
+const runningHubModelOptions: ModelOption[] = RUNNINGHUB_MODEL_MANIFEST.map((model) => ({
+  value: `runninghub/${model.id}`, provider: 'runninghub', label: model.label,
+  description: `${model.id} · ${model.parameters.filter((field) => field.binding && field.binding !== 'prompt').map((field) => field.name).join(' / ') || '文本输入'}`,
+  iconType: 'badge', badgeText: 'RH', nodeTypes: [`ai-${model.kind}`], audioPurpose: model.audioPurpose,
+}));
 
 const WORKFLOW_MEDIA_KIND: Partial<Record<WorkflowCategory, MediaModelKind>> = {
   'ai-image': 'image',
@@ -452,15 +462,10 @@ export const defaultModelGroups: ModelGroup[] = [
         badgeText: 'VD',
         nodeTypes: ['ai-video'],
       },
-      {
-        value: 'apimart/Omni-Flash-Ext',
-        provider: 'apimart',
-        label: 'Omni Flash',
-        description: '全模态快速视频生成',
-        iconType: 'badge',
-        badgeText: 'OF',
-        nodeTypes: ['ai-video'],
-      },
+      ...APIMART_OMNI_MODELS.map((model): ModelOption => ({
+        value: `apimart/${model.id}`, provider: 'apimart', label: model.name,
+        description: model.description, iconType: 'badge', badgeText: 'GO', nodeTypes: ['ai-video'],
+      })),
       // ── 音频模型 ──
       {
         value: 'apimart/gpt-4o-mini-tts',
@@ -866,6 +871,7 @@ export const defaultModelGroups: ModelGroup[] = [
     iconType: 'badge',
     badgeText: 'RH',
     models: [
+      ...runningHubModelOptions,
       {
         value: 'runninghub/nanobanana',
         provider: 'runninghub',
@@ -993,6 +999,7 @@ function modelCategoryForNodeType(nodeType: NodeType): GeneralModelCategory | nu
 }
 
 function normalizedCatalogModelId(value: string, provider: string): string {
+  if (provider === 'runninghub') return normalizeRunningHubModelId(value).toLowerCase();
   const providerPrefix = `${provider}/`;
   const modelId = value.startsWith(providerPrefix) ? value.slice(providerPrefix.length) : value;
   return modelId.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -1059,9 +1066,8 @@ export function getConfiguredModelGroups(
 
   return groups.flatMap((group) => {
     if (group.id === 'runninghubwf') {
-      if (!config.providers.runninghub?.apiKey) return [];
-      const workflowModels = group.models.filter((model) => model.nodeTypes.includes(modelNodeType));
-      return workflowModels.length > 0 ? [{ ...group, models: workflowModels }] : [];
+      // 旧条目仅有远端 ID、没有参数合同；保留 ID 识别，但不作为可运行选项展示。
+      return [];
     }
 
     const providerConfigId = providerConfigIdForGroup(group.id);
@@ -1072,11 +1078,14 @@ export function getConfiguredModelGroups(
     if (provider && !isProviderCategoryVisible(config, providerConfigId, category)) return [];
 
     const modelProvider = group.models[0]?.provider || group.id;
-    const selectedModels = provider?.selectedModels;
+    const selectedModels = group.id === 'apimart'
+      ? replaceLegacyApimartOmni(provider?.selectedModels)
+      : provider?.selectedModels;
     const selectedIds = selectedModels === undefined
       ? null
       : new Set(selectedModels.map((model) => normalizedCatalogModelId(model.id, modelProvider)));
     const models = group.models.filter((model) => {
+      if (group.id === 'runninghub' && filterSelectedModels && selectedIds === null && !isLegacyRunningHubModel(model.value)) return false;
       if (!model.nodeTypes.includes(modelNodeType)) return false;
       if (!filterSelectedModels || selectedIds === null) return true;
       return selectedIds.has(normalizedCatalogModelId(model.value, modelProvider));
@@ -1100,6 +1109,7 @@ export function getConfiguredModelGroups(
       for (const selectedModel of selectedModels) {
         const normalizedId = normalizedCatalogModelId(selectedModel.id, modelProvider);
         if (selectedModel.category !== category || configuredIds.has(normalizedId)) continue;
+        if (group.id === 'runninghub' && !getRunningHubModel(selectedModel.id)) continue;
         models.push(createConfiguredModelOption(group, selectedModel));
         configuredIds.add(normalizedId);
       }
@@ -1271,18 +1281,23 @@ export function getMediaModelOptions(
   const workflowModels: MediaModelOption[] = workflows.flatMap((workflow) => {
     const mediaKind = WORKFLOW_MEDIA_KIND[workflow.category];
     if (!mediaKind) return [];
+    const api = workflow.adapterType === 'workflow-api';
+    const cloud = isRunningHubWorkflow(workflow) || api;
+    if (cloud && !(api ? workflow.workflowApi : workflow.runninghub)) return [];
+    const execution = workflowExecution(workflow);
     return [{
-      value: `comfyui/${workflow.id}`,
-      provider: 'comfyui',
+      value: cloud ? execution.model : `comfyui/${workflow.id}`,
+      provider: execution.provider,
       label: workflow.name,
-      description: 'ComfyUI 工作流',
+      description: api ? 'AutoDL 视频工作流' : cloud ? `RunningHub ${workflow.runninghub?.kind === 'app' ? 'AI 应用' : '云工作流'}` : 'ComfyUI 工作流',
       iconType: 'badge',
-      badgeText: 'CF',
+      badgeText: api ? 'WF' : cloud ? 'RH' : 'CF',
       nodeTypes: [workflow.category],
       mediaKind,
-      groupId: 'comfyui',
-      groupName: 'ComfyUI 工作流',
+      groupId: api ? 'workflow-api' : cloud ? 'runninghubwf' : 'comfyui',
+      groupName: api ? '工作流 API' : cloud ? 'RunningHub 工作流' : 'ComfyUI 工作流',
       workflowId: workflow.id,
+      providerConfigId: api ? workflow.workflowApi?.connectionId : cloud ? workflow.runninghub?.connectionId : undefined,
     }];
   });
 
@@ -1299,6 +1314,9 @@ export function findMediaModelOption(
   config?: ProviderModelVisibilityConfig,
   workflows: WorkflowDefinition[] = [],
 ): MediaModelOption | undefined {
+  if (modelRef.startsWith('apimart/') && isLegacyApimartOmni(modelRef)) {
+    modelRef = 'apimart/gemini-omni-1.1-flash-ext';
+  }
   const normalized = modelRef.startsWith('general/') ? modelRef : `general/${modelRef}`;
   return getMediaModelOptions(generalModels, config, workflows).find(
     (model) => model.value === modelRef || model.value === normalized,

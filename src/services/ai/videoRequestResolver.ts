@@ -48,7 +48,7 @@ export function resolveVideoSubmissionControls(
   options: ResolveVideoSubmissionControlOptions,
 ): VideoSubmissionControlParams {
   const directGeneralProtocol = options.provider === 'general' && !options.workflowId;
-  if (directGeneralProtocol) {
+  if (directGeneralProtocol || options.provider === 'workflow-api') {
     return {
       videoResolution: options.videoResolution,
       videoFps: options.videoFps,

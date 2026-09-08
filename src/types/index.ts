@@ -10,7 +10,7 @@ import type {
   DirectorRuntimeKind,
   DirectorSceneReference,
 } from './directorScene';
-import type { ShotlistColumnKey, ShotRow } from './shotlist';
+import type { ShotlistColumnKey, ShotRow, ShotlistScriptSource, ShotlistProductionSource } from './shotlist';
 import type { Locale } from '../i18n';
 import type { McpToolExposure } from './mcp';
 
@@ -168,11 +168,18 @@ export interface StoryboardCellOverride {
   relativePath?: string; // 项目目录内的相对路径（持久化优先）
 }
 
-export interface CharacterLibraryNodeLink {
+export type CharacterLibraryNodeLink = {
   scope: 'project' | 'global';
   characterId: string;
+} & ({
   referenceImageId: string;
-}
+  actionId?: never;
+  mediaId?: never;
+} | {
+  referenceImageId?: never;
+  actionId: string;
+  mediaId: string;
+});
 
 /** 视频拉片插件写入图片节点的结构化结果；不包含本地路径或调用级 resourceId。 */
 export interface VideoFrameAnalysisData {
@@ -213,7 +220,12 @@ export interface BaseNodeData {
   model?: string;             // 选择的模型 ID（如 qwen/qwen3.5-397b-a17b）
   provider?: string;          // 选择的供应商 ID（如 apimart）
   workflowId?: string;        // 选择的工作流 ID
-  workflowInputs?: Record<string, string>; // 工作流 IO 节点赋值: ioNodeId → value
+  workflowInputs?: Record<string, string>; // 本地 IO 或云工作流 nodeId/fieldName 赋值
+  runninghubOutputs?: import('./runninghub').RunningHubOutput[];
+  runninghubModelParameters?: Record<string, string>;
+  runninghubStage?: string;
+  workflowApiOutputs?: import('./workflowApi').CloudWorkflowOutput[];
+  workflowApiStage?: string;
   imageUrl?: string;          // 生成的图片 URL（Tauri: asset://localhost/..., 浏览器: data:...）
   videoUrl?: string;          // 生成的视频 URL
   audioUrl?: string;          // 生成的音频 URL
@@ -285,6 +297,8 @@ export interface BaseNodeData {
   // ── 分镜表（ai-shotlist）──
   shotlistRows?: ShotRow[];                 // 逐行镜头
   shotlistColumns?: ShotlistColumnKey[];    // 当前显示的列（常驻列恒在其中）
+  shotlistScriptSource?: ShotlistScriptSource;
+  shotlistProductionSource?: ShotlistProductionSource;
   frameAnalysis?: VideoFrameAnalysisData;   // 视频拉片抽帧及画面分析结果
   // ── 3D 导演台（ai-director）──
   directorRuntimeKind?: DirectorRuntimeKind; // 缺失=lightweight-web；未知运行时必须失败关闭
@@ -718,6 +732,9 @@ export interface WorkflowIONode {
 
 /** 导入的 ComfyUI 工作流 */
 export interface WorkflowDefinition {
+  adapterType?: 'comfyui' | 'runninghub' | 'workflow-api';
+  runninghub?: import('./runninghub').RunningHubWorkflowManifest;
+  workflowApi?: import('./workflowApi').WorkflowApiManifest;
   id: string;
   name: string;               // 工作流名称
   category: WorkflowCategory; // 归属分类

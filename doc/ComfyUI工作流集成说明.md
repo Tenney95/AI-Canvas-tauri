@@ -1,7 +1,7 @@
 # ComfyUI 工作流集成说明
 
 > 本文档描述 AI Canvas 如何导入、管理和执行 ComfyUI 工作流，包括 IO 节点识别、内容与参数注入规则、结果取回和编辑回写链路。
-> 当前版本：`0.8.2`；最后更新：2026-08-12。
+> 最后更新：2026-09-08。范围、验证与回滚见[可靠性修复](./plans/2026-09-08-comfyui-reliability.md)、[助手多服务器支持](./plans/2026-09-08-comfyui-assistant-servers.md)和[打开与编辑体验](./plans/2026-09-08-comfyui-editor-experience.md)。
 
 ## 1. 概览
 
@@ -9,34 +9,35 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 1. 把画布上的提示词、图片、视频、音频**注入**到工作流对应的节点；
 2. 把节点面板上选的分辨率、比例、帧率、时长**注入**到工作流的参数节点；
-3. 提交到 ComfyUI 的 `/prompt` 并轮询 `/history`；
+3. 提交到 ComfyUI 的 `/prompt`，用 WebSocket 展示节点进度，用 `/history` 轮询确认结果；
 4. 把产物地址取回来，下载保存进项目目录。
 
 执行路径按分类分三条：
 
 | 分类 | 入口 | 执行函数 |
 |------|------|---------|
-| `ai-image` | [generateImage.ts:148](../src/services/ai/generateImage.ts:148) | `executeComfyUIGenerate` |
-| `ai-video` | [generateVideo.ts:283](../src/services/ai/generateVideo.ts:283) | `executeComfyUIVideoGenerate` |
-| `ai-audio` | [generateAudio.ts:132](../src/services/ai/generateAudio.ts:132) | `executeComfyUIAudioGenerate` |
+| `ai-image` | [generateImage.ts](../src/services/ai/generateImage.ts) | `executeComfyUIGenerate` |
+| `ai-video` | [generateVideo.ts](../src/services/ai/generateVideo.ts) | `executeComfyUIVideoGenerate` |
+| `ai-audio` | [generateAudio.ts](../src/services/ai/generateAudio.ts) | `executeComfyUIAudioGenerate` |
 
 `ai-text` 分类只能导入和归类，**没有执行路径** —— 文本生成不会走 ComfyUI。
 
 ## 2. 配置与连接
 
-设置 → ComfyUI 里有两项：
+设置 → ComfyUI 配置连接与本地安装目录：
 
 - **服务地址**：默认 `http://127.0.0.1:8188`，存在 `config.comfyUIUrl`。未配置时执行会直接抛「未配置 ComfyUI 服务地址」。
-- **本地安装目录**：存在 `config.comfyUIPath`，配好后可以一键启动本地 ComfyUI（Tauri 命令 `launch_comfyui`，启动参数固定为 `-u -s main.py --listen --enable-cors-header`）。
+- **额外服务器**：`config.comfyServers` 保存服务器名称和 URL；工作流通过 `serverId` 绑定。未绑定或服务器记录已删除时回落到默认地址；可用性灯通过 `/system_stats` 探测。
+- **本地安装目录**：存在 `config.comfyUIPath`，配好后可以一键启动本地 ComfyUI（Tauri 命令 `launch_comfyui`，固定使用 `--listen 127.0.0.1 --enable-cors-header`）。当前本地启动尚未关联自定义端口。
 
-所有请求都经过 [comfyWorkflowService.ts](../src/services/comfyWorkflowService.ts) 里的 `comfyFetch`，出口按环境分流：
+请求通过 [comfyPolling.ts](../src/services/comfyPolling.ts) 的 `comfyFetch`，出口按环境分流：
 
 - **Tauri 桌面**：走 `corsSafeFetch` → Rust `proxy_fetch`，不受浏览器同源限制；
 - **浏览器开发模式**：`http://127.0.0.1:<port>` 会被替换成 Vite 代理路径 `/api/comfyui`。
 
 ## 3. 数据模型
 
-工作流定义见 [types/index.ts:577](../src/types/index.ts:577)：
+工作流定义见 [types/index.ts](../src/types/index.ts)：
 
 | 字段 | 说明 |
 |------|------|
@@ -47,6 +48,7 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 | `editableContent` | **界面格式** JSON，只用于在 ComfyUI 里打开时保住节点布局 |
 | `ioNodes` | 识别出的输入/输出节点，`{ nodeId, title, type }` |
 | `defaultNodes` | 各类型的默认 IO 节点，`type → nodeId` |
+| `serverId` | 可选服务器绑定；恢复任务使用提交时保存的实际地址 |
 
 两种 JSON 格式不能混用：
 
@@ -79,7 +81,7 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 ## 5. IO 节点识别
 
-`extractComfyUIIONodes`（[comfyUIWindowService.ts:59](../src/services/comfyUIWindowService.ts:59)）扫一遍 API JSON，按 `class_type` 归类：
+`extractComfyUIIONodes`（[comfyUIWindowService.ts](../src/services/comfyUIWindowService.ts)）扫一遍 API JSON，按 `class_type` 归类：
 
 | 类型 | 匹配的 class_type |
 |------|------------------|
@@ -98,7 +100,7 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 > 用户**没有** `@` 该类型的任何节点时，提示词框里的同类内容自动送进这个节点。
 
-优先级规则在 `submitComfyUIWorkflow` 里（[comfyWorkflowService.ts:910](../src/services/comfyWorkflowService.ts:910)）：**某个类型只要被 `@` 过一次，该类型就完全按用户的赋值走，默认节点不再介入。** 类型之间互不影响 —— `@` 了提示词节点，图片的默认节点照常生效。
+优先级规则在 `submitComfyUIWorkflow` 里（[comfyWorkflowService.ts](../src/services/comfyWorkflowService.ts)）：**某个类型只要被 `@` 过一次，该类型就完全按用户的赋值走，默认节点不再介入。** 类型之间互不影响 —— `@` 了提示词节点，图片的默认节点照常生效。
 
 在 ComfyUI 里改完结构存回来时，指向已不存在节点的默认设置会被 `pruneDefaultNodes` 丢掉。
 
@@ -106,10 +108,10 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 以视频为例，`executeComfyUIVideoGenerate` 的完整顺序：
 
-1. **预存待续任务** —— 在提交之前就写 `savePendingTask`，保证关窗重启后能恢复（`submitted: false`）；
+1. **预存待续任务** —— 在提交之前写 `savePendingTask`（`submitted: false`），拿到 `prompt_id` 后才具备续查条件；
 2. **解析工作流** —— 从 store 取 `fileContent` 并 `JSON.parse`，得到可改的 `workflowObj`；
 3. **注入提示词** → `injectPromptsIntoWorkflow`；
-4. **注入图片** → `injectImagesIntoWorkflow`（上传后写文件名）；
+4. **注入显式图片/视频** → `injectExplicitMediaIntoWorkflow`（上传后写文件名）；
 5. **注入默认媒体** → `injectDefaultMediaIntoWorkflow`（图片/视频）；
 6. **注入音频** → `injectAudioIntoWorkflow`；
 7. **查节点声明** → `resolveVideoParamSpecs`，只为需要校验的字段问 `/object_info/{class}`；
@@ -132,6 +134,8 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 | 没有任何 `@` 赋值，也没默认节点 | 兜底猜测：遍历所有 `text`/`prompt` 输入，**只替换看起来像占位符的值**（长度 < 10 且不含空格，例如 `t-1`） |
 | 有 `@` 赋值 | 只写被 `@` 命中且在 `ioNodes` 里的节点，其余保持原值 |
 
+显式赋值仅处理 `prompt` 类型 IO，与默认输入共用 `text → prompt → string → value` 字段顺序，只写已有的字符串字段，保留连线。无法找到可写字段时在提交前报错，不静默使用旧文本。
+
 ### 8.2 图片 / 音频 / 视频
 
 媒体统一先上传到 ComfyUI 的 `/upload/image`（ComfyUI 只有 `/upload/image` 和 `/upload/mask` 两个上传路由，前者不校验扩展名，音频视频同样走它），再把返回的文件名写进节点：
@@ -142,7 +146,7 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 | 视频 | `video`，没有就试 `file`（核心 `LoadVideo` 用的是 `file`） |
 | 音频 | `audio`（并同步 `upload` 字段） |
 
-**读主机绝对路径的节点会被跳过**（音频的 `audio_file`、视频里既没有 `video` 也没有 `file` 的变体）—— 上传到 `input` 目录得到的文件名对它们无效，宁可跳过也不写错路径。
+**默认媒体注入会跳过不接受上传文件名的节点**（例如音频只有 `audio_file`，视频既没有字符串 `video` 也没有字符串 `file`）。显式 `@` 图片/视频无法解析素材或找不到可写字段时，在上传和提交前报错。显式视频与图片复用上传通道，回填时包含返回的子目录；未被指定的同类 IO 保持原值。
 
 `injectDefaultMediaIntoWorkflow` 还会处理 autogrow 可选参考位：ComfyUI 的可选槽形如 `ref_images.ref_image_1`（键名带点号），用户这次带的参考图不够填满时，没轮到的槽会连同下游链路一起摘掉，避免残留的示例文件名让工作流报错。只有整条链路终点全是可选槽才摘，否则一律保留。
 
@@ -152,7 +156,7 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 ### 8.4 视频参数
 
-`injectVideoParamsIntoWorkflow`（[comfyWorkflowService.ts:820](../src/services/comfyWorkflowService.ts:820)）按**输入名**匹配，不按 IO 节点过滤 —— 分辨率、帧率、帧数都在 latent / 合成节点上，用户不会去 `@` 它们。
+`injectVideoParamsIntoWorkflow`（[comfyWorkflowService.ts](../src/services/comfyWorkflowService.ts)）按**输入名**匹配，不按 IO 节点过滤 —— 分辨率、帧率、帧数都在 latent / 合成节点上，用户不会去 `@` 它们。
 
 认的字段是照着 ComfyUI 核心（`comfy_extras`、`comfy_api_nodes`）和常用插件的节点定义列的：
 
@@ -210,29 +214,53 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 ## 10. 断点续查
 
-`savePendingTask` 在提交**之前**就落盘，`taskId` 留空、`submitted: false`；拿到 `prompt_id` 后再回填。这样关窗重启后 [pollManager.ts](../src/services/pollManager.ts) 的 `resumeComfyUI` 能接着轮询，不会因为「提交了但没记下 id」而丢任务。任务结束（成功或失败）在 `finally` 里清理。
+`savePendingTask` 在提交前落盘，`taskId` 留空、`submitted: false`；拿到 `prompt_id` 后回填 ID 和实际服务器地址。只有已记录 ID 的任务才能由 [pollManager.ts](../src/services/pollManager.ts) 继续查询。提交响应丢失或关窗时尚未记下 ID 的任务仍不能自动找回，也不会自动重新提交。
+
+- history 请求连续失败或查询达到一小时上限：抛出 `ComfyPendingError`，保留任务并标记 `comfyRecoveryState=disconnected`。节点显示“继续查询”和“再次终止”；续查复用原 ID，不再次生成。
+- 取消前先标记 `cancel_pending` 并停止本地等待。远端取消得到成功响应后清理；请求失败保留记录和重试入口。重开项目不会自动再次发送取消请求。
+- 执行成功、明确执行失败、连续确认 history/queue 都不存在以及节点删除：正常清理。旧控制器退出或旧取消回执不得删除新任务。
+- 恢复下载回填须复核任务、项目和 canvas derivation guard；项目或画布已变化时保留任务供再次查询。
+- 已有可恢复任务时禁止覆盖提交；用户先续查或确认终止后再生成。
+
+正常生成的实时进度保存在非持久化 UI Store，图片、动画、视频和音频节点共用 `NodeGenerationProgress`。WebSocket 失效时继续 HTTP 轮询，恢复任务当前仍以 HTTP 续查为主。
 
 ## 11. ComfyUI 编辑窗口与回写
 
 工作流列表里点铅笔图标会开一个独立的 ComfyUI 窗口：
 
-1. **先拦缺节点** —— `findMissingNodeClasses` 拉 `/object_info` 比对 class_type。缺节点时 ComfyUI 会中止加载但照样开一个同名标签页，画布上还留着上一个工作流，看起来就像「打开了别的工作流」，所以宁可提前把缺什么说清楚；
-2. **开窗** —— Tauri 命令 `open_comfyui_window`，把 API JSON 和界面 JSON 一起带过去；
-3. **注入桥接脚本** —— `bridge.js` **只对 loopback 地址注入**，远程 ComfyUI 不注入；
+1. **检查数据与缺失节点** —— 先校验 API JSON；`findMissingNodeClasses` 比对 `/object_info`，最多等待 4 秒。缺失检查仅作提示，不阻止 ComfyUI 显示缺失节点；
+2. **开窗与载入** —— `open_comfyui_window` 接收请求 ID 和两份 JSON。`bridge.js` 等待画布与前端启动恢复完成，实际载入已有标签的当前草稿，或为新工作流载入编辑布局。空白、损坏或载入失败的布局尝试从 API 重建；新载入的节点居中，已有草稿保留视口；
+3. **确认结果** —— 原生端最多等待 60 秒，校验同源页面、请求 ID 和非空画布回执后才返回成功。打开请求串行，重复请求合并；面板显示检查、载入、成功或失败状态，失败可重试。桥接**只对 loopback 地址注入**，远程工作流自动载入明确报错，普通远程页面仍可打开；
 4. **保存** —— 桥接脚本把两种格式的 JSON 打包放到 `window.__AI_CANVAS_PENDING_SAVE_PAYLOAD__`，Rust 用 `eval_with_callback` 取回来、校验（分类合法、两份 JSON 都能解析、都不超 16 MiB），再 `emit` 出 `comfyui-workflow-save` 事件；
 5. **落库** —— 前端 `initComfyUIWindowBridge` 收到事件后再校验一次，已存在就更新（重新识别 IO 节点、剪掉失效的默认节点），不存在就新建。
 
-能匹配上的 id 只有手动导入的 `wf-` 和内置播种的 `builtin-` 两种（`WORKFLOW_ID_PATTERN`）。**内置工作流走的是同一条路径，编辑后同样原地更新**，不会另存成同名副本；id 认不出来才当新工作流入库。
+回写接受 `wf-*`、`builtin-*` 和 MCP 创建的 `workflow-mcp-*`（`WORKFLOW_ID_PATTERN`）。既有记录原地更新，保留服务器绑定并清理失效默认输入；无效 ID 不能覆盖既有记录。
 
-面板保持打开不关：ComfyUI 那边存回来后列表会实时刷新，方便接着改默认节点。
+保存身份绑定 ComfyUI 的真实标签对象，切换或重命名标签不改变对应记录。未知标签按新工作流命名保存，不按同名文件推断目标。“另存到 AI Canvas”创建新记录。导出期间切换标签时拒绝该次保存；延迟保存回执只绑定发起保存的标签，打开失败不改绑当前标签。前端版本无法提供标签身份时采用新建保存，不回退到最后一次打开的记录。
+
+面板保持打开不关：ComfyUI 那边存回来后列表会实时刷新，方便接着改默认节点。连接检查失败会返回错误，保留已有编辑窗口及未保存草稿。
+
+### 11.1 助手动态工作流与服务器绑定
+
+[comfyAgentService.ts](../src/services/comfyAgentService.ts) 负责助手的模型发现、动态工作流校验、执行和成功后的保存；[comfyTools.ts](../src/services/chat/tools/comfyTools.ts) 通过既有 Registry 暴露给内部助手与 MCP。
+
+- `comfyui_discover` 的 `resource=servers` 列出设置中的有效 HTTP(S) 服务器名称和 ID，不发网络请求，也不返回服务器地址。默认服务器标记 `isDefault=true`，通过省略 `serverId` 选择；其他服务器使用返回的 ID。即使没有默认地址，只要配置了额外服务器，工具也可用。
+- 查询 `models`/`nodes` 和 `comfyui_validate_workflow` 可传相同 `serverId`。省略时沿用默认服务器；显式 ID 无效时拒绝，不回落。校验凭证固定任务、项目、服务器 ID 和当时地址，执行工具只接收凭证，不接收任意地址或另选服务器。
+- 节点与模型缓存按实际地址隔离，保留 30 秒、每类最多 16 个地址；失败缓存会清理。发现或校验的异步读取返回时、执行前都会重新核对配置；改址或删除服务器后须重新校验。
+- 已提交任务继续在原地址查询或取消。成功后的保存凭证保留服务器绑定，保存前再次核对配置；保存的工作流写入既有 `serverId`。普通工作流保存后遇到服务器删除时仍使用原有默认回落策略。
+- 工具摘要显示所选服务器名称；模型发现/校验仍为 `read`，执行为 `media_generation`，保存为 `file_write`，权限与审批遵循既有 Policy。
+
+本阶段未改变输出数量、动态工作流任务恢复或节点参数映射规则。真实多服务器联调与生成仍需运行验收。
 
 ## 12. 已知限制
 
 - **`ai-text` 分类不能执行** —— 能导入、能分类，但文本生成不走 ComfyUI。
-- **`width`/`height` 注入不区分节点用途** —— 工作流里任何同时是数字 `width`/`height` 的节点都会被覆盖成当前尺寸。被 `@` 的都是提示词/图片 IO 节点，按它们过滤等于什么都不注入，所以这里选择了全量覆盖。
+- **尚无用户自定义参数映射面板** —— 尺寸按字段规则及节点声明注入，组合工作流仍需检查实际生效的字段。
 - **有秒数节点时帧率不生效**，见 [§8.4](#84-视频参数)。
 - **字段名不在表里的工作流不会被注入** —— 比如用 `video_length`、`seconds` 之类自定义命名的节点。
 - **浏览器开发模式下**编辑窗口、保存回写、本地启动 ComfyUI 都不可用（依赖 Tauri）。
+- **远程编辑窗口不注入保存桥接**，远程服务可执行工作流，但不具备与本地窗口相同的自动载入、保存回写能力。
+- **多结果尚未批量交付**：当前返回首个匹配媒体；参数面板、运行前体检和多结果管理属于后续扩展。
 
 ## 13. 相关文件
 
@@ -245,5 +273,10 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 | [src/services/aiDimensions.ts](../src/services/aiDimensions.ts) | 尺寸/帧数/秒数换算 |
 | [src/components/WorkflowPanel.tsx](../src/components/WorkflowPanel.tsx) | 工作流管理面板 |
 | [src/store/store.workflows.ts](../src/store/store.workflows.ts) | 工作流 CRUD 与持久化 |
-| [src-tauri/src/comfyui/mod.rs](../src-tauri/src/comfyui/mod.rs) | 启动本地 ComfyUI、编辑窗口、保存 payload 校验 |
+| [src-tauri/src/media/comfyui/mod.rs](../src-tauri/src/media/comfyui/mod.rs) | 启动本地 ComfyUI、编辑窗口、保存 payload 校验 |
+| [src-tauri/src/media/comfyui/bridge.js](../src-tauri/src/media/comfyui/bridge.js) | 标签身份绑定、编辑载入与保存握手 |
+| [tests/services/comfyBridgeSaveIdentity.test.ts](../tests/services/comfyBridgeSaveIdentity.test.ts) | 多标签保存和异步身份回归 |
+| [tests/services/comfyWorkflowEditor.test.ts](../tests/services/comfyWorkflowEditor.test.ts) | 打开回执、并发限制与缺节点检查超时 |
+| [tests/components/workflowEditorInteraction.test.tsx](../tests/components/workflowEditorInteraction.test.tsx) | 加载反馈、重复点击与失败重试交互 |
+| [tests/services/comfyTaskRecovery.test.ts](../tests/services/comfyTaskRecovery.test.ts) | 取消、断线、续查与过期回执回归 |
 | [tests/services/comfyVideoParams.test.ts](../tests/services/comfyVideoParams.test.ts) | 视频参数注入的回归用例 |

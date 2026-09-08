@@ -1,4 +1,5 @@
 import type { GeneralModelCategory, NodeType } from './index';
+import type { Locale } from '../i18n';
 
 export type PluginPermission =
   | 'node.read'
@@ -43,12 +44,16 @@ export interface PluginNodeToolOutputManifest {
   fields: string[];
 }
 
+export type PluginImageRepresentation = 'original' | 'lineart';
+
 export interface PluginNodeSetItem {
   /** 调用内稳定键；宿主用它解析边与分镜行的 frameKey。 */
   key: string;
   nodeType: NodeType;
   /** ai-image 节点绑定本次 invocation 的派生图像资源。 */
   resourceId?: string;
+  /** 图像节点使用的宿主派生表示；省略时保留原图。 */
+  representation?: PluginImageRepresentation;
   data: Record<string, PluginJsonValue>;
 }
 
@@ -233,6 +238,8 @@ export interface PluginUISurfaceProps {
   surface: PluginUISurface;
   /** 宿主主题；内嵌时实时同步，原生窗口重新聚焦时刷新，并派发 ai-canvas-theme-change。 */
   theme: 'dark' | 'light';
+  /** 实际生效的宿主语言；切换后派发 ai-canvas-locale-change，插件自行提供翻译。 */
+  readonly locale: Locale;
   /** 已按 inputFields 白名单裁剪的节点数据。 */
   node: { id: string; type: NodeType; data: Record<string, PluginJsonValue> };
   /** 声明 models.read 时填充的模型目录，不含任何凭据。 */
@@ -302,6 +309,8 @@ export interface InstalledPlugin {
 
 export interface NodePluginInvocationInput {
   projectId: string;
+  /** 本轮执行时实际生效的宿主语言。 */
+  locale: Locale;
   /** 宿主 effect 轮次；0 表示首次调用。 */
   iteration: number;
   /** 宿主弹窗收集的用户参数；右键直接执行时为空对象。 */
@@ -403,6 +412,7 @@ export type PluginNodeHostEffect =
   | { type: 'resource.readRange'; resourceId: string; offset: number; length: number }
   | { type: 'resource.createText'; content: string; suggestedName?: string }
   | { type: 'resource.export'; resourceId: string; suggestedName?: string }
+  | { type: 'image.lineArt'; resourceId: string }
   | { type: 'video.detectShots'; resourceId: string; start: number; end: number; threshold?: number; minShotDuration?: number }
   | { type: 'video.inspectFrame'; resourceId: string; time: number; direction: -1 | 0 | 1; boundary?: boolean }
   | {
@@ -428,6 +438,8 @@ export interface PluginNodeHostEffectResult {
 
 export interface PluginNodeInvocationInput {
   projectId: string;
+  /** 本轮执行时实际生效的宿主语言。 */
+  locale: Locale;
   iteration: number;
   node: {
     id: string;

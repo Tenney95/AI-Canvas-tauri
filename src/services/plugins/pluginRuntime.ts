@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getLocale } from '../../i18n';
 import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData, NodeType } from '../../types';
 import type {
@@ -20,6 +21,7 @@ import type {
   PluginPermission,
   PluginPlacement,
   PluginInvocationResources,
+  PluginImageRepresentation,
   PythonPluginRuntimeStatus,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
@@ -41,12 +43,15 @@ import {
   readPluginResourceRange,
   readPluginResourceText,
   readPluginDerivedResourceForOutput,
+  getPluginLineArtResource,
+  setPluginLineArtResource,
   registerPluginDerivedResource,
   replacePluginDerivedResources,
   resolvePluginResourceHostUrl,
   type PluginResourceReadContext,
 } from './pluginResourceService';
 import { buildPluginModelCatalog, collectDeclaredModelCategories } from './pluginModelCatalog';
+import { createPluginLineArtImage } from './pluginImageService';
 import { detectPluginVideoShots, extractPluginVideoFrames, inspectPluginVideoFrame } from './pluginVideoFrameService';
 
 const MAX_STRING_LENGTH = 256_000;
@@ -306,6 +311,7 @@ function buildInvocationInput(
   }
   return {
     projectId,
+    locale: getLocale(),
     iteration: options.iteration,
     parameters,
     node: {
@@ -348,15 +354,22 @@ function validateNodeSetData(
       if (normalized === undefined) throw new Error(`节点集字段不可 JSON 序列化: ${field}`);
       data[field] = normalized;
     }
-    const resourceId = typeof node.resourceId === 'string' ? node.resourceId.slice(0, 160) : undefined;
+    if (node.resourceId !== undefined && (typeof node.resourceId !== 'string'
+      || !node.resourceId || node.resourceId.length > 160)) throw new Error('节点集 resourceId 无效');
+    const resourceId = node.resourceId as string | undefined;
     const imageNode = nodeType === 'ai-image' || nodeType === 'source-image';
     if (imageNode && !resourceId) throw new Error('节点集图像节点必须绑定派生 resourceId');
     if (!imageNode && resourceId) throw new Error('只有图像节点可以绑定派生 resourceId');
+    if (node.representation !== undefined && (!imageNode
+      || (node.representation !== 'original' && node.representation !== 'lineart'))) {
+      throw new Error('只有图像节点可以指定 original 或 lineart 表示');
+    }
+    const representation = node.representation as PluginImageRepresentation | undefined;
     if (trustedMediaReferences) {
       assertSafeCanvasNoteColors(data);
       assertTrustedNodeMediaReferences(data, trustedMediaReferences, nodeType);
     }
-    return { key, nodeType, resourceId, data };
+    return { key, nodeType, resourceId, ...(representation ? { representation } : {}), data };
   });
 
   const rawEdges = rawData.edges === undefined ? [] : rawData.edges;
@@ -631,6 +644,13 @@ function parseHostEffect(
 ): PluginNodeHostEffect {
   const raw = recordValue(rawEffect);
   const type = raw.type;
+  if (type === 'image.lineArt') {
+    if (typeof raw.resourceId !== 'string' || !raw.resourceId.trim() || raw.resourceId.length > 160
+      || Object.keys(raw).some((key) => key !== 'type' && key !== 'resourceId')) {
+      throw new Error('线稿转换只接受有效的派生 resourceId');
+    }
+    return { type, resourceId: raw.resourceId };
+  }
   if (type === 'model.generate') {
     const rawImageUrls = Array.isArray(raw.imageUrls) ? raw.imageUrls : [];
     const imageUrls = rawImageUrls.filter((item): item is string => typeof item === 'string');
@@ -1015,6 +1035,34 @@ async function executeHostEffect(
       );
       return { type: effect.type, ok: true, value: toPluginJson(value) };
     }
+    if (effect.type === 'image.lineArt') {
+      if (!context.permissions.includes('files.connected.read') || !context.permissions.includes('files.output.create')) {
+        throw new Error('线稿转换要求 files.connected.read 与 files.output.create 权限');
+      }
+      assertFresh();
+      const lease = context.resourceReadContext!;
+      if (!context.resources?.derived.some((resource) => resource.resourceId === effect.resourceId)) {
+        throw new Error('线稿转换只能读取当前调用的派生图像');
+      }
+      let image = getPluginLineArtResource(lease, effect.resourceId);
+      if (!image) {
+        const original = readPluginDerivedResourceForOutput(lease, effect.resourceId);
+        image = await createPluginLineArtImage({ bytes: original.bytes, mediaType: original.resource.mediaType }, {
+          signal: context.signal,
+          assertFresh,
+        });
+        assertFresh();
+        setPluginLineArtResource(lease, effect.resourceId, image);
+      }
+      assertFresh();
+      return { type: effect.type, ok: true, value: {
+        resourceId: effect.resourceId,
+        representation: 'lineart',
+        width: image.width,
+        height: image.height,
+        previewDataUrl: image.previewDataUrl,
+      } };
+    }
     if (effect.type === 'video.extractFrames' || effect.type === 'video.detectShots' || effect.type === 'video.inspectFrame') {
       if (
         !context.permissions.includes('files.connected.read')
@@ -1214,6 +1262,7 @@ export async function executePluginNode(
       requireCurrentPluginRevision(pluginNode.pluginId, sourceDigest, revisionDigest);
       const input: PluginNodeInvocationInput = {
         projectId,
+        locale: getLocale(),
         iteration,
         node: { id: nodeId, values: values ?? {} },
         inputs,
@@ -1293,24 +1342,35 @@ async function preparePluginNodeSet(options: {
     filePath: string;
     fileName: string;
     dimensions: { nodeWidth: number; nodeHeight: number };
+    pixelDimensions?: { width: number; height: number };
   }>();
   const nodeIds = new Map(options.nodeSet.nodes.map((item) => [item.key, `node-${generateId()}`]));
   const rollback = async () => {
     await Promise.all(savedPaths.map((filePath) => moveToTrash(filePath)));
   };
+  const validateImages = () => {
+    options.assertFresh();
+    for (const item of options.nodeSet.nodes) {
+      if (item.resourceId) readPluginDerivedResourceForOutput(
+        options.resourceContext, item.resourceId, item.representation ?? 'original',
+      );
+    }
+  };
 
   try {
+    // 整批先验证选择的表示，缺少线稿时不能先保存部分原图。
+    validateImages();
     for (const item of options.nodeSet.nodes) {
       if (!item.resourceId) continue;
       options.assertFresh();
-      const derived = readPluginDerivedResourceForOutput(options.resourceContext, item.resourceId);
+      const derived = readPluginDerivedResourceForOutput(options.resourceContext, item.resourceId, item.representation ?? 'original');
       const extension = derived.resource.mediaType === 'image/png'
         ? 'png'
         : derived.resource.mediaType === 'image/webp' ? 'webp' : 'jpg';
       const fileName = `video-frame-${item.key}.${extension}`;
       const saved = await saveBinaryToProjectData(derived.bytes, options.projectId, fileName);
+      if (saved) savedPaths.push(saved.filePath);
       if (!saved?.assetUrl) throw new Error(`无法保存抽帧图像「${item.key}」`);
-      savedPaths.push(saved.filePath);
       // 像素尺寸不是节点展示尺寸；从宿主保存的图像计算，避免竖图落入默认横框。
       const dimensions = await computeImageNodeDimensions(saved.assetUrl);
       options.assertFresh();
@@ -1320,10 +1380,12 @@ async function preparePluginNodeSet(options: {
         filePath: saved.filePath,
         fileName: saved.filePath.replace(/\\/gu, '/').split('/').at(-1) ?? fileName,
         dimensions,
+        pixelDimensions: derived.dimensions,
       });
     }
 
-    options.assertFresh();
+    // 保存含异步操作；提交前再次确认派生批次仍有效。
+    validateImages();
     const base = derivedNodePlacement(options.sourceNode);
     const columns = Math.min(4, Math.max(1, options.nodeSet.nodes.length));
     let rowY = base.position.y;
@@ -1374,6 +1436,10 @@ async function preparePluginNodeSet(options: {
         data.fileName = image.fileName;
         data.nodeWidth = image.dimensions.nodeWidth;
         data.nodeHeight = image.dimensions.nodeHeight;
+        if (image.pixelDimensions) {
+          data.imageWidth = image.pixelDimensions.width;
+          data.imageHeight = image.pixelDimensions.height;
+        }
       }
       const nodeHeight = typeof data.nodeHeight === 'number' && Number.isFinite(data.nodeHeight) && data.nodeHeight > 0
         ? data.nodeHeight : item.nodeType === 'ai-shotlist' ? 380 : 158;

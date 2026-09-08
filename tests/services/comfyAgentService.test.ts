@@ -21,9 +21,12 @@ import {
   clearComfyAgentCachesForTests,
   discoverComfyUI,
   executeValidatedComfyUIWorkflow,
+  getComfyWorkflowSaveOfferSummary,
+  getValidatedComfyWorkflowSummary,
   saveCompletedComfyUIWorkflow,
   validateComfyUIWorkflow,
 } from '../../src/services/comfyAgentService';
+import { comfyBaseUrlFor } from '../../src/services/comfyServers';
 
 const objectInfo = {
   CheckpointLoaderSimple: {
@@ -74,6 +77,162 @@ beforeEach(() => {
   clearComfyAgentCachesForTests();
   comfyFetchMock.mockReset();
   pollComfyHistoryMock.mockReset();
+});
+
+describe('ComfyUI assistant server selection', () => {
+  const remoteUrl = 'http://comfy-video.test:8288';
+  const validationArgs = { kind: 'image' as const, taskId: 'task-1', projectId: 'project-1', serverId: 'video-server' };
+  const executionArgs = { taskId: 'task-1', projectId: 'project-1', conversationId: 'conversation-1', prompt: '猫', deliveryMode: 'chat' as const };
+
+  beforeEach(() => {
+    useAppStore.setState((state) => ({ config: {
+      ...state.config,
+      comfyServers: [
+        { id: 'video-server', name: '视频服务器', url: `${remoteUrl}/` },
+        { id: 'other-server', name: '视频服务器', url: 'http://comfy-other.test:8188' },
+      ],
+    } }));
+    comfyFetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/object_info')) return jsonResponse(objectInfo);
+      if (url.endsWith('/prompt')) return jsonResponse({ prompt_id: 'remote-task' });
+      if (url.includes('/api/jobs/')) return jsonResponse({ ok: true });
+      throw new Error(`unexpected ${url}`);
+    });
+    pollComfyHistoryMock.mockImplementation(async (
+      _baseUrl: string, _promptId: string, _timeout: string, extract: (outputs: unknown) => unknown,
+    ) => extract({ '3': { images: [{ filename: 'remote.png', type: 'output' }] } }));
+  });
+
+  it('lists configured server identities without exposing addresses or sending network requests', async () => {
+    const result = await discoverComfyUI({ resource: 'servers' });
+    expect(result.servers).toEqual([
+      { serverName: '默认服务器', isDefault: true },
+      { serverId: 'video-server', serverName: '视频服务器', isDefault: false },
+      { serverId: 'other-server', serverName: '视频服务器', isDefault: false },
+    ]);
+    expect(JSON.stringify(result)).not.toContain('http');
+    expect(comfyFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('supports an additional server when the default URL is empty', async () => {
+    useAppStore.setState((state) => ({ config: { ...state.config, comfyUIUrl: '' } }));
+    expect((await discoverComfyUI({ resource: 'servers' })).servers).toHaveLength(2);
+    await expect(discoverComfyUI({ resource: 'nodes' })).rejects.toThrow('serverId');
+    const result = await discoverComfyUI({ resource: 'nodes', serverId: 'video-server' });
+    expect(result).toMatchObject({ serverId: 'video-server', serverName: '视频服务器', returned: 3 });
+    expect(comfyFetchMock).toHaveBeenCalledWith(`${remoteUrl}/object_info`);
+  });
+
+  it.each(['missing-server', '', 'http://unconfigured.test'])('rejects unknown selection %s without default fallback', async (serverId) => {
+    await expect(discoverComfyUI({ resource: 'nodes', serverId })).rejects.toThrow('服务器不存在');
+    expect(comfyFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not list or request a server with an invalid API URL', async () => {
+    useAppStore.setState((state) => ({ config: {
+      ...state.config, comfyServers: [{ id: 'bad', name: '无效服务', url: 'file:///workflow.json' }],
+    } }));
+    expect((await discoverComfyUI({ resource: 'servers' })).servers).toHaveLength(1);
+    await expect(discoverComfyUI({ resource: 'nodes', serverId: 'bad' })).rejects.toThrow('地址无效');
+    expect(comfyFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('isolates node and model caches when alternating between two servers', async () => {
+    comfyFetchMock.mockImplementation(async (url: string) => {
+      const remote = url.startsWith(remoteUrl);
+      const modelName = remote ? 'remote.safetensors' : 'local.safetensors';
+      if (url.endsWith('/models')) return jsonResponse(['checkpoints']);
+      if (url.endsWith('/models/checkpoints')) return jsonResponse([modelName]);
+      if (url.endsWith('/object_info')) return jsonResponse({ [remote ? 'RemoteNode' : 'LocalNode']: { output: [] } });
+      throw new Error(`unexpected ${url}`);
+    });
+    for (const serverId of [undefined, 'video-server', undefined, 'video-server']) {
+      const nodes = await discoverComfyUI({ resource: 'nodes', serverId });
+      const models = await discoverComfyUI({ resource: 'models', serverId });
+      expect(nodes.nodes).toEqual([expect.objectContaining({ classType: serverId ? 'RemoteNode' : 'LocalNode' })]);
+      expect(models.folders).toEqual([expect.objectContaining({ models: [serverId ? 'remote.safetensors' : 'local.safetensors'] })]);
+    }
+    expect(comfyFetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it('evicts a failed cache entry so an explicit retry can recover immediately', async () => {
+    comfyFetchMock.mockResolvedValueOnce(jsonResponse({}, 503));
+    await expect(discoverComfyUI({ resource: 'nodes', serverId: 'video-server' })).rejects.toThrow('503');
+    expect((await discoverComfyUI({ resource: 'nodes', serverId: 'video-server' })).returned).toBe(3);
+    expect(comfyFetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('validates installed models against the selected server definitions', async () => {
+    comfyFetchMock.mockImplementation(async (url: string) => {
+      const info = structuredClone(objectInfo);
+      if (url.startsWith(remoteUrl)) info.CheckpointLoaderSimple.input.required.ckpt_name = [['remote.safetensors']];
+      return jsonResponse(info);
+    });
+    const remoteWorkflow = workflow();
+    remoteWorkflow['1'].inputs.ckpt_name = 'remote.safetensors';
+    expect(await validateComfyUIWorkflow({ ...validationArgs, workflow: remoteWorkflow })).toMatchObject({ modelNames: ['remote.safetensors'] });
+    await expect(validateComfyUIWorkflow({ ...validationArgs, serverId: undefined, workflow: remoteWorkflow })).rejects.toThrow('允许的选项');
+  });
+
+  it.each(['discover', 'validate'])('rejects a stale %s result if the target changes while reading definitions', async (action) => {
+    let finish!: (value: Response) => void;
+    comfyFetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    const request = action === 'discover'
+      ? discoverComfyUI({ resource: 'nodes', serverId: 'video-server' })
+      : validateComfyUIWorkflow({ ...validationArgs, workflow: workflow() });
+    const rejected = expect(request).rejects.toThrow('服务器已删除或地址已变化');
+    useAppStore.setState((state) => ({ config: { ...state.config, comfyServers: [] } }));
+    finish(jsonResponse(objectInfo));
+    await rejected;
+  });
+
+  it('keeps execution and saved workflow on the selected server when the default changes', async () => {
+    const validated = await validateComfyUIWorkflow({ ...validationArgs, workflow: workflow() });
+    expect(validated).toMatchObject({ serverId: 'video-server', serverName: '视频服务器' });
+    expect(JSON.stringify(validated)).not.toContain(remoteUrl);
+    useAppStore.setState((state) => ({ config: { ...state.config, comfyUIUrl: 'http://new-default.test' } }));
+    const result = await executeValidatedComfyUIWorkflow({ ...executionArgs, validationId: validated.validationId });
+    expect(comfyFetchMock).toHaveBeenCalledWith(`${remoteUrl}/prompt`, expect.objectContaining({ method: 'POST' }));
+    expect(pollComfyHistoryMock).toHaveBeenCalledWith(remoteUrl, 'remote-task', expect.any(String), expect.any(Function), undefined);
+    expect(result.artifact.url).toContain(`${remoteUrl}/view?`);
+    expect(result.saveOffer).toMatchObject({ serverId: 'video-server', serverName: '视频服务器' });
+    const saved = await saveCompletedComfyUIWorkflow({ ...executionArgs, saveOfferId: result.saveOffer.saveOfferId, name: '远程工作流' });
+    expect(useAppStore.getState().workflows.find((item) => item.id === saved.id)?.serverId).toBe('video-server');
+    expect(comfyBaseUrlFor(saved.id)).toBe(remoteUrl);
+  });
+
+  it.each(['delete', 'replace', 'default'])('invalidates validation after %s without sending a prompt', async (change) => {
+    const validated = await validateComfyUIWorkflow({ ...validationArgs, serverId: change === 'default' ? undefined : validationArgs.serverId, workflow: workflow() });
+    useAppStore.setState((state) => ({ config: {
+      ...state.config,
+      comfyUIUrl: 'http://new-default.test',
+      comfyServers: change === 'delete' ? [] : [{ id: 'video-server', name: '新服务', url: 'http://replacement.test' }],
+    } }));
+    expect(getValidatedComfyWorkflowSummary(validated.validationId, 'task-1', 'project-1')).toBeNull();
+    await expect(executeValidatedComfyUIWorkflow({ ...executionArgs, validationId: validated.validationId })).rejects.toThrow('重新选择服务器');
+    expect(comfyFetchMock.mock.calls.some(([url]) => String(url).endsWith('/prompt'))).toBe(false);
+  });
+
+  it('does not save a workflow onto a replacement server after generation', async () => {
+    const validated = await validateComfyUIWorkflow({ ...validationArgs, workflow: workflow() });
+    const result = await executeValidatedComfyUIWorkflow({ ...executionArgs, validationId: validated.validationId });
+    useAppStore.setState((state) => ({ config: { ...state.config, comfyServers: [] } }));
+    expect(getComfyWorkflowSaveOfferSummary(result.saveOffer.saveOfferId, 'conversation-1', 'project-1')).toBeNull();
+    await expect(saveCompletedComfyUIWorkflow({ ...executionArgs, saveOfferId: result.saveOffer.saveOfferId, name: '远程工作流' })).rejects.toThrow('重新选择服务器');
+    expect(useAppStore.getState().workflows).toHaveLength(0);
+  });
+
+  it('cancels a submitted task on its original server even after configuration changes', async () => {
+    const validated = await validateComfyUIWorkflow({ ...validationArgs, workflow: workflow() });
+    const controller = new AbortController();
+    pollComfyHistoryMock.mockImplementation(async () => {
+      useAppStore.setState((state) => ({ config: { ...state.config, comfyServers: [] } }));
+      controller.abort();
+      throw new DOMException('aborted', 'AbortError');
+    });
+    await expect(executeValidatedComfyUIWorkflow({ ...executionArgs, validationId: validated.validationId, signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(comfyFetchMock).toHaveBeenCalledWith(`${remoteUrl}/api/jobs/remote-task/cancel`, { method: 'POST' });
+  });
 });
 
 describe('ComfyUI assistant discovery', () => {

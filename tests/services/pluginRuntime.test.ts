@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { LOCALES, setLocale } from '../../src/i18n';
 import type { InstalledPlugin, PluginInvocationResources } from '../../src/types/plugin';
 
 const mocks = vi.hoisted(() => ({
@@ -12,6 +13,9 @@ const mocks = vi.hoisted(() => ({
   saveBinaryToProjectData: vi.fn(),
   moveToTrash: vi.fn(),
   readDerivedResource: vi.fn(),
+  getLineArtResource: vi.fn(),
+  setLineArtResource: vi.fn(),
+  createLineArtImage: vi.fn(),
   registerDerivedResource: vi.fn(),
   resolveResourceHostUrl: vi.fn(),
   extractVideoFrames: vi.fn(),
@@ -44,6 +48,8 @@ vi.mock('../../src/services/plugins/pluginResourceService', async (importOrigina
   return {
     ...actual,
     readPluginDerivedResourceForOutput: mocks.readDerivedResource,
+    getPluginLineArtResource: mocks.getLineArtResource,
+    setPluginLineArtResource: mocks.setLineArtResource,
     registerPluginDerivedResource: mocks.registerDerivedResource,
     resolvePluginResourceHostUrl: mocks.resolveResourceHostUrl,
   };
@@ -52,6 +58,9 @@ vi.mock('../../src/services/plugins/pluginVideoFrameService', () => ({
   extractPluginVideoFrames: mocks.extractVideoFrames,
   detectPluginVideoShots: mocks.detectShots,
   inspectPluginVideoFrame: mocks.inspectFrame,
+}));
+vi.mock('../../src/services/plugins/pluginImageService', () => ({
+  createPluginLineArtImage: mocks.createLineArtImage,
 }));
 
 import {
@@ -331,6 +340,7 @@ const outputToolPlugin: InstalledPlugin = {
 afterEach(() => vi.unstubAllGlobals());
 
 beforeEach(() => {
+  setLocale('zh-CN');
   vi.clearAllMocks();
   mocks.revision = 3;
   mocks.state = {
@@ -361,6 +371,12 @@ beforeEach(() => {
     assetUrl: 'asset://localhost/plugin-output.txt',
   });
   mocks.moveToTrash.mockResolvedValue(undefined);
+  mocks.getLineArtResource.mockReset().mockReturnValue(undefined);
+  mocks.setLineArtResource.mockReset();
+  mocks.createLineArtImage.mockReset().mockResolvedValue({
+    bytes: new Uint8Array([137, 80, 78, 71]), mediaType: 'image/png', width: 480, height: 720,
+    previewDataUrl: 'data:image/png;base64,iVBORw==',
+  });
   mocks.readDerivedResource.mockImplementation((_context, resourceId: string) => ({
     resource: {
       resourceId,
@@ -411,6 +427,15 @@ describe('node plugin runtime', () => {
     const invocation = mocks.invoke.mock.calls[0][1] as Record<string, unknown>;
     expect(invocation).not.toHaveProperty('runtime');
     expect(invocation).not.toHaveProperty('source');
+  });
+
+  it.each(LOCALES)('passes the effective %s locale to tools without exposing app configuration', async (locale) => {
+    setLocale(locale);
+    const tool = getAvailableNodePluginTools([plugin], 'ai-text', 'node-context-menu')[0];
+    await executeNodePluginTool(tool, 'node-1');
+    const input = mocks.invoke.mock.calls[0][1].input;
+    expect(input.locale).toBe(locale);
+    expect(input).not.toHaveProperty('config');
   });
 
   it('reuses a custom UI execution lease without revoking it after submit', async () => {
@@ -494,6 +519,7 @@ describe('node plugin runtime', () => {
       invocationId: expect.any(String),
       input: {
         projectId: 'project-1',
+        locale: 'zh-CN',
         iteration: 0,
         parameters: { tone: 'brief' },
         node: {
@@ -747,6 +773,7 @@ describe('node plugin runtime', () => {
   });
 
   it('runs a custom node through a host-controlled model effect', async () => {
+    setLocale('ja-JP');
     mocks.state = {
       ...mocks.state,
       nodes: [{
@@ -795,6 +822,8 @@ describe('node plugin runtime', () => {
       invocationId: expect.any(String),
     });
     expect(secondInvocation.invocationId).toBe(firstInvocation.invocationId);
+    expect(firstInvocation).toMatchObject({ input: { locale: 'ja-JP' } });
+    expect(secondInvocation).toMatchObject({ input: { locale: 'ja-JP' } });
     expect(firstInvocation).not.toHaveProperty('runtime');
     expect(firstInvocation).not.toHaveProperty('source');
     expect(mocks.updateNodeData).toHaveBeenCalledWith('plugin-node-1', expect.objectContaining({
@@ -1522,6 +1551,109 @@ describe('node plugin runtime', () => {
   });
 });
 
+describe('visible frame outputs', () => {
+  function setup(representation: 'original' | 'lineart', count = 2) {
+    const outputPlugin: InstalledPlugin = {
+      ...plugin,
+      manifest: { ...plugin.manifest, permissions: ['node.read', 'node.write', 'files.connected.read', 'files.output.create'], contributes: {
+        nodeTools: [{ id: 'frames', title: '分镜', nodeTypes: ['ai-text'], placements: ['node-context-menu'], inputFields: ['label'],
+          output: { mode: 'create-node-set', nodeTypes: ['ai-image', 'ai-shotlist'], maxNodes: 25, fields: ['imageWidth', 'imageHeight', 'frameAnalysis', 'shotlistRows'] } }],
+      } },
+    };
+    mocks.state.installedPlugins = [outputPlugin];
+    const frames = Array.from({ length: count }, (_, i) => ({ key: `frame-${i}`, nodeType: 'ai-image', resourceId: `derived-${i}`, representation,
+      data: { imageWidth: 9999, imageHeight: 9999, frameAnalysis: { shotId: `shot-${i}`, actualTime: i, content: '人工修改' } } }));
+    const payload = { data: { nodes: [...frames, { key: 'sheet', nodeType: 'ai-shotlist', data: {
+      shotlistRows: frames.map((frame, i) => ({ id: `shot-${i}`, frameKey: frame.key, content: '人工修改', frameAnalysis: { actualTime: i, reviewStatus: 'reviewed' } })),
+    } }], edges: [] } };
+    mocks.invoke.mockResolvedValue(payload);
+    mocks.readDerivedResource.mockImplementation((_context, resourceId: string, view = 'original') => ({
+      resource: { resourceId, origin: 'derived', displayName: 'frame.jpg', mediaType: view === 'lineart' ? 'image/png' : 'image/jpeg', size: 4, access: 'read' },
+      bytes: new Uint8Array(view === 'lineart' ? [137, 80, 78, 71] : [255, 216, 255, 224]),
+      ...(view === 'lineart' ? { dimensions: { width: 480, height: 720 } } : {}),
+    }));
+    mocks.saveBinaryToProjectData.mockImplementation(async (_bytes, _projectId, fileName: string) => ({ filePath: `G:\\project\\${fileName}`, assetUrl: `asset://localhost/${fileName}` }));
+    vi.stubGlobal('Image', class {
+      naturalWidth = 480;
+      naturalHeight = 720;
+      onload: (() => void) | null = null;
+      set src(_value: string) { this.onload?.(); }
+    });
+    const resources: PluginInvocationResources = { self: [], incoming: [], inputs: {}, package: [], derived: frames.map((frame) => ({
+      resourceId: frame.resourceId, origin: 'derived', access: 'read', displayName: 'frame.jpg', mediaType: 'image/jpeg', size: 4,
+    })) };
+    const guard = registerCanvasDerivation(mocks.state as never, 'node-1')!;
+    const run = () => executeNodePluginTool(getAvailableNodePluginTools([outputPlugin], 'ai-text')[0], 'node-1', {}, {
+      invocationId: 'visible-output', guard, resources, trustedMediaReferences: new Set(),
+    });
+    return { run, payload, resources };
+  }
+
+  it.each(['original', 'lineart'] as const)('saves 24 actual %s images and binds the same files to shotlist rows', async (view) => {
+    const { run, resources } = setup(view, 24);
+    await run();
+    const extension = view === 'lineart' ? 'png' : 'jpg';
+    expect(mocks.saveBinaryToProjectData).toHaveBeenCalledTimes(24);
+    const expectedBytes = new Uint8Array(view === 'lineart' ? [137, 80, 78, 71] : [255, 216, 255, 224]);
+    for (let i = 0; i < 24; i++) {
+      expect(mocks.saveBinaryToProjectData).toHaveBeenNthCalledWith(i + 1, expectedBytes, 'project-1', `video-frame-frame-${i}.${extension}`);
+    }
+    expect(mocks.addNodesWithEdges).toHaveBeenCalledTimes(1);
+    const nodes = mocks.addNodesWithEdges.mock.calls[0][0];
+    const rows = nodes[24].data.shotlistRows;
+    nodes.slice(0, 24).forEach((node: { id: string; data: Record<string, unknown> }, i: number) => {
+      expect(node.data.frameAnalysis).toMatchObject({ shotId: `shot-${i}`, actualTime: i, content: '人工修改' });
+      if (view === 'lineart') expect(node.data).toMatchObject({ imageWidth: 480, imageHeight: 720 });
+      expect(rows[i]).toMatchObject({ id: `shot-${i}`, content: '人工修改', frameAnalysis: { actualTime: i, reviewStatus: 'reviewed' },
+        frame: { nodeId: node.id, kind: 'image', url: node.data.imageUrl, filePath: node.data.filePath } });
+    });
+    expect(resources.derived.every((r) => r.mediaType === 'image/jpeg')).toBe(true);
+    expect(mocks.moveToTrash).not.toHaveBeenCalled();
+  });
+
+  it('preflights every selected variant before saving any file', async () => {
+    const { run } = setup('lineart');
+    const read = mocks.readDerivedResource.getMockImplementation()!;
+    mocks.readDerivedResource.mockImplementation((...args) => {
+      if (args[1] === 'derived-1') throw new Error('该帧尚未生成线稿');
+      return read(...args);
+    });
+    await expect(run()).rejects.toThrow('尚未生成线稿');
+    expect(mocks.saveBinaryToProjectData).not.toHaveBeenCalled();
+    expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+  });
+
+  it.each(['save', 'empty-url-first', 'empty-url-second', 'lease', 'commit'] as const)('recycles all written line art on %s failure', async (failure) => {
+    const { run } = setup('lineart');
+    const save = mocks.saveBinaryToProjectData.getMockImplementation()!;
+    let count = 0;
+    mocks.saveBinaryToProjectData.mockImplementation(async (...args) => {
+      count++;
+      if (failure === 'save' && count === 2) throw new Error('写入失败');
+      const saved = await save(...args);
+      if ((failure === 'empty-url-first' && count === 1) || (failure === 'empty-url-second' && count === 2)) return { ...saved, assetUrl: '' };
+      if (failure === 'lease' && count === 2) mocks.readDerivedResource.mockImplementation(() => { throw new Error('插件资源已失效'); });
+      return saved;
+    });
+    if (failure === 'commit') mocks.addNodesWithEdges.mockImplementationOnce(() => { throw new Error('画布写入失败'); });
+    await expect(run()).rejects.toThrow();
+    const expectedCount = failure === 'save' || failure === 'empty-url-first' ? 1 : 2;
+    expect(mocks.moveToTrash).toHaveBeenCalledTimes(expectedCount);
+    for (let i = 0; i < expectedCount; i++) expect(mocks.moveToTrash).toHaveBeenCalledWith(`G:\\project\\video-frame-frame-${i}.png`);
+    if (failure !== 'commit') expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+  });
+
+  it.each(['unknown', 'non-image', 'oversized-id'] as const)('rejects %s output descriptors before any write', async (invalid) => {
+    const { run, payload } = setup('lineart');
+    if (invalid === 'unknown') Object.assign(payload.data.nodes[0], { representation: 'other' });
+    if (invalid === 'non-image') Object.assign(payload.data.nodes[2], { representation: 'lineart' });
+    if (invalid === 'oversized-id') Object.assign(payload.data.nodes[0], { resourceId: 'x'.repeat(161) });
+    await expect(run()).rejects.toThrow();
+    expect(mocks.saveBinaryToProjectData).not.toHaveBeenCalled();
+    expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+  });
+});
+
 describe('node plugin tool model effects', () => {
   function uiContext() {
     return {
@@ -1536,6 +1668,70 @@ describe('node plugin tool model effects', () => {
       },
     };
   }
+
+  function lineArtContext() {
+    const context = uiContext();
+    context.resources.derived.push({ resourceId: 'frame', origin: 'derived', access: 'read', displayName: 'frame.jpg', mediaType: 'image/jpeg', size: 3 });
+    return { ...context, effect: { type: 'image.lineArt', resourceId: 'frame' } };
+  }
+
+  it('converts an authorized original once and returns only a bounded preview and representation', async () => {
+    const context = lineArtContext();
+    const first = await executePluginUiHostEffect(context);
+    expect(first).toEqual({ type: 'image.lineArt', ok: true, value: {
+      resourceId: 'frame', representation: 'lineart', width: 480, height: 720,
+      previewDataUrl: 'data:image/png;base64,iVBORw==',
+    } });
+    expect(mocks.createLineArtImage).toHaveBeenCalledWith({ bytes: new Uint8Array([1, 2, 3]), mediaType: 'image/jpeg' }, expect.objectContaining({ assertFresh: expect.any(Function) }));
+    const cached = mocks.setLineArtResource.mock.calls[0][2];
+    mocks.getLineArtResource.mockReturnValue(cached);
+    expect(await executePluginUiHostEffect(context)).toEqual(first);
+    expect(mocks.createLineArtImage).toHaveBeenCalledTimes(1);
+    expect(mocks.setLineArtResource).toHaveBeenCalledTimes(1);
+    expect(mocks.saveBinaryToProjectData).not.toHaveBeenCalled();
+    expect(mocks.generateImage).not.toHaveBeenCalled();
+    expect(mocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { resourceId: '' }, { resourceId: 42 }, { resourceId: 'a'.repeat(161) },
+    { resourceId: 'frame', url: 'https://example.com/frame.png' },
+    { resourceId: 'frame', bytes: [137, 80, 78, 71] },
+  ])('rejects malformed or uploaded line-art input before processing %j', async (extra) => {
+    await expect(executePluginUiHostEffect({ ...lineArtContext(), effect: { type: 'image.lineArt', ...extra } })).rejects.toThrow('只接受');
+    expect(mocks.createLineArtImage).not.toHaveBeenCalled();
+  });
+
+  it.each(['foreign', 'self-video'])('rejects non-derived line-art source %s', async (resourceId) => {
+    expect(await executePluginUiHostEffect({ ...lineArtContext(), effect: { type: 'image.lineArt', resourceId } }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('当前调用的派生图像') });
+    expect(mocks.getLineArtResource).not.toHaveBeenCalled();
+    expect(mocks.createLineArtImage).not.toHaveBeenCalled();
+  });
+
+  it.each(['files.connected.read', 'files.output.create'] as const)('requires %s for line art', async (missing) => {
+    const context = lineArtContext();
+    expect(await executePluginUiHostEffect({ ...context, permissions: context.permissions.filter((p) => p !== missing) }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('权限') });
+    expect(mocks.createLineArtImage).not.toHaveBeenCalled();
+  });
+
+  it.each(['cancel', 'project', 'revision', 'plugin', 'lease', 'decode'] as const)('does not cache line art after %s failure', async (failure) => {
+    const context = lineArtContext();
+    const controller = new AbortController();
+    mocks.createLineArtImage.mockImplementationOnce(async () => {
+      if (failure === 'cancel') controller.abort();
+      if (failure === 'project') mocks.state.currentProjectId = 'other';
+      if (failure === 'revision') mocks.revision += 1;
+      if (failure === 'plugin') mocks.state.installedPlugins = [{ ...plugin, enabled: false }];
+      if (failure === 'lease') mocks.setLineArtResource.mockImplementationOnce(() => { throw new Error('插件资源已失效'); });
+      if (failure === 'decode') throw new Error('图片解码失败');
+      return { bytes: new Uint8Array([137, 80, 78, 71]), mediaType: 'image/png', width: 1, height: 1, previewDataUrl: 'data:image/png;base64,iVBORw==' };
+    });
+    expect(await executePluginUiHostEffect({ ...context, signal: controller.signal })).toMatchObject({ ok: false });
+    if (failure !== 'lease') expect(mocks.setLineArtResource).not.toHaveBeenCalled();
+    expect(mocks.saveBinaryToProjectData).not.toHaveBeenCalled();
+  });
 
   it('routes local shot and frame operations through self resource and rejects stale results', async () => {
     mocks.detectShots.mockResolvedValueOnce({ shots: [{ inPoint: 0, outPoint: 1, score: 0 }], scannedFrames: 25 });

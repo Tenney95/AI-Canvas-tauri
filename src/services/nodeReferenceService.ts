@@ -2,7 +2,7 @@
  * 解析工作流输入中的画布节点、剧本资产和本地资产引用，并替换为可提交的实际内容。
  */
 import { useAppStore } from '../store/useAppStore';
-import { resolveDramaAssetImageRef } from './dramaAssetPrompt';
+import { resolveDramaActionMediaRef, resolveDramaAssetImageRef } from './dramaAssetPrompt';
 import { parseDramaMentionId } from '../types/dramaAssets';
 
 /** 解析 workflowInputs 值中的 @{nodeId:label} / @drama{id:name} 引用，替换为对应输出内容 */
@@ -16,11 +16,16 @@ export function resolveNodeReferences(value: string): string {
     // 延迟 require 形状的 import 在顶部已有 store；简介格式与 promptResolver 一致
     const lib = store.dramaAssets;
     // 工作流文本输入只能塞一个地址，#all 在这里退化成主视觉那一张
-    const { assetId, referenceImageId } = parseDramaMentionId(dramaId);
+    const { assetId, referenceImageId, actionId, actionMediaId } = parseDramaMentionId(dramaId);
     const asset =
       lib.characters.find((a) => a.id === assetId)
       || lib.scenes.find((a) => a.id === assetId)
       || lib.props.find((a) => a.id === assetId);
+    if (actionId !== undefined) {
+      const media = resolveDramaActionMediaRef(asset, actionId, actionMediaId);
+      if (!media) throw new Error(`动作素材引用已失效：${dramaName || '未命名动作'}`);
+      return media.url;
+    }
     if (!asset) return dramaName || _match;
     const imageReference = resolveDramaAssetImageRef(
       asset,

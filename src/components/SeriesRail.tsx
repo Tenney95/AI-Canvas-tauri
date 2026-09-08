@@ -13,6 +13,7 @@ import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
 import ProjectAssetsOverlay from './ProjectAssetsOverlay';
 import ScriptWorkbench from './ScriptWorkbench';
+import SeriesSourceBrowser from './SeriesSourceBrowser';
 import { useT } from '../i18n';
 
 /** 原著文件落在项目数据目录里，只存相对路径，换机器或导入后仍能定位。 */
@@ -122,6 +123,7 @@ export default function SeriesRail() {
   const [pinned, setPinned] = useState(false);
   // 资产浮层：双击竖线打开，关闭按钮收起
   const [assetsOpen, setAssetsOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
   // 区分单击 / 双击：单击延迟执行，双击时取消
   const singleClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 打开编辑器时就把草稿装好，弹窗内部不用再和外部值同步
@@ -260,6 +262,8 @@ export default function SeriesRail() {
                   <div className="flex items-center gap-1.5 text-[11px] font-semibold text-canvas-text-secondary">
                     <Icon icon="lucide:book-open" className="h-3.5 w-3.5 shrink-0" />
                     <span className="truncate">{t('原著')}</span>
+                    <button type="button" className="ui-btn ui-btn--sm" disabled={!ready || !originalWork}
+                      onClick={() => setSourceOpen(true)}>{t('章节浏览')}</button>
                   </div>
                   <div className="flex h-8 items-center gap-1 rounded-lg border border-canvas-border bg-canvas-card px-2 leading-none">
                     <span className="min-w-0 flex-1 truncate text-[11px] text-canvas-text-secondary">
@@ -503,6 +507,7 @@ export default function SeriesRail() {
         onClose={() => setEditorDraft(null)}
         onSave={(next) => updateSeriesInfo({ script: next })}
       />
+      {sourceOpen && <SeriesSourceBrowser onClose={() => setSourceOpen(false)} />}
       {workbenchMode ? (
         <ScriptWorkbench
           isOpen

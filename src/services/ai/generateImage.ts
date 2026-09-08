@@ -6,26 +6,28 @@
  *   apimart    → Media Provider Registry → APIMart adapter
  *   general    → providers/standardImage（通用模型，OpenAI 兼容）
  *   volcengine → providers/volcengineImage（Seedream 专属请求格式）
- *   runninghub → providers/runninghubImage（标准模型异步任务协议）
+ *   runninghub → Media Provider Registry → RunningHub adapter
  *   localllm   → 已废弃，引导迁移到通用模型
  *   其他       → providers/standardImage（标准 OpenAI 兼容）
  *
  * 公共前置处理（prompt 解析、图床上传、空值校验）统一在此完成。
  */
 import { useAppStore } from '../../store/useAppStore';
-import { DEFAULT_BASE_URLS, RUNNINGHUB_MODEL_BASE_URL } from '../../constants/api';
+import { DEFAULT_BASE_URLS } from '../../constants/api';
 import { mapImageDimensions } from '../aiDimensions';
 import { generateDreaminaImage } from '../dreaminaService';
 import { executeComfyUIGenerate } from '../comfyWorkflowService';
+import { isRunningHubWorkflow } from '../workflowExecutionService';
+import { executeRunningHubWorkflow } from './providers/runninghubWorkflow';
+import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaReferences } from './connectedReferenceMedia';
 import type { AIImageGenParams, BatchImageResult, ImageGenerationResult } from '../../types/aiTypes';
 import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
-import { resolvePromptWithImageRefs } from './promptResolver';
+import { collectPromptNodeMediaUrls, resolvePromptWithImageRefs } from './promptResolver';
 import { warnIfTooManyReferences } from './connectedReferenceMedia';
 import { resolveImageDataUrlArray, resolveImageUrlArray } from './imageUtils';
 import { generateImageStandardBatch } from './providers/standardImage';
 import { generateVolcengineImagesBatch } from './providers/volcengineImage';
-import { generateRunningHubImagesBatch } from './providers/runninghubImage';
 import { runConfiguredModelProtocol } from './modelProtocolRuntime';
 import { mediaProviderRegistry } from './mediaProviderRegistry';
 
@@ -145,8 +147,18 @@ export async function generateImagesBatch(
   // ComfyUI 工作流执行路径：参考图由 ComfyUI 自己的 /upload 收，不必先过图床
   if (params.workflowId) {
     if (requestedCount > 1) throw new Error('工作流暂不支持批量生成，请将数量设为 1');
+    const workflow = useAppStore.getState().workflows.find((item) => item.id === params.workflowId);
+    if (isRunningHubWorkflow(workflow)) {
+      const refs = mergeMediaReferences(collectPromptNodeMediaUrls(rawPrompt).references, collectConnectedReferenceMedia(params.nodeId).references);
+      const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, prompt, kind: 'image', references: {
+        image: mergeImageUrls(allImageUrls, getMediaReferenceUrls(refs, 'image', 'local')),
+        video: getMediaReferenceUrls(refs, 'video', 'local'), audio: getMediaReferenceUrls(refs, 'audio', 'local'),
+      } }, signal);
+      return singleResult({ url: outputs[0].url, runninghubOutputs: outputs, ...mapImageDimensions(imageSize, aspectRatio) });
+    }
     return singleResult(await executeComfyUIGenerate({ ...params, prompt }, signal, allImageUrls));
   }
+  if (provider === 'runninghubwf') throw new Error('请先在工作流管理中导入并配置该 RunningHub 工作流');
 
   // comfyui 从不注册在 providers 里，落到下面的 default 分支只会误报「未配置 API Key」
   if (provider === 'comfyui') {
@@ -154,12 +166,14 @@ export async function generateImagesBatch(
   }
 
   // 参考图传输格式由通用模型配置决定；其他 Provider 保持上传图床的既有行为。
-  allImageUrls = usesImageDataUrls
+  const referenceMedia = provider === 'runninghub' ? mergeMediaReferences(collectPromptNodeMediaUrls(rawPrompt).references, collectConnectedReferenceMedia(params.nodeId).references) : undefined;
+  if (referenceMedia) allImageUrls = mergeImageUrls(allImageUrls, getMediaReferenceUrls(referenceMedia, 'image', 'local'));
+  allImageUrls = provider === 'runninghub' ? allImageUrls : usesImageDataUrls
     ? await resolveImageDataUrlArray(allImageUrls, signal)
     : await resolveImageUrlArray(allImageUrls, provider, signal);
   if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
 
-  if (!prompt.trim()) throw new Error('提示词不能为空');
+  if (!prompt.trim() && provider !== 'runninghub') throw new Error('提示词不能为空');
 
   const registeredAdapter = mediaProviderRegistry.getImageAdapter(provider);
   if (registeredAdapter) {
@@ -167,6 +181,7 @@ export async function generateImagesBatch(
       params,
       prompt,
       imageUrls: allImageUrls,
+      referenceMedia,
       requestedCount,
       signal,
     });
@@ -244,28 +259,6 @@ export async function generateImagesBatch(
         imageSize,
         aspectRatio,
         imageUrls: allImageUrls,
-      }, requestedCount, signal);
-    }
-
-    case 'runninghub': {
-      const pc = config.providers['runninghub-model'];
-      const apiKey = pc?.apiKey || '';
-      if (!apiKey) {
-        throw new Error('未配置 RunningHub 模型 API Key\n请在「设置 → API Key」中配置企业级-共享密钥');
-      }
-      const baseUrl = (pc?.baseUrl || RUNNINGHUB_MODEL_BASE_URL).replace(/\/+$/, '');
-      if (!baseUrl) throw new Error('未配置 RunningHub 模型 API 服务地址');
-      const dimensions = mapImageDimensions(imageSize, aspectRatio);
-      return generateRunningHubImagesBatch({
-        apiKey,
-        baseUrl,
-        model,
-        prompt,
-        imageSize,
-        aspectRatio,
-        dimensions,
-        imageUrls: allImageUrls,
-        nodeId: params.nodeId,
       }, requestedCount, signal);
     }
 

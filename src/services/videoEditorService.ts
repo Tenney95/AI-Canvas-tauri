@@ -15,10 +15,12 @@ import {
 import {
   DEFAULT_IMAGE_CLIP_DURATION,
   DEFAULT_TEXT_STYLE,
+  DEFAULT_TRANSFORM,
   VIDEO_EDITOR_SCHEMA_VERSION,
   relayoutSequential,
   type VideoEditorClip,
   type VideoEditorProjectRecord,
+  type VideoEditorTrack,
 } from '../types/videoEditor';
 import {
   buildVideoEditorProjectId,
@@ -168,6 +170,65 @@ export async function openVideoEditorForNodes(params: {
 /** 未填画面的行在时间轴上显示成占位文字，字号比默认标题小一档 */
 const SHOT_PLACEHOLDER_FONT_SIZE = 40;
 
+/** 推送读取实时媒体；只有来源节点已删除时才使用绑定快照。 */
+export function resolveShotlistTimelineRows(rows: ShotRow[], nodes: EditableMediaNode[]): ShotRow[] {
+  return rows.map((row) => {
+    if (!row.frame) return row;
+    const source = nodes.find((node) => node.id === row.frame!.nodeId);
+    if (!source) return row;
+    if (!isEditableMediaNode(source)) return { ...row, frame: null };
+    const kind = VIDEO_NODE_TYPES.includes(source.type as NodeType) ? 'video' : 'image';
+    return { ...row, frame: {
+      nodeId: source.id, kind,
+      url: kind === 'video' ? source.data.videoUrl : source.data.imageUrl,
+      filePath: source.data.filePath, assetId: source.data.assetId,
+      sourceDuration: kind === 'video' && typeof source.data.videoDuration === 'number'
+        && Number.isFinite(source.data.videoDuration) && source.data.videoDuration > 0 ? source.data.videoDuration : undefined,
+    } };
+  });
+}
+
+/** 对白沿用已排好的镜头起止；保留无对白镜头的空档，不再次压紧字幕。 */
+function buildDialogueTrack(rows: ShotRow[], clips: VideoEditorClip[]): VideoEditorTrack | null {
+  const captions = rows.flatMap<VideoEditorClip>((row, index) => {
+    const content = row.dialogue?.trim();
+    if (!content) return [];
+    return [{
+      id: `dialogue-${row.id}`, kind: 'text', fileName: `对白 ${row.shotNo || index + 1}`,
+      timelineStart: clips[index].timelineStart, sourceIn: 0, sourceOut: clips[index].sourceOut,
+      textStyle: { ...DEFAULT_TEXT_STYLE, content, fontSize: SHOT_PLACEHOLDER_FONT_SIZE },
+      transform: { ...DEFAULT_TRANSFORM, y: 0.88 },
+    }];
+  });
+  // 编辑器的文字叠加轨参与预览和导出；预留的 caption 类型目前不参与合成。
+  return captions.length ? { id: 'shotlist-dialogue', kind: 'video', name: '对白字幕', overlay: true, clips: captions } : null;
+}
+
+/** 只取明确关联到这张表的音频来源；供异步推送比较成果是否变化。 */
+export function resolveShotlistVoiceoverNodes(nodeId: string, nodes: EditableMediaNode[]): EditableMediaNode[] {
+  return nodes.filter((node) => ['ai-audio', 'source-audio'].includes(node.type ?? '')
+    && node.data.shotlistProductionSource?.nodeId === nodeId && node.data.shotlistProductionSource.kind === 'voiceover')
+    .map((node) => ({ id: node.id, type: node.type, data: {
+      type: node.data.type, label: node.data.label, audioUrl: node.data.audioUrl, filePath: node.data.filePath,
+      assetId: node.data.assetId, shotlistProductionSource: node.data.shotlistProductionSource,
+    } }));
+}
+
+function buildVoiceoverTrack(rows: ShotRow[], clips: VideoEditorClip[], nodeId: string, nodes: EditableMediaNode[]): VideoEditorTrack | null {
+  const sources = resolveShotlistVoiceoverNodes(nodeId, nodes);
+  const audioClips = rows.flatMap<VideoEditorClip>((row, index) => {
+    const matches = sources.filter((node) => node.data.shotlistProductionSource?.rowId === row.id);
+    if (matches.length > 1) throw new Error('同一镜头有多个配音节点，请先核对来源');
+    const source = matches[0];
+    if (!source || (!source.data.audioUrl && !source.data.filePath)) return [];
+    return [{ id: `voiceover-${row.id}`, kind: 'video', fileName: `配音 ${row.shotNo || index + 1}`,
+      nodeId: source.id, filePath: source.data.filePath, assetId: source.data.assetId, sourceUrl: source.data.audioUrl,
+      timelineStart: clips[index].timelineStart, sourceIn: 0, sourceOut: clips[index].sourceOut,
+    }];
+  });
+  return audioClips.length ? { id: 'shotlist-voiceover', kind: 'audio', name: '镜头配音', overlay: true, clips: audioClips } : null;
+}
+
 /**
  * 按分镜表的一行构造时间轴片段。
  *
@@ -232,10 +293,16 @@ export async function openVideoEditorForShotlist(params: {
   nodeId: string;
   label: string;
   rows: ShotRow[];
+  includeDialogueCaptions?: boolean;
+  /** 省略表示不附带配音；只使用带明确镜头来源的已就绪音频。 */
+  voiceoverNodes?: EditableMediaNode[];
+  /** 调用方的项目/来源校验，在异步读取后、开窗前复核。 */
+  assertCurrent?: () => void;
   theme?: 'dark' | 'light';
 }): Promise<void> {
-  const { projectId, nodeId, label, rows, theme } = params;
+  const { projectId, nodeId, label, rows, theme, assertCurrent } = params;
   if (!projectId) throw new Error('请先打开一个项目再推送分镜表');
+  assertCurrent?.();
 
   // 全空的行既没画面也没文字，推过去只会是一段空白，直接跳过
   const usable = rows.filter((row) => !isShotRowBlank(row));
@@ -243,11 +310,15 @@ export async function openVideoEditorForShotlist(params: {
 
   const id = buildVideoEditorProjectId(projectId, nodeId);
   const existing = await getVideoEditorProject(id);
+  assertCurrent?.();
   const now = Date.now();
   const clips = relayoutSequential(usable.map(buildShotClip));
-  const sourceNodeIds = [...new Set(usable
+  const dialogueTrack = params.includeDialogueCaptions ? buildDialogueTrack(usable, clips) : null;
+  const voiceoverTrack = params.voiceoverNodes ? buildVoiceoverTrack(usable, clips, nodeId, params.voiceoverNodes) : null;
+  if (params.voiceoverNodes && !voiceoverTrack) throw new Error('没有可用配音，请先完成语音生成或取消附带配音');
+  const sourceNodeIds = [...new Set([...usable
     .map((row) => row.frame?.nodeId)
-    .filter((value): value is string => !!value))];
+    .filter((value): value is string => !!value), ...(voiceoverTrack?.clips.map((clip) => clip.nodeId!) ?? [])])];
 
   await saveVideoEditorProject({
     id,
@@ -256,11 +327,12 @@ export async function openVideoEditorForShotlist(params: {
     nodeId,
     nodeIds: sourceNodeIds,
     name: label || '分镜表',
-    tracks: [{ id: 'video-1', kind: 'video', name: '视频轨 1', clips }],
+    tracks: [{ id: 'video-1', kind: 'video', name: '视频轨 1', clips }, ...(dialogueTrack ? [dialogueTrack] : []), ...(voiceoverTrack ? [voiceoverTrack] : [])],
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   } satisfies VideoEditorProjectRecord);
 
+  assertCurrent?.();
   await openVideoEditorWindow({ instanceId: id, projectId, nodeId, theme });
 }
 

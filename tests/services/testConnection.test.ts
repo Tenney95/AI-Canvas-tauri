@@ -13,6 +13,11 @@ beforeEach(() => {
 });
 
 describe('provider connection tests', () => {
+  it.each(['runninghub', 'runninghub-model'])('RunningHub %s 连接使用无生成计费的账户接口', async (provider) => {
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({ code: 0, data: { remainCoins: '12', currentTaskCounts: '0' } })));
+    await expect(testProviderConnection(provider, 'secret', 'https://www.runninghub.cn/openapi/v2')).resolves.toMatchObject({ success: true, balance: '12 积分' });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith('https://www.runninghub.cn/uc/openapi/accountStatus', expect.objectContaining({ method: 'POST', body: JSON.stringify({ apikey: 'secret' }) }));
+  });
   it.each([
     ['apimart', 'https://api.example/v1/', 'https://api.example/v1/models'],
     ['volcengine', 'https://ark.example/api/v3', 'https://ark.example/api/v3/models'],
@@ -21,6 +26,10 @@ describe('provider connection tests', () => {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }));
+
+    if (provider === 'apimart') {
+      transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response('not found', { status: 404 }));
+    }
 
     await expect(testProviderConnection(provider, 'secret', baseUrl)).resolves.toEqual({
       success: true,
@@ -45,6 +54,67 @@ describe('provider connection tests', () => {
       success: false,
       error: 'HTTP 401: invalid api key',
     });
+  });
+
+  it.each([
+    ['https://api.apimart.ai/v1/', 1000],
+    ['https://api.apib.ai/v1', 0],
+    ['https://relay.example/prefix/v1', 123.5],
+  ])('reads APIMart user credits from the configured address %s', async (baseUrl, credits) => {
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(Response.json({ data: [] }))
+      .mockResolvedValueOnce(Response.json({
+        success: true,
+        remain_balance: 100,
+        remain_credits: credits,
+        used_credits: 255,
+      }));
+
+    const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
+    await expect(testProviderConnection('apimart', 'secret', baseUrl)).resolves.toEqual({
+      success: true,
+      baseUrl: normalizedBaseUrl,
+      balance: `${credits} 积分`,
+    });
+    expect(transportMocks.corsSafeFetch).toHaveBeenLastCalledWith(`${normalizedBaseUrl}/user/balance`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer secret' },
+    });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { success: false, message: '获取用户额度失败', remain_credits: 1000 },
+    { success: true, remain_balance: 100 },
+    { success: true, remain_credits: null },
+    { success: true, remain_credits: 'unknown' },
+    null,
+  ])('does not display a fabricated balance for an invalid APIMart response: %j', async (payload) => {
+    transportMocks.corsSafeFetch
+      .mockResolvedValueOnce(Response.json({ data: [] }))
+      .mockResolvedValueOnce(Response.json(payload));
+
+    await expect(testProviderConnection('apimart', 'secret')).resolves.toEqual({
+      success: true,
+      baseUrl: 'https://api.apib.ai/v1',
+    });
+  });
+
+  it.each(['http', 'network', 'json'])('keeps a verified APIMart connection when balance lookup fails: %s', async (failure) => {
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(Response.json({ data: [] }));
+    if (failure === 'network') {
+      transportMocks.corsSafeFetch.mockRejectedValueOnce(new Error('network unavailable'));
+    } else {
+      transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response('unavailable', {
+        status: failure === 'http' ? 429 : 200,
+      }));
+    }
+
+    await expect(testProviderConnection('apimart', 'secret')).resolves.toEqual({
+      success: true,
+      baseUrl: 'https://api.apib.ai/v1',
+    });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledTimes(2);
   });
 
   it('falls back to /v1 when the pasted base URL omits it', async () => {

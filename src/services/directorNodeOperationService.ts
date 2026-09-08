@@ -45,6 +45,11 @@ const MESSAGES = {
   DIRECTOR_INVALID_RESULT: 'Blender 未返回与当前任务匹配的完整成果',
   DIRECTOR_CANCELLED: '已取消 Blender 任务',
   DIRECTOR_OPERATION_FAILED: 'Blender 操作失败，请检查本机 Blender 运行环境',
+  DIRECTOR_BLENDER_VERSION_UNSUPPORTED: '不支持此 Blender 版本，请选择 4.5、5.0、5.1 或 5.2 稳定版（补丁号不限）',
+  DIRECTOR_BLENDER_CAPABILITY_MISSING: '此 Blender 缺少所需渲染能力，请检查 EEVEE、PNG 和 H.264 视频输出支持',
+  DIRECTOR_BLENDER_STARTUP_FAILED: 'Blender 启动失败，请确认所选安装可以正常打开',
+  DIRECTOR_BLENDER_CRASHED: 'Blender 异常退出，请检查其运行环境及当前工程',
+  DIRECTOR_BLENDER_TIMED_OUT: 'Blender 操作超时，请检查渲染负载后重试',
 } as const;
 
 export class DirectorOperationError extends Error {
@@ -192,6 +197,21 @@ function receiveStatus(record: OperationRecord, status: DirectorBlenderJobStatus
     return;
   }
   const progress = status.progress;
+  // Map only fixed native codes after verifying the job binding; never expose raw diagnostics.
+  if (status.state === 'failed') {
+    const failures: Record<string, keyof typeof MESSAGES> = {
+      UNSUPPORTED_VERSION: 'DIRECTOR_BLENDER_VERSION_UNSUPPORTED',
+      MISSING_CAPABILITY: 'DIRECTOR_BLENDER_CAPABILITY_MISSING',
+      STARTUP_FAILED: 'DIRECTOR_BLENDER_STARTUP_FAILED',
+      PROCESS_CRASHED: 'DIRECTOR_BLENDER_CRASHED',
+      TIMED_OUT: 'DIRECTOR_BLENDER_TIMED_OUT',
+      RESULT_INVALID: 'DIRECTOR_INVALID_RESULT',
+    };
+    const code = status.failure?.code;
+    record.failure = new DirectorOperationError(
+      code && Object.hasOwn(failures, code) ? failures[code] : 'DIRECTOR_OPERATION_FAILED',
+    );
+  }
   const safeProgress = progress && ['preparing', 'loading-scene', 'rendering', 'saving', 'finalizing'].includes(progress.phase)
     && Number.isSafeInteger(progress.completed) && Number.isSafeInteger(progress.total)
     && progress.completed >= 0 && progress.total >= progress.completed

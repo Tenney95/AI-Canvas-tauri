@@ -308,6 +308,8 @@ export function needsCompositing(tracks: VideoEditorTrack[]): boolean {
   const visible = tracks.filter((track) => !track.hidden);
   const videoTracks = visible.filter((track) => track.kind === 'video');
   if (videoTracks.length > 1) return true;
+  // 独立音轨需要混入输出，不能只直通主视频而丢失配音。
+  if (visible.some((track) => track.kind === 'audio' && !track.muted && track.clips.length > 0)) return true;
 
   return visible.some((track) => track.clips.some((clip) => (
     clip.kind === 'image'

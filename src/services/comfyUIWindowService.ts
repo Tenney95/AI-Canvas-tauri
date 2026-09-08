@@ -34,11 +34,11 @@ const IO_TYPE_RULES: { patterns: RegExp[]; type: WorkflowIONodeType }[] = [
 ];
 
 /**
- * 认得出的工作流 id：手动导入的 `wf-`，以及内置播种的 `builtin-`。
+ * 接受手动/助手保存的 `wf-`、内置 `builtin-` 与 MCP 创建的 `workflow-mcp-`。
  * 不认这个 id 就会当成新工作流入库 —— 内置工作流在 ComfyUI 里改完存回来会变成同名副本，
  * 原来那条纹丝不动，默认节点也得重标一遍。
  */
-const WORKFLOW_ID_PATTERN = /^(wf|builtin)-[A-Za-z0-9._:-]{1,160}$/;
+const WORKFLOW_ID_PATTERN = /^(wf|builtin|workflow-mcp)-[A-Za-z0-9._:-]{1,160}$/;
 const SAVE_REQUEST_ID_PATTERN = /^save-[A-Za-z0-9._:-]{1,120}$/;
 
 const WORKFLOW_CATEGORIES = new Set<WorkflowCategory>([
@@ -174,26 +174,70 @@ async function completeComfyUIWorkflowSave(
   });
 }
 
-/**
- * 在 ComfyUI 里打开工作流。缺节点照样打开（ComfyUI 自己会把缺的节点标红），
- * 只把缺失的类型回传给调用方提示一句 —— 装没装插件由用户判断，不替他拦。
- * @returns ComfyUI 没注册的节点类型，全都在就是空数组
- */
-export async function openComfyUIWorkflowEditor(
+export interface ComfyUIWorkflowOpenResult {
+  requestId: string;
+  nodeCount: number;
+  source: 'editable' | 'api' | 'existing';
+  detail: string;
+  missingNodeClasses: string[];
+}
+
+let activeEditorOpen: { key: string; promise: Promise<ComfyUIWorkflowOpenResult> } | null = null;
+
+/** 缺节点检查只作提示，不能因服务器的节点清单请求卡住而永远没有开窗反馈。 */
+async function checkEditorNodeClasses(comfyUrl: string, content: string): Promise<string[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      findMissingNodeClasses(comfyUrl, content).catch(() => []),
+      new Promise<string[]>((resolve) => { timer = setTimeout(() => resolve([]), 4000); }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** 只有收到对应请求的非空画布回执才算打开完成；缺节点仍交给 ComfyUI 展示。 */
+export function openComfyUIWorkflowEditor(
   comfyUrl: string,
   workflow: WorkflowDefinition,
-): Promise<string[]> {
-  const missing = await findMissingNodeClasses(comfyUrl, workflow.fileContent);
-  await invoke<void>('open_comfyui_window', {
-    comfyUrl,
-    workflowId: workflow.id,
-    workflowName: workflow.name,
-    workflowCategory: workflow.category,
-    workflowFileName: workflow.fileName,
-    apiJson: workflow.fileContent,
-    editableJson: workflow.editableContent ?? null,
+  onStage?: (stage: 'checking' | 'opening') => void,
+): Promise<ComfyUIWorkflowOpenResult> {
+  const key = `${comfyUrl.replace(/\/+$/, '')}:${workflow.id}`;
+  if (activeEditorOpen) {
+    if (activeEditorOpen.key === key) return activeEditorOpen.promise;
+    return Promise.reject(new Error('正在打开另一个工作流，请等待当前载入完成'));
+  }
+  const operation = Promise.resolve().then(async () => {
+    if (workflow.fileContent.length > MAX_WORKFLOW_JSON_LENGTH) throw new Error('工作流超过 16 MiB 上限');
+    let api: unknown;
+    try { api = JSON.parse(workflow.fileContent); } catch { throw new Error('工作流 JSON 无法解析，请重新导入'); }
+    if (!isApiWorkflow(api)) throw new Error('工作流没有有效的 API 节点，请重新导入 ComfyUI API 格式工作流');
+    onStage?.('checking');
+    const missingNodeClasses = await checkEditorNodeClasses(comfyUrl, workflow.fileContent);
+    onStage?.('opening');
+    const requestId = `open-${generateId()}`;
+    const result = await invoke<Omit<ComfyUIWorkflowOpenResult, 'missingNodeClasses'>>('open_comfyui_window', {
+      requestId,
+      comfyUrl,
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      workflowCategory: workflow.category,
+      workflowFileName: workflow.fileName,
+      apiJson: workflow.fileContent,
+      editableJson: workflow.editableContent ?? null,
+    });
+    if (!result || result.requestId !== requestId || !Number.isInteger(result.nodeCount) || result.nodeCount <= 0
+      || !['api', 'editable', 'existing'].includes(result.source) || typeof result.detail !== 'string') {
+      throw new Error('未收到有效的工作流载入回执，请重试；开发环境修改后需重启桌面应用');
+    }
+    return { ...result, missingNodeClasses };
   });
-  return missing;
+  const promise = operation.finally(() => {
+    if (activeEditorOpen?.promise === promise) activeEditorOpen = null;
+  });
+  activeEditorOpen = { key, promise };
+  return promise;
 }
 
 export async function initComfyUIWindowBridge(): Promise<() => void> {

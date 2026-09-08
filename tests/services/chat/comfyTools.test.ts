@@ -54,6 +54,8 @@ function task(): AgentTask {
 
 const summary = {
   validationId: 'validation-1',
+  serverId: 'video-server',
+  serverName: '视频服务器',
   kind: 'image' as const,
   nodeCount: 3,
   outputNodeCount: 1,
@@ -100,6 +102,8 @@ beforeEach(() => {
     },
     saveOffer: {
       saveOfferId: 'save-offer-1',
+      serverId: 'video-server',
+      serverName: '视频服务器',
       suggestedName: 'base-图像工作流',
       kind: 'image',
       modelNames: ['base.safetensors'],
@@ -136,9 +140,30 @@ describe('ComfyUI assistant tools', () => {
     expect(getAvailableAgentTools(context).map((tool) => tool.id)).not.toContain('comfyui_discover');
   });
 
+  it('exposes discovery, validation and execution when only an additional server is configured', () => {
+    useAppStore.setState((state) => ({ config: {
+      ...state.config, comfyUIUrl: '',
+      comfyServers: [{ id: 'video-server', name: '视频服务器', url: 'http://video.test' }],
+    } }));
+    expect(getAvailableAgentTools(context).map((tool) => tool.id)).toEqual(expect.arrayContaining([
+      'comfyui_discover', 'comfyui_validate_workflow', 'comfyui_execute_workflow',
+    ]));
+  });
+
+  it('passes server discovery and explicit selection through the existing read tool', async () => {
+    const tool = getAgentTool('comfyui_discover')!;
+    const servers = await tool.execute(context, { resource: 'servers' });
+    expect(servers.summary).toBe('已读取 ComfyUI 服务器清单');
+    expect(discoverMock).toHaveBeenLastCalledWith({ resource: 'servers' });
+    await tool.execute(context, { resource: 'nodes', serverId: 'video-server' });
+    expect(discoverMock).toHaveBeenLastCalledWith({ resource: 'nodes', serverId: 'video-server' });
+    expect(tool.inputSchema).toMatchObject({ properties: { resource: { enum: ['servers', 'models', 'nodes'] }, serverId: { type: 'string' } } });
+  });
+
   it('returns a task-bound validation id to the assistant', async () => {
     const result = await getAgentTool('comfyui_validate_workflow')!.execute(context, {
       kind: 'image',
+      serverId: 'video-server',
       workflow: { '1': { class_type: 'SaveImage', inputs: {} } },
     });
 
@@ -147,6 +172,7 @@ describe('ComfyUI assistant tools', () => {
     expect(validateMock).toHaveBeenCalledWith(expect.objectContaining({
       taskId: context.taskId,
       projectId: context.projectId,
+      serverId: 'video-server',
     }));
   });
 
@@ -191,6 +217,7 @@ describe('ComfyUI assistant tools', () => {
     expect(result.modelContent).toContain('不要自动保存');
     expect(result.modelContent).toContain('comfyui_save_workflow');
     expect(result.modelContent).toContain('save-offer-1');
+    expect(JSON.parse(result.modelContent!).workflowSaveOffer).toMatchObject({ serverId: 'video-server', serverName: '视频服务器' });
   });
 
   it('saves the workflow only through a valid conversation-bound offer', async () => {
@@ -221,6 +248,7 @@ describe('ComfyUI assistant tools', () => {
       deliveryMode: 'chat',
     });
     expect(text).toContain('base.safetensors');
+    expect(text).toContain('视频服务器');
     expect(text).toContain('CustomSampler');
     expect(text).toContain('文件、网络或外部程序');
   });

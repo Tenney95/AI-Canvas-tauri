@@ -37,6 +37,7 @@ const categories: Record<string, { title: string; keywords: string }> = {
   style: { title: '画风', keywords: '画风 风格 style' },
   drama: { title: '短剧资产', keywords: '角色 人物 场景 道具 短剧 drama character assets' },
   series: { title: '剧集', keywords: '剧集 剧本 原著 series script' },
+  shotlist: { title: '分镜表', keywords: '分镜 镜头 表格 补图 shotlist shot frames' },
   episode: { title: '分集', keywords: '分集 大纲 episode outline' },
   file: { title: '文件', keywords: '文件 授权 读取 保存 file grant read save' },
   history: { title: '历史', keywords: '历史 撤销 重做 history undo redo' },

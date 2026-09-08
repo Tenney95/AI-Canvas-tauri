@@ -23,6 +23,7 @@ import {
   joinPath,
 } from '../fs/core';
 import { assertSafeProjectRelativePath } from '../fs/projectFiles';
+import type { PluginLineArtImage } from './pluginImageService';
 
 const MAX_TEXT_BYTES = 256 * 1024;
 const MAX_RANGE_BYTES = 256 * 1024;
@@ -92,6 +93,8 @@ interface PluginResourceLease {
   portId?: string;
   /** invocation 内宿主生成的派生资源；不落盘、不暴露真实路径。 */
   bytes?: Uint8Array;
+  /** 原图的固定线稿槽位，与原图共用资源 ID、租约及总字节额度。 */
+  lineart?: PluginLineArtImage;
 }
 
 const resourceLeases = new Map<string, PluginResourceLease>();
@@ -346,6 +349,60 @@ function requireLease(context: PluginResourceReadContext, resourceId: string): P
   return lease;
 }
 
+function requireDerivedLease(context: PluginResourceReadContext, resourceId: string): PluginResourceLease {
+  const lease = requireLease(context, resourceId);
+  if (lease.ref.origin !== 'derived' || !lease.bytes) throw new Error('节点集只能绑定宿主派生资源');
+  return lease;
+}
+
+function derivedLeaseBytes(lease: PluginResourceLease): number {
+  return (lease.bytes?.byteLength ?? 0) + (lease.lineart?.bytes.byteLength ?? 0);
+}
+
+function copyLineArtImage(image: PluginLineArtImage): PluginLineArtImage {
+  return {
+    bytes: image.bytes.slice(),
+    mediaType: image.mediaType,
+    width: image.width,
+    height: image.height,
+    previewDataUrl: image.previewDataUrl,
+  };
+}
+
+/** 只读取当前调用原帧的线稿缓存；缺少缓存由宿主显式生成，不改变原图。 */
+export function getPluginLineArtResource(
+  context: PluginResourceReadContext,
+  resourceId: string,
+): PluginLineArtImage | undefined {
+  const image = requireDerivedLease(context, resourceId).lineart;
+  return image ? copyLineArtImage(image) : undefined;
+}
+
+/** 同一原帧最多一个线稿表示；校验失败时保留已有缓存。 */
+export function setPluginLineArtResource(
+  context: PluginResourceReadContext,
+  resourceId: string,
+  image: PluginLineArtImage,
+): void {
+  const lease = requireDerivedLease(context, resourceId);
+  if (image.mediaType !== 'image/png') throw new Error('线稿必须是 PNG 图像');
+  if (image.bytes.byteLength <= 0 || image.bytes.byteLength > MAX_DERIVED_RESOURCE_BYTES) {
+    throw new Error('单个派生资源不能超过 4 MiB');
+  }
+  if (!Number.isSafeInteger(image.width) || image.width <= 0
+    || !Number.isSafeInteger(image.height) || image.height <= 0) {
+    throw new Error('线稿图像尺寸无效');
+  }
+  let invocationBytes = 0;
+  for (const current of resourceLeases.values()) {
+    if (current.invocationId === context.invocationId) invocationBytes += derivedLeaseBytes(current);
+  }
+  if (invocationBytes - (lease.lineart?.bytes.byteLength ?? 0) + image.bytes.byteLength > MAX_DERIVED_TOTAL_BYTES) {
+    throw new Error('单次调用的派生资源总量不能超过 48 MiB');
+  }
+  lease.lineart = copyLineArtImage(image);
+}
+
 /** 把宿主 effect 生成的图像登记为当前 invocation 的内存资源。 */
 export function registerPluginDerivedResource(
   context: PluginResourceReadContext,
@@ -376,7 +433,10 @@ export function registerPluginDerivedResource(
   if (resources.derived.length >= MAX_DERIVED_RESOURCES) {
     throw new Error(`单次调用最多登记 ${MAX_DERIVED_RESOURCES} 个派生资源`);
   }
-  const invocationBytes = resources.derived.reduce((total, resource) => total + resource.size, 0);
+  // 替换批次会暂存新租约；只计算当前活动列表，旧批次在成功提交后统一撤销。
+  const invocationBytes = resources.derived.reduce((total, resource) => (
+    total + derivedLeaseBytes(requireDerivedLease(context, resource.resourceId))
+  ), 0);
   if (invocationBytes + options.bytes.byteLength > MAX_DERIVED_TOTAL_BYTES) {
     throw new Error('单次调用的派生资源总量不能超过 48 MiB');
   }
@@ -565,10 +625,21 @@ export async function resolvePluginResourceHostUrl(
 export function readPluginDerivedResourceForOutput(
   context: PluginResourceReadContext,
   resourceId: string,
-): { resource: PluginResourceRef; bytes: Uint8Array } {
-  const lease = requireLease(context, resourceId);
-  if (lease.ref.origin !== 'derived' || !lease.bytes) throw new Error('节点集只能绑定宿主派生资源');
-  return { resource: lease.ref, bytes: lease.bytes.slice() };
+  representation: 'original' | 'lineart' = 'original',
+): { resource: PluginResourceRef; bytes: Uint8Array; dimensions?: { width: number; height: number } } {
+  const lease = requireDerivedLease(context, resourceId);
+  if (representation === 'lineart') {
+    const image = lease.lineart;
+    if (!image) throw new Error('线稿尚未生成或已失效，请重新转换');
+    const basename = lease.ref.displayName.replace(/\.[^.]+$/u, '').slice(0, 108);
+    return {
+      resource: { ...lease.ref, displayName: `${basename}-lineart.png`, mediaType: image.mediaType, size: image.bytes.byteLength },
+      bytes: image.bytes.slice(),
+      dimensions: { width: image.width, height: image.height },
+    };
+  }
+  if (representation !== 'original') throw new Error('派生图像表示无效');
+  return { resource: { ...lease.ref }, bytes: lease.bytes!.slice() };
 }
 
 export function clearPluginInvocationResources(invocationId: string): void {

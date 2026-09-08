@@ -306,6 +306,8 @@ export interface NodeSlice {
   releaseCharacterLibraryNodes: (
     scope: CharacterLibraryNodeLink['scope'],
     characterId?: string,
+    actionId?: string,
+    mediaId?: string,
   ) => string[];
   deleteNode: (nodeId: string) => void;
   /** 原子批量删除多个节点（一次 commitToHistory，一次退场动画） */
@@ -583,7 +585,10 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     if (!node) return false;
     const previousLinks = node.data.characterLibraryLinks ?? [];
     const retainedLinks = previousLinks.filter(
-      (item) => item.scope !== link.scope || item.characterId !== link.characterId,
+      (item) => item.scope !== link.scope || item.characterId !== link.characterId
+        || (link.actionId !== undefined
+          ? item.actionId !== link.actionId || item.mediaId !== link.mediaId
+          : item.actionId !== undefined),
     );
     const nextLinks = [...retainedLinks, link];
     const nextHidden = node.data.hiddenByCharacterLibrary === true || hideNode;
@@ -592,6 +597,8 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
         item.scope === nextLinks[index].scope
         && item.characterId === nextLinks[index].characterId
         && item.referenceImageId === nextLinks[index].referenceImageId
+        && item.actionId === nextLinks[index].actionId
+        && item.mediaId === nextLinks[index].mediaId
       ));
     if (sameLink && nextHidden === (node.data.hiddenByCharacterLibrary === true)) return false;
 
@@ -635,12 +642,15 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     return true;
   },
 
-  releaseCharacterLibraryNodes: (scope, characterId) => {
+  releaseCharacterLibraryNodes: (scope, characterId, actionId, mediaId) => {
+    const matches = (link: CharacterLibraryNodeLink) => (
+      link.scope === scope && (characterId === undefined || link.characterId === characterId)
+      && (actionId === undefined || link.actionId === actionId)
+      && (mediaId === undefined || link.mediaId === mediaId)
+    );
     const affectedNodes = get().nodes.filter((node) => (
       node.data.characterLibraryLinks ?? []
-    ).some((link) => (
-      link.scope === scope && (characterId === undefined || link.characterId === characterId)
-    )));
+    ).some(matches));
     if (affectedNodes.length === 0) return [];
 
     get().commitToHistory();
@@ -648,9 +658,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     set((state) => ({
       nodes: state.nodes.map((node) => {
         const links = node.data.characterLibraryLinks ?? [];
-        const nextLinks = links.filter((link) => (
-          link.scope !== scope || (characterId !== undefined && link.characterId !== characterId)
-        ));
+        const nextLinks = links.filter((link) => !matches(link));
         if (nextLinks.length === links.length) return node;
         const data = { ...node.data };
         if (nextLinks.length > 0) data.characterLibraryLinks = nextLinks;

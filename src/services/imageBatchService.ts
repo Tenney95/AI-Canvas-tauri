@@ -9,8 +9,10 @@ import { generateId } from '../store/store.utils';
 import { useAppStore } from '../store/useAppStore';
 import { persistMediaUrlToProjectData, type PersistedProjectMedia } from './fileService';
 import { runBatchTasks } from './ai/batchUtils';
+import { getRunningHubPersistedOutput } from './ai/providers/runninghubWorkflow';
 
 interface ApplyImageBatchParams {
+  isCurrent?: () => boolean;
   nodeId: string;
   /** 提交请求前创建的目标节点；恢复旧任务时可缺省，由 batchGroupId 自动找回。 */
   targetNodeIds?: string[];
@@ -160,7 +162,9 @@ export async function applyImageBatchResults({
   prompt,
   imageSize,
   aspectRatio,
+  isCurrent,
 }: ApplyImageBatchParams): Promise<void> {
+  if (isCurrent && !isCurrent()) throw new Error('画布已变化，批量产物已保留');
   if (batch.results.length === 0) throw new Error('批量图片生成未返回可用结果');
 
   const initialStore = useAppStore.getState();
@@ -170,18 +174,19 @@ export async function applyImageBatchResults({
 
   const savedBatch = await runBatchTasks(batch.results.length, 3, async (index): Promise<SavedBatchItem> => {
     const result = batch.results[index];
-    const persisted = projectId
+    const persisted = getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (projectId
       ? await persistMediaUrlToProjectData(
           result.url,
           projectId,
           'ai-image',
           `${sourceData.label}-${index + 1}`,
         )
-      : { mediaUrl: result.url, sourceUrl: result.url };
+      : { mediaUrl: result.url, sourceUrl: result.url });
     return { result, persisted };
   });
 
   let store = useAppStore.getState();
+  if (isCurrent && !isCurrent()) throw new Error('画布已变化，批量产物已保留');
   let liveSource = store.nodes.find((node) => node.id === nodeId) as Node<BaseNodeData> | undefined;
   if (!liveSource || store.currentProjectId !== projectId) throw new Error('任务已被取消');
 

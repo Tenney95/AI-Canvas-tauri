@@ -11,11 +11,10 @@
  * 画面有三种来源：把素材节点拖进格子、从连线进来的节点里挑、直接叫 AI 生成
  * （生成出的图仍然是画布上一个正常的图像节点，表里只存引用）。
  */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
-import type { Node } from '@xyflow/react';
 import type { BaseNodeData, ShotFrameCandidate, ShotlistColumnKey, ShotRow } from '../../types';
 import { confirmAction } from '../../services/confirmDialog';
 import {
@@ -42,8 +41,18 @@ import NodeError from './shared/NodeError';
 import { useNodeRename } from './shared/useNodeRename';
 import { resolveEffectiveModel } from './shared/toolbar/presetAction';
 import { useAppStore, generateId } from '../../store/useAppStore';
-import { executeGeneration } from '../../services/generationService';
-import { hasShotlistTimeline, openVideoEditorForShotlist } from '../../services/videoEditorService';
+import { generateShotlistFrames, MAX_SHOTLIST_FRAME_BATCH } from '../../services/shotlistFrameService';
+import { buildShotlistAssistantPrompt } from '../../services/shotlistService';
+import ShotlistRevisionDialog from './ShotlistRevisionDialog';
+import ShotlistProductionDialog from './ShotlistProductionDialog';
+import ShotlistStoryboardDialog from './ShotlistStoryboardDialog';
+import { getMediaModelOptions } from './shared/defaultModels';
+import Select from '../shared/Select';
+import ModalOverlay from '../shared/ModalOverlay';
+import PopupCloseButton from '../shared/PopupCloseButton';
+import { useT } from '../../i18n';
+import { hasShotlistTimeline, openVideoEditorForShotlist, resolveShotlistTimelineRows, resolveShotlistVoiceoverNodes } from '../../services/videoEditorService';
+import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../services/canvasDerivationGuard';
 
 /** 画面格实时解析出的素材 */
 interface ResolvedFrame {
@@ -64,6 +73,11 @@ const OPTION_COLUMNS: Record<string, readonly string[]> = {
 };
 
 function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
+  const t = useT();
+  const config = useAppStore((s) => s.config);
+  const workflows = useAppStore((s) => s.workflows);
+  const imageModels = useMemo(() => getMediaModelOptions(config.generalModels ?? [], config, workflows)
+    .filter((model) => model.mediaKind === 'image'), [config, workflows]);
   const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
   const commitToHistory = useAppStore((s) => s.commitToHistory);
   const setSelectedNodeIds = useAppStore((s) => s.setSelectedNodeIds);
@@ -127,7 +141,34 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   >(null);
   const [aiPrompt, setAiPrompt] = useState('');
   const [busyRows, setBusyRows] = useState<string[]>([]);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [frameModelRef, setFrameModelRef] = useState('');
+  const [frameProgress, setFrameProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [revisionOpen, setRevisionOpen] = useState(false);
+  const [production, setProduction] = useState<{ rowId?: string } | null>(null);
+  const [storyboardRowId, setStoryboardRowId] = useState<string | null>(null);
+  const subtitleInputId = useId();
+  const [includeDialogueCaptions, setIncludeDialogueCaptions] = useState(false);
+  const voiceoverInputId = useId();
+  const [includeVoiceovers, setIncludeVoiceovers] = useState(false);
+  const [timelineBusy, setTimelineBusy] = useState(false);
+  const timelineRunning = useRef(false);
+  const episodeScript = useAppStore((state) => state.projects.find((project) => project.id === data.shotlistScriptSource?.episodeId)?.episodeScript);
+  const sourceScript = useAppStore((state) => state.nodes.find((node) => node.id === data.shotlistScriptSource?.nodeId)?.data.output);
+  const scriptChanged = useMemo(() => typeof sourceScript === 'string' && sourceScript.trim() !== (episodeScript ?? '').trim(), [sourceScript, episodeScript]);
+  const frameController = useRef<AbortController | null>(null);
+  const emptyRows = rows.filter((row) => !row.frame && buildShotFramePrompt(row).trim());
   const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => () => frameController.current?.abort(), []);
+
+  const prepareFrameModel = useCallback(() => {
+    const state = useAppStore.getState();
+    const preferred = state.projects.find((project) => project.id === state.currentProjectId)?.settings?.defaultModels?.image
+      || resolveEffectiveModel('ai-image')?.model;
+    setFrameModelRef((current) => imageModels.some((model) => model.value === current) ? current
+      : imageModels.find((model) => model.value === preferred)?.value ?? '');
+  }, [imageModels]);
 
   const writeRows = useCallback(
     (next: ShotRow[]) => updateNodeDataTransient(id, { shotlistRows: next } as Partial<BaseNodeData>),
@@ -209,6 +250,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   );
 
   const openPicker = useCallback((rowId: string, anchor: HTMLElement) => {
+    prepareFrameModel();
     const { nodes, edges } = useAppStore.getState();
     const rect = anchor.getBoundingClientRect();
     const row = rows.find((item) => item.id === rowId);
@@ -221,7 +263,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       top: Math.min(rect.bottom + 6, Math.max(8, window.innerHeight - 380)),
       candidates: collectShotFrameCandidates(nodes, edges, id),
     });
-  }, [id, rows]);
+  }, [id, rows, prepareFrameModel]);
 
   const chooseCandidate = useCallback((rowId: string, nodeId: string) => {
     useAppStore.getState().bindShotlistFrame(id, rowId, nodeId);
@@ -232,56 +274,46 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
    * 叫 AI 补这一格：在画布上新建一个图像节点并连回本表，生成成功后再绑定。
    * 画面始终是画布上的真节点，用户可以照常改提示词重跑，表里跟着变。
    */
-  const generateFrame = useCallback(async (rowId: string) => {
+  const generateFrames = useCallback(async (rowIds: string[], prompts?: Record<string, string>, replaceExisting = false) => {
+    if (frameController.current || !frameModelRef) return;
     const store = useAppStore.getState();
-    const row = rows.find((item) => item.id === rowId);
-    const prompt = (aiPrompt.trim() || (row ? buildShotFramePrompt(row) : '')).trim();
-    if (!prompt) {
-      store.showToast('先填「内容」栏或写一句提示词', 'error');
-      return;
-    }
-    const self = store.nodes.find((node) => node.id === id);
-    if (!self) return;
-
+    if (!store.currentProjectId) return;
+    const controller = new AbortController();
+    frameController.current = controller;
     setPicker(null);
-    const newNodeId = `node-${generateId()}`;
-    const rowIndex = Math.max(0, rows.findIndex((item) => item.id === rowId));
-    const model = resolveEffectiveModel('ai-image');
-    const node: Node<BaseNodeData> = {
-      id: newNodeId,
-      type: 'ai-image',
-      parentId: self.parentId,
-      // 画面是表的输入，放在表左侧，按行错开避免叠成一摞
-      position: { x: self.position.x - 320, y: self.position.y + rowIndex * 180 },
-      data: {
-        type: 'ai-image',
-        label: `${displayLabel} 镜${row?.shotNo ?? rowIndex + 1}`,
-        role: 'generator',
-        status: 'idle',
-        prompt,
-        imageSize: '2K',
-        aspectRatio: '16:9',
-        nodeWidth: 280,
-        nodeHeight: 158,
-        ...(model ? { model: model.model, provider: model.provider } : {}),
-      },
-    };
-    store.addNodeWithEdge(node, {
-      id: generateId(),
-      source: newNodeId,
-      target: id,
-      sourceHandle: 'right',
-      targetHandle: 'left',
-    });
-
-    setBusyRows((prev) => [...prev, rowId]);
+    setBatchOpen(false);
+    setBusyRows(rowIds);
+    setFrameProgress({ completed: 0, total: rowIds.length });
     try {
-      const result = await executeGeneration(newNodeId, prompt, undefined, node.data);
-      if (result.success) useAppStore.getState().bindShotlistFrame(id, rowId, newNodeId);
+      const results = await generateShotlistFrames({
+        projectId: store.currentProjectId, baseRevision: store.getCurrentRevision(),
+        nodeId: id, rowIds, prompts, replaceExisting, modelRef: frameModelRef, signal: controller.signal,
+        onProgress: (completed, total) => setFrameProgress({ completed, total }),
+      });
+      const completed = results.filter((result) => result.status === 'success').length;
+      const unfinished = results.filter((result) => !['success', 'skipped'].includes(result.status)).length;
+      store.showToast(t('已补齐 {count} 镜，未完成 {remaining} 镜', { count: completed, remaining: unfinished }), unfinished ? 'error' : 'success');
+    } catch (error) {
+      store.showToast(error instanceof Error ? error.message : t('补图失败'), 'error');
     } finally {
-      setBusyRows((prev) => prev.filter((item) => item !== rowId));
+      frameController.current = null;
+      setBusyRows([]);
+      setFrameProgress(null);
     }
-  }, [aiPrompt, displayLabel, id, rows]);
+  }, [frameModelRef, id, t]);
+
+  const generateFrame = useCallback((rowId: string) => generateFrames([rowId], aiPrompt.trim() ? { [rowId]: aiPrompt.trim() } : undefined, true), [aiPrompt, generateFrames]);
+
+  const askAssistant = useCallback((rowId?: string) => {
+    const state = useAppStore.getState();
+    try {
+      const draft = buildShotlistAssistantPrompt({ projectId: state.currentProjectId ?? '' }, id, rowId);
+      state.openChatWithDraft(draft);
+      state.showToast(t('已准备分镜请求，请在助手中发送'));
+    } catch (error) {
+      state.showToast(error instanceof Error ? error.message : t('准备分镜请求失败'), 'error');
+    }
+  }, [id, t]);
 
   /**
    * 叫模型拆整张表：复用节点通用的 AI 弹窗（模型选择器 + @ 引用 + 提示词），
@@ -298,25 +330,51 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   }, [id]);
 
   const pushToTimeline = useCallback(async () => {
+    if (timelineRunning.current) return;
     const store = useAppStore.getState();
     const projectId = store.currentProjectId ?? '';
+    const guard = registerCanvasDerivation(store, id);
+    if (!guard) return;
+    const source = store.nodes.find((node) => node.id === id)!;
+    const timelineRows = resolveShotlistTimelineRows(source.data.shotlistRows ?? [], store.nodes);
+    const voiceoverNodes = includeVoiceovers ? resolveShotlistVoiceoverNodes(id, store.nodes) : undefined;
+    const snapshot = JSON.stringify([timelineRows, voiceoverNodes]);
+    const assertCurrent = () => {
+      const current = useAppStore.getState();
+      const node = current.nodes.find((candidate) => candidate.id === id);
+      if (!isCanvasDerivationFresh(guard, current) || current.projectLoadStatus !== 'ready'
+        || !node || JSON.stringify([resolveShotlistTimelineRows(node.data.shotlistRows ?? [], current.nodes),
+          includeVoiceovers ? resolveShotlistVoiceoverNodes(id, current.nodes) : undefined]) !== snapshot) {
+        throw new Error(t('项目或分镜已变化，请重新推送时间轴'));
+      }
+    };
+    timelineRunning.current = true;
+    setTimelineBusy(true);
     try {
       // 分镜表是时间轴的源，每次推送都按当前表重建，会覆盖上次在剪辑窗口里的调整
       if (await hasShotlistTimeline(projectId, id)) {
         const confirmed = await confirmAction('这张分镜表已经推送过时间轴。继续将按当前表重建，剪辑窗口里的调整会丢失。', { title: '重新推送时间轴' });
         if (!confirmed) return;
       }
+      assertCurrent();
       await openVideoEditorForShotlist({
         projectId,
         nodeId: id,
-        label: (data.label as string) || '分镜表',
-        rows,
+        label: source.data.label || '分镜表',
+        rows: timelineRows,
+        includeDialogueCaptions,
+        voiceoverNodes,
+        assertCurrent,
         theme: store.config.theme === 'light' ? 'light' : 'dark',
       });
     } catch (err: unknown) {
       store.showToast(err instanceof Error ? err.message : '推送时间轴失败', 'error');
+    } finally {
+      completeCanvasDerivation(guard);
+      timelineRunning.current = false;
+      setTimelineBusy(false);
     }
-  }, [id, data.label, rows]);
+  }, [id, includeDialogueCaptions, includeVoiceovers, t]);
 
   const handleResize = useCallback(
     (w: number, h: number) => updateNodeDataTransient(id, { nodeWidth: w, nodeHeight: h } as Partial<BaseNodeData>),
@@ -347,6 +405,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       if (pickerRef.current.contains(target)) return;
       // 资源库弹窗 Portal 到 body，按包含关系判定会被当成"点了外面"，刚点开就被关掉
       if (isInsideMentionPortal(target)) return;
+      if (target.closest('[data-ui-select-portal]')) return;
       setPicker(null);
     };
     document.addEventListener('pointerdown', onPointerDown);
@@ -491,13 +550,35 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         nodeId={id}
         onRename={handleRename}
       />
+      {revisionOpen && <ShotlistRevisionDialog nodeId={id} onClose={() => setRevisionOpen(false)} />}
+      {production && <ShotlistProductionDialog nodeId={id} rowId={production.rowId} onClose={() => setProduction(null)} />}
+      {storyboardRowId && <ShotlistStoryboardDialog nodeId={id} rowId={storyboardRowId} onClose={() => setStoryboardRowId(null)} />}
       <div className={`node shotlist-node ${selected ? 'selected' : ''}`} style={{ height: nodeHeight }}>
         {/* 工具条本身不加 nodrag：表体几乎被输入框占满，这条带子是节点主要的拖拽手柄 */}
-        <div className="shotlist-toolbar">
+        <div className="shotlist-toolbar flex-wrap">
           <span className="shotlist-stat">
             共 {rows.length} 镜 · 总时长 {Number(totalDuration.toFixed(1))}″
           </span>
-          <div className="shotlist-toolbar-actions nodrag" ref={columnMenuRef}>
+          <div className="shotlist-toolbar-actions nodrag flex-wrap" ref={columnMenuRef}>
+            <button type="button" className="ui-btn ui-btn--sm" disabled={generating || !rows.length}
+              onClick={() => askAssistant()}>
+              <Icon icon="mdi:clipboard-text-search-outline" width={13} height={13} />
+              {t('AI 诊断')}
+            </button>
+            {data.shotlistScriptSource && <button type="button" className="ui-btn ui-btn--sm" disabled={generating}
+              onClick={() => setRevisionOpen(true)}>{t(scriptChanged ? '剧本已修改' : '剧本改动复核')}</button>}
+            <button type="button" className="ui-btn ui-btn--sm" disabled={generating || !rows.length}
+              onClick={() => setProduction({})}>{t('镜头制作准备')}</button>
+            {frameProgress ? (
+              <button type="button" className="ui-btn ui-btn--sm" onClick={() => frameController.current?.abort()}>
+                {t('取消补图')} {frameProgress.completed}/{frameProgress.total}
+              </button>
+            ) : (
+              <button type="button" className="ui-btn ui-btn--sm" disabled={generating || !emptyRows.length}
+                onClick={() => { prepareFrameModel(); setBatchOpen(true); }}>
+                {t('补齐空镜')} ({emptyRows.length})
+              </button>
+            )}
             <button
               type="button"
               className="shotlist-btn"
@@ -533,10 +614,21 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
                 ))}
               </div>
             )}
+            <div className="text-xs" title={t('对白按镜头时长放置，可在剪辑器中细调')}>
+              <input id={subtitleInputId} type="checkbox" className="ui-checkbox" checked={includeDialogueCaptions}
+                disabled={timelineBusy} onChange={(event) => setIncludeDialogueCaptions(event.target.checked)} />
+              <label htmlFor={subtitleInputId}>{t('附带对白字幕')}</label>
+            </div>
+            <div className="text-xs" title={t('配音按镜头起点放置，超长部分裁到镜头末尾，可在剪辑器中调整')}>
+              <input id={voiceoverInputId} type="checkbox" className="ui-checkbox" checked={includeVoiceovers}
+                disabled={timelineBusy} onChange={(event) => setIncludeVoiceovers(event.target.checked)} />
+              <label htmlFor={voiceoverInputId}>{t('附带已就绪配音')}</label>
+            </div>
             <button
               type="button"
               className="shotlist-btn shotlist-btn--primary"
               onClick={pushToTimeline}
+              disabled={timelineBusy}
               title="按当前表重建剪辑时间轴"
             >
               <Icon icon="mdi:timeline-plus-outline" width={13} height={13} />
@@ -584,15 +676,27 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
                     <td key={column} className={`shot-col-${column}`}>{renderCell(row, column)}</td>
                   ))}
                   <td className="shot-col-actions">
-                    <button
-                      type="button"
-                      className="shot-row-delete nodrag"
-                      onClick={() => deleteRow(row.id)}
-                      title="删除该镜"
-                      aria-label="删除该镜"
-                    >
-                      <Icon icon="mdi:trash-can-outline" width={13} height={13} />
-                    </button>
+                    <div className="flex flex-col items-center gap-0.5">
+                      <button type="button" className="ui-icon-btn ui-icon-btn--sm nodrag"
+                        disabled={generating || busyRows.includes(row.id)}
+                        onClick={() => askAssistant(row.id)}
+                        title={t('AI 优化本镜')} aria-label={t('AI 优化本镜')}>
+                        <Icon icon="mdi:auto-fix" width={13} height={13} />
+                      </button>
+                      <button type="button" className="ui-btn ui-btn--sm" disabled={generating}
+                        onClick={() => setProduction({ rowId: row.id })} title={t('镜头制作准备')} aria-label={t('镜头制作准备')}>
+                        <Icon icon="mdi:movie-open-plus-outline" width={13} height={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="shot-row-delete nodrag"
+                        onClick={() => deleteRow(row.id)}
+                        title="删除该镜"
+                        aria-label="删除该镜"
+                      >
+                        <Icon icon="mdi:trash-can-outline" width={13} height={13} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -650,7 +754,11 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             <div className="shot-picker-empty">把图像/视频节点连到这张表，这里就能直接挑</div>
           )}
 
+          <button type="button" className="ui-btn ui-btn--sm my-2" onClick={() => { setStoryboardRowId(picker.rowId); setPicker(null); }}>{t('从宫格取画面')}</button>
           <div className="shot-picker-title">AI 生成画面</div>
+          <Select value={frameModelRef} onChange={setFrameModelRef}
+            options={imageModels.map((model) => ({ value: model.value, label: model.label }))}
+            placeholder={t('选择图片模型')} aria-label={t('选择图片模型')} fixedMenu />
           {/*
             走 MentionEditor 而不是裸 textarea：@ 能引用连进本表的节点、角色和资源库文件。
             存下来的 @{id:label} 记号由 generateImage 里的 resolvePromptWithImageRefs 解析，
@@ -660,7 +768,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             value={aiPrompt}
             onChange={setAiPrompt}
             onSubmit={() => void generateFrame(picker.rowId)}
-            canSubmit={!busyRows.includes(picker.rowId)}
+            canSubmit={!busyRows.length && !!frameModelRef}
             nodeId={id}
             className="shot-picker-input"
             placeholder="默认用「内容」栏，@ 可引用角色、资源库和连线节点"
@@ -669,6 +777,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             type="button"
             className="shotlist-btn shotlist-btn--primary shot-picker-go"
             onClick={() => void generateFrame(picker.rowId)}
+            disabled={!!busyRows.length || !frameModelRef}
           >
             <Icon icon="mdi:auto-fix" width={13} height={13} />
             生成并绑定
@@ -676,6 +785,27 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         </div>,
         document.body,
       )}
+
+      <ModalOverlay isOpen={batchOpen} onClose={() => setBatchOpen(false)} ariaLabel={t('补齐空镜')}
+        className="w-[min(420px,calc(100vw-24px))] bg-[var(--glass-bg)] text-canvas-text">
+        <div className="flex items-center gap-3 border-b border-canvas-border p-4">
+          <span className="flex-1 text-sm font-semibold">{t('补齐空镜')}</span>
+          <PopupCloseButton ariaLabel={t('关闭')} onClick={() => setBatchOpen(false)} />
+        </div>
+        <div className="grid gap-4 p-4">
+          <p className="text-xs text-canvas-text-secondary">
+            {t('本次生成前 {count} 个空镜，已有画面保持不变。', { count: Math.min(emptyRows.length, MAX_SHOTLIST_FRAME_BATCH) })}
+          </p>
+          <Select value={frameModelRef} onChange={setFrameModelRef}
+            options={imageModels.map((model) => ({ value: model.value, label: model.label }))}
+            placeholder={t('选择图片模型')} aria-label={t('选择图片模型')} fixedMenu />
+          <p className="text-xs text-canvas-text-muted">{t('每镜调用一次图片模型，可随时取消并保留已完成结果。')}</p>
+          <button type="button" className="ui-btn ui-btn--primary" disabled={!frameModelRef || !emptyRows.length}
+            onClick={() => { void generateFrames(emptyRows.slice(0, MAX_SHOTLIST_FRAME_BATCH).map((row) => row.id)); }}>
+            {t('开始补图')}
+          </button>
+        </div>
+      </ModalOverlay>
 
       <ResizeHandle
         nodeId={id}

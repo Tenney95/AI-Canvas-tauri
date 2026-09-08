@@ -4,6 +4,7 @@
  * iframe 与专用原生 Channel 使用不同的来源验证，共用同一个资源/effect/写回权威。
  */
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { getLocale, type Locale } from '../../i18n';
 import type { NodeType } from '../../types';
 import type {
   InstalledPlugin,
@@ -101,6 +102,7 @@ export interface PluginUiFrameSession {
   src: string;
   attach: (frameWindow: Window | null) => void;
   updateTheme: (theme: 'dark' | 'light') => void;
+  updateLocale: (locale: Locale) => void;
   dispose: () => void;
 }
 
@@ -295,6 +297,7 @@ async function dispatchRequest(
           value: {
             surface: session.surface,
             theme: state.config.theme,
+            locale: getLocale(),
             node: { id: session.nodeId, type: node.data.type as NodeType, data },
             models: modelCatalog(plugin, session.tool),
             parameters: session.parameters,
@@ -317,8 +320,9 @@ async function dispatchRequest(
           // 按请求量预留额度，失败也计数；不占用模型调用额度，不改变资源授权校验。
           session.rangeReadBudget = (session.rangeReadBudget ?? 0) + 1;
           session.rangeReadBytes = (session.rangeReadBytes ?? 0) + length;
-        } else if (effectType === 'video.extractFrames' || effectType === 'video.detectShots' || effectType === 'video.inspectFrame') {
-          if ((session.mediaEffectBudget ?? 0) >= MAX_UI_MEDIA_EFFECTS) throw new Error('本地视频操作达到 96 次上限，请重新打开插件');
+        } else if (effectType === 'video.extractFrames' || effectType === 'video.detectShots' || effectType === 'video.inspectFrame'
+          || effectType === 'image.lineArt') {
+          if ((session.mediaEffectBudget ?? 0) >= MAX_UI_MEDIA_EFFECTS) throw new Error('本地媒体操作达到 96 次上限，请重新打开插件');
           session.mediaEffectBudget = (session.mediaEffectBudget ?? 0) + 1;
         } else if (effectType === 'resource.export' || effectType === 'resource.createText') {
           if ((session.exportEffectBudget ?? 0) >= MAX_UI_EXPORT_EFFECTS) throw new Error('本次会话导出达到 12 次上限');
@@ -536,6 +540,16 @@ export async function createPluginUiFrameSession(options: CreatePluginUiSessionO
         }, '*');
       },
       dispose: () => closeSession(sessionId, false),
+      updateLocale: (locale) => {
+        const current = sessions.get(sessionId);
+        current?.frameWindow?.postMessage({
+          channel: MESSAGE_CHANNEL,
+          direction: 'event',
+          sessionId,
+          kind: 'locale',
+          value: locale,
+        }, '*');
+      },
     };
   } catch (error) {
     closeSession(sessionId, false);

@@ -18,9 +18,11 @@ import ViewportImage from '../../shared/ViewportImage';
 import {
   DRAMA_MENTION_MERGE_ALL,
   buildDramaMentionId,
+  buildDramaActionMentionId,
 } from '../../../types/dramaAssets';
 import type { CharacterReferenceImage } from '../../../types/dramaAssets';
 import { CHARACTER_REFERENCE_KIND_LABELS } from '../../character/characterReferencePresentation';
+import { resolveDramaActionMediaRef } from '../../../services/dramaAssetPrompt';
 import {
   bestNodeThumb,
   buildAssetChipEl,
@@ -97,6 +99,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const [mentionDropdownPosition, setMentionDropdownPosition] = useState({ left: 12, top: 0 });
   const editorRef = useRef<HTMLDivElement>(null);
   const savedMentionRangeRef = useRef<Range | null>(null);
+  const selectFirstMentionRef = useRef<(() => void) | null>(null);
   const lastFocusedWfValueRef = useRef<HTMLSpanElement | null>(null);
   const { nodes, edges, workflows, dramaAssets } = useAppStore(
     useShallow((state) => ({
@@ -264,14 +267,18 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     return resolveDramaMentionItems(dramaAssets, mentionQuery);
   }, [showMention, dramaAssets, mentionQuery]);
 
-  // 展开了参考图二级菜单的角色 id（多图角色才有）
+  // 角色参考图 / 动作列表 / 单个动作的素材选择。
   const [dramaRefPickerId, setDramaRefPickerId] = useState<string | null>(null);
+  const [dramaActionPicker, setDramaActionPicker] = useState(false);
+  const [dramaActionId, setDramaActionId] = useState<string | null>(null);
   // @ 面板的 Tab / 资产种类筛选
   const [pickerTab, setPickerTab] = useState<'nodes' | 'assets'>('nodes');
   const [dramaKind, setDramaKind] = useState<string>('all');
   useEffect(() => {
     if (!showMention) {
       setDramaRefPickerId(null);
+      setDramaActionPicker(false);
+      setDramaActionId(null);
       setPickerTab('nodes');
       setDramaKind('all');
     }
@@ -759,22 +766,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       if (e.key.startsWith('Arrow') && editorRef.current) normalizeChipSlots(editorRef.current);
       // @ mention: Enter → select first match
       if (showMention && e.key === 'Enter' && !e.shiftKey) {
-        if (filteredCanvasMentions.length > 0) {
-          e.preventDefault();
-          handleSelectCanvasMention(filteredCanvasMentions[0].id, filteredCanvasMentions[0].label);
-          return;
-        }
-        if (dramaMentionItems.length > 0) {
-          e.preventDefault();
-          handleSelectDramaMention(dramaMentionItems[0]);
-          return;
-        }
-        if (filteredWorkflowMentions.length > 0) {
-          e.preventDefault();
-          const wf = filteredWorkflowMentions[0] as typeof filteredWorkflowMentions[number] & { _ioNodeId: string; _ioType: WorkflowIONodeType };
-          handleSelectWorkflowMention(wf._ioNodeId, wf.label, wf._ioType);
-          return;
-        }
+        e.preventDefault();
+        selectFirstMentionRef.current?.();
+        return;
       }
       // @ mention: Escape → close
       if (showMention && e.key === 'Escape') {
@@ -912,15 +906,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     },
     [
       showMention,
-      filteredCanvasMentions,
-      filteredWorkflowMentions,
-      dramaMentionItems,
       canSubmit,
       onSubmit,
       emitDOM,
-      handleSelectCanvasMention,
-      handleSelectWorkflowMention,
-      handleSelectDramaMention,
     ],
   );
 
@@ -997,6 +985,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     : undefined;
   const drillRefs: CharacterReferenceImage[] = (drillItem?.referenceImages ?? [])
     .filter((reference) => !!reference.imageUrl);
+  const drillCharacter = dramaAssets.characters.find((character) => character.id === drillItem?.id);
+  const drillActions = drillCharacter?.actions ?? [];
+  const drillAction = drillActions.find((action) => action.id === dramaActionId);
 
   const dramaKindChips: MentionPickerChip[] = (() => {
     if (drillItem) return [];
@@ -1009,27 +1000,64 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     ];
   })();
 
-  const assetTabItems: MentionPickerItem[] = drillItem
-    ? [
-      {
+  const assetTabItems: MentionPickerItem[] = drillItem && dramaActionPicker
+    ? drillAction && drillCharacter
+      ? (drillAction.media ?? []).map((media) => ({
+        key: `drama-action-media:${media.id}`,
+        label: media.name,
+        thumbnailUrl: media.kind === 'video' ? undefined : media.url,
+        icon: media.kind === 'video' ? 'lucide:film' : 'mdi:image-outline',
+        badge: media.kind === 'video' ? '视频' : media.kind === 'gif' ? 'GIF' : '图片',
+        disabled: !resolveDramaActionMediaRef(drillCharacter, drillAction.id, media.id),
+        onSelect: () => {
+          const selected = resolveDramaActionMediaRef(drillCharacter, drillAction.id, media.id);
+          if (!selected) return;
+          restoreMentionCursor();
+          deleteAtChar();
+          insertDramaChipAtCursor(
+            buildDramaActionMentionId(drillCharacter.id, drillAction.id, media.id),
+            selected.label,
+            media.kind === 'video' ? 'action-video' : 'action-image',
+            media.kind === 'video' ? undefined : selected.url,
+          );
+          setShowMention(false);
+          setMentionQuery('');
+        },
+      }))
+      : drillActions.map((action) => ({
+        key: `drama-action:${action.id}`,
+        label: action.name,
+        thumbnailUrl: action.media?.find((media) => media.kind !== 'video' && media.url)?.url,
+        icon: 'lucide:accessibility',
+        badge: `${action.media?.length ?? 0} 素材`,
+        onSelect: () => setDramaActionId(action.id),
+      }))
+    : drillItem ? [
+      ...(drillRefs.length > 1 ? [{
         key: 'drama-merge-all',
         label: '全部拼成一张',
         icon: 'lucide:layout-grid',
         badge: `${drillRefs.length} 图`,
         onSelect: () => handleSelectDramaReference(drillItem, DRAMA_MENTION_MERGE_ALL, drillRefs[0]?.imageUrl),
-      },
+      }] : []),
       ...drillRefs.map((reference) => ({
         key: `drama-ref:${reference.id}`,
         label: CHARACTER_REFERENCE_KIND_LABELS[reference.kind],
         thumbnailUrl: reference.imageUrl,
         onSelect: () => handleSelectDramaReference(drillItem, reference.id, reference.imageUrl),
       })),
+      ...(drillRefs.length === 0 ? [{
+        key: 'drama-brief', label: dramaThumbOf(drillItem) ? '主视觉' : '角色简介', icon: 'lucide:text',
+        thumbnailUrl: dramaThumbOf(drillItem),
+        onSelect: () => handleSelectDramaMention(drillItem),
+      }] : []),
     ]
     : dramaMentionItems
       .filter((item) => dramaKind === 'all' || item.kind === dramaKind)
       .map((item) => {
         const references = (item.referenceImages ?? []).filter((reference) => !!reference.imageUrl);
         const multiRef = references.length > 1;
+        const hasActions = dramaAssets.characters.some((character) => character.id === item.id && !!character.actions?.length);
         const thumb = dramaThumbOf(item) || references[0]?.imageUrl;
         return {
           key: `drama:${item.id}`,
@@ -1038,19 +1066,28 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           icon: 'mdi:account-box-outline',
           badge: multiRef ? `${references.length} 图` : thumb ? undefined : '简介',
           onSelect: () => {
-            // 多张参考图先钻进二级视图让用户挑图或选合并
-            if (multiRef) setDramaRefPickerId(item.id);
-            else handleSelectDramaMention(item);
+            // 单图或无图但有动作的角色也能进入动作选择。
+            if (multiRef || hasActions) {
+              setDramaRefPickerId(item.id);
+              setDramaActionPicker(false);
+              setDramaActionId(null);
+            } else handleSelectDramaMention(item);
           },
         };
       });
 
   // 当前 Tab 空而另一个有内容时自动切过去（输入 @关键词 时不至于对着空网格）
-  const effectiveTab = pickerTab === 'nodes' && nodeTabItems.length === 0 && assetTabItems.length > 0
+  const effectiveTab = drillItem ? 'assets' : pickerTab === 'nodes' && nodeTabItems.length === 0 && assetTabItems.length > 0
     ? 'assets'
-    : pickerTab === 'assets' && assetTabItems.length === 0 && nodeTabItems.length > 0
+    : pickerTab === 'assets' && !drillItem && assetTabItems.length === 0 && nodeTabItems.length > 0
       ? 'nodes'
       : pickerTab;
+
+  // 回车与鼠标始终选当前页面中的条目，包括动作及素材下钻页。
+  useLayoutEffect(() => {
+    selectFirstMentionRef.current = (effectiveTab === 'assets' ? assetTabItems : nodeTabItems)
+      .find((item) => !item.disabled)?.onSelect ?? null;
+  });
 
   const updateMentionDropdownPosition = useCallback(() => {
     const wrap = mentionEditorWrapRef.current;
@@ -1168,22 +1205,57 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
               { id: 'assets', label: '资产库', icon: 'mdi:bookshelf' },
             ]}
             activeTab={effectiveTab}
-            onTabChange={(id) => { setPickerTab(id as 'nodes' | 'assets'); setDramaRefPickerId(null); }}
+            onTabChange={(id) => {
+              setPickerTab(id as 'nodes' | 'assets');
+              setDramaRefPickerId(null);
+              setDramaActionPicker(false);
+              setDramaActionId(null);
+            }}
             chips={effectiveTab === 'assets' ? dramaKindChips : undefined}
             activeChip={dramaKind}
             onChipChange={setDramaKind}
             leading={effectiveTab === 'assets' && drillItem ? (
-              <button
-                type="button"
-                className="mention-picker-chip"
-                onMouseDown={(e) => { e.preventDefault(); setDramaRefPickerId(null); }}
-              >
-                <Icon icon="lucide:chevron-left" width="12" height="12" />
-                {drillItem.name}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="mention-picker-chip"
+                  aria-label={dramaActionPicker ? '返回角色参考图' : '返回资产列表'}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (dramaActionPicker) {
+                      setDramaActionPicker(false);
+                      setDramaActionId(null);
+                    } else setDramaRefPickerId(null);
+                  }}
+                >
+                  <Icon icon="lucide:chevron-left" width="12" height="12" />
+                  {drillItem.name}
+                </button>
+                {drillCharacter && (
+                  <button
+                    type="button"
+                    className={`mention-picker-chip${dramaActionPicker ? ' active' : ''}`}
+                    aria-pressed={dramaActionPicker}
+                    onMouseDown={(e) => { e.preventDefault(); setDramaActionPicker(true); setDramaActionId(null); }}
+                  >
+                    <Icon icon="lucide:accessibility" width="12" height="12" />
+                    动作
+                    <span className="mention-picker-chip-count">{drillActions.length}</span>
+                  </button>
+                )}
+                {dramaActionPicker && drillAction && (
+                  <button type="button" className="mention-picker-chip" aria-label="返回动作列表"
+                    onMouseDown={(e) => { e.preventDefault(); setDramaActionId(null); }}>
+                    <Icon icon="lucide:chevron-left" width="12" height="12" />
+                    {drillAction.name}
+                  </button>
+                )}
+              </>
             ) : undefined}
             items={effectiveTab === 'assets' ? assetTabItems : nodeTabItems}
-            emptyText={mentionQuery ? '无匹配节点或资产' : effectiveTab === 'assets' ? '暂无短剧资产' : '暂无可引用的输入'}
+            emptyText={effectiveTab === 'assets' && drillItem && dramaActionPicker
+              ? drillAction ? '该动作暂无图片、GIF 或视频素材' : '该角色暂无动作，请先在角色库中添加'
+              : mentionQuery ? '无匹配节点或资产' : effectiveTab === 'assets' ? '暂无短剧资产' : '暂无可引用的输入'}
             footer={(
               <button
                 type="button"

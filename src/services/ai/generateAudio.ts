@@ -2,6 +2,9 @@
  * ai/generateAudio — 音频生成入口
  */
 import { resolveNodeReferences } from '../nodeReferenceService';
+import { useAppStore } from '../../store/useAppStore';
+import { isRunningHubWorkflow } from '../workflowExecutionService';
+import { executeRunningHubWorkflow, getRunningHubPersistedOutput } from './providers/runninghubWorkflow';
 import { executeComfyUIAudioGenerate } from '../comfyWorkflowService';
 import {
   createMediaDataUrlBudget,
@@ -92,6 +95,8 @@ export async function persistAudioGenerationResult(
   projectId: string | null | undefined,
   label: string,
 ): Promise<PersistedAudioGenerationResult> {
+  const cloud = getRunningHubPersistedOutput(result.runninghubOutputs, result.url);
+  if (cloud) return cloud;
   const shouldPersist = !!projectId && isTauriEnv();
   let saved: { filePath?: string; assetUrl?: string; sourceUrl?: string } | null = null;
   let persistError: string | undefined;
@@ -141,6 +146,13 @@ export async function generateAudio(
 
   // ComfyUI 工作流执行路径：连线音频兜底填充工作流的 audio IO 节点
   if (params.workflowId) {
+    const workflow = useAppStore.getState().workflows.find((item) => item.id === params.workflowId);
+    if (isRunningHubWorkflow(workflow)) {
+      const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, prompt, kind: 'audio', references: {
+        image: getMediaReferenceUrls(references, 'image', 'local'), video: getMediaReferenceUrls(references, 'video', 'local'), audio: getMediaReferenceUrls(references, 'audio', 'local'),
+      } }, signal);
+      return { ...normalizeProtocolAudioResult(outputs[0].url), runninghubOutputs: outputs };
+    }
     return executeComfyUIAudioGenerate(
       { ...params, prompt },
       signal,
@@ -150,7 +162,7 @@ export async function generateAudio(
 
   const registeredAdapter = mediaProviderRegistry.getAudioAdapter(provider);
   if (registeredAdapter) {
-    return registeredAdapter.generateAudio({ params, prompt, referenceAudioUrls, signal });
+    return registeredAdapter.generateAudio({ params, prompt, referenceAudioUrls, referenceMedia: references, signal });
   }
 
   // ── 通用模型音频生成 ──

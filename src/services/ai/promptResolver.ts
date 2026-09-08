@@ -11,6 +11,7 @@ import {
   findDramaAsset,
   formatDramaAssetTextBrief,
   resolveDramaAssetImageRef,
+  resolveDramaActionMediaRef,
 } from '../dramaAssetPrompt';
 import type { DramaAsset } from '../../types/dramaAssets';
 import { formatShotRowBrief, isShotRowBlank, readShotFrameSource } from '../../types';
@@ -194,8 +195,27 @@ export async function resolvePromptToChatContent(rawPrompt: string): Promise<{
     if (match[2] !== undefined) {
       const dramaId = match[2];
       const dramaName = match[3] || '';
-      const { assetId, referenceImageId, mergeAll } = parseDramaMentionId(dramaId);
+      const { assetId, referenceImageId, mergeAll, actionId, actionMediaId } = parseDramaMentionId(dramaId);
       const dramaAsset = findDramaAsset(store.dramaAssets, assetId);
+      if (actionId !== undefined) {
+        const media = resolveDramaActionMediaRef(dramaAsset, actionId, actionMediaId);
+        if (!media) throw new Error(`动作素材引用已失效：${dramaName || '未命名动作'}`);
+        if (media.kind === 'video') {
+          // 文本模型沿用画布视频引用的 URL 文本语义。
+          parts.push(`${media.label}（${media.url}）`);
+        } else {
+          const key = `drama:${dramaId}`;
+          let idx = imageKeyToIndex.get(key);
+          if (idx === undefined) {
+            idx = imageEntries.length + 1;
+            imageKeyToIndex.set(key, idx);
+            imageEntries.push({ url: media.url, filePath: media.filePath });
+          }
+          parts.push(`图片${idx}（${media.label}）`);
+        }
+        lastIndex = chipRegex.lastIndex;
+        continue;
+      }
       const mergedUrl = dramaAsset && mergeAll
         ? await resolveMergedCharacterImage(
           dramaAsset,
@@ -521,7 +541,23 @@ async function resolvePromptReferences(
     }
 
     if (dramaId !== undefined) {
-      const { assetId, referenceImageId } = parseDramaMentionId(dramaId);
+      const { assetId, referenceImageId, actionId, actionMediaId } = parseDramaMentionId(dramaId);
+      if (actionId !== undefined) {
+        const media = resolveDramaActionMediaRef(findDramaAsset(store.dramaAssets, assetId), actionId, actionMediaId);
+        if (!media) throw new Error(`动作素材引用已失效：${dramaName || '未命名动作'}`);
+        const key = `drama:${dramaId}`;
+        if (media.kind !== 'video') {
+          return `图片${addImage(key, { url: media.url, filePath: media.filePath })}`;
+        }
+        if (!extractMediaReferences) return media.url;
+        let idx = videoKeyToIndex.get(key);
+        if (idx === undefined) {
+          idx = videoKeyToIndex.size + 1;
+          videoKeyToIndex.set(key, idx);
+          mediaReferences.push({ kind: 'video', url: media.url, filePath: media.filePath, origin: 'prompt', role: 'reference' });
+        }
+        return `视频${idx}`;
+      }
       const mergedUrl = dramaMergedMap.get(dramaId);
       if (mergedUrl) {
         const key = `drama:${dramaId}`;

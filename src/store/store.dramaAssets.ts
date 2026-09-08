@@ -31,6 +31,11 @@ import { generateId } from './store.utils';
 import { nodeHeightForAspectRatio } from '../utils/nodeBounds';
 import type { BaseNodeData, CharacterLibraryNodeLink } from '../types';
 import {
+  registerCanvasDerivation,
+  isCanvasDerivationFresh,
+  completeCanvasDerivation,
+} from '../services/canvasDerivationGuard';
+import {
   clearGlobalCharacterCards,
   deleteGlobalCharacterCard,
   loadGlobalCharacterCards,
@@ -38,6 +43,12 @@ import {
 } from '../services/characterLibraryService';
 
 export type CharacterLibraryScope = 'project' | 'global';
+
+/** 从画布收纳一份动作素材；关联仅保存在来源项目的节点上。 */
+export interface CharacterActionNodeCapture {
+  nodeId: string;
+  hideNode: boolean;
+}
 
 const CHARACTER_REFERENCE_NODE_TYPES = new Set([
   'ai-image',
@@ -184,12 +195,14 @@ export interface DramaAssetsSlice {
     scope: CharacterLibraryScope,
     characterId: string,
     action: Pick<CharacterAction, 'category' | 'customCategory' | 'name' | 'prompt' | 'media'>,
+    capture?: CharacterActionNodeCapture,
   ) => Promise<string | null>;
   addCharacterActionMedia: (
     scope: CharacterLibraryScope,
     characterId: string,
     actionId: string,
     media: CharacterActionMedia[],
+    capture?: CharacterActionNodeCapture,
   ) => Promise<boolean>;
   removeCharacterActionMedia: (
     scope: CharacterLibraryScope,
@@ -255,6 +268,61 @@ function mapKindList(
 
 function silentSave(get: () => AppState) {
   void get().saveCurrentProjectSilent?.();
+}
+
+async function saveCharacterActionWithNode(
+  set: Parameters<StateCreator<AppState>>[0],
+  get: () => AppState,
+  scope: CharacterLibraryScope,
+  character: DramaCharacter,
+  actionId: string,
+  media: CharacterActionMedia[],
+  capture?: CharacterActionNodeCapture,
+): Promise<boolean> {
+  if (!capture) return get().saveCharacterCard(scope, character);
+  if (media.length !== 1) return false;
+  const guard = registerCanvasDerivation(get(), capture.nodeId);
+  if (!guard) return false;
+  const previousCharacter = get().dramaAssets.characters.find((item) => item.id === character.id);
+  try {
+    if (scope === 'project') {
+      if (!previousCharacter) return false;
+      set((state) => ({
+        dramaAssets: {
+          ...state.dramaAssets,
+          characters: state.dramaAssets.characters.map((item) => item.id === character.id ? character : item),
+        },
+      }));
+      const savedProjectId = await get().saveCurrentProjectSilent();
+      if (savedProjectId !== guard.projectId) throw new Error('动作素材保存失败');
+    } else if (!await get().saveCharacterCard(scope, character)) {
+      return false;
+    }
+    if (isCanvasDerivationFresh(guard, get())) {
+      const linked = get().linkNodeToCharacter(capture.nodeId, {
+        scope,
+        characterId: character.id,
+        actionId,
+        mediaId: media[0].id,
+      }, capture.hideNode);
+      if (linked) silentSave(get);
+    }
+    return true;
+  } catch {
+    // 保存失败仅回退本次角色对象，不覆盖期间的其他角色编辑或已切换项目。
+    if (scope === 'project' && get().currentProjectId === guard.projectId && previousCharacter) {
+      set((state) => ({
+        dramaAssets: {
+          ...state.dramaAssets,
+          characters: state.dramaAssets.characters.map((item) => item === character ? previousCharacter : item),
+        },
+      }));
+    }
+    get().showToast?.('动作素材保存失败，画布节点保持不变', 'error');
+    return false;
+  } finally {
+    completeCanvasDerivation(guard);
+  }
 }
 
 function upsertCharacterReference(
@@ -805,7 +873,7 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     }
 
     const previousLink = sourceNode.data.characterLibraryLinks?.find((link) => (
-      link.scope === input.scope && link.characterId === baseCharacter.id
+      link.scope === input.scope && link.characterId === baseCharacter.id && link.referenceImageId !== undefined
     ));
     const previousReference = baseCharacter.referenceImages?.find((reference) => (
       reference.id === previousLink?.referenceImageId
@@ -984,7 +1052,7 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     }));
   },
 
-  addCharacterAction: async (scope, characterId, action) => {
+  addCharacterAction: async (scope, characterId, action, capture) => {
     const characters = scope === 'project'
       ? get().dramaAssets.characters
       : get().globalCharacters;
@@ -994,7 +1062,7 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     if (!character || !name) return null;
     const now = Date.now();
     const actionId = `action-${generateId()}`;
-    const saved = await get().saveCharacterCard(scope, normalizeDramaCharacter({
+    const saved = await saveCharacterActionWithNode(set, get, scope, normalizeDramaCharacter({
       ...character,
       actions: [
         ...(character.actions ?? []),
@@ -1012,11 +1080,11 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
         },
       ],
       updatedAt: now,
-    }));
+    }), actionId, action.media ?? [], capture);
     return saved ? actionId : null;
   },
 
-  addCharacterActionMedia: async (scope, characterId, actionId, media) => {
+  addCharacterActionMedia: async (scope, characterId, actionId, media, capture) => {
     if (media.length === 0) return false;
     const characters = scope === 'project'
       ? get().dramaAssets.characters
@@ -1024,7 +1092,7 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     const character = characters.find((item) => item.id === characterId);
     if (!character?.actions?.some((action) => action.id === actionId)) return false;
     const now = Date.now();
-    return get().saveCharacterCard(scope, normalizeDramaCharacter({
+    return saveCharacterActionWithNode(set, get, scope, normalizeDramaCharacter({
       ...character,
       actions: character.actions.map((action) => action.id === actionId
         ? {
@@ -1034,10 +1102,11 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
           }
         : action),
       updatedAt: now,
-    }));
+    }), actionId, media, capture);
   },
 
   removeCharacterActionMedia: async (scope, characterId, actionId, mediaId) => {
+    const projectId = get().currentProjectId;
     const characters = scope === 'project'
       ? get().dramaAssets.characters
       : get().globalCharacters;
@@ -1045,7 +1114,7 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
     const action = character?.actions?.find((item) => item.id === actionId);
     if (!character || !action?.media?.some((item) => item.id === mediaId)) return false;
     const now = Date.now();
-    return get().saveCharacterCard(scope, normalizeDramaCharacter({
+    const saved = await get().saveCharacterCard(scope, normalizeDramaCharacter({
       ...character,
       actions: character.actions?.map((item) => item.id === actionId
         ? {
@@ -1056,19 +1125,30 @@ export const createDramaAssetsSlice: StateCreator<AppState, [], [], DramaAssetsS
         : item),
       updatedAt: now,
     }));
+    if (saved && get().currentProjectId === projectId) {
+      get().releaseCharacterLibraryNodes(scope, characterId, actionId, mediaId);
+      silentSave(get);
+    }
+    return saved;
   },
 
   removeCharacterAction: async (scope, characterId, actionId) => {
+    const projectId = get().currentProjectId;
     const characters = scope === 'project'
       ? get().dramaAssets.characters
       : get().globalCharacters;
     const character = characters.find((item) => item.id === characterId);
     if (!character?.actions?.some((action) => action.id === actionId)) return false;
-    return get().saveCharacterCard(scope, normalizeDramaCharacter({
+    const saved = await get().saveCharacterCard(scope, normalizeDramaCharacter({
       ...character,
       actions: character.actions.filter((action) => action.id !== actionId),
       updatedAt: Date.now(),
     }));
+    if (saved && get().currentProjectId === projectId) {
+      get().releaseCharacterLibraryNodes(scope, characterId, actionId);
+      silentSave(get);
+    }
+    return saved;
   },
 
   bindAudioNodeToCharacterVoice: async (input) => {

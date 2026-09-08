@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LOCALES, setLocale } from '../../src/i18n';
 import type {
   InstalledPlugin,
   PluginInvocationResources,
@@ -139,6 +140,13 @@ describe('pluginUiSessionService', () => {
   });
   const notify = () => { for (const listener of mocks.subscribers) listener(); };
 
+  it.each(LOCALES)('returns the current %s locale through the bound context', async (locale) => {
+    const session = await native();
+    setLocale(locale);
+    expect(await session.request('context', null)).toMatchObject({ ok: true, value: { locale } });
+    session.dispose();
+  });
+
   it('keeps native sessions inaccessible to iframe messages and retains the v1 context', async () => {
     const frame = await createPluginUiFrameSession({ plugin, tool, nodeId: 'target', exportName: 'dialog', onClose: vi.fn() });
     frame.dispose();
@@ -260,8 +268,8 @@ describe('pluginUiSessionService', () => {
       await vi.waitFor(() => expect(frame.postMessage).toHaveBeenCalledWith(expect.objectContaining({ requestId }), '*'), { interval: 1 });
       return vi.mocked(frame.postMessage).mock.calls.at(-1)?.[0];
     };
-    for (let i = 0; i < 96; i++) expect(await send('video.inspectFrame')).toMatchObject({ ok: true });
-    expect(await send('video.inspectFrame')).toMatchObject({ ok: false });
+    for (let i = 0; i < 96; i++) expect(await send(i % 2 ? 'image.lineArt' : 'video.inspectFrame')).toMatchObject({ ok: true });
+    expect(await send('image.lineArt')).toMatchObject({ ok: false, error: expect.stringContaining('96') });
     for (let i = 0; i < 4; i++) expect(await send('model.generate')).toMatchObject({ ok: true });
     expect(await send('model.generate')).toMatchObject({ ok: false });
     expect(await send('resource.export')).toMatchObject({ ok: true });
@@ -276,6 +284,9 @@ describe('pluginUiSessionService', () => {
     for (let i = 0; i < 4; i++) expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: true });
     expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: false });
     expect(await session.request('effect', { type: 'video.inspectFrame' })).toMatchObject({ ok: true });
+    for (let i = 0; i < 24; i++) {
+      expect(await session.request('effect', { type: 'image.lineArt', resourceId: `frame-${i}` })).toMatchObject({ ok: true });
+    }
     expect(await session.request('effect', { type: 'resource.export' })).toMatchObject({ ok: true });
     session.dispose();
   });
@@ -291,9 +302,14 @@ describe('pluginUiSessionService', () => {
     }
     expect(await session.request('effect', { type: 'resource.readRange', length: 1 })).toMatchObject({ ok: false, error: expect.stringContaining('16 MiB') });
     expect(mocks.executeEffect).toHaveBeenCalledTimes(64);
+    mocks.executeEffect.mockResolvedValue({ type: 'image.lineArt', ok: true });
+    for (let i = 0; i < 24; i++) {
+      expect(await session.request('effect', { type: 'image.lineArt', resourceId: `frame-${i}` })).toMatchObject({ ok: true });
+    }
     session.dispose();
   });
   beforeEach(() => {
+    setLocale('zh-CN');
     vi.clearAllMocks();
     // 服务模块只安装一次监听器；后续用例继续使用同一监听器引用。
     Object.defineProperty(globalThis, 'window', {
@@ -378,6 +394,11 @@ describe('pluginUiSessionService', () => {
       sessionId: session.sessionId,
       kind: 'theme',
       value: 'dark',
+    }), '*');
+
+    session.updateLocale('ko-KR');
+    expect(frame.postMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+      direction: 'event', sessionId: session.sessionId, kind: 'locale', value: 'ko-KR',
     }), '*');
 
     mocks.messageHandler?.({

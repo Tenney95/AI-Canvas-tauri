@@ -120,6 +120,7 @@ npm run tauri build
 - [开发指南](doc/开发指南.md)：环境、命令、目录、开发约定、调试和常见问题
 - [架构说明](doc/架构说明.md)：核心模块、数据流、安全边界和性能设计
 - [插件开发规范](doc/插件开发规范.md)：Manifest、JavaScript/Python 运行时、自定义节点、权限、安全边界、安装更新与发布规范
+- [开源插件开发示例：逐帧拉片](https://github.com/luckcatlin2000/ai-canvas-video-frame-review-plugin)：参考自定义界面、授权视频抽帧、模型分析、线稿转换与分镜节点输出；插件需用户单独安装。
 - [ComfyUI 工作流集成说明](doc/ComfyUI工作流集成说明.md)：导入、IO 节点识别、内容与参数注入、结果取回
 - [对话式画布助手功能方案](doc/对话式画布助手-功能方案.md)
 - [对话助手 Agent 能力实施方案](doc/对话助手-Agent能力实施方案.md)

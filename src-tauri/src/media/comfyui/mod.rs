@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -54,12 +55,111 @@ const TAKE_SAVE_PAYLOAD_SCRIPT: &str = r#"(() => {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ComfyUIEditorPayload<'a> {
+    request_id: &'a str,
     workflow_id: Option<&'a str>,
     workflow_name: Option<&'a str>,
     workflow_category: Option<&'a str>,
     workflow_file_name: Option<&'a str>,
     api_json: &'a str,
     editable_json: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComfyUIWorkflowOpenResult {
+    request_id: String,
+    node_count: usize,
+    source: String,
+    detail: String,
+}
+
+fn parse_editor_load_result(
+    raw: &str,
+    request_id: &str,
+) -> Result<Option<ComfyUIWorkflowOpenResult>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|_| "ComfyUI 返回的载入状态无效".to_string())?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    if value.get("requestId").and_then(|v| v.as_str()) != Some(request_id) {
+        return Err("ComfyUI 载入回执与当前请求不匹配".to_string());
+    }
+    let detail = value
+        .get("detail")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .chars()
+        .take(1200)
+        .collect::<String>();
+    match value.get("state").and_then(|v| v.as_str()) {
+        Some("loading") => Ok(None),
+        Some("error") => Err(if detail.is_empty() {
+            "ComfyUI 工作流载入失败".to_string()
+        } else {
+            detail
+        }),
+        Some("ready") => {
+            let node_count = value
+                .get("nodeCount")
+                .and_then(|v| v.as_u64())
+                .filter(|count| *count > 0 && *count <= 100_000)
+                .ok_or_else(|| "ComfyUI 未返回有效的画布节点，请重试".to_string())?;
+            let source = value.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            if !matches!(source, "api" | "editable" | "existing") {
+                return Err("ComfyUI 返回的载入来源无效".to_string());
+            }
+            Ok(Some(ComfyUIWorkflowOpenResult {
+                request_id: request_id.to_string(),
+                node_count: node_count as usize,
+                source: source.to_string(),
+                detail,
+            }))
+        }
+        _ => Err("ComfyUI 返回的载入状态无效".to_string()),
+    }
+}
+
+async fn wait_for_editor_load(
+    window: &tauri::WebviewWindow,
+    origin: &Url,
+    request_id: &str,
+) -> Result<ComfyUIWorkflowOpenResult, String> {
+    let encoded = serde_json::to_string(request_id).map_err(|_| "载入请求无效".to_string())?;
+    let script = format!("window.__AI_CANVAS_COMFY__?.getLoadResult({encoded}) ?? null");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while tokio::time::Instant::now() < deadline {
+        let current = window
+            .url()
+            .map_err(|_| "ComfyUI 窗口已关闭，请重新打开".to_string())?;
+        if current.as_str() == "about:blank" {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        if !is_same_comfyui_origin(&current, origin) {
+            return Err("ComfyUI 页面已离开配置的服务器，请关闭该窗口后重试".to_string());
+        }
+        let (sender, receiver) = tokio::sync::oneshot::channel::<String>();
+        let sender = Arc::new(Mutex::new(Some(sender)));
+        if window
+            .eval_with_callback(&script, move |raw| {
+                if let Ok(mut sender) = sender.lock() {
+                    if let Some(sender) = sender.take() {
+                        let _ = sender.send(raw);
+                    }
+                }
+            })
+            .is_ok()
+        {
+            if let Ok(Ok(raw)) = tokio::time::timeout(Duration::from_secs(2), receiver).await {
+                if let Some(result) = parse_editor_load_result(&raw, request_id)? {
+                    return Ok(result);
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    Err("ComfyUI 工作流载入超时，请检查编辑窗口中的提示后重试".to_string())
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -134,6 +234,7 @@ async fn ensure_local_comfyui_reachable(url: &Url) -> Result<(), String> {
 }
 
 fn build_editor_script(
+    request_id: Option<&str>,
     workflow_id: Option<&str>,
     workflow_name: Option<&str>,
     workflow_category: Option<&str>,
@@ -144,6 +245,15 @@ fn build_editor_script(
     let Some(api_json) = api_json else {
         return Ok(None);
     };
+    let request_id = request_id
+        .filter(|value| {
+            value.starts_with("open-")
+                && value.len() <= 160
+                && value
+                    .bytes()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'-' | b'_' | b'.'))
+        })
+        .ok_or_else(|| "ComfyUI 打开请求标识无效".to_string())?;
     if api_json.len() > MAX_WORKFLOW_JSON_LENGTH
         || editable_json.is_some_and(|json| json.len() > MAX_WORKFLOW_JSON_LENGTH)
     {
@@ -151,12 +261,10 @@ fn build_editor_script(
     }
     serde_json::from_str::<serde_json::Value>(api_json)
         .map_err(|_| "ComfyUI API 工作流 JSON 无效".to_string())?;
-    if let Some(editable_json) = editable_json {
-        serde_json::from_str::<serde_json::Value>(editable_json)
-            .map_err(|_| "ComfyUI 可编辑工作流 JSON 无效".to_string())?;
-    }
+    // 编辑布局可损坏；桥接会从已校验的 API 数据重建，不应先打开空白后静默失败。
 
     let payload = ComfyUIEditorPayload {
+        request_id,
         workflow_id,
         workflow_name,
         workflow_category,
@@ -611,25 +719,28 @@ pub async fn open_comfyui_window(
     webview: tauri::Webview,
     app: tauri::AppHandle,
     comfy_url: String,
+    request_id: Option<String>,
     workflow_id: Option<String>,
     workflow_name: Option<String>,
     workflow_category: Option<String>,
     workflow_file_name: Option<String>,
     api_json: Option<String>,
     editable_json: Option<String>,
-) -> Result<(), String> {
+) -> Result<Option<ComfyUIWorkflowOpenResult>, String> {
     crate::path_policy::ensure_trusted_caller(&webview)?;
     let url = parse_comfyui_url(&comfy_url)?;
     let use_local_bridge = is_local_comfyui_url(&url);
+    if api_json.is_some() && !use_local_bridge {
+        return Err(
+            "远程 ComfyUI 当前不支持自动载入编辑工作流，请在该服务器页面手动导入 JSON".to_string(),
+        );
+    }
     if use_local_bridge {
-        if let Err(error) = ensure_local_comfyui_reachable(&url).await {
-            if let Some(window) = app.get_webview_window(COMFYUI_WINDOW_LABEL) {
-                let _ = window.close();
-            }
-            return Err(error);
-        }
+        // 服务短暂离线只返回错误，不能关闭还保存着未提交草稿的编辑窗口。
+        ensure_local_comfyui_reachable(&url).await?;
     }
     let editor_script = build_editor_script(
+        request_id.as_deref(),
         workflow_id.as_deref(),
         workflow_name.as_deref(),
         workflow_category.as_deref(),
@@ -659,7 +770,13 @@ pub async fn open_comfyui_window(
             window
                 .set_focus()
                 .map_err(|e| format!("聚焦 ComfyUI 窗口失败: {e}"))?;
-            return Ok(());
+            return if api_json.is_some() {
+                wait_for_editor_load(&window, &url, request_id.as_deref().unwrap_or(""))
+                    .await
+                    .map(Some)
+            } else {
+                Ok(None)
+            };
         }
         window
             .close()
@@ -676,27 +793,30 @@ pub async fn open_comfyui_window(
 
     let action_origin = url.clone();
     let page_origin = url.clone();
-    let mut builder =
-        WebviewWindowBuilder::new(&app, COMFYUI_WINDOW_LABEL, WebviewUrl::External(url))
-            .title("ComfyUI")
-            .inner_size(1280.0, 820.0)
-            .min_inner_size(900.0, 600.0)
-            .center()
-            .resizable(true)
-            // 本地页面加载完成前保留原生标题栏；连接异常时窗口仍有系统关闭按钮。
-            .decorations(true)
-            // Tauri 默认的原生拖放处理会吞掉 HTML5 drag 事件，ComfyUI 就收不到拖进来的
-            // 工作流 JSON / 图片；关掉它交还给页面自己处理
-            .disable_drag_drop_handler()
-            // wry 默认注册的下载处理器会把下载标记为已处理，WebView2 自带的「另存为」
-            // 和下载提示都不会出现，导出的工作流悄悄落到「下载」目录里。这里补上反馈。
-            .on_download(|webview, event| {
-                if let tauri::webview::DownloadEvent::Finished { path, success, .. } = event {
-                    notify_comfyui_download(&webview, path.as_deref(), success);
-                }
-                true
-            })
-            .visible(true);
+    let mut builder = WebviewWindowBuilder::new(
+        &app,
+        COMFYUI_WINDOW_LABEL,
+        WebviewUrl::External(url.clone()),
+    )
+    .title("ComfyUI")
+    .inner_size(1280.0, 820.0)
+    .min_inner_size(900.0, 600.0)
+    .center()
+    .resizable(true)
+    // 本地页面加载完成前保留原生标题栏；连接异常时窗口仍有系统关闭按钮。
+    .decorations(true)
+    // Tauri 默认的原生拖放处理会吞掉 HTML5 drag 事件，ComfyUI 就收不到拖进来的
+    // 工作流 JSON / 图片；关掉它交还给页面自己处理
+    .disable_drag_drop_handler()
+    // wry 默认注册的下载处理器会把下载标记为已处理，WebView2 自带的「另存为」
+    // 和下载提示都不会出现，导出的工作流悄悄落到「下载」目录里。这里补上反馈。
+    .on_download(|webview, event| {
+        if let tauri::webview::DownloadEvent::Finished { path, success, .. } = event {
+            notify_comfyui_download(&webview, path.as_deref(), success);
+        }
+        true
+    })
+    .visible(true);
     if use_local_bridge {
         let navigation_app = app.clone();
         builder = builder.on_navigation(move |navigation_url| {
@@ -730,11 +850,17 @@ pub async fn open_comfyui_window(
     if !initialization_script.is_empty() {
         builder = builder.initialization_script(&initialization_script);
     }
-    builder
+    let window = builder
         .build()
         .map_err(|e| format!("创建 ComfyUI 窗口失败: {e}"))?;
 
-    Ok(())
+    if api_json.is_some() {
+        wait_for_editor_load(&window, &url, request_id.as_deref().unwrap_or(""))
+            .await
+            .map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
@@ -742,7 +868,8 @@ mod tests {
     use super::{
         build_editor_script, comfyui_socket_endpoint, ensure_local_comfyui_reachable,
         is_local_comfyui_url, is_same_comfyui_origin, parse_comfyui_url,
-        parse_comfyui_window_action, parse_workflow_save_payload, ComfyUIWindowAction, COMFY_ARGS,
+        parse_comfyui_window_action, parse_editor_load_result, parse_workflow_save_payload,
+        ComfyUIWindowAction, COMFY_ARGS,
     };
     use std::net::TcpListener;
 
@@ -825,6 +952,7 @@ mod tests {
     #[test]
     fn safely_serializes_editor_payload() {
         let script = build_editor_script(
+            Some("open-test-1"),
             Some("wf-1"),
             Some("引号\"与换行\n测试"),
             Some("ai-image"),
@@ -835,7 +963,42 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(script.contains("window.__AI_CANVAS_PENDING_WORKFLOW__="));
+        assert!(script.contains("open-test-1"));
         assert!(script.contains(r#"引号\"与换行\n测试"#));
+    }
+
+    #[test]
+    fn editor_load_requires_matching_request_and_nonempty_canvas() {
+        assert!(parse_editor_load_result("null", "open-a")
+            .unwrap()
+            .is_none());
+        assert!(
+            parse_editor_load_result(r#"{"requestId":"open-a","state":"loading"}"#, "open-a")
+                .unwrap()
+                .is_none()
+        );
+        let ready = r#"{"requestId":"open-a","state":"ready","nodeCount":4,"source":"existing","detail":"已切换"}"#;
+        assert_eq!(
+            parse_editor_load_result(ready, "open-a")
+                .unwrap()
+                .unwrap()
+                .node_count,
+            4
+        );
+        assert!(parse_editor_load_result(ready, "open-b").is_err());
+        assert!(parse_editor_load_result(
+            &ready.replace("\"nodeCount\":4", "\"nodeCount\":0"),
+            "open-a"
+        )
+        .is_err());
+        assert_eq!(
+            parse_editor_load_result(
+                r#"{"requestId":"open-a","state":"error","detail":"缺少节点"}"#,
+                "open-a"
+            )
+            .unwrap_err(),
+            "缺少节点"
+        );
     }
 
     #[test]

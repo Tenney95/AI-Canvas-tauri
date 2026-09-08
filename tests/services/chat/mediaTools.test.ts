@@ -43,6 +43,19 @@ beforeEach(() => {
 });
 
 describe('media_generate display parameters', () => {
+  it('RunningHub 专属参数保持字符串，且不注入其他模型的视频默认值', () => {
+    const id = 'minimax/h3-max-turbo/image-to-video';
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: { 'runninghub-model': { name: 'RH', apiKey: 'fake', selectedModels: [{ id, name: 'H3', provider: 'runninghub', category: 'video' }] } } } }));
+    const prepared = prepareAgentToolCall({ callId: 'rh-params', toolId: 'media_generate', input: { kind: 'video', prompt: '镜头推进', modelRef: `runninghub/${id}`, deliveryMode: 'chat', modelParameters: [{ name: 'duration', value: '15' }] } }, context);
+    expect(prepared.ok).toBe(true);
+    if (prepared.ok) {
+      expect(prepared.prepared.input).toMatchObject({ modelParameters: [{ name: 'duration', value: '15' }] });
+      expect(prepared.prepared.input).not.toHaveProperty('resolution');
+      expect(prepared.prepared.input).not.toHaveProperty('duration');
+    }
+    const read = prepareAgentToolCall({ callId: 'rh-read', toolId: 'media_model_parameters', input: { modelRef: `runninghub/${id}` } }, { ...context, mode: 'plan' });
+    expect(read.ok).toBe(true);
+  });
   it('uses the project default media model when modelRef is omitted', () => {
     useAppStore.setState((state) => ({
       projects: state.projects.map((project) => ({

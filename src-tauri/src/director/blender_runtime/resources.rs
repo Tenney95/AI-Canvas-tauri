@@ -35,14 +35,31 @@ const JOB_SCRIPT_BYTES: &[u8] =
 
 const SCHEMA_VERSION: u32 = 1;
 const PACKAGE_ID: &str = "ai-canvas-blender-runtime";
-const PACKAGE_VERSION: &str = "1.3.3";
+const PACKAGE_VERSION: &str = "1.4.0";
 const TEMPLATE_ID: &str = "ai_canvas_director";
 const TEMPLATE_VERSION: u32 = 1;
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
 const REQUEST_SCHEMA_VERSION: u32 = 1;
 const RESULT_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const CREATED_WITH_BLENDER_VERSION: &str = "5.2.1 LTS";
-const SUPPORTED_BLENDER_VERSION: &str = "5.2.1";
+const SUPPORTED_BLENDER_SERIES: [&str; 4] = ["4.5", "5.0", "5.1", "5.2"];
+
+/// Accept stable releases in the supported API families, never a prefix or prerelease.
+pub(super) fn is_supported_blender_version(version: &str) -> bool {
+    let version = version.strip_suffix(" LTS").unwrap_or(version);
+    let parts: Vec<_> = version.split('.').collect();
+    if parts.len() != 3
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || (part.len() > 1 && part.starts_with('0'))
+                || !part.bytes().all(|byte| byte.is_ascii_digit())
+                || part.parse::<u32>().is_err()
+        })
+    {
+        return false;
+    }
+    SUPPORTED_BLENDER_SERIES.contains(&format!("{}.{}", parts[0], parts[1]).as_str())
+}
 const COMPATIBILITY_PLATFORM: &str = "windows";
 const COMPATIBILITY_ARCHITECTURE: &str = "x86_64";
 
@@ -59,7 +76,7 @@ const CHARACTER_LICENSE_PATH: &str = "scripts/startup/bl_app_templates_system/ai
 const JOB_SCRIPT_PATH: &str = "jobs/ai_canvas_director_job_v1.py";
 
 const TEMPLATE_INIT_SHA256: &str =
-    "09c4d751683b5a343599c7809f5e8333a7726984dd0beaa18f32650545b25523";
+    "08e6d0c278affdead5a4d7b08519be0cd404f4ff35dfb2ead07ef032c373c190";
 const TEMPLATE_STARTUP_BLEND_SHA256: &str =
     "a3e806fc2b910598b5f24c90127d02494fcbaf79a53f7e2eb7aee95f7f85e340";
 const CHARACTER_FEMALE_BLEND_SHA256: &str =
@@ -68,14 +85,14 @@ const CHARACTER_MALE_BLEND_SHA256: &str =
     "767911283f1e09295057dc4bdbe5e79e4e80eddd525ad74af1041b35e7425df9";
 const CHARACTER_LICENSE_SHA256: &str =
     "c232257c8a2545520aa120cda96acb23d00a355d2e3339cba20b7ebf56f28a09";
-const JOB_SCRIPT_SHA256: &str = "101184769ed013e6b3d5a1692cccd0d1b3dc6973fdc77d08f8cf422fb8dd2b8c";
+const JOB_SCRIPT_SHA256: &str = "a62fbf9a553ce2615ea7be0415eb86a9907afec68b45e4a367ba1e0e969f9e3c";
 
-const TEMPLATE_INIT_SIZE: u64 = 93_064;
+const TEMPLATE_INIT_SIZE: u64 = 93_996;
 const TEMPLATE_STARTUP_BLEND_SIZE: u64 = 91_348;
 const CHARACTER_FEMALE_BLEND_SIZE: u64 = 560_000;
 const CHARACTER_MALE_BLEND_SIZE: u64 = 543_063;
 const CHARACTER_LICENSE_SIZE: u64 = 782;
-const JOB_SCRIPT_SIZE: u64 = 43_941;
+const JOB_SCRIPT_SIZE: u64 = 45_780;
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -167,7 +184,7 @@ struct RuntimeManifest {
 struct RuntimeCompatibility {
     platform: String,
     architecture: String,
-    supported_versions: Vec<String>,
+    supported_version_series: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -313,8 +330,7 @@ pub fn validate_embedded_blender_runtime() -> Result<(), BlenderResourceError> {
         && manifest.created_with_blender_version == CREATED_WITH_BLENDER_VERSION
         && manifest.compatibility.platform == COMPATIBILITY_PLATFORM
         && manifest.compatibility.architecture == COMPATIBILITY_ARCHITECTURE
-        && manifest.compatibility.supported_versions.len() == 1
-        && manifest.compatibility.supported_versions[0] == SUPPORTED_BLENDER_VERSION
+        && manifest.compatibility.supported_version_series == SUPPORTED_BLENDER_SERIES
         && manifest.resources.len() == EMBEDDED_RESOURCES.len();
     if !has_fixed_header {
         return Err(BlenderResourceError::InvalidEmbeddedManifest);
@@ -669,6 +685,32 @@ mod tests {
     }
 
     #[test]
+    fn version_policy_accepts_patches_but_rejects_prefixes_and_prereleases() {
+        for version in ["4.5.0", "4.5.13 LTS", "5.0.0", "5.1.2", "5.2.0", "5.2.99"] {
+            assert!(is_supported_blender_version(version), "{version}");
+        }
+        for version in [
+            "",
+            "4.4.9",
+            "4.6.0",
+            "5.3.0",
+            "6.0.0",
+            "5.2",
+            "5.2.1.0",
+            "5.2.1 Alpha",
+            "5.2.1rc",
+            "5.2.1-extra",
+            "5.2.1 LTS extra",
+            "5.2.1\n",
+            "5.2.-1",
+            "05.2.1",
+            "5.2.999999999999999999999",
+        ] {
+            assert!(!is_supported_blender_version(version), "{version}");
+        }
+    }
+
+    #[test]
     fn trusted_text_is_canonicalized_without_weakening_the_pinned_hash() {
         assert_eq!(
             canonicalize_lf_text(b"first\r\nsecond\r\n")
@@ -708,7 +750,7 @@ mod tests {
             .expect("second resource install should be idempotent");
 
         assert_eq!(first, second);
-        assert!(first.runtime_root.ends_with("blender-runtime/1.3.3"));
+        assert!(first.runtime_root.ends_with("blender-runtime/1.4.0"));
         assert_eq!(
             fs::read(previous_resource).expect("previous runtime should remain readable"),
             previous_bytes

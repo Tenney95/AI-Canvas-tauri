@@ -320,6 +320,35 @@ describe('shared director operation lifecycle', () => {
     await vi.waitFor(() => expect(getDirectorOperation(retry.operationId, owner).state).toBe('succeeded'));
   });
 
+  it.each([
+    ['UNSUPPORTED_VERSION', 'DIRECTOR_BLENDER_VERSION_UNSUPPORTED', '4.5'],
+    ['MISSING_CAPABILITY', 'DIRECTOR_BLENDER_CAPABILITY_MISSING', 'H.264'],
+    ['STARTUP_FAILED', 'DIRECTOR_BLENDER_STARTUP_FAILED', '启动失败'],
+    ['PROCESS_CRASHED', 'DIRECTOR_BLENDER_CRASHED', '异常退出'],
+    ['TIMED_OUT', 'DIRECTOR_BLENDER_TIMED_OUT', '超时'],
+    ['RESULT_INVALID', 'DIRECTOR_INVALID_RESULT', '完整成果'],
+    ['unknown-code', 'DIRECTOR_OPERATION_FAILED', '操作失败'],
+    ['__proto__', 'DIRECTOR_OPERATION_FAILED', '操作失败'],
+  ])('maps bound native failure %s to a fixed public message', async (code, expected, message) => {
+    const pending = deferred<ReturnType<typeof opened>>();
+    let report!: NonNullable<DirectorRuntimeBlenderContext['onStatus']>;
+    vi.mocked(openDirectorRuntime).mockImplementationOnce((_kind, request) => {
+      report = request.blender!.onStatus!;
+      report(status('open-editor'));
+      return pending.promise;
+    });
+    const operation = await start();
+    report({ ...status('open-editor'), state: 'failed', failure: { code, message: 'private credential=secret' } });
+    pending.reject(new Error('private credential=secret'));
+    await vi.waitFor(() => expect(getDirectorOperation(operation.operationId, owner).state).toBe('failed'));
+    const snapshot = getDirectorOperation(operation.operationId, owner);
+    expect(snapshot.error).toMatchObject({ code: expected });
+    expect(snapshot.error?.message).toContain(message);
+    expect(useAppStore.getState().nodes[0].data.error).toBe(snapshot.error?.message);
+    expect(JSON.stringify(snapshot)).not.toMatch(/private|credential|secret/);
+    expect(openDirectorRuntime).toHaveBeenCalledOnce();
+  });
+
   it('returns detached public snapshots and drops old operation IDs when the runtime resets', async () => {
     const pending = pendingEditor();
     const operation = await start();

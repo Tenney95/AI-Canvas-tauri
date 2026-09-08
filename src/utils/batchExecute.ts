@@ -54,6 +54,13 @@ const EXECUTABLE_NODE_TYPES = new Set<AINodeType>([
 // ── 执行单个节点 ──
 async function executeOneNode(node: Node<BaseNodeData>, ctx: BatchContext): Promise<boolean> {
   const d = node.data!;
+  if (d.provider === 'workflow-api') {
+    const { useAppStore } = await import('../store/useAppStore');
+    if (useAppStore.getState().currentProjectId !== ctx.currentProjectId) return false;
+    const { executeGeneration } = await import('../services/generationService');
+    if (useAppStore.getState().currentProjectId !== ctx.currentProjectId) return false;
+    return (await executeGeneration(node.id)).success;
+  }
   const nt = d.type as AINodeType;
   const prompt = (d.prompt as string) || '';
 

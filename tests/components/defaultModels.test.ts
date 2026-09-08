@@ -7,6 +7,8 @@ import {
   getMediaModelOptions,
 } from '../../src/components/nodes/shared/defaultModels';
 import type { AppConfig, ProviderModelSelection } from '../../src/types';
+import { APIMART_OMNI_MODELS, replaceLegacyApimartOmni } from '../../src/services/ai/apimartVideoModels';
+import { isProviderModelVisible } from '../../src/services/ai/providerCatalogService';
 
 function createConfig(selectedModels: ProviderModelSelection[]): AppConfig {
   return {
@@ -23,6 +25,37 @@ function createConfig(selectedModels: ProviderModelSelection[]): AppConfig {
 }
 
 describe('内置厂商动态模型目录', () => {
+  it('云工作流进入媒体目录并保留指定连接，旧无参数合同的云 ID 不再作为可运行选项', () => {
+    const config: AppConfig = { theme: 'dark', providers: { runninghub: { name: 'RH 工作流', apiKey: 'configured' } } };
+    const workflows = [{ id: 'cloud-video', name: '云视频', category: 'ai-video' as const, adapterType: 'runninghub' as const, runninghub: { version: 1 as const, kind: 'workflow' as const, remoteId: '1904152026220003329', connectionId: 'runninghub-model' as const, parameters: [] }, fileName: 'RH', fileContent: '', createdAt: 1 }];
+    const option = findMediaModelOption('runninghubwf/cloud-video', [], config, workflows);
+    expect(option).toMatchObject({ provider: 'runninghubwf', providerConfigId: 'runninghub-model', workflowId: 'cloud-video', mediaKind: 'video' });
+    expect(getConfiguredModelGroups(config, 'ai-video').some((group) => group.id === 'runninghubwf')).toBe(false);
+  });
+  it('用三个 Omni 视频模型替换已选择的旧条目，不影响其它选择', () => {
+    const other: ProviderModelSelection = { id: 'wan2.7', name: 'Wan', category: 'video', provider: 'apimart' };
+    const legacy: ProviderModelSelection = { id: 'apimart/Omni-Flash-Ext', name: 'Omni Flash', category: 'video', provider: 'apimart' };
+    const selections = [other, legacy, { ...APIMART_OMNI_MODELS[0] }];
+    const migrated = replaceLegacyApimartOmni(selections)!;
+    expect(migrated).toHaveLength(4);
+    expect(migrated[0]).toBe(other);
+    expect(replaceLegacyApimartOmni(migrated)).toBe(migrated);
+    expect(selections[1]).toBe(legacy);
+    const models = getConfiguredModelGroups(createConfig(selections), 'ai-video')[0].models;
+    expect(models.map((model) => model.value)).toEqual(expect.arrayContaining(
+      APIMART_OMNI_MODELS.map((model) => `apimart/${model.id}`),
+    ));
+    expect(models.some((model) => model.value.includes('Omni-Flash-Ext'))).toBe(false);
+    expect(isProviderModelVisible('apimart', 'Omni-Flash-Ext')).toBe(false);
+    expect(isProviderModelVisible('google', 'gemini-omni-flash-preview')).toBe(true);
+  });
+
+  it('不会重新启用用户没有选择的 Omni 模型', () => {
+    const selections = [{ ...APIMART_OMNI_MODELS[2] }];
+    expect(replaceLegacyApimartOmni(selections)).toBe(selections);
+    expect(getConfiguredModelGroups(createConfig(selections), 'ai-video')[0].models.map((model) => model.value))
+      .toEqual(['apimart/gemini-omni-flash-preview']);
+  });
   it('内置即梦 CLI v1.4.17 完整媒体模型目录', () => {
     const models = defaultModelGroups.find((group) => group.id === 'dreamina')?.models ?? [];
 

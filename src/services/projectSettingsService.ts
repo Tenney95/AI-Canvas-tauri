@@ -45,6 +45,7 @@ export const PROJECT_VIDEO_RESOLUTIONS = ['480p', '720p', '1080p', '4k'] as cons
 
 const NODE_MODEL_KIND: Partial<Record<NodeType, ProjectModelKind>> = {
   'ai-text': 'text',
+  'ai-shotlist': 'text',
   'ai-image': 'image',
   'ai-animation': 'image',
   'ai-panorama': 'image',
