@@ -8,9 +8,9 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { useShallow } from 'zustand/react/shallow';
 import { generateId, useAppStore } from '../../store/useAppStore';
 import { derivedNodePlacement } from '../../store/store.utils';
-import type { AnimationAction, BaseNodeData, CameraGenerationSettings, ImagePostProcess, ModelOption, ShotlistColumnKey, ShotRow } from '../../types';
-import { ANIMATION_FRAME_GRIDS, resolveShotlistColumns } from '../../types';
-import { buildShotlistGenerationPrompt, carryOverShotFrames, parseShotlistRows } from '../../services/shotlistGenerate';
+import type { AnimationAction, BaseNodeData, CameraGenerationSettings, ImagePostProcess, ModelOption } from '../../types';
+import { ANIMATION_FRAME_GRIDS } from '../../types';
+import { generateShotlistRows } from '../../services/shotlistService';
 import { MAX_IMAGE_BATCH_COUNT, type AudioOutputFormat, type AudioTtsVoice, type VideoReferenceItem } from '../../types/aiTypes';
 import { generateText, generateImage, generateImagesBatch, generateVideo, generateAudio, buildPanoramaPrompt } from '../../services/aiService';
 import { persistAudioGenerationResult } from '../../services/ai/generateAudio';
@@ -648,32 +648,7 @@ function AINodeDialog() {
         });
         showToast(t('音频生成完成'));
       } else if (nodeType === 'ai-shotlist') {
-        // 分镜表要的是表格行不是一段文字：按当前显示的列出题，把回答解析回 shotlistRows
-        const columns = resolveShotlistColumns(latestData.shotlistColumns as ShotlistColumnKey[] | undefined);
-        const result = await generateText({
-          prompt: buildShotlistGenerationPrompt(effectivePrompt, columns),
-          model: nodeModel,
-          provider: nodeProvider,
-        });
-        if (!isStillCurrentSubmission()) return;
-        const generated = parseShotlistRows(result);
-        // 生成期间用户可能还在改表，取最新一份做画面接续，别拿 await 前的快照
-        const previousRows = (useAppStore.getState().nodes.find((n) => n.id === submittingNodeId)
-          ?.data.shotlistRows as ShotRow[] | undefined) ?? [];
-        const rows = carryOverShotFrames(previousRows, generated);
-        updateNodeData(activeNodeId!, { shotlistRows: rows, status: 'success' });
-        recordOutputHistory(activeNodeId!, {
-          nodeId: activeNodeId!,
-          nodeLabel: nodeLabel,
-          timestamp: Date.now(),
-          prompt: effectivePrompt,
-          output: result,
-          nodeType: 'ai-shotlist',
-          model: nodeModel,
-          provider: nodeProvider,
-          status: 'success',
-          params: { columns },
-        });
+        const rows = await generateShotlistRows(submittingNodeId, effectivePrompt, nodeModel, nodeProvider);
         showToast(t('已生成 {count} 个镜头', { count: rows.length }));
       } else {
         const result = await generateText({

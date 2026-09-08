@@ -23,6 +23,8 @@ const STRUCTURAL_NODE_DATA_KEYS = [
   'storyboardColPositions',
   'storyboardExtracted',
   'storyboardOverrides',
+  'shotlistRows',
+  'shotlistColumns',
   'characterLibraryLinks',
   'hiddenByCharacterLibrary',
   'groupCollapsed',

@@ -116,6 +116,11 @@ export interface ShotRow {
   note?: string;
 }
 
+/** 助手可编辑的镜头字段；媒体绑定只接受真实来源节点。 */
+export type ShotRowEdit = Partial<Pick<ShotRow,
+  'id' | 'shotNo' | 'shotSize' | 'camera' | 'content' | 'dialogue' | 'audio' | 'transition' | 'duration' | 'note'
+>>;
+
 /** 可以放进画面格的节点类型 */
 export const SHOTLIST_FRAME_SOURCE_TYPES = ['ai-image', 'source-image', 'ai-video', 'source-video'];
 

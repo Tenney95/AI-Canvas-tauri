@@ -23,6 +23,7 @@ import { registerConversationAgentTools } from './conversationTools';
 import { registerHistoryAgentTools } from './historyTools';
 import { registerDirectorAgentTools } from './directorTools';
 import { registerMcpDiscoveryTools } from './mcpDiscoveryTools';
+import { registerShotlistAgentTools } from './shotlistTools';
 
 type AgentToolRegistrationFactory = () => Array<() => void>;
 
@@ -59,6 +60,7 @@ function getRegistrationFactories(): AgentToolRegistrationFactory[] {
     registerPresetAgentTools,
     registerDramaAssetAgentTools,
     registerSeriesAgentTools,
+    registerShotlistAgentTools,
     registerExpertAgentTools,
     registerSubAgentAgentTools,
     registerProviderConfigAgentTools,

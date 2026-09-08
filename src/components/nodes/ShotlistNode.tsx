@@ -15,7 +15,6 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
-import type { Node } from '@xyflow/react';
 import type { BaseNodeData, ShotFrameCandidate, ShotlistColumnKey, ShotRow } from '../../types';
 import { confirmAction } from '../../services/confirmDialog';
 import {
@@ -42,7 +41,12 @@ import NodeError from './shared/NodeError';
 import { useNodeRename } from './shared/useNodeRename';
 import { resolveEffectiveModel } from './shared/toolbar/presetAction';
 import { useAppStore, generateId } from '../../store/useAppStore';
-import { executeGeneration } from '../../services/generationService';
+import { generateShotlistFrames, MAX_SHOTLIST_FRAME_BATCH } from '../../services/shotlistFrameService';
+import { getMediaModelOptions } from './shared/defaultModels';
+import Select from '../shared/Select';
+import ModalOverlay from '../shared/ModalOverlay';
+import PopupCloseButton from '../shared/PopupCloseButton';
+import { useT } from '../../i18n';
 import { hasShotlistTimeline, openVideoEditorForShotlist } from '../../services/videoEditorService';
 
 /** 画面格实时解析出的素材 */
@@ -64,6 +68,11 @@ const OPTION_COLUMNS: Record<string, readonly string[]> = {
 };
 
 function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; selected?: boolean }) {
+  const t = useT();
+  const config = useAppStore((s) => s.config);
+  const workflows = useAppStore((s) => s.workflows);
+  const imageModels = useMemo(() => getMediaModelOptions(config.generalModels ?? [], config, workflows)
+    .filter((model) => model.mediaKind === 'image'), [config, workflows]);
   const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
   const commitToHistory = useAppStore((s) => s.commitToHistory);
   const setSelectedNodeIds = useAppStore((s) => s.setSelectedNodeIds);
@@ -127,7 +136,22 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   >(null);
   const [aiPrompt, setAiPrompt] = useState('');
   const [busyRows, setBusyRows] = useState<string[]>([]);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [frameModelRef, setFrameModelRef] = useState('');
+  const [frameProgress, setFrameProgress] = useState<{ completed: number; total: number } | null>(null);
+  const frameController = useRef<AbortController | null>(null);
+  const emptyRows = rows.filter((row) => !row.frame && buildShotFramePrompt(row).trim());
   const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => () => frameController.current?.abort(), []);
+
+  const prepareFrameModel = useCallback(() => {
+    const state = useAppStore.getState();
+    const preferred = state.projects.find((project) => project.id === state.currentProjectId)?.settings?.defaultModels?.image
+      || resolveEffectiveModel('ai-image')?.model;
+    setFrameModelRef((current) => imageModels.some((model) => model.value === current) ? current
+      : imageModels.find((model) => model.value === preferred)?.value ?? '');
+  }, [imageModels]);
 
   const writeRows = useCallback(
     (next: ShotRow[]) => updateNodeDataTransient(id, { shotlistRows: next } as Partial<BaseNodeData>),
@@ -209,6 +233,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   );
 
   const openPicker = useCallback((rowId: string, anchor: HTMLElement) => {
+    prepareFrameModel();
     const { nodes, edges } = useAppStore.getState();
     const rect = anchor.getBoundingClientRect();
     const row = rows.find((item) => item.id === rowId);
@@ -221,7 +246,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       top: Math.min(rect.bottom + 6, Math.max(8, window.innerHeight - 380)),
       candidates: collectShotFrameCandidates(nodes, edges, id),
     });
-  }, [id, rows]);
+  }, [id, rows, prepareFrameModel]);
 
   const chooseCandidate = useCallback((rowId: string, nodeId: string) => {
     useAppStore.getState().bindShotlistFrame(id, rowId, nodeId);
@@ -232,56 +257,35 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
    * 叫 AI 补这一格：在画布上新建一个图像节点并连回本表，生成成功后再绑定。
    * 画面始终是画布上的真节点，用户可以照常改提示词重跑，表里跟着变。
    */
-  const generateFrame = useCallback(async (rowId: string) => {
+  const generateFrames = useCallback(async (rowIds: string[], prompts?: Record<string, string>, replaceExisting = false) => {
+    if (frameController.current || !frameModelRef) return;
     const store = useAppStore.getState();
-    const row = rows.find((item) => item.id === rowId);
-    const prompt = (aiPrompt.trim() || (row ? buildShotFramePrompt(row) : '')).trim();
-    if (!prompt) {
-      store.showToast('先填「内容」栏或写一句提示词', 'error');
-      return;
-    }
-    const self = store.nodes.find((node) => node.id === id);
-    if (!self) return;
-
+    if (!store.currentProjectId) return;
+    const controller = new AbortController();
+    frameController.current = controller;
     setPicker(null);
-    const newNodeId = `node-${generateId()}`;
-    const rowIndex = Math.max(0, rows.findIndex((item) => item.id === rowId));
-    const model = resolveEffectiveModel('ai-image');
-    const node: Node<BaseNodeData> = {
-      id: newNodeId,
-      type: 'ai-image',
-      parentId: self.parentId,
-      // 画面是表的输入，放在表左侧，按行错开避免叠成一摞
-      position: { x: self.position.x - 320, y: self.position.y + rowIndex * 180 },
-      data: {
-        type: 'ai-image',
-        label: `${displayLabel} 镜${row?.shotNo ?? rowIndex + 1}`,
-        role: 'generator',
-        status: 'idle',
-        prompt,
-        imageSize: '2K',
-        aspectRatio: '16:9',
-        nodeWidth: 280,
-        nodeHeight: 158,
-        ...(model ? { model: model.model, provider: model.provider } : {}),
-      },
-    };
-    store.addNodeWithEdge(node, {
-      id: generateId(),
-      source: newNodeId,
-      target: id,
-      sourceHandle: 'right',
-      targetHandle: 'left',
-    });
-
-    setBusyRows((prev) => [...prev, rowId]);
+    setBatchOpen(false);
+    setBusyRows(rowIds);
+    setFrameProgress({ completed: 0, total: rowIds.length });
     try {
-      const result = await executeGeneration(newNodeId, prompt, undefined, node.data);
-      if (result.success) useAppStore.getState().bindShotlistFrame(id, rowId, newNodeId);
+      const results = await generateShotlistFrames({
+        projectId: store.currentProjectId, baseRevision: store.getCurrentRevision(),
+        nodeId: id, rowIds, prompts, replaceExisting, modelRef: frameModelRef, signal: controller.signal,
+        onProgress: (completed, total) => setFrameProgress({ completed, total }),
+      });
+      const completed = results.filter((result) => result.status === 'success').length;
+      const unfinished = results.filter((result) => !['success', 'skipped'].includes(result.status)).length;
+      store.showToast(t('已补齐 {count} 镜，未完成 {remaining} 镜', { count: completed, remaining: unfinished }), unfinished ? 'error' : 'success');
+    } catch (error) {
+      store.showToast(error instanceof Error ? error.message : t('补图失败'), 'error');
     } finally {
-      setBusyRows((prev) => prev.filter((item) => item !== rowId));
+      frameController.current = null;
+      setBusyRows([]);
+      setFrameProgress(null);
     }
-  }, [aiPrompt, displayLabel, id, rows]);
+  }, [frameModelRef, id, t]);
+
+  const generateFrame = useCallback((rowId: string) => generateFrames([rowId], aiPrompt.trim() ? { [rowId]: aiPrompt.trim() } : undefined, true), [aiPrompt, generateFrames]);
 
   /**
    * 叫模型拆整张表：复用节点通用的 AI 弹窗（模型选择器 + @ 引用 + 提示词），
@@ -347,6 +351,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       if (pickerRef.current.contains(target)) return;
       // 资源库弹窗 Portal 到 body，按包含关系判定会被当成"点了外面"，刚点开就被关掉
       if (isInsideMentionPortal(target)) return;
+      if (target.closest('[data-ui-select-portal]')) return;
       setPicker(null);
     };
     document.addEventListener('pointerdown', onPointerDown);
@@ -493,11 +498,21 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       />
       <div className={`node shotlist-node ${selected ? 'selected' : ''}`} style={{ height: nodeHeight }}>
         {/* 工具条本身不加 nodrag：表体几乎被输入框占满，这条带子是节点主要的拖拽手柄 */}
-        <div className="shotlist-toolbar">
+        <div className="shotlist-toolbar flex-wrap">
           <span className="shotlist-stat">
             共 {rows.length} 镜 · 总时长 {Number(totalDuration.toFixed(1))}″
           </span>
-          <div className="shotlist-toolbar-actions nodrag" ref={columnMenuRef}>
+          <div className="shotlist-toolbar-actions nodrag flex-wrap" ref={columnMenuRef}>
+            {frameProgress ? (
+              <button type="button" className="ui-btn ui-btn--sm" onClick={() => frameController.current?.abort()}>
+                {t('取消补图')} {frameProgress.completed}/{frameProgress.total}
+              </button>
+            ) : (
+              <button type="button" className="ui-btn ui-btn--sm" disabled={generating || !emptyRows.length}
+                onClick={() => { prepareFrameModel(); setBatchOpen(true); }}>
+                {t('补齐空镜')} ({emptyRows.length})
+              </button>
+            )}
             <button
               type="button"
               className="shotlist-btn"
@@ -651,6 +666,9 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
           )}
 
           <div className="shot-picker-title">AI 生成画面</div>
+          <Select value={frameModelRef} onChange={setFrameModelRef}
+            options={imageModels.map((model) => ({ value: model.value, label: model.label }))}
+            placeholder={t('选择图片模型')} aria-label={t('选择图片模型')} fixedMenu />
           {/*
             走 MentionEditor 而不是裸 textarea：@ 能引用连进本表的节点、角色和资源库文件。
             存下来的 @{id:label} 记号由 generateImage 里的 resolvePromptWithImageRefs 解析，
@@ -660,7 +678,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             value={aiPrompt}
             onChange={setAiPrompt}
             onSubmit={() => void generateFrame(picker.rowId)}
-            canSubmit={!busyRows.includes(picker.rowId)}
+            canSubmit={!busyRows.length && !!frameModelRef}
             nodeId={id}
             className="shot-picker-input"
             placeholder="默认用「内容」栏，@ 可引用角色、资源库和连线节点"
@@ -669,6 +687,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
             type="button"
             className="shotlist-btn shotlist-btn--primary shot-picker-go"
             onClick={() => void generateFrame(picker.rowId)}
+            disabled={!!busyRows.length || !frameModelRef}
           >
             <Icon icon="mdi:auto-fix" width={13} height={13} />
             生成并绑定
@@ -676,6 +695,27 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         </div>,
         document.body,
       )}
+
+      <ModalOverlay isOpen={batchOpen} onClose={() => setBatchOpen(false)} ariaLabel={t('补齐空镜')}
+        className="w-[min(420px,calc(100vw-24px))] bg-[var(--glass-bg)] text-canvas-text">
+        <div className="flex items-center gap-3 border-b border-canvas-border p-4">
+          <span className="flex-1 text-sm font-semibold">{t('补齐空镜')}</span>
+          <PopupCloseButton ariaLabel={t('关闭')} onClick={() => setBatchOpen(false)} />
+        </div>
+        <div className="grid gap-4 p-4">
+          <p className="text-xs text-canvas-text-secondary">
+            {t('本次生成前 {count} 个空镜，已有画面保持不变。', { count: Math.min(emptyRows.length, MAX_SHOTLIST_FRAME_BATCH) })}
+          </p>
+          <Select value={frameModelRef} onChange={setFrameModelRef}
+            options={imageModels.map((model) => ({ value: model.value, label: model.label }))}
+            placeholder={t('选择图片模型')} aria-label={t('选择图片模型')} fixedMenu />
+          <p className="text-xs text-canvas-text-muted">{t('每镜调用一次图片模型，可随时取消并保留已完成结果。')}</p>
+          <button type="button" className="ui-btn ui-btn--primary" disabled={!frameModelRef || !emptyRows.length}
+            onClick={() => { void generateFrames(emptyRows.slice(0, MAX_SHOTLIST_FRAME_BATCH).map((row) => row.id)); }}>
+            {t('开始补图')}
+          </button>
+        </div>
+      </ModalOverlay>
 
       <ResizeHandle
         nodeId={id}

@@ -23,6 +23,7 @@ import {
 import { postProcessDramaExtractOutput } from './dramaAssetExtract';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { resolveVideoSubmissionControls } from './ai/videoRequestResolver';
+import { generateShotlistRows } from './shotlistService';
 
 export interface GenerationResult {
   success: boolean;
@@ -264,6 +265,8 @@ export async function executeGeneration(
         },
       });
       store.showToast('音频生成完成');
+    } else if (nodeType === 'ai-shotlist') {
+      await generateShotlistRows(nodeId, effectivePrompt, nodeModel, nodeProvider);
     } else {
       const result = await generateText({ prompt: effectivePrompt, model: nodeModel, provider: nodeProvider });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };

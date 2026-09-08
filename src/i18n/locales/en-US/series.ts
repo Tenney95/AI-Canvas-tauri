@@ -3,6 +3,17 @@
  * AI 创作提示词由 seriesCreativeService 统一构造，不放入界面字典。
  */
 const series = {
+  "创建本集分镜失败": "Could not create the episode shot list",
+  "用已保存的本集剧本创建分镜表，并选择模型生成": "Create a shot list from the saved episode script, then choose a model",
+  "生成本集分镜": "Create episode shots",
+  "已补齐 {count} 镜，未完成 {remaining} 镜": "Filled {count} shots; {remaining} unfinished",
+  "补图失败": "Image generation failed",
+  "取消补图": "Cancel images",
+  "补齐空镜": "Fill empty shots",
+  "选择图片模型": "Choose an image model",
+  "本次生成前 {count} 个空镜，已有画面保持不变。": "Generate images for the first {count} empty shots. Existing frames are preserved.",
+  "每镜调用一次图片模型，可随时取消并保留已完成结果。": "One image request per shot. Cancel at any time and keep completed results.",
+  "开始补图": "Generate missing images",
   '展开剧集栏（双击打开项目资产）': 'Expand the series rail (double-click to open project assets)',
   '单击：展开剧集栏｜双击：打开项目资产': 'Click: expand series rail | Double-click: open project assets',
   '剧集': 'Series',

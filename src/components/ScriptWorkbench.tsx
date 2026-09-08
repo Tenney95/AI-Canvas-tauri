@@ -15,6 +15,8 @@ import {
 import { useT } from '../i18n';
 import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
+import Select from './shared/Select';
+import { createEpisodeShotlist } from '../services/shotlistService';
 
 type EditorTab = 'outline' | 'script' | 'creative';
 type PendingAction = { type: 'close' } | { type: 'switch'; episodeId: string };
@@ -336,6 +338,24 @@ export default function ScriptWorkbench({
     showToast(t('已把创作请求放入对话输入框'));
   };
 
+  const openEpisodeShotlist = async () => {
+    if (!currentEpisode || isSaving || projectLoadStatus !== 'ready') return;
+    const startingProjectId = useAppStore.getState().currentProjectId;
+    const episodeId = currentEpisode.id;
+    try {
+      if (isDirty && !await saveDraft()) return;
+      if (useAppStore.getState().currentProjectId !== startingProjectId) return;
+      if (startingProjectId !== episodeId) await switchProject(episodeId);
+      const state = useAppStore.getState();
+      const { shotlistId } = createEpisodeShotlist({ projectId: episodeId, baseRevision: state.getCurrentRevision() }, episodeId);
+      onClose();
+      window.dispatchEvent(new CustomEvent('canvas-focus-node', { detail: { nodeId: shotlistId } }));
+      useAppStore.getState().openNodeDialog(shotlistId);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : t('创建本集分镜失败'), 'error');
+    }
+  };
+
   const openFieldPolish = async (field: CreativeFieldId, label: string, hasValue: boolean) => {
     if (!series || !currentEpisode) return;
     if (isDirty && !await saveDraft()) return;
@@ -466,19 +486,20 @@ export default function ScriptWorkbench({
         ) : null}
 
         {splitOpen ? (
-          <section className="grid shrink-0 gap-3 border-b border-border-subtle bg-canvas-card/40 p-3
+          <section className="grid shrink-0 gap-3 border-b border-border-subtle bg-[color-mix(in_srgb,var(--theme-card)_40%,transparent)] p-3
                               sm:grid-cols-[minmax(0,1fr)_120px_120px_auto] sm:items-end">
-            <label className="grid gap-1">
+            <div className="grid gap-1">
               <span className="text-[10px] text-canvas-text-muted">{t('拆分素材')}</span>
-              <select
+              <Select<'script' | 'original'>
                 value={splitSource}
-                onChange={(event) => setSplitSource(event.target.value as 'script' | 'original')}
-                className="h-8 rounded-lg border border-canvas-border bg-canvas-card px-2 text-xs outline-none"
-              >
-                <option value="script">{t('全剧剧本')}</option>
-                <option value="original">{t('原著')}</option>
-              </select>
-            </label>
+                onChange={setSplitSource}
+                options={[
+                  { value: 'script', label: t('全剧剧本') },
+                  { value: 'original', label: t('原著') },
+                ]}
+                aria-label={t('拆分素材')}
+              />
+            </div>
             <label className="grid gap-1">
               <span className="text-[10px] text-canvas-text-muted">{t('目标总集数')}</span>
               <input
@@ -681,9 +702,19 @@ export default function ScriptWorkbench({
                   <span className="hidden text-[10px] text-canvas-text-muted sm:inline">Ctrl+S</span>
                   <button
                     type="button"
+                    disabled={!draft.script.trim() || isSaving || projectLoadStatus !== 'ready'}
+                    onClick={() => { void openEpisodeShotlist(); }}
+                    className="ui-btn ui-btn--sm ml-auto"
+                    title={t('用已保存的本集剧本创建分镜表，并选择模型生成')}
+                  >
+                    <Icon icon="lucide:list-video" className="h-3.5 w-3.5" />
+                    {t('生成本集分镜')}
+                  </button>
+                  <button
+                    type="button"
                     disabled={!isDirty || isSaving || projectLoadStatus !== 'ready'}
                     onClick={() => { void saveDraft(); }}
-                    className="ml-auto h-8 rounded-lg bg-indigo-500/90 px-4 text-xs font-medium text-white
+                    className="h-8 rounded-lg bg-indigo-500/90 px-4 text-xs font-medium text-white
                                hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {isSaving ? t('保存中…') : t('保存本集')}
