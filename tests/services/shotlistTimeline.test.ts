@@ -14,6 +14,7 @@ import {
   hasShotlistTimeline,
   openVideoEditorForShotlist,
   resolveShotlistTimelineRows,
+  resolveShotlistVoiceoverNodes,
 } from '../../src/services/videoEditorService';
 import { computeTimelineDuration, getActiveClips, getOverlayTracks, getVideoTrack, needsCompositing } from '../../src/types/videoEditor';
 import { createShotRow } from '../../src/types/shotlist';
@@ -167,6 +168,36 @@ describe('分镜表推送时间轴', () => {
     await openVideoEditorForShotlist({ projectId: 'proj-1', nodeId: 'n-no-dialogue', label: '音效',
       rows: [shot('a', { dialogue: '  ', audio: '雷声' })], includeDialogueCaptions: true });
     expect((await getVideoEditorProject('proj-1::n-no-dialogue'))!.tracks).toHaveLength(1);
+  });
+
+  it('仅装配匹配镜头的已就绪配音，保留时间空档并触发混音导出', async () => {
+    const nodes = [{ id: 'voice', type: 'ai-audio', data: { type: 'ai-audio' as const, label: '配音', audioUrl: 'voice.wav',
+      shotlistProductionSource: { nodeId: 'n-audio', rowId: 'c', kind: 'voiceover' as const } } },
+    { id: 'pending', type: 'ai-audio', data: { type: 'ai-audio' as const, label: '待生成',
+      shotlistProductionSource: { nodeId: 'n-audio', rowId: 'a', kind: 'voiceover' as const } } },
+    { id: 'unrelated', type: 'source-audio', data: { type: 'source-audio' as const, label: '其他音频', audioUrl: 'other.wav' } }];
+    const rows = [shot('a', { content: '甲', duration: 2 }), shot('b', { content: '乙', duration: 4 }), shot('c', { dialogue: '丙', duration: 3 })];
+    await openVideoEditorForShotlist({ projectId: 'proj-1', nodeId: 'n-audio', label: '带配音', rows, voiceoverNodes: nodes });
+    const record = (await getVideoEditorProject('proj-1::n-audio'))!;
+    const audio = record.tracks.find((track) => track.kind === 'audio')!;
+    expect(audio.clips).toHaveLength(1);
+    expect(audio.clips[0]).toMatchObject({ nodeId: 'voice', sourceUrl: 'voice.wav', timelineStart: 6, sourceOut: 3 });
+    expect(audio.overlay).toBe(true);
+    expect(record.nodeIds).toContain('voice');
+    expect(needsCompositing(record.tracks)).toBe(true);
+    expect(resolveShotlistVoiceoverNodes('other-sheet', nodes)).toEqual([]);
+  });
+
+  it('零可用配音或同镜头多个来源时明确拒绝，不覆盖旧工程', async () => {
+    const rows = [shot('a', { content: '甲' })];
+    await pushAndLoad('n-ambiguous-audio', rows);
+    const original = await getVideoEditorProject('proj-1::n-ambiguous-audio');
+    await expect(openVideoEditorForShotlist({ projectId: 'proj-1', nodeId: 'n-ambiguous-audio', label: '重复', rows, voiceoverNodes: [] })).rejects.toThrow('没有可用配音');
+    const voice = { id: 'one', type: 'ai-audio', data: { type: 'ai-audio' as const, label: '配音', audioUrl: 'voice.wav',
+      shotlistProductionSource: { nodeId: 'n-ambiguous-audio', rowId: 'a', kind: 'voiceover' as const } } };
+    await expect(openVideoEditorForShotlist({ projectId: 'proj-1', nodeId: 'n-ambiguous-audio', label: '重复', rows,
+      voiceoverNodes: [voice, { ...voice, id: 'two' }] })).rejects.toThrow('多个配音节点');
+    expect(await getVideoEditorProject('proj-1::n-ambiguous-audio')).toEqual(original);
   });
 
   it('读取工程后来源过期则不落盘或开窗', async () => {

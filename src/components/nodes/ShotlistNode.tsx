@@ -50,7 +50,7 @@ import Select from '../shared/Select';
 import ModalOverlay from '../shared/ModalOverlay';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import { useT } from '../../i18n';
-import { hasShotlistTimeline, openVideoEditorForShotlist, resolveShotlistTimelineRows } from '../../services/videoEditorService';
+import { hasShotlistTimeline, openVideoEditorForShotlist, resolveShotlistTimelineRows, resolveShotlistVoiceoverNodes } from '../../services/videoEditorService';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../services/canvasDerivationGuard';
 
 /** 画面格实时解析出的素材 */
@@ -147,6 +147,8 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const [production, setProduction] = useState<{ rowId?: string } | null>(null);
   const subtitleInputId = useId();
   const [includeDialogueCaptions, setIncludeDialogueCaptions] = useState(false);
+  const voiceoverInputId = useId();
+  const [includeVoiceovers, setIncludeVoiceovers] = useState(false);
   const [timelineBusy, setTimelineBusy] = useState(false);
   const timelineRunning = useRef(false);
   const episodeScript = useAppStore((state) => state.projects.find((project) => project.id === data.shotlistScriptSource?.episodeId)?.episodeScript);
@@ -333,12 +335,14 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     if (!guard) return;
     const source = store.nodes.find((node) => node.id === id)!;
     const timelineRows = resolveShotlistTimelineRows(source.data.shotlistRows ?? [], store.nodes);
-    const snapshot = JSON.stringify(timelineRows);
+    const voiceoverNodes = includeVoiceovers ? resolveShotlistVoiceoverNodes(id, store.nodes) : undefined;
+    const snapshot = JSON.stringify([timelineRows, voiceoverNodes]);
     const assertCurrent = () => {
       const current = useAppStore.getState();
       const node = current.nodes.find((candidate) => candidate.id === id);
       if (!isCanvasDerivationFresh(guard, current) || current.projectLoadStatus !== 'ready'
-        || !node || JSON.stringify(resolveShotlistTimelineRows(node.data.shotlistRows ?? [], current.nodes)) !== snapshot) {
+        || !node || JSON.stringify([resolveShotlistTimelineRows(node.data.shotlistRows ?? [], current.nodes),
+          includeVoiceovers ? resolveShotlistVoiceoverNodes(id, current.nodes) : undefined]) !== snapshot) {
         throw new Error(t('项目或分镜已变化，请重新推送时间轴'));
       }
     };
@@ -357,6 +361,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         label: source.data.label || '分镜表',
         rows: timelineRows,
         includeDialogueCaptions,
+        voiceoverNodes,
         assertCurrent,
         theme: store.config.theme === 'light' ? 'light' : 'dark',
       });
@@ -367,7 +372,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       timelineRunning.current = false;
       setTimelineBusy(false);
     }
-  }, [id, includeDialogueCaptions, t]);
+  }, [id, includeDialogueCaptions, includeVoiceovers, t]);
 
   const handleResize = useCallback(
     (w: number, h: number) => updateNodeDataTransient(id, { nodeWidth: w, nodeHeight: h } as Partial<BaseNodeData>),
@@ -610,6 +615,11 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
               <input id={subtitleInputId} type="checkbox" className="ui-checkbox" checked={includeDialogueCaptions}
                 disabled={timelineBusy} onChange={(event) => setIncludeDialogueCaptions(event.target.checked)} />
               <label htmlFor={subtitleInputId}>{t('附带对白字幕')}</label>
+            </div>
+            <div className="text-xs" title={t('配音按镜头起点放置，超长部分裁到镜头末尾，可在剪辑器中调整')}>
+              <input id={voiceoverInputId} type="checkbox" className="ui-checkbox" checked={includeVoiceovers}
+                disabled={timelineBusy} onChange={(event) => setIncludeVoiceovers(event.target.checked)} />
+              <label htmlFor={voiceoverInputId}>{t('附带已就绪配音')}</label>
             </div>
             <button
               type="button"

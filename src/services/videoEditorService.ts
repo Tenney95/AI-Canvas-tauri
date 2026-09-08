@@ -204,6 +204,31 @@ function buildDialogueTrack(rows: ShotRow[], clips: VideoEditorClip[]): VideoEdi
   return captions.length ? { id: 'shotlist-dialogue', kind: 'video', name: '对白字幕', overlay: true, clips: captions } : null;
 }
 
+/** 只取明确关联到这张表的音频来源；供异步推送比较成果是否变化。 */
+export function resolveShotlistVoiceoverNodes(nodeId: string, nodes: EditableMediaNode[]): EditableMediaNode[] {
+  return nodes.filter((node) => ['ai-audio', 'source-audio'].includes(node.type ?? '')
+    && node.data.shotlistProductionSource?.nodeId === nodeId && node.data.shotlistProductionSource.kind === 'voiceover')
+    .map((node) => ({ id: node.id, type: node.type, data: {
+      type: node.data.type, label: node.data.label, audioUrl: node.data.audioUrl, filePath: node.data.filePath,
+      assetId: node.data.assetId, shotlistProductionSource: node.data.shotlistProductionSource,
+    } }));
+}
+
+function buildVoiceoverTrack(rows: ShotRow[], clips: VideoEditorClip[], nodeId: string, nodes: EditableMediaNode[]): VideoEditorTrack | null {
+  const sources = resolveShotlistVoiceoverNodes(nodeId, nodes);
+  const audioClips = rows.flatMap<VideoEditorClip>((row, index) => {
+    const matches = sources.filter((node) => node.data.shotlistProductionSource?.rowId === row.id);
+    if (matches.length > 1) throw new Error('同一镜头有多个配音节点，请先核对来源');
+    const source = matches[0];
+    if (!source || (!source.data.audioUrl && !source.data.filePath)) return [];
+    return [{ id: `voiceover-${row.id}`, kind: 'video', fileName: `配音 ${row.shotNo || index + 1}`,
+      nodeId: source.id, filePath: source.data.filePath, assetId: source.data.assetId, sourceUrl: source.data.audioUrl,
+      timelineStart: clips[index].timelineStart, sourceIn: 0, sourceOut: clips[index].sourceOut,
+    }];
+  });
+  return audioClips.length ? { id: 'shotlist-voiceover', kind: 'audio', name: '镜头配音', overlay: true, clips: audioClips } : null;
+}
+
 /**
  * 按分镜表的一行构造时间轴片段。
  *
@@ -269,6 +294,8 @@ export async function openVideoEditorForShotlist(params: {
   label: string;
   rows: ShotRow[];
   includeDialogueCaptions?: boolean;
+  /** 省略表示不附带配音；只使用带明确镜头来源的已就绪音频。 */
+  voiceoverNodes?: EditableMediaNode[];
   /** 调用方的项目/来源校验，在异步读取后、开窗前复核。 */
   assertCurrent?: () => void;
   theme?: 'dark' | 'light';
@@ -287,9 +314,11 @@ export async function openVideoEditorForShotlist(params: {
   const now = Date.now();
   const clips = relayoutSequential(usable.map(buildShotClip));
   const dialogueTrack = params.includeDialogueCaptions ? buildDialogueTrack(usable, clips) : null;
-  const sourceNodeIds = [...new Set(usable
+  const voiceoverTrack = params.voiceoverNodes ? buildVoiceoverTrack(usable, clips, nodeId, params.voiceoverNodes) : null;
+  if (params.voiceoverNodes && !voiceoverTrack) throw new Error('没有可用配音，请先完成语音生成或取消附带配音');
+  const sourceNodeIds = [...new Set([...usable
     .map((row) => row.frame?.nodeId)
-    .filter((value): value is string => !!value))];
+    .filter((value): value is string => !!value), ...(voiceoverTrack?.clips.map((clip) => clip.nodeId!) ?? [])])];
 
   await saveVideoEditorProject({
     id,
@@ -298,7 +327,7 @@ export async function openVideoEditorForShotlist(params: {
     nodeId,
     nodeIds: sourceNodeIds,
     name: label || '分镜表',
-    tracks: [{ id: 'video-1', kind: 'video', name: '视频轨 1', clips }, ...(dialogueTrack ? [dialogueTrack] : [])],
+    tracks: [{ id: 'video-1', kind: 'video', name: '视频轨 1', clips }, ...(dialogueTrack ? [dialogueTrack] : []), ...(voiceoverTrack ? [voiceoverTrack] : [])],
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   } satisfies VideoEditorProjectRecord);

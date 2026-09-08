@@ -3,6 +3,8 @@
  * AI 创作提示词由 seriesCreativeService 统一构造，不放入界面字典。
  */
 const series = {
+  "附带已就绪配音": "Include ready voiceovers",
+  "配音按镜头起点放置，超长部分裁到镜头末尾，可在剪辑器中调整": "Voiceovers start with each shot and are trimmed at its end. Adjust them in the editor.",
   "镜头制作准备": "Shot production setup",
   "关闭制作准备": "Close production setup",
   "每次最多选择 12 镜。仅准备节点，已有同类节点会被定位，内容不会覆盖。": "Select up to 12 shots. Existing nodes of the same kind are reused without replacing their content.",

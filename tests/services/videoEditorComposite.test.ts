@@ -38,6 +38,14 @@ function videoTrack(clips: VideoEditorClip[]): VideoEditorTrack {
 }
 
 describe('needsCompositing', () => {
+  it('mixes an independent audio track even when the main video needs no visual changes', () => {
+    const main = videoTrack([clip({ id: 'main' })]);
+    const audio: VideoEditorTrack = { id: 'voice', kind: 'audio', name: '配音', clips: [clip({ id: 'voice' })] };
+    expect(needsCompositing([main, audio])).toBe(true);
+    expect(needsCompositing([main, { ...audio, muted: true }])).toBe(false);
+    expect(needsCompositing([main, { ...audio, hidden: true }])).toBe(false);
+    expect(needsCompositing([main, { ...audio, clips: [] }])).toBe(false);
+  });
   it('stays on the lossless path for a plain single-track timeline', () => {
     expect(needsCompositing([videoTrack([clip({ id: 'a' }), clip({ id: 'b' })])])).toBe(false);
   });
