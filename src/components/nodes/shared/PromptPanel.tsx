@@ -22,6 +22,7 @@ import { ANIMATION_ACTION_LABELS } from '../../../types';
 import type { PresetOverride } from './SlashCommandMenu';
 import { useAppStore } from '../../../store/useAppStore';
 import ModelSelector from './ModelSelector';
+import RunningHubParameterFields from './RunningHubParameterFields';
 import QualityRatioSelector from './QualityRatioSelector';
 import VideoParamSelector from './VideoParamSelector';
 import AudioParamSelector from './AudioParamSelector';
@@ -320,6 +321,8 @@ interface PromptPanelProps {
   selectedModel?: string;
   selectedProvider?: string;
   selectedWorkflowId?: string;
+  workflowInputs?: Record<string, string>;
+  onWorkflowInputsChange?: (values: Record<string, string>) => void;
   animationAction?: AnimationAction;
   onAnimationActionChange?: (action: AnimationAction) => void;
   animationFrames?: number;
@@ -389,6 +392,8 @@ export default function PromptPanel({
   selectedModel,
   selectedProvider,
   selectedWorkflowId,
+  workflowInputs,
+  onWorkflowInputsChange,
   animationAction = 'idle',
   onAnimationActionChange,
   animationFrames = 8,
@@ -642,6 +647,7 @@ export default function PromptPanel({
     }
   }, [showToast, uploadSkill, t]);
 
+  const runninghubWorkflow = workflows?.find((workflow) => workflow.id === selectedWorkflowId && workflow.adapterType === 'runninghub');
   return (
     <>
     <div className={`prompt-panel ${focused ? 'focused' : ''}`}>
@@ -663,6 +669,10 @@ export default function PromptPanel({
           onSlashTrigger={handleEditorSlash}
         />
       </div>
+      {runninghubWorkflow && onWorkflowInputsChange && <details className="m-2 rounded border border-canvas-border p-2">
+        <summary className="cursor-pointer text-xs text-canvas-text-secondary">云工作流参数</summary>
+        <div className="mt-2 max-h-72 overflow-y-auto"><RunningHubParameterFields parameters={runninghubWorkflow.runninghub?.parameters ?? []} values={workflowInputs} onChange={onWorkflowInputsChange} disabled={isGenerating} /></div>
+      </details>}
       <div className="prompt-footer">
         <ModelSelector
           nodeType={nodeType}
@@ -722,7 +732,7 @@ export default function PromptPanel({
           <CameraSettingsSelector value={cameraSettings} onChange={onChangeCameraSettings} />
         )}
 
-        {nodeType === 'ai-image' && (
+        {nodeType === 'ai-image' && !runninghubWorkflow && (
           <QualityRatioSelector
             imageSize={imageSize}
             aspectRatio={aspectRatio}
@@ -753,7 +763,7 @@ export default function PromptPanel({
           />
         )}
 
-        {nodeType === 'ai-video' && (
+        {nodeType === 'ai-video' && !runninghubWorkflow && (
           <VideoParamSelector
             provider={selectedProvider}
             selectedModel={selectedModel}
@@ -777,7 +787,7 @@ export default function PromptPanel({
           />
         )}
 
-        {nodeType === 'ai-audio' && (
+        {nodeType === 'ai-audio' && !runninghubWorkflow && (
           <AudioParamSelector
             purpose={audioPurpose}
             voice={audioVoice}

@@ -13,6 +13,7 @@ import type {
   WorkflowDefinition,
 } from '../../../types';
 import { CATEGORY_TO_NODE_TYPES, GENERAL_MODEL_CATEGORY_LABELS } from '../../../types';
+import { isRunningHubWorkflow, workflowExecution } from '../../../services/workflowExecutionService';
 import { DREAMINA_IMAGE_MODELS, DREAMINA_VIDEO_MODELS } from '../../../services/ai/dreaminaModels';
 import { APIMART_OMNI_MODELS, isLegacyApimartOmni, replaceLegacyApimartOmni } from '../../../services/ai/apimartVideoModels';
 
@@ -21,6 +22,7 @@ export type MediaModelKind = 'image' | 'video' | 'audio';
 type ProviderModelVisibilityConfig = Pick<AppConfig, 'providers' | 'dreaminaAuth'>;
 
 export interface MediaModelOption extends ModelOption {
+  providerConfigId?: string;
   mediaKind: MediaModelKind;
   groupId: string;
   groupName: string;
@@ -1055,9 +1057,8 @@ export function getConfiguredModelGroups(
 
   return groups.flatMap((group) => {
     if (group.id === 'runninghubwf') {
-      if (!config.providers.runninghub?.apiKey) return [];
-      const workflowModels = group.models.filter((model) => model.nodeTypes.includes(modelNodeType));
-      return workflowModels.length > 0 ? [{ ...group, models: workflowModels }] : [];
+      // 旧条目仅有远端 ID、没有参数合同；保留 ID 识别，但不作为可运行选项展示。
+      return [];
     }
 
     const providerConfigId = providerConfigIdForGroup(group.id);
@@ -1269,18 +1270,22 @@ export function getMediaModelOptions(
   const workflowModels: MediaModelOption[] = workflows.flatMap((workflow) => {
     const mediaKind = WORKFLOW_MEDIA_KIND[workflow.category];
     if (!mediaKind) return [];
+    const cloud = isRunningHubWorkflow(workflow);
+    if (cloud && !workflow.runninghub) return [];
+    const execution = workflowExecution(workflow);
     return [{
-      value: `comfyui/${workflow.id}`,
-      provider: 'comfyui',
+      value: cloud ? execution.model : `comfyui/${workflow.id}`,
+      provider: execution.provider,
       label: workflow.name,
-      description: 'ComfyUI 工作流',
+      description: cloud ? `RunningHub ${workflow.runninghub?.kind === 'app' ? 'AI 应用' : '云工作流'}` : 'ComfyUI 工作流',
       iconType: 'badge',
-      badgeText: 'CF',
+      badgeText: cloud ? 'RH' : 'CF',
       nodeTypes: [workflow.category],
       mediaKind,
-      groupId: 'comfyui',
-      groupName: 'ComfyUI 工作流',
+      groupId: cloud ? 'runninghubwf' : 'comfyui',
+      groupName: cloud ? 'RunningHub 工作流' : 'ComfyUI 工作流',
       workflowId: workflow.id,
+      providerConfigId: cloud ? workflow.runninghub?.connectionId : undefined,
     }];
   });
 

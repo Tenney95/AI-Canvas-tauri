@@ -148,7 +148,7 @@ export default function ProviderConnectionForm({
               && definition.allowCustomBaseUrl === false;
             return (
               <label key={field.key} className="provider-field">
-                <span>{field.label}{field.required ? ' *' : ''}</span>
+                <span>{definition.id === 'runninghub-model' && field.key === 'apiKey' ? '模型 API Key（企业级 / 共享）' : field.label}{field.required && definition.id !== 'runninghub-model' ? ' *' : ''}</span>
                 <input
                   type={field.secret ? 'password' : 'text'}
                   value={value}
@@ -172,13 +172,14 @@ export default function ProviderConnectionForm({
           })}
           {definition.id === 'runninghub-model' && (
             <label className="provider-field">
-              <span>{t('消费级-会员 API Key')}</span>
+              <span>{t('工作流 API Key（消费级 / 会员）')}</span>
               <input
                 type="password"
                 value={workflowApiKey}
                 placeholder={t('用于 RunningHub 工作流执行（可选）')}
                 onChange={(event) => setWorkflowApiKey(event.target.value)}
               />
+              <small>用于云工作流与 AI 应用；也可以只填写此密钥。每个云工作流可单独选择使用哪种连接。</small>
             </label>
           )}
         </div>

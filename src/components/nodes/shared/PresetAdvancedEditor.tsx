@@ -2,6 +2,7 @@
  * 编辑高级预设的参数定义、模板和多步骤节点序列，并提供即时结构校验。
  */
 import { useMemo } from 'react';
+import { workflowExecution } from '../../../services/workflowExecutionService';
 import { Icon } from '@iconify/react';
 import type {
   ModelOption,
@@ -449,9 +450,10 @@ export default function PresetAdvancedEditor({
                           provider: model.provider,
                           workflowId: undefined,
                         })}
-                        onWorkflowSelect={(workflowId) => updateStep(step.id, workflowId
-                          ? { workflowId, provider: 'comfyui', model: 'comfyui/workflow' }
-                          : { workflowId: undefined })}
+                        onWorkflowSelect={(workflowId) => {
+                          const workflow = workflows.find((item) => item.id === workflowId);
+                          updateStep(step.id, workflow ? workflowExecution(workflow) : { workflowId: undefined });
+                        }}
                       />
                       {step.model || step.workflowId ? (
                         <button

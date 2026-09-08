@@ -168,11 +168,13 @@ export default function ProviderConnectionDialog({
   const missingCredentials = useMemo(() => {
     if (!definition) return true;
     if (definition.authType === 'oauth') return !dreaminaLoggedIn;
+    if (definition.id === 'runninghub-model') return !apiKey.trim() && !workflowApiKey.trim();
     if (!apiKey.trim()) return true;
     return definition.credentials.some(
       (field) => field.required && field.key === 'baseUrl' && !baseUrl.trim(),
     );
-  }, [apiKey, baseUrl, definition, dreaminaLoggedIn]);
+  }, [apiKey, baseUrl, definition, dreaminaLoggedIn, workflowApiKey]);
+  const workflowOnlyConnection = definition?.id === 'runninghub-model' && !!workflowApiKey.trim() && !apiKey.trim();
 
   const chooseDefinition = (nextDefinition: ProviderDefinition) => {
     const savedConfig = nextDefinition.kind === 'web-search'
@@ -216,6 +218,7 @@ export default function ProviderConnectionDialog({
 
   const handleFetchModels = async () => {
     if (!definition || missingCredentials) return;
+    if (workflowOnlyConnection) { setCatalogStatus('warning'); setCatalogMessage('当前只配置工作流连接，可直接保存；获取模型目录需要模型 API Key'); return; }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -273,6 +276,17 @@ export default function ProviderConnectionDialog({
     if (!definition || missingCredentials) return;
     setCatalogStatus('loading');
     setCatalogMessage(t('正在验证 {name} 连接...', { name: definition.name }));
+    if (definition.id === 'runninghub-model') {
+      const checks: string[] = [];
+      let passed = true;
+      for (const [id, key, label] of [['runninghub-model', apiKey.trim(), '模型'], ['runninghub', workflowApiKey.trim(), '工作流']] as const) {
+        if (!key) continue;
+        const result = await testProviderConnection(id, key, baseUrl.trim() || undefined);
+        checks.push(`${label}连接：${result.success ? `验证成功${result.balance ? `（${result.balance}）` : ''}` : result.error || '验证失败'}`);
+        passed &&= result.success;
+      }
+      setCatalogStatus(passed ? 'ready' : 'error'); setCatalogMessage(checks.join('；')); return;
+    }
     const result = await testProviderConnection(
       definition.id,
       apiKey.trim(),
@@ -516,7 +530,7 @@ export default function ProviderConnectionDialog({
     if (
       !definition
       || missingCredentials
-      || (!isWebSearchProvider && selectedModels.length === 0)
+      || (!isWebSearchProvider && !workflowOnlyConnection && selectedModels.length === 0)
       || !protocolValid
     ) return;
     try {
@@ -709,7 +723,7 @@ export default function ProviderConnectionDialog({
                 className="provider-primary-btn"
                 disabled={
                   missingCredentials
-                  || (!isWebSearchProvider && selectedModels.length === 0)
+                  || (!isWebSearchProvider && !workflowOnlyConnection && selectedModels.length === 0)
                   || !protocolValid
                 }
                 onClick={() => void handleSave()}

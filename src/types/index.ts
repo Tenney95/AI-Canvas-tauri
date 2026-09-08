@@ -220,7 +220,9 @@ export interface BaseNodeData {
   model?: string;             // 选择的模型 ID（如 qwen/qwen3.5-397b-a17b）
   provider?: string;          // 选择的供应商 ID（如 apimart）
   workflowId?: string;        // 选择的工作流 ID
-  workflowInputs?: Record<string, string>; // 工作流 IO 节点赋值: ioNodeId → value
+  workflowInputs?: Record<string, string>; // 本地 IO 或云工作流 nodeId/fieldName 赋值
+  runninghubOutputs?: import('./runninghub').RunningHubOutput[];
+  runninghubStage?: string;
   imageUrl?: string;          // 生成的图片 URL（Tauri: asset://localhost/..., 浏览器: data:...）
   videoUrl?: string;          // 生成的视频 URL
   audioUrl?: string;          // 生成的音频 URL
@@ -727,6 +729,8 @@ export interface WorkflowIONode {
 
 /** 导入的 ComfyUI 工作流 */
 export interface WorkflowDefinition {
+  adapterType?: 'comfyui' | 'runninghub';
+  runninghub?: import('./runninghub').RunningHubWorkflowManifest;
   id: string;
   name: string;               // 工作流名称
   category: WorkflowCategory; // 归属分类

@@ -13,6 +13,11 @@ beforeEach(() => {
 });
 
 describe('provider connection tests', () => {
+  it.each(['runninghub', 'runninghub-model'])('RunningHub %s 连接使用无生成计费的账户接口', async (provider) => {
+    transportMocks.corsSafeFetch.mockResolvedValueOnce(new Response(JSON.stringify({ code: 0, data: { remainCoins: '12', currentTaskCounts: '0' } })));
+    await expect(testProviderConnection(provider, 'secret', 'https://www.runninghub.cn/openapi/v2')).resolves.toMatchObject({ success: true, balance: '12 积分' });
+    expect(transportMocks.corsSafeFetch).toHaveBeenCalledWith('https://www.runninghub.cn/uc/openapi/accountStatus', expect.objectContaining({ method: 'POST', body: JSON.stringify({ apikey: 'secret' }) }));
+  });
   it.each([
     ['apimart', 'https://api.example/v1/', 'https://api.example/v1/models'],
     ['volcengine', 'https://ark.example/api/v3', 'https://ark.example/api/v3/models'],

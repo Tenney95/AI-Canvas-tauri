@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ApiProviderConfig, GeneralModelConfig } from '../../src/types';
+import type { ApiProviderConfig, GeneralModelConfig, WorkflowDefinition } from '../../src/types';
 
 const mocks = vi.hoisted(() => ({
   generateImage: vi.fn(),
@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
     currentProjectId: 'project-1',
     projects: [] as Array<Record<string, unknown>>,
     customStyles: [] as Array<Record<string, unknown>>,
+    workflows: [] as WorkflowDefinition[],
   },
 }));
 
@@ -36,7 +37,8 @@ vi.mock('../../src/components/nodes/shared/defaultModels', () => ({
       : modelRef.includes('audio')
         ? 'audio'
         : 'image',
-    provider: modelRef.startsWith('general/') ? 'general' : 'openai',
+    provider: modelRef.startsWith('runninghubwf/') ? 'runninghubwf' : modelRef.startsWith('general/') ? 'general' : 'openai',
+    ...(modelRef.startsWith('runninghubwf/') ? { workflowId: modelRef.slice('runninghubwf/'.length) } : {}),
   }),
 }));
 vi.mock('../../src/services/ai/generateImage', () => ({ generateImage: mocks.generateImage }));
@@ -66,6 +68,7 @@ beforeEach(() => {
   mocks.storeState.currentProjectId = 'project-1';
   mocks.storeState.projects = [];
   mocks.storeState.customStyles = [];
+  mocks.storeState.workflows = [];
   mocks.storeState.config.generalModels = [];
   mocks.storeState.config.providers = { openai: { name: 'OpenAI', apiKey: 'secret' } };
   mocks.generateImage.mockResolvedValue({ url: 'https://cdn.example/image.png', width: 1, height: 1 });
@@ -86,6 +89,17 @@ beforeEach(() => {
 });
 
 describe('media generation cancellation', () => {
+  it('云工作流按指定连接执行并传递参数，已保存产物不重复下载', async () => {
+    mocks.storeState.workflows = [{ id: 'cloud-image', name: '云图像', category: 'ai-image', fileName: 'RH', fileContent: '', createdAt: 1, adapterType: 'runninghub', runninghub: { version: 1, kind: 'workflow', remoteId: '1904152026220003329', connectionId: 'runninghub', parameters: [] } }];
+    mocks.storeState.config.providers = { runninghub: { name: 'RH', apiKey: 'secret' } };
+    mocks.generateImage.mockResolvedValue({ url: 'asset://saved.png', width: 1, height: 1, runninghubOutputs: [{ url: 'asset://saved.png', filePath: 'project/saved.png', kind: 'image', sourceUrl: 'https://cdn.test/image.png' }] });
+    const result = await runMediaGeneration({ kind: 'image', prompt: '猫', modelRef: 'runninghubwf/cloud-image', workflowInputs: { '3::seed': '0' }, deliveryMode: 'chat' }, 'project-1');
+    expect(mocks.generateImage).toHaveBeenCalledWith(expect.objectContaining({ provider: 'runninghubwf', workflowId: 'cloud-image', workflowInputs: { '3::seed': '0' } }), undefined);
+    expect(result).toMatchObject({ url: 'asset://saved.png', persistence: 'saved', filePath: 'project/saved.png' });
+    expect(mocks.persistMediaUrlToProjectData).not.toHaveBeenCalled();
+    mocks.storeState.workflows[0].runninghub!.connectionId = 'runninghub-model';
+    await expect(runMediaGeneration({ kind: 'image', prompt: '猫', modelRef: 'runninghubwf/cloud-image', deliveryMode: 'chat' }, 'project-1')).rejects.toThrow('模型');
+  });
   it.each([
     ['image', 'openai/image-model', mocks.generateImage],
     ['video', 'openai/video-model', mocks.generateVideo],

@@ -3,6 +3,7 @@
  */
 import type { Edge, Node } from '@xyflow/react';
 import { getLastCanvasPointerPosition } from '../../canvasPointerService';
+import { workflowExecution } from '../../workflowExecutionService';
 import { useAppStore } from '../../../store/useAppStore';
 import { generateId } from '../../../store/store.utils';
 import type { BaseNodeData, NodeType } from '../../../types';
@@ -451,6 +452,11 @@ function resolveModelPatch(
     };
   }
   // ComfyUI 工作流靠 workflowId 走本地执行路径，只写 model 会在生成时找不到工作流
+  if (option.provider === 'runninghubwf') {
+    const workflow = useAppStore.getState().workflows.find((item) => `runninghubwf/${item.id}` === option.id);
+    if (!workflow) return { error: 'RunningHub 工作流未导入' };
+    return { patch: { ...workflowExecution(workflow), workflowInputs: undefined } };
+  }
   if (option.provider === 'comfyui') {
     return {
       patch: { model: 'comfyui/workflow', provider: 'comfyui', workflowId: option.id.slice('comfyui/'.length) },

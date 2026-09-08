@@ -25,6 +25,13 @@ function createConfig(selectedModels: ProviderModelSelection[]): AppConfig {
 }
 
 describe('内置厂商动态模型目录', () => {
+  it('云工作流进入媒体目录并保留指定连接，旧无参数合同的云 ID 不再作为可运行选项', () => {
+    const config: AppConfig = { theme: 'dark', providers: { runninghub: { name: 'RH 工作流', apiKey: 'configured' } } };
+    const workflows = [{ id: 'cloud-video', name: '云视频', category: 'ai-video' as const, adapterType: 'runninghub' as const, runninghub: { version: 1 as const, kind: 'workflow' as const, remoteId: '1904152026220003329', connectionId: 'runninghub-model' as const, parameters: [] }, fileName: 'RH', fileContent: '', createdAt: 1 }];
+    const option = findMediaModelOption('runninghubwf/cloud-video', [], config, workflows);
+    expect(option).toMatchObject({ provider: 'runninghubwf', providerConfigId: 'runninghub-model', workflowId: 'cloud-video', mediaKind: 'video' });
+    expect(getConfiguredModelGroups(config, 'ai-video').some((group) => group.id === 'runninghubwf')).toBe(false);
+  });
   it('用三个 Omni 视频模型替换已选择的旧条目，不影响其它选择', () => {
     const other: ProviderModelSelection = { id: 'wan2.7', name: 'Wan', category: 'video', provider: 'apimart' };
     const legacy: ProviderModelSelection = { id: 'apimart/Omni-Flash-Ext', name: 'Omni Flash', category: 'video', provider: 'apimart' };

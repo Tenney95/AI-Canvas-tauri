@@ -3,6 +3,9 @@
  */
 import { useAppStore } from '../../../store/useAppStore';
 import { comfyBaseUrlFor } from '../../comfyServers';
+import { isRunningHubWorkflow, mediaProviderConfigId, workflowExecution } from '../../workflowExecutionService';
+import { runningHubParameterKey } from '../../runninghubWorkflowService';
+import { completeRunningHubNodeTask } from '../../ai/providers/runninghubWorkflow';
 import type {
   AudioGenerationPurpose,
   MediaDeliveryMode,
@@ -40,6 +43,7 @@ interface GenerateMediaInput {
   aspectRatio?: string;
   resolution?: string;
   duration?: number;
+  workflowInputs?: Array<{ nodeId: string; fieldName: string; value: string }>;
 }
 
 const MEDIA_PROMPT_DISPLAY_LIMIT = 1_000;
@@ -84,6 +88,7 @@ function resolveMediaToolInput(
   // 自定义 API 的缺省值由该模型 capability / 上游接口决定，不能套用项目里为内置模型
   // 保存的 16:9、1080p、10 秒等偏好。用户本轮显式传入的值已经保留在 resolved 中。
   if (selectedModel?.provider === 'general' && !selectedModel.workflowId) return resolved;
+  if (selectedModel?.provider === 'runninghubwf') return resolved;
   return {
     ...resolved,
     aspectRatio: input.aspectRatio ?? projectSettings?.generation?.videoAspectRatio,
@@ -169,6 +174,19 @@ function getAssistantMessageId(taskId: string): string | undefined {
 
 export function registerMediaAgentTools(): Array<() => void> {
   return [
+    registerAgentTool<{ modelRef: string }>({
+      id: 'media_workflow_parameters', title: '读取云工作流参数', effect: 'read',
+      description: '读取已保存 RunningHub 工作流或 AI 应用的输出类型、参数名称、默认值与素材映射，供 media_generate 的 workflowInputs 使用。',
+      inputSchema: { type: 'object', required: ['modelRef'], additionalProperties: false, properties: { modelRef: { type: 'string', minLength: 1, maxLength: 240 } } },
+      authorize: (context) => ({ allowed: context.projectId === useAppStore.getState().currentProjectId, reason: '只能读取当前项目可用的工作流' }),
+      execute: async (_context, input) => {
+        const store = useAppStore.getState();
+        const option = findMediaModelOption(input.modelRef, store.config.generalModels ?? [], store.config, store.workflows);
+        const workflow = store.workflows.find((item) => item.id === option?.workflowId);
+        if (!isRunningHubWorkflow(workflow) || !workflow?.runninghub) return { status: 'error', summary: '未找到已保存的云工作流', modelContent: '请先在工作流管理中导入 RunningHub 工作流或 AI 应用', errorCode: 'RUNNINGHUB_WORKFLOW_NOT_FOUND' };
+        return { status: 'success', summary: `已读取 ${workflow.name} 的参数`, modelContent: JSON.stringify({ workflowId: workflow.id, outputType: workflow.category, parameters: workflow.runninghub.parameters.map((field) => ({ ...field, defaultValue: typeof field.defaultValue === 'string' ? field.defaultValue.slice(0, 1200) : field.defaultValue })) }) };
+      },
+    }),
     registerAgentTool<GenerateMediaInput>({
       id: 'media_generate',
       title: '生成媒体内容',
@@ -194,6 +212,12 @@ export function registerMediaAgentTools(): Array<() => void> {
             description: '生成或编辑要求；图片编辑时必须原样保留用户给出的节点或资产引用标记。',
           },
           modelRef: { type: 'string', minLength: 1, maxLength: 240 },
+          workflowInputs: {
+            type: 'array', maxItems: 200, description: 'RunningHub 参数覆盖；先用 media_workflow_parameters 读取参数定义，数字和布尔值以字符串传入并由本地恢复类型。',
+            items: { type: 'object', required: ['nodeId', 'fieldName', 'value'], additionalProperties: false, properties: {
+              nodeId: { type: 'string', minLength: 1, maxLength: 120 }, fieldName: { type: 'string', minLength: 1, maxLength: 160 }, value: { type: 'string', maxLength: 12000 },
+            } },
+          },
           deliveryMode: { type: 'string', enum: ['chat', 'canvas', 'both'] },
           audioPurpose: { type: 'string', enum: ['music', 'speech'] },
           aspectRatio: {
@@ -239,7 +263,12 @@ export function registerMediaAgentTools(): Array<() => void> {
             return { allowed: false, reason: '所选模型与本次媒体类型不兼容' };
           }
           if (option.workflowId) {
-            if (!comfyBaseUrlFor(option.workflowId)) {
+            const workflow = store.workflows.find((item) => item.id === option.workflowId);
+            if (isRunningHubWorkflow(workflow) && [input.aspectRatio, input.resolution, input.duration].some((value) => value !== undefined)) return { allowed: false, reason: '云工作流使用自己的参数定义，请通过 workflowInputs 设置比例、分辨率或时长' };
+            if (input.workflowInputs && new Set(input.workflowInputs.map(runningHubParameterKey)).size !== input.workflowInputs.length) return { allowed: false, reason: '工作流参数包含重复节点/字段' };
+            if (isRunningHubWorkflow(workflow)) {
+              if (!store.config.providers[mediaProviderConfigId(option.provider, workflow)]?.apiKey) return { allowed: false, reason: '请先配置该 RunningHub 工作流使用的 API Key' };
+            } else if (!comfyBaseUrlFor(option.workflowId)) {
               return { allowed: false, reason: '请先在设置里配置 ComfyUI 服务地址' };
             }
           } else if (option.provider === 'general') {
@@ -256,7 +285,7 @@ export function registerMediaAgentTools(): Array<() => void> {
             if (!store.config.dreaminaAuth?.loggedIn) {
               return { allowed: false, reason: '请先登录即梦账号' };
             }
-          } else if (!store.config.providers[option.provider]?.apiKey) {
+          } else if (!store.config.providers[mediaProviderConfigId(option.provider)]?.apiKey) {
             return { allowed: false, reason: `请先配置 ${option.provider} 的 API Key` };
           }
         }
@@ -343,12 +372,15 @@ export function registerMediaAgentTools(): Array<() => void> {
           aspectRatio: input.aspectRatio,
           resolution: input.resolution,
           duration: input.duration,
+          workflowInputs: input.workflowInputs ? Object.fromEntries(input.workflowInputs.map((field) => [runningHubParameterKey(field), field.value])) : undefined,
         };
         const needsCanvas = input.deliveryMode === 'canvas' || input.deliveryMode === 'both';
         let targetNodeId: string | undefined;
         let placeholderLifecycle: MediaPlaceholderLifecycle | null = null;
         if (needsCanvas) {
           targetNodeId = store.createMediaPlaceholder(intent);
+          const cloud = store.workflows?.find((workflow) => workflow.adapterType === 'runninghub' && `runninghubwf/${workflow.id}` === input.modelRef);
+          if (cloud) store.updateNodeDataTransient(targetNodeId, { ...workflowExecution(cloud), workflowInputs: intent.workflowInputs });
           placeholderLifecycle = registerMediaPlaceholderLifecycle(targetNodeId);
         }
         store.updateMessage(assistantMessageId, {
@@ -367,6 +399,8 @@ export function registerMediaAgentTools(): Array<() => void> {
             intent,
             context.projectId,
             context.signal,
+            targetNodeId,
+            { projectId: context.projectId, conversationId: context.conversationId, messageId: assistantMessageId, deliveryMode: input.deliveryMode },
           );
           if (context.signal.aborted) {
             throw new DOMException('请求已取消', 'AbortError');
@@ -375,6 +409,10 @@ export function registerMediaAgentTools(): Array<() => void> {
           const nodeCreated = placeholderLifecycle
             ? settleMediaPlaceholderLifecycle(placeholderLifecycle, result)
             : targetNodeId ? currentStore.settleMediaPlaceholder(targetNodeId, result) : false;
+          if (nodeCreated && targetNodeId && result.provider === 'runninghubwf') {
+            currentStore.updateNodeDataTransient(targetNodeId, { runninghubOutputs: result.runninghubOutputs });
+            completeRunningHubNodeTask(targetNodeId);
+          }
           currentStore.updateMessage(assistantMessageId, {
             mediaResult: result,
             mediaStatus: 'succeeded',
@@ -385,6 +423,7 @@ export function registerMediaAgentTools(): Array<() => void> {
               ? MEDIA_PLACEHOLDER_STALE_ERROR
               : undefined,
           });
+          if (!targetNodeId && result.provider === 'runninghubwf') completeRunningHubNodeTask(`runninghub-message-${assistantMessageId}`);
           // 落盘失败时产物只有临时地址，必须让用户和模型都看到，而不是报告纯成功
           const unsaved = result.persistence === 'failed';
           if (unsaved) {

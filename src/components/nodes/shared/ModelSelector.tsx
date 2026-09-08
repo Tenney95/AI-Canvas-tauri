@@ -400,8 +400,8 @@ export default function ModelSelector({
                   </svg>
                 </span>
                 <div className="model-group-info">
-                  <div className="model-group-name">{t('ComfyUI 工作流')}</div>
-                  <div className="model-group-desc">{t('用户导入的本地工作流')}</div>
+                  <div className="model-group-name">{t('工作流')}</div>
+                  <div className="model-group-desc">{t('ComfyUI 与 RunningHub 云工作流')}</div>
                 </div>
               </div>
               <div className="model-group-items">

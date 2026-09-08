@@ -24,6 +24,8 @@ function publicWorkflow(workflow: WorkflowDefinition, includeContent = false) {
     id: workflow.id,
     name: workflow.name,
     category: workflow.category,
+    adapterType: workflow.adapterType || 'comfyui',
+    ...(workflow.runninghub ? { runninghub: workflow.runninghub } : {}),
     ioNodes: workflow.ioNodes,
     defaultNodes: workflow.defaultNodes,
     createdAt: workflow.createdAt,
@@ -101,10 +103,11 @@ export function registerWorkflowAgentTools(): Array<() => void> {
       execute: async (_context, input) => {
         const existing = useAppStore.getState().workflows.find((item) => item.id === input.workflowId);
         if (!existing) return error('工作流不存在', 'WORKFLOW_NOT_FOUND');
+        if (existing.adapterType === 'runninghub' && (input.fileContent !== undefined || input.editableContent !== undefined || input.ioNodes !== undefined)) return error('云工作流请通过 RunningHub 导入表单编辑参数定义', 'WORKFLOW_INVALID');
         const invalid = (input.fileContent ? validateJson(input.fileContent) : undefined) || (input.editableContent ? validateJson(input.editableContent) : undefined);
         if (invalid) return error(invalid, 'WORKFLOW_INVALID');
         const { workflowId: _workflowId, ...changes } = input;
-        await useAppStore.getState().updateWorkflow(existing.id, { ...changes, name: changes.name?.trim(), updatedAt: Date.now() });
+        await useAppStore.getState().updateWorkflow(existing.id, { ...changes, ...(changes.name !== undefined ? { name: changes.name.trim() } : {}), updatedAt: Date.now() });
         const updated = useAppStore.getState().workflows.find((item) => item.id === existing.id)!;
         return { status: 'success', summary: `已更新工作流“${updated.name}”`, modelContent: JSON.stringify({ workflow: publicWorkflow(updated) }) };
       },

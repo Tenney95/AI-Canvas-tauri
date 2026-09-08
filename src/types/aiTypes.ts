@@ -12,6 +12,7 @@ export interface AIGenerateParams {
 }
 
 export interface AIImageGenParams extends AIGenerateParams {
+  runninghubTaskContext?: import('./runninghub').RunningHubTaskContext;
   imageSize?: string;     // '1K' | '2K' | '4K'
   aspectRatio?: string;   // '1:1' | '16:9' | '9:16' | ...
   image_urls?: string[];  // 参考图片 URL（从 @图片节点 引用中提取）
@@ -355,6 +356,7 @@ export const MAX_IMAGE_BATCH_COUNT = 8;
 
 export interface ImageGenerationResult {
   url: string;
+  runninghubOutputs?: import('./runninghub').RunningHubOutput[];
   width: number;
   height: number;
 }
@@ -430,6 +432,7 @@ export interface VideoGenerationReferenceInput {
 }
 
 export interface AIVideoGenParams {
+  runninghubTaskContext?: import('./runninghub').RunningHubTaskContext;
   prompt: string;
   model: string;
   provider: string;
@@ -459,6 +462,7 @@ export interface AIVideoGenParams {
 }
 
 export interface AIAudioGenParams {
+  runninghubTaskContext?: import('./runninghub').RunningHubTaskContext;
   prompt: string;
   model: string;
   provider: string;
@@ -490,6 +494,7 @@ export type AudioOutputFormat = 'wav' | 'opus' | 'aac' | 'flac' | 'pcm';
 
 export interface AudioGenerationResult {
   url: string;
+  runninghubOutputs?: import('./runninghub').RunningHubOutput[];
   /** 同步二进制接口返回的运行时数据，只用于落盘，不得写入 Store 或 IndexedDB。 */
   bytes?: Uint8Array;
   format?: AudioOutputFormat;

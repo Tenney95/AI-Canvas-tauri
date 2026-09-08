@@ -18,6 +18,8 @@ import {
 const CONFIG_KEY = 'app-config';
 
 export interface WorkflowRecord {
+  adapterType?: 'comfyui' | 'runninghub';
+  runninghub?: import('../../types/runninghub').RunningHubWorkflowManifest;
   id: string;
   name: string;
   category: string;

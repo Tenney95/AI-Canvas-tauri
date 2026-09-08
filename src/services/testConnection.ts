@@ -128,8 +128,9 @@ async function testApimart(apiKey: string, baseUrl = APIMART_BASE_URL): Promise<
 }
 
 /** RunningHUB — 模型 API 密钥，有余额 */
-async function testRunninghubModel(apiKey: string): Promise<TestResult> {
-  const url = 'https://www.runninghub.cn/uc/openapi/accountStatus';
+async function testRunninghubModel(apiKey: string, baseUrl?: string): Promise<TestResult> {
+  const root = (baseUrl || 'https://www.runninghub.cn').replace(/\/openapi\/v2\/?$/, '').replace(/\/+$/, '');
+  const url = `${root}/uc/openapi/accountStatus`;
   const res = await corsSafeFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -180,6 +181,7 @@ export type ProviderTestKey =
   | 'apimart'
   | 'volcengine'
   | 'runninghub-model'
+  | 'runninghub'
   | 'grsai'
   | WebSearchProviderId;
 
@@ -187,6 +189,7 @@ const testFns: Record<ProviderTestKey, (apiKey: string, baseUrl?: string) => Pro
   apimart: testApimart,
   volcengine: (apiKey, baseUrl) => testModelCatalog(apiKey, baseUrl || VOLCENGINE_BASE_URL),
   'runninghub-model': testRunninghubModel,
+  runninghub: testRunninghubModel,
   grsai: testGRSAI,
   tavily: (apiKey) => testWebSearch('tavily', apiKey),
   bocha: (apiKey) => testWebSearch('bocha', apiKey),

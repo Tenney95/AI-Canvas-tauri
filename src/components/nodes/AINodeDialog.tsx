@@ -40,7 +40,10 @@ import {
 import { resolveVideoSubmissionControls } from '../../services/ai/videoRequestResolver';
 import { buildGenerationCameraPrompt } from './shared/image/cameraStudio';
 import { cancelComfyUINodeTask } from '../../services/comfyWorkflowService';
-import { getPendingTasksForProject, resumeComfyUINodeTask } from '../../services/pollManager';
+import { getPendingTasksForProject, resumeComfyUINodeTask, resumeRunningHubNodeTask, updatePendingTask, removePendingTask } from '../../services/pollManager';
+import { isRunningHubWorkflow, workflowExecution } from '../../services/workflowExecutionService';
+import { cancelRunningHubNodeTask, completeRunningHubNodeTask, getRunningHubPersistedOutput } from '../../services/ai/providers/runninghubWorkflow';
+import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../services/canvasDerivationGuard';
 import { useT } from '../../i18n';
 
 const DIALOG_VIEWPORT_MARGIN = 16;
@@ -72,6 +75,7 @@ function AINodeDialog() {
   const previewRef = useRef<HTMLDivElement>(null);
   const cancellingNodeIdsRef = useRef(new Set<string>());
   const [isExpanded, setIsExpanded] = useState(false);
+  const [recoveryInput, setRecoveryInput] = useState({ nodeId: '', taskId: '', confirmed: false });
 
   useLayoutEffect(() => {
     const panel = panelRef.current;
@@ -286,6 +290,10 @@ function AINodeDialog() {
   // All hooks must be called before any early return
   const onPromptChange = useCallback(
     (value: string) => {
+      const current = useAppStore.getState().nodes.find((item) => item.id === activeNodeId)?.data;
+      if (isRunningHubWorkflow(useAppStore.getState().workflows.find((item) => item.id === current?.workflowId))) {
+        updateContinuousNodeData({ prompt: value }); return;
+      }
       // Extract workflow IO node assignments from the prompt string
       // Format: @wf{ioNodeId|title|type}(value content)
       // ioNodeId can contain ":" (e.g. "57:27"), fields are pipe-separated to avoid ambiguity
@@ -299,7 +307,7 @@ function AINodeDialog() {
       }
       updateContinuousNodeData({ prompt: value, workflowInputs: Object.keys(workflowInputs).length > 0 ? workflowInputs : undefined });
     },
-    [updateContinuousNodeData]
+    [activeNodeId, updateContinuousNodeData]
   );
 
   // 调用选中模型生成（文本 or 图片）
@@ -321,7 +329,8 @@ function AINodeDialog() {
       return;
     }
     const rawPrompt = overridePrompt ?? (latestData.prompt as string) ?? '';
-    if (!rawPrompt.trim()) {
+    const cloudWorkflow = isRunningHubWorkflow(store.workflows.find((item) => item.id === latestData.workflowId));
+    if (!rawPrompt.trim() && !cloudWorkflow) {
       showToast(t('请输入提示词'), 'error');
       return;
     }
@@ -347,17 +356,19 @@ function AINodeDialog() {
     }
     const submittingNodeId = activeNodeId!;
     const submittingProjectId = currentProjectId;
+    const cloudGuard = cloudWorkflow ? registerCanvasDerivation(store, submittingNodeId) : null;
     const isStillCurrentSubmission = () => {
       const state = useAppStore.getState();
       return (
         state.currentProjectId === submittingProjectId
         && state.nodes.some((n) => n.id === submittingNodeId)
+        && (!cloudWorkflow || (!!cloudGuard && isCanvasDerivationFresh(cloudGuard, state)))
       );
     };
     updateNodeDataTransient(activeNodeId!, { status: 'loading', error: undefined });
     let batchNodeIds: string[] | undefined;
     try {
-      const batchCount = Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(latestData.batchCount) || 1)));
+      const batchCount = cloudWorkflow ? 1 : Math.min(MAX_IMAGE_BATCH_COUNT, Math.max(1, Math.floor(Number(latestData.batchCount) || 1)));
       if (nodeType === 'ai-image' && batchCount > 1) {
         if (postProcess) throw new Error(t('批量生成暂不支持图片后处理，请将数量设为 1'));
         const imageSize = (latestData.imageSize as string) || '2K';
@@ -413,9 +424,10 @@ function AINodeDialog() {
         });
         if (!isStillCurrentSubmission()) return;
         // 下载远程 URL 到本地项目目录
-        const persisted = currentProjectId
+        const persisted = getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (currentProjectId
           ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-image', nodeLabel)
-          : { mediaUrl: result.url, sourceUrl: result.url };
+          : { mediaUrl: result.url, sourceUrl: result.url });
+        if (cloudWorkflow && !isStillCurrentSubmission()) return;
         const mediaUrl = persisted.mediaUrl;
         updateNodeData(activeNodeId!, {
           imageUrl: mediaUrl,
@@ -428,6 +440,7 @@ function AINodeDialog() {
           imageHeight: result.height,
           ...(isAnimation ? { aspectRatio } : {}),
         });
+        if (cloudWorkflow) completeRunningHubNodeTask(submittingNodeId);
         useAppStore.getState().syncDramaAssetImageFromNode?.(activeNodeId!, mediaUrl);
         recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
@@ -571,9 +584,10 @@ function AINodeDialog() {
         });
         if (!isStillCurrentSubmission()) return;
         // 下载远程 URL 到本地项目目录
-        const persisted = currentProjectId
+        const persisted = getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (currentProjectId
           ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-video', nodeLabel)
-          : { mediaUrl: result.url, sourceUrl: result.url };
+          : { mediaUrl: result.url, sourceUrl: result.url });
+        if (cloudWorkflow && !isStillCurrentSubmission()) return;
         const mediaUrl = persisted.mediaUrl;
         updateNodeData(activeNodeId!, {
           videoUrl: mediaUrl,
@@ -583,6 +597,7 @@ function AINodeDialog() {
           output: persisted.sourceUrl,
           status: 'success',
         });
+        if (cloudWorkflow) completeRunningHubNodeTask(submittingNodeId);
         recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
           nodeLabel: nodeLabel,
@@ -620,6 +635,7 @@ function AINodeDialog() {
           return;
         }
         const persisted = await persistAudioGenerationResult(result, currentProjectId, nodeLabel);
+        if (cloudWorkflow && !isStillCurrentSubmission()) return;
         updateNodeData(activeNodeId!, {
           audioUrl: persisted.mediaUrl,
           sourceUrl: persisted.sourceUrl,
@@ -631,6 +647,7 @@ function AINodeDialog() {
           ...(result.lyrics ? { musicLyrics: result.lyrics } : {}),
           status: 'success',
         });
+        if (cloudWorkflow) completeRunningHubNodeTask(submittingNodeId);
         recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
           nodeLabel: nodeLabel,
@@ -718,6 +735,9 @@ function AINodeDialog() {
         error: msg,
       });
       showToast(msg, 'error');
+    } finally {
+      if (cloudWorkflow && isStillCurrentSubmission() && useAppStore.getState().nodes.find((item) => item.id === submittingNodeId)?.data.status === 'success') completeRunningHubNodeTask(submittingNodeId);
+      if (cloudGuard) completeCanvasDerivation(cloudGuard);
     }
   }, [activeNodeId, nodeType, currentProjectId, finishContinuousEdit, updateNodeData, updateNodeDataTransient, recordOutputHistory, showToast, t]);
 
@@ -725,20 +745,22 @@ function AINodeDialog() {
     if (!activeNodeId || cancellingNodeIdsRef.current.has(activeNodeId)) return;
     const nodeId = activeNodeId;
     const projectId = currentProjectId;
+    const cloud = useAppStore.getState().nodes.find((item) => item.id === nodeId)?.data.provider === 'runninghubwf';
     const originalTaskId = projectId ? getPendingTasksForProject(projectId).find((task) => task.nodeId === nodeId)?.taskId : undefined;
     const isCurrent = () => useAppStore.getState().currentProjectId === projectId
       && useAppStore.getState().nodes.some((item) => item.id === nodeId)
       && (!projectId || !getPendingTasksForProject(projectId).some((task) => task.nodeId === nodeId && task.taskId !== originalTaskId));
     cancellingNodeIdsRef.current.add(nodeId);
     try {
-      await cancelComfyUINodeTask(nodeId);
+      const cloudResult = cloud ? await cancelRunningHubNodeTask(nodeId) : undefined;
+      if (!cloud) await cancelComfyUINodeTask(nodeId);
       if (!isCurrent()) return;
       updateNodeDataTransient(nodeId, { status: 'idle', error: undefined });
-      showToast(t('已终止 ComfyUI 任务'));
+      showToast(cloud ? (cloudResult === 'local-stopped' ? '已停止本地等待，尚未提交任务' : 'RunningHub 已确认任务结束') : t('已终止 ComfyUI 任务'));
     } catch (error) {
       if (!isCurrent()) return;
       const message = error instanceof Error ? error.message : t('无法终止 ComfyUI 任务');
-      updateNodeDataTransient(nodeId, { status: 'error', error: t('ComfyUI 取消尚未确认，任务已保留，可继续查询或再次终止') });
+      updateNodeDataTransient(nodeId, { status: 'error', error: cloud ? message : t('ComfyUI 取消尚未确认，任务已保留，可继续查询或再次终止') });
       showToast(t('取消尚未确认，任务已保留：{message}', { message }), 'error');
     } finally {
       cancellingNodeIdsRef.current.delete(nodeId);
@@ -796,9 +818,11 @@ function AINodeDialog() {
 
   const onWorkflowSelect = useCallback(
     (workflowId: string | undefined) => {
+      const workflow = useAppStore.getState().workflows.find((item) => item.id === workflowId);
       updateNodeData(activeNodeId!, {
         workflowId,
-        ...(workflowId ? { provider: 'comfyui', model: 'comfyui/workflow', batchCount: 1, audioPurpose: undefined } : {}),
+        workflowInputs: undefined, runninghubOutputs: undefined, runninghubStage: undefined,
+        ...(workflow ? { ...workflowExecution(workflow), batchCount: 1, audioPurpose: undefined } : {}),
       });
     },
     [activeNodeId, updateNodeData]
@@ -927,6 +951,7 @@ function AINodeDialog() {
   const recoverableComfyTask = currentProjectId && data.status !== 'loading'
     ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && task.taskType === 'comfyui' && task.comfyRecoveryState)
     : undefined;
+  const cloudTask = currentProjectId ? getPendingTasksForProject(currentProjectId).find((task) => task.nodeId === activeNodeId && task.taskType === 'runninghub-workflow') : undefined;
 
   const audioPurpose = data.audioPurpose
     ?? (data.model ? findMediaModelOption(data.model)?.audioPurpose : undefined);
@@ -1036,6 +1061,29 @@ function AINodeDialog() {
             </svg>
           )}
         </button>
+        {data.provider === 'runninghubwf' && data.runninghubStage && <p role="status" className="px-3 py-1 text-xs text-canvas-text-secondary">RunningHub · {data.runninghubStage}</p>}
+        {cloudTask && data.status !== 'loading' && <div className="ui-card m-2 flex flex-col gap-2 p-3 text-xs">
+          <p>{cloudTask.taskId ? `任务 ${cloudTask.taskId} 已保留，可以继续查询或请求远端取消。` : '提交状态未知。请到 RunningHub 平台核对，补充任务 ID 后继续查询。'}</p>
+          {!cloudTask.taskId && <input aria-label="RunningHub 任务 ID" className="ui-input w-full" value={recoveryInput.nodeId === activeNodeId ? recoveryInput.taskId : ''} inputMode="numeric" onChange={(event) => setRecoveryInput({ nodeId: activeNodeId, taskId: event.target.value, confirmed: false })} />}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="ui-btn ui-btn--sm" onClick={() => {
+              if (!cloudTask.taskId) {
+                if (recoveryInput.nodeId !== activeNodeId || !/^\d{1,30}$/.test(recoveryInput.taskId.trim())) { showToast('请填写正确的任务 ID', 'error'); return; }
+                updatePendingTask(activeNodeId, { taskId: recoveryInput.taskId.trim(), submitted: true, runninghubRecoveryState: 'disconnected' }, '');
+              }
+              void resumeRunningHubNodeTask(activeNodeId).catch((error: unknown) => showToast(error instanceof Error ? error.message : '恢复查询失败', 'error'));
+            }}>继续查询 / 保存</button>
+            {cloudTask.taskId && <button type="button" className="ui-btn ui-btn--sm ui-btn--danger" onClick={() => { void onCancelGeneration(); }}>请求远端取消</button>}
+          </div>
+          <details><summary className="cursor-pointer text-canvas-text-secondary">在平台确认任务结束后解除限制</summary>
+            <label className="my-2 flex gap-2"><input type="checkbox" checked={recoveryInput.nodeId === activeNodeId && recoveryInput.confirmed} onChange={(event) => setRecoveryInput({ nodeId: activeNodeId, taskId: '', confirmed: event.target.checked })} />我已在平台确认任务未提交或已经结束</label>
+            <button type="button" className="ui-btn ui-btn--sm" disabled={recoveryInput.nodeId !== activeNodeId || !recoveryInput.confirmed} onClick={() => { removePendingTask(activeNodeId, cloudTask.taskId); updateNodeDataTransient(activeNodeId, { status: 'idle', error: undefined, runninghubStage: undefined }); setRecoveryInput({ nodeId: '', taskId: '', confirmed: false }); }}>清除本地恢复记录</button>
+          </details>
+        </div>}
+        {data.runninghubOutputs && data.runninghubOutputs.length > 1 && <details className="ui-card m-2 p-2 text-xs"><summary className="cursor-pointer">全部产物 · {data.runninghubOutputs.length}</summary><div className="mt-2 flex max-h-72 flex-col gap-2 overflow-y-auto">{data.runninghubOutputs.map((output, index) => <div key={`${output.url}:${index}`}>
+          <p className="mb-1 text-canvas-text-secondary">产物 {index + 1}{output.nodeId ? ` · 节点 ${output.nodeId}` : ''}</p>
+          {output.kind === 'image' ? <img className="max-h-48 max-w-full object-contain" src={output.url} alt={`产物 ${index + 1}`} /> : output.kind === 'video' ? <video className="max-h-48 w-full" src={output.url} controls preload="metadata" /> : <audio className="w-full" src={output.url} controls preload="metadata" />}
+        </div>)}</div></details>}
         {recoverableComfyTask && (
           <div className="ui-alert ui-alert--warning mx-3 mb-2 flex-wrap" role="status">
             <span className="min-w-0 flex-1 text-xs">
@@ -1064,14 +1112,16 @@ function AINodeDialog() {
           onAnimationActionChange={onAnimationActionChange}
           animationFrames={data.animationFrames ?? 8}
           onAnimationFramesChange={onAnimationFramesChange}
-          canGenerate={data.status !== 'loading' && !recoverableComfyTask}
+          canGenerate={data.status !== 'loading' && !recoverableComfyTask && !cloudTask}
           isGenerating={data.status === 'loading'}
-          onCancelGeneration={data.provider === 'comfyui' ? () => { void onCancelGeneration(); } : undefined}
+          onCancelGeneration={['comfyui', 'runninghubwf'].includes(data.provider ?? '') ? () => { void onCancelGeneration(); } : undefined}
           onChange={onPromptChange}
           onContinuousEditEnd={finishContinuousEdit}
           onSubmit={onSubmit}
           onModelSelect={onModelSelect}
           onWorkflowSelect={onWorkflowSelect}
+          workflowInputs={data.workflowInputs}
+          onWorkflowInputsChange={(workflowInputs) => updateNodeData(activeNodeId, { workflowInputs })}
           onPassThrough={supportsPassThrough ? onPassThrough : undefined}
           imageSize={(data.imageSize as string) || '2K'}
           aspectRatio={(data.aspectRatio as string) || (nodeType === 'ai-panorama' ? '2:1' : '1:1')}

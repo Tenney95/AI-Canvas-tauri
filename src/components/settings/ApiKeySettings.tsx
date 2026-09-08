@@ -573,8 +573,9 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                     <div className="provider-connection-meta">
                       {isRunningHub ? (
                         <>
-                          <span>{hasRunningHubModelKey ? t('企业级-共享已配置') : t('企业级-共享未配置')}</span>
-                          <span>{hasRunningHubWorkflowKey ? t('消费级-会员已配置') : t('消费级-会员未配置')}</span>
+                          <span>{hasRunningHubModelKey ? t('模型连接已配置') : t('模型连接未配置')}</span>
+                          <span>{hasRunningHubWorkflowKey ? t('工作流连接已配置') : t('工作流连接未配置')}</span>
+                          <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => { useAppStore.getState().setSettingsOpen(false); useAppStore.getState().setWorkflowPanelOpen(true); }}>管理云工作流</button>
                           {hasRunningHubModelKey && (
                             <span>
                               {selectedCount === undefined

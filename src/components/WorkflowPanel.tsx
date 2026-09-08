@@ -1,4 +1,4 @@
-﻿/**
+/**
  * WorkflowPanel 工作流面板 — 管理 RunningHUB 工作流定义，支持导入 JSON、分类筛选、拖放到画布
  * 使用 framer-motion 驱动面板进出场动画
  */
@@ -11,6 +11,7 @@ import { extractComfyUIIONodes, openComfyUIWorkflowEditor } from '../services/co
 import { comfyBaseUrlFor, DEFAULT_COMFY_URL } from '../services/comfyServers';
 import PopupCloseButton from './shared/PopupCloseButton';
 import Select from './shared/Select';
+import RunningHubWorkflowImport from './runninghub/RunningHubWorkflowImport';
 
 const CATEGORIES: { value: WorkflowCategory; label: string }[] = [
   { value: 'ai-text', label: '生成文本' },
@@ -133,6 +134,8 @@ export default function WorkflowPanel() {
   );
 
   const [name, setName] = useState('');
+  const [importSource, setImportSource] = useState<'comfyui' | 'workflow' | 'app'>('comfyui');
+  const [editingCloud, setEditingCloud] = useState<WorkflowDefinition>();
   const [editorOpen, setEditorOpen] = useState<{ workflowId: string; phase: 'checking' | 'opening' | 'ready' | 'error'; detail: string }>();
   const editorOpeningRef = useRef(false);
   const [category, setCategory] = useState<WorkflowCategory>('ai-text');
@@ -298,6 +301,9 @@ export default function WorkflowPanel() {
 
   const handleEdit = useCallback(async (workflow: WorkflowDefinition, event: React.MouseEvent) => {
     event.stopPropagation();
+    if (workflow.adapterType === 'runninghub' && workflow.runninghub) {
+      setImportSource(workflow.runninghub.kind); setEditingCloud(workflow); return;
+    }
     if (editorOpeningRef.current) return;
     editorOpeningRef.current = true;
     setEditorOpen({ workflowId: workflow.id, phase: 'checking', detail: '正在检查工作流…' });
@@ -374,9 +380,12 @@ export default function WorkflowPanel() {
             >
         {/* 左卡片：上传与添加 */}
         <div className="wf-panel-card wf-panel-import">
-          <span className="wf-section-title">导入 ComfyUI 工作流</span>
+          <span className="wf-section-title">导入工作流</span>
+          <label className="mt-3 flex flex-col gap-1 text-xs">来源<select className="ui-select__control w-full" value={importSource} onChange={(event) => { setImportSource(event.target.value as typeof importSource); setEditingCloud(undefined); }}>
+            <option value="comfyui">ComfyUI 工作流</option><option value="workflow">RunningHub 云工作流</option><option value="app">RunningHub AI 应用</option>
+          </select></label>
           <div className="wf-section-rule" />
-
+          {importSource !== 'comfyui' ? <RunningHubWorkflowImport key={`${importSource}:${editingCloud?.id ?? 'new'}`} kind={importSource} editing={editingCloud} onSaved={() => { setEditingCloud(undefined); setImportSource('comfyui'); showToast('已保存云工作流', 'success'); }} /> : <>
           {/* Name */}
           <div className="wf-field">
             <label className="wf-label">工作流名称</label>
@@ -537,6 +546,7 @@ export default function WorkflowPanel() {
               )}
             </AnimatePresence>
           </div>
+          </>}
         </div>
 
         {/* 右卡片：已导入工作流管理 */}
@@ -582,7 +592,7 @@ export default function WorkflowPanel() {
 
           {/* 顶栏与筛选固定，只有提示与列表滚动 */}
           <div className="wf-list-scroll">
-          <p className="wf-hint" role="note">
+          {(importSource === 'comfyui' || workflows.some((workflow) => workflow.adapterType !== 'runninghub')) && <p className="wf-hint" role="note">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
               <line x1="12" y1="9" x2="12" y2="13" />
@@ -591,7 +601,7 @@ export default function WorkflowPanel() {
             <span>
               未设置默认节点时，ComfyUI 调用需要在提示词中 <code className="wf-hint-code">@对应节点</code>，提示词或参考图才会写入对应输入。展开下方工作流卡片，点击节点徽章设为该类型默认节点（显示为 <code className="wf-hint-code">★</code>），调用时即可自动注入，无须每次 <code className="wf-hint-code">@</code>。
             </span>
-          </p>
+          </p>}
 
           <AnimatePresence mode="popLayout">
             {workflows.length > 0 && workflowsByCategory.length === 0 ? (
@@ -660,14 +670,14 @@ export default function WorkflowPanel() {
                                 triggerClassName="wf-item-cat-trigger"
                                 value={wf.category}
                                 title="修改分类"
-                                options={CATEGORIES.map((cat) => ({ value: cat.value, label: cat.label }))}
+                                options={CATEGORIES.filter((cat) => wf.adapterType !== 'runninghub' || cat.value !== 'ai-text').map((cat) => ({ value: cat.value, label: cat.label }))}
                                 onChange={(value) => {
                                   updateWorkflow(wf.id, { category: value as WorkflowCategory })
                                     .catch(() => showToast('修改分类失败', 'error'));
                                 }}
                               />
                               {/* 只有配了多台服务端才需要选：单台时这一栏是纯噪音 */}
-                              {(comfyServers?.length ?? 0) > 0 && (
+                              {wf.adapterType !== 'runninghub' && (comfyServers?.length ?? 0) > 0 && (
                                 <Select
                                   className="wf-item-cat"
                                   triggerClassName="wf-item-cat-trigger"
@@ -709,10 +719,10 @@ export default function WorkflowPanel() {
                               type="button"
                               className="wf-item-del wf-item-edit disabled:opacity-50 disabled:cursor-wait"
                               onClick={(event) => void handleEdit(wf, event)}
-                              disabled={(editorOpen?.phase === 'checking' || editorOpen?.phase === 'opening')}
+                              disabled={wf.adapterType !== 'runninghub' && (editorOpen?.phase === 'checking' || editorOpen?.phase === 'opening')}
                               aria-label={`编辑工作流：${wf.name}`}
                               aria-busy={editorOpen?.workflowId === wf.id && (editorOpen.phase === 'checking' || editorOpen.phase === 'opening')}
-                              data-tooltip="在 ComfyUI 中编辑"
+                              data-tooltip={wf.adapterType === 'runninghub' ? '编辑云工作流参数' : '在 ComfyUI 中编辑'}
                               data-tooltip-pos="left"
                               whileHover={{ scale: 1.1 }}
                               whileTap={{ scale: 0.9 }}
@@ -739,7 +749,7 @@ export default function WorkflowPanel() {
                           </div>
                         </div>{/* /wf-item-row */}
 
-                        {editorOpen?.workflowId === wf.id && (
+                        {wf.adapterType !== 'runninghub' && editorOpen?.workflowId === wf.id && (
                           <div className={`ui-alert mt-2 flex-wrap ${editorOpen.phase === 'error' ? 'ui-alert--danger' : 'ui-alert--info'}`} role={editorOpen.phase === 'error' ? 'alert' : 'status'}>
                             <span className="min-w-0 flex-1 break-words text-xs">{editorOpen.detail}</span>
                             {editorOpen.phase === 'error' && <button type="button" className="ui-btn ui-btn--sm" onClick={(event) => void handleEdit(wf, event)}>重试打开</button>}

@@ -17,10 +17,13 @@ import { DEFAULT_BASE_URLS, RUNNINGHUB_MODEL_BASE_URL } from '../../constants/ap
 import { mapImageDimensions } from '../aiDimensions';
 import { generateDreaminaImage } from '../dreaminaService';
 import { executeComfyUIGenerate } from '../comfyWorkflowService';
+import { isRunningHubWorkflow } from '../workflowExecutionService';
+import { executeRunningHubWorkflow } from './providers/runninghubWorkflow';
+import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaReferences } from './connectedReferenceMedia';
 import type { AIImageGenParams, BatchImageResult, ImageGenerationResult } from '../../types/aiTypes';
 import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
 import { extractModelName, resolveGeneralModel, resolveGeneralModelConnection } from './helpers';
-import { resolvePromptWithImageRefs } from './promptResolver';
+import { collectPromptNodeMediaUrls, resolvePromptWithImageRefs } from './promptResolver';
 import { warnIfTooManyReferences } from './connectedReferenceMedia';
 import { resolveImageDataUrlArray, resolveImageUrlArray } from './imageUtils';
 import { generateImageStandardBatch } from './providers/standardImage';
@@ -145,8 +148,18 @@ export async function generateImagesBatch(
   // ComfyUI 工作流执行路径：参考图由 ComfyUI 自己的 /upload 收，不必先过图床
   if (params.workflowId) {
     if (requestedCount > 1) throw new Error('工作流暂不支持批量生成，请将数量设为 1');
+    const workflow = useAppStore.getState().workflows.find((item) => item.id === params.workflowId);
+    if (isRunningHubWorkflow(workflow)) {
+      const refs = mergeMediaReferences(collectPromptNodeMediaUrls(rawPrompt).references, collectConnectedReferenceMedia(params.nodeId).references);
+      const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, prompt, kind: 'image', references: {
+        image: mergeImageUrls(allImageUrls, getMediaReferenceUrls(refs, 'image', 'local')),
+        video: getMediaReferenceUrls(refs, 'video', 'local'), audio: getMediaReferenceUrls(refs, 'audio', 'local'),
+      } }, signal);
+      return singleResult({ url: outputs[0].url, runninghubOutputs: outputs, ...mapImageDimensions(imageSize, aspectRatio) });
+    }
     return singleResult(await executeComfyUIGenerate({ ...params, prompt }, signal, allImageUrls));
   }
+  if (provider === 'runninghubwf') throw new Error('请先在工作流管理中导入并配置该 RunningHub 工作流');
 
   // comfyui 从不注册在 providers 里，落到下面的 default 分支只会误报「未配置 API Key」
   if (provider === 'comfyui') {

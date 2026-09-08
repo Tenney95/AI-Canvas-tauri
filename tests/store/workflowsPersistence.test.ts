@@ -42,6 +42,20 @@ beforeEach(() => {
 });
 
 describe('工作流持久化顺序', () => {
+  it('云定义在新增、修改与重启加载后完整保留，原始调用示例不落库', async () => {
+    const cloud: WorkflowDefinition = { ...workflow, fileContent: '', adapterType: 'runninghub', runninghub: { version: 1, kind: 'app', remoteId: '1904152026220003329', connectionId: 'runninghub', parameters: [{ nodeId: '3', fieldName: 'count', type: 'number', defaultValue: 0, label: '数量', source: 'value' }] } };
+    const { slice, getState } = createSlice();
+    await slice.addWorkflow(cloud);
+    expect(fileMocks.saveWorkflow).toHaveBeenLastCalledWith(expect.objectContaining({ adapterType: 'runninghub', runninghub: cloud.runninghub }));
+    await slice.updateWorkflow(cloud.id, { name: '改名' });
+    expect(getState().workflows[0].runninghub).toEqual(cloud.runninghub);
+    fileMocks.loadWorkflows.mockResolvedValue([{ ...cloud, name: '改名' }]);
+    await slice.loadWorkflows();
+    expect(getState().workflows[0].runninghub).toEqual(cloud.runninghub);
+    await expect(slice.updateWorkflow(cloud.id, { fileContent: '{"apiKey":"do-not-save"}' })).rejects.toThrow('不保存');
+    await expect(slice.updateWorkflow(cloud.id, { category: 'ai-text' })).rejects.toThrow('输出类型');
+    expect(JSON.stringify(fileMocks.saveWorkflow.mock.calls)).not.toContain('do-not-save');
+  });
   it('新增落库失败时不把工作流留在界面状态中', async () => {
     const { slice, getState } = createSlice();
     fileMocks.saveWorkflow.mockRejectedValueOnce(new Error('写入失败'));
