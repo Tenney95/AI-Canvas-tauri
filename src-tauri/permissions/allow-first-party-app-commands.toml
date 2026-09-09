@@ -34,6 +34,7 @@ commands.allow = [
   "remove_director_desk_runtime",
   "move_to_trash",
   "copy_files_to_clipboard",
+  "read_canvas_clipboard",
   "dreamina_login",
   "dreamina_login_start",
   "dreamina_login_runtime",

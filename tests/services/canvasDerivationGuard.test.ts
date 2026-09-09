@@ -5,6 +5,7 @@ import {
   completeCanvasDerivation,
   isCanvasDerivationFresh,
   registerCanvasDerivation,
+  registerCanvasImport,
 } from '../../src/services/canvasDerivationGuard';
 
 function createState(projectId = 'project-a') {
@@ -21,6 +22,21 @@ function createState(projectId = 'project-a') {
 }
 
 describe('canvasDerivationGuard', () => {
+  it('guards an empty-canvas import and invalidates it on project lifecycle cancellation', () => {
+    const { state, setRevision } = createState();
+    state.nodes = [];
+    const cancel = vi.fn();
+    const guard = registerCanvasImport(state, cancel)!;
+    expect(isCanvasDerivationFresh(guard, state)).toBe(true);
+    setRevision(4);
+    expect(isCanvasDerivationFresh(guard, state)).toBe(false);
+    setRevision(3);
+    cancelProjectCanvasDerivations(state.currentProjectId!);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(isCanvasDerivationFresh(guard, state)).toBe(false);
+    state.currentProjectId = null;
+    expect(registerCanvasImport(state)).toBeNull();
+  });
   it('requires the project, revision, source node and placeholder to remain current', () => {
     const { state, setRevision } = createState();
     const guard = registerCanvasDerivation(state, 'source', { placeholderNodeId: 'placeholder' });

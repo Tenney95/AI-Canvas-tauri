@@ -24,6 +24,8 @@ mod assistant_web;
 mod blender_runtime;
 #[path = "files/clipboard.rs"]
 mod clipboard;
+#[path = "files/clipboard_read.rs"]
+mod clipboard_read;
 #[path = "media/comfyui/mod.rs"]
 mod comfyui;
 #[path = "director/desk_runtime.rs"]
@@ -1130,6 +1132,7 @@ pub fn run() {
             director_desk_runtime::remove_director_desk_runtime,
             move_to_trash,
             clipboard::copy_files_to_clipboard,
+            clipboard_read::read_canvas_clipboard,
             dreamina_login,
             dreamina::dreamina_login_start,
             dreamina::dreamina_login_runtime,

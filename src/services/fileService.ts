@@ -42,6 +42,8 @@ export interface FileTransferProgress {
 
 export interface FileTransferOptions {
   signal?: AbortSignal;
+  /** Agent/MCP 导入不把调用方的本地路径或原生错误写入控制台。 */
+  redactErrors?: boolean;
   onProgress?: (progress: FileTransferProgress) => void;
   /** Data URL 按内容摘要复用确定路径，供持久化迁移重试使用。 */
   deduplicateByContent?: boolean;
@@ -661,7 +663,7 @@ export async function copyFileToProjectData(
     await runNativeFileTransfer('copy_file_streamed', { sourcePath, destinationPath: destPath }, options);
     notifyProjectDiskChanged();
   } catch (err) {
-    console.error('Failed to copy file to project data:', sourcePath, err);
+    if (!options?.redactErrors) console.error('Failed to copy file to project data:', sourcePath, err);
     // Don't fallback to convertFileSrc on external paths — asset protocol won't serve them
     // Return null so caller can fallback to readFile → base64 in-memory loading
     return null;

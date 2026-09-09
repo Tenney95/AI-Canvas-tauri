@@ -82,6 +82,7 @@ describe('MCP UI control tools', () => {
       canvas_set_viewport: 'canvas_write',
       canvas_fit_view: 'canvas_write',
       ui_capture_window: 'read',
+      ui_capture_to_canvas: 'canvas_write',
     } as const;
 
     for (const [id, effect] of Object.entries(expected)) {

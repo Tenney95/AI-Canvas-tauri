@@ -11,9 +11,62 @@ import {
   readGrantedTextFile,
 } from '../fileGrantService';
 import { registerAgentTool } from '../toolRegistry';
+import { importLocalResources, pasteClipboardResources, ResourceImportError,
+  type LocalResourceInput, type ResourcePosition } from '../../canvasResourceImportService';
+
+const positionFields = {
+  x: { type: 'number' as const, minimum: -100000, maximum: 100000 },
+  y: { type: 'number' as const, minimum: -100000, maximum: 100000 },
+};
+
+async function resourceResult(run: () => ReturnType<typeof importLocalResources>) {
+  try {
+    const result = await run();
+    return { status: 'success' as const, summary: `已导入 ${result.nodes.length} 个资源节点`,
+      modelContent: JSON.stringify(result) };
+  } catch (error) {
+    const summary = error instanceof ResourceImportError ? error.message : '资源导入失败';
+    return { status: 'error' as const, summary, modelContent: summary, retryable: false,
+      errorCode: error instanceof ResourceImportError ? error.code : 'IMPORT_FAILED' };
+  }
+}
 
 export function registerFileAgentTools(): Array<() => void> {
   return [
+    registerAgentTool<ResourcePosition & { files: LocalResourceInput[] }>({
+      id: 'file_import_media_to_canvas',
+      title: '批量导入本地媒体到画布',
+      description: '把 1 至 20 个本地图片、视频、音频文件复制到项目并创建 source 素材节点，返回同序 nodeId，可直接连线生成。传入绝对路径；必须是已通过文件选择、拖入或设置授权的文件/目录，不会扩大文件权限。可指定每项坐标和名称，或使用起始 x/y 自动排列。整批只提交一次画布历史；失败不自动重试。此工具只导入，不调用生成模型。',
+      inputSchema: { type: 'object', required: ['files'], additionalProperties: false, properties: {
+        ...positionFields,
+        files: { type: 'array', minItems: 1, maxItems: 20, items: {
+          type: 'object', required: ['path'], additionalProperties: false, properties: {
+            path: { type: 'string', minLength: 1, maxLength: 4096 },
+            label: { type: 'string', minLength: 1, maxLength: 120 }, ...positionFields,
+          },
+        } },
+      } },
+      effect: 'canvas_write',
+      isAvailable: () => typeof window !== 'undefined' && '__TAURI__' in window,
+      authorize: (context) => ({ allowed: useAppStore.getState().currentProjectId === context.projectId,
+        reason: '目标项目当前未加载' }),
+      summarizeInput: (input) => `导入 ${input.files.length} 个本地媒体文件`,
+      buildInputDisplay: (input) => ({ fields: [{ label: '文件数量', value: input.files.length }] }),
+      execute: (context, input) => resourceResult(() => importLocalResources(context, input.files, input)),
+    }),
+    registerAgentTool<ResourcePosition>({
+      id: 'canvas_paste_external',
+      title: '粘贴系统剪贴板到画布',
+      description: '读取系统剪贴板中的图片或纯文本并创建素材节点，返回同序 nodeId。无须鼠标或模拟 Ctrl+V；不读取应用内部节点剪贴板，不执行剪贴板文字，也不跟随 HTML 图片或 URL。文件路径和视频音频文件请使用 file_import_media_to_canvas。最多 20 项、32 MiB，文本最多 100000 字；失败不自动重试。',
+      inputSchema: { type: 'object', additionalProperties: false, properties: positionFields },
+      effect: 'canvas_write',
+      isAvailable: () => typeof navigator !== 'undefined' && (!!navigator.clipboard?.read
+        || (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && /win/i.test(navigator.platform))),
+      authorize: (context) => ({ allowed: useAppStore.getState().currentProjectId === context.projectId,
+        reason: '目标项目当前未加载' }),
+      summarizeInput: () => '把系统剪贴板中的图片或文本粘贴到画布',
+      execute: (context, input) => resourceResult(() => pasteClipboardResources(context, input)),
+    }),
     registerAgentTool<Record<string, never>>({
       id: 'file_list_grants',
       title: '列出已授权文件',

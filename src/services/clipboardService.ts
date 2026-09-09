@@ -40,6 +40,13 @@ export async function readText(): Promise<string> {
   }
 }
 
+export type NativeClipboardContent = { kind: 'text'; text: string } | { kind: 'image'; dataUrl: string };
+
+/** Windows MCP 无用户手势读取；命令仅允许主窗口，原生端限制格式与体积。 */
+export async function readNativeClipboard(): Promise<NativeClipboardContent> {
+  return invoke<NativeClipboardContent>('read_canvas_clipboard');
+}
+
 /**
  * 复制图像到系统剪贴板（位图格式，可粘贴到 PS、聊天工具）。
  * 支持 data: URL 和 http(s) URL（在 Tauri 环境用 fetch 拉取）。
