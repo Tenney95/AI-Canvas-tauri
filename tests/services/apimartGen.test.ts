@@ -43,6 +43,8 @@ import { apimartMediaProviderAdapter } from '../../src/services/ai/providers/api
 import { APIMART_OMNI_MODELS, getApimartSeedanceCapability } from '../../src/services/ai/apimartVideoModels';
 import { fetchProviderModelCatalog } from '../../src/services/ai/providerCatalogService';
 import { assertVideoInputConstraints } from '../../src/services/ai/videoInputValidation';
+import { buildImageCapabilityRequest } from '../../src/services/ai/mediaModelCapabilities';
+import { getMediaModelOptions } from '../../src/components/nodes/shared/defaultModels';
 
 describe('APIMart Omni 视频合同', () => {
   beforeEach(() => {
@@ -188,6 +190,72 @@ describe('APIMart image polling', () => {
     vi.unstubAllGlobals();
     pollingMocks.registerNodePolling.mockReturnValue(new AbortController().signal);
     serviceMocks.uploadToRemote.mockResolvedValue('https://upload.example/reference.png');
+  });
+
+  it.each(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])(
+    '将 %s 从媒体目录路由到原生批量接口并收集四张图片',
+    async (model) => {
+      const option = getMediaModelOptions().find((item) => item.value === `apimart/${model}`);
+      expect(option).toMatchObject({ provider: 'apimart', mediaKind: 'image' });
+      if (!option) throw new Error('缺少内置模型');
+      const imageUrls = Array.from({ length: 16 }, (_, index) => `https://ref.example/${index}.png`);
+      const outputUrls = Array.from({ length: 4 }, (_, index) => `https://img.example/${index}.png`);
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ code: 200, data: [{ status: 'submitted', task_id: 'gpt-25-task' }] }))
+        .mockResolvedValueOnce(jsonResponse({ code: 200, data: {
+          status: 'completed', result: { images: [{ url: outputUrls }] },
+        } }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const batch = await apimartMediaProviderAdapter.generateImage?.({
+        params: { model: option.value, provider: option.provider, prompt: '保留商品并替换背景', imageSize: '4K', aspectRatio: '16:9' },
+        prompt: '保留商品并替换背景', imageUrls, requestedCount: 4,
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0][0]).toBe('https://api.example.com/images/generations');
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
+        model, prompt: '保留商品并替换背景', resolution: '4k', size: '16:9', n: 4, image_urls: imageUrls,
+      });
+      expect(fetchMock.mock.calls[1][0]).toBe('https://api.example.com/tasks/gpt-25-task?language=zh');
+      expect(batch).toEqual({
+        requestedCount: 4, failedCount: 0,
+        results: outputUrls.map((url) => ({ url, width: 3840, height: 2160 })),
+      });
+    },
+  );
+
+  it.each(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])(
+    '%s 文生图保留自适应尺寸并将原生数量限制为四张',
+    (model) => {
+      const request = buildImageCapabilityRequest(`apimart/${model}`, '风景', {
+        ratio: '自适应', resolution: '2K', count: 8,
+      });
+      expect(request?.body).toEqual({ model, prompt: '风景', size: 'auto', resolution: '2k', n: 4 });
+      expect(request?.requestedCount).toBe(4);
+    },
+  );
+
+  it.each([
+    ['1K', '4:3', 1024, 768],
+    ['2K', '3:2', 2048, 1360],
+    ['4K', '1:1', 2880, 2880],
+    ['4K', '9:21', 1648, 3840],
+  ])('GPT Image 2.5 使用 %s / %s 对应的官方像素尺寸', (resolution, ratio, width, height) => {
+    expect(buildImageCapabilityRequest('gpt-image-2.5-flare', '风景', {
+      resolution: String(resolution), ratio: String(ratio),
+    })?.dimensions).toEqual({ width, height });
+  });
+
+  it('GPT Image 2.5 在提交前拒绝超过十六张参考图', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(generateApimartImagesBatch(
+      'api-key', 'https://api.example.com', 'gpt-image-2.5-sunburst', '编辑',
+      '2K', '1:1', { width: 2048, height: 2048 },
+      Array.from({ length: 17 }, (_, index) => `https://ref.example/${index}.png`),
+    )).rejects.toThrow('最多支持 16 张参考图');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('stops polling immediately when the task fails', async () => {
