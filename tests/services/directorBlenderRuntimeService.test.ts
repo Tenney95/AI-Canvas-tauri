@@ -136,9 +136,63 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('directorBlenderRuntimeService', () => {
+  it('macOS 手选应用包，不再筛选 exe，且不向节点暴露路径', async () => {
+    vi.stubGlobal('navigator', { platform: 'MacIntel' });
+    mocks.open.mockResolvedValue('/Applications/Blender 4.5.app');
+    mocks.invoke.mockResolvedValue({ ...installation, source: 'user-selected' });
+    const service = await loadService();
+    await expect(service.chooseDirectorBlenderInstallation()).resolves.toMatchObject({
+      source: 'user-selected',
+    });
+    expect(mocks.open).toHaveBeenCalledWith({
+      title: '选择 Blender 应用（Blender.app）',
+      directory: false,
+      multiple: false,
+      filters: [{ name: 'Blender', extensions: ['app'] }],
+      defaultPath: '/Applications',
+      canCreateDirectories: false,
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith('register_blender_installation', {
+      request: { executablePath: '/Applications/Blender 4.5.app' },
+    });
+    expect(service.getSelectedDirectorBlenderInstallation()).not.toHaveProperty('executablePath');
+  });
+
+  it('macOS 唯一安装直接使用，多个安装由用户选择，取消不会误登记', async () => {
+    vi.stubGlobal('navigator', { platform: 'MacIntel' });
+    const macInstallation = { ...installation, source: 'macos-applications' };
+    mocks.invoke.mockResolvedValueOnce({ candidates: [macInstallation] });
+    const service = await loadService();
+    await expect(service.prepareDirectorBlenderInstallation()).resolves.toEqual(macInstallation);
+    expect(mocks.open).not.toHaveBeenCalled();
+    service.__resetDirectorBlenderRuntimeServiceForTests();
+    mocks.invoke.mockResolvedValueOnce({ candidates: [macInstallation, {
+      ...macInstallation, installationId: 'blender-mac-second', displayName: 'Blender 4.5',
+    }] });
+    mocks.open.mockResolvedValue(null);
+    await expect(service.prepareDirectorBlenderInstallation()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({
+      filters: [{ name: 'Blender', extensions: ['app'] }],
+    }));
+    expect(commandNames()).not.toContain('register_blender_installation');
+    expect(service.getSelectedDirectorBlenderInstallation()).toBeNull();
+  });
+
+  it('Windows 继续选择 exe 文件', async () => {
+    vi.stubGlobal('navigator', { platform: 'Win32' });
+    mocks.open.mockResolvedValue(null);
+    const service = await loadService();
+    await expect(service.chooseDirectorBlenderInstallation()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mocks.open).toHaveBeenCalledWith({
+      title: '选择 Blender 的 blender.exe', directory: false, multiple: false,
+      filters: [{ name: 'Blender', extensions: ['exe'] }],
+    });
+  });
+
   it('直接采用唯一发现候选，不打开文件选择器也不登记绝对路径', async () => {
     mocks.invoke.mockResolvedValueOnce({ candidates: [installation] });
     const service = await loadService();

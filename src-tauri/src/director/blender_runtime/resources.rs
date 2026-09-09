@@ -35,7 +35,7 @@ const JOB_SCRIPT_BYTES: &[u8] =
 
 const SCHEMA_VERSION: u32 = 1;
 const PACKAGE_ID: &str = "ai-canvas-blender-runtime";
-const PACKAGE_VERSION: &str = "1.4.0";
+const PACKAGE_VERSION: &str = "1.5.0";
 const TEMPLATE_ID: &str = "ai_canvas_director";
 const TEMPLATE_VERSION: u32 = 1;
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
@@ -60,8 +60,7 @@ pub(super) fn is_supported_blender_version(version: &str) -> bool {
     }
     SUPPORTED_BLENDER_SERIES.contains(&format!("{}.{}", parts[0], parts[1]).as_str())
 }
-const COMPATIBILITY_PLATFORM: &str = "windows";
-const COMPATIBILITY_ARCHITECTURE: &str = "x86_64";
+const COMPATIBILITY_TARGETS: [&str; 3] = ["windows-x86_64", "macos-x86_64", "macos-aarch64"];
 
 const INSTALL_VENDOR_DIRECTORY: &str = "blender-runtime";
 const INSTALL_VERSION_DIRECTORY: &str = PACKAGE_VERSION;
@@ -182,8 +181,7 @@ struct RuntimeManifest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RuntimeCompatibility {
-    platform: String,
-    architecture: String,
+    targets: Vec<String>,
     supported_version_series: Vec<String>,
 }
 
@@ -328,8 +326,7 @@ pub fn validate_embedded_blender_runtime() -> Result<(), BlenderResourceError> {
         && manifest.request_schema_version == REQUEST_SCHEMA_VERSION
         && manifest.result_manifest_schema_version == RESULT_MANIFEST_SCHEMA_VERSION
         && manifest.created_with_blender_version == CREATED_WITH_BLENDER_VERSION
-        && manifest.compatibility.platform == COMPATIBILITY_PLATFORM
-        && manifest.compatibility.architecture == COMPATIBILITY_ARCHITECTURE
+        && manifest.compatibility.targets == COMPATIBILITY_TARGETS
         && manifest.compatibility.supported_version_series == SUPPORTED_BLENDER_SERIES
         && manifest.resources.len() == EMBEDDED_RESOURCES.len();
     if !has_fixed_header {
@@ -750,7 +747,7 @@ mod tests {
             .expect("second resource install should be idempotent");
 
         assert_eq!(first, second);
-        assert!(first.runtime_root.ends_with("blender-runtime/1.4.0"));
+        assert!(first.runtime_root.ends_with("blender-runtime/1.5.0"));
         assert_eq!(
             fs::read(previous_resource).expect("previous runtime should remain readable"),
             previous_bytes

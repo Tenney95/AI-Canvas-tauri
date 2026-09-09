@@ -1,9 +1,12 @@
 //! Blender 原生运行时的受限安装候选发现。
 //!
 //! Windows 端只读取固定的应用注册位置、PATH、Steam 元数据和 Program Files 标准层级；
+//! macOS 端只读取 Applications 标准层级、固定 Steam 路径与 PATH 中的应用包入口；
 //! 不执行候选、不扫描整块磁盘，也不向前端暴露绝对路径。
 
 mod job;
+#[cfg(any(target_os = "macos", test))]
+mod macos;
 pub mod project_grant;
 mod resources;
 mod result;
@@ -26,7 +29,10 @@ use std::{
 use tauri::{AppHandle, Manager, Runtime, State, Webview};
 
 const BLENDER_VENDOR_DIRECTORY: &str = "Blender Foundation";
+#[cfg(not(target_os = "macos"))]
 const BLENDER_EXECUTABLE_NAME: &str = "blender.exe";
+#[cfg(target_os = "macos")]
+const BLENDER_EXECUTABLE_NAME: &str = "Blender";
 const STEAM_BLENDER_APP_ID: &str = "365670";
 const INSTALLATION_ID_DOMAIN: &[u8] = b"ai-canvas/blender-installation/v1\0";
 const MAX_DISCOVERY_ROOTS: usize = 3;
@@ -60,6 +66,12 @@ pub enum BlenderInstallationSource {
     EnvironmentPath,
     #[serde(rename = "steam")]
     Steam,
+    #[cfg(any(target_os = "macos", test))]
+    #[serde(rename = "macos-applications")]
+    MacApplications,
+    #[cfg(any(target_os = "macos", test))]
+    #[serde(rename = "macos-user-applications")]
+    MacUserApplications,
     #[serde(rename = "user-selected")]
     UserSelected,
 }
@@ -80,7 +92,9 @@ pub struct BlenderInstallationCandidate {
 #[serde(rename_all = "kebab-case")]
 pub enum BlenderDiscoveryScope {
     WindowsKnownInstallLocations,
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    MacKnownInstallLocations,
+    #[cfg(not(any(windows, target_os = "macos")))]
     UnsupportedPlatform,
 }
 
@@ -308,7 +322,12 @@ fn platform_discovery_scope() -> BlenderDiscoveryScope {
     BlenderDiscoveryScope::WindowsKnownInstallLocations
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn platform_discovery_scope() -> BlenderDiscoveryScope {
+    BlenderDiscoveryScope::MacKnownInstallLocations
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn platform_discovery_scope() -> BlenderDiscoveryScope {
     BlenderDiscoveryScope::UnsupportedPlatform
 }
@@ -318,7 +337,12 @@ fn platform_direct_discovery_hints() -> DirectDiscoveryHints {
     windows_discovery::collect_direct_hints()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn platform_direct_discovery_hints() -> DirectDiscoveryHints {
+    macos::collect_direct_hints()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn platform_direct_discovery_hints() -> DirectDiscoveryHints {
     DirectDiscoveryHints::default()
 }
@@ -983,15 +1007,19 @@ fn canonicalize_registered_executable(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn manual_installation_record(path: &Path) -> Result<InstallationRecord, String> {
+    #[cfg(target_os = "macos")]
+    let selected_executable = macos::resolve_executable(path, std::env::consts::ARCH)?;
+    #[cfg(target_os = "macos")]
+    let path = selected_executable.as_path();
     if path
         .file_name()
         .and_then(OsStr::to_str)
         .is_none_or(|name| !name.eq_ignore_ascii_case(BLENDER_EXECUTABLE_NAME))
     {
-        return Err("请选择 blender.exe".to_string());
+        return Err("请选择当前系统的 Blender 应用".to_string());
     }
     let executable = canonicalize_registered_executable(path)?;
-    validate_pe_x64(&executable)?;
+    validate_platform_executable(&executable)?;
     let canonical_root = executable
         .parent()
         .ok_or_else(|| "Blender 安装目录无效".to_string())?
@@ -1106,8 +1134,19 @@ fn validate_installation_record(record: &InstallationRecord) -> Result<PathBuf, 
     {
         return Err("Blender 安装候选不存在或已失效".to_string());
     }
-    validate_pe_x64(&executable)?;
+    validate_platform_executable(&executable)?;
     Ok(executable)
+}
+
+fn validate_platform_executable(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::resolve_executable(path, std::env::consts::ARCH).map(|_| ())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        validate_pe_x64(path)
+    }
 }
 
 fn bounded_directory_entries(directory: &Path) -> Result<Vec<fs::DirEntry>, DirectoryEntriesError> {
@@ -1268,7 +1307,7 @@ fn discover_direct_hint(hint: DirectDiscoveryHint) -> Option<DiscoveredInstallat
     let canonical_executable = hint.executable_path.canonicalize().ok()?;
     if !canonical_root_is_allowed(&canonical_root)
         || canonical_executable.parent() != Some(canonical_root.as_path())
-        || validate_pe_x64(&canonical_executable).is_err()
+        || validate_platform_executable(&canonical_executable).is_err()
     {
         return None;
     }
@@ -1395,13 +1434,21 @@ pub fn discover_blender_installations(
     crate::path_policy::ensure_trusted_caller(&webview)?;
     ensure_main_window_label(webview.label())?;
 
-    let snapshot = merge_direct_hints(
+    let mut snapshot = merge_direct_hints(
         scan_from_roots(platform_discovery_roots()),
         platform_direct_discovery_hints(),
     );
     state.replace_installations(&snapshot.installations)?;
     let private_directory = prepare_blender_private_runtime(webview.app_handle())?;
-    let selected_candidate = restore_manual_installation(&private_directory)?
+    // 安装迁移、应用包重命名或旧记录损坏不能阻断其余安装的发现及重新选择。
+    let selected = match restore_manual_installation(&private_directory) {
+        Ok(selected) => selected,
+        Err(_) => {
+            snapshot.partial = true;
+            None
+        }
+    };
+    let selected_candidate = selected
         .map(|record| state.register_manual(record))
         .transpose()?;
     Ok(public_discovery_result(
@@ -1425,7 +1472,15 @@ pub fn register_blender_installation(
 ) -> Result<BlenderInstallationCandidate, String> {
     crate::path_policy::ensure_trusted_caller(&webview)?;
     ensure_main_window_label(webview.label())?;
+    #[cfg(not(target_os = "macos"))]
     let executable = crate::path_policy::authorize_existing_plain_file(
+        webview.app_handle(),
+        &request.executable_path,
+    )?;
+    // .app 在系统选择器中是文件项，原生文件系统中是目录；仅授权被选中的包根，
+    // 固定的 Contents/MacOS/Blender 由原生解析，不递归扩大通用文件权限。
+    #[cfg(target_os = "macos")]
+    let executable = crate::path_policy::authorize_existing_plain_directory(
         webview.app_handle(),
         &request.executable_path,
     )?;
@@ -1523,12 +1578,12 @@ mod tests {
 
     static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    struct TestDirectory {
-        path: PathBuf,
+    pub(super) struct TestDirectory {
+        pub(super) path: PathBuf,
     }
 
     impl TestDirectory {
-        fn new(name: &str) -> Self {
+        pub(super) fn new(name: &str) -> Self {
             let sequence = TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

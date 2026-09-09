@@ -29,6 +29,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(target_os = "macos")]
+#[path = "macos_process.rs"]
+mod macos_process;
+#[cfg(target_os = "macos")]
+use macos_process::ManagedProcess;
+
 const JOB_PROTOCOL: &str = "ai-canvas-blender-job-v1";
 const ADAPTER_VERSION: &str = "1.0.0";
 const MAX_SCENE_BYTES: usize = 2 * 1024 * 1024;
@@ -46,14 +52,14 @@ static JOB_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static COMMIT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) struct NativeBlenderJobRunner {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     active: Mutex<HashMap<String, Arc<ManagedProcess>>>,
 }
 
 impl Default for NativeBlenderJobRunner {
     fn default() -> Self {
         Self {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             active: Mutex::new(HashMap::new()),
         }
     }
@@ -61,7 +67,7 @@ impl Default for NativeBlenderJobRunner {
 
 impl BlenderJobRunner for NativeBlenderJobRunner {
     fn is_available(&self) -> bool {
-        cfg!(windows)
+        cfg!(any(windows, target_os = "macos"))
     }
 
     fn run(
@@ -70,11 +76,11 @@ impl BlenderJobRunner for NativeBlenderJobRunner {
         cancellation: BlenderJobCancellation,
         progress: BlenderJobProgressReporter,
     ) -> Result<BlenderCollectCandidate, BlenderJobRunnerFailure> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
-            return self.run_windows(job, cancellation, progress);
+            return self.run_native(job, cancellation, progress);
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let _ = (job, cancellation, progress);
             Err(BlenderJobRunnerFailure::new(
@@ -84,7 +90,7 @@ impl BlenderJobRunner for NativeBlenderJobRunner {
     }
 
     fn shutdown(&self) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             let processes: Vec<_> = self
                 .active
@@ -101,8 +107,8 @@ impl BlenderJobRunner for NativeBlenderJobRunner {
 }
 
 impl NativeBlenderJobRunner {
-    #[cfg(windows)]
-    fn run_windows(
+    #[cfg(any(windows, target_os = "macos"))]
+    fn run_native(
         &self,
         job: PreparedBlenderJob,
         cancellation: BlenderJobCancellation,
@@ -144,7 +150,7 @@ impl NativeBlenderJobRunner {
         candidate
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn execute_blender(
         &self,
         job: &PreparedBlenderJob,
@@ -174,11 +180,20 @@ impl NativeBlenderJobRunner {
             background,
         );
 
+        #[cfg(windows)]
         let environment = build_windows_environment_for(background).map_err(startup_failure)?;
+        #[cfg(windows)]
         let process = spawn_managed_process(
             &launch_executable,
             &arguments,
             environment.as_deref(),
+            &layout.job_directory,
+            background,
+        )?;
+        #[cfg(target_os = "macos")]
+        let process = macos_process::spawn_managed_process(
+            &launch_executable,
+            &arguments,
             &layout.job_directory,
             background,
         )?;
@@ -276,7 +291,7 @@ impl NativeBlenderJobRunner {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn build_blender_arguments(
     executable: &Path,
     startup_blend: &Path,
