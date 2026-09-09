@@ -1005,7 +1005,7 @@ export async function listProjectFiles(projectId: string): Promise<AssetFileEntr
   const projectDir = await getProjectDataDir(projectId);
   if (!projectDir) return [];
   // 递归：节点文件可能位于分组子文件夹内
-  const allFiles = await walkDirectoryFiles(projectDir);
+  const allFiles = await walkDirectoryFiles(projectDir, { excludedRootDirectories: ['.thumbnail'] });
   // Filter out files inside AppData / .trash subdirectories (可能嵌套在分组文件夹内)
   const files = allFiles.filter((f) => {
     const relative = f.path.substring(projectDir.length).replace(/\\/g, '/').replace(/^\//, '');

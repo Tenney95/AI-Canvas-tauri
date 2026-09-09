@@ -500,7 +500,7 @@ async function restoreAssetReferenceSafely<T extends AssetReferenceLike>(
 async function refreshProjectAssetIndex(projectId: string, projectDir: string): Promise<void> {
   let diskFiles: Awaited<ReturnType<typeof walkDirectoryFiles>>;
   try {
-    diskFiles = await walkDirectoryFiles(projectDir);
+    diskFiles = await walkDirectoryFiles(projectDir, { excludedRootDirectories: ['.thumbnail'] });
   } catch {
     console.warn('[项目加载] 资产目录扫描失败，已继续加载画布', { projectId });
     return;

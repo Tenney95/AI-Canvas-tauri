@@ -352,8 +352,9 @@ describe('critical canvas node interactions', () => {
     const VideoNode = (await import('../../src/components/nodes/VideoNode')).default as unknown as (
       props: { id: string; data: Record<string, unknown>; selected: boolean },
     ) => unknown;
+    store.selectedNodeIds = ['video-source'];
     const tree = VideoNode({ id: 'video-source', data: store.nodes[0].data, selected: true });
-    const video = findElement(tree, (element) => element.type === 'video' && element.props.preload === 'metadata');
+    const video = findElement(tree, (element) => element.type === 'video' && element.props.className === 'video-preview-player compact');
     const toolbar = findElement(tree, (element) => componentName(element) === 'VideoNodeToolbarMock');
     (video.props.ref as { current: unknown }).current = {
       readyState: 2,

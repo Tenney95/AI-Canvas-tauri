@@ -116,6 +116,10 @@ fn append_assets_dir<W: Write>(
             if EXCLUDED_DIR_NAMES.contains(&name.to_string_lossy().as_ref()) {
                 continue;
             }
+            // 只排除项目根的派生缓存，分组中的同名目录仍属于用户素材。
+            if archive_dir == Path::new(ASSETS_PREFIX) && name == ".thumbnail" {
+                continue;
+            }
             append_assets_dir(builder, &entry.path(), &archive_path, stats)?;
             continue;
         }
@@ -320,5 +324,52 @@ mod tests {
         let normalized =
             normalize_archive_path(Path::new("./assets/分组/a.png")).expect("路径可归一化");
         assert_eq!(to_archive_text(&normalized), "assets/分组/a.png");
+    }
+
+    #[test]
+    fn omits_root_thumbnail_cache_but_preserves_nested_user_directory() {
+        let directory = std::env::temp_dir().join(format!(
+            "ai-canvas-archive-thumbnail-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(directory.join(".thumbnail")).unwrap();
+        fs::create_dir_all(directory.join("group/.thumbnail")).unwrap();
+        fs::write(directory.join(".thumbnail/cache.webp"), b"cache").unwrap();
+        fs::write(directory.join("group/.thumbnail/user.png"), b"user").unwrap();
+        fs::write(directory.join("original.png"), b"original").unwrap();
+
+        let mut builder = Builder::new(Vec::new());
+        let mut stats = AssetStats { count: 0, bytes: 0 };
+        append_assets_dir(
+            &mut builder,
+            &directory,
+            Path::new(ASSETS_PREFIX),
+            &mut stats,
+        )
+        .unwrap();
+        let bytes = builder.into_inner().unwrap();
+        let mut archive = Archive::new(bytes.as_slice());
+        let mut paths: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|entry| to_archive_text(&entry.unwrap().path().unwrap()))
+            .collect();
+        paths.sort();
+
+        // The only recursive removal belongs to this test's newly created temporary directory.
+        let resolved = directory.canonicalize().unwrap();
+        assert!(resolved.starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        fs::remove_dir_all(&resolved).unwrap();
+
+        assert_eq!(
+            paths,
+            ["assets/group/.thumbnail/user.png", "assets/original.png"]
+        );
+        assert_eq!(stats.count, 2);
+        assert_eq!(stats.bytes, 12);
     }
 }

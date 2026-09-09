@@ -13,6 +13,7 @@ const connectedPreviewSource = readSource(
 );
 const panoramaNodeSource = readSource('../../src/components/nodes/PanoramaNode.tsx');
 const videoNodeSource = readSource('../../src/components/nodes/VideoNode.tsx');
+const videoPreviewCacheSource = readSource('../../src/components/nodes/shared/video/canvasVideoPreviewCache.ts');
 const nodesCssSource = readSource('../../src/styles/nodes.css');
 const nodesImageCssSource = readSource('../../src/styles/nodes-image.css');
 const cropCssSource = readSource('../../src/styles/crop.css');
@@ -104,13 +105,12 @@ describe('media preview memory guards', () => {
   });
 
   it('moves video playback between one compact player and one fullscreen player', () => {
-    expect(videoNodeSource).toContain('{data.videoUrl && !isFullscreen ? (');
+    expect(videoNodeSource).toContain('{shouldMountPlayer ? (');
     expect(videoNodeSource).toContain('compactPlaybackRestoreRef.current = {');
     expect(videoNodeSource).toContain('shouldPlay: fullscreenPlaybackRef.current.wasPlaying');
     expect(videoNodeSource).toContain('releaseVideoElement(fullscreenVideo);');
-    expect(videoNodeSource).toMatch(
-      /function releaseVideoElement[\s\S]*?removeAttribute\('src'\)[\s\S]*?video\.load\(\)/,
-    );
+    expect(videoNodeSource).toContain('releaseCanvasVideo(video);');
+    expect(videoPreviewCacheSource).toMatch(/function releaseCanvasVideo[\s\S]*?removeAttribute\('src'\)[\s\S]*?video\.load\(\)/);
     expect(videoNodeSource).toMatch(/const cleanup = \(\) => \{[\s\S]*?releaseVideoElement\(video\)/);
     expect(videoNodeSource).toMatch(
       /className="fullscreen-overlay--image-preview"[\s\S]*?ref=\{setFullscreenVideoElement\}/,

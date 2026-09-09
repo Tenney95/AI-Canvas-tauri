@@ -10,6 +10,7 @@ import GooeyBtn from './shared/GooeyBtn';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import AudioNodeToolbar from './shared/AudioNodeToolbar';
+import NodeToolbarShell from './shared/NodeToolbarShell';
 import { useAudioNodeAsr } from './shared/audio/useAudioNodeAsr';
 import ModelDownloadDialog from '../shared/ModelDownloadDialog';
 import { generateId, useAppStore } from '../../store/useAppStore';
@@ -436,7 +437,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         onRename={handleRename}
       />
       {data.audioUrl && (
-        <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
+        <NodeToolbarShell visible={selected && isSingleSelection}>
           <AudioNodeToolbar
             nodeId={id}
             isPlaying={isPlaying}
@@ -449,7 +450,7 @@ function AIAudioNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             onUpload={handleUpload}
             onCopyFile={handleCopyFile}
           />
-        </div>
+        </NodeToolbarShell>
       )}
       <div
         className={`node audio-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}

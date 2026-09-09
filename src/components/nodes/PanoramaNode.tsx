@@ -12,6 +12,7 @@ import NodeError from './shared/NodeError';
 import GooeyBtn from './shared/GooeyBtn';
 import ResizeHandle from './shared/ResizeHandle';
 import PanoramaNodeToolbar from './shared/PanoramaNodeToolbar';
+import NodeToolbarShell from './shared/NodeToolbarShell';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import XiaoLuoPanoramaViewer, {
   type XiaoLuoPanoramaViewerHandle,
@@ -340,7 +341,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
         />
 
         {hasImage && (
-          <div className={`node-toolbar-shell ${selected ? 'is-visible' : ''}`}>
+          <NodeToolbarShell visible={selected}>
             <PanoramaNodeToolbar
               nodeId={id}
               onUpload={handleUpload}
@@ -349,7 +350,7 @@ function AIPanoramaNode({ id, data, selected }: { id: string; data: BaseNodeData
               onScreenshot={handleScreenshot}
               onFullscreen={toggleFullscreen}
             />
-          </div>
+          </NodeToolbarShell>
         )}
       </div>
 

@@ -13,12 +13,14 @@ import type { BaseNodeData, ImageAnnotationLayer as ImageAnnotationLayerData } f
 import NodeLabel from './shared/NodeLabel';
 import GooeyBtn from './shared/GooeyBtn';
 import ImageNodeToolbar from './shared/image/ImageNodeToolbar';
+import NodeToolbarShell from './shared/NodeToolbarShell';
 import ResizeHandle from './shared/ResizeHandle';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import CanvasImagePreview from '../shared/CanvasImagePreview';
 import NodeError from './shared/NodeError';
 import ModelDownloadDialog from '../shared/ModelDownloadDialog';
 import { computeImageNodeDimensions } from './shared/image/imageUtils';
+import CanvasPreviewImage from './shared/image/CanvasPreviewImage';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore, generateId } from '../../store/useAppStore';
@@ -119,6 +121,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
   const commitToHistory = useAppStore((s) => s.commitToHistory);
+  const previewProjectId = useAppStore((s) => s.currentProjectId);
   const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
   const isSource = data.role === 'source';
   const nodeWidth = (data.nodeWidth as number) || 280;
@@ -892,9 +895,12 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                     </button>
                   </div>
                 ) : (
-                  <img
+                  <CanvasPreviewImage
                     key={`${displaySrc}:${imgRetryAttempt}`}
                     src={displaySrc}
+                    projectId={previewProjectId}
+                    nodeWidth={nodeWidth}
+                    nodeHeight={nodeHeight}
                     alt="Generated"
                     className={`image-preview-img compact img-reveal${imgLoaded ? ' is-loaded' : ''}`}
                     data-source-url={data.sourceUrl}
@@ -1026,9 +1032,8 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           onResize={handleResize}
         />
 
-        {/* Keep the toolbar mounted to animate selection changes. */}
         {(data.imageUrl || data.thumbnailUrl) && (
-          <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
+          <NodeToolbarShell visible={selected && isSingleSelection}>
             <ImageNodeToolbar
               nodeId={id}
               onUpload={handleUpload}
@@ -1049,7 +1054,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               isUpscaling={isUpscaling}
               isSubjectMattingRunning={isMattingRunning}
             />
-          </div>
+          </NodeToolbarShell>
         )}
       </div>
 

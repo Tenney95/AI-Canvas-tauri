@@ -2,8 +2,10 @@
  * VideoNode 视频节点 — 在画布上渲染视频内容，支持上传本地视频、播放控制、连接其他节点
  */
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
 import { isRemoteMediaUrl } from '../../utils/mediaUrl';
+import { getCanvasNodeById } from '../../utils/canvasRenderProjection';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
@@ -11,12 +13,19 @@ import GooeyBtn from './shared/GooeyBtn';
 import ResizeHandle from './shared/ResizeHandle';
 import VideoNodeControls from './shared/VideoNodeControls';
 import VideoNodeToolbar, { type CaptureFramePosition } from './shared/VideoNodeToolbar';
+import NodeToolbarShell from './shared/NodeToolbarShell';
+import {
+  acquireCanvasVideoPoster,
+  releaseCanvasVideo,
+  waitForCanvasVideoReady,
+  type CanvasVideoPoster,
+} from './shared/video/canvasVideoPreviewCache';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { computeImageNodeDimensions, generateId, useAppStore } from '../../store/useAppStore';
 import { blobToDataUrl, derivedNodePlacement } from '../../store/store.utils';
-import { afterVideoFramePresented, seekVideoTo } from '../../utils/videoSeek';
+import { seekVideoTo } from '../../utils/videoSeek';
 import { downloadUrlAndSave, saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { copyFile as copyFileToClipboard } from '../../services/clipboardService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
@@ -106,31 +115,6 @@ async function captureVideoFrame(
   }
 }
 
-/** 节点封面只保留预览尺寸，避免把 4K 原帧常驻在组件内存。 */
-function captureVideoPoster(video: HTMLVideoElement): { dataUrl: string; blank: boolean } {
-  const maxDimension = 640;
-  const { width, height } = fitVideoFrameDimensions(video, maxDimension);
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('无法创建视频封面画布');
-  context.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-  let visiblePixels = 0;
-  const pixelCount = Math.max(1, pixels.length / 4);
-  // 跳采样即可识别尚未提交的纯黑帧，避免扫描整张高分辨率画布。
-  const stride = Math.max(4, Math.floor(pixelCount / 4096) * 4);
-  for (let index = 0; index < pixels.length; index += stride) {
-    if (pixels[index] + pixels[index + 1] + pixels[index + 2] > 36) visiblePixels += 1;
-  }
-  const sampledPixels = Math.ceil(pixels.length / stride);
-  return {
-    dataUrl: canvas.toDataURL('image/jpeg', 0.82),
-    blank: visiblePixels / Math.max(1, sampledPixels) < 0.01,
-  };
-}
-
 /** 尾帧要略微退回，正好停在 duration 上多数解码器给不出画面 */
 const LAST_FRAME_BACKOFF = 0.05;
 
@@ -165,10 +149,11 @@ function isTaintedCanvasError(error: unknown): boolean {
 }
 
 function releaseVideoElement(video: HTMLVideoElement | null): void {
-  if (!video) return;
-  video.pause();
-  video.removeAttribute('src');
-  video.load();
+  releaseCanvasVideo(video);
+}
+
+function restoreVideoTime(video: HTMLVideoElement, time: number): void {
+  if (video.readyState > 0) video.currentTime = time;
 }
 
 function captureFrameFromVideoUrl(url: string, currentTime: number): Promise<{ dataUrl: string; width: number; height: number }> {
@@ -243,20 +228,122 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     source: string;
     currentTime: number;
     shouldPlay: boolean;
+    volume?: number;
+    muted?: boolean;
   } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const previewAttemptedSourceRef = useRef<string | null>(null);
-  const [generatedCover, setGeneratedCover] = useState<{ source: string; dataUrl: string } | null>(null);
+  const [generatedCover, setGeneratedCover] = useState<(CanvasVideoPoster & { source: string; projectId: string | null }) | null>(null);
+  const [failedCover, setFailedCover] = useState<string | null>(null);
+  const [activatedSource, setActivatedSource] = useState<string | null>(null);
+  const [playingSource, setPlayingSource] = useState<string | null>(null);
+  const pendingVideoOperations = useRef(new Set<AbortController>());
+  const heldPosters = useRef(new Set<() => void>());
   const [dismissedCoverSource, setDismissedCoverSource] = useState<string | null>(null);
   const updateNodeData = useAppStore((s) => s.updateNodeData);
   const updateNodeDataTransient = useAppStore((s) => s.updateNodeDataTransient);
   const commitToHistory = useAppStore((s) => s.commitToHistory);
   const openNodeDialog = useAppStore((s) => s.openNodeDialog);
   const isSingleSelection = useAppStore((s) => s.selectedNodeIds.length <= 1);
+  const isSoleSelectedNode = useAppStore((s) => s.selectedNodeIds.length === 1 && s.selectedNodeIds[0] === id);
+  const projectId = useAppStore((s) => s.currentProjectId);
   const isSource = data.role === 'source';
   const fallbackDimensions = computeVideoNodeDimensions(data.videoWidth ?? 0, data.videoHeight ?? 0);
   const nodeWidth = data.nodeWidth ?? fallbackDimensions.nodeWidth;
   const nodeHeight = data.nodeHeight ?? fallbackDimensions.nodeHeight;
+  const source = data.videoUrl;
+  if (generatedCover && (generatedCover.source !== source || generatedCover.projectId !== projectId)) {
+    setGeneratedCover(null);
+  }
+  const shouldMountPlayer = !!source && !isFullscreen
+    && ((!!selected && isSoleSelectedNode) || activatedSource === source || playingSource === source);
+  // 既有生成结果会把视频本身写入 thumbnailUrl，不能把它当作图片封面。
+  const suppliedCover = typeof data.thumbnailUrl === 'string'
+    && data.thumbnailUrl !== source && data.thumbnailUrl !== data.sourceUrl
+    && data.thumbnailUrl !== failedCover ? data.thumbnailUrl : null;
+
+  useEffect(() => {
+    if (!source || suppliedCover || isFullscreen) return;
+    const controller = new AbortController();
+    const derivation = registerCanvasDerivation(useAppStore.getState(), id);
+    let current = true;
+    void acquireCanvasVideoPoster(source, controller.signal).then((poster) => {
+      if (!current) { poster?.release(); return; }
+      if (poster) {
+        heldPosters.current.add(poster.release);
+        setGeneratedCover({ ...poster, source, projectId });
+        const state = useAppStore.getState();
+        const liveData = getCanvasNodeById(state.nodes, id)?.data;
+        if (derivation && isCanvasDerivationFresh(derivation, state) && liveData?.videoUrl === source
+          && (liveData.videoWidth !== poster.videoWidth || liveData.videoHeight !== poster.videoHeight
+            || liveData.nodeWidth == null || liveData.nodeHeight == null)) {
+          state.updateNodeDataTransient(id, {
+            videoWidth: poster.videoWidth, videoHeight: poster.videoHeight,
+            ...computeVideoNodeDimensions(poster.videoWidth, poster.videoHeight),
+          });
+        }
+      }
+      if (derivation) completeCanvasDerivation(derivation);
+    });
+    return () => {
+      current = false;
+      controller.abort();
+      if (derivation) cancelCanvasDerivation(derivation);
+    };
+  }, [source, suppliedCover, projectId, isFullscreen, id]);
+
+  useEffect(() => () => {
+    if (generatedCover) {
+      generatedCover.release();
+      heldPosters.current.delete(generatedCover.release);
+    }
+  }, [generatedCover]);
+
+  useEffect(() => {
+    const held = heldPosters.current;
+    const operations = pendingVideoOperations.current;
+    return () => {
+      held.forEach((release) => release());
+      held.clear();
+      operations.forEach((controller) => controller.abort());
+      operations.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    const video = shouldMountPlayer ? videoRef.current : null;
+    const operations = pendingVideoOperations.current;
+    // StrictMode 的额外 cleanup 会清除 src；setup 必须恢复同一 DOM 的当前来源。
+    if (video && source && video.getAttribute('src') !== source) {
+      video.src = source;
+      video.load();
+    }
+    const previousPlayback = compactPlaybackRestoreRef.current;
+    if (video && previousPlayback && previousPlayback.source === source) {
+      if (typeof previousPlayback.volume === 'number') video.volume = previousPlayback.volume;
+      if (typeof previousPlayback.muted === 'boolean') video.muted = previousPlayback.muted;
+    }
+    return () => {
+      operations.forEach((controller) => controller.abort());
+      operations.clear();
+      if (video && source && video.readyState > 0) {
+        compactPlaybackRestoreRef.current = { source, currentTime: video.ended ? 0 : video.currentTime, shouldPlay: false,
+          volume: video.volume, muted: video.muted };
+      }
+      releaseVideoElement(video);
+    };
+  }, [shouldMountPlayer, source, projectId]);
+
+  const activateCompactVideo = useCallback(() => {
+    if (!source || isFullscreen) return null;
+    // 点击回调内同步挂载，随后的 play() 仍属于用户手势，兼容 WebKit。
+    flushSync(() => setActivatedSource(source));
+    return videoRef.current;
+  }, [source, isFullscreen]);
+
+  const requestPlayback = useCallback(() => {
+    const video = activateCompactVideo();
+    if (video) void video.play().catch(() => setActivatedSource(null));
+  }, [activateCompactVideo]);
 
   const handleResize = useCallback(
     (newWidth: number, newHeight: number) => {
@@ -289,49 +376,11 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         ? Math.min(Math.max(pendingRestore.currentTime, 0), Math.max(duration - 0.01, 0))
         : Math.max(pendingRestore.currentTime, 0);
       compactPlaybackRestoreRef.current = null;
-      previewAttemptedSourceRef.current = source;
       if (pendingRestore.shouldPlay) {
         void video.play().catch(() => {});
       }
       return;
     }
-    if (!source || previewAttemptedSourceRef.current === source) return;
-    previewAttemptedSourceRef.current = source;
-    const duration = Number.isFinite(video.duration) ? video.duration : 0;
-    const end = Math.max(0, duration - 0.05);
-    const candidateTimes = duration > 0
-      ? [...new Set([0.08, 0.25, 0.5, 0.75].map((ratio) => Math.min(end, Math.max(0.1, duration * ratio))))]
-      : [0];
-
-    const tryCandidate = (index: number) => {
-      const targetTime = candidateTimes[index];
-      const capturePresentedFrame = () => afterVideoFramePresented(video, () => {
-        if (previewAttemptedSourceRef.current !== source) return;
-        try {
-          const poster = captureVideoPoster(video);
-          if (poster.blank && index < candidateTimes.length - 1) {
-            tryCandidate(index + 1);
-            return;
-          }
-          if (!poster.blank) {
-            setGeneratedCover({ source, dataUrl: poster.dataUrl });
-            video.currentTime = 0;
-          }
-        } catch {
-          // 远程跨域视频不能导出画布；保留已 seek 的可见帧作为降级。
-        }
-      });
-
-      if (Math.abs(video.currentTime - targetTime) < 0.01
-        && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        capturePresentedFrame();
-        return;
-      }
-      video.addEventListener('seeked', capturePresentedFrame, { once: true });
-      video.currentTime = targetTime;
-    };
-
-    tryCandidate(0);
   }, [
     data.nodeHeight,
     data.nodeWidth,
@@ -354,6 +403,8 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     if (!result) return;
     updateNodeData(id, {
       videoUrl: result.dataUrl,
+      thumbnailUrl: undefined,
+      sourceUrl: undefined,
       filePath: result.filePath,
       fileName: result.fileName,
       label: result.fileName,
@@ -368,8 +419,10 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const handleOpenFullscreen = useCallback(() => {
     if (!data.videoUrl && !data.thumbnailUrl) return;
     const compactVideo = videoRef.current;
+    const savedPlayback = compactPlaybackRestoreRef.current;
     fullscreenPlaybackRef.current = {
-      currentTime: compactVideo?.currentTime ?? 0,
+      currentTime: compactVideo?.currentTime
+        ?? (savedPlayback && savedPlayback.source === data.videoUrl ? savedPlayback.currentTime : 0),
       wasPlaying: compactVideo ? !compactVideo.paused && !compactVideo.ended : false,
     };
     compactVideo?.pause();
@@ -379,12 +432,14 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     const fullscreenVideo = fullscreenVideoRef.current;
     if (data.videoUrl) {
       compactPlaybackRestoreRef.current = {
+        ...(compactPlaybackRestoreRef.current?.source === data.videoUrl ? compactPlaybackRestoreRef.current : {}),
         source: data.videoUrl,
         currentTime: fullscreenVideo?.currentTime ?? fullscreenPlaybackRef.current.currentTime,
         // 旧实现关闭全屏后，节点播放器会保持打开前的播放/暂停状态。
         // 全屏播放器会自动播放，不能据此把原本暂停的节点意外改成播放。
         shouldPlay: fullscreenPlaybackRef.current.wasPlaying,
       };
+      setActivatedSource(fullscreenPlaybackRef.current.wasPlaying ? data.videoUrl : null);
     }
     releaseVideoElement(fullscreenVideo);
     fullscreenVideoRef.current = null;
@@ -413,10 +468,10 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   }, []);
 
   const { displayLabel, handleRename } = useNodeRename(id, data, t('粘贴视频'));
-  const generatedCoverUrl = generatedCover && generatedCover.source === data.videoUrl
-    ? generatedCover.dataUrl
+  const generatedCoverUrl = generatedCover && generatedCover.source === data.videoUrl && generatedCover.projectId === projectId
+    ? generatedCover.src
     : null;
-  const initialCoverUrl = generatedCoverUrl || (typeof data.thumbnailUrl === 'string' ? data.thumbnailUrl : null);
+  const initialCoverUrl = suppliedCover || generatedCoverUrl;
   const showInitialCover = !!initialCoverUrl && dismissedCoverSource !== data.videoUrl;
 
   // 独立编辑器窗口导出完成后，在源节点旁新建一个视频节点承载结果
@@ -569,7 +624,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   const handleCaptureFrame = useCallback(async (position: CaptureFramePosition = 'current') => {
     const store = useAppStore.getState();
-    const video = videoRef.current;
+    const video = videoRef.current ?? activateCompactVideo();
     const frameLabel = t(CAPTURE_FRAME_LABELS[position]);
 
     if (!video || !data.videoUrl) {
@@ -577,121 +632,145 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       return;
     }
 
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0 || video.videoHeight === 0) {
-      store.showToast(t('视频尚未加载到可截取的帧'), 'error');
-      return;
-    }
-
-    const derivation = registerCanvasDerivation(store, id);
+    const controller = new AbortController();
+    const derivation = registerCanvasDerivation(store, id, { onCancel: () => controller.abort() });
     if (!derivation) {
       store.showToast(t('视频节点已失效，请重试'), 'error');
       return;
     }
-    const captureTime = resolveCaptureTime(video, position);
-    const ensureFresh = () => {
-      const fresh = isCanvasDerivationFresh(derivation, useAppStore.getState());
-      if (!fresh) cancelCanvasDerivation(derivation);
-      return fresh;
-    };
-
-    const createFrameNode = async (frame: { dataUrl: string; width: number; height: number }): Promise<boolean> => {
-      const dims = await computeImageNodeDimensions(frame.dataUrl);
-      if (!ensureFresh()) return false;
-
-      let liveStore = useAppStore.getState();
-      const currentNode = liveStore.nodes.find((node) => node.id === id);
-      const currentPosition = currentNode?.position ?? { x: 0, y: 0 };
-      const frameFileName = buildNodeFileName(`${displayLabel} ${frameLabel}`, 'jpg', `video-frame-${Date.now()}`);
-      const savedFrame = derivation.projectId !== 'default'
-        ? await saveDataUrlToProjectData(frame.dataUrl, derivation.projectId, frameFileName)
-        : null;
-      if (!ensureFresh()) return false;
-
-      liveStore = useAppStore.getState();
-      const imageUrl = savedFrame?.assetUrl || frame.dataUrl;
-
-      liveStore.addNode({
-        id: `node-${generateId()}`,
-        type: 'ai-image',
-        ...derivedNodePlacement({
-          position: currentPosition,
-          parentId: currentNode?.parentId,
-          data: currentNode?.data ?? ({ nodeWidth } as BaseNodeData),
-        }),
-        data: {
-          label: `${displayLabel} ${frameLabel}`,
-          type: 'ai-image',
-          role: 'source',
-          status: 'success',
-          imageUrl,
-          filePath: savedFrame?.filePath,
-          fileName: frameFileName,
-          imageWidth: frame.width,
-          imageHeight: frame.height,
-          ...dims,
-        },
-      } as Parameters<typeof liveStore.addNode>[0]);
-      completeCanvasDerivation(derivation);
-      return true;
-    };
-
-    const restoreTime = video.currentTime;
+    pendingVideoOperations.current.add(controller);
     try {
-      const frame = await captureFrameAtTime(video, captureTime);
-      video.currentTime = restoreTime;
-      const created = await createFrameNode(frame);
-      if (created) useAppStore.getState().showToast(t('已截取{frame}为图像节点', { frame: frameLabel }), 'success');
-    } catch (error) {
-      video.currentTime = restoreTime;
-      if (!isTaintedCanvasError(error)) {
-        cancelCanvasDerivation(derivation);
-        const message = error instanceof Error ? error.message : t('截取{frame}失败', { frame: frameLabel });
-        if (useAppStore.getState().currentProjectId === derivation.projectId) {
-          useAppStore.getState().showToast(t('截取{frame}失败：{message}', { frame: frameLabel, message }), 'error');
-        }
-        return;
-      }
-
-      if (!ensureFresh()) return;
-      const remoteUrl = isRemoteMediaUrl(data.sourceUrl) ? data.sourceUrl : data.videoUrl;
-      if (!isRemoteMediaUrl(remoteUrl)) {
-        cancelCanvasDerivation(derivation);
-        const message = error instanceof Error ? error.message : t('本地资源截帧失败');
-        useAppStore.getState().showToast(t('截取{frame}失败：{message}', { frame: frameLabel, message }), 'error');
-        return;
-      }
-      if (derivation.projectId === 'default') {
-        cancelCanvasDerivation(derivation);
-        useAppStore.getState().showToast(t('该视频来源禁止导出{frame}，请先上传为本地视频后再截帧', { frame: frameLabel }), 'error');
-        return;
-      }
-      useAppStore.getState().showToast(t('远程视频受跨域限制，正在转为本地资源后重试...'), 'success');
-      const saved = await downloadUrlAndSave(remoteUrl, derivation.projectId, 'video-source');
-      if (!ensureFresh()) return;
-      if (!saved?.assetUrl) {
-        cancelCanvasDerivation(derivation);
-        useAppStore.getState().showToast(t('远程视频本地化失败，无法截取{frame}', { frame: frameLabel }), 'error');
-        return;
-      }
-
       try {
-        useAppStore.getState().updateNodeData(id, {
-          videoUrl: saved.assetUrl,
-          filePath: saved.filePath,
-          sourceUrl: remoteUrl,
-        } as Partial<BaseNodeData>);
+        await waitForCanvasVideoReady(video, controller.signal);
+      } catch {
+        if (!controller.signal.aborted && isCanvasDerivationFresh(derivation, useAppStore.getState())) {
+          store.showToast(t('视频尚未加载到可截取的帧'), 'error');
+        }
+        return;
+      }
+      if (controller.signal.aborted || !isCanvasDerivationFresh(derivation, useAppStore.getState())) return;
+      const captureTime = resolveCaptureTime(video, position);
+      const ensureFresh = () => {
+        const fresh = !controller.signal.aborted && isCanvasDerivationFresh(derivation, useAppStore.getState());
+        if (!fresh) cancelCanvasDerivation(derivation);
+        return fresh;
+      };
 
-        const created = await createFrameNode(await captureFrameFromVideoUrl(saved.assetUrl, captureTime));
+      const createFrameNode = async (
+        frame: { dataUrl: string; width: number; height: number },
+        localizedSource?: Pick<BaseNodeData, 'videoUrl' | 'filePath' | 'sourceUrl'>,
+      ): Promise<boolean> => {
+        const dims = await computeImageNodeDimensions(frame.dataUrl);
+        if (!ensureFresh()) return false;
+
+        let liveStore = useAppStore.getState();
+        const currentNode = liveStore.nodes.find((node) => node.id === id);
+        const currentPosition = currentNode?.position ?? { x: 0, y: 0 };
+        const frameFileName = buildNodeFileName(`${displayLabel} ${frameLabel}`, 'jpg', `video-frame-${Date.now()}`);
+        const savedFrame = derivation.projectId !== 'default'
+          ? await saveDataUrlToProjectData(frame.dataUrl, derivation.projectId, frameFileName)
+          : null;
+        if (!ensureFresh()) return false;
+
+        liveStore = useAppStore.getState();
+        const imageUrl = savedFrame?.assetUrl || frame.dataUrl;
+
+        if (localizedSource) {
+          // 取帧和保存均已完成；接下来同步交付，避免自己的来源更新触发播放器卸载而取消结果。
+          pendingVideoOperations.current.delete(controller);
+          liveStore.updateNodeData(id, localizedSource);
+          liveStore = useAppStore.getState();
+        }
+
+        liveStore.addNode({
+          id: `node-${generateId()}`,
+          type: 'ai-image',
+          ...derivedNodePlacement({
+            position: currentPosition,
+            parentId: currentNode?.parentId,
+            data: currentNode?.data ?? ({ nodeWidth } as BaseNodeData),
+          }),
+          data: {
+            label: `${displayLabel} ${frameLabel}`,
+            type: 'ai-image',
+            role: 'source',
+            status: 'success',
+            imageUrl,
+            filePath: savedFrame?.filePath,
+            fileName: frameFileName,
+            imageWidth: frame.width,
+            imageHeight: frame.height,
+            ...dims,
+          },
+        } as Parameters<typeof liveStore.addNode>[0]);
+        completeCanvasDerivation(derivation);
+        return true;
+      };
+
+      const restoreTime = video.currentTime;
+      try {
+        const frame = await captureFrameAtTime(video, captureTime);
+        if (!ensureFresh()) return;
+        restoreVideoTime(video, restoreTime);
+        const created = await createFrameNode(frame);
         if (created) useAppStore.getState().showToast(t('已截取{frame}为图像节点', { frame: frameLabel }), 'success');
-      } catch (fallbackError) {
-        cancelCanvasDerivation(derivation);
-        const message = fallbackError instanceof Error ? fallbackError.message : t('本地资源截帧失败');
-        if (useAppStore.getState().currentProjectId === derivation.projectId) {
+      } catch (error) {
+        if (!ensureFresh()) return;
+        restoreVideoTime(video, restoreTime);
+        if (!isTaintedCanvasError(error)) {
+          cancelCanvasDerivation(derivation);
+          const message = error instanceof Error ? error.message : t('截取{frame}失败', { frame: frameLabel });
+          if (useAppStore.getState().currentProjectId === derivation.projectId) {
+            useAppStore.getState().showToast(t('截取{frame}失败：{message}', { frame: frameLabel, message }), 'error');
+          }
+          return;
+        }
+
+        if (!ensureFresh()) return;
+        const remoteUrl = isRemoteMediaUrl(data.sourceUrl) ? data.sourceUrl : data.videoUrl;
+        if (!isRemoteMediaUrl(remoteUrl)) {
+          cancelCanvasDerivation(derivation);
+          const message = error instanceof Error ? error.message : t('本地资源截帧失败');
           useAppStore.getState().showToast(t('截取{frame}失败：{message}', { frame: frameLabel, message }), 'error');
+          return;
+        }
+        if (derivation.projectId === 'default') {
+          cancelCanvasDerivation(derivation);
+          useAppStore.getState().showToast(t('该视频来源禁止导出{frame}，请先上传为本地视频后再截帧', { frame: frameLabel }), 'error');
+          return;
+        }
+        useAppStore.getState().showToast(t('远程视频受跨域限制，正在转为本地资源后重试...'), 'success');
+        const saved = await downloadUrlAndSave(remoteUrl, derivation.projectId, 'video-source');
+        if (!ensureFresh()) return;
+        if (!saved?.assetUrl) {
+          cancelCanvasDerivation(derivation);
+          useAppStore.getState().showToast(t('远程视频本地化失败，无法截取{frame}', { frame: frameLabel }), 'error');
+          return;
+        }
+
+        try {
+          const frame = await captureFrameFromVideoUrl(saved.assetUrl, captureTime);
+          if (!ensureFresh()) return;
+          const created = await createFrameNode(frame, {
+            videoUrl: saved.assetUrl,
+            filePath: saved.filePath,
+            sourceUrl: remoteUrl,
+          });
+          if (created) useAppStore.getState().showToast(t('已截取{frame}为图像节点', { frame: frameLabel }), 'success');
+        } catch (fallbackError) {
+          if (!ensureFresh()) return;
+          cancelCanvasDerivation(derivation);
+          const message = fallbackError instanceof Error ? fallbackError.message : t('本地资源截帧失败');
+          if (useAppStore.getState().currentProjectId === derivation.projectId) {
+            useAppStore.getState().showToast(t('截取{frame}失败：{message}', { frame: frameLabel, message }), 'error');
+          }
         }
       }
+    } finally {
+      pendingVideoOperations.current.delete(controller);
+      cancelCanvasDerivation(derivation);
     }
-  }, [data.sourceUrl, data.videoUrl, displayLabel, id, nodeWidth, t]);
+  }, [activateCompactVideo, data.sourceUrl, data.videoUrl, displayLabel, id, nodeWidth, t]);
 
   // 反推提示词：抽首/中/尾三帧当序列喂给文本模型，让它把画面和运动一起还原
   const handleShowPrompt = useCallback(() => {
@@ -706,44 +785,49 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
 
   const handleReversePrompt = useCallback(async () => {
     const store = useAppStore.getState();
-    const video = videoRef.current;
+    const video = videoRef.current ?? activateCompactVideo();
     if (!video || !data.videoUrl) {
       store.showToast(t('没有可反推的视频'), 'error');
       return;
     }
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0) {
-      store.showToast(t('视频尚未加载到可读取的帧'), 'error');
-      return;
-    }
-
-    const duration = Number.isFinite(video.duration) ? video.duration : 0;
-    const times = duration > 0
-      ? [0, duration / 2, Math.max(0, duration - LAST_FRAME_BACKOFF)]
-      : [video.currentTime];
-
+    const controller = new AbortController();
+    const derivation = registerCanvasDerivation(store, id, { onCancel: () => controller.abort() });
+    if (!derivation) return;
+    pendingVideoOperations.current.add(controller);
     setIsReversingPrompt(true);
-    const restoreTime = video.currentTime;
+    let restoreTime = video.currentTime;
     try {
+      await waitForCanvasVideoReady(video, controller.signal);
+      restoreTime = video.currentTime;
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const times = duration > 0
+        ? [0, duration / 2, Math.max(0, duration - LAST_FRAME_BACKOFF)]
+        : [video.currentTime];
       const frames: string[] = [];
       for (const time of times) {
+        if (controller.signal.aborted || !isCanvasDerivationFresh(derivation, useAppStore.getState())) return;
         frames.push((await captureFrameAtTime(video, time)).dataUrl);
       }
+      if (controller.signal.aborted || !isCanvasDerivationFresh(derivation, useAppStore.getState())) return;
       useAppStore.getState().setReversePromptRequest({
         sourceNodeId: id,
         kind: 'video',
         imageUrls: frames,
       });
     } catch (error) {
+      if (controller.signal.aborted || !isCanvasDerivationFresh(derivation, useAppStore.getState())) return;
       const message = isTaintedCanvasError(error)
         ? t('远程视频受跨域限制，请先把视频本地化后再反推')
         : error instanceof Error ? error.message : t('读取视频帧失败');
       useAppStore.getState().showToast(message, 'error');
     } finally {
       // 三帧一次性取完再复位，中间来回跳会让 seek 互相打架
-      video.currentTime = restoreTime;
+      if (!controller.signal.aborted) restoreVideoTime(video, restoreTime);
+      pendingVideoOperations.current.delete(controller);
+      completeCanvasDerivation(derivation);
       setIsReversingPrompt(false);
     }
-  }, [data.videoUrl, id, t]);
+  }, [activateCompactVideo, data.videoUrl, id, t]);
 
   return (
     <div className="node-wrapper relative" style={{ width: nodeWidth }}>
@@ -755,7 +839,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         onRename={handleRename}
       />
       {data.videoUrl && (
-        <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
+        <NodeToolbarShell visible={selected && isSingleSelection}>
           <VideoNodeToolbar
             nodeId={id}
             onCaptureFrame={handleCaptureFrame}
@@ -765,23 +849,26 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             onShowPrompt={handleShowPrompt}
             isReversingPrompt={isReversingPrompt}
           />
-        </div>
+        </NodeToolbarShell>
       )}
       <div
         className={`node video-node ${selected ? 'selected' : ''} ${data.status === 'loading' || isUploading ? 'loading' : ''} ${justCompleted ? 'just-completed' : ''}`}
         style={{ height: nodeHeight }}
       >
-        <div className={`node-preview compact${data.videoUrl || data.thumbnailUrl ? ' has-media' : ''}`}>
-          {data.videoUrl && !isFullscreen ? (
+        <div className={`node-preview compact${data.videoUrl || data.thumbnailUrl ? ' has-media' : ''}`}
+          onDoubleClick={(event) => { event.stopPropagation(); handleOpenFullscreen(); }}>
+          {shouldMountPlayer ? (
             <video
               ref={videoRef}
               src={data.videoUrl}
               className="video-preview-player compact"
               crossOrigin="anonymous"
               playsInline
-              preload="metadata"
+              preload="auto"
               onLoadedMetadata={handleLoadedMetadata}
-              onPlay={dismissInitialCover}
+              onPlay={() => { dismissInitialCover(); setPlayingSource(source ?? null); }}
+              onPause={() => { setPlayingSource(null); setActivatedSource(null); }}
+              onEnded={() => { setPlayingSource(null); setActivatedSource(null); }}
               onDoubleClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
               data-source-url={data.sourceUrl}
             />
@@ -791,6 +878,7 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
               alt=""
               className="video-node-poster"
               draggable={false}
+              onError={() => { if (suppliedCover) setFailedCover(suppliedCover); }}
             />
           ) : data.videoUrl ? (
             <div className="node-preview-placeholder" aria-hidden="true">
@@ -843,14 +931,19 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
           {(data.videoUrl || data.thumbnailUrl) && data.status === 'loading' && (
             <NodeGenerationProgress nodeId={id} fallbackLabel={t('生成视频中...')} overlay />
           )}
-          {data.videoUrl && !isFullscreen && showInitialCover && (
-            <img src={initialCoverUrl} alt="" className="video-node-initial-cover" draggable={false} />
+          {shouldMountPlayer && showInitialCover && (
+            <img src={initialCoverUrl} alt="" className="video-node-initial-cover" draggable={false}
+              onError={() => { if (suppliedCover) setFailedCover(suppliedCover); }} />
           )}
           {data.videoUrl && !isFullscreen && (
             <VideoNodeControls
               videoRef={videoRef}
               source={data.videoUrl}
               onInteract={dismissInitialCover}
+              active={shouldMountPlayer}
+              durationHint={generatedCover && generatedCover.source === source ? generatedCover.duration
+                : typeof data.videoDuration === 'number' ? data.videoDuration : 0}
+              onRequestPlayback={requestPlayback}
             />
           )}
         </div>

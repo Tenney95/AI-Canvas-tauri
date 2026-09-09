@@ -25,6 +25,8 @@ commands.allow = [
   "agent_source_read_text",
   "pack_project_archive",
   "unpack_project_archive",
+  "prepare_project_thumbnail",
+  "write_project_thumbnail",
   "copy_file_streamed",
   "download_file_streamed",
   "cancel_file_transfer",

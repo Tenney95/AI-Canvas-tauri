@@ -230,6 +230,26 @@ describe('project loading tolerates asset recovery failures', () => {
       .toBe('/project/data/saved.png');
   });
 
+  it('excludes the project thumbnail cache when rebuilding the index for a missing asset', async () => {
+    mocks.exists.mockResolvedValue(false);
+    mocks.walkDirectoryFiles.mockResolvedValue([]);
+    const projectId = `project-missing-${Date.now()}`;
+    await saveProjectToDb({
+      id: projectId,
+      name: 'Missing asset',
+      createdAt: 1,
+      updatedAt: 2,
+      nodes: [{ id: 'missing', data: { assetId: 'missing', relativePath: 'missing.png' } }],
+      edges: [],
+    });
+
+    await loadProjectData(projectId);
+
+    expect(mocks.walkDirectoryFiles).toHaveBeenCalledWith('/project/data', {
+      excludedRootDirectories: ['.thumbnail'],
+    });
+  });
+
   it('keeps the newest generation when the record still carries a runtime file path', async () => {
     const projectId = `project-latest-${Date.now()}`;
     // 上一次保存没能收敛身份（identifyAsset 失败）：filePath 是最后一次生成的图，

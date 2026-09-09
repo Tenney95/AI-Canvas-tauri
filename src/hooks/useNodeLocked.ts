@@ -5,8 +5,9 @@
  * 除了禁止拖拽移动，也要禁止缩放改变大小。
  */
 import { useAppStore } from '../store/useAppStore';
+import { getCanvasNodeById } from '../utils/canvasRenderProjection';
 
 export function useNodeLocked(nodeId?: string): boolean {
   return useAppStore((s) =>
-    !!nodeId && s.nodes.find((n) => n.id === nodeId)?.draggable === false);
+    !!nodeId && getCanvasNodeById(s.nodes, nodeId)?.draggable === false);
 }
