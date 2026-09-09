@@ -566,7 +566,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                     ? t('待填写 API Key')
                     : isWorkflowApi ? t('已配置') : t('已连接');
               return (
-                <div key={item.id} className="provider-connection-card">
+                <div key={item.id} className={`provider-connection-card${isRunningHub ? ' provider-connection-card--runninghub' : ''}`}>
                   <ProviderBadge providerId={item.id} config={item.config} size="large" />
                   <div className="provider-connection-copy">
                     <div className="provider-connection-title-row">
@@ -580,21 +580,8 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                         </span>
                       )}
                     </div>
-                    <div className="provider-connection-meta">
-                      {isRunningHub ? (
-                        <>
-                          <span>{hasRunningHubModelKey ? t('模型连接已配置') : t('模型连接未配置')}</span>
-                          <span>{hasRunningHubWorkflowKey ? t('工作流连接已配置') : t('工作流连接未配置')}</span>
-                          <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost" onClick={() => { useAppStore.getState().setSettingsOpen(false); useAppStore.getState().setWorkflowPanelOpen(true); }}>管理云工作流</button>
-                          {hasRunningHubModelKey && (
-                            <span>
-                              {selectedCount === undefined
-                                ? t('沿用内置模型目录')
-                                : t('{count} 个模型', { count: selectedCount })}
-                            </span>
-                          )}
-                        </>
-                      ) : isWorkflowApi ? (
+                    {!isRunningHub && <div className="provider-connection-meta">
+                      {isWorkflowApi ? (
                         <><span>{t('H3 多图多音频视频工作流')}</span>{summaryUrl && <span>{summaryUrl}</span>}</>
                       ) : isWebSearchProvider ? (
                         <>
@@ -611,8 +598,29 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                           {summaryUrl && <span>{summaryUrl}</span>}
                         </>
                       )}
-                    </div>
+                    </div>}
                   </div>
+
+                  {isRunningHub && <div className="provider-runninghub-connections">
+                    <div className="provider-runninghub-connection">
+                      <span className="provider-runninghub-connection-state">
+                        <Icon icon={hasRunningHubModelKey ? 'mdi:check-circle-outline' : 'mdi:circle-outline'} width="14" className={hasRunningHubModelKey ? 'is-configured' : ''} />
+                        {hasRunningHubModelKey ? t('模型连接已配置') : t('模型连接未配置')}
+                      </span>
+                      {hasRunningHubModelKey && <span className="provider-runninghub-model-count">
+                        {selectedCount === undefined ? t('沿用内置模型目录') : t('{count} 个模型', { count: selectedCount })}
+                      </span>}
+                    </div>
+                    <div className="provider-runninghub-connection">
+                      <span className="provider-runninghub-connection-state">
+                        <Icon icon={hasRunningHubWorkflowKey ? 'mdi:check-circle-outline' : 'mdi:circle-outline'} width="14" className={hasRunningHubWorkflowKey ? 'is-configured' : ''} />
+                        {hasRunningHubWorkflowKey ? t('工作流连接已配置') : t('工作流连接未配置')}
+                      </span>
+                      <button type="button" className="ui-btn ui-btn--sm ui-btn--ghost provider-runninghub-manage" onClick={() => { useAppStore.getState().setSettingsOpen(false); useAppStore.getState().setWorkflowPanelOpen(true, 'workflow'); }}>
+                        管理云工作流 <Icon icon="mdi:arrow-right" width="14" />
+                      </button>
+                    </div>
+                  </div>}
 
                   {pendingDeleteId === item.id ? (
                     <div className="provider-delete-confirm">

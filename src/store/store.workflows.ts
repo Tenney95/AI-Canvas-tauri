@@ -16,7 +16,9 @@ import {
 export interface WorkflowSlice {
   workflows: WorkflowDefinition[];
   workflowPanelOpen: boolean;
-  setWorkflowPanelOpen: (open: boolean) => void;
+  workflowPanelSource: 'comfyui' | 'workflow' | 'app';
+  setWorkflowPanelSource: (source: WorkflowSlice['workflowPanelSource']) => void;
+  setWorkflowPanelOpen: (open: boolean, source?: WorkflowSlice['workflowPanelSource']) => void;
   addWorkflow: (wf: WorkflowDefinition) => Promise<void>;
   updateWorkflow: (id: string, updates: Partial<Omit<WorkflowDefinition, 'id' | 'createdAt'>>) => Promise<void>;
   deleteWorkflow: (id: string) => Promise<void>;
@@ -42,8 +44,10 @@ function validateWorkflow(workflow: WorkflowDefinition) {
 export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> = (set, get) => ({
   workflows: [],
   workflowPanelOpen: false,
+  workflowPanelSource: 'comfyui',
+  setWorkflowPanelSource: (source) => set({ workflowPanelSource: source }),
 
-  setWorkflowPanelOpen: (open) => set({ workflowPanelOpen: open }),
+  setWorkflowPanelOpen: (open, source) => set({ workflowPanelOpen: open, ...(source ? { workflowPanelSource: source } : {}) }),
 
   addWorkflow: async (wf) => {
     validateWorkflow(wf);

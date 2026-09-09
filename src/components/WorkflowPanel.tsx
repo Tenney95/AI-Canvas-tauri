@@ -113,6 +113,8 @@ export default function WorkflowPanel() {
     workflows,
     workflowPanelOpen,
     setWorkflowPanelOpen,
+    importSource,
+    setImportSource,
     addWorkflow,
     deleteWorkflow,
     updateWorkflow,
@@ -124,6 +126,8 @@ export default function WorkflowPanel() {
       workflows: s.workflows,
       workflowPanelOpen: s.workflowPanelOpen,
       setWorkflowPanelOpen: s.setWorkflowPanelOpen,
+      importSource: s.workflowPanelSource,
+      setImportSource: s.setWorkflowPanelSource,
       addWorkflow: s.addWorkflow,
       deleteWorkflow: s.deleteWorkflow,
       updateWorkflow: s.updateWorkflow,
@@ -134,7 +138,6 @@ export default function WorkflowPanel() {
   );
 
   const [name, setName] = useState('');
-  const [importSource, setImportSource] = useState<'comfyui' | 'workflow' | 'app'>('comfyui');
   const [editingCloud, setEditingCloud] = useState<WorkflowDefinition>();
   const [editorOpen, setEditorOpen] = useState<{ workflowId: string; phase: 'checking' | 'opening' | 'ready' | 'error'; detail: string }>();
   const editorOpeningRef = useRef(false);
@@ -334,7 +337,7 @@ export default function WorkflowPanel() {
     } finally {
       editorOpeningRef.current = false;
     }
-  }, [showToast]);
+  }, [showToast, setImportSource]);
 
   const handleResetBuiltIns = useCallback(() => {
     if (!resetArmed) {
@@ -348,12 +351,15 @@ export default function WorkflowPanel() {
       .catch(() => showToast('恢复内置工作流失败', 'error'));
   }, [resetArmed, resetBuiltIns, showToast]);
 
-  // Filter workflows by category for the preview list
+  // 来源与输出分类共同过滤，不把其他执行平台混入当前来源。
+  const sourceWorkflows = workflows.filter((workflow) => importSource === 'comfyui'
+    ? !workflow.adapterType || workflow.adapterType === 'comfyui'
+    : workflow.adapterType === 'runninghub' && workflow.runninghub?.kind === importSource);
   const workflowsByCategory = CATEGORIES
     .filter((cat) => listFilter === 'all' || cat.value === listFilter)
     .map((cat) => ({
       ...cat,
-      items: workflows.filter((w) => w.category === cat.value),
+      items: sourceWorkflows.filter((w) => w.category === cat.value),
     }))
     .filter((g) => g.items.length > 0);
 
@@ -386,11 +392,11 @@ export default function WorkflowPanel() {
         {/* 左卡片：上传与添加 */}
         <div className="wf-panel-card wf-panel-import">
           <span className="wf-section-title">导入工作流</span>
-          <label className="mt-3 flex flex-col gap-1 text-xs">来源<select className="ui-select__control w-full" value={importSource} onChange={(event) => { setImportSource(event.target.value as typeof importSource); setEditingCloud(undefined); }}>
+          <label className="mt-3 flex flex-col gap-1 text-xs">来源<select className="ui-select__control w-full" value={importSource} onChange={(event) => { setImportSource(event.target.value as typeof importSource); setEditingCloud(undefined); setListFilter('all'); }}>
             <option value="comfyui">ComfyUI 工作流</option><option value="workflow">RunningHub 云工作流</option><option value="app">RunningHub AI 应用</option>
           </select></label>
           <div className="wf-section-rule" />
-          {importSource !== 'comfyui' ? <RunningHubWorkflowImport key={`${importSource}:${editingCloud?.id ?? 'new'}`} kind={importSource} editing={editingCloud} onSaved={() => { setEditingCloud(undefined); setImportSource('comfyui'); showToast('已保存云工作流', 'success'); }} /> : <>
+          {importSource !== 'comfyui' ? <RunningHubWorkflowImport key={`${importSource}:${editingCloud?.id ?? 'new'}`} kind={importSource} editing={editingCloud?.runninghub?.kind === importSource ? editingCloud : undefined} onSaved={() => { setEditingCloud(undefined); showToast('已保存云工作流', 'success'); }} /> : <>
           {/* Name */}
           <div className="wf-field">
             <label className="wf-label">工作流名称</label>
@@ -578,7 +584,7 @@ export default function WorkflowPanel() {
           <div className="wf-list-header">
             <span className="wf-section-title">
               已导入工作流
-              <span className="wf-count">{workflows.length}</span>
+              <span className="wf-count">{sourceWorkflows.length}</span>
             </span>
             <div className="wf-filter-row">
               {LIST_FILTERS.map((cat) => (
@@ -597,7 +603,7 @@ export default function WorkflowPanel() {
 
           {/* 顶栏与筛选固定，只有提示与列表滚动 */}
           <div className="wf-list-scroll">
-          {(importSource === 'comfyui' || workflows.some((workflow) => workflow.adapterType !== 'runninghub')) && <p className="wf-hint" role="note">
+          {importSource === 'comfyui' && <p className="wf-hint" role="note">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
               <line x1="12" y1="9" x2="12" y2="13" />
@@ -609,7 +615,7 @@ export default function WorkflowPanel() {
           </p>}
 
           <AnimatePresence mode="popLayout">
-            {workflows.length > 0 && workflowsByCategory.length === 0 ? (
+            {sourceWorkflows.length > 0 && workflowsByCategory.length === 0 ? (
               <motion.div
                 key="filtered-empty"
                 className="wf-empty"
@@ -618,7 +624,7 @@ export default function WorkflowPanel() {
               >
                 <span>该分类下暂无工作流</span>
               </motion.div>
-            ) : workflows.length === 0 ? (
+            ) : sourceWorkflows.length === 0 ? (
               <motion.div
                 key="empty"
                 className="wf-empty"
@@ -631,7 +637,7 @@ export default function WorkflowPanel() {
                   <line x1="3" y1="9" x2="21" y2="9" />
                   <line x1="9" y1="21" x2="9" y2="9" />
                 </svg>
-                <span>暂无工作流，请导入 ComfyUI 工作流文件</span>
+                <span>{importSource === 'comfyui' ? '暂无 ComfyUI 工作流，请从左侧导入文件' : importSource === 'workflow' ? '暂无 RunningHub 云工作流，请从左侧导入定义' : '暂无 RunningHub AI 应用，请从左侧导入定义'}</span>
               </motion.div>
             ) : (
               <motion.div key="list" className="wf-list">
