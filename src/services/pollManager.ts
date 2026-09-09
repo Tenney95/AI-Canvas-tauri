@@ -1142,19 +1142,20 @@ async function resumeWorkflowApi(task: PendingTask): Promise<void> {
     const store = useAppStore.getState();
     const node = store.nodes.find((item) => item.id === task.nodeId);
     const workflow = store.workflows.find((item) => item.id === descriptor.workflowId);
-    if ((!messageOnly && (!node || node.data.type !== 'ai-video' || node.data.workflowId !== descriptor.workflowId)) || task.nodeType !== 'ai-video'
-      || workflow?.adapterType !== 'workflow-api' || workflow.category !== 'ai-video') throw new Error('节点工作流或输出类型已变化，请在平台核对原任务');
+    const expectedType = descriptor.manifest ? `ai-${descriptor.manifest.outputKind}` : 'ai-video';
+    if ((!messageOnly && (!node || node.data.type !== expectedType || node.data.workflowId !== descriptor.workflowId)) || task.nodeType !== expectedType
+      || workflow?.adapterType !== 'workflow-api' || workflow.category !== expectedType) throw new Error('节点工作流或输出类型已变化，请在平台核对原任务');
     manifestModule.validateWorkflowApiManifest(workflow.workflowApi);
     if (workflow.workflowApi.workflowId !== descriptor.remoteWorkflowId || workflow.workflowApi.connectionId !== task.providerConfigId) throw new Error('工作流连接或远端定义已变化，请在平台核对原任务');
-    const connection = adapter.workflowApiConnection(task.providerConfigId ? store.config.providers[task.providerConfigId] : undefined);
+    const connection = adapter.workflowApiConnection(task.providerConfigId ? store.config.providers[task.providerConfigId] : undefined, descriptor.manifest ?? workflow.workflowApi);
     if (node) store.updateNodeDataTransient(task.nodeId, { status: 'loading', error: undefined, workflowApiStage: '恢复查询' });
     if (context) store.updateMessage(context.messageId, { mediaStatus: 'generating', mediaError: undefined });
     const outputs = await adapter.queryWorkflowApiTask(connection, task.taskId, descriptor, signal, (workflowApiStage) => {
       if (node && isCurrent()) useAppStore.getState().updateNodeDataTransient(task.nodeId, { workflowApiStage });
     });
     if (!isCurrent()) return;
-    updatePendingTask(task.nodeId, { workflowApi: { ...descriptor, state: 'save_pending' } }, task.taskId);
-    const saved = await saveCloudWorkflowOutputs(outputs, task.projectId, node?.data.label ?? workflow.name, isCurrent, 'AutoDL');
+    updatePendingTask(task.nodeId, { workflowApi: { ...descriptor, state: 'save_pending', ...(descriptor.adapter === 'declarative' ? { outputs } : {}) } }, task.taskId);
+    const saved = await saveCloudWorkflowOutputs(outputs, task.projectId, node?.data.label ?? workflow.name, isCurrent, '工作流 API');
     if (!isCurrent()) return;
     if (node) {
       useAppStore.getState().updateNodeDataTransient(task.nodeId, { workflowApiOutputs: saved });
@@ -1168,7 +1169,7 @@ async function resumeWorkflowApi(task: PendingTask): Promise<void> {
       const first = saved[0];
       useAppStore.getState().updateMessage(context.messageId, {
         mediaStatus: 'succeeded', mediaError: undefined,
-        mediaResult: { id: `workflow-api-${task.taskId}`, kind: 'video', deliveryMode: context.deliveryMode,
+        mediaResult: { id: `workflow-api-${task.taskId}`, kind: descriptor.manifest?.outputKind ?? 'video', deliveryMode: context.deliveryMode,
           url: first.url, sourceUrl: first.sourceUrl ?? first.url, filePath: first.filePath, persistence: first.filePath ? 'saved' : 'skipped',
           prompt: '', modelId: `workflow-api/${workflow.id}`, provider: 'workflow-api', createdAt: Date.now(), workflowApiOutputs: saved },
         ...(node ? { canvasStatus: 'created', canvasNodeId: node.id, canvasError: undefined } : {}),

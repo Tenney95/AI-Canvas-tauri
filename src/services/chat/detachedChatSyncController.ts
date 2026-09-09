@@ -141,7 +141,12 @@ export function getMediaModelAvailability(
 ): Record<string, boolean> {
   return Object.fromEntries(options.map((option) => {
     // ponytail: 工作流没有 API Key 可查，服务地址缺失由生成入口报错，这里只管「可选」
-    if (option.workflowId) return [option.value, !['runninghubwf', 'workflow-api'].includes(option.provider) || !!providers[option.providerConfigId ?? 'runninghub']?.apiKey];
+    if (option.workflowId && option.provider === 'workflow-api') {
+      const manifest = useAppStore.getState().workflows.find((workflow) => workflow.id === option.workflowId)?.workflowApi;
+      const connection = providers[option.providerConfigId ?? ''];
+      return [option.value, !!connection?.baseUrl && (!!connection.apiKey || (manifest?.version === 2 && manifest.protocol.auth?.type === 'none'))];
+    }
+    if (option.workflowId) return [option.value, option.provider !== 'runninghubwf' || !!providers[option.providerConfigId ?? 'runninghub']?.apiKey];
     if (option.provider === 'general') {
       const generalModel = generalModels.find(
         (model) => `general/${model.id}` === option.value,

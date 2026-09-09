@@ -821,6 +821,72 @@
   color: var(--danger-light);
   font-size: 10px;
 }
+.provider-connection-card--runninghub {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 7px 10px;
+  padding: 10px;
+}
+.provider-connection-card--runninghub > .provider-connection-copy {
+  grid-column: 2;
+  grid-row: 1;
+}
+.provider-connection-card--runninghub .provider-connection-title-row {
+  flex-wrap: wrap;
+  gap: 4px 7px;
+}
+.provider-connection-card--runninghub > .provider-card-actions,
+.provider-connection-card--runninghub > .provider-delete-confirm {
+  grid-column: 3;
+  grid-row: 1;
+}
+.provider-connection-card--runninghub > .provider-delete-confirm {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 110px;
+}
+.provider-runninghub-connections {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px 12px;
+}
+.provider-runninghub-connection {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+.provider-runninghub-connection-state {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-wrap: anywhere;
+}
+.provider-runninghub-connection-state svg {
+  flex-shrink: 0;
+}
+.provider-runninghub-connection-state .is-configured {
+  color: var(--success-text);
+}
+.provider-runninghub-model-count {
+  color: var(--theme-text-muted);
+  overflow-wrap: anywhere;
+}
+.provider-runninghub-manage.ui-btn {
+  gap: 5px;
+  max-width: 100%;
+  height: auto;
+  min-height: 20px;
+  padding: 0 2px;
+  white-space: normal;
+}
 .provider-secret-warning {
   display: flex;
   align-items: center;

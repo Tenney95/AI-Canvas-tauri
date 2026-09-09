@@ -4,6 +4,8 @@
  */
 
 import { APIMART_BASE_URL } from '../constants/api';
+import { isLocalMediaUrl, isRemoteMediaUrl } from '../utils/mediaUrl';
+import { assertMediaDataUrlWithinLimitAsync, isMediaDataUrl, readFileToDataUrl } from './fileService';
 import { pollTask } from './pollTask';
 import { splitCommaSeparatedUrls } from './ai/helpers';
 const APIMART_BASE = APIMART_BASE_URL;
@@ -53,10 +55,14 @@ function dataUrlToBlob(dataUrl: string): Blob {
 }
 
 /* ── 步骤 1: 上传图片到 APIMart ── */
-async function uploadToApimart(dataUrl: string, apiKey: string): Promise<string> {
+async function uploadToApimart(sourceUrl: string, apiKey: string): Promise<string> {
+  const dataUrl = isMediaDataUrl(sourceUrl)
+    ? sourceUrl
+    : await readFileToDataUrl(sourceUrl, { kind: 'image', label: '扩图参考图' });
+  if (!dataUrl) throw new Error('无法读取扩图参考图');
+  await assertMediaDataUrlWithinLimitAsync(dataUrl, 'image', '扩图参考图');
   const blob = dataUrlToBlob(dataUrl);
   const formData = new FormData();
-  // 如果是远程 URL，先 fetch 转 blob
   const fileName = `canvas-image-${Date.now()}.png`;
   formData.append('file', blob, fileName);
 
@@ -72,8 +78,8 @@ async function uploadToApimart(dataUrl: string, apiKey: string): Promise<string>
   }
 
   const result: UploadResponse = await resp.json();
-  if (!result.url) {
-    throw new Error('图片上传失败: 未返回 url');
+  if (!isRemoteMediaUrl(result.url)) {
+    throw new Error('图片上传失败: 未返回有效的网络地址');
   }
   return result.url;
 }
@@ -157,7 +163,7 @@ async function pollApimartTask(
 export interface OutpaintGenerateParams {
   apiKey: string;
   model: string;          // 如 'gemini-3.1-flash-image-preview'（不含 apimart/ 前缀）
-  imageUrl: string;       // 客户端合成好的"垫图"（data URL，原图 + 透明留白）
+  imageUrl: string;       // 扩图参考图，支持 data/blob/asset/file 与 HTTP(S) URL
   size: string;           // 目标画幅，如 '1:1' / '16:9' / '9:16'
   prompt?: string;        // 可选的补充描述，追加到默认扩图提示词后
 }
@@ -185,15 +191,17 @@ export async function generateOutpaintImage(
 ): Promise<OutpaintGenerateResult> {
   const { apiKey, model, imageUrl, size, prompt } = params;
 
-  // 步骤 1: 合成图通常是 data URL，先上传到 APIMart
+  // 步骤 1: 本地参考图先上传到 APIMart，使用本次扩图调用的凭据。
   let publicUrl: string;
-  if (imageUrl.startsWith('data:')) {
+  if (isLocalMediaUrl(imageUrl)) {
     onProgress?.(5);
     publicUrl = await uploadToApimart(imageUrl, apiKey);
     onProgress?.(15);
-  } else {
+  } else if (isRemoteMediaUrl(imageUrl)) {
     publicUrl = imageUrl;
     onProgress?.(10);
+  } else {
+    throw new Error('扩图参考图地址无效');
   }
 
   // 步骤 2: 构建提示词并提交生成任务

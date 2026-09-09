@@ -91,7 +91,7 @@ export interface ProviderConnectionDialogProps {
   onSave: (
     connectionId: string,
     config: ApiProviderConfig,
-    related?: { runninghubWorkflowApiKey?: string; workflowApiDefaults?: import('../../../types/workflowApi').WorkflowApiInputValues },
+    related?: { runninghubWorkflowApiKey?: string; workflowApiDrafts?: import('../../../types/workflowApi').WorkflowApiDraft[] },
   ) => Promise<void>;
 }
 

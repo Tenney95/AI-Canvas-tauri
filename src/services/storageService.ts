@@ -2,6 +2,7 @@
  * storageService — IndexedDB-backed persistence wrappers for projects,
  * workflows, app config, user presets, and uploaded skills.
  */
+import { isTauriAssetUrl, localMediaUrlToPath } from '../utils/mediaUrl';
 import {
   saveProjectToDb,
   getAllProjects,
@@ -392,14 +393,9 @@ function projectRecordContainsInlineMedia(record: ProjectSaveData): boolean {
 
 /** 从展示用的 asset URL 还原本地路径（convertFileSrc 的逆运算），非本地 URL 返回 undefined。 */
 function assetUrlToPath(url: string | undefined): string | undefined {
-  if (!url || !(url.includes('asset.localhost') || url.startsWith('asset://'))) return undefined;
-  try {
-    const { pathname } = new URL(url);
-    const decoded = decodeURIComponent(pathname.replace(/^\//, ''));
-    return decoded ? stripVerbatimPrefix(decoded) : undefined;
-  } catch {
-    return undefined;
-  }
+  if (!isTauriAssetUrl(url)) return undefined;
+  const path = localMediaUrlToPath(url);
+  return path ? stripVerbatimPrefix(path) : undefined;
 }
 
 async function restoreAssetReference<T extends AssetReferenceLike>(

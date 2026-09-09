@@ -42,6 +42,16 @@
 7. 只有用户需要精修时才打开 Blender；截图和参考视频允许以后由后台 Job 完成。
 8. Blender 内部可以使用由 Rust 第一方信任根解析、版本固定并通过哈希或签名校验的 AI Canvas 脚本，但不能形成任意 Python、Shell 或命令行入口；具体资源交付方式留到 Phase 1-C 检查点。
 
+### 2026-09-09：macOS 安装选择与原生启动
+
+- 前端根据平台选择 `blender.exe` 或 `.app`；macOS 选择器从 Applications 打开，单一候选自动使用，多候选交给用户手选，取消保持原选择。设置文案说明自动检测与本机记忆行为。
+- 新增 `blender_runtime/macos.rs`：有界扫描系统/用户 Applications、Blender 版本子目录、固定 Steam 位置和 PATH；手选应用包须经过原有目录授权，原生只解析固定 `Contents/MacOS/Blender`，校验普通文件、执行位、64 位 Mach-O / Universal slice 和应用架构，不递归扩大通用 fs scope。失效的旧安装记忆不阻断其他候选发现。
+- 新增 `blender_runtime/macos_process.rs`，共用原有 runner 的固定参数、超时/取消、私有 Job、保存返回和成果校验。macOS 使用直接子进程与专属进程组，不使用 shell 或 `open -a`，后台继续隔离 Blender/Python 环境覆盖。Windows Job Object 保持原有实现。
+- 固定资源包升级到 1.5.0，清单目标扩展至 Windows x86_64、macOS x86_64/aarch64；资源正文、大小和 SHA-256 保持一致。无依赖、数据库、capability、Tauri 安全配置变化；源码范围为安装服务、设置文案、对应服务测试、原生安装/runner/资源模块及两个新增 macOS 模块。
+- 当前 Windows 检查：前端定向回归 171 项、Rust `blender_runtime::` 46 项、Python 35 项通过；应用/测试类型、定向 ESLint、默认特性 `cargo check --lib --locked --offline` 通过。Rust 测试使用 `--no-default-features`。Windows 执行了 Mach-O 与应用包解析测试；macOS 专属原生登记、进程组测试仅已编写，未在本机运行。
+- 验收缺口：当前主机只有 Windows Rust 目标，未验证 macOS 编译、原生 `.app` 选择授权、Gatekeeper、真实打开/保存返回/视频导出及安装包。Apple Silicon/Intel 各需使用匹配架构的应用与 Blender 完成真机验收；不把模拟测试当作 Mac 验收通过。
+- 回滚仅撤销本批平台分支及恢复运行包 1.4.0；已有 Blender 工程、成果与本机私有安装选择记录不删除。
+
 ## 2. 本计划不包含
 
 - 新增 Blender 专用节点、节点菜单、Store 或下游连线类型；
@@ -277,7 +287,7 @@ Phase 2-A 尚未包含正式人物/道具资产库、项目模型资产化、简
 - Blender 专有数据与新 Scene revision 发生冲突时的用户提示和合并策略；
 - 不可变 revision 与孤儿 Job 文件的空间配额、识别和回收周期；
 - `.blend` artifact 的大小上限和项目整体导入导出上限；
-- macOS/Linux 的安全安装发现、签名、沙箱和进程回收差异。
+- macOS 安装包、系统权限与真实进程回收验收，以及 Linux 尚未实现的原生支持。
 
 这些问题只能在对应阶段检查点解决，不得由模型、脚本或运行时自行选择。
 

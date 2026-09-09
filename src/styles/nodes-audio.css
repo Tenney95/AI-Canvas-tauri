@@ -18,8 +18,7 @@
   height: auto;
 }
 
-/* 播放遮罩浮在波形图上，两个主题都是深色蒙版，因此前景色刻意写死为亮橙，
-   不跟随 --node-audio-light（浅色主题下该令牌会变深，深底深字不可读）。 */
+/* 暗色主题使用深色蒙版与亮橙图标；浅色主题在下方使用独立的柔和配色。 */
 .audio-play-overlay {
   position: absolute;
   inset: 0;
@@ -34,6 +33,29 @@
 .audio-waveform-wrapper:hover .audio-play-overlay {
   background: var(--black-alpha-50);
   color: #fb923c;
+}
+
+/* 浅色主题保持波形明亮，圆形衬底将播放图标与波形分开。 */
+[data-theme='light'] .audio-waveform-wrapper {
+  background: color-mix(in srgb, var(--node-audio) 10%, var(--theme-surface));
+}
+
+[data-theme='light'] .audio-play-overlay {
+  background: transparent;
+  color: var(--node-audio-light);
+}
+
+[data-theme='light'] .audio-play-overlay svg {
+  box-sizing: content-box;
+  padding: 8px;
+  border-radius: 50%;
+  background: var(--theme-surface);
+  box-shadow: 0 0 0 1px var(--node-audio-bg);
+}
+
+[data-theme='light'] .audio-waveform-wrapper:hover .audio-play-overlay {
+  background: var(--node-audio-bg);
+  color: var(--node-audio-light);
 }
 
 /* ── Time label (bottom-left during playback) ── */

@@ -3,8 +3,10 @@
  */
 import { resolveNodeReferences } from '../nodeReferenceService';
 import { useAppStore } from '../../store/useAppStore';
-import { isRunningHubWorkflow } from '../workflowExecutionService';
-import { executeRunningHubWorkflow, getRunningHubPersistedOutput } from './providers/runninghubWorkflow';
+import { executeWorkflowApiMedia } from '../workflowApi/workflowApiAdapter';
+import { parseWorkflowApiFields } from '../workflowApi/workflowApiConfig';
+import { isRunningHubWorkflow, getCloudWorkflowPersistedOutput } from '../workflowExecutionService';
+import { executeRunningHubWorkflow } from './providers/runninghubWorkflow';
 import { executeComfyUIAudioGenerate } from '../comfyWorkflowService';
 import {
   createMediaDataUrlBudget,
@@ -95,7 +97,7 @@ export async function persistAudioGenerationResult(
   projectId: string | null | undefined,
   label: string,
 ): Promise<PersistedAudioGenerationResult> {
-  const cloud = getRunningHubPersistedOutput(result.runninghubOutputs, result.url);
+  const cloud = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url);
   if (cloud) return cloud;
   const shouldPersist = !!projectId && isTauriEnv();
   let saved: { filePath?: string; assetUrl?: string; sourceUrl?: string } | null = null;
@@ -147,6 +149,14 @@ export async function generateAudio(
   // ComfyUI 工作流执行路径：连线音频兜底填充工作流的 audio IO 节点
   if (params.workflowId) {
     const workflow = useAppStore.getState().workflows.find((item) => item.id === params.workflowId);
+    if (provider === 'workflow-api' && workflow?.adapterType !== 'workflow-api') throw new Error('请先配置并选择工作流 API');
+    if (workflow?.adapterType === 'workflow-api') {
+      const result = await executeWorkflowApiMedia({ workflowId: workflow.id, nodeId: params.nodeId, taskContext: params.workflowApiTaskContext,
+        prompt, inputs: parseWorkflowApiFields(params.workflowInputs, workflow.workflowApi), references: {
+          image: getMediaReferenceUrls(references, 'image', 'local'), video: getMediaReferenceUrls(references, 'video', 'local'), audio: getMediaReferenceUrls(references, 'audio', 'local'),
+        } }, signal);
+      return { ...normalizeProtocolAudioResult(result.url), ...result };
+    }
     if (isRunningHubWorkflow(workflow)) {
       const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, prompt, kind: 'audio', references: {
         image: getMediaReferenceUrls(references, 'image', 'local'), video: getMediaReferenceUrls(references, 'video', 'local'), audio: getMediaReferenceUrls(references, 'audio', 'local'),
@@ -160,6 +170,7 @@ export async function generateAudio(
     );
   }
 
+  if (provider === 'workflow-api') throw new Error('请先配置并选择工作流 API');
   const registeredAdapter = mediaProviderRegistry.getAudioAdapter(provider);
   if (registeredAdapter) {
     return registeredAdapter.generateAudio({ params, prompt, referenceAudioUrls, referenceMedia: references, signal });

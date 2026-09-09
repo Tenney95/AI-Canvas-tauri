@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "packageId": "ai-canvas-blender-runtime",
-  "packageVersion": "1.4.0",
+  "packageVersion": "1.5.0",
   "templateId": "ai_canvas_director",
   "templateVersion": 1,
   "jobProtocol": "ai-canvas-blender-job-v1",
@@ -9,8 +9,7 @@
   "resultManifestSchemaVersion": 1,
   "createdWithBlenderVersion": "5.2.1 LTS",
   "compatibility": {
-    "platform": "windows",
-    "architecture": "x86_64",
+    "targets": ["windows-x86_64", "macos-x86_64", "macos-aarch64"],
     "supportedVersionSeries": [
       "4.5",
       "5.0",

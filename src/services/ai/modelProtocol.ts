@@ -150,6 +150,7 @@ export async function submitModelProtocol(
       return { urls: [`data:${mimeType};base64,${encodeBytesBase64(bytes)}`] };
     }
     const payload = await readJsonResponse(response, '模型请求失败', responseConfig.errorPath);
+    options.validateResponse?.(payload);
     const resultConfig = responseConfig.result!;
     let urls = resultConfig.urlPath ? readModelProtocolUrls(payload, resultConfig.urlPath) : [];
     if (resultConfig.fetchUrl) {
@@ -179,6 +180,7 @@ export async function submitModelProtocol(
   }
 
   const payload = await readJsonResponse(response, '模型请求失败', responseConfig.errorPath);
+  options.validateResponse?.(payload);
   const taskIdValue = readModelProtocolFirstScalar(payload, responseConfig.taskIdPath!);
   if (taskIdValue === undefined || taskIdValue === null || taskIdValue === '') {
     throw new Error(`模型提交响应中未找到任务 ID：${responseConfig.taskIdPath}`);

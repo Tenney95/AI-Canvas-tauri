@@ -1,4 +1,5 @@
 /** RunningHub 标准模型 Adapter。固定 manifest 选路；工作流协议仍由 runninghubWorkflow 执行。 */
+import { isRemoteMediaUrl } from '../../../utils/mediaUrl';
 import { useAppStore } from '../../../store/useAppStore';
 import type { AIImageGenParams, AIVideoGenParams, AIAudioGenParams } from '../../../types/aiTypes';
 import type { RunningHubConnection, RunningHubMediaKind, RunningHubOutput } from '../../../types/runninghub';
@@ -87,8 +88,7 @@ export async function buildRunningHubModelRequest(
     const remote: string[] = [];
     for (const url of urls) {
       signal?.throwIfAborted();
-      const parsed = new URL(url);
-      if (['http:', 'https:'].includes(parsed.protocol) && parsed.hostname !== 'asset.localhost') remote.push(url);
+      if (isRemoteMediaUrl(url)) remote.push(url);
       else {
         const key = `${field.mediaKind}:${url}`;
         let uploaded = uploads.get(key);

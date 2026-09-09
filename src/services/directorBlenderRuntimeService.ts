@@ -251,11 +251,14 @@ export async function chooseDirectorBlenderInstallation(): Promise<DirectorBlend
   assertDesktopRuntime();
   let selection: Awaited<ReturnType<typeof open>>;
   try {
+    const isMac = typeof navigator !== 'undefined'
+      && /mac/i.test(navigator.platform || navigator.userAgent || '');
     selection = await open({
-      title: '选择 Blender 的 blender.exe',
+      title: isMac ? '选择 Blender 应用（Blender.app）' : '选择 Blender 的 blender.exe',
       multiple: false,
       directory: false,
-      filters: [{ name: 'Blender', extensions: ['exe'] }],
+      filters: [{ name: 'Blender', extensions: [isMac ? 'app' : 'exe'] }],
+      ...(isMac ? { defaultPath: '/Applications', canCreateDirectories: false } : {}),
     });
   } catch (error) {
     throw normalizeBlenderRuntimeError(error, '无法打开 Blender 文件选择器');
@@ -289,7 +292,7 @@ export async function getDirectorBlenderAvailability(): Promise<DirectorBlenderA
 }
 
 /**
- * 选择并登记 blender.exe。绝对路径只从 Tauri 文件对话框流向用途单一的 Rust command，
+ * 选择并登记 Blender 应用。绝对路径只从 Tauri 文件对话框流向用途单一的 Rust command，
  * 不返回给节点，也不写入 IndexedDB。
  */
 export async function prepareDirectorBlenderInstallation(): Promise<DirectorBlenderInstallationCandidate> {

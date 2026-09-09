@@ -18,7 +18,8 @@ import type {
   ProviderModelSelection,
   WorkflowDefinition,
 } from '../../types';
-import type { WorkflowApiManifest } from '../../types/workflowApi';
+import type { WorkflowApiDraft, WorkflowApiManifest } from '../../types/workflowApi';
+import { editableWorkflowApiManifest } from '../workflowApi/workflowApiDefinition';
 import { createAutodlH3WorkflowManifest, normalizeWorkflowApiBaseUrl, validateWorkflowApiManifest } from '../workflowApi/autodlWorkflowManifest';
 import { GENERAL_MODEL_CATEGORY_LABELS } from '../../types';
 import { validateModelExecutionProtocol } from './modelProtocol';
@@ -45,6 +46,11 @@ function asString(value: unknown): string | undefined {
 
 /** 序列化一个连接（不含凭据），用于复制到剪贴板分享。 */
 export function serializeConnection(config: ApiProviderConfig, workflows: WorkflowDefinition[] = []): string {
+  const customWorkflow = ['workflow-api', 'autodl-workflow'].includes(config.catalogId ?? '');
+  const workflowApis = customWorkflow ? workflows.filter((workflow) => workflow.adapterType === 'workflow-api').map((workflow) => {
+    validateWorkflowApiManifest(workflow.workflowApi);
+    return { name: workflow.name, manifest: { ...workflow.workflowApi, connectionId: 'shared-connection' } };
+  }) : undefined;
   const manifest = config.catalogId === 'autodl-workflow'
     ? workflows.find((workflow) => workflow.adapterType === 'workflow-api')?.workflowApi ?? createAutodlH3WorkflowManifest('shared-connection') : undefined;
   if (manifest) validateWorkflowApiManifest(manifest);
@@ -52,6 +58,7 @@ export function serializeConnection(config: ApiProviderConfig, workflows: Workfl
     kind: SHARE_KIND,
     version: SHARE_VERSION,
     ...(manifest ? { workflowApi: { ...manifest, connectionId: 'shared-connection' } } : {}),
+    ...(workflowApis?.length ? { workflowApis } : {}),
     connection: {
       name: config.name,
       catalogId: config.catalogId,
@@ -124,6 +131,7 @@ export interface ParsedConnectionShare {
   catalogId: string;
   config: ApiProviderConfig;
   workflowApi?: WorkflowApiManifest;
+  workflowApiDrafts?: WorkflowApiDraft[];
 }
 
 /** 解析剪贴板里的连接 JSON；格式不符返回 null。 */
@@ -140,12 +148,24 @@ export function parseConnectionShare(text: string): ParsedConnectionShare | null
 
   const catalogId = asString(source.catalogId) || 'custom-openai';
   let workflowApi: WorkflowApiManifest | undefined;
-  if (catalogId === 'autodl-workflow' || payload.workflowApi !== undefined) {
+  let workflowApiDrafts: WorkflowApiDraft[] | undefined;
+  const customWorkflow = ['workflow-api', 'autodl-workflow'].includes(catalogId);
+  if (customWorkflow || payload.workflowApi !== undefined || payload.workflowApis !== undefined) {
     try {
-      if (catalogId !== 'autodl-workflow') return null;
-      validateWorkflowApiManifest(payload.workflowApi);
-      normalizeWorkflowApiBaseUrl(asString(source.baseUrl));
-      workflowApi = payload.workflowApi;
+      if (!customWorkflow || !asString(source.baseUrl)) return null;
+      normalizeWorkflowApiBaseUrl(asString(source.baseUrl), true);
+      if (payload.workflowApis !== undefined) {
+        if (!Array.isArray(payload.workflowApis) || !payload.workflowApis.length || payload.workflowApis.length > 50) return null;
+        workflowApiDrafts = payload.workflowApis.map((item) => {
+          if (!isRecord(item) || !asString(item.name) || String(item.name).length > 120) throw new Error('工作流名称无效');
+          validateWorkflowApiManifest(item.manifest);
+          return { id: crypto.randomUUID(), name: String(item.name), manifest: editableWorkflowApiManifest(item.manifest) };
+        });
+      } else {
+        validateWorkflowApiManifest(payload.workflowApi);
+        workflowApi = payload.workflowApi;
+        workflowApiDrafts = [{ id: crypto.randomUUID(), name: '导入的工作流', manifest: editableWorkflowApiManifest(workflowApi) }];
+      }
     } catch { return null; }
   }
   const chatApiProtocol: ChatApiProtocol = isChatApiProtocol(source.chatApiProtocol)
@@ -158,15 +178,16 @@ export function parseConnectionShare(text: string): ParsedConnectionShare | null
   return {
     catalogId,
     ...(workflowApi ? { workflowApi } : {}),
+    ...(workflowApiDrafts ? { workflowApiDrafts } : {}),
     config: {
       name: asString(source.name) || '导入的连接',
       // 凭据永远不随配置流转，由用户重新填写
       apiKey: '',
-      baseUrl: workflowApi ? normalizeWorkflowApiBaseUrl(asString(source.baseUrl)) : normalizeBaseUrl(asString(source.baseUrl), chatApiProtocol) || undefined,
+      baseUrl: customWorkflow ? normalizeWorkflowApiBaseUrl(asString(source.baseUrl), true) : normalizeBaseUrl(asString(source.baseUrl), chatApiProtocol) || undefined,
       chatApiProtocol,
       catalogId,
-      selectedModels: workflowApi ? [] : parseModels(source.selectedModels),
-      catalogModels: workflowApi ? [] : parseModels(source.catalogModels),
+      selectedModels: customWorkflow ? [] : parseModels(source.selectedModels),
+      catalogModels: customWorkflow ? [] : parseModels(source.catalogModels),
       visibleModelCategories: visible,
     },
   };

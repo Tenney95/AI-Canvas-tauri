@@ -4,6 +4,7 @@
  * 适用于 general 通用模型和任意 OpenAI 兼容 provider。
  * 缺省使用 /images/generations JSON；显式配置后，参考图请求使用 /images/edits multipart。
  */
+import { isLocalMediaUrl } from '../../../utils/mediaUrl';
 import { parseResponseError, buildAuthHeaders } from '../httpUtils';
 import { corsSafeFetch } from '../httpTransport';
 import {
@@ -40,7 +41,7 @@ const MIME_EXTENSION: Record<string, string> = {
 };
 
 function usesWebViewFetch(url: string): boolean {
-  return /^(asset:|blob:|data:|file:)/i.test(url) || url.includes('asset.localhost');
+  return isLocalMediaUrl(url);
 }
 
 async function loadReferenceImage(

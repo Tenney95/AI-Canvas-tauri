@@ -16,12 +16,7 @@ interface LoadSafeImageOptions {
 const SAFE_FORMAT_MESSAGE = '无法在解码前确认图片尺寸，请先转换为 PNG、JPEG、WebP、GIF、BMP 或带固定尺寸的 SVG';
 
 async function readSafeImageBlob(url: string): Promise<Blob> {
-  const source = !url.startsWith('data:')
-    && !url.startsWith('blob:')
-    && !url.startsWith('asset://')
-    && !url.includes('asset.localhost')
-    ? await fetchImageForCrop(url)
-    : url;
+  const source = await fetchImageForCrop(url);
   const response = await fetch(source);
   if (!response.ok) throw new Error(`图片读取失败：HTTP ${response.status}`);
   return response.blob();

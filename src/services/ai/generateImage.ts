@@ -19,6 +19,8 @@ import { generateDreaminaImage } from '../dreaminaService';
 import { executeComfyUIGenerate } from '../comfyWorkflowService';
 import { isRunningHubWorkflow } from '../workflowExecutionService';
 import { executeRunningHubWorkflow } from './providers/runninghubWorkflow';
+import { executeWorkflowApiMedia } from '../workflowApi/workflowApiAdapter';
+import { parseWorkflowApiFields } from '../workflowApi/workflowApiConfig';
 import { collectConnectedReferenceMedia, getMediaReferenceUrls, mergeMediaReferences } from './connectedReferenceMedia';
 import type { AIImageGenParams, BatchImageResult, ImageGenerationResult } from '../../types/aiTypes';
 import { MAX_IMAGE_BATCH_COUNT } from '../../types/aiTypes';
@@ -148,6 +150,16 @@ export async function generateImagesBatch(
   if (params.workflowId) {
     if (requestedCount > 1) throw new Error('工作流暂不支持批量生成，请将数量设为 1');
     const workflow = useAppStore.getState().workflows.find((item) => item.id === params.workflowId);
+    if (provider === 'workflow-api' && workflow?.adapterType !== 'workflow-api') throw new Error('请先配置并选择工作流 API');
+    if (workflow?.adapterType === 'workflow-api') {
+      const refs = mergeMediaReferences(collectPromptNodeMediaUrls(rawPrompt).references, collectConnectedReferenceMedia(params.nodeId).references);
+      const result = await executeWorkflowApiMedia({ workflowId: workflow.id, nodeId: params.nodeId, taskContext: params.workflowApiTaskContext,
+        prompt, inputs: parseWorkflowApiFields(params.workflowInputs, workflow.workflowApi), references: {
+          image: mergeImageUrls(allImageUrls, getMediaReferenceUrls(refs, 'image', 'local')),
+          video: getMediaReferenceUrls(refs, 'video', 'local'), audio: getMediaReferenceUrls(refs, 'audio', 'local'),
+        } }, signal);
+      return singleResult({ ...result, ...mapImageDimensions(imageSize, aspectRatio) });
+    }
     if (isRunningHubWorkflow(workflow)) {
       const refs = mergeMediaReferences(collectPromptNodeMediaUrls(rawPrompt).references, collectConnectedReferenceMedia(params.nodeId).references);
       const outputs = await executeRunningHubWorkflow({ ...params, workflowId: params.workflowId, prompt, kind: 'image', references: {
@@ -159,6 +171,7 @@ export async function generateImagesBatch(
     return singleResult(await executeComfyUIGenerate({ ...params, prompt }, signal, allImageUrls));
   }
   if (provider === 'runninghubwf') throw new Error('请先在工作流管理中导入并配置该 RunningHub 工作流');
+  if (provider === 'workflow-api') throw new Error('请先配置并选择工作流 API');
 
   // comfyui 从不注册在 providers 里，落到下面的 default 分支只会误报「未配置 API Key」
   if (provider === 'comfyui') {

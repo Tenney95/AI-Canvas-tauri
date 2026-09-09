@@ -7,6 +7,7 @@ import type { WorkflowDefinition } from '../types';
 import * as fileService from '../services/fileService';
 import { validateRunningHubManifest } from '../services/runninghubWorkflowService';
 import { validateWorkflowApiManifest } from '../services/workflowApi/autodlWorkflowManifest';
+import { workflowApiOutputKind } from '../services/workflowApi/workflowApiDefinition';
 import {
   pendingBuiltInWorkflows,
   resetBuiltInWorkflows,
@@ -16,7 +17,9 @@ import {
 export interface WorkflowSlice {
   workflows: WorkflowDefinition[];
   workflowPanelOpen: boolean;
-  setWorkflowPanelOpen: (open: boolean) => void;
+  workflowPanelSource: 'comfyui' | 'workflow' | 'app';
+  setWorkflowPanelSource: (source: WorkflowSlice['workflowPanelSource']) => void;
+  setWorkflowPanelOpen: (open: boolean, source?: WorkflowSlice['workflowPanelSource']) => void;
   addWorkflow: (wf: WorkflowDefinition) => Promise<void>;
   updateWorkflow: (id: string, updates: Partial<Omit<WorkflowDefinition, 'id' | 'createdAt'>>) => Promise<void>;
   deleteWorkflow: (id: string) => Promise<void>;
@@ -28,8 +31,8 @@ export interface WorkflowSlice {
 function validateWorkflow(workflow: WorkflowDefinition) {
   if (workflow.adapterType && !['comfyui', 'runninghub', 'workflow-api'].includes(workflow.adapterType)) throw new Error('不支持的工作流来源');
   if (workflow.adapterType === 'workflow-api') {
-    if (workflow.category !== 'ai-video') throw new Error('此工作流只支持视频输出');
     validateWorkflowApiManifest(workflow.workflowApi);
+    if (workflow.category !== `ai-${workflowApiOutputKind(workflow.workflowApi)}`) throw new Error('工作流输出类型与声明不一致');
     if (workflow.runninghub || workflow.fileContent || workflow.editableContent || workflow.ioNodes?.length || workflow.defaultNodes || workflow.serverId) throw new Error('工作流 API 不保存原始调用示例或本地工作流正文');
   } else if (workflow.workflowApi) throw new Error('工作流 API 定义与来源不一致');
   if (workflow.adapterType === 'runninghub') {
@@ -42,8 +45,10 @@ function validateWorkflow(workflow: WorkflowDefinition) {
 export const createWorkflowSlice: StateCreator<AppState, [], [], WorkflowSlice> = (set, get) => ({
   workflows: [],
   workflowPanelOpen: false,
+  workflowPanelSource: 'comfyui',
+  setWorkflowPanelSource: (source) => set({ workflowPanelSource: source }),
 
-  setWorkflowPanelOpen: (open) => set({ workflowPanelOpen: open }),
+  setWorkflowPanelOpen: (open, source) => set({ workflowPanelOpen: open, ...(source ? { workflowPanelSource: source } : {}) }),
 
   addWorkflow: async (wf) => {
     validateWorkflow(wf);

@@ -307,7 +307,7 @@ export default function FileAppSettings({ active }: { active: boolean }) {
                   ? t('检测中…')
                   : blenderInstallation
                     ? formatBlenderInstallation(blenderInstallation)
-                    : t('未检测到唯一安装，请选择 blender.exe')}
+                    : t('未检测到唯一安装，请选择 Blender 应用')}
               </div>
               <AnimatedButton
                 type="button"
@@ -319,7 +319,7 @@ export default function FileAppSettings({ active }: { active: boolean }) {
               </AnimatedButton>
             </div>
             <p className="text-[11px] text-canvas-text-muted leading-relaxed mt-1.5">
-              {t('用于 3D 导演台的高级编辑、当前帧截图和参考视频渲染；安装仅在当前运行会话登记，启动前会重新校验')}
+              {t('自动检测常见安装位置；多个版本可手动选择。Windows 选择 blender.exe，macOS 选择 Blender.app。记住本机选择，每次启动前重新校验。')}
             </p>
             {blenderError && (
               <p className="mt-1 text-[11px] leading-relaxed text-red-400" role="alert">

@@ -208,7 +208,7 @@ export async function testProviderConnection(
   baseUrl?: string,
   chatApiProtocol?: ChatApiProtocol,
 ): Promise<TestResult> {
-  if (!apiKey) return { success: false, error: '请先填写 API 密钥' };
+  if (!apiKey && getProviderDefinition(provider)?.kind !== 'workflow-api') return { success: false, error: '请先填写 API 密钥' };
   const fn = testFns[provider as ProviderTestKey];
   try {
     if (fn) return await fn(apiKey, baseUrl);
@@ -218,7 +218,8 @@ export async function testProviderConnection(
     }
     if (definition?.kind === 'workflow-api') {
       const { normalizeWorkflowApiBaseUrl } = await import('./workflowApi/autodlWorkflowManifest');
-      normalizeWorkflowApiBaseUrl(baseUrl);
+      if (!baseUrl?.trim()) throw new Error('请填写工作流 API 连接地址');
+      normalizeWorkflowApiBaseUrl(baseUrl, true);
       return { success: false, unsupported: true, error: '配置格式有效；Token 权限需在实际生成时验证。未提交任务。' };
     }
     const target = baseUrl?.trim() || definition?.defaultBaseUrl;
