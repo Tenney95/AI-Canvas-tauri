@@ -21,7 +21,7 @@ export interface ProjectStorageInfo {
   projectName: string;
   /** 项目数据目录路径 */
   dataDir: string | null;
-  /** 项目数据目录内文件的总大小（不含 .trash） */
+  /** 项目素材总大小（不含 .trash 和根 .thumbnail 派生缓存） */
   fileSize: number;
   /** 项目数据目录内的文件数量 */
   fileCount: number;
@@ -89,7 +89,10 @@ export interface StorageHealthReport {
 /**
  * 递归扫描目录，返回所有文件条目（含子目录）
  */
-async function scanDirRecursive(dirPath: string): Promise<ScanFileEntry[]> {
+async function scanDirRecursive(
+  dirPath: string,
+  excludedRootDirectories: readonly string[] = [],
+): Promise<ScanFileEntry[]> {
   const results: ScanFileEntry[] = [];
   if (!isTauriEnv()) return results;
 
@@ -100,6 +103,7 @@ async function scanDirRecursive(dirPath: string): Promise<ScanFileEntry[]> {
       if (entry.isDirectory) {
         // 跳过 .trash、AppData 等特殊目录
         if (entry.name === '.trash' || entry.name === 'AppData') continue;
+        if (excludedRootDirectories.includes(entry.name)) continue;
         const subFiles = await scanDirRecursive(entryPath);
         results.push(...subFiles);
       } else if (entry.isFile) {
@@ -136,7 +140,7 @@ async function scanProjectStorage(
     categories: {},
   };
 
-  const files = await scanDirRecursive(dataDir);
+  const files = await scanDirRecursive(dataDir, ['.thumbnail']);
 
   const categories: Record<string, { count: number; size: number }> = {};
   let totalSize = 0;
@@ -211,7 +215,7 @@ async function scanOrphanFiles(
   const dataDir = await getProjectDataDir(project.id);
   if (!dataDir) return [];
 
-  const files = await scanDirRecursive(dataDir);
+  const files = await scanDirRecursive(dataDir, ['.thumbnail']);
   return files
     .filter((f) => !nodeFilePaths.has(f.path))
     .map((f) => ({
@@ -236,7 +240,7 @@ async function scanDuplicateFiles(
   for (const p of projects) {
     const dataDir = await getProjectDataDir(p.id);
     if (!dataDir) continue;
-    const files = await scanDirRecursive(dataDir);
+    const files = await scanDirRecursive(dataDir, ['.thumbnail']);
     for (const f of files) {
       allFiles.push({
         path: f.path,

@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Node } from '@xyflow/react';
 import { useAppStore } from '../store/useAppStore';
-import { watchFilePaths, type FileWatchEvent } from '../services/fileService';
+import { getProjectDataDir, watchFilePaths, type FileWatchEvent } from '../services/fileService';
 import type { BaseNodeData, StoryboardCellOverride } from '../types';
 
 export const REFERENCED_IMAGE_CHANGED_EVENT = 'referenced-image-changed';
@@ -178,7 +178,7 @@ export function useReferencedImageWatcher(): void {
     let signature = '';
     let syncFrame: number | undefined;
 
-    const rebuildWatcher = async (paths: string[]) => {
+    const rebuildWatcher = async (paths: string[], projectId: string | null) => {
       const currentGeneration = ++generation;
       unwatch?.();
       unwatch = undefined;
@@ -188,16 +188,22 @@ export function useReferencedImageWatcher(): void {
       if (directories.length === 0) return;
 
       try {
+        // 与缩略图写入共用实际项目目录映射；每次重建只解析一次，事件回调不做 IPC。
+        const projectDir = projectId ? await getProjectDataDir(projectId).catch(() => null) : null;
+        if (disposed || currentGeneration !== generation) return;
+        const cacheDirectory = projectDir ? `${normalizeWatchedPath(projectDir)}/.thumbnail` : undefined;
         const stop = await watchFilePaths(
           directories,
           (event) => {
             if (disposed || currentGeneration !== generation || isAccessEvent(event)) return;
 
             const changedPaths = new Set(
-              event.paths.flatMap((eventPath) => [
-                normalizeWatchedPath(eventPath),
-                normalizeWatchedPath(parentDirectory(eventPath)),
-              ]),
+              event.paths.flatMap((eventPath) => {
+                const normalized = normalizeWatchedPath(eventPath);
+                // 缓存目录创建或写入不能使同目录全部原图失效；分组和外部同名目录保留。
+                if (cacheDirectory && (normalized === cacheDirectory || normalized.startsWith(`${cacheDirectory}/`))) return [];
+                return [normalized, normalizeWatchedPath(parentDirectory(eventPath))];
+              }),
             );
             const affected = paths.filter((path) => {
               const normalized = normalizeWatchedPath(path);
@@ -222,11 +228,12 @@ export function useReferencedImageWatcher(): void {
     };
 
     const syncWatcher = () => {
-      const paths = collectReferencedImagePaths(useAppStore.getState().nodes);
-      const nextSignature = paths.map(normalizeWatchedPath).join('\n');
+      const state = useAppStore.getState();
+      const paths = collectReferencedImagePaths(state.nodes);
+      const nextSignature = JSON.stringify([state.currentProjectId, paths.map(normalizeWatchedPath)]);
       if (nextSignature === signature) return;
       signature = nextSignature;
-      void rebuildWatcher(paths);
+      void rebuildWatcher(paths, state.currentProjectId);
     };
 
     const scheduleSync = () => {
@@ -239,7 +246,8 @@ export function useReferencedImageWatcher(): void {
 
     syncWatcher();
     const unsubscribe = useAppStore.subscribe((state, previousState) => {
-      if (haveReferencedImageFieldsChanged(state.nodes, previousState.nodes)) scheduleSync();
+      if (state.currentProjectId !== previousState.currentProjectId
+        || haveReferencedImageFieldsChanged(state.nodes, previousState.nodes)) scheduleSync();
     });
     return () => {
       disposed = true;

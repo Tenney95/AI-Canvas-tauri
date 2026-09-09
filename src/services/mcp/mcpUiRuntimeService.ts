@@ -45,7 +45,9 @@ function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-function isSensitiveElement(node: HTMLElement): boolean {
+export function isSensitiveElement(node: Node): boolean {
+  // html-to-image 也会把 Text 节点交给 filter；只有 Element 才有 closest。
+  if (!(node instanceof Element)) return false;
   if (node.closest('[data-mcp-sensitive="true"]')) return true;
   if (!(node instanceof HTMLInputElement)) return false;
   const marker = `${node.name} ${node.id} ${node.autocomplete}`.toLowerCase();

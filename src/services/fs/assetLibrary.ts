@@ -56,7 +56,7 @@ export async function listGlobalFiles(): Promise<AssetFileEntry[]> {
  */
 export async function walkDirectoryFiles(
   rootDir: string,
-  opts: { maxFiles?: number; maxDepth?: number } = {},
+  opts: { maxFiles?: number; maxDepth?: number; excludedRootDirectories?: readonly string[] } = {},
 ): Promise<AssetFileEntry[]> {
   if (!isTauriEnv()) return [];
   const maxFiles = opts.maxFiles ?? 3000;
@@ -115,7 +115,11 @@ export async function walkDirectoryFiles(
     }
 
     if (depth < maxDepth) {
-      for (const d of subDirs) stack.push({ dir: joinPath(dir, d.name), depth: depth + 1 });
+      for (const d of subDirs) {
+        // 项目派生缓存只占用根目录；分组和外部目录内的同名文件夹仍是用户素材。
+        if (depth === 0 && opts.excludedRootDirectories?.includes(d.name)) continue;
+        stack.push({ dir: joinPath(dir, d.name), depth: depth + 1 });
+      }
     }
   }
   return out;

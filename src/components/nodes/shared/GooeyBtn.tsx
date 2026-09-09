@@ -2,7 +2,6 @@
  * 为节点连接点提供带语义色的黏性悬停反馈，不承载连接或 Store 业务逻辑。
  */
 import React, { useEffect, useId, useRef } from "react";
-import { useStore, type ReactFlowState } from '@xyflow/react';
 
 interface GooeyBtnProps {
   className?: string;
@@ -10,15 +9,10 @@ interface GooeyBtnProps {
   hue?: number;
 }
 
-const selectZoom = (state: ReactFlowState) => state.transform[2];
-
 const GooeyBtn = ({ className, hue }: GooeyBtnProps) => {
 const btnRef = useRef<HTMLButtonElement>(null);
 const filterId = `goo-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
-// 反向补偿系数：放大画布（zoom>1）时取 1/zoom，按钮视觉保持 100%；
-// 缩小画布（zoom<1）时钳制为 1，按钮随画布一起缩小，最大不超过 100%
-const zoom = useStore(selectZoom);
-const invZoom = Math.min(1, 1 / zoom);
+// 缩放补偿从 Canvas 根节点继承，避免每个连接按钮订阅视口并在缩放时重渲染。
 
   useEffect(() => {
     const btn = btnRef.current;
@@ -39,7 +33,6 @@ const invZoom = Math.min(1, 1 / zoom);
   return (
     <div
       className={`gooey-btn-wrapper ${className ?? ''}`}
-      style={{ '--gooey-inv-zoom': invZoom } as React.CSSProperties}
     >
       <svg width="0" height="0" style={{ position: "absolute" }}>
         <filter

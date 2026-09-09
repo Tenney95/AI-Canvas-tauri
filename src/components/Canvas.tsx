@@ -458,9 +458,18 @@ function CanvasInner() {
   });
 
   const nodeToolbarScaleRef = useRef(Number.NaN);
+  const gooeyScaleRef = useRef(Number.NaN);
 
-  const updateNodeToolbarScale = useCallback((zoom: number) => {
-    if (!Number.isFinite(zoom) || zoom <= 0) return;
+  const updateNodeZoomCompensation = useCallback((zoom: number) => {
+    const canvasRoot = canvasRootRef.current;
+    if (!canvasRoot || !Number.isFinite(zoom) || zoom <= 0) return;
+    // 连接按钮放大时保持原尺寸，缩小时随画布缩小；纯平移与 zoom<=1 无需反复写入。
+    const gooeyCompensation = Math.min(1, 1 / zoom);
+    if (gooeyCompensation !== gooeyScaleRef.current) {
+      gooeyScaleRef.current = gooeyCompensation;
+      canvasRoot.style.setProperty('--gooey-inv-zoom', String(gooeyCompensation));
+    }
+
     const clampedScreenScale = Math.min(
       NODE_TOOLBAR_MAX_SCREEN_SCALE,
       Math.max(NODE_TOOLBAR_MIN_SCREEN_SCALE, zoom),
@@ -469,15 +478,15 @@ function CanvasInner() {
     // 纯平移或极小缩放变化无需写入，避免每帧让全部节点工具条重新计算样式。
     if (Math.abs(compensation - nodeToolbarScaleRef.current) < NODE_TOOLBAR_SCALE_EPSILON) return;
     nodeToolbarScaleRef.current = compensation;
-    canvasRootRef.current?.style.setProperty(
+    canvasRoot.style.setProperty(
       '--node-toolbar-zoom-compensation',
       String(compensation),
     );
   }, []);
 
   useEffect(() => {
-    updateNodeToolbarScale(reactFlowInstance.getViewport().zoom);
-  }, [reactFlowInstance, updateNodeToolbarScale]);
+    updateNodeZoomCompensation(reactFlowInstance.getViewport().zoom);
+  }, [reactFlowInstance, updateNodeZoomCompensation]);
 
   const setCanvasInteraction = useCallback((kind: CanvasInteractionKind, active: boolean) => {
     if (active) activeInteractionsRef.current.add(kind);
@@ -544,14 +553,14 @@ function CanvasInner() {
   }, [endCanvasInteraction]);
 
   const handleCanvasViewportMove = useCallback<OnMove>((_, viewport) => {
-    updateNodeToolbarScale(viewport.zoom);
+    updateNodeZoomCompensation(viewport.zoom);
     const activePan = activeCanvasPanRef.current;
     if (!activePan) return;
     activePan.detail.onProgress?.({
       deltaX: viewport.x - activePan.startX,
       deltaY: viewport.y - activePan.startY,
     });
-  }, [updateNodeToolbarScale]);
+  }, [updateNodeZoomCompensation]);
 
   // 节点进场动画（translateY）会让 React Flow 在挂载瞬间测得偏移的 handle 锚点并缓存，
   // 导致连线起止点错位。进场动画结束（落位 translateY:0）后重新测量该节点的 handle。

@@ -19,6 +19,7 @@ import {
   type CapturableWindowLabel,
 } from '../../mcp/mcpUiRuntimeService';
 import { registerAgentTool, type AgentToolExecutionResult } from '../toolRegistry';
+import { importCapturedImage, ResourceImportError } from '../../canvasResourceImportService';
 
 const MCP_PREFIX = 'mcp-control-';
 const WINDOW_LABELS = ['main', 'chat-assistant', 'asset-search', 'video-editor', 'director-desk', 'comfyui'];
@@ -365,6 +366,29 @@ export function registerUiControlAgentTools(): Array<() => void> {
         if (input.nodeIds?.some((id) => !known.has(id))) return failure(new Error('聚焦列表包含不存在的节点'), 'CANVAS_NODE_NOT_FOUND');
         await controller.fitView(input);
         return { status: 'success', summary: '已适配画布视图', modelContent: JSON.stringify(controller.getSnapshot()) };
+      },
+    }),
+    registerAgentTool<{ maxWidth?: number; x?: number; y?: number; label?: string }>({
+      id: 'ui_capture_to_canvas', title: '截图并添加到画布',
+      description: '把当前 AI Canvas 主窗口的真实可见界面截图保存为一个 source-image 素材节点，返回 nodeId，可直接连线生成。始终隐藏标记的敏感元素；不会截图桌面或其他软件。无需鼠标、剪贴板、文件选择或传入 Base64。',
+      effect: 'canvas_write',
+      inputSchema: { type: 'object', additionalProperties: false, properties: {
+        maxWidth: { type: 'integer', minimum: 320, maximum: 1920 },
+        x: { type: 'number', minimum: -100000, maximum: 100000 },
+        y: { type: 'number', minimum: -100000, maximum: 100000 },
+        label: { type: 'string', minLength: 1, maxLength: 120 },
+      } }, ...common,
+      execute: async (context, input) => {
+        try {
+          const result = await importCapturedImage(context, () => captureAppWindow({
+            target: 'main', maxWidth: input.maxWidth ?? 1920, quality: 0.92, redactSensitive: true,
+          }), input, input.label);
+          return { status: 'success', summary: '已把真实界面截图添加到画布', modelContent: JSON.stringify(result) };
+        } catch (error) {
+          return { status: 'error', summary: error instanceof ResourceImportError ? error.message : '界面截图导入失败',
+            modelContent: '界面截图导入失败，请检查项目与截图能力', retryable: false,
+            errorCode: error instanceof ResourceImportError ? error.code : 'UI_CAPTURE_IMPORT_FAILED' };
+        }
       },
     }),
     registerAgentTool<{ target: CapturableWindowLabel; maxWidth?: number; quality?: number; redactSensitive?: boolean }>({

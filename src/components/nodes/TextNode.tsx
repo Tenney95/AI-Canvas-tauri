@@ -7,6 +7,7 @@ import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
 import TextNodeToolbar from './shared/TextNodeToolbar';
+import NodeToolbarShell from './shared/NodeToolbarShell';
 import GooeyBtn from './shared/GooeyBtn';
 import FullscreenOverlay from '../shared/FullscreenOverlay';
 import { useNodeRename } from './shared/useNodeRename';
@@ -219,8 +220,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
   return (
     <>
     <div className="node-wrapper relative" style={{ width: nodeWidth }}>
-      {/* Floating toolbar stays mounted so selection changes can animate. */}
-      <div className={`node-toolbar-shell ${selected && isSingleSelection ? 'is-visible' : ''}`}>
+      <NodeToolbarShell visible={selected && isSingleSelection}>
         <TextNodeToolbar
           nodeId={id}
           data={data}
@@ -229,7 +229,7 @@ function AITextNode({ id, data, selected }: { id: string; data: BaseNodeData; se
           onShowPrompt={handleShowPrompt}
           onFullscreen={handleOpenFullscreen}
         />
-      </div>
+      </NodeToolbarShell>
       <NodeLabel
         kind="ai-text"
         label={displayLabel}

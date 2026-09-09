@@ -47,22 +47,25 @@ export default function HistoryTimelinePanel() {
   const saveConfig = useAppStore((state) => state.saveConfig);
   // 只有内置（未拆出独立窗口）的助手才会占住画布右侧
   const chatDocked = chatOpen && !chatPanelDetached;
+  const panelOpen = pinned || hoverOpen;
+  const showRows = panelOpen && expanded;
 
   const togglePinned = () => {
     updateConfig({ canvasHistoryPinned: !pinned });
     void saveConfig({ silent: true });
   };
   // 最新一条操作的效果只存在于实时状态里（commitToHistory 记录的是改动前快照），
-  // 因此实时状态单独订阅、单独 memo，避免拖拽时重算整条列表。
-  const liveNodes = useAppStore((state) => state.nodes);
-  const liveEdges = useAppStore((state) => state.edges);
-  const liveGroups = useAppStore((state) => state.groups);
+  // 只在列表可见且停在最新历史时订阅实时图，收起后不再逐帧扫描全部节点。
+  const trackLive = showRows && history.length > 0 && historyIndex === history.length - 1;
+  const live = useAppStore(useShallow((state) => trackLive ? {
+    nodes: state.nodes, edges: state.edges, groups: state.groups,
+  } : null));
 
   const canUndo = historyIndex >= 0 && history.length > 0;
   const canRedo = historyIndex < history.length - 1;
 
   const committedRows = useMemo<TimelineRow[]>(() => {
-    if (!expanded) return [];
+    if (!showRows) return [];
     const rows: TimelineRow[] = [];
     for (let index = 1; index < history.length; index += 1) {
       rows.push({
@@ -74,29 +77,21 @@ export default function HistoryTimelinePanel() {
       });
     }
     return rows;
-  }, [expanded, history]);
+  }, [showRows, history]);
 
   const latestRow = useMemo<TimelineRow | null>(() => {
-    if (!expanded || history.length === 0) return null;
-    // 只有停在最新位置时，实时状态才是「最后一次操作的结果」
-    if (historyIndex !== history.length - 1) return null;
+    if (!trackLive || !live) return null;
     const previous = history[history.length - 1] as HistorySnapshotLike;
-    const live: HistorySnapshotLike = {
-      nodes: liveNodes,
-      edges: liveEdges,
-      groups: liveGroups,
-    };
     const label = describeCanvasChange(previous, live);
     if (label.title === '画布修改') return null;
     return { ...label, index: history.length - 1 };
-  }, [expanded, history, historyIndex, liveNodes, liveEdges, liveGroups]);
+  }, [trackLive, history, live]);
 
   // 倒序展示：最近的操作在最上面，紧贴撤销 / 重做按钮
   const orderedRows = useMemo(
     () => [...committedRows, ...(latestRow ? [latestRow] : [])].reverse(),
     [committedRows, latestRow],
   );
-  const panelOpen = pinned || hoverOpen;
 
   useEffect(() => {
     if (!hoverOpen || pinned) return;
@@ -181,7 +176,7 @@ export default function HistoryTimelinePanel() {
         </AnimatedButton>
       </div>
 
-      {expanded && (
+      {showRows && (
         <ul className="canvas-history-list" aria-label={t('画布操作记录')}>
           {orderedRows.length === 0 ? (
             <li className="canvas-history-empty">{t('暂无操作记录')}</li>

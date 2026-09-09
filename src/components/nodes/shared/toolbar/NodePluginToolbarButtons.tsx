@@ -6,6 +6,7 @@ import { useAppStore } from '../../../../store/useAppStore';
 import AnimatedButton from '../../../shared/AnimatedButton';
 import NodePluginToolDialog from './NodePluginToolDialog';
 import { getPluginToolbarButtonKey } from './toolbarRegistry';
+import { getCanvasNodeById } from '../../../../utils/canvasRenderProjection';
 
 interface UseNodePluginToolbarOptions {
   nodeId: string;
@@ -19,7 +20,7 @@ export function useNodePluginToolbar({
   rounded = false,
 }: UseNodePluginToolbarOptions) {
   const plugins = useAppStore((state) => state.installedPlugins);
-  const nodeType = useAppStore((state) => state.nodes.find((node) => node.id === nodeId)?.data.type);
+  const nodeType = useAppStore((state) => getCanvasNodeById(state.nodes, nodeId)?.data.type);
   const [activeTool, setActiveTool] = useState<AvailableNodePluginTool | null>(null);
   const toolsByKey = useMemo(() => new Map(
     getAvailableNodePluginTools(plugins, nodeType, 'node-toolbar')

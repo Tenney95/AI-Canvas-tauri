@@ -24,6 +24,8 @@ mod assistant_web;
 mod blender_runtime;
 #[path = "files/clipboard.rs"]
 mod clipboard;
+#[path = "files/clipboard_read.rs"]
+mod clipboard_read;
 #[path = "media/comfyui/mod.rs"]
 mod comfyui;
 #[path = "director/desk_runtime.rs"]
@@ -32,6 +34,8 @@ mod director_desk_runtime;
 mod dreamina;
 #[path = "files/transfer.rs"]
 mod file_transfer;
+#[path = "files/thumbnail_cache.rs"]
+mod thumbnail_cache;
 #[path = "media/local_fonts.rs"]
 mod local_fonts;
 #[path = "mcp/bridge.rs"]
@@ -1121,6 +1125,8 @@ pub fn run() {
             agent_package::agent_source_read_text,
             project_archive::pack_project_archive,
             project_archive::unpack_project_archive,
+            thumbnail_cache::prepare_project_thumbnail,
+            thumbnail_cache::write_project_thumbnail,
             file_transfer::copy_file_streamed,
             file_transfer::download_file_streamed,
             file_transfer::cancel_file_transfer,
@@ -1130,6 +1136,7 @@ pub fn run() {
             director_desk_runtime::remove_director_desk_runtime,
             move_to_trash,
             clipboard::copy_files_to_clipboard,
+            clipboard_read::read_canvas_clipboard,
             dreamina_login,
             dreamina::dreamina_login_start,
             dreamina::dreamina_login_runtime,

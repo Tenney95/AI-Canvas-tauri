@@ -10,7 +10,7 @@ interface CanvasDerivationState {
 export interface CanvasDerivationGuard {
   readonly operationId: string;
   readonly projectId: string;
-  readonly sourceNodeId: string;
+  readonly sourceNodeId: string | null;
   readonly baseRevision: number;
   readonly placeholderNodeId?: string;
 }
@@ -45,6 +45,22 @@ export function registerCanvasDerivation(
   return guard;
 }
 
+/** 新素材导入没有源节点，仍绑定项目、revision 和项目切换取消生命周期。 */
+export function registerCanvasImport(
+  state: CanvasDerivationState,
+  onCancel?: () => void,
+): CanvasDerivationGuard | null {
+  if (!state.currentProjectId) return null;
+  const guard: CanvasDerivationGuard = {
+    operationId: `canvas-import-${Date.now()}-${operationSequence++}`,
+    projectId: state.currentProjectId,
+    sourceNodeId: null,
+    baseRevision: state.getCurrentRevision(),
+  };
+  pendingDerivations.set(guard.operationId, { guard, onCancel });
+  return guard;
+}
+
 export function isCanvasDerivationFresh(
   guard: CanvasDerivationGuard,
   state: CanvasDerivationState,
@@ -52,7 +68,7 @@ export function isCanvasDerivationFresh(
   if (!pendingDerivations.has(guard.operationId)) return false;
   if (state.currentProjectId !== guard.projectId) return false;
   if (state.getCurrentRevision() !== guard.baseRevision) return false;
-  if (!state.nodes.some((node) => node.id === guard.sourceNodeId)) return false;
+  if (guard.sourceNodeId !== null && !state.nodes.some((node) => node.id === guard.sourceNodeId)) return false;
   return !guard.placeholderNodeId
     || state.nodes.some((node) => node.id === guard.placeholderNodeId);
 }
