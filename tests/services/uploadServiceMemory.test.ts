@@ -26,6 +26,8 @@ vi.mock('../../src/store/useAppStore', () => ({
 vi.mock('../../src/services/fs/core', () => ({
   bytePartsToBase64Async: mocks.bytePartsToBase64Async,
   isTauriEnv: () => true,
+  // 本地素材走 Tauri asset protocol 读取，上传前会先把路径换成可 fetch 的 URL。
+  getAssetUrlFromPath: async (path: string) => `asset://${path}`,
 }));
 vi.mock('../../src/services/fileService', () => ({
   assertMediaDataUrlSize: mocks.assertMediaDataUrlSize,
