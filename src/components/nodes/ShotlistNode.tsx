@@ -645,7 +645,7 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
                 {visibleColumns.map((column) => (
                   <th key={column} className={`shot-col-${column}`}>{SHOTLIST_COLUMN_LABELS[column]}</th>
                 ))}
-                <th className="shot-col-actions" aria-label="操作" />
+                <th className="shot-col-actions">{t('操作')}</th>
               </tr>
             </thead>
             <tbody>
@@ -676,20 +676,20 @@ function ShotlistNode({ id, data, selected }: { id: string; data: BaseNodeData; 
                     <td key={column} className={`shot-col-${column}`}>{renderCell(row, column)}</td>
                   ))}
                   <td className="shot-col-actions">
-                    <div className="flex flex-col items-center gap-0.5">
+                    <div className="flex items-center justify-center gap-1 px-1">
                       <button type="button" className="ui-icon-btn ui-icon-btn--sm nodrag"
                         disabled={generating || busyRows.includes(row.id)}
                         onClick={() => askAssistant(row.id)}
                         title={t('AI 优化本镜')} aria-label={t('AI 优化本镜')}>
                         <Icon icon="mdi:auto-fix" width={13} height={13} />
                       </button>
-                      <button type="button" className="ui-btn ui-btn--sm" disabled={generating}
+                      <button type="button" className="ui-icon-btn ui-icon-btn--sm nodrag" disabled={generating}
                         onClick={() => setProduction({ rowId: row.id })} title={t('镜头制作准备')} aria-label={t('镜头制作准备')}>
                         <Icon icon="mdi:movie-open-plus-outline" width={13} height={13} />
                       </button>
                       <button
                         type="button"
-                        className="shot-row-delete nodrag"
+                        className="ui-icon-btn ui-icon-btn--sm ui-icon-btn--danger nodrag"
                         onClick={() => deleteRow(row.id)}
                         title="删除该镜"
                         aria-label="删除该镜"

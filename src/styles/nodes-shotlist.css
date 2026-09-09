@@ -160,8 +160,9 @@
 }
 
 /* 列宽：内容与台词吃掉剩余空间，其余按内容定宽 */
-.shot-col-grip,
-.shot-col-actions { width: 26px; }
+.shot-col-grip { width: 26px; }
+.shot-col-actions { width: calc(var(--ui-control-h-sm) * 3 + 28px); }
+.shotlist-table th.shot-col-actions { text-align: center; }
 .shot-col-shotNo { width: 48px; }
 .shot-col-frame { width: 84px; }
 .shot-col-shotSize,
@@ -171,8 +172,7 @@
 .shot-col-audio,
 .shot-col-note { width: 96px; }
 
-.shot-grip,
-.shot-row-delete {
+.shot-grip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -185,8 +185,6 @@
   cursor: grab;
 }
 
-.shot-row-delete { cursor: var(--cursor-pointer, pointer); }
-.shot-row-delete:hover { color: #f87171; }
 .shot-grip:active { cursor: grabbing; }
 
 /* ── 单元格输入 ── */
