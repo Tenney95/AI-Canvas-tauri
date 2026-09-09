@@ -844,7 +844,7 @@ body {
   contain: paint;
 }
 
-/* Portal 全屏蒙层与主内容边界保持一致，避免覆盖玻璃带或露出直角。 */
+/* 全屏蒙层与主内容边界保持一致，避免覆盖玻璃带或露出直角。 */
 body[data-tauri-window] {
   --window-overlay-top: 0px;
   --window-overlay-right: 0px;
@@ -904,6 +904,12 @@ body[data-tauri-window] > :is(
   .preset-modal-overlay,
   .dreamina-login-overlay,
   .asset-picker-backdrop
+),
+body[data-tauri-window] .app-shell__content > :is(
+  .wf-panel-backdrop,
+  .assets-panel-backdrop,
+  .ai-dialog-expanded-backdrop,
+  .fixed.inset-0
 ) {
   top: var(--window-overlay-top);
   right: var(--window-overlay-right);
@@ -911,6 +917,22 @@ body[data-tauri-window] > :is(
   left: var(--window-overlay-left);
   border-radius: var(--window-overlay-radius);
   overflow: hidden;
+}
+
+/* 内容内的 fixed 蒙层同样以视口定位；在蒙层自身裁切模糊合成层。 */
+body[data-tauri-window] .app-shell__content > :is(
+  .wf-panel-backdrop,
+  .assets-panel-backdrop,
+  .ai-dialog-expanded-backdrop,
+  .fixed.inset-0
+) {
+  clip-path: inset(0 round var(--window-overlay-radius));
+}
+
+/* 展开蒙层是 button，显式的 100% 尺寸会抵消右侧和底部 inset。 */
+body[data-tauri-window] .app-shell__content > .ai-dialog-expanded-backdrop {
+  width: auto;
+  height: auto;
 }
 
 /* PointEdit 通过 portal 挂载到 body，蒙层视觉与项目内置图片工具保持一致。 */
