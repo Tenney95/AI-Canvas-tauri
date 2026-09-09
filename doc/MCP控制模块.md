@@ -18,6 +18,7 @@
 - 两种传输共用 Registry 与 Policy；MCP 按 C 自主模式处理，`user_choice` 仍等待用户作答，不能由客户端替用户解决审批。
 - 令牌只由原生凭据存储持久化，不进入普通配置、事件或日志。HTTP 保留 Bearer、Host、Origin、请求体与并发限制；具体常量以当前原生源码为准。
 - 业务工具必须能通过当前目录检索，并在执行阶段重新校验上下文；发现结果不代表后续调用已获授权。插件窗口、导演台等业务的完整实施记录写入各自模块。
+- 画布连线区分端口与空间排布：`canvas_connect_nodes` 固定右出左入；创建/连接工具同时要求上游放左、下游放右，建议水平间距至少 80 画布单位。连接结果（含已连接分支）及 `canvas_query(detail=true)` 返回实际端口、按分组绝对坐标计算的水平间距与 `layout.warning`。提醒不自动改线或移动用户节点，也不新增审批或硬性禁止有意回绕。
 
 ## 按需工具发现
 
@@ -38,6 +39,7 @@ MCP 设置中的「工具发现方式」默认按需加载，对应可选配置 
 ## 验证与资料
 
 - 外部资源已补充 `file_import_media_to_canvas`、`canvas_paste_external`、`ui_capture_to_canvas`，均为 `canvas_write`，保留 Plan 拒绝、B 确认、C/MCP 自动执行的既有策略。业务边界见 [文件与存储](./文件与存储模块.md#mcp-资源导入)。`ui_capture_window` 仍是只返回瞬时图像的只读工具；截图过滤器已兼容文本节点，避免 `closest` 调用失败。
+- 连线布局反馈：画布工具与 MCP 目录定向测试共 58 项通过，应用/测试类型检查和定向 ESLint 通过；覆盖分组绝对坐标、80 单位边界、已连接请求不重复写入及实际端口返回。实机查询已识别素材位于生成节点右侧造成的回绕；布局提醒不等同于阻止执行。
 
 - 定向回归：[MCP 控制服务](../tests/services/mcp/mcpControlService.test.ts)。真实 stdio/HTTP 握手、鉴权失败、取消和工具发现验收与 mock 测试分别记录。
 - 按需目录：[目录测试](../tests/services/mcp/mcpToolCatalog.test.ts)、[设置测试](../tests/components/mcpControlSettings.test.ts)、[适配器测试](../tests/scripts/aiCanvasMcp.test.mjs)。2026-09-07：六个相关测试文件共 107 项通过，应用/测试类型检查与改动文件 ESLint 通过；真实 stdio 客户端经打包资源适配器发现三个入口，并完成带参数检索和画布读取，原名调用兼容也已实测。

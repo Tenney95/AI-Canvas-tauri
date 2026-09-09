@@ -428,7 +428,11 @@ function buildCanvasDetail(targetIds: string[], limit?: number): Record<string, 
     // 只给出与返回节点相关的连线，避免整张图铺满上下文
     edges: store.edges
       .filter((edge) => visibleIds.has(edge.source) || visibleIds.has(edge.target))
-      .map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })),
+      .map((edge) => ({
+        id: edge.id, source: edge.source, target: edge.target,
+        sourceHandle: edge.sourceHandle ?? null, targetHandle: edge.targetHandle ?? null,
+        layout: describeConnectionLayout(edge.source, edge.target, store.nodes),
+      })),
     truncated: scoped.length > nodes.length,
   };
 }
@@ -723,6 +727,23 @@ function createCanvasNode(
   };
 }
 
+/** 端口方向正确不代表布局顺向；按绝对坐标检查分组内外节点的水平间距。 */
+function describeConnectionLayout(sourceId: string, targetId: string, nodes: Node<BaseNodeData>[]) {
+  const source = nodes.find((node) => node.id === sourceId);
+  const target = nodes.find((node) => node.id === targetId);
+  if (!source || !target) return null;
+  const sourceRect = getExistingNodeRect(source, nodes);
+  const targetRect = getExistingNodeRect(target, nodes);
+  const sourceRightX = sourceRect.x + sourceRect.width;
+  const horizontalGap = targetRect.x - sourceRightX;
+  return {
+    sourceRightX, targetLeftX: targetRect.x, horizontalGap, recommendedMinGap: 80,
+    warning: horizontalGap < 80
+      ? '上游应放左、下游应放右，并预留至少 80 画布单位间距；当前连线可能回绕或过于拥挤，请用 canvas_update_nodes 调整位置后再次查询。'
+      : null,
+  };
+}
+
 /** 宫格分镜单元格是虚拟引用，画布连线仍连接到真实的分镜节点。 */
 function resolvePromptReferenceSourceId(rawNodeId: string): string {
   const nodeId = rawNodeId.trim();
@@ -786,7 +807,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
       description: [
         '读取画布概况或符合条件的节点。无筛选条件时返回整个画布概况。',
         'detail=true 时额外返回结构化节点详情：ID、坐标、尺寸、模型、生成参数、提示词、',
-        '文本输出摘要和相关连线，用于精确定位后再调用更新、连接或运行工具。',
+        '文本输出摘要和相关连线（含实际端口、水平间距与布局提醒），用于精确定位后再调用更新、连接或运行工具。',
         '不会返回本地路径或媒体 URL。',
       ].join(''),
       inputSchema: {
@@ -839,6 +860,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
       title: '新建画布节点',
       description: [
         '在画布上原子创建一个或多个节点；不会自动运行节点模型。',
+        '布局按数据流从左向右：上游素材放左、下游生成或汇总节点放右；右出左入，节点之间建议预留至少 80 画布单位。',
         'prompt 里可写 @{nodeId:label} 或 @drama{assetId:name} 引用已有节点输出与资产库设定；节点引用会在创建时自动连线，生成时自动展开，不要再重复调用 canvas_connect_nodes。',
         'type 按这个节点最终要产出什么来选，不要因为内容是文字描述就一律建文本节点：',
         '产物是画面的（角色设定图、场景图、道具图、关键帧、单张分镜）用 ai-image，把画面描述写进 prompt；',
@@ -1087,6 +1109,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
       title: '连接画布节点',
       description: [
         '在两个已存在的画布节点之间创建一条连线，方向是 sourceId（提供内容）→ targetId（消费内容）。',
+        '端口固定为右出左入（sourceHandle=right、targetHandle=left），不会自动移动节点。连接前先用 canvas_query(detail=true) 检查位置：上游放左、下游放右，目标左边界应在源节点右边界之后并预留至少 80 画布单位；否则先用 canvas_update_nodes 调整。连接后检查返回的 layout.warning。',
         '连线会把上游节点的输出作为下游生成节点的参考输入，所以 targetId 必须是生成器节点：',
         'source-* 与 comment 只能作为 sourceId。',
       ].join(''),
@@ -1118,8 +1141,17 @@ export function registerCanvasAgentTools(): Array<() => void> {
           const message = `目标节点「${targetNode.data.label}」是素材节点，只能作为连线起点；两端写反了就交换 sourceId 与 targetId`;
           return { status: 'error', summary: message, modelContent: message };
         }
-        if (store.edges.some((edge) => edge.source === input.sourceId && edge.target === input.targetId)) {
-          return { status: 'success', summary: '节点已经连接', modelContent: '节点已经连接，无需重复创建' };
+        const layout = describeConnectionLayout(input.sourceId, input.targetId, store.nodes);
+        const existing = store.edges.find((edge) => edge.source === input.sourceId && edge.target === input.targetId);
+        if (existing) {
+          return {
+            status: 'success', summary: layout?.warning ? '节点已经连接，但布局需调整' : '节点已经连接',
+            modelContent: JSON.stringify({
+              sourceId: input.sourceId, targetId: input.targetId, alreadyConnected: true,
+              sourceHandle: existing.sourceHandle ?? null, targetHandle: existing.targetHandle ?? null,
+              layout, revision: store.getCurrentRevision(),
+            }),
+          };
         }
         store.onConnect({
           source: input.sourceId,
@@ -1130,10 +1162,11 @@ export function registerCanvasAgentTools(): Array<() => void> {
         useAppStore.getState().incrementRevision();
         return {
           status: 'success',
-          summary: '已创建节点连线',
+          summary: layout?.warning ? '已创建节点连线，但布局需调整' : '已创建节点连线',
           modelContent: JSON.stringify({
             sourceId: input.sourceId,
             targetId: input.targetId,
+            sourceHandle: 'right', targetHandle: 'left', layout,
             revision: useAppStore.getState().getCurrentRevision(),
           }),
         };
