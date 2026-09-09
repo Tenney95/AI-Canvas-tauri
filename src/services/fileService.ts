@@ -7,6 +7,7 @@ import { exists, writeFile, readFile as tauriReadFile, stat, rename } from '@tau
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { isLocalMediaUrl, isRemoteMediaUrl, localMediaUrlToPath } from '../utils/mediaUrl';
 import { identifyAsset } from './fs/assetIndex';
 import { walkDirectoryFiles } from './fs/assetLibrary';
 import {
@@ -22,6 +23,7 @@ import {
   sanitizeFileName,
   stripVerbatimPrefix,
   getConvertFileSrc,
+  getAssetUrlFromPath,
   ensureProjectDataDir,
   getProjectDataDir,
   joinPath,
@@ -483,19 +485,15 @@ function browserOpenFile(accept: string): Promise<File | null> {
   });
 }
 
-/** 读取本地文件路径，返回 data URL（供剪贴板粘贴等场景使用） */
+/** 解析裁剪来源，本地文件使用 asset URL，远程图片按需绕过 CORS。 */
 export async function fetchImageForCrop(imageUrl: string): Promise<string> {
-  // data:/blob: 是同源 URL，asset:// / asset.localhost 是 Tauri 本地资源，不需要绕过 CORS
-  if (
-    imageUrl.startsWith('data:') ||
-    imageUrl.startsWith('blob:') ||
-    imageUrl.startsWith('asset://') ||
-    imageUrl.includes('asset.localhost')
-  ) {
+  if (isLocalMediaUrl(imageUrl)) {
+    const localPath = localMediaUrlToPath(imageUrl);
+    if (localPath && isTauriEnv()) return getAssetUrlFromPath(localPath);
     return imageUrl;
   }
   // 远程 URL：通过 Rust 端 reqwest 原生 HTTP 下载（WebView CORS 不适用）
-  if (isTauriEnv() && /^https?:\/\//i.test(imageUrl)) {
+  if (isTauriEnv() && isRemoteMediaUrl(imageUrl)) {
     try {
       const dataUrl: string = await invoke('fetch_image_data_url', { url: imageUrl });
       return dataUrl;
@@ -549,23 +547,30 @@ function readBlobAsDataUrl(blob: Blob, signal?: AbortSignal): Promise<string> {
   });
 }
 
-/** 读取本地文件路径，返回有明确内存预算的 data URL。 */
+/** 读取本地路径或媒体 URL，返回有明确内存预算的 data URL。 */
 export async function readFileToDataUrl(
   filePath: string,
   options: ReadFileToDataUrlOptions = {},
 ): Promise<string | null> {
   try {
     throwIfMediaReadAborted(options.signal);
-    // Normalize Windows backslash paths
-    const normalized = filePath.replace(/\\/g, '/');
+    const localPath = localMediaUrlToPath(filePath);
+    const readPath = localPath ?? filePath;
+    const normalized = readPath.replace(/\\/g, '/');
     const ext = normalized.split('.').pop()?.toLowerCase() || '';
     const kind = options.kind ?? inferMediaDataUrlKind(normalized);
     const label = options.label ?? MEDIA_KIND_LABELS[kind];
 
-    if (isTauriEnv()) {
+    if (isMediaDataUrl(filePath)) {
+      const bytes = await assertMediaDataUrlWithinLimitAsync(filePath, kind, label, options.signal);
+      consumeMediaDataUrlBudgetBytes(options.dataUrlBudget, bytes);
+      return filePath;
+    }
+
+    if (isTauriEnv() && (localPath !== undefined || (!isLocalMediaUrl(filePath) && !isRemoteMediaUrl(filePath)))) {
       // 授权路径可 stat 时先拒绝，避免先把整个大文件读进 WebView 内存。
       try {
-        const fileInfo = await stat(filePath);
+        const fileInfo = await stat(readPath);
         throwIfMediaReadAborted(options.signal);
         assertMediaDataUrlSize(fileInfo.size, kind, label);
         assertMediaDataUrlBudgetAvailable(options.dataUrlBudget, fileInfo.size);
@@ -576,9 +581,9 @@ export async function readFileToDataUrl(
           || error instanceof MediaDataUrlTotalTooLargeError
           || isAbortError(error)
         ) throw error;
-        // 某些 asset/file URL 无法直接 stat，读取后仍会在 Base64 转换前二次检查。
+        // stat 不可用时，授权读取后仍会在 Base64 转换前二次检查。
       }
-      const content = await tauriReadFile(filePath);
+      const content = await tauriReadFile(readPath);
       throwIfMediaReadAborted(options.signal);
       assertMediaDataUrlSize(content.byteLength, kind, label);
       assertMediaDataUrlBudgetAvailable(options.dataUrlBudget, content.byteLength);
@@ -589,8 +594,8 @@ export async function readFileToDataUrl(
       return dataUrl;
     }
 
-    // Browser fallback: try fetch for http(s) URLs, or file:// for local dev
-    const resp = await fetch(normalized, { signal: options.signal });
+    // blob 与浏览器可访问的 URL 由 WebView 读取，不把 URL 当文件路径。
+    const resp = await fetch(filePath, { signal: options.signal });
     throwIfMediaReadAborted(options.signal);
     if (!resp.ok) throw new Error(`读取本地文件失败 (${resp.status})`);
     const contentLength = Number(resp.headers.get('Content-Length'));
@@ -613,7 +618,7 @@ export async function readFileToDataUrl(
       || error instanceof MediaDataUrlHeaderTooLargeError
       || isAbortError(error)
     ) throw error;
-    console.error('readFileToDataUrl failed:', filePath, error);
+    console.error('readFileToDataUrl failed:', error);
     return null;
   }
 }
@@ -834,7 +839,7 @@ export interface PersistedProjectMedia {
  * 将一次媒体生成结果收敛为可持久化的项目文件引用。
  * 没有项目目录时（浏览器环境）无法落盘：远程 URL 仍可展示，但内嵌媒体一旦进入
  * 持久化就是死数据，只能失败关闭。有项目目录时落盘失败同样必须失败关闭，
- * data:/blob: 落盘后还会把来源改为 asset URL，避免把完整媒体正文回写进 IndexedDB。
+ * 本地媒体落盘后把来源改为项目 asset URL，避免保留临时正文或旧目录引用。
  */
 export async function persistMediaUrlToProjectData(
   url: string,
@@ -851,7 +856,7 @@ export async function persistMediaUrlToProjectData(
   if (!saved?.filePath || !saved.assetUrl) {
     throw new Error('生成媒体未能写入项目目录');
   }
-  if (isTransientMediaUrl(url)) {
+  if (isLocalMediaUrl(url)) {
     return { ...saved, mediaUrl: saved.assetUrl, sourceUrl: saved.assetUrl };
   }
   return {
@@ -862,7 +867,7 @@ export async function persistMediaUrlToProjectData(
 }
 
 /**
- * 下载远程 URL 文件并保存到项目数据目录
+ * 将媒体 URL 保存到项目数据目录：本地资源复制，远程资源下载。
  * @param baseName 可选，优先用作文件名主体（通常为节点名）；为空时从 URL 提取或用 fallbackPrefix
  * @returns { filePath, assetUrl } 或 null（失败/非 Tauri）
  */
@@ -875,6 +880,7 @@ export async function downloadUrlAndSave(
 ): Promise<{ filePath: string; assetUrl: string } | null> {
   if (!isTauriEnv()) return null;
   try {
+    throwIfMediaReadAborted(options?.signal);
     if (isMediaDataUrl(url)) {
       const mime = /^data:([^;,]+)/i.exec(url)?.[1];
       const fileName = baseName && baseName.trim()
@@ -884,7 +890,7 @@ export async function downloadUrlAndSave(
     }
 
     if (/^blob:/i.test(url)) {
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: options?.signal });
       if (!response.ok) throw new Error(`读取临时媒体失败：HTTP ${response.status}`);
       const mime = response.headers.get('content-type') || undefined;
       const kind = inferMediaDataUrlKind(mime ?? fallbackPrefix);
@@ -896,12 +902,14 @@ export async function downloadUrlAndSave(
         assertMediaDataUrlSize(contentLength, kind, fileName);
       }
       const bytes = new Uint8Array(await response.arrayBuffer());
+      throwIfMediaReadAborted(options?.signal);
       assertMediaDataUrlSize(bytes.byteLength, kind, fileName);
       if (options?.deduplicateByContent) {
         const dataDir = await ensureProjectDataDir(projectId);
         if (!dataDir) return null;
         const destPath = await resolveContentAddressedProjectPath(dataDir, fileName, bytes);
         if (!await exists(destPath).catch(() => false)) {
+          throwIfMediaReadAborted(options?.signal);
           await writeFile(destPath, bytes);
           notifyProjectDiskChanged();
         }
@@ -914,10 +922,13 @@ export async function downloadUrlAndSave(
       return saveBinaryToProjectData(bytes, projectId, fileName);
     }
 
-    // 优先用节点名命名；否则沿用从 URL 提取文件名的旧逻辑
+    const sourcePath = localMediaUrlToPath(url);
+    if (!sourcePath && !isRemoteMediaUrl(url)) throw new Error('不支持的媒体地址');
+    // 本地 URL 还原为授权文件路径，保留原生流式复制的取消与进度。
+    const sourceName = sourcePath?.replace(/\\/g, '/').split('/').pop();
     const fileName = baseName && baseName.trim()
-      ? buildNodeFileName(baseName, guessExtension(url, undefined, fallbackPrefix), fallbackPrefix)
-      : extractFileNameFromUrl(url, fallbackPrefix);
+      ? buildNodeFileName(baseName, guessExtension(sourceName ?? url, undefined, fallbackPrefix), fallbackPrefix)
+      : sourceName ? sanitizeFileName(sourceName) : extractFileNameFromUrl(url, fallbackPrefix);
     const dataDir = await ensureProjectDataDir(projectId);
     if (!dataDir) return null;
     const result = await withDownloadDestinationLock(
@@ -926,8 +937,8 @@ export async function downloadUrlAndSave(
       async () => {
         const destPath = await resolveUniqueDestPath(dataDir, fileName);
         return runNativeFileTransfer(
-          'download_file_streamed',
-          { url, destinationPath: destPath },
+          sourcePath ? 'copy_file_streamed' : 'download_file_streamed',
+          sourcePath ? { sourcePath, destinationPath: destPath } : { url, destinationPath: destPath },
           options,
         );
       },
@@ -936,7 +947,7 @@ export async function downloadUrlAndSave(
     const toAssetUrl = await getConvertFileSrc();
     return { filePath: result.path, assetUrl: toAssetUrl ? toAssetUrl(result.path) : '' };
   } catch (err) {
-    console.warn('[fileService] downloadUrlAndSave failed:', url, err);
+    console.warn('[fileService] downloadUrlAndSave failed:', err);
     return null;
   }
 }

@@ -4,6 +4,7 @@
  * iframe 与专用原生 Channel 使用不同的来源验证，共用同一个资源/effect/写回权威。
  */
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { isLocalMediaUrl as isLocalReference } from '../../utils/mediaUrl';
 import { getLocale, type Locale } from '../../i18n';
 import type { NodeType } from '../../types';
 import type {
@@ -113,16 +114,6 @@ function normalizeDigest(value: string | undefined, label: string): string {
   const digest = value?.trim().toLowerCase().replace(/^sha256-/, '');
   if (!digest || !/^[a-f0-9]{64}$/u.test(digest)) throw new Error(`${label}缺失或无效`);
   return digest;
-}
-
-function isLocalReference(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  return normalized.startsWith('asset:')
-    || normalized.startsWith('file:')
-    || normalized.startsWith('blob:')
-    || normalized.startsWith('data:')
-    || normalized.startsWith('http://asset.localhost/')
-    || normalized.startsWith('https://asset.localhost/');
 }
 
 function normalizeJson(value: unknown, depth = 0): PluginJsonValue | undefined {

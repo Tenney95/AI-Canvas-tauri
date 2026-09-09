@@ -1,6 +1,7 @@
 /**
  * ai/generateVideo — 视频生成入口
  */
+import { isRemoteMediaUrl } from '../../utils/mediaUrl';
 import { useAppStore } from '../../store/useAppStore';
 import { isRunningHubWorkflow } from '../workflowExecutionService';
 import { executeRunningHubWorkflow } from './providers/runninghubWorkflow';
@@ -378,7 +379,7 @@ export function buildCanonicalVideoProtocolVariables(
     ...compatibility.videoUrls,
     ...compatibility.audioUrls,
   ];
-  const referenceUrls = combinedReferences.filter((url) => /^https?:\/\//i.test(url));
+  const referenceUrls = combinedReferences.filter(isRemoteMediaUrl);
   const inlineReferences = combinedReferences.filter((url) => url.startsWith('data:'));
 
   return {

@@ -3,6 +3,7 @@
  */
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
+import { isRemoteMediaUrl } from '../../utils/mediaUrl';
 import type { BaseNodeData } from '../../types';
 import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
@@ -651,14 +652,19 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         return;
       }
 
-      const remoteUrl = typeof data.sourceUrl === 'string' ? data.sourceUrl : data.videoUrl;
-      if (!remoteUrl?.startsWith('http') || derivation.projectId === 'default') {
+      if (!ensureFresh()) return;
+      const remoteUrl = isRemoteMediaUrl(data.sourceUrl) ? data.sourceUrl : data.videoUrl;
+      if (!isRemoteMediaUrl(remoteUrl)) {
+        cancelCanvasDerivation(derivation);
+        const message = error instanceof Error ? error.message : t('本地资源截帧失败');
+        useAppStore.getState().showToast(t('截取{frame}失败：{message}', { frame: frameLabel, message }), 'error');
+        return;
+      }
+      if (derivation.projectId === 'default') {
         cancelCanvasDerivation(derivation);
         useAppStore.getState().showToast(t('该视频来源禁止导出{frame}，请先上传为本地视频后再截帧', { frame: frameLabel }), 'error');
         return;
       }
-      if (!ensureFresh()) return;
-
       useAppStore.getState().showToast(t('远程视频受跨域限制，正在转为本地资源后重试...'), 'success');
       const saved = await downloadUrlAndSave(remoteUrl, derivation.projectId, 'video-source');
       if (!ensureFresh()) return;

@@ -1,3 +1,4 @@
+import { isRemoteMediaUrl } from '../../../utils/mediaUrl';
 import { useAppStore } from '../../../store/useAppStore';
 import type { RunningHubConnection, RunningHubMediaKind, RunningHubOutput, RunningHubWorkflowManifest } from '../../../types/runninghub';
 import { runningHubFieldValue, runningHubParameterKey, validateRunningHubManifest, isRecord } from '../../runninghubWorkflowService';
@@ -42,7 +43,7 @@ export async function buildRunningHubInputs(
     else if (field.source !== 'value') {
       const source = inputs[runningHubParameterKey(field)] || references[field.source]?.[field.referenceIndex ?? 0];
       if (source) {
-        if (field.mediaFormat === 'url' && /^https?:\/\//.test(source) && !source.includes('asset.localhost')) fieldValue = source;
+        if (field.mediaFormat === 'url' && isRemoteMediaUrl(source)) fieldValue = source;
         else {
           const cacheKey = `${field.source}:${source}`;
           let upload = uploaded.get(cacheKey);

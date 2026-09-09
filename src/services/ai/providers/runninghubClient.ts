@@ -1,3 +1,4 @@
+import { isLocalMediaUrl } from '../../../utils/mediaUrl';
 import type { RunningHubConnection, RunningHubMediaKind } from '../../../types/runninghub';
 import { corsSafeFetch } from '../httpTransport';
 import { assertMediaDataUrlSize } from '../../fileService';
@@ -72,7 +73,7 @@ export async function uploadRunningHubMedia(
   if (!['http:', 'https:', 'asset:', 'blob:', 'data:'].includes(source.protocol) || source.username || source.password) throw new Error('不支持的参考素材地址');
   if (mediaUrl.startsWith('data:') && mediaUrl.length > Math.ceil(MAX_UPLOAD_BYTES * 4 / 3) + 1024) throw new Error('参考素材超过 100 MB 限制');
   if (/^data:[^,]*;base64,/.test(mediaUrl)) assertMediaDataUrlSize(Math.ceil((mediaUrl.length - mediaUrl.indexOf(',') - 1) * 3 / 4), kind, 'RunningHub 参考素材');
-  const local = ['asset:', 'blob:', 'data:'].includes(source.protocol) || source.hostname === 'asset.localhost';
+  const local = isLocalMediaUrl(mediaUrl);
   const activeSignal = requestSignal(signal);
   const response = await (local ? fetch : request)(mediaUrl, { signal: activeSignal });
   if (!response.ok) throw new Error(`读取参考${kind === 'image' ? '图片' : kind === 'video' ? '视频' : '音频'}失败`);

@@ -3,6 +3,7 @@
  *
  * Handles workflow JSON mutation, image upload, submission, and result polling.
  */
+import { isRemoteMediaUrl } from '../utils/mediaUrl';
 import { useAppStore } from '../store/useAppStore';
 import { comfyBaseUrlFor } from './comfyServers';
 import type { WorkflowIONode, WorkflowIONodeType } from '../types';
@@ -406,7 +407,7 @@ async function uploadMediaToComfyUI(
     // 远程 URL → 取回字节。http(s) 一律走 Rust 通道：WebView 对 ComfyUI /view、
     // 各家 CDN 这类第三方源没有 CORS 许可，裸 fetch 会直接 Failed to fetch。
     // asset.localhost / blob: 是 WebView 自己的资源，reqwest 拿不到，仍走原生 fetch。
-    const useNativeChannel = /^https?:\/\//i.test(mediaUrl) && !mediaUrl.includes('asset.localhost');
+    const useNativeChannel = isRemoteMediaUrl(mediaUrl);
     const response = await (useNativeChannel ? corsSafeFetch : fetch)(mediaUrl, { signal });
     if (!response.ok) {
       throw new Error(`下载${label}失败 (${response.status})`);

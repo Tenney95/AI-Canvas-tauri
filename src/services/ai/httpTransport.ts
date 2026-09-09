@@ -1,4 +1,5 @@
 /** Fetch-compatible AI transport with a Tauri-native streaming path that bypasses WebView CORS. */
+import { isLocalMediaUrl, isRemoteMediaUrl, isTauriAssetUrl } from '../../utils/mediaUrl';
 import { Channel, invoke } from '@tauri-apps/api/core';
 
 type ProxyFetchStreamEvent =
@@ -7,7 +8,6 @@ type ProxyFetchStreamEvent =
   | { event: 'done' };
 
 const SENSITIVE_KEY_RE = /(?:authorization|api[-_]?key|access[-_]?key|token|secret|password|credential|signature|cookie)/i;
-const LOCAL_MEDIA_RE = /^(?:asset|blob|data|file):/i;
 const WINDOWS_ABSOLUTE_PATH_RE = /(?:^|[\s"'(=])[a-z]:[\\/]/i;
 const UNIX_ABSOLUTE_PATH_RE = /(?:^|[\s"'(=])\/(?:Users|home|root|private|var\/folders|tmp)\//;
 const MAX_LOGGED_STRING_LENGTH = 1000;
@@ -22,11 +22,11 @@ type SanitizedValue =
 
 function mediaScheme(value: string): string {
   const scheme = /^([a-z][a-z\d+.-]*):/i.exec(value)?.[1]?.toLowerCase();
-  return scheme || (value.includes('asset.localhost') ? 'asset.localhost' : 'local');
+  return isTauriAssetUrl(value) ? 'asset' : scheme || 'local';
 }
 
 function sanitizeUrl(value: string): SanitizedValue {
-  if (LOCAL_MEDIA_RE.test(value) || value.includes('asset.localhost')) {
+  if (isLocalMediaUrl(value)) {
     return { type: 'local-media', scheme: mediaScheme(value), length: value.length };
   }
   try {
@@ -46,6 +46,10 @@ function sanitizeUrl(value: string): SanitizedValue {
 }
 
 function sanitizeString(value: string): string {
+  // 日志中的嵌入地址也要脱敏；这条规则不参与素材上传或下载选路。
+  if (isLocalMediaUrl(value) || /(?:https?:\/\/asset\.localhost(?=[/:?#\s]|$)|asset:\/\/localhost)/i.test(value)) {
+    return '[REDACTED_TEXT_WITH_LOCAL_MEDIA]';
+  }
   if (WINDOWS_ABSOLUTE_PATH_RE.test(value) || UNIX_ABSOLUTE_PATH_RE.test(value)) {
     return '[REDACTED_TEXT_WITH_LOCAL_PATH]';
   }
@@ -63,7 +67,7 @@ function sanitizeValue(
   if (SENSITIVE_KEY_RE.test(key)) return '[REDACTED]';
   if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
   if (typeof value === 'string') {
-    if (LOCAL_MEDIA_RE.test(value) || value.includes('asset.localhost') || /^https?:\/\//i.test(value)) {
+    if (isLocalMediaUrl(value) || isRemoteMediaUrl(value)) {
       return sanitizeUrl(value);
     }
     return sanitizeString(value);

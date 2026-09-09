@@ -10,9 +10,10 @@
  *  - 内存缓存：同一进程内即时复用
  *  - localStorage 持久化缓存：跨进程/Session 复用，2.5 小时过期后自动重传
  */
+import { isLocalMediaUrl, isRemoteMediaUrl, localMediaUrlToPath } from '../utils/mediaUrl';
 import { useAppStore } from '../store/useAppStore';
 import { APIMART_BASE_URL } from '../constants/api';
-import { bytePartsToBase64Async, isTauriEnv } from './fs/core';
+import { bytePartsToBase64Async, getAssetUrlFromPath, isTauriEnv } from './fs/core';
 import {
   assertMediaDataUrlSize,
   assertMediaDataUrlWithinLimitAsync,
@@ -229,17 +230,7 @@ function pruneExpiredMemoryCache(now = Date.now()) {
 }
 
 /** 判断是否为本地图片 URL（需上传后才能发给远程 AI） */
-export function isLocalImageUrl(url: string): boolean {
-  if (!url) return false;
-  if (isMediaDataUrl(url)) return true;
-  if (/^(?:asset:|file:|blob:)/i.test(url)) return true;
-  try {
-    const source = new URL(url);
-    return ['http:', 'https:'].includes(source.protocol) && source.hostname === 'asset.localhost';
-  } catch {
-    return false;
-  }
-}
+export const isLocalImageUrl = isLocalMediaUrl;
 
 async function decodeBase64DataUrlParts(
   dataUrl: string,
@@ -310,7 +301,9 @@ async function fetchUrlToBlob(
   label: string,
   signal?: AbortSignal,
 ): Promise<{ blob: Blob; ext: string }> {
-  const response = await fetch(url, { signal });
+  const localPath = localMediaUrlToPath(url);
+  const readUrl = localPath && isTauriEnv() ? await getAssetUrlFromPath(localPath) : url;
+  const response = await fetch(readUrl, { signal });
   if (!response.ok) {
     throw new Error(`获取本地${label}失败 (${response.status})`);
   }
@@ -614,7 +607,7 @@ export async function resolveMediaReferenceUrl(
   } = options;
   if (signal?.aborted) throw abortReason(signal);
   // Windows 的 Tauri asset URL 也使用 HTTP，仍需读取并上传本地素材。
-  if (/^https?:\/\//i.test(url) && !isLocalImageUrl(url)) return url;
+  if (isRemoteMediaUrl(url)) return url;
   if (isMediaDataUrl(url) && mode === 'dataUrl') {
     const bytes = await assertMediaDataUrlWithinLimitAsync(
       url,

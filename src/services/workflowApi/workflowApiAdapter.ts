@@ -1,3 +1,4 @@
+import { isRemoteMediaUrl } from '../../utils/mediaUrl';
 import type { ApiProviderConfig } from '../../types';
 import type {
   CloudWorkflowOutput, WorkflowApiConnection, WorkflowApiInputValues, WorkflowApiManifest,
@@ -74,7 +75,7 @@ function validateReference(value: string, kind: 'image' | 'audio'): URL {
   let source: URL;
   try { source = new URL(value); } catch { throw new Error('工作流参考素材地址无效'); }
   if (source.username || source.password || !['http:', 'https:', 'asset:', 'file:', 'data:', 'blob:'].includes(source.protocol)) throw new Error('工作流参考素材地址无效');
-  if (['http:', 'https:'].includes(source.protocol) && source.hostname !== 'asset.localhost') assertPublicUrl(source);
+  if (isRemoteMediaUrl(value)) assertPublicUrl(source);
   const spec = kind === 'image' ? AUTODL_H3_WORKFLOW.images : AUTODL_H3_WORKFLOW.audio;
   if (source.protocol === 'data:') {
     const mime = /^data:([^;,]+);base64,/i.exec(value)?.[1]?.toLowerCase();
@@ -113,7 +114,7 @@ export async function buildWorkflowApiInputs(
   };
   for (const item of media) {
     signal?.throwIfAborted();
-    const remote = ['http:', 'https:'].includes(item.source.protocol) && item.source.hostname !== 'asset.localhost';
+    const remote = isRemoteMediaUrl(item.url);
     const url = remote ? item.url : await resolveMediaReferenceUrl(item.url, {
       provider: manifest.connectionId, kind: item.kind, mode: 'publicUrl', signal,
     });

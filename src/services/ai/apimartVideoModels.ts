@@ -1,6 +1,7 @@
 /**
  * 声明 APIMart Seedance 视频模型能力表，并将通用生成参数映射为各模型请求字段。
  */
+import { isRemoteMediaUrl } from '../../utils/mediaUrl';
 import type { VideoGenerationOperation, VideoModelCapability } from '../../types/aiTypes';
 import { mapVideoParameters } from './videoParameterMappings';
 import type { ProviderModelSelection } from '../../types';
@@ -467,9 +468,7 @@ function buildOmniRequest(
     throw new Error(`Omni 图片与首尾帧合计最多 ${capability.maxImageReferences} 张`);
   }
   const allUrls = [...images, ...videos, ...(first ? [first] : []), ...(last ? [last] : [])];
-  if (allUrls.some((value) => {
-    try { return !['http:', 'https:'].includes(new URL(value).protocol); } catch { return true; }
-  })) throw new Error('Omni 参考素材必须是可访问的 HTTP/HTTPS URL');
+  if (allUrls.some((value) => !isRemoteMediaUrl(value))) throw new Error('Omni 参考素材必须是可访问的 HTTP/HTTPS URL');
 
   const requestedResolution = params.resolution?.toLowerCase();
   const resolution = requestedResolution === '2160p' ? '4k' : requestedResolution ?? capability.defaultResolution;

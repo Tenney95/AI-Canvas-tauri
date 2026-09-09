@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { isLocalMediaUrl as isLocalMediaReference, isRemoteMediaUrl } from '../../utils/mediaUrl';
 import { getLocale } from '../../i18n';
 import type { Edge, Node } from '@xyflow/react';
 import type { BaseNodeData, NodeType } from '../../types';
@@ -477,22 +478,7 @@ function visitRenderedMarkdownImageReferences(markdown: string, visitor: (value:
 function isRemoteNetworkReference(value: string): boolean {
   const slashNormalized = value.replace(/\\/gu, '/');
   if (slashNormalized.startsWith('//')) return true;
-  try {
-    const protocol = new URL(slashNormalized).protocol.toLowerCase();
-    return protocol === 'http:' || protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-function isLocalMediaReference(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  return normalized.startsWith('asset:')
-    || normalized.startsWith('file:')
-    || normalized.startsWith('blob:')
-    || normalized.startsWith('data:')
-    || normalized.startsWith('http://asset.localhost/')
-    || normalized.startsWith('https://asset.localhost/');
+  return isRemoteMediaUrl(slashNormalized);
 }
 
 function isUnsafeInlineMediaReference(value: string): boolean {

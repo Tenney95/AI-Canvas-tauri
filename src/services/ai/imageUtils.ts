@@ -1,6 +1,7 @@
 /**
  * ai/imageUtils — 图片加载、URL 解析、上传辅助
  */
+import { isLocalMediaUrl, isRemoteMediaUrl } from '../../utils/mediaUrl';
 import { uploadToRemote, isLocalImageUrl } from '../uploadService';
 import { getAssetUrlFromPath } from '../fileService';
 import { corsSafeFetch } from './httpTransport';
@@ -53,8 +54,7 @@ async function referenceImageToDataUrl(
     return url;
   }
 
-  const usesWebViewFetch = /^(asset:|blob:|data:|file:)/i.test(url)
-    || url.includes('asset.localhost');
+  const usesWebViewFetch = isLocalMediaUrl(url);
   const response = await (usesWebViewFetch
     ? fetch(url, { signal })
     : corsSafeFetch(url, { signal }));
@@ -129,7 +129,7 @@ export function imageUrlReachable(url: string, timeoutMs = 6000): Promise<boolea
  */
 export async function resolveNodeImageUrl(url: string, filePath?: string): Promise<string> {
   // 本地/内联 URL（asset://、data:、blob:、http://asset.localhost）无需校验
-  if (!url || !/^https?:/i.test(url) || url.includes('asset.localhost')) return url;
+  if (!isRemoteMediaUrl(url)) return url;
   if (await imageUrlReachable(url)) return url;
   if (filePath) {
     try {
