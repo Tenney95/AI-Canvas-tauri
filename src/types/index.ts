@@ -599,6 +599,7 @@ export interface AppConfig {
   nodeLabelVisible?: boolean; // 是否显示节点顶部标题标签，默认 true
   canvasNoteToolbarVisible?: boolean; // 是否显示画布笔记工具栏，默认 true
   canvasHistoryPinned?: boolean; // 操作记录浮层是否锁定常显（默认悬浮才显示）
+  outputHistoryPinned?: boolean; // 输出历史面板是否固定常驻（固定后跳转节点不关闭面板）
   canvasQuickActions?: CanvasQuickAction[]; // 画布空白处长按圆环，最多 6 个槽位
   startupView?: StartupView; // 软件启动后打开上次画布或项目列表，默认 'last-project'
   windowAspectRatio?: WindowAspectRatio; // 窗口尺寸预设所用比例，默认 '16:9'

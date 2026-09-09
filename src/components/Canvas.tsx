@@ -35,6 +35,7 @@ import CanvasNoteNode from './noteNodes/CanvasNoteNode';
 import PluginNode from './nodes/PluginNode';
 import NodeRenderBoundary from './nodes/shared/NodeRenderBoundary';
 import { isEditableTarget } from '../utils/textSelection';
+import { playNodeFocusPulse } from '../utils/nodeAnimations';
 import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
 import NodeContextMenu from './canvas/NodeContextMenu';
@@ -821,9 +822,10 @@ function CanvasInner() {
   // ── Focus node events (history / Agent-created node batch) ──
   useEffect(() => {
     const scheduledFrames = new Set<number>();
+    const scheduledTimers = new Set<number>();
     const focusNodes = (
       nodeIds: string[],
-      options?: { padding?: number; maxZoom?: number; duration?: number },
+      options?: { padding?: number; maxZoom?: number; duration?: number; pulse?: boolean },
     ) => {
       if (nodeIds.length === 0) return;
       const firstFrame = requestAnimationFrame(() => {
@@ -834,21 +836,33 @@ function CanvasInner() {
           const targetNodes = reactFlowInstance.getNodes().filter((node) => targetIds.has(node.id));
           if (targetNodes.length === 0) return;
           const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          const duration = reduceMotion ? 0 : (options?.duration ?? 420);
           void reactFlowInstance.fitView({
             nodes: targetNodes,
             padding: options?.padding ?? (targetNodes.length === 1 ? 0.45 : 0.3),
             minZoom: targetNodes.length > 6 ? 0.18 : 0.28,
             maxZoom: options?.maxZoom ?? (targetNodes.length === 1 ? 1.1 : 0.95),
-            duration: reduceMotion ? 0 : (options?.duration ?? 420),
+            duration,
           });
+          // 单个节点定位后补一记「放大 → 回弹」脉冲，等镜头停稳再播
+          if (options?.pulse && nodeIds.length === 1 && !reduceMotion) {
+            const [nodeId] = nodeIds;
+            const timer = window.setTimeout(() => {
+              scheduledTimers.delete(timer);
+              playNodeFocusPulse(nodeId);
+            }, duration + 90);
+            scheduledTimers.add(timer);
+          }
         });
         scheduledFrames.add(secondFrame);
       });
       scheduledFrames.add(firstFrame);
     };
     const handleSingleNodeFocus = (e: Event) => {
-      const detail = (e as CustomEvent<{ nodeId: string }>).detail;
-      if (detail?.nodeId) focusNodes([detail.nodeId], { maxZoom: 1, duration: 400 });
+      const detail = (e as CustomEvent<{ nodeId: string; pulse?: boolean }>).detail;
+      if (detail?.nodeId) {
+        focusNodes([detail.nodeId], { maxZoom: 1, duration: 400, pulse: detail.pulse });
+      }
     };
     const handleNodeBatchFocus = (e: Event) => {
       const detail = (e as CustomEvent<{
@@ -865,6 +879,7 @@ function CanvasInner() {
       window.removeEventListener('canvas-focus-node', handleSingleNodeFocus);
       window.removeEventListener('canvas-focus-nodes', handleNodeBatchFocus);
       for (const frameId of scheduledFrames) cancelAnimationFrame(frameId);
+      for (const timerId of scheduledTimers) window.clearTimeout(timerId);
     };
   }, [reactFlowInstance]);
 
