@@ -26,7 +26,7 @@ import { resolveVideoSubmissionControls } from './ai/videoRequestResolver';
 import { generateShotlistRows } from './shotlistService';
 import { isCloudWorkflow, getCloudWorkflowPersistedOutput } from './workflowExecutionService';
 import { completeWorkflowApiNodeTask } from './workflowApi/workflowApiAdapter';
-import { completeRunningHubNodeTask, getRunningHubPersistedOutput } from './ai/providers/runninghubWorkflow';
+import { completeRunningHubNodeTask } from './ai/providers/runninghubWorkflow';
 import { registerCanvasDerivation, isCanvasDerivationFresh, completeCanvasDerivation } from './canvasDerivationGuard';
 
 export interface GenerationResult {
@@ -127,7 +127,7 @@ export async function executeGeneration(
       });
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
 
-      const persisted = getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (submittingProjectId
+      const persisted = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (submittingProjectId
         ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-image', data.label)
         : { mediaUrl: result.url, sourceUrl: result.url });
       if (runningHubTask && !isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
@@ -138,6 +138,7 @@ export async function executeGeneration(
         imageWidth: result.width, imageHeight: result.height,
       });
       if (runningHubTask) completeRunningHubNodeTask(nodeId);
+      if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
       store.syncDramaAssetImageFromNode?.(nodeId, mediaUrl);
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
@@ -229,6 +230,7 @@ export async function executeGeneration(
       });
       if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
       if (runningHubTask) completeRunningHubNodeTask(nodeId);
+      if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
         output: persisted.sourceUrl, nodeType: 'ai-video', model: nodeModel, provider: nodeProvider,
@@ -268,6 +270,7 @@ export async function executeGeneration(
         status: 'success',
       });
       if (runningHubTask) completeRunningHubNodeTask(nodeId);
+      if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
       store.recordOutputHistory(nodeId, {
         nodeId, nodeLabel: data.label, timestamp: Date.now(), prompt: effectivePrompt,
         output: persisted.outputUrl, nodeType: 'ai-audio', model: nodeModel, provider: nodeProvider,
@@ -282,6 +285,7 @@ export async function executeGeneration(
           autoGenerateLyrics: data.autoGenerateLyrics,
         },
       });
+      if (result.workflowApiTaskId) completeWorkflowApiNodeTask(nodeId, result.workflowApiTaskId);
       store.showToast('音频生成完成');
     } else if (nodeType === 'ai-shotlist') {
       await generateShotlistRows(nodeId, effectivePrompt, nodeModel, nodeProvider);

@@ -1,14 +1,15 @@
 import type { VideoModelCapability } from '../../types/aiTypes';
-import type { WorkflowApiManifest } from '../../types/workflowApi';
+import type { LegacyWorkflowApiManifest, WorkflowApiManifest } from '../../types/workflowApi';
+import { validateDeclarativeWorkflowManifest } from './workflowApiDefinition';
 
 export const AUTODL_BASE_URL = 'https://autodl.art';
-export function normalizeWorkflowApiBaseUrl(value?: string): string {
+export function normalizeWorkflowApiBaseUrl(value?: string, allowBasePath = false): string {
   let url: URL;
   try { url = new URL(value?.trim() || AUTODL_BASE_URL); }
   catch { throw new Error('工作流 API 连接地址无效'); }
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash
-    || !['', '/'].includes(url.pathname)) throw new Error('工作流 API 连接请填写站点根地址');
-  return url.origin;
+    || (!allowBasePath && !['', '/'].includes(url.pathname))) throw new Error('工作流 API 连接请填写站点根地址');
+  return allowBasePath ? url.toString().replace(/\/+$/, '') : url.origin;
 }
 export const AUTODL_H3_WORKFLOW = {
   id: 'minimax_h3_zm_u24',
@@ -48,6 +49,7 @@ export function resolveWorkflowApiInputValues(values: unknown = {}) {
 }
 
 export function validateWorkflowApiManifest(value: unknown): asserts value is WorkflowApiManifest {
+  if (isRecord(value) && value.version === 2) { validateDeclarativeWorkflowManifest(value); return; }
   const keys = ['version', 'adapter', 'workflowId', 'connectionId', 'defaults'];
   if (!isRecord(value) || Object.keys(value).some((key) => !keys.includes(key))
     || value.version !== 1 || value.adapter !== 'autodl-comfyui'
@@ -61,8 +63,8 @@ export function validateWorkflowApiManifest(value: unknown): asserts value is Wo
   }
 }
 
-export function createAutodlH3WorkflowManifest(connectionId: string): WorkflowApiManifest {
-  const manifest: WorkflowApiManifest = { version: 1, adapter: 'autodl-comfyui', workflowId: AUTODL_H3_WORKFLOW.id, connectionId };
+export function createAutodlH3WorkflowManifest(connectionId: string): LegacyWorkflowApiManifest {
+  const manifest: LegacyWorkflowApiManifest = { version: 1, adapter: 'autodl-comfyui', workflowId: AUTODL_H3_WORKFLOW.id, connectionId };
   validateWorkflowApiManifest(manifest);
   return manifest;
 }

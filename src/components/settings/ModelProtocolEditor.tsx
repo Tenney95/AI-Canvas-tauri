@@ -47,6 +47,8 @@ type EditorView = 'form' | 'json';
 type JsonFieldKind = 'object' | 'value';
 
 interface ModelProtocolEditorProps {
+  workflowMode?: boolean;
+  initialPreviewVariables?: ModelProtocolVariables;
   model: ProviderModelSelection;
   /** 试跑用的真实凭据与网关地址；缺任意一个就只能做本地预览。 */
   apiKey: string;
@@ -294,6 +296,8 @@ function createDefaultPoll(category: GeneralModelCategory): ModelProtocolPollTem
 }
 
 export default function ModelProtocolEditor({
+  workflowMode = false,
+  initialPreviewVariables,
   model,
   apiKey,
   baseUrl,
@@ -314,7 +318,7 @@ export default function ModelProtocolEditor({
   const [error, setError] = useState<string | null>(null);
   const [formRevision, setFormRevision] = useState(0);
   const [previewVariablesJson, setPreviewVariablesJson] = useState(
-    () => serializeJson(createPreviewVariables(model)),
+    () => serializeJson(initialPreviewVariables ?? createPreviewVariables(model)),
   );
   const [responseSampleJson, setResponseSampleJson] = useState(
     () => serializeJson(createResponseSample()),
@@ -584,6 +588,9 @@ export default function ModelProtocolEditor({
   };
 
   const auth = protocol.auth ?? { type: 'bearer' as const };
+  const availableVariables = workflowMode && initialPreviewVariables
+    ? Object.keys(initialPreviewVariables)
+    : CATEGORY_VARIABLES[model.category];
   const poll = protocol.poll;
   const responseResult = protocol.response.result ?? {};
   const pollResponse = poll?.response;
@@ -693,7 +700,7 @@ export default function ModelProtocolEditor({
     <section className="provider-protocol-editor is-small"       aria-label={t('{name} 调用协议', { name: model.name })}>
       <div className="provider-protocol-editor-head">
         <div>
-          <span>{t('模型调用协议')}</span>
+          <span>{t(workflowMode ? '工作流调用协议' : '模型调用协议')}</span>
           <strong>{model.name}</strong>
         </div>
         <PopupCloseButton ariaLabel={t('关闭协议设置')} onClick={onClose} />
@@ -703,12 +710,12 @@ export default function ModelProtocolEditor({
         <label className="provider-protocol-field">
           <span>{t('协议预设')}</span>
           <select value={preset} onChange={(event) => changePreset(event.target.value as ProtocolChoice)}>
-            {getAvailableChoices(model.category).map((choice) => (
+            {(workflowMode ? ['custom' as const] : getAvailableChoices(model.category)).map((choice) => (
               <option key={choice} value={choice}>{t(PRESET_LABELS[choice])}</option>
             ))}
           </select>
         </label>
-        {model.category === 'image' ? (
+        {model.category === 'image' && !workflowMode ? (
           <label className="provider-protocol-field">
             <span>{t('参考图请求')}</span>
             <select
@@ -1325,7 +1332,7 @@ export default function ModelProtocolEditor({
           <details className="provider-protocol-variables">
             <summary>{t('可用变量')}</summary>
             <div>
-              {CATEGORY_VARIABLES[model.category].map((variable) => (
+              {availableVariables.map((variable) => (
                 <code key={variable} data-tooltip={t(getVariableTooltip(variable))}>
                   {`{{${variable}}}`}
                 </code>
@@ -1398,7 +1405,7 @@ export default function ModelProtocolEditor({
               <span>{t('（鼠标在变量上悬浮可查看详细说明）')}</span>
             </div>
             <div className="provider-protocol-json-variable-list">
-              {CATEGORY_VARIABLES[model.category].map((variable) => (
+              {availableVariables.map((variable) => (
                 <code key={variable} data-tooltip={t(getVariableTooltip(variable))}>
                   {`{{${variable}}}`}
                 </code>

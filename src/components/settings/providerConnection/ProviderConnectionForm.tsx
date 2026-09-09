@@ -91,7 +91,7 @@ export default function ProviderConnectionForm({
         </div>
       )}
 
-      {definition.id === 'custom-openai' && (
+      {(definition.id === 'custom-openai' || isWorkflowApi) && (
         <label className="provider-field">
           <span>{t('连接名称')}</span>
           <input
@@ -186,7 +186,7 @@ export default function ProviderConnectionForm({
         </div>
       )}
 
-      {isWorkflowApi && <p className="mt-2 text-xs text-canvas-text-secondary">{t('请填写 AutoDL ComfyUI 分组的原始 Token。')}</p>}
+      {isWorkflowApi && <p className="mt-2 text-xs text-canvas-text-secondary">{t('填写平台提供的密钥，鉴权方式和前缀在各工作流的调用协议中配置。')}</p>}
       {duplicateConnectionName && (
         <div className="provider-catalog-message is-warning">
           <Icon icon="mdi:content-duplicate" width="14" />

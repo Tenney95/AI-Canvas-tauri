@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseConnectionShare, serializeConnection } from '../../src/services/ai/providerConnectionTransfer';
 import { getProviderDefinition, fetchProviderModelCatalog } from '../../src/services/ai/providerCatalogService';
 import { testProviderConnection } from '../../src/services/testConnection';
-import { saveAutodlWorkflowTemplate, parseWorkflowApiFields } from '../../src/services/workflowApi/workflowApiConfig';
+import { saveAutodlWorkflowTemplate, saveWorkflowApiDrafts, parseWorkflowApiFields } from '../../src/services/workflowApi/workflowApiConfig';
 import { useAppStore } from '../../src/store/useAppStore';
 import { findMediaModelOption } from '../../src/components/nodes/shared/defaultModels';
 import { workflowExecution } from '../../src/services/workflowExecutionService';
@@ -36,8 +36,8 @@ describe('工作流 API 配置与目录', () => {
     expect(share).not.toContain(connection.apiKey);
     const parsed = parseConnectionShare(share)!;
     expect(parsed.config.apiKey).toBe(''); expect(parsed.config.selectedModels).toEqual([]);
-    expect(parsed.workflowApi?.defaults).toEqual({ seed: 0, duration: 15, resolution: '480p', ratio: '1:1' });
-    await saveAutodlWorkflowTemplate('new-connection', parsed.workflowApi?.defaults);
+    expect(parsed.workflowApiDrafts?.[0].manifest.parameters).toMatchObject({ seed: { default: 0 }, duration: { default: 15 }, resolution: { default: '480p(1:1)' } });
+    await saveWorkflowApiDrafts('new-connection', parsed.workflowApiDrafts!);
     expect(useAppStore.getState().workflows[1].workflowApi?.connectionId).toBe('new-connection');
   });
   it.each(['unknown-workflow', '../../other'])('导入拒绝未知工作流 %s，不回退到普通模型', (workflowId) => {
@@ -49,7 +49,7 @@ describe('工作流 API 配置与目录', () => {
       const share = JSON.parse(serializeConnection(connection)); Object.assign(share.workflowApi, patch);
       expect(parseConnectionShare(JSON.stringify(share))).toBeNull();
     }
-    const share = JSON.parse(serializeConnection(connection)); share.connection.baseUrl = 'https://autodl.art/v1';
+    const share = JSON.parse(serializeConnection(connection)); share.connection.baseUrl = 'https://user:password@autodl.art/v1';
     expect(parseConnectionShare(JSON.stringify(share))).toBeNull();
     await expect(saveAutodlWorkflowTemplate('autodl-workflow', { duration: 16 })).rejects.toThrow();
     expect(mocks.save).not.toHaveBeenCalled();

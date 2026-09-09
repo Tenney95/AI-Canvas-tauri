@@ -187,6 +187,8 @@ export default function VideoParamSelector({
     return state.nodes.filter((node) => sourceIds.has(node.id) && Boolean((node.data as BaseNodeData).imageUrl));
   }));
   const canvasNodes = useAppStore((state) => state.nodes);
+  const workflowApiManifest = useAppStore((state) => state.workflows.find((workflow) =>
+    workflow.id === selectedModel?.replace(/^workflow-api\//, ''))?.workflowApi);
 
   const references = videoReferences ?? [];
   const frameReferences = references.filter((item) => item.kind === 'frame');
@@ -266,7 +268,8 @@ export default function VideoParamSelector({
   });
   // 原生模型和通用模型共享参数面板，但通用模型不再经过会补齐 Seedance 默认值的能力视图。
   // 这样 capability 未声明的字段会保持未指定，不会被 UI 悄悄写成 720p / 16:9 / 24fps。
-  const workflowApiCapability: VideoModelCapability | undefined = provider === 'workflow-api' ? AUTODL_H3_WORKFLOW.capability : undefined;
+  const workflowApiCapability: VideoModelCapability | undefined = provider === 'workflow-api' && workflowApiManifest?.version === 1
+    ? AUTODL_H3_WORKFLOW.capability : undefined;
   const nativeCapability = apimartCapability ?? volcengineCapability ?? dreaminaCapability;
   const parameterCapability = nativeCapability ?? workflowApiCapability ?? generalCapability;
   const isNativeSeedance = provider === 'volcengine' || provider === 'dreamina' || Boolean(apimartCapability || workflowApiCapability);

@@ -36,8 +36,9 @@ import PopupCloseButton from '../shared/PopupCloseButton';
 import ProviderConnectionForm from './providerConnection/ProviderConnectionForm';
 import ProviderModelSection from './providerConnection/ProviderModelSection';
 import ProviderWorkflowSection from './providerConnection/ProviderWorkflowSection';
-import type { WorkflowApiInputValues } from '../../types/workflowApi';
-import { normalizeWorkflowApiBaseUrl, resolveWorkflowApiInputValues } from '../../services/workflowApi/autodlWorkflowManifest';
+import type { WorkflowApiDraft } from '../../types/workflowApi';
+import { normalizeWorkflowApiBaseUrl } from '../../services/workflowApi/autodlWorkflowManifest';
+import { editableWorkflowApiManifest, validateDeclarativeWorkflowManifest } from '../../services/workflowApi/workflowApiDefinition';
 import ProviderWebSearchPicker from './providerConnection/ProviderWebSearchPicker';
 import {
   assertProviderModelsVideoCapabilities,
@@ -80,8 +81,10 @@ export default function ProviderConnectionDialog({
   const [apiKey, setApiKey] = useState(initialConfig?.apiKey || '');
   const [baseUrl, setBaseUrl] = useState(initialConfig?.baseUrl || initialDefinition?.defaultBaseUrl || '');
   const [workflowApiKey, setWorkflowApiKey] = useState(runninghubWorkflowApiKey);
-  const [workflowDefaults, setWorkflowDefaults] = useState<WorkflowApiInputValues>(() =>
-    useAppStore.getState().workflows.find((workflow) => workflow.adapterType === 'workflow-api' && workflow.workflowApi?.connectionId === connectionId)?.workflowApi?.defaults ?? {});
+  const [workflowDrafts, setWorkflowDrafts] = useState<WorkflowApiDraft[]>(() =>
+    useAppStore.getState().workflows.filter((workflow) => workflow.adapterType === 'workflow-api' && workflow.workflowApi?.connectionId === connectionId)
+      .map((workflow) => ({ id: workflow.id, name: workflow.name, manifest: editableWorkflowApiManifest(workflow.workflowApi!) })));
+  const [workflowValid, setWorkflowValid] = useState(false);
   const [models, setModels] = useState<ProviderModelSelection[]>(
     mergeModels(mergeModels(initialLocalModels, initialCatalogModels), initialSelectedModels),
   );
@@ -126,6 +129,7 @@ export default function ProviderConnectionDialog({
       return item.id === 'tavily' && (!hasWebSearchConnection || isWebSearchProvider);
     }
     return item.id === 'custom-openai'
+      || item.kind === 'workflow-api'
       || item.id === initialDefinitionId
       || !connectedProviderIds.includes(item.id);
   });
@@ -173,6 +177,7 @@ export default function ProviderConnectionDialog({
 
   const missingCredentials = useMemo(() => {
     if (!definition) return true;
+    if (definition.kind === 'workflow-api') return !baseUrl.trim();
     if (definition.authType === 'oauth') return !dreaminaLoggedIn;
     if (definition.id === 'runninghub-model') return !apiKey.trim() && !workflowApiKey.trim();
     if (!apiKey.trim()) return true;
@@ -540,7 +545,12 @@ export default function ProviderConnectionDialog({
       || !protocolValid
     ) return;
     try {
-      if (isWorkflowApi) { normalizeWorkflowApiBaseUrl(baseUrl); resolveWorkflowApiInputValues(workflowDefaults); }
+      if (isWorkflowApi) {
+        if (!baseUrl.trim() || !workflowValid || !workflowDrafts.length) throw new Error(t('请完成工作流配置'));
+        normalizeWorkflowApiBaseUrl(baseUrl, true);
+        workflowDrafts.forEach((draft) => validateDeclarativeWorkflowManifest(draft.manifest));
+        if (!apiKey.trim() && workflowDrafts.some((draft) => draft.manifest.protocol.auth?.type !== 'none')) throw new Error(t('请填写工作流 API Token'));
+      }
       assertProviderModelsVideoCapabilities(selectedModels);
     } catch (error) {
       setCatalogStatus('error');
@@ -564,14 +574,14 @@ export default function ProviderConnectionDialog({
       {
         name: connectionName.trim() || definition.name,
         apiKey: definition.authType === 'oauth' ? '' : apiKey.trim(),
-        baseUrl: isWorkflowApi ? normalizeWorkflowApiBaseUrl(baseUrl) : normalizeBaseUrl(baseUrl, chatApiProtocol) || undefined,
+        baseUrl: isWorkflowApi ? normalizeWorkflowApiBaseUrl(baseUrl, true) : normalizeBaseUrl(baseUrl, chatApiProtocol) || undefined,
         catalogId: definition.id,
         ...(definition.id === 'custom-openai' ? { chatApiProtocol } : {}),
         ...modelConfig,
       },
       definition.id === 'runninghub-model'
         ? { runninghubWorkflowApiKey: workflowApiKey.trim() }
-        : isWorkflowApi ? { workflowApiDefaults: workflowDefaults } : undefined,
+        : isWorkflowApi ? { workflowApiDrafts: workflowDrafts } : undefined,
     );
     } catch (error) { setCatalogStatus('error'); setCatalogMessage(error instanceof Error ? error.message : t('保存失败')); }
   };
@@ -661,7 +671,7 @@ export default function ProviderConnectionDialog({
               />
             )}
 
-            {isWorkflowApi && <ProviderWorkflowSection values={workflowDefaults} onChange={setWorkflowDefaults} />}
+            {isWorkflowApi && <ProviderWorkflowSection drafts={workflowDrafts} onChange={setWorkflowDrafts} onValidityChange={setWorkflowValid} />}
             {!isWebSearchProvider && !isWorkflowApi && (
               <ProviderModelSection
                 definition={definition}
@@ -719,7 +729,7 @@ export default function ProviderConnectionDialog({
             <span>
               {isWebSearchProvider
                 ? `当前使用 ${definition.name}`
-                : isWorkflowApi ? t('将启用 H3 视频工作流') : selectedModels.length > 0
+                : isWorkflowApi ? t('将配置 {count} 个工作流', { count: workflowDrafts.length }) : selectedModels.length > 0
                   ? t('将启用 {count} 个模型', { count: selectedModels.length })
                   : t('至少选择一个模型')}
             </span>
@@ -732,6 +742,7 @@ export default function ProviderConnectionDialog({
                 className="provider-primary-btn"
                 disabled={
                   missingCredentials
+                  || (isWorkflowApi && !workflowValid)
                   || (!isWebSearchProvider && !isWorkflowApi && !workflowOnlyConnection && selectedModels.length === 0)
                   || !protocolValid
                 }

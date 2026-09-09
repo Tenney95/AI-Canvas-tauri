@@ -52,6 +52,9 @@ export function workflowExecution(workflow: WorkflowDefinition) {
   }
   if (isWorkflowApi(workflow)) {
     if (!workflow.workflowApi) throw new Error('工作流 API 定义不完整，请重新选择模板');
+    if (workflow.workflowApi.version === 2) return { provider: 'workflow-api', model: `workflow-api/${workflow.id}`, workflowId: workflow.id,
+      workflowInputs: {}, seedanceDuration: undefined, seedanceResolution: undefined, seedanceRatio: undefined,
+      videoResolution: undefined, videoFps: undefined, videoFrames: undefined, generateAudio: undefined };
     const values = resolveWorkflowApiInputValues(workflow.workflowApi.defaults);
     return { provider: 'workflow-api', model: `workflow-api/${workflow.id}`, workflowId: workflow.id,
       seedanceDuration: values.duration, seedanceResolution: values.resolution, seedanceRatio: values.ratio,

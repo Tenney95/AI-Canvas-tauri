@@ -20,7 +20,6 @@ import {
 import { comfyBaseUrlFor } from '../comfyServers';
 import { isRunningHubWorkflow, mediaProviderConfigId, workflowExecution, runningHubConnection } from '../workflowExecutionService';
 import { getRunningHubModel } from './providers/runninghubModelManifest';
-import { getRunningHubPersistedOutput } from './providers/runninghubWorkflow';
 import { workflowApiConnection } from '../workflowApi/workflowApiAdapter';
 import { getCloudWorkflowPersistedOutput } from '../workflowExecutionService';
 import type {
@@ -105,7 +104,7 @@ export function resolveMediaModel(kind: MediaKind, modelRef?: string): ResolvedM
   if (option.workflowId) {
     const workflow = useAppStore.getState().workflows.find((item) => item.id === option.workflowId);
     if (workflow?.adapterType === 'workflow-api' && workflow.workflowApi) {
-      workflowApiConnection(config.providers[workflow.workflowApi.connectionId]);
+      workflowApiConnection(config.providers[workflow.workflowApi.connectionId], workflow.workflowApi);
       const execution = workflowExecution(workflow);
       return { configId: option.value, requestModel: execution.model, provider: execution.provider, workflowId: workflow.id };
     }
@@ -225,6 +224,8 @@ export async function runMediaGeneration(
 
   const model = resolveMediaModel(intent.kind, intent.modelRef);
   if (model.provider === 'runninghubwf' && [intent.aspectRatio, intent.resolution, intent.duration].some((value) => value !== undefined)) throw new Error('请通过工作流参数设置比例、分辨率或时长');
+  if (model.provider === 'workflow-api' && useAppStore.getState().workflows.find((workflow) => workflow.id === model.workflowId)?.workflowApi?.version === 2
+    && [intent.aspectRatio, intent.resolution, intent.duration].some((value) => value !== undefined)) throw new Error('自定义工作流请通过 workflowInputs 设置参数');
   if (
     intent.kind === 'audio'
     && intent.audioPurpose
@@ -255,11 +256,13 @@ export async function runMediaGeneration(
       aspectRatio: projectSettings?.generation?.imageAspectRatio || '1:1',
       workflowId: model.workflowId,
       workflowInputs: intent.workflowInputs, runninghubModelParameters: model.provider === 'runninghub' ? runninghubModelParameters : undefined,
-      nodeId: ['runninghubwf', 'runninghub'].includes(model.provider) ? targetNodeId : undefined,
+      nodeId: ['runninghubwf', 'runninghub', 'workflow-api'].includes(model.provider) ? targetNodeId : undefined,
       runninghubTaskContext,
+
+      workflowApiTaskContext: model.provider === 'workflow-api' ? runninghubTaskContext : undefined,
     }, signal);
     throwIfAborted(signal);
-    const savedCloud = getRunningHubPersistedOutput(result.runninghubOutputs, result.url);
+    const savedCloud = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url);
     const persisted: MediaPersistOutcome = savedCloud ? { ...savedCloud, status: savedCloud.persistence } : await persistGeneratedMedia(result.url, projectId, intent.kind, id);
     if (persisted.status === 'failed' && isTransientMediaUrl(result.url)) {
       throw new Error(persisted.error || MEDIA_PERSIST_FAILED_MESSAGE);
@@ -270,6 +273,8 @@ export async function runMediaGeneration(
       id,
       kind: intent.kind,
       runninghubOutputs: result.runninghubOutputs,
+
+      workflowApiOutputs: result.workflowApiOutputs, workflowApiTaskId: result.workflowApiTaskId,
       deliveryMode: intent.deliveryMode,
       url: persisted.assetUrl || result.url,
       sourceUrl: persisted.sourceUrl || result.url,
@@ -340,8 +345,10 @@ export async function runMediaGeneration(
     provider: model.provider,
     workflowId: model.workflowId,
     workflowInputs: intent.workflowInputs, runninghubModelParameters: model.provider === 'runninghub' ? runninghubModelParameters : undefined,
-    nodeId: ['runninghubwf', 'runninghub'].includes(model.provider) ? targetNodeId : undefined,
+    nodeId: ['runninghubwf', 'runninghub', 'workflow-api'].includes(model.provider) ? targetNodeId : undefined,
     runninghubTaskContext,
+
+    workflowApiTaskContext: model.provider === 'workflow-api' ? runninghubTaskContext : undefined,
   }, signal);
   throwIfAborted(signal);
   const persisted = await persistAudioGenerationResult(
@@ -355,6 +362,8 @@ export async function runMediaGeneration(
     id,
     kind: intent.kind,
     runninghubOutputs: result.runninghubOutputs,
+
+    workflowApiOutputs: result.workflowApiOutputs, workflowApiTaskId: result.workflowApiTaskId,
     deliveryMode: intent.deliveryMode,
     url: persisted.mediaUrl,
     sourceUrl: persisted.sourceUrl || persisted.outputUrl,

@@ -37,6 +37,7 @@ import { MAX_IMAGE_BATCH_COUNT } from '../../../types/aiTypes';
 import type { AudioOutputFormat, AudioTtsVoice, VideoReferenceItem } from '../../../types/aiTypes';
 import type { AudioGenerationPurpose } from '../../../types/media';
 import { useT } from '../../../i18n';
+import WorkflowApiParameterFields from './WorkflowApiParameterFields';
 import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../../services/ai/dreaminaModels';
 
 const IMAGE_RATIO_CLASS_NAMES: Record<string, string> = {
@@ -518,7 +519,7 @@ export default function PromptPanel({
     }
   }, []);
 
-  const hasGenerationInput = !!prompt.trim() || selectedProvider === 'runninghub' || selectedProvider === 'runninghubwf';
+  const hasGenerationInput = !!prompt.trim() || selectedProvider === 'runninghub' || selectedProvider === 'runninghubwf' || selectedProvider === 'workflow-api';
   const batchSupported = nodeType === 'ai-image'
     && Boolean(onChangeBatchCount)
     && selectedProvider !== 'dreamina'
@@ -685,7 +686,11 @@ export default function PromptPanel({
         <summary className="cursor-pointer text-xs text-canvas-text-secondary">云工作流参数</summary>
         <div className="mt-2 max-h-72 overflow-y-auto"><RunningHubParameterFields parameters={runninghubWorkflow.runninghub?.parameters ?? []} values={workflowInputs} onChange={onWorkflowInputsChange} disabled={isGenerating} /></div>
       </details>}
-      {workflowApi && onWorkflowInputsChange && <details className="ui-card m-2 p-2 text-xs">
+      {workflowApi?.workflowApi?.version === 2 && onWorkflowInputsChange && <details className="ui-card m-2 p-2 text-xs">
+        <summary className="cursor-pointer text-canvas-text-secondary">{t('工作流输入')}</summary>
+        <div className="mt-2 max-h-80 overflow-y-auto"><WorkflowApiParameterFields manifest={workflowApi.workflowApi} values={workflowInputs} onChange={onWorkflowInputsChange} disabled={isGenerating} /></div>
+      </details>}
+      {workflowApi?.workflowApi?.version === 1 && onWorkflowInputsChange && <details className="ui-card m-2 p-2 text-xs">
         <summary className="cursor-pointer text-canvas-text-secondary">{t('工作流输入')}</summary>
         <p className="my-2 text-canvas-text-secondary">{t('引用 1–9 张图片与最多 3 段音频；按引用顺序发送。')}</p>
         <label className="flex flex-wrap items-center gap-2">{t('随机种子（可选）')}<input className="ui-input min-w-0 flex-1" type="number" step={1} disabled={isGenerating}
@@ -751,7 +756,7 @@ export default function PromptPanel({
           <CameraSettingsSelector value={cameraSettings} onChange={onChangeCameraSettings} />
         )}
 
-        {nodeType === 'ai-image' && !runninghubWorkflow && !runninghubModel && (
+        {nodeType === 'ai-image' && !runninghubWorkflow && !runninghubModel && !workflowApi && (
           <QualityRatioSelector
             imageSize={imageSize}
             aspectRatio={aspectRatio}
@@ -782,7 +787,7 @@ export default function PromptPanel({
           />
         )}
 
-        {nodeType === 'ai-video' && !runninghubWorkflow && !runninghubModel && (
+        {nodeType === 'ai-video' && !runninghubWorkflow && !runninghubModel && workflowApi?.workflowApi?.version !== 2 && (
           <VideoParamSelector
             provider={selectedProvider}
             selectedModel={selectedModel}
@@ -806,7 +811,7 @@ export default function PromptPanel({
           />
         )}
 
-        {nodeType === 'ai-audio' && !runninghubWorkflow && !runninghubModel && (
+        {nodeType === 'ai-audio' && !runninghubWorkflow && !runninghubModel && !workflowApi && (
           <AudioParamSelector
             purpose={audioPurpose}
             voice={audioVoice}

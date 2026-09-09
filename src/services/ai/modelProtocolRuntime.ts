@@ -174,7 +174,6 @@ function isRuleDelivered(
 ): boolean {
   const eligible = usages.filter((usage) => (
     rule.roots.includes(usage.root)
-    && (expected.length <= 1 || (usage.full && rule.collectionRoots.includes(usage.root)))
   ));
   return containsAllValues(eligible.flatMap((usage) => usage.values), expected);
 }
@@ -211,6 +210,7 @@ function fallbackDeliveryRule(name: string): ReferenceDeliveryRule {
 export function findUnusedReferenceVariables(
   protocolSource: string,
   variables: ModelProtocolVariables,
+  options: { frameAliases?: boolean } = {},
 ): string[] {
   const provided = REFERENCE_PROTOCOL_VARIABLES
     .map((name) => ({ name, values: readReferenceStrings(variables[name]) }))
@@ -219,6 +219,9 @@ export function findUnusedReferenceVariables(
 
   const usages = collectTemplateTransportUsages(protocolSource, variables);
   const canonical = CANONICAL_REFERENCE_DELIVERY_RULES
+    .filter((rule) => !options.frameAliases || !['firstImage', 'lastImage'].includes(rule.name))
+    .map((rule) => options.frameAliases && rule.name === 'referenceImageUrls'
+      ? { ...rule, roots: [...rule.roots, 'firstImage', 'lastImage'] } : rule)
     .map((rule) => ({ rule, values: readReferenceStrings(variables[rule.name]) }))
     .filter((item) => item.values.length > 0);
   const canonicalValues = canonical.flatMap((item) => item.values);

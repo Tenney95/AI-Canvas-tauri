@@ -24,7 +24,6 @@ import type {
   WebSearchProviderId,
 } from '../../types';
 import { corsSafeFetch } from './httpTransport';
-import { AUTODL_BASE_URL } from '../workflowApi/autodlWorkflowManifest';
 import { baseUrlCandidates } from './providerBaseUrl';
 import { APIMART_OMNI_MODELS, isLegacyApimartOmni } from './apimartVideoModels';
 import { getChatApiHeaders, normalizeGeminiModelId, resolveChatApiProtocol } from './chatApiProtocol';
@@ -160,12 +159,11 @@ export const WEB_SEARCH_PROVIDER_IDS: readonly WebSearchProviderId[] = [
 
 const BUILT_IN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [
   {
-    id: 'autodl-workflow', name: '工作流 API · AutoDL', kind: 'workflow-api',
-    description: '直接运行 AutoDL 云工作流，支持多图与多音频生成视频', badgeText: 'WF',
-    authType: 'api-key', catalogAdapter: 'local-manifest', defaultBaseUrl: AUTODL_BASE_URL,
-    externalUrl: 'https://autodl.art/docs/comfyui_api/',
-    credentials: [{ ...API_KEY_FIELD, label: 'ComfyUI Token', placeholder: 'AutoDL ComfyUI 分组 Token' },
-      { key: 'baseUrl', label: '站点根地址', required: true, placeholder: AUTODL_BASE_URL }],
+    id: 'workflow-api', name: '工作流 API', kind: 'workflow-api',
+    description: '自定义平台、工作流路径、输入参数与结果映射', badgeText: 'WF',
+    authType: 'api-key', catalogAdapter: 'local-manifest',
+    credentials: [{ ...API_KEY_FIELD, label: 'API Key / Token', required: false, placeholder: '填写平台提供的密钥' },
+      { key: 'baseUrl', label: '接口地址', required: true, placeholder: 'https://api.example.com' }],
   },
   {
     id: 'apimart',
@@ -413,17 +411,18 @@ export function resolveWebSearchProviderId(
  * 自定义接口可以有多条，加随机后缀区分。
  */
 export function createConnectionId(providerId: string): string {
-  if (providerId !== 'custom-openai') return providerId;
+  if (providerId !== 'custom-openai' && providerId !== 'workflow-api') return providerId;
   const suffix = globalThis.crypto?.randomUUID?.().slice(0, 8)
     ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
-  return `custom-${suffix}`;
+  return `${providerId === 'workflow-api' ? 'workflow-api' : 'custom'}-${suffix}`;
 }
 
 export function getProviderDefinition(
   providerId: string,
   config?: Pick<ApiProviderConfig, 'catalogId'>,
 ): ProviderDefinition | undefined {
-  return PROVIDER_DEFINITION_MAP.get(config?.catalogId || providerId);
+  const id = config?.catalogId || providerId;
+  return PROVIDER_DEFINITION_MAP.get(id === 'autodl-workflow' ? 'workflow-api' : id);
 }
 
 function inferModelCategory(modelId: string): GeneralModelCategory {

@@ -33,7 +33,7 @@ import { testProviderConnection } from '../../services/testConnection';
 import { replaceLegacyApimartOmni } from '../../services/ai/apimartVideoModels';
 import DreaminaLoginModal from './DreaminaLoginModal';
 import ProviderConnectionDialog from './ProviderConnectionDialog';
-import { saveAutodlWorkflowTemplate } from '../../services/workflowApi/workflowApiConfig';
+import { saveAutodlWorkflowTemplate, saveWorkflowApiDrafts } from '../../services/workflowApi/workflowApiConfig';
 import { invoke } from '@tauri-apps/api/core';
 import { useT } from '../../i18n';
 
@@ -66,6 +66,7 @@ function isTauri(): boolean {
 
 export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const t = useT();
+  const workflows = useAppStore((state) => state.workflows);
   const {
     config,
     updateConfig,
@@ -409,7 +410,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       useAppStore.getState().showToast(t('该连接类型不支持导入'), 'error');
       return;
     }
-    const newConnectionId = createConnectionId(parsed.catalogId);
+    const newConnectionId = createConnectionId(definition.id);
     if (config.providers[newConnectionId]) {
       useAppStore.getState().showToast(
         t('已存在 {name} 连接，请先删除后再导入', { name: definition.name }),
@@ -430,8 +431,9 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       })),
     });
     try {
-      await saveConfig(parsed.workflowApi ? { throwOnError: true } : undefined);
-      if (parsed.workflowApi) await saveAutodlWorkflowTemplate(newConnectionId, parsed.workflowApi.defaults);
+      await saveConfig(parsed.workflowApiDrafts || parsed.workflowApi ? { throwOnError: true } : undefined);
+      if (parsed.workflowApiDrafts) await saveWorkflowApiDrafts(newConnectionId, parsed.workflowApiDrafts);
+      else if (parsed.workflowApi) await saveAutodlWorkflowTemplate(newConnectionId, parsed.workflowApi.defaults);
     } catch (error) {
       useAppStore.getState().showToast(error instanceof Error ? error.message : t('保存失败'), 'error');
       return;
@@ -458,7 +460,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const handleSaveConnection = async (
     connectionId: string,
     providerConfig: ApiProviderConfig,
-    related?: { runninghubWorkflowApiKey?: string; workflowApiDefaults?: import('../../types/workflowApi').WorkflowApiInputValues },
+    related?: { runninghubWorkflowApiKey?: string; workflowApiDrafts?: import('../../types/workflowApi').WorkflowApiDraft[] },
   ) => {
     saveProviderConfig(connectionId, providerConfig);
     const definition = getProviderDefinition(connectionId, providerConfig);
@@ -473,7 +475,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       await removeProviderConfig('runninghub');
     }
     await saveConfig(definition?.kind === 'workflow-api' ? { throwOnError: true } : undefined);
-    if (definition?.kind === 'workflow-api') await saveAutodlWorkflowTemplate(connectionId, related?.workflowApiDefaults);
+    if (definition?.kind === 'workflow-api') await saveWorkflowApiDrafts(connectionId, related?.workflowApiDrafts ?? []);
     closeConnectionDialog();
   };
 
@@ -547,7 +549,9 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
               const isRunningHub = definition.id === 'runninghub-model';
               const isWebSearchProvider = definition.kind === 'web-search';
               const isWorkflowApi = definition.kind === 'workflow-api';
-              const isPendingApiKey = definition.authType !== 'oauth' && !item.config.apiKey.trim();
+              const connectionWorkflows = workflows.filter((workflow) => workflow.workflowApi?.connectionId === item.id);
+              const needsWorkflowKey = connectionWorkflows.some((workflow) => workflow.workflowApi?.version !== 2 || workflow.workflowApi.protocol.auth?.type !== 'none');
+              const isPendingApiKey = definition.authType !== 'oauth' && !item.config.apiKey.trim() && (!isWorkflowApi || needsWorkflowKey);
               const hasRunningHubModelKey = isRunningHub && !!item.config.apiKey.trim();
               const hasRunningHubWorkflowKey = isRunningHub
                 && !!config.providers.runninghub?.apiKey.trim();
@@ -557,7 +561,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                 ? t('联网搜索')
                 : definition.id === 'custom-openai'
                   ? item.config.name.trim() || definition.name
-                  : isWorkflowApi ? t(definition.name) : definition.name;
+                  : isWorkflowApi ? item.config.name.trim() || t(definition.name) : definition.name;
               const statusLabel = isDreamina
                 ? t('OAuth 已连接')
                 : isRunningHub
@@ -582,7 +586,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
                     </div>
                     {!isRunningHub && <div className="provider-connection-meta">
                       {isWorkflowApi ? (
-                        <><span>{t('H3 多图多音频视频工作流')}</span>{summaryUrl && <span>{summaryUrl}</span>}</>
+                        <><span>{t('自定义工作流')}</span>{summaryUrl && <span>{summaryUrl}</span>}</>
                       ) : isWebSearchProvider ? (
                         <>
                           <span>{t('当前厂商：{name}', { name: definition.name })}</span>

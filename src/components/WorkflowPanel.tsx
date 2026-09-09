@@ -307,7 +307,8 @@ export default function WorkflowPanel() {
     if (workflow.adapterType === 'workflow-api') {
       useAppStore.getState().setWorkflowPanelOpen(false);
       useAppStore.getState().setSettingsOpen(true, 'api');
-      useAppStore.getState().showToast('在工作流 API 连接中编辑模板默认参数'); return;
+      useAppStore.getState().setPendingApiKeyConnectionId(workflow.workflowApi?.connectionId ?? null);
+      useAppStore.getState().showToast('在工作流 API 连接中编辑路径、参数与输出类型'); return;
     }
     if (workflow.adapterType === 'runninghub' && workflow.runninghub) {
       setImportSource(workflow.runninghub.kind); setEditingCloud(workflow); return;
@@ -681,7 +682,7 @@ export default function WorkflowPanel() {
                                 triggerClassName="wf-item-cat-trigger"
                                 value={wf.category}
                                 title="修改分类"
-                                options={CATEGORIES.filter((cat) => wf.adapterType === 'workflow-api' ? cat.value === 'ai-video' : wf.adapterType !== 'runninghub' || cat.value !== 'ai-text').map((cat) => ({ value: cat.value, label: cat.label }))}
+                                options={CATEGORIES.filter((cat) => wf.adapterType === 'workflow-api' ? cat.value === wf.category : wf.adapterType !== 'runninghub' || cat.value !== 'ai-text').map((cat) => ({ value: cat.value, label: cat.label }))}
                                 onChange={(value) => {
                                   updateWorkflow(wf.id, { category: value as WorkflowCategory })
                                     .catch(() => showToast('修改分类失败', 'error'));

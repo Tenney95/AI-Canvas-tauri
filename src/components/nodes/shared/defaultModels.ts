@@ -1307,7 +1307,7 @@ export function getMediaModelOptions(
       value: cloud ? execution.model : `comfyui/${workflow.id}`,
       provider: execution.provider,
       label: workflow.name,
-      description: api ? 'AutoDL 视频工作流' : cloud ? `RunningHub ${workflow.runninghub?.kind === 'app' ? 'AI 应用' : '云工作流'}` : 'ComfyUI 工作流',
+      description: api ? '自定义云工作流' : cloud ? `RunningHub ${workflow.runninghub?.kind === 'app' ? 'AI 应用' : '云工作流'}` : 'ComfyUI 工作流',
       iconType: 'badge',
       badgeText: api ? 'WF' : cloud ? 'RH' : 'CF',
       nodeTypes: [workflow.category],

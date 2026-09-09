@@ -80,6 +80,7 @@ export const IMAGE_SINGLE_FIELDS = [
 ];
 
 export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
+  { name: 'parameters', supplied: MEDIA },
   { name: 'model', supplied: ALL, fields: ['model', 'modelid', 'modelname', 'modelcode'] },
   {
     name: 'prompt', supplied: ALL,
@@ -250,6 +251,7 @@ export const PROTOCOL_VARIABLES: readonly ProtocolVariableSpec[] = [
  * 新增协议变量时，定向测试会要求同步补充这里的说明。
  */
 const PROTOCOL_VARIABLE_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  parameters: '工作流 API 声明的参数，例如 {{parameters.seed}}；普通模型不提供此变量',
   model: '实际请求使用的模型 ID',
   prompt: '节点中的提示词（已解析文本引用）',
   messages: '发送给对话模型的消息数组',

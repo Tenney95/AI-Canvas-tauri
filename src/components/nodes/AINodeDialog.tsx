@@ -44,7 +44,7 @@ import { getPendingTasksForProject, resumeComfyUINodeTask, resumeRunningHubNodeT
 import { isCloudWorkflow, getCloudWorkflowPersistedOutput, workflowExecution } from '../../services/workflowExecutionService';
 import { completeWorkflowApiNodeTask, stopWorkflowApiNodeTask } from '../../services/workflowApi/workflowApiAdapter';
 import WorkflowApiTaskStatus from './shared/WorkflowApiTaskStatus';
-import { cancelRunningHubNodeTask, completeRunningHubNodeTask, getRunningHubPersistedOutput } from '../../services/ai/providers/runninghubWorkflow';
+import { cancelRunningHubNodeTask, completeRunningHubNodeTask } from '../../services/ai/providers/runninghubWorkflow';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../services/canvasDerivationGuard';
 import { useT } from '../../i18n';
 
@@ -430,7 +430,7 @@ function AINodeDialog() {
         });
         if (!isStillCurrentSubmission()) return;
         // 下载远程 URL 到本地项目目录
-        const persisted = getRunningHubPersistedOutput(result.runninghubOutputs, result.url) ?? (currentProjectId
+        const persisted = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (currentProjectId
           ? await persistMediaUrlToProjectData(result.url, currentProjectId, 'ai-image', nodeLabel)
           : { mediaUrl: result.url, sourceUrl: result.url });
         if (runningHubTask && !isStillCurrentSubmission()) return;
@@ -447,6 +447,7 @@ function AINodeDialog() {
           ...(isAnimation ? { aspectRatio } : {}),
         });
         if (runningHubTask) completeRunningHubNodeTask(submittingNodeId);
+        if (result.workflowApiTaskId) completeWorkflowApiNodeTask(submittingNodeId, result.workflowApiTaskId);
         useAppStore.getState().syncDramaAssetImageFromNode?.(activeNodeId!, mediaUrl);
         recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
@@ -605,6 +606,7 @@ function AINodeDialog() {
         });
         if (result.workflowApiTaskId) completeWorkflowApiNodeTask(submittingNodeId, result.workflowApiTaskId);
         if (runningHubTask) completeRunningHubNodeTask(submittingNodeId);
+        if (result.workflowApiTaskId) completeWorkflowApiNodeTask(submittingNodeId, result.workflowApiTaskId);
         recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
           nodeLabel: nodeLabel,
@@ -655,6 +657,7 @@ function AINodeDialog() {
           status: 'success',
         });
         if (runningHubTask) completeRunningHubNodeTask(submittingNodeId);
+        if (result.workflowApiTaskId) completeWorkflowApiNodeTask(submittingNodeId, result.workflowApiTaskId);
         recordOutputHistory(activeNodeId!, {
           nodeId: activeNodeId!,
           nodeLabel: nodeLabel,

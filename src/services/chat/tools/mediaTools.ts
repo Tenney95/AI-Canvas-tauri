@@ -202,6 +202,13 @@ export function registerMediaAgentTools(): Array<() => void> {
         const workflow = store.workflows.find((item) => item.id === option?.workflowId);
         if (workflow?.adapterType === 'workflow-api') {
           validateWorkflowApiManifest(workflow.workflowApi);
+          if (workflow.workflowApi.version === 2) return { status: 'success', summary: `已读取 ${workflow.name} 的参数`, modelContent: JSON.stringify({
+            workflowId: workflow.id, outputType: workflow.workflowApi.outputKind, references: workflow.workflowApi.references,
+            prompt: workflow.workflowApi.prompt, parameters: Object.entries(workflow.workflowApi.parameters).map(([name, spec]) => ({
+              nodeId: 'workflow', fieldName: name, type: spec.type, required: spec.required ?? false, defaultValue: spec.default,
+              label: spec.label, min: spec.min, max: spec.max, options: spec.options,
+            })), usage: '通过 workflowInputs 传入工作流声明的参数；nodeId 为 workflow，fieldName 为参数名。素材在 prompt 中显式引用。不要同时传通用 duration/resolution/aspectRatio。',
+          }) };
           const defaults = resolveWorkflowApiInputValues(workflow.workflowApi.defaults);
           return { status: 'success', summary: `已读取 ${workflow.name} 的参数`, modelContent: JSON.stringify({
             workflowId: workflow.id, outputType: 'video', capability: AUTODL_H3_WORKFLOW.capability, defaults,
@@ -308,12 +315,12 @@ export function registerMediaAgentTools(): Array<() => void> {
           }
           if (option.workflowId) {
             const workflow = store.workflows.find((item) => item.id === option.workflowId);
-            if (isRunningHubWorkflow(workflow) && [input.aspectRatio, input.resolution, input.duration].some((value) => value !== undefined)) return { allowed: false, reason: '云工作流使用自己的参数定义，请通过 workflowInputs 设置比例、分辨率或时长' };
+            if ((isRunningHubWorkflow(workflow) || workflow?.workflowApi?.version === 2) && [input.aspectRatio, input.resolution, input.duration].some((value) => value !== undefined)) return { allowed: false, reason: '云工作流使用自己的参数定义，请通过 workflowInputs 设置比例、分辨率或时长' };
             if (input.workflowInputs && new Set(input.workflowInputs.map(runningHubParameterKey)).size !== input.workflowInputs.length) return { allowed: false, reason: '工作流参数包含重复节点/字段' };
             if (isRunningHubWorkflow(workflow)) {
               if (!store.config.providers[mediaProviderConfigId(option.provider, workflow)]?.apiKey) return { allowed: false, reason: '请先配置该 RunningHub 工作流使用的 API Key' };
             } else if (workflow?.adapterType === 'workflow-api') {
-              try { validateWorkflowApiManifest(workflow.workflowApi); workflowApiConnection(store.config.providers[workflow.workflowApi.connectionId]); }
+              try { validateWorkflowApiManifest(workflow.workflowApi); workflowApiConnection(store.config.providers[workflow.workflowApi.connectionId], workflow.workflowApi); }
               catch (error) { return { allowed: false, reason: error instanceof Error ? error.message : '工作流连接无效' }; }
             } else if (!comfyBaseUrlFor(option.workflowId)) {
               return { allowed: false, reason: '请先在设置里配置 ComfyUI 服务地址' };

@@ -457,10 +457,10 @@ export async function generateVideo(
     if (workflow?.adapterType === 'workflow-api') {
       const outputs = await executeWorkflowApi({ workflowId: params.workflowId, nodeId: params.nodeId,
         taskContext: params.workflowApiTaskContext, prompt: referenceInput.prompt, inputs: {
-          ...parseWorkflowApiFields(params.workflowInputs),
-          ...(params.seedanceDuration === undefined ? {} : { duration: params.seedanceDuration }),
-          ...(params.seedanceResolution === undefined ? {} : { resolution: params.seedanceResolution }),
-          ...(params.seedanceRatio === undefined ? {} : { ratio: params.seedanceRatio }),
+          ...parseWorkflowApiFields(params.workflowInputs, workflow.workflowApi),
+          ...(workflow.workflowApi?.version === 2 || params.seedanceDuration === undefined ? {} : { duration: params.seedanceDuration }),
+          ...(workflow.workflowApi?.version === 2 || params.seedanceResolution === undefined ? {} : { resolution: params.seedanceResolution }),
+          ...(workflow.workflowApi?.version === 2 || params.seedanceRatio === undefined ? {} : { ratio: params.seedanceRatio }),
         }, references: {
           image: getMediaReferenceUrls(references, 'image', 'local'), video: videoUrls,
           audio: getMediaReferenceUrls(references, 'audio', 'local'),
@@ -494,6 +494,7 @@ export async function generateVideo(
     );
   }
 
+  if (provider === 'workflow-api') throw new Error('请先配置并选择工作流 API');
   const registeredAdapter = mediaProviderRegistry.getVideoAdapter(provider);
   if (registeredAdapter) {
     return registeredAdapter.generateVideo({

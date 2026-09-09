@@ -191,6 +191,7 @@ export async function pollResolvedModelProtocol(
   apiKey: string,
   signal?: AbortSignal,
   allowedBaseUrl?: string,
+  validateResponse?: (payload: unknown) => void,
 ): Promise<ExecuteModelProtocolResult> {
   if (allowedBaseUrl) {
     const pollUrl = new URL(poll.url);
@@ -226,6 +227,7 @@ export async function pollResolvedModelProtocol(
           },
         );
         const payload = await readJsonResponse(response, '模型任务查询失败', poll.errorPath);
+        validateResponse?.(payload);
         consecutiveErrors = 0;
         return payload;
       } catch (error) {

@@ -18,6 +18,8 @@ export interface SubmitModelProtocolOptions {
   baseUrl: string;
   protocol: ModelExecutionProtocol;
   variables: ModelProtocolVariables;
+  /** 适配器可校验平台业务码，不改变传输和同源边界。 */
+  validateResponse?: (payload: unknown) => void;
   signal?: AbortSignal;
 }
 

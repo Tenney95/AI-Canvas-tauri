@@ -232,9 +232,13 @@ function pruneExpiredMemoryCache(now = Date.now()) {
 export function isLocalImageUrl(url: string): boolean {
   if (!url) return false;
   if (isMediaDataUrl(url)) return true;
-  if (url.startsWith('asset://') || url.includes('asset.localhost')) return true;
-  if (url.startsWith('file://')) return true;
-  return false;
+  if (/^(?:asset:|file:|blob:)/i.test(url)) return true;
+  try {
+    const source = new URL(url);
+    return ['http:', 'https:'].includes(source.protocol) && source.hostname === 'asset.localhost';
+  } catch {
+    return false;
+  }
 }
 
 async function decodeBase64DataUrlParts(
@@ -609,7 +613,8 @@ export async function resolveMediaReferenceUrl(
     provider = '', mode = 'publicUrl', kind = 'image', signal, dataUrlBudget,
   } = options;
   if (signal?.aborted) throw abortReason(signal);
-  if (/^https?:\/\//i.test(url)) return url;
+  // Windows 的 Tauri asset URL 也使用 HTTP，仍需读取并上传本地素材。
+  if (/^https?:\/\//i.test(url) && !isLocalImageUrl(url)) return url;
   if (isMediaDataUrl(url) && mode === 'dataUrl') {
     const bytes = await assertMediaDataUrlWithinLimitAsync(
       url,

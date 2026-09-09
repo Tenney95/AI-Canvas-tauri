@@ -12,6 +12,7 @@ export interface AIGenerateParams {
 }
 
 export interface AIImageGenParams extends AIGenerateParams {
+  workflowApiTaskContext?: import('./workflowApi').CloudWorkflowTaskContext;
   runninghubModelParameters?: Record<string, string>;
   runninghubTaskContext?: import('./runninghub').RunningHubTaskContext;
   imageSize?: string;     // '1K' | '2K' | '4K'
@@ -357,6 +358,8 @@ export const MAX_IMAGE_BATCH_COUNT = 8;
 
 export interface ImageGenerationResult {
   url: string;
+  workflowApiOutputs?: import('./workflowApi').CloudWorkflowOutput[];
+  workflowApiTaskId?: string;
   runninghubOutputs?: import('./runninghub').RunningHubOutput[];
   width: number;
   height: number;
@@ -465,6 +468,7 @@ export interface AIVideoGenParams {
 }
 
 export interface AIAudioGenParams {
+  workflowApiTaskContext?: import('./workflowApi').CloudWorkflowTaskContext;
   runninghubModelParameters?: Record<string, string>;
   runninghubTaskContext?: import('./runninghub').RunningHubTaskContext;
   prompt: string;
@@ -498,6 +502,8 @@ export type AudioOutputFormat = 'wav' | 'opus' | 'aac' | 'flac' | 'pcm';
 
 export interface AudioGenerationResult {
   url: string;
+  workflowApiOutputs?: import('./workflowApi').CloudWorkflowOutput[];
+  workflowApiTaskId?: string;
   runninghubOutputs?: import('./runninghub').RunningHubOutput[];
   /** 同步二进制接口返回的运行时数据，只用于落盘，不得写入 Store 或 IndexedDB。 */
   bytes?: Uint8Array;
