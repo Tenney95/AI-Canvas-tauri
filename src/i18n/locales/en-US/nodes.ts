@@ -347,7 +347,6 @@ const nodes = {
   '该视频没有本地文件，无法复制': 'This video has no local file, cannot copy',
   '已复制视频到剪贴板': 'Video copied to clipboard',
   '没有可反推的视频': 'No video to reverse',
-  '视频尚未加载到可读取的帧': 'Video has not loaded a readable frame yet',
   '远程视频受跨域限制，请先把视频本地化后再反推':
     'The remote video is cross-origin restricted; localize it before reversing',
   '读取视频帧失败': 'Failed to read the video frame',
