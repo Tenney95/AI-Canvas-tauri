@@ -51,7 +51,7 @@ describe('工作流持久化顺序', () => {
     fileMocks.loadWorkflows.mockResolvedValue([cloud]); await slice.loadWorkflows();
     expect(getState().workflows[0].workflowApi).toEqual(cloud.workflowApi);
     await expect(slice.updateWorkflow(cloud.id, { adapterType: 'comfyui' })).rejects.toThrow('来源');
-    await expect(slice.updateWorkflow(cloud.id, { category: 'ai-image' })).rejects.toThrow('视频');
+    await expect(slice.updateWorkflow(cloud.id, { category: 'ai-image' })).rejects.toThrow('输出类型');
     await expect(slice.updateWorkflow(cloud.id, { fileContent: '{"Authorization":"do-not-save"}' })).rejects.toThrow('不保存');
     expect(JSON.stringify(fileMocks.saveWorkflow.mock.calls)).not.toContain('do-not-save');
   });

@@ -133,6 +133,22 @@ const CCCAPI_MODEL_MANIFEST: readonly ProviderModelSelection[] = [
   { id: 'gpt-4', name: 'GPT-4', category: 'text', provider: 'cccapi', description: 'GPT-4 通用文本模型', inputModalities: ['text'] },
   { id: 'codex-auto-review', name: 'Codex Auto Review', category: 'text', provider: 'cccapi', description: 'Codex 自动代码评审模型' },
   {
+    id: 'gpt-image-2.5-flare',
+    name: 'GPT Image 2.5 Flare',
+    category: 'image',
+    provider: 'cccapi',
+    description: '速度优先的轻量图片模型，支持文生图与图片编辑',
+    imageReferenceRequestMode: 'edits-multipart',
+  },
+  {
+    id: 'gpt-image-2.5-sunburst',
+    name: 'GPT Image 2.5 Sunburst',
+    category: 'image',
+    provider: 'cccapi',
+    description: '质量优先的高画质图片模型，支持文生图与图片编辑',
+    imageReferenceRequestMode: 'edits-multipart',
+  },
+  {
     id: 'gpt-image-2',
     name: 'GPT Image 2',
     category: 'image',

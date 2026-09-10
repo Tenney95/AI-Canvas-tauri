@@ -31,6 +31,7 @@ vi.mock('../../src/services/fs/core', () => ({
   arrayBufferToBase64: vi.fn(),
   buildNodeFileName: (label: string, ext: string) => `${label}${ext}`,
   ensureProjectDataDir: mocks.ensureProjectDataDir,
+  getAssetUrlFromPath: async (path: string) => `asset://${path}`,
   getConvertFileSrc: () => (path: string) => `asset://${path}`,
   getFileCategory: vi.fn(),
   getMimeType: vi.fn(),
@@ -173,7 +174,10 @@ describe('downloadUrlAndSave', () => {
       '自定义接口视频',
     );
 
-    expect(fetchMock).toHaveBeenCalledWith('blob:http://localhost/generated-video');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'blob:http://localhost/generated-video',
+      { signal: undefined },
+    );
     expect(mocks.invoke).not.toHaveBeenCalled();
     expect(mocks.writeFile).toHaveBeenCalledWith(
       '/project/data/自定义接口视频.mp4',

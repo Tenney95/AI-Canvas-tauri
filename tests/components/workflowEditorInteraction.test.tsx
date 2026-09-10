@@ -65,6 +65,8 @@ it('shows loading, blocks repeated opens, and retries a failed workflow from its
       fileContent: '{}', createdAt: 0,
     })),
     workflowPanelOpen: true,
+    // 工作流列表按来源过滤，默认展示 ComfyUI 来源；缺了这个字段会筛空整个列表。
+    workflowPanelSource: 'comfyui',
     config: { comfyServers: [] },
     showToast: vi.fn(),
   };

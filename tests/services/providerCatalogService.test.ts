@@ -126,7 +126,8 @@ describe('CCC API 内置厂商目录', () => {
     const models = definition?.models ?? [];
     const findModel = (id: string) => models.find((model) => model.id === id);
     for (const id of [
-      'gpt-image-2', 'gpt-5.5', 'gpt-5.4', 'gpt-5.6-terra', 'o4-mini', 'codex-auto-review',
+      'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2',
+      'gpt-5.5', 'gpt-5.4', 'gpt-5.6-terra', 'o4-mini', 'codex-auto-review',
       'gpt-4', 'gpt-4-turbo', 'gpt-4.1', 'gpt-4.1-nano', 'gpt-4o', 'gpt-5.6', 'gpt-5.6-sol',
       'gpt-5.3-codex-spark', 'gpt-5.2', 'o3', 'gpt-5', 'gpt-5.4-mini', 'gpt-5.6-luna',
       'gpt-image-1', 'o3-mini', 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-5.2-pro',
@@ -136,8 +137,10 @@ describe('CCC API 内置厂商目录', () => {
     expect(models.every((model) => model.provider === 'cccapi')).toBe(true);
 
     expect(findModel('gpt-image-1')?.category).toBe('image');
-    expect(findModel('gpt-image-2')?.category).toBe('image');
-    expect(findModel('gpt-image-2')?.imageReferenceRequestMode).toBe('edits-multipart');
+    for (const id of ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2']) {
+      expect(findModel(id)?.category).toBe('image');
+      expect(findModel(id)?.imageReferenceRequestMode).toBe('edits-multipart');
+    }
     expect(findModel('gpt-5.6')?.category).toBe('text');
     // 纯文本模型要显式声明，不能落进按 ID 猜模态的兜底分支
     expect(findModel('gpt-4')?.inputModalities).toEqual(['text']);
@@ -150,6 +153,8 @@ describe('CCC API 内置厂商目录', () => {
       object: 'list',
       data: [
         { id: 'gpt-4o-mini', object: 'model' },
+        { id: 'gpt-image-2.5-flare', object: 'model' },
+        { id: 'gpt-image-2.5-sunburst', object: 'model' },
         { id: 'gpt-image-2', object: 'model' },
       ],
     }));
@@ -178,6 +183,18 @@ describe('CCC API 内置厂商目录', () => {
     });
     expect(result.models).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'gpt-4o-mini', category: 'text', provider: 'cccapi' }),
+      expect.objectContaining({
+        id: 'gpt-image-2.5-flare',
+        category: 'image',
+        provider: 'cccapi',
+        imageReferenceRequestMode: 'edits-multipart',
+      }),
+      expect.objectContaining({
+        id: 'gpt-image-2.5-sunburst',
+        category: 'image',
+        provider: 'cccapi',
+        imageReferenceRequestMode: 'edits-multipart',
+      }),
       expect.objectContaining({
         id: 'gpt-image-2',
         category: 'image',

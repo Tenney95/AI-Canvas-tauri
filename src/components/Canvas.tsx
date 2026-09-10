@@ -6,7 +6,6 @@ import { createPortal } from 'react-dom';
 import { ReactFlow,
   Background,
   Controls,
-  MiniMap,
   BackgroundVariant,
   ConnectionMode,
   SelectionMode,
@@ -35,6 +34,7 @@ import CanvasNoteNode from './noteNodes/CanvasNoteNode';
 import PluginNode from './nodes/PluginNode';
 import NodeRenderBoundary from './nodes/shared/NodeRenderBoundary';
 import { isEditableTarget } from '../utils/textSelection';
+import { playNodeFocusPulse } from '../utils/nodeAnimations';
 import ConnectionMenu from './canvas/ConnectionMenu';
 import CanvasContextMenu from './canvas/CanvasContextMenu';
 import NodeContextMenu from './canvas/NodeContextMenu';
@@ -42,6 +42,7 @@ import CanvasToolbar from './canvas/CanvasToolbar';
 import CanvasDrawingToolbar from './canvas/CanvasDrawingToolbar';
 import CanvasNoteStylePanel from './canvas/CanvasNoteStylePanel';
 import RoundedMiniMapMask from './canvas/RoundedMiniMapMask';
+import MiniMapNodeStats from './canvas/MiniMapNodeStats';
 import MultiSelectToolbar from './canvas/MultiSelectToolbar';
 import CanvasEmptyState from './canvas/CanvasEmptyState';
 import HistoryTimelinePanel from './canvas/HistoryTimelinePanel';
@@ -186,35 +187,7 @@ const CLASSIC_INTERACTION = Object.freeze({
   selectionMode: SelectionMode.Partial,
   deleteKeyCode: null,
 });
-const MINIMAP_STYLE = {
-  width: 180,
-  height: 120,
-  border: '1px solid var(--theme-border)',
-  borderRadius: '8px',
-};
 const INLINE_EDIT_DOUBLE_CLICK_DELAY_MS = 280;
-const minimapNodeColor = (node: RFNode) => {
-  switch (node.type) {
-    case 'ai-text':
-    case 'source-text':
-    case 'comment': return 'color-mix(in srgb, var(--node-text-light) 50%, transparent)';
-    case 'ai-image':
-    case 'source-image':
-    case 'ai-storyboard': return 'color-mix(in srgb, var(--node-image-light) 50%, transparent)';
-    case 'ai-video':
-    case 'source-video': return 'color-mix(in srgb, var(--node-video-light) 50%, transparent)';
-    case 'ai-audio':
-    case 'source-audio': return 'color-mix(in srgb, var(--node-audio-light) 50%, transparent)';
-    case 'ai-animation': return 'color-mix(in srgb, var(--brand) 50%, transparent)';
-    case 'ai-panorama': return 'color-mix(in srgb, var(--node-panorama) 50%, transparent)';
-    case 'ai-markdown': return 'color-mix(in srgb, var(--node-markdown-light) 50%, transparent)';
-    case 'ai-director': return 'color-mix(in srgb, #a78bfa 50%, transparent)';
-    case 'ai-shotlist': return 'color-mix(in srgb, #fbbf24 50%, transparent)';
-    case 'canvas-note': return 'color-mix(in srgb, var(--brand-light) 55%, transparent)';
-    case 'group': return '#4b556380';
-    default: return '#6b728080';
-  }
-};
 
 // ── Snap lines overlay ──
 type SpacingSnapLine = Extract<SnapLine, { kind: 'spacing' }>;
@@ -830,9 +803,10 @@ function CanvasInner() {
   // ── Focus node events (history / Agent-created node batch) ──
   useEffect(() => {
     const scheduledFrames = new Set<number>();
+    const scheduledTimers = new Set<number>();
     const focusNodes = (
       nodeIds: string[],
-      options?: { padding?: number; maxZoom?: number; duration?: number },
+      options?: { padding?: number; maxZoom?: number; duration?: number; pulse?: boolean },
     ) => {
       if (nodeIds.length === 0) return;
       const firstFrame = requestAnimationFrame(() => {
@@ -843,21 +817,33 @@ function CanvasInner() {
           const targetNodes = reactFlowInstance.getNodes().filter((node) => targetIds.has(node.id));
           if (targetNodes.length === 0) return;
           const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          const duration = reduceMotion ? 0 : (options?.duration ?? 420);
           void reactFlowInstance.fitView({
             nodes: targetNodes,
             padding: options?.padding ?? (targetNodes.length === 1 ? 0.45 : 0.3),
             minZoom: targetNodes.length > 6 ? 0.18 : 0.28,
             maxZoom: options?.maxZoom ?? (targetNodes.length === 1 ? 1.1 : 0.95),
-            duration: reduceMotion ? 0 : (options?.duration ?? 420),
+            duration,
           });
+          // 单个节点定位后补一记「放大 → 回弹」脉冲，等镜头停稳再播
+          if (options?.pulse && nodeIds.length === 1 && !reduceMotion) {
+            const [nodeId] = nodeIds;
+            const timer = window.setTimeout(() => {
+              scheduledTimers.delete(timer);
+              playNodeFocusPulse(nodeId);
+            }, duration + 90);
+            scheduledTimers.add(timer);
+          }
         });
         scheduledFrames.add(secondFrame);
       });
       scheduledFrames.add(firstFrame);
     };
     const handleSingleNodeFocus = (e: Event) => {
-      const detail = (e as CustomEvent<{ nodeId: string }>).detail;
-      if (detail?.nodeId) focusNodes([detail.nodeId], { maxZoom: 1, duration: 400 });
+      const detail = (e as CustomEvent<{ nodeId: string; pulse?: boolean }>).detail;
+      if (detail?.nodeId) {
+        focusNodes([detail.nodeId], { maxZoom: 1, duration: 400, pulse: detail.pulse });
+      }
     };
     const handleNodeBatchFocus = (e: Event) => {
       const detail = (e as CustomEvent<{
@@ -874,6 +860,7 @@ function CanvasInner() {
       window.removeEventListener('canvas-focus-node', handleSingleNodeFocus);
       window.removeEventListener('canvas-focus-nodes', handleNodeBatchFocus);
       for (const frameId of scheduledFrames) cancelAnimationFrame(frameId);
+      for (const timerId of scheduledTimers) window.clearTimeout(timerId);
     };
   }, [reactFlowInstance]);
 
@@ -1348,21 +1335,7 @@ function CanvasInner() {
         {/* Mini Map — interactive navigator, toggle with M key */}
         {minimapVisible && (
           <>
-            <MiniMap
-              position="bottom-right"
-              pannable
-              zoomable
-              nodeColor={minimapNodeColor}
-              nodeStrokeColor="var(--theme-border)"
-              nodeStrokeWidth={1.5}
-              nodeBorderRadius={35}
-              bgColor="var(--theme-surface)"
-              maskColor="var(--minimap-mask)"
-              maskStrokeColor="var(--brand)"
-              maskStrokeWidth={2}
-              style={MINIMAP_STYLE}
-              className="!bottom-12 !right-1 max-[900px]:!bottom-28"
-            />
+            <MiniMapNodeStats />
             <RoundedMiniMapMask />
           </>
         )}
