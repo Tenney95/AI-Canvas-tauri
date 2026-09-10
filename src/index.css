@@ -38,6 +38,7 @@
 @import './styles/canvas-drawing.css';
 @import './styles/video-editor.css';
 @import './styles/range-controls.css';
+@import './styles/minimap-stats.css';
 
 /* Global overlay scrollbars are managed by OverlayScrollbarLayer. */
 * {

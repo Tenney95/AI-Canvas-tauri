@@ -1,0 +1,131 @@
+/* ============================================
+   小地图节点统计 — 悬浮小地图时的数量浮层
+   只引用 base.css 的变量，明暗主题自动适配
+   ============================================ */
+
+/* 与小地图同位的悬浮热区：
+   15px 外边距复刻 .react-flow__panel 的几何，保证小地图位置与改造前一致。 */
+.minimap-stats-zone {
+  position: absolute;
+  right: 0.25rem;
+  bottom: 3rem;
+  width: 180px;
+  height: 120px;
+  margin: 15px;
+  z-index: 6;
+}
+
+.minimap-stats-zone > .react-flow__minimap {
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .minimap-stats-zone {
+    bottom: 7rem;
+  }
+}
+
+.minimap-stats-card {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  min-width: 152px;
+  padding: 8px 10px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--theme-surface);
+  box-shadow: var(--glass-shadow-floating);
+  color: var(--theme-text);
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+  animation: minimap-stats-in 140ms ease-out;
+}
+
+.minimap-stats-card__title {
+  margin-bottom: 6px;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+}
+
+.minimap-stats-card__empty {
+  color: var(--theme-text-muted);
+}
+
+.minimap-stats-card__list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.minimap-stats-card__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.minimap-stats-card__dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--theme-text-muted);
+}
+
+.minimap-stats-card__dot.is-text { background: var(--node-text-light); }
+.minimap-stats-card__dot.is-image { background: var(--node-image-light); }
+.minimap-stats-card__dot.is-video { background: var(--node-video-light); }
+.minimap-stats-card__dot.is-audio { background: var(--node-audio-light); }
+.minimap-stats-card__dot.is-panorama { background: var(--node-panorama-light); }
+.minimap-stats-card__dot.is-markdown { background: var(--node-markdown-light); }
+.minimap-stats-card__dot.is-animation { background: var(--brand-light); }
+.minimap-stats-card__dot.is-director { background: var(--brand-pale); }
+.minimap-stats-card__dot.is-shotlist { background: var(--warning-light); }
+.minimap-stats-card__dot.is-plugin { background: var(--node-text-light); }
+.minimap-stats-card__dot.is-note { background: var(--brand-light); }
+.minimap-stats-card__dot.is-group { background: var(--theme-text-muted); }
+
+.minimap-stats-card__label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--theme-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.minimap-stats-card__count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text);
+}
+
+.minimap-stats-card__total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--separator-color);
+  font-weight: 600;
+}
+
+@keyframes minimap-stats-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .minimap-stats-card {
+    animation: none;
+  }
+}
