@@ -312,9 +312,13 @@ describe('model request transport boundary', () => {
     );
   });
 
-  it('routes CCC API GPT Image 2 references through image edits while keeping text-only generations', async () => {
+  it.each([
+    'gpt-image-2.5-flare',
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2',
+  ])('routes CCC API %s references through image edits while keeping text-only generations', async (modelId) => {
     const cccModel = (getProviderDefinition('cccapi')?.models ?? [])
-      .find((item) => item.id === 'gpt-image-2');
+      .find((item) => item.id === modelId);
     expect(cccModel?.imageReferenceRequestMode).toBe('edits-multipart');
     useAppStore.setState((state) => ({
       config: {
@@ -329,9 +333,9 @@ describe('model request transport boundary', () => {
           },
         },
         generalModels: [{
-          id: 'cccapi-gpt-image-2',
-          name: cccModel?.name ?? 'GPT Image 2',
-          modelId: cccModel?.id ?? 'gpt-image-2',
+          id: `cccapi-${modelId}`,
+          name: cccModel?.name ?? modelId,
+          modelId: cccModel?.id ?? modelId,
           category: 'image',
           providerConfigId: 'cccapi-image',
           imageReferenceRequestMode: cccModel?.imageReferenceRequestMode,
@@ -353,7 +357,7 @@ describe('model request transport boundary', () => {
 
     await expect(generateImagesBatch({
       provider: 'general',
-      model: 'general/cccapi-gpt-image-2',
+      model: `general/cccapi-${modelId}`,
       prompt: '保持人物设定生成新场景',
       imageSize: '1K',
       aspectRatio: '1:1',
@@ -368,7 +372,7 @@ describe('model request transport boundary', () => {
 
     await expect(generateImagesBatch({
       provider: 'general',
-      model: 'general/cccapi-gpt-image-2',
+      model: `general/cccapi-${modelId}`,
       prompt: '纯文本生成一张图',
       imageSize: '1K',
       aspectRatio: '1:1',
