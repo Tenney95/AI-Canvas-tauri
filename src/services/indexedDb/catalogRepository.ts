@@ -94,9 +94,25 @@ export interface CustomStyleRecord {
 function putRecord<T>(storeName: string, record: T): Promise<void> {
   return openDB().then((db) => new Promise((resolve, reject) => {
     const transaction = db.transaction(storeName, 'readwrite');
-    transaction.objectStore(storeName).put(record);
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
+    let failure: unknown;
+    let request: IDBRequest<IDBValidKey> | undefined;
+    transaction.oncomplete = () => failure === undefined ? resolve() : reject(failure);
+    transaction.onabort = () => reject(
+      failure ?? transaction.error ?? new DOMException('数据库写入事务已中止', 'AbortError'),
+    );
+    // error 先于 abort 派发；等终态再结束 Promise，避免持久化队列提前放行。
+    transaction.onerror = () => { failure ??= request?.error ?? transaction.error; };
+    try {
+      request = transaction.objectStore(storeName).put(record);
+    } catch (error) {
+      failure = error;
+      try {
+        transaction.abort();
+      } catch {
+        // 已结束的事务无法再 abort，此时可立即报告原始写入错误。
+        reject(error);
+      }
+    }
   }));
 }
 

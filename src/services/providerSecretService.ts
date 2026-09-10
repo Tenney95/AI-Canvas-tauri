@@ -12,6 +12,7 @@
  */
 import { isTauriEnv } from './fs/core';
 import { invoke } from '@tauri-apps/api/core';
+import { enqueueConfigPersistence } from './configPersistenceQueue';
 
 /** 配置中代替明文凭据的引用前缀，便于识别与迁移。 */
 const SECRET_REF_PREFIX = 'secret:';
@@ -35,6 +36,8 @@ export interface SecretPersistResult {
   config: unknown;
   /** 未能写入凭据存储的连接 ID：其凭据仅本次会话有效。 */
   unstored: string[];
+  /** 既有引用或已持久化的旧凭据未能更新，调用方必须保留原配置记录。 */
+  failedExistingSecrets: string[];
 }
 
 export interface SecretRestoreResult {
@@ -98,6 +101,29 @@ async function writeSecret(ref: string, value: string): Promise<boolean> {
   }
 }
 
+/** 每次核对原生权威值；读取失败时不能覆盖未知凭据，不缓存明文。 */
+async function writeProviderSecretIfChanged(ref: string, value: string): Promise<boolean> {
+  const key = refToKey(ref);
+  if (!key || !isTauriEnv()) return false;
+  try {
+    const current = await invokeSecret<string | null>('secret_get', { key });
+    if (current === value) return true;
+    if (current !== null && typeof current !== 'string') throw new Error('凭据读取结果无效');
+    await invokeSecret<void>('secret_set', { key, value });
+    return true;
+  } catch {
+    console.warn('[providerSecret] 凭据读取或写入失败，本次未确认持久化');
+    return false;
+  }
+}
+
+function existingProviderSecretRef(provider: unknown): string | undefined {
+  if (!isRecord(provider) || typeof provider.apiKeyRef !== 'string') return undefined;
+  const key = refToKey(provider.apiKeyRef);
+  if (!key?.startsWith('provider/') || key.length > 120 || key.includes('..')) return undefined;
+  return /^[A-Za-z0-9._/-]+$/.test(key) ? provider.apiKeyRef : undefined;
+}
+
 async function readSecret(ref: string): Promise<string | null> {
   const key = refToKey(ref);
   if (!key || !isTauriEnv()) return null;
@@ -123,26 +149,31 @@ export async function readAppSecret(key: string): Promise<string | null> {
 
 /** 删除某个连接的凭据（连接被移除时调用，避免凭据存储留下孤立条目）。 */
 export async function deleteProviderSecret(connectionId: string): Promise<void> {
-  const key = refToKey(providerSecretRef(connectionId));
-  if (!key || !isTauriEnv()) return;
   try {
-    await invokeSecret<void>('secret_delete', { key });
-  } catch (error) {
-    console.warn('[providerSecret] 删除凭据存储条目失败:', connectionId, error);
+    await enqueueConfigPersistence(async () => {
+      const key = refToKey(providerSecretRef(connectionId));
+      if (!key || !isTauriEnv()) return;
+      await invokeSecret<void>('secret_delete', { key });
+    });
+  } catch {
+    console.warn('[providerSecret] 删除凭据存储条目失败');
   }
 }
 
 /**
  * 持久化前摘除凭据：写入凭据存储并用引用替换明文。
- * 写入失败时同样不落明文，只在 unstored 里报告，由调用方提示用户。
+ * 写入失败时同样不落明文；既有凭据失败额外阻止调用方覆盖原配置。
  */
-export async function stripConfigSecrets(raw: unknown): Promise<SecretPersistResult> {
+export async function stripConfigSecrets(raw: unknown, previousConfig?: unknown): Promise<SecretPersistResult> {
   const config = asConfig(raw);
-  if (!config) return { config: raw, unstored: [] };
+  if (!config) return { config: raw, unstored: [], failedExistingSecrets: [] };
 
   const providers = isRecord(config.providers) ? config.providers : undefined;
+  const previous = asConfig(previousConfig);
+  const previousProviders = isRecord(previous?.providers) ? previous.providers : undefined;
   const nextProviders: Record<string, ProviderSecretEntry> = {};
   const unstored: string[] = [];
+  const failedExistingSecrets: string[] = [];
 
   for (const [connectionId, provider] of Object.entries(providers ?? {})) {
     if (!isRecord(provider)) {
@@ -158,13 +189,22 @@ export async function stripConfigSecrets(raw: unknown): Promise<SecretPersistRes
     }
 
     const ref = providerSecretRef(connectionId);
-    const stored = await writeSecret(ref, apiKey);
+    const stored = await writeProviderSecretIfChanged(ref, apiKey);
     if (stored) {
       nextProviders[connectionId] = { ...rest, apiKey: '', apiKeyRef: ref };
     } else {
       unstored.push(connectionId);
+      const previousProvider = previousProviders?.[connectionId];
+      const previousRef = existingProviderSecretRef(previousProvider) ?? existingProviderSecretRef(provider);
+      const hadPersistedPlaintext = isRecord(previousProvider)
+        && typeof previousProvider.apiKey === 'string' && previousProvider.apiKey.length > 0;
+      if (previousRef || hadPersistedPlaintext) failedExistingSecrets.push(connectionId);
       const { apiKeyRef: _staleRef, ...withoutRef } = rest;
-      nextProviders[connectionId] = { ...withoutRef, apiKey: '' };
+      nextProviders[connectionId] = {
+        ...withoutRef,
+        apiKey: '',
+        ...(previousRef ? { apiKeyRef: previousRef } : {}),
+      };
     }
   }
 
@@ -176,7 +216,7 @@ export async function stripConfigSecrets(raw: unknown): Promise<SecretPersistRes
     next.dreaminaAuth = auth;
   }
 
-  return { config: next, unstored };
+  return { config: next, unstored, failedExistingSecrets };
 }
 
 /**
@@ -204,7 +244,7 @@ export async function restoreConfigSecrets(raw: unknown): Promise<SecretRestoreR
     if (plainKey) {
       // 旧版明文配置：迁进凭据存储，内存里继续可用
       const storedRef = providerSecretRef(connectionId);
-      const stored = await writeSecret(storedRef, plainKey);
+      const stored = await writeProviderSecretIfChanged(storedRef, plainKey);
       migrated = migrated || stored;
       nextProviders[connectionId] = stored
         ? { ...provider, apiKey: plainKey, apiKeyRef: storedRef }
