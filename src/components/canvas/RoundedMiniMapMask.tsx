@@ -49,23 +49,29 @@ export default function RoundedMiniMapMask({ radius = 6 }: { radius?: number }) 
   useEffect(() => {
     let path: SVGPathElement | null = null;
     let squareMaskPath = '';
+    let lastRoundedPath = '';
+    let screenWidth = 0;
     let pathObserver: MutationObserver | null = null;
     let resizeObserver: ResizeObserver | null = null;
 
-    const updateMask = () => {
+    const updateMask = (resized = false) => {
       const svg = path?.ownerSVGElement;
       if (!path || !svg) return;
 
       const currentPath = path.getAttribute('d') ?? '';
+      // 忽略圆角路径自身的回写通知，避免同一次视口更新处理两遍。
+      if (!resized && currentPath === lastRoundedPath) return;
       if (!currentPath.includes('a')) squareMaskPath = currentPath;
       if (!squareMaskPath) return;
 
-      const bounds = svg.getBoundingClientRect();
       const viewBox = svg.viewBox.baseVal;
-      if (!bounds.width || !viewBox.width) return;
-      const radiusInViewBox = radius * (viewBox.width / bounds.width);
+      if (!screenWidth || !viewBox.width) return;
+      const radiusInViewBox = radius * (viewBox.width / screenWidth);
       const roundedPath = roundInnerRect(squareMaskPath, radiusInViewBox);
-      if (roundedPath && roundedPath !== currentPath) path.setAttribute('d', roundedPath);
+      if (roundedPath) {
+        lastRoundedPath = roundedPath;
+        if (roundedPath !== currentPath) path.setAttribute('d', roundedPath);
+      }
     };
 
     const disconnectMask = () => {
@@ -73,24 +79,37 @@ export default function RoundedMiniMapMask({ radius = 6 }: { radius?: number }) 
       resizeObserver?.disconnect();
       pathObserver = null;
       resizeObserver = null;
+      path = null;
+      squareMaskPath = '';
+      lastRoundedPath = '';
+      screenWidth = 0;
     };
 
     const connectMask = () => {
+      // 画布其他区域的 DOM 更新不需要重新查找仍在使用的小地图。
+      if (path?.isConnected) return;
       const nextPath = document.querySelector<SVGPathElement>(MASK_SELECTOR);
       if (nextPath === path) return;
 
       disconnectMask();
       path = nextPath;
-      squareMaskPath = '';
       if (!path) return;
 
+      const svg = path.ownerSVGElement;
+      // SVG 的屏幕宽度只在连接和尺寸变化时测量，平移/缩放沿用缓存。
+      if (svg) screenWidth = svg.getBoundingClientRect().width;
       updateMask();
-      pathObserver = new MutationObserver(updateMask);
+      pathObserver = new MutationObserver(() => updateMask());
       pathObserver.observe(path, { attributes: true, attributeFilter: ['d'] });
 
-      const svg = path.ownerSVGElement;
       if (svg) {
-        resizeObserver = new ResizeObserver(updateMask);
+        resizeObserver = new ResizeObserver(() => {
+          if (path?.ownerSVGElement !== svg) return;
+          const nextWidth = svg.getBoundingClientRect().width;
+          if (nextWidth === screenWidth) return;
+          screenWidth = nextWidth;
+          updateMask(true);
+        });
         resizeObserver.observe(svg);
       }
     };
