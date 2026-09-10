@@ -12,7 +12,6 @@ import { ReactFlow,
   PanOnScrollMode,
   useReactFlow,
   useViewport,
-  useUpdateNodeInternals,
   ReactFlowProvider,
   Panel,
   applyNodeChanges,
@@ -389,7 +388,6 @@ function CanvasInner() {
   }, [nodes]);
   const reactFlowInstance = useReactFlow();
   const wheelZoomCancelRef = useRef<(() => void) | null>(null);
-  const updateNodeInternals = useUpdateNodeInternals();
   const activeCanvasPanRef = useRef<{
     startX: number;
     startY: number;
@@ -635,19 +633,6 @@ function CanvasInner() {
     minZoom: MIN_CANVAS_ZOOM,
     maxZoom: MAX_CANVAS_ZOOM,
   });
-
-  // 节点进场动画（translateY）会让 React Flow 在挂载瞬间测得偏移的 handle 锚点并缓存，
-  // 导致连线起止点错位。进场动画结束（落位 translateY:0）后重新测量该节点的 handle。
-  useEffect(() => {
-    const onAnimEnd = (e: AnimationEvent) => {
-      if (e.animationName !== 'nodeIn') return;
-      const el = (e.target as HTMLElement | null)?.closest?.('.react-flow__node');
-      const id = el?.getAttribute('data-id');
-      if (id) updateNodeInternals(id);
-    };
-    document.addEventListener('animationend', onAnimEnd);
-    return () => document.removeEventListener('animationend', onAnimEnd);
-  }, [updateNodeInternals]);
 
   const {
     isDragOver,
@@ -1423,7 +1408,7 @@ function CanvasInner() {
         onDrop={onDrop}
       >
         {/* Snap alignment lines */}
-        <SnapLinesOverlay lines={snapLines} />
+        {snapLines.length > 0 && <SnapLinesOverlay lines={snapLines} />}
 
         {/* Grid background */}
         {showGrid && (

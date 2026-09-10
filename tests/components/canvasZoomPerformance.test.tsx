@@ -17,6 +17,11 @@ describe('canvas connection button zoom', () => {
     expect((html.match(/gooey-btn-left/g) ?? [])).toHaveLength(100);
     expect((html.match(/gooey-btn-right/g) ?? [])).toHaveLength(100);
     expect(html).not.toContain('--gooey-inv-zoom:');
-    expect(new Set([...html.matchAll(/<filter id="([^"]+)"/g)].map((match) => match[1])).size).toBe(200);
+    // 节点重挂载不能插入全局样式表，每个按钮也必须引用自己的 SVG 滤镜。
+    expect(html).not.toContain('<style');
+    const filterIds = [...html.matchAll(/<filter id="([^"]+)"/g)].map((match) => match[1]);
+    const filterReferences = [...html.matchAll(/--gooey-filter:url\(#([^)]*)\)/g)].map((match) => match[1]);
+    expect(new Set(filterIds).size).toBe(200);
+    expect(filterReferences).toEqual(filterIds);
   });
 });

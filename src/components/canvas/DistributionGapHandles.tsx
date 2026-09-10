@@ -33,7 +33,7 @@ function DistributionGapHandles({ axis }: DistributionGapHandlesProps) {
   const nodes = useAppStore((state) => state.nodes);
   const selectedNodeIds = useAppStore((state) => state.selectedNodeIds);
   const { flowToScreenPosition, screenToFlowPosition } = useReactFlow();
-  useViewport(); // 视口变化时重渲染；下方仅重算少量手柄的屏幕坐标。
+  const { zoom } = useViewport();
   const dragSessionRef = useRef<DragSession | null>(null);
   const removeListenersRef = useRef<() => void>(() => undefined);
 
@@ -57,10 +57,15 @@ function DistributionGapHandles({ axis }: DistributionGapHandlesProps) {
     });
   }, [axis, nodes, selectedNodeIds]);
 
-  const handles = flowHandles.map(({ gapIndex, flowPosition }) => ({
+  // 每次渲染共用一个包含容器偏移的屏幕原点，避免逐个手柄读取容器边界。
+  const screenOrigin = flowHandles.length > 0 ? flowToScreenPosition({ x: 0, y: 0 }) : null;
+  const handles = screenOrigin ? flowHandles.map(({ gapIndex, flowPosition }) => ({
     gapIndex,
-    screenPosition: flowToScreenPosition(flowPosition),
-  }));
+    screenPosition: {
+      x: screenOrigin.x + flowPosition.x * zoom,
+      y: screenOrigin.y + flowPosition.y * zoom,
+    },
+  })) : [];
 
   const finishDrag = useCallback(() => {
     dragSessionRef.current = null;
