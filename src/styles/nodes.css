@@ -25,18 +25,17 @@
   border-radius: 12px;
   transition: border-color var(--transition-smooth), box-shadow var(--transition-smooth),
     transform var(--dur-fast) var(--ease-out-quart), height 0.24s var(--ease-spring);
-  /* 进场：弹簧式浮入。只用 translate（不用 scale）——scale 会改变 handle 相对父节点的
-     偏移，破坏 React Flow 对连线锚点的测量并被缓存，导致连线起止点错位。*/
+  /* 进场只淡入，不移动连线锚点；跨视口重新挂载时无需在动画结束后补测。 */
   animation: nodeIn 0.3s var(--ease-spring) backwards;
 }
 
 /* ── 节点进场 ── */
 @keyframes nodeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-/* ── 节点退场（由 playNodeExit 添加 .node-exiting）——向下淡出（与进场向上呼应）。
+/* ── 节点退场（由 playNodeExit 添加 .node-exiting）——向下淡出。
    节点随即被移除，位移不会造成持久的连线问题。 ── */
 .node.node-exiting {
   opacity: 0;

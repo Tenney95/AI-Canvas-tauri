@@ -188,6 +188,7 @@ export function useNodeCreation() {
   const onDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (useAppStore.getState().workflowPanelOpen || isExternalDropCaptured()) return;
     enterCount.current++;
     if (e.dataTransfer?.types?.length > 0) setIsDragOver(true);
   }, []);
@@ -214,6 +215,7 @@ export function useNodeCreation() {
       e.stopPropagation();
       setIsDragOver(false);
       enterCount.current = 0;
+      if (useAppStore.getState().workflowPanelOpen || isExternalDropCaptured()) return;
       const dt = e.dataTransfer;
       if (!dt || dt.files.length === 0) return;
       const pos = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
@@ -260,7 +262,7 @@ export function useNodeCreation() {
           lastDropTs = Date.now();
         }
         // 全屏编辑器（如合成器）独占外部拖放时，画布跳过建节点
-        if (isExternalDropCaptured()) { setIsDragOver(false); return; }
+        if (useAppStore.getState().workflowPanelOpen || isExternalDropCaptured()) { setIsDragOver(false); return; }
 
         if (payload.type === 'enter' || payload.type === 'over') {
           setIsDragOver(true);

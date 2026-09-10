@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const tauriMocks = vi.hoisted(() => ({
   isTauri: true,
   keychain: new Map<string, string>(),
+  failReads: false,
   failWrites: false,
   invoke: vi.fn(),
 }));
@@ -22,6 +23,7 @@ import {
   restoreConfigSecrets,
   stripConfigSecrets,
 } from '../../src/services/providerSecretService';
+import { enqueueConfigPersistence } from '../../src/services/configPersistenceQueue';
 
 function config(providers: Record<string, Record<string, unknown>>, extra: Record<string, unknown> = {}) {
   return { theme: 'dark', providers, ...extra };
@@ -30,6 +32,7 @@ function config(providers: Record<string, Record<string, unknown>>, extra: Recor
 beforeEach(() => {
   tauriMocks.isTauri = true;
   tauriMocks.keychain.clear();
+  tauriMocks.failReads = false;
   tauriMocks.failWrites = false;
   tauriMocks.invoke.mockReset();
   tauriMocks.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
@@ -39,7 +42,10 @@ beforeEach(() => {
       tauriMocks.keychain.set(key, args.value as string);
       return undefined;
     }
-    if (command === 'secret_get') return tauriMocks.keychain.get(key) ?? null;
+    if (command === 'secret_get') {
+      if (tauriMocks.failReads) throw new Error('G:/fixture-private-path/test-secret-read-failed');
+      return tauriMocks.keychain.get(key) ?? null;
+    }
     if (command === 'secret_delete') {
       tauriMocks.keychain.delete(key);
       return undefined;
@@ -49,6 +55,119 @@ beforeEach(() => {
 });
 
 describe('provider secret persistence', () => {
+  it('checks the native value and skips unchanged credential writes', async () => {
+    tauriMocks.keychain.set('provider/apimart', 'unchanged-test-key');
+
+    const result = await stripConfigSecrets(config({
+      apimart: { name: 'Apimart', apiKey: 'unchanged-test-key' },
+    }));
+
+    expect(result.unstored).toEqual([]);
+    expect(result.failedExistingSecrets).toEqual([]);
+    expect(tauriMocks.invoke).toHaveBeenCalledWith('secret_get', { key: 'provider/apimart' });
+    expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === 'secret_set')).toHaveLength(0);
+    expect(result.config).toMatchObject({
+      providers: { apimart: { apiKey: '', apiKeyRef: 'secret:provider/apimart' } },
+    });
+  });
+
+  it('writes a changed credential once and rechecks native state on every save', async () => {
+    tauriMocks.keychain.set('provider/apimart', 'old-test-key');
+    const next = config({ apimart: { name: 'Apimart', apiKey: 'new-test-key' } });
+
+    await stripConfigSecrets(next);
+    await stripConfigSecrets(next);
+
+    expect(tauriMocks.keychain.get('provider/apimart')).toBe('new-test-key');
+    expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === 'secret_get')).toHaveLength(2);
+    expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === 'secret_set')).toHaveLength(1);
+
+    tauriMocks.keychain.set('provider/apimart', 'externally-changed-test-key');
+    await stripConfigSecrets(next);
+    expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === 'secret_set')).toHaveLength(2);
+  });
+
+  it('does not overwrite a credential when its native value cannot be read', async () => {
+    tauriMocks.keychain.set('provider/apimart', 'existing-test-key');
+    tauriMocks.failReads = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await stripConfigSecrets(config({
+      apimart: { apiKey: 'new-test-key', apiKeyRef: 'secret:provider/apimart' },
+    }));
+
+    expect(result.unstored).toEqual(['apimart']);
+    expect(result.failedExistingSecrets).toEqual(['apimart']);
+    expect(tauriMocks.keychain.get('provider/apimart')).toBe('existing-test-key');
+    expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === 'secret_set')).toHaveLength(0);
+    expect(result.config).toMatchObject({
+      providers: { apimart: { apiKey: '', apiKeyRef: 'secret:provider/apimart' } },
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('fixture-private-path');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('test-secret-read-failed');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('new-test-key');
+  });
+
+  it('preserves an existing reference when a changed credential cannot be written', async () => {
+    tauriMocks.keychain.set('provider/apimart', 'old-test-key');
+    tauriMocks.failWrites = true;
+
+    const result = await stripConfigSecrets(config({
+      apimart: { apiKey: 'new-test-key', apiKeyRef: 'secret:provider/apimart' },
+    }));
+
+    expect(result.unstored).toEqual(['apimart']);
+    expect(result.failedExistingSecrets).toEqual(['apimart']);
+    expect(result.config).toMatchObject({
+      providers: { apimart: { apiKey: '', apiKeyRef: 'secret:provider/apimart' } },
+    });
+    expect(tauriMocks.keychain.get('provider/apimart')).toBe('old-test-key');
+  });
+
+  it.each([undefined, 'secret:provider/other-ref'])(
+    'uses the persisted reference when the input reference is %s',
+    async (apiKeyRef) => {
+      tauriMocks.failWrites = true;
+      const previous = config({ apimart: { apiKey: '', apiKeyRef: 'secret:provider/apimart' } });
+
+      const result = await stripConfigSecrets(config({
+        apimart: { apiKey: 'new-test-key', ...(apiKeyRef ? { apiKeyRef } : {}) },
+      }), previous);
+
+      expect(result.failedExistingSecrets).toEqual(['apimart']);
+      expect(result.config).toMatchObject({
+        providers: { apimart: { apiKey: '', apiKeyRef: 'secret:provider/apimart' } },
+      });
+    },
+  );
+
+  it('reports failed legacy credentials only when plaintext was already persisted', async () => {
+    tauriMocks.failWrites = true;
+    const previous = config({ apimart: { apiKey: 'previous-test-key' } });
+
+    const result = await stripConfigSecrets(config({
+      apimart: { apiKey: 'replacement-test-key' },
+      custom: { apiKey: 'new-connection-test-key' },
+    }), previous);
+
+    expect(result.unstored).toEqual(['apimart', 'custom']);
+    expect(result.failedExistingSecrets).toEqual(['apimart']);
+    expect(hasPlaintextSecret(result.config)).toBe(false);
+    expect(JSON.stringify(result.config)).not.toContain('previous-test-key');
+  });
+
+  it('marks same-value legacy migration for database cleanup without rewriting the key', async () => {
+    tauriMocks.keychain.set('provider/apimart', 'legacy-test-key');
+
+    const result = await restoreConfigSecrets(config({ apimart: { apiKey: 'legacy-test-key' } }));
+
+    expect(result.migrated).toBe(true);
+    expect(result.config).toMatchObject({
+      providers: { apimart: { apiKey: 'legacy-test-key', apiKeyRef: 'secret:provider/apimart' } },
+    });
+    expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === 'secret_set')).toHaveLength(0);
+  });
+
   it('moves the api key into the keychain and leaves only a reference', async () => {
     const { config: persisted, unstored } = await stripConfigSecrets(
       config({ apimart: { name: 'Apimart', apiKey: 'sk-live-secret', baseUrl: 'https://api' } }),
@@ -98,11 +217,12 @@ describe('provider secret persistence', () => {
   it('never writes plaintext when the keychain rejects the write', async () => {
     tauriMocks.failWrites = true;
 
-    const { config: persisted, unstored } = await stripConfigSecrets(
+    const { config: persisted, unstored, failedExistingSecrets } = await stripConfigSecrets(
       config({ apimart: { name: 'Apimart', apiKey: 'sk-live-secret' } }),
     );
 
     expect(unstored).toEqual(['apimart']);
+    expect(failedExistingSecrets).toEqual([]);
     expect(hasPlaintextSecret(persisted)).toBe(false);
     expect(JSON.stringify(persisted)).not.toContain('sk-live-secret');
     const providers = (persisted as { providers: Record<string, Record<string, unknown>> }).providers;
@@ -162,6 +282,25 @@ describe('provider secret persistence', () => {
 
     await deleteProviderSecret('apimart');
 
+    expect(tauriMocks.keychain.has('provider/apimart')).toBe(false);
+  });
+
+  it('queues credential deletion behind an earlier configuration operation', async () => {
+    let release: () => void = () => {};
+    const blocked = enqueueConfigPersistence(() => new Promise<void>((resolve) => { release = resolve; }));
+    await Promise.resolve();
+    tauriMocks.keychain.set('provider/apimart', 'existing-test-key');
+
+    const deletion = deleteProviderSecret('apimart');
+    await Promise.resolve();
+    try {
+      expect(tauriMocks.keychain.has('provider/apimart')).toBe(true);
+      expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === 'secret_delete')).toHaveLength(0);
+    } finally {
+      release();
+      await blocked;
+      await deletion;
+    }
     expect(tauriMocks.keychain.has('provider/apimart')).toBe(false);
   });
 

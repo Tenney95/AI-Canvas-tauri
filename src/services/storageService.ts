@@ -42,7 +42,8 @@ import { walkDirectoryFiles } from './fs/assetLibrary';
 import { identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
 import type { DramaAssetLibrary } from '../types/dramaAssets';
 import { normalizeDramaAssetLibrary } from '../types/dramaAssets';
-import { restoreConfigSecrets, stripConfigSecrets } from './providerSecretService';
+import { hasPlaintextSecret, restoreConfigSecrets, stripConfigSecrets } from './providerSecretService';
+import { enqueueConfigPersistence } from './configPersistenceQueue';
 import {
   decodeDataUrlBytesAsync,
   MEDIA_DATA_URL_BYTE_LIMITS,
@@ -834,17 +835,25 @@ export async function deleteWorkflow(id: string): Promise<void> {
 /**
  * 保存应用配置到 IndexedDB。
  * 凭据先摘进 Rust 侧凭据存储，数据库里只留引用；存储失败也不落明文。
+ * 既有凭据保存失败时拒绝整份配置回写，保留原数据库记录。
  * @returns 未能写入凭据存储、仅本次会话有效的连接 ID
  */
 export async function saveConfig(data: unknown): Promise<string[]> {
   try {
-    const { config, unstored } = await stripConfigSecrets(data);
-    await saveConfigToDb(config);
-    console.log('Config saved to IndexedDB');
-    return unstored;
-  } catch (error) {
-    console.error('Save config failed:', error);
-    throw error;
+    // 入队前捕获快照，异步凭据操作期间调用方修改对象不能改变本次保存内容。
+    const snapshot: unknown = structuredClone(data);
+    return await enqueueConfigPersistence(async () => {
+      // 先读已保存记录，确认既有引用；读取失败时不触碰任何凭据。
+      const previous = await loadConfigFromDb();
+      const { config, unstored, failedExistingSecrets } = await stripConfigSecrets(snapshot, previous);
+      if (failedExistingSecrets.length > 0) throw new Error('既有配置凭据保存未完成');
+      await saveConfigToDb(config);
+      console.log('Config saved to IndexedDB');
+      return unstored;
+    });
+  } catch {
+    console.error('[storage] 配置保存失败，未确认配置持久化');
+    throw new Error('保存应用配置失败，请重试或检查存储状态');
   }
 }
 
@@ -854,26 +863,39 @@ export interface LoadedConfig {
   missingSecrets: string[];
 }
 
+/** 保留版本不兼容分类供启动层提示，不传播存储路径或原始错误正文。 */
+function configLoadError(error: unknown): Error {
+  const failure = new Error('读取应用配置失败，请重试或检查存储状态');
+  if (error instanceof Error && error.name === 'VersionError') failure.name = 'VersionError';
+  console.error('[storage] 配置加载失败:', failure.name);
+  return failure;
+}
+
 /**
  * 从 IndexedDB 加载应用配置，并按引用从凭据存储补回凭据。
  * 遇到旧版明文配置会迁进凭据存储并立刻回写清理后的记录。
+ * 只有配置记录不存在才返回 null；读取或迁移失败必须阻止上层保存默认配置。
  */
 export async function loadConfigWithSecrets(): Promise<LoadedConfig> {
   try {
-    const raw = await loadConfigFromDb();
-    if (raw === null || raw === undefined) return { config: null, missingSecrets: [] };
+    return await enqueueConfigPersistence(async () => {
+      const raw = await loadConfigFromDb();
+      if (raw === null || raw === undefined) return { config: null, missingSecrets: [] };
 
-    const { config, migrated, missing } = await restoreConfigSecrets(raw);
-    if (migrated) {
-      // 明文已进凭据存储，立刻覆盖掉数据库里的旧记录
-      const { config: scrubbed } = await stripConfigSecrets(config);
-      await saveConfigToDb(scrubbed);
-      console.log('[storage] 已将明文 API Key 迁移到凭据存储并清理数据库记录');
-    }
-    return { config, missingSecrets: missing };
+      const { config, migrated, missing } = await restoreConfigSecrets(raw);
+      // 旧凭据全部迁移失败时不能开放保存，否则后续保存可能清掉尚未迁出的唯一副本。
+      if (hasPlaintextSecret(raw) && !migrated) throw new Error('配置凭据迁移未完成');
+      if (migrated) {
+        // 在同一持久化锁内确认凭据可用，再清理数据库中的旧明文。
+        const { config: scrubbed, unstored } = await stripConfigSecrets(config, raw);
+        if (unstored.length > 0) throw new Error('配置凭据迁移未完成');
+        await saveConfigToDb(scrubbed);
+        console.log('[storage] 已将明文 API Key 迁移到凭据存储并清理数据库记录');
+      }
+      return { config, missingSecrets: missing };
+    });
   } catch (error) {
-    console.error('Load config failed:', error);
-    return { config: null, missingSecrets: [] };
+    throw configLoadError(error);
   }
 }
 
@@ -890,8 +912,7 @@ export async function loadConfigWithoutSecrets(): Promise<unknown | null> {
   try {
     return await loadConfigFromDb();
   } catch (error) {
-    console.error('Load config failed:', error);
-    return null;
+    throw configLoadError(error);
   }
 }
 

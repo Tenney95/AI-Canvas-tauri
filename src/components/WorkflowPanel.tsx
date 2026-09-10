@@ -12,6 +12,7 @@ import { comfyBaseUrlFor, DEFAULT_COMFY_URL } from '../services/comfyServers';
 import PopupCloseButton from './shared/PopupCloseButton';
 import Select from './shared/Select';
 import RunningHubWorkflowImport from './runninghub/RunningHubWorkflowImport';
+import { readBinaryFile } from '../services/fileService';
 
 const CATEGORIES: { value: WorkflowCategory; label: string }[] = [
   { value: 'ai-text', label: '生成文本' },
@@ -154,6 +155,7 @@ export default function WorkflowPanel() {
   // 重置会覆盖改过的内置工作流，点两下才执行
   const [resetArmed, setResetArmed] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const dropZoneRef = useRef<HTMLDivElement>(null);
 
   // Close on Escape
   useEffect(() => {
@@ -184,7 +186,7 @@ export default function WorkflowPanel() {
   }, [setWorkflowPanelOpen, resetForm]);
 
   // 点击选择与拖放共用的读取入口
-  const acceptFile = useCallback(async (file: File) => {
+  const acceptFile = useCallback(async (file: Pick<File, 'name' | 'text'>, isCurrent: () => boolean = () => true) => {
     setUploadError('');
     setUploadSuccess('');
     if (!/\.json$/i.test(file.name)) {
@@ -193,6 +195,7 @@ export default function WorkflowPanel() {
     }
     try {
       const content = await file.text();
+      if (!isCurrent()) return;
       // Validate it's likely a ComfyUI workflow
       const parsed = JSON.parse(content);
       if (!parsed || typeof parsed !== 'object') {
@@ -206,6 +209,7 @@ export default function WorkflowPanel() {
       // Auto-fill name from filename
       setName((current) => current || file.name.replace(/\.json$/i, ''));
     } catch {
+      if (!isCurrent()) return;
       setUploadError('JSON 解析失败，请检查文件格式');
     }
   }, []);
@@ -217,10 +221,61 @@ export default function WorkflowPanel() {
 
   const handleDrop = useCallback((event: React.DragEvent) => {
     event.preventDefault();
+    event.stopPropagation();
     setDragOver(false);
     const file = event.dataTransfer.files?.[0];
     if (file) void acceptFile(file);
   }, [acceptFile]);
+
+  // 桌面文件拖放由 Tauri 接管，不会触发上面的 HTML5 onDrop。
+  // 画布按 workflowPanelOpen 跳过原生拖放，本面板只接收导入区内的文件。
+  useEffect(() => {
+    if (!workflowPanelOpen || importSource !== 'comfyui' || !('__TAURI_INTERNALS__' in window)) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+      if (cancelled) return;
+      const release = await getCurrentWebview().onDragDropEvent(async ({ payload }) => {
+        if (cancelled) return;
+        if (payload.type === 'leave') {
+          setDragOver(false);
+          return;
+        }
+        const rect = dropZoneRef.current?.getBoundingClientRect();
+        const scale = window.devicePixelRatio || 1;
+        const x = payload.position.x / scale;
+        const y = payload.position.y / scale;
+        const inside = !!rect && x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+        setDragOver(inside && payload.type !== 'drop');
+        if (payload.type !== 'drop' || !inside) return;
+        const path = payload.paths[0];
+        if (!path) return;
+        let readFailed = false;
+        await acceptFile({
+          name: path.split(/[/\\]/).pop() || '',
+          text: async () => {
+            try {
+              return new TextDecoder('utf-8').decode(await readBinaryFile(path));
+            } catch {
+              if (!cancelled) setUploadError('工作流文件读取失败，请重新拖入或点击选择文件');
+              readFailed = true;
+              return '';
+            }
+          },
+        }, () => !cancelled && !readFailed);
+      });
+      if (cancelled) release();
+      else unlisten = release;
+    })().catch(() => {
+      if (!cancelled) setUploadError('拖放接收不可用，请点击选择工作流文件');
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      setDragOver(false);
+    };
+  }, [workflowPanelOpen, importSource, acceptFile]);
 
   // 清掉已选文件，名称与分类留着，方便换个文件继续
   const handleClearFile = useCallback((event: React.MouseEvent) => {
@@ -433,6 +488,7 @@ export default function WorkflowPanel() {
           <div className="wf-field">
             <label className="wf-label">工作流文件</label>
             <motion.div
+              ref={dropZoneRef}
               className={`ui-dropzone${dragOver ? ' is-dragover' : ''}`}
               role="button"
               tabIndex={0}
@@ -443,8 +499,9 @@ export default function WorkflowPanel() {
                   void handlePickFile();
                 }
               }}
-              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-              onDragLeave={() => setDragOver(false)}
+              onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true); }}
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true); }}
+              onDragLeave={(e) => { e.stopPropagation(); setDragOver(false); }}
               onDrop={handleDrop}
               whileTap={{ scale: 0.995 }}
             >

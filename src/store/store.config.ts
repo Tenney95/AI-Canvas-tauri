@@ -563,16 +563,24 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
   },
 
   loadConfig: async () => {
+    // 包括重新加载期间也禁止保存，只有本次读取成功才能重新开放写入。
+    set({ configHydrated: false });
     let saved: unknown | null;
     let missingSecrets: string[];
     try {
       const loaded = await fileService.loadConfigWithSecrets();
       saved = loaded.config;
       missingSecrets = loaded.missingSecrets;
-    } catch {
+    } catch (error) {
       set({ configHydrated: false });
       console.warn('[设置] 配置加载失败，已阻止默认值覆盖持久化配置');
-      return;
+      const message = error instanceof Error && error.name === 'VersionError'
+        ? '数据由较新版本软件保存，请使用最新版本重新打开；已阻止覆盖原配置'
+        : '设置读取失败，已阻止覆盖原配置；请关闭所有软件窗口后重新打开';
+      get().showToast(message, 'error');
+      // 配置中的数据目录尚未确认，不能让 initFromDb 继续创建或迁移项目。
+      // eslint-disable-next-line preserve-caught-error -- 原始存储错误可能含路径或凭据，不能通过 cause 透传。
+      throw new Error(message);
     }
 
     if (!saved) {
