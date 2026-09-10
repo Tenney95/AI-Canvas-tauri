@@ -42,7 +42,7 @@ import { walkDirectoryFiles } from './fs/assetLibrary';
 import { identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
 import type { DramaAssetLibrary } from '../types/dramaAssets';
 import { normalizeDramaAssetLibrary } from '../types/dramaAssets';
-import { restoreConfigSecrets, stripConfigSecrets } from './providerSecretService';
+import { hasPlaintextSecret, restoreConfigSecrets, stripConfigSecrets } from './providerSecretService';
 import {
   decodeDataUrlBytesAsync,
   MEDIA_DATA_URL_BYTE_LIMITS,
@@ -854,9 +854,18 @@ export interface LoadedConfig {
   missingSecrets: string[];
 }
 
+/** 保留版本不兼容分类供启动层提示，不传播存储路径或原始错误正文。 */
+function configLoadError(error: unknown): Error {
+  const failure = new Error('读取应用配置失败，请重试或检查存储状态');
+  if (error instanceof Error && error.name === 'VersionError') failure.name = 'VersionError';
+  console.error('[storage] 配置加载失败:', failure.name);
+  return failure;
+}
+
 /**
  * 从 IndexedDB 加载应用配置，并按引用从凭据存储补回凭据。
  * 遇到旧版明文配置会迁进凭据存储并立刻回写清理后的记录。
+ * 只有配置记录不存在才返回 null；读取或迁移失败必须阻止上层保存默认配置。
  */
 export async function loadConfigWithSecrets(): Promise<LoadedConfig> {
   try {
@@ -864,16 +873,19 @@ export async function loadConfigWithSecrets(): Promise<LoadedConfig> {
     if (raw === null || raw === undefined) return { config: null, missingSecrets: [] };
 
     const { config, migrated, missing } = await restoreConfigSecrets(raw);
+    // 旧凭据全部迁移失败时不能开放保存，否则后续保存可能清掉尚未迁出的唯一副本。
+    if (hasPlaintextSecret(raw) && !migrated) throw new Error('配置凭据迁移未完成');
     if (migrated) {
       // 明文已进凭据存储，立刻覆盖掉数据库里的旧记录
-      const { config: scrubbed } = await stripConfigSecrets(config);
+      const { config: scrubbed, unstored } = await stripConfigSecrets(config);
+      // 二次写入凭据失败会使副本失去引用；此时保留原记录，不能提交不完整迁移。
+      if (unstored.length > 0) throw new Error('配置凭据迁移未完成');
       await saveConfigToDb(scrubbed);
       console.log('[storage] 已将明文 API Key 迁移到凭据存储并清理数据库记录');
     }
     return { config, missingSecrets: missing };
   } catch (error) {
-    console.error('Load config failed:', error);
-    return { config: null, missingSecrets: [] };
+    throw configLoadError(error);
   }
 }
 
@@ -890,8 +902,7 @@ export async function loadConfigWithoutSecrets(): Promise<unknown | null> {
   try {
     return await loadConfigFromDb();
   } catch (error) {
-    console.error('Load config failed:', error);
-    return null;
+    throw configLoadError(error);
   }
 }
 

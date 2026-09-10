@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTooltipAutoPlacement } from '../../hooks/useTooltipAutoPlacement';
-import { loadConfig } from '../../services/fileService';
+import { loadConfigWithoutSecrets } from '../../services/fileService';
 import { useAppStore } from '../../store/useAppStore';
 import { emptyDramaAssetLibrary } from '../../types/dramaAssets';
 import type { AppConfig } from '../../types';
@@ -50,7 +50,7 @@ export default function ChatWindow() {
     let disposed = false;
 
     const syncTheme = () => {
-      void loadConfig().then((savedConfig) => {
+      void loadConfigWithoutSecrets().then((savedConfig) => {
         if (disposed) return;
         const config = savedConfig as AppConfig | null;
         const effectiveTheme = config?.canvasBackground === 'off-white'
@@ -59,6 +59,9 @@ export default function ChatWindow() {
         document.documentElement.setAttribute('data-theme', effectiveTheme);
         document.documentElement.toggleAttribute('data-native-cursor', config?.customCursor === false);
         setLocale(config?.language);
+      }).catch(() => {
+        // 读取失败时保留当前主题；下次聚焦窗口会重新读取。
+        if (!disposed) console.warn('[ChatWindow] 主题配置读取失败，已保留当前主题');
       });
     };
 

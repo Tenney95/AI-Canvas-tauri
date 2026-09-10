@@ -161,12 +161,109 @@ describe('config hydration guard', () => {
   });
 
   it('keeps persistence blocked when loading the saved config fails', async () => {
-    fileMocks.loadConfig.mockRejectedValue(new Error('read failed'));
+    fileMocks.loadConfig.mockRejectedValue(new Error('private-path-and-secret'));
+
+    await expect(useAppStore.getState().loadConfig()).rejects.toThrow('已阻止覆盖原配置');
+    await useAppStore.getState().saveConfig();
+
+    expect(useAppStore.getState().configHydrated).toBe(false);
+    expect(fileMocks.saveConfig).not.toHaveBeenCalled();
+    expect(useAppStore.getState().toast).toMatchObject({
+      visible: true,
+      type: 'error',
+      message: expect.stringContaining('已阻止覆盖原配置'),
+    });
+    expect(useAppStore.getState().toast.message).not.toContain('private-path-and-secret');
+  });
+
+  it('explains that a newer database requires a newer application without enabling writes', async () => {
+    fileMocks.loadConfig.mockRejectedValue(new DOMException('private-database-path', 'VersionError'));
+
+    await expect(useAppStore.getState().loadConfig()).rejects.toThrow('较新版本');
+    await useAppStore.getState().saveConfig();
+
+    expect(useAppStore.getState().configHydrated).toBe(false);
+    expect(fileMocks.saveConfig).not.toHaveBeenCalled();
+    expect(useAppStore.getState().toast.message).toContain('较新版本');
+    expect(useAppStore.getState().toast.message).not.toContain('private-database-path');
+  });
+
+  it('blocks saves while reloading and restores the saved providers after a failed read', async () => {
+    const savedConfig = {
+      providers: { retained: { name: '已有连接', apiKey: 'test-only-key' } },
+      theme: 'light',
+    };
+    fileMocks.loadConfig.mockResolvedValue(savedConfig);
+    await useAppStore.getState().loadConfig();
+    const previousConfig = useAppStore.getState().config;
+    let rejectReload!: (error: Error) => void;
+    fileMocks.loadConfig.mockReturnValueOnce(new Promise((_resolve, reject) => {
+      rejectReload = reject;
+    }));
+
+    const reloading = useAppStore.getState().loadConfig();
+    await useAppStore.getState().saveConfig();
+    expect(fileMocks.saveConfig).not.toHaveBeenCalled();
+    rejectReload(new Error('read interrupted'));
+    await expect(reloading).rejects.toThrow('已阻止覆盖原配置');
+
+    expect(useAppStore.getState().config).toBe(previousConfig);
+    expect(useAppStore.getState().configHydrated).toBe(false);
+
+    await useAppStore.getState().loadConfig();
+    await useAppStore.getState().saveConfig();
+    expect(fileMocks.saveConfig).toHaveBeenCalledOnce();
+    expect(fileMocks.saveConfig).toHaveBeenCalledWith(expect.objectContaining(savedConfig));
+  });
+
+  it('allows first-run settings to be saved when the configuration is genuinely absent', async () => {
+    fileMocks.loadConfig.mockResolvedValue(null);
 
     await useAppStore.getState().loadConfig();
     await useAppStore.getState().saveConfig();
 
+    expect(useAppStore.getState().configHydrated).toBe(true);
+    expect(fileMocks.saveConfig).toHaveBeenCalledOnce();
+  });
+
+  it('blocks default writes when the real persistence service cannot read an existing config', async () => {
+    const persistence = await import('../../src/services/storageService');
+    const repository = await import('../../src/services/indexedDbService');
+    const saved = { theme: 'light', providers: { retained: { name: '已有连接', apiKey: '' } } };
+    await repository.saveConfigToDb(saved);
+    fileMocks.loadConfigWithSecrets.mockImplementation(persistence.loadConfigWithSecrets);
+    vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementationOnce(() => {
+      throw new DOMException('read interrupted', 'UnknownError');
+    });
+
+    await expect(useAppStore.getState().loadConfig()).rejects.toThrow('已阻止覆盖原配置');
+    await useAppStore.getState().saveConfig();
+
     expect(useAppStore.getState().configHydrated).toBe(false);
+    expect(fileMocks.saveConfig).not.toHaveBeenCalled();
+    await expect(repository.loadConfigFromDb()).resolves.toEqual(saved);
+
+    await useAppStore.getState().loadConfig();
+    expect(useAppStore.getState().configHydrated).toBe(true);
+    expect(useAppStore.getState().config.providers).toEqual(saved.providers);
+  });
+
+  it('stops project initialization when its data-directory configuration cannot be loaded', async () => {
+    for (const action of [
+      'loadWorkflows', 'loadPresets', 'loadSkills', 'loadSubAgentProfiles',
+      'loadCustomStyles', 'loadToolbarLayouts', 'loadPlugins',
+    ] as const) {
+      vi.spyOn(useAppStore.getState(), action).mockResolvedValue(undefined);
+    }
+    fileMocks.loadConfig.mockRejectedValue(new Error('configuration read failed'));
+
+    await useAppStore.getState().initFromDb();
+
+    expect(useAppStore.getState().configHydrated).toBe(false);
+    expect(useAppStore.getState().projectLoadStatus).toBe('error');
+    expect(fileMocks.loadProjectsList).not.toHaveBeenCalled();
+    expect(fileMocks.loadProjectData).not.toHaveBeenCalled();
+    expect(fileMocks.saveProject).not.toHaveBeenCalled();
     expect(fileMocks.saveConfig).not.toHaveBeenCalled();
   });
 

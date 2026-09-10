@@ -36,7 +36,13 @@ let dbPromise: Promise<IDBDatabase> | null = null;
 /** 打开数据库并按历史版本声明补齐缺失的 store/index。 */
 export function openDB(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
+  const opening = new Promise<IDBDatabase>((resolve, reject) => {
+    let settled = false;
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -151,8 +157,34 @@ export function openDB(): Promise<IDBDatabase> {
         db.createObjectStore(STORE_PLUGINS, { keyPath: 'id' });
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      // blocked 请求无法取消；调用方已收到失败后，迟到的连接必须释放。
+      if (settled) {
+        db.close();
+        return;
+      }
+      settled = true;
+      const invalidate = () => {
+        if (dbPromise === opening) dbPromise = null;
+      };
+      db.onversionchange = () => {
+        db.close();
+        invalidate();
+      };
+      db.onclose = invalidate;
+      resolve(db);
+    };
+    request.onerror = () => fail(request.error);
+    request.onblocked = () => fail(new DOMException(
+      '本地数据库正在等待其他软件窗口释放，请关闭其他实例后重试',
+      'InvalidStateError',
+    ));
   });
-  return dbPromise;
+  dbPromise = opening;
+  // 同时覆盖异步请求失败和 indexedDB.open 同步抛错；旧请求不得清掉新连接。
+  void opening.catch(() => {
+    if (dbPromise === opening) dbPromise = null;
+  });
+  return opening;
 }
