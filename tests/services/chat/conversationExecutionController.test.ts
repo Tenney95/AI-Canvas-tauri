@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentScheduleResult } from '../../../src/services/chat/agentScheduler';
+import type { AgentScheduleResult, ConversationAgentExecution } from '../../../src/services/chat/agentScheduler';
 
 const schedulerMocks = vi.hoisted(() => {
   // 记录已入队的任务，让 isAgentExecutionScheduled 能反映真实调度器的去重行为
@@ -81,6 +81,42 @@ beforeEach(() => {
 });
 
 describe('conversation execution controller', () => {
+  it.each([
+    { body: 'data: [DONE]\n\n', contentType: 'text/event-stream', status: 'failed', messageStatus: 'error', text: '未返回' },
+    { body: 'data: {"error":{"message":"Provider unavailable"}}\n\n', contentType: 'text/event-stream', status: 'failed', messageStatus: 'error', text: 'Provider unavailable' },
+    { body: '{"choices":[{"message":{"content":"已收到你的要求"},"finish_reason":"stop"}]}', contentType: 'application/json', status: 'completed', messageStatus: 'done', text: '已收到你的要求' },
+    { body: 'data:{"choices":[{"delta":{"content":"已收到你的要求"},"finish_reason":"stop"}]}\n\n', contentType: 'text/event-stream', status: 'completed', messageStatus: 'done', text: '已收到你的要求' },
+  ])('keeps a visible final message for $body', async ({ body, contentType, status, messageStatus, text }) => {
+    useAppStore.setState((state) => ({
+      config: {
+        ...state.config,
+        assistantModelId: 'reply-test',
+        providers: { ...state.config.providers, reply: { name: 'Reply test', baseUrl: 'https://example.invalid/v1', apiKey: 'test-only' } },
+        generalModels: [{ id: 'reply-test', name: 'Reply test', category: 'text', providerConfigId: 'reply', modelId: 'reply-model' }],
+      },
+      conversations: state.conversations.map((conversation) => ({ ...conversation, agentMode: 'plan' as const })),
+    }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, { headers: { 'Content-Type': contentType } }));
+    vi.stubGlobal('fetch', fetchMock);
+    let execution: ConversationAgentExecution | undefined;
+    schedulerMocks.schedule.mockImplementation((scheduled) => {
+      execution = scheduled as ConversationAgentExecution;
+      return { state: 'started', position: 0 };
+    });
+    const result = submitConversationMessage({ content: '你好', conversationId: 'conversation-1' });
+    if (result.status !== 'started') throw new Error('Expected a scheduled assistant reply');
+    expect(execution).toBeDefined();
+    execution!.onStart?.();
+    await execution!.run();
+    const state = useAppStore.getState();
+    expect(state.agentTasks.find((task) => task.id === result.taskId)?.status).toBe(status);
+    expect(state.messages.find((message) => message.id === result.assistantMessageId)).toMatchObject({
+      status: messageStatus,
+      content: expect.stringContaining(text),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('creates the message pair and schedules one Agent task', () => {
     const result = submitConversationMessage({
       content: '  update the canvas  ',

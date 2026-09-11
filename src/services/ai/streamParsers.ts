@@ -60,12 +60,12 @@ function parseSseEvent(lines: string[]): SseEvent | null {
   const dataLines: string[] = [];
 
   for (const line of lines) {
-    if (line.startsWith('event: ')) {
-      eventName = line.slice(7).trim();
-    } else if (line.startsWith('data: ')) {
-      dataLines.push(line.slice(6));
-    } else if (line === 'data:[DONE]' || line === 'data: [DONE]') {
-      return { event: 'done', data: '[DONE]' };
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      // SSE 字段冒号后允许省略空格；只移除一个可选空格，保留正文缩进。
+      const value = line.slice(5);
+      dataLines.push(value.startsWith(' ') ? value.slice(1) : value);
     }
   }
 
@@ -78,6 +78,7 @@ function parseSseEvent(lines: string[]): SseEvent | null {
 // ============================================
 
 interface OpenAiChunk {
+  error?: unknown;
   id?: string;
   object?: string;
   model?: string;
@@ -111,6 +112,12 @@ interface AnthropicToolCallBuffer extends BufferedToolCall {
 }
 
 class ProviderStreamPayloadError extends Error {}
+
+function assertAssistantOutput(text: string, toolCallCount: number): void {
+  if (!text.trim() && toolCallCount === 0) {
+    throw new ProviderStreamPayloadError('模型未返回回复正文或有效工具调用，请重试或检查模型接口的协议配置。');
+  }
+}
 
 function parseOpenAiChunk(json: OpenAiChunk, requestId: string, modelId: string): AssistantStreamEvent[] {
   const events: AssistantStreamEvent[] = [];
@@ -192,6 +199,12 @@ export async function parseStream(
     throw new Error(errorMsg);
   }
 
+  // 部分兼容接口即使收到 stream=true 仍返回 JSON，沿用同一协议的解析与事件回调。
+  const contentType = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+  if (contentType === 'application/json' || contentType?.endsWith('+json')) {
+    return parseNonStream(response, options);
+  }
+
   const reader = response.body?.getReader();
   if (!reader) {
     onEvent({ type: 'error', code: 'NO_BODY', message: '响应体为空', retryable: false });
@@ -202,6 +215,7 @@ export async function parseStream(
   let fullContent = '';
   let doneSent = false;
   let toolCallsFinalized = false;
+  let finalizedToolCallCount = 0;
   const toolCallBuffer = new Map<number, BufferedToolCall>();
   const anthropicToolCallBuffer = new Map<number, AnthropicToolCallBuffer>();
   const geminiToolCalls = new Set<string>();
@@ -244,6 +258,7 @@ export async function parseStream(
       if (!call.toolId || !call.argumentsJson) continue;
       try {
         const input = JSON.parse(call.argumentsJson) as unknown;
+        finalizedToolCallCount += 1;
         onEvent({
           type: 'tool.call.final',
           call: { callId: call.callId, toolId: call.toolId, input },
@@ -278,6 +293,7 @@ export async function parseStream(
       }
     }
     call.finalized = true;
+    finalizedToolCallCount += 1;
     onEvent({
       type: 'tool.call.final',
       call: { callId: call.callId, toolId: call.toolId, input },
@@ -394,6 +410,7 @@ export async function parseStream(
       const signature = `${callId}:${JSON.stringify(call.args ?? {})}`;
       if (geminiToolCalls.has(signature)) continue;
       geminiToolCalls.add(signature);
+      finalizedToolCallCount += 1;
       const argumentsJson = JSON.stringify(call.args ?? {});
       onEvent({ type: 'tool.call.delta', callId, delta: argumentsJson });
       onEvent({
@@ -412,6 +429,7 @@ export async function parseStream(
         if (protocol === 'anthropic-compatible') finalizeAnthropicToolCalls();
         emitNativeUsage();
       }
+      assertAssistantOutput(fullContent, finalizedToolCallCount);
       doneSent = true;
       onEvent({ type: 'done', finishReason: nativeFinishReason });
     }
@@ -465,11 +483,17 @@ export async function parseStream(
                   if (typeof first.finishReason === 'string') sendDoneIfNeeded();
                 } else {
                   const json = JSON.parse(event.data) as OpenAiChunk;
+                  if (json.error) {
+                    throw new ProviderStreamPayloadError(
+                      readChatApiErrorMessage(json) || '模型流式请求失败',
+                    );
+                  }
                   consumeToolCallDeltas(json);
                   const events = parseOpenAiChunk(json, options.requestId, options.modelId);
                   for (const ev of events) {
                     if (ev.type === 'done') {
                       finalizeToolCalls();
+                      assertAssistantOutput(fullContent, finalizedToolCallCount);
                       doneSent = true;
                     }
                     if (ev.type === 'text.delta') fullContent += ev.delta;
@@ -515,7 +539,14 @@ export async function parseNonStream(
     throw new Error(errorMsg);
   }
 
-  const parsed = parseChatApiResponse(await response.json(), options.protocol);
+  const payload: unknown = await response.json();
+  if (payload && typeof payload === 'object' && 'error' in payload && payload.error) {
+    throw new ProviderStreamPayloadError(readChatApiErrorMessage(payload) || '模型请求失败');
+  }
+  const parsed = parseChatApiResponse(payload, options.protocol);
+  assertAssistantOutput(parsed.text, parsed.toolCalls.length);
+  // Agent 与对话消息通过事件累计正文，不能只返回字符串而不通知消息消费者。
+  if (parsed.text) onEvent({ type: 'text.delta', delta: parsed.text });
   for (const call of parsed.toolCalls) onEvent({ type: 'tool.call.final', call });
   if (parsed.inputTokens !== undefined || parsed.outputTokens !== undefined) {
     onEvent({
