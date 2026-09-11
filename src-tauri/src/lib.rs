@@ -22,6 +22,7 @@ mod assistant_web;
 #[cfg_attr(not(windows), allow(dead_code, unused_imports))]
 #[path = "director/blender_runtime/mod.rs"]
 mod blender_runtime;
+mod canvas_input;
 #[path = "files/clipboard.rs"]
 mod clipboard;
 #[path = "files/clipboard_read.rs"]
@@ -1101,6 +1102,7 @@ pub fn run() {
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(canvas_input::init())
         .invoke_handler(tauri::generate_handler![
             fetch_image_data_url,
             proxy_fetch,

@@ -55,6 +55,14 @@ symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4"] }
 [target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
 ort = { version = "2.0.0-rc.12", features = ["download-binaries", "directml"], optional = true }
 
+# Mac：仅为主画布普通滚轮分流启用原生绑定，复用锁文件中的版本。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+block2 = "=0.6.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSEvent", "NSApplication", "NSResponder", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSGeometry", "NSObject", "NSProcessInfo", "NSString", "NSValue"] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "WKWebView", "objc2-app-kit"] }
+
 # Windows: DXGI 适配器枚举（GPU 探测用）+ 剪贴板 CF_HDROP 文件写入
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

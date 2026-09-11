@@ -651,7 +651,8 @@ function CanvasInner() {
   useCanvasWheelZoom({
     rootRef: canvasRootRef,
     cancelRef: wheelZoomCancelRef,
-    enabled: interactionMode === 'default' && !shouldUseMacTrackpadPan,
+    enabled: interactionMode === 'default',
+    nativeMouseWheel: shouldUseMacTrackpadPan,
     projectId: currentProjectId,
     getViewport: reactFlowInstance.getViewport,
     setViewport: reactFlowInstance.setViewport,
