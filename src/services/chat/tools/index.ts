@@ -17,6 +17,7 @@ import { registerAppAgentTools } from './appTools';
 import { registerComfyAgentTools } from './comfyTools';
 import { registerProjectAgentTools } from './projectTools';
 import { registerUiControlAgentTools } from './uiControlTools';
+import { registerVideoEditorAgentTools } from './videoEditorTools';
 import { registerWorkflowAgentTools } from './workflowTools';
 import { registerStyleAgentTools } from './styleTools';
 import { registerConversationAgentTools } from './conversationTools';
@@ -51,6 +52,7 @@ function getRegistrationFactories(): AgentToolRegistrationFactory[] {
     registerComfyAgentTools,
     registerProjectAgentTools,
     registerUiControlAgentTools,
+    registerVideoEditorAgentTools,
     registerWorkflowAgentTools,
     registerStyleAgentTools,
     registerConversationAgentTools,

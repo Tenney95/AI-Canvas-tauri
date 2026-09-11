@@ -16,7 +16,8 @@
  *   store.clipboard.ts — 复制 / 粘贴
  *   store.projects.ts  — 项目管理 / 保存加载
  */
-import { create } from 'zustand';
+import type { StateCreator } from 'zustand';
+import { createOrRefreshHotStore } from './store.hotReload';
 
 import type { NodeSlice } from './store.nodes';
 import type { UISlice } from './store.ui';
@@ -89,7 +90,7 @@ export type AppState = NodeSlice
   & AgentPackageSlice;
 
 // ---- Store creation via slice composition ----
-export const useAppStore = create<AppState>()((...a) => ({
+const createAppState: StateCreator<AppState> = (...a) => ({
   ...createNodeSlice(...a),
   ...createUISlice(...a),
   ...createToastSlice(...a),
@@ -111,4 +112,8 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createDramaAssetsSlice(...a),
   ...createPluginSlice(...a),
   ...createAgentPackageSlice(...a),
-}));
+});
+
+// 仅开发热更新时恢复内存 Store；生产构建与独立窗口仍各自创建正常实例。
+export const useAppStore = createOrRefreshHotStore(createAppState,
+  import.meta.hot?.data);

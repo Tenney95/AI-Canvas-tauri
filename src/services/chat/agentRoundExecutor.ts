@@ -101,8 +101,12 @@ function isAgentExecutionInactive(taskId: string, signal: AbortSignal): boolean 
 }
 
 export function assertAgentTaskActive(taskId: string, signal: AbortSignal): void {
-  if (isAgentExecutionInactive(taskId, signal)) {
-    throw new DOMException('Agent 任务已取消或不再运行', 'AbortError');
+  // 区分真实取消与任务缺失，便于识别开发热更新时的状态引用不同步。
+  if (signal.aborted) throw new DOMException('Agent 任务已取消（执行信号已中止）', 'AbortError');
+  const task = useAppStore.getState().agentTasks.find((item) => item.id === taskId);
+  if (!task) throw new DOMException('Agent 任务记录不存在，无法继续执行', 'AbortError');
+  if (task.status === 'paused' || AGENT_TERMINAL_STATUSES.has(task.status)) {
+    throw new DOMException(`Agent 任务不再运行（状态：${task.status}）`, 'AbortError');
   }
 }
 

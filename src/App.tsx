@@ -298,7 +298,9 @@ export default function App() {
         if (cancelled) cleanup();
         else dispose = cleanup;
       })
-      .catch(() => {});
+      .catch(() => {
+        useAppStore.getState().showToast('MCP 控制器初始化失败，请重新加载应用后重试', 'error');
+      });
     return () => {
       cancelled = true;
       dispose?.();

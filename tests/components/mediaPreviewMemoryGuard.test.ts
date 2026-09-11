@@ -39,6 +39,7 @@ const videoEditorWindowSource = readSource(
 const videoEditorMediaServiceSource = readSource(
   '../../src/services/videoEditorMediaService.ts',
 );
+const videoEditorBitmapSource = readSource('../../src/services/videoEditorRenderBitmap.ts');
 
 describe('media preview memory guards', () => {
   it('uses the no-backdrop preview scope and removes duplicate connected thumbnails', () => {
@@ -81,11 +82,11 @@ describe('media preview memory guards', () => {
   });
 
   it('bounds and releases video-editor image bitmaps and export surfaces', () => {
-    expect(videoEditorWindowSource).toContain('const MAX_RENDER_IMAGE_BITMAP_BYTES = 256 * 1024 * 1024;');
-    expect(videoEditorWindowSource).toMatch(
+    expect(videoEditorBitmapSource).toContain('const MAX_RENDER_IMAGE_BITMAP_BYTES = 256 * 1024 * 1024;');
+    expect(videoEditorBitmapSource).toMatch(
       /retainedBytes \+ bytes > MAX_RENDER_IMAGE_BITMAP_BYTES[\s\S]*?bitmap\.close\(\)/,
     );
-    expect(videoEditorWindowSource.match(/createBudgetedRenderBitmap\(/g)).toHaveLength(3);
+    expect(videoEditorWindowSource.match(/createBudgetedRenderBitmap\(/g)).toHaveLength(2);
     expect(videoEditorWindowSource.match(/closeRenderSourceBitmaps\(renderSources\.values\(\)\)/g)).toHaveLength(2);
     expect(videoEditorMediaServiceSource).toMatch(
       /export async function exportComposite[\s\S]*?finally \{\s*await pendingOutput\?\.cancel\(\)[\s\S]*?surface\.width = 1;\s*surface\.height = 1;/,

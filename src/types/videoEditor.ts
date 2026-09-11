@@ -164,6 +164,10 @@ export interface VideoEditorProjectRecord {
   nodeIds?: string[];
   name: string;
   tracks: VideoEditorTrack[];
+  /** 自动化写入版本；人工作业必须保留，仓储拒绝过期窗口覆盖。 */
+  automationRevision?: number;
+  /** 自动化导出的默认设置；旧工程缺省时使用 1920×1080、30fps。 */
+  output?: VideoEditorCanvasSize & { frameRate: number };
   createdAt: number;
   updatedAt: number;
 }
