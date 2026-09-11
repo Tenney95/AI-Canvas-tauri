@@ -121,7 +121,7 @@ export default function FileAppSettings({ active }: { active: boolean }) {
         await saveConfig();
       }
     } catch {
-      // 浏览器环境忽略
+      useAppStore.getState().showToast(t('目录选择或保存失败，请重试'), 'error');
     }
   };
 
@@ -141,7 +141,7 @@ export default function FileAppSettings({ active }: { active: boolean }) {
         await saveConfig();
       }
     } catch {
-      // 浏览器环境忽略
+      useAppStore.getState().showToast(t('程序选择或保存失败，请重试'), 'error');
     }
   };
 

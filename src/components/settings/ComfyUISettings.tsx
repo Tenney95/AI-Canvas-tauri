@@ -200,7 +200,7 @@ export default function ComfyUISettings() {
 
   const saveServers = async (next: ComfyServer[]) => {
     updateConfig({ comfyServers: next });
-    await saveConfig();
+    await saveConfig().catch(() => {});
   };
 
   const addServer = () => saveServers([
@@ -290,7 +290,7 @@ export default function ComfyUISettings() {
               defaultValue={config.comfyUIUrl || ''}
               onBlur={async (event) => {
                 updateConfig({ comfyUIUrl: event.target.value });
-                await saveConfig();
+                await saveConfig().catch(() => {});
               }}
             />
             <ServerStatusLight

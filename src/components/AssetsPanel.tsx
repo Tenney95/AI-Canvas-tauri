@@ -479,7 +479,7 @@ export default function AssetsPanel() {
 
   const handleRemoveFolder = useCallback(async (path: string) => {
     updateConfig({ assetFolders: folders.filter((f) => f !== path) });
-    await saveConfig();
+    try { await saveConfig(); } catch { return; }
     if (activeTab === 'permanent') await loadFiles();
   }, [folders, updateConfig, saveConfig, activeTab, loadFiles]);
 

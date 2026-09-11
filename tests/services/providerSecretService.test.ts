@@ -22,6 +22,8 @@ import {
   providerSecretRef,
   restoreConfigSecrets,
   stripConfigSecrets,
+  readAppSecret,
+  writeAppSecret,
 } from '../../src/services/providerSecretService';
 import { enqueueConfigPersistence } from '../../src/services/configPersistenceQueue';
 
@@ -55,6 +57,52 @@ beforeEach(() => {
 });
 
 describe('provider secret persistence', () => {
+  it('passes the observed native value as a compare condition and does not retry conflicts', async () => {
+    tauriMocks.keychain.set('provider/apimart', 'original-fixture');
+    await stripConfigSecrets(config({ apimart: { apiKey: 'next-fixture' } }));
+    expect(tauriMocks.invoke).toHaveBeenCalledWith('secret_set', {
+      key: 'provider/apimart', value: 'next-fixture', expected: { value: 'original-fixture' },
+    });
+    tauriMocks.invoke.mockClear();
+    tauriMocks.invoke.mockImplementation(async (cmd) => {
+      if (cmd === 'secret_get') return 'next-fixture';
+      throw { code: 'conflict', message: 'fixture-private' };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(stripConfigSecrets(config({ apimart: { apiKey: 'other-fixture' } }))).rejects.toMatchObject({ code: 'conflict' });
+    expect(tauriMocks.invoke.mock.calls.filter(([cmd]) => cmd === 'secret_set')).toHaveLength(1);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('fixture');
+  });
+
+  it('distinguishes a missing application secret from a failed read without leaking details', async () => {
+    await expect(readAppSecret('mcp/token')).resolves.toBeNull();
+    tauriMocks.failReads = true;
+    const failure = await readAppSecret('mcp/token').catch((error: unknown) => error);
+    expect(failure).toMatchObject({ operation: 'secret-read', code: 'unknown' });
+    expect(String(failure)).not.toContain('fixture-private-path');
+    expect(failure).not.toHaveProperty('cause');
+    expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === 'secret_set')).toHaveLength(0);
+  });
+
+  it('rejects malformed IPC results and classifies unavailable runtime', async () => {
+    tauriMocks.invoke.mockResolvedValueOnce(undefined);
+    await expect(readAppSecret('mcp/token')).rejects.toMatchObject({ code: 'corrupt' });
+    tauriMocks.isTauri = false;
+    await expect(readAppSecret('mcp/token')).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
+  it('retries only a transient native read and does not retry failed writes', async () => {
+    tauriMocks.invoke.mockRejectedValueOnce({ code: 'busy', message: 'secret-path' }).mockResolvedValueOnce('saved');
+    expect(await readAppSecret('mcp/token')).toBe('saved');
+    expect(tauriMocks.invoke).toHaveBeenCalledTimes(2);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    tauriMocks.invoke.mockRejectedValueOnce(new Error('G:/private sk-private'));
+    expect(await writeAppSecret('mcp/token', 'replacement')).toBe(false);
+    expect(tauriMocks.invoke).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('private');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('replacement');
+  });
+
   it('checks the native value and skips unchanged credential writes', async () => {
     tauriMocks.keychain.set('provider/apimart', 'unchanged-test-key');
 

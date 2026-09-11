@@ -8,6 +8,37 @@
  */
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../store/useAppStore';
+import { isSettingsClosing, registerSettingsProducer } from '../services/configPersistenceQueue';
+
+/** 防抖任务可在关闭前立即执行，并等待已经开始的异步保存。 */
+export function createWindowSizeSaveScheduler(save: () => Promise<void>, delay = 300) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let pending = false;
+  let disposed = false;
+  let running: Promise<void> | null = null;
+  const flush = async (): Promise<void> => {
+    clearTimeout(timer); timer = undefined;
+    while (running) await running;
+    if (!pending || disposed) return;
+    pending = false;
+    const operation = save();
+    running = operation;
+    try { await operation; }
+    catch (error) { pending = true; throw error; }
+    finally { if (running === operation) running = null; }
+    if (pending) await flush();
+  };
+  return {
+    schedule: () => {
+      if (disposed || isSettingsClosing()) return;
+      pending = true;
+      clearTimeout(timer);
+      timer = setTimeout(() => { void flush().catch(() => {}); }, delay);
+    },
+    flush,
+    dispose: () => { disposed = true; clearTimeout(timer); },
+  };
+}
 
 export const MAIN_WINDOW_MIN_WIDTH = 1000;
 export const MAIN_WINDOW_MIN_HEIGHT = 700;
@@ -55,7 +86,8 @@ export function useMainWindowSize(lockedRatio: number | null): void {
     if (!configHydrated) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    let timer: number | undefined;
+    let scheduler: ReturnType<typeof createWindowSizeSaveScheduler> | undefined;
+    let unregisterProducer: (() => void) | undefined;
     // 自己发起的 setSize 也会触发 onResized，靠这个标记避免自激
     let applying = false;
 
@@ -77,10 +109,7 @@ export function useMainWindowSize(lockedRatio: number | null): void {
         }
         if (disposed) return;
 
-        const off = await win.onResized(() => {
-          if (applying) return;
-          window.clearTimeout(timer);
-          timer = window.setTimeout(async () => {
+        scheduler = createWindowSizeSaveScheduler(async () => {
             try {
               // 最大化 / 全屏时窗口尺寸由系统决定，既不纠正也不记忆
               if (await win.isMaximized() || await win.isFullscreen()) return;
@@ -107,14 +136,20 @@ export function useMainWindowSize(lockedRatio: number | null): void {
               }
 
               const store = useAppStore.getState();
+              if (disposed) return;
               const prev = store.config.windowSize;
               if (prev?.width === actualSize.width && prev?.height === actualSize.height) return;
               store.updateConfig({ windowSize: actualSize });
-              void store.saveConfig();
+              await store.saveConfig({ silent: true });
             } catch (error) {
-              console.warn('[窗口尺寸] 记忆或纠正失败:', error);
+              console.warn('[窗口尺寸] 记忆或纠正失败');
+              throw error;
             }
-          }, 300);
+        });
+        unregisterProducer = registerSettingsProducer(scheduler.flush);
+        const off = await win.onResized(() => {
+          if (applying || disposed || isSettingsClosing()) return;
+          scheduler?.schedule();
         });
         if (disposed) off();
         else unlisten = off;
@@ -125,7 +160,8 @@ export function useMainWindowSize(lockedRatio: number | null): void {
 
     return () => {
       disposed = true;
-      window.clearTimeout(timer);
+      scheduler?.dispose();
+      unregisterProducer?.();
       unlisten?.();
     };
   }, [configHydrated, lockedRatio]);

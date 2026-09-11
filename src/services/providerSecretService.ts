@@ -13,6 +13,7 @@
 import { isTauriEnv } from './fs/core';
 import { invoke } from '@tauri-apps/api/core';
 import { enqueueConfigPersistence } from './configPersistenceQueue';
+import { readStorageWithRetry, reportStorageError, StorageError } from './storageDiagnostics';
 
 /** 配置中代替明文凭据的引用前缀，便于识别与迁移。 */
 const SECRET_REF_PREFIX = 'secret:';
@@ -84,19 +85,20 @@ export async function isSecretStoreAvailable(): Promise<boolean> {
   try {
     return await invoke<boolean>('secret_store_available');
   } catch (error) {
-    console.warn('[providerSecret] 凭据存储探测失败:', error);
+    reportStorageError('secret-probe', error);
     return false;
   }
 }
 
-async function writeSecret(ref: string, value: string): Promise<boolean> {
+async function writeSecret(ref: string, value: string, expected?: { value: string | null }): Promise<boolean> {
   const key = refToKey(ref);
   if (!key || !isTauriEnv()) return false;
   try {
-    await invokeSecret<void>('secret_set', { key, value });
+    await invokeSecret<void>('secret_set', { key, value, ...(expected ? { expected } : {}) });
     return true;
   } catch (error) {
-    console.warn('[providerSecret] 写入凭据存储失败:', ref, error);
+    const safe = reportStorageError('secret-write', error);
+    if (safe.code === 'conflict') throw safe;
     return false;
   }
 }
@@ -106,13 +108,13 @@ async function writeProviderSecretIfChanged(ref: string, value: string): Promise
   const key = refToKey(ref);
   if (!key || !isTauriEnv()) return false;
   try {
-    const current = await invokeSecret<string | null>('secret_get', { key });
+    const current = await readSecret(ref);
     if (current === value) return true;
-    if (current !== null && typeof current !== 'string') throw new Error('凭据读取结果无效');
-    await invokeSecret<void>('secret_set', { key, value });
+    await invokeSecret<void>('secret_set', { key, value, expected: { value: current } });
     return true;
-  } catch {
-    console.warn('[providerSecret] 凭据读取或写入失败，本次未确认持久化');
+  } catch (error) {
+    const safe = reportStorageError(error instanceof StorageError ? error.operation : 'secret-write', error);
+    if (safe.code === 'conflict') throw safe;
     return false;
   }
 }
@@ -126,21 +128,39 @@ function existingProviderSecretRef(provider: unknown): string | undefined {
 
 async function readSecret(ref: string): Promise<string | null> {
   const key = refToKey(ref);
-  if (!key || !isTauriEnv()) return null;
-  try {
-    return await invokeSecret<string | null>('secret_get', { key }) ?? null;
-  } catch (error) {
-    console.warn('[providerSecret] 读取凭据存储失败:', ref, error);
-    return null;
-  }
+  if (!key) throw new StorageError('secret-read', 'corrupt');
+  if (!isTauriEnv()) throw new StorageError('secret-read', 'unavailable');
+  return readStorageWithRetry('secret-read', async () => {
+    const value = await invokeSecret<unknown>('secret_get', { key });
+    if (value !== null && typeof value !== 'string') throw new StorageError('secret-read', 'corrupt');
+    return value;
+  });
 }
 
 /**
  * 通用凭据读写：条目名不带 `secret:` 前缀，供 provider 之外的凭据（如 MCP 固定令牌）复用。
- * 写入失败返回 false，调用方需要自行降级（凭据仅本次会话有效）。
+ * 读取仅在确认条目不存在时返回 null；读取失败抛脱敏错误。写入失败返回 false。
  */
-export async function writeAppSecret(key: string, value: string): Promise<boolean> {
-  return writeSecret(`${SECRET_REF_PREFIX}${key}`, value);
+export async function writeAppSecret(key: string, value: string, expected?: { value: string | null }): Promise<boolean> {
+  return writeSecret(`${SECRET_REF_PREFIX}${key}`, value, expected);
+}
+
+/** 清理计划只持有原生 SHA-256 指纹，不另建明文缓存；由配置队列调用。 */
+export async function readProviderSecretFingerprint(connectionId: string): Promise<string | null> {
+  if (!isTauriEnv()) return null;
+  return readStorageWithRetry('secret-read', async () => {
+    const value = await invokeSecret<unknown>('secret_get', { key: refToKey(providerSecretRef(connectionId)), fingerprintOnly: true });
+    if (value !== null && (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value))) throw new StorageError('secret-read', 'corrupt');
+    return value as string | null;
+  });
+}
+
+/** 调用方须先确认连接删除已提交；不自行入队，避免嵌套锁。 */
+export async function deleteProviderSecretIfUnchanged(connectionId: string, fingerprint: string): Promise<void> {
+  if (!isTauriEnv()) throw new StorageError('secret-delete', 'unavailable');
+  try {
+    await invokeSecret<void>('secret_delete', { key: refToKey(providerSecretRef(connectionId)), expected: { fingerprint } });
+  } catch (error) { throw reportStorageError('secret-delete', error); }
 }
 
 export async function readAppSecret(key: string): Promise<string | null> {
@@ -155,8 +175,8 @@ export async function deleteProviderSecret(connectionId: string): Promise<void> 
       if (!key || !isTauriEnv()) return;
       await invokeSecret<void>('secret_delete', { key });
     });
-  } catch {
-    console.warn('[providerSecret] 删除凭据存储条目失败');
+  } catch (error) {
+    reportStorageError('secret-delete', error);
   }
 }
 
@@ -164,14 +184,7 @@ export async function deleteProviderSecret(connectionId: string): Promise<void> 
 async function readProviderSecret(ref: string): Promise<string | null> {
   const key = refToKey(ref);
   if (!key || !isTauriEnv()) return null;
-  try {
-    const value = await invokeSecret<string | null>('secret_get', { key });
-    if (value !== null && typeof value !== 'string') throw new Error('凭据读取结果无效');
-    return value;
-  } catch {
-    // 不附带原始错误或 cause，避免凭据和本地路径进入日志或消息。
-    throw new Error('渠道凭据读取失败，请重试或检查存储状态');
-  }
+  return readSecret(ref);
 }
 
 /**

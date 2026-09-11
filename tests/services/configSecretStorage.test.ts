@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createStore } from 'zustand/vanilla';
+import { createHash } from 'node:crypto';
+import type { AppState } from '../../src/store/useAppStore';
 
 /**
  * 端到端钉住报告里的那条路径：配置写进 IndexedDB 时不得含明文 API Key。
@@ -23,6 +26,10 @@ vi.mock('../../src/services/fs/assetIndex', () => ({
   identifyAsset: vi.fn(async () => null),
   resolveIndexedAssetPath: vi.fn(async () => null),
 }));
+vi.mock('../../src/services/fileService', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/storageService')>('../../src/services/storageService'),
+  setBaseDataDir: vi.fn(), syncAuthorizedDirectories: async () => {},
+}));
 
 import {
   loadConfig,
@@ -34,6 +41,14 @@ import { loadConfigFromDb, saveConfigToDb } from '../../src/services/indexedDbSe
 import { openDB, STORE_CONFIG } from '../../src/services/indexedDb/schema';
 import { enqueueConfigPersistence } from '../../src/services/configPersistenceQueue';
 import { deleteProviderSecret } from '../../src/services/providerSecretService';
+import { configWithoutSecrets, createConfigPatch } from '../../src/services/configPatch';
+import { createConfigSlice } from '../../src/store/store.config';
+
+function configStore() {
+  return createStore<AppState>()((set, get, api) => ({
+    ...createConfigSlice(set, get, api), showToast: vi.fn(), nodes: [], projects: [], currentProjectId: null,
+  } as unknown as AppState));
+}
 
 function deferred() {
   let resolve!: () => void;
@@ -55,14 +70,222 @@ beforeEach(async () => {
   secretStore.invoke.mockReset();
   secretStore.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
     const key = args?.key as string;
-    if (command === 'secret_set') { secretStore.entries.set(key, args.value as string); return undefined; }
-    if (command === 'secret_get') return secretStore.entries.get(key) ?? null;
-    if (command === 'secret_delete') { secretStore.entries.delete(key); return undefined; }
+    const current = secretStore.entries.get(key) ?? null;
+    const fingerprint = current === null ? null : createHash('sha256').update(current).digest('hex');
+    const expected = args.expected as { value?: string | null; fingerprint?: string } | undefined;
+    if (command === 'secret_set') {
+      if (current !== args.value && expected && expected.value !== current) throw { code: 'conflict' };
+      secretStore.entries.set(key, args.value as string); return undefined;
+    }
+    if (command === 'secret_get') return args.fingerprintOnly ? fingerprint : current;
+    if (command === 'secret_delete') {
+      if (current !== null && expected?.fingerprint && expected.fingerprint !== fingerprint) throw { code: 'conflict' };
+      secretStore.entries.delete(key); return undefined;
+    }
     return undefined;
   });
 });
 
 describe('config persistence keeps secrets out of IndexedDB', () => {
+  it('does not delete a provider key until its config deletion commits, including an aborted config write', async () => {
+    await saveConfigToDb({ providers: { a: { name: 'A', apiKeyRef: 'secret:provider/a' } } });
+    secretStore.entries.set('provider/a', 'delete-fixture');
+    const store = configStore(); await store.getState().loadConfig();
+    await store.getState().removeProviderConfig('a');
+    expect(secretStore.entries.has('provider/a')).toBe(true);
+    const originalPut = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementationOnce(function (this: IDBObjectStore, value, key) {
+      const request = originalPut.call(this, value, key);
+      request.addEventListener('success', () => this.transaction.abort()); return request;
+    });
+    await expect(store.getState().saveConfig()).rejects.toThrow();
+    expect(secretStore.entries.has('provider/a')).toBe(true);
+    expect(await loadConfigFromDb()).toHaveProperty('providers.a');
+    await store.getState().saveConfig();
+    expect(secretStore.entries.has('provider/a')).toBe(false);
+    expect(await loadConfigFromDb()).not.toHaveProperty('providers.a');
+  });
+
+  it('records only a fingerprint after cleanup failure and finishes cleanup on a fresh load', async () => {
+    await saveConfigToDb({ providers: { a: { name: 'A', apiKeyRef: 'secret:provider/a' } } });
+    secretStore.entries.set('provider/a', 'delete-fixture');
+    const store = configStore(); await store.getState().loadConfig();
+    await store.getState().removeProviderConfig('a');
+    const invoke = secretStore.invoke.getMockImplementation()!;
+    secretStore.invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === 'secret_delete') throw { code: 'permission_denied' };
+      return invoke(cmd, args);
+    });
+    await expect(store.getState().saveConfig()).rejects.toThrow('旧渠道凭据清理失败');
+    expect(store.getState().configPersistedBaseline).not.toHaveProperty('providers.a');
+    expect(store.getState().configDirty).toBe(false);
+    const saved = await loadConfigFromDb();
+    expect(saved).not.toHaveProperty('providers.a');
+    expect(saved).toHaveProperty('_pendingSecretCleanup.a');
+    expect(JSON.stringify(saved)).not.toContain('delete-fixture');
+    expect(secretStore.entries.has('provider/a')).toBe(true);
+    const duringFailure = configStore(); await duringFailure.getState().loadConfig();
+    expect(duringFailure.getState().configHydrated).toBe(true);
+    expect(duringFailure.getState().configSaveError).toContain('旧渠道凭据清理失败');
+    secretStore.invoke.mockImplementation(invoke);
+    const fresh = configStore(); await fresh.getState().loadConfig();
+    expect(secretStore.entries.has('provider/a')).toBe(false);
+    expect(await loadConfigFromDb()).toHaveProperty('_pendingSecretCleanup', {});
+  });
+
+  it('does not delete a changed native key while finishing an older cleanup plan', async () => {
+    const hash = createHash('sha256').update('old-fixture').digest('hex');
+    await saveConfigToDb({ providers: {}, _pendingSecretCleanup: { a: hash } });
+    secretStore.entries.set('provider/a', 'new-fixture');
+    await loadConfigWithSecrets({ allowSecretReadFailure: true });
+    expect(secretStore.entries.get('provider/a')).toBe('new-fixture');
+    expect(await loadConfigFromDb()).toHaveProperty('_pendingSecretCleanup', {});
+  });
+
+  it('can recreate a connection after its deletion committed but secret cleanup failed', async () => {
+    await saveConfigToDb({ providers: { a: { name: 'A', apiKeyRef: 'secret:provider/a' } } });
+    secretStore.entries.set('provider/a', 'old-fixture');
+    const store = configStore(); await store.getState().loadConfig();
+    await store.getState().removeProviderConfig('a');
+    const invoke = secretStore.invoke.getMockImplementation()!;
+    secretStore.invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === 'secret_delete') throw { code: 'permission_denied' };
+      return invoke(cmd, args);
+    });
+    await expect(store.getState().saveConfig()).rejects.toThrow('旧渠道凭据清理失败');
+    store.getState().saveProviderConfig('a', { name: 'A', apiKey: 'replacement-fixture' });
+    secretStore.invoke.mockImplementation(invoke);
+    await store.getState().saveConfig();
+    expect(await loadConfigFromDb()).toHaveProperty('providers.a.apiKeyRef', 'secret:provider/a');
+    expect(secretStore.entries.get('provider/a')).toBe('replacement-fixture');
+    expect(store.getState().configDirty).toBe(false);
+  });
+
+  it('migrates legacy model credentials through the real Store and persists the ordinary baseline', async () => {
+    await saveConfigToDb({ providers: {}, generalModels: [{ id: 'old', name: '旧模型', modelId: 'model', category: 'text', apiKey: 'legacy-fixture-key', openaiUrl: 'https://example.test/v1' }] });
+    const store = configStore();
+    await store.getState().loadConfig();
+    expect(store.getState().config.providers['custom-1'].apiKey).toBe('legacy-fixture-key');
+    expect(secretStore.entries.get('provider/custom-1')).toBe('legacy-fixture-key');
+    expect(JSON.stringify(await loadConfigFromDb())).not.toContain('legacy-fixture-key');
+    expect(JSON.stringify(store.getState().configEditBaseline)).not.toContain('legacy-fixture-key');
+    expect(JSON.stringify(store.getState().configPersistedBaseline)).not.toContain('legacy-fixture-key');
+    secretStore.invoke.mockClear();
+    store.getState().updateConfig({ theme: 'light' });
+    await store.getState().saveConfig();
+    expect(secretStore.invoke).not.toHaveBeenCalled();
+    expect(await loadConfigFromDb()).toMatchObject({ theme: 'light', generalModels: [{ providerConfigId: 'custom-1' }] });
+  });
+
+  it('preserves the original legacy record and blocks saves when credential migration fails', async () => {
+    const legacy = { providers: {}, generalModels: [{ id: 'old', modelId: 'model', apiKey: 'legacy-fixture-key' }] };
+    await saveConfigToDb(legacy);
+    secretStore.invoke.mockRejectedValue(new Error('fixture-private'));
+    const store = configStore();
+    await expect(store.getState().loadConfig()).rejects.toThrow('设置读取失败');
+    expect(store.getState().configHydrated).toBe(false);
+    await expect(store.getState().saveConfig()).rejects.toThrow('配置尚未完成加载');
+    expect(await loadConfigFromDb()).toEqual(legacy);
+    expect(JSON.stringify(await loadConfigWithoutSecrets())).not.toContain('legacy-fixture-key');
+  });
+
+  it('persists ordinary migrations even if an unrelated credential is unreadable', async () => {
+    await saveConfigToDb({ graphicsCompatibilityMode: true, providers: { grsai: { name: 'GRSAI', baseUrl: 'https://api.grsai.com/', apiKeyRef: 'secret:provider/grsai' } } });
+    secretStore.invoke.mockRejectedValue(new Error('fixture-private'));
+    const store = configStore();
+    await store.getState().loadConfig();
+    expect(store.getState().configSecretReadErrors).toEqual(['grsai']);
+    const saved = await loadConfigFromDb();
+    expect(saved).toMatchObject({ performanceMode: true, providers: { grsai: { baseUrl: 'https://grsai.dakka.com.cn/v1', apiKeyRef: 'secret:provider/grsai' } } });
+    expect(saved).not.toHaveProperty('graphicsCompatibilityMode');
+  });
+
+  it('preserves credential references and revisions when an editor reconstructs the provider object', async () => {
+    await saveConfigToDb({ providers: { a: { name: 'A', apiKeyRef: 'secret:provider/a', apiKeyRevision: 'current-version' } } });
+    secretStore.entries.set('provider/a', 'fixture-key');
+    const store = configStore(); await store.getState().loadConfig();
+    secretStore.invoke.mockClear();
+    store.getState().saveProviderConfig('a', { name: '改名', apiKey: 'fixture-key' });
+    await store.getState().saveConfig();
+    expect(secretStore.invoke).not.toHaveBeenCalled();
+    expect(await loadConfigFromDb()).toMatchObject({ providers: { a: { name: '改名', apiKeyRef: 'secret:provider/a', apiKeyRevision: 'current-version' } } });
+  });
+
+  it('merges independent Store changes and prevents stale cached credentials from returning after reload', async () => {
+    const original = { theme: 'dark', providers: { a: { name: 'A', apiKeyRef: 'secret:provider/a', apiKeyRevision: 'old' } } };
+    await saveConfigToDb(original); secretStore.entries.set('provider/a', 'original-fixture');
+    const first = configStore(); const second = configStore();
+    await first.getState().loadConfig(); await second.getState().loadConfig();
+    first.getState().setProviderKey('a', 'new-fixture'); await first.getState().saveConfig();
+    second.getState().updateConfig({ theme: 'light' }); await second.getState().saveConfig();
+    expect(second.getState().config.providers.a.apiKey).toBe('');
+    expect(second.getState().configSecretReadErrors).toEqual(['a']);
+    expect(await loadConfigFromDb()).toMatchObject({ theme: 'light' });
+    // 另一实例持有旧 Key，但同一引用已换版本；失败的重读不能把旧 Key 继续当成当前值。
+    const third = configStore(); await third.getState().loadConfig();
+    first.getState().setProviderKey('a', 'newer-fixture'); await first.getState().saveConfig();
+    secretStore.invoke.mockRejectedValue(new Error('fixture-private'));
+    await third.getState().loadConfig();
+    expect(third.getState().config.providers.a.apiKey).toBe('');
+  });
+
+  it('saves an unrelated setting with zero credential IPC even when secret reads fail', async () => {
+    const baseline = { theme: 'dark', providers: { a: { name: 'A', apiKeyRef: 'secret:provider/a' } } };
+    await saveConfigToDb(baseline);
+    secretStore.invoke.mockRejectedValue(new Error('unavailable'));
+    await saveConfig({ ...baseline, theme: 'light', providers: { a: { ...baseline.providers.a, apiKey: 'runtime-key' } } }, {
+      baseline, changes: createConfigPatch(baseline, { ...baseline, theme: 'light' }),
+    });
+    expect(secretStore.invoke).not.toHaveBeenCalled();
+    expect(await loadConfigFromDb()).toEqual({ ...baseline, theme: 'light' });
+  });
+
+  it('keeps ordinary settings readable when individual credentials cannot be read', async () => {
+    const baseline = { theme: 'light', providers: { a: { name: 'A', apiKeyRef: 'secret:provider/a' } } };
+    await saveConfigToDb(baseline);
+    secretStore.invoke.mockRejectedValue(new Error('fixture-private'));
+    expect(await loadConfigWithSecrets({ allowSecretReadFailure: true })).toMatchObject({ config: baseline, unreadSecrets: ['a'], missingSecrets: [] });
+    expect(await loadConfigFromDb()).toEqual(baseline);
+  });
+
+  it('merges two stale snapshots for different fields and rejects a same-field conflict', async () => {
+    const baseline = { theme: 'dark', language: 'zh-CN', providers: {} };
+    await saveConfigToDb(baseline);
+    const first = { ...baseline, theme: 'light' };
+    const second = { ...baseline, language: 'en-US' };
+    await Promise.all([
+      saveConfig(first, { baseline, changes: createConfigPatch(baseline, first) }),
+      saveConfig(second, { baseline, changes: createConfigPatch(baseline, second) }),
+    ]);
+    expect(await loadConfigFromDb()).toEqual({ ...baseline, theme: 'light', language: 'en-US' });
+    const conflict = { ...baseline, theme: 'system' };
+    await expect(saveConfig(conflict, { baseline, changes: createConfigPatch(baseline, conflict) })).rejects.toMatchObject({ name: 'ConfigConflictError' });
+  });
+
+  it('writes only explicitly changed credentials and checks their revision before native writes', async () => {
+    const baseline = { providers: { a: { name: 'A', apiKeyRef: 'secret:provider/a', apiKeyRevision: 'old' }, b: { name: 'B', apiKeyRef: 'secret:provider/b' } } };
+    await saveConfigToDb(baseline);
+    const snapshot = { providers: { a: { ...baseline.providers.a, apiKey: 'replacement' }, b: { ...baseline.providers.b, apiKey: 'unchanged' } } };
+    const options = { baseline, changes: [], secretChanges: { a: 'revision-one' } };
+    await saveConfig(snapshot, options);
+    expect(secretStore.invoke.mock.calls.every(([, args]) => (args as { key: string }).key === 'provider/a')).toBe(true);
+    const persisted = await loadConfigFromDb();
+    expect(JSON.stringify(persisted)).not.toContain('replacement');
+    expect(persisted).toMatchObject({ providers: { a: { apiKeyRevision: 'revision-one' } } });
+    secretStore.invoke.mockClear();
+    await expect(saveConfig(snapshot, { ...options, secretChanges: { a: 'revision-two' } })).rejects.toMatchObject({ name: 'ConfigConflictError' });
+    expect(secretStore.invoke).not.toHaveBeenCalled();
+  });
+
+  it('recovers a missing reference without writing a runtime plaintext key into ordinary config', async () => {
+    await saveConfigToDb({ providers: { a: { name: 'A' } } });
+    secretStore.entries.set('provider/a', 'fixture-native-key');
+    const loaded = await loadConfigWithSecrets({ allowSecretReadFailure: true });
+    expect(loaded.config).toMatchObject({ providers: { a: { apiKey: 'fixture-native-key', apiKeyRef: 'secret:provider/a' } } });
+    expect(configWithoutSecrets(loaded.config)).toEqual(await loadConfigFromDb());
+    expect(JSON.stringify(loaded.persistedConfig)).not.toContain('fixture-native-key');
+  });
+
   it('returns null only when the config record is absent', async () => {
     await expect(loadConfigWithSecrets()).resolves.toEqual({ config: null, missingSecrets: [] });
     await expect(loadConfig()).resolves.toBeNull();
@@ -502,6 +725,24 @@ describe('config persistence keeps secrets out of IndexedDB', () => {
     await expect(loadConfigFromDb()).resolves.toEqual({ theme: 'dark', providers: {} });
     await saveConfig({ theme: 'system', providers: {} });
     await expect(loadConfigFromDb()).resolves.toEqual({ theme: 'system', providers: {} });
+  });
+
+  it('retains Store edits when a patch transaction aborts after put, then converges on explicit retry', async () => {
+    await saveConfigToDb({ theme: 'dark', providers: {} });
+    const store = configStore(); await store.getState().loadConfig();
+    store.getState().updateConfig({ theme: 'light' });
+    const originalPut = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementationOnce(function (this: IDBObjectStore, value, key) {
+      const request = originalPut.call(this, value, key);
+      request.addEventListener('success', () => this.transaction.abort());
+      return request;
+    });
+    await expect(store.getState().saveConfig()).rejects.toThrow('设置保存失败');
+    expect(store.getState()).toMatchObject({ configDirty: true, configSaveStatus: 'error', config: { theme: 'light' } });
+    expect(await loadConfigFromDb()).toMatchObject({ theme: 'dark' });
+    await store.getState().saveConfig();
+    expect(store.getState()).toMatchObject({ configDirty: false, configSaveStatus: 'saved' });
+    expect(await loadConfigFromDb()).toMatchObject({ theme: 'light' });
   });
 
   it('does not bypass a failed cross-window lock and recovers on the next request', async () => {

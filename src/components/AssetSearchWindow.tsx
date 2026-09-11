@@ -8,7 +8,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, useDeferredValue, type DragEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  loadConfig,
+  loadConfigWithoutSecrets as loadConfig,
   saveConfig,
   loadProjectsList,
   listProjectFiles,
@@ -132,6 +132,8 @@ export default function AssetSearchWindow() {
   // ── 添加文件 / 文件夹 ──
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [folderSaveError, setFolderSaveError] = useState<string | null>(null);
+  const pendingFolder = useRef<string | null>(null);
   const addWrapRef = useRef<HTMLDivElement | null>(null);
 
   // 点击外部关闭「添加」菜单
@@ -157,17 +159,23 @@ export default function AssetSearchWindow() {
   const handleAddFolder = useCallback(async () => {
     setAddMenuOpen(false);
     setBusy(true);
+    setFolderSaveError(null);
     try {
-      const path = await pickAssetFolder();
+      const path = pendingFolder.current ?? await pickAssetFolder();
       if (path) {
+        pendingFolder.current = path;
         const cfg = (await loadConfig()) as AppConfig | null;
         const folders = cfg?.assetFolders ?? [];
         if (!folders.includes(path)) {
-          await saveConfig({ ...cfg, assetFolders: [...folders, path] });
+          await saveConfig({ ...cfg, assetFolders: [...folders, path] }, {
+            baseline: cfg,
+            changes: [{ path: ['assetFolders'], before: cfg?.assetFolders, after: [...folders, path] }],
+          });
           await loadAll();
         }
+        pendingFolder.current = null;
       }
-    } catch (err) { console.error('[AssetSearchWindow] 添加文件夹失败:', err); }
+    } catch { setFolderSaveError('文件夹设置保存失败，已保留本次选择，请重试'); }
     finally { setBusy(false); }
   }, [loadAll]);
 
@@ -285,6 +293,13 @@ export default function AssetSearchWindow() {
           </button>
         </div>
       </div>
+
+      {folderSaveError && (
+        <div role="alert" className="ui-alert ui-alert--danger mx-3 my-2 flex items-center justify-between gap-2">
+          <span>{folderSaveError}</span>
+          <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" disabled={busy} onClick={() => void handleAddFolder()}>重试保存</button>
+        </div>
+      )}
 
       <div className="asset-search-toolbar">
         <div className="assets-search asset-search-input">

@@ -203,7 +203,7 @@ export default function CanvasRadialMenu({ position, onClose }: CanvasRadialMenu
   const saveDraft = async () => {
     const normalized = normalizeCanvasQuickActions(draft);
     updateConfig({ canvasQuickActions: normalized });
-    await saveConfig({ silent: true });
+    try { await saveConfig({ silent: true }); } catch { return; }
     showToast(t('画布圆环快捷方式已保存'));
     setEditing(false);
     onClose();
