@@ -6,12 +6,15 @@ import { blobToDataUrl, computeImageNodeDimensions, generateId } from '../store/
 import { getCanvasPointerPosition } from './canvasPointerService';
 import { copyFileToProjectData, saveDataUrlToProjectData } from './fileService';
 import { readNativeClipboard } from './clipboardService';
+import { MediaUploadError, reserveUploadedMedia, settleUploadedMedia } from './mediaUploadService';
+import type { MediaResourceInput } from '../types/mediaUpload';
 import {
   completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasImport,
 } from './canvasDerivationGuard';
 
 export interface ResourceImportContext {
   projectId: string;
+  conversationId?: string;
   baseRevision?: number;
   signal: AbortSignal;
 }
@@ -22,6 +25,7 @@ type MediaKind = 'image' | 'video' | 'audio';
 type Resource = ResourcePosition & { label: string } & (
   | { kind: MediaKind; path: string }
   | { kind: MediaKind; blob: Blob; extension: string }
+  | { kind: 'image'; saved: { filePath: string; assetUrl: string; fileName: string } }
   | { kind: 'text'; text: string }
 );
 
@@ -162,7 +166,9 @@ async function importResources(
         data.output = resource.text;
       } else {
         let saved: { assetUrl: string; filePath: string; fileName?: string } | null;
-        if ('path' in resource) {
+        if ('saved' in resource) {
+          saved = resource.saved;
+        } else if ('path' in resource) {
           saved = await cancellable(copyFileToProjectData(resource.path, context.projectId, {
             signal: controller.signal, redactErrors: true,
           }), controller.signal);
@@ -197,6 +203,7 @@ async function importResources(
     };
   } catch (error) {
     if (error instanceof ResourceImportError) throw error;
+    if (error instanceof MediaUploadError) throw new ResourceImportError(error.code, error.message);
     reject('IMPORT_FAILED', '资源导入失败，本批未添加节点；请检查素材与存储授权');
   } finally {
     context.signal.removeEventListener('abort', abort);
@@ -204,8 +211,36 @@ async function importResources(
   }
 }
 
-export function importLocalResources(context: ResourceImportContext, files: LocalResourceInput[], position: ResourcePosition = {}) {
-  return importResources(context, async () => localResources(files), position);
+export async function importLocalResources(context: ResourceImportContext, files: MediaResourceInput[], position: ResourcePosition = {}) {
+  let reserved: string[] = [];
+  let committed = false;
+  try {
+    const result = await importResources(context, async () => {
+      if (!files.length || files.length > MAX_ITEMS) reject('IMPORT_LIMIT', '每次导入 1 至 20 个媒体文件');
+      for (const file of files) {
+        if ((typeof file.path === 'string') === (typeof file.uploadId === 'string')
+          || (typeof file.uploadId === 'string' && !file.uploadId.trim())) {
+          reject('IMPORT_SOURCE_INVALID', '每项必须提供 path 或 uploadId 其中一个');
+        }
+      }
+      // 整批路径先校验，不能先领取上传再发现后续路径参数无效。
+      const paths = files.filter((file): file is LocalResourceInput => typeof file.path === 'string');
+      const pathResources = paths.length ? localResources(paths) : [];
+      const ids = files.flatMap((file) => file.uploadId ? [file.uploadId] : []);
+      if (ids.length && !context.conversationId) reject('IMPORT_CONTEXT_REQUIRED', '上传导入需要当前对话身份');
+      const uploaded = await reserveUploadedMedia({ ...context, conversationId: context.conversationId ?? '' }, ids);
+      reserved = ids;
+      let pathIndex = 0;
+      let uploadIndex = 0;
+      return files.map((file): Resource => {
+        if (file.path !== undefined) return pathResources[pathIndex++];
+        const saved = uploaded[uploadIndex++];
+        return { kind: 'image', saved, label: file.label?.trim() || saved.label, x: file.x, y: file.y };
+      });
+    }, position);
+    committed = true;
+    return result;
+  } finally { settleUploadedMedia(reserved, committed); }
 }
 
 export function pasteClipboardResources(context: ResourceImportContext, position: ResourcePosition = {}) {
