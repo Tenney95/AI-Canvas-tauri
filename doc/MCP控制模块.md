@@ -41,6 +41,23 @@ MCP 设置中的「工具发现方式」默认按需加载，对应可选配置 
 
 回退时选择「完整工具列表」并刷新客户端即可，不改变原工具权限或业务数据。
 
+## 媒体输入与视频制作工具
+
+| 能力 | 工具与边界 |
+|---|---|
+| 图片上传 | `file_media_upload`（`file_write`）按 begin/append/finish/status/cancel 管理 PNG/JPEG/WebP；固定 256 KiB 分块与链式摘要，完成后由批量导入领取。仅 MCP 会话可用。 |
+| 批量导入 | `file_import_media_to_canvas`（`canvas_write`）一次 1–20 项，每项使用已授权 path 或同会话 uploadId；准备成功后批量写入一次历史。 |
+| 系统内容与截图 | `canvas_paste_external` 和 `ui_capture_to_canvas` 写入画布；只查看主窗口图像仍用只读 `ui_capture_window`。 |
+| 剪辑工程 | `video_editor_list` / `video_editor_get` 读取；`video_editor_create` / `video_editor_update` 为 `file_write`，更新携带 expectedVersion，tracks 完整替换。仅当前项目的 MCP 会话可用。 |
+| 后台合成 | `video_editor_export` / `video_editor_export_cancel` 为 `canvas_write`，`video_editor_export_status` 只读。requestKey 与版本约束避免同任务重复启动；返回 jobId 后须查询完成。 |
+| 验片 | `video_media_probe` 只读探测真实媒体参数；`video_media_extract_frames` 按 1–6 个递增时间点返回瞬时图像，不持久化图像正文。 |
+
+以上为工具摘要，调用前通过发现接口读取完整 schema。上传的会话、项目、revision、十分钟空闲失效及一次性消费由媒体服务控制；传输鉴权不能代替本地路径授权。分块字节与原始路径不进入审计摘要。
+
+剪辑控制当前最多 300 秒、8 轨、120 片段、1080p 等像素面积、60 fps。人工剪辑窗口打开时拒绝后台修改/导出；导出期间复核工程、素材和画布，任务状态仅在应用会话内保留。工具受理不等于文件已完成；抽帧也不等于声音和剪辑质量验收。
+
+用户步骤见[说明书：MCP](../site/manual.html#mcp-discovery)。业务实现与实机验收分别见[图片上传计划](./plans/2026-09-11-mcp图片上传导入.md)、[视频制作计划](./plans/2026-09-11-mcp-video-production/task_plan.md)及[文件与存储](./文件与存储模块.md#mcp-资源导入)。
+
 ## 验证与资料
 
 - 令牌故障回归：[会话配置](../tests/services/mcpSessionConfig.test.ts)、[设置页状态](../tests/components/mcpControlSettings.test.ts)。覆盖读取失败不覆盖、并发初始化、稳定会话降级、失败轮换保留正在运行的配置和过期查询保护。提示复用 `ui-alert--warning` 的明暗主题变量；未启动真实桌面 bridge 或做主题截图验收。
@@ -50,7 +67,7 @@ MCP 设置中的「工具发现方式」默认按需加载，对应可选配置 
 
 - 定向回归：[MCP 控制服务](../tests/services/mcp/mcpControlService.test.ts)。真实 stdio/HTTP 握手、鉴权失败、取消和工具发现验收与 mock 测试分别记录。
 - 按需目录：[目录测试](../tests/services/mcp/mcpToolCatalog.test.ts)、[设置测试](../tests/components/mcpControlSettings.test.ts)、[适配器测试](../tests/scripts/aiCanvasMcp.test.mjs)。2026-09-07：六个相关测试文件共 107 项通过，应用/测试类型检查与改动文件 ESLint 通过；真实 stdio 客户端经打包资源适配器发现三个入口，并完成带参数检索和画布读取，原名调用兼容也已实测。
-- 目录测试快照含 122 个当前可用业务工具，完整定义 76,669 字节、精简定义 2,446 字节，初始体积减少约 96.8%；一次带 schema 的检索结果为 1,505 字节。这是 JSON 的 UTF-8 体积，不代表模型实际 Token 或费用。实机精简目录同为 2,446 字节。
+- 2026-09-07 的目录测试快照含 122 个当时可用业务工具，完整定义 76,669 字节、精简定义 2,446 字节，初始体积减少约 96.8%；一次带 schema 的检索结果为 1,505 字节。这是 JSON 的 UTF-8 体积，不代表模型实际 Token 或费用。实机精简目录同为 2,446 字节。
 - 本次未切换远程传输，HTTP 端到端与深浅主题实际切换尚未验收；新控件复用既有 `ui-*` 与主题变量。扩展 i18n 检查发现四条既有孤儿词条，未纳入本次修复；已有图片适配器测试的 Vite/shebang 加载问题在临时原生加载配置下验证通过，不据此宣称全仓检查通过。
 - 专项计划：[本机控制桥](./plans/2026-07-24-local-mcp-control-bridge.md)、[全面控制工具](./plans/2026-08-13-mcp-complete-control-implementation.md)、[Streamable HTTP](./plans/2026-08-20-mcp-streamable-http.md)。
 - 历史：[本机 MCP](./history/2026-09-07-跨模块实施记录归档.md#mcp-local)、[全面控制](./history/2026-09-07-跨模块实施记录归档.md#mcp-full)、[HTTP 传输](./history/2026-09-07-跨模块实施记录归档.md#mcp-http)。

@@ -1,7 +1,7 @@
 # ComfyUI 工作流集成说明
 
 > 本文档描述 AI Canvas 如何导入、管理和执行 ComfyUI 工作流，包括 IO 节点识别、内容与参数注入规则、结果取回和编辑回写链路。
-> 最后更新：2026-09-08。范围、验证与回滚见[可靠性修复](./plans/2026-09-08-comfyui-reliability.md)、[助手多服务器支持](./plans/2026-09-08-comfyui-assistant-servers.md)和[打开与编辑体验](./plans/2026-09-08-comfyui-editor-experience.md)。
+> 最后更新：2026-09-11。范围、验证与回滚见[可靠性修复](./plans/2026-09-08-comfyui-reliability.md)、[助手多服务器支持](./plans/2026-09-08-comfyui-assistant-servers.md)和[打开与编辑体验](./plans/2026-09-08-comfyui-editor-experience.md)。
 
 ## 1. 概览
 
@@ -77,7 +77,7 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 ### 4.3 从 ComfyUI 编辑后保存回来
 
-见 [§9](#9-comfyui-编辑窗口与回写)。
+见 [§11](#11-comfyui-编辑窗口与回写)。
 
 ## 5. IO 节点识别
 
@@ -203,6 +203,12 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 | `duration` | 挑最接近的可选值（选 9 秒而节点只给 5/10 → 退到 10）；纯数字型的按声明的 `min`/`max` 收边 |
 
 结果按 `baseUrl + class_type` 缓存 30 秒，一个工作流通常只命中一两个节点。**问不到就一律不写**，退回原来的行为 —— ComfyUI 没连上不会导致把任务写崩。
+
+### 8.6 未填充的可选媒体分支
+
+提交副本中，`pruneUnfilledOptionalMediaBranches` 检查识别出的图片/视频/音频上传节点：文件值为 null、undefined 或空白时，只清理能够确认属于可选输入的分支。可选关系来自节点声明或支持的可选槽结构，不按用户提示词猜测。
+
+必填连接、独立终点、非空文件名和无法识别的结构保留，让服务端给出真实错误；不会删除保存的工作流定义，也不能把缺失模型或必填素材问题变成成功。该逻辑与默认 ★ 输入、显式 @ 注入配合，详细步骤见[说明书 13.10](../site/manual.html#comfy-progress)。
 
 ## 9. 结果取回
 
