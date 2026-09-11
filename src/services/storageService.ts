@@ -34,6 +34,7 @@ import type { BaseNodeData, ProjectSettings } from '../types';
 import {
   getAssetUrlFromPath,
   getProjectDataDir,
+  isTauriEnv,
   joinPath,
   notifyProjectDiskChanged,
   stripVerbatimPrefix,
@@ -835,7 +836,7 @@ export async function deleteWorkflow(id: string): Promise<void> {
 /**
  * 保存应用配置到 IndexedDB。
  * 凭据先摘进 Rust 侧凭据存储，数据库里只留引用；存储失败也不落明文。
- * 既有凭据保存失败时拒绝整份配置回写，保留原数据库记录。
+ * 桌面凭据保存失败时拒绝整份配置回写，保留原数据库记录。
  * @returns 未能写入凭据存储、仅本次会话有效的连接 ID
  */
 export async function saveConfig(data: unknown): Promise<string[]> {
@@ -847,6 +848,8 @@ export async function saveConfig(data: unknown): Promise<string[]> {
       const previous = await loadConfigFromDb();
       const { config, unstored, failedExistingSecrets } = await stripConfigSecrets(snapshot, previous);
       if (failedExistingSecrets.length > 0) throw new Error('既有配置凭据保存未完成');
+      // 桌面新渠道也必须确认 Key 已持久化，不能降级为重启后丢 Key 的会话配置。
+      if (isTauriEnv() && unstored.length > 0) throw new Error('渠道凭据保存未完成');
       await saveConfigToDb(config);
       console.log('Config saved to IndexedDB');
       return unstored;
@@ -873,7 +876,7 @@ function configLoadError(error: unknown): Error {
 
 /**
  * 从 IndexedDB 加载应用配置，并按引用从凭据存储补回凭据。
- * 遇到旧版明文配置会迁进凭据存储并立刻回写清理后的记录。
+ * 遇到旧版明文或丢失的凭据引用会恢复并立刻回写不含明文的记录。
  * 只有配置记录不存在才返回 null；读取或迁移失败必须阻止上层保存默认配置。
  */
 export async function loadConfigWithSecrets(): Promise<LoadedConfig> {
@@ -890,7 +893,7 @@ export async function loadConfigWithSecrets(): Promise<LoadedConfig> {
         const { config: scrubbed, unstored } = await stripConfigSecrets(config, raw);
         if (unstored.length > 0) throw new Error('配置凭据迁移未完成');
         await saveConfigToDb(scrubbed);
-        console.log('[storage] 已将明文 API Key 迁移到凭据存储并清理数据库记录');
+        console.log('[storage] 已更新配置中的凭据引用并清理明文字段');
       }
       return { config, missingSecrets: missing };
     });

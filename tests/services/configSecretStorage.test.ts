@@ -141,6 +141,127 @@ describe('config persistence keeps secrets out of IndexedDB', () => {
     expect(providers.volcengine.apiKey).toBe('legacy-plaintext');
   });
 
+  it.each(['secret_get', 'secret_set'])(
+    'rejects a new desktop credential when %s fails instead of saving a keyless connection',
+    async (failedCommand) => {
+      const original = { theme: 'dark', providers: {} };
+      await saveConfigToDb(original);
+      const invokeSecret = secretStore.invoke.getMockImplementation()!;
+      secretStore.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+        if (command === failedCommand) throw new Error('native credential unavailable');
+        return invokeSecret(command, args);
+      });
+
+      const next = { theme: 'light', providers: { apimart: { apiKey: 'test-new-desktop-key' } } };
+      await expect(saveConfig(next)).rejects.toThrow('保存应用配置失败');
+      await expect(loadConfigFromDb()).resolves.toEqual(original);
+
+      secretStore.invoke.mockImplementation(invokeSecret);
+      await expect(saveConfig(next)).resolves.toEqual([]);
+      await expect(loadConfigWithSecrets()).resolves.toMatchObject({ config: next, missingSecrets: [] });
+    },
+  );
+
+  it.each(['throws', 'invalid-result'])(
+    'rejects an unreadable existing credential (%s) without replacing it with an empty key',
+    async (failure) => {
+      await saveConfig({ providers: { apimart: { apiKey: 'test-saved-key' } } });
+      const original = await loadConfigFromDb();
+      const invokeSecret = secretStore.invoke.getMockImplementation()!;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      secretStore.invoke.mockImplementation(async (command: string, args: Record<string, unknown>) => {
+        if (command === 'secret_get') {
+          if (failure === 'throws') throw new Error('G:/fixture-private-path/test-private-key');
+          return undefined;
+        }
+        return invokeSecret(command, args);
+      });
+
+      await expect(loadConfigWithSecrets()).rejects.toThrow('读取应用配置失败');
+      await expect(loadConfigFromDb()).resolves.toEqual(original);
+      expect(JSON.stringify([...warn.mock.calls, ...errorLog.mock.calls])).not.toMatch(/fixture-private-path|test-private-key/);
+      expect(secretStore.entries.get('provider/apimart')).toBe('test-saved-key');
+
+      secretStore.invoke.mockImplementation(invokeSecret);
+      await expect(loadConfigWithSecrets()).resolves.toMatchObject({
+        config: { providers: { apimart: { apiKey: 'test-saved-key' } } }, missingSecrets: [],
+      });
+    },
+  );
+
+  it('preserves the saved reference when a keyless editor snapshot updates other connection fields', async () => {
+    await saveConfig({ providers: { apimart: { name: 'Original', apiKey: 'test-retained-key' } } });
+    secretStore.invoke.mockClear();
+
+    await saveConfig({ theme: 'light', providers: { apimart: { name: 'Renamed', apiKey: '', baseUrl: 'https://example.com' } } });
+
+    expect(secretStore.invoke).not.toHaveBeenCalled();
+    await expect(loadConfigFromDb()).resolves.toMatchObject({
+      providers: { apimart: { apiKey: '', apiKeyRef: 'secret:provider/apimart', name: 'Renamed' } },
+    });
+    await expect(loadConfigWithSecrets()).resolves.toMatchObject({
+      config: { theme: 'light', providers: { apimart: { apiKey: 'test-retained-key', name: 'Renamed' } } },
+      missingSecrets: [],
+    });
+  });
+
+  it('recovers a lost reference from the same connection native entry and persists the repaired reference', async () => {
+    await saveConfigToDb({ providers: { apimart: { name: 'Apimart', apiKey: '' } } });
+    secretStore.entries.set('provider/apimart', 'test-recoverable-key');
+    secretStore.entries.set('provider/unrelated', 'test-unrelated-key');
+
+    await expect(loadConfigWithSecrets()).resolves.toMatchObject({
+      config: { providers: { apimart: { name: 'Apimart', apiKey: 'test-recoverable-key', apiKeyRef: 'secret:provider/apimart' } } },
+      missingSecrets: [],
+    });
+    const persisted = await loadConfigFromDb();
+    expect(persisted).toMatchObject({ providers: { apimart: { apiKey: '', apiKeyRef: 'secret:provider/apimart' } } });
+    expect(JSON.stringify(persisted)).not.toMatch(/test-recoverable-key|test-unrelated-key/);
+    expect(secretStore.invoke.mock.calls.every(([command, args]) => command === 'secret_get' && args.key === 'provider/apimart')).toBe(true);
+    await expect(loadConfigWithSecrets()).resolves.toMatchObject({
+      config: { providers: { apimart: { apiKey: 'test-recoverable-key' } } }, missingSecrets: [],
+    });
+  });
+
+  it('does not invent a reference for a connection that has never stored credentials', async () => {
+    const original = { providers: { custom: { apiKey: '', name: 'No authentication' } } };
+    await saveConfigToDb(original);
+
+    await expect(loadConfigWithSecrets()).resolves.toEqual({ config: original, missingSecrets: [] });
+    await expect(loadConfigFromDb()).resolves.toEqual(original);
+    expect(secretStore.entries.size).toBe(0);
+  });
+
+  it('keeps a legacy credential record when a keyless snapshot would remove its only copy', async () => {
+    const legacy = { providers: { apimart: { apiKey: 'test-only-legacy-copy' } } };
+    await saveConfigToDb(legacy);
+
+    await expect(saveConfig({ providers: { apimart: { apiKey: '' } } })).rejects.toThrow('保存应用配置失败');
+    await expect(loadConfigFromDb()).resolves.toEqual(legacy);
+    expect(secretStore.invoke).not.toHaveBeenCalled();
+  });
+
+  it('does not replace an explicit missing reference with another native entry', async () => {
+    const original = { providers: { apimart: { apiKey: '', apiKeyRef: 'secret:provider/explicit-ref' } } };
+    await saveConfigToDb(original);
+    secretStore.entries.set('provider/apimart', 'test-other-entry');
+
+    await expect(loadConfigWithSecrets()).resolves.toEqual({ config: original, missingSecrets: ['apimart'] });
+    expect(secretStore.invoke).toHaveBeenCalledTimes(1);
+    expect(secretStore.invoke).toHaveBeenCalledWith('secret_get', { key: 'provider/explicit-ref' });
+    await expect(loadConfigFromDb()).resolves.toEqual(original);
+  });
+
+  it('reports an actually missing referenced entry without deleting its reference', async () => {
+    await saveConfig({ providers: { apimart: { apiKey: 'test-removed-key' } } });
+    const original = await loadConfigFromDb();
+    secretStore.entries.clear();
+
+    await expect(loadConfigWithSecrets()).resolves.toEqual({ config: original, missingSecrets: ['apimart'] });
+    await expect(loadConfigFromDb()).resolves.toEqual(original);
+  });
+
   it('still refuses to persist plaintext when no keychain is available', async () => {
     secretStore.isTauri = false;
 

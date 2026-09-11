@@ -42,7 +42,7 @@ export interface SecretPersistResult {
 
 export interface SecretRestoreResult {
   config: unknown;
-  /** 有旧版明文凭据被迁进凭据存储，调用方需要立刻回写一次已清理的配置。 */
+  /** 已迁移旧明文或补回丢失的引用，调用方需要回写不含明文的配置。 */
   migrated: boolean;
   /** 引用存在但凭据存储里读不到的连接 ID：需要用户重新输入。 */
   missing: string[];
@@ -160,6 +160,20 @@ export async function deleteProviderSecret(connectionId: string): Promise<void> 
   }
 }
 
+/** 渠道加载必须区分“条目不存在”和“读取失败”，失败不能把已保存的 Key 变为空值。 */
+async function readProviderSecret(ref: string): Promise<string | null> {
+  const key = refToKey(ref);
+  if (!key || !isTauriEnv()) return null;
+  try {
+    const value = await invokeSecret<string | null>('secret_get', { key });
+    if (value !== null && typeof value !== 'string') throw new Error('凭据读取结果无效');
+    return value;
+  } catch {
+    // 不附带原始错误或 cause，避免凭据和本地路径进入日志或消息。
+    throw new Error('渠道凭据读取失败，请重试或检查存储状态');
+  }
+}
+
 /**
  * 持久化前摘除凭据：写入凭据存储并用引用替换明文。
  * 写入失败时同样不落明文；既有凭据失败额外阻止调用方覆盖原配置。
@@ -183,8 +197,14 @@ export async function stripConfigSecrets(raw: unknown, previousConfig?: unknown)
     const apiKey = typeof provider.apiKey === 'string' ? provider.apiKey : '';
     const { apiKey: _omitted, ...rest } = provider;
     if (!apiKey) {
-      // 没有凭据要存；保留可能已有的引用，避免清空设置时误删存储条目
-      nextProviders[connectionId] = { ...rest, apiKey: '' };
+      // 编辑器或未恢复凭据的配置快照可能不含引用，必须从已保存记录补回。
+      const previousProvider = previousProviders?.[connectionId];
+      const previousRef = existingProviderSecretRef(previousProvider) ?? existingProviderSecretRef(provider);
+      if (!previousRef && isRecord(previousProvider)
+        && typeof previousProvider.apiKey === 'string' && previousProvider.apiKey.length > 0) {
+        failedExistingSecrets.push(connectionId);
+      }
+      nextProviders[connectionId] = { ...rest, apiKey: '', ...(previousRef ? { apiKeyRef: previousRef } : {}) };
       continue;
     }
 
@@ -252,17 +272,17 @@ export async function restoreConfigSecrets(raw: unknown): Promise<SecretRestoreR
       continue;
     }
 
-    if (!ref) {
-      nextProviders[connectionId] = provider;
-      continue;
-    }
-
-    const secret = await readSecret(ref);
+    // 旧保存路径可能丢掉引用；只查当前连接的固定条目，不枚举或借用其他渠道凭据。
+    const restoredRef = ref || providerSecretRef(connectionId);
+    const secret = await readProviderSecret(restoredRef);
     if (secret) {
-      nextProviders[connectionId] = { ...provider, apiKey: secret };
-    } else {
+      nextProviders[connectionId] = { ...provider, apiKey: secret, apiKeyRef: restoredRef };
+      migrated = migrated || !ref;
+    } else if (ref) {
       missing.push(connectionId);
       nextProviders[connectionId] = { ...provider, apiKey: '' };
+    } else {
+      nextProviders[connectionId] = provider;
     }
   }
 
