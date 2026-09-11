@@ -21,8 +21,9 @@ import {
   syncAuthorizedDirectories,
   type ProjectSaveData,
 } from '../services/fileService';
-import { deleteProviderSecret } from '../services/providerSecretService';
 import { setLocale } from '../i18n';
+import { applyConfigPatch, ConfigConflictError, configValuesEqual, configWithoutSecrets, createConfigPatch } from '../services/configPatch';
+import { areSettingsMutationsFrozen, registerSettingsPersistence } from '../services/configPersistenceQueue';
 
 const defaultConfig: AppConfig = {
   providers: {},
@@ -75,6 +76,15 @@ export interface ConfigSlice {
   config: AppConfig;
   /** IndexedDB 配置已成功读取；为 false 时禁止持久化默认配置。 */
   configHydrated: boolean;
+  configSaveStatus: 'idle' | 'dirty' | 'saving' | 'saved' | 'error' | 'conflict';
+  configSaveError: string | null;
+  configRevision: number;
+  configDirty: boolean;
+  /** 运行时基线只保留普通字段；不含 API Key。 */
+  configEditBaseline: Record<string, unknown>;
+  configPersistedBaseline: unknown;
+  configSecretChanges: Record<string, string>;
+  configSecretReadErrors: string[];
   updateConfig: (config: Partial<AppConfig>) => void;
   setProviderKey: (providerName: string, key: string) => void;
   setProviderUrl: (providerName: string, url: string) => void;
@@ -84,7 +94,7 @@ export interface ConfigSlice {
   addGeneralModel: (model: Omit<GeneralModelConfig, 'id'>) => void;
   updateGeneralModel: (id: string, model: Partial<GeneralModelConfig>) => void;
   removeGeneralModel: (id: string) => void;
-  /** 严格调用方可要求失败抛出脱敏错误；普通设置按钮保持仅 Toast 的兼容行为。 */
+  /** 失败始终拒绝并保留修改；保留 throwOnError 参数兼容既有调用方。 */
   saveConfig: (options?: { silent?: boolean; throwOnError?: boolean }) => Promise<void>;
   loadConfig: () => Promise<void>;
 }
@@ -336,11 +346,62 @@ function migrateLegacyGeneralModels(config: AppConfig): AppConfig {
   return { ...normalizedConfig, providers, generalModels: migratedModels };
 }
 
-export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (set, get) => ({
+export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (rawSet, get) => {
+  let tail: Promise<unknown> = Promise.resolve();
+  const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = tail.then(operation);
+    tail = result.catch(() => {});
+    return result;
+  };
+  const set = (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => rawSet((state) => {
+    if (areSettingsMutationsFrozen()) return {};
+    const next = typeof partial === 'function' ? partial(state) : partial;
+    if (!next.config || next.config === state.config) return next;
+    const secretChanges = { ...state.configSecretChanges };
+    const providers = { ...next.config.providers };
+    for (const [id, provider] of Object.entries(providers)) {
+      if (provider.apiKey !== state.config.providers[id]?.apiKey && provider.apiKey) secretChanges[id] = crypto.randomUUID();
+      if (!provider.apiKeyRef && state.config.providers[id]?.apiKeyRef) {
+        providers[id] = { ...provider, apiKeyRef: state.config.providers[id].apiKeyRef };
+      }
+      // 表单重建渠道对象时也保留凭据版本；只有持久化提交可以推进版本。
+      const revision = Reflect.get(state.config.providers[id] ?? {}, 'apiKeyRevision');
+      providers[id] = { ...providers[id] };
+      if (revision === undefined) Reflect.deleteProperty(providers[id], 'apiKeyRevision');
+      else Reflect.set(providers[id], 'apiKeyRevision', revision);
+    }
+    for (const id of Object.keys(secretChanges)) if (!providers[id]) delete secretChanges[id];
+    const config = { ...next.config, providers };
+    const dirty = Object.keys(secretChanges).length > 0 || !configValuesEqual(configWithoutSecrets(config), state.configEditBaseline);
+    return { ...next, config, configSecretChanges: secretChanges, configDirty: dirty,
+      configRevision: state.configRevision + 1,
+      configSaveStatus: state.configSaveStatus === 'saving' ? 'saving' : dirty ? 'dirty' : 'idle',
+      configSaveError: null };
+  });
+  registerSettingsPersistence('config', {
+    flush: async (retry) => {
+      await tail;
+      const state = get();
+      if ((state.configDirty && state.configSaveStatus !== 'error' && state.configSaveStatus !== 'conflict')
+        || (retry && state.configSaveError !== null)) await state.saveConfig({ silent: true });
+      await tail;
+    },
+    hasUnsaved: () => get().configDirty || get().configSaveError !== null,
+  });
+  return {
   config: { ...defaultConfig },
   configHydrated: false,
+  configSaveStatus: 'idle',
+  configSaveError: null,
+  configRevision: 0,
+  configDirty: false,
+  configEditBaseline: configWithoutSecrets(defaultConfig),
+  configPersistedBaseline: null,
+  configSecretChanges: {},
+  configSecretReadErrors: [],
 
   updateConfig: (partial) => {
+    if (areSettingsMutationsFrozen()) return;
     set((state) => ({ config: { ...state.config, ...partial } }));
     if ('baseDataDir' in partial && partial.baseDataDir !== undefined) {
       setBaseDataDir(partial.baseDataDir);
@@ -415,6 +476,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
     })),
 
   removeProviderConfig: async (providerName) => {
+    if (areSettingsMutationsFrozen()) return;
     const state = get();
     const references = collectRemovedModelReferences(state.config, providerName);
     const providers = { ...state.config.providers };
@@ -451,8 +513,7 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
     clearLocalModelPreferences(references);
     set({ config: nextConfig, nodes: nextNodes.nodes, projects: nextProjects });
 
-    // 连接已删除，同步清掉凭据存储里的条目，避免留下孤立凭据
-    await deleteProviderSecret(providerName);
+    // 原生凭据由保存配置的事务成功后清理；保存失败不能先删掉 Key。
 
     const currentProjectId = state.currentProjectId;
     if (currentProjectChanged && currentProjectId) {
@@ -521,96 +582,155 @@ export const createConfigSlice: StateCreator<AppState, [], [], ConfigSlice> = (s
       },
     })),
 
-  saveConfig: async (options) => {
-    const { config, configHydrated, showToast } = get();
-    if (!configHydrated) {
-      console.warn('[设置] 配置尚未完成加载，已阻止默认值覆盖持久化配置');
-      if (options?.throwOnError) throw new Error('配置尚未完成加载，不能保存设置');
-      return;
+  saveConfig: (options) => {
+    if (!get().configHydrated) {
+      const message = '配置尚未完成加载，不能保存设置';
+      if (!get().configSaveError) rawSet({ configSaveStatus: 'error', configSaveError: message });
+      const rejected = Promise.reject<void>(new Error(message));
+      void rejected.catch(() => {});
+      return rejected;
     }
-    let persisted = false;
-    let unstored: string[] = [];
-    try {
-      const normalizedConfig = migrateLegacyGeneralModels(config);
-      // 凭据由持久化层写入 Rust 侧凭据存储；写不进去时不会落明文，只能本次会话有效
-      unstored = await fileService.saveConfig(normalizedConfig);
-      if (!Array.isArray(unstored)) throw new Error('配置保存结果无效');
-      persisted = true;
-      // 保存期间可能有其他配置更新，旧快照的归一化结果不能覆盖后来修改。
-      if (normalizedConfig !== config && get().config === config) set({ config: normalizedConfig });
-      // 同步 baseDataDir 到 fileService
-      if (get().config === config || get().config === normalizedConfig) {
-        setBaseDataDir(normalizedConfig.baseDataDir);
-        await syncAuthorizedDirectories(normalizedConfig);
+    const snapshot = structuredClone(get().config);
+    const secretChanges = { ...get().configSecretChanges };
+    const revision = get().configRevision;
+    const hydrated = get().configHydrated;
+    return enqueue(async () => {
+      let committed: unknown;
+      let committedFailure: unknown;
+      let unstored: string[] = [];
+      let directoriesSynced = false;
+      try {
+        if (!hydrated) throw new Error('配置尚未完成加载，不能保存设置');
+        rawSet({ configSaveStatus: 'saving', configSaveError: null });
+        const normalized = migrateLegacyGeneralModels(snapshot);
+        const changes = createConfigPatch(get().configEditBaseline, configWithoutSecrets(normalized));
+        const baseline = get().configPersistedBaseline;
+        try {
+          unstored = await fileService.saveConfig(normalized, {
+            baseline, changes, secretChanges,
+            onCommitted: (value) => { committed = value; },
+          });
+        } catch (error) {
+          if (committed === undefined) throw error;
+          // 数据库已提交而后续清理失败：仍需推进基线，否则后续撤回/重建会误判为没有修改。
+          committedFailure = error;
+        }
+        if (!Array.isArray(unstored)) throw new Error('配置保存结果无效');
+        // 兼容没有附带提交快照的保存适配器；生产路径由真实事务返回快照。
+        committed ??= applyConfigPatch(configWithoutSecrets(baseline), changes, false);
+        const ordinary = configWithoutSecrets(migrateLegacyGeneralModels({ ...defaultConfig, ...committed as AppConfig }));
+        const latest = get();
+        const pending = createConfigPatch(configWithoutSecrets(normalized), configWithoutSecrets(latest.config));
+        const merged = applyConfigPatch(ordinary, pending, false) as unknown as AppConfig;
+        const unread = new Set(latest.configSecretReadErrors.filter((id) => merged.providers?.[id]));
+        const nextSecrets = { ...latest.configSecretChanges };
+        const oldProviders = (configWithoutSecrets(baseline).providers ?? {}) as Record<string, Record<string, unknown>>;
+        const savedProviders = (ordinary.providers ?? {}) as Record<string, Record<string, unknown>>;
+        for (const [id, provider] of Object.entries(merged.providers ?? {})) {
+          const changedHere = secretChanges[id] && !unstored.includes(id);
+          const hasLaterEdit = nextSecrets[id] && nextSecrets[id] !== secretChanges[id];
+          const sameCredential = oldProviders[id]?.apiKeyRevision === savedProviders[id]?.apiKeyRevision
+            && oldProviders[id]?.apiKeyRef === savedProviders[id]?.apiKeyRef;
+          provider.apiKey = hasLaterEdit || changedHere || sameCredential ? latest.config.providers[id]?.apiKey ?? '' : '';
+          if (changedHere) unread.delete(id);
+          else if (!sameCredential && provider.apiKeyRef && !hasLaterEdit) unread.add(id);
+          if (changedHere && nextSecrets[id] === secretChanges[id]) delete nextSecrets[id];
+        }
+        const dirty = Object.keys(nextSecrets).length > 0 || !configValuesEqual(configWithoutSecrets(merged), ordinary);
+        rawSet({ config: merged, configPersistedBaseline: configWithoutSecrets(committed), configEditBaseline: ordinary,
+          configSecretChanges: nextSecrets, configSecretReadErrors: [...unread], configDirty: dirty });
+        syncNodeToolbarMode(merged.nodeToolbarMode);
+        syncNodeLabelVisible(merged.nodeLabelVisible);
+        syncPerformanceMode(merged.performanceMode);
+        setLocale(merged.language);
+        setBaseDataDir(merged.baseDataDir);
+        await syncAuthorizedDirectories(merged);
+        directoriesSynced = true;
+        if (committedFailure !== undefined) throw committedFailure;
+        if (unstored.length) throw new Error('配置已保存，但凭据存储不可用，API Key 仅本次会话有效');
+        rawSet({ configSaveStatus: get().configDirty ? 'dirty' : 'saved', configSaveError: null });
+        if (!options?.silent && get().configRevision === revision) get().showToast('设置已保存');
+      } catch (error) {
+        const conflict = error instanceof ConfigConflictError;
+        const message = conflict ? error.message
+          : error instanceof Error && error.name === 'ConfigCleanupError' ? error.message
+          : !hydrated ? '配置尚未完成加载，不能保存设置'
+            : committed !== undefined
+              ? (!directoriesSynced ? '配置已保存，但目录授权同步失败，请重试' + (unstored.length ? '；API Key 仅本次会话有效' : '')
+                : '配置已保存，但凭据存储不可用，API Key 仅本次会话有效')
+              : '设置保存失败，当前修改尚未确认持久化';
+        rawSet({ configSaveStatus: conflict ? 'conflict' : 'error', configSaveError: message });
+        get().showToast(message, 'error');
+        throw conflict ? new ConfigConflictError() : new Error(message);
       }
-    } catch {
-      const message = (persisted
-        ? '配置已保存，但目录授权同步失败，请检查设置后重试'
-        : '设置保存失败，当前修改尚未确认持久化')
-        + (persisted && unstored.length > 0 ? '；凭据存储也不可用，API Key 仅本次会话有效' : '');
-      showToast(persisted ? message : '设置保存失败', 'error');
-      // 不传播原始存储错误，避免本地路径或凭据进入 Agent 消息。
-      if (options?.throwOnError) throw new Error(message);
-      return;
-    }
-    if (unstored.length > 0) {
-      const message = '配置已保存，但凭据存储不可用，API Key 仅本次会话有效，重启后需重新填写';
-      showToast('凭据存储不可用，API Key 仅本次会话有效，重启后需重新填写', 'error');
-      if (options?.throwOnError) throw new Error(message);
-    } else if (!options?.silent) {
-      showToast('设置已保存');
-    }
+    });
   },
 
-  loadConfig: async () => {
-    // 包括重新加载期间也禁止保存，只有本次读取成功才能重新开放写入。
-    set({ configHydrated: false });
-    let saved: unknown | null;
-    let missingSecrets: string[];
+  loadConfig: () => {
+    rawSet({ configHydrated: false });
+    return enqueue(async () => {
+    const starting = get();
+    const before = starting.config;
+    const beforeOrdinary = configWithoutSecrets(before);
+    rawSet({ configHydrated: false });
+    let loaded: Awaited<ReturnType<typeof fileService.loadConfigWithSecrets>>;
     try {
-      const loaded = await fileService.loadConfigWithSecrets();
-      saved = loaded.config;
-      missingSecrets = loaded.missingSecrets;
+      loaded = await fileService.loadConfigWithSecrets({
+        allowSecretReadFailure: true,
+        normalize: (config) => migrateLegacyGeneralModels(migrateLegacyPerformanceMode({
+          ...config as AppConfig, providers: (config as AppConfig).providers ?? {},
+        })),
+      });
     } catch (error) {
-      set({ configHydrated: false });
-      console.warn('[设置] 配置加载失败，已阻止默认值覆盖持久化配置');
       const message = error instanceof Error && error.name === 'VersionError'
         ? '数据由较新版本软件保存，请使用最新版本重新打开；已阻止覆盖原配置'
-        : '设置读取失败，已阻止覆盖原配置；请关闭所有软件窗口后重新打开';
+        : '设置读取失败，已阻止覆盖原配置；请重试加载';
+      rawSet({ configHydrated: false, configSaveStatus: 'error', configSaveError: message });
       get().showToast(message, 'error');
-      // 配置中的数据目录尚未确认，不能让 initFromDb 继续创建或迁移项目。
-      // eslint-disable-next-line preserve-caught-error -- 原始存储错误可能含路径或凭据，不能通过 cause 透传。
+      // eslint-disable-next-line preserve-caught-error -- 原始错误可能含凭据或路径，不保留 cause。
       throw new Error(message);
     }
-
-    if (!saved) {
-      syncNodeToolbarMode(defaultConfig.nodeToolbarMode);
-      syncNodeLabelVisible(defaultConfig.nodeLabelVisible);
-      syncPerformanceMode(defaultConfig.performanceMode);
-      setLocale(defaultConfig.language);
-      set({ configHydrated: true });
-      return;
+    const saved = loaded.config;
+    const cfg = saved ? migrateLegacyGeneralModels({ ...defaultConfig, ...migrateLegacyPerformanceMode(saved as AppConfig) }) : { ...defaultConfig };
+    const ordinary = configWithoutSecrets(cfg);
+    // 显式重新加载采用磁盘值；加载期间的新编辑单独重放，不能被迟到结果清掉。
+    const latest = get();
+    const pending = createConfigPatch(beforeOrdinary, configWithoutSecrets(latest.config));
+    const merged = applyConfigPatch(ordinary, pending, false) as unknown as AppConfig;
+    const unread = loaded.unreadSecrets ?? [];
+    const nextSecrets: Record<string, string> = {};
+    for (const [id, provider] of Object.entries(merged.providers ?? {})) {
+      const edited = latest.configSecretChanges[id] !== starting.configSecretChanges[id];
+      const oldProvider = before.providers[id];
+      // 版本是持久化协议元数据，不作为渠道编辑字段暴露。
+      const sameRef = oldProvider?.apiKeyRef === provider.apiKeyRef
+        && Reflect.get(oldProvider ?? {}, 'apiKeyRevision') === Reflect.get(provider, 'apiKeyRevision');
+      provider.apiKey = edited ? latest.config.providers[id]?.apiKey ?? ''
+        : unread.includes(id) && sameRef ? oldProvider?.apiKey ?? '' : cfg.providers[id]?.apiKey ?? '';
+      if (edited && latest.configSecretChanges[id]) nextSecrets[id] = latest.configSecretChanges[id];
     }
-
-    const migratedPerformanceConfig = migrateLegacyPerformanceMode(saved as AppConfig);
-    const cfg = migrateLegacyGeneralModels({ ...defaultConfig, ...migratedPerformanceConfig });
-    syncNodeToolbarMode(cfg.nodeToolbarMode);
-    syncNodeLabelVisible(cfg.nodeLabelVisible);
-    syncPerformanceMode(cfg.performanceMode);
-    setLocale(cfg.language);
-    set({ config: cfg, configHydrated: true });
-    if (missingSecrets.length > 0) {
-      console.warn('[设置] 凭据存储中缺少以下连接的凭据:', missingSecrets);
-      get().showToast(
-        `有 ${missingSecrets.length} 个连接的 API Key 未能读取，请在设置中重新填写`,
-        'error',
-      );
+    const dirty = pending.length > 0 || Object.keys(nextSecrets).length > 0;
+    rawSet({ config: merged, configHydrated: true, configEditBaseline: ordinary,
+      configPersistedBaseline: configWithoutSecrets(loaded.persistedConfig ?? saved),
+      configSecretChanges: nextSecrets, configSecretReadErrors: unread, configDirty: dirty,
+      configSaveStatus: loaded.cleanupPending ? 'error' : dirty ? 'dirty' : 'idle',
+      configSaveError: loaded.cleanupPending ? '设置已保存，但旧渠道凭据清理失败，请重试' : null });
+    if (loaded.cleanupPending) get().showToast('设置已加载，但旧渠道凭据仍待清理，请重试保存', 'error');
+    syncNodeToolbarMode(merged.nodeToolbarMode);
+    syncNodeLabelVisible(merged.nodeLabelVisible);
+    syncPerformanceMode(merged.performanceMode);
+    setLocale(merged.language);
+    if (unread.length || loaded.missingSecrets.length) {
+      get().showToast(unread.length ? '部分 API Key 读取失败，已保留原引用，可重试加载；其他设置仍可保存'
+        : '部分连接的 API Key 不存在，请在设置中重新填写', 'error');
     }
     try {
-      setBaseDataDir(cfg.baseDataDir);
-      await syncAuthorizedDirectories(cfg);
+      setBaseDataDir(merged.baseDataDir);
+      await syncAuthorizedDirectories(merged);
     } catch {
-      console.warn('[设置] 配置已加载，但文件目录授权同步失败');
+      get().showToast('配置已加载，但文件目录授权同步失败', 'error');
     }
+    });
   },
-});
+  };
+};

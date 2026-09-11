@@ -48,6 +48,7 @@ vi.mock('../../src/components/nodes/shared/video/canvasVideoPreviewCache', () =>
 }));
 vi.mock('../../src/i18n', () => ({ useT: () => (message: string) => message }));
 vi.mock('../../src/hooks/useCompletionFlash', () => ({ useCompletionFlash: () => false }));
+vi.mock('../../src/hooks/useCanvasNodeLod', () => ({ useCanvasNodeLodProtection: vi.fn() }));
 vi.mock('../../src/components/nodes/shared/useNodeRename', () => ({ useNodeRename: () => ({ displayLabel: 'Video', handleRename: vi.fn() }) }));
 vi.mock('../../src/components/nodes/shared/useSourceFileUpload', () => ({ useSourceFileUpload: () => ({ isUploading: false, handleUpload: driver.upload }) }));
 vi.mock('../../src/services/fileService', () => ({ downloadUrlAndSave: vi.fn(), saveDataUrlToProjectData: vi.fn(), buildNodeFileName: () => 'frame.jpg' }));

@@ -6,11 +6,16 @@ import { evaluateAgentToolPolicy } from '../../../src/services/chat/policyEngine
 import { cancelProjectCanvasDerivations } from '../../../src/services/canvasDerivationGuard';
 import { importCapturedImage } from '../../../src/services/canvasResourceImportService';
 
-const mocks = vi.hoisted(() => ({ copy: vi.fn(), save: vi.fn(), read: vi.fn(), native: vi.fn() }));
+const mocks = vi.hoisted(() => ({ copy: vi.fn(), save: vi.fn(), read: vi.fn(), native: vi.fn(), reserve: vi.fn(), settle: vi.fn() }));
+vi.mock('../../../src/services/mediaUploadService', async (original) => ({
+  ...await original<typeof import('../../../src/services/mediaUploadService')>(),
+  reserveUploadedMedia: mocks.reserve, settleUploadedMedia: mocks.settle,
+}));
 vi.mock('../../../src/services/clipboardService', () => ({ readNativeClipboard: mocks.native }));
 vi.mock('../../../src/services/fileService', () => ({
   copyFileToProjectData: mocks.copy, saveDataUrlToProjectData: mocks.save,
   setBaseDataDir: vi.fn(), syncAuthorizedDirectories: vi.fn(),
+  waitForPendingNodeFileDeletions: vi.fn(async () => undefined),
 }));
 vi.mock('../../../src/store/store.utils', async (original) => ({
   ...await original<typeof import('../../../src/store/store.utils')>(),
@@ -40,11 +45,46 @@ beforeEach(() => {
     filePath: '/project/' + path.split('/').pop(), assetUrl: 'asset://localhost/media', fileName: path.split('/').pop(),
   }));
   mocks.save.mockResolvedValue({ filePath: '/project/clipboard.png', assetUrl: 'asset://localhost/clipboard.png' });
+  mocks.reserve.mockImplementation(async (_context, ids: string[]) => ids.map((uploadId) => ({
+    uploadId, filePath: `/project/${uploadId}.png`, assetUrl: `asset://localhost/${uploadId}.png`,
+    fileName: `${uploadId}.png`, label: '已上传图片',
+  })));
   registerFileAgentTools();
 });
 afterEach(() => { vi.unstubAllGlobals(); cancelProjectCanvasDerivations('p1'); });
 
 describe('resource import tools', () => {
+  it('imports uploaded images and existing paths in order with one history entry and no extra image copy', async () => {
+    const commit = vi.spyOn(useAppStore.getState(), 'commitToHistory');
+    const result = await importTool().execute(context(), { files: [
+      { uploadId: 'u1', label: '开场', x: 12, y: 34 }, { path: '/input/video.mp4' }, { uploadId: 'u2' },
+    ] });
+    expect(result.status).toBe('success');
+    expect(commit).toHaveBeenCalledOnce();
+    expect(mocks.copy).toHaveBeenCalledTimes(1);
+    expect(mocks.reserve).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'c1' }), ['u1', 'u2']);
+    expect(mocks.settle).toHaveBeenCalledWith(['u1', 'u2'], true);
+    expect(useAppStore.getState().nodes.map((node) => node.type)).toEqual(['source-image', 'source-video', 'source-image']);
+    expect(useAppStore.getState().nodes[0]).toMatchObject({ position: { x: 12, y: 34 }, data: { label: '开场' } });
+    expect(JSON.stringify(result)).not.toContain('/project');
+    await useAppStore.getState().undo();
+    expect(useAppStore.getState().nodes).toHaveLength(0);
+  });
+
+  it.each([{ path: '/a.png', uploadId: 'u1' }, {}, { uploadId: '' }])('rejects ambiguous or empty import sources before reserving: %j', async (file) => {
+    expect(await importTool().execute(context(), { files: [file] })).toMatchObject({ errorCode: 'IMPORT_SOURCE_INVALID' });
+    expect(mocks.reserve).not.toHaveBeenCalled();
+    expect(mocks.copy).not.toHaveBeenCalled();
+  });
+
+  it('releases uploaded images when another item fails without a partial canvas commit', async () => {
+    mocks.copy.mockResolvedValueOnce(null);
+    expect(await importTool().execute(context(), { files: [{ uploadId: 'u1' }, { path: '/a.png' }] }))
+      .toMatchObject({ errorCode: 'IMPORT_COPY_FAILED' });
+    expect(mocks.settle).toHaveBeenCalledWith(['u1'], false);
+    expect(useAppStore.getState().nodes).toHaveLength(0);
+  });
+
   it('registers bounded schemas and retains the Plan/B/C write policy', () => {
     for (const tool of [importTool(), pasteTool()]) {
       expect(tool.effect).toBe('canvas_write');

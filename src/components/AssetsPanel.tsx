@@ -18,7 +18,7 @@ import {
   type DragEvent,
 } from 'react';
 import { Icon } from '@iconify/react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import {
@@ -43,6 +43,8 @@ import Select from './shared/Select';
 import { springSmooth, fadeFast } from '../utils/motion';
 import { countUnreadDramaAssets } from '../store/store.dramaAssets';
 import { distributeToColumns } from './assets/waterfallColumns';
+import { getNodeTypeConfig } from '../types';
+import CanvasNodeCardContent from './assets/CanvasNodeCardContent';
 
 const DramaAssetsPanel = lazy(() => import('./DramaAssetsPanel'));
 
@@ -52,7 +54,7 @@ function isDraggableEntry(file: AssetFileEntry): boolean {
 }
 
 type FileTabKey = 'project' | 'permanent';
-type TabKey = FileTabKey | 'drama';
+type TabKey = FileTabKey | 'drama' | 'nodes';
 
 /** 单页渲染数量（增量加载步长）— 限制 DOM 规模 */
 const PAGE_SIZE = 48;
@@ -79,14 +81,17 @@ const panelVariants = {
 };
 
 export default function AssetsPanel() {
+  const reduceMotion = useReducedMotion();
   const {
     assetsPanelOpen,
+    assetsPanelMode,
     setAssetsPanelOpen,
     dramaAssetsPanelOpen,
     setDramaAssetsPanelOpen,
     markDramaAssetsViewed,
     unreadDramaAssetCount,
     dramaAssetCount,
+    canvasNodeCount,
     currentProjectId,
     projects,
     assetFolders,
@@ -97,6 +102,7 @@ export default function AssetsPanel() {
     useAppStore(
       useShallow((s) => ({
         assetsPanelOpen: s.assetsPanelOpen,
+        assetsPanelMode: s.assetsPanelMode,
         setAssetsPanelOpen: s.setAssetsPanelOpen,
         dramaAssetsPanelOpen: s.dramaAssetsPanelOpen,
         setDramaAssetsPanelOpen: s.setDramaAssetsPanelOpen,
@@ -106,6 +112,7 @@ export default function AssetsPanel() {
           s.dramaAssets.characters.length
           + s.dramaAssets.scenes.length
           + s.dramaAssets.props.length,
+        canvasNodeCount: s.nodes.length,
         currentProjectId: s.currentProjectId,
         projects: s.projects,
         assetFolders: s.config.assetFolders,
@@ -116,14 +123,22 @@ export default function AssetsPanel() {
     );
 
   const [activeTab, setActiveTab] = useState<FileTabKey>('project');
-  const visibleTab: TabKey = dramaAssetsPanelOpen ? 'drama' : activeTab;
+  const [nodeListOpen, setNodeListOpen] = useState(false);
+  const visibleTab: TabKey = dramaAssetsPanelOpen ? 'drama' : nodeListOpen ? 'nodes' : activeTab;
+  const isNodeList = visibleTab === 'nodes';
+  // 只在节点页订阅标识和内容；移动节点不改变 data，避免位置更新重绘整个资产面板。
+  const canvasNodeIds = useAppStore(useShallow((s) => assetsPanelOpen && isNodeList ? s.nodes.map((node) => node.id) : []));
+  const canvasNodeData = useAppStore(useShallow((s) => assetsPanelOpen && isNodeList ? s.nodes.map((node) => node.data) : []));
   // 项目文件 Tab 查看的项目；null 表示「跟随当前项目」（关闭时复位，故每次打开默认当前项目）
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<FileCategory | null>(null);
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const deferredSearch = useDeferredValue(search);
-  const waterfallColumns = normalizeWaterfallColumns(assetWaterfallColumns);
+  const [nodeSearch, setNodeSearch] = useState('');
+  const deferredNodeSearch = useDeferredValue(nodeSearch);
+  const isDrawer = assetsPanelMode === 'drawer';
+  const waterfallColumns = isDrawer ? DEFAULT_WATERFALL_COLUMNS : normalizeWaterfallColumns(assetWaterfallColumns);
 
   const [projectFiles, setProjectFiles] = useState<AssetFileEntry[]>([]);
   const [permanentFiles, setPermanentFiles] = useState<AssetFileEntry[]>([]);
@@ -142,6 +157,27 @@ export default function AssetsPanel() {
   const [visibleFilterItemCount, setVisibleFilterItemCount] = useState(Number.POSITIVE_INFINITY);
   const filterRowRef = useRef<HTMLDivElement | null>(null);
   const filterListRef = useRef<HTMLDivElement | null>(null);
+  const loadRequestRef = useRef(0);
+
+  // 同一组件在两种展示方式之间复用；每次从画布打开时跟随当前项目。
+  const presentation = assetsPanelOpen ? assetsPanelMode : null;
+  const [previousPresentation, setPreviousPresentation] = useState(presentation);
+  if (presentation !== previousPresentation) {
+    setPreviousPresentation(presentation);
+    if (presentation === 'drawer') {
+      setActiveTab('project');
+      setNodeListOpen(false);
+      setNodeSearch('');
+      setSelectedProjectId(null);
+      setSearch('');
+      setActiveCategory(null);
+      setActiveTag(null);
+      setVisibleCount(PAGE_SIZE);
+      setFilterRowExpanded(false);
+      setEditingPath(null);
+      setAddMenuOpen(false);
+    }
+  }
 
   const folders = useMemo(() => assetFolders ?? [], [assetFolders]);
 
@@ -170,12 +206,16 @@ export default function AssetsPanel() {
 
   // 载入文件列表（按 Tab 聚合）
   const loadFiles = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    const isCurrentRequest = () => requestId === loadRequestRef.current
+      && currentProjectId === useAppStore.getState().currentProjectId;
     setLoading(true);
     try {
       if (activeTab === 'project') {
         const viewProjectId = selectedProjectId ?? currentProjectId;
         if (!viewProjectId) { setProjectFiles([]); return; }
         const diskFiles = await listProjectFiles(viewProjectId);
+        if (!isCurrentRequest()) return;
         const known = new Set(diskFiles.map((f) => f.path));
         const nodeEntries: AssetFileEntry[] = [];
         // 仅当查看的是「当前项目」时，才并入画布上尚未落盘的节点文件
@@ -193,6 +233,7 @@ export default function AssetsPanel() {
           listGlobalFiles(),
           listExternalFolderFiles(folders),
         ]);
+        if (!isCurrentRequest()) return;
         const seen = new Set<string>();
         const merged: AssetFileEntry[] = [];
         for (const f of [...globalFiles, ...folderFiles]) {
@@ -203,7 +244,7 @@ export default function AssetsPanel() {
         setPermanentFiles(merged);
       }
     } catch { /* ignore */ } finally {
-      setLoading(false);
+      if (isCurrentRequest()) setLoading(false);
     }
   }, [activeTab, currentProjectId, selectedProjectId, folders]);
 
@@ -214,6 +255,7 @@ export default function AssetsPanel() {
       void loadFiles().then(loadTags);
       void prepareDragIcon();
     }
+    return () => { loadRequestRef.current += 1; };
   }, [assetsPanelOpen, loadFiles, loadTags]);
 
   useEffect(() => {
@@ -229,6 +271,25 @@ export default function AssetsPanel() {
     setAssetsPanelOpen(false);
   }, [setAssetsPanelOpen]);
 
+  const handleLocateNode = useCallback((nodeId: string) => {
+    const focusNode = () => {
+      const state = useAppStore.getState();
+      if (state.currentProjectId !== currentProjectId) return;
+      if (!state.nodes.some((node) => node.id === nodeId)) {
+        toast('节点已不存在');
+        return;
+      }
+      // 与历史记录共用画布定位与放大回弹；左侧面板保留，方便连续查看。
+      window.dispatchEvent(new CustomEvent('canvas-focus-node', { detail: { nodeId, pulse: true } }));
+    };
+    if (isDrawer) {
+      focusNode();
+    } else {
+      handleClose();
+      setTimeout(focusNode, 300);
+    }
+  }, [currentProjectId, handleClose, isDrawer, toast]);
+
   // 拖拽文件到画布：dragstart 内同步发起原生拖拽，并立即隐藏弹窗露出画布
   const handleCardDragStart = useCallback((file: AssetFileEntry, e: DragEvent) => {
     if (!isDraggableEntry(file)) return;
@@ -240,10 +301,15 @@ export default function AssetsPanel() {
   // Esc 关闭
   useEffect(() => {
     if (!assetsPanelOpen) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      // 抽屉之上的确认框/选择器先消费 Esc，避免连带关闭资产库。
+      if (isDrawer && document.querySelector('[aria-modal="true"], [role="listbox"], dialog[open]')) return;
+      handleClose();
+    };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [assetsPanelOpen, handleClose]);
+  }, [assetsPanelOpen, handleClose, isDrawer]);
 
   // 点击外部关闭「添加」菜单
   const addWrapRef = useRef<HTMLDivElement | null>(null);
@@ -331,7 +397,7 @@ export default function AssetsPanel() {
   }, [filterRowExpanded]);
 
   useEffect(() => {
-    if (!assetsPanelOpen || visibleTab === 'drama') return;
+    if (!assetsPanelOpen || visibleTab === 'drama' || visibleTab === 'nodes') return;
     const row = filterRowRef.current;
     if (!row) return;
 
@@ -361,6 +427,18 @@ export default function AssetsPanel() {
 
   const visibleFiles = useMemo(() => filteredFiles.slice(0, visibleCount), [filteredFiles, visibleCount]);
 
+  const filteredNodes = useMemo(() => {
+    const query = deferredNodeSearch.trim().toLowerCase();
+    return canvasNodeIds.map((id, index) => {
+      const data = canvasNodeData[index];
+      const config = getNodeTypeConfig(data.type);
+      const label = data.label?.trim() || data.fileName?.trim() || config.label;
+      return { id, label, displayId: data.displayId, config, data };
+    }).filter((node) => !query || [node.label, node.config.label, node.id, node.displayId === undefined ? '' : `#${node.displayId}`]
+      .some((value) => value.toLowerCase().includes(query)));
+  }, [canvasNodeData, canvasNodeIds, deferredNodeSearch]);
+  const totalResultCount = isNodeList ? filteredNodes.length : filteredFiles.length;
+
   // 无限滚动哨兵
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -368,12 +446,12 @@ export default function AssetsPanel() {
     if (!el) return;
     const io = new IntersectionObserver((entries) => {
       if (entries[0]?.isIntersecting) {
-        setVisibleCount((c) => (c < filteredFiles.length ? c + PAGE_SIZE : c));
+        setVisibleCount((c) => (c < totalResultCount ? c + PAGE_SIZE : c));
       }
     }, { rootMargin: '300px' });
     io.observe(el);
     return () => io.disconnect();
-  }, [filteredFiles.length, visibleFiles.length]);
+  }, [totalResultCount, visibleCount, visibleTab]);
 
   // ── 添加文件 / 文件夹 ──
   const handleAddFiles = useCallback(async () => {
@@ -401,7 +479,7 @@ export default function AssetsPanel() {
 
   const handleRemoveFolder = useCallback(async (path: string) => {
     updateConfig({ assetFolders: folders.filter((f) => f !== path) });
-    await saveConfig();
+    try { await saveConfig(); } catch { return; }
     if (activeTab === 'permanent') await loadFiles();
   }, [folders, updateConfig, saveConfig, activeTab, loadFiles]);
 
@@ -446,10 +524,11 @@ export default function AssetsPanel() {
   }, [tagMap, persistTags]);
 
   const switchTab = useCallback((tab: TabKey) => {
+    setNodeListOpen(tab === 'nodes');
     if (tab === 'drama') {
       setDramaAssetsPanelOpen(true);
     } else {
-      setActiveTab(tab);
+      if (tab !== 'nodes') setActiveTab(tab);
       setDramaAssetsPanelOpen(false);
     }
     setActiveCategory(null);
@@ -464,51 +543,62 @@ export default function AssetsPanel() {
     <AnimatePresence>
       {assetsPanelOpen && (
         <>
-          <motion.div
+          {!isDrawer && <motion.div
             data-tauri-drag-region
             className="assets-panel-backdrop"
             variants={backdropVariants}
             initial="hidden" animate="visible" exit="hidden"
             transition={{ duration: 0.2 }}
             onClick={handleClose}
-          />
-          <div className="assets-panel-wrapper">
+          />}
+          <div className={`assets-panel-wrapper${isDrawer ? ' assets-panel-wrapper--drawer' : ''}`}>
             <motion.div
-              className="assets-panel"
-              variants={panelVariants}
+              className={`assets-panel${isDrawer ? ' assets-panel--drawer' : ''}`}
+              role={isDrawer ? 'region' : 'dialog'}
+              aria-label={isDrawer ? '资产库快捷面板' : '资产管理'}
+              aria-modal={isDrawer ? undefined : true}
+              variants={isDrawer ? {
+                hidden: { opacity: 0, x: reduceMotion ? 0 : -12 },
+                visible: { opacity: 1, x: 0, transition: { duration: reduceMotion ? 0 : 0.16 } },
+                exit: { opacity: 0, x: 0 },
+              } : panelVariants}
               initial="hidden" animate="visible" exit="exit"
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
               <div className="assets-panel-header">
                 <h2 className="assets-panel-title">
-                  资产管理
-                  <span className="assets-panel-subtitle">
-                    {visibleTab === 'drama' ? '管理人物、场景和道具简介与绑图' : '拖拽卡片到画布即可添加节点'}
-                  </span>
+                  {isDrawer ? '资产库' : '资产管理'}
+                  {!isDrawer && <span className="assets-panel-subtitle">
+                    {visibleTab === 'drama' ? '管理人物、场景和道具简介与绑图' : isNodeList ? '查看当前画布中的全部节点' : '拖拽卡片到画布即可添加节点'}
+                  </span>}
                 </h2>
-                <PopupCloseButton onClick={handleClose} />
+                {isDrawer ? (
+                  <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={handleClose} aria-label="收起资产库">
+                    收起 <kbd>Tab</kbd>
+                  </button>
+                ) : <PopupCloseButton onClick={handleClose} />}
               </div>
 
               {/* Tabs */}
               <div className="assets-tabs">
-                {(['project', 'permanent', 'drama'] as TabKey[]).map((tab) => (
+                {(['project', 'permanent', 'drama', 'nodes'] as TabKey[]).map((tab) => (
                   <motion.button
                     key={tab} type="button"
                     className={`assets-tab ${visibleTab === tab ? 'active' : ''}`}
                     onClick={() => switchTab(tab)}
                     whileHover={{ scale: visibleTab === tab ? 1 : 1.03 }} whileTap={{ scale: 0.97 }}
                   >
-                    {tab === 'project' ? '项目文件' : tab === 'permanent' ? '全局资产' : '创作资产'}
+                    {tab === 'project' ? '项目文件' : tab === 'permanent' ? '全局资产' : tab === 'drama' ? '创作资产' : '节点列表'}
                     <span className="assets-tab-count">
-                      {tab === 'project' ? projectFiles.length : tab === 'permanent' ? permanentFiles.length : dramaAssetCount}
+                      {tab === 'project' ? projectFiles.length : tab === 'permanent' ? permanentFiles.length : tab === 'drama' ? dramaAssetCount : canvasNodeCount}
                     </span>
                   </motion.button>
                 ))}
 
                 {/* Toolbar: 搜索 + 添加 */}
               {visibleTab !== 'drama' ? <div className="assets-toolbar ml-auto">
-                {activeTab === 'project' && (
+                {visibleTab === 'project' && (
                   <Select
                     className="assets-project-select-wrap"
                     triggerClassName="assets-project-select"
@@ -525,18 +615,19 @@ export default function AssetsPanel() {
                     <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
                   </svg>
                   <input
-                    type="text" placeholder="搜索名称或标签…"
-                    value={search} onChange={(e) => { setSearch(e.target.value); setVisibleCount(PAGE_SIZE); }}
+                    type="text" placeholder={isNodeList ? '搜索节点名称、类型或编号…' : '搜索名称或标签…'}
+                    value={isNodeList ? nodeSearch : search}
+                    onChange={(e) => { (isNodeList ? setNodeSearch : setSearch)(e.target.value); setVisibleCount(PAGE_SIZE); }}
                   />
-                  {search && (
-                    <button type="button" className="assets-search-clear" onClick={() => { setSearch(''); setVisibleCount(PAGE_SIZE); }} aria-label="清空">
+                  {(isNodeList ? nodeSearch : search) && (
+                    <button type="button" className="assets-search-clear" onClick={() => { (isNodeList ? setNodeSearch : setSearch)(''); setVisibleCount(PAGE_SIZE); }} aria-label="清空">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                         <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                       </svg>
                     </button>
                   )}
                 </div>
-                <div className="assets-column-stepper" role="group" aria-label="瀑布流列数">
+                {!isDrawer && !isNodeList && <div className="assets-column-stepper" role="group" aria-label="瀑布流列数">
                   <Icon icon="lucide:columns-3" className="assets-column-stepper-icon" aria-hidden="true" />
                   <button
                     type="button"
@@ -555,8 +646,8 @@ export default function AssetsPanel() {
                   >
                     <Icon icon="lucide:plus" aria-hidden="true" />
                   </button>
-                </div>
-                {activeTab === 'permanent' && (
+                </div>}
+                {visibleTab === 'permanent' && (
                   <div className="assets-add-wrap" ref={addWrapRef}>
                     <motion.button
                       type="button" className="assets-add-btn" disabled={busy}
@@ -587,7 +678,46 @@ export default function AssetsPanel() {
               </div> : null}
               </div>
 
-              {visibleTab === 'drama' ? (
+              {isNodeList ? (
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2.5 pt-2">
+                  {filteredNodes.length === 0 ? (
+                    <div className="assets-empty">
+                      <Icon icon="lucide:workflow" width="32" height="32" aria-hidden="true" />
+                      <span>{nodeSearch.trim() ? '没有匹配的节点' : '当前画布暂无节点'}</span>
+                    </div>
+                  ) : (
+                    <>
+                      <ul className="flex flex-col gap-1.5" aria-label="当前画布节点">
+                        {filteredNodes.slice(0, visibleCount).map((node) => (
+                          <li key={node.id} data-node-id={node.id} className="ui-card assets-node-card p-2">
+                            <div className="flex items-center gap-2">
+                              <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded ${node.config.color} ${node.config.bg}`}>
+                                <Icon icon={node.config.icon} width="18" height="18" aria-hidden="true" />
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs text-canvas-text" title={node.label}>{node.label}</p>
+                                <p className="truncate text-[11px] text-canvas-text-muted">
+                                  {node.displayId !== undefined && <span>#{node.displayId} · </span>}{node.config.label}
+                                </p>
+                              </div>
+                              <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm shrink-0"
+                                aria-label={`查看节点 ${node.label}`} onClick={() => handleLocateNode(node.id)}>
+                                查看节点
+                              </button>
+                            </div>
+                            <CanvasNodeCardContent nodeId={node.id} data={node.data} projectId={currentProjectId} connectable={isDrawer} />
+                          </li>
+                        ))}
+                      </ul>
+                      {visibleCount < filteredNodes.length && (
+                        <div ref={sentinelRef} className="assets-load-sentinel">
+                          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}>加载更多节点</button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              ) : visibleTab === 'drama' ? (
                 <Suspense
                   fallback={(
                     <div className="flex flex-1 items-center justify-center text-xs text-canvas-text-muted">
@@ -595,7 +725,7 @@ export default function AssetsPanel() {
                     </div>
                   )}
                 >
-                  <DramaAssetsPanel />
+                  <DramaAssetsPanel compact={isDrawer} />
                 </Suspense>
               ) : (
                 <>

@@ -6,6 +6,9 @@ import type { ConversationContextSummary } from '../types/chat';
 import type { ProjectMemory } from '../types/memory';
 import type { DramaCharacter } from '../types/dramaAssets';
 import type { ProjectVisualDescription } from '../types/visualMemory';
+import { StorageError } from './storageDiagnostics';
+import { configValuesEqual } from './configPatch';
+import { createDurableSettingsTransaction } from './indexedDb/catalogRepository';
 import {
   openDB,
   STORE_AGENT_TASKS,
@@ -1138,10 +1141,47 @@ const TOOLBAR_LAYOUTS_KEY = 'layouts';
 export async function saveToolbarLayoutsToDb(data: Record<string, unknown>): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_TOOLBAR_LAYOUTS, 'readwrite');
+    const tx = createDurableSettingsTransaction(db, STORE_TOOLBAR_LAYOUTS);
     tx.objectStore(STORE_TOOLBAR_LAYOUTS).put({ id: TOOLBAR_LAYOUTS_KEY, data });
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new DOMException('Toolbar transaction aborted', 'AbortError'));
+  });
+}
+
+function toolbarRecordData(record: unknown): Record<string, unknown> | null {
+  if (record === undefined) return null;
+  const data = (record as { data?: unknown } | null)?.data;
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    throw new StorageError('toolbar-read', 'corrupt');
+  }
+  return data as Record<string, unknown>;
+}
+
+/** 同一事务内读取最新记录，只更新一个节点类型，保留其他实例保存的布局。 */
+export async function saveToolbarLayoutToDb(nodeType: string, layout: unknown | null, expected?: { baseline: unknown }): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = createDurableSettingsTransaction(db, STORE_TOOLBAR_LAYOUTS);
+    const store = tx.objectStore(STORE_TOOLBAR_LAYOUTS);
+    const request = store.get(TOOLBAR_LAYOUTS_KEY);
+    let failure: unknown;
+    request.onsuccess = () => {
+      try {
+        const next = { ...toolbarRecordData(request.result) };
+        if (expected && !configValuesEqual(next[nodeType] ?? null, expected.baseline)
+          && !configValuesEqual(next[nodeType] ?? null, layout)) throw new StorageError('toolbar-write', 'conflict');
+        if (layout === null) delete next[nodeType];
+        else Object.defineProperty(next, nodeType, { value: layout, enumerable: true, configurable: true, writable: true });
+        store.put({ id: TOOLBAR_LAYOUTS_KEY, data: next });
+      } catch (error) {
+        failure = error;
+        tx.abort();
+      }
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => { failure ??= tx.error; };
+    tx.onabort = () => reject(failure ?? tx.error ?? new DOMException('Toolbar transaction aborted', 'AbortError'));
   });
 }
 
@@ -1150,8 +1190,15 @@ export async function loadToolbarLayoutsFromDb(): Promise<Record<string, unknown
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_TOOLBAR_LAYOUTS, 'readonly');
     const request = tx.objectStore(STORE_TOOLBAR_LAYOUTS).get(TOOLBAR_LAYOUTS_KEY);
-    request.onsuccess = () => resolve(request.result?.data ?? null);
-    request.onerror = () => reject(request.error);
+    let data: Record<string, unknown> | null = null;
+    let failure: unknown;
+    request.onsuccess = () => {
+      try { data = toolbarRecordData(request.result); }
+      catch (error) { failure = error; tx.abort(); }
+    };
+    tx.oncomplete = () => resolve(data);
+    tx.onerror = () => { failure ??= tx.error; };
+    tx.onabort = () => reject(failure ?? tx.error ?? new DOMException('Toolbar transaction aborted', 'AbortError'));
   });
 }
 

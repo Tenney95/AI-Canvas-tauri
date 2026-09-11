@@ -12,7 +12,9 @@ import {
 } from '../fileGrantService';
 import { registerAgentTool } from '../toolRegistry';
 import { importLocalResources, pasteClipboardResources, ResourceImportError,
-  type LocalResourceInput, type ResourcePosition } from '../../canvasResourceImportService';
+  type ResourcePosition } from '../../canvasResourceImportService';
+import { executeMediaUpload, MediaUploadError, MEDIA_UPLOAD_BASE64_CHARS } from '../../mediaUploadService';
+import type { MediaResourceInput, MediaUploadInput } from '../../../types/mediaUpload';
 
 const positionFields = {
   x: { type: 'number' as const, minimum: -100000, maximum: 100000 },
@@ -33,15 +35,47 @@ async function resourceResult(run: () => ReturnType<typeof importLocalResources>
 
 export function registerFileAgentTools(): Array<() => void> {
   return [
-    registerAgentTool<ResourcePosition & { files: LocalResourceInput[] }>({
+    registerAgentTool<MediaUploadInput>({
+      id: 'file_media_upload', title: '分块上传图片到项目', effect: 'file_write',
+      description: '接收客户端持有的 PNG/JPEG/WebP 字节，不读取客户端路径。无文件总大小上限，逐块落盘；每块固定 256 KiB，末块为余量。begin 传 fileName/mimeType/totalBytes；append 传 uploadId/offset/data(Base64)/checksum(当前块 SHA-256)；finish 传 uploadId/checksum(最终 sha256-chain-v1 摘要)。H0=SHA256(UTF8("AI-Canvas-upload-v1:"+mimeType+":"+totalBytes))；Hn=SHA256(UTF8(上一 digest+":"+offset+":"+当前块SHA256))，十六进制均小写。status 返回 nextOffset/digest；cancel 清理未交付上传。完成后把 uploadId 交给 file_import_media_to_canvas。上传绑定当前项目、对话和画布，空闲十分钟失效；传输期间不要切项目或改画布。失败不自动重试，当前块确认丢失时先查询状态。',
+      inputSchema: { type: 'object', additionalProperties: false, required: ['action'], properties: {
+        action: { type: 'string', enum: ['begin', 'append', 'finish', 'status', 'cancel'] },
+        uploadId: { type: 'string', minLength: 1, maxLength: 160 },
+        fileName: { type: 'string', minLength: 1, maxLength: 180 },
+        mimeType: { type: 'string', enum: ['image/png', 'image/jpeg', 'image/webp'] },
+        totalBytes: { type: 'integer', minimum: 1 },
+        offset: { type: 'integer', minimum: 0 },
+        data: { type: 'string', minLength: 1, maxLength: MEDIA_UPLOAD_BASE64_CHARS },
+        checksum: { type: 'string', minLength: 64, maxLength: 64 },
+      } },
+      isAvailable: (context) => typeof window !== 'undefined' && '__TAURI__' in window
+        && context.conversationId.startsWith('mcp-control-'),
+      authorize: (context) => ({ allowed: useAppStore.getState().currentProjectId === context.projectId
+        && context.conversationId.startsWith('mcp-control-'), reason: '需要当前项目的 MCP 控制会话' }),
+      summarizeInput: (input) => `图片上传：${['begin', 'append', 'finish', 'status', 'cancel'].includes(input.action) ? input.action : '未知操作'}`,
+      buildInputDisplay: (input) => ({ fields: [{ label: '操作', value: input.action },
+        { label: '文件字节数', value: input.totalBytes ?? 0 }, { label: '块偏移', value: input.offset ?? 0 }] }),
+      execute: async (context, input) => {
+        try {
+          const result = await executeMediaUpload(context, input);
+          return { status: 'success', summary: '图片上传状态已更新', modelContent: JSON.stringify(result) };
+        } catch (error) {
+          const summary = error instanceof MediaUploadError ? error.message : '图片上传失败，请检查项目存储与连接状态';
+          return { status: 'error', summary, modelContent: summary, retryable: false,
+            errorCode: error instanceof MediaUploadError ? error.code : 'UPLOAD_FAILED' };
+        }
+      },
+    }),
+    registerAgentTool<ResourcePosition & { files: MediaResourceInput[] }>({
       id: 'file_import_media_to_canvas',
-      title: '批量导入本地媒体到画布',
-      description: '把 1 至 20 个本地图片、视频、音频文件复制到项目并创建 source 素材节点，返回同序 nodeId，可直接连线生成。传入绝对路径；必须是已通过文件选择、拖入或设置授权的文件/目录，不会扩大文件权限。可指定每项坐标和名称，或使用起始 x/y 自动排列。整批只提交一次画布历史；失败不自动重试。此工具只导入，不调用生成模型。',
+      title: '批量导入媒体到画布',
+      description: '创建 source 素材节点并返回同序 nodeId。files 每项 path/uploadId 二选一：path 复制已通过文件选择、拖入或设置授权的本地图片、视频、音频；uploadId 使用 file_media_upload 已完成的图片，不读取外部路径。一次 1 至 20 项，支持混合导入、名称和位置，一批一次历史。不会扩大目录权限；失败不自动重试，不调用生成模型。',
       inputSchema: { type: 'object', required: ['files'], additionalProperties: false, properties: {
         ...positionFields,
         files: { type: 'array', minItems: 1, maxItems: 20, items: {
-          type: 'object', required: ['path'], additionalProperties: false, properties: {
+          type: 'object', additionalProperties: false, properties: {
             path: { type: 'string', minLength: 1, maxLength: 4096 },
+            uploadId: { type: 'string', minLength: 1, maxLength: 160 },
             label: { type: 'string', minLength: 1, maxLength: 120 }, ...positionFields,
           },
         } },

@@ -1563,6 +1563,173 @@ button.wf-ionode-badge.is-default {
   font-size: 11px;
 }
 
+/* Tab 资产抽屉：同一资产库的窄布局，画布继续接收鼠标操作。 */
+.assets-panel-wrapper.assets-panel-wrapper--drawer {
+  --assets-drawer-left: 72px;
+  inset: max(64px, var(--window-overlay-top, 0px)) auto 12px var(--assets-drawer-left);
+  width: min(340px, calc(100vw - var(--assets-drawer-left) - 12px));
+  align-items: stretch;
+}
+[data-tauri-window][data-sidebar-floating] .assets-panel-wrapper--drawer {
+  --assets-drawer-left: 32px;
+}
+.assets-panel-wrapper.assets-panel-wrapper--drawer > .assets-panel--drawer {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin-left: 0;
+}
+.assets-panel--drawer .assets-panel-header {
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 8px;
+}
+.assets-panel--drawer .assets-panel-title {
+  min-width: 0;
+  font-size: 14px;
+}
+.assets-panel--drawer .assets-tabs {
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+}
+.assets-panel--drawer .assets-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 2px;
+  font-size: 12px;
+}
+.assets-panel--drawer .assets-tab-count { padding: 1px 3px; }
+.assets-panel--drawer .assets-toolbar {
+  width: 100%;
+  min-width: 0;
+  flex-wrap: nowrap;
+  margin-left: 0;
+  padding: 8px 0 0;
+}
+.assets-panel--drawer .assets-search {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+}
+.assets-panel--drawer .assets-project-select-wrap {
+  flex: 0 1 110px;
+  min-width: 0;
+  max-width: 44%;
+  width: 110px;
+}
+.assets-panel--drawer .assets-add-wrap { margin-left: auto; }
+.assets-panel--drawer .assets-waterfall-cols,
+.assets-panel--drawer .assets-waterfall-col { gap: 6px; }
+.assets-panel--drawer .assets-card-info { padding: 6px; }
+.assets-panel--drawer .assets-card-name { font-size: 11px; }
+.assets-panel--drawer .assets-card-actions { right: 3px; bottom: 3px; gap: 2px; }
+.assets-panel--drawer .assets-card-action-btn { width: 24px; height: 24px; }
+.assets-panel--drawer .assets-card-size { top: 3px; right: 3px; padding: 1px 3px; }
+.assets-panel--drawer .assets-folder-row { max-height: 80px; overflow-y: auto; }
+.assets-panel--drawer .assets-file-scroll { overscroll-behavior: contain; }
+
+.assets-node-card { flex-shrink: 0; }
+.assets-node-content { position: relative; margin-top: 8px; }
+.assets-node-media {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 170px;
+  overflow: hidden;
+  border-radius: var(--ui-radius);
+  background: var(--theme-bg);
+}
+.assets-node-media img { width: 100%; height: 100%; object-fit: contain; }
+.assets-node-media-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: var(--ui-radius-sm);
+  background: var(--theme-card);
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+}
+.assets-node-text, .assets-node-audio {
+  min-height: 112px;
+  padding: 10px;
+  border-radius: var(--ui-radius);
+  background: var(--theme-bg);
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+}
+.assets-node-text p {
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.assets-node-audio { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; }
+.assets-node-audio audio { width: 100%; min-width: 0; height: 36px; }
+.assets-node-ports {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  right: 6px;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  pointer-events: none;
+}
+.assets-node-audio + .assets-node-ports { top: 6px; bottom: auto; }
+.assets-node-port-group { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; max-width: 48%; }
+.assets-node-port-group.is-output { align-items: flex-end; margin-left: auto; }
+.assets-node-port {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--theme-surface);
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  cursor: crosshair;
+  touch-action: none;
+  pointer-events: auto;
+}
+.assets-node-port:hover, .assets-node-port:focus-visible { border-color: var(--brand-light); color: var(--theme-text); }
+.assets-node-port-dot { width: 8px; height: 8px; flex-shrink: 0; border: 2px solid var(--brand-light); border-radius: 50%; }
+.assets-node-port-group.is-output .assets-node-port { flex-direction: row-reverse; }
+.assets-node-connection-overlay { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 220; pointer-events: none; }
+.assets-node-connection-overlay path { fill: none; stroke: var(--brand-light); stroke-width: 2; stroke-dasharray: 6 4; }
+.assets-node-connection-overlay circle { fill: var(--brand-light); }
+.assets-node-connection-overlay.is-valid path { stroke-dasharray: none; }
+.assets-node-connection-overlay text { fill: var(--theme-text); stroke: var(--theme-bg); stroke-width: 3; paint-order: stroke; font-size: 12px; }
+
+/* 创作资产保留详细卡片和全部操作，仅让工具栏及卡片按可用宽度换行。 */
+.drama-assets--compact .drama-assets-toolbar { flex-wrap: wrap; gap: 4px; }
+.drama-assets--compact .drama-assets-toolbar > button { padding: 6px; }
+.drama-assets--compact .drama-assets-search { order: -1; width: 100%; margin-left: 0; }
+.drama-assets--compact .drama-asset-card-layout { flex-wrap: wrap; gap: 8px; }
+.drama-assets--compact .drama-asset-thumbnail { width: 56px; height: 56px; }
+.drama-assets--compact .drama-asset-card-body { flex: 1 1 160px; }
+.drama-assets--compact .drama-asset-actions {
+  width: 100%;
+  min-width: 0;
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+.drama-assets--compact .drama-asset-actions > button { flex: 1 1 auto; }
+
 /* 添加按钮 + 菜单 */
 .assets-add-wrap { position: relative; flex-shrink: 0; }
 .assets-add-btn {

@@ -36,6 +36,7 @@ import { useMascotDrag } from './hooks/useMascotDrag';
 import type { MascotHandle } from './components/shared/mascot/Mascot';
 import { initComfyUIWindowBridge } from './services/comfyUIWindowService';
 import { invoke } from '@tauri-apps/api/core';
+import { prepareSettingsClose, resumeSettingsPersistence } from './services/configPersistenceQueue';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -224,6 +225,19 @@ export default function App() {
               });
             });
             const store = useAppStore.getState();
+            let settingsSaved = await prepareSettingsClose();
+            while (!settingsSaved) {
+              const { ask } = await import('@tauri-apps/plugin-dialog');
+              const retry = await ask('部分设置或工具栏布局尚未保存。是否重试保存？', {
+                title: '设置尚未保存', kind: 'warning', okLabel: '重试保存', cancelLabel: '其他选择',
+              }).catch(() => false);
+              if (retry) { settingsSaved = await prepareSettingsClose(true); continue; }
+              const discard = await ask('退出会放弃本次尚未保存的设置。是否仍然退出？', {
+                title: '确认放弃未保存的设置', kind: 'warning', okLabel: '放弃并退出', cancelLabel: '取消退出',
+              }).catch(() => false);
+              if (!discard) return;
+              break;
+            }
             try {
               await store.captureCurrentProjectSnapshot();
             } catch (error) {
@@ -260,6 +274,7 @@ export default function App() {
             console.warn('[退出] 关闭窗口失败:', error);
             useAppStore.getState().showToast('关闭未完成，请重试', 'error');
           } finally {
+            resumeSettingsPersistence();
             closeInProgress.current = false;
             setClosePhase(null);
           }
@@ -298,7 +313,9 @@ export default function App() {
         if (cancelled) cleanup();
         else dispose = cleanup;
       })
-      .catch(() => {});
+      .catch(() => {
+        useAppStore.getState().showToast('MCP 控制器初始化失败，请重新加载应用后重试', 'error');
+      });
     return () => {
       cancelled = true;
       dispose?.();

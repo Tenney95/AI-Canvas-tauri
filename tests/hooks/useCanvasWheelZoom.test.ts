@@ -38,10 +38,11 @@ function frameAt(time: number) {
   frames.clear();
   pending.forEach(callback => callback(now));
 }
-function install() {
+function install(nativeMouseWheel = false) {
   vi.stubGlobal('window', win);
   destroy = bindCanvasWheelZoom(surface as unknown as HTMLElement, {
     getViewport: () => viewport, setViewport, onStart, onEnd, minZoom: 0.1, maxZoom: 5,
+    nativeMouseWheel,
   }).destroy;
 }
 
@@ -58,6 +59,127 @@ beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
   install();
+});
+
+describe('Mac native mouse wheel routing', () => {
+  function nativeWheel(deltaY: number, extras: Record<string, unknown> = {}) {
+    const event = new CustomEvent('ai-canvas:native-mouse-wheel', {
+      cancelable: true,
+      detail: { xRatio: 425 / 1000, yRatio: 350 / 800, deltaY, issuedAt: Date.now(), ...extras },
+    });
+    win.dispatchEvent(event);
+    return event;
+  }
+
+  beforeEach(() => {
+    destroy();
+    Object.assign(win, { innerWidth: 1000, innerHeight: 800 });
+    Object.assign(doc, { hasFocus: () => true, elementFromPoint: () => surface });
+    install(true);
+    timeAt(10);
+  });
+
+  it('uses the same smooth 8% target and cursor anchor without Ctrl', () => {
+    expect(nativeWheel(-120).defaultPrevented).toBe(true);
+    expect(viewport.zoom).toBe(1);
+    frameAt(26);
+    expect(viewport.zoom).toBeGreaterThan(1);
+    expect(viewport.zoom).toBeLessThan(1.08);
+    frameAt(70);
+    expect(viewport.zoom).toBeCloseTo(1.08, 8);
+    expect((400 - viewport.x) / viewport.zoom).toBeCloseTo(380, 8);
+    expect((300 - viewport.y) / viewport.zoom).toBeCloseTo(270, 8);
+    expect(onEnd).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it('combines native inputs per frame and reverses from the displayed zoom', () => {
+    for (let i = 0; i < 12; i++) nativeWheel(-10);
+    frameAt(26);
+    expect(setViewport).toHaveBeenCalledOnce();
+    const displayed = viewport.zoom;
+    nativeWheel(120);
+    frameAt(86);
+    expect(viewport.zoom).toBeCloseTo(displayed / 1.08, 8);
+  });
+
+  it.each([
+    { deltaY: 3 }, { deltaY: 120 }, { deltaY: 0.25 }, { deltaY: 1200 },
+    { deltaY: 40, deltaX: 20 }, { deltaY: 0, deltaX: 40 }, { ctrlKey: true },
+  ])('leaves DOM trackpad/pinch events untouched even at mouse-like deltas: %j', extras => {
+    expect(wheel(-120, extras).defaultPrevented).toBe(false);
+    expect(frames.size).toBe(0);
+    expect(setViewport).not.toHaveBeenCalled();
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
+  it('cancels queued mouse zoom when a trackpad takes over', () => {
+    nativeWheel(-120);
+    expect(wheel(40, { deltaX: 30 }).defaultPrevented).toBe(false);
+    frameAt(100);
+    expect(viewport.zoom).toBe(1);
+    expect(onEnd).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it('returns unconsumed for editors, overlays and other flows so AppKit can scroll normally', () => {
+    surface.excluded = true;
+    expect(nativeWheel(-120).defaultPrevented).toBe(false);
+    surface.excluded = false; surface.flow = new Surface();
+    expect(nativeWheel(-120).defaultPrevented).toBe(false);
+    Object.assign(doc, { elementFromPoint: () => null });
+    expect(nativeWheel(-120).defaultPrevented).toBe(false);
+    expect(setViewport).not.toHaveBeenCalled();
+  });
+
+  it('consumes once at the zoom limit instead of falling back to pan', () => {
+    viewport.zoom = 5;
+    expect(nativeWheel(-120).defaultPrevented).toBe(true);
+    expect(frames.size).toBe(0);
+    expect(setViewport).not.toHaveBeenCalled();
+  });
+
+  it('drops delayed input across project rebinding and accepts fresh input', () => {
+    const issuedAt = Date.now();
+    nativeWheel(-120);
+    timeAt(30); destroy(); install(true);
+    expect(nativeWheel(-120, { issuedAt }).defaultPrevented).toBe(true);
+    frameAt(60);
+    expect(viewport.zoom).toBe(1);
+    expect(nativeWheel(-120).defaultPrevented).toBe(true);
+    frameAt(120);
+    expect(viewport.zoom).toBeCloseTo(1.08, 8);
+  });
+
+  it.each(['pointerdown', 'keydown', 'gesturestart', 'ai-canvas:native-wheel-cancel', 'blur'])('drops pending and late input after %s', kind => {
+    const issuedAt = Date.now();
+    nativeWheel(-120);
+    timeAt(20); win.dispatchEvent(new Event(kind));
+    expect(nativeWheel(-120, { issuedAt }).defaultPrevented).toBe(true);
+    frameAt(100);
+    expect(viewport.zoom).toBe(1);
+    expect(onEnd).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it('drops stale, hidden or unfocused input without replaying it into another view', () => {
+    expect(nativeWheel(-120, { issuedAt: Date.now() - 300 }).defaultPrevented).toBe(true);
+    doc.hidden = true;
+    expect(nativeWheel(-120).defaultPrevented).toBe(true);
+    doc.hidden = false;
+    Object.assign(doc, { hasFocus: () => false });
+    expect(nativeWheel(-120).defaultPrevented).toBe(true);
+    expect(setViewport).not.toHaveBeenCalled();
+  });
+
+  it.each([{ xRatio: -1 }, { yRatio: 1 }, { deltaY: Infinity }, { issuedAt: 'bad' }])('rejects invalid native input: %j', extras => {
+    expect(nativeWheel(-120, extras).defaultPrevented).toBe(false);
+    expect(frames.size).toBe(0);
+  });
+
+  it('removes the native listener on mode change or unmount', () => {
+    nativeWheel(-120); destroy();
+    expect(nativeWheel(-120).defaultPrevented).toBe(false);
+    frameAt(100);
+    expect(viewport.zoom).toBe(1);
+  });
 });
 afterEach(() => { destroy(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 

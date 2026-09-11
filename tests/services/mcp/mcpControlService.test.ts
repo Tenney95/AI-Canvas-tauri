@@ -18,6 +18,7 @@ import type {
   AgentPackageSkill,
 } from '../../../src/types/agentPackage';
 import * as directorRuntime from '../../../src/services/directorRuntimeRegistry';
+import * as mediaUploads from '../../../src/services/mediaUploadService';
 import * as directorScenes from '../../../src/services/directorSceneService';
 import { createDefaultDirectorScene } from '../../../src/services/directorBlenderRuntimeService';
 import { buildDirectorSceneRelativePath } from '../../../src/services/directorSceneSchema';
@@ -138,6 +139,24 @@ function registerDispatchProbe(partial: Partial<AgentToolDefinition> = {}) {
 }
 
 describe('MCP on-demand discovery', () => {
+  it('exposes image uploads only to MCP and omits uploaded bytes from messages and task audit', async () => {
+    vi.stubGlobal('window', { __TAURI__: {} });
+    const data = Buffer.from('private-image-byte-marker-for-upload-audit').toString('base64');
+    const execute = vi.spyOn(mediaUploads, 'executeMediaUpload').mockResolvedValue({ uploadId: 'u1', state: 'cancelled' });
+    try {
+      const result = await mcpCall('tools_call', { name: 'file_media_upload', arguments: {
+        action: 'append', uploadId: 'u1', offset: 0, data, checksum: 'a'.repeat(64),
+      } }, 'upload:chunk');
+      expect(result.isError).toBe(false);
+      expect(execute).toHaveBeenCalledWith(expect.objectContaining({ conversationId: expect.stringContaining('mcp-control-') }), expect.objectContaining({ data }));
+      const state = useAppStore.getState();
+      expect(state.agentTasks).toHaveLength(1);
+      expect(JSON.stringify([state.messages, state.agentTasks])).not.toContain(data);
+      expect(buildAssistantFunctionTools({ taskId: 'chat', projectId: 'project-mcp', conversationId: 'normal-chat', mode: 'autonomous' })
+        .some((tool) => tool.function.name === 'file_media_upload')).toBe(false);
+    } finally { execute.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
   it('exposes three stable entrypoints, including before a project is loaded', async () => {
     const names = ['tools_search', 'tools_describe', 'tools_call'];
     expect((await listMcpTools()).map((tool) => tool.name)).toEqual(names);

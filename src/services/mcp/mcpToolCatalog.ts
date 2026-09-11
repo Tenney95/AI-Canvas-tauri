@@ -27,6 +27,7 @@ const categories: Record<string, { title: string; keywords: string }> = {
   canvas: { title: '画布节点', keywords: '画布 节点 连线 排列 canvas nodes edges layout align' },
   project: { title: '项目', keywords: '项目 工程 project workspace' },
   media: { title: '媒体生成', keywords: '生成 图片 视频 音频 生图 音乐 image video audio generation generate' },
+  video: { title: '视频剪辑', keywords: '视频 剪辑 时间轴 字幕 转场 音乐 音量 导出 验片 抽帧 video timeline edit export preview probe frames' },
   director: { title: '导演台', keywords: '导演 摄影机 镜头 渲染 blender camera render director' },
   skill: { title: 'Skill', keywords: '技能 技能包 智能体包 skill instructions' },
   plugin: { title: '插件窗口', keywords: '插件 窗口 plugin window' },

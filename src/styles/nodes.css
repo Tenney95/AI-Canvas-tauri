@@ -14,6 +14,37 @@
   border-radius: 12PX;
 }
 
+/* Far-zoom media nodes keep the same outer box and connection anchors. */
+.canvas-node-lod-boundary {
+  display: contents;
+}
+
+.canvas-node-lod-preview {
+  background: var(--theme-surface);
+  box-shadow: inset 0 0 0 1px var(--canvas-edge);
+  border-radius: 12px;
+}
+
+.canvas-node-lod-preview.is-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.canvas-node-lod-image {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity var(--dur-fast);
+}
+
+.canvas-node-lod-image.is-ready {
+  opacity: 1;
+}
+
 /* Base Node — frosted glass card */
 .node {
   display: flex;

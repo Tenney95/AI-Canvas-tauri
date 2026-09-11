@@ -16,9 +16,44 @@ export async function saveVideoEditorProject(record: VideoEditorProjectRecord): 
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(STORE_VIDEO_EDITOR_PROJECTS, 'readwrite');
-    transaction.objectStore(STORE_VIDEO_EDITOR_PROJECTS).put(record);
+    const store = transaction.objectStore(STORE_VIDEO_EDITOR_PROJECTS);
+    const request = store.get(record.id);
+    request.onsuccess = () => {
+      const current = request.result as VideoEditorProjectRecord | undefined;
+      if ((current?.automationRevision ?? 0) !== (record.automationRevision ?? 0)) {
+        reject(new Error('剪辑工程已被 MCP 更新，请重新读取工程后编辑'));
+        transaction.abort();
+        return;
+      }
+      store.put(record);
+    };
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(new Error('剪辑工程事务已取消'));
+  });
+}
+
+/** 同一 IDB 事务内比较完整快照并写入，防止异步读取后覆盖人工作业。 */
+export async function compareAndSaveVideoEditorProject(
+  record: VideoEditorProjectRecord,
+  expected: VideoEditorProjectRecord | null,
+): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_VIDEO_EDITOR_PROJECTS, 'readwrite');
+    const store = transaction.objectStore(STORE_VIDEO_EDITOR_PROJECTS);
+    const request = store.get(record.id);
+    request.onsuccess = () => {
+      if (JSON.stringify(request.result ?? null) !== JSON.stringify(expected)) {
+        reject(new Error('剪辑工程已变化，请重新读取后提交'));
+        transaction.abort();
+        return;
+      }
+      store.put(record);
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error('剪辑工程保存失败'));
+    transaction.onabort = () => reject(new Error('剪辑工程事务已取消'));
   });
 }
 

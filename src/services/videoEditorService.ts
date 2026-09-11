@@ -66,7 +66,7 @@ export function hasVideoSource(nodes: EditableMediaNode[]): boolean {
   });
 }
 
-function buildClip(node: EditableMediaNode, index: number): VideoEditorClip {
+export function buildClip(node: EditableMediaNode, index: number): VideoEditorClip {
   const type = node.type as NodeType | undefined;
   const isImage = !!type && IMAGE_NODE_TYPES.includes(type);
   const data = node.data;
@@ -189,7 +189,7 @@ export function resolveShotlistTimelineRows(rows: ShotRow[], nodes: EditableMedi
 }
 
 /** 对白沿用已排好的镜头起止；保留无对白镜头的空档，不再次压紧字幕。 */
-function buildDialogueTrack(rows: ShotRow[], clips: VideoEditorClip[]): VideoEditorTrack | null {
+export function buildDialogueTrack(rows: ShotRow[], clips: VideoEditorClip[]): VideoEditorTrack | null {
   const captions = rows.flatMap<VideoEditorClip>((row, index) => {
     const content = row.dialogue?.trim();
     if (!content) return [];
@@ -235,7 +235,7 @@ function buildVoiceoverTrack(rows: ShotRow[], clips: VideoEditorClip[], nodeId: 
  * 与 buildClip 的区别有两处，也正是分镜表必须走独立入口的原因：
  * 时长取自表里的「时长」栏而非图片固定停留时长，且没绑画面的行也要出片段。
  */
-function buildShotClip(row: ShotRow, index: number): VideoEditorClip {
+export function buildShotClip(row: ShotRow, index: number): VideoEditorClip {
   const duration = resolveShotDuration(row);
   const transitionKind = resolveShotTransitionKind(row.transition);
   // 首个片段之前没有可叠的画面，转场无从谈起
@@ -329,6 +329,8 @@ export async function openVideoEditorForShotlist(params: {
     name: label || '分镜表',
     tracks: [{ id: 'video-1', kind: 'video', name: '视频轨 1', clips }, ...(dialogueTrack ? [dialogueTrack] : []), ...(voiceoverTrack ? [voiceoverTrack] : [])],
     createdAt: existing?.createdAt ?? now,
+    automationRevision: existing?.automationRevision,
+    output: existing?.output,
     updatedAt: now,
   } satisfies VideoEditorProjectRecord);
 

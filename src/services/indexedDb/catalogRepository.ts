@@ -17,6 +17,15 @@ import {
 
 const CONFIG_KEY = 'app-config';
 
+/** 只用于低频关键设置；仅在运行时明确不支持 options 时回退，真实事务错误不得降级重试。 */
+export function createDurableSettingsTransaction(db: IDBDatabase, store: string): IDBTransaction {
+  try { return db.transaction(store, 'readwrite', { durability: 'strict' }); }
+  catch (error) {
+    if (!(error instanceof TypeError) && !(error instanceof DOMException && error.name === 'NotSupportedError')) throw error;
+    return db.transaction(store, 'readwrite');
+  }
+}
+
 export interface WorkflowRecord {
   adapterType?: WorkflowDefinition['adapterType'];
   runninghub?: import('../../types/runninghub').RunningHubWorkflowManifest;
@@ -93,7 +102,7 @@ export interface CustomStyleRecord {
 
 function putRecord<T>(storeName: string, record: T): Promise<void> {
   return openDB().then((db) => new Promise((resolve, reject) => {
-    const transaction = db.transaction(storeName, 'readwrite');
+    const transaction = storeName === STORE_CONFIG ? createDurableSettingsTransaction(db, storeName) : db.transaction(storeName, 'readwrite');
     let failure: unknown;
     let request: IDBRequest<IDBValidKey> | undefined;
     transaction.oncomplete = () => failure === undefined ? resolve() : reject(failure);
@@ -145,12 +154,51 @@ export const deleteWorkflowFromDb = (id: string): Promise<void> =>
 export const saveConfigToDb = (data: unknown): Promise<void> =>
   putRecord(STORE_CONFIG, { id: CONFIG_KEY, data });
 
+/** 比较和更新在一个事务里完成，避免两个实例之间的读后写竞态。 */
+export async function patchConfigToDb(changes: import('../configPatch').ConfigChange[]): Promise<unknown> {
+  const { applyConfigPatch } = await import('../configPatch');
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = createDurableSettingsTransaction(db, STORE_CONFIG);
+    const store = tx.objectStore(STORE_CONFIG);
+    const request = store.get(CONFIG_KEY);
+    let failure: unknown;
+    let next: unknown;
+    request.onsuccess = () => {
+      try {
+        const record = request.result as { data?: unknown } | undefined;
+        if (record !== undefined && (!record.data || typeof record.data !== 'object' || Array.isArray(record.data))) {
+          throw new Error('配置记录格式异常');
+        }
+        next = applyConfigPatch(record?.data ?? {}, changes);
+        if (changes.length) store.put({ id: CONFIG_KEY, data: next });
+      } catch (error) { failure = error; tx.abort(); }
+    };
+    tx.oncomplete = () => resolve(next);
+    tx.onerror = () => { failure ??= tx.error; };
+    tx.onabort = () => reject(failure ?? tx.error ?? new DOMException('配置事务已中止', 'AbortError'));
+  });
+}
+
 export async function loadConfigFromDb(): Promise<unknown | null> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const request = db.transaction(STORE_CONFIG, 'readonly').objectStore(STORE_CONFIG).get(CONFIG_KEY);
-    request.onsuccess = () => resolve(request.result?.data ?? null);
-    request.onerror = () => reject(request.error);
+    const tx = db.transaction(STORE_CONFIG, 'readonly');
+    let failure: unknown;
+    let data: unknown = null;
+    try {
+      const request = tx.objectStore(STORE_CONFIG).get(CONFIG_KEY);
+      request.onsuccess = () => {
+        const record = request.result as { data?: unknown } | undefined;
+        if (record !== undefined && (!record.data || typeof record.data !== 'object' || Array.isArray(record.data))) {
+          failure = new Error('配置记录格式异常'); tx.abort(); return;
+        }
+        data = record?.data ?? null;
+      };
+    } catch (error) { failure = error; tx.abort(); }
+    tx.oncomplete = () => resolve(data);
+    tx.onerror = () => { failure ??= tx.error; };
+    tx.onabort = () => reject(failure ?? tx.error ?? new DOMException('配置读取已中止', 'AbortError'));
   });
 }
 

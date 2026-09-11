@@ -12,6 +12,7 @@ import {
   getAllWorkflows,
   deleteWorkflowFromDb,
   saveConfigToDb,
+  patchConfigToDb,
   loadConfigFromDb,
   savePresetToDb,
   getAllPresets,
@@ -22,7 +23,7 @@ import {
   saveStyleToDb,
   getAllStyles,
   deleteStyleFromDb,
-  saveToolbarLayoutsToDb,
+  saveToolbarLayoutToDb,
   loadToolbarLayoutsFromDb,
   type WorkflowRecord,
   type PresetRecord,
@@ -34,6 +35,7 @@ import type { BaseNodeData, ProjectSettings } from '../types';
 import {
   getAssetUrlFromPath,
   getProjectDataDir,
+  isTauriEnv,
   joinPath,
   notifyProjectDiskChanged,
   stripVerbatimPrefix,
@@ -42,8 +44,10 @@ import { walkDirectoryFiles } from './fs/assetLibrary';
 import { identifyAsset, resolveIndexedAssetPath } from './fs/assetIndex';
 import type { DramaAssetLibrary } from '../types/dramaAssets';
 import { normalizeDramaAssetLibrary } from '../types/dramaAssets';
-import { hasPlaintextSecret, restoreConfigSecrets, stripConfigSecrets } from './providerSecretService';
+import { deleteProviderSecretIfUnchanged, hasPlaintextSecret, readProviderSecretFingerprint, restoreConfigSecrets, stripConfigSecrets } from './providerSecretService';
 import { enqueueConfigPersistence } from './configPersistenceQueue';
+import { applyConfigPatch, ConfigConflictError, configWithoutSecrets, createConfigPatch, type ConfigChange } from './configPatch';
+import { classifyStorageError, readStorageWithRetry, storageError } from './storageDiagnostics';
 import {
   decodeDataUrlBytesAsync,
   MEDIA_DATA_URL_BYTE_LIMITS,
@@ -835,24 +839,104 @@ export async function deleteWorkflow(id: string): Promise<void> {
 /**
  * 保存应用配置到 IndexedDB。
  * 凭据先摘进 Rust 侧凭据存储，数据库里只留引用；存储失败也不落明文。
- * 既有凭据保存失败时拒绝整份配置回写，保留原数据库记录。
+ * 桌面凭据保存失败时拒绝整份配置回写，保留原数据库记录。
  * @returns 未能写入凭据存储、仅本次会话有效的连接 ID
  */
-export async function saveConfig(data: unknown): Promise<string[]> {
+export interface ConfigSaveOptions {
+  baseline: unknown;
+  changes: ConfigChange[];
+  /** 连接 ID → 本次凭据变更的随机版本，只在明确编辑凭据时提供。 */
+  secretChanges?: Record<string, string>;
+  onCommitted?: (config: unknown) => void;
+}
+
+export class ConfigCleanupError extends Error {
+  constructor() { super('设置已保存，但旧渠道凭据清理失败，请重试'); this.name = 'ConfigCleanupError'; }
+}
+
+/** 与连接删除同事务持久化；仅含指纹，重启后仍可完成清理。必须在配置队列内调用。 */
+async function completeSecretCleanup(raw: unknown): Promise<unknown> {
+  const config = raw as { providers?: Record<string, unknown>; _pendingSecretCleanup?: Record<string, string> } | null;
+  const pending = config?._pendingSecretCleanup;
+  if (pending === undefined) return raw;
+  if (!pending || typeof pending !== 'object' || Array.isArray(pending)) throw new ConfigCleanupError();
+  let committed = raw;
+  for (const [id, fingerprint] of Object.entries(pending)) {
+    if (typeof fingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(fingerprint)) throw new ConfigCleanupError();
+    try {
+      // 已重新出现的连接不能作为旧删除任务清理；条件删除也不能删掉已换值的条目。
+      if (!config?.providers?.[id]) await deleteProviderSecretIfUnchanged(id, fingerprint);
+      committed = await patchConfigToDb([{ path: ['_pendingSecretCleanup', id], before: fingerprint, after: undefined }]);
+    } catch (error) {
+      if (classifyStorageError(error) === 'conflict') {
+        // 原生值已变化，旧清理意图作废，保留新凭据。
+        committed = await patchConfigToDb([{ path: ['_pendingSecretCleanup', id], before: fingerprint, after: undefined }]);
+      } else { throw new ConfigCleanupError(); }
+    }
+  }
+  return committed;
+}
+
+export async function saveConfig(data: unknown, options?: ConfigSaveOptions): Promise<string[]> {
   try {
     // 入队前捕获快照，异步凭据操作期间调用方修改对象不能改变本次保存内容。
     const snapshot: unknown = structuredClone(data);
+    const intent = options ? structuredClone({ baseline: options.baseline, changes: options.changes, secretChanges: options.secretChanges }) : undefined;
     return await enqueueConfigPersistence(async () => {
       // 先读已保存记录，确认既有引用；读取失败时不触碰任何凭据。
-      const previous = await loadConfigFromDb();
+      const previous = await completeSecretCleanup(await readStorageWithRetry('config-read', loadConfigFromDb));
+      if (intent) {
+        const baseline = configWithoutSecrets(intent.baseline);
+        let next = applyConfigPatch(baseline, intent.changes, false);
+        const sourceProviders = (snapshot as { providers?: Record<string, Record<string, unknown>> })?.providers ?? {};
+        const providers = (next.providers ?? {}) as Record<string, Record<string, unknown>>;
+        const changedProviders: Record<string, Record<string, unknown>> = {};
+        for (const [id, revision] of Object.entries(intent.secretChanges ?? {})) {
+          const provider = sourceProviders[id];
+          if (!provider || typeof provider.apiKey !== 'string' || !provider.apiKey) continue;
+          providers[id] = { ...providers[id], apiKeyRevision: revision };
+          changedProviders[id] = provider;
+        }
+        if (next.providers || Object.keys(changedProviders).length) next.providers = providers;
+        // 先检查普通字段与凭据版本冲突，拒绝后不触碰原生凭据。
+        applyConfigPatch(configWithoutSecrets(previous), createConfigPatch(baseline, next));
+        const deleted = Object.keys((baseline.providers ?? {}) as Record<string, unknown>).filter((id) => !providers[id]);
+        const cleanup: Record<string, string> = {};
+        for (const id of deleted) {
+          const fingerprint = await readProviderSecretFingerprint(id);
+          if (fingerprint) cleanup[id] = fingerprint;
+        }
+        if (Object.keys(cleanup).length) next._pendingSecretCleanup = cleanup;
+        let unstored: string[] = [];
+        if (Object.keys(changedProviders).length) {
+          const result = await stripConfigSecrets({ providers: changedProviders }, previous);
+          unstored = result.unstored;
+          if (result.failedExistingSecrets.length || (isTauriEnv() && unstored.length)) throw new Error('渠道凭据保存未完成');
+          const storedProviders = (result.config as { providers: Record<string, Record<string, unknown>> }).providers;
+          for (const [id, provider] of Object.entries(storedProviders)) {
+            if (provider.apiKeyRef) providers[id].apiKeyRef = provider.apiKeyRef;
+          }
+          next = configWithoutSecrets(next);
+        }
+        const committed = await patchConfigToDb(createConfigPatch(baseline, next));
+        options?.onCommitted?.(committed);
+        const cleaned = await completeSecretCleanup(committed);
+        options?.onCommitted?.(cleaned);
+        return unstored;
+      }
       const { config, unstored, failedExistingSecrets } = await stripConfigSecrets(snapshot, previous);
       if (failedExistingSecrets.length > 0) throw new Error('既有配置凭据保存未完成');
+      // 桌面新渠道也必须确认 Key 已持久化，不能降级为重启后丢 Key 的会话配置。
+      if (isTauriEnv() && unstored.length > 0) throw new Error('渠道凭据保存未完成');
       await saveConfigToDb(config);
       console.log('Config saved to IndexedDB');
       return unstored;
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof ConfigCleanupError) throw error;
+    if (error instanceof ConfigConflictError || classifyStorageError(error) === 'conflict') throw new ConfigConflictError();
     console.error('[storage] 配置保存失败，未确认配置持久化');
+    // eslint-disable-next-line preserve-caught-error -- 原始存储错误可能包含凭据或路径。
     throw new Error('保存应用配置失败，请重试或检查存储状态');
   }
 }
@@ -861,38 +945,83 @@ export interface LoadedConfig {
   config: unknown | null;
   /** 引用存在但凭据存储里读不到的连接 ID，需要用户重新输入 */
   missingSecrets: string[];
+  /** 只有凭据读取失败；普通配置已经读到，允许无关设置继续保存。 */
+  unreadSecrets?: string[];
+  persistedConfig?: unknown;
+  cleanupPending?: boolean;
 }
 
 /** 保留版本不兼容分类供启动层提示，不传播存储路径或原始错误正文。 */
 function configLoadError(error: unknown): Error {
   const failure = new Error('读取应用配置失败，请重试或检查存储状态');
-  if (error instanceof Error && error.name === 'VersionError') failure.name = 'VersionError';
+  if (classifyStorageError(error) === 'version') failure.name = 'VersionError';
   console.error('[storage] 配置加载失败:', failure.name);
   return failure;
 }
 
 /**
  * 从 IndexedDB 加载应用配置，并按引用从凭据存储补回凭据。
- * 遇到旧版明文配置会迁进凭据存储并立刻回写清理后的记录。
+ * 遇到旧版明文或丢失的凭据引用会恢复并立刻回写不含明文的记录。
  * 只有配置记录不存在才返回 null；读取或迁移失败必须阻止上层保存默认配置。
  */
-export async function loadConfigWithSecrets(): Promise<LoadedConfig> {
+export async function loadConfigWithSecrets(options?: {
+  allowSecretReadFailure?: boolean;
+  /** 旧模型到渠道的纯转换必须在凭据迁移和数据库清理之前执行。 */
+  normalize?: (config: unknown) => unknown;
+}): Promise<LoadedConfig> {
   try {
     return await enqueueConfigPersistence(async () => {
-      const raw = await loadConfigFromDb();
+      const stored = await readStorageWithRetry('config-read', loadConfigFromDb);
+      let raw = stored;
+      let cleanupPending = false;
+      try { raw = await completeSecretCleanup(stored); }
+      catch (error) {
+        if (!options?.allowSecretReadFailure || !(error instanceof ConfigCleanupError)) throw error;
+        // 删除已提交但后续清理失败，不影响已有普通设置的读取；由 Store 提供重试状态。
+        cleanupPending = true;
+      }
       if (raw === null || raw === undefined) return { config: null, missingSecrets: [] };
+      const normalized = options?.normalize ? options.normalize(structuredClone(raw)) : raw;
+      const normalizationChanged = createConfigPatch(raw, normalized).length > 0;
+      const legacyModels = (raw as { generalModels?: Array<{ apiKey?: unknown }> }).generalModels;
+      const hasLegacyKey = Array.isArray(legacyModels) && legacyModels.some((model) => !!model?.apiKey);
 
-      const { config, migrated, missing } = await restoreConfigSecrets(raw);
+      if (options?.allowSecretReadFailure && !hasPlaintextSecret(normalized)
+        && !hasPlaintextSecret(raw) && !hasLegacyKey) {
+        const config = structuredClone(normalized) as { providers?: Record<string, unknown> };
+        const providers = config.providers ?? {};
+        const unreadSecrets: string[] = [];
+        const missingSecrets: string[] = [];
+        const migratedProviders: Record<string, unknown> = {};
+        for (const [id, provider] of Object.entries(providers)) {
+          try {
+            const restored = await restoreConfigSecrets({ providers: { [id]: provider } });
+            providers[id] = (restored.config as { providers: Record<string, unknown> }).providers[id];
+            missingSecrets.push(...restored.missing);
+            if (restored.migrated) migratedProviders[id] = providers[id];
+          } catch { unreadSecrets.push(id); }
+        }
+        let persistedConfig: unknown = raw;
+        if (normalizationChanged || Object.keys(migratedProviders).length) {
+          const clean = configWithoutSecrets(config);
+          persistedConfig = await patchConfigToDb(createConfigPatch(configWithoutSecrets(raw), clean));
+        }
+        return { config, persistedConfig, missingSecrets, unreadSecrets, ...(cleanupPending ? { cleanupPending } : {}) };
+      }
+
+      const { config, migrated, missing } = await restoreConfigSecrets(normalized);
       // 旧凭据全部迁移失败时不能开放保存，否则后续保存可能清掉尚未迁出的唯一副本。
-      if (hasPlaintextSecret(raw) && !migrated) throw new Error('配置凭据迁移未完成');
-      if (migrated) {
+      if (hasPlaintextSecret(normalized) && !migrated) throw new Error('配置凭据迁移未完成');
+      if (migrated || normalizationChanged) {
         // 在同一持久化锁内确认凭据可用，再清理数据库中的旧明文。
         const { config: scrubbed, unstored } = await stripConfigSecrets(config, raw);
         if (unstored.length > 0) throw new Error('配置凭据迁移未完成');
         await saveConfigToDb(scrubbed);
-        console.log('[storage] 已将明文 API Key 迁移到凭据存储并清理数据库记录');
+        console.log('[storage] 已更新配置中的凭据引用并清理明文字段');
       }
-      return { config, missingSecrets: missing };
+      return { config, missingSecrets: missing,
+        ...(cleanupPending ? { cleanupPending } : {}),
+        ...(options?.allowSecretReadFailure ? { persistedConfig: configWithoutSecrets(config) } : {}) };
     });
   } catch (error) {
     throw configLoadError(error);
@@ -910,7 +1039,8 @@ export async function loadConfig(): Promise<unknown | null> {
  */
 export async function loadConfigWithoutSecrets(): Promise<unknown | null> {
   try {
-    return await loadConfigFromDb();
+    const raw = await readStorageWithRetry('config-read', loadConfigFromDb);
+    return raw == null ? null : configWithoutSecrets(raw);
   } catch (error) {
     throw configLoadError(error);
   }
@@ -1009,20 +1139,14 @@ export type { WorkflowRecord, PresetRecord, SkillRecord, CustomStyleRecord };
 
 // ── Toolbar Layouts ──
 
-export async function saveToolbarLayouts(data: Record<string, unknown>): Promise<void> {
+export async function saveToolbarLayout(nodeType: string, layout: unknown | null, expected?: { baseline: unknown }): Promise<void> {
   try {
-    await saveToolbarLayoutsToDb(data);
+    await enqueueConfigPersistence(() => saveToolbarLayoutToDb(nodeType, layout, expected));
   } catch (error) {
-    console.error('Save toolbar layouts failed:', error);
-    throw error;
+    throw storageError('toolbar-write', error);
   }
 }
 
 export async function loadToolbarLayouts(): Promise<Record<string, unknown> | null> {
-  try {
-    return await loadToolbarLayoutsFromDb();
-  } catch (error) {
-    console.error('Load toolbar layouts failed:', error);
-    return null;
-  }
+  return enqueueConfigPersistence(() => readStorageWithRetry('toolbar-read', loadToolbarLayoutsFromDb));
 }

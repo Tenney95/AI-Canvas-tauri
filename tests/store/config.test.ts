@@ -1,19 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../../src/types';
+import type { ConfigSaveOptions, LoadedConfig } from '../../src/services/storageService';
+import { ConfigConflictError, configWithoutSecrets } from '../../src/services/configPatch';
 
 const fileMocks = vi.hoisted(() => {
   const loadConfig = vi.fn();
   return {
     loadConfig,
     // 凭据改由凭据存储托管后，store 走 loadConfigWithSecrets；沿用 loadConfig 的桩数据
-    loadConfigWithSecrets: vi.fn(async () => ({
+    loadConfigWithSecrets: vi.fn<(_options?: { allowSecretReadFailure?: boolean }) => Promise<LoadedConfig>>(async () => ({
       config: await loadConfig(),
       missingSecrets: [] as string[],
     })),
     loadProjectsList: vi.fn(async () => [] as Array<Record<string, unknown>>),
     loadProjectData: vi.fn(async () => null as Record<string, unknown> | null),
     saveProject: vi.fn(async (record: { id: string }) => record.id),
-    saveConfig: vi.fn<(config: unknown) => Promise<string[]>>(async () => []),
+    saveConfig: vi.fn<(config: unknown, options?: ConfigSaveOptions) => Promise<string[]>>(async () => []),
     setBaseDataDir: vi.fn(),
     syncAuthorizedDirectories: vi.fn(async () => undefined),
   };
@@ -44,12 +46,85 @@ beforeEach(() => {
 });
 
 describe('config hydration guard', () => {
-  it('returns a sanitized failure to strict callers without changing legacy save behavior', async () => {
+  it('keeps failed edits dirty and clears the error only after a successful retry', async () => {
+    fileMocks.loadConfig.mockResolvedValue({ theme: 'dark', providers: {} });
+    await useAppStore.getState().loadConfig();
+    useAppStore.getState().updateConfig({ theme: 'light' });
+    fileMocks.saveConfig.mockRejectedValueOnce(new Error('fixture-private'));
+    await expect(useAppStore.getState().saveConfig()).rejects.toThrow('设置保存失败');
+    expect(useAppStore.getState()).toMatchObject({ configDirty: true, configSaveStatus: 'error', config: { theme: 'light' } });
+    await useAppStore.getState().saveConfig();
+    expect(useAppStore.getState()).toMatchObject({ configDirty: false, configSaveStatus: 'saved', configSaveError: null });
+  });
+
+  it('saves a later reversal after the first pending operation', async () => {
+    fileMocks.loadConfig.mockResolvedValue({ theme: 'dark', providers: {} });
+    await useAppStore.getState().loadConfig();
+    let finish!: () => void;
+    fileMocks.saveConfig.mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve([]); }));
+    useAppStore.getState().updateConfig({ theme: 'light' });
+    const first = useAppStore.getState().saveConfig();
+    await Promise.resolve();
+    useAppStore.getState().updateConfig({ theme: 'dark' });
+    const second = useAppStore.getState().saveConfig();
+    finish(); await first; await second;
+    expect(fileMocks.saveConfig.mock.calls[1][1]?.changes).toContainEqual({ path: ['theme'], before: 'light', after: 'dark' });
+    expect(useAppStore.getState()).toMatchObject({ configDirty: false, config: { theme: 'dark' } });
+  });
+
+  it('reports conflicts without replacing local edits and resets the baseline on reload', async () => {
+    fileMocks.loadConfig.mockResolvedValue({ language: 'zh-CN', providers: {} });
+    await useAppStore.getState().loadConfig();
+    useAppStore.getState().updateConfig({ language: 'en-US' });
+    fileMocks.saveConfig.mockRejectedValueOnce(new ConfigConflictError());
+    await expect(useAppStore.getState().saveConfig()).rejects.toBeInstanceOf(ConfigConflictError);
+    expect(useAppStore.getState()).toMatchObject({ configSaveStatus: 'conflict', configDirty: true, config: { language: 'en-US' } });
+    fileMocks.loadConfig.mockResolvedValue({ language: 'ja-JP', providers: {} });
+    await useAppStore.getState().loadConfig();
+    expect(useAppStore.getState()).toMatchObject({ configSaveStatus: 'idle', configDirty: false, config: { language: 'ja-JP' } });
+  });
+
+  it('preserves edits made during loading while adopting the new disk baseline', async () => {
+    let finish!: (config: unknown) => void;
+    fileMocks.loadConfig.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const loading = useAppStore.getState().loadConfig();
+    await Promise.resolve();
+    useAppStore.getState().updateConfig({ language: 'en-US' });
+    finish({ theme: 'light', language: 'ja-JP', providers: {} }); await loading;
+    expect(useAppStore.getState()).toMatchObject({ configDirty: true, config: { theme: 'light', language: 'en-US' }, configEditBaseline: { language: 'ja-JP' } });
+  });
+
+  it('marks only explicit credential changes and keeps plaintext out of baselines', async () => {
+    fileMocks.loadConfig.mockResolvedValue({ providers: { a: { name: 'A', apiKey: 'fixture-key', apiKeyRef: 'secret:provider/a' } } });
+    await useAppStore.getState().loadConfig();
+    useAppStore.getState().updateConfig({ theme: 'light' });
+    await useAppStore.getState().saveConfig();
+    expect(fileMocks.saveConfig.mock.calls[0][1]?.secretChanges).toEqual({});
+    useAppStore.getState().setProviderKey('a', 'replacement-key');
+    await useAppStore.getState().saveConfig();
+    expect(Object.keys(fileMocks.saveConfig.mock.calls[1][1]?.secretChanges ?? {})).toEqual(['a']);
+    expect(JSON.stringify(useAppStore.getState().configEditBaseline)).not.toContain('replacement-key');
+    expect(configWithoutSecrets(useAppStore.getState().config)).toEqual(useAppStore.getState().configEditBaseline);
+  });
+
+  it('allows ordinary saves after credential-only errors and retains references in editor drafts', async () => {
+    const config = { providers: { a: { name: 'A', apiKeyRef: 'secret:provider/a' } } };
+    fileMocks.loadConfigWithSecrets.mockResolvedValueOnce({ config, persistedConfig: config, unreadSecrets: ['a'], missingSecrets: [] });
+    await useAppStore.getState().loadConfig();
+    expect(useAppStore.getState().configHydrated).toBe(true);
+    useAppStore.getState().saveProviderConfig('a', { name: '改名', apiKey: '' });
+    await useAppStore.getState().saveConfig();
+    expect(useAppStore.getState().config.providers.a.apiKeyRef).toBe('secret:provider/a');
+    expect(fileMocks.saveConfig.mock.calls[0][1]?.secretChanges).toEqual({});
+    expect(useAppStore.getState().configSecretReadErrors).toEqual(['a']);
+  });
+
+  it('rejects every failed save with a sanitized error', async () => {
     useAppStore.setState({ configHydrated: true });
     fileMocks.saveConfig.mockRejectedValue(new Error('private-path-and-secret'));
     await expect(useAppStore.getState().saveConfig({ throwOnError: true }))
       .rejects.toThrow('设置保存失败');
-    await expect(useAppStore.getState().saveConfig()).resolves.toBeUndefined();
+    await expect(useAppStore.getState().saveConfig()).rejects.toThrow();
   });
 
   it('rejects strict saves before hydration without writing defaults', async () => {
@@ -63,7 +138,7 @@ describe('config hydration guard', () => {
     fileMocks.saveConfig.mockResolvedValue(['private-provider-id']);
     await expect(useAppStore.getState().saveConfig({ throwOnError: true }))
       .rejects.toThrow('配置已保存，但凭据存储不可用');
-    await expect(useAppStore.getState().saveConfig()).resolves.toBeUndefined();
+    await expect(useAppStore.getState().saveConfig()).rejects.toThrow();
   });
 
   it('reports a directory synchronization failure after persistence separately', async () => {
@@ -95,7 +170,7 @@ describe('config hydration guard', () => {
   it('blocks persistence until the saved config has been loaded', async () => {
     useAppStore.getState().updateConfig({ baseDataDir: 'new-default-path' });
 
-    await useAppStore.getState().saveConfig();
+    await expect(useAppStore.getState().saveConfig()).rejects.toThrow();
 
     expect(useAppStore.getState().configHydrated).toBe(false);
     expect(fileMocks.saveConfig).not.toHaveBeenCalled();
@@ -116,7 +191,7 @@ describe('config hydration guard', () => {
     await useAppStore.getState().saveConfig();
 
     expect(useAppStore.getState().configHydrated).toBe(true);
-    expect(fileMocks.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+    expect(fileMocks.saveConfig.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
       baseDataDir: 'existing-root',
       assetFolders: ['existing-assets'],
     }));
@@ -134,7 +209,7 @@ describe('config hydration guard', () => {
     await useAppStore.getState().saveConfig({ silent: true });
 
     expect(useAppStore.getState().config.startupView).toBe('project-library');
-    expect(fileMocks.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+    expect(fileMocks.saveConfig.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
       startupView: 'project-library',
     }));
   });
@@ -154,7 +229,7 @@ describe('config hydration guard', () => {
 
     await useAppStore.getState().saveConfig({ silent: true });
 
-    expect(fileMocks.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+    expect(fileMocks.saveConfig.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
       assistantModelId: 'volcengine/doubao-seed',
     }));
     expect(useAppStore.getState().toast.visible).toBe(false);
@@ -164,7 +239,7 @@ describe('config hydration guard', () => {
     fileMocks.loadConfig.mockRejectedValue(new Error('private-path-and-secret'));
 
     await expect(useAppStore.getState().loadConfig()).rejects.toThrow('已阻止覆盖原配置');
-    await useAppStore.getState().saveConfig();
+    await expect(useAppStore.getState().saveConfig()).rejects.toThrow();
 
     expect(useAppStore.getState().configHydrated).toBe(false);
     expect(fileMocks.saveConfig).not.toHaveBeenCalled();
@@ -180,7 +255,7 @@ describe('config hydration guard', () => {
     fileMocks.loadConfig.mockRejectedValue(new DOMException('private-database-path', 'VersionError'));
 
     await expect(useAppStore.getState().loadConfig()).rejects.toThrow('较新版本');
-    await useAppStore.getState().saveConfig();
+    await expect(useAppStore.getState().saveConfig()).rejects.toThrow();
 
     expect(useAppStore.getState().configHydrated).toBe(false);
     expect(fileMocks.saveConfig).not.toHaveBeenCalled();
@@ -202,7 +277,7 @@ describe('config hydration guard', () => {
     }));
 
     const reloading = useAppStore.getState().loadConfig();
-    await useAppStore.getState().saveConfig();
+    await expect(useAppStore.getState().saveConfig()).rejects.toThrow();
     expect(fileMocks.saveConfig).not.toHaveBeenCalled();
     rejectReload(new Error('read interrupted'));
     await expect(reloading).rejects.toThrow('已阻止覆盖原配置');
@@ -213,7 +288,7 @@ describe('config hydration guard', () => {
     await useAppStore.getState().loadConfig();
     await useAppStore.getState().saveConfig();
     expect(fileMocks.saveConfig).toHaveBeenCalledOnce();
-    expect(fileMocks.saveConfig).toHaveBeenCalledWith(expect.objectContaining(savedConfig));
+    expect(fileMocks.saveConfig.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining(savedConfig));
   });
 
   it('allows first-run settings to be saved when the configuration is genuinely absent', async () => {
@@ -237,7 +312,7 @@ describe('config hydration guard', () => {
     });
 
     await expect(useAppStore.getState().loadConfig()).rejects.toThrow('已阻止覆盖原配置');
-    await useAppStore.getState().saveConfig();
+    await expect(useAppStore.getState().saveConfig()).rejects.toThrow();
 
     expect(useAppStore.getState().configHydrated).toBe(false);
     expect(fileMocks.saveConfig).not.toHaveBeenCalled();
@@ -272,7 +347,7 @@ describe('config hydration guard', () => {
     fileMocks.syncAuthorizedDirectories.mockRejectedValue(new Error('sync failed'));
 
     await useAppStore.getState().loadConfig();
-    await useAppStore.getState().saveConfig();
+    await expect(useAppStore.getState().saveConfig()).rejects.toThrow();
 
     expect(useAppStore.getState().configHydrated).toBe(true);
     expect(fileMocks.saveConfig).toHaveBeenCalledTimes(1);
@@ -489,7 +564,7 @@ describe('config hydration guard', () => {
     expect(rootAttributes.has('data-performance-mode')).toBe(true);
 
     await useAppStore.getState().saveConfig({ silent: true });
-    expect(fileMocks.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+    expect(fileMocks.saveConfig.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
       performanceMode: true,
     }));
     expect(fileMocks.saveConfig.mock.calls[0]?.[0]).not.toHaveProperty('graphicsCompatibilityMode');

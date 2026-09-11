@@ -29,6 +29,7 @@ import { seekVideoTo } from '../../utils/videoSeek';
 import { downloadUrlAndSave, saveDataUrlToProjectData, buildNodeFileName } from '../../services/fileService';
 import { copyFile as copyFileToClipboard } from '../../services/clipboardService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
+import { useCanvasNodeLodProtection } from '../../hooks/useCanvasNodeLod';
 import {
   cancelCanvasDerivation,
   completeCanvasDerivation,
@@ -828,6 +829,9 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       setIsReversingPrompt(false);
     }
   }, [activateCompactVideo, data.videoUrl, id, t]);
+
+  useCanvasNodeLodProtection(id, isFullscreen || !!playingSource || !!activatedSource
+    || isUploading || isReversingPrompt || !!failedCover);
 
   return (
     <div className="node-wrapper relative" style={{ width: nodeWidth }}>

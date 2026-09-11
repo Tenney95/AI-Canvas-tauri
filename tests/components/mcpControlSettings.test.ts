@@ -1,16 +1,32 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isValidElement, type ReactElement } from 'react';
 import { getConfiguredMcpToolExposure } from '../../src/services/mcp/mcpToolCatalog';
 
 const settingsState = vi.hoisted(() => ({
   config: {} as { mcpToolExposure?: string }, updateConfig: vi.fn(), saveConfig: vi.fn(),
 }));
+const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as unknown[], effects: [] as Array<() => void | (() => void)> }));
+const tokenMocks = vi.hoisted(() => ({ start: vi.fn(), rotate: vi.fn(), read: vi.fn(), status: vi.fn(), stop: vi.fn(), persistence: vi.fn() }));
+vi.mock('../../src/services/mcp/mcpSessionConfig', async (original) => ({
+  ...await original<typeof import('../../src/services/mcp/mcpSessionConfig')>(),
+  startConfiguredMcpBridge: tokenMocks.start, rotateMcpSessionToken: tokenMocks.rotate,
+  readRunningMcpToken: tokenMocks.read, getMcpTokenPersistence: tokenMocks.persistence,
+}));
+vi.mock('../../src/services/mcp/mcpBridgeService', () => ({ getMcpBridgeStatus: tokenMocks.status, stopMcpBridge: tokenMocks.stop }));
 vi.mock('react', async (original) => ({
   ...await original<typeof import('react')>(),
-  useEffect: () => {},
+  useEffect: (effect: () => void | (() => void)) => { hooks.effects.push(effect); },
   useMemo: <T>(factory: () => T) => factory(),
-  useRef: <T>(value: T) => ({ current: value }),
-  useState: <T>(value: T) => [value, vi.fn()],
+  useRef: <T>(value: T) => {
+    const index = hooks.cursor++;
+    if (!(index in hooks.slots)) hooks.slots[index] = { current: value };
+    return hooks.slots[index];
+  },
+  useState: <T>(initial: T) => {
+    const index = hooks.cursor++;
+    if (!(index in hooks.slots)) hooks.slots[index] = initial;
+    return [hooks.slots[index], (value: T) => { hooks.slots[index] = value; }];
+  },
 }));
 vi.mock('../../src/store/useAppStore', () => ({
   useAppStore: Object.assign((selector: (state: unknown) => unknown) => selector(settingsState), { getState: () => settingsState }),
@@ -18,7 +34,26 @@ vi.mock('../../src/store/useAppStore', () => ({
 vi.mock('../../src/i18n', () => ({ useT: () => (text: string) => text }));
 vi.mock('zustand/react/shallow', () => ({ useShallow: <T>(selector: T) => selector }));
 
+beforeEach(() => {
+  hooks.cursor = 0; hooks.slots = []; hooks.effects = [];
+  vi.stubGlobal('window', { __TAURI__: {} });
+  tokenMocks.persistence.mockReset().mockReturnValue('persistent');
+  tokenMocks.start.mockReset(); tokenMocks.rotate.mockReset(); tokenMocks.read.mockReset();
+  tokenMocks.status.mockReset().mockResolvedValue(null); tokenMocks.stop.mockReset().mockResolvedValue(undefined);
+});
 afterEach(() => { vi.unstubAllGlobals(); });
+
+async function renderSettings() {
+  hooks.cursor = 0; hooks.effects = [];
+  const { default: McpControlSettings } = await import('../../src/components/settings/McpControlSettings');
+  return elements(McpControlSettings());
+}
+
+function click(tree: Array<ReactElement<Record<string, unknown>>>, label: string): Promise<void> {
+  const button = tree.find((element) => Array.isArray(element.props.children) && element.props.children.includes(label));
+  if (!button) throw new Error(`Missing button: ${label}`);
+  return (button.props.onClick as () => Promise<void>)();
+}
 
 function elements(root: unknown): Array<ReactElement<Record<string, unknown>>> {
   if (Array.isArray(root)) return root.flatMap(elements);
@@ -49,8 +84,7 @@ describe('MCP control settings helpers', () => {
     settingsState.config = {};
     settingsState.updateConfig.mockClear();
     settingsState.saveConfig.mockClear();
-    const { default: McpControlSettings } = await import('../../src/components/settings/McpControlSettings');
-    const tree = elements(McpControlSettings());
+    const tree = await renderSettings();
     const select = tree.find((element) => element.type === 'select' && element.props.id === 'mcp-tool-exposure')!;
     expect(select.props.value).toBe('compact');
     expect(select.props.className).toBe('ui-select__control');
@@ -59,7 +93,61 @@ describe('MCP control settings helpers', () => {
     expect(settingsState.updateConfig).toHaveBeenCalledExactlyOnceWith({ mcpToolExposure: 'full' });
     expect(settingsState.saveConfig).toHaveBeenCalledOnce();
     settingsState.config = { mcpToolExposure: 'full' };
-    expect(elements(McpControlSettings()).find((element) => element.props.id === 'mcp-tool-exposure')?.props.value).toBe('full');
+    expect((await renderSettings()).find((element) => element.props.id === 'mcp-tool-exposure')?.props.value).toBe('full');
+  });
+
+  it('visibly marks a session-only token after starting without durable persistence', async () => {
+    const token = 'ab'.repeat(32);
+    tokenMocks.start.mockResolvedValue({ token, session: { sessionId: 'started', transport: 'stdio', port: 43123, adapterPath: 'fixture.mjs' } });
+    tokenMocks.persistence.mockReturnValue('session-only');
+    await click(await renderSettings(), '开启');
+    const tree = await renderSettings();
+    const notice = tree.find((element) => element.props.id === 'mcp-token-persistence');
+    expect(notice?.props.children).toContain('仅本次应用会话有效');
+    expect(notice?.props.role).toBe('status');
+    expect(notice?.props.className).toBe('ui-alert ui-alert--warning');
+    expect(tree.filter((element) => typeof element.props.children === 'string').map((element) => element.props.children).join(' '))
+      .not.toContain('重新开启即可继续用同一份配置');
+  });
+
+  it('leaves a running session and client configuration intact when rotation fails', async () => {
+    const { StorageError } = await import('../../src/services/storageDiagnostics');
+    const token = 'cd'.repeat(32);
+    tokenMocks.start.mockResolvedValue({ token, session: { sessionId: 'started', transport: 'stdio', port: 43123, adapterPath: 'fixture.mjs' } });
+    await click(await renderSettings(), '开启');
+    tokenMocks.rotate.mockRejectedValue(new StorageError('secret-write', 'permission'));
+    await click(await renderSettings(), '重置令牌');
+    const tree = await renderSettings();
+    expect(tree.find((element) => element.type === 'pre')?.props.children).toContain(token);
+    expect(tokenMocks.stop).not.toHaveBeenCalled();
+    expect(tree.some((element) => element.props.children === '凭据：存储访问被拒绝')).toBe(true);
+  });
+
+  it('does not create a replacement when the active session token cannot be read', async () => {
+    const { StorageError } = await import('../../src/services/storageDiagnostics');
+    tokenMocks.status.mockResolvedValue({ sessionId: 'active', transport: 'stdio', port: 43123 });
+    tokenMocks.read.mockRejectedValue(new StorageError('secret-read', 'corrupt'));
+    await renderSettings();
+    hooks.effects[0]();
+    await vi.waitFor(() => expect(hooks.slots).toContain('凭据：存储数据格式异常'));
+    const tree = await renderSettings();
+    expect(tree.find((element) => element.type === 'pre')).toBeUndefined();
+    expect(tokenMocks.start).not.toHaveBeenCalled();
+    expect(tokenMocks.rotate).not.toHaveBeenCalled();
+  });
+
+  it('ignores an old status query completed after a new start', async () => {
+    let finish!: (status: unknown) => void;
+    tokenMocks.status.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const token = 'ef'.repeat(32);
+    tokenMocks.start.mockResolvedValue({ token, session: { sessionId: 'new', transport: 'stdio', port: 43123, adapterPath: 'fixture.mjs' } });
+    const tree = await renderSettings();
+    hooks.effects[0]();
+    await click(tree, '开启');
+    finish({ sessionId: 'old', transport: 'stdio', port: 43124 });
+    await Promise.resolve();
+    expect((await renderSettings()).find((element) => element.type === 'pre')?.props.children).toContain(token);
+    expect(tokenMocks.read).not.toHaveBeenCalled();
   });
 
   it('lists the complete local connection environment requirements', () => {

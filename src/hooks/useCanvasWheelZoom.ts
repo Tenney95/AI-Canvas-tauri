@@ -6,6 +6,19 @@ const WHEEL_SENSITIVITY = Math.log(1.08) / WHEEL_DELTA_PER_NOTCH;
 const WHEEL_TRANSITION_MS = 60;
 const WHEEL_RESPONSE_MS = WHEEL_TRANSITION_MS / 4;
 const WHEEL_EXCLUDED = '.nowheel, .react-flow__panel, .react-flow__minimap, .node-floating-toolbar, input, textarea, select, [contenteditable]:not([contenteditable="false"])';
+const NATIVE_MOUSE_WHEEL = 'ai-canvas:native-mouse-wheel';
+// 跨 Hook 重挂载保留取消水位，迟到的原生输入不能落入新项目。
+let nativeWheelCancelledAt = 0;
+
+interface NativeMouseWheelDetail {
+  xRatio: number;
+  yRatio: number;
+  deltaY: number;
+  issuedAt: number;
+}
+
+type WheelZoomInput = Pick<WheelEvent, 'target' | 'defaultPrevented' | 'cancelable' | 'ctrlKey' | 'metaKey'
+  | 'shiftKey' | 'buttons' | 'deltaY' | 'deltaMode' | 'clientX' | 'clientY' | 'preventDefault' | 'stopPropagation'>;
 
 interface WheelZoomOptions {
   getViewport: () => Viewport;
@@ -14,6 +27,8 @@ interface WheelZoomOptions {
   onEnd: (interrupted: boolean) => void;
   minZoom: number;
   maxZoom: number;
+  /** Mac 桌面只接收原生识别的实体滚轮；DOM wheel 保留给触摸板。 */
+  nativeMouseWheel?: boolean;
 }
 
 /** 合并同帧滚轮输入，以短过渡跟随目标；结束后立即释放交互状态。 */
@@ -68,7 +83,7 @@ export function bindCanvasWheelZoom(element: HTMLElement, options: WheelZoomOpti
     if (!settled) frame = requestAnimationFrame(tick);
     else cancel(false);
   };
-  const onWheel = (event: WheelEvent) => {
+  const applyWheel = (event: WheelZoomInput) => {
     const target = event.target;
     // ctrl+wheel 包含触控板捏合，继续交由 React Flow；面板和编辑器保留自身滚动。
     if (event.defaultPrevented || !event.cancelable || event.ctrlKey || event.metaKey || event.shiftKey
@@ -111,22 +126,66 @@ export function bindCanvasWheelZoom(element: HTMLElement, options: WheelZoomOpti
     if (!active) { active = true; options.onStart(); }
     if (!frame) frame = requestAnimationFrame(tick);
   };
-  const onVisibilityChange = () => { if (document.hidden) cancel(); };
-  const interrupt = () => cancel();
+  const interrupt = () => {
+    // Date.now 的毫秒精度边界也算作旧输入，避免同毫秒切项目后的回写。
+    if (options.nativeMouseWheel) nativeWheelCancelledAt = Date.now() + 1;
+    cancel();
+  };
+  const onWheel = (event: WheelEvent) => {
+    if (options.nativeMouseWheel) interrupt();
+    else applyWheel(event);
+  };
+  const onNativeWheel = (event: Event) => {
+    if (!(event instanceof CustomEvent) || event.defaultPrevented || !event.cancelable) return;
+    const detail = event.detail as Partial<NativeMouseWheelDetail> | null;
+    if (!detail || ![detail.xRatio, detail.yRatio, detail.deltaY, detail.issuedAt].every(value => typeof value === 'number' && Number.isFinite(value))) return;
+    const { xRatio, yRatio, deltaY, issuedAt } = detail as NativeMouseWheelDetail;
+    if (xRatio < 0 || xRatio >= 1 || yRatio < 0 || yRatio >= 1 || deltaY === 0) return;
+    if (issuedAt <= nativeWheelCancelledAt || Date.now() - issuedAt > 250 || document.hidden || !document.hasFocus()) {
+      // 确认消费过期输入，但不回放原生事件，防止它平移已切换的画布。
+      event.preventDefault();
+      return;
+    }
+    const clientX = xRatio * window.innerWidth;
+    const clientY = yRatio * window.innerHeight;
+    applyWheel({
+      target: document.elementFromPoint(clientX, clientY),
+      defaultPrevented: false, cancelable: true, ctrlKey: false, metaKey: false, shiftKey: false,
+      buttons: 0, deltaY, deltaMode: 0, clientX, clientY,
+      preventDefault: () => event.preventDefault(), stopPropagation: () => {},
+    });
+  };
+  const onVisibilityChange = () => { if (document.hidden) interrupt(); };
+  if (options.nativeMouseWheel) {
+    interrupt();
+    window.addEventListener(NATIVE_MOUSE_WHEEL, onNativeWheel);
+    window.addEventListener('ai-canvas:native-wheel-cancel', interrupt);
+    window.addEventListener('pointerdown', interrupt, { capture: true });
+    window.addEventListener('keydown', interrupt, { capture: true });
+    // WebKit 原生捏合不一定产生 ctrl+wheel，也可能产生 gesturestart。
+    window.addEventListener('gesturestart', interrupt, { capture: true });
+  }
   element.addEventListener('wheel', onWheel, { capture: true, passive: false });
   element.addEventListener('pointerdown', interrupt, { capture: true });
   window.addEventListener('blur', interrupt);
   document.addEventListener('visibilitychange', onVisibilityChange);
   return { cancel: interrupt, destroy: () => {
+    if (options.nativeMouseWheel) {
+      window.removeEventListener(NATIVE_MOUSE_WHEEL, onNativeWheel);
+      window.removeEventListener('ai-canvas:native-wheel-cancel', interrupt);
+      window.removeEventListener('pointerdown', interrupt, { capture: true });
+      window.removeEventListener('keydown', interrupt, { capture: true });
+      window.removeEventListener('gesturestart', interrupt, { capture: true });
+    }
     element.removeEventListener('wheel', onWheel, { capture: true });
     element.removeEventListener('pointerdown', interrupt, { capture: true });
     window.removeEventListener('blur', interrupt);
     document.removeEventListener('visibilitychange', onVisibilityChange);
-    cancel();
+    interrupt();
   } };
 }
 
-export function useCanvasWheelZoom({ rootRef, cancelRef, enabled, projectId, getViewport, setViewport, onStart, onEnd, minZoom, maxZoom }: WheelZoomOptions & {
+export function useCanvasWheelZoom({ rootRef, cancelRef, enabled, projectId, getViewport, setViewport, onStart, onEnd, minZoom, maxZoom, nativeMouseWheel }: WheelZoomOptions & {
   rootRef: RefObject<HTMLDivElement | null>;
   cancelRef: RefObject<(() => void) | null>;
   enabled: boolean;
@@ -135,11 +194,11 @@ export function useCanvasWheelZoom({ rootRef, cancelRef, enabled, projectId, get
   useEffect(() => {
     const element = rootRef.current?.querySelector<HTMLElement>('.react-flow');
     if (!enabled || !element) return;
-    const controller = bindCanvasWheelZoom(element, { getViewport, setViewport, onStart, onEnd, minZoom, maxZoom });
+    const controller = bindCanvasWheelZoom(element, { getViewport, setViewport, onStart, onEnd, minZoom, maxZoom, nativeMouseWheel });
     cancelRef.current = controller.cancel;
     return () => {
       cancelRef.current = null;
       controller.destroy();
     };
-  }, [rootRef, cancelRef, enabled, projectId, getViewport, setViewport, onStart, onEnd, minZoom, maxZoom]);
+  }, [rootRef, cancelRef, enabled, projectId, getViewport, setViewport, onStart, onEnd, minZoom, maxZoom, nativeMouseWheel]);
 }

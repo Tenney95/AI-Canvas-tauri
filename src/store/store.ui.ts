@@ -39,6 +39,8 @@ export interface UISlice {
   activeNodeId: string | null;
   dialogPosition: { x: number; y: number } | null;
   assetsPanelOpen: boolean;
+  /** 同一资产库的展示方式，仅用于当前界面，不持久化。 */
+  assetsPanelMode: 'modal' | 'drawer';
   characterLibraryOpen: boolean;
   /** 角色库里的动作库弹层；圆环快捷入口要能越过角色列表直接打开它 */
   characterActionLibraryOpen: boolean;
@@ -83,7 +85,7 @@ export interface UISlice {
   setHelpOpen: (open: boolean) => void;
   openNodeDialog: (nodeId: string, position?: { x: number; y: number }) => void;
   closeNodeDialog: () => void;
-  setAssetsPanelOpen: (open: boolean) => void;
+  setAssetsPanelOpen: (open: boolean, mode?: UISlice['assetsPanelMode']) => void;
   setCharacterLibraryOpen: (open: boolean) => void;
   setCharacterActionLibraryOpen: (open: boolean) => void;
   setHistoryPanelOpen: (open: boolean) => void;
@@ -115,6 +117,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   activeNodeId: null,
   dialogPosition: null,
   assetsPanelOpen: false,
+  assetsPanelMode: 'modal',
   characterLibraryOpen: false,
   characterActionLibraryOpen: false,
   historyPanelOpen: false,
@@ -160,17 +163,18 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set) => (
   setHelpOpen: (open) => set({ helpOpen: open }),
   openNodeDialog: (nodeId, position) => set({ activeNodeId: nodeId, dialogPosition: position ?? null }),
   closeNodeDialog: () => set({ activeNodeId: null, dialogPosition: null, pendingPresetAction: null }),
-  setAssetsPanelOpen: (open) => set(open
+  setAssetsPanelOpen: (open, mode = 'modal') => set(open
     ? {
         settingsOpen: false,
         assetsPanelOpen: true,
+        assetsPanelMode: mode,
         characterLibraryOpen: false,
         characterActionLibraryOpen: false,
         historyPanelOpen: false,
         dramaAssetsPanelOpen: false,
         chatOpen: false,
       }
-    : { assetsPanelOpen: false, dramaAssetsPanelOpen: false }),
+    : { assetsPanelOpen: false, assetsPanelMode: 'modal', dramaAssetsPanelOpen: false }),
   setCharacterLibraryOpen: (open) => set(open
     ? {
         settingsOpen: false,

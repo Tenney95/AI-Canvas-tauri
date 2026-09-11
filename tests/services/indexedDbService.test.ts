@@ -88,6 +88,34 @@ beforeEach(() => {
 });
 
 describe('indexedDbService schema', () => {
+  it('uses strict durability only for configuration and toolbar writes', async () => {
+    const service = await import('../../src/services/indexedDbService');
+    const { openDB } = await import('../../src/services/indexedDb/schema');
+    const db = await openDB();
+    const transaction = vi.spyOn(db, 'transaction');
+    await service.saveConfigToDb({ theme: 'dark' });
+    await service.saveToolbarLayoutToDb('text', { version: 1, zones: [] }, { baseline: null });
+    expect(transaction).toHaveBeenCalledWith('config', 'readwrite', { durability: 'strict' });
+    expect(transaction).toHaveBeenCalledWith('toolbarLayouts', 'readwrite', { durability: 'strict' });
+    await service.saveProjectToDb(RECOVERY_PROJECT);
+    expect(transaction.mock.calls.at(-1)).toEqual([['projects', 'projectSummaries'], 'readwrite']);
+  });
+
+  it('falls back only when transaction options are unsupported and does not retry permission or quota failures', async () => {
+    const service = await import('../../src/services/indexedDbService');
+    const { openDB } = await import('../../src/services/indexedDb/schema');
+    const db = await openDB();
+    const transaction = vi.spyOn(db, 'transaction').mockImplementationOnce(() => { throw new TypeError('unsupported options'); });
+    await service.saveConfigToDb({ theme: 'dark' });
+    expect(transaction.mock.calls.slice(0, 2)).toEqual([['config', 'readwrite', { durability: 'strict' }], ['config', 'readwrite']]);
+    for (const name of ['SecurityError', 'QuotaExceededError']) {
+      transaction.mockClear().mockImplementationOnce(() => { throw new DOMException('fixture-private', name); });
+      await expect(service.saveConfigToDb({ theme: 'light' })).rejects.toHaveProperty('name', name);
+      expect(transaction).toHaveBeenCalledOnce();
+    }
+    expect(await service.loadConfigFromDb()).toEqual({ theme: 'dark' });
+  });
+
   it('shares one opening request across concurrent callers', async () => {
     const { openDB } = await import('../../src/services/indexedDb/schema');
     const open = vi.spyOn(indexedDB, 'open');

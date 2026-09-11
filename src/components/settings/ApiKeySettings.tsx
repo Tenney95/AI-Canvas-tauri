@@ -66,6 +66,7 @@ function isTauri(): boolean {
 
 export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
   const t = useT();
+  const unreadSecrets = useAppStore((state) => state.configSecretReadErrors);
   const workflows = useAppStore((state) => state.workflows);
   const {
     config,
@@ -431,7 +432,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
       })),
     });
     try {
-      await saveConfig(parsed.workflowApiDrafts || parsed.workflowApi ? { throwOnError: true } : undefined);
+      await saveConfig({ throwOnError: true });
       if (parsed.workflowApiDrafts) await saveWorkflowApiDrafts(newConnectionId, parsed.workflowApiDrafts);
       else if (parsed.workflowApi) await saveAutodlWorkflowTemplate(newConnectionId, parsed.workflowApi.defaults);
     } catch (error) {
@@ -474,7 +475,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
     } else if (related && 'runninghubWorkflowApiKey' in related && config.providers.runninghub) {
       await removeProviderConfig('runninghub');
     }
-    await saveConfig(definition?.kind === 'workflow-api' ? { throwOnError: true } : undefined);
+    await saveConfig({ throwOnError: true });
     if (definition?.kind === 'workflow-api') await saveWorkflowApiDrafts(connectionId, related?.workflowApiDrafts ?? []);
     closeConnectionDialog();
   };
@@ -498,6 +499,11 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="settings-pane">
+      {unreadSecrets?.length > 0 && (
+        <div role="status" className="ui-alert ui-alert--warning">
+          {t('部分 API Key 读取失败，原引用已保留。请在设置顶部重试加载；这与未填写 Key 不同。')}
+        </div>
+      )}
       <div className="settings-pane-heading">
         <h2 className="settings-pane-title">API Key</h2>
         <div className="flex items-center gap-1.5">
@@ -692,7 +698,7 @@ export default function ApiKeySettings({ onClose }: { onClose: () => void }) {
             type="button"
             className="settings-save-btn"
             onClick={async () => {
-              await saveConfig();
+              try { await saveConfig(); } catch { return; }
               onClose();
             }}
           >
