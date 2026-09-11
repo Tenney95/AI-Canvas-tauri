@@ -92,10 +92,9 @@ describe('MCP streamed media upload', () => {
     const { uploadId } = await begin();
     const first = await append(uploadId, png, 0);
     const second = await append(uploadId, png, 0);
-    // 每次写入都会续期，expiresAt 本就会前进；幂等比较只针对真正的上传状态。
-    const { expiresAt: _firstExpiry, ...firstState } = first;
-    expect(second).toMatchObject(firstState);
-    expect(second.expiresAt).toBeGreaterThanOrEqual(first.expiresAt);
+    // 每次写入都会续期，expiresAt 本就会前进（跨毫秒即不等）；
+    // 幂等比较只针对真正的上传状态，用 any(Number) 放过这个时间戳。
+    expect(second).toMatchObject({ ...(first as object), expiresAt: expect.any(Number) });
     expect(fs.write).toHaveBeenCalledTimes(2);
     const altered = png.slice(); altered[40] ^= 1;
     await expect(append(uploadId, altered, 0)).rejects.toMatchObject({ code: 'UPLOAD_OFFSET_INVALID' });
