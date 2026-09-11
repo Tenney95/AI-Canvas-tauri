@@ -6,7 +6,8 @@
 
 ```text
 site/
-├── index.html      # 全部页面结构
+├── index.html      # 产品首页
+├── manual.html     # 中文操作说明书（独立 HTML，内嵌样式、脚本与截图）
 ├── styles.css      # 全部样式（深色单主题）
 ├── script.js       # 滚动进场、平台识别、导航交互
 ├── .nojekyll       # 跳过 GitHub Pages 的 Jekyll 处理
@@ -21,6 +22,14 @@ site/
 │   └── *.svg                 # 占位素材
 └── app/            # Web 构建产物，由 workflow 生成，已 gitignore
 ```
+
+## 操作说明书
+
+[manual.html](./manual.html) 可直接离线打开，也可在本地服务的 `/manual.html` 访问；通过应用开发服务预览时路径为 `/site/manual.html`。它不依赖 `site/app/` 构建，支持章节搜索、锚点导航、复制示例、图片放大、明暗主题与打印。
+
+当前文档基线为 0.9.7，功能核对日期为 2026-09-11；后续源码功能与已发布安装包的差异在说明书末尾注明。自定义接口部分保留完整配置流程，工作流 API 另列能力 JSON、协议 JSON 与恢复步骤。
+
+维护时同步目录和锚点，使用占位凭据；已有 8 张截图以内嵌 Data URL 保存。更换或压缩截图应验证像素与尺寸，纯文案更新需保证图片数据完全不变。文档导航见[模块入口](../doc/文档导航.md)。
 
 ## 浏览器试用是怎么工作的
 
@@ -63,6 +72,6 @@ python3 -m http.server 4321 --directory site
 ## 维护约定
 
 - 页面文案以 `README.md` 与 `.release-notes.md` 的既有描述为准，不要写入未实现的能力。
-- 版本号出现在 hero 徽章与下载区，发版时同步更新。
+- 首页 hero、下载区、四种语言 README 和说明书分别核对版本；说明书同时维护核对日期和后续功能范围。`sync-version` 不会自动同步这些全部位置。
 - 应用截图更新后，重新从 `public/screenshot.png` 复制到 `site/assets/`。
 - 保持零外部依赖：不要引入 CDN 字体、脚本或分析代码。

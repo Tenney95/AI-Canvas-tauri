@@ -299,6 +299,25 @@ describe('canvas agent tools', () => {
     }]);
   });
 
+  it.each<{ label: string; data: Partial<BaseNodeData>; outputKind: string | null }>([
+    { label: 'video with thumbnail and poster', data: { type: 'ai-video', videoUrl: 'asset://clip.mp4', thumbnailUrl: 'asset://thumb.jpg', imageUrl: 'asset://poster.png' }, outputKind: 'video' },
+    { label: 'audio with thumbnail and cover', data: { type: 'ai-audio', audioUrl: 'asset://audio.wav', thumbnailUrl: 'asset://thumb.jpg', imageUrl: 'asset://cover.png' }, outputKind: 'audio' },
+    { label: 'image', data: { imageUrl: 'asset://image.png' }, outputKind: 'image' },
+    { label: 'thumbnail-only image', data: { thumbnailUrl: 'asset://thumb.jpg' }, outputKind: 'image' },
+    { label: 'text with thumbnail', data: { type: 'source-text', output: '实际正文', thumbnailUrl: 'asset://thumb.jpg' }, outputKind: 'text' },
+    { label: 'text', data: { type: 'ai-text', output: '实际正文' }, outputKind: 'text' },
+    { label: 'video type without a result', data: { type: 'ai-video', status: 'success' }, outputKind: null },
+    { label: 'audio type without a result', data: { type: 'ai-audio' }, outputKind: null },
+  ])('reports the actual primary output for $label without exposing media URLs', async ({ data, outputKind }) => {
+    useAppStore.setState({ nodes: [node('result', data)], edges: [] });
+    const result = await getAgentTool('canvas_query')!.execute(context(), { nodeIds: ['result'], detail: true });
+    expect(result.status).toBe('success');
+    const detail = JSON.parse(result.modelContent).nodes[0];
+    expect(detail.outputKind).toBe(outputKind);
+    expect(detail.outputText).toEqual(outputKind === 'text' ? { text: '实际正文', truncated: false } : undefined);
+    expect(result.modelContent).not.toContain('asset://');
+  });
+
   it('shifts nodes with dx/dy and resizes them in one call', async () => {
     const result = await getAgentTool('canvas_update_nodes')!.execute(context(), {
       nodeIds: ['n1', 'n2'],

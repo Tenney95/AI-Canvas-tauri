@@ -29,8 +29,11 @@ import { startAssetDrag, prepareDragIcon } from '../utils/assetDrag';
 import { ALL_CATEGORIES, CATEGORY_ICONS, shortFolderName } from '../utils/assetFormat';
 import { springSmooth, fadeFast } from '../utils/motion';
 import AssetThumb from './shared/AssetThumb';
+import Select from './shared/Select';
 import type { AppConfig } from '../types';
 import { setLocale } from '../i18n';
+import { useResourceVideoPreview } from '../hooks/useResourceVideoPreview';
+import { distributeToColumns } from './assets/waterfallColumns';
 
 /** 单页渲染数量（增量加载步长）*/
 const PAGE_SIZE = 60;
@@ -229,6 +232,7 @@ export default function AssetSearchWindow() {
   useEffect(() => { setVisibleCount(PAGE_SIZE); }, [activeSource, activeCategory, deferredSearch]);
 
   const visibleFiles = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
+  const videoPreview = useResourceVideoPreview(JSON.stringify([search, activeSource, activeCategory]), visibleFiles.map((file) => file.path));
 
   // 无限滚动哨兵
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -257,7 +261,7 @@ export default function AssetSearchWindow() {
   }, []);
 
   // 分组后的来源下拉
-  const groupedSources = useMemo(() => {
+  const sourceOptions = useMemo(() => {
     const flat = sources.filter((s) => !s.group);
     const groups = new Map<string, SourceOption[]>();
     for (const s of sources) {
@@ -266,11 +270,15 @@ export default function AssetSearchWindow() {
       arr.push(s);
       groups.set(s.group, arr);
     }
-    return { flat, groups: [...groups.entries()] };
+    const toOption = (source: SourceOption) => ({ value: source.key, label: source.label });
+    return [
+      ...flat.map(toOption),
+      ...[...groups.entries()].map(([label, entries]) => ({ label, options: entries.map(toOption) })),
+    ];
   }, [sources]);
 
   return (
-    <div className="asset-search-root">
+    <div className="asset-search-root" data-resource-video-boundary>
       <div className="asset-search-header" data-tauri-drag-region>
         <h1 className="asset-search-title">资源搜索</h1>
         <span className="asset-search-total">{filtered.length} / {files.length}</span>
@@ -319,21 +327,15 @@ export default function AssetSearchWindow() {
           )}
         </div>
 
-        <select
-          className="assets-project-select"
+        <Select
+          className="assets-project-select-wrap"
+          triggerClassName="assets-project-select"
           value={activeSource}
-          onChange={(e) => setActiveSource(e.target.value)}
-          data-tooltip="按项目 / 文件夹筛选"
-        >
-          {groupedSources.flat.map((s) => (
-            <option key={s.key} value={s.key}>{s.label}</option>
-          ))}
-          {groupedSources.groups.map(([group, opts]) => (
-            <optgroup key={group} label={group}>
-              {opts.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-            </optgroup>
-          ))}
-        </select>
+          onChange={setActiveSource}
+          options={sourceOptions}
+          aria-label="按项目 / 文件夹筛选"
+          title="按项目 / 文件夹筛选"
+        />
 
         <div className="assets-add-wrap" ref={addWrapRef}>
           <motion.button
@@ -397,14 +399,20 @@ export default function AssetSearchWindow() {
           </div>
         ) : (
           <>
-            <div className="asset-search-masonry">
-              {visibleFiles.map((file) => (
-                <SearchCard
-                  key={file.path}
-                  file={file}
-                  onReveal={() => handleReveal(file.path)}
-                  onDragStart={(e) => { e.preventDefault(); startAssetDrag(file); }}
-                />
+            <div className="assets-waterfall-cols">
+              {distributeToColumns(visibleFiles, 3).map((column, columnIndex) => (
+                <div className="assets-waterfall-col" key={columnIndex}>
+                  {column.map((file) => (
+                    <SearchCard
+                      key={file.path}
+                      file={file}
+                      onReveal={() => handleReveal(file.path)}
+                      onDragStart={(e) => { e.preventDefault(); startAssetDrag(file); }}
+                      videoExpanded={videoPreview.expandedId === file.path}
+                      onVideoExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? file.path : null)}
+                    />
+                  ))}
+                </div>
               ))}
             </div>
             {visibleCount < filtered.length && (
@@ -418,10 +426,12 @@ export default function AssetSearchWindow() {
 }
 
 /* ── 单个搜索结果卡片 ── */
-function SearchCard({ file, onReveal, onDragStart }: {
+function SearchCard({ file, onReveal, onDragStart, videoExpanded, onVideoExpandedChange }: {
   file: SearchEntry;
   onReveal: () => void;
   onDragStart: (e: DragEvent) => void;
+  videoExpanded: boolean;
+  onVideoExpandedChange: (expanded: boolean) => void;
 }) {
   const tags = file.tags ?? [];
   const sourceLabel = file.source === 'project'
@@ -430,8 +440,9 @@ function SearchCard({ file, onReveal, onDragStart }: {
       ? shortFolderName(file.folderRoot || '')
       : '全局';
   return (
-    <div className="assets-waterfall-card anim-card-in" draggable onDragStart={onDragStart} data-tooltip="拖拽到主窗口画布以添加节点" data-tooltip-pos="bottom">
-      <AssetThumb assetUrl={file.assetUrl} name={file.name} category={file.category} size={file.size} badge={sourceLabel}>
+    <div className={`assets-waterfall-card anim-card-in${videoExpanded ? ' has-expanded-video' : ''}`} draggable={!videoExpanded} onDragStart={onDragStart} data-tooltip={videoExpanded ? undefined : '拖拽到主窗口画布以添加节点'} data-tooltip-pos="bottom">
+      <AssetThumb assetUrl={file.assetUrl} filePath={file.path} videoExpanded={videoExpanded} onVideoExpandedChange={onVideoExpandedChange}
+        name={file.name} category={file.category} size={file.size} badge={sourceLabel}>
         <div className="assets-card-actions">
           <button type="button" className="assets-card-action-btn" data-tooltip="在文件夹中显示" onClick={onReveal}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

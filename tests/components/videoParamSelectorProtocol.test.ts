@@ -1,11 +1,30 @@
 import { describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { modelProtocolUsesVariable } from '../../src/services/ai/modelProtocol';
 import { analyzeModelProtocolExamples } from '../../src/services/ai/modelProtocolImport';
-import {
+import { resolveVideoSubmissionControls } from '../../src/services/ai/videoRequestResolver';
+import VideoParamSelector, {
   resolveGeneralVideoControlSupport,
   resolveGeneralVideoModel,
   resolveGeneralVideoParameterDisplayState,
 } from '../../src/components/nodes/shared/VideoParamSelector';
+
+describe('ComfyUI 时长显示与提交一致', () => {
+  it.each([
+    { name: '没有保存秒数和帧数', controls: {}, seconds: 5 },
+    { name: '明确选择 3 秒', controls: { seedanceDuration: 3 }, seconds: 3 },
+    { name: '旧节点保留 77 帧', controls: { videoFrames: 77, videoFps: 24 }, seconds: 3 },
+    { name: '3 秒优先于旧的 121 帧', controls: { seedanceDuration: 3, videoFrames: 121 }, seconds: 3 },
+  ])('$name', ({ controls, seconds }) => {
+    const props = { provider: 'comfyui', selectedModel: 'builtin-minimax-h3-i2v', ...controls };
+    const html = renderToStaticMarkup(createElement(VideoParamSelector, props));
+    const submitted = resolveVideoSubmissionControls({ ...props, workflowId: props.selectedModel });
+
+    expect(submitted.seedanceDuration).toBe(seconds);
+    expect(html).toContain(`时长${seconds}s`);
+  });
+});
 
 describe('VideoParamSelector 自定义协议参数识别', () => {
   it('保留导入协议的比例、分辨率和秒数变量', () => {

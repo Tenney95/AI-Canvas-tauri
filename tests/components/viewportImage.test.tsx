@@ -227,11 +227,11 @@ describe('ViewportImage', () => {
     expect(video.pause).toHaveBeenCalledOnce();
     expect(video.removeAttribute).toHaveBeenCalledWith('src');
     expect(video.load).toHaveBeenCalledOnce();
-    expect(projectAssetsSource).toContain('<ViewportVideo');
+    expect(projectAssetsSource).toContain('<ResourceVideoPreview');
     expect(projectAssetsSource).toContain('for (const ep of episodes)');
     expect(projectAssetsSource).toContain('loadRequestRef.current !== requestId');
     expect(projectAssetsSource).not.toMatch(/Promise\.all\(\s*episodes\.map/);
-    expect(characterLibrarySource.match(/<ViewportVideo/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(characterLibrarySource.match(/<ResourceVideoPreview/g)?.length).toBeGreaterThanOrEqual(3);
     expect(messageBubbleSource).toContain('<ViewportVideo');
   });
 });

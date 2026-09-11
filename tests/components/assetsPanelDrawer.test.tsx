@@ -13,6 +13,7 @@ const driver = vi.hoisted(() => ({
   pending: [] as Array<() => void>, stateIndex: 0, refIndex: 0, effectIndex: 1,
   dirty: false, listProject: vi.fn(), listGlobal: vi.fn(), drag: vi.fn(),
   memos: [] as Array<{ value: unknown; deps: readonly unknown[] }>, memoIndex: 0,
+  reduceMotion: true,
 }));
 
 // 与仓库其他组件交互测试一样，驱动真实组件的状态、effect 和事件，不依赖 DOM 库。
@@ -63,7 +64,8 @@ vi.mock('../../src/store/useAppStore', () => ({
   }),
 }));
 vi.mock('framer-motion', () => ({
-  motion: { div: 'div', button: 'button' }, AnimatePresence: 'presence', useReducedMotion: () => true,
+  motion: { div: 'div', button: 'button' }, AnimatePresence: 'presence', MotionConfig: 'motion-config',
+  useReducedMotion: () => driver.reduceMotion,
 }));
 vi.mock('../../src/services/fileService', () => ({
   listProjectFiles: driver.listProject, listGlobalFiles: driver.listGlobal,
@@ -146,6 +148,7 @@ function openNodeList() {
 beforeEach(() => {
   driver.states = []; driver.refs = []; driver.effects = []; driver.pending = [];
   driver.memos = []; driver.memoIndex = 0;
+  driver.reduceMotion = true;
   blockingModal = false;
   doc = Object.assign(new EventTarget(), {
     body: new Target(), documentElement: new Target(),
@@ -214,6 +217,39 @@ describe('资产库 Tab 抽屉', () => {
     expect(find((el) => el.props.role === 'dialog').props['aria-modal']).toBe(true);
     expect(all(tree, (el) => el.props.className === 'assets-panel-backdrop')).toHaveLength(1);
     expect(key().defaultPrevented).toBe(false);
+  });
+
+  it('抽屉从左侧整幅滑入并原向退出，关闭后保留退场宿主', () => {
+    driver.reduceMotion = false;
+    key(); render();
+    const panel = find((el) => el.props.role === 'region');
+    const variants = panel.props.variants as Record<string, Record<string, unknown>>;
+    expect(variants.hidden).toMatchObject({ x: '-100%', opacity: 0 });
+    expect(variants.visible).toMatchObject({ x: 0, opacity: 1 });
+    expect(variants.exit).toMatchObject({ x: '-100%', opacity: 0 });
+    const config = find((el) => el.type === 'motion-config');
+    expect(config.props.reducedMotion).toBe('user');
+    expect(config.props.transition).toEqual({ type: 'spring', visualDuration: 0.35, bounce: 0 });
+    expect(variants.visible.transition).toEqual(config.props.transition);
+    expect(variants.exit.transition).toEqual(config.props.transition);
+
+    click(button('收起资产库')); render();
+    expect(driver.store!.getState().assetsPanelOpen).toBe(false);
+    expect(driver.store!.getState().assetsPanelMode).toBe('modal');
+    expect(find((el) => el.type === 'motion-config').props.reducedMotion).toBe('user');
+    expect(all(tree, (el) => el.type === 'presence')).toHaveLength(1);
+    expect(all(tree, (el) => el.props.role === 'region')).toHaveLength(0);
+  });
+
+  it('系统减少动态效果时只淡入淡出，大弹窗不覆盖外层动效设置', () => {
+    key(); render();
+    const variants = find((el) => el.props.role === 'region').props.variants as Record<string, Record<string, unknown>>;
+    expect(variants.hidden).toEqual({ x: 0, opacity: 0 });
+    expect(variants.exit).toEqual({ x: 0, opacity: 0, transition: { duration: 0.12 } });
+    expect(find((el) => el.type === 'motion-config').props.transition).toEqual({ duration: 0.12 });
+
+    driver.store!.getState().setAssetsPanelOpen(true); render();
+    expect(all(tree, (el) => el.type === 'motion-config')).toHaveLength(0);
   });
 
   it('抽屉固定三列且隐藏列数控件与提示，不改写大弹窗设置', async () => {

@@ -49,7 +49,7 @@ export function registerMcpDiscoveryTools(): Array<() => void> {
   return [
     registerAgentTool<McpToolSearchInput>({
       id: 'tools_search', title: '搜索 AI Canvas 工具',
-      description: '按中文需求、英文工具名或类别查找当前可用能力。默认返回最多 5 个摘要；detail=schema 同时获取完整参数，然后用 tools_call 执行。空参数仅返回类别导航。已知工具可直接复用，无需反复搜索。',
+      description: '按单个中文需求、英文工具名或类别查找当前可用能力。默认返回最多 5 个摘要；hasMore=true 时保持 query/category 不变，用 nextOffset 作为 offset 继续翻页。空参数仅返回类别导航，少量或无匹配不能证明缺少能力。descriptionTruncated 标记说明截断；detail=schema 或 tools_describe 获取完整定义后用 tools_call 执行，已知参数可直接复用。',
       inputSchema: MCP_SEARCH_SCHEMA, ...common,
       summarizeInput: () => '检索当前可用工具',
       execute: async (context, input) => readCatalog(context, () => searchMcpToolCatalog(context, input)),

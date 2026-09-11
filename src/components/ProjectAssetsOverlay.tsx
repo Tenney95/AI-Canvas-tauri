@@ -18,7 +18,8 @@ import {
 import { loadProjectData } from '../services/storageService';
 import PopupCloseButton from './shared/PopupCloseButton';
 import ViewportImage from './shared/ViewportImage';
-import ViewportVideo from './shared/ViewportVideo';
+import ResourceVideoPreview from './shared/ResourceVideoPreview';
+import { useResourceVideoPreview } from '../hooks/useResourceVideoPreview';
 import { formatSize } from '../utils/assetFormat';
 
 const TABS: Array<{ key: FileCategory; label: string }> = [
@@ -53,53 +54,6 @@ function ImageCard({ file }: { file: AssetFileEntry }) {
       )}
       <span className="absolute right-1.5 top-1.5 rounded bg-black/60 px-1 py-0.5 text-[9px] leading-none text-white/80">
         {formatSize(file.size)}
-      </span>
-    </div>
-  );
-}
-
-/** 视频卡片：可播放的 video 元素 */
-function VideoCard({ file }: { file: AssetFileEntry }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const shouldPlayRef = useRef(false);
-
-  const handlePlay = () => {
-    shouldPlayRef.current = true;
-    videoRef.current?.play().catch(() => {
-      /* 自动播放被拦截，静默忽略 */
-    });
-  };
-
-  const handlePause = () => {
-    shouldPlayRef.current = false;
-    videoRef.current?.pause();
-  };
-
-  return (
-    <div
-      className="relative w-full cursor-pointer"
-      style={{ aspectRatio: '16 / 9' }}
-      onMouseEnter={handlePlay}
-      onMouseLeave={handlePause}
-    >
-      <ViewportVideo
-        ref={videoRef}
-        src={file.assetUrl}
-        className="block h-full w-full rounded-t-lg object-cover"
-        muted
-        loop
-        playsInline
-        preload="metadata"
-        title={file.name}
-        onCanPlay={() => {
-          if (shouldPlayRef.current) handlePlay();
-        }}
-      />
-      <span className="pointer-events-none absolute right-1.5 top-1.5 rounded bg-black/60 px-1 py-0.5 text-[9px] leading-none text-white/80">
-        {formatSize(file.size)}
-      </span>
-      <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white/70 opacity-0 transition-opacity group-hover/card:opacity-100">
-        <Icon icon="lucide:play" className="h-6 w-6 drop-shadow-md" />
       </span>
     </div>
   );
@@ -204,11 +158,14 @@ export default function ProjectAssetsOverlay({
     () => files.filter((file) => file.category === activeTab).length,
     [files, activeTab],
   );
+  const videoPreview = useResourceVideoPreview(JSON.stringify([isOpen, currentProjectId, activeTab]),
+    files.filter((file) => file.category === activeTab && !collapsed.has(file.episodeId)).map(assetKey));
 
   if (!isOpen) return null;
 
   return (
     <div
+      data-resource-video-boundary
       className="pointer-events-auto fixed right-2 top-1/2 z-[160] flex -translate-y-1/2 flex-col overflow-hidden
                  rounded-[14px] border border-[var(--glass-ring)] bg-[var(--glass-bg)]
                  text-canvas-text shadow-2xl shadow-black/40 backdrop-blur-2xl"
@@ -296,8 +253,10 @@ export default function ProjectAssetsOverlay({
                           key={assetKey(file)}
                           className="project-asset-card group/card overflow-hidden rounded-lg border border-canvas-border bg-canvas-card transition-colors hover:border-canvas-hover"
                         >
-                          {file.category === 'video' && file.assetUrl ? (
-                            <VideoCard file={file} />
+                          {file.category === 'video' ? (
+                            <ResourceVideoPreview src={file.assetUrl} filePath={file.path} name={file.name}
+                              expanded={videoPreview.expandedId === assetKey(file)}
+                              onExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? assetKey(file) : null)} />
                           ) : (
                             <ImageCard file={file} />
                           )}

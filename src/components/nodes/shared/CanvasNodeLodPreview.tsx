@@ -1,12 +1,13 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { BaseNodeData } from '../../../types';
 import { withPreviewRevision } from '../../../hooks/useReferencedImageWatcher';
-import { useCanvasNodeLodPreviewRevision } from '../../../hooks/useCanvasNodeLod';
+import { CanvasNodeLodContext, useCanvasNodeLodPreviewRevision } from '../../../hooks/useCanvasNodeLod';
 import { acquireCanvasImagePreview } from './image/canvasImagePreviewCache';
 import { acquireCanvasVideoPoster } from './video/canvasVideoPreviewCache';
 
 interface Props {
+  nodeId?: string;
   data: BaseNodeData;
   video: boolean;
   projectId: string | null;
@@ -16,7 +17,8 @@ interface Props {
   onUnavailable: () => void;
 }
 
-function CanvasNodeLodPreview({ data, video, projectId, width, height, cover = false, onUnavailable }: Props) {
+function CanvasNodeLodPreview({ nodeId, data, video, projectId, width, height, cover = false, onUnavailable }: Props) {
+  const runtime = useContext(CanvasNodeLodContext);
   const revision = useCanvasNodeLodPreviewRevision() ?? 0;
   const imageSource = video
     ? (data.thumbnailUrl !== data.videoUrl && data.thumbnailUrl !== data.sourceUrl ? data.thumbnailUrl : undefined)
@@ -29,24 +31,37 @@ function CanvasNodeLodPreview({ data, video, projectId, width, height, cover = f
   }>();
   const [ready, setReady] = useState<string>();
   const requestRef = useRef<AbortController | null>(null);
+  const cancelDisplay = useRef<(() => void) | undefined>(undefined);
+  const publish = useCallback((request: AbortController, update: () => void) => {
+    if (request.signal.aborted || requestRef.current !== request) return;
+    cancelDisplay.current?.();
+    const commit = () => { if (!request.signal.aborted && requestRef.current === request) update(); };
+    if (runtime) cancelDisplay.current = runtime.enqueueDisplay(request, commit, nodeId);
+    else commit();
+  }, [runtime, nodeId]);
 
   useEffect(() => {
     const request = new AbortController();
     requestRef.current = request;
     let lease: { src: string; release: () => void } | null = null;
-    if (source) {
+    const prepare = async () => {
+      if (!source || request.signal.aborted) return;
       const acquisition = imageSource
         ? acquireCanvasImagePreview(source, 256, request.signal, projectId)
         : acquireCanvasVideoPoster(source, request.signal);
-      void acquisition.then((result) => {
+      await acquisition.then((result) => {
         lease = result;
         if (request.signal.aborted) { lease?.release(); return; }
-        if (lease) setPreview({ source, projectId, image: !!imageSource, src: lease.src, request });
-        else onUnavailable();
-      }, () => { if (!request.signal.aborted) onUnavailable(); });
-    }
-    return () => { request.abort(); lease?.release(); };
-  }, [source, imageSource, projectId, onUnavailable]);
+        const next = lease;
+        publish(request, () => {
+          if (next) setPreview({ source, projectId, image: !!imageSource, src: next.src, request });
+          else onUnavailable();
+        });
+      }, () => publish(request, onUnavailable));
+    };
+    const cancelPrepare = runtime ? runtime.prepareDisplay(request, prepare, nodeId) : (void prepare(), undefined);
+    return () => { request.abort(); cancelPrepare?.(); cancelDisplay.current?.(); lease?.release(); };
+  }, [source, imageSource, projectId, onUnavailable, publish, runtime, nodeId]);
 
   const resolved = preview?.source === source && preview?.projectId === projectId && preview?.image === !!imageSource
     ? preview?.src : undefined;
@@ -68,11 +83,11 @@ function CanvasNodeLodPreview({ data, video, projectId, width, height, cover = f
           const request = preview?.request;
           try {
             await event.currentTarget.decode();
-            if (request && !request.signal.aborted && request === requestRef.current) setReady(resolved);
-          } catch { if (request && !request.signal.aborted && request === requestRef.current) onUnavailable(); }
+            if (request) publish(request, () => setReady(resolved));
+          } catch { if (request) publish(request, onUnavailable); }
         }}
         onError={() => {
-          if (preview && !preview.request.signal.aborted && preview.request === requestRef.current) onUnavailable();
+          if (preview) publish(preview.request, onUnavailable);
         }}
       />}
       {!cover && <>

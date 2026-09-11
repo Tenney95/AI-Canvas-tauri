@@ -18,7 +18,7 @@ import {
   type DragEvent,
 } from 'react';
 import { Icon } from '@iconify/react';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, AnimatePresence, MotionConfig, useReducedMotion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../store/useAppStore';
 import {
@@ -45,6 +45,7 @@ import { countUnreadDramaAssets } from '../store/store.dramaAssets';
 import { distributeToColumns } from './assets/waterfallColumns';
 import { getNodeTypeConfig } from '../types';
 import CanvasNodeCardContent from './assets/CanvasNodeCardContent';
+import { useResourceVideoPreview } from '../hooks/useResourceVideoPreview';
 
 const DramaAssetsPanel = lazy(() => import('./DramaAssetsPanel'));
 
@@ -162,8 +163,10 @@ export default function AssetsPanel() {
   // 同一组件在两种展示方式之间复用；每次从画布打开时跟随当前项目。
   const presentation = assetsPanelOpen ? assetsPanelMode : null;
   const [previousPresentation, setPreviousPresentation] = useState(presentation);
+  const [motionMode, setMotionMode] = useState(assetsPanelMode);
   if (presentation !== previousPresentation) {
     setPreviousPresentation(presentation);
+    if (presentation) setMotionMode(presentation);
     if (presentation === 'drawer') {
       setActiveTab('project');
       setNodeListOpen(false);
@@ -437,6 +440,10 @@ export default function AssetsPanel() {
     }).filter((node) => !query || [node.label, node.config.label, node.id, node.displayId === undefined ? '' : `#${node.displayId}`]
       .some((value) => value.toLowerCase().includes(query)));
   }, [canvasNodeData, canvasNodeIds, deferredNodeSearch]);
+  const videoPreview = useResourceVideoPreview(
+    JSON.stringify([assetsPanelOpen, assetsPanelMode, currentProjectId, visibleTab, selectedProjectId, search, nodeSearch, activeCategory, activeTag]),
+    isNodeList ? filteredNodes.map((node) => node.id) : visibleFiles.map(assetKey),
+  );
   const totalResultCount = isNodeList ? filteredNodes.length : filteredFiles.length;
 
   // 无限滚动哨兵
@@ -537,9 +544,12 @@ export default function AssetsPanel() {
     setVisibleCount(PAGE_SIZE);
   }, [setDramaAssetsPanelOpen]);
 
-  if (!assetsPanelOpen) return null;
-
-  return (
+  // 与右侧助手面板保持相同的弹簧节奏，左侧抽屉镜像进退方向。
+  const drawerTransition = reduceMotion
+    ? { duration: 0.12 }
+    : { type: 'spring' as const, visualDuration: 0.35, bounce: 0 };
+  // 关闭时保留 AnimatePresence，让面板完成退场后再卸载。
+  const panel = (
     <AnimatePresence>
       {assetsPanelOpen && (
         <>
@@ -553,14 +563,15 @@ export default function AssetsPanel() {
           />}
           <div className={`assets-panel-wrapper${isDrawer ? ' assets-panel-wrapper--drawer' : ''}`}>
             <motion.div
+              data-resource-video-boundary
               className={`assets-panel${isDrawer ? ' assets-panel--drawer' : ''}`}
               role={isDrawer ? 'region' : 'dialog'}
               aria-label={isDrawer ? '资产库快捷面板' : '资产管理'}
               aria-modal={isDrawer ? undefined : true}
               variants={isDrawer ? {
-                hidden: { opacity: 0, x: reduceMotion ? 0 : -12 },
-                visible: { opacity: 1, x: 0, transition: { duration: reduceMotion ? 0 : 0.16 } },
-                exit: { opacity: 0, x: 0 },
+                hidden: { opacity: 0, x: reduceMotion ? 0 : '-100%' },
+                visible: { opacity: 1, x: 0, transition: drawerTransition },
+                exit: { opacity: 0, x: reduceMotion ? 0 : '-100%', transition: drawerTransition },
               } : panelVariants}
               initial="hidden" animate="visible" exit="exit"
               onClick={(e) => e.stopPropagation()}
@@ -705,7 +716,9 @@ export default function AssetsPanel() {
                                 查看节点
                               </button>
                             </div>
-                            <CanvasNodeCardContent nodeId={node.id} data={node.data} projectId={currentProjectId} connectable={isDrawer} />
+                            <CanvasNodeCardContent nodeId={node.id} data={node.data} projectId={currentProjectId} connectable={isDrawer}
+                              videoExpanded={videoPreview.expandedId === node.id}
+                              onVideoExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? node.id : null)} />
                           </li>
                         ))}
                       </ul>
@@ -832,6 +845,8 @@ export default function AssetsPanel() {
                                   onRemoveTag={(t) => removeTag(file, t)}
                                   onSave={() => handleSavePermanent(file)}
                                   onDelete={() => handleDeletePermanent(file)}
+                                  videoExpanded={videoPreview.expandedId === assetKey(file)}
+                                  onVideoExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? assetKey(file) : null)}
                                 />
                               ))}
                             </div>
@@ -868,6 +883,12 @@ export default function AssetsPanel() {
       )}
     </AnimatePresence>
   );
+
+  // 关闭 Action 会重置展示模式；保留上次打开的动效宿主，避免退场被中断。
+  // 局部覆盖性能模式，仍尊重系统减少动态效果设置。
+  return motionMode === 'drawer'
+    ? <MotionConfig reducedMotion="user" transition={drawerTransition}>{panel}</MotionConfig>
+    : panel;
 }
 
 /* ============================================
@@ -886,21 +907,27 @@ interface AssetCardProps {
   onRemoveTag: (tag: string) => void;
   onSave: () => void;
   onDelete: () => void;
+  videoExpanded?: boolean;
+  onVideoExpandedChange?: (expanded: boolean) => void;
 }
 
 function AssetCard({
   file, isProject, draggable, onDragStart, editing, tagDraft,
   onToggleEdit, onTagDraftChange, onAddTag, onRemoveTag, onSave, onDelete,
+  videoExpanded = false, onVideoExpandedChange,
 }: AssetCardProps) {
   const tags = file.tags ?? [];
   return (
     <div
-      className="assets-waterfall-card anim-card-in"
-      draggable={draggable}
+      className={`assets-waterfall-card anim-card-in${videoExpanded ? ' has-expanded-video' : ''}`}
+      draggable={draggable && !videoExpanded}
       onDragStart={onDragStart}
     >
       <AssetThumb
         assetUrl={file.assetUrl}
+        filePath={file.path}
+        videoExpanded={videoExpanded}
+        onVideoExpandedChange={onVideoExpandedChange}
         name={file.name}
         category={file.category}
         size={file.size}

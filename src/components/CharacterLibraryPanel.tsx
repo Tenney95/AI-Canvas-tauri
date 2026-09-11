@@ -29,7 +29,8 @@ import ModalOverlay from './shared/ModalOverlay';
 import PopupCloseButton from './shared/PopupCloseButton';
 import Select from './shared/Select';
 import ViewportImage from './shared/ViewportImage';
-import ViewportVideo from './shared/ViewportVideo';
+import ResourceVideoPreview from './shared/ResourceVideoPreview';
+import { useResourceVideoPreview } from '../hooks/useResourceVideoPreview';
 import { useT } from '../i18n';
 import CharacterAssetDialog from './CharacterAssetDialog';
 import CharacterReferenceGallery from './character/CharacterReferenceGallery';
@@ -364,6 +365,14 @@ export default function CharacterLibraryPanel() {
   const visibleActions = (selectedCharacter?.actions ?? []).filter((action) => (
     actionFilter === 'all' || action.category === actionFilter
   ));
+  const videoPreview = useResourceVideoPreview(
+    JSON.stringify([open, actionLibraryOpen, scope, currentProjectId, selectedCharacter?.id, search, actionFilter, actionNodePickerTargetId]),
+    [
+      ...visibleActions.flatMap((action) => (action.media ?? []).map((media) => `action:${action.id}:${media.id}`)),
+      ...pendingActionMedia.map((media) => `pending:${media.id}`),
+      ...(actionNodePickerTargetId ? pickableActionNodes.map((node) => `node:${node.id}`) : []),
+    ],
+  );
   const playingVoiceClipId = playingVoice?.characterId === selectedCharacter?.id
     ? playingVoice?.clipId ?? null
     : null;
@@ -1139,11 +1148,13 @@ export default function CharacterLibraryPanel() {
                                 ? t('没有唯一对应的画布节点')
                                 : hidden ? t('显示画布节点') : t('在画布中隐藏');
                               return (
-                                <figure key={media.id} className="group relative m-0 aspect-video overflow-hidden rounded-lg border border-canvas-border bg-canvas-surface">
+                                <figure key={media.id} className={`resource-video-tile group relative m-0 overflow-hidden rounded-lg border border-canvas-border bg-canvas-surface${media.kind === 'video' ? '' : ' aspect-video'}${videoPreview.expandedId === `action:${action.id}:${media.id}` ? ' is-expanded' : ''}`}>
                                   {media.kind !== 'video' ? (
                                     <ViewportImage src={media.url} alt={media.name} className="size-full object-cover" draggable={false} />
                                   ) : (
-                                    <ViewportVideo src={media.url} className="size-full object-cover" controls aria-label={media.name} />
+                                    <ResourceVideoPreview src={media.url} filePath={media.filePath} name={media.name}
+                                      expanded={videoPreview.expandedId === `action:${action.id}:${media.id}`}
+                                      onExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? `action:${action.id}:${media.id}` : null)} />
                                   )}
                                   <span className="pointer-events-none absolute bottom-1 left-1 max-w-[calc(100%-40px)] truncate rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-white">
                                     {media.name}
@@ -1241,35 +1252,27 @@ export default function CharacterLibraryPanel() {
                                         || node.data.fileName
                                         || t('未命名节点');
                                       return (
-                                        <button
+                                        <div
                                           key={node.id}
-                                          type="button"
-                                          className="group min-w-0 overflow-hidden rounded-md border border-canvas-border bg-canvas-card text-left transition-[transform,border-color,background-color] duration-150 ease-out hover:border-indigo-400 hover:bg-canvas-hover active:scale-[.98]"
-                                          onClick={() => void handleBindActionNode(node.id)}
+                                          className={`resource-video-tile group min-w-0 overflow-hidden rounded-md border border-canvas-border bg-canvas-card text-left${videoPreview.expandedId === `node:${node.id}` ? ' is-expanded' : ''}`}
                                         >
-                                          <span className="block aspect-video overflow-hidden bg-canvas-bg">
+                                          <div className={`overflow-hidden bg-canvas-bg${node.data.videoUrl ? '' : ' aspect-video'}`}>
                                             {node.data.videoUrl ? (
-                                              <ViewportVideo
-                                                src={previewUrl}
-                                                className="size-full object-cover"
-                                                muted
-                                                playsInline
-                                                preload="metadata"
-                                                aria-hidden="true"
-                                              />
+                                              <ResourceVideoPreview src={previewUrl} filePath={node.data.filePath} name={label}
+                                                poster={node.data.thumbnailUrl} revision={node.data.mediaVersion}
+                                                expanded={videoPreview.expandedId === `node:${node.id}`}
+                                                onExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? `node:${node.id}` : null)} />
                                             ) : (
-                                              <ViewportImage
-                                                src={previewUrl}
-                                                alt=""
-                                                className="size-full object-cover"
-                                                draggable={false}
-                                              />
+                                              <button type="button" className="size-full" onClick={() => void handleBindActionNode(node.id)} aria-label={`${label}：添加素材`}>
+                                                <ViewportImage src={previewUrl} alt="" className="size-full object-cover" draggable={false} />
+                                              </button>
                                             )}
-                                          </span>
-                                          <span className="block truncate px-2 py-1.5 text-[10px] text-canvas-text-secondary group-hover:text-canvas-text">
-                                            {label}
-                                          </span>
-                                        </button>
+                                          </div>
+                                          <button type="button" className="block w-full truncate px-2 py-1.5 text-left text-[10px] text-canvas-text-secondary hover:text-canvas-text"
+                                            aria-label={`${label}：添加素材`} onClick={() => void handleBindActionNode(node.id)}>
+                                            {node.data.videoUrl ? `添加：${label}` : label}
+                                          </button>
+                                        </div>
                                       );
                                     })}
                                   </div>
@@ -1358,11 +1361,13 @@ export default function CharacterLibraryPanel() {
                   {pendingActionMedia.length > 0 ? (
                     <div className="mt-2 grid grid-cols-2 gap-2">
                       {pendingActionMedia.map((media) => (
-                        <figure key={media.id} className="relative m-0 aspect-video overflow-hidden rounded-lg border border-canvas-border bg-canvas-surface">
+                        <figure key={media.id} className={`resource-video-tile relative m-0 overflow-hidden rounded-lg border border-canvas-border bg-canvas-surface${media.kind === 'video' ? '' : ' aspect-video'}${videoPreview.expandedId === `pending:${media.id}` ? ' is-expanded' : ''}`}>
                           {media.kind !== 'video' ? (
                             <ViewportImage src={media.url} alt={media.name} className="size-full object-cover" draggable={false} />
                           ) : (
-                            <ViewportVideo src={media.url} className="size-full object-cover" aria-label={media.name} />
+                            <ResourceVideoPreview src={media.url} filePath={media.filePath} name={media.name}
+                              expanded={videoPreview.expandedId === `pending:${media.id}`}
+                              onExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? `pending:${media.id}` : null)} />
                           )}
                           <button
                             type="button"

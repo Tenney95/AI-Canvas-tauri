@@ -376,15 +376,16 @@ function truncateText(value: string | undefined, limit = DETAIL_TEXT_LIMIT): {
  */
 function describeNode(node: Node<BaseNodeData>): Record<string, unknown> {
   const data = node.data;
-  const outputKind = data.imageUrl || data.thumbnailUrl
-    ? 'image'
-    : data.videoUrl
-      ? 'video'
-      : data.audioUrl
-        ? 'audio'
+  // 缩略图仅作为没有主产物时的图片预览，不能盖过视频、音频或正文。
+  const outputKind = data.videoUrl
+    ? 'video'
+    : data.audioUrl
+      ? 'audio'
+      : data.imageUrl
+        ? 'image'
         : TEXT_OUTPUT_NODE_TYPES.has(data.type) && data.output
           ? 'text'
-          : null;
+          : data.thumbnailUrl ? 'image' : null;
   return {
     id: node.id,
     displayId: data.displayId,
@@ -1292,7 +1293,7 @@ export function registerCanvasAgentTools(): Array<() => void> {
       title: '运行画布节点',
       description: [
         `按节点自身的提示词、模型和连线输入运行生成，一次最多 ${MAX_RUN_NODES} 个节点，串行执行。`,
-        '这是真实的付费模型调用，每次都需要用户确认；只想改参数不生成时用 canvas_update_nodes。',
+        '这是真实的付费模型调用；Plan 模式拒绝，B 协作模式由 Policy 请求确认，C 自主模式与 MCP 会话直接执行。只想改参数不生成时用 canvas_update_nodes。',
         '正在生成中的节点会被跳过。',
       ].join(''),
       inputSchema: {

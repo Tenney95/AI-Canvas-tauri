@@ -39,6 +39,7 @@ function LodBoundary({ node, data, video, children, projectId }: Props & { proje
   const [keepFull, setKeepFull] = useState(false);
   const [cover, setCover] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const cancelCover = useRef<(() => void) | undefined>(undefined);
   const hasMedia = video ? !!data.videoUrl : !!(data.imageUrl || data.thumbnailUrl);
   const width = data.nodeWidth;
   const height = data.nodeHeight;
@@ -57,12 +58,21 @@ function LodBoundary({ node, data, video, children, projectId }: Props & { proje
   if ((selection & 2) !== 0 && !keepFull) setKeepFull(true);
   const requireFull = useCallback(() => { setKeepFull(true); setCover(false); }, []);
   const dismissCover = useCallback(async (target: EventTarget) => {
-    if (!(target instanceof Element) || target.closest('[data-canvas-node-lod="preview"]')) return;
+    if (!cover || !(target instanceof Element) || target.closest('[data-canvas-node-lod="preview"]')) return;
+    const source = target instanceof HTMLImageElement ? target.src : undefined;
     if (target instanceof HTMLImageElement) {
       try { await target.decode(); } catch { /* 原节点接管加载失败提示。 */ }
     }
-    if (root.current?.contains(target)) setCover(false);
-  }, []);
+    if (!root.current?.contains(target)) return;
+    cancelCover.current?.();
+    const commit = () => {
+      if (root.current?.contains(target) && (!(target instanceof HTMLImageElement) || target.src === source)) setCover(false);
+    };
+    if (runtime) cancelCover.current = runtime.enqueueDisplay(root, commit, node.id);
+    else commit();
+  }, [cover, node.id, runtime]);
+
+  useLayoutEffect(() => () => cancelCover.current?.(), [runtime, lite]);
 
   useLayoutEffect(() => {
     position.current = { x: node.positionAbsoluteX + (width ?? 0) / 2, y: node.positionAbsoluteY + (height ?? 0) / 2 };
@@ -79,6 +89,8 @@ function LodBoundary({ node, data, video, children, projectId }: Props & { proje
       void dismissCover(media);
       return;
     }
+    // 图片已挂载但正在显示队列中等待；由 load/error 完成交接，不能定时揭开空图。
+    if (media instanceof HTMLImageElement) return;
     // 异常/无媒体分支仍须可见，不能永久遮盖原节点的错误或重试提示。
     const timer = setTimeout(() => setCover(false), 1000);
     return () => clearTimeout(timer);
@@ -98,6 +110,7 @@ function LodBoundary({ node, data, video, children, projectId }: Props & { proje
     >
       {!lite && children}
       {eligible && (lite || (cover && !data.error && data.status !== 'error')) && <CanvasNodeLodPreview
+        nodeId={node.id}
         data={data}
         video={video}
         projectId={projectId}

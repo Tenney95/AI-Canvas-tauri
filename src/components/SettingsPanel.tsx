@@ -310,6 +310,7 @@ export default function SettingsPanel() {
             onClick={() => setSettingsOpen(false)}
           />
         </div>
+        {(saveError || !configHydrated || unreadSecretCount > 0 || (saveStatus !== 'idle' && saveStatus !== 'saved')) && (
         <div role="status" className={`ui-alert ${saveStatus === 'error' || saveStatus === 'conflict' ? 'ui-alert--danger' : 'ui-alert--info'} mx-3 my-2`} data-settings-persistence>
           <div className="ui-alert__body flex-1">
             {saveError ?? t(saveStatus === 'saving' ? '正在保存设置…' : saveStatus === 'dirty' ? '有未保存的设置'
@@ -322,7 +323,7 @@ export default function SettingsPanel() {
             <button type="button" className="ui-btn ui-btn--secondary ui-btn--sm" onClick={() => void reload()}>{t('重新加载')}</button>
           )}
         </div>
-
+        )}
 
         <div className="flex flex-1 min-h-0">
           <SettingsNavigation activeTab={activeTab} onSelect={selectTab} />

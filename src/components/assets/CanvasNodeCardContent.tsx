@@ -7,7 +7,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { useViewportMediaSource } from '../../hooks/useViewportMediaSource';
 import { withPreviewRevision } from '../../hooks/useReferencedImageWatcher';
 import { acquireCanvasImagePreview } from '../nodes/shared/image/canvasImagePreviewCache';
-import { acquireCanvasVideoPoster } from '../nodes/shared/video/canvasVideoPreviewCache';
+import ResourceVideoPreview from '../shared/ResourceVideoPreview';
 import { getAssetNodePorts, startAssetNodeConnectionDrag, type AssetNodePort } from '../../utils/assetNodeConnection';
 
 interface Props {
@@ -15,9 +15,11 @@ interface Props {
   data: BaseNodeData;
   projectId: string | null;
   connectable: boolean;
+  videoExpanded?: boolean;
+  onVideoExpandedChange?: (expanded: boolean) => void;
 }
 
-function CanvasNodeCardContent({ nodeId, data, projectId, connectable }: Props) {
+function CanvasNodeCardContent({ nodeId, data, projectId, connectable, videoExpanded = false, onVideoExpandedChange }: Props) {
   const plugins = useAppStore((state) => state.installedPlugins);
   const ports = useMemo(() => getAssetNodePorts(data, plugins), [data, plugins]);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -29,7 +31,7 @@ function CanvasNodeCardContent({ nodeId, data, projectId, connectable }: Props) 
   const image = video
     ? (data.thumbnailUrl !== data.videoUrl && data.thumbnailUrl !== data.sourceUrl ? data.thumbnailUrl : undefined)
     : data.imageUrl || data.thumbnailUrl;
-  const mediaSource = image || (video ? data.videoUrl : undefined);
+  const mediaSource = video ? undefined : image;
   const revisionSource = mediaSource ? withPreviewRevision(mediaSource, data.mediaVersion ?? 0) : undefined;
   const visibleMedia = useViewportMediaSource(revisionSource, bodyRef, { rootMargin: '160px 0px' });
   const audioSource = useViewportMediaSource(data.audioUrl, bodyRef, { rootMargin: '160px 0px' });
@@ -39,9 +41,7 @@ function CanvasNodeCardContent({ nodeId, data, projectId, connectable }: Props) 
     if (!visibleMedia) return;
     const request = new AbortController();
     let lease: { src: string; release: () => void } | null = null;
-    const acquisition = image
-      ? acquireCanvasImagePreview(visibleMedia, 512, request.signal, projectId)
-      : acquireCanvasVideoPoster(visibleMedia, request.signal);
+    const acquisition = acquireCanvasImagePreview(visibleMedia, 512, request.signal, projectId);
     void acquisition.then((result) => {
       if (request.signal.aborted) { result?.release(); return; }
       lease = result;
@@ -76,13 +76,16 @@ function CanvasNodeCardContent({ nodeId, data, projectId, connectable }: Props) 
     targetPosition: drag.input ? Position.Right : Position.Left }) : [''];
 
   return (
-    <div ref={bodyRef} className="assets-node-content">
-      {mediaSource ? (
+    <div ref={bodyRef} className={`assets-node-content${videoExpanded ? ' has-expanded-video' : ''}`}>
+      {video ? (
+        <ResourceVideoPreview key={`${projectId}:${nodeId}`} src={data.videoUrl} filePath={data.filePath} poster={image}
+          revision={data.mediaVersion} name={data.label} expanded={videoExpanded}
+          onExpandedChange={(expanded) => onVideoExpandedChange?.(expanded)} />
+      ) : mediaSource ? (
         <div className="assets-node-media">
           {resolved && failedImage !== resolved ? (
             <img src={resolved} alt={data.label} draggable={false} loading="lazy" decoding="async" onError={() => setFailedImage(resolved)} />
           ) : <span className="text-xs text-canvas-text-muted">{preview?.source === visibleMedia ? '暂无可用预览' : '加载预览…'}</span>}
-          {video && <span className="assets-node-media-badge"><Icon icon="lucide:video" width="14" />视频</span>}
         </div>
       ) : data.audioUrl ? (
         <div className="assets-node-audio">

@@ -2,6 +2,9 @@ import { useAppStore } from '../store/useAppStore';
 import type { ComfyNodeProgressStage } from '../store/store.ui';
 
 const SOCKET_READY_TIMEOUT_MS = 1_000;
+const SOCKET_CONNECT_TIMEOUT_MS = 5_000;
+const SOCKET_RECONNECT_DELAY_MS = 1_000;
+const MAX_SOCKET_RECONNECTS = 3;
 const MAX_EVENT_TEXT_LENGTH = 1_048_576;
 
 export interface ParsedComfyProgress {
@@ -117,7 +120,14 @@ function createRequestId(): string {
 
 function buildSocketUrl(baseUrl: string, clientId: string): string {
   const normalized = baseUrl.replace(/\/+$/, '');
-  const url = new URL(`${normalized}/ws`);
+  let url = new URL(`${normalized}/ws`);
+  // Vite 的固定本地代理同时服务浏览器和 Tauri dev；生产和其他服务器保持原地址。
+  if (import.meta.env.DEV && typeof window !== 'undefined'
+    && /^https?:$/.test(window.location?.protocol ?? '')
+    && url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname)
+    && url.port === '8188' && url.pathname === '/ws') {
+    url = new URL('/api/comfyui/ws', window.location.origin);
+  }
   if (url.protocol === 'http:') url.protocol = 'ws:';
   else if (url.protocol === 'https:') url.protocol = 'wss:';
   else throw new Error('ComfyUI WebSocket 地址协议无效');
@@ -149,6 +159,10 @@ export function createComfyProgressSession({
   let socket: WebSocket | null = null;
   let boundPromptId: string | undefined;
   let closed = false;
+  let reconnectCount = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let connectTimer: ReturnType<typeof setTimeout> | undefined;
+  const earlyProgress = new Map<string, ParsedComfyProgress>();
   let settleReady = () => {};
   let readySettled = false;
   const readyPromise = new Promise<void>((resolve) => {
@@ -161,40 +175,79 @@ export function createComfyProgressSession({
   const readyTimer = globalThis.setTimeout(settleReady, SOCKET_READY_TIMEOUT_MS);
 
   const update = (patch: Parameters<typeof store.updateComfyNodeProgress>[2]) => {
+    if (closed) return;
     useAppStore.getState().updateComfyNodeProgress(nodeId, requestId, patch);
   };
 
-  try {
-    if (typeof globalThis.WebSocket === 'function') {
-      socket = new globalThis.WebSocket(buildSocketUrl(baseUrl, clientId));
-      socket.onopen = () => {
+  const applyProgress = (parsed: ParsedComfyProgress) => update({
+    value: undefined, max: undefined, percent: undefined, executingNodeId: undefined,
+    ...parsed,
+    promptId: boundPromptId,
+  });
+
+  const connect = () => {
+    if (closed || typeof globalThis.WebSocket !== 'function') {
+      settleReady();
+      return;
+    }
+    try {
+      const currentSocket = new globalThis.WebSocket(buildSocketUrl(baseUrl, clientId));
+      socket = currentSocket;
+      connectTimer = globalThis.setTimeout(() => {
+        if (!closed && socket === currentSocket && currentSocket.readyState === 0) currentSocket.close();
+      }, SOCKET_CONNECT_TIMEOUT_MS);
+      currentSocket.onopen = () => {
+        if (closed || socket !== currentSocket) return;
+        globalThis.clearTimeout(connectTimer);
         settleReady();
         update({ stage: boundPromptId ? 'queued' : 'connecting' });
       };
-      socket.onmessage = (event) => {
-        if (closed || typeof event.data !== 'string') return;
+      currentSocket.onmessage = (event) => {
+        if (closed || socket !== currentSocket || typeof event.data !== 'string') return;
         const parsed = parseComfyProgressEvent(event.data);
-        if (!parsed || (boundPromptId && parsed.promptId && parsed.promptId !== boundPromptId)) return;
-        update(parsed);
+        if (!parsed) return;
+        // /prompt 响应前可能已经收到执行事件，先按 promptId 暂存，绑定后只取本次任务。
+        if (!boundPromptId) {
+          if (parsed.promptId) {
+            if (!earlyProgress.has(parsed.promptId) && earlyProgress.size >= 32) return;
+            earlyProgress.set(parsed.promptId, parsed);
+          }
+          return;
+        }
+        if (parsed.promptId && parsed.promptId !== boundPromptId) return;
+        applyProgress(parsed);
       };
-      socket.onerror = settleReady;
-      socket.onclose = () => {
+      currentSocket.onerror = () => {
+        if (closed || socket !== currentSocket) return;
         settleReady();
-        if (!closed && boundPromptId) {
-          update({ stage: 'running', value: undefined, max: undefined, percent: undefined });
+        currentSocket.close();
+      };
+      currentSocket.onclose = () => {
+        if (closed || socket !== currentSocket) return;
+        globalThis.clearTimeout(connectTimer);
+        socket = null;
+        settleReady();
+        earlyProgress.clear();
+        update({ stage: 'connecting', value: undefined, max: undefined, percent: undefined, executingNodeId: undefined });
+        // 只重连读取进度的通道，不重新提交生成任务。
+        if (reconnectCount < MAX_SOCKET_RECONNECTS) {
+          reconnectCount += 1;
+          reconnectTimer = globalThis.setTimeout(connect, SOCKET_RECONNECT_DELAY_MS);
         }
       };
-    } else {
+    } catch {
       settleReady();
     }
-  } catch {
-    settleReady();
-  }
+  };
+  connect();
 
   const close = () => {
     if (closed) return;
     closed = true;
     globalThis.clearTimeout(readyTimer);
+    globalThis.clearTimeout(connectTimer);
+    globalThis.clearTimeout(reconnectTimer);
+    earlyProgress.clear();
     settleReady();
     signal?.removeEventListener('abort', close);
     if (socket && socket.readyState < globalThis.WebSocket.CLOSING) socket.close();
@@ -208,8 +261,10 @@ export function createComfyProgressSession({
     requestId,
     waitUntilReady: () => readyPromise,
     bindPrompt: (promptId) => {
+      if (closed) return;
       boundPromptId = promptId;
-      update({ promptId, stage: 'queued' });
+      applyProgress(earlyProgress.get(promptId) ?? { stage: 'queued' });
+      earlyProgress.clear();
     },
     close,
   };

@@ -5,10 +5,22 @@ const driver = vi.hoisted(() => ({
   effects: [] as Array<{ deps?: readonly unknown[]; cleanup?: () => void }>,
   pending: [] as Array<() => void>, stateIndex: 0, refIndex: 0, effectIndex: 0,
   image: vi.fn(), video: vi.fn(), unavailable: vi.fn(), revision: 0,
+  runtime: null as null | {
+    prepareDisplay: (key: object, work: () => Promise<void>, nodeId?: string) => () => void;
+    enqueueDisplay: (key: object, work: () => void, nodeId?: string) => () => void;
+  },
 }));
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react');
   return { ...actual, memo: <T,>(value: T) => value,
+    useContext: () => driver.runtime,
+    useCallback: <T,>(value: T, deps: readonly unknown[]) => {
+      const index = driver.refIndex++;
+      const previous = driver.refs[index]?.current as { value: T; deps: readonly unknown[] } | undefined;
+      if (previous && deps.length === previous.deps.length && deps.every((dep, i) => Object.is(dep, previous.deps[i]))) return previous.value;
+      driver.refs[index] = { current: { value, deps } };
+      return value;
+    },
     useState: <T,>(initial: T) => {
       const index = driver.stateIndex++;
       if (!(index in driver.states)) driver.states[index] = initial;
@@ -34,7 +46,7 @@ vi.mock('@xyflow/react', () => ({ Handle: 'handle', Position: { Left: 'left', Ri
 vi.mock('../../src/hooks/useReferencedImageWatcher', () => ({
     withPreviewRevision: (source: string, revision: number) => revision ? `${source}?_refresh=${revision}` : source,
 }));
-vi.mock('../../src/hooks/useCanvasNodeLod', () => ({ useCanvasNodeLodPreviewRevision: () => driver.revision }));
+vi.mock('../../src/hooks/useCanvasNodeLod', () => ({ CanvasNodeLodContext: {}, useCanvasNodeLodPreviewRevision: () => driver.revision }));
 vi.mock('../../src/components/nodes/shared/image/canvasImagePreviewCache', () => ({ acquireCanvasImagePreview: driver.image }));
 vi.mock('../../src/components/nodes/shared/video/canvasVideoPreviewCache', () => ({ acquireCanvasVideoPoster: driver.video }));
 import Preview from '../../src/components/nodes/shared/CanvasNodeLodPreview';
@@ -48,6 +60,7 @@ interface ImageProps {
   onError: () => void;
 }
 const base: Props = {
+  nodeId: 'image-node',
   data: { type: 'ai-image', label: 'Image', imageUrl: 'asset://image.png' },
   video: false, projectId: 'project-a', width: 280, height: 210, onUnavailable: driver.unavailable,
 };
@@ -73,11 +86,29 @@ function unmount() { driver.effects.forEach((effect) => effect.cleanup?.()); dri
 beforeEach(() => {
   driver.states = []; driver.refs = []; driver.effects = []; driver.pending = [];
   driver.image.mockReset(); driver.video.mockReset(); driver.unavailable.mockReset();
-  driver.revision = 0;
+  driver.revision = 0; driver.runtime = null;
 });
 afterEach(unmount);
 
 describe('canvas lightweight media preview', () => {
+  it('queues cache acquisition, display and decode completion separately and cancels pending display on unmount', async () => {
+    const preparation = new Map<object, () => Promise<void>>();
+    const display = new Map<object, () => void>();
+    driver.runtime = {
+      prepareDisplay: (key, work, id) => { expect(id).toBe('image-node'); preparation.set(key, work); return () => { preparation.delete(key); }; },
+      enqueueDisplay: (key, work, id) => { expect(id).toBe('image-node'); display.set(key, work); return () => { display.delete(key); }; },
+    };
+    const lease = { src: 'blob:cached', release: vi.fn() }; driver.image.mockResolvedValue(lease);
+    render(); expect(driver.image).not.toHaveBeenCalled();
+    await [...preparation.values()][0]();
+    expect(render().image).toBeUndefined(); expect(display.size).toBe(1);
+    [...display.values()][0](); display.clear();
+    const image = render().image!; expect(image.src).toBe(lease.src);
+    await image.onLoad({ currentTarget: { decode: async () => {} } });
+    expect(render().image?.className).not.toContain('is-ready'); expect(display.size).toBe(1);
+    unmount(); expect(display.size).toBe(0); expect(preparation.size).toBe(0);
+    expect(lease.release).toHaveBeenCalledOnce(); expect(driver.unavailable).not.toHaveBeenCalled();
+  });
   it('uses the retained boundary revision to avoid stale memory previews after an external edit', () => {
     driver.image.mockReturnValue(new Promise(() => {}));
     render();

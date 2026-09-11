@@ -903,6 +903,7 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
                   <CanvasPreviewImage
                     key={`${displaySrc}:${imgRetryAttempt}`}
                     src={displaySrc}
+                    nodeId={id}
                     projectId={previewProjectId}
                     nodeWidth={nodeWidth}
                     nodeHeight={nodeHeight}

@@ -10,7 +10,7 @@
 
 AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, Markdown, shot lists, 360° panoramas and hand-drawn notes into connectable canvas nodes. In a single project you can orchestrate generation pipelines, manage a character library and local assets, run ComfyUI workflows, and use the conversational assistant to query or modify the canvas, generate media, dispatch read-only sub-agents, read authorized files, and accumulate project memory. Projects can also be split into series and episodes — each episode of a short drama gets its own canvas, while the character library and assets are shared across the whole series.
 
-![Version](https://img.shields.io/badge/version-0.8.9-6366f1)
+![Version](https://img.shields.io/badge/version-0.9.7-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)
@@ -33,20 +33,22 @@ AI Canvas Tauri organizes text, images, video, audio, frame-by-frame animation, 
 
 | Capability | Description |
 | --- | --- |
-| Multimodal node canvas | Text, image, video, audio, frame-by-frame animation, Markdown, shot list, panorama, 3D director desk, source file and canvas note nodes, connected and orchestrated together. |
-| AI & workflows | Cloud models, custom model execution protocols, ComfyUI workflows, Dreamina login-based calls and local ONNX inference. |
-| Built-in video editing | Video nodes open in a standalone editor with multi-track arrangement, trimming and splitting, transforms, transitions, text and stickers, volume control, and lossless passthrough or composited export to disk and new nodes. |
-| Conversational Agent | Multiple conversations, streaming responses, Plan/B/C execution modes, tool calls, approval cards, task timelines, context compression and project memory. |
-| Read-only sub-agents | Users define domain roles inside the assistant; the main task dispatches parallel read-only sub-agents whose sanitized outputs are returned. |
-| Character library & drama assets | Global and project-level character cards, multiple reference images, voice binding and voice-over export, plus short-drama characters, scenes and props. |
-| Local MCP control bridge | A manually enabled, per-session stdio MCP adapter that lets external clients reuse the same tools, Policy, approvals and task timelines. |
-| Local-first & secure | Media lives in the project data directory, structured data is persisted by IndexedDB, and API keys are isolated in the Rust credential store. |
-| Series & episodes | Projects can be split into series and episodes, each episode owning its own canvas while sharing the character library, project memory and asset directories; the assistant can create episodes in bulk after reading a script. |
-| Projects & assets | Multiple projects, an asset library, recoverable deletion and whole-project `.aicanvas` import/export. |
-| Onboarding & Help Center | A first-launch guide covers hover hints and hidden actions such as Space-to-open-dialog and long-press batch generation; the Help Center is organized by scenario and uses a real `@` chip to demonstrate how ComfyUI input nodes are written. |
-| On-demand 3D director desk | On first creation of a director-desk node, downloads fixed and verified runtime assets, then does scene layout, camera previz and screenshot handoff in a separate Tauri window. |
+| Multimodal node canvas | Connect text, images, video, audio, animation, Markdown, shot lists, panoramas, director nodes, source files and canvas notes. Minimap counts, lightweight overview nodes and progressive display improve navigation while preserving source media and canvas data. |
+| AI & workflows | Cloud models, custom model protocols, multiple ComfyUI servers, RunningHub cloud workflows/AI apps, generic Workflow API connections with an AutoDL H3 template, Dreamina and local ONNX inference. Parameters, uploads, progress and recovery follow each platform. |
+| User plugins | Install JavaScript or trusted Python plugins from local folders, the marketplace or GitHub Releases. Plugins extend tools, nodes and host-managed UI. JavaScript uses QuickJS; Python has the current user’s permissions. Source and full revision digests bind execution; disabled or replaced revisions cannot write results back. |
+| Scripts & shot production | Browse source chapters, write episodes, preserve script snapshots, revise shots, fill missing frames, prepare voice/video/director nodes and send dialogue captions and ready voice-overs to the timeline. Reference character action media with @. |
+| Built-in video editing | A separate editor provides multiple tracks, trimming, splitting, transforms, transitions, text, stickers and volume controls, with passthrough or composited export. MCP also exposes project editing, background export, media probing and frame extraction. |
+| Conversational Agent | Multiple conversations, streaming, Plan/B/C modes, tools, approval cards, task timelines, context compression and project memory. |
+| Read-only sub-agents | Define domain roles and let the main task dispatch parallel read-only sub-agents; sanitized results return to the main task. |
+| Characters & creative assets | Project/global character cards, reference images, voices and action media, plus extraction, descriptions and image binding for characters, scenes and props. |
+| External MCP control | Disabled by default. Supports local stdio and Streamable HTTP with an additional configuration confirmation; on-demand tool discovery is the default. Import media, upload images in chunks, paste system content, capture the canvas and control editing projects. MCP runs autonomously, while user-choice questions still require the user. |
+| Local storage & protected settings | Media is stored in project directories, structured data in IndexedDB, and API keys in the Rust credential store. Settings save changed fields with conflict checks; failures preserve drafts and offer retry/reload. Exit waits for saving. |
+| Series & episodes | Each episode has its own canvas; the series shares characters, project memory and media directories. The assistant can create episodes in batches from a script. |
+| Asset library & previews | Tab toggles the left asset drawer with project files, global assets, creative assets and the current node list. Locate and connect nodes from cards, browse full-screen images by display number, play floating video previews and pin output history. Includes recoverable deletion and desktop .aicanvas project packages. |
+| Onboarding & help | First-run guidance, a scenario-based Help Center and an offline manual covering references, ComfyUI inputs, shortcuts and custom APIs. |
+| Dual-runtime director desk | The lightweight desk installs its runtime on demand. Blender editing supports Windows x86_64 and macOS Intel/Apple Silicon with stable 4.5, 5.0, 5.1 and 5.2 series. Save-and-return validates both the camera PNG and the .blend project. |
 
-See [功能方案](doc/对话式画布助手-功能方案.md) and [Agent 能力实施方案](doc/对话助手-Agent能力实施方案.md) (in Chinese) for detailed feature descriptions and stage progress.
+These documents cover 0.9.7 and subsequent source updates through 2026-09-11. Released installers may not include later features. See the [user manual](site/manual.html) and [module index](doc/文档导航.md) (in Chinese) for operations, ownership and validation boundaries.
 
 ## Tech Stack
 
@@ -67,6 +69,7 @@ See [功能方案](doc/对话式画布助手-功能方案.md) and [Agent 能力�
 - Node.js: meet Vite 8 runtime requirements; current LTS recommended
 - npm
 - Rust stable toolchain
+- Optional Blender editing: Windows x86_64 or macOS Intel/Apple Silicon; stable 4.5 / 5.0 / 5.1 / 5.2 series. The lightweight director desk does not require Blender.
 - Platform-specific [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/)
 
 Windows builds additionally require Visual Studio Build Tools 2022 with the "Desktop development with C++" workload installed.
@@ -111,10 +114,12 @@ npm run build
 npm run tauri build
 ```
 
-For releases, `package.json` is the version source; run `npm run sync-version` to sync the Rust config and the README version badge.
+`package.json` is the version source. `npm run sync-version` currently updates only the Chinese README badge and `src-tauri/Cargo.toml`; check the Tauri configuration, translated READMEs, website and manual separately. See the [release guide](doc/打包与发版流程.md).
 
 ## Documentation
 
+- [User manual (Chinese)](site/manual.html)
+- [Module documentation (Chinese)](doc/文档导航.md)
 - [开发指南](doc/开发指南.md): environment, commands, directories, conventions, debugging and FAQ (in Chinese)
 - [架构说明](doc/架构说明.md): core modules, data flow, security boundaries and performance design (in Chinese)
 - [ComfyUI 工作流集成说明](doc/ComfyUI工作流集成说明.md): import, IO node detection, content/parameter injection and result retrieval (in Chinese)

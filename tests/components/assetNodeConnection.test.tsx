@@ -45,6 +45,7 @@ vi.mock('react-dom', async () => ({ ...await vi.importActual<typeof import('reac
 
 import { createNodeSlice } from '../../src/store/store.nodes';
 import Card from '../../src/components/assets/CanvasNodeCardContent';
+import ResourceVideoPreview from '../../src/components/shared/ResourceVideoPreview';
 import {
   commitAssetNodeConnection, findAssetNodeConnectionTarget, getAssetNodePorts,
   resolveAssetNodeConnection, startAssetNodeConnectionDrag,
@@ -61,7 +62,7 @@ let doc: EventTarget;
 let hit: unknown;
 const cleanups: Array<() => void> = [];
 interface Element { type: unknown; props: Record<string, unknown> & { children?: unknown } }
-function elements(tree: unknown, type: string): Element[] {
+function elements(tree: unknown, type: unknown): Element[] {
   if (Array.isArray(tree)) return tree.flatMap((item) => elements(item, type));
   if (!tree || typeof tree !== 'object' || !('props' in tree)) return [];
   const el = tree as Element;
@@ -239,15 +240,13 @@ describe('节点内容卡片', () => {
     (image.props.onError as () => void)();
     expect(elements(render(data), 'img')).toHaveLength(0);
   });
-  it('视频使用已有封面缓存，提供封面图片时不再申请视频解码', async () => {
+  it('视频委托共享资源预览，传递封面并保留真实端口', () => {
     const data = node('a', { type: 'ai-video', videoUrl: 'clip.mp4' }).data;
-    driver.video.mockResolvedValue({ src: 'blob:poster', release: vi.fn() });
-    render(data); await Promise.resolve();
-    expect(elements(render(data), 'img')[0].props.src).toBe('blob:poster');
-    expect(elements(render(data), 'video')).toHaveLength(0);
-    render({ ...data, thumbnailUrl: 'cover.png' });
-    expect(driver.image).toHaveBeenCalledWith('cover.png', 512, expect.any(AbortSignal), 'p1');
-    expect(driver.video).toHaveBeenCalledTimes(1);
+    const tree = render({ ...data, thumbnailUrl: 'cover.png' });
+    expect(elements(tree, ResourceVideoPreview)[0].props).toMatchObject({ src: 'clip.mp4', poster: 'cover.png', expanded: false });
+    expect(elements(tree, 'button')).toHaveLength(2);
+    expect(driver.image).not.toHaveBeenCalled();
+    expect(driver.video).not.toHaveBeenCalled();
   });
   it('音频按需播放且不自动预加载，笔记没有虚构端口', () => {
     const tree = render(node('a', { type: 'ai-audio', audioUrl: 'sound.wav' }).data);
