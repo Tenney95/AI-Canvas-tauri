@@ -1715,6 +1715,26 @@ button.wf-ionode-badge.is-default {
 .assets-node-connection-overlay.is-valid path { stroke-dasharray: none; }
 .assets-node-connection-overlay text { fill: var(--theme-text); stroke: var(--theme-bg); stroke-width: 3; paint-order: stroke; font-size: 12px; }
 
+/* 资源窗口共用封面与悬浮播放器；原卡片始终保留，不改变列表尺寸和顺序。 */
+.resource-video-preview { position: relative; min-width: 0; width: 100%; overflow: hidden; border-radius: var(--ui-radius); background: var(--media-well); aspect-ratio: 16 / 9; min-height: 90px; }
+.resource-video-open { position: relative; display: grid; place-items: center; width: 100%; height: 100%; min-height: inherit; padding: 0; border: 0; background: transparent; color: var(--theme-text-secondary); cursor: pointer; }
+.resource-video-open img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.resource-video-open:focus-visible { outline: 2px solid var(--brand-light); outline-offset: -3px; }
+.resource-video-placeholder { width: 36px; height: 36px; opacity: .5; }
+.resource-video-play { position: absolute; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--theme-card); color: var(--theme-text); box-shadow: 0 0 0 1px var(--theme-border); }
+.resource-video-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 4px 8px; background: var(--theme-surface); color: var(--theme-text-secondary); font-size: 11px; }
+.resource-video-toolbar > button { flex-shrink: 0; }
+.resource-video-clip { position: fixed; z-index: 350; overflow: hidden; pointer-events: none; }
+.resource-video-floating { position: absolute; overflow: hidden; pointer-events: auto; border-radius: var(--ui-radius); background: var(--theme-surface); box-shadow: var(--glass-shadow-floating); outline: 1px solid var(--theme-border); }
+.resource-video-floating.is-closing { pointer-events: none; }
+.resource-video-player { position: relative; }
+.resource-video-player video { display: block; width: 100%; height: auto; aspect-ratio: var(--resource-video-ratio, 16 / 9); object-fit: contain; }
+.resource-video-retry { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+.resource-video-unavailable { display: grid; min-height: 180px; place-items: center; color: var(--theme-text-muted); font-size: 12px; }
+.assets-node-content > .resource-video-preview { height: 170px; aspect-ratio: auto; }
+.assets-card-video-wrap > .assets-card-size, .assets-card-video-wrap > .assets-card-badge { pointer-events: none; }
+.resource-video-compact { width: 96px; min-height: 54px; flex-shrink: 0; }
+
 /* 创作资产保留详细卡片和全部操作，仅让工具栏及卡片按可用宽度换行。 */
 .drama-assets--compact .drama-assets-toolbar { flex-wrap: wrap; gap: 4px; }
 .drama-assets--compact .drama-assets-toolbar > button { padding: 6px; }

@@ -20,6 +20,8 @@ import AnimatedButton from './shared/AnimatedButton';
 import PopupCloseButton from './shared/PopupCloseButton';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { isTauriEnv, saveAgentTextOutput } from '../services/fileService';
+import ResourceVideoPreview from './shared/ResourceVideoPreview';
+import { useResourceVideoPreview } from '../hooks/useResourceVideoPreview';
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 type FilterType = 'all' | 'ai-text' | 'ai-image' | 'ai-video' | 'ai-audio';
@@ -106,11 +108,15 @@ function CompactHistoryRow({
   exists,
   onLocate,
   onDelete,
+  videoExpanded,
+  onVideoExpandedChange,
 }: {
   entry: OutputHistoryEntry;
   exists: boolean;
   onLocate: (entry: OutputHistoryEntry) => void;
   onDelete: (entry: OutputHistoryEntry) => void;
+  videoExpanded: boolean;
+  onVideoExpandedChange: (expanded: boolean) => void;
 }) {
   const typeCfg = NODE_TYPE_CONFIG[entry.nodeType];
   const isError = entry.status === 'error';
@@ -127,12 +133,15 @@ function CompactHistoryRow({
           onLocate(entry);
         }
       }}
-      className={`group flex cursor-pointer items-center gap-2.5 rounded-lg border bg-canvas-surface/60 px-2.5 py-2 transition-colors
+      className={`resource-history-row group flex cursor-pointer items-center gap-2.5 rounded-lg border bg-canvas-surface/60 px-2.5 py-2 transition-colors
                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 ${
                     isError ? 'border-red-500/20' : 'border-canvas-border hover:border-canvas-border/80'
                   }`}
     >
-      {hasThumb ? (
+      {entry.nodeType === 'ai-video' && !isError && (entry.mediaUrl || entry.filePath) ? (
+        <ResourceVideoPreview src={entry.mediaUrl} filePath={entry.filePath} name={entry.nodeLabel} className="resource-video-compact"
+          expanded={videoExpanded} onExpandedChange={onVideoExpandedChange} />
+      ) : hasThumb ? (
         <HistoryThumbnail mediaUrl={entry.mediaUrl} filePath={entry.filePath} className="w-9 h-9" />
       ) : (
         <span
@@ -304,6 +313,7 @@ export default function OutputHistoryPanel() {
     }
     return list;
   }, [currentProjectId, filter, historyProjectId, outputHistoryRecords, search]);
+  const videoPreview = useResourceVideoPreview(JSON.stringify([historyPanelOpen, historyPinned, collapsed, currentProjectId, filter, search]), filteredEntries.map((entry) => entry.id));
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -440,6 +450,7 @@ export default function OutputHistoryPanel() {
 
           {/* Bottom Sheet — 固定时缩成右下角小窗（避开底部工具栏），否则保持底部抽屉 */}
           <motion.div
+            data-resource-video-boundary
             className={`z-[250] flex flex-col glass-panel shadow-2xl overflow-hidden ${
               historyPinned
                 ? 'fixed bottom-14 right-3 w-[360px] max-h-[min(60vh,520px)] border rounded-2xl'
@@ -598,6 +609,8 @@ export default function OutputHistoryPanel() {
                           exists={nodeExists(entry.nodeId)}
                           onLocate={handleLocateNode}
                           onDelete={handleDeleteEntry}
+                          videoExpanded={videoPreview.expandedId === entry.id}
+                          onVideoExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? entry.id : null)}
                         />
                       );
                     }
@@ -689,6 +702,11 @@ export default function OutputHistoryPanel() {
                             ) : (
                               <div className={`rounded-lg bg-canvas-bg/60 p-2 ${isImage && entry.mediaUrl ? 'flex items-start gap-2.5' : 'space-y-1.5'}`}>
                                 {/* Image thumbnail — local file first, online URL fallback */}
+                                {entry.nodeType === 'ai-video' && (entry.mediaUrl || entry.filePath) && (
+                                  <ResourceVideoPreview src={entry.mediaUrl} filePath={entry.filePath} name={entry.nodeLabel}
+                                    expanded={videoPreview.expandedId === entry.id}
+                                    onExpandedChange={(expanded) => videoPreview.setExpanded(expanded ? entry.id : null)} />
+                                )}
                                 {isImage && (entry.mediaUrl || entry.filePath) && (
                                   <HistoryThumbnail
                                     mediaUrl={entry.mediaUrl}

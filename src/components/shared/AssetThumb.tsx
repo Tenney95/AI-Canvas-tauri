@@ -6,9 +6,13 @@ import type { ReactNode } from 'react';
 import type { FileCategory } from '../../services/fileService';
 import { CATEGORY_ICONS, formatSize } from '../../utils/assetFormat';
 import ViewportImage from './ViewportImage';
+import ResourceVideoPreview from './ResourceVideoPreview';
 
 interface AssetThumbProps {
   assetUrl?: string;
+  filePath?: string;
+  videoExpanded?: boolean;
+  onVideoExpandedChange?: (expanded: boolean) => void;
   name: string;
   category: FileCategory;
   size: number;
@@ -18,8 +22,16 @@ interface AssetThumbProps {
   children?: ReactNode;
 }
 
-export default function AssetThumb({ assetUrl, name, category, size, badge, children }: AssetThumbProps) {
-  return assetUrl ? (
+export default function AssetThumb({ assetUrl, filePath, videoExpanded = false, onVideoExpandedChange, name, category, size, badge, children }: AssetThumbProps) {
+  return category === 'video' ? (
+    <div className="assets-card-img-wrap assets-card-video-wrap">
+      <ResourceVideoPreview src={assetUrl} filePath={filePath} name={name} expanded={videoExpanded}
+        onExpandedChange={(expanded) => onVideoExpandedChange?.(expanded)} />
+      <span className="assets-card-size">{formatSize(size)}</span>
+      {badge && <span className="assets-card-badge">{badge}</span>}
+      {children}
+    </div>
+  ) : assetUrl ? (
     <div className="assets-card-img-wrap">
       <ViewportImage src={assetUrl} alt={name} className="assets-card-img" draggable={false} />
       <span className="assets-card-size">{formatSize(size)}</span>
