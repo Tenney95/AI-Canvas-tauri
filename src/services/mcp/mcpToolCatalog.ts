@@ -64,6 +64,7 @@ export const MCP_SEARCH_SCHEMA: AgentToolSchema = {
     query: { type: 'string', maxLength: 240, description: '需求、工具名或关键词；省略时查看类别导航。' },
     category: { type: 'string', minLength: 1, maxLength: 64, description: '类别 ID，可从无参数搜索的导航中获取。' },
     limit: { type: 'integer', minimum: 1, maximum: MAX_SEARCH_RESULTS, description: '默认 5。' },
+    offset: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: '默认 0；保持 query/category 不变，使用上次 nextOffset 继续翻页。目录会随当前可用能力变化，不是固定快照。无 query/category 时仅允许 0。' },
     detail: { type: 'string', enum: ['summary', 'schema'], description: '默认 summary；schema 同时返回命中工具的完整参数，避免再调用 tools_describe。' },
   },
 };
@@ -120,6 +121,7 @@ function entry(tool: AgentToolDefinition, full: boolean): McpToolCatalogEntry {
   return {
     name: tool.id, title: tool.title, category: categoryId(tool), effect: tool.effect,
     description: full ? tool.description : tool.description.slice(0, 120),
+    descriptionTruncated: !full && tool.description.length > 120,
     ...(full ? { inputSchema: tool.inputSchema } : {}),
   };
 }
@@ -170,14 +172,16 @@ export function searchMcpToolCatalog(
   const tools = availableTools(context);
   const query = normalize(input.query ?? '');
   const category = normalize(input.category ?? '');
+  const offset = input.offset ?? 0;
   if (!query && !category) {
+    if (offset !== 0) throw new Error('类别导航不分页；请指定 query 或 category 后使用 offset。');
     const counts = new Map<string, number>();
     for (const tool of tools) counts.set(categoryId(tool), (counts.get(categoryId(tool)) ?? 0) + 1);
     return {
       tools: [], total: tools.length,
       categories: [...counts].sort(([a], [b]) => a.localeCompare(b)).slice(0, 32)
         .map(([id, count]) => ({ id, title: categories[id]?.title ?? id, count })),
-      hint: '使用 query 描述需求或用 category 浏览；默认只返回少量摘要，需要参数时使用 detail=schema 或 tools_describe。',
+      hint: '按单个目的使用 query 搜索或用 category 逐页浏览；匹配结果不等于全部能力。摘要不含完整参数，descriptionTruncated=true 表示说明也被截断；调用前使用 detail=schema 或 tools_describe 获取完整定义，已知参数可复用。',
     };
   }
   const terms = searchTerms(query);
@@ -185,12 +189,20 @@ export function searchMcpToolCatalog(
     .map((tool) => ({ tool, weight: query ? score(tool, query, terms) : 1 }))
     .filter(({ weight }) => weight > 0)
     .sort((a, b) => b.weight - a.weight || a.tool.id.localeCompare(b.tool.id));
+  const page = matches.slice(offset, offset + (input.limit ?? 5));
+  const nextOffset = offset + page.length;
+  const hasMore = nextOffset < matches.length;
   return {
-    tools: matches.slice(0, input.limit ?? 5).map(({ tool }) => entry(tool, input.detail === 'schema')),
+    tools: page.map(({ tool }) => entry(tool, input.detail === 'schema')),
     total: matches.length,
-    hint: matches.length
-      ? '有完整参数后用 tools_call 调用；已知工具无需重复搜索。更多结果请细化 query 或 category。'
-      : '未找到匹配工具。请缩短关键词、使用工具 ID，或省略参数查看当前类别。',
+    returned: page.length,
+    hasMore,
+    ...(hasMore ? { nextOffset } : {}),
+    hint: !matches.length
+      ? '未找到匹配工具，不代表能力不存在。请缩短为单个目的、使用工具 ID，或省略参数查看类别后逐页浏览。'
+      : !page.length
+        ? 'offset 已超出当前匹配结果，请从 offset=0 重新查询；工具可用性可能已变化。'
+        : '匹配结果不等于全部能力，多步骤需求请拆开搜索。hasMore=true 时保持 query/category 不变，用 nextOffset 继续；目录随当前可用能力变化。摘要不含完整参数，descriptionTruncated=true 表示说明也被截断；调用前用 detail=schema 或 tools_describe 获取完整定义，已知参数可直接复用 tools_call。',
   };
 }
 

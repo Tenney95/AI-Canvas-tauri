@@ -11,6 +11,7 @@ export interface McpToolSearchInput {
   query?: string;
   category?: string;
   limit?: number;
+  offset?: number;
   detail?: 'summary' | 'schema';
 }
 
@@ -27,6 +28,7 @@ export interface McpToolCatalogEntry {
   name: string;
   title: string;
   description: string;
+  descriptionTruncated?: boolean;
   category: string;
   effect: AgentToolEffect;
   inputSchema?: AgentToolSchema;
@@ -35,6 +37,10 @@ export interface McpToolCatalogEntry {
 export interface McpToolCatalogResult {
   tools: McpToolCatalogEntry[];
   total: number;
+  /** 仅搜索结果页返回；无参数类别导航与 describe 不分页。 */
+  returned?: number;
+  hasMore?: boolean;
+  nextOffset?: number;
   categories?: Array<{ id: string; title: string; count: number }>;
   hint?: string;
 }
