@@ -29,6 +29,7 @@ vi.mock('../../src/services/nodeReferenceService', () => ({
 
 import { pendingBuiltInWorkflows } from '../../src/services/builtinWorkflows';
 import { executeComfyUIVideoGenerate } from '../../src/services/comfyWorkflowService';
+import { resolveVideoSubmissionControls } from '../../src/services/ai/videoRequestResolver';
 import type { WorkflowDefinition } from '../../src/types';
 
 function jsonResponse(body: unknown) {
@@ -121,6 +122,28 @@ describe('内置 MiniMax H3 工作流', () => {
     expect(submitted['105:111'].inputs.value).toBe(6);
     // 秒→帧由工作流自己的算式按 24 帧完成，改帧率反而会让时长错位
     expect(submitted['105:91'].inputs.fps).toBe(24);
+  });
+
+  it.each([
+    { name: '未设置时长使用 5 秒', controls: {}, seconds: 5 },
+    { name: '明确选择 3 秒', controls: { seedanceDuration: 3 }, seconds: 3 },
+    { name: '旧节点的 77 帧换算为 3 秒', controls: { videoFrames: 77, videoFps: 24 }, seconds: 3 },
+    { name: '选择 3 秒覆盖旧的 121 帧', controls: { seedanceDuration: 3, videoFrames: 121 }, seconds: 3 },
+  ])('图生视频时长提交：$name', async ({ controls, seconds }) => {
+    const workflowId = 'builtin-minimax-h3-i2v';
+    await runBuiltIn(workflowId, {
+      // 提示词里的秒数不能覆盖参数控件。
+      prompt: 'Create a 5-second shot', model: 'wf', provider: 'comfyui',
+      ...resolveVideoSubmissionControls({ provider: 'comfyui', workflowId, ...controls }),
+    });
+
+    const submitted = submittedWorkflow();
+    expect(submitted['105:111'].inputs.value).toBe(seconds);
+    expect(submitted['105:107'].inputs['values.a']).toEqual(['105:111', 0]);
+    expect(submitted['105:91'].inputs.fps).toBe(24);
+    // 注入只改变提交副本，不覆盖用户保存的工作流默认值。
+    const stored = JSON.parse(String(mocks.storeState.workflows.find((workflow) => workflow.id === workflowId)?.fileContent));
+    expect(stored['105:111'].inputs.value).toBe(5);
   });
 
   it('图生视频：连线图片上传后写进 LoadImage', async () => {

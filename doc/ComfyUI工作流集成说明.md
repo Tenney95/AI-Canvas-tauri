@@ -180,6 +180,7 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 - **只写数字**。连线过来的值是 `["3", 0]` 这样的数组，跳过 —— 写进去会把连接冲掉。
 - **秒数节点优先**。先扫一遍 `PrimitiveFloat` / `PrimitiveInt` 且标题匹配 `duration|时长|秒` 的节点，写秒数。一旦命中，**帧率就不再注入** —— 这类工作流自己按秒算帧，帧率是算式里的常量，再去改它只会让时长对不上。内置的 MiniMax H3 工作流正是这种结构，所以在它们上面调帧率是不生效的。
+- **显示与提交使用相同的默认时长**。未保存秒数和帧数时均为 5 秒；显式选择 3 秒就提交 3 秒。旧节点已有帧数时继续兼容换算，界面不再凭空补 77 帧显示成 3 秒。
 - **分辨率是长边**。`mapVideoDimensions` 把分辨率数值当长边（和图片的短边语义相反），按比例算另一边并对齐到 8 —— ComfyUI latent 和多数视频模型都要求边长是 8 的倍数。
 - **`length` 要同节点有 `width`/`height`** 才写，避免误伤其他节点上同名的 `length` 参数。
 
@@ -225,6 +226,11 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 - 已有可恢复任务时禁止覆盖提交；用户先续查或确认终止后再生成。
 
 正常生成的实时进度保存在非持久化 UI Store，图片、动画、视频和音频节点共用 `NodeGenerationProgress`。WebSocket 失效时继续 HTTP 轮询，恢复任务当前仍以 HTTP 续查为主。
+
+- 本地默认端口 8188 在 Vite 开发环境（含 Tauri dev）通过同源 `/api/comfyui/ws` 代理读取进度，保留原始 Host/Origin 供 ComfyUI 校验，避免页面来源为 `localhost:1420` 时直连被拒绝。生产环境及其他服务器仍按原地址连接。
+- 百分比来自 ComfyUI 当前执行节点的 `value/max`；切换节点或任务收尾会清除旧数值，不能把单节点的 100% 当作成片完成。提交响应前收到的事件按 promptId 暂存并在绑定后匹配。
+- 连接超时或断线后复用同一 clientId，最多重连三次，只恢复进度读取，不重提生成；取消或结束时清理连接、计时器及进度。
+- 回归入口：[时长显示](../tests/components/videoParamSelectorProtocol.test.ts)、[H3 请求参数](../tests/services/builtinWorkflows.test.ts)、[实时进度与代理握手](../tests/services/comfyProgress.test.ts)。代理测试覆盖真实 WebSocket 握手、采样事件透传和跨站来源 403；实际模型执行不属于该自动化测试。
 
 ## 11. ComfyUI 编辑窗口与回写
 

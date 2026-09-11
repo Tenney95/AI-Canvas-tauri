@@ -280,7 +280,6 @@ export default function VideoParamSelector({
   const usesDurationControls = isNativeSeedance || !isWorkflowProvider;
   const legacyVideoResolution = videoResolution ?? 832;
   const legacyVideoFps = videoFps ?? 24;
-  const legacyVideoFrames = videoFrames ?? 77;
   const legacySeedanceRatio = seedanceRatio ?? '16:9';
   // 非 Seedance（ComfyUI / RunningHub / 自建模型）：比例换算成 width/height 后注入请求
   const genericRatios = VIDEO_ASPECT_RATIOS.map((value) => ({ value, label: value }));
@@ -356,7 +355,8 @@ export default function VideoParamSelector({
     ?? (generalModel ? generalDisplayState.duration : capabilityDurationDefault)
     ?? (generalModel
       ? undefined
-      : resolveVideoDurationSeconds(undefined, legacyVideoFrames, legacyVideoFps, maxDuration));
+      // 缺少帧数时与提交层共用默认秒数，不能用临时的 77 帧显示成 3 秒。
+      : resolveVideoDurationSeconds(undefined, videoFrames, legacyVideoFps, maxDuration));
   const displayedDuration = generalModel || requestedDuration === undefined
     ? requestedDuration
     : allowedDurations
