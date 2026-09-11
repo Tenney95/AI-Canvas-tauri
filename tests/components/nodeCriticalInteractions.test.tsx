@@ -99,6 +99,7 @@ async function installReactHookDriver(
       useCallback: <T,>(callback: T) => callback,
       useEffect: () => undefined,
       useLayoutEffect: () => undefined,
+      useContext: () => undefined,
       useId: () => `test-id-${++idIndex}`,
       useMemo: <T,>(factory: () => T) => factory(),
       useRef: <T,>(initialValue: T) => ({ current: initialValue }),

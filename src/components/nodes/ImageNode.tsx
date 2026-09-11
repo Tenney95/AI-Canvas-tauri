@@ -30,6 +30,7 @@ import { blobToDataUrl } from '../../store/store.utils';
 import { generateOutpaintImage } from '../../services/apimartService';
 import { executeGeneration } from '../../services/generationService';
 import { useCompletionFlash } from '../../hooks/useCompletionFlash';
+import { useCanvasNodeLodPreviewRevision, useCanvasNodeLodProtection } from '../../hooks/useCanvasNodeLod';
 import { createPresetNode } from './shared/toolbar/presetAction';
 import type { CameraStudioResult } from './shared/image/cameraStudio';
 import {
@@ -180,8 +181,9 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
   const [annotateFailedSrc, setAnnotateFailedSrc] = useState<string | undefined>();
 
   // 文件被外部工具覆盖时只刷新本地预览，不修改节点数据或撤销历史。
-  const revisionFor = useReferencedImageRevisions([data.filePath]);
-  const previewRevision = revisionFor(data.filePath);
+  const lodPreviewRevision = useCanvasNodeLodPreviewRevision();
+  const revisionFor = useReferencedImageRevisions([lodPreviewRevision === undefined ? data.filePath : undefined]);
+  const previewRevision = lodPreviewRevision ?? revisionFor(data.filePath);
   const rawDisplaySrc = (data.imageUrl || data.thumbnailUrl) as string | undefined;
   const displaySrc = withPreviewRevision(rawDisplaySrc, previewRevision);
   const annotationLayer = data.annotationLayer;
@@ -846,6 +848,9 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     || isCustomGrid
     || isCameraStudio
     || isCompose;
+
+  useCanvasNodeLodProtection(id, shouldSuspendCanvasPreview || isUploading || isUpscaling
+    || isMattingRunning || imgLoadError || imgRetrying || mattingError || annotateError);
 
   return (
     <>

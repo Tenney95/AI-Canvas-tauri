@@ -11,6 +11,7 @@ import { ReactFlow,
   SelectionMode,
   PanOnScrollMode,
   useReactFlow,
+  useStoreApi,
   useViewport,
   ReactFlowProvider,
   Panel,
@@ -32,6 +33,9 @@ import GroupNode from './nodes/GroupNode';
 import CanvasNoteNode from './noteNodes/CanvasNoteNode';
 import PluginNode from './nodes/PluginNode';
 import NodeRenderBoundary from './nodes/shared/NodeRenderBoundary';
+import CanvasNodeLodBoundary from './nodes/shared/CanvasNodeLodBoundary';
+import { CanvasNodeLodContext } from '../hooks/useCanvasNodeLod';
+import { createCanvasNodeLodRuntime } from '../services/canvasNodeLodRuntime';
 import { isEditableTarget } from '../utils/textSelection';
 import { playNodeFocusPulse } from '../utils/nodeAnimations';
 import ConnectionMenu from './canvas/ConnectionMenu';
@@ -103,12 +107,18 @@ const CharacterAssetDialog = lazy(() => import('./CharacterAssetDialog'));
  */
 function withNodeRenderBoundaries(types: NodeTypes): NodeTypes {
   return Object.fromEntries(Object.entries(types).map(([typeName, NodeComponent]) => {
+    const mediaLod = typeName === 'ai-image' || typeName === 'source-image'
+      || typeName === 'ai-video' || typeName === 'source-video';
     const Bounded = (props: NodeProps) => {
       const liveData = useAppStore((state) => getCanvasNodeById(state.nodes, props.id)?.data);
       const data = liveData ?? props.data;
       return (
         <NodeRenderBoundary nodeId={props.id} typeName={typeName} data={data}>
-          <NodeComponent {...props} data={data} />
+          {mediaLod ? (
+            <CanvasNodeLodBoundary node={props} data={data as BaseNodeData} video={typeName.endsWith('video')}>
+              <NodeComponent {...props} data={data} />
+            </CanvasNodeLodBoundary>
+          ) : <NodeComponent {...props} data={data} />}
         </NodeRenderBoundary>
       );
     };
@@ -387,6 +397,20 @@ function CanvasInner() {
     syncCanvasNodeIndex(nodes);
   }, [nodes]);
   const reactFlowInstance = useReactFlow();
+  const flowStore = useStoreApi();
+  const lodSession = useMemo(() => ({
+    projectId: currentProjectId,
+    runtime: createCanvasNodeLodRuntime(reactFlowInstance.getViewport().zoom),
+  }), [currentProjectId, reactFlowInstance]);
+  const nodeLodRuntime = lodSession.runtime;
+  useEffect(() => {
+    nodeLodRuntime.activate();
+    const { x, y, zoom } = reactFlowInstance.getViewport();
+    const { width, height } = flowStore.getState();
+    nodeLodRuntime.viewport(zoom, (width / 2 - x) / zoom, (height / 2 - y) / zoom);
+    nodeLodRuntime.interaction(activeInteractionsRef.current.size > 0);
+    return () => nodeLodRuntime.deactivate();
+  }, [nodeLodRuntime, reactFlowInstance, flowStore]);
   const wheelZoomCancelRef = useRef<(() => void) | null>(null);
   const activeCanvasPanRef = useRef<{
     startX: number;
@@ -523,6 +547,7 @@ function CanvasInner() {
     else activeInteractionsRef.current.delete(kind);
     const interacting = activeInteractionsRef.current.size > 0;
     if (wasInteracting === interacting) return;
+    nodeLodRuntime.interaction(interacting);
     if (interacting) {
       const canvasRoot = canvasRootRef.current;
       if (canvasRoot) {
@@ -543,7 +568,7 @@ function CanvasInner() {
       updateNodeZoomCompensation(reactFlowInstance.getViewport().zoom);
     }
     document.documentElement.classList.toggle(CANVAS_INTERACTING_CLASS, interacting);
-  }, [reactFlowInstance, refreshLocalZoomTargets, stopObservingZoomTargets, updateNodeZoomCompensation]);
+  }, [nodeLodRuntime, reactFlowInstance, refreshLocalZoomTargets, stopObservingZoomTargets, updateNodeZoomCompensation]);
 
   const beginCanvasInteraction = useCallback((kind: CanvasInteractionKind) => {
     const pendingFrame = interactionReleaseFramesRef.current[kind];
@@ -607,6 +632,8 @@ function CanvasInner() {
   }, [endCanvasInteraction, setCanvasInteraction]);
 
   const handleCanvasViewportMove = useCallback<OnMove>((_, viewport) => {
+    const { width, height } = flowStore.getState();
+    nodeLodRuntime.viewport(viewport.zoom, (width / 2 - viewport.x) / viewport.zoom, (height / 2 - viewport.y) / viewport.zoom);
     updateNodeZoomCompensation(viewport.zoom);
     const activePan = activeCanvasPanRef.current;
     if (!activePan) return;
@@ -614,7 +641,7 @@ function CanvasInner() {
       deltaX: viewport.x - activePan.startX,
       deltaY: viewport.y - activePan.startY,
     });
-  }, [updateNodeZoomCompensation]);
+  }, [flowStore, nodeLodRuntime, updateNodeZoomCompensation]);
 
   const handleWheelZoomStart = useCallback(() => beginCanvasInteraction('wheel'), [beginCanvasInteraction]);
   const handleWheelZoomEnd = useCallback((interrupted: boolean) => {
@@ -1359,6 +1386,7 @@ function CanvasInner() {
   );
 
   return (
+    <CanvasNodeLodContext.Provider value={nodeLodRuntime}>
     <ResizeSnapContext.Provider value={resizeSnapApi}>
     <div
       ref={canvasRootRef}
@@ -1601,6 +1629,7 @@ function CanvasInner() {
       document.body,
     )}
     </ResizeSnapContext.Provider>
+    </CanvasNodeLodContext.Provider>
   );
 }
 
