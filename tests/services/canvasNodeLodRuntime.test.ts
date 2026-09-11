@@ -30,6 +30,8 @@ describe('canvas node LOD scheduling', () => {
     runtime.viewport(0.16);
     expect(runtime.getSnapshot('node')).toBe(true);
     runtime.viewport(0.159);
+    expect(runtime.getSnapshot('node')).toBe(true);
+    tick();
     expect(runtime.getSnapshot('node')).toBe(false);
     for (const zoom of [0.16, 0.23, 0.18, 0.249]) runtime.viewport(zoom, 100, 200);
     expect(changed).toHaveBeenCalledTimes(1);
@@ -42,6 +44,7 @@ describe('canvas node LOD scheduling', () => {
     runtime.viewport(0.16);
     expect(runtime.getSnapshot('node')).toBe(true);
     runtime.viewport(0.159);
+    tick();
     expect(runtime.getSnapshot('node')).toBe(false);
     runtime.deactivate();
   });
@@ -95,7 +98,7 @@ describe('canvas node LOD scheduling', () => {
   });
 
   it('keeps overlapping protection leases full even during far zoom and input', () => {
-    const { runtime, frames } = fixture();
+    const { runtime, frames, tick } = fixture();
     runtime.subscribe('node', vi.fn());
     runtime.interaction(true);
     const first = runtime.pin('node');
@@ -104,6 +107,10 @@ describe('canvas node LOD scheduling', () => {
     first();
     expect(runtime.getSnapshot('node')).toBe(true);
     second();
+    expect(runtime.getSnapshot('node')).toBe(true);
+    runtime.interaction(false);
+    vi.advanceTimersByTime(CANVAS_NODE_LOD.idleMs);
+    tick();
     expect(runtime.getSnapshot('node')).toBe(false);
     expect(frames.size).toBe(0);
   });
@@ -122,6 +129,7 @@ describe('canvas node LOD scheduling', () => {
     runtime.viewport(0.12);
     runtime.interaction(false);
     vi.advanceTimersByTime(500);
+    tick();
     expect(runtime.getSnapshot('first')).toBe(false);
     expect(frames.size).toBe(0);
   });
@@ -145,5 +153,40 @@ describe('canvas node LOD scheduling', () => {
     expect(a.runtime.getSnapshot('new-visible-node')).toBe(true);
     a.runtime.viewport(Number.NaN);
     expect(a.runtime.getSnapshot('new-visible-node')).toBe(true);
+  });
+
+  it.each([70, 300, 500])('queues both directions for %i nodes and cancels an obsolete downgrade', (count) => {
+    const { runtime, tick, frames } = fixture(1);
+    const changed = vi.fn();
+    for (let i = 0; i < count; i++) runtime.subscribe(String(i), changed);
+    runtime.interaction(true);
+    runtime.viewport(0.12);
+    expect(changed).not.toHaveBeenCalled();
+    expect(frames.size).toBe(0);
+    runtime.viewport(0.3);
+    runtime.interaction(false);
+    vi.advanceTimersByTime(180);
+    tick();
+    expect(changed).not.toHaveBeenCalled();
+    runtime.viewport(0.12);
+    while (frames.size) {
+      const before = changed.mock.calls.length;
+      tick();
+      expect(changed.mock.calls.length - before).toBeLessThanOrEqual(4);
+    }
+    expect(changed).toHaveBeenCalledTimes(count);
+  });
+
+  it('starts newly visible nodes light during input before the first far zoom', () => {
+    const { runtime, tick } = fixture(1);
+    runtime.subscribe('existing', vi.fn());
+    runtime.interaction(true);
+    runtime.subscribe('new', vi.fn());
+    expect(runtime.getSnapshot('existing')).toBe(true);
+    expect(runtime.getSnapshot('new')).toBe(false);
+    runtime.interaction(false);
+    vi.advanceTimersByTime(180);
+    tick();
+    expect(runtime.getSnapshot('new')).toBe(true);
   });
 });
