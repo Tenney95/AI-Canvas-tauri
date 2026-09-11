@@ -310,8 +310,6 @@ const settings = {
   '随机': 'Random',
   '固定端口后客户端配置不再变化，写一次即可。': 'With a fixed port the client config stays the same; write it once.',
   ' 新端口在下次开启会话时生效。': ' The new port takes effect the next time the session starts.',
-  '本页没有当前令牌。停止后重新开启以生成新的客户端配置。':
-    'This page does not have the current token. Stop and restart to generate a new client config.',
   '客户端配置片段': 'Client configuration snippet',
   '生成新令牌，旧配置立即失效': 'Generate a new token; the old config is invalidated immediately',
   '重置令牌': 'Reset token',
