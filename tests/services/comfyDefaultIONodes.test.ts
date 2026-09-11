@@ -129,6 +129,105 @@ describe('ComfyUI 默认 IO 节点', () => {
     expect(mocks.corsSafeFetch).not.toHaveBeenCalled();
   });
 
+  it('未上传的视频节点只连接 autogrow 可选槽时自动绕过', async () => {
+    registerWorkflow();
+    mocks.storeState.workflows[0].ioNodes = [
+      { nodeId: '127', type: 'video', title: 'Load Video (Upload) from S3' },
+    ];
+    mocks.storeState.workflows[0].fileContent = JSON.stringify({
+      '127': { class_type: 'LoadVideoUploadS3', inputs: { video: null } },
+      '93': {
+        class_type: 'ReferenceToVideo',
+        inputs: {
+          prompt: 'keep original prompt',
+          'ref_video_audios.ref_video_audio_0': ['127', 2],
+        },
+      },
+      '9': { class_type: 'SaveImage', inputs: { images: ['93', 0] } },
+    });
+
+    await executeComfyUIVideoGenerate(baseParams);
+
+    const submitted = submittedWorkflow();
+    expect(submitted['127']).toBeUndefined();
+    expect(submitted['93'].inputs).toEqual({ prompt: 'keep original prompt' });
+  });
+
+  it('未上传的媒体节点连接普通 optional 输入时按节点声明绕过', async () => {
+    registerWorkflow();
+    mocks.storeState.workflows[0].ioNodes = [
+      { nodeId: '20', type: 'image', title: '可选参考图' },
+    ];
+    mocks.storeState.workflows[0].fileContent = JSON.stringify({
+      '20': { class_type: 'LoadImageCustom', inputs: { image: '' } },
+      '21': { class_type: 'OptionalReferenceConsumer', inputs: { reference: ['20', 0], prompt: 'keep original prompt' } },
+      '9': { class_type: 'SaveImage', inputs: { images: ['21', 0] } },
+    });
+    mocks.corsSafeFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/object_info/OptionalReferenceConsumer')) {
+        return jsonResponse({
+          OptionalReferenceConsumer: {
+            input: { optional: { reference: ['IMAGE', {}] }, required: { prompt: ['STRING', {}] } },
+          },
+        });
+      }
+      if (url.endsWith('/prompt')) return jsonResponse({ prompt_id: 'prompt-1' });
+      if (url.includes('/history/')) {
+        return jsonResponse({
+          'prompt-1': {
+            status: { completed: true },
+            outputs: { '9': { images: [{ filename: 'out.png', subfolder: '', type: 'output' }] } },
+          },
+        });
+      }
+      throw new Error(`未预期的请求：${url}`);
+    });
+
+    await executeComfyUIGenerate(baseParams);
+
+    const submitted = submittedWorkflow();
+    expect(submitted['20']).toBeUndefined();
+    expect(submitted['21'].inputs).toEqual({ prompt: 'keep original prompt' });
+  });
+
+  it('未上传的媒体节点连接必填输入时不自动删除', async () => {
+    registerWorkflow();
+    mocks.storeState.workflows[0].ioNodes = [
+      { nodeId: '20', type: 'image', title: '必填参考图' },
+    ];
+    mocks.storeState.workflows[0].fileContent = JSON.stringify({
+      '20': { class_type: 'LoadImageCustom', inputs: { image: null } },
+      '21': { class_type: 'RequiredReferenceConsumer', inputs: { reference: ['20', 0] } },
+      '9': { class_type: 'SaveImage', inputs: { images: ['21', 0] } },
+    });
+    mocks.corsSafeFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/object_info/RequiredReferenceConsumer')) {
+        return jsonResponse({
+          RequiredReferenceConsumer: {
+            input: { required: { reference: ['IMAGE', {}] } },
+          },
+        });
+      }
+      if (url.endsWith('/object_info/SaveImage')) {
+        return jsonResponse({ SaveImage: { input: { required: { images: ['IMAGE', {}] } } } });
+      }
+      if (url.endsWith('/prompt')) return jsonResponse({ prompt_id: 'prompt-1' });
+      if (url.includes('/history/')) {
+        return jsonResponse({
+          'prompt-1': {
+            status: { completed: true },
+            outputs: { '9': { images: [{ filename: 'out.png', subfolder: '', type: 'output' }] } },
+          },
+        });
+      }
+      throw new Error(`未预期的请求：${url}`);
+    });
+
+    await executeComfyUIGenerate(baseParams);
+
+    expect(submittedWorkflow()['20'].inputs.image).toBeNull();
+  });
+
   it('显式提示词不能写入时报告映射错误，不覆盖连线', async () => {
     registerWorkflow();
     mocks.storeState.workflows[0].fileContent = JSON.stringify({ '6': { class_type: 'CLIPTextEncode', inputs: { text: ['source', 0] } } });

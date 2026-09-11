@@ -150,6 +150,8 @@ ComfyUI 在 AI Canvas 里是一种 **provider**：工作流导入后会出现在
 
 `injectDefaultMediaIntoWorkflow` 还会处理 autogrow 可选参考位：ComfyUI 的可选槽形如 `ref_images.ref_image_1`（键名带点号），用户这次带的参考图不够填满时，没轮到的槽会连同下游链路一起摘掉，避免残留的示例文件名让工作流报错。只有整条链路终点全是可选槽才摘，否则一律保留。
 
+提交前还会统一检查图片、视频和音频上传节点。导入工作流把未选择文件保存为 `null` 或空字符串时，若该节点只连接到 autogrow 槽或 `/object_info` 声明的 `optional` 输入，会自动移除空连接与无用支路；必填连接、独立终点和无法确认的结构保持不变，避免为了绕过空素材而破坏工作流主体。这项清理适用于所有本地 ComfyUI 工作流，不依赖特定自定义节点名称。
+
 ### 8.3 图片尺寸
 
 `injectDimensionsIntoWorkflow`：`mapImageDimensions(imageSize, aspectRatio)` 把画质档位当**短边**（`720p`=720 / `1K`=1024 / `2K`=2048 / `4K`=4096）按比例算另一边，然后写进所有 `width`、`height` 都是数字的节点，外加 ResolutionSelector 类节点的 `aspect_ratio` + `megapixels`。

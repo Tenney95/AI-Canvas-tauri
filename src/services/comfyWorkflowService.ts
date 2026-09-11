@@ -125,6 +125,7 @@ async function fetchComfyNodeClasses(baseUrl: string): Promise<Set<string> | nul
 interface ComfyInputSpec {
   options?: unknown[];
   type?: string;
+  optional?: boolean;
   min?: number;
   max?: number;
   step?: number;
@@ -146,6 +147,7 @@ function parseNodeInputSpecs(payload: unknown, classType: string): ComfyNodeInpu
       specs[name] = {
         options: Array.isArray(type) ? type : undefined,
         type: typeof type === 'string' ? type : undefined,
+        optional: group === 'optional',
         min: typeof config?.min === 'number' ? config.min : undefined,
         max: typeof config?.max === 'number' ? config.max : undefined,
         step: typeof config?.step === 'number' ? config.step : undefined,
@@ -565,10 +567,11 @@ function mediaLoaderInputKey(
  * ComfyUI 的 autogrow 输入形如 "ref_images.ref_image_1"，带点号的键都是可选槽；
  * 顺着链路找下去，只要终点全是这种槽就能整条摘掉，否则一律保留（少一张图报错也好过删错节点）。
  */
-function pruneOptionalMediaNode(
+async function pruneOptionalMediaNode(
   workflowObj: Record<string, Record<string, unknown>>,
   startNodeId: string,
-): void {
+  baseUrl: string,
+): Promise<void> {
   const chain = new Set([startNodeId]);
   const optionalRefs: Array<[Record<string, unknown>, string]> = [];
   const queue = [startNodeId];
@@ -582,7 +585,12 @@ function pruneOptionalMediaNode(
       for (const [key, value] of Object.entries(inputs)) {
         if (!Array.isArray(value) || value[0] !== current) continue;
         consumed = true;
-        if (key.includes('.')) {
+        const classType = typeof nodeData.class_type === 'string' ? nodeData.class_type : '';
+        const specs = key.includes('.') || !classType
+          ? null
+          : await fetchNodeInputSpecs(baseUrl, classType);
+        // autogrow 插槽使用带点号的键；其他节点以 ComfyUI 的 optional 声明为准。
+        if (key.includes('.') || specs?.[key]?.optional === true) {
           optionalRefs.push([inputs, key]);
         } else if (!chain.has(nodeId)) {
           // 必填输入：只有把消费者一起摘掉才合法，继续往下判断
@@ -635,7 +643,7 @@ async function injectDefaultMediaIntoWorkflow(
       continue;
     }
     if (index >= urls.length) {
-      pruneOptionalMediaNode(workflowObj, nodeId);
+      await pruneOptionalMediaNode(workflowObj, nodeId, baseUrl);
       continue;
     }
     const uploadResult = await uploadMediaToComfyUI(baseUrl, urls[index], kind, signal);
@@ -643,6 +651,35 @@ async function injectDefaultMediaIntoWorkflow(
     if (inputs.upload !== undefined) {
       inputs.upload = kind;
     }
+  }
+}
+
+const EMPTY_MEDIA_INPUT_KEYS: Record<Exclude<WorkflowIONodeType, 'prompt'>, string[]> = {
+  image: ['image'],
+  video: ['video', 'file'],
+  audio: ['audio'],
+};
+
+/**
+ * 导入的上传节点可以把未选择文件序列化成 null/空字符串。ComfyUI 会先校验这些节点，
+ * 即使它们只接到可选参考位也会让整份 prompt 失败。提交前只清理能够证明为可选的空分支；
+ * 必填连接、独立终点和无法识别的结构均保持原样，让服务端给出真实错误。
+ */
+async function pruneUnfilledOptionalMediaBranches(
+  workflowObj: Record<string, Record<string, unknown>>,
+  ioNodes: WorkflowIONode[],
+  baseUrl: string,
+): Promise<void> {
+  for (const ioNode of ioNodes) {
+    if (ioNode.type === 'prompt') continue;
+    const inputs = workflowObj[ioNode.nodeId]?.inputs as Record<string, unknown> | undefined;
+    if (!inputs) continue;
+    const inputKey = EMPTY_MEDIA_INPUT_KEYS[ioNode.type]
+      .find((key) => Object.prototype.hasOwnProperty.call(inputs, key));
+    if (!inputKey) continue;
+    const value = inputs[inputKey];
+    if (value !== null && value !== undefined && (typeof value !== 'string' || value.trim())) continue;
+    await pruneOptionalMediaNode(workflowObj, ioNode.nodeId, baseUrl);
   }
 }
 
@@ -1370,6 +1407,9 @@ async function submitComfyUIWorkflow(
     signal,
     defaultNodeFor('audio'),
   );
+
+  // 空上传节点即使只服务于可选参考位，也会在 ComfyUI prompt 校验阶段先报错。
+  await pruneUnfilledOptionalMediaBranches(workflowObj, ioNodes, baseUrl);
 
   // 返回 workflowObj 让调用方注入尺寸/视频参数后再提交
   return { baseUrl, promptId: '', workflowObj };
