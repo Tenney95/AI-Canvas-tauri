@@ -278,7 +278,7 @@ function DramaAssetCard({
   );
 }
 
-export default function DramaAssetsPanel() {
+export default function DramaAssetsPanel({ compact = false }: { compact?: boolean }) {
   const {
     dramaAssets,
     nodes,
@@ -389,8 +389,8 @@ export default function DramaAssetsPanel() {
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 px-3 pt-3 pb-2 shrink-0">
+    <div className={`flex min-h-0 flex-1 flex-col${compact ? ' drama-assets--compact' : ''}`}>
+      <div className="drama-assets-toolbar flex items-center gap-2 px-3 pt-3 pb-2 shrink-0">
               {KIND_TABS.map(({ key, label }) => {
                 const count = key === 'all' ? totals.all : totals[key];
                 return (
@@ -423,7 +423,7 @@ export default function DramaAssetsPanel() {
                   打开角色库
                 </button>
               ) : null}
-              <div className={`${tab === 'all' || tab === 'character' ? '' : 'ml-auto'} relative w-[180px] shrink-0`}>
+              <div className={`drama-assets-search ${tab === 'all' || tab === 'character' ? '' : 'ml-auto'} relative w-[180px] shrink-0`}>
                 <svg
                   className="absolute left-2.5 top-1/2 -translate-y-1/2 text-canvas-text-muted"
                   width="12"
