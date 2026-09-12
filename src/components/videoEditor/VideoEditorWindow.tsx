@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import {
-  loadConfig,
+  loadConfigWithoutSecrets as loadConfig,
   loadProjectData,
   loadProjectsList,
   listExternalFolderFiles,
