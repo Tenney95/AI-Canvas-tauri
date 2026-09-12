@@ -41,7 +41,7 @@ import { loadConfigFromDb, saveConfigToDb } from '../../src/services/indexedDbSe
 import { openDB, STORE_CONFIG } from '../../src/services/indexedDb/schema';
 import { enqueueConfigPersistence } from '../../src/services/configPersistenceQueue';
 import { deleteProviderSecret } from '../../src/services/providerSecretService';
-import { configWithoutSecrets, createConfigPatch } from '../../src/services/configPatch';
+import { ConfigConflictError, configWithoutSecrets, createConfigPatch } from '../../src/services/configPatch';
 import { createConfigSlice } from '../../src/store/store.config';
 
 function configStore() {
@@ -227,6 +227,63 @@ describe('config persistence keeps secrets out of IndexedDB', () => {
     secretStore.invoke.mockRejectedValue(new Error('fixture-private'));
     await third.getState().loadConfig();
     expect(third.getState().config.providers.a.apiKey).toBe('');
+  });
+
+  it('deletes a provider after only its credential revision changed elsewhere', async () => {
+    const original = {
+      providers: {
+        a: {
+          name: 'A',
+          baseUrl: 'https://example.test/v1',
+          apiKeyRef: 'secret:provider/a',
+          apiKeyRevision: 'old-revision',
+        },
+      },
+    };
+    await saveConfigToDb(original);
+    secretStore.entries.set('provider/a', 'old-fixture');
+    const deletingStore = configStore();
+    const editingStore = configStore();
+    await deletingStore.getState().loadConfig();
+    await editingStore.getState().loadConfig();
+
+    editingStore.getState().setProviderKey('a', 'new-fixture');
+    await editingStore.getState().saveConfig();
+    await deletingStore.getState().removeProviderConfig('a');
+    await deletingStore.getState().saveConfig();
+
+    expect(await loadConfigFromDb()).not.toHaveProperty('providers.a');
+    expect(secretStore.entries.has('provider/a')).toBe(false);
+  });
+
+  it('still rejects provider deletion after its ordinary fields changed elsewhere', async () => {
+    const original = {
+      providers: {
+        a: {
+          name: 'A',
+          baseUrl: 'https://example.test/v1',
+          apiKeyRef: 'secret:provider/a',
+          apiKeyRevision: 'old-revision',
+        },
+      },
+    };
+    await saveConfigToDb(original);
+    secretStore.entries.set('provider/a', 'fixture-key');
+    const deletingStore = configStore();
+    const editingStore = configStore();
+    await deletingStore.getState().loadConfig();
+    await editingStore.getState().loadConfig();
+
+    editingStore.getState().saveProviderConfig('a', {
+      ...editingStore.getState().config.providers.a,
+      name: 'Renamed',
+    });
+    await editingStore.getState().saveConfig();
+    await deletingStore.getState().removeProviderConfig('a');
+
+    await expect(deletingStore.getState().saveConfig()).rejects.toBeInstanceOf(ConfigConflictError);
+    expect(await loadConfigFromDb()).toHaveProperty('providers.a.name', 'Renamed');
+    expect(secretStore.entries.get('provider/a')).toBe('fixture-key');
   });
 
   it('saves an unrelated setting with zero credential IPC even when secret reads fail', async () => {

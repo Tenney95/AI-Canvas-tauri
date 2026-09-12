@@ -46,7 +46,7 @@ import type { DramaAssetLibrary } from '../types/dramaAssets';
 import { normalizeDramaAssetLibrary } from '../types/dramaAssets';
 import { deleteProviderSecretIfUnchanged, hasPlaintextSecret, readProviderSecretFingerprint, restoreConfigSecrets, stripConfigSecrets } from './providerSecretService';
 import { enqueueConfigPersistence } from './configPersistenceQueue';
-import { applyConfigPatch, ConfigConflictError, configWithoutSecrets, createConfigPatch, type ConfigChange } from './configPatch';
+import { applyConfigPatch, ConfigConflictError, configValuesEqual, configWithoutSecrets, createConfigPatch, type ConfigChange } from './configPatch';
 import { classifyStorageError, readStorageWithRetry, storageError } from './storageDiagnostics';
 import {
   decodeDataUrlBytesAsync,
@@ -854,6 +854,38 @@ export class ConfigCleanupError extends Error {
   constructor() { super('设置已保存，但旧渠道凭据清理失败，请重试'); this.name = 'ConfigCleanupError'; }
 }
 
+/**
+ * 删除整条连接时，凭据版本可能刚被同一应用的另一保存任务推进。
+ * 版本只用于防止旧 Key 回写，不属于用户可编辑配置；普通字段一致时以最新版本为删除基线。
+ */
+function rebaseDeletedProviderRevisions(
+  baseline: Record<string, unknown>,
+  current: Record<string, unknown>,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const baselineProviders = baseline.providers;
+  const currentProviders = current.providers;
+  const nextProviders = next.providers;
+  if (!baselineProviders || typeof baselineProviders !== 'object' || Array.isArray(baselineProviders)
+    || !currentProviders || typeof currentProviders !== 'object' || Array.isArray(currentProviders)
+    || !nextProviders || typeof nextProviders !== 'object' || Array.isArray(nextProviders)) return baseline;
+
+  let rebased: Record<string, unknown> | undefined;
+  const providers = baselineProviders as Record<string, unknown>;
+  for (const [id, originalProvider] of Object.entries(providers)) {
+    if (id in nextProviders) continue;
+    const currentProvider = (currentProviders as Record<string, unknown>)[id];
+    if (!originalProvider || typeof originalProvider !== 'object' || Array.isArray(originalProvider)
+      || !currentProvider || typeof currentProvider !== 'object' || Array.isArray(currentProvider)) continue;
+    const { apiKeyRevision: _originalRevision, ...originalOrdinary } = originalProvider as Record<string, unknown>;
+    const { apiKeyRevision: _currentRevision, ...currentOrdinary } = currentProvider as Record<string, unknown>;
+    if (!configValuesEqual(originalOrdinary, currentOrdinary)) continue;
+    rebased ??= structuredClone(baseline);
+    (rebased.providers as Record<string, unknown>)[id] = structuredClone(currentProvider);
+  }
+  return rebased ?? baseline;
+}
+
 /** 与连接删除同事务持久化；仅含指纹，重启后仍可完成清理。必须在配置队列内调用。 */
 async function completeSecretCleanup(raw: unknown): Promise<unknown> {
   const config = raw as { providers?: Record<string, unknown>; _pendingSecretCleanup?: Record<string, string> } | null;
@@ -886,7 +918,7 @@ export async function saveConfig(data: unknown, options?: ConfigSaveOptions): Pr
       // 先读已保存记录，确认既有引用；读取失败时不触碰任何凭据。
       const previous = await completeSecretCleanup(await readStorageWithRetry('config-read', loadConfigFromDb));
       if (intent) {
-        const baseline = configWithoutSecrets(intent.baseline);
+        let baseline = configWithoutSecrets(intent.baseline);
         let next = applyConfigPatch(baseline, intent.changes, false);
         const sourceProviders = (snapshot as { providers?: Record<string, Record<string, unknown>> })?.providers ?? {};
         const providers = (next.providers ?? {}) as Record<string, Record<string, unknown>>;
@@ -898,6 +930,7 @@ export async function saveConfig(data: unknown, options?: ConfigSaveOptions): Pr
           changedProviders[id] = provider;
         }
         if (next.providers || Object.keys(changedProviders).length) next.providers = providers;
+        baseline = rebaseDeletedProviderRevisions(baseline, configWithoutSecrets(previous), next);
         // 先检查普通字段与凭据版本冲突，拒绝后不触碰原生凭据。
         applyConfigPatch(configWithoutSecrets(previous), createConfigPatch(baseline, next));
         const deleted = Object.keys((baseline.providers ?? {}) as Record<string, unknown>).filter((id) => !providers[id]);
