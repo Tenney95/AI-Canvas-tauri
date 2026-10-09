@@ -1306,19 +1306,17 @@
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
   user-select: none;
-  animation: zoomControlsReveal 1.2s var(--ease-out-expo) 900ms both;
+  animation: zoomControlsReveal var(--dur-normal) var(--ease-out-expo) both;
 }
 
 @keyframes zoomControlsReveal {
   from {
     opacity: 0;
     transform: translate(-50%, 10px) scale(0.96);
-    filter: blur(8px);
   }
   to {
     opacity: 1;
     transform: translate(-50%, 0) scale(1);
-    filter: blur(0);
   }
 }
 

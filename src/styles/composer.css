@@ -31,7 +31,7 @@
   min-height: 0;
   overflow: hidden;
   transform-origin: center center;
-  animation: composerRootBloom 1000ms var(--ease-out-expo) both;
+  animation: composerRootBloom var(--dur-slow) var(--ease-out-expo) both;
 }
 
 /* 收起面板后只给展开按钮留一条窄边 */
@@ -72,7 +72,7 @@
   border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
   border-radius: 16px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
-  animation: composerToolsReveal 1000ms var(--ease-out-expo) 320ms both;
+  animation: composerToolsReveal var(--dur-normal) var(--ease-out-expo) both;
 }
 
 .composer-toolbar-main {
@@ -175,7 +175,7 @@
   min-width: 0;
   overflow: hidden;
   transform-origin: center center;
-  animation: composerStageBloom 1000ms var(--ease-out-expo) 120ms both;
+  animation: composerStageBloom var(--dur-slow) var(--ease-out-expo) both;
   background: transparent;
 }
 
@@ -204,7 +204,7 @@
   position: absolute;
   pointer-events: none;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4), 0 10px 40px rgba(0, 0, 0, 0.5);
-  animation: composerPageFocus 1000ms var(--ease-out-expo) 260ms both;
+  animation: composerPageFocus var(--dur-normal) var(--ease-out-expo) both;
 }
 
 .composer-text-edit {
@@ -330,7 +330,7 @@
   border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent);
   border-radius: 16px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
-  animation: composerSideReveal 1000ms var(--ease-out-expo) 380ms both;
+  animation: composerSideReveal var(--dur-normal) var(--ease-out-expo) both;
 }
 
 .composer-side.collapsed { display: none; }
