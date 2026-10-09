@@ -1280,10 +1280,11 @@ function LayoutSection() {
    ========================================================================== */
 function VideoPlayerSection() {
   const [media, setMedia] = useState<{ src: string; name: string } | null>(null);
+  const [compact, setCompact] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => () => { if (media) URL.revokeObjectURL(media.src); }, [media]);
-  return <Section id="sg-video-player" title="视频播放器" desc="公用 VideoPlayer；主题色进度、倍速、音量、悬停预览与全屏。选择本地视频试播，样例仅在本窗口使用，关闭或替换时释放资源。">
-    <Demo code={'<VideoPlayer src={videoUrl} name="示例视频" onMetadata={handleMetadata} />'}>
+  return <Section id="sg-video-player" title="视频播放器" desc="公用 VideoPlayer；主题色进度、倍速、音量、悬停预览与全屏。进度滑块悬浮轻微放大，拖动时按方向倾斜，松手回弹恢复；支持减少动态效果。音量使用 ui-slider，在按钮右侧同一行展开；紧凑模式时间靠右。选择本地视频试播，样例仅在本窗口使用，关闭或替换时释放资源。">
+    <Demo code={'<VideoPlayer src={videoUrl} name="示例视频" compact={compact} onMetadata={handleMetadata} /> · ui-video-player--compact'}>
       <div className="ui-stack">
         <div className="ui-row">
           <FileUploadButton label="选择视频" accept="video/*" aria-label="选择视频样例" fileName={media?.name ?? ''} placeholder="选择本地视频试播" className="min-w-0 flex-1" onChange={(event) => {
@@ -1294,10 +1295,11 @@ function VideoPlayerSection() {
             setError(''); setMedia({ src: URL.createObjectURL(file), name: file.name });
           }} />
           <button type="button" className="ui-btn ui-btn--ghost" disabled={!media} onClick={() => setMedia(null)}>移除样例</button>
+          <button type="button" className={`ui-btn ui-btn--ghost${compact ? ' is-active' : ''}`} aria-pressed={compact} onClick={() => setCompact(!compact)}>紧凑模式</button>
         </div>
         {error && <p role="status" className="text-xs text-canvas-text-secondary">{error}</p>}
-        <div className="h-[380px] min-w-0 rounded-lg bg-canvas-bg">
-          <VideoPlayer key={media?.src ?? 'empty'} src={media?.src} name={media?.name ?? '视频样例'} unavailable={!media} />
+        <div className={`${compact ? 'h-[158px] w-[280px] max-w-full' : 'h-[380px]'} min-w-0 rounded-lg bg-canvas-bg`}>
+          <VideoPlayer key={media?.src ?? 'empty'} src={media?.src} name={media?.name ?? '视频样例'} unavailable={!media} compact={compact} />
         </div>
       </div>
     </Demo>

@@ -1896,15 +1896,23 @@ select:not(.ui-select__control):not(.ui-select__native):disabled {
 .ui-video-player { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; width: 100%; height: 100%; color: var(--theme-text); }
 .ui-video-player:fullscreen { background: var(--theme-bg); }
 .ui-video-player__view { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
-.ui-video-player__view video { width: 100%; height: 100%; object-fit: contain; }
+.ui-video-player__view video, .ui-video-player__view > img { width: 100%; height: 100%; object-fit: contain; }
 .ui-video-player__controls { position: relative; z-index: 1; flex-shrink: 0; color: var(--theme-text); }
-.ui-video-player__progress { position: relative; height: 18px; }
+.ui-video-player__progress { --video-played: 0%; position: relative; height: 18px; }
 .ui-video-player__progress-track { position: absolute; inset: 6px 0; pointer-events: none; }
 .ui-video-player__progress-track span { position: absolute; top: 0; height: 100%; border-radius: 999px; }
 .ui-video-player__progress-empty { left: min(100%, calc(var(--video-played) + 6px)); right: 0; background: var(--white-alpha-10); }
 .ui-video-player__progress-buffer { left: min(100%, calc(var(--video-played) + 6px)); width: max(0px, calc(var(--video-buffered) - var(--video-played) - 6px)); background: color-mix(in srgb, var(--theme-text) 25%, transparent); }
 .ui-video-player__progress-played { left: 0; width: max(0px, calc(var(--video-played) - 6px)); background: var(--brand); }
-.ui-video-player__progress-marker { position: absolute; top: 3px; left: var(--video-played); width: 4px; height: 12px; border-radius: 999px; transform: translateX(-50%); background: var(--theme-text); pointer-events: none; }
+.ui-video-player__progress-marker { position: absolute; top: 3px; left: var(--video-played); width: 4px; height: 12px; border-radius: 999px; transform: translateX(-50%); transform-origin: center 75%; transition: transform var(--dur-slow) var(--ease-spring); background: var(--theme-text); pointer-events: none; }
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .ui-video-player__progress:where(:has(input:enabled):hover) .ui-video-player__progress-marker { transform: translateX(-50%) scale(1.12); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ui-video-player__progress.is-scrubbing .ui-video-player__progress-marker { transform: translateX(-50%) scale(1.16); transition: transform var(--dur-instant) var(--ease-out-quart); }
+  .ui-video-player__progress.is-scrubbing-forward .ui-video-player__progress-marker { transform: translateX(-50%) rotate(12deg) scale(1.16); }
+  .ui-video-player__progress.is-scrubbing-backward .ui-video-player__progress-marker { transform: translateX(-50%) rotate(-12deg) scale(1.16); }
+}
 .ui-video-player__range-hit { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: var(--cursor-pointer, pointer); }
 .ui-video-player__range-hit:disabled { cursor: var(--cursor-not-allowed, not-allowed); }
 .ui-video-player__progress:has(input:focus-visible) .ui-video-player__progress-marker { outline: 2px solid var(--brand); outline-offset: 3px; }
@@ -1929,10 +1937,8 @@ select:not(.ui-select__control):not(.ui-select__native):disabled {
 .ui-video-player__speed-popover .ui-video-player__value-track { margin: 8px 4px 12px; }
 .ui-video-player__volume { display: flex; height: 32px; max-width: 32px; align-items: center; overflow: hidden; border-radius: 10px; transition: max-width var(--transition-base), background var(--transition-base); }
 .ui-video-player__volume:hover, .ui-video-player__volume:focus-within { max-width: 112px; background: var(--white-alpha-10); }
-.ui-video-player__volume-track { width: 56px; flex-shrink: 0; margin: 0 16px 0 8px; opacity: 0; transition: opacity var(--transition-base); }
-.ui-video-player__volume:hover .ui-video-player__volume-track, .ui-video-player__volume:focus-within .ui-video-player__volume-track { opacity: 1; }
-.ui-video-player__volume-track .ui-video-player__value-marker { width: 12px; height: 12px; }
-.ui-video-player__volume-track .ui-video-player__range-hit { inset: -5px 0; height: 16px; }
+.ui-video-player__volume-track.ui-slider { width: 56px; flex-shrink: 0; margin: 0 12px 0 8px; opacity: 0; visibility: hidden; transition: opacity var(--transition-base); }
+.ui-video-player__volume:hover .ui-video-player__volume-track, .ui-video-player__volume:focus-within .ui-video-player__volume-track { opacity: 1; visibility: visible; }
 .ui-video-player__time-format { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 .ui-video-player__time-trigger.ui-btn { width: 20px; height: 20px; color: var(--theme-text-secondary); }
 .ui-video-player__time-trigger > svg { width: 14px; height: 14px; }
@@ -1944,8 +1950,45 @@ select:not(.ui-select__control):not(.ui-select__native):disabled {
 .ui-video-player__seek-time { position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%); padding: 2px 6px; border-radius: 6px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--theme-text); background: var(--theme-surface); }
 @media (prefers-reduced-motion: reduce) {
   .ui-video-player__volume, .ui-video-player__volume-track { transition: none; }
+  .ui-video-player__progress .ui-video-player__progress-marker { transform: translateX(-50%); transition: none; }
 }
 .ui-video-player__retry { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+
+/* 紧凑嵌入：控件悬浮于封面之上，小节点保留完整画面；原生全屏恢复标准尺寸。 */
+.ui-video-player--compact:not(:fullscreen) { container-type: size; border-radius: inherit; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__view { border-radius: inherit; overflow: hidden; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__controls { position: absolute; inset: auto 0 0; z-index: 8; opacity: 0; visibility: hidden; pointer-events: none; background: linear-gradient(transparent, var(--theme-bg)); }
+.ui-video-player--compact:hover .ui-video-player__controls,
+.ui-video-player--compact:focus-within .ui-video-player__controls,
+.node.selected .ui-video-player--compact .ui-video-player__controls { opacity: 1; visibility: visible; pointer-events: auto; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__control-row { grid-template-columns: minmax(0, 1fr) auto 26px; gap: 4px; margin-top: 2px; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__control.ui-btn { width: 26px; height: 26px; border-radius: 6px; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__control > svg { width: 16px; height: 16px; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__speed-trigger.ui-btn { min-width: 26px; padding: 0; font-size: 11px; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__time-format { justify-content: flex-end; gap: 0; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__time-format time { font-size: 11px; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__time-trigger.ui-btn { width: 14px; height: 20px; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__time-trigger > svg { width: 12px; height: 12px; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__volume { height: 26px; min-width: 26px; max-width: 26px; flex-shrink: 1; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__volume:hover,
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__volume:focus-within { max-width: 98px; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__volume-track.ui-slider { min-width: 0; flex-shrink: 1; margin: 0 8px; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__control-anchor { position: static; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__speed-popover.ui-menu,
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__time-popover.ui-menu { left: 8px; right: 8px; bottom: calc(100% + 4px); width: auto; min-width: 0; max-width: none; transform: none; padding: 8px; border-radius: 8px; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__speed-popover h2,
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__speed-popover > .ui-video-player__value-track { display: none; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__speed-options { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
+.ui-video-player--compact:not(:fullscreen) .ui-video-player__time-popover .ui-menu__item { font-size: 11px; }
+@container (max-width: 240px) {
+  .ui-video-player--compact:not(:fullscreen) .ui-video-player__time-format { grid-column: 1 / -1; grid-row: 1; }
+  .ui-video-player--compact:not(:fullscreen) .ui-video-player__control-left { grid-column: 1; grid-row: 2; }
+  .ui-video-player--compact:not(:fullscreen) .ui-video-player__control-row > :last-child { grid-column: 3; grid-row: 2; }
+}
+@container (max-height: 140px) {
+  .ui-video-player--compact:not(:fullscreen) .ui-video-player__speed-popover.ui-menu,
+  .ui-video-player--compact:not(:fullscreen) .ui-video-player__time-popover.ui-menu { bottom: 8px; max-height: calc(100cqh - 16px); overflow-y: auto; }
+}
 
 /* ==========================================================================
    Reduced Motion / 尊重系统「减少动效」

@@ -11,7 +11,7 @@ import NodeLabel from './shared/NodeLabel';
 import NodeError from './shared/NodeError';
 import GooeyBtn from './shared/GooeyBtn';
 import ResizeHandle from './shared/ResizeHandle';
-import VideoNodeControls from './shared/VideoNodeControls';
+import VideoPlayer from '../shared/VideoPlayer';
 import VideoNodeToolbar, { type CaptureFramePosition } from './shared/VideoNodeToolbar';
 import NodeToolbarShell from './shared/NodeToolbarShell';
 import {
@@ -361,6 +361,17 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     };
   }, [shouldMountPlayer, source, projectId]);
 
+  const setCompactVideoElement = useCallback((video: HTMLVideoElement | null) => {
+    const previous = videoRef.current;
+    if (!video && previous && source && previous.readyState > 0) {
+      compactPlaybackRestoreRef.current = {
+        source, currentTime: previous.ended ? 0 : previous.currentTime, shouldPlay: false,
+        volume: previous.volume, muted: previous.muted,
+      };
+    }
+    videoRef.current = video;
+  }, [source]);
+
   const activateCompactVideo = useCallback(() => {
     if (!source || isFullscreen) return null;
     // 点击回调内同步挂载，随后的 play() 仍属于用户手势，兼容 WebKit。
@@ -372,6 +383,20 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
     const video = activateCompactVideo();
     if (video) void video.play().catch(() => setActivatedSource(null));
   }, [activateCompactVideo]);
+
+  const handleVolumeChange = useCallback((volume: number, muted: boolean) => {
+    if (!source) return;
+    const previous = compactPlaybackRestoreRef.current;
+    const saved = previous?.source === source ? previous : null;
+    const video = videoRef.current;
+    compactPlaybackRestoreRef.current = {
+      source,
+      currentTime: video && video.readyState > 0 ? video.currentTime : saved?.currentTime ?? 0,
+      shouldPlay: saved?.shouldPlay ?? false,
+      volume,
+      muted,
+    };
+  }, [source]);
 
   const handleResize = useCallback(
     (newWidth: number, newHeight: number) => {
@@ -892,36 +917,27 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       >
         <div className={`node-preview compact${data.videoUrl || data.thumbnailUrl ? ' has-media' : ''}`}
           onDoubleClick={(event) => { event.stopPropagation(); handleOpenFullscreen(); }}>
-          {shouldMountPlayer ? (
-            <video
-              ref={videoRef}
+          {data.videoUrl ? (
+            <VideoPlayer
+              key={`${projectId}:${data.videoUrl}`}
+              mediaRef={setCompactVideoElement}
               src={data.videoUrl}
-              className="video-preview-player compact"
+              name={displayLabel}
+              compact
+              active={shouldMountPlayer}
+              poster={initialCoverUrl ?? undefined}
+              durationHint={generatedCover && generatedCover.source === source ? generatedCover.duration
+                : typeof data.videoDuration === 'number' ? data.videoDuration : 0}
               crossOrigin="anonymous"
-              playsInline
-              preload="auto"
               onLoadedMetadata={handleLoadedMetadata}
               onPlay={() => { dismissInitialCover(); setPlayingSource(source ?? null); }}
               onPause={() => { setPlayingSource(null); setActivatedSource(null); }}
+              onVolumeChange={handleVolumeChange}
               onEnded={() => { setPlayingSource(null); setActivatedSource(null); }}
-              onDoubleClick={(e) => { e.stopPropagation(); handleOpenFullscreen(); }}
-              data-source-url={data.sourceUrl}
+              onPosterError={() => { if (suppliedCover) setFailedCover(suppliedCover); }}
+              onRequestPlayback={requestPlayback}
+              onFullscreen={handleOpenFullscreen}
             />
-          ) : data.videoUrl && initialCoverUrl ? (
-            <img
-              src={initialCoverUrl}
-              alt=""
-              className="video-node-poster"
-              draggable={false}
-              onError={() => { if (suppliedCover) setFailedCover(suppliedCover); }}
-            />
-          ) : data.videoUrl ? (
-            <div className="node-preview-placeholder" aria-hidden="true">
-              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
-                <polygon points="23 7 16 12 23 17 23 7" />
-                <rect x="1" y="5" width="15" height="14" rx="2" />
-              </svg>
-            </div>
           ) : data.thumbnailUrl ? (
             <img
               src={data.thumbnailUrl}
@@ -970,17 +986,6 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
             <img src={initialCoverUrl} alt="" className="video-node-initial-cover" draggable={false}
               onError={() => { if (suppliedCover) setFailedCover(suppliedCover); }} />
           )}
-          {data.videoUrl && !isFullscreen && (
-            <VideoNodeControls
-              videoRef={videoRef}
-              source={data.videoUrl}
-              onInteract={dismissInitialCover}
-              active={shouldMountPlayer}
-              durationHint={generatedCover && generatedCover.source === source ? generatedCover.duration
-                : typeof data.videoDuration === 'number' ? data.videoDuration : 0}
-              onRequestPlayback={requestPlayback}
-            />
-          )}
         </div>
         {data.error && <NodeError nodeId={id} message={data.error} />}
         <Handle type="source" position={Position.Left} id="left" className="node-handle handle-source handle-video" >
@@ -1012,17 +1017,18 @@ function AIVideoNode({ id, data, selected }: { id: string; data: BaseNodeData; s
         className="fullscreen-overlay--image-preview"
       >
         {isFullscreen && (data.videoUrl ? (
-          <video
-            ref={setFullscreenVideoElement}
-            src={data.videoUrl}
-            className="fullscreen-video-view"
-            controls
-            autoPlay
-            playsInline
-            crossOrigin="anonymous"
-            data-source-url={data.sourceUrl}
-            onLoadedMetadata={handleFullscreenLoadedMetadata}
-          />
+          <div className="h-[92vh] w-[92vw] min-h-0 min-w-0 rounded bg-canvas-bg">
+            <VideoPlayer
+              mediaRef={setFullscreenVideoElement}
+              src={data.videoUrl}
+              poster={initialCoverUrl ?? undefined}
+              name={displayLabel}
+              autoPlay
+              crossOrigin="anonymous"
+              onLoadedMetadata={handleFullscreenLoadedMetadata}
+              onEscape={handleCloseFullscreen}
+            />
+          </div>
         ) : data.thumbnailUrl ? (
           <img
             src={data.thumbnailUrl}
