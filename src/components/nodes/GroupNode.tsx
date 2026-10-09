@@ -14,6 +14,7 @@ import { GROUP_COLOR_PALETTE } from '../../types';
 import { useNodeLocked } from '../../hooks/useNodeLocked';
 import AnimatedButton from '../shared/AnimatedButton';
 import { batchExecuteNodes, type BatchContext } from '../../utils/batchExecute';
+import { getGroupChildImageKey } from '../../utils/groupChildImageKey';
 import { useT } from '../../i18n';
 
 interface GroupNodeData {
@@ -65,11 +66,7 @@ export default function GroupNode({ id, data, selected }: NodeProps) {
   const [batchRunning, setBatchRunning] = useState(false);
   const [showColors, setShowColors] = useState(false);
   // 订阅成字符串，避免每次渲染返回新数组
-  const childImageKey = useAppStore((s) => s.nodes
-    .filter((n) => n.parentId === id)
-    .map((n) => (n.data.thumbnailUrl || n.data.imageUrl) as string | undefined)
-    .filter(Boolean)
-    .join('|'));
+  const childImageKey = useAppStore((s) => getGroupChildImageKey(s.nodes, id));
   // 组内图片随机抽 2-3 张当封面；组内图片变化时重抽
   const [coverImages, setCoverImages] = useState<string[]>(() => pickCoverImages(childImageKey));
   const [coverKey, setCoverKey] = useState(childImageKey);
