@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Icon } from '@iconify/react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../store/useAppStore';
+import { seriesOwnerId } from '../../store/store.utils';
 import { loadRecentAssets, type RecentAssetEntry } from '../../services/fs/recentAssets';
 import { shortFolderName } from '../../utils/assetFormat';
 import { useResourceVideoPreview } from '../../hooks/useResourceVideoPreview';
@@ -159,7 +160,7 @@ export default function RecentAssetsSection() {
                         ? { kind: 'folder', rootPath: file.folderRoot, relativePath: file.relativePath?.split('/').slice(0, -1).join('/') ?? '' } : { kind: 'all' } })} />
                 )}
                 <span className="assets-card-badge pointer-events-none max-w-[calc(100%-5rem)] truncate opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
-                  {projectId ? projects.find((project) => project.id === projectId)?.name ?? '项目素材'
+                  {projectId ? projects.find((project) => project.id === seriesOwnerId(projects, projectId))?.name ?? '项目素材'
                     : file.folderRoot ? shortFolderName(file.folderRoot) : '全局资产'}
                 </span>
               </div>
