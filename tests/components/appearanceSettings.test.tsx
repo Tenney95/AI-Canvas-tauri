@@ -22,6 +22,25 @@ describe('appearance settings rendering', () => {
     const markup = renderToStaticMarkup(<AppearanceSettings />);
     expect(markup).toContain('appearance-settings-view');
     expect(markup).toContain('connection-handles-settings');
+    for (const preset of createBuiltinAppearanceThemes()) {
+      expect(markup).toContain(`aria-label="外观预设：${preset.name}" aria-pressed="${preset.id === theme.id}"`);
+    }
+  });
+
+  it('keeps custom preset selection separate from rename and delete buttons', () => {
+    const custom = { ...createBuiltinAppearanceThemes()[0], id: 'custom', name: '我的预设', builtin: false };
+    driver.state = {
+      config: { providers: {}, appearance: custom },
+      appearanceThemes: [...createBuiltinAppearanceThemes(), custom],
+    } as AppState;
+    const markup = renderToStaticMarkup(<AppearanceSettings />);
+    const selector = markup.match(/<button[^>]*aria-label="外观预设：我的预设"[^>]*>[\s\S]*?<\/button>/)?.[0];
+    expect(selector).toBeDefined();
+    expect(selector).toContain('aria-pressed="true"');
+    expect(selector).not.toContain('删除预设');
+    expect(selector?.match(/<button/g)).toHaveLength(1);
+    expect(markup).toContain('title="重命名"');
+    expect(markup).toContain('aria-label="删除预设"');
   });
 
   it('renders single node preview with real canvas nodes when available', () => {

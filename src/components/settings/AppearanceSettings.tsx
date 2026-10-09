@@ -1156,12 +1156,6 @@ export default function AppearanceSettings() {
             return (
               <div
                 key={theme.id}
-                onClick={() => {
-                  draftRef.current = null;
-                  setDraft(null);
-                  setAutoSaveStatus('idle');
-                  void activate(theme);
-                }}
                 className={`group relative rounded-2xl overflow-hidden transition-all cursor-pointer border select-none ${
                   isCurrent ? 'settings-preset-card--active ring-2 ring-brand/35 shadow-md shadow-brand/10' : 'settings-preset-card hover:shadow-sm'
                 }`}
@@ -1177,6 +1171,18 @@ export default function AppearanceSettings() {
                           : themeResolved.ui.background,
                 }}
               >
+                <button
+                  type="button"
+                  aria-label={`${t('外观预设')}：${theme.name}`}
+                  aria-pressed={isCurrent}
+                  className="absolute inset-0 z-20 rounded-2xl border-0 bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand"
+                  onClick={() => {
+                    draftRef.current = null;
+                    setDraft(null);
+                    setAutoSaveStatus('idle');
+                    void activate(theme);
+                  }}
+                />
                 {/* Solar system background elements */}
                 {isSolarSystem && solarPlanet && (
                   <>
@@ -1201,13 +1207,13 @@ export default function AppearanceSettings() {
 
                 {/* Floating Bottom Footer */}
                 <div
-                  className={`absolute bottom-0 inset-x-0 px-3 py-1.5 flex items-center justify-between z-20 transition-colors ${
+                  className={`absolute bottom-0 inset-x-0 px-3 py-1.5 flex items-center justify-between z-30 pointer-events-none transition-colors ${
                     isDark
                       ? 'bg-gradient-to-t from-black/80 via-black/40 to-transparent text-white'
                       : 'bg-gradient-to-t from-white/90 via-white/50 to-transparent text-slate-800'
                   }`}
                 >
-                  <div className="flex items-center gap-1.5 min-w-0" onClick={(e) => e.stopPropagation()}>
+                  <div className={`flex items-center gap-1.5 min-w-0 ${!theme.builtin ? 'pointer-events-auto' : ''}`}>
                     {editingPresetId === theme.id ? (
                       <input
                         autoFocus
@@ -1230,8 +1236,8 @@ export default function AppearanceSettings() {
                       <button
                         type="button"
                         className="group/name flex items-center gap-1 text-left text-xs font-semibold drop-shadow-xs hover:text-brand transition-colors"
-                        title={t('双击修改名称')}
-                        onDoubleClick={() => {
+                        title={t('重命名')}
+                        onClick={() => {
                           setEditingPresetId(theme.id);
                           setEditingPresetName(theme.name);
                         }}
@@ -1243,7 +1249,7 @@ export default function AppearanceSettings() {
                     )}
                   </div>
 
-                  <div className="flex items-center space-x-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center space-x-1.5 shrink-0">
                     {isCurrent && (
                       <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-brand text-white shadow-xs">
                         {t('当前使用')}
@@ -1253,7 +1259,7 @@ export default function AppearanceSettings() {
                       <button
                         type="button"
                         onClick={() => setConfirmation({ kind: 'delete', theme })}
-                        className="p-1 text-canvas-text-muted hover:text-danger rounded transition-colors"
+                        className="pointer-events-auto p-1 text-canvas-text-muted hover:text-danger rounded transition-colors"
                         title={t('删除预设')}
                         aria-label={t('删除预设')}
                       >
