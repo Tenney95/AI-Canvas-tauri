@@ -763,7 +763,6 @@ const settings = {
   '外观预设': 'Appearance presets',
   '选择、保存或管理完整外观配置': 'Select, save or manage the full appearance configuration',
   '预设名称': 'Preset name',
-  '双击修改名称': 'Double-click to rename',
   '当前使用': 'In use',
   '删除预设': 'Delete preset',
   '主题模式': 'Theme mode',
