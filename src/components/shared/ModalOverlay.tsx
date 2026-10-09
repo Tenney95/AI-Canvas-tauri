@@ -11,6 +11,7 @@ import {
   useReducedMotion,
 } from 'framer-motion';
 import { fadeFast, fadeNormal, panelMotion, springSmooth } from '../../utils/motion';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
 
 export default function ModalOverlay({
   isOpen,
@@ -40,7 +41,6 @@ export default function ModalOverlay({
   const quickMotion = motionPreset === 'quick';
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const onCloseRef = useRef(onClose);
   const dragControls = useDragControls();
   const dragX = useMotionValue(0);
   const dragY = useMotionValue(0);
@@ -79,9 +79,7 @@ export default function ModalOverlay({
     dragControls.start(event);
   };
 
-  useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
+  useDialogFocus(isOpen, panelRef, onClose, { zIndex });
 
   useEffect(() => {
     if (!isOpen || !draggable) {
@@ -94,62 +92,6 @@ export default function ModalOverlay({
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [clampPanelToViewport, dragX, dragY, draggable, isOpen]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const previouslyFocused = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    const panel = panelRef.current;
-    if (!panel) return;
-
-    const getFocusableElements = () => Array.from(
-      panel.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      ),
-    ).filter((element) => element.getClientRects().length > 0);
-
-    const focusFrame = requestAnimationFrame(() => {
-      const firstFocusable = getFocusableElements()[0];
-      (firstFocusable ?? panel).focus();
-    });
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        onCloseRef.current();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-
-      const focusableElements = getFocusableElements();
-      if (focusableElements.length === 0) {
-        event.preventDefault();
-        panel.focus();
-        return;
-      }
-
-      const firstFocusable = focusableElements[0];
-      const lastFocusable = focusableElements[focusableElements.length - 1];
-      const activeElement = document.activeElement;
-      if (event.shiftKey && (activeElement === firstFocusable || !panel.contains(activeElement))) {
-        event.preventDefault();
-        lastFocusable.focus();
-      } else if (!event.shiftKey && (activeElement === lastFocusable || !panel.contains(activeElement))) {
-        event.preventDefault();
-        firstFocusable.focus();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown, true);
-    return () => {
-      cancelAnimationFrame(focusFrame);
-      document.removeEventListener('keydown', handleKeyDown, true);
-      if (previouslyFocused?.isConnected) previouslyFocused.focus();
-    };
-  }, [isOpen]);
 
   return createPortal(
     <AnimatePresence>
