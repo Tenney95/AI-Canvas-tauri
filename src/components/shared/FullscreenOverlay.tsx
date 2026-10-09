@@ -2,12 +2,14 @@
  * FullscreenOverlay — 全屏蒙层组件
  * 通过 Portal 渲染到 document.body，使用 framer-motion 动画
  */
-import { useEffect, useCallback } from 'react';
+import { useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { ReactNode } from 'react';
 import { EASE_OUT_EXPO } from '../../utils/motion';
 import PopupCloseButton from './PopupCloseButton';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
+import { useT } from '../../i18n';
 
 export interface FullscreenOverlayProps {
   isOpen: boolean;
@@ -73,23 +75,18 @@ export default function FullscreenOverlay({
   headerContent,
   unmountOnClose = false,
 }: FullscreenOverlayProps) {
-  // Close on Escape release so child keydown handlers cannot swallow the shortcut.
-  const handleKeyUp = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    },
-    [onClose],
-  );
-
-  useEffect(() => {
-    if (isOpen) {
-      window.addEventListener('keyup', handleKeyUp, true);
-      return () => window.removeEventListener('keyup', handleKeyUp, true);
-    }
-  }, [isOpen, handleKeyUp]);
+  const t = useT();
+  const overlayRef = useRef<HTMLDivElement>(null);
+  // 保留松开 Escape 关闭的语义，并与嵌套弹窗共享焦点/键盘层级。
+  useDialogFocus(isOpen, overlayRef, onClose, { escapeOnKeyUp: true });
 
   const overlay = isOpen ? (
         <motion.div
+          ref={overlayRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={title || t('全屏预览')}
+          tabIndex={-1}
           data-tauri-drag-region
           className={`fullscreen-overlay${hidePanel ? ' fullscreen-overlay--transparent' : ''} ${className}`}
           variants={hidePanel ? backdropVariantsInstant : backdropVariants}
