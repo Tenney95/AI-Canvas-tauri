@@ -1,6 +1,11 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const driver = vi.hoisted(() => ({ reduceMotion: false }));
+vi.mock('framer-motion', async () => ({
+  ...await vi.importActual<typeof import('framer-motion')>('framer-motion'),
+  useReducedMotion: () => driver.reduceMotion,
+}));
 vi.mock('react-dom', () => ({ createPortal: (element: unknown) => element }));
 vi.mock('../../src/hooks/useDialogFocus', () => ({ useDialogFocus: vi.fn() }));
 vi.mock('../../src/i18n', () => ({ useT: () => (value: string) => value }));
@@ -8,9 +13,19 @@ vi.mock('../../src/i18n', () => ({ useT: () => (value: string) => value }));
 import FullscreenOverlay from '../../src/components/shared/FullscreenOverlay';
 import { useDialogFocus } from '../../src/hooks/useDialogFocus';
 
-beforeEach(() => { vi.stubGlobal('document', { body: {} }); });
+beforeEach(() => { driver.reduceMotion = false; vi.stubGlobal('document', { body: {} }); });
 
 describe('全屏预览的焦点边界与生命周期', () => {
+  it('减少动态效果时保留淡入，不再缩放或移动面板', () => {
+    driver.reduceMotion = true;
+    const markup = renderToStaticMarkup(
+      <FullscreenOverlay isOpen onClose={vi.fn()} title="文本预览">内容</FullscreenOverlay>,
+    );
+    expect(markup).toContain('opacity:0');
+    expect(markup).not.toMatch(/scale\(|translate3d\(/);
+    expect(markup).toContain('transform:none');
+  });
+
   it.each([false, true])('普通与无面板模式都有命名的模态语义：hidePanel=%s', (hidePanel) => {
     const close = vi.fn();
     const markup = renderToStaticMarkup(
