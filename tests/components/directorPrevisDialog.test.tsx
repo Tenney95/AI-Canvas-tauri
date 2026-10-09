@@ -82,6 +82,18 @@ beforeEach(() => {
 });
 
 describe('previs dialog saved-scene boundary', () => {
+  it('reports video export failures without suggesting a text model configuration change', async () => {
+    vi.mocked(loadDirectorPrevisScene).mockResolvedValue(createDefaultPrevisScene());
+    vi.mocked(saveDirectorPrevisOutput).mockRejectedValue(new TypeError('Type error'));
+    ready(render());
+    await vi.waitFor(() => {
+      expect(find(render(), (element) => element.type === 'p' && element.props.className === 'ui-error min-w-0 flex-1').children)
+        .toBe('导出参考视频失败，请检查项目存储或视频编码支持后重试');
+    });
+    expect(saveDirectorPrevisOutput).toHaveBeenCalledOnce();
+    expect(saveDirectorPrevisOutput).toHaveBeenCalledWith('director-a', 'video', expect.any(Function), expect.any(AbortSignal));
+  });
+
   it('generates using the same mention editor and connected material chips as node prompts', async () => {
     driver.data = { ...driver.data, directorPrevisScene: undefined, prompt: '参考 @{image:空间图} 生成跟拍', model: 'general/vision', provider: 'general' };
     let tree = render();

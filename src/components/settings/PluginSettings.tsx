@@ -39,6 +39,12 @@ function pluginNodeTypeLabel(nodeType: string): string {
   return nodeType.startsWith('source-') ? label.replace(/^生成/u, '') : label;
 }
 
+function pluginIcon(manifest: PluginManifest): string {
+  return manifest.contributes.nodeTools.find((tool) => tool.icon)?.icon
+    || manifest.contributes.nodes?.find((node) => node.icon)?.icon
+    || 'lucide:blocks';
+}
+
 function isUpdateAvailable(latest: string, current: string): boolean {
   try {
     return comparePluginVersions(latest, current) > 0;
@@ -884,7 +890,7 @@ export default function PluginSettings() {
               <article key={item.repository} className="rounded-lg border border-canvas-border bg-canvas-surface p-3">
                 <div className="flex items-start gap-3">
                   <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
-                    <Icon icon="lucide:blocks" width={18} height={18} />
+                    <Icon icon={pluginIcon(item.manifest)} width={18} height={18} />
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -976,7 +982,7 @@ export default function PluginSettings() {
             <article key={plugin.id} className="rounded-xl border border-canvas-border bg-canvas-card p-3">
               <div className="flex items-start gap-3">
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
-                  <Icon icon="lucide:blocks" width={18} height={18} />
+                  <Icon icon={pluginIcon(plugin.manifest)} width={18} height={18} />
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">

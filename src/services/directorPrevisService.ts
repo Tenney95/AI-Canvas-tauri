@@ -1,6 +1,7 @@
 import type { DirectorPrevisReference, DirectorPrevisScene } from '../types/directorPrevis';
 import type { BaseNodeData } from '../types';
-import { useAppStore } from '../store/useAppStore';
+import { generateId, useAppStore } from '../store/useAppStore';
+import { derivedNodePlacement } from '../store/store.utils';
 import { generateText } from './ai/generateText';
 import { createDefaultPrevisScene, normalizeDirectorPrevisScene, parseDirectorPrevisJson, PREVIS_MAX_BYTES } from './directorPrevisSchema';
 import { assertProjectFileReference, readVerifiedProjectFile, sha256Hex, writeImmutableProjectFile } from './fs/projectFiles';
@@ -198,9 +199,8 @@ export async function saveDirectorPrevisOutput(nodeId: string, kind: 'image' | '
     const url = await render(operationSignal);
     assertFresh();
     if (!url.startsWith(kind === 'image' ? 'data:image/png;base64,' : 'data:video/mp4;base64,')) throw new Error('预演输出格式无效');
-    const saved = await saveDataUrlToProjectData(url, projectId,
-      buildNodeFileName(data.label || '镜头预演', kind === 'image' ? 'png' : 'mp4', 'previs'),
-      { throwOnError: true });
+    const fileName = buildNodeFileName(data.label || '镜头预演', kind === 'image' ? 'png' : 'mp4', 'previs');
+    const saved = await saveDataUrlToProjectData(url, projectId, fileName, { throwOnError: true });
     assertFresh();
     if (!saved?.assetUrl || !saved.filePath) throw new Error('预演输出未能保存，请检查项目存储');
     const state = useAppStore.getState();
@@ -210,6 +210,18 @@ export async function saveDirectorPrevisOutput(nodeId: string, kind: 'image' | '
       directorCaptureFilePaths: [...(data.directorCaptureFilePaths || []), saved.filePath].slice(-12),
     } : { videoUrl: saved.assetUrl, filePath: saved.filePath };
     state.updateNodeData(nodeId, { ...patch, status: 'success', directorStatus: 'ready', error: undefined });
+    if (kind === 'video') {
+      const node = state.nodes.find((item) => item.id === nodeId)!;
+      // 导演节点的回填已经记录历史，新增视频共用这一次撤销。
+      state.addNodeTransient({
+        id: `node-${generateId()}`, type: 'ai-video',
+        ...derivedNodePlacement({ ...node, data: { ...node.data, nodeWidth: node.data.nodeWidth || 320 } }),
+        data: {
+          label: `${node.data.label || '镜头预演'} 运镜参考视频`, type: 'ai-video', role: 'source', status: 'success',
+          videoUrl: saved.assetUrl, filePath: saved.filePath, fileName, nodeWidth: 280, nodeHeight: 160,
+        },
+      });
+    }
     state.incrementRevision();
   });
 }

@@ -318,7 +318,7 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
                 onClick={() => void openInWindow()}
               >
                 <Icon
-                  icon={openingWindow ? 'lucide:loader-circle' : 'lucide:external-link'}
+                  icon={openingWindow ? 'lucide:loader-circle' : 'mdi:dock-window'}
                   width={16}
                   height={16}
                   className={openingWindow ? 'animate-spin' : undefined}

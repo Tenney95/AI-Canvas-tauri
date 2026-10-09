@@ -199,27 +199,71 @@ describe('previs generation and project lifecycle', () => {
     expect(readVerifiedProjectFile).not.toHaveBeenCalled();
   });
 
-  it('saves a camera frame or video into the original node and retains both outputs', async () => {
+  it('creates a video source beside the director, retains both outputs and supports one-step undo and redo', async () => {
     await saveDirectorPrevisScene(nodeId, createDefaultPrevisScene());
     await saveDirectorPrevisOutput(nodeId, 'image', async () => 'data:image/png;base64,AA==');
+    expect(useAppStore.getState().nodes).toHaveLength(1);
+    vi.mocked(saveDataUrlToProjectData).mockResolvedValue({ assetUrl: 'asset://previs.mp4', filePath: '/project/previs.mp4' });
+    const history = vi.spyOn(useAppStore.getState(), 'commitToHistory');
     await saveDirectorPrevisOutput(nodeId, 'video', async () => 'data:video/mp4;base64,AA==');
     expect(getData().directorCaptureUrls).toEqual(['asset://previs.png']);
     expect(getData().imageUrl).toBe('asset://previs.png');
-    expect(getData().videoUrl).toBe('asset://previs.png');
+    expect(getData().videoUrl).toBe('asset://previs.mp4');
+    const video = useAppStore.getState().nodes.find((node) => node.type === 'ai-video')!;
+    expect(video).toMatchObject({ position: { x: 360, y: 0 }, data: {
+      label: '导演台 运镜参考视频', role: 'source', status: 'success', videoUrl: 'asset://previs.mp4',
+      filePath: '/project/previs.mp4', fileName: expect.stringMatching(/\.mp4$/),
+    } });
+    expect(video.data.displayId).toBeDefined();
+    expect(history).toHaveBeenCalledOnce();
+    expect(await useAppStore.getState().undo()).toBe(true);
+    expect(useAppStore.getState().nodes).toHaveLength(1);
+    expect(getData().imageUrl).toBe('asset://previs.png');
+    expect(getData().videoUrl).toBe('asset://previs.mp4');
+    expect(await useAppStore.getState().redo()).toBe(true);
+    expect(useAppStore.getState().nodes.find((node) => node.id === video.id)).toEqual(video);
   });
 
-  it('does not save late renders or publish after stale media writes', async () => {
+  it('places the video beside a resized director within the same parent group', async () => {
+    useAppStore.setState((state) => ({ nodes: [
+      { id: 'group-a', type: 'group', position: { x: 1000, y: 800 },
+        data: { type: 'comment', label: '分组', nodeWidth: 1400, nodeHeight: 800 } },
+      { ...state.nodes[0], parentId: 'group-a', position: { x: 50, y: 60 }, data: { ...state.nodes[0].data, nodeWidth: 420 } },
+    ] }));
     await saveDirectorPrevisScene(nodeId, createDefaultPrevisScene());
-    await expect(saveDirectorPrevisOutput(nodeId, 'image', async () => {
-      useAppStore.getState().incrementRevision(); return 'data:image/png;base64,AA==';
+    await saveDirectorPrevisOutput(nodeId, 'video', async () => 'data:video/mp4;base64,AA==');
+    expect(useAppStore.getState().nodes.find((node) => node.type === 'ai-video'))
+      .toMatchObject({ parentId: 'group-a', position: { x: 510, y: 60 } });
+  });
+
+  it.each(['render', 'save'])('does not create a video node when %s fails', async (failure) => {
+    await saveDirectorPrevisScene(nodeId, createDefaultPrevisScene());
+    if (failure === 'save') vi.mocked(saveDataUrlToProjectData).mockRejectedValue(new Error('write failed'));
+    const history = vi.spyOn(useAppStore.getState(), 'commitToHistory');
+    await expect(saveDirectorPrevisOutput(nodeId, 'video', async () => {
+      if (failure === 'render') throw new Error('encode failed');
+      return 'data:video/mp4;base64,AA==';
+    })).rejects.toThrow(failure === 'render' ? 'encode failed' : 'write failed');
+    expect(useAppStore.getState().nodes).toHaveLength(1);
+    expect(getData().videoUrl).toBeUndefined();
+    expect(history).not.toHaveBeenCalled();
+  });
+
+  it.each(['image', 'video'] as const)('does not save late %s renders or publish after stale media writes', async (kind) => {
+    const url = kind === 'image' ? 'data:image/png;base64,AA==' : 'data:video/mp4;base64,AA==';
+    await saveDirectorPrevisScene(nodeId, createDefaultPrevisScene());
+    await expect(saveDirectorPrevisOutput(nodeId, kind, async () => {
+      useAppStore.getState().incrementRevision(); return url;
     })).rejects.toMatchObject({ name: 'AbortError' });
     expect(saveDataUrlToProjectData).not.toHaveBeenCalled();
     vi.mocked(saveDataUrlToProjectData).mockImplementation(async () => {
       useAppStore.setState({ currentProjectId: 'project-b' });
       return { assetUrl: 'asset://late.png', filePath: '/project/late.png' };
     });
-    await expect(saveDirectorPrevisOutput(nodeId, 'image', async () => 'data:image/png;base64,AA==')).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(saveDirectorPrevisOutput(nodeId, kind, async () => url)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(useAppStore.getState().nodes).toHaveLength(1);
     expect(getData().imageUrl).toBeUndefined();
+    expect(getData().videoUrl).toBeUndefined();
   });
 
   it('requires a saved scene and rejects arbitrary render URLs', async () => {

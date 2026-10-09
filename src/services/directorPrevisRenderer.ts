@@ -249,7 +249,7 @@ export function createDirectorPrevisRenderer(mount: HTMLElement, input: Director
     async exportVideo(signal, progress) {
       if (exporting || disposed) throw new Error('预演画面不可导出');
       signal.throwIfAborted();
-      const { Output, Mp4OutputFormat, BufferTarget, CanvasSource, QUALITY_HIGH } = await import('mediabunny');
+      const { Output, Mp4OutputFormat, BufferTarget, CanvasSource, Quality } = await import('mediabunny');
       signal.throwIfAborted();
       if (exporting || disposed) throw new Error('预演画面不可导出');
       const target = new BufferTarget();
@@ -258,7 +258,8 @@ export function createDirectorPrevisRenderer(mount: HTMLElement, input: Director
       surface.width = aspect < 1 ? 720 : 1280;
       surface.height = Math.round(surface.width / aspect / 2) * 2;
       const context = surface.getContext('2d', { alpha: false });
-      const source = new CanvasSource(surface, { codec: 'avc', bitrate: QUALITY_HIGH });
+      // WebKit 会直接拒绝 quantizer 模式；改用高画质预设按分辨率估算的码率。
+      const source = new CanvasSource(surface, { codec: 'avc', quality: new Quality({ quality: 'high', preferBitrate: true }) });
       let finalized = false;
       exporting = true;
       controls.enabled = false;

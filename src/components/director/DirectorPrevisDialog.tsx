@@ -124,9 +124,11 @@ export default function DirectorPrevisDialog({ nodeId, initialAction = 'editor',
     try { await action(controller.signal); }
     catch (failure) {
       if (mounted.current) {
+        const suggestion = label === '生成镜头预演…' ? '模型配置或项目存储' :
+          label === '导出参考视频…' ? '项目存储或视频编码支持' : '项目存储';
         setError(isAbort(failure) ? '操作已取消或画布发生变化，未写回结果' :
           failure instanceof Error && failure.message.startsWith('预演场景数据无效：') ? failure.message :
-            `${label.replace(/…$/, '')}失败，请检查模型配置、项目存储或视频编码支持后重试`);
+            `${label.replace(/…$/, '')}失败，请检查${suggestion}后重试`);
       }
     } finally {
       if (operation.current === controller) {
@@ -144,7 +146,7 @@ export default function DirectorPrevisDialog({ nodeId, initialAction = 'editor',
       await saveDirectorPrevisOutput(nodeId, kind,
         kind === 'image' ? async () => instance.capture(renderTime.current) :
           (operationSignal) => instance.exportVideo(operationSignal, (value) => { if (mounted.current) setProgress(value); }), signal);
-      if (mounted.current) useAppStore.getState().showToast(kind === 'image' ? '当前镜头已同步到导演节点' : '运镜参考视频已写入导演节点');
+      if (mounted.current) useAppStore.getState().showToast(kind === 'image' ? '当前镜头已同步到导演节点' : '运镜参考视频已导出，并在旁边创建视频节点');
     });
   }, [dirty, nodeId, reference, run]);
 
