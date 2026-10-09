@@ -1,5 +1,6 @@
 import { VideoEditorControlError } from "../types/videoEditorControl";
 /** 有界后台合成任务；完成后只向仍匹配的项目画布提交一次结果。 */
+import { AudioBufferSink, type Input } from 'mediabunny';
 import { useAppStore } from '../store/useAppStore';
 import { generateId } from '../store/store.utils';
 import { saveBinaryToProjectData } from './fileService';
@@ -55,8 +56,32 @@ async function assertRecordVersion(context: VideoEditorControlContext, editorId:
   return record;
 }
 
-export async function startControlledExport(context: VideoEditorControlContext, input: VideoEditorExportInput) {
+/** 明确的音频轨（包括从视频绑定的原声）必须在成片中保留可解码音轨。 */
+async function validateRequiredAudio(input: Input, record: VideoEditorProjectRecord, check: () => void) {
+  const clips = record.tracks.filter((track) => track.kind === 'audio' && !track.muted && (track.volume ?? 1) > 0)
+    .flatMap((track) => track.clips.filter((clip) => (clip.volume ?? 1) > 0));
+  if (!clips.length) return;
+  const audio = await input.getPrimaryAudioTrack();
+  check();
+  if (!audio || !(await audio.canDecode())) throw new VideoEditorControlError('成片原声音轨缺失或无法解码');
+  check();
+  const first = Math.min(...clips.map((clip) => clip.timelineStart));
+  const sink = new AudioBufferSink(audio);
+  let decoded = false;
+  for await (const wrapped of sink.buffers(first, Math.min(computeTimelineDuration(record.tracks), first + 1))) {
+    check();
+    if (wrapped.buffer.length > 0 && wrapped.buffer.numberOfChannels > 0) { decoded = true; break; }
+  }
+  if (!decoded) throw new VideoEditorControlError('成片原声音轨没有可解码音频');
+}
+
+/** 可选调用方租约仅驻留主窗口内存；普通 MCP 导出仍独立于短请求信号。 */
+export interface VideoEditorExportLease { signal?: AbortSignal; assertFresh: () => void | Promise<void> }
+
+export async function startControlledExport(context: VideoEditorControlContext, input: VideoEditorExportInput, lease?: VideoEditorExportLease) {
   assertVideoEditorContext(context);
+  if (lease?.signal?.aborted) throw new VideoEditorControlError('调用方任务已取消');
+  await lease?.assertFresh();
   const prior = [...jobs.values()].find((job) => job.projectId === context.projectId && job.requestKey === input.requestKey);
   if (prior) {
     if (prior.status.editorId !== input.editorId || prior.status.version !== input.expectedVersion) {
@@ -80,6 +105,9 @@ export async function startControlledExport(context: VideoEditorControlContext, 
     const controller = new AbortController();
     const guard = registerCanvasDerivation(useAppStore.getState(), record.nodeId, { onCancel: () => controller.abort() });
     if (!guard) throw new VideoEditorControlError('剪辑工程的锚点节点已不存在');
+    const cancel = () => controller.abort();
+    lease?.signal?.addEventListener('abort', cancel, { once: true });
+    if (lease?.signal?.aborted) controller.abort();
     const jobId = `video-export-${generateId()}`;
     const job: ExportJob = { projectId: context.projectId, requestKey: input.requestKey, controller,
       status: { jobId, editorId: record.id, version: input.expectedVersion, status: 'queued',
@@ -91,17 +119,20 @@ export async function startControlledExport(context: VideoEditorControlContext, 
       assertVideoEditorContext(runContext);
       if (!isCanvasDerivationFresh(guard, useAppStore.getState())) throw new VideoEditorControlError('项目或画布已变化');
     };
-    void runExport(job, record, runContext, check).finally(() => completeCanvasDerivation(guard));
+    void runExport(job, record, runContext, check, lease).finally(() => {
+      completeCanvasDerivation(guard); lease?.signal?.removeEventListener('abort', cancel);
+    });
     return { ...job.status };
   } finally { starting = false; }
 }
 
-async function runExport(job: ExportJob, record: VideoEditorProjectRecord, context: VideoEditorControlContext, check: () => void) {
+async function runExport(job: ExportJob, record: VideoEditorProjectRecord, context: VideoEditorControlContext, check: () => void, lease?: VideoEditorExportLease) {
   let sources: Awaited<ReturnType<typeof prepareControlledRenderSources>> | undefined;
   let saved = false;
   const checkAssets = () => { check(); sources?.assertFresh(); };
   try {
     job.status.status = 'running'; job.status.stage = '读取素材';
+    await lease?.assertFresh(); check();
     sources = await prepareControlledRenderSources(record, check);
     const output = record.output ?? DEFAULT_VIDEO_EDITOR_OUTPUT;
     const duration = computeTimelineDuration(record.tracks);
@@ -111,18 +142,23 @@ async function runExport(job: ExportJob, record: VideoEditorProjectRecord, conte
       onStage: (stage) => { checkAssets(); job.status.stage = stage; },
       onAudioMode: (mode) => { job.status.audioMode = mode; },
     });
+    await lease?.assertFresh();
     checkAssets();
     job.status.stage = '校验成片';
     const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'video/mp4' }));
     let probe;
     try {
       const encoded = await createVideoInput(url);
-      try { probe = await probeVideoSource(encoded); } finally { encoded.dispose(); }
+      try {
+        probe = await probeVideoSource(encoded);
+        await validateRequiredAudio(encoded, record, checkAssets);
+      } finally { encoded.dispose(); }
     } finally { URL.revokeObjectURL(url); }
     if (!probe.decodable || probe.width !== output.width || probe.height !== output.height
       || Math.abs(probe.duration - duration) > Math.max(0.1, 2 / output.frameRate)) throw new VideoEditorControlError('成片参数校验失败');
     await assertRecordVersion(context, record.id, job.status.version);
     await assertEditorWindowClosed();
+    await lease?.assertFresh();
     checkAssets();
     job.status.status = 'saving'; job.status.stage = '保存成片';
     const fileName = `${job.status.jobId}.mp4`;
@@ -130,6 +166,7 @@ async function runExport(job: ExportJob, record: VideoEditorProjectRecord, conte
     if (!result) throw new VideoEditorControlError('成片保存失败');
     saved = true;
     await assertRecordVersion(context, record.id, job.status.version);
+    await lease?.assertFresh();
     checkAssets();
     const nodeId = `node-${generateId()}`;
     const store = useAppStore.getState();

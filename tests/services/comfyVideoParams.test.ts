@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   corsSafeFetch: vi.fn(),
+  createProgress: vi.fn(),
+  waitUntilReady: vi.fn(),
+  bindPrompt: vi.fn(),
+  closeProgress: vi.fn(),
   storeState: {
     config: { comfyUIUrl: 'http://comfy.test:8188' },
     currentProjectId: 'p1',
@@ -21,9 +25,13 @@ vi.mock('../../src/services/pollManager', () => ({
   removePendingTask: vi.fn(),
   registerNodePolling: vi.fn(() => undefined),
   cleanupNodePolling: vi.fn(),
+  getPendingTasksForProject: vi.fn(() => []),
 }));
 vi.mock('../../src/services/nodeReferenceService', () => ({
   resolveNodeReferences: (value: string) => value,
+}));
+vi.mock('../../src/services/comfyProgress', () => ({
+  createComfyProgressSession: mocks.createProgress,
 }));
 
 import { executeComfyUIVideoGenerate } from '../../src/services/comfyWorkflowService';
@@ -83,6 +91,11 @@ beforeEach(() => {
   registerWorkflow();
   objectInfoByClass = {};
   mocks.storeState.config.comfyUIUrl = `http://comfy.test:${++comfyPort}`;
+  mocks.waitUntilReady.mockResolvedValue(undefined);
+  mocks.createProgress.mockReturnValue({
+    clientId: 'test-client', requestId: 'test-request',
+    waitUntilReady: mocks.waitUntilReady, bindPrompt: mocks.bindPrompt, close: mocks.closeProgress,
+  });
   mocks.corsSafeFetch.mockImplementation(async (url: string) => {
     const objectInfoMatch = /\/object_info\/(.+)$/.exec(String(url));
     if (objectInfoMatch) {
@@ -100,6 +113,84 @@ beforeEach(() => {
       });
     }
     throw new Error(`未预期的请求：${url}`);
+  });
+});
+
+describe('ComfyUI checks the caller lease immediately before /prompt', () => {
+  it.each((['upload', 'paramspec', 'progressready'] as const)
+    .flatMap((stage) => (['stale', 'abort'] as const).map((failure) => ({ stage, failure }))))(
+    'blocks submission after $failure during $stage', async ({ stage, failure }) => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let waiting = false;
+      let stale = false;
+      const controller = new AbortController();
+      const beforeSubmit = vi.fn(async () => { if (stale) throw new Error('caller input lease revoked'); });
+      const defaultFetch = mocks.corsSafeFetch.getMockImplementation()!;
+      mocks.corsSafeFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (stage === 'upload' && url.endsWith('/upload/image')) {
+          waiting = true; await gate;
+          return jsonResponse({ name: 'reference.mp4', subfolder: '', type: 'input' });
+        }
+        if (stage === 'paramspec' && url.endsWith('/object_info/WanImageToVideo')) {
+          waiting = true; await gate;
+        }
+        return defaultFetch(url, init);
+      });
+      if (stage === 'progressready') mocks.waitUntilReady.mockImplementationOnce(async () => { waiting = true; await gate; });
+      if (stage === 'upload') {
+        const workflow = mocks.storeState.workflows[0];
+        const workflowObj = JSON.parse(workflow.fileContent as string);
+        workflowObj['4'] = { class_type: 'VHS_LoadVideo', inputs: { video: 'old.mp4' } };
+        workflow.fileContent = JSON.stringify(workflowObj);
+        workflow.ioNodes = [
+          { nodeId: '1', title: '正向提示词', type: 'prompt' },
+          { nodeId: '4', title: '参考视频', type: 'video' },
+        ];
+      }
+      const generation = executeComfyUIVideoGenerate({
+        prompt: '保留运镜', model: 'wf', provider: 'comfyui', workflowId: 'wf-1', nodeId: 'replica-segment',
+        videoFps: 24, videoFrames: 121, seedanceDuration: 5,
+      }, controller.signal, [], stage === 'upload' ? { videoUrls: ['data:video/mp4;base64,YQ=='] } : {}, beforeSubmit);
+      await vi.waitFor(() => expect(waiting).toBe(true));
+      if (failure === 'abort') controller.abort(); else stale = true;
+      release();
+      await expect(generation).rejects.toThrow(failure === 'abort' ? /取消|abort/iu : 'caller input lease revoked');
+      expect(beforeSubmit).toHaveBeenCalledTimes(failure === 'abort' ? 0 : 1);
+      expect(mocks.corsSafeFetch.mock.calls.some(([url]) => String(url).endsWith('/prompt'))).toBe(false);
+      expect(mocks.corsSafeFetch.mock.calls.some(([url]) => String(url).includes('/history/'))).toBe(false);
+      expect(mocks.bindPrompt).not.toHaveBeenCalled();
+    },
+  );
+
+  it('checks cancellation again after an asynchronous caller lease callback', async () => {
+    const controller = new AbortController();
+    const beforeSubmit = vi.fn(async () => { await Promise.resolve(); controller.abort(); });
+    await expect(executeComfyUIVideoGenerate({
+      prompt: '保留运镜', model: 'wf', provider: 'comfyui', workflowId: 'wf-1', nodeId: 'replica-segment',
+    }, controller.signal, [], {}, beforeSubmit)).rejects.toThrow(/取消|abort/iu);
+    expect(beforeSubmit).toHaveBeenCalledTimes(1);
+    expect(mocks.corsSafeFetch.mock.calls.some(([url]) => String(url).endsWith('/prompt'))).toBe(false);
+    expect(mocks.closeProgress).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the injected workflow and returned video when the caller lease succeeds', async () => {
+    const beforeSubmit = vi.fn(async () => undefined);
+    await expect(executeComfyUIVideoGenerate({
+      prompt: '海边日落', model: 'wf', provider: 'comfyui', workflowId: 'wf-1', nodeId: 'replica-segment',
+      videoResolution: 480, seedanceRatio: '16:9', videoFps: 16, videoFrames: 81,
+    }, undefined, [], {}, beforeSubmit)).resolves.toEqual({ url: expect.stringContaining('/view?filename=out.mp4') });
+    expect(beforeSubmit).toHaveBeenCalledTimes(1);
+    expect(mocks.waitUntilReady).toHaveBeenCalledTimes(1);
+    expect(mocks.waitUntilReady.mock.invocationCallOrder[0]).toBeLessThan(beforeSubmit.mock.invocationCallOrder[0]);
+    const promptCallIndex = mocks.corsSafeFetch.mock.calls.findIndex(([url]) => String(url).endsWith('/prompt'));
+    expect(beforeSubmit.mock.invocationCallOrder[0]).toBeLessThan(mocks.corsSafeFetch.mock.invocationCallOrder[promptCallIndex]);
+    const submitted = submittedWorkflow();
+    expect(submitted['1'].inputs.text).toBe('海边日落');
+    expect(submitted['2'].inputs).toMatchObject({ width: 480, height: 272, length: 81 });
+    expect(submitted['3'].inputs.frame_rate).toBe(16);
+    expect(mocks.bindPrompt).toHaveBeenCalledWith('prompt-1');
+    expect(mocks.closeProgress).toHaveBeenCalledTimes(1);
   });
 });
 

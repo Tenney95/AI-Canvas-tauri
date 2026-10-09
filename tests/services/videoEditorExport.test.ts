@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   version: 'a'.repeat(64),
   prepare: vi.fn(), encode: vi.fn(), save: vi.fn(), inputDispose: vi.fn(), sourceDispose: vi.fn(),
   windows: vi.fn(async (): Promise<void> => undefined),
+  audioTrack: vi.fn(), audioCanDecode: vi.fn(), audioBuffers: vi.fn(),
 }));
 vi.mock('../../src/store/useAppStore', () => ({ useAppStore: { getState: () => mocks.store } }));
 vi.mock('../../src/services/videoEditorControlService', () => ({
@@ -21,9 +22,10 @@ vi.mock('../../src/services/videoEditorControlService', () => ({
 vi.mock('../../src/services/videoEditorRenderSources', () => ({ prepareControlledRenderSources: mocks.prepare }));
 vi.mock('../../src/services/fileService', () => ({ saveBinaryToProjectData: mocks.save }));
 vi.mock('../../src/services/videoEditorMediaService', () => ({ exportComposite: mocks.encode,
-  createVideoInput: async () => ({ dispose: mocks.inputDispose }),
+  createVideoInput: async () => ({ dispose: mocks.inputDispose, getPrimaryAudioTrack: mocks.audioTrack }),
   probeVideoSource: async () => ({ decodable: true, duration: 24, width: 1920, height: 1080 }),
 }));
+vi.mock('mediabunny', () => ({ AudioBufferSink: class { buffers = mocks.audioBuffers; } }));
 vi.mock('../../src/services/videoCompositor', () => ({ renderFrameAt: vi.fn() }));
 vi.mock('../../src/services/videoEditorInspectionService', () => ({ inspectionImage: vi.fn(), validateInspectionTimes: vi.fn() }));
 import { cancelControlledExport, getControlledExport, startControlledExport } from '../../src/services/videoEditorExportService';
@@ -49,6 +51,8 @@ beforeEach(() => {
     options.onAudioMode('none'); options.onProgress(1); return new Uint8Array([1, 2, 3]);
   });
   mocks.save.mockReset().mockResolvedValue({ filePath: 'G:/private/output.mp4', assetUrl: 'asset://private/output' });
+  mocks.audioTrack.mockReset().mockResolvedValue(null); mocks.audioCanDecode.mockReset().mockResolvedValue(true);
+  mocks.audioBuffers.mockReset().mockImplementation(async function* () { yield { buffer: { length: 48_000, numberOfChannels: 2 } }; });
 });
 
 describe('MCP 后台合成', () => {
@@ -119,5 +123,47 @@ describe('MCP 后台合成', () => {
     const job = await startControlledExport(context(), request()); const result = await completed(job.jobId);
     expect(result.status).toBe('failed'); expect(JSON.stringify(result)).not.toMatch(/secrets|confidential/);
     expect(mocks.save).toHaveBeenCalledTimes(1); expect(mocks.sourceDispose).toHaveBeenCalledTimes(1);
+  });
+  it('verifies a required original audio track is present and actually decodable before saving', async () => {
+    mocks.record.tracks.push({ id: 'original-sound', kind: 'audio', name: '原声', clips: [
+      { id: 'audio', kind: 'video', fileName: 'original', nodeId: 'anchor', sourceIn: 0, sourceOut: 24, timelineStart: 0 },
+    ] });
+    const missing = await startControlledExport(context(), request());
+    expect((await completed(missing.jobId)).error).toContain('音轨缺失'); expect(mocks.save).not.toHaveBeenCalled();
+    mocks.audioTrack.mockResolvedValue({ canDecode: mocks.audioCanDecode });
+    mocks.audioCanDecode.mockResolvedValue(false);
+    const undecodable = await startControlledExport(context(), request());
+    expect((await completed(undecodable.jobId)).status).toBe('failed'); expect(mocks.save).not.toHaveBeenCalled();
+    mocks.audioCanDecode.mockResolvedValue(true);
+    mocks.audioBuffers.mockImplementationOnce(async function* () { /* No decoded samples. */ });
+    const empty = await startControlledExport(context(), request());
+    expect((await completed(empty.jobId)).error).toContain('没有可解码音频'); expect(mocks.save).not.toHaveBeenCalled();
+    const valid = await startControlledExport(context(), request());
+    expect((await completed(valid.jobId)).status).toBe('succeeded'); expect(mocks.save).toHaveBeenCalledOnce();
+    expect(mocks.audioBuffers).toHaveBeenLastCalledWith(0, 1);
+  });
+  it('allows intentional silent exports when all audio tracks are muted', async () => {
+    mocks.record.tracks.push({ id: 'muted-sound', kind: 'audio', name: '静音', muted: true, clips: [
+      { id: 'audio', kind: 'video', fileName: 'original', nodeId: 'anchor', sourceIn: 0, sourceOut: 24, timelineStart: 0 },
+    ] });
+    const result = await completed((await startControlledExport(context(), request())).jobId);
+    expect(result.status).toBe('succeeded'); expect(mocks.audioTrack).not.toHaveBeenCalled();
+  });
+  it('binds an optional caller lease to export cancellation without changing ordinary exports', async () => {
+    let finish!: () => void;
+    mocks.encode.mockImplementationOnce(() => new Promise<Uint8Array>((resolve) => { finish = () => resolve(new Uint8Array([1])); }));
+    const controller = new AbortController();
+    const job = await startControlledExport(context(), request(), { signal: controller.signal, assertFresh: () => undefined });
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    controller.abort(); finish();
+    expect((await completed(job.jobId)).status).toBe('cancelled'); expect(mocks.save).not.toHaveBeenCalled();
+  });
+  it('refuses publishing if the caller identity changes after save', async () => {
+    let live = true;
+    mocks.save.mockImplementationOnce(async () => { live = false; return { filePath: 'G:/private/retained.mp4', assetUrl: 'asset://retained' }; });
+    const job = await startControlledExport(context(), request(), { assertFresh: () => { if (!live) throw new Error('stale private identity'); } });
+    const result = await completed(job.jobId);
+    expect(result.status).toBe('failed'); expect(result.error).toContain('文件已保存'); expect(mocks.store.addNodesWithEdges).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain('private identity');
   });
 });

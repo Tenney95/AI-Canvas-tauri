@@ -72,6 +72,20 @@ describe('MCP 剪辑工程', () => {
     expect(next.version).not.toBe(created.version);
     await expect(updateControlledEditor(context(), { editorId: created.editorId, expectedVersion: created.version, name: 'stale' })).rejects.toThrow('版本');
   });
+  it('binds an authorized video node as an audio-only track for preserving the original sound', () => {
+    const video = mediaNode('original', 'source-video');
+    video.data.videoUrl = 'asset://original-video'; video.data.audioUrl = 'asset://unrelated-audio';
+    mocks.store.nodes.push(video);
+    const tracks = bindVideoEditorTracks([track(), { id: 'original-sound', kind: 'audio', name: '原声', clips: [
+      { id: 'original-audio', kind: 'video', nodeId: video.id, sourceIn: 0, sourceOut: 4, timelineStart: 0 },
+    ] }]);
+    expect(tracks[1].clips[0].sourceUrl).toBe('asset://original-video');
+    expect(tracks[1].clips[0].filePath).toBe(video.data.filePath);
+    expect(tracks[1].kind).toBe('audio');
+    expect(() => bindVideoEditorTracks([track(), { id: 'invalid-sound', kind: 'audio', name: '错误', clips: [
+      { id: 'wrong-audio', kind: 'video', nodeId: 'image', sourceIn: 0, sourceOut: 4, timelineStart: 0 },
+    ] }])).toThrow('类型');
+  });
   it('CAS allows exactly one concurrent writer and rejects a stale human window save', async () => {
     const created = await createControlledEditor(context(), { nodeIds: ['image'] });
     const original = (await getVideoEditorProject(created.editorId))!;

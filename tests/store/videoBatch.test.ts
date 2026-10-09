@@ -20,6 +20,18 @@ beforeEach(() => {
 });
 const inspect = () => useAppStore.getState().nodes.map((n) => inspectVideoNode(n, useAppStore.getState()));
 
+it.each(['success', 'error', 'unknown'] as const)('returns the final %s batch outcome once execution settles without resubmitting', async (status) => {
+  if (status === 'error') mocks.execute.mockResolvedValueOnce({ success: false });
+  if (status === 'unknown') mocks.execute.mockRejectedValueOnce(new Error('提交后连接中断'));
+  const result = await useAppStore.getState().startVideoBatch('project', [inspect()[0]]);
+  expect(result).toBe(useAppStore.getState().videoBatches.project[0]);
+  expect(result.items[0].status).toBe(status);
+  expect(mocks.execute).toHaveBeenCalledTimes(1);
+  await Promise.resolve();
+  expect(mocks.execute).toHaveBeenCalledTimes(1);
+  expect(useAppStore.getState().videoBatchBusy).toBe(false);
+});
+
 it('persists independent durations and statuses, rejects a duplicate click synchronously', async () => {
   let release!: () => void;
   const gate = new Promise<void>((r) => { release = r; });
@@ -34,6 +46,22 @@ it('persists independent durations and statuses, rejects a duplicate click synch
   expect(batch.items.every((i) => i.status === 'success')).toBe(true);
   expect(JSON.stringify(batch)).not.toContain('动作');
   expect(useAppStore.getState().videoBatchBusy).toBe(false);
+});
+it('forwards the optional runtime lease without persisting its signal or callback', async () => {
+  const lease = { signal: new AbortController().signal, assertFresh: vi.fn(async () => {}) };
+  const result = await useAppStore.getState().startVideoBatch('project', [inspect()[0]], lease);
+  expect(mocks.execute).toHaveBeenCalledWith('v1', undefined, undefined, undefined, lease);
+  expect(result.items[0].status).toBe('success');
+  expect(mocks.write).toHaveBeenCalledWith('project', expect.any(Array));
+  expect(JSON.stringify(mocks.write.mock.calls)).not.toMatch(/assertFresh|signal|AbortController/);
+});
+it('rejects an already cancelled lease before creating or submitting a batch', async () => {
+  const controller = new AbortController(); controller.abort();
+  await expect(useAppStore.getState().startVideoBatch('project', [inspect()[0]], { signal: controller.signal, assertFresh: vi.fn() }))
+    .rejects.toThrow('已取消');
+  expect(mocks.execute).not.toHaveBeenCalled();
+  expect(mocks.write).not.toHaveBeenCalled();
+  expect(useAppStore.getState().videoBatches.project).toBeUndefined();
 });
 it('cancel waiting never interrupts the active request or submits the next one', async () => {
   let release!: () => void;

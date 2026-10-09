@@ -5,12 +5,13 @@ import { readVideoBatches, writeVideoBatches } from '../services/videoBatchRepos
 import { recoverVideoBatches, runVideoBatch } from '../services/videoBatchRunner';
 import { inspectVideoNode } from '../services/videoBatchPlanning';
 import { generateId } from './store.utils';
+import type { GenerationLease } from '../services/generationService';
 
 export interface VideoBatchSlice {
   videoBatches: Record<string, VideoBatch[]>;
   videoBatchBusy: boolean;
   loadVideoBatches: (projectId: string) => Promise<void>;
-  startVideoBatch: (projectId: string, items: VideoPreflightItem[]) => Promise<void>;
+  startVideoBatch: (projectId: string, items: VideoPreflightItem[], lease?: GenerationLease) => Promise<VideoBatch>;
   cancelWaitingVideos: (projectId: string, batchId: string) => Promise<void>;
 }
 
@@ -40,7 +41,8 @@ export const createVideoBatchSlice: StateCreator<AppState, [], [], VideoBatchSli
         : { ...b, items: b.items.map((i) => i.status === 'waiting' ? { ...i, status: 'cancelled' as const, message: '已取消，未提交' } : i) }) } }));
       await persist(projectId);
     },
-    startVideoBatch: async (projectId, items) => {
+    startVideoBatch: async (projectId, items, lease) => {
+      if (lease?.signal?.aborted) throw new Error('视频批次已取消，未提交');
       if (get().videoBatchBusy) throw new Error('已有视频批次正在执行');
       if (get().currentProjectId !== projectId || !items.length) throw new Error('项目或提交范围已变化');
       if (new Set(items.map((i) => i.nodeId)).size !== items.length) throw new Error('提交范围包含重复节点');
@@ -63,7 +65,7 @@ export const createVideoBatchSlice: StateCreator<AppState, [], [], VideoBatchSli
         set((s) => ({ videoBatches: { ...s.videoBatches, [projectId]: [...(s.videoBatches[projectId] || []), batch].slice(-30) } }));
         await persist(projectId);
         await runVideoBatch({
-          projectId: () => projectChanged ? null : get().currentProjectId,
+          projectId: () => projectChanged || lease?.signal?.aborted ? null : get().currentProjectId,
           read: () => get().videoBatches[projectId].find((b) => b.id === batch.id)!,
           update: (nodeId, value) => patch(projectId, batch.id, nodeId, value),
           inspect: (nodeId) => {
@@ -73,9 +75,12 @@ export const createVideoBatchSlice: StateCreator<AppState, [], [], VideoBatchSli
           execute: async (nodeId) => {
             const { executeGeneration } = await import('../services/generationService');
             if (projectChanged || get().currentProjectId !== projectId) return { success: false, message: '项目已切换' };
-            return executeGeneration(nodeId);
+            return lease ? executeGeneration(nodeId, undefined, undefined, undefined, lease) : executeGeneration(nodeId);
           },
         });
+        const completed = get().videoBatches[projectId]?.find((item) => item.id === batch.id);
+        if (!completed) throw new Error('视频批次结果已不可用');
+        return completed;
       } catch (error) {
         set((s) => ({ videoBatches: { ...s.videoBatches, [projectId]: recoverVideoBatches(s.videoBatches[projectId] || []) } }));
         await persist(projectId).catch(() => undefined);

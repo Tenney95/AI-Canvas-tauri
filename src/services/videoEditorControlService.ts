@@ -83,10 +83,13 @@ export async function listControlledEditors(context: VideoEditorControlContext) 
 
 export function bindVideoEditorMedia(nodeId: string, kind: VideoEditorClip['kind'], audio = false) {
   const node = useAppStore.getState().nodes.find((candidate) => candidate.id === nodeId);
-  const expected = audio ? ['ai-audio', 'source-audio']
+  const expected = audio ? ['ai-audio', 'source-audio', 'ai-video', 'source-video']
     : kind === 'image' ? ['ai-image', 'source-image'] : ['ai-video', 'source-video'];
   if (!node || !expected.includes(node.type ?? '')) throw new VideoEditorControlError('素材节点不存在或类型与轨道不符');
-  const sourceUrl = audio ? node.data.audioUrl : kind === 'image' ? node.data.imageUrl : node.data.videoUrl;
+  // 音频轨可取授权视频节点内的原声；素材地址与授权仍只在宿主绑定。
+  const sourceUrl = audio
+    ? ['ai-video', 'source-video'].includes(node.type ?? '') ? node.data.videoUrl : node.data.audioUrl
+    : kind === 'image' ? node.data.imageUrl : node.data.videoUrl;
   if (!node.data.filePath && !sourceUrl) throw new VideoEditorControlError('素材节点还没有生成结果');
   return { nodeId, filePath: node.data.filePath, assetId: node.data.assetId, sourceUrl, fileName: node.data.label || '素材' };
 }

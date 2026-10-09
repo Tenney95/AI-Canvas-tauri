@@ -1,12 +1,13 @@
 /**
  * plugins/pluginModelCatalog — 插件可见的可调用模型目录。
  *
- * 只输出 ID、名称、厂商、分类与输入模态，不含 API Key、接口地址或任何厂商凭据。
+ * 只输出模型身份、分类与能力，不含 API Key、接口地址或任何厂商凭据。
  * 自定义节点与节点工具共用同一份枚举逻辑，避免两处各自维护导致目录漂移。
  */
 import { useAppStore } from '../../store/useAppStore';
 import type { GeneralModelCategory, NodeType, WorkflowDefinition } from '../../types';
 import type { PluginModelSummary } from '../../types/plugin';
+import { resolveVideoModelCapability } from '../ai/videoModelCapabilityResolver';
 import {
   defaultModelGroups,
   getConfiguredModelGroups,
@@ -25,6 +26,11 @@ const CATEGORY_NODE_TYPES: Record<GeneralModelCategory, NodeType> = {
 };
 
 export const ALL_MODEL_CATEGORIES: GeneralModelCategory[] = ['text', 'image', 'video', 'audio'];
+
+function videoCapabilitySummary(category: GeneralModelCategory, modelId: string, config: AppConfig): Pick<PluginModelSummary, 'videoCapability'> {
+  const capability = category === 'video' ? resolveVideoModelCapability(modelId, config) : undefined;
+  return capability ? { videoCapability: capability } : {};
+}
 
 /** 旧目录没有显式模态时复用宿主既有视觉能力判断，让插件不用复制模型 ID 规则。 */
 export function resolvePluginModelInputModalities(
@@ -66,6 +72,7 @@ export function buildPluginModelCatalog(
       category,
       description: model.description,
       inputModalities: resolvePluginModelInputModalities(category, model.value, model.inputModalities),
+      ...videoCapabilitySummary(category, model.value, config),
     })));
     const general = (config.generalModels ?? [])
       .filter((model) => (
@@ -80,6 +87,7 @@ export function buildPluginModelCatalog(
         category,
         description: model.description || `ID: ${model.modelId}`,
         inputModalities: resolvePluginModelInputModalities(category, model.modelId, model.inputModalities),
+        ...videoCapabilitySummary(category, `general/${model.id}`, config),
       }));
     return [...builtIn, ...general];
   });

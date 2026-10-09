@@ -90,6 +90,7 @@ import {
   executePluginNode,
   getAvailablePluginNodes,
   getAvailableNodePluginTools,
+  parsePluginVideoReplicaEffect,
 } from '../../src/services/plugins/pluginRuntime';
 import {
   completeCanvasDerivation,
@@ -1705,7 +1706,7 @@ describe('node plugin runtime', () => {
 });
 
 describe('trusted Python media workspace', () => {
-  function setup(enabled = true) {
+  function setup(enabled = true, materialsOnly = false) {
     const bytes = new Uint8Array([
       0, 0, 0, 16, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0,
       0, 0, 0, 8, 109, 111, 111, 118,
@@ -1715,7 +1716,7 @@ describe('trusted Python media workspace', () => {
       mediaType: 'video/mp4', size: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex') };
     const payload = { data: { nodes: [{ key: 'control', nodeType: 'source-video', artifactKey: 'depth', data: { label: '深度视频' } }], edges: [] }, artifacts: [artifact] };
     const workspacePlugin: InstalledPlugin = { ...plugin, manifest: { ...plugin.manifest, apiVersion: 2,
-      runtime: 'python', entry: 'main.py', requiredCapabilities: enabled ? ['python.mediaWorkspace', 'python.executionTimeout'] : [],
+      runtime: 'python', entry: 'main.py', requiredCapabilities: enabled ? ['python.mediaWorkspace', 'python.executionTimeout', ...(materialsOnly ? ['video.replicaPipeline'] : [])] : [],
       permissions: ['node.read', 'node.write', 'files.connected.read', 'files.output.create'],
       contributes: { nodeTools: [{ id: 'controls', title: '生成控制视频', nodeTypes: ['source-video'],
         placements: ['node-context-menu'], inputFields: ['label'], resourceAccess: { self: true },
@@ -1737,10 +1738,29 @@ describe('trusted Python media workspace', () => {
     mocks.saveBinaryToProjectData.mockImplementation(async (_bytes, _project, fileName: string) => ({
       assetUrl: `asset://localhost/${fileName}`, filePath: `G:\\project\\${fileName}`,
     }));
-    const run = () => executeNodePluginTool(tool, 'node-1', {}, { invocationId: 'native-video-invoke', guard, resources })
+    const run = () => executeNodePluginTool(tool, 'node-1', {}, { invocationId: 'native-video-invoke', guard, resources }, materialsOnly ? { materialsOnly: true } : undefined)
       .finally(() => completeCanvasDerivation(guard));
     return { run, payload, bytes, tool, workspacePlugin };
   }
+
+  it('returns committed materials and key bindings for a host pipeline without starting a video batch', async () => {
+    const { run } = setup(true, true);
+    const result = await run();
+    if (!result) throw new Error('宿主素材调用没有返回节点集合');
+    expect(result).toMatchObject({ nodes: [expect.objectContaining({ type: 'source-video' })], edges: [], nodeIdsByKey: { control: expect.any(String) } });
+    expect(result.nodeIdsByKey.control).toBe(result.nodes[0].id);
+    expect(mocks.addNodesWithEdges).toHaveBeenCalledTimes(1);
+    expect(mocks.startVideoBatch).not.toHaveBeenCalled();
+  });
+
+  it('rolls back written materials when an internal host invocation lacks pipeline capability', async () => {
+    const { run, workspacePlugin } = setup(true, true);
+    workspacePlugin.manifest.requiredCapabilities = ['python.mediaWorkspace', 'python.executionTimeout'];
+    await expect(run()).rejects.toThrow('全片任务能力');
+    expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+    expect(mocks.startVideoBatch).not.toHaveBeenCalled();
+    expect(mocks.moveToTrash).toHaveBeenCalledWith('G:\\project\\plugin-video-depth.mp4');
+  });
 
   it('prepares only host-resolved inputs, reads verified native artifacts and commits one video batch', async () => {
     const { run, bytes } = setup();
@@ -1967,6 +1987,38 @@ describe('node plugin tool model effects', () => {
     context.resources.derived.push({ resourceId: 'frame', origin: 'derived', access: 'read', displayName: 'frame.jpg', mediaType: 'image/jpeg', size: 3 });
     return { ...context, effect: { type: 'image.lineArt', resourceId: 'frame' } };
   }
+  const replicaStart = {
+    type: 'video.replicaJob.start', resourceId: 'self-video', modelId: 'general/video', controls: ['depth'], audioMode: 'original', transcribe: true,
+  };
+  it('parses a full-video request while preserving manual cuts and explicit speech-download intent', () => {
+    const input = { ...replicaStart, cuts: [15, 30, 45], maxSegmentSeconds: 30, downloadSpeech: true };
+    expect(parsePluginVideoReplicaEffect(input)).toEqual(input);
+    expect(parsePluginVideoReplicaEffect({ type: 'video.replicaJob.status', jobId: 'video-replica-valid' })).toEqual({ type: 'video.replicaJob.status', jobId: 'video-replica-valid' });
+  });
+  it.each([
+    { path: 'D:\\private\\video.mp4' }, { controls: ['depth', 'depth'] }, { controls: ['invalid'] },
+    { controls: [['depth']] }, { audioMode: ['original'] }, { resourceId: 1 }, { modelId: '' }, { transcribe: 'true' }, { downloadSpeech: 1 },
+    { cuts: [15, 10] }, { cuts: [15, 15] }, { cuts: [NaN] }, { cuts: Array.from({ length: 64 }, (_, index) => index + 1) },
+    { maxSegmentSeconds: 31 }, { maxSegmentSeconds: 0 }, { maxSegmentSeconds: Infinity }, { character: '文'.repeat(2001) },
+  ])('rejects malformed or undeclared replica request fields %j', (patch) => {
+    expect(() => parsePluginVideoReplicaEffect({ ...replicaStart, ...patch })).toThrow();
+  });
+  it.each(['video.replicaJob.status', 'video.replicaJob.cancel'])('strictly validates %s task IDs and rejects extra identity fields', (type) => {
+    for (const payload of [{ type, jobId: '../foreign' }, { type, jobId: 123 }, { type, jobId: 'video-replica-valid', projectId: 'foreign' }]) {
+      expect(() => parsePluginVideoReplicaEffect(payload)).toThrow();
+    }
+  });
+  it.each([
+    replicaStart,
+    { type: 'video.replicaJob.status', jobId: 'video-replica-valid' },
+    { type: 'video.replicaJob.cancel', jobId: 'video-replica-valid' },
+  ])('rejects ordinary runtime execution of the broker-only %s effect', async (effect) => {
+    const result = await executePluginUiHostEffect({ ...uiContext(), effect });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('已绑定的插件界面') });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.startVideoBatch).not.toHaveBeenCalled();
+    expect(mocks.generateText).not.toHaveBeenCalled();
+  });
   it('resolves selected prompt references on the host and supplies their images to analysis', async () => {
     const context = uiContext();
     const permissions: import('../../src/types/plugin').PluginPermission[] = ['prompt.references.read', 'models.invoke', 'models.read'];
@@ -2524,6 +2576,16 @@ describe('plugin node-set video generation', () => {
       set src(_value: string) { this.onload?.(); }
     });
   }
+  it('rejects generation directives in a materials-only host call and recycles saved references', async () => {
+    const { payload, generationPlugin } = setup();
+    generationPlugin.manifest.requiredCapabilities!.push('video.replicaPipeline');
+    addFrame(payload);
+    await expect(executeNodePluginTool(getAvailableNodePluginTools([generationPlugin], 'source-video')[0], 'node-1', {}, undefined, { materialsOnly: true })).rejects.toThrow('后台素材调用不能提交生成');
+    expect(mocks.saveBinaryToProjectData).toHaveBeenCalledTimes(1);
+    expect(mocks.moveToTrash).toHaveBeenCalledWith('G:\\project\\plugin-output.txt');
+    expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+    expect(mocks.startVideoBatch).not.toHaveBeenCalled();
+  });
   afterEach(() => {
     mocks.buildModelCatalog.mockReset().mockReturnValue([]);
     mocks.addNodesWithEdges.mockReset();

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildPluginModelCatalog, resolvePluginModelInputModalities } from '../../src/services/plugins/pluginModelCatalog';
 import { useAppStore } from '../../src/store/useAppStore';
-import type { WorkflowDefinition } from '../../src/types';
+import type { AppConfig, WorkflowDefinition } from '../../src/types';
 
 describe('pluginModelCatalog input modalities', () => {
   it('preserves explicit declarations', () => {
@@ -15,6 +15,29 @@ describe('pluginModelCatalog input modalities', () => {
 
   it('does not invent modalities for media categories', () => {
     expect(resolvePluginModelInputModalities('image', 'provider/image-model', undefined)).toBeUndefined();
+  });
+});
+
+describe('pluginModelCatalog video capabilities', () => {
+  it('includes configured model capability without exposing credentials or protocol content', () => {
+    const config: AppConfig = { ...useAppStore.getState().config,
+      providers: { relay: { name: '中转站', apiKey: 'private-key', baseUrl: 'https://private.example/v1' } },
+      generalModels: [{ id: 'replica', name: '复刻模型', modelId: 'relay-video', category: 'video', providerConfigId: 'relay',
+        videoCapability: { maxDuration: 30, maxVideoReferences: 10, maxAudioReferences: 10 },
+        executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync', submit: { method: 'POST', path: '/private', body: {} }, response: { type: 'json', result: { urlPath: 'url' } } } } }],
+    };
+    const model = buildPluginModelCatalog(config, ['video']).find((entry) => entry.id === 'general/replica');
+    expect(model).toMatchObject({ videoCapability: { maxDuration: 30, maxVideoReferences: 10, maxAudioReferences: 10 } });
+    expect(JSON.stringify(model)).not.toContain('private');
+    expect(JSON.stringify(model)).not.toContain('executionProfile');
+  });
+
+  it('keeps unknown ComfyUI capability unspecified', () => {
+    const config = { ...useAppStore.getState().config, comfyUIUrl: 'http://127.0.0.1:8188' };
+    const model = buildPluginModelCatalog(config, ['video'], [{ id: 'local', name: 'local', category: 'ai-video', fileName: 'video.json', fileContent: '{}', createdAt: 1 }])
+      .find((entry) => entry.id === 'comfyui/local');
+    expect(model).toBeDefined();
+    expect(model).not.toHaveProperty('videoCapability');
   });
 });
 

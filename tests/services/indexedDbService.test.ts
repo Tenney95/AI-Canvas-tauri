@@ -446,4 +446,28 @@ describe('indexedDbService schema', () => {
       .toBeUndefined();
     expect(await service.getAllProjects()).toEqual([]);
   });
+
+  it('deletes only the selected project replica jobs while preserving other project metadata', async () => {
+    const service = await import('../../src/services/indexedDbService');
+    const { openDB } = await import('../../src/services/indexedDb/schema');
+    await service.saveProjectToDb({ id: 'replica-project', name: '复刻项目', createdAt: 1, updatedAt: 1, nodes: [], edges: [] });
+    const db = await openDB();
+    const records = [
+      { id: 'video-replica-jobs:replica-project', jobs: [{ jobId: 'video-replica-current' }] },
+      { id: 'video-replica-jobs:other-project', jobs: [{ jobId: 'video-replica-other' }] },
+      { id: 'video-batches:replica-project', batches: ['batch'] },
+      { id: 'unrelated-metadata', value: { retained: true } },
+    ];
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction('metadata', 'readwrite');
+      for (const record of records) transaction.objectStore('metadata').put(record);
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+    });
+    await service.deleteProjectFromDb('replica-project');
+    expect(await readRecord(db, 'metadata', records[0].id)).toBeUndefined();
+    expect(await readRecord(db, 'metadata', records[2].id)).toBeUndefined();
+    expect(await readRecord(db, 'metadata', records[1].id)).toEqual(records[1]);
+    expect(await readRecord(db, 'metadata', records[3].id)).toEqual(records[3]);
+  });
 });

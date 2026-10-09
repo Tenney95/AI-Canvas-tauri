@@ -28,6 +28,7 @@ import type {
   PluginNativeMediaArtifactRef,
   PluginNodeSetVideoGeneration,
   PluginVideoGenerationParameters,
+  PluginVideoReplicaStart,
   PythonPluginRuntimeStatus,
 } from '../../types/plugin';
 import { useAppStore } from '../../store/useAppStore';
@@ -837,6 +838,41 @@ function parseHostEffect(
 ): PluginNodeHostEffect {
   const raw = recordValue(rawEffect);
   const type = raw.type;
+  if (type === 'video.replicaJob.status' || type === 'video.replicaJob.cancel') {
+    if (Object.keys(raw).some((key) => !['type', 'jobId'].includes(key))
+      || typeof raw.jobId !== 'string' || !/^video-replica-[a-zA-Z0-9-]{1,80}$/u.test(raw.jobId)) {
+      throw new Error('复刻任务只接受当前会话登记的任务 ID');
+    }
+    return { type, jobId: raw.jobId };
+  }
+  if (type === 'video.replicaJob.start') {
+    const fields = ['type', 'resourceId', 'modelId', 'analysisModelId', 'character', 'scene', 'style',
+      'controls', 'cuts', 'maxSegmentSeconds', 'resolution', 'aspectRatio', 'audioMode', 'transcribe', 'downloadSpeech'];
+    if (Object.keys(raw).some((key) => !fields.includes(key))
+      || typeof raw.resourceId !== 'string' || !raw.resourceId || raw.resourceId.length > 160
+      || typeof raw.modelId !== 'string' || !raw.modelId || raw.modelId.length > 200
+      || typeof raw.audioMode !== 'string' || !['original', 'model', 'mute'].includes(raw.audioMode) || typeof raw.transcribe !== 'boolean'
+      || (raw.downloadSpeech !== undefined && typeof raw.downloadSpeech !== 'boolean')
+      || !Array.isArray(raw.controls) || raw.controls.length > 3 || new Set(raw.controls).size !== raw.controls.length
+      || raw.controls.some((control) => typeof control !== 'string' || !['depth', 'pose', 'canny'].includes(control))) {
+      throw new Error('复刻任务参数或控制类型无效');
+    }
+    for (const key of ['analysisModelId', 'character', 'scene', 'style', 'resolution', 'aspectRatio']) {
+      if (raw[key] !== undefined && (typeof raw[key] !== 'string' || (raw[key] as string).length > (['character', 'scene', 'style'].includes(key) ? 2000 : 200))) {
+        throw new Error('复刻要求或模型参数过长');
+      }
+    }
+    if (raw.maxSegmentSeconds !== undefined && (typeof raw.maxSegmentSeconds !== 'number'
+      || !Number.isFinite(raw.maxSegmentSeconds) || raw.maxSegmentSeconds <= 0 || raw.maxSegmentSeconds > 30)) {
+      throw new Error('每段规划时长必须大于 0 且不超过 30 秒');
+    }
+    if (raw.cuts !== undefined && (!Array.isArray(raw.cuts) || raw.cuts.length > 63
+      || raw.cuts.some((value, index) => typeof value !== 'number' || !Number.isFinite(value)
+        || value <= 0 || (index > 0 && value <= (raw.cuts as number[])[index - 1])))) {
+      throw new Error('手动切点必须是至多 63 个递增秒数');
+    }
+    return raw as unknown as PluginVideoReplicaStart;
+  }
   if (type === 'prompt.mentions') {
     if (!['nodes', 'characters', 'assets'].includes(String(raw.source))
       || Object.keys(raw).some((key) => !['type', 'source', 'query', 'offset', 'preview'].includes(key))
@@ -1005,6 +1041,15 @@ function parseHostEffect(
     return { type, resourceId, mode, samples, replaceDerived: raw.replaceDerived === true };
   }
   throw new Error('插件请求了不支持的宿主操作');
+}
+
+/** UI Broker 的任务入口仍使用同一严格解析器；不接受原生路径或执行源码。 */
+export function parsePluginVideoReplicaEffect(value: unknown): Extract<PluginNodeHostEffect, { type: 'video.replicaJob.start' | 'video.replicaJob.status' | 'video.replicaJob.cancel' }> {
+  const effect = parseHostEffect(value);
+  if (effect.type !== 'video.replicaJob.start' && effect.type !== 'video.replicaJob.status' && effect.type !== 'video.replicaJob.cancel') {
+    throw new Error('复刻任务操作无效');
+  }
+  return effect;
 }
 
 function connectedInputValue(data: BaseNodeData, type: string): PluginJsonValue | undefined {
@@ -1228,6 +1273,9 @@ async function executeHostEffect(
   };
   try {
     if (context.signal?.aborted) throw new Error('插件操作已取消');
+    if (effect.type === 'video.replicaJob.start' || effect.type === 'video.replicaJob.status' || effect.type === 'video.replicaJob.cancel') {
+      throw new Error('完整复刻任务必须通过已绑定的插件界面会话执行');
+    }
     if (effect.type === 'prompt.mentions') {
       if (!context.permissions.includes('prompt.references.read')) throw new Error('插件未声明 prompt.references.read 权限');
       assertFresh();
@@ -1405,6 +1453,9 @@ async function executeHostEffect(
     }
     if (!context.permissions.includes('files.output.create')) {
       throw new Error('插件未声明 files.output.create 权限');
+    }
+    if (effect.type !== 'resource.export' && effect.type !== 'resource.createText') {
+      throw new Error('此宿主操作不能创建文件');
     }
     // 导出只接受当前 invocation 的派生图像，不暴露任意路径读写。
     if (effect.type === 'resource.export' && !context.resourceReadContext) throw new Error('插件资源会话已失效');
@@ -1610,6 +1661,7 @@ export async function executePluginNode(
 interface PreparedPluginNodeSet {
   nodes: Node<BaseNodeData>[];
   edges: Edge[];
+  nodeIdsByKey: Record<string, string>;
   rollback: () => Promise<void>;
   assertGenerationModelsFresh: () => void;
   assertReferencesFresh: () => Promise<void>;
@@ -1888,7 +1940,7 @@ async function preparePluginNodeSet(options: {
     const generationIds = new Set([...generations.keys()].map((key) => nodeIds.get(key)!));
     const videoPreflight = nodes.filter((node) => generationIds.has(node.id)).map((node) => inspectVideoNode(node, workspace));
     if (videoPreflight.some((item) => item.issues.length)) throw new Error('视频生成节点预检失败，请检查模型与本批参考媒体');
-    return { nodes, edges, rollback, assertGenerationModelsFresh, assertReferencesFresh, videoPreflight };
+    return { nodes, edges, nodeIdsByKey: Object.fromEntries(nodeIds), rollback, assertGenerationModelsFresh, assertReferencesFresh, videoPreflight };
   } catch (error) {
     await rollback();
     throw error;
@@ -1906,7 +1958,9 @@ export async function executeNodePluginTool(
     trustedMediaReferences?: Set<string>;
     signal?: AbortSignal;
   },
-): Promise<void> {
+  /** 仅宿主后台任务使用，不从插件 JSON、SDK 或 UI 请求反序列化。 */
+  hostTask?: { materialsOnly: true },
+): Promise<void | { nodes: Node<BaseNodeData>[]; edges: Edge[]; nodeIdsByKey: Record<string, string> }> {
   const before = useAppStore.getState();
   const projectId = before.currentProjectId;
   const sourceNode = before.nodes.find((node) => node.id === nodeId);
@@ -2115,6 +2169,9 @@ export async function executeNodePluginTool(
           resources,
         });
         try {
+          if (hostTask && (prepared.videoPreflight.length || !installedPlugin.manifest.requiredCapabilities?.includes('video.replicaPipeline'))) {
+            throw new Error('后台素材调用不能提交生成，且必须声明全片任务能力');
+          }
           await prepared.assertReferencesFresh();
           assertFresh();
           prepared.assertGenerationModelsFresh();
@@ -2125,6 +2182,7 @@ export async function executeNodePluginTool(
           await prepared.rollback();
           throw error;
         }
+        if (hostTask) return { nodes: prepared.nodes, edges: prepared.edges, nodeIdsByKey: prepared.nodeIdsByKey };
         if (prepared.videoPreflight.length) {
           // Store 会分配 displayId 并按设置补本批参考 @；以其最终节点生成提交指纹。
           const committed = useAppStore.getState();

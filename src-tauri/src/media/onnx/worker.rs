@@ -501,8 +501,7 @@ fn handle_asr(request: &Value, id: &Value) {
         }
     };
     eprintln!(
-        "[onnx-worker] 语音转文本: {}（词表 {} 条）",
-        input.display(),
+        "[onnx-worker] 开始语音转文本（词表 {} 条）",
         vocab.len()
     );
 

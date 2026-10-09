@@ -212,6 +212,7 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
 
     tx.objectStore(STORE_PROJECTS).delete(id);
     tx.objectStore(STORE_METADATA).delete(`video-batches:${id}`);
+    tx.objectStore(STORE_METADATA).delete(`video-replica-jobs:${id}`);
     tx.objectStore(STORE_PROJECT_SUMMARIES).delete(id);
 
     const conversationStore = tx.objectStore(STORE_CHAT_CONVERSATIONS);

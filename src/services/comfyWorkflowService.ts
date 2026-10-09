@@ -1416,8 +1416,12 @@ async function promptComfyUIWorkflow(
   workflowObj: Record<string, Record<string, unknown>>,
   signal?: AbortSignal,
   progressSession?: ComfyProgressSession,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<string> {
   await progressSession?.waitUntilReady();
+  if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
+  if (beforeSubmit) await beforeSubmit();
+  if (signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
   const promptRes = await comfyFetch(`${baseUrl}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1568,6 +1572,8 @@ export async function executeComfyUIVideoGenerate(
   referenceAudioUrls: string[] = [],
   /** 提示词框里引用的图片/视频，按同类顺序填充工作流上传 IO 节点 */
   promptMedia: { imageUrls?: string[]; videoUrls?: string[] } = {},
+  /** 仅调用方显式传入时启用；普通节点生成沿用既有流程。 */
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<{ url: string }> {
   const {
     workflowId, workflowInputs, prompt,
@@ -1628,7 +1634,7 @@ export async function executeComfyUIVideoGenerate(
     }
 
     // 提交工作流
-    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession);
+    const promptId = await promptComfyUIWorkflow(baseUrl, workflowObj, signal, progressSession, beforeSubmit);
     submittedTaskId = promptId;
 
     // 回填 promptId，标记为已提交

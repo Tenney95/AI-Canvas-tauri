@@ -17,6 +17,14 @@ declare global {
 export type * from '../src/types/plugin';
 
 /**
+ * video.replicaPipeline：runEffect(video.replicaJob.start) 接受整个本地视频任务。
+ * 模型目录 videoCapability 用于分段预览；宿主按实际配置再次预检。
+ * 接受后只用返回 jobId 查询/停止；不得沿用 UI resourceId 或引用 token 执行后台步骤。
+ * 原音保留、模型声音和静音分别由 audioMode 指定；转写是分段文本，不是声音克隆。
+ * speechModelsRequired 表示等待用户明确下载；停止后续段不重投已经提交的生成。
+ */
+
+/**
  * prompt.mentions 返回候选标签与调用级 token；声明 prompt.references.read + prompt.mentions。
  * 可选 preview:true 提供宿主生成的有界 thumbnailDataUrl、裁剪矩形和小标，不返回路径或原图地址。
  * thumbnailDataUrl 仅用于选择器展示；不得把预览或其像素当作原始生成参考图。

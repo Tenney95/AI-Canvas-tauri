@@ -35,13 +35,35 @@ export interface GenerationResult {
   message?: string;
 }
 
+/** 全片复刻等宿主任务的执行租约；不持久化到节点或项目。 */
+export interface GenerationLease {
+  signal?: AbortSignal;
+  assertFresh: () => void | Promise<void>;
+}
+
 export async function executeGeneration(
   nodeId: string,
   overridePrompt?: string,
   postProcess?: ImagePostProcess,
   /** 直接传入节点数据（避免读 store 的时序问题），不传则从 store 读 */
   passData?: BaseNodeData,
+  lease?: GenerationLease,
 ): Promise<GenerationResult> {
+  let leaseValid = true;
+  const assertLease = async () => {
+    if (!lease) return;
+    try {
+      if (lease.signal?.aborted) throw new Error('任务已取消');
+      await lease.assertFresh();
+      if (lease.signal?.aborted) throw new Error('任务已取消');
+    } catch {
+      leaseValid = false;
+      throw new Error('任务已取消');
+    }
+  };
+  if (lease) {
+    try { await assertLease(); } catch { return { success: false, message: '任务已取消' }; }
+  }
   const store = useAppStore.getState();
   const data: BaseNodeData | undefined = passData ?? (store.nodes.find((n) => n.id === nodeId)?.data as BaseNodeData | undefined);
   if (!data) return { success: false, message: '节点不存在' };
@@ -124,7 +146,7 @@ export async function executeGeneration(
     ? videoInputFingerprint({ ...videoNode, data }, store) : undefined;
   const isStillCurrentSubmission = () => {
     const s = useAppStore.getState();
-    return s.currentProjectId === submittingProjectId && s.nodes.some((n) => n.id === nodeId)
+    return leaseValid && !lease?.signal?.aborted && s.currentProjectId === submittingProjectId && s.nodes.some((n) => n.id === nodeId)
       && (!guardedSubmission || (!!cloudGuard && isCanvasDerivationFresh(cloudGuard, s)));
   };
 
@@ -241,12 +263,13 @@ export async function executeGeneration(
     } else if (nodeType === 'ai-video') {
       // Imported/legacy outputs may not have a history record. Preserve before replacing.
       if (data.videoUrl) {
+        if (lease) await assertLease();
         await store.recordOutputHistory(nodeId, {
           nodeId, nodeLabel: `${data.label} · 替换前版本`, timestamp: Date.now(), prompt: '',
           output: data.sourceUrl || data.videoUrl, nodeType: 'ai-video', model: '',
           provider: '', status: 'success', mediaUrl: data.videoUrl, filePath: data.filePath,
         }, true);
-        if (!isStillCurrentSubmission()) return { success: false, message: '画布已变化，尚未提交' };
+        if (!isStillCurrentSubmission()) return { success: false, message: lease ? '任务已取消' : '画布已变化，尚未提交' };
       }
       const {
         videoResolution,
@@ -266,17 +289,27 @@ export async function executeGeneration(
         seedanceDuration: data.seedanceDuration as number | undefined,
       });
       const genAudio = data.generateAudio as boolean | undefined;
-      const result = await generateVideo({
+      const videoOptions = {
         prompt: effectivePrompt, model: nodeModel, provider: nodeProvider,
         videoResolution, videoFps, videoFrames, seedanceResolution, seedanceRatio,
         seedanceDuration, generateAudio: genAudio, nodeId,
         workflowId, workflowInputs: data.workflowInputs, runninghubModelParameters: data.runninghubModelParameters,
-      });
+      };
+      // 异步哈希/版本检查完成后再提交付费请求；撤销的租约不写失败历史。
+      if (lease) {
+        await assertLease();
+        if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
+      }
+      const result = lease ? await generateVideo(videoOptions, lease.signal, assertLease) : await generateVideo(videoOptions);
+      if (lease) await assertLease();
       if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
       const persisted = getCloudWorkflowPersistedOutput(result.workflowApiOutputs ?? result.runninghubOutputs, result.url) ?? (submittingProjectId
         ? await persistMediaUrlToProjectData(result.url, submittingProjectId, 'ai-video', data.label)
         : { mediaUrl: result.url, sourceUrl: result.url });
-      if (!isStillCurrentSubmission()) return { success: false, message: '画布已变化，任务已保留' };
+      if (lease) await assertLease();
+      if (!isStillCurrentSubmission()) return { success: false, message: lease ? '任务已取消' : '画布已变化，任务已保留' };
+      if (lease) await assertLease();
+      if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };
       store.updateNodeData(nodeId, {
         videoUrl: persisted.mediaUrl, sourceUrl: persisted.sourceUrl, filePath: persisted.filePath,
         thumbnailUrl: persisted.mediaUrl, output: persisted.sourceUrl, status: 'success', videoBatchFingerprint: videoFingerprint,
@@ -372,6 +405,9 @@ export async function executeGeneration(
     if (runningHubTask && isStillCurrentSubmission()) completeRunningHubNodeTask(nodeId);
     return { success: true };
   } catch (err) {
+    if (lease) {
+      try { await assertLease(); } catch { return { success: false, message: '任务已取消' }; }
+    }
     const msg = err instanceof Error ? err.message : (typeof err === 'string' && err.trim() ? err : '生成失败');
     if (msg === '任务已被取消') return { success: false, message: '任务已取消' };
     if (!isStillCurrentSubmission()) return { success: false, message: '任务已取消' };

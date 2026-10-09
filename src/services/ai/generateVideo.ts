@@ -554,6 +554,8 @@ export function buildCanonicalVideoProtocolVariables(
 export async function generateVideo(
   params: AIVideoGenParams,
   signal?: AbortSignal,
+  /** 宿主任务在素材准备完成后、实际提交前复核运行时租约。 */
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<{ url: string; runninghubOutputs?: import('../../types/runninghub').RunningHubOutput[];
   workflowApiOutputs?: import('../../types/workflowApi').CloudWorkflowOutput[]; workflowApiTaskId?: string }> {
   // 内置 Provider 与本地工作流暂时保持旧归一化；通用模型交给 capability-aware
@@ -617,7 +619,7 @@ export async function generateVideo(
       } }, signal);
       return { url: outputs[0].url, runninghubOutputs: outputs };
     }
-    return executeComfyUIVideoGenerate(
+    const comfyArgs = [
       { ...params, prompt: referenceInput.prompt },
       signal,
       getMediaReferenceUrls(references, 'audio', 'local'),
@@ -625,7 +627,10 @@ export async function generateVideo(
         imageUrls: getMediaReferenceUrls(references, 'image', 'local'),
         videoUrls,
       },
-    );
+    ] as const;
+    return beforeSubmit
+      ? executeComfyUIVideoGenerate(...comfyArgs, beforeSubmit)
+      : executeComfyUIVideoGenerate(...comfyArgs);
   }
 
   if (provider === 'workflow-api') throw new Error('请先配置并选择工作流 API');
@@ -747,6 +752,7 @@ export async function generateVideo(
       preserveFrameRoles,
       params,
       signal,
+      beforeSubmit,
     );
   }
 
@@ -813,6 +819,9 @@ export async function generateVideo(
         gm.name,
         { signal },
       );
+      if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
+      if (beforeSubmit) await beforeSubmit();
+      if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
       const urls = await runConfiguredModelProtocol({
         model: gm,
         category: 'video',
@@ -844,6 +853,7 @@ async function generateVolcengineVideo(
   preserveFrameRoles: boolean,
   params: AIVideoGenParams,
   externalSignal?: AbortSignal,
+  beforeSubmit?: () => void | Promise<void>,
 ): Promise<{ url: string }> {
   const nodeId = params.nodeId;
   let billingRun: Awaited<ReturnType<typeof createBillingRun>> = null;
@@ -903,6 +913,9 @@ async function generateVolcengineVideo(
 
     // 提交任务
     const apiUrl = `${baseUrl}/contents/generations/tasks`;
+    if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
+    if (beforeSubmit) await beforeSubmit();
+    if (signal?.aborted) throw signal.reason ?? new DOMException('请求已取消', 'AbortError');
     requestSent = true;
     const submitResp = await corsSafeFetch(apiUrl, {
       method: 'POST',

@@ -23,6 +23,8 @@ import { buildDramaVoiceMentionId, emptyDramaAssetLibrary, type DramaCharacter }
 import * as apimartApi from '../../src/services/ai/apimartGen';
 import * as imageUtils from '../../src/services/ai/imageUtils';
 import * as uploadService from '../../src/services/uploadService';
+import * as videoInputValidation from '../../src/services/ai/videoInputValidation';
+import * as volcengineBilling from '../../src/services/billing/volcengineBillingService';
 import { createSeedanceQuickAdaptTemplate } from '../../src/services/ai/seedanceModelCapabilities';
 import { resolveVideoSubmissionControls } from '../../src/services/ai/videoRequestResolver';
 import { buildCharacterVideoReferences, resolveVideoParameterInputMode } from '../../src/components/nodes/shared/VideoParamSelector';
@@ -1401,5 +1403,100 @@ describe('ComfyUI 普通素材自动匹配入口', () => {
         { kind: 'image', url: 'data:image/png;base64,ZXh0cmE=', role: 'first_frame', origin: 'connection' }],
     });
     expect(comfyMocks.executeVideo).toHaveBeenCalledWith(expect.anything(), undefined, [urls.audio], { imageUrls: [urls.second, urls.first, 'data:image/png;base64,ZXh0cmE='], videoUrls: [urls.video] });
+  });
+});
+
+describe('caller lease at the paid video submission boundary', () => {
+  function configureLeaseProtocol() {
+    useAppStore.setState((state) => ({ config: { ...state.config,
+      providers: { ...state.config.providers, relay: { name: '测试连接', apiKey: 'test-key', baseUrl: 'https://video-gateway.example' } },
+      generalModels: [{ id: 'lease-video', name: '测试模型', modelId: 'vendor-video', category: 'video', providerConfigId: 'relay',
+        videoCapability: { operations: ['text-to-video', 'image-to-video'], minDuration: 1, maxDuration: 30, maxImageReferences: 2 },
+        executionProfile: { preset: 'custom', protocol: { version: 2, mode: 'sync', submit: {
+          method: 'POST', path: '/v1/videos', bodyEncoding: 'json', body: { model: '{{model}}', prompt: '{{prompt}}', duration: '{{duration}}' },
+        }, response: { type: 'json', result: { urlPath: 'video.url' } } } },
+      }],
+    } }));
+  }
+
+  it.each([
+    { stage: 'upload', failure: 'stale' }, { stage: 'upload', failure: 'abort' },
+    { stage: 'constraints', failure: 'stale' }, { stage: 'constraints', failure: 'abort' },
+  ] as const)('does not submit after $failure during a general model $stage wait', async ({ stage, failure }) => {
+    configureLeaseProtocol();
+    const controller = new AbortController(); let stale = false; let reached = false; let release!: () => void;
+    const upload = vi.spyOn(imageUtils, 'resolveImageUrlArray').mockImplementation(async (urls) => {
+      if (stage === 'upload') { reached = true; await new Promise<void>((resolve) => { release = resolve; }); }
+      return urls.map(() => 'https://cdn.example/uploaded-reference.png');
+    });
+    const constraints = vi.spyOn(videoInputValidation, 'assertVideoInputConstraints').mockImplementation(async () => {
+      if (stage === 'constraints') { reached = true; await new Promise<void>((resolve) => { release = resolve; }); }
+    });
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    const beforeSubmit = vi.fn(async () => { if (stale) throw new Error('caller input lease revoked'); });
+    try {
+      const pending = generateVideo({ provider: 'general', model: 'general/lease-video', prompt: '复刻这段动作', seedanceDuration: 5,
+        referenceMedia: [{ kind: 'image', url: 'data:image/png;base64,YQ==', origin: 'connection', role: 'reference' }],
+      }, controller.signal, beforeSubmit);
+      await vi.waitFor(() => expect(reached).toBe(true));
+      if (failure === 'abort') controller.abort(); else stale = true;
+      release();
+      await expect(pending).rejects.toThrow(failure === 'abort' ? /取消|abort/iu : 'caller input lease revoked');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(beforeSubmit).toHaveBeenCalledTimes(failure === 'abort' ? 0 : 1);
+    } finally { upload.mockRestore(); constraints.mockRestore(); }
+  });
+
+  it('checks cancellation again after an asynchronous beforeSubmit callback', async () => {
+    configureLeaseProtocol();
+    const controller = new AbortController(); const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    const beforeSubmit = vi.fn(async () => { await Promise.resolve(); controller.abort(); });
+    await expect(generateVideo({ provider: 'general', model: 'general/lease-video', prompt: '保留构图', seedanceDuration: 5 },
+      controller.signal, beforeSubmit)).rejects.toThrow(/取消|abort/iu);
+    expect(beforeSubmit).toHaveBeenCalledTimes(1); expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a successful callback transparent to the configured request and result', async () => {
+    configureLeaseProtocol();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ video: { url: 'https://cdn.example/lease-result.mp4' } }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock); const beforeSubmit = vi.fn(async () => undefined);
+    await expect(generateVideo({ provider: 'general', model: 'general/lease-video', prompt: '保留构图', seedanceDuration: 5 },
+      undefined, beforeSubmit)).resolves.toEqual({ url: 'https://cdn.example/lease-result.mp4' });
+    expect(beforeSubmit).toHaveBeenCalledTimes(1); expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(beforeSubmit.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[0]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({ model: 'vendor-video', prompt: '保留构图', duration: 5 });
+  });
+
+  it.each(['stale', 'abort'] as const)('rechecks %s after the Volcengine billing record await and before the paid POST', async (failure) => {
+    useAppStore.setState((state) => ({ config: { ...state.config, providers: { ...state.config.providers,
+      volcengine: { name: '测试方舟', apiKey: 'test-key', baseUrl: 'https://ark.example/api/v3' },
+    } } }));
+    const controller = new AbortController(); let reached = false; let release!: () => void; let stale = false;
+    const billing = vi.spyOn(volcengineBilling, 'createBillingRun').mockImplementation(async () => {
+      reached = true; await new Promise<void>((resolve) => { release = resolve; }); return null;
+    });
+    const updateBilling = vi.spyOn(volcengineBilling, 'updateBillingRun').mockResolvedValue(null);
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    const beforeSubmit = vi.fn(async () => { if (stale) throw new Error('caller input lease revoked'); });
+    try {
+      const pending = generateVideo({ provider: 'volcengine', model: 'volcengine/doubao-seedance-2-5-260628', prompt: '保留动作和构图', seedanceDuration: 5 },
+        controller.signal, beforeSubmit);
+      await vi.waitFor(() => expect(reached).toBe(true));
+      if (failure === 'abort') controller.abort(); else stale = true;
+      release();
+      await expect(pending).rejects.toThrow(failure === 'abort' ? /取消|abort/iu : 'caller input lease revoked');
+      expect(fetchMock).not.toHaveBeenCalled(); expect(billing).toHaveBeenCalledTimes(1);
+      expect(beforeSubmit).toHaveBeenCalledTimes(failure === 'abort' ? 0 : 1);
+      expect(updateBilling.mock.calls.some(([, patch]) => patch.status === 'unknown')).toBe(false);
+    } finally { billing.mockRestore(); updateBilling.mockRestore(); }
+  });
+
+  it('forwards the caller callback through the ComfyUI dispatch without consuming it early', async () => {
+    const beforeSubmit = vi.fn(async () => undefined);
+    await generateVideo({ prompt: '保留运镜', model: 'comfyui/workflow', provider: 'comfyui', workflowId: 'workflow' }, undefined, beforeSubmit);
+    expect(comfyMocks.executeVideo).toHaveBeenCalledWith(expect.anything(), undefined, [], { imageUrls: [], videoUrls: [] }, beforeSubmit);
+    expect(beforeSubmit).not.toHaveBeenCalled();
   });
 });

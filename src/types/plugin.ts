@@ -1,5 +1,6 @@
 import type { GeneralModelCategory, NodeType } from './index';
 import type { Locale } from '../i18n';
+import type { VideoModelCapability } from './aiTypes';
 
 export type PluginPermission =
   | 'node.read'
@@ -327,7 +328,7 @@ export interface PluginHostInfo {
   apiVersions: readonly number[];
   /** 宿主支持的功能，不代表插件已经获得对应权限。 */
   capabilities: readonly string[];
-  limits: Record<'tool' | 'ui', Record<string, number>>;
+  limits: Record<'tool' | 'ui', Record<string, number>> & { replica?: Record<string, number> };
 }
 
 export interface PluginManifest {
@@ -437,6 +438,50 @@ export interface PluginModelSummary {
   category: GeneralModelCategory;
   description?: string;
   inputModalities?: Array<'text' | 'image'>;
+  /** 脱敏参数能力；不包含协议、服务地址或凭据。 */
+  videoCapability?: VideoModelCapability;
+}
+
+/** 完整视频任务只使用安全模型 ID、时间点和当前会话授权引用。 */
+export interface PluginVideoReplicaStart {
+  type: 'video.replicaJob.start';
+  resourceId: string;
+  modelId: string;
+  analysisModelId?: string;
+  character?: string;
+  scene?: string;
+  style?: string;
+  controls: Array<'depth' | 'pose' | 'canny'>;
+  cuts?: number[];
+  maxSegmentSeconds?: number;
+  resolution?: string;
+  aspectRatio?: string;
+  audioMode: 'original' | 'model' | 'mute';
+  transcribe: boolean;
+  /** 用户明确选择后才下载固定的本地语音模型。 */
+  downloadSpeech?: boolean;
+}
+
+/** 可持久化的最小摘要，不保存提示词、路径、资源 grant 或控制器。 */
+export interface PluginVideoReplicaJobSummary {
+  jobId: string;
+  projectId: string;
+  pluginId: string;
+  nodeId: string;
+  sourceDigest: string;
+  revisionDigest: string;
+  modelId: string;
+  status: 'queued' | 'preparing' | 'generating' | 'composing' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'unknown';
+  stage: string;
+  totalSegments: number;
+  completedSegments: number;
+  progress: number;
+  createdAt: number;
+  updatedAt: number;
+  segmentNodeIds: string[];
+  outputNodeId?: string;
+  error?: string;
+  warnings?: string[];
 }
 
 export type PluginResourceOrigin = 'node-self' | 'connection' | 'package' | 'derived';
@@ -485,6 +530,8 @@ export interface PluginPromptMentionPage {
 }
 
 export type PluginNodeHostEffect =
+  | PluginVideoReplicaStart
+  | { type: 'video.replicaJob.status' | 'video.replicaJob.cancel'; jobId: string }
   | { type: 'prompt.mentions'; source: PluginPromptMentionSource; query?: string; offset?: number; preview?: boolean }
   | { type: 'network.request'; url: string; method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; headers?: Record<string, string>; body?: string }
   | { type: 'settings.get'; key: string }

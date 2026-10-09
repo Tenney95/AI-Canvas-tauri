@@ -105,7 +105,7 @@ function decodeBase64Bytes(value: string): Uint8Array {
   }
 }
 
-function pcmS16LeToWav(pcm: Uint8Array, sampleRate: number, channels: number): Uint8Array {
+export function pcmS16LeToWav(pcm: Uint8Array, sampleRate: number, channels: number): Uint8Array {
   const bytesPerSample = 2;
   const blockAlign = channels * bytesPerSample;
   if (pcm.byteLength % blockAlign !== 0) {
