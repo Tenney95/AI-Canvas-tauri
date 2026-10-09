@@ -263,6 +263,37 @@ describe('header startup page entry', () => {
 });
 
 describe('startup page keyboard boundary', () => {
+  it.each([null, 'p1'])('lets the active dialog own keyboard input in project %s', async (projectId) => {
+    driver.state.currentProjectId = projectId;
+    let keydown: ((event: unknown) => Promise<void>) | undefined;
+    vi.stubGlobal('document', {
+      body: {}, documentElement: {}, querySelector: () => ({}),
+      addEventListener: (_: string, handler: typeof keydown) => { keydown = handler; },
+      removeEventListener: vi.fn(),
+    });
+    driver.effects = [];
+    useKeyboardShortcuts();
+    const cleanup = driver.effects[0]();
+    const target = { tagName: 'BUTTON', closest: () => null };
+    try {
+      for (const key of ['Escape', 'Tab', ' ', 'Delete', '1', 'z']) {
+        const event = { target, key, code: key === ' ' ? 'Space' : 'Digit1', ctrlKey: key === 'z',
+          preventDefault: vi.fn(), stopPropagation: vi.fn() };
+        await keydown?.(event);
+        expect(event.preventDefault).not.toHaveBeenCalled();
+        expect(event.stopPropagation).not.toHaveBeenCalled();
+      }
+      expect(driver.state.setSettingsOpen).not.toHaveBeenCalled();
+      expect(driver.state.addNode).not.toHaveBeenCalled();
+      expect(driver.state.undo).not.toHaveBeenCalled();
+      await keydown?.({ target, key: 's', ctrlKey: true, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+      expect(driver.state.saveCurrentProject).toHaveBeenCalledOnce();
+    } finally {
+      cleanup?.();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('does not create, paste, or undo nodes before opening a project', async () => {
     let keydown: ((event: unknown) => Promise<void>) | undefined;
     vi.stubGlobal('document', {

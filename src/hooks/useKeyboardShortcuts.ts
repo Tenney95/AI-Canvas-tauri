@@ -167,6 +167,9 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // 弹窗负责自己的 Escape/Tab 和编辑快捷键，捕获阶段不能先关闭父面板或操作底层画布。
+      if (document.querySelector?.('[aria-modal="true"], dialog[open]')) return;
+
       // 编辑器内的空格、数字、撤销和删除交给控件，避免捕获阶段误操作背后的画布。
       if (target.closest?.('.animation-editor')) return;
 
