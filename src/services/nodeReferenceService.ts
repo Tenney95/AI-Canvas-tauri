@@ -2,7 +2,7 @@
  * 解析工作流输入中的画布节点、剧本资产和本地资产引用，并替换为可提交的实际内容。
  */
 import { useAppStore } from '../store/useAppStore';
-import { resolveDramaActionMediaRef, resolveDramaAssetImageRef, resolveDramaVoiceRef } from './dramaAssetPrompt';
+import { findDramaAsset, resolveDramaActionMediaRef, resolveDramaAssetImageRef, resolveDramaVoiceRef } from './dramaAssetPrompt';
 import { parseDramaMentionId } from '../types/dramaAssets';
 
 /** 解析 workflowInputs 值中的 @{nodeId:label} / @drama{id:name} 引用，替换为对应输出内容 */
@@ -17,10 +17,7 @@ export function resolveNodeReferences(value: string): string {
     const lib = store.dramaAssets;
     // 工作流文本输入只能塞一个地址，#all 在这里退化成主视觉那一张
     const { assetId, referenceImageId, actionId, actionMediaId, voiceClipId } = parseDramaMentionId(dramaId);
-    const asset =
-      lib.characters.find((a) => a.id === assetId)
-      || lib.scenes.find((a) => a.id === assetId)
-      || lib.props.find((a) => a.id === assetId);
+    const asset = findDramaAsset(lib, assetId, store.globalCharacters);
     if (voiceClipId !== undefined) {
       const voice = resolveDramaVoiceRef(asset, voiceClipId);
       if (!voice) throw new Error(`角色音频引用已失效：${dramaName || '未命名角色'}`);

@@ -96,6 +96,7 @@ interface PluginUiSession {
   exportEffectBudget?: number;
   networkEffectBudget?: number;
   settingsEffectBudget?: number;
+  mentionEffectBudget?: number;
   requestCount: number;
   requestInFlight: boolean;
   effectAbortController?: AbortController;
@@ -313,7 +314,10 @@ async function dispatchRequest(
       case 'effect': {
         const effectType = request.payload && typeof request.payload === 'object' && 'type' in request.payload
           ? request.payload.type : undefined;
-        if (effectType === 'network.request') {
+        if (effectType === 'prompt.mentions') {
+          if ((session.mentionEffectBudget ?? 0) >= PLUGIN_HOST.limits.ui.promptMentions) throw new Error('本次会话引用查询达到 96 次上限，请重新打开插件');
+          session.mentionEffectBudget = (session.mentionEffectBudget ?? 0) + 1;
+        } else if (effectType === 'network.request') {
           if ((session.networkEffectBudget ?? 0) >= MAX_UI_NETWORK_EFFECTS) throw new Error('本次会话网络请求达到 16 次上限');
           session.networkEffectBudget = (session.networkEffectBudget ?? 0) + 1;
         } else if (effectType === 'settings.get' || effectType === 'settings.set' || effectType === 'settings.delete') {

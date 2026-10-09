@@ -16,6 +16,7 @@ import type {
   PluginNodeToolDialogFieldType,
   PluginPackageResourceManifest,
   PluginResourceAccessManifest,
+  PluginPythonExecutionManifest,
   PluginToolDialogManifest,
   PluginUIManifest,
 } from '../../types/plugin';
@@ -108,6 +109,7 @@ const PERMISSIONS = new Set<PluginPermission>([
   'node.write',
   'models.read',
   'models.invoke',
+  'prompt.references.read',
   'network.request',
   'settings.read',
   'settings.write',
@@ -444,6 +446,7 @@ function parseCustomNodes(value: unknown): PluginCustomNodeManifest[] {
   return value.map((rawNode, index) => {
     const node = objectValue(rawNode, `nodes[${index}]`);
     const id = nonEmptyString(node.id, `nodes[${index}].id`, 64);
+    if (node.pythonExecution !== undefined) throw new Error('pythonExecution 仅允许节点工具声明');
     if (!TOOL_ID_RE.test(id)) throw new Error(`自定义节点 id 无效: ${id}`);
     if (seenNodeIds.has(id)) throw new Error(`自定义节点 id 重复: ${id}`);
     seenNodeIds.add(id);
@@ -557,6 +560,10 @@ function parseManifest(value: unknown): PluginManifest {
   if (permissions.includes('models.invoke') && !permissions.includes('models.read')) {
     throw new Error('models.invoke 必须与 models.read 一起声明');
   }
+  if (permissions.includes('prompt.references.read')
+    && (apiVersion !== 2 || !requiredCapabilities?.includes('prompt.mentions'))) {
+    throw new Error('prompt.references.read 要求 API 2 与 prompt.mentions 能力');
+  }
   let network: PluginManifest['network'];
   if (root.network !== undefined) {
     if (!permissions.includes('network.request')) throw new Error('声明 network 必须包含 network.request 权限');
@@ -625,6 +632,34 @@ function parseManifest(value: unknown): PluginManifest {
     }
     const dialog = tool.dialog === undefined ? undefined : parseToolDialog(tool.dialog, toolId);
     const resourceAccess = parseResourceAccess(tool.resourceAccess, `${toolId}.resourceAccess`);
+    let pythonExecution: PluginPythonExecutionManifest | undefined;
+    if (tool.pythonExecution !== undefined) {
+      if (runtime !== 'python' || apiVersion !== 2) throw new Error('pythonExecution 仅允许 API 2 可信 Python 节点工具声明');
+      if (!requiredCapabilities?.includes('python.executionTimeout')) {
+        throw new Error('声明 pythonExecution 需要 python.executionTimeout');
+      }
+      const execution = objectValue(tool.pythonExecution, `${toolId}.pythonExecution`);
+      if (Object.keys(execution).some((key) => key !== 'timeoutSeconds' && key !== 'mediaWorkspace')) {
+        throw new Error(`${toolId}.pythonExecution 包含未知字段`);
+      }
+      const timeoutSeconds = execution.timeoutSeconds;
+      if (timeoutSeconds !== undefined && (typeof timeoutSeconds !== 'number'
+        || !Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 30 || timeoutSeconds > 120)) {
+        throw new Error(`${toolId}.pythonExecution.timeoutSeconds 必须在 30–120 秒之间`);
+      }
+      if (execution.mediaWorkspace !== undefined && typeof execution.mediaWorkspace !== 'boolean') {
+        throw new Error(`${toolId}.pythonExecution.mediaWorkspace 必须是布尔值`);
+      }
+      if (execution.mediaWorkspace === true && (!requiredCapabilities?.includes('python.mediaWorkspace')
+        || !permissions.includes('files.connected.read') || !permissions.includes('files.output.create')
+        || resourceAccess?.self !== true)) {
+        throw new Error('Python 媒体工作区需要 python.mediaWorkspace、读取/输出权限与 self 资源授权');
+      }
+      pythonExecution = {
+        ...(timeoutSeconds === undefined ? {} : { timeoutSeconds: timeoutSeconds as number }),
+        ...(execution.mediaWorkspace === undefined ? {} : { mediaWorkspace: execution.mediaWorkspace as boolean }),
+      };
+    }
     if (placements.includes('node-toolbar') && !dialog) {
       throw new Error(`${toolId} 使用节点工具栏入口时必须配置 dialog`);
     }
@@ -632,6 +667,9 @@ function parseManifest(value: unknown): PluginManifest {
     const output = objectValue(tool.output, `${toolId}.output`);
     const mode = nonEmptyString(output.mode, `${toolId}.output.mode`, 32) as PluginNodeOutputMode;
     if (!OUTPUT_MODES.has(mode)) throw new Error(`${toolId} 的输出模式不受支持`);
+    if (pythonExecution?.mediaWorkspace && mode !== 'create-node-set') {
+      throw new Error('Python 媒体工作区必须声明 create-node-set 输出');
+    }
     const fields = stringArray(output.fields, `${toolId}.output.fields`, MAX_FIELDS);
     if (fields.some((field) => !FIELD_RE.test(field))) throw new Error(`${toolId} 包含无效输出字段`);
     if (fields.some((field) => FORBIDDEN_OUTPUT_FIELDS.has(field))) {
@@ -657,6 +695,14 @@ function parseManifest(value: unknown): PluginManifest {
     } else if (outputNodeTypes !== undefined || maxNodes !== undefined) {
       throw new Error(`${toolId} 只有 create-node-set 可以声明 nodeTypes 和 maxNodes`);
     }
+    if (output.generateVideos !== undefined && typeof output.generateVideos !== 'boolean') {
+      throw new Error(`${toolId}.output.generateVideos 必须是布尔值`);
+    }
+    if (output.generateVideos === true && (apiVersion !== 2 || mode !== 'create-node-set'
+      || !outputNodeTypes?.includes('ai-video') || !requiredCapabilities?.includes('video.nodeSetGeneration')
+      || !permissions.includes('models.read') || !permissions.includes('models.invoke'))) {
+      throw new Error('视频节点集生成要求 API 2、create-node-set、ai-video、video.nodeSetGeneration 与 models.read/models.invoke');
+    }
 
     return {
       id: toolId,
@@ -668,12 +714,14 @@ function parseManifest(value: unknown): PluginManifest {
       nodeTypes: nodeTypes as NodeType[],
       inputFields,
       resourceAccess,
+      ...(pythonExecution ? { pythonExecution } : {}),
       output: {
         mode,
         nodeType: outputNodeType,
         nodeTypes: outputNodeTypes,
         maxNodes,
         fields,
+        ...(output.generateVideos !== undefined ? { generateVideos: output.generateVideos } : {}),
       },
     };
   });

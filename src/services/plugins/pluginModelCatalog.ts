@@ -5,11 +5,12 @@
  * 自定义节点与节点工具共用同一份枚举逻辑，避免两处各自维护导致目录漂移。
  */
 import { useAppStore } from '../../store/useAppStore';
-import type { GeneralModelCategory, NodeType } from '../../types';
+import type { GeneralModelCategory, NodeType, WorkflowDefinition } from '../../types';
 import type { PluginModelSummary } from '../../types/plugin';
 import {
   defaultModelGroups,
   getConfiguredModelGroups,
+  getMediaModelOptions,
   hasVisionInputCapability,
   isProviderCategoryVisible,
 } from '../../components/nodes/shared/defaultModels';
@@ -50,6 +51,7 @@ export function collectDeclaredModelCategories(
 export function buildPluginModelCatalog(
   config: AppConfig,
   categories: GeneralModelCategory[],
+  workflows: WorkflowDefinition[] = useAppStore.getState().workflows ?? [],
 ): PluginModelSummary[] {
   const models = categories.flatMap((category) => {
     const builtIn = getConfiguredModelGroups(
@@ -81,5 +83,13 @@ export function buildPluginModelCatalog(
       }));
     return [...builtIn, ...general];
   });
-  return [...new Map(models.map((model) => [model.id, model])).values()];
+  const videoWorkflows = categories.includes('video') ? workflows.filter((workflow) => {
+    const boundUrl = config.comfyServers?.find((server) => server.id === workflow.serverId)?.url;
+    return workflow.category === 'ai-video' && (!workflow.adapterType || workflow.adapterType === 'comfyui')
+      && !!workflow.fileContent.trim() && !!(boundUrl?.trim() || config.comfyUIUrl?.trim());
+  }) : [];
+  const workflowModels: PluginModelSummary[] = getMediaModelOptions([], config, videoWorkflows)
+    .filter((option) => !!option.workflowId && option.provider === 'comfyui')
+    .map((option) => ({ id: option.value, name: option.label, provider: 'comfyui', category: 'video', description: 'ComfyUI 工作流' }));
+  return [...new Map([...models, ...workflowModels].map((model) => [model.id, model])).values()];
 }

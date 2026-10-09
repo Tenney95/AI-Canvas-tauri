@@ -1,6 +1,6 @@
 /**
  * 插件资源 Broker：把当前节点、直接入边和插件包资源映射为调用级不透明句柄。
- * 真实路径只保存在当前 Renderer 内存；插件输入、IndexedDB 和日志均不得持有路径。
+ * 真实路径只在宿主内存与原生私有工作区使用；普通插件输入、IndexedDB 和日志不得持有路径。
  */
 import { invoke } from '@tauri-apps/api/core';
 import { lstat, readFile } from '@tauri-apps/plugin-fs';
@@ -24,6 +24,7 @@ import {
 } from '../fs/core';
 import { assertSafeProjectRelativePath } from '../fs/projectFiles';
 import type { PluginLineArtImage } from './pluginImageService';
+import { clearPluginPromptReferences, clearPluginPromptReferencesForPlugin } from './pluginPromptReferenceService';
 
 const MAX_TEXT_BYTES = 256 * 1024;
 const MAX_RANGE_BYTES = 256 * 1024;
@@ -31,6 +32,7 @@ const MAX_RANGE_FALLBACK_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_DERIVED_RESOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_DERIVED_TOTAL_BYTES = 48 * 1024 * 1024;
 const MAX_DERIVED_RESOURCES = 25;
+const MAX_NATIVE_MEDIA_INPUT_BYTES = 256 * 1024 * 1024;
 const DERIVED_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 export interface PluginResourceStateSnapshot {
@@ -605,6 +607,28 @@ export async function readPluginResourceText(
   return { resource: lease.ref, content };
 }
 
+/** 仅供主窗口原生工作区桥使用；复核租约，路径不得进入普通插件输入或日志。 */
+export async function resolvePluginMediaWorkspaceInputs(
+  context: PluginResourceReadContext,
+  resources: PluginInvocationResources,
+): Promise<Array<{ resourceId: string; path: string }>> {
+  if (!context.permissions.includes('files.connected.read') || !context.permissions.includes('files.output.create')) {
+    throw new Error('Python 媒体工作区要求读取与输出权限');
+  }
+  if (resources.self.length !== 1) throw new Error('Python 媒体工作区需要当前节点的 self 视频资源');
+  const lease = requireLease(context, resources.self[0].resourceId);
+  if (lease.ref.origin !== 'node-self' || lease.sourceNodeId !== context.nodeId
+    || !lease.ref.mediaType.startsWith('video/') || lease.bytes || lease.packageResourceId) {
+    throw new Error('Python 媒体工作区只允许当前节点的项目视频');
+  }
+  if (lease.ref.size <= 0 || lease.ref.size > MAX_NATIVE_MEDIA_INPUT_BYTES) {
+    throw new Error('Python 媒体工作区输入必须为 1–256 MiB');
+  }
+  const identity = await revalidateProjectLease(context, lease);
+  requireLease(context, lease.ref.resourceId);
+  return [{ resourceId: lease.ref.resourceId, path: identity.path }];
+}
+
 /** 仅供宿主模型适配器使用；返回值不得进入插件输入或日志。 */
 export async function resolvePluginResourceHostUrl(
   context: PluginResourceReadContext,
@@ -643,12 +667,14 @@ export function readPluginDerivedResourceForOutput(
 }
 
 export function clearPluginInvocationResources(invocationId: string): void {
+  clearPluginPromptReferences(invocationId);
   for (const [resourceId, lease] of resourceLeases) {
     if (lease.invocationId === invocationId) resourceLeases.delete(resourceId);
   }
 }
 
 export function clearPluginResources(pluginId?: string): void {
+  clearPluginPromptReferencesForPlugin(pluginId);
   for (const [resourceId, lease] of resourceLeases) {
     if (!pluginId || lease.pluginId === pluginId) resourceLeases.delete(resourceId);
   }

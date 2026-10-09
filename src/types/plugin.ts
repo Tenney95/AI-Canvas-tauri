@@ -6,6 +6,8 @@ export type PluginPermission =
   | 'node.write'
   | 'models.read'
   | 'models.invoke'
+  /** 枚举当前画布、人物/场景与资源库的安全引用；正文与媒体仍仅由宿主解析。 */
+  | 'prompt.references.read'
   /** 由宿主请求 Manifest 中列出的公共 HTTPS 来源。 */
   | 'network.request'
   | 'settings.read'
@@ -46,6 +48,24 @@ export interface PluginNodeToolOutputManifest {
   maxNodes?: number;
   /** 插件返回 data 时允许写入的 BaseNodeData 顶层字段。 */
   fields: string[];
+  /** API 2：提交节点集后，由宿主视频批次生成本批至多 6 个视频节点。 */
+  generateVideos?: boolean;
+}
+
+export interface PluginVideoGenerationParameters {
+  duration?: number;
+  aspectRatio?: '1:1' | '16:9' | '9:16' | '4:3' | '3:4' | '21:9' | 'adaptive';
+  resolution?: '480p' | '720p' | '1080p' | '4k';
+  videoResolution?: number;
+  videoFps?: number;
+  videoFrames?: number;
+  generateAudio?: boolean;
+}
+
+export interface PluginNodeSetVideoGeneration {
+  /** 只接受宿主当前安全模型目录的 ID；宿主解析厂商与工作流身份。 */
+  modelId: string;
+  parameters?: PluginVideoGenerationParameters;
 }
 
 export type PluginImageRepresentation = 'original' | 'lineart';
@@ -56,6 +76,10 @@ export interface PluginNodeSetItem {
   nodeType: NodeType;
   /** ai-image 节点绑定本次 invocation 的派生图像资源。 */
   resourceId?: string;
+  /** 可信 Python 工作区经原生校验的 MP4 key（ASCII 字母、数字、_、-，1–160 字符）；仅视频节点可用。 */
+  artifactKey?: string;
+  /** 仅未绑定产物的 ai-video 节点可用；参考媒体通过本批 edges 传入。 */
+  generation?: PluginNodeSetVideoGeneration;
   /** 图像节点使用的宿主派生表示；省略时保留原图。 */
   representation?: PluginImageRepresentation;
   data: Record<string, PluginJsonValue>;
@@ -118,7 +142,34 @@ export interface PluginNodeToolManifest {
   inputFields: string[];
   /** API v1：声明本工具需要哪些节点文件资源；默认不授予。 */
   resourceAccess?: PluginResourceAccessManifest;
+  /** API 2 可信 Python 节点工具的有界运行与调用私有媒体工作区。 */
+  pythonExecution?: PluginPythonExecutionManifest;
   output: PluginNodeToolOutputManifest;
+}
+
+export interface PluginPythonExecutionManifest {
+  /** 缺省 30 秒；允许 30–120 秒，整个 pythonExecution 声明需 python.executionTimeout。 */
+  timeoutSeconds?: number;
+  /** 原生复制已授权 self 视频并校验输出；需声明 python.mediaWorkspace。 */
+  mediaWorkspace?: boolean;
+}
+
+export interface PluginInvocationIdentity {
+  pluginId: string;
+  sourceDigest: string;
+  revisionDigest: string;
+  toolId: string;
+  invocationId: string;
+}
+
+/** 仅 Rust 校验输出后发给宿主；插件提交 fileName，不能自行构造此引用。 */
+export interface PluginNativeMediaArtifactRef {
+  key: string;
+  artifactId: string;
+  displayName: string;
+  mediaType: 'video/mp4';
+  size: number;
+  sha256: string;
 }
 
 export interface PluginResourceAccessManifest {
@@ -353,6 +404,8 @@ export interface NodePluginExecutionResult {
   message?: string;
   /** 请求宿主代执行模型或文件能力；宿主完成后会携带 effectResult 再次调用。 */
   effect?: PluginNodeHostEffect;
+  /** 最多 18 个原生验收后替换的 MP4 引用；最终节点集提交前仍须原生读取复核。 */
+  artifacts?: PluginNativeMediaArtifactRef[];
 }
 
 export interface AvailableNodePluginTool {
@@ -412,7 +465,27 @@ export interface PluginInvocationResources {
   derived: PluginResourceRef[];
 }
 
+export type PluginPromptMentionSource = 'nodes' | 'characters' | 'assets';
+export interface PluginPromptMentionItem {
+  id: string;
+  label: string;
+  kind: 'text' | 'image' | 'video' | 'audio' | 'character' | 'scene' | 'prop';
+  /** 调用级 opaque token；不能自造普通节点、人物或文件引用。 */
+  token: string;
+  /** 仅 preview 查询返回：宿主重编码的有界 JPEG，不包含源地址或路径。 */
+  thumbnailDataUrl?: string;
+  /** 与角色头像一致的 0..1 裁剪矩形，width/height 必须大于 0。 */
+  thumbnailCrop?: { x: number; y: number; width: number; height: number };
+  badge?: string;
+}
+export interface PluginPromptMentionPage {
+  items: PluginPromptMentionItem[];
+  hasMore: boolean;
+  nextOffset?: number;
+}
+
 export type PluginNodeHostEffect =
+  | { type: 'prompt.mentions'; source: PluginPromptMentionSource; query?: string; offset?: number; preview?: boolean }
   | { type: 'network.request'; url: string; method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; headers?: Record<string, string>; body?: string }
   | { type: 'settings.get'; key: string }
   | { type: 'settings.set'; key: string; value: PluginJsonValue }

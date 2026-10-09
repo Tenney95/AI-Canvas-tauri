@@ -147,6 +147,8 @@ mod plugin_registry;
 mod plugin_runtime;
 #[path = "plugins/host_effects.rs"]
 mod plugin_host_effects;
+#[path = "plugins/artifacts.rs"]
+mod plugin_artifacts;
 #[path = "plugins/ui.rs"]
 mod plugin_ui;
 #[path = "plugins/window.rs"]
@@ -1265,6 +1267,9 @@ pub fn run() {
             plugin_window::plugin_ui_window_request,
             plugin_runtime::execute_node_plugin_tool,
             plugin_runtime::cancel_node_plugin_tool,
+            plugin_artifacts::prepare_plugin_media_workspace,
+            plugin_artifacts::read_plugin_media_artifact,
+            plugin_artifacts::release_plugin_media_workspace,
             plugin_host_effects::execute_plugin_host_effect,
             plugin_host_effects::cancel_plugin_host_effect,
             plugin_runtime::get_python_plugin_runtime_status,

@@ -44,11 +44,12 @@ const MAX_UI_EXPORTS: usize = 32;
 const MAX_PACKAGE_RESOURCES: usize = 64;
 const MAX_PACKAGE_RESOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PACKAGE_TOTAL_BYTES: usize = 64 * 1024 * 1024;
-const SUPPORTED_PERMISSIONS: [&str; 11] = [
+const SUPPORTED_PERMISSIONS: [&str; 12] = [
     "node.read",
     "node.write",
     "models.read",
     "models.invoke",
+    "prompt.references.read",
     "network.request",
     "settings.read",
     "settings.write",
@@ -109,6 +110,8 @@ struct PluginRevision {
     #[serde(default)]
     required_capabilities: Vec<String>,
     declared_tool_ids: Vec<String>,
+    #[serde(default)]
+    python_execution: BTreeMap<String, PluginPythonExecution>,
     #[serde(default)]
     native_approved: bool,
     /// 自定义界面产物的 SHA-256（manifest.ui.integrity 归一化后的 hex）；未声明 ui 时为 None。
@@ -195,6 +198,75 @@ pub struct PluginRegistrationStatus {
 pub(crate) struct PluginExecutionSource {
     pub runtime: String,
     pub source: String,
+    pub python_execution: Option<PluginPythonExecution>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PluginPythonExecution {
+    #[serde(default = "default_python_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default)]
+    pub media_workspace: bool,
+}
+
+fn default_python_timeout() -> u64 {
+    30
+}
+
+fn parse_python_execution(
+    contributes: &Map<String, Value>,
+    runtime: &str,
+    api_version: u64,
+    permissions: &[String],
+    capabilities: &[String],
+) -> Result<BTreeMap<String, PluginPythonExecution>, String> {
+    let mut declarations = BTreeMap::new();
+    if let Some(tools) = contributes.get("nodeTools").and_then(Value::as_array) {
+        for tool in tools {
+            let Some(raw) = tool.get("pythonExecution") else {
+                continue;
+            };
+            if runtime != "python" || api_version != 2 {
+                return Err("pythonExecution 仅允许 API 2 可信 Python 节点工具".into());
+            }
+            let declaration: PluginPythonExecution = serde_json::from_value(raw.clone())
+                .map_err(|_| "可信 Python 执行声明无效".to_string())?;
+            if !(30..=120).contains(&declaration.timeout_seconds)
+                || !capabilities
+                    .iter()
+                    .any(|item| item == "python.executionTimeout")
+            {
+                return Err("Python 执行时限必须为 30–120 秒并声明 python.executionTimeout".into());
+            }
+            if declaration.media_workspace
+                && (!capabilities
+                    .iter()
+                    .any(|item| item == "python.mediaWorkspace")
+                    || !permissions
+                        .iter()
+                        .any(|item| item == "files.connected.read")
+                    || !permissions.iter().any(|item| item == "files.output.create")
+                    || tool
+                        .pointer("/resourceAccess/self")
+                        .and_then(Value::as_bool)
+                        != Some(true)
+                    || tool.pointer("/output/mode").and_then(Value::as_str)
+                        != Some("create-node-set"))
+            {
+                return Err(
+                    "Python 媒体工作区需要明确能力、读写权限、self 资源及节点集输出".into(),
+                );
+            }
+            let id = tool
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or("Python 工具 ID 无效")?;
+            validate_tool_id(id)?;
+            declarations.insert(id.to_string(), declaration);
+        }
+    }
+    Ok(declarations)
 }
 
 pub(crate) struct PluginHostGrant {
@@ -329,6 +401,7 @@ fn string_list(
         if !item.is_ascii()
             || !item.bytes().all(|byte| {
                 byte.is_ascii_lowercase()
+                    || (key == "requiredCapabilities" && byte.is_ascii_uppercase())
                     || byte.is_ascii_digit()
                     || matches!(byte, b'.' | b'_' | b'-')
             })
@@ -753,12 +826,24 @@ fn parse_revision_with_resources(
     {
         return Err("models.invoke 必须与 models.read 一起声明".to_string());
     }
+    if permissions.iter().any(|item| item == "prompt.references.read")
+        && (api_version != 2 || !required_capabilities.iter().any(|item| item == "prompt.mentions"))
+    {
+        return Err("prompt.references.read 要求 API 2 与 prompt.mentions 能力声明".to_string());
+    }
     let contributes = object(
         root.get("contributes")
             .ok_or_else(|| "插件缺少 contributes".to_string())?,
         "contributes",
     )?;
     let declared_tool_ids = declared_tool_ids(contributes)?;
+    let python_execution = parse_python_execution(
+        contributes,
+        &runtime,
+        api_version,
+        &permissions,
+        &required_capabilities,
+    )?;
     let (ui_digest, ui_entry) = parse_ui_declaration(root, &permissions, ui_source)?;
     let resources = parse_package_resources(root, &permissions, resource_payloads)?;
     let network_origins = parse_network_origins(root, &permissions)?;
@@ -777,6 +862,7 @@ fn parse_revision_with_resources(
             min_host_version,
             required_capabilities,
             declared_tool_ids,
+            python_execution,
             native_approved: false,
             ui_digest,
             ui_entry,
@@ -1123,6 +1209,11 @@ fn validate_stored_revision(revision: &PluginRevision) -> Result<(), String> {
     {
         return Err("插件信任注册表包含无效权限组合".to_string());
     }
+    if revision.permissions.iter().any(|item| item == "prompt.references.read")
+        && !revision.required_capabilities.iter().any(|item| item == "prompt.mentions")
+    {
+        return Err("提示词引用权限缺少 prompt.mentions 能力声明".to_string());
+    }
     if revision.declared_tool_ids.is_empty()
         || revision.declared_tool_ids.len() > MAX_DECLARED_TOOL_IDS
         || revision
@@ -1150,6 +1241,31 @@ fn validate_stored_revision(revision: &PluginRevision) -> Result<(), String> {
     }
     for tool_id in &revision.declared_tool_ids {
         validate_tool_id(tool_id)?;
+    }
+    for (tool_id, declaration) in &revision.python_execution {
+        if revision.runtime != "python"
+            || !revision.declared_tool_ids.contains(tool_id)
+            || !(30..=120).contains(&declaration.timeout_seconds)
+            || !revision
+                .required_capabilities
+                .iter()
+                .any(|item| item == "python.executionTimeout")
+            || (declaration.media_workspace
+                && (!revision
+                    .required_capabilities
+                    .iter()
+                    .any(|item| item == "python.mediaWorkspace")
+                    || !revision
+                        .permissions
+                        .iter()
+                        .any(|item| item == "files.connected.read")
+                    || !revision
+                        .permissions
+                        .iter()
+                        .any(|item| item == "files.output.create")))
+        {
+            return Err("插件信任注册表包含无效 Python 执行声明".into());
+        }
     }
     if revision.resources.len() > MAX_PACKAGE_RESOURCES
         || revision
@@ -1773,6 +1889,7 @@ fn revision_security_manifest_matches(left: &PluginRevision, right: &PluginRevis
         && left.min_host_version == right.min_host_version
         && left.required_capabilities == right.required_capabilities
         && left.declared_tool_ids == right.declared_tool_ids
+        && left.python_execution == right.python_execution
         && left.ui_digest == right.ui_digest
         && left.ui_entry == right.ui_entry
         && left.resources == right.resources
@@ -2489,6 +2606,7 @@ pub(crate) fn load_plugin_for_execution<R: Runtime>(
     Ok(PluginExecutionSource {
         runtime: revision.runtime.clone(),
         source,
+        python_execution: revision.python_execution.get(tool_id).cloned(),
     })
 }
 
@@ -2649,6 +2767,87 @@ mod tests {
         assert!(is_valid_digest(&revision.source_digest));
         assert_eq!(revision.declared_tool_ids, ["custom-node", "upper"]);
         assert!(!revision.native_approved);
+    }
+
+    #[test]
+    fn plugin_prompt_references_require_explicit_compatible_declaration() {
+        let mut value = manifest("javascript");
+        value["permissions"] = json!(["node.read", "node.write", "prompt.references.read"]);
+        assert!(parse_revision(&value, "source", None).is_err());
+        value["apiVersion"] = json!(2);
+        assert!(parse_revision(&value, "source", None).is_err());
+        value["requiredCapabilities"] = json!(["prompt.mentions"]);
+        let (_, revision) = parse_revision(&value, "source", None).unwrap();
+        assert!(revision.permissions.iter().any(|item| item == "prompt.references.read"));
+        let mut forged = revision.clone();
+        forged.required_capabilities.clear();
+        assert!(validate_stored_revision(&forged).is_err());
+    }
+
+    #[test]
+    fn plugin_python_media_declarations_require_native_manifest_authority() {
+        let source = "define_plugin({'tools': {}})";
+        let mut value = manifest("python");
+        value["apiVersion"] = json!(2);
+        value["permissions"] = json!([
+            "node.read",
+            "node.write",
+            "files.connected.read",
+            "files.output.create"
+        ]);
+        value["requiredCapabilities"] = json!(["python.executionTimeout", "python.mediaWorkspace"]);
+        value["contributes"]["nodeTools"][0]["resourceAccess"] = json!({"self": true});
+        value["contributes"]["nodeTools"][0]["output"] = json!({"mode": "create-node-set"});
+        value["contributes"]["nodeTools"][0]["pythonExecution"] =
+            json!({"timeoutSeconds": 120, "mediaWorkspace": true});
+        let (_, revision) = parse_revision(&value, source, None).unwrap();
+        assert_eq!(revision.python_execution["upper"].timeout_seconds, 120);
+        assert!(revision.python_execution["upper"].media_workspace);
+        let mut changed = revision.clone();
+        changed
+            .python_execution
+            .get_mut("upper")
+            .unwrap()
+            .timeout_seconds = 30;
+        assert!(!revision_security_manifest_matches(&revision, &changed));
+        for raw in [
+            json!({"timeoutSeconds": 121}),
+            json!({"timeoutSeconds": 29}),
+            json!({"timeoutSeconds": 90.5}),
+            json!({"unknown": true}),
+        ] {
+            let mut bad = value.clone();
+            bad["contributes"]["nodeTools"][0]["pythonExecution"] = raw;
+            assert!(parse_revision(&bad, source, None).is_err());
+        }
+        for capabilities in [
+            json!([]),
+            json!(["python.executionTimeout"]),
+            json!(["python.mediaWorkspace"]),
+        ] {
+            let mut bad = value.clone();
+            bad["requiredCapabilities"] = capabilities;
+            assert!(parse_revision(&bad, source, None).is_err());
+        }
+        let mut bad = value.clone();
+        bad["contributes"]["nodeTools"][0]["resourceAccess"]["self"] = json!(false);
+        assert!(parse_revision(&bad, source, None).is_err());
+        bad = value.clone();
+        bad["runtime"] = json!("javascript");
+        bad["entry"] = json!("main.js");
+        assert!(parse_revision(&bad, "definePlugin({});", None).is_err());
+        bad = value.clone();
+        bad["apiVersion"] = json!(1);
+        assert!(parse_revision(&bad, source, None).is_err());
+        value["contributes"]["nodeTools"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("pythonExecution");
+        assert!(parse_revision(&value, source, None)
+            .unwrap()
+            .1
+            .python_execution
+            .is_empty());
     }
 
     #[test]
@@ -2870,7 +3069,9 @@ mod tests {
         assert_eq!(cache.bytes, bytes.len());
         let path = resource_snapshot_path(&directory, &id, &revision, "template");
         fs::write(&path, b"ABD").unwrap();
-        fs::File::open(&path)
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
             .unwrap()
             .set_modified(SystemTime::now() + std::time::Duration::from_secs(2))
             .unwrap();
@@ -3548,6 +3749,7 @@ mod tests {
             min_host_version: None,
             required_capabilities: Vec::new(),
             declared_tool_ids,
+            python_execution: BTreeMap::new(),
             native_approved: false,
             ui_digest: None,
             ui_entry: None,

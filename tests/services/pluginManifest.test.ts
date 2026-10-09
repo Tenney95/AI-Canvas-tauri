@@ -45,6 +45,80 @@ function manifest(overrides: Record<string, unknown> = {}): string {
 }
 
 describe('AI Canvas Plugin Manifest Standard', () => {
+  it('requires explicit API 2 prompt reference permission and capability', () => {
+    const safe = manifest({ apiVersion: 2, permissions: ['node.read', 'node.write', 'prompt.references.read'], requiredCapabilities: ['prompt.mentions'] });
+    expect(parsePluginBundle(safe, 'definePlugin({ tools: {} });').permissions).toContain('prompt.references.read');
+    expect(() => parsePluginBundle(manifest({ permissions: ['node.read', 'node.write', 'prompt.references.read'] }), 'definePlugin({ tools: {} });')).toThrow('API 2');
+    expect(() => parsePluginBundle(manifest({ apiVersion: 2, permissions: ['node.read', 'node.write', 'prompt.references.read'] }), 'definePlugin({ tools: {} });')).toThrow('prompt.mentions');
+  });
+  function generationManifest(overrides: Record<string, unknown> = {}) {
+    return manifest({ apiVersion: 2, requiredCapabilities: ['video.nodeSetGeneration'],
+      permissions: ['node.read', 'node.write', 'models.read', 'models.invoke'],
+      contributes: { nodeTools: [{ id: 'replica', title: '视频复刻', placements: ['node-context-menu'],
+        nodeTypes: ['source-video'], inputFields: ['label'], output: { mode: 'create-node-set', nodeTypes: ['ai-video'], maxNodes: 6, fields: ['label', 'prompt'], generateVideos: true } }] },
+      ...overrides,
+    });
+  }
+  it('requires an explicit bounded API 2 video generation contract', () => {
+    expect(parsePluginBundle(generationManifest(), 'definePlugin({ tools: {} });').contributes.nodeTools[0].output.generateVideos).toBe(true);
+    for (const overrides of [{ apiVersion: 1, requiredCapabilities: undefined }, { requiredCapabilities: [] },
+      { permissions: ['node.read', 'node.write', 'models.read'] }, { permissions: ['node.read', 'node.write'] }]) {
+      expect(() => parsePluginBundle(generationManifest(overrides), 'definePlugin({ tools: {} });')).toThrow();
+    }
+    const raw = JSON.parse(generationManifest());
+    raw.contributes.nodeTools[0].output.generateVideos = 'true';
+    expect(() => parsePluginBundle(JSON.stringify(raw), 'definePlugin({ tools: {} });')).toThrow('布尔值');
+    raw.contributes.nodeTools[0].output.generateVideos = true;
+    raw.contributes.nodeTools[0].output.nodeTypes = ['ai-text'];
+    expect(() => parsePluginBundle(JSON.stringify(raw), 'definePlugin({ tools: {} });')).toThrow('ai-video');
+  });
+  function pythonManifest(overrides: Record<string, unknown> = {}, execution: unknown = { timeoutSeconds: 120, mediaWorkspace: true }) {
+    return manifest({ apiVersion: 2, runtime: 'python', entry: 'main.py',
+      requiredCapabilities: ['python.executionTimeout', 'python.mediaWorkspace'],
+      permissions: ['node.read', 'node.write', 'files.connected.read', 'files.output.create'],
+      contributes: { nodeTools: [{ id: 'replica', title: '视频复刻', placements: ['node-context-menu'],
+        nodeTypes: ['source-video'], inputFields: ['label'], resourceAccess: { self: true },
+        pythonExecution: execution, output: { mode: 'create-node-set', nodeTypes: ['source-video'], maxNodes: 3, fields: ['label'] } }] },
+      ...overrides,
+    });
+  }
+
+  it('preserves API 2 Python execution declarations only with their required capabilities', () => {
+    const parsed = parsePluginBundle(pythonManifest(), 'define_plugin({"tools": {}})');
+    expect(parsed.contributes.nodeTools[0].pythonExecution).toEqual({ timeoutSeconds: 120, mediaWorkspace: true });
+    expect(parsePluginBundle(pythonManifest({ requiredCapabilities: ['python.executionTimeout'] }, { timeoutSeconds: 30, mediaWorkspace: false }), 'define_plugin({})')
+      .contributes.nodeTools[0].pythonExecution).toEqual({ timeoutSeconds: 30, mediaWorkspace: false });
+    expect(() => parsePluginBundle(pythonManifest({ requiredCapabilities: ['python.mediaWorkspace'] }), 'define_plugin({})')).toThrow('python.executionTimeout');
+    expect(() => parsePluginBundle(pythonManifest({ requiredCapabilities: ['python.executionTimeout'] }), 'define_plugin({})')).toThrow('python.mediaWorkspace');
+  });
+
+  it.each([29, 121, 30.5, '120', null])('rejects invalid Python timeout %s', (timeoutSeconds) => {
+    expect(() => parsePluginBundle(pythonManifest({}, { timeoutSeconds }), 'define_plugin({})')).toThrow('timeoutSeconds');
+  });
+
+  it.each([
+    { apiVersion: 1, requiredCapabilities: undefined }, { runtime: 'javascript', entry: 'main.js' },
+    { permissions: ['node.read', 'node.write', 'files.connected.read'] },
+    { contributes: { nodeTools: [{ id: 'replica', title: '视频复刻', placements: ['node-context-menu'], nodeTypes: ['source-video'], inputFields: ['label'],
+      pythonExecution: { mediaWorkspace: true }, output: { mode: 'update-current', fields: ['label'] } }] } },
+  ])('rejects Python execution outside its declared authority %j', (override) => {
+    expect(() => parsePluginBundle(pythonManifest(override), 'define_plugin({})')).toThrow(/pythonExecution|媒体工作区/);
+  });
+
+  it.each([{ mediaWorkspace: 'true' }, { outputDir: '/tmp/arbitrary' }])('rejects unsafe Python execution fields %j', (execution) => {
+    expect(() => parsePluginBundle(pythonManifest({}, execution), 'define_plugin({})')).toThrow('pythonExecution');
+  });
+
+  it('requires node-set output for a Python media workspace and rejects the declaration on custom nodes', () => {
+    const wrongOutput = JSON.parse(pythonManifest());
+    wrongOutput.contributes.nodeTools[0].output = { mode: 'update-current', fields: ['label'] };
+    expect(() => parsePluginBundle(JSON.stringify(wrongOutput), 'define_plugin({})')).toThrow('create-node-set');
+    const customNode = JSON.parse(pythonManifest());
+    customNode.contributes.nodes = [{ id: 'custom', title: '自定义', icon: 'lucide:box', inputs: [], outputs: [], fields: [],
+      pythonExecution: { timeoutSeconds: 120 } }];
+    expect(() => parsePluginBundle(JSON.stringify(customNode), 'define_plugin({})')).toThrow('仅允许节点工具');
+  });
+
   it('checks API 2 compatibility and preserves the declaration in the revision manifest', () => {
     const declaration = { apiVersion: 2, minHostVersion: PLUGIN_HOST.version,
       requiredCapabilities: ['javascript.async', 'invocation.cancel', 'javascript.async'] };

@@ -27,7 +27,12 @@ export function listDramaAssetsFlat(library: DramaAssetLibrary): DramaAsset[] {
 export function findDramaAsset(
   library: DramaAssetLibrary,
   id: string,
+  globalCharacters: readonly DramaCharacter[] = [],
 ): DramaAsset | undefined {
+  if (id.startsWith('global/')) {
+    const character = globalCharacters.find((entry) => entry.id === id.slice('global/'.length));
+    return character ? { ...character, id } : undefined;
+  }
   return listDramaAssetsFlat(library).find((a) => a.id === id);
 }
 

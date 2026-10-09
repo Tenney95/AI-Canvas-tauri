@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { LOCALES, setLocale } from '../../src/i18n';
 import type { InstalledPlugin, PluginInvocationResources } from '../../src/types/plugin';
 import { PLUGIN_HOST } from '../../src/services/plugins/pluginHost';
@@ -19,11 +20,17 @@ const mocks = vi.hoisted(() => ({
   createLineArtImage: vi.fn(),
   registerDerivedResource: vi.fn(),
   resolveResourceHostUrl: vi.fn(),
+  resolveMediaInputs: vi.fn(),
   extractVideoFrames: vi.fn(),
   detectShots: vi.fn(),
   inspectFrame: vi.fn(),
   generateText: vi.fn(),
   generateImage: vi.fn(),
+  queryPromptMentions: vi.fn(),
+  rewritePromptReferences: vi.fn(),
+  resolvePromptReferences: vi.fn(),
+  resolveMediaModel: vi.fn(),
+  startVideoBatch: vi.fn(),
   buildModelCatalog: vi.fn(() => [] as Array<Record<string, unknown>>),
   state: {} as Record<string, unknown>,
   subscribers: new Set<() => void>(),
@@ -44,6 +51,7 @@ vi.mock('../../src/services/ai/generateText', () => ({ generateText: mocks.gener
 vi.mock('../../src/services/ai/generateImage', () => ({ generateImage: mocks.generateImage }));
 vi.mock('../../src/services/ai/generateVideo', () => ({ generateVideo: vi.fn() }));
 vi.mock('../../src/services/ai/generateAudio', () => ({ generateAudio: vi.fn() }));
+vi.mock('../../src/services/ai/generationRuntime', () => ({ resolveMediaModel: mocks.resolveMediaModel }));
 vi.mock('../../src/services/fileService', () => ({
   saveBinaryToProjectData: mocks.saveBinaryToProjectData,
   moveToTrash: mocks.moveToTrash,
@@ -57,6 +65,7 @@ vi.mock('../../src/services/plugins/pluginResourceService', async (importOrigina
     setPluginLineArtResource: mocks.setLineArtResource,
     registerPluginDerivedResource: mocks.registerDerivedResource,
     resolvePluginResourceHostUrl: mocks.resolveResourceHostUrl,
+    resolvePluginMediaWorkspaceInputs: mocks.resolveMediaInputs,
   };
 });
 vi.mock('../../src/services/plugins/pluginVideoFrameService', () => ({
@@ -66,6 +75,13 @@ vi.mock('../../src/services/plugins/pluginVideoFrameService', () => ({
 }));
 vi.mock('../../src/services/plugins/pluginImageService', () => ({
   createPluginLineArtImage: mocks.createLineArtImage,
+}));
+vi.mock('../../src/services/plugins/pluginPromptReferenceService', () => ({
+  queryPluginPromptMentions: mocks.queryPromptMentions,
+  rewritePluginPromptReferences: mocks.rewritePromptReferences,
+  resolvePluginPromptReferencesForModel: mocks.resolvePromptReferences,
+  clearPluginPromptReferences: vi.fn(),
+  clearPluginPromptReferencesForPlugin: vi.fn(),
 }));
 
 import {
@@ -348,6 +364,9 @@ afterEach(() => vi.unstubAllGlobals());
 beforeEach(() => {
   setLocale('zh-CN');
   vi.clearAllMocks();
+  mocks.queryPromptMentions.mockReset().mockResolvedValue({ items: [], hasMore: false });
+  mocks.rewritePromptReferences.mockReset().mockImplementation(async (text: string) => text);
+  mocks.resolvePromptReferences.mockReset().mockImplementation(async (prompt: string) => ({ prompt, imageUrls: [] }));
   mocks.revision = 3;
   mocks.subscribers.clear();
   mocks.state = {
@@ -370,9 +389,14 @@ beforeEach(() => {
     addNode: mocks.addNode,
     addNodesWithEdges: mocks.addNodesWithEdges,
     showToast: mocks.showToast,
+    startVideoBatch: mocks.startVideoBatch,
   };
   mocks.invoke.mockResolvedValue({ data: { output: 'after' }, message: '完成' });
   mocks.generateText.mockResolvedValue('模型结果');
+  mocks.startVideoBatch.mockReset().mockResolvedValue(undefined);
+  mocks.resolveMediaModel.mockReset().mockImplementation((_kind, modelId: string) => modelId.startsWith('comfyui/')
+    ? { configId: modelId, requestModel: 'comfyui/workflow', provider: 'comfyui', workflowId: modelId.slice(8) }
+    : { configId: modelId, requestModel: modelId, provider: 'general' });
   mocks.saveBinaryToProjectData.mockReset().mockResolvedValue({
     filePath: 'G:\\project\\plugin-output.txt',
     assetUrl: 'asset://localhost/plugin-output.txt',
@@ -396,6 +420,7 @@ beforeEach(() => {
     bytes: new Uint8Array([1, 2, 3]),
   }));
   mocks.resolveResourceHostUrl.mockResolvedValue('asset://localhost/video.mp4');
+  mocks.resolveMediaInputs.mockReset().mockResolvedValue([{ resourceId: 'self-video', path: 'G:\\project\\reference.mp4' }]);
   mocks.registerDerivedResource.mockImplementation((_context, resources: PluginInvocationResources, options) => {
     const ref = {
       resourceId: `derived-${resources.derived.length + 1}`,
@@ -1679,6 +1704,146 @@ describe('node plugin runtime', () => {
   });
 });
 
+describe('trusted Python media workspace', () => {
+  function setup(enabled = true) {
+    const bytes = new Uint8Array([
+      0, 0, 0, 16, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0,
+      0, 0, 0, 8, 109, 111, 111, 118,
+      0, 0, 0, 9, 109, 100, 97, 116, 1,
+    ]);
+    const artifact = { key: 'depth', artifactId: 'plugin-artifact-random', displayName: 'depth.mp4',
+      mediaType: 'video/mp4', size: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex') };
+    const payload = { data: { nodes: [{ key: 'control', nodeType: 'source-video', artifactKey: 'depth', data: { label: '深度视频' } }], edges: [] }, artifacts: [artifact] };
+    const workspacePlugin: InstalledPlugin = { ...plugin, manifest: { ...plugin.manifest, apiVersion: 2,
+      runtime: 'python', entry: 'main.py', requiredCapabilities: enabled ? ['python.mediaWorkspace', 'python.executionTimeout'] : [],
+      permissions: ['node.read', 'node.write', 'files.connected.read', 'files.output.create'],
+      contributes: { nodeTools: [{ id: 'controls', title: '生成控制视频', nodeTypes: ['source-video'],
+        placements: ['node-context-menu'], inputFields: ['label'], resourceAccess: { self: true },
+        ...(enabled ? { pythonExecution: { timeoutSeconds: 120, mediaWorkspace: true } } : {}),
+        output: { mode: 'create-node-set', nodeTypes: ['source-video', 'ai-shotlist'], maxNodes: 25, fields: ['label'] } }] },
+    } };
+    mocks.state.nodes = [{ id: 'node-1', type: 'source-video', position: { x: 0, y: 0 }, data: { type: 'source-video', label: '参考视频' } }];
+    mocks.state.installedPlugins = [workspacePlugin];
+    const resources: PluginInvocationResources = { self: [{ resourceId: 'self-video', origin: 'node-self', access: 'read',
+      displayName: 'reference.mp4', mediaType: 'video/mp4', size: 100, source: { nodeId: 'node-1' } }],
+      incoming: [], inputs: {}, package: [], derived: [] };
+    const guard = registerCanvasDerivation(mocks.state as never, 'node-1')!;
+    const tool = getAvailableNodePluginTools([workspacePlugin], 'source-video')[0];
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'execute_node_plugin_tool') return payload;
+      if (command === 'read_plugin_media_artifact') return Array.from(bytes);
+      return undefined;
+    });
+    mocks.saveBinaryToProjectData.mockImplementation(async (_bytes, _project, fileName: string) => ({
+      assetUrl: `asset://localhost/${fileName}`, filePath: `G:\\project\\${fileName}`,
+    }));
+    const run = () => executeNodePluginTool(tool, 'node-1', {}, { invocationId: 'native-video-invoke', guard, resources })
+      .finally(() => completeCanvasDerivation(guard));
+    return { run, payload, bytes, tool, workspacePlugin };
+  }
+
+  it('prepares only host-resolved inputs, reads verified native artifacts and commits one video batch', async () => {
+    const { run, bytes } = setup();
+    await run();
+    const commands = mocks.invoke.mock.calls.map(([command]) => command);
+    expect(commands).toEqual(['prepare_plugin_media_workspace', 'execute_node_plugin_tool', 'read_plugin_media_artifact', 'release_plugin_media_workspace']);
+    const identity = { pluginId: plugin.id, sourceDigest: plugin.sourceDigest, revisionDigest: plugin.revisionDigest,
+      toolId: 'controls', invocationId: 'native-video-invoke' };
+    expect(mocks.invoke).toHaveBeenCalledWith('prepare_plugin_media_workspace', { identity,
+      inputs: [{ resourceId: 'self-video', path: 'G:\\project\\reference.mp4' }] });
+    const nativeInput = mocks.invoke.mock.calls.find(([command]) => command === 'execute_node_plugin_tool')?.[1].input;
+    expect(JSON.stringify(nativeInput)).not.toContain('G:\\project');
+    expect(nativeInput).not.toHaveProperty('nativeMedia');
+    expect(mocks.saveBinaryToProjectData).toHaveBeenCalledWith(bytes, 'project-1', 'plugin-video-depth.mp4', { throwOnError: true });
+    expect(mocks.addNodesWithEdges).toHaveBeenCalledTimes(1);
+    expect(mocks.addNodesWithEdges.mock.calls[0][0][0]).toMatchObject({ type: 'source-video', data: {
+      videoUrl: 'asset://localhost/plugin-video-depth.mp4', filePath: 'G:\\project\\plugin-video-depth.mp4',
+      fileName: 'plugin-video-depth.mp4', relativePath: 'plugin-video-depth.mp4',
+    } });
+    expect(mocks.moveToTrash).not.toHaveBeenCalled();
+  });
+
+  it('rejects artifacts from an undeclared Python tool without using any native media bridge', async () => {
+    const { run } = setup(false);
+    await expect(run()).rejects.toThrow('获准的 Python 媒体工作区');
+    expect(mocks.invoke.mock.calls.map(([command]) => command)).toEqual(['execute_node_plugin_tool']);
+    expect(mocks.saveBinaryToProjectData).not.toHaveBeenCalled();
+  });
+
+  it.each(['artifact-path', 'display-path', 'key-path', 'raw-file', 'mismatch', 'oversized', 'effect', 'wrong-node', 'resource-conflict', 'protected-path'] as const)('rejects %s descriptors before reading or saving an output', async (invalid) => {
+      const { run, payload } = setup();
+      if (invalid === 'artifact-path') payload.artifacts[0].artifactId = '../depth.mp4';
+      if (invalid === 'display-path') payload.artifacts[0].displayName = 'C:\\private\\depth.mp4';
+      if (invalid === 'key-path') payload.data.nodes[0].artifactKey = '../depth';
+      if (invalid === 'raw-file') Object.assign(payload.artifacts[0], { fileName: 'depth.mp4' });
+      if (invalid === 'mismatch') payload.data.nodes[0].artifactKey = 'unknown';
+      if (invalid === 'oversized') payload.artifacts[0].size = 16 * 1024 * 1024 + 1;
+      if (invalid === 'effect') Object.assign(payload, { effect: { type: 'settings.get', key: 'prefs' } });
+      if (invalid === 'wrong-node') payload.data.nodes[0].nodeType = 'ai-shotlist';
+      if (invalid === 'resource-conflict') Object.assign(payload.data.nodes[0], { resourceId: 'derived-image' });
+      if (invalid === 'protected-path') Object.assign(payload.data.nodes[0].data, { filePath: 'C:\\private\\output.mp4' });
+      await expect(run()).rejects.toThrow();
+      expect(mocks.invoke.mock.calls.some(([command]) => command === 'read_plugin_media_artifact')).toBe(false);
+      expect(mocks.saveBinaryToProjectData).not.toHaveBeenCalled();
+      expect(mocks.invoke).toHaveBeenCalledWith('release_plugin_media_workspace', expect.any(Object));
+    });
+
+  it.each(['bytes', 'digest', 'stale-read'] as const)('rejects %s native artifact results before writing project files', async (failure) => {
+    const { run, payload, bytes } = setup();
+    if (failure === 'digest') payload.artifacts[0].sha256 = 'c'.repeat(64);
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'execute_node_plugin_tool') return payload;
+      if (command === 'read_plugin_media_artifact') {
+        if (failure === 'stale-read') mocks.revision++;
+        return failure === 'bytes' ? [256, ...Array.from(bytes).slice(1)] : Array.from(bytes);
+      }
+      return undefined;
+    });
+    await expect(run()).rejects.toThrow();
+    expect(mocks.saveBinaryToProjectData).not.toHaveBeenCalled();
+    expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+    expect(mocks.invoke).toHaveBeenCalledWith('release_plugin_media_workspace', expect.any(Object));
+  });
+
+  it.each(['stale-save', 'commit', 'empty-url'] as const)('recycles saved video artifacts and releases the workspace on %s', async (failure) => {
+    const { run } = setup();
+    if (failure === 'commit') mocks.addNodesWithEdges.mockImplementationOnce(() => { throw new Error('提交失败'); });
+    const save = mocks.saveBinaryToProjectData.getMockImplementation()!;
+    mocks.saveBinaryToProjectData.mockImplementation(async (...args) => {
+      const saved = await save(...args);
+      if (failure === 'stale-save') mocks.revision++;
+      return failure === 'empty-url' ? { ...saved, assetUrl: '' } : saved;
+    });
+    await expect(run()).rejects.toThrow();
+    expect(mocks.moveToTrash).toHaveBeenCalledWith('G:\\project\\plugin-video-depth.mp4');
+    expect(mocks.invoke).toHaveBeenCalledWith('release_plugin_media_workspace', expect.any(Object));
+    if (failure !== 'commit') expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+  });
+
+  it('releases a workspace after a preparation failure without executing the Python tool', async () => {
+    const { run } = setup();
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'prepare_plugin_media_workspace') throw new Error('源视频发生变化');
+      return undefined;
+    });
+    await expect(run()).rejects.toThrow('源视频发生变化');
+    expect(mocks.invoke.mock.calls.map(([command]) => command)).toEqual(['prepare_plugin_media_workspace', 'release_plugin_media_workspace']);
+  });
+
+  it('rejects more than 18 native artifacts and workspace effect proposals before saving', async () => {
+    const { run, payload } = setup();
+    const artifact = payload.artifacts[0];
+    payload.artifacts = Array.from({ length: 19 }, (_, index) => ({ ...artifact, key: `depth_${index}`, artifactId: `artifact_${index}` }));
+    payload.data.nodes = payload.artifacts.map((item, index) => ({ key: `control_${index}`, nodeType: 'source-video', artifactKey: item.key, data: { label: '深度视频' } }));
+    await expect(run()).rejects.toThrow('最多 18 项');
+    expect(mocks.saveBinaryToProjectData).not.toHaveBeenCalled();
+    const next = setup();
+    mocks.invoke.mockImplementation(async (command: string) => command === 'execute_node_plugin_tool'
+      ? { effect: { type: 'settings.get', key: 'prefs' } } : undefined);
+    await expect(next.run()).rejects.toThrow('只接受最终节点集结果');
+  });
+});
+
 describe('visible frame outputs', () => {
   function setup(representation: 'original' | 'lineart', count = 2) {
     const outputPlugin: InstalledPlugin = {
@@ -1802,6 +1967,48 @@ describe('node plugin tool model effects', () => {
     context.resources.derived.push({ resourceId: 'frame', origin: 'derived', access: 'read', displayName: 'frame.jpg', mediaType: 'image/jpeg', size: 3 });
     return { ...context, effect: { type: 'image.lineArt', resourceId: 'frame' } };
   }
+  it('resolves selected prompt references on the host and supplies their images to analysis', async () => {
+    const context = uiContext();
+    const permissions: import('../../src/types/plugin').PluginPermission[] = ['prompt.references.read', 'models.invoke', 'models.read'];
+    mocks.resolvePromptReferences.mockResolvedValue({ prompt: '替换角色：演员甲（图片1）', imageUrls: ['data:image/png;base64,YQ=='] });
+    const result = await executePluginUiHostEffect({ ...context, permissions,
+      resourceReadContext: { ...context.resourceReadContext, permissions },
+      models: [{ id: 'gpt-4o', name: '分析模型', provider: 'openai', category: 'text' }],
+      effect: { type: 'model.generate', modelId: 'gpt-4o', prompt: '替换角色 @{plugin-ref-12345678-1234-1234-1234-123456789abc:演员甲}' } });
+    expect(result.ok).toBe(true);
+    expect(mocks.generateText).toHaveBeenCalledWith(expect.objectContaining({ prompt: '替换角色：演员甲（图片1）', imageUrls: ['data:image/png;base64,YQ=='] }));
+    expect(mocks.resolvePromptReferences).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects reference queries without the explicit permission before reaching the catalogue', async () => {
+    const result = await executePluginUiHostEffect({ ...uiContext(), effect: { type: 'prompt.mentions', source: 'assets' } });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('prompt.references.read') });
+    expect(mocks.queryPromptMentions).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false, undefined])('passes an optional boolean preview flag to the reference catalogue (%s)', async (preview) => {
+    const context = uiContext();
+    const controller = new AbortController();
+    mocks.queryPromptMentions.mockResolvedValue({ items: [], hasMore: false });
+    const result = await executePluginUiHostEffect({ ...context, permissions: ['prompt.references.read'], signal: controller.signal,
+      effect: { type: 'prompt.mentions', source: 'nodes', query: '演员', offset: 20, ...(preview === undefined ? {} : { preview }) } });
+    expect(result).toMatchObject({ ok: true, value: { items: [], hasMore: false } });
+    expect(mocks.queryPromptMentions).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'nodes', query: '演员', offset: 20, preview, signal: controller.signal,
+    }));
+  });
+
+  it.each(['true', 1, null, {}, []].map((preview) => ({ preview })))('rejects a non-boolean reference preview flag ($preview)', async ({ preview }) => {
+    await expect(executePluginUiHostEffect({ ...uiContext(), permissions: ['prompt.references.read'],
+      effect: { type: 'prompt.mentions', source: 'nodes', preview } })).rejects.toThrow('布尔预览');
+    expect(mocks.queryPromptMentions).not.toHaveBeenCalled();
+  });
+
+  it('rejects plugin-selected preview addresses instead of sending them to the catalogue', async () => {
+    await expect(executePluginUiHostEffect({ ...uiContext(), permissions: ['prompt.references.read'],
+      effect: { type: 'prompt.mentions', source: 'nodes', preview: true, thumbnailUrl: 'https://untrusted.example/image.png' } })).rejects.toThrow('引用查询');
+    expect(mocks.queryPromptMentions).not.toHaveBeenCalled();
+  });
 
   it.each([
     { effect: { type: 'network.request', url: 'https://api.example.com/items' }, permission: 'network.request' },
@@ -2278,5 +2485,188 @@ describe('node plugin tool model effects', () => {
     ).rejects.toThrow('model 操作不能超过 4 次');
     expect(mocks.addNode).not.toHaveBeenCalled();
     expect(mocks.updateNodeData).not.toHaveBeenCalled();
+  });
+});
+
+describe('plugin node-set video generation', () => {
+  function setup(modelId = 'general/video') {
+    const generationPlugin: InstalledPlugin = { ...plugin, manifest: { ...plugin.manifest, apiVersion: 2,
+      requiredCapabilities: ['video.nodeSetGeneration'], permissions: ['node.read', 'node.write', 'models.read', 'models.invoke'],
+      contributes: { nodeTools: [{ id: 'replicate', title: '视频复刻', placements: ['node-context-menu'],
+        nodeTypes: ['source-video'], inputFields: ['label'], dialog: { fields: [{ id: 'videoModel', type: 'model', label: '视频模型', modelCategories: ['video'] }] },
+        output: { mode: 'create-node-set', nodeTypes: ['ai-video', 'ai-text', 'ai-image', 'source-video'], maxNodes: 25, fields: ['label', 'prompt', 'model', 'provider', 'workflowId', 'videoUrl'], generateVideos: true } }] },
+    } };
+    const payload: { data: { nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>> } } = { data: {
+      nodes: [{ key: 'video', nodeType: 'ai-video', data: { label: '镜头一', prompt: '缓慢推镜，保持人物动作' },
+        generation: { modelId, parameters: { duration: 5, aspectRatio: '16:9', resolution: '720p', videoResolution: 832, videoFps: 24, videoFrames: 121, generateAudio: false } } }], edges: [],
+    } };
+    mocks.buildModelCatalog.mockReturnValue([{ id: modelId, name: '视频模型', provider: modelId.startsWith('comfyui/') ? 'comfyui' : 'general', category: 'video' }]);
+    mocks.state = { ...mocks.state, installedPlugins: [generationPlugin], projects: [], workflows: [{ id: 'local', fileContent: '{}', category: 'ai-video' }],
+      config: { generalModels: [], providers: {}, comfyUIUrl: 'http://127.0.0.1:8188' }, videoBatchBusy: false,
+      nodes: [{ id: 'node-1', type: 'source-video', position: { x: 0, y: 0 }, data: { type: 'source-video', label: '参考视频' } }] };
+    mocks.addNodesWithEdges.mockImplementation((nodes, edges) => {
+      mocks.state.nodes = [...mocks.state.nodes as unknown[], ...nodes];
+      mocks.state.edges = [...mocks.state.edges as unknown[], ...edges];
+      mocks.revision += 1;
+      for (const subscriber of mocks.subscribers) subscriber();
+    });
+    mocks.invoke.mockResolvedValue(payload);
+    const run = () => executeNodePluginTool(getAvailableNodePluginTools([generationPlugin], 'source-video')[0], 'node-1');
+    return { run, payload, generationPlugin };
+  }
+  function addFrame(payload: { data: { nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>> } }) {
+    payload.data.nodes.push({ key: 'frame', nodeType: 'ai-image', resourceId: 'derived-frame', data: { label: '参考帧' } });
+    payload.data.edges.push({ sourceKey: 'frame', targetKey: 'video' });
+    vi.stubGlobal('Image', class {
+      naturalWidth = 1280;
+      naturalHeight = 720;
+      onload: (() => void) | null = null;
+      set src(_value: string) { this.onload?.(); }
+    });
+  }
+  afterEach(() => {
+    mocks.buildModelCatalog.mockReset().mockReturnValue([]);
+    mocks.addNodesWithEdges.mockReset();
+  });
+  it('rewrites host-issued references before preflight and never sends opaque tokens to the video batch', async () => {
+    const { run, payload, generationPlugin } = setup();
+    generationPlugin.manifest.requiredCapabilities!.push('prompt.mentions');
+    generationPlugin.manifest.permissions.push('prompt.references.read');
+    const opaque = '@{plugin-ref-12345678-1234-1234-1234-123456789abc:角色}';
+    (payload.data.nodes[0].data as Record<string, unknown>).prompt = `替换为 ${opaque}`;
+    (mocks.state.nodes as unknown[]).push({ id: 'ref-image', type: 'source-image', data: { type: 'source-image', imageUrl: 'asset://localhost/role.png', label: '角色' } });
+    mocks.rewritePromptReferences.mockImplementation(async (text: string) => text.replace(opaque, '@{ref-image:角色}'));
+    await run();
+    expect(mocks.addNodesWithEdges.mock.calls[0][0][0].data.prompt).toBe('替换为 @{ref-image:角色}');
+    expect(mocks.startVideoBatch).toHaveBeenCalledWith('project-1', [expect.objectContaining({ issues: [] })]);
+    expect(mocks.rewritePromptReferences).toHaveBeenCalledWith(expect.stringContaining(opaque), expect.objectContaining({ resources: expect.any(Object) }));
+  });
+  it('rejects an expired prompt reference before media persistence or batch submission', async () => {
+    const { run, payload, generationPlugin } = setup();
+    generationPlugin.manifest.requiredCapabilities!.push('prompt.mentions');
+    generationPlugin.manifest.permissions.push('prompt.references.read');
+    (payload.data.nodes[0].data as Record<string, unknown>).prompt = '@{plugin-ref-12345678-1234-1234-1234-123456789abc:角色}';
+    mocks.rewritePromptReferences.mockRejectedValue(new Error('提示词引用已删除、变更或撤销'));
+    await expect(run()).rejects.toThrow('引用已删除');
+    expect(mocks.saveBinaryToProjectData).not.toHaveBeenCalled();
+    expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+    expect(mocks.startVideoBatch).not.toHaveBeenCalled();
+  });
+  it('places wide shotlists and materials without overlap, with generated videos in a separate right column', async () => {
+    const { run, payload, generationPlugin } = setup();
+    const output = generationPlugin.manifest.contributes.nodeTools[0].output;
+    output.nodeTypes!.push('ai-shotlist', 'ai-markdown');
+    addFrame(payload);
+    payload.data.nodes.push({ key: 'shots', nodeType: 'ai-shotlist', data: { label: '分镜表' } },
+      { key: 'prompts', nodeType: 'ai-markdown', data: { label: '提示词' } },
+      { ...payload.data.nodes[0], key: 'video2', data: { label: '镜头二', prompt: '保持运镜' } });
+    await run();
+    const nodes = mocks.addNodesWithEdges.mock.calls[0][0] as Array<{ position: { x: number; y: number }; data: { type: string; nodeWidth: number; nodeHeight: number } }>;
+    const materials = nodes.filter((node) => node.data.type !== 'ai-video');
+    const generated = nodes.filter((node) => node.data.type === 'ai-video');
+    const right = Math.max(...materials.map((node) => node.position.x + node.data.nodeWidth));
+    expect(generated.every((node) => node.position.x >= right + 80)).toBe(true);
+    expect(generated[1].position.y).toBeGreaterThanOrEqual(generated[0].position.y + generated[0].data.nodeHeight + 80);
+    for (let index = 1; index < materials.length; index++) {
+      const left = materials[index - 1];
+      const next = materials[index];
+      expect(next.position.x).toBeGreaterThanOrEqual(left.position.x + left.data.nodeWidth + 80);
+    }
+    expect(materials.find((node) => node.data.type === 'ai-shotlist')?.data.nodeWidth).toBe(720);
+  });
+  it.each(['general/video', 'comfyui/local'])('resolves %s through host identities and submits only new idle video nodes', async (modelId) => {
+    const { run } = setup(modelId);
+    // Long polling belongs to the host batch, so it cannot block the plugin's submit promise.
+    mocks.startVideoBatch.mockReturnValue(new Promise<void>(() => undefined));
+    await run();
+    const node = mocks.addNodesWithEdges.mock.calls[0][0][0];
+    expect(node.data).toMatchObject({ role: 'prompt', status: 'idle', seedanceDuration: 5, seedanceRatio: '16:9', seedanceResolution: '720p', videoResolution: 832, videoFps: 24, videoFrames: 121, generateAudio: false,
+      model: modelId.startsWith('comfyui/') ? 'comfyui/workflow' : modelId, provider: modelId.startsWith('comfyui/') ? 'comfyui' : 'general' });
+    if (modelId.startsWith('comfyui/')) expect(node.data.workflowId).toBe('local');
+    expect(node.data).not.toHaveProperty('videoUrl');
+    expect(mocks.startVideoBatch).toHaveBeenCalledWith('project-1', [expect.objectContaining({ nodeId: node.id, issues: [], existing: false })]);
+    expect(mocks.resolveMediaModel).toHaveBeenCalledWith('video', modelId);
+    expect(mocks.moveToTrash).not.toHaveBeenCalled();
+  });
+  it.each([{ duration: 0 }, { duration: 61 }, { duration: '5' }, { videoResolution: 128 }, { videoFrames: 1.5 }, { videoFps: 121 },
+    { generateAudio: 'false' }, { aspectRatio: 'arbitrary' }, { resolution: '16K' }, { provider: 'attacker' }, { workflowInputs: {} }, { path: 'D:\\private\\secret.mp4' }])('rejects unsafe video parameters %j before committing', async (parameters) => {
+    const { run, payload } = setup();
+    (payload.data.nodes[0].generation as Record<string, unknown>).parameters = parameters;
+    await expect(run()).rejects.toThrow();
+    expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+    expect(mocks.startVideoBatch).not.toHaveBeenCalled();
+  });
+  it('captures fingerprints after the Store adds same-batch connection mentions', async () => {
+    const { run, payload } = setup();
+    addFrame(payload);
+    mocks.addNodesWithEdges.mockImplementationOnce((nodes, edges) => {
+      const frame = nodes.find((node: { data: { type: string } }) => node.data.type === 'ai-image');
+      const video = nodes.find((node: { data: { type: string } }) => node.data.type === 'ai-video');
+      video.data.prompt += ` @{${frame.id}:参考帧}`;
+      mocks.state.nodes = [...mocks.state.nodes as unknown[], ...nodes];
+      mocks.state.edges = [...mocks.state.edges as unknown[], ...edges];
+      mocks.revision += 1;
+    });
+    await run();
+    const nodes = mocks.state.nodes as Array<{ id: string; data: { type: string } }>;
+    const video = nodes.find((node) => node.data.type === 'ai-video')!;
+    const { inspectVideoNode } = await import('../../src/services/videoBatchPlanning');
+    expect(mocks.startVideoBatch).toHaveBeenCalledWith('project-1', [inspectVideoNode(video as never, mocks.state as never)]);
+  });
+  it('rejects workflow changes during media persistence and rolls back saved frames', async () => {
+    const { run, payload } = setup('comfyui/local');
+    addFrame(payload);
+    mocks.saveBinaryToProjectData.mockImplementationOnce(async () => {
+      (mocks.state.workflows as Array<Record<string, unknown>>)[0].fileContent = '{"changed":true}';
+      return { assetUrl: 'asset://localhost/frame.jpg', filePath: 'G:\\project\\frame.jpg' };
+    });
+    await expect(run()).rejects.toThrow('配置已变化');
+    expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+    expect(mocks.startVideoBatch).not.toHaveBeenCalled();
+    expect(mocks.moveToTrash).toHaveBeenCalledWith('G:\\project\\frame.jpg');
+  });
+  it.each(['missing-permission', 'missing-capability', 'api-one', 'disabled-output', 'wrong-node', 'foreign-identity', 'foreign-reference', 'catalog-removed', 'too-many', 'reference-text'])('rejects %s without starting a batch', async (failure) => {
+    const { run, payload, generationPlugin } = setup();
+    if (failure === 'missing-permission') generationPlugin.manifest.permissions = ['node.read', 'node.write', 'models.read'];
+    if (failure === 'missing-capability') generationPlugin.manifest.requiredCapabilities = [];
+    if (failure === 'api-one') generationPlugin.manifest.apiVersion = 1;
+    if (failure === 'disabled-output') generationPlugin.manifest.contributes.nodeTools[0].output.generateVideos = false;
+    if (failure === 'wrong-node') payload.data.nodes[0].nodeType = 'ai-text';
+    if (failure === 'foreign-identity') (payload.data.nodes[0].data as Record<string, unknown>).provider = 'attacker';
+    if (failure === 'foreign-reference') (payload.data.nodes[0].data as Record<string, unknown>).prompt = '@{foreign:video}';
+    if (failure === 'catalog-removed') mocks.buildModelCatalog.mockReturnValue([]);
+    if (failure === 'too-many') payload.data.nodes = Array.from({ length: 7 }, (_, index) => ({ ...payload.data.nodes[0], key: `video${index}` }));
+    if (failure === 'reference-text') { payload.data.nodes.push({ key: 'text', nodeType: 'ai-text', data: { prompt: '不应传入的整份分镜' } }); payload.data.edges = [{ sourceKey: 'text', targetKey: 'video' }]; }
+    await expect(run()).rejects.toThrow();
+    expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+    expect(mocks.startVideoBatch).not.toHaveBeenCalled();
+  });
+  it('rechecks a workflow changed during preparation before commit', async () => {
+    const { run } = setup('comfyui/local');
+    let calls = 0;
+    mocks.resolveMediaModel.mockImplementation(() => {
+      if (++calls === 2) (mocks.state.workflows as Array<Record<string, unknown>>)[0].fileContent = '{"changed":true}';
+      return { configId: 'comfyui/local', requestModel: 'comfyui/workflow', provider: 'comfyui', workflowId: 'local' };
+    });
+    await expect(run()).rejects.toThrow('配置已变化');
+    expect(mocks.addNodesWithEdges).not.toHaveBeenCalled();
+  });
+  it.each(['project', 'plugin', 'model', 'batch'])('keeps committed nodes when %s prevents initial batch dispatch', async (failure) => {
+    const { run } = setup();
+    mocks.addNodesWithEdges.mockImplementationOnce((nodes, edges) => {
+      mocks.state.nodes = [...mocks.state.nodes as unknown[], ...nodes];
+      mocks.state.edges = [...mocks.state.edges as unknown[], ...edges];
+      mocks.revision += 1;
+      if (failure === 'project') mocks.state.currentProjectId = 'other-project';
+      if (failure === 'plugin') mocks.state.installedPlugins = [];
+      if (failure === 'model') mocks.buildModelCatalog.mockReturnValue([]);
+    });
+    if (failure === 'batch') mocks.startVideoBatch.mockRejectedValue(new Error('提交状态未知'));
+    await expect(run()).resolves.toBeUndefined();
+    await Promise.resolve();
+    expect(mocks.addNodesWithEdges).toHaveBeenCalledTimes(1);
+    expect(mocks.startVideoBatch).toHaveBeenCalledTimes(failure === 'batch' ? 1 : 0);
+    expect(mocks.moveToTrash).not.toHaveBeenCalled();
+    expect(mocks.showToast).toHaveBeenCalledWith(expect.stringMatching(/视频节点|视频批次/));
   });
 });

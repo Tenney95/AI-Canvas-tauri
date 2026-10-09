@@ -29,7 +29,7 @@ vi.mock('../../src/services/fs/assetIndex', () => ({
 vi.mock('../../src/services/fs/core', () => ({
   getProjectDataDir: vi.fn(async () => 'G:\\project'),
   joinPath: (base: string, part: string) => `${base}\\${part.replace(/\//g, '\\')}`,
-  getMimeType: (extension: string) => extension === 'png' ? 'image/png' : 'text/plain',
+  getMimeType: (extension: string) => extension === 'png' ? 'image/png' : extension === 'mp4' ? 'video/mp4' : 'text/plain',
   getConvertFileSrc: mocks.getConvertFileSrc,
 }));
 vi.mock('../../src/services/fs/projectFiles', () => ({
@@ -50,6 +50,7 @@ import {
   registerPluginDerivedResource,
   replacePluginDerivedResources,
   resolvePluginResourceHostUrl,
+  resolvePluginMediaWorkspaceInputs,
   setPluginLineArtResource,
 } from '../../src/services/plugins/pluginResourceService';
 
@@ -138,6 +139,47 @@ describe('pluginResourceService', () => {
         : { isDirectory: false, isFile: true, isSymlink: false, size: 11, mtime: new Date(1_000) }
     ));
     mocks.readFile.mockResolvedValue(new TextEncoder().encode('hello world'));
+  });
+
+  async function workspaceSetup() {
+    const { state, setRevision } = createState();
+    state.nodes[1].data = { type: 'source-video', label: '参考视频', filePath: 'G:\\project\\reference.mp4' };
+    const resources = await mintPluginInvocationResources({ pluginId: 'plugin-a', sourceDigest: SOURCE_DIGEST,
+      revisionDigest: REVISION_DIGEST, invocationId: 'invoke-1', projectId: 'project-1', nodeId: 'target',
+      baseRevision: 7, access: { self: true }, state });
+    const context = { ...readContext(state), permissions: ['files.connected.read', 'files.output.create'] as const };
+    return { state, setRevision, resources, context };
+  }
+
+  it('resolves an authorized self video path only for the native workspace bridge', async () => {
+    const { resources, context } = await workspaceSetup();
+    expect(JSON.stringify(resources)).not.toContain('G:\\project');
+    await expect(resolvePluginMediaWorkspaceInputs(context, resources)).resolves.toEqual([
+      { resourceId: resources.self[0].resourceId, path: 'G:\\project\\reference.mp4' },
+    ]);
+    expect(mocks.readFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects forged or stale native workspace inputs and rechecks the source fingerprint', async () => {
+    const { resources, context, setRevision } = await workspaceSetup();
+    await expect(resolvePluginMediaWorkspaceInputs(context, { ...resources,
+      self: [{ ...resources.self[0], resourceId: 'guessed-path' }] })).rejects.toThrow('授权不存在');
+    await expect(resolvePluginMediaWorkspaceInputs({ ...context, invocationId: 'other-invocation' }, resources)).rejects.toThrow('不属于当前调用');
+    mocks.lstat.mockImplementation(async (path: string) => path === 'G:\\project'
+      ? { isDirectory: true, isFile: false, isSymlink: false, size: 0, mtime: new Date(1_000) }
+      : { isDirectory: false, isFile: true, isSymlink: false, size: 12, mtime: new Date(1_000) });
+    await expect(resolvePluginMediaWorkspaceInputs(context, resources)).rejects.toThrow('文件已变化');
+    setRevision(8);
+    await expect(resolvePluginMediaWorkspaceInputs(context, resources)).rejects.toThrow('画布已变化');
+  });
+
+  it('rejects media workspace inputs above 256 MiB before copying or decoding bytes', async () => {
+    mocks.lstat.mockImplementation(async (path: string) => path === 'G:\\project'
+      ? { isDirectory: true, isFile: false, isSymlink: false, size: 0, mtime: new Date(1_000) }
+      : { isDirectory: false, isFile: true, isSymlink: false, size: 256 * 1024 * 1024 + 1, mtime: new Date(1_000) });
+    const { context, resources } = await workspaceSetup();
+    await expect(resolvePluginMediaWorkspaceInputs(context, resources)).rejects.toThrow('256 MiB');
+    expect(mocks.readFile).not.toHaveBeenCalled();
   });
 
   it('mints only direct incoming resources and never exposes their path', async () => {

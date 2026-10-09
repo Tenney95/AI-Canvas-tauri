@@ -7,7 +7,7 @@ import {
   emptyDramaAssetLibrary,
   parseDramaMentionId,
 } from '../../src/types/dramaAssets';
-import { resolveDramaActionMediaRef, resolveDramaAssetImageRef, resolveDramaVoiceRef } from '../../src/services/dramaAssetPrompt';
+import { findDramaAsset, resolveDramaActionMediaRef, resolveDramaAssetImageRef, resolveDramaVoiceRef } from '../../src/services/dramaAssetPrompt';
 import type { DramaCharacter } from '../../src/types/dramaAssets';
 import { useAppStore } from '../../src/store/useAppStore';
 import { collectPromptNodeMediaUrls, resolvePromptToChatContent, resolvePromptWithImageRefs, resolvePromptWithMediaRefs } from '../../src/services/ai/promptResolver';
@@ -32,6 +32,41 @@ function character(): DramaCharacter {
     ],
   } as DramaCharacter;
 }
+
+describe('显式全局角色引用', () => {
+  beforeEach(() => useAppStore.setState(useAppStore.getInitialState(), true));
+  it('keeps project and global identities separate even when their raw IDs match', () => {
+    const project = { ...character(), name: '项目角色' };
+    const global = { ...character(), name: '全局角色' };
+    const library = { ...emptyDramaAssetLibrary(), characters: [project] };
+    expect(findDramaAsset(library, 'char_1', [global])?.name).toBe('项目角色');
+    expect(findDramaAsset(library, 'global/char_1', [global])).toMatchObject({ id: 'global/char_1', name: '全局角色' });
+    expect(findDramaAsset(library, 'global/char_1')).toBeUndefined();
+    expect(findDramaAsset(emptyDramaAssetLibrary(), 'char_1', [global])).toBeUndefined();
+  });
+  it('resolves global appearance references through text and video prompt parsers', async () => {
+    const url = 'data:image/png;base64,Z2xvYmFs';
+    const global = { ...character(), referenceImages: [{ ...character().referenceImages![1], imageUrl: url }] };
+    useAppStore.setState({ globalCharacters: [global] });
+    const token = `@drama{${buildDramaMentionId('global/char_1', 'ref-side')}:全局角色}`;
+    const chat = await resolvePromptToChatContent(token);
+    expect(chat.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'image_url', image_url: { url } })]));
+    const video = await resolvePromptWithMediaRefs(token, { preserveBindings: true });
+    expect(video.imageUrls).toEqual([url]);
+    const binding = video.segments!.find((segment) => typeof segment !== 'string');
+    expect(binding?.character?.id).toBe('global/char_1');
+  });
+  it('resolves a global description without leaking another project asset with the same ID', async () => {
+    const global = { ...character(), referenceImages: [], imageUrl: undefined, summary: '全局人物设定' };
+    useAppStore.setState({ globalCharacters: [global], dramaAssets: { ...emptyDramaAssetLibrary(), characters: [{ ...global, summary: '无关项目正文' }] } });
+    const chat = await resolvePromptToChatContent('@drama{global/char_1:全局角色}');
+    expect(chat.textContent).toContain('全局人物设定');
+    expect(chat.textContent).not.toContain('无关项目正文');
+    const workflowPrompt = resolveNodeReferences('@drama{global/char_1:全局角色}');
+    expect(workflowPrompt).toContain('全局人物设定');
+    expect(workflowPrompt).not.toContain('无关项目正文');
+  });
+});
 
 describe('@drama 选图后缀', () => {
   it('不带后缀时保持原样', () => {

@@ -305,6 +305,14 @@ describe('pluginUiSessionService', () => {
     expect(mocks.executeEffect).toHaveBeenCalledWith(expect.objectContaining({ toolId: tool.id }));
     session.dispose();
   });
+  it('bounds mention queries independently of paid model calls', async () => {
+    const session = await native();
+    for (let i = 0; i < 96; i++) expect(await session.request('effect', { type: 'prompt.mentions', source: 'nodes' })).toMatchObject({ ok: true });
+    expect(await session.request('effect', { type: 'prompt.mentions', source: 'nodes' })).toMatchObject({ ok: false, error: expect.stringContaining('96') });
+    for (let i = 0; i < 4; i++) expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: true });
+    expect(await session.request('effect', { type: 'model.generate' })).toMatchObject({ ok: false });
+    session.dispose();
+  });
   it('keeps local media, exports and paid effects in separate bounded budgets', async () => {
     const session = await createPluginUiFrameSession({ plugin, tool, nodeId: 'target', exportName: 'dialog', parameters: {}, onClose: vi.fn() });
     const frame = { postMessage: vi.fn() } as unknown as Window;

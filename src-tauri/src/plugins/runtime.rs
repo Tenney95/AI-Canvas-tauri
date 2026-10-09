@@ -146,6 +146,8 @@ pub fn cancel_plugin_invocations(plugin_id: &str) {
             entry.cancelled.store(true, Ordering::Release);
         }
     }
+    drop(invocations);
+    crate::plugin_artifacts::revoke_plugin_workspaces(Some(plugin_id));
 }
 
 /// 取消所有插件当前仍在运行的调用。
@@ -158,6 +160,26 @@ pub fn cancel_all_plugin_invocations() {
     for entry in invocations.values() {
         entry.cancelled.store(true, Ordering::Release);
     }
+    drop(invocations);
+    crate::plugin_artifacts::revoke_plugin_workspaces(None);
+}
+
+pub(crate) fn ensure_invocation_not_cancelled(
+    plugin_id: &str,
+    invocation_id: &str,
+) -> Result<(), String> {
+    crate::plugin_registry::validate_plugin_id(plugin_id)?;
+    validate_invocation_id(invocation_id)?;
+    let invocations = active_plugin_invocations()
+        .lock()
+        .map_err(|_| "插件调用锁异常")?;
+    if invocations
+        .get(&(plugin_id.to_string(), invocation_id.to_string()))
+        .is_some_and(|entry| entry.cancelled.load(Ordering::Acquire))
+    {
+        return Err("插件调用已取消".into());
+    }
+    Ok(())
 }
 
 fn cancel_invocation(plugin_id: &str, invocation_id: &str) -> Result<(), String> {
@@ -188,6 +210,8 @@ fn cancel_invocation(plugin_id: &str, invocation_id: &str) -> Result<(), String>
         .expect("invocation inserted")
         .cancelled
         .store(true, Ordering::Release);
+    drop(invocations);
+    crate::plugin_artifacts::revoke_invocation_by_id(plugin_id, invocation_id);
     Ok(())
 }
 
@@ -1119,12 +1143,31 @@ const __input = Object.freeze({input_json});
     serde_json::from_str(&output_json).map_err(|error| format!("插件输出不是有效 JSON: {error}"))
 }
 
+#[cfg(test)]
 fn execute_plugin_tool_inner(
     runtime: String,
     source: String,
     tool_id: String,
     input: Value,
     cancelled: Option<Arc<AtomicBool>>,
+) -> Result<Value, String> {
+    execute_plugin_tool_with_timeout(
+        runtime,
+        source,
+        tool_id,
+        input,
+        cancelled,
+        PYTHON_EXECUTION_TIMEOUT,
+    )
+}
+
+fn execute_plugin_tool_with_timeout(
+    runtime: String,
+    source: String,
+    tool_id: String,
+    input: Value,
+    cancelled: Option<Arc<AtomicBool>>,
+    python_timeout: Duration,
 ) -> Result<Value, String> {
     match runtime.as_str() {
         "javascript" => execute_with_timeout(
@@ -1134,13 +1177,7 @@ fn execute_plugin_tool_inner(
             JAVASCRIPT_EXECUTION_TIMEOUT,
             cancelled,
         ),
-        "python" => execute_python(
-            source,
-            tool_id,
-            input,
-            PYTHON_EXECUTION_TIMEOUT,
-            cancelled.as_deref(),
-        ),
+        "python" => execute_python(source, tool_id, input, python_timeout, cancelled.as_deref()),
         _ => Err("不支持的插件运行时".to_string()),
     }
 }
@@ -1167,19 +1204,66 @@ pub async fn execute_node_plugin_tool(
         &revision_digest,
         &tool_id,
     )?;
+    let identity = crate::plugin_host_effects::PluginHostIdentity {
+        plugin_id,
+        source_digest,
+        revision_digest,
+        tool_id: tool_id.clone(),
+        invocation_id,
+    };
+    let media_workspace = executable
+        .python_execution
+        .as_ref()
+        .is_some_and(|settings| settings.media_workspace);
+    let python_timeout = executable
+        .python_execution
+        .as_ref()
+        .map_or(PYTHON_EXECUTION_TIMEOUT, |settings| {
+            Duration::from_secs(settings.timeout_seconds)
+        });
     let object = input.as_object_mut().ok_or("插件输入必须是对象")?;
+    // Renderer 不能提供可信 Python 的本地路径。只从原生已授权工作区注入。
+    object.remove("nativeMedia");
     object.insert("host".into(), host_info());
 
     tauri::async_runtime::spawn_blocking(move || {
         let _active_invocation = active_invocation;
         let cancelled = Some(Arc::clone(&_active_invocation.cancelled));
-        execute_plugin_tool_inner(
-            executable.runtime,
-            executable.source,
-            tool_id,
-            input,
-            cancelled,
-        )
+        let result = (|| {
+            let _workspace_cleanup = if media_workspace {
+                Some(crate::plugin_artifacts::cleanup_guard(&identity)?)
+            } else {
+                None
+            };
+            if media_workspace {
+                crate::plugin_artifacts::inject_python_input(&identity, &mut input)?;
+            }
+            let mut result = execute_plugin_tool_with_timeout(
+                executable.runtime,
+                executable.source,
+                tool_id,
+                input,
+                cancelled,
+                python_timeout,
+            )
+            .map_err(|error| {
+                if media_workspace && error != "插件调用已取消" {
+                    "Python 媒体工具运行失败，请检查插件环境或所选片段".to_string()
+                } else {
+                    error
+                }
+            })?;
+            if media_workspace {
+                crate::plugin_artifacts::collect_result(&app, &identity, &mut result)?;
+            } else if result.get("artifacts").is_some() {
+                return Err("该工具未声明 Python 媒体工作区，不能返回原生产物".into());
+            }
+            Ok(result)
+        })();
+        if result.is_err() {
+            crate::plugin_artifacts::revoke_invocation(&identity);
+        }
+        result
     })
     .await
     .map_err(|error| format!("插件运行任务失败: {error}"))?
