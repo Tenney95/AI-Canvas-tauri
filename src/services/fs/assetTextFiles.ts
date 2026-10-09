@@ -63,7 +63,10 @@ export async function saveAssetTextFile(path: string, baseline: AssetTextSnapsho
     checkAbort(signal);
     // 写入开始后不提前报告取消；等待真实结果，避免误认为磁盘未修改。
     try { await writeFile(path, encoded); }
-    catch { throw new Error('保存失败，草稿已保留；请检查权限或磁盘空间，并重新读取磁盘确认内容'); }
+    catch (reason) {
+      const detail = reason instanceof Error ? reason.message : typeof reason === 'string' ? reason.trim() : '';
+      throw new Error(`保存失败，草稿已保留；请检查权限或磁盘空间，并重新读取磁盘确认内容${detail ? `：${detail}` : ''}`, { cause: reason });
+    }
     invalidateTextPreview(path);
     notifyProjectDiskChanged();
     try {

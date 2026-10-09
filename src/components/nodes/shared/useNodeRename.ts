@@ -4,7 +4,7 @@
 import { useCallback } from 'react';
 import type { BaseNodeData } from '../../../types';
 import { useAppStore } from '../../../store/useAppStore';
-import { getAssetUrlFromPath, renameProjectFileToLabel } from '../../../services/fileService';
+import { buildNodeFileName, getAssetUrlFromPath, renameProjectFileToLabel } from '../../../services/fileService';
 
 export function useNodeRename(id: string, data: BaseNodeData, fallback: string) {
   const updateNodeData = useAppStore((s) => s.updateNodeData);
@@ -13,6 +13,24 @@ export function useNodeRename(id: string, data: BaseNodeData, fallback: string) 
 
   const handleRename = useCallback(
     (newName: string) => {
+      if (data.type === 'ai-markdown') {
+        // Markdown 的自动保存会排队；执行改名时读取最新文件关联，不能使用旧渲染的路径。
+        const state = useAppStore.getState();
+        const node = state.nodes.find((entry) => entry.id === id);
+        if (node?.data.type !== 'ai-markdown') return;
+        const filePath = node.data.filePath;
+        if (!filePath) {
+          state.updateNodeData(id, { label: newName, fileName: buildNodeFileName(newName.replace(/\.md$/i, ''), '.md', 'markdown'),
+            ...(node.data.displayLabel ? { displayLabel: newName } : {}) });
+          return;
+        }
+        if (!state.currentProjectId) return;
+        // 复用资源库改名 Action：扩展名、资产身份、历史引用和失败回滚沿用同一套规则。
+        return state.renameAssetFile({ name: filePath.split(/[/\\]/).pop() || 'markdown.md', path: filePath,
+          assetId: node.data.assetId, size: 0, category: 'text', source: 'project' }, newName, state.currentProjectId)
+          .then((result) => { if (result.warning) useAppStore.getState().showToast(result.warning, 'error'); })
+          .catch((reason) => { useAppStore.getState().showToast(reason instanceof Error ? reason.message : 'Markdown 文件改名失败，原文件名已保留', 'error'); });
+      }
       const payload: Partial<BaseNodeData> = { label: newName };
       if (data.displayLabel) payload.displayLabel = newName;
       if (data.fileName) (payload as Record<string, unknown>).fileName = newName;
@@ -41,7 +59,7 @@ export function useNodeRename(id: string, data: BaseNodeData, fallback: string) 
         })();
       }
     },
-    [id, updateNodeData, data.displayLabel, data.fileName, data.filePath, data.imageUrl, data.videoUrl, data.audioUrl],
+    [id, updateNodeData, data.type, data.displayLabel, data.fileName, data.filePath, data.imageUrl, data.videoUrl, data.audioUrl],
   );
 
   return { displayLabel, handleRename };

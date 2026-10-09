@@ -10,7 +10,7 @@ import FullscreenOverlay from '../shared/FullscreenOverlay';
 import { useNodeRename } from './shared/useNodeRename';
 import { useSourceFileUpload } from './shared/useSourceFileUpload';
 import { useAppStore } from '../../store/useAppStore';
-import { saveBinaryToProjectData, readAssetTextFile, saveAssetTextFile, type AssetTextSnapshot } from '../../services/fileService';
+import { saveBinaryToProjectData, readAssetTextFile, saveAssetTextFile, isFileMissing, type AssetTextSnapshot } from '../../services/fileService';
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../services/canvasDerivationGuard';
 import MarkdownEditor from '../shared/MarkdownEditor';
 import AnimatedButton from '../shared/AnimatedButton';
@@ -83,22 +83,28 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
 
   const savedFilePathRef = useRef<string>((data.filePath as string) || '');
   const baselineRef = useRef<{ path: string; snapshot: AssetTextSnapshot } | null>(null);
-  const originalContentRef = useRef((data.output as string) || '');
+  const baselineLoadRef = useRef<{ path: string; promise: Promise<AssetTextSnapshot> } | null>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const activeRef = useRef(true);
   useEffect(() => {
     const path = (data.filePath as string) || '';
+    if (!path && !savedFilePathRef.current && data.fileName) savedFileNameRef.current = data.fileName;
     if (path && path !== savedFilePathRef.current) {
       savedFilePathRef.current = path;
       savedFileNameRef.current = (data.fileName as string) || `markdown-${id}.md`;
       baselineRef.current = null;
-      originalContentRef.current = (data.output as string) || '';
-    } else if (!contentEditActiveRef.current && baselineRef.current?.snapshot.content !== data.output) {
-      // 资源大屏同步或撤销恢复了节点内容；下一次保存重新核对磁盘基线。
-      baselineRef.current = null;
-      originalContentRef.current = (data.output as string) || '';
     }
-  }, [data.filePath, data.fileName, data.output, id]);
+    if (!path || baselineRef.current?.path === path || baselineLoadRef.current?.path === path) return;
+    // 旧节点正文可能比磁盘更新；以打开时的真实磁盘摘要检测外部修改，
+    // 不能把节点正文当成磁盘原文，也不能在失焦或撤销时用草稿替换基线。
+    const load = { path, promise: readAssetTextFile(path) };
+    baselineLoadRef.current = load;
+    void load.promise.then((snapshot) => {
+      if (activeRef.current && baselineLoadRef.current === load && savedFilePathRef.current === path) {
+        baselineRef.current = { path, snapshot };
+      }
+    }, () => { /* 保存时沿用这个失败结果，展示具体错误，不静默重建或覆盖文件。 */ });
+  }, [data.filePath, data.fileName, id]);
   useEffect(() => {
     activeRef.current = true;
     return () => { activeRef.current = false; };
@@ -113,38 +119,52 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       const guard = registerCanvasDerivation(state, id, { onCancel: () => controller.abort() });
       if (!guard) return;
       setSaveStatus('正在自动保存…');
+      let saveStep = '读取原文件';
       try {
         let path = savedFilePathRef.current;
+        const recoveredMissingFile = !!path && await isFileMissing(path);
+        if (recoveredMissingFile) {
+          // 仅确认不存在时另建项目文件；权限失败与内容冲突不绕过原文件保护。
+          savedFileNameRef.current = path.split(/[/\\]/).pop() || savedFileNameRef.current;
+          path = '';
+        }
         if (path) {
           let baseline = baselineRef.current?.path === path ? baselineRef.current.snapshot : null;
           if (!baseline) {
-            baseline = await readAssetTextFile(path, controller.signal);
-            if (baseline.content !== originalContentRef.current.replace(/\r\n/g, '\n')) throw new Error('磁盘与节点内容不同，未覆盖文件；请在资源库检查后同步');
+            baseline = baselineLoadRef.current?.path === path
+              ? await baselineLoadRef.current.promise.catch(() => readAssetTextFile(path, controller.signal))
+              : await readAssetTextFile(path, controller.signal);
           }
           if (!isCanvasDerivationFresh(guard, useAppStore.getState())) return;
+          saveStep = '保存文件';
           const saved = await saveAssetTextFile(path, baseline, content, controller.signal);
           baselineRef.current = { path, snapshot: saved };
-          originalContentRef.current = saved.content;
         } else {
           if (!currentProjectId || !isCanvasDerivationFresh(guard, useAppStore.getState())) return;
+          saveStep = '创建项目文件';
           const result = await saveBinaryToProjectData(new TextEncoder().encode(content), currentProjectId, savedFileNameRef.current, { throwOnError: true });
           if (!result) throw new Error('当前环境无法保存本地文件');
           path = result.filePath;
           // 运行时记住首次创建的文件，即使后续输入令本轮画布 revision 过期也不创建副本。
           savedFilePathRef.current = path;
+          saveStep = '读取新文件确认';
           const saved = await readAssetTextFile(path);
           baselineRef.current = { path, snapshot: saved };
-          originalContentRef.current = saved.content;
         }
         const current = useAppStore.getState();
         if (isCanvasDerivationFresh(guard, current)) {
           const name = path.split(/[/\\]/).pop() || savedFileNameRef.current;
           savedFileNameRef.current = name;
-          current.updateNodeDataTransient(id, { fileName: name, filePath: path, status: 'success' });
+          current.updateNodeDataTransient(id, { fileName: name, filePath: path, status: 'success',
+            ...(recoveredMissingFile ? { assetId: undefined } : {}) });
         }
-        if (activeRef.current) setSaveStatus('已自动保存');
+        if (activeRef.current) setSaveStatus(recoveredMissingFile ? '原文件不存在，已恢复保存到项目目录' : '已自动保存');
       } catch (reason) {
-        if (activeRef.current) setSaveStatus(controller.signal.aborted ? '自动保存已中止，节点内容已保留' : reason instanceof Error ? reason.message : '自动保存失败，节点内容已保留');
+        // Tauri IPC 通常拒绝为字符串，不能只识别 Error，否则真实文件错误会被吞掉。
+        const detail = reason instanceof Error ? reason.message : typeof reason === 'string' ? reason.trim() : '';
+        if (activeRef.current) setSaveStatus(controller.signal.aborted
+          ? '自动保存已中止，节点内容已保留'
+          : `${saveStep}失败，节点内容已保留${detail ? `：${detail}` : ''}`);
       } finally { completeCanvasDerivation(guard); }
     };
     const queued = saveQueueRef.current.catch(() => {}).then(task);
@@ -176,6 +196,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
     savedFileNameRef.current = result.fileName;
     savedFilePathRef.current = '';
     baselineRef.current = null;
+    baselineLoadRef.current = null;
 
     updateNodeData(id, {
       output: textContent,
@@ -225,6 +246,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
       // debounce auto-save: 1.5s after last keystroke
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
       autoSaveTimer.current = setTimeout(() => {
+        autoSaveTimer.current = null;
         doSave(value);
       }, 1500);
     },
@@ -235,6 +257,34 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
   const previewHtml = useMemo(() => renderMarkdown((data.output as string) || ''), [data.output]);
 
   const { displayLabel, handleRename } = useNodeRename(id, data, t('Markdown 文档'));
+  const handleMarkdownRename = useCallback((newName: string) => {
+    if (autoSaveTimer.current) {
+      clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = null;
+      const node = useAppStore.getState().nodes.find((entry) => entry.id === id);
+      if (node) void doSave((node.data.output as string) || '');
+    }
+    const rename = async () => {
+      const state = useAppStore.getState();
+      if (!activeRef.current || state.currentProjectId !== currentProjectId || !state.nodes.some((entry) => entry.id === id)) return;
+      const previousPath = savedFilePathRef.current;
+      await handleRename(newName);
+      const current = useAppStore.getState();
+      const node = current.nodes.find((entry) => entry.id === id);
+      if (!activeRef.current || current.currentProjectId !== currentProjectId || !node) return;
+      const path = (node.data.filePath as string) || '';
+      savedFileNameRef.current = (node.data.fileName as string) || savedFileNameRef.current;
+      if (path !== savedFilePathRef.current) {
+        savedFilePathRef.current = path;
+        baselineLoadRef.current = null;
+        baselineRef.current = baselineRef.current?.path === previousPath
+          ? { path, snapshot: baselineRef.current.snapshot } : null;
+      }
+    };
+    const queued = saveQueueRef.current.catch(() => {}).then(rename);
+    saveQueueRef.current = queued;
+    void queued;
+  }, [currentProjectId, doSave, handleRename, id]);
 
   return (
     <>
@@ -244,7 +294,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         label={displayLabel}
         displayId={data.displayId as number | undefined}
         nodeId={id}
-        onRename={handleRename}
+        onRename={handleMarkdownRename}
       />
 
       <div
@@ -388,6 +438,7 @@ function MarkdownNode({ id, data, selected }: { id: string; data: BaseNodeData; 
         <MarkdownEditor value={(data.output as string) || ''} onChange={handleContentChange} onBlur={finishContentEdit}
           initialMode="split" status={saveStatus} onSave={() => {
             if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+            autoSaveTimer.current = null;
             void doSave((data.output as string) || '');
           }} />
       </div>
