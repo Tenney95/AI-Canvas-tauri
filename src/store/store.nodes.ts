@@ -80,6 +80,7 @@ function appendConnectionMentions(
   nodes: Node<BaseNodeData>[],
   edges: readonly Edge[],
   enabled: boolean | undefined,
+  activeNodeId: string | null,
 ): { nodes: Node<BaseNodeData>[]; edges: Edge[] } {
   if (enabled === false || edges.length === 0) return { nodes, edges: [...edges] };
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -88,7 +89,9 @@ function appendConnectionMentions(
     const source = byId.get(edge.source);
     const target = byId.get(edge.target);
     if (!source || !target || source.id === target.id || target.type === 'group'
-      || !AUTO_MENTION_TARGET_TYPES.has(target.data.type) || target.data.role === 'source') continue;
+      || !AUTO_MENTION_TARGET_TYPES.has(target.data.type)) continue;
+    // 上传、导入和生成结果仍可打开同一生成对话框，编辑时不按来源角色跳过引用。
+    if (target.data.role === 'source' && target.id !== activeNodeId) continue;
     const sources = source.type === 'group'
       ? nodes.filter((node) => node.parentId === source.id)
       : [source];
@@ -666,7 +669,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     get().commitToHistory();
     set((state) => {
       const inserted = insertPreparedNode(state, node);
-      const connected = appendConnectionMentions(inserted.nodes, [edge], state.config?.autoMentionOnConnect);
+      const connected = appendConnectionMentions(inserted.nodes, [edge], state.config?.autoMentionOnConnect, state.activeNodeId);
       return {
         ...inserted,
         nodes: connected.nodes,
@@ -681,7 +684,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     get().commitToHistory();
     set((state) => {
       const nextNodes = appendPreparedNodes(state, nodes);
-      const connected = appendConnectionMentions(nextNodes, edges, state.config?.autoMentionOnConnect);
+      const connected = appendConnectionMentions(nextNodes, edges, state.config?.autoMentionOnConnect, state.activeNodeId);
       return {
         nodes: connected.nodes,
         edges: [...state.edges, ...connected.edges],
@@ -1358,7 +1361,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       ...normalized,
     };
     set((state) => {
-      const connected = appendConnectionMentions(state.nodes, [edge], state.config?.autoMentionOnConnect);
+      const connected = appendConnectionMentions(state.nodes, [edge], state.config?.autoMentionOnConnect, state.activeNodeId);
       return { nodes: connected.nodes, edges: [...state.edges, ...connected.edges] };
     });
   },
@@ -1373,7 +1376,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
     if (nextEdges.length === 0) return 0;
     state.commitToHistory();
     set((current) => {
-      const connected = appendConnectionMentions(current.nodes, nextEdges, current.config?.autoMentionOnConnect);
+      const connected = appendConnectionMentions(current.nodes, nextEdges, current.config?.autoMentionOnConnect, current.activeNodeId);
       return { nodes: connected.nodes, edges: [...current.edges, ...connected.edges] };
     });
     return nextEdges.length;
@@ -1391,7 +1394,7 @@ export const createNodeSlice: StateCreator<AppState, [], [], NodeSlice> = (set, 
       const settings = current.projects.find((project) => project.id === current.currentProjectId)?.settings;
       const data = applyProjectDefaultsToNodeData(node.data, settings);
       const inserted = insertNodeInGroup(current, prepareNodeForInsertion(node, data, displayId));
-      const connected = appendConnectionMentions(inserted.nodes, nextEdges, current.config?.autoMentionOnConnect);
+      const connected = appendConnectionMentions(inserted.nodes, nextEdges, current.config?.autoMentionOnConnect, current.activeNodeId);
       return {
         ...inserted,
         nodes: connected.nodes,

@@ -233,6 +233,64 @@ describe('automatic connection mentions', () => {
     expect(useAppStore.getState().nodes[0].data.prompt).toBeUndefined();
   });
 
+  it.each(['ai-image', 'ai-video', 'ai-audio'] as const)('mentions later connections in an open %s source-node dialog', (type) => {
+    useAppStore.setState({ nodes: [
+      node('source', { type: 'ai-image', role: 'source', label: '全景截图.png' }),
+      node('other'),
+      { ...node('target', { type, role: 'source', model: 'general/custom', provider: 'general', prompt: '正在编辑的描述' }), type },
+    ] });
+    useAppStore.getState().openNodeDialog('target');
+    connect();
+    useAppStore.getState().onConnect({ source: 'target', target: 'other', sourceHandle: 'left', targetHandle: 'right' });
+    connect();
+    expect(targetPrompt()).toBe('正在编辑的描述 @{source:全景截图.png} @{other:other}');
+    expect(useAppStore.getState().nodes.find((item) => item.id === 'target')?.data.role).toBe('source');
+  });
+
+  it('preserves prompt edits while undoing and redoing the source-dialog connection', async () => {
+    useAppStore.setState({ nodes: [node('source'), node('target', { type: 'ai-video', role: 'source', prompt: '原描述' })] });
+    useAppStore.getState().openNodeDialog('target');
+    connect();
+    expect(targetPrompt()).toBe('原描述 @{source:source}');
+    expect(useAppStore.getState().history).toHaveLength(1);
+    useAppStore.getState().updateNodeDataTransient('target', { prompt: '继续编辑 @{source:source}' });
+    expect(await useAppStore.getState().undo()).toBe(true);
+    expect(targetPrompt()).toBe('继续编辑 @{source:source}');
+    expect(useAppStore.getState().edges).toHaveLength(0);
+    expect(await useAppStore.getState().redo()).toBe(true);
+    expect(targetPrompt()).toBe('继续编辑 @{source:source}');
+    expect(useAppStore.getState().edges).toHaveLength(1);
+  });
+
+  it('respects the disabled setting for an open source-node dialog', () => {
+    useAppStore.setState({
+      nodes: [node('source'), node('target', { type: 'ai-video', role: 'source', prompt: '原描述' })],
+      config: { ...useAppStore.getState().config, autoMentionOnConnect: false },
+    });
+    useAppStore.getState().openNodeDialog('target');
+    connect();
+    expect(targetPrompt()).toBe('原描述');
+    expect(useAppStore.getState().edges).toHaveLength(1);
+  });
+
+  it('does not change the prompt of a source node whose dialog is not open', () => {
+    useAppStore.setState({ nodes: [node('source'), node('other'), node('target', { type: 'ai-video', role: 'source', prompt: '原描述' })] });
+    useAppStore.getState().openNodeDialog('other');
+    connect();
+    expect(targetPrompt()).toBe('原描述');
+  });
+
+  it('applies batch and newly created input references to the open source-node dialog', () => {
+    useAppStore.setState({ currentProjectId: 'p', nodes: [node('source'), node('other'),
+      node('target', { type: 'ai-video', role: 'source', prompt: '原描述' })] });
+    useAppStore.getState().openNodeDialog('target');
+    expect(useAppStore.getState().connectSelectedNodes(['source', 'other'], 'target', 'p')).toBe(2);
+    expect(targetPrompt()).toBe('原描述 @{source:source} @{other:other}');
+    useAppStore.getState().addNodeWithEdge(node('new-input'), { id: 'new-edge', source: 'new-input', target: 'target' });
+    useAppStore.getState().addNodesWithEdges([node('batch-input')], [{ id: 'batch-edge', source: 'batch-input', target: 'target' }]);
+    expect(targetPrompt()).toBe('原描述 @{source:source} @{other:other} @{new-input:new-input} @{batch-input:batch-input}');
+  });
+
   it('removes disconnected mentions while preserving prose, other references and one history snapshot', () => {
     useAppStore.setState({
       nodes: [node('source'), node('other'), node('target', {

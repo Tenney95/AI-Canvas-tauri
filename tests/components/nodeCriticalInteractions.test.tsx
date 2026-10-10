@@ -40,7 +40,7 @@ interface TestStore {
   addNode: ReturnType<typeof vi.fn>;
   addNodeTransient: ReturnType<typeof vi.fn>;
   updateNodeData: ReturnType<typeof vi.fn>;
-  updateNodeDataTransient: ReturnType<typeof vi.fn>;
+  updateNodeDataTransient: ReturnType<typeof vi.fn<(nodeId: string, patch: Record<string, unknown>) => void>>;
   commitToHistory: ReturnType<typeof vi.fn>;
   recordOutputHistory: ReturnType<typeof vi.fn>;
   showToast: ReturnType<typeof vi.fn>;
