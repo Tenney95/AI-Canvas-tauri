@@ -56,6 +56,7 @@ import { cancelRunningHubNodeTask, completeRunningHubNodeTask } from '../../serv
 import { completeCanvasDerivation, isCanvasDerivationFresh, registerCanvasDerivation } from '../../services/canvasDerivationGuard';
 import { animationProcessing, animationResultPatch } from '../../services/animationService';
 import { useT } from '../../i18n';
+import { mergeAppendedNodeMentions } from '../../utils/promptConnectionMentions';
 
 const DIALOG_VIEWPORT_MARGIN = 16;
 
@@ -316,10 +317,15 @@ function AINodeDialog() {
 
   // All hooks must be called before any early return
   const onPromptChange = useCallback(
-    (value: string) => {
-      const current = useAppStore.getState().nodes.find((item) => item.id === activeNodeId)?.data;
-      if (isCloudWorkflow(useAppStore.getState().workflows.find((item) => item.id === current?.workflowId))) {
-        updateContinuousNodeData({ prompt: value }); return;
+    (value: string, previousValue?: string) => {
+      const state = useAppStore.getState();
+      if (state.currentProjectId !== currentProjectId || state.activeNodeId !== activeNodeId) return;
+      const current = state.nodes.find((item) => item.id === activeNodeId)?.data;
+      if (!current) return;
+      const nextValue = previousValue === undefined ? value
+        : mergeAppendedNodeMentions(previousValue, value, current.prompt ?? '');
+      if (isCloudWorkflow(state.workflows.find((item) => item.id === current.workflowId))) {
+        updateContinuousNodeData({ prompt: nextValue }); return;
       }
       // Extract workflow IO node assignments from the prompt string
       // Format: @wf{ioNodeId|title|type}(value content)
@@ -332,14 +338,14 @@ function AINodeDialog() {
       }
       wfRegex.lastIndex = 0;
       let match: RegExpExecArray | null;
-      while ((match = wfRegex.exec(value)) !== null) {
+      while ((match = wfRegex.exec(nextValue)) !== null) {
         const ioNodeId = match[1]; // Full ID (may contain ":")
         const valueText = match[4].replace(/\n$/, '');
         workflowInputs[ioNodeId] = valueText;
       }
-      updateContinuousNodeData({ prompt: value, workflowInputs: Object.keys(workflowInputs).length > 0 ? workflowInputs : undefined });
+      updateContinuousNodeData({ prompt: nextValue, workflowInputs: Object.keys(workflowInputs).length > 0 ? workflowInputs : undefined });
     },
-    [activeNodeId, updateContinuousNodeData]
+    [activeNodeId, currentProjectId, updateContinuousNodeData]
   );
 
   // 调用选中模型生成（文本 or 图片）

@@ -377,7 +377,7 @@ interface PromptPanelProps {
   canGenerate?: boolean;
   isGenerating?: boolean;
   onCancelGeneration?: () => void;
-  onChange: (value: string) => void;
+  onChange: (value: string, previousValue?: string) => void;
   onContinuousEditEnd?: () => void;
   onSubmit: (overridePrompt?: string, postProcess?: ImagePostProcess) => void;
   onModelSelect: (model: ModelOption) => void;

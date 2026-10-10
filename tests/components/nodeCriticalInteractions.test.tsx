@@ -1056,6 +1056,17 @@ describe('critical canvas node interactions', () => {
     const AINodeDialog = (await import('../../src/components/nodes/AINodeDialog')).default as unknown as () => unknown;
     const tree = AINodeDialog();
     const promptPanel = findElement(tree, (element) => componentName(element) === 'PromptPanelMock');
+    const changePrompt = promptPanel.props.onChange as (value: string, previousValue?: string) => void;
+    // 后连线已经写入 Store，但编辑器还持有旧 DOM；继续输入不能抹掉新引用。
+    store.updateNodeDataTransient('video-node', { prompt: 'old prompt @{image:新参考图} @{audio:新声音}' });
+    changePrompt('正在编辑的内容', 'old prompt');
+    expect(store.nodes[0].data.prompt).toBe('正在编辑的内容 @{image:新参考图} @{audio:新声音}');
+    (promptPanel.props.onContinuousEditEnd as () => void)();
+    const editWrites = store.updateNodeDataTransient.mock.calls.length;
+    store.currentProjectId = 'project-b';
+    changePrompt('旧项目迟到的输入', '正在编辑的内容');
+    expect(store.updateNodeDataTransient).toHaveBeenCalledTimes(editWrites);
+    store.currentProjectId = 'project-a';
     (promptPanel.props.onModelSelect as (model: Record<string, unknown>) => void)({
       value: 'general/custom-video',
       label: 'Custom Video',

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * MentionEditor @提及编辑器 — 支持 @引用其他节点输出的富文本输入框，实时渲染为彩色标签芯片
  */
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
@@ -61,7 +61,7 @@ const DRAMA_KIND_LABELS: Record<string, string> = { character: '角色', scene: 
 // ── Props ──
 export interface MentionEditorProps {
   value: string;
-  onChange: (value: string) => void;
+  onChange: (value: string, previousValue?: string) => void;
   onSubmit?: () => void;
   placeholder?: string;
   nodeId?: string;
@@ -106,6 +106,9 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const mentionDropdownRef = useRef<HTMLDivElement>(null);
   const [mentionDropdownPosition, setMentionDropdownPosition] = useState({ left: 12, top: 0 });
   const editorRef = useRef<HTMLDivElement>(null);
+  const syncedPromptRef = useRef(prompt);
+  const composingRef = useRef(false);
+  const [compositionRevision, setCompositionRevision] = useState(0);
   const savedMentionRangeRef = useRef<Range | null>(null);
   const selectFirstMentionRef = useRef<(() => void) | null>(null);
   const lastFocusedWfValueRef = useRef<HTMLSpanElement | null>(null);
@@ -119,6 +122,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       currentProjectId: state.currentProjectId,
     })),
   );
+  const editorOwnerRef = useRef({ projectId: currentProjectId, nodeId });
   useEffect(() => () => {
     cancelChipDragRef.current?.();
     cancelChipDragRef.current = null;
@@ -149,10 +153,18 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const nodeMetaMap = useMemo(() => getNodeMetaMap(nodes), [nodes]);
 
   // ── Rebuild DOM when prompt changes externally ──
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = editorRef.current;
     if (!el) return;
+    const owner = editorOwnerRef.current;
+    if (owner.projectId !== currentProjectId || owner.nodeId !== nodeId) {
+      composingRef.current = false;
+      editorOwnerRef.current = { projectId: currentProjectId, nodeId };
+    }
+    // IME 组合输入期间保留浏览器的文本节点，结束后再通过输入基线合并新引用。
+    if (composingRef.current) return;
     syncImageReferenceLabels(el, nodeMetaMap);
+    syncedPromptRef.current = prompt;
     if (serializeDOM(el) === prompt) {
       // 删空后浏览器常残留 <br>，而 serializeDOM 会剥掉尾部换行使其「看起来为空」，
       // 于是 DOM 不会被清理、光标停在残留空行（第 2/3 行）。这里把真正的空状态归一化。
@@ -172,14 +184,17 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       return;
     }
     const sel = window.getSelection();
-    const cursorOffset = sel && sel.rangeCount ? saveCursor(el) : null;
+    const cursorOffset = sel && sel.rangeCount && el.contains(sel.getRangeAt(0).startContainer)
+      ? saveCursor(el) : null;
+    cancelChipDragRef.current?.();
+    cancelChipDragRef.current = null;
     el.innerHTML = '';
     for (const node of renderPromptToNodes(prompt, nodeMetaMap)) {
       el.appendChild(node);
     }
     syncImageReferenceLabels(el, nodeMetaMap);
     if (cursorOffset !== null) restoreCursor(el, cursorOffset);
-  }, [prompt, nodeMetaMap]);
+  }, [compositionRevision, currentProjectId, nodeId, prompt, nodeMetaMap]);
 
   // ── Cursor save/restore ──
   const saveCursor = (root: HTMLElement): number => {
@@ -257,7 +272,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     const el = editorRef.current;
     if (!el) return;
     syncImageReferenceLabels(el, nodeMetaMap);
-    onChange(serializeDOM(el));
+    const nextPrompt = serializeDOM(el);
+    const previousPrompt = syncedPromptRef.current;
+    syncedPromptRef.current = nextPrompt;
+    onChange(nextPrompt, previousPrompt);
   }, [nodeMetaMap, onChange]);
 
   const canvasMentionNodes = useMemo(
@@ -1284,6 +1302,13 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         className={`prompt-editor${!prompt ? ' is-empty' : ''}`}
         data-placeholder={placeholder}
         onInput={handleInput}
+        onCompositionStart={() => { composingRef.current = true; }}
+        onCompositionEnd={() => {
+          composingRef.current = false;
+          emitDOM();
+          // 合并后提示词可能与 Store 相同，仍需刷新组合输入期间暂缓的 DOM。
+          setCompositionRevision((revision) => revision + 1);
+        }}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
         onPointerDown={handleChipPointerDown}
@@ -1297,8 +1322,11 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
           onFocus?.();
         }}
         onBlur={() => {
-          onBlur?.();
+          const wasComposing = composingRef.current;
+          composingRef.current = false;
           emitDOM();
+          if (wasComposing) setCompositionRevision((revision) => revision + 1);
+          onBlur?.();
         }}
         spellCheck={false}
       />
