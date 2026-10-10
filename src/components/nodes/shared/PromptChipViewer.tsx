@@ -9,7 +9,7 @@ import type {
 import { getFileCategory } from '../../../services/fileService';
 import { parseDramaMentionId } from '../../../types/dramaAssets';
 import { resolveDramaActionMediaRef } from '../../../services/dramaAssetPrompt';
-import { bestNodeThumb, getNodeMetaMap, numberImageReferenceKeys } from './mentionEditorDom';
+import { bestNodeThumb, getNodeMetaMap, numberMediaReferenceLabels } from './mentionEditorDom';
 
 const CHIP_STYLE: Record<string, string> = {
   'ai-text': 'chip-text',
@@ -37,7 +37,7 @@ const WF_IO_ICON: Record<string, string> = {
 export interface PromptChipRenderOptions {
   nodes?: Array<{ id: string; data?: Record<string, unknown> }>;
   dramaAssets?: DramaAssetLibrary;
-  nodeMetaMap?: Map<string, { type: string; displayId?: number; thumbnailUrl?: string; imageReferenceKey?: string }>;
+  nodeMetaMap?: ReturnType<typeof getNodeMetaMap>;
   onPreviewImage?: (preview: { url: string; name: string }) => void;
   emptyText?: string;
 }
@@ -61,26 +61,34 @@ export function renderPromptWithChips(
   const dramaAssets = options.dramaAssets;
   const metaMap = options.nodeMetaMap || (nodes ? getNodeMetaMap(nodes as never) : new Map());
 
-  // 预扫描图片引用序号，保持与 MentionEditor 一致的 (图1)、(图2) 编号
-  const imageKeys: Array<string | undefined> = [];
+  // 与 MentionEditor 共用按媒体类型分别编号的规则。
+  const references: Parameters<typeof numberMediaReferenceLabels>[0] = [];
   let scanMatch: RegExpExecArray | null;
   while ((scanMatch = regex.exec(prompt)) !== null) {
     if (scanMatch[1] !== undefined) {
       let path = scanMatch[1];
       try { path = decodeURIComponent(scanMatch[1]); } catch { /* 保留原值 */ }
       const name = path.split(/[\\/]/).pop() || '';
-      imageKeys.push(getFileCategory(name) === 'image' ? `asset:${encodeURIComponent(path)}` : undefined);
+      references.push(getFileCategory(name) === 'image' ? { kind: 'image', key: `asset:${encodeURIComponent(path)}` } : undefined);
     } else if (scanMatch[2] !== undefined) {
       const dramaId = scanMatch[2];
-      imageKeys.push(`drama:${dramaId}`);
+      const { assetId, actionId, actionMediaId, voiceClipId } = parseDramaMentionId(dramaId);
+      const asset = dramaAssets?.characters.find((item) => item.id === assetId)
+        || dramaAssets?.scenes.find((item) => item.id === assetId)
+        || dramaAssets?.props.find((item) => item.id === assetId);
+      const action = actionId !== undefined ? resolveDramaActionMediaRef(asset, actionId, actionMediaId) : undefined;
+      references.push({ kind: voiceClipId !== undefined ? 'audio' : action?.kind === 'video' ? 'video' : 'image', key: `drama:${dramaId}` });
     } else if (scanMatch[4] !== undefined) {
       const nodeId = scanMatch[4];
-      imageKeys.push(metaMap.get(nodeId)?.imageReferenceKey || `node:${nodeId}`);
+      const meta = metaMap.get(nodeId);
+      references.push(meta?.mediaReference || (meta?.imageReferenceKey
+        ? { kind: 'image', key: meta.imageReferenceKey }
+        : !meta ? { kind: 'image', key: `node:${nodeId}` } : undefined));
     } else {
-      imageKeys.push(undefined);
+      references.push(undefined);
     }
   }
-  const imageIndices = numberImageReferenceKeys(imageKeys);
+  const referenceLabels = numberMediaReferenceLabels(references);
   regex.lastIndex = 0;
 
   const elements: ReactNode[] = [];
@@ -99,15 +107,15 @@ export function renderPromptWithChips(
       try { path = decodeURIComponent(match[1]); } catch { /* 保留原值 */ }
       const name = path.split(/[\\/]/).pop() || 'asset';
       const isImage = getFileCategory(name) === 'image';
-      const imgIdx = imageIndices[currentIdx];
+      const referenceLabel = referenceLabels[currentIdx];
       const displayName = name.length > 18 ? `${name.slice(0, 16)}…` : name;
 
       elements.push(
         <span key={`asset-${match.index}`} className="prompt-chip chip-asset" data-asset-path={path} title={name}>
           <span className="prompt-chip-icon">{isImage ? '🖼' : '📄'}</span>
           <span className="prompt-chip-id">{displayName}</span>
-          {imgIdx !== undefined && (
-            <span className="prompt-chip-id prompt-chip-image-index text-canvas-text-secondary">{`(图${imgIdx})`}</span>
+          {referenceLabel !== undefined && (
+            <span className="prompt-chip-id prompt-chip-image-index prompt-chip-media-index text-canvas-text-secondary">{referenceLabel}</span>
           )}
         </span>,
       );
@@ -151,7 +159,7 @@ export function renderPromptWithChips(
 
       const chipStyle = kind === 'voice' ? 'chip-audio' : kind === 'action-video' ? 'chip-video' : 'chip-image';
       const displayName = dramaName.length > 16 ? `${dramaName.slice(0, 14)}…` : dramaName;
-      const imgIdx = imageIndices[currentIdx];
+      const referenceLabel = referenceLabels[currentIdx];
       const canPreview = !!thumb && !!options.onPreviewImage;
 
       elements.push(
@@ -168,8 +176,8 @@ export function renderPromptWithChips(
             {thumb ? <img src={thumb} className="prompt-chip-thumb" alt="" /> : icon}
           </span>
           <span className="prompt-chip-id">{displayName}</span>
-          {imgIdx !== undefined && (
-            <span className="prompt-chip-id prompt-chip-image-index text-canvas-text-secondary">{`(图${imgIdx})`}</span>
+          {referenceLabel !== undefined && (
+            <span className="prompt-chip-id prompt-chip-image-index prompt-chip-media-index text-canvas-text-secondary">{referenceLabel}</span>
           )}
         </span>,
       );
@@ -185,7 +193,7 @@ export function renderPromptWithChips(
       const displayId = meta?.displayId ?? (node?.data?.displayId as number | undefined);
       const displayLabel = displayId != null ? `#${displayId}` : label;
       const title = displayId != null ? `${label} (#${displayId})` : label;
-      const imgIdx = imageIndices[currentIdx];
+      const referenceLabel = referenceLabels[currentIdx];
       const canPreview = isMedia && !!thumbUrl && !!options.onPreviewImage;
 
       elements.push(
@@ -202,8 +210,8 @@ export function renderPromptWithChips(
             {isMedia && thumbUrl ? <img src={thumbUrl} className="prompt-chip-thumb" alt="" /> : '@'}
           </span>
           <span className="prompt-chip-id">{displayLabel}</span>
-          {imgIdx !== undefined && (
-            <span className="prompt-chip-id prompt-chip-image-index text-canvas-text-secondary">{`(图${imgIdx})`}</span>
+          {referenceLabel !== undefined && (
+            <span className="prompt-chip-id prompt-chip-image-index prompt-chip-media-index text-canvas-text-secondary">{referenceLabel}</span>
           )}
         </span>,
       );
