@@ -2,11 +2,12 @@
  * clipboardService — 系统级剪贴板写入封装
  *
  * - 文本：navigator.clipboard.writeText（web 标准，Tauri/浏览器均可用）
- * - 图像：navigator.clipboard.write([ClipboardItem])（写位图，可粘贴到 PS/聊天）
+ * - 图像：优先写原格式位图；WebView 不支持时降级为 Tauri 系统文件剪贴板
  * - 视频/音频文件：调用 Rust 命令 copy_files_to_clipboard（CF_HDROP 格式，可在资源管理器粘贴）
  */
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from './fs/core';
+import { localMediaUrlToPath } from '../utils/mediaUrl';
 
 /** MIME 子类型 → 扩展名映射（用于推断图像类型） */
 function mimeFromUrl(url: string): string {
@@ -18,6 +19,26 @@ function mimeFromUrl(url: string): string {
     gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml',
   };
   return extMap[ext] || 'image/png';
+}
+
+export interface ImageClipboardOptions {
+  filePath?: string;
+  projectId?: string | null;
+}
+
+/** 保留原始格式，通过既有文件服务和原生授权命令复制文件。 */
+async function copyImageFile(imageUrl: string, options: ImageClipboardOptions): Promise<boolean> {
+  if (!isTauriEnv()) return false;
+  const localPath = localMediaUrlToPath(imageUrl) || options.filePath;
+  if (localPath) return copyFile(localPath);
+  if (!options.projectId) return false;
+
+  const { downloadUrlAndSave } = await import('./fileService');
+  const saved = await downloadUrlAndSave(imageUrl, options.projectId, 'image', undefined, {
+    deduplicateByContent: true,
+    throwOnError: true,
+  });
+  return saved ? copyFile(saved.filePath) : false;
 }
 
 /** 复制文本到系统剪贴板 */
@@ -54,18 +75,16 @@ export async function readClipboardFolders(): Promise<string[]> {
 }
 
 /**
- * 复制图像到系统剪贴板（位图格式，可粘贴到 PS、聊天工具）。
- * 支持 data: URL 和 http(s) URL（在 Tauri 环境用 fetch 拉取）。
+ * 优先按原格式复制位图；WebView 不支持时，桌面端降级为系统文件剪贴板。
+ * 无本地文件的图片先保存到调用方捕获的项目，不修改节点或原始图片。
  */
-export async function copyImage(imageUrl: string): Promise<boolean> {
+export async function copyImage(imageUrl: string, options: ImageClipboardOptions = {}): Promise<boolean> {
   if (!imageUrl) return false;
   try {
     const mime = mimeFromUrl(imageUrl);
-    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
-      throw new Error('当前 WebView 不支持图片剪贴板');
-    }
-    if (typeof ClipboardItem.supports === 'function' && !ClipboardItem.supports(mime)) {
-      throw new Error(`当前 WebView 不支持复制 ${mime}`);
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined'
+      || (typeof ClipboardItem.supports === 'function' && !ClipboardItem.supports(mime))) {
+      return await copyImageFile(imageUrl, options);
     }
 
     // WebKit 要求 write() 在用户手势内立即调用；图片读取作为 Promise 延后完成。
@@ -77,11 +96,21 @@ export async function copyImage(imageUrl: string): Promise<boolean> {
       }
       return blob.type === mime ? blob : new Blob([blob], { type: mime });
     });
-    const item = new ClipboardItem({ [mime]: blobPromise });
-    await navigator.clipboard.write([item]);
+    // 写入可能先因格式不支持失败；仍消费延后读取的拒绝，避免未处理的 Promise。
+    void blobPromise.catch(() => {});
+    try {
+      const item = new ClipboardItem({ [mime]: blobPromise });
+      await navigator.clipboard.write([item]);
+    } catch (error) {
+      // 部分 WebView 没有 supports()，在实际写入时才报告格式不支持。
+      if (error instanceof Error && error.name === 'NotSupportedError') {
+        return await copyImageFile(imageUrl, options);
+      }
+      throw error;
+    }
     return true;
-  } catch (error) {
-    console.error('[剪贴板] 复制图片失败:', error);
+  } catch {
+    console.error('[剪贴板] 复制图片失败');
     return false;
   }
 }

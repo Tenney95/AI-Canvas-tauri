@@ -801,9 +801,12 @@ function AIImageNode({ id, data, selected }: { id: string; data: BaseNodeData; s
       store.showToast(t('没有可用的图片'), 'error');
       return;
     }
-    const ok = await copyImageToClipboard(imageUrl);
+    const ok = await copyImageToClipboard(imageUrl, {
+      filePath: data.filePath,
+      projectId: store.currentProjectId,
+    });
     store.showToast(ok ? t('已复制图像到剪贴板') : t('复制失败'), ok ? undefined : 'error');
-  }, [data.imageUrl, data.thumbnailUrl, t]);
+  }, [data.imageUrl, data.thumbnailUrl, data.filePath, t]);
 
   const handleReversePrompt = useCallback(() => {
     const store = useAppStore.getState();

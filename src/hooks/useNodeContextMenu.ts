@@ -471,7 +471,10 @@ export function useNodeContextMenu() {
       if (nodeType === 'ai-image') {
         const imageUrl = data.imageUrl || data.thumbnailUrl;
         if (!imageUrl) { toast(t('没有可用的图片'), 'error'); closeMenu(); return; }
-        ok = await copyImageToClipboard(imageUrl);
+        ok = await copyImageToClipboard(imageUrl, {
+          filePath: data.filePath,
+          projectId: useAppStore.getState().currentProjectId,
+        });
       } else {
         const filePath = data.filePath;
         if (!filePath) { toast(t('该节点没有本地文件，无法复制'), 'error'); closeMenu(); return; }
