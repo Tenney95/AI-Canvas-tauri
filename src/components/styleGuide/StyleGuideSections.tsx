@@ -15,6 +15,7 @@ import VideoPlayer from '../shared/VideoPlayer';
 import Timeline from '../shared/Timeline';
 import MarkdownEditor from '../shared/MarkdownEditor';
 import FileUploadButton from '../shared/FileUploadButton';
+import ProviderBadge from '../shared/ProviderBadge';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import StyleGuideMascot from './StyleGuideMascot';
 import StyleGuideGenerationEffects from './StyleGuideGenerationEffects';
@@ -206,7 +207,7 @@ function TypographySection() {
   );
 }
 
-function ButtonsSection() {
+function ButtonsSection({ theme }: { theme: 'dark' | 'light' }) {
   return (
     <Section
       id="sg-buttons"
@@ -220,6 +221,29 @@ function ButtonsSection() {
           <button type="button" className="ui-btn ui-btn--ghost">幽灵</button>
           <button type="button" className="ui-btn ui-btn--danger">删除</button>
           <button type="button" className="ui-btn ui-btn--link">了解更多</button>
+        </div>
+      </Demo>
+
+      <Demo label="提示词栏共用按钮 · 28px 高度与 14px 金属厂商文字" code="prompt-btn / model-selector--pill > model-selector-trigger prompt-btn + ui-model-pill__avatar（ProviderBadge appearance=metal）+ ui-model-pill__label + ui-model-pill__action">
+        <div className="ui-row">
+          {['Seedance 2.0', '超长模型名称 · 视频生成预览版本'].map((label) => (
+            <div key={label} className="model-selector model-selector--pill w-48">
+              <button type="button" className="model-selector-trigger prompt-btn text-xs" title={label}>
+                <span className="ui-model-pill__avatar"><ProviderBadge providerId="apimart" size="medium" appearance="metal" theme={theme} /></span>
+                <span className="ui-model-pill__label">{label}</span>
+                <span className="ui-model-pill__action" aria-hidden="true">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="m6 6 12 12M18 6 6 18" />
+                  </svg>
+                </span>
+              </button>
+            </div>
+          ))}
+          <button type="button" className="prompt-btn" aria-label="画风按钮样例">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d="M12 3C9 7 5 10.5 5 15a7 7 0 0 0 14 0c0-4.5-4-8-7-12Z" />
+            </svg>
+          </button>
         </div>
       </Demo>
 
@@ -1346,7 +1370,7 @@ export function StyleGuideContent({ theme }: { theme: 'dark' | 'light' }) {
 
       <ColorsSection />
       <TypographySection />
-      <ButtonsSection />
+      <ButtonsSection theme={theme} />
       <ChipsSection />
       <InputsSection />
       <SelectsSection />

@@ -229,7 +229,7 @@ export function applyProjectDefaultsToNodeData(
   const projectModel = parseProjectModelRef(settings.defaultModels?.[kind]);
   const hasPrompt = !!data.prompt?.trim();
   const hasPromptedModel = !!data.model && hasPrompt;
-  if (projectModel && !hasPromptedModel) {
+  if (projectModel && data.model !== '' && !hasPromptedModel) {
     next.model = projectModel.model;
     next.provider = projectModel.provider;
     next.workflowId = projectModel.workflowId;

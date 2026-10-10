@@ -891,6 +891,23 @@ function AINodeDialog() {
     [activeNodeId, updateNodeData]
   );
 
+  const onClearModel = useCallback(() => {
+    if (!activeNodeId) return;
+    updateNodeData(activeNodeId, {
+      model: '',
+      provider: undefined,
+      workflowId: undefined,
+      workflowInputs: undefined,
+      audioPurpose: undefined,
+      runninghubModelParameters: undefined,
+      runninghubOutputs: undefined,
+      runninghubStage: undefined,
+      workflowApiOutputs: undefined,
+      workflowApiStage: undefined,
+      ...(nodeType === 'ai-director' ? { directorPrevisModel: '', directorPrevisProvider: undefined } : {}),
+    });
+  }, [activeNodeId, nodeType, updateNodeData]);
+
   const onChangeImageSize = useCallback(
     (value: string) => updateNodeData(activeNodeId!, { imageSize: value }),
     [activeNodeId, updateNodeData]
@@ -1190,7 +1207,7 @@ function AINodeDialog() {
           nodeId={activeNodeId}
           prompt={data.prompt || (isPrevis ? data.directorPrevisPrompt : '') || ''}
           placeholder={isPrevis ? t('按 @ 引用连线图片或完整分镜表，描述空间、人物走位和运镜；') : t('按 @ 引用素材；连线素材需 @ 后才会传给模型，仅连线不生效；\n描述想要生成的内容；\n/ 呼出指令；')}
-          selectedModel={data.model || (isPrevis ? data.directorPrevisModel : undefined)}
+          selectedModel={data.model ?? (isPrevis ? data.directorPrevisModel : undefined)}
           selectedProvider={data.provider || (isPrevis ? data.directorPrevisProvider : undefined)}
           selectedWorkflowId={data.workflowId}
           costEstimate={<VolcengineCostEstimate data={data} onOpenRecords={() => setBillingOpen(true)} />}
@@ -1205,6 +1222,7 @@ function AINodeDialog() {
           onContinuousEditEnd={finishContinuousEdit}
           onSubmit={onSubmit}
           onModelSelect={onModelSelect}
+          onClearModel={onClearModel}
           onWorkflowSelect={onWorkflowSelect}
           runninghubModelParameters={data.runninghubModelParameters}
           onRunninghubModelParametersChange={(runninghubModelParameters) => updateNodeData(activeNodeId, { runninghubModelParameters })}

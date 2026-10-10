@@ -216,6 +216,39 @@
 
 .ui-btn--block { width: 100%; }
 
+/* 模型入口内容：身份标识 + 可截省名称 + 操作区；按钮底座复用 prompt-btn。 */
+.ui-model-pill__avatar {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--ui-control-h) - 8px);
+  height: calc(var(--ui-control-h) - 8px);
+  background: transparent;
+  color: var(--theme-text);
+}
+.ui-model-pill__avatar > [role='img'] {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+.ui-model-pill__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.ui-model-pill__action {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--ui-control-h) - 12px);
+  height: calc(var(--ui-control-h) - 12px);
+  color: var(--theme-text-secondary);
+}
+
 /* 选中态：默认品牌色；分段控件、过滤器常用 */
 .ui-btn.is-active {
   background: var(--brand-alpha-15);

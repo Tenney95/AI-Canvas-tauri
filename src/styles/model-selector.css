@@ -6,7 +6,7 @@
   flex: 1;
   min-width: 0;
 }
-.model-selector-trigger {
+.model-selector-trigger:not(.prompt-btn) {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -20,11 +20,11 @@
   cursor: var(--cursor-pointer, pointer);
   transition: color var(--transition-base), background var(--transition-base), border-color var(--transition-base);
 }
-.model-selector-trigger:hover {
+.model-selector-trigger:not(.prompt-btn):hover {
   color: var(--theme-text);
   background: var(--white-alpha-03);
 }
-.model-selector-trigger.has-model {
+.model-selector-trigger.has-model:not(.prompt-btn) {
   color: var(--theme-text-secondary);
 }
 .model-selector-icon {
@@ -49,7 +49,7 @@
 }
 
 /* Workflow trigger state */
-.model-selector-trigger.has-workflow {
+.model-selector-trigger.has-workflow:not(.prompt-btn) {
   color: var(--brand-light);
   border-color: color-mix(in srgb, var(--brand) 20%, transparent);
   background: var(--brand-alpha-08);
@@ -73,6 +73,59 @@
 }
 .model-selector .model-workflow-edit:hover:not(:disabled) {
   background: transparent;
+}
+
+/* 提示词栏模型入口复用同栏 prompt-btn；此处只适配可变宽内容与独立操作。 */
+.model-selector--pill {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+.model-selector--pill > .model-selector-trigger.prompt-btn {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  gap: 6px;
+  padding: 0 4px;
+}
+.model-selector--pill:has(> .model-selector-clear:hover) > .model-selector-trigger {
+  color: var(--theme-text);
+  background: var(--theme-hover);
+}
+.model-selector--pill > .model-selector-trigger:focus-visible,
+.model-selector--pill > .model-selector-clear:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+.model-selector--pill .model-selector-clear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: calc(var(--ui-control-h) - 12px);
+  height: calc(var(--ui-control-h) - 12px);
+  border: 0;
+  background: transparent;
+  color: var(--theme-text-secondary);
+}
+.model-selector--pill .model-selector-clear:hover:not(:disabled) {
+  background: transparent;
+  color: var(--theme-text);
+}
+.model-selector--pill .model-selector-clear:active:not(:disabled) {
+  transform: translateY(-50%);
+}
+.model-selector--pill .has-workflow-editor .ui-model-pill__label {
+  padding-right: 24px;
+}
+.model-selector--pill .model-workflow-edit {
+  right: 36px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--theme-hover);
+}
+.model-selector--pill .model-workflow-edit:hover:not(:disabled) {
+  background: var(--brand-alpha-15);
 }
 
 /* Text Model Icon */
@@ -258,7 +311,6 @@
   gap: 8px;
   width: 100%;
   padding: 6px;
-  background: var(--theme-surface);
   border: none;
   /* 底层保持完整遮挡，圆角悬浮效果由独立背景层绘制。 */
   border-radius: 0;

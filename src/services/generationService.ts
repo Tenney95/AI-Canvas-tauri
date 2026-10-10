@@ -71,6 +71,11 @@ export async function executeGeneration(
   const nodeType = data?.type;
   const rawPrompt = overridePrompt ?? (data?.prompt as string) ?? '';
 
+  if (data.model === '' && !data.workflowId) {
+    store.showToast('请先在底部模型选择器中选择一个模型', 'error');
+    return { success: false, message: '未选择模型' };
+  }
+
   if (nodeType === 'ai-director') {
     if (data.directorRuntimeKind !== 'ai-threejs') {
       const message = '请切换到 AI 镜头预演后生成';

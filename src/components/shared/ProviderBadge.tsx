@@ -1,5 +1,9 @@
+import { lazy, Suspense } from 'react';
 import type { ApiProviderConfig } from '../../types';
 import { getProviderDefinition } from '../../services/ai/providerCatalogService';
+import LazyLoadBoundary from './LazyLoadBoundary';
+
+const MetalText = lazy(() => import('../../vendor/generation-effects/metal-fx/src').then((module) => ({ default: module.MetalText })));
 
 interface ProviderBadgeProps {
   providerId: string;
@@ -7,12 +11,20 @@ interface ProviderBadgeProps {
   fallbackName?: string;
   fallbackBadge?: string;
   size?: 'small' | 'medium' | 'large';
+  appearance?: 'default' | 'metal';
+  theme?: 'dark' | 'light';
 }
 
 const SIZES = {
   small: 'h-5 w-5 rounded-md text-[9px]',
   medium: 'h-6 w-6 rounded-md text-[10px]',
   large: 'h-[34px] w-[34px] rounded-lg text-[11px]',
+};
+
+const METAL_FONTS = {
+  small: '600 11px/1 sans-serif',
+  medium: '600 14px/1 sans-serif',
+  large: '600 15px/1 sans-serif',
 };
 
 const TONES: Record<string, string> = {
@@ -40,6 +52,8 @@ export default function ProviderBadge({
   fallbackName,
   fallbackBadge,
   size = 'medium',
+  appearance = 'default',
+  theme = 'dark',
 }: ProviderBadgeProps) {
   const definition = getProviderDefinition(providerId, config);
   const catalogId = definition?.id || providerId;
@@ -49,16 +63,32 @@ export default function ProviderBadge({
   const badge = isCustom
     ? abbreviateName(name)
     : definition?.badgeText || fallbackBadge || abbreviateName(name);
-  const tone = TONES[catalogId] || 'bg-[var(--brand-alpha-15)] text-[var(--brand-light)]';
+  const tone = appearance === 'metal'
+    ? 'text-[var(--theme-text)]'
+    : `border border-[var(--separator-color)] ${TONES[catalogId] || 'bg-[var(--brand-alpha-15)] text-[var(--brand-light)]'}`;
+  const metalFallback = size === 'medium' ? <span className="text-[14px]">{badge}</span> : badge;
 
   return (
     <span
       role="img"
       aria-label={name}
       title={name}
-      className={`inline-flex shrink-0 select-none items-center justify-center border border-[var(--separator-color)] font-semibold leading-none tracking-wide ${SIZES[size]} ${tone}`}
+      className={`inline-flex shrink-0 select-none items-center justify-center font-semibold leading-none tracking-wide ${SIZES[size]} ${tone}`}
     >
-      {badge}
+      {appearance === 'metal' ? (
+        <LazyLoadBoundary label="模型厂商金属文字" errorFallback={metalFallback}>
+          <Suspense fallback={metalFallback}>
+            <MetalText
+              font={METAL_FONTS[size]}
+              color="var(--theme-text)"
+              preset={theme === 'light' ? 'silver' : 'chromatic'}
+              theme={theme}
+              strength={0.85}
+              paused
+            >{badge}</MetalText>
+          </Suspense>
+        </LazyLoadBoundary>
+      ) : badge}
     </span>
   );
 }

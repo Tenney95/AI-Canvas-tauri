@@ -20,6 +20,7 @@ import {
 import { useAppStore } from '../../../store/useAppStore';
 import { useT } from '../../../i18n';
 import ProviderBadge from '../../shared/ProviderBadge';
+import { resolveAppearanceMode } from '../../../services/appearance/appearanceRuntime';
 import { comfyBaseUrlFor, DEFAULT_COMFY_URL, probeComfyServer } from '../../../services/comfyServers';
 
 const MODEL_PREF_KEY = 'canvas-model-prefs';
@@ -57,10 +58,13 @@ function saveModelPref(nodeType: string, modelValue: string) {
 
 interface ModelSelectorProps {
   nodeType: NodeType;
+  /** 节点提示词栏用紧凑透明入口展示当前模型。 */
+  appearance?: 'default' | 'pill';
   selectedModel?: string;
   selectedProvider?: string;
   selectedWorkflowId?: string;
   onSelect: (model: ModelOption) => void;
+  onClear?: () => void;
   onWorkflowSelect?: (workflowId: string | undefined) => void;
   groups?: ModelGroup[];
   /** 已由可信宿主按配置筛选的模型分组；用于没有完整配置的独立窗口。 */
@@ -74,9 +78,11 @@ interface ModelSelectorProps {
 
 export default function ModelSelector({
   nodeType,
+  appearance = 'default',
   selectedModel,
   selectedWorkflowId,
   onSelect,
+  onClear,
   onWorkflowSelect,
   groups = defaultModelGroups,
   configuredGroupsOverride,
@@ -234,6 +240,8 @@ export default function ModelSelector({
   // 全景图/动画回退到生图偏好，分镜表回退到生文偏好
   const effectiveModel = useMemo(
     () => {
+      // 空字符串表示用户已清除当前节点选择，不再回填历史偏好。
+      if (selectedModel === '') return undefined;
       const prefs = loadModelPrefs();
       const fallbackType = MODEL_TYPE_FALLBACK[nodeType];
       return selectedModel
@@ -249,7 +257,12 @@ export default function ModelSelector({
     : undefined;
   const currentModel = currentGroup?.models.find((model) => model.value === effectiveModel);
 
-  const renderProviderBadge = (group: ModelGroup, model?: ModelOption, size: 'small' | 'medium' = 'medium') => {
+  const renderProviderBadge = (
+    group: ModelGroup,
+    model?: ModelOption,
+    size: 'small' | 'medium' = 'medium',
+    badgeAppearance: 'default' | 'metal' = 'default',
+  ) => {
     const generalModel = model?.provider === 'general'
       ? generalModels.find((candidate) => `general/${candidate.id}` === model.value)
       : undefined;
@@ -265,6 +278,8 @@ export default function ModelSelector({
         fallbackName={group.name}
         fallbackBadge={group.badgeText}
         size={size}
+        appearance={badgeAppearance}
+        theme={resolveAppearanceMode(config.appearance?.mode ?? config.theme)}
       />
     );
   };
@@ -344,6 +359,7 @@ export default function ModelSelector({
   const displayLabel = currentWorkflow
     ? currentWorkflow.name
     : currentModel?.label ?? t('选择模型');
+  const canClearSelection = appearance === 'pill' && !!onClear && !!(effectiveModel || selectedWorkflowId);
 
   // 切换分组折叠（不可用分组拒绝展开）
   const toggleGroup = (groupId: string) => {
@@ -357,29 +373,62 @@ export default function ModelSelector({
   };
 
   return (
-    <div className="model-selector" ref={ref}>
+    <div className={`model-selector${appearance === 'pill' ? ' model-selector--pill' : ''}`} ref={ref}>
       <button
         type="button"
-        className={`model-selector-trigger${selectedWorkflowId ? ' has-workflow' : ''}${currentModel ? ' has-model' : ''}${canEditWorkflow ? ' has-workflow-editor' : ''}`}
+        className={`model-selector-trigger${appearance === 'pill' ? ' prompt-btn text-xs' : ''}${selectedWorkflowId ? ' has-workflow' : ''}${currentModel ? ' has-model' : ''}${canEditWorkflow ? ' has-workflow-editor' : ''}`}
+        aria-expanded={open}
+        title={displayLabel}
         onClick={(e) => {
           e.stopPropagation();
           if (!open) setAvailableComfyUrls({});
           setOpen(!open);
         }}
       >
-        <span className="model-selector-icon">
+        <span className={appearance === 'pill' ? 'ui-model-pill__avatar' : 'model-selector-icon'}>
           {selectedWorkflowId ? (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
             </svg>
-          ) : currentGroup && currentModel ? renderProviderBadge(currentGroup, currentModel) : null}
+          ) : currentGroup && currentModel ? renderProviderBadge(currentGroup, currentModel, 'medium', appearance === 'pill' ? 'metal' : 'default') : appearance === 'pill' ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" />
+              <path d="m4 7.5 8 4.5 8-4.5M12 12v9" />
+            </svg>
+          ) : null}
         </span>
-        <span className="model-selector-label">{displayLabel}</span>
-        <svg className="caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+        <span className={appearance === 'pill' ? 'ui-model-pill__label' : 'model-selector-label'}>{displayLabel}</span>
+        {appearance === 'pill' ? (
+          <span className="ui-model-pill__action" aria-hidden="true">
+            {!canClearSelection && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points={open ? '6 15 12 9 18 15' : '6 9 12 15 18 9'} />
+            </svg>}
+          </span>
+        ) : (
+          <svg className="caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        )}
       </button>
+
+      {canClearSelection && (
+        <button
+          type="button"
+          className="prompt-btn model-selector-clear nodrag nopan"
+          aria-label={t('清除当前模型选择')}
+          title={t('清除当前模型选择')}
+          onClick={(event) => {
+            event.stopPropagation();
+            setOpen(false);
+            onClear?.();
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <path d="m6 6 12 12M18 6 6 18" />
+          </svg>
+        </button>
+      )}
 
       {canEditWorkflow && (
         <button

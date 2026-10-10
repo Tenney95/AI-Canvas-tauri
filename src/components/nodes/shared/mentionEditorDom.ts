@@ -22,6 +22,35 @@ const CHIP_STYLE: Record<string, string> = {
   'ai-markdown': 'chip-markdown',
   'ai-storyboard': 'chip-image',
 };
+const NODE_CHIP_ICON_PATHS: Record<string, string> = {
+  'ai-text': 'M4 4h16v16H4zM8 8h8M8 12h8M8 16h5',
+  'ai-video': 'm16 8 5-3v14l-5-3M3 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z',
+  'ai-audio': 'm11 5-5 4H3v6h3l5 4V5ZM15.54 8.46a5 5 0 0 1 0 7.08M19.07 4.93a10 10 0 0 1 0 14.14',
+};
+
+/** 编辑器与生成信息共用引用图标，源节点和 Markdown 沿用对应类型。 */
+export function getNodeChipIconPath(nodeType: string): string | undefined {
+  const type = nodeType === 'ai-markdown' ? 'ai-text' : nodeType.replace(/^source-/, 'ai-');
+  return NODE_CHIP_ICON_PATHS[type];
+}
+
+function buildNodeChipIconEl(iconPath: string): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', '12');
+  svg.setAttribute('height', '12');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.8');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', iconPath);
+  svg.appendChild(path);
+  return svg;
+}
+
 const WF_IO_STYLE: Record<string, string> = {
   prompt: 'chip-workflow-prompt',
   image: 'chip-workflow-image',
@@ -252,8 +281,11 @@ export function buildChipEl(
   const icon = document.createElement('span');
   icon.className = 'prompt-chip-icon';
   icon.setAttribute('aria-hidden', 'true');
+  const iconPath = getNodeChipIconPath(nodeType);
   const isMedia = nodeType === 'ai-image' || nodeType === 'ai-video' || nodeType === 'ai-storyboard';
-  if (isMedia && meta?.thumbnailUrl) {
+  if (iconPath) {
+    icon.appendChild(buildNodeChipIconEl(iconPath));
+  } else if (isMedia && meta?.thumbnailUrl) {
     icon.classList.add('has-thumbnail');
     const image = document.createElement('img');
     image.src = meta.thumbnailUrl;

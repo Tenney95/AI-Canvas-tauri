@@ -223,7 +223,7 @@ export interface BaseNodeData {
   prompt?: string;           // 提示词
   output?: string;            // 输出结果（文本/URL等）
   status?: 'idle' | 'loading' | 'success' | 'error';
-  model?: string;             // 选择的模型 ID（如 qwen/qwen3.5-397b-a17b）
+  model?: string;             // 模型 ID；空字符串表示主动清除，不回填偏好或项目默认模型
   provider?: string;          // 选择的供应商 ID（如 apimart）
   workflowId?: string;        // 选择的工作流 ID
   workflowInputs?: Record<string, string>; // 本地 IO 或云工作流 nodeId/fieldName 赋值

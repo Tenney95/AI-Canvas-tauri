@@ -126,8 +126,12 @@
   min-height: 80px;
   max-height: 140px;
   font-size: 14px;
-  padding: 4px;
-  border-radius: 10px;
+  padding: 0;
+  border-radius: 0;
+}
+.ai-dialog-float .prompt-editor .prompt-chip {
+  /* 胶囊留在行内布局中，避免无内边距时被编辑器滚动边界裁切。 */
+  top: 0;
 }
 .ai-dialog-float.is-expanded .prompt-panel {
   display: flex;
@@ -149,7 +153,6 @@
   flex: 1 1 auto;
   min-height: 0;
   max-height: none;
-  padding: 8px;
   font-size: 15px;
   line-height: 1.65;
 }

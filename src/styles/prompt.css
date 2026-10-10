@@ -6,8 +6,16 @@
   flex-shrink: 0;
   transition: border-color var(--transition-smooth);
 }
+.prompt-panel:not(.focused):has(.prompt-editor:hover) {
+  background: linear-gradient(to bottom, var(--white-alpha-03), transparent);
+}
 .prompt-panel.focused {
   border-top-color: var(--brand);
+  background: linear-gradient(to bottom, var(--brand-alpha-12), transparent);
+}
+.prompt-panel.focused .prompt-editor,
+.prompt-panel .prompt-editor:hover {
+  background-color: transparent;
 }
 .prompt-input-wrap {
   position: relative;
@@ -280,9 +288,15 @@
 .prompt-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  flex-wrap: wrap;
   padding: 2px 8px 4px;
   gap: 8px;
+}
+.prompt-footer-tools {
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+  justify-content: flex-end;
 }
 .prompt-actions {
   display: flex;

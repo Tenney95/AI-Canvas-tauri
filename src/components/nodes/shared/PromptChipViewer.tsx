@@ -9,7 +9,7 @@ import type {
 import { getFileCategory } from '../../../services/fileService';
 import { parseDramaMentionId } from '../../../types/dramaAssets';
 import { resolveDramaActionMediaRef } from '../../../services/dramaAssetPrompt';
-import { bestNodeThumb, getNodeMetaMap, numberMediaReferenceLabels } from './mentionEditorDom';
+import { bestNodeThumb, getNodeChipIconPath, getNodeMetaMap, numberMediaReferenceLabels } from './mentionEditorDom';
 
 const CHIP_STYLE: Record<string, string> = {
   'ai-text': 'chip-text',
@@ -188,8 +188,10 @@ export function renderPromptWithChips(
       const meta = metaMap.get(nodeId);
       const node = nodes?.find((n) => n.id === (nodeId.includes('/cell/') ? nodeId.split('/')[0] : nodeId));
       const nodeType = meta?.type || (node?.data?.type as string) || 'ai-image';
+      const iconPath = getNodeChipIconPath(nodeType);
       const thumbUrl = meta?.thumbnailUrl || (node ? bestNodeThumb(node.data ?? {}) || (node.data?.imageUrl as string) : undefined);
       const isMedia = nodeType === 'ai-image' || nodeType === 'ai-video' || nodeType === 'ai-storyboard';
+      const showThumbnail = !iconPath && isMedia && !!thumbUrl;
       const displayId = meta?.displayId ?? (node?.data?.displayId as number | undefined);
       const displayLabel = displayId != null ? `#${displayId}` : label;
       const title = displayId != null ? `${label} (#${displayId})` : label;
@@ -206,8 +208,12 @@ export function renderPromptWithChips(
           onClick={canPreview ? () => options.onPreviewImage?.({ url: thumbUrl!, name: label }) : undefined}
           style={canPreview ? { cursor: 'pointer' } : undefined}
         >
-          <span className={`prompt-chip-icon${isMedia && thumbUrl ? ' has-thumbnail' : ''}`} aria-hidden="true">
-            {isMedia && thumbUrl ? <img src={thumbUrl} className="prompt-chip-thumb" alt="" /> : '@'}
+          <span className={`prompt-chip-icon${showThumbnail ? ' has-thumbnail' : ''}`} aria-hidden="true">
+            {showThumbnail ? <img src={thumbUrl} className="prompt-chip-thumb" alt="" /> : iconPath ? (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d={iconPath} />
+              </svg>
+            ) : '@'}
           </span>
           <span className="prompt-chip-id">{displayLabel}</span>
           {referenceLabel !== undefined && (
