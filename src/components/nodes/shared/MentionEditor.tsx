@@ -17,6 +17,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import PopupCloseButton from '../../shared/PopupCloseButton';
 import MentionPicker, { type MentionPickerChip, type MentionPickerItem } from '../../shared/MentionPicker';
 import ViewportImage from '../../shared/ViewportImage';
+import { findDraggableMentionChip, startMentionChipDrag } from './mentionEditorChipDrag';
 import {
   DRAMA_MENTION_MERGE_ALL,
   buildDramaMentionId,
@@ -108,14 +109,20 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const savedMentionRangeRef = useRef<Range | null>(null);
   const selectFirstMentionRef = useRef<(() => void) | null>(null);
   const lastFocusedWfValueRef = useRef<HTMLSpanElement | null>(null);
-  const { nodes, edges, workflows, dramaAssets } = useAppStore(
+  const cancelChipDragRef = useRef<(() => void) | null>(null);
+  const { nodes, edges, workflows, dramaAssets, currentProjectId } = useAppStore(
     useShallow((state) => ({
       nodes: state.nodes,
       edges: state.edges,
       workflows: state.workflows,
       dramaAssets: state.dramaAssets,
+      currentProjectId: state.currentProjectId,
     })),
   );
+  useEffect(() => () => {
+    cancelChipDragRef.current?.();
+    cancelChipDragRef.current = null;
+  }, [currentProjectId, nodeId, prompt]);
 
   // ── 资产引用弹窗 ──
   const assetFolders = useAppStore((s) => s.config.assetFolders);
@@ -958,6 +965,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     setChipTip(null);
   }, []);
   const handleEditorMouseOver = useCallback((e: React.MouseEvent) => {
+    if (editorRef.current?.classList.contains('is-chip-dragging')) return;
     const el = (e.target as HTMLElement).closest?.('[data-ref-id]') as HTMLElement | null;
     const id = el?.getAttribute('data-ref-id') ?? null;
     if (id === lastHoverIdRef.current) return; // 同一芯片，跳过避免抖动
@@ -980,6 +988,29 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       }, 120);
     }
   }, [handleEditorMouseLeave, nodeId]);
+  const handleChipPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const root = editorRef.current;
+    if (!root || event.button !== 0 || event.pointerType === 'touch') return;
+    const source = findDraggableMentionChip(root, event.target);
+    if (!source) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelChipDragRef.current?.();
+    handleEditorMouseLeave();
+    setShowMention(false);
+    root.focus({ preventScroll: true });
+    const range = document.createRange();
+    range.setStartAfter(source);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    cancelChipDragRef.current = startMentionChipDrag({
+      root, source, pointerId: event.pointerId,
+      clientX: event.clientX, clientY: event.clientY, onCommit: emitDOM,
+      isCurrent: () => useAppStore.getState().currentProjectId === currentProjectId,
+    });
+  }, [currentProjectId, emitDOM, handleEditorMouseLeave]);
   const chipPreview = chipTip && chipTip.ownerNodeId === nodeId
     ? resolveMentionPreview(nodes, chipTip.id, chipTip.label, nodeMetaMap.get(chipTip.id)?.thumbnailUrl)
     : null;
@@ -1255,6 +1286,10 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         onInput={handleInput}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
+        onPointerDown={handleChipPointerDown}
+        onDragStart={(event) => {
+          if (editorRef.current && findDraggableMentionChip(editorRef.current, event.target)) event.preventDefault();
+        }}
         onMouseOver={handleEditorMouseOver}
         onMouseLeave={handleEditorMouseLeave}
         onFocus={() => {

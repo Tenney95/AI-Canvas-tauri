@@ -60,6 +60,7 @@ vi.mock('../../src/services/videoEditorWindowService', () => ({
 vi.mock('../../src/services/videoEditorAiTransitionService', () => ({ listVideoEditorVideoModels: vi.fn(), runVideoEditorAiTransition: vi.fn() }));
 vi.mock('../../src/store/store.utils', () => ({ blobToDataUrl: async () => 'data:image/jpeg;base64,frame', derivedNodePlacement: () => ({ position: { x: 0, y: 0 } }) }));
 vi.mock('../../src/utils/videoSeek', () => ({ seekVideoTo: driver.seek }));
+vi.mock('../../src/components/shared/VideoPlayer', () => ({ default: 'VideoPlayer' }));
 
 class FakeVideo {
   readyState = 2; videoWidth = 1920; videoHeight = 1080; duration = 10;
@@ -77,6 +78,7 @@ let tree: unknown;
 let selected: boolean;
 let compact: FakeVideo | undefined;
 let fullscreen: FakeVideo | undefined;
+let compactMediaRef: ((video: FakeVideo | null) => void) | undefined;
 let revision: number;
 let store: {
   currentProjectId: string; nodes: Array<{ id: string; type: string; position: { x: number; y: number }; data: Record<string, unknown> }>;
@@ -108,20 +110,22 @@ function render() {
   driver.stateIndex = driver.refIndex = driver.effectIndex = 0;
   driver.callbacks = [];
   tree = Node({ id: 'video', data: store.nodes[0].data, selected });
-  const videos = all(tree, (element) => element.type === 'video');
-  const player = videos.find((element) => element.props.className === 'video-preview-player compact');
+  const videos = all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false);
+  const player = videos.find((element) => element.props.compact === true);
+  if (compact && (!player || compact.src !== player.props.src)) {
+    compactMediaRef?.(null);
+    compact = undefined;
+  }
   if (player) {
     compact ??= new FakeVideo();
     compact.src = player.props.src as string;
-    (player.props.ref as { current: unknown }).current = compact;
-  } else {
-    driver.refs[0].current = null;
-    compact = undefined;
+    compactMediaRef = player.props.mediaRef as (video: FakeVideo | null) => void;
+    compactMediaRef(compact);
   }
-  const full = videos.find((element) => element.props.className === 'fullscreen-video-view');
+  const full = videos.find((element) => !element.props.compact);
   if (full) {
     fullscreen ??= new FakeVideo();
-    (full.props.ref as (video: FakeVideo) => void)(fullscreen);
+    (full.props.mediaRef as (video: FakeVideo) => void)(fullscreen);
   } else fullscreen = undefined;
   driver.pending.splice(0).forEach((effect) => effect());
   return tree;
@@ -135,7 +139,7 @@ beforeEach(async () => {
   driver.seek.mockReset().mockImplementation(async (video: FakeVideo, time: number) => { video.currentTime = time; });
   driver.upload.mockReset().mockResolvedValue(null);
   driver.rerender = () => { render(); };
-  selected = false; compact = undefined; fullscreen = undefined; revision = 1;
+  selected = false; compact = undefined; fullscreen = undefined; compactMediaRef = undefined; revision = 1;
   store = {
     currentProjectId: 'project-a',
     nodes: [{ id: 'video', type: 'ai-video', position: { x: 0, y: 0 }, data: { type: 'ai-video', label: 'Video', videoUrl: 'asset://video.mp4' } }],
@@ -145,7 +149,7 @@ beforeEach(async () => {
   };
   const useAppStore = Object.assign(<T,>(selector: (state: typeof store) => T) => selector(store), { getState: () => store });
   vi.doMock('../../src/store/useAppStore', () => ({ useAppStore, generateId: () => 'frame', computeImageNodeDimensions: async () => ({ nodeWidth: 280, nodeHeight: 158 }) }));
-  for (const name of ['NodeLabel', 'NodeError', 'GooeyBtn', 'ResizeHandle', 'VideoNodeControls', 'VideoNodeToolbar', 'NodeToolbarShell', 'NodeGenerationProgress']) {
+  for (const name of ['NodeLabel', 'NodeError', 'GooeyBtn', 'ResizeHandle', 'VideoNodeToolbar', 'NodeToolbarShell', 'NodeGenerationProgress']) {
     vi.doMock(`../../src/components/nodes/shared/${name}`, () => ({ default: name }));
   }
   vi.doMock('../../src/components/shared/FullscreenOverlay', () => ({ default: 'FullscreenOverlay' }));
@@ -181,7 +185,7 @@ describe('video node demand loading', () => {
     } else {
       compact!.videoWidth = videoWidth;
       compact!.videoHeight = videoHeight;
-      (find((element) => element.type === 'video').props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
+      (find((element) => element.type === 'VideoPlayer' && element.props.active !== false).props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
     }
     expect(store.updateNodeDataTransient).toHaveBeenCalledExactlyOnceWith('video', {
       videoWidth, videoHeight, nodeWidth, nodeHeight,
@@ -198,7 +202,7 @@ describe('video node demand loading', () => {
         videoWidth: 1920, videoHeight: 1080, duration: 10 });
       await pending.promise;
     } else {
-      (find((element) => element.type === 'video').props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
+      (find((element) => element.type === 'VideoPlayer' && element.props.active !== false).props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
     }
     expect(store.updateNodeDataTransient).toHaveBeenCalledExactlyOnceWith('video', {
       videoWidth: 1920, videoHeight: 1080, nodeWidth: 320, nodeHeight: 180,
@@ -213,7 +217,7 @@ describe('video node demand loading', () => {
     render();
     compact!.videoWidth = 832;
     compact!.videoHeight = 1472;
-    const onLoadedMetadata = find((element) => element.type === 'video').props.onLoadedMetadata as (event: unknown) => void;
+    const onLoadedMetadata = find((element) => element.type === 'VideoPlayer' && element.props.active !== false).props.onLoadedMetadata as (event: unknown) => void;
     onLoadedMetadata({ currentTarget: compact });
     expect(store.updateNodeDataTransient).toHaveBeenCalledExactlyOnceWith('video', {
       videoWidth: 832, videoHeight: 1472, nodeWidth: 400, nodeHeight: 708,
@@ -227,9 +231,9 @@ describe('video node demand loading', () => {
   it('keeps idle nodes free of video players and ignores thumbnailUrl values that actually point at the video', () => {
     store.nodes[0].data.thumbnailUrl = 'asset://video.mp4';
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(0);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
     expect(driver.acquire).toHaveBeenCalledWith('asset://video.mp4', expect.any(AbortSignal));
-    expect(named('VideoNodeControls').props.active).toBe(false);
+    expect(named('VideoPlayer').props.active).toBe(false);
     expect(all(tree, (element) => 'onMouseEnter' in element.props || 'onPointerEnter' in element.props)).toHaveLength(0);
   });
 
@@ -237,11 +241,12 @@ describe('video node demand loading', () => {
     store.nodes[0].data.thumbnailUrl = 'asset://cover.jpg';
     render();
     expect(driver.acquire).not.toHaveBeenCalled();
-    const image = find((element) => element.type === 'img' && element.props.src === 'asset://cover.jpg');
-    (image.props.onError as () => void)();
+    const image = named('VideoPlayer');
+    expect(image.props.poster).toBe('asset://cover.jpg');
+    (image.props.onPosterError as () => void)();
     render();
     expect(driver.acquire).toHaveBeenCalledTimes(1);
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(0);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
   });
 
   it('clears the old cover and remote provenance when the upload handler replaces a video source', async () => {
@@ -258,15 +263,15 @@ describe('video node demand loading', () => {
     store.nodes[0].data = { ...store.nodes[0].data, ...store.updateNodeData.mock.calls[0][1] };
     render();
     expect(driver.acquire).toHaveBeenCalledWith('asset://new-video.mp4', expect.any(AbortSignal));
-    expect(all(tree, (element) => element.type === 'img' && element.props.src === 'asset://old-cover.jpg')).toHaveLength(0);
+    expect(named('VideoPlayer').props.poster).not.toBe('asset://old-cover.jpg');
   });
 
   it('synchronously mounts the player before the original playback gesture, then unloads it after pause', () => {
     render();
-    (named('VideoNodeControls').props.onRequestPlayback as () => void)();
+    (named('VideoPlayer').props.onRequestPlayback as () => void)();
     expect(compact?.play).toHaveBeenCalledOnce();
-    expect(named('VideoNodeControls').props.active).toBe(true);
-    const video = find((element) => element.type === 'video');
+    expect(named('VideoPlayer').props.active).toBe(true);
+    const video = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
     (video.props.onPlay as () => void)();
     render();
     const oldVideo = compact!;
@@ -275,10 +280,10 @@ describe('video node demand loading', () => {
     oldVideo.muted = true;
     (video.props.onPause as () => void)();
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(0);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
     expect(oldVideo.removeAttribute).toHaveBeenCalledWith('src');
-    (named('VideoNodeControls').props.onRequestPlayback as () => void)();
-    const next = find((element) => element.type === 'video');
+    (named('VideoPlayer').props.onRequestPlayback as () => void)();
+    const next = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
     (next.props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
     expect(compact?.currentTime).toBe(4.5);
     expect(compact?.volume).toBe(0.3);
@@ -288,11 +293,11 @@ describe('video node demand loading', () => {
   it('loads on selection and releases the paused player when selection moves away', () => {
     selected = true;
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(1);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(1);
     const oldVideo = compact!;
     selected = false;
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(0);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
     expect(oldVideo.load).toHaveBeenCalled();
   });
 
@@ -300,18 +305,18 @@ describe('video node demand loading', () => {
     selected = true;
     store.selectedNodeIds = ['video', 'other-video'];
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(0);
-    expect(named('VideoNodeControls').props.active).toBe(false);
-    (named('VideoNodeControls').props.onRequestPlayback as () => void)();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(1);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+    expect(named('VideoPlayer').props.active).toBe(false);
+    (named('VideoPlayer').props.onRequestPlayback as () => void)();
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(1);
     expect(compact?.play).toHaveBeenCalledOnce();
-    const player = find((element) => element.type === 'video');
+    const player = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
     (player.props.onPlay as () => void)();
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(1);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(1);
     (player.props.onPause as () => void)();
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(0);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
   });
 
   it('unloads a paused player when an existing single selection expands into a multiple selection', () => {
@@ -322,11 +327,11 @@ describe('video node demand loading', () => {
     oldVideo.currentTime = 5;
     store.selectedNodeIds = ['video', 'other-video'];
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(0);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
     expect(oldVideo.removeAttribute).toHaveBeenCalledWith('src');
     store.selectedNodeIds = ['video'];
     render();
-    const player = find((element) => element.type === 'video');
+    const player = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
     (player.props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
     expect(compact?.currentTime).toBe(5);
   });
@@ -335,8 +340,8 @@ describe('video node demand loading', () => {
     selected = true;
     store.selectedNodeIds = ids;
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(0);
-    expect(named('VideoNodeControls').props.active).toBe(false);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
+    expect(named('VideoPlayer').props.active).toBe(false);
   });
 
   it('cancels an obsolete poster and fits the latest resize made while the new poster loads', async () => {
@@ -357,7 +362,7 @@ describe('video node demand loading', () => {
     second.resolve({ src: 'blob:new', release: vi.fn(), width: 360, height: 640, videoWidth: 832, videoHeight: 1472, duration: 10 });
     await second.promise;
     render();
-    expect(find((element) => element.type === 'img').props.src).toBe('blob:new');
+    expect(named('VideoPlayer').props.poster).toBe('blob:new');
     expect(store.updateNodeDataTransient).toHaveBeenCalledExactlyOnceWith('video', {
       videoWidth: 832, videoHeight: 1472, nodeWidth: 540, nodeHeight: 955,
     });
@@ -391,7 +396,7 @@ describe('video node demand loading', () => {
     render();
     render();
     expect(release).toHaveBeenCalledOnce();
-    expect(find((element) => element.type === 'img').props.src).toBe('asset://other.jpg');
+    expect(named('VideoPlayer').props.poster).toBe('asset://other.jpg');
   });
 
   it('completes a requested frame capture once delayed video pixels become ready', async () => {
@@ -466,13 +471,13 @@ describe('video node demand loading', () => {
     compact!.paused = false;
     (named('VideoNodeToolbar').props.onFullscreen as () => void)();
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(1);
-    expect(find((element) => element.type === 'video').props.className).toBe('fullscreen-video-view');
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(1);
+    expect(find((element) => element.type === 'VideoPlayer' && element.props.active !== false).props.compact).toBeUndefined();
     fullscreen!.currentTime = 7;
     (named('FullscreenOverlay').props.onClose as () => void)();
     render();
-    const player = find((element) => element.type === 'video');
-    expect(player.props.className).toBe('video-preview-player compact');
+    const player = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
+    expect(player.props.compact).toBe(true);
     (player.props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: compact });
     expect(compact!.currentTime).toBe(7);
     expect(compact!.play).toHaveBeenCalled();
@@ -480,16 +485,16 @@ describe('video node demand loading', () => {
 
   it('opens fullscreen at the remembered position after a paused compact player has been unloaded', () => {
     render();
-    (named('VideoNodeControls').props.onRequestPlayback as () => void)();
-    const player = find((element) => element.type === 'video');
+    (named('VideoPlayer').props.onRequestPlayback as () => void)();
+    const player = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
     compact!.currentTime = 4.5;
     (player.props.onPause as () => void)();
     render();
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(0);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
     (named('VideoNodeToolbar').props.onFullscreen as () => void)();
     render();
-    const full = find((element) => element.type === 'video');
-    expect(full.props.className).toBe('fullscreen-video-view');
+    const full = find((element) => element.type === 'VideoPlayer' && element.props.active !== false);
+    expect(full.props.compact).toBeUndefined();
     (full.props.onLoadedMetadata as (event: unknown) => void)({ currentTarget: fullscreen });
     expect(fullscreen?.currentTime).toBe(4.5);
   });
@@ -501,6 +506,6 @@ describe('video node demand loading', () => {
     (preview.props.onDoubleClick as (event: unknown) => void)({ stopPropagation: vi.fn() });
     render();
     expect(named('FullscreenOverlay').props.isOpen).toBe(true);
-    expect(all(tree, (element) => element.type === 'video')).toHaveLength(0);
+    expect(all(tree, (element) => element.type === 'VideoPlayer' && element.props.active !== false)).toHaveLength(0);
   });
 });

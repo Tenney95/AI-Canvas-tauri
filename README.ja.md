@@ -10,7 +10,7 @@
 
 AI Canvas Tauri は、テキスト・画像・動画・音声・コマ撮りアニメーション・Markdown・ショットリスト・360° パノラマ・手描きノートを、接続可能なキャンバスノードとして整理します。ひとつのプロジェクト内で生成パイプラインを構成し、キャラクターライブラリとローカル素材を管理し、ComfyUI ワークフローを実行し、対話アシスタントでキャンバスの参照・編集、メディア生成、読み取り専用サブエージェントの派遣、許可済みファイルの読み取り、プロジェクトメモリの蓄積ができます。プロジェクトはシリーズとエピソードに分割でき、短編ドラマの各話ごとにキャンバスを持ち、キャラクターライブラリと素材はシリーズ全体で共有します。
 
-![Version](https://img.shields.io/badge/version-0.10.2-6366f1)
+![Version](https://img.shields.io/badge/version-0.10.3-6366f1)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db)
 ![React](https://img.shields.io/badge/React-19-61dafb)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-ff0072)

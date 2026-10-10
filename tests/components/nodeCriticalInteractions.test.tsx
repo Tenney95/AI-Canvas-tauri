@@ -742,6 +742,9 @@ describe('critical canvas node interactions', () => {
     vi.doMock('../../src/components/nodes/shared/VideoNodeToolbar', () => ({
       default: function VideoNodeToolbarMock() { return null; },
     }));
+    vi.doMock('../../src/components/shared/VideoPlayer', () => ({
+      default: function VideoPlayerMock() { return null; },
+    }));
     vi.doMock('../../src/services/fileService', () => ({
       buildNodeFileName: () => 'frame.png',
       saveDataUrlToProjectData: vi.fn(),
@@ -763,14 +766,14 @@ describe('critical canvas node interactions', () => {
     ) => unknown;
     store.selectedNodeIds = ['video-source'];
     const tree = VideoNode({ id: 'video-source', data: store.nodes[0].data, selected: true });
-    const video = findElement(tree, (element) => element.type === 'video' && element.props.className === 'video-preview-player compact');
+    const video = findElement(tree, (element) => componentName(element) === 'VideoPlayerMock' && element.props.compact === true);
     const toolbar = findElement(tree, (element) => componentName(element) === 'VideoNodeToolbarMock');
-    (video.props.ref as { current: unknown }).current = {
+    (video.props.mediaRef as (video: unknown) => void)({
       readyState: 2,
       videoWidth: 1920,
       videoHeight: 1080,
       currentTime: 12.5,
-    };
+    });
 
     const completion = (toolbar.props.onCaptureFrame as () => Promise<void>)();
     revision = 2;

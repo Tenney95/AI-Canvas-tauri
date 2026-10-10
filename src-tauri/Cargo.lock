@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "ai-canvas-tauri"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "axum",
  "base64 0.22.1",

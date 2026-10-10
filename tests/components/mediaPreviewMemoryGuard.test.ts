@@ -106,7 +106,7 @@ describe('media preview memory guards', () => {
   });
 
   it('moves video playback between one compact player and one fullscreen player', () => {
-    expect(videoNodeSource).toContain('{shouldMountPlayer ? (');
+    expect(videoNodeSource).toContain('active={shouldMountPlayer}');
     expect(videoNodeSource).toContain('compactPlaybackRestoreRef.current = {');
     expect(videoNodeSource).toContain('shouldPlay: fullscreenPlaybackRef.current.wasPlaying');
     expect(videoNodeSource).toContain('releaseVideoElement(fullscreenVideo);');
@@ -114,7 +114,7 @@ describe('media preview memory guards', () => {
     expect(videoPreviewCacheSource).toMatch(/function releaseCanvasVideo[\s\S]*?removeAttribute\('src'\)[\s\S]*?video\.load\(\)/);
     expect(videoNodeSource).toMatch(/const cleanup = \(\) => \{[\s\S]*?releaseVideoElement\(video\)/);
     expect(videoNodeSource).toMatch(
-      /className="fullscreen-overlay--image-preview"[\s\S]*?ref=\{setFullscreenVideoElement\}/,
+      /className="fullscreen-overlay--image-preview"[\s\S]*?mediaRef=\{setFullscreenVideoElement\}/,
     );
     expect(videoNodeSource).toMatch(
       /const setFullscreenVideoElement[\s\S]*?if \(!video\) return;[\s\S]*?fullscreenVideoRef\.current = video;/,

@@ -74,6 +74,30 @@
   filter: brightness(1.14) saturate(1.05);
   box-shadow: 0 2px 9px var(--black-alpha-30);
 }
+.prompt-editor .prompt-chip { cursor: var(--cursor-grab, grab); }
+.prompt-editor .prompt-chip-wf-value { cursor: text; }
+.prompt-editor.is-chip-dragging,
+.prompt-editor.is-chip-dragging .prompt-chip { cursor: var(--cursor-grabbing, grabbing); }
+.prompt-editor.is-chip-copying,
+.prompt-editor.is-chip-copying .prompt-chip { cursor: copy; }
+.prompt-chip.is-chip-drag-source { opacity: 0.45; }
+.prompt-chip-drag-preview,
+.prompt-chip-drop-caret {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  user-select: none;
+}
+.prompt-chip-drag-preview { opacity: 0.9; font-family: inherit; }
+.prompt-chip-drag-preview.is-copy::after {
+  content: '+';
+  color: var(--theme-text);
+  background: var(--theme-card);
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.prompt-chip-drop-caret { width: 2px; background: var(--brand); }
 .prompt-chip-node,
 .prompt-chip.chip-skill {
   --prompt-chip-accent: var(--theme-text-secondary);
