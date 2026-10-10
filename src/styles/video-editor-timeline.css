@@ -53,9 +53,9 @@
 .video-editor-timeline-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 46px;
-  padding: 7px 10px;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 8px;
   flex-shrink: 0;
   background: var(--video-editor-panel);
   border-bottom: 1px solid var(--theme-border);
@@ -66,56 +66,7 @@
   gap: 6px;
   min-width: 0;
 }
-.video-editor-timeline-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px 0 2px;
-  border-right: 1px solid var(--theme-border);
-  color: var(--theme-text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.video-editor-timeline-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 30px;
-  padding: 0 9px;
-  border-radius: 7px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--theme-text);
-  font-size: 12px;
-  cursor: var(--cursor-pointer, pointer);
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 120ms var(--video-editor-ease-out);
-}
-.video-editor-timeline-btn:hover:not(:disabled) {
-  background: var(--white-alpha-08);
-  border-color: var(--theme-border);
-}
-.video-editor-timeline-btn:disabled { opacity: 0.4; cursor: var(--cursor-not-allowed, not-allowed); }
-.video-editor-timeline-btn:active:not(:disabled) { transform: scale(0.97); }
-.video-editor-timeline-btn.icon-only {
-  width: 30px;
-  padding: 0;
-  justify-content: center;
-}
-.video-editor-timeline-btn.emphasis:not(:disabled) {
-  background: var(--video-editor-accent-soft);
-  border-color: var(--brand-alpha-20, rgba(99, 102, 241, 0.2));
-  color: var(--brand-light, #818cf8);
-}
-.video-editor-timeline-btn.emphasis kbd {
-  margin-left: 2px;
-  border-color: var(--brand-alpha-20, rgba(99, 102, 241, 0.2));
-  color: inherit;
-}
-.video-editor-timeline-btn.danger:hover:not(:disabled) {
-  color: #fff;
-  background: color-mix(in srgb, var(--danger) 70%, transparent);
-}
+/* 工具按钮沿用 UI Kit 的透明图标按钮，业务类只保留语义。 */
 /* 自检面板 */
 .video-editor-probe-btn {
   margin-left: auto;
@@ -177,51 +128,6 @@
   color: var(--theme-text-muted);
 }
 /* ── 刻度尺 ── */
-.video-editor-ruler {
-  position: relative;
-  height: 28px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--theme-border);
-  cursor: var(--cursor-pointer, pointer);
-  touch-action: none;
-  -webkit-user-select: none;
-  user-select: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, transparent 100%);
-}
-.video-editor-tick {
-  position: absolute;
-  bottom: 0;
-  width: 1px;
-  height: 5px;
-  background: var(--theme-text-muted);
-  opacity: 0.35;
-  pointer-events: none;
-}
-.video-editor-tick.major { height: 10px; opacity: 0.65; }
-.video-editor-tick-label {
-  position: absolute;
-  left: 4px;
-  top: -12px;
-  font-style: normal;
-  font-size: 10px;
-  line-height: 1;
-  color: var(--theme-text-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  opacity: 0.8;
-}
-.video-editor-ruler-handle {
-  position: absolute;
-  top: 0;
-  width: 12px;
-  height: 14px;
-  margin-left: -6px;
-  background: var(--danger, #ef4444);
-  border-radius: 3px 3px 5px 5px;
-  pointer-events: none;
-  z-index: 3;
-  box-shadow: 0 1px 4px rgba(239, 68, 68, 0.35);
-}
 .video-editor-ruler-spacer { height: 28px; flex-shrink: 0; }
 
 /* ── 时间轴主体：左侧固定轨道头 + 右侧横向滚动画布 ── */
@@ -536,21 +442,6 @@
   color: var(--theme-text);
   text-shadow: 0 1px 2px color-mix(in srgb, var(--theme-bg) 70%, transparent);
 }
-.video-editor-clip-thumbs {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  overflow: hidden;
-  pointer-events: none;
-}
-.video-editor-clip-thumbs img,
-.video-editor-thumb-blank {
-  flex: 0 0 64px;
-  width: 64px;
-  height: 100%;
-  object-fit: cover;
-}
-.video-editor-thumb-blank { background: var(--white-alpha-08); }
 .video-editor-clip-name {
   position: absolute;
   left: 4px;
@@ -601,27 +492,13 @@
 }
 .video-editor-playhead {
   position: absolute;
-  top: 0;
+  top: 18px;
   bottom: 0;
-  width: 2px;
-  margin-left: -1px;
-  background: var(--danger, #ef4444);
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--theme-text);
   pointer-events: none;
   z-index: 2;
-  box-shadow: 0 0 4px rgba(239, 68, 68, 0.4);
-}
-/* 播放头顶部三角形指示器 */
-.video-editor-playhead::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  left: 50%;
-  translate: -50% 0;
-  width: 0;
-  height: 0;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-top: 7px solid var(--danger, #ef4444);
 }
 .video-editor-timeline-snap-indicator {
   position: absolute;
@@ -714,10 +591,5 @@
   );
   width: 108px;
   margin: 0 2px;
-}
-.video-editor-timeline-btn.active {
-  border-color: var(--brand-alpha-25, rgba(99, 102, 241, 0.25));
-  color: var(--brand-light, #818cf8);
-  background: var(--video-editor-accent-soft);
 }
 

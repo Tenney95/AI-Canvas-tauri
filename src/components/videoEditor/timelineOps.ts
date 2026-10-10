@@ -45,9 +45,7 @@ export function collectFrameSourceClips(
   return result;
 }
 
-/** 缩放范围：每秒对应的像素数 */
-export const MIN_PIXELS_PER_SECOND = 2;
-export const MAX_PIXELS_PER_SECOND = 400;
+export { clampZoom, fitZoom, MIN_PIXELS_PER_SECOND, MAX_PIXELS_PER_SECOND } from '../shared/timelineGeometry';
 
 /** 吸附判定的像素容差 */
 export const SNAP_TOLERANCE_PX = 6;
@@ -240,20 +238,6 @@ export function snapTime(
     }
   }
   return best;
-}
-
-/** 把缩放夹在允许区间内 */
-export function clampZoom(pixelsPerSecond: number): number {
-  return Math.min(
-    MAX_PIXELS_PER_SECOND,
-    Math.max(MIN_PIXELS_PER_SECOND, pixelsPerSecond),
-  );
-}
-
-/** 让整条时间轴恰好铺满可用宽度的缩放值 */
-export function fitZoom(duration: number, availableWidth: number): number {
-  if (duration <= 0 || availableWidth <= 0) return 40;
-  return clampZoom(availableWidth / duration);
 }
 
 /** 拖动落点对应的插入序号：按各片段中点判断落在谁前谁后 */

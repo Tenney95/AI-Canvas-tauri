@@ -59,6 +59,25 @@ const mainTrack = (clips: VideoEditorClip[]): VideoEditorTrack => ({
 });
 
 describe('VideoEditorTimeline transitions', () => {
+  it('uses the shared UI Kit ruler and thumbnail track', () => {
+    const html = render([mainTrack([clip({})])]);
+    expect(html).toContain('ui-timeline__ruler');
+    expect(html).toContain('ui-timeline__thumbnails');
+    expect(html).not.toContain('video-editor-clip-thumbs');
+  });
+  it('keeps editor operations accessible when rendered as icon-only tools', () => {
+    const html = render([mainTrack([clip({})])]);
+    const head = html.slice(html.indexOf('video-editor-timeline-head'), html.indexOf('video-editor-timeline-body'));
+    for (const label of ['撤销', '重做', '分割', '复制片段', '删除选中片段', '吸附', '叠加轨', '音频轨', '缩小', '放大', '适应窗口']) {
+      expect(head).toContain(`aria-label="${label}"`);
+    }
+    expect(head).toContain('ui-icon-btn--ghost');
+    expect(head).toContain('aria-keyshortcuts="S"');
+    expect(head).toContain('ui-timeline__split-icon');
+    expect(head).not.toContain('<kbd');
+    expect(head).not.toContain('>分割<');
+    expect(html).toContain('ui-timeline__tick-label">00:00</em>');
+  });
   it('marks a clip that carries a transition and labels its seam', () => {
     const html = render([mainTrack([
       clip({}),

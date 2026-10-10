@@ -12,6 +12,7 @@ import NumberStepper from '../shared/NumberStepper';
 import Tabs from '../shared/Tabs';
 import PopupCloseButton from '../shared/PopupCloseButton';
 import VideoPlayer from '../shared/VideoPlayer';
+import Timeline from '../shared/Timeline';
 import MarkdownEditor from '../shared/MarkdownEditor';
 import FileUploadButton from '../shared/FileUploadButton';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -1278,12 +1279,27 @@ function LayoutSection() {
 /* ==========================================================================
    内容装配
    ========================================================================== */
+function TimelineDemo() {
+  const [playhead, setPlayhead] = useState(12);
+  const [markers, setMarkers] = useState([{ id: 'cut-demo', time: 20 }]);
+  const boundaries = [0, ...markers.map((marker) => marker.time).sort((a, b) => a - b), 60];
+  return <Demo label="共用时间轴 · 时间码刻度与图标工具栏" code="Timeline / TimelineRuler / TimelineThumbnails · ui-timeline / ui-icon-btn--ghost">
+    <Timeline duration={60} playhead={playhead} onSeek={setPlayhead} thumbnails={[]} markers={markers}
+      segments={boundaries.slice(0, -1).map((start, index) => ({ id: String(index), start, end: boundaries[index + 1], label: `${index + 1}: ${start.toFixed(1)}–${boundaries[index + 1].toFixed(1)}s` }))}
+      labels={{ title: '时间轴', playhead: '播放头', track: '示例视频', segments: '分段', addMarker: '添加切点',
+        removeMarker: '删除切点', resetMarkers: '恢复自动分段', zoomIn: '放大', zoomOut: '缩小', fit: '适应', position: '位置（秒）', marker: '切点' }}
+      onAddMarker={(time) => { if (time > 0 && time < 60 && !markers.some((marker) => Math.abs(marker.time - time) < 0.001)) setMarkers([...markers, { id: crypto.randomUUID(), time }]); }}
+      onMoveMarker={(id, time) => { if (time > 0 && time < 60 && !markers.some((marker) => marker.id !== id && Math.abs(marker.time - time) < 0.001)) setMarkers(markers.map((marker) => marker.id === id ? { ...marker, time } : marker)); }}
+      onRemoveMarker={(id) => setMarkers(markers.filter((marker) => marker.id !== id))} onResetMarkers={() => setMarkers([])} />
+  </Demo>;
+}
+
 function VideoPlayerSection() {
   const [media, setMedia] = useState<{ src: string; name: string } | null>(null);
   const [compact, setCompact] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => () => { if (media) URL.revokeObjectURL(media.src); }, [media]);
-  return <Section id="sg-video-player" title="视频播放器" desc="公用 VideoPlayer；主题色进度、倍速、音量、悬停预览与全屏。进度滑块悬浮轻微放大，拖动时按方向倾斜，松手回弹恢复；支持减少动态效果。音量使用 ui-slider，在按钮右侧同一行展开；紧凑模式时间靠右。选择本地视频试播，样例仅在本窗口使用，关闭或替换时释放资源。">
+  return <Section id="sg-video-player" title="视频播放器" desc="公用 VideoPlayer；主题色进度、倍速、音量、悬停预览与全屏。进度滑块悬浮轻微放大，拖动时按方向倾斜，松手回弹恢复；支持减少动态效果。音量使用 ui-slider，在按钮右侧同一行展开；紧凑模式时间靠右。下方展示共用 Timeline 的缩放、打点和切点调整。选择本地视频试播，样例仅在本窗口使用，关闭或替换时释放资源。">
     <Demo code={'<VideoPlayer src={videoUrl} name="示例视频" compact={compact} onMetadata={handleMetadata} /> · ui-video-player--compact'}>
       <div className="ui-stack">
         <div className="ui-row">
@@ -1303,6 +1319,7 @@ function VideoPlayerSection() {
         </div>
       </div>
     </Demo>
+    <TimelineDemo />
   </Section>;
 }
 

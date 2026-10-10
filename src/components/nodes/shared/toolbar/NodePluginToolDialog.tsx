@@ -311,7 +311,7 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
             {supportsNativeWindow && (
               <button
                 type="button"
-                className="ui-btn ui-btn--ghost h-8 w-8 shrink-0 px-0"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border-0 bg-transparent p-0 text-canvas-text-secondary transition-colors hover:text-canvas-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-canvas-border disabled:cursor-not-allowed disabled:opacity-40"
                 aria-label="在独立窗口打开"
                 title={windowUnavailableReason || '在独立窗口打开（成功后关闭弹窗，未保存编辑不迁移）'}
                 disabled={openingWindow || Boolean(windowUnavailableReason)}
@@ -319,9 +319,9 @@ export default function NodePluginToolDialog({ pluginTool, nodeId, onClose }: No
               >
                 <Icon
                   icon={openingWindow ? 'lucide:loader-circle' : 'mdi:dock-window'}
-                  width={16}
-                  height={16}
-                  className={openingWindow ? 'animate-spin' : undefined}
+                  width={18}
+                  height={18}
+                  className={openingWindow ? 'shrink-0 animate-spin' : 'shrink-0'}
                   aria-hidden="true"
                 />
               </button>

@@ -325,6 +325,8 @@
   height: var(--ui-control-h-sm);
   border-radius: var(--ui-radius-sm);
 }
+/* 工具栏图标：无常驻边框或底色，沿用图标按钮的交互状态。 */
+.ui-icon-btn--ghost { border: 0; background: transparent; }
 
 /* 标准关闭按钮：弹窗、浮层、面板、全屏预览与工具栏统一使用（触感微缩放 + 危险色悬浮） */
 .ui-close-btn {
@@ -1953,6 +1955,40 @@ select:not(.ui-select__control):not(.ui-select__native):disabled {
   .ui-video-player__progress .ui-video-player__progress-marker { transform: translateX(-50%); transition: none; }
 }
 .ui-video-player__retry { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+
+/* 时间轴：纯展示组件，刻度尺和铺帧同时用于多轨视频编辑器。 */
+.ui-timeline { min-width: 0; overflow: hidden; border: 1px solid var(--theme-border); border-radius: var(--ui-radius); background: var(--theme-surface); color: var(--theme-text); }
+.ui-timeline__toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--theme-border); }
+.ui-timeline__title { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 24px; margin-right: 4px; padding-right: 4px; border-right: 1px solid var(--theme-border); color: var(--theme-text-secondary); }
+.ui-timeline__tool { width: 32px; height: 32px; border-radius: var(--ui-radius-sm); }
+.ui-timeline__tool[aria-pressed='true'] { color: var(--brand); }
+.ui-timeline__zoom { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.ui-timeline__zoom .ui-slider { width: 80px; min-width: 0; }
+.ui-timeline__position { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; font-variant-numeric: tabular-nums; }
+.ui-timeline__position .ui-input { width: 108px; }
+.ui-timeline__scroll { min-width: 0; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; background: var(--theme-bg); }
+.ui-timeline__canvas { position: relative; min-width: 100%; }
+.ui-timeline__ruler { position: relative; height: 28px; flex-shrink: 0; background: var(--theme-bg); border-bottom: 1px solid var(--theme-border); cursor: var(--cursor-pointer, pointer); touch-action: none; user-select: none; }
+.ui-timeline__tick { position: absolute; top: 11px; width: 1px; height: 6px; background: var(--theme-text-muted); pointer-events: none; }
+.ui-timeline__tick.is-major { top: 7px; height: 14px; }
+.ui-timeline__tick-label { position: absolute; left: 4px; top: -1px; padding-right: 4px; background: var(--theme-bg); font-style: normal; font-size: 11px; line-height: 16px; color: var(--theme-text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; z-index: 1; }
+.ui-timeline__ruler-handle { position: absolute; top: 3px; width: 10px; height: 15px; margin-left: -5px; border: 2px solid var(--theme-text); background: var(--theme-bg); border-radius: 2px 2px 4px 4px; pointer-events: none; z-index: 3; }
+.ui-timeline__ruler:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+.ui-timeline__track { position: relative; height: 72px; padding-block: 4px; cursor: var(--cursor-pointer, pointer); touch-action: none; user-select: none; }
+.ui-timeline__film { position: relative; height: 64px; overflow: hidden; border-radius: 6px; background: var(--theme-card); }
+.ui-timeline__thumbnails { position: absolute; inset: 0; display: flex; overflow: hidden; pointer-events: none; }
+.ui-timeline__thumbnails img, .ui-timeline__thumbnail-blank { flex: 1 0 64px; min-width: 64px; height: 100%; object-fit: cover; }
+.ui-timeline__thumbnail-blank { background: var(--theme-hover); }
+.ui-timeline__track-name { position: absolute; left: 8px; right: 8px; bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--theme-text); background: var(--theme-surface); border-radius: 4px; padding-inline: 4px; pointer-events: none; }
+.ui-timeline__segments { position: relative; height: 32px; margin-bottom: 8px; }
+.ui-timeline__segment { position: absolute; top: 0; height: 28px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 8px; border: 1px solid var(--brand); border-radius: 4px; color: var(--theme-text); background: var(--brand-alpha-15); font-size: 11px; font-variant-numeric: tabular-nums; text-align: left; cursor: var(--cursor-pointer, pointer); }
+.ui-timeline__segment:hover { background: var(--brand-alpha-25); }
+.ui-timeline__marker { position: absolute; top: 16px; bottom: 4px; width: 20px; margin-left: -10px; padding: 0; border: 0; background: transparent; color: var(--brand); touch-action: none; cursor: ew-resize; z-index: 5; }
+.ui-timeline__marker::after { content: ''; position: absolute; top: 16px; bottom: 0; left: 9px; width: 2px; background: currentColor; }
+.ui-timeline__marker > span { position: absolute; top: -2px; left: 0; width: 20px; font-size: 16px; line-height: 20px; }
+.ui-timeline__marker.is-selected, .ui-timeline__marker:focus-visible { color: var(--theme-text); outline: none; }
+.ui-timeline__playhead { position: absolute; top: 18px; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--theme-text); pointer-events: none; z-index: 4; }
+.ui-timeline [aria-disabled='true'], .ui-timeline :disabled { cursor: var(--cursor-not-allowed, not-allowed); opacity: 0.5; }
 
 /* 紧凑嵌入：控件悬浮于封面之上，小节点保留完整画面；原生全屏恢复标准尺寸。 */
 .ui-video-player--compact:not(:fullscreen) { container-type: size; border-radius: inherit; }
