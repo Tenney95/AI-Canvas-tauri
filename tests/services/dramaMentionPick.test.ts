@@ -286,7 +286,7 @@ describe('音频节点的角色声音引用', () => {
     useAppStore.setState({ dramaAssets: { ...emptyDramaAssetLibrary(), characters: [voiceCharacter()] } });
   });
 
-  it('音频候选先过滤再截取，只有图片、声音描述或空音频的角色不出现', () => {
+  it('音频候选只保留有可用声音的角色，只有图片、声音描述或空音频的角色不出现', () => {
     const silent = Array.from({ length: 21 }, (_, index) => ({
       ...character(), id: `silent-${index}`, voiceNotes: '温柔女声',
       voiceClips: [{ id: 'empty', kind: 'timbre' as const, audioUrl: ' ', transcript: '', createdAt: 0, updatedAt: 0 }],
@@ -297,7 +297,7 @@ describe('音频节点的角色声音引用', () => {
     expect(items[0]).toMatchObject({ id: 'char_1', kind: 'character', voice: { id: 'primary', url: voiceUrl } });
     expect(resolveDramaMentionItems(library, '林小', 'ai-audio')).toHaveLength(1);
     expect(resolveDramaMentionItems(library, '不存在', 'ai-audio')).toEqual([]);
-    expect(resolveDramaMentionItems(library, '', 'ai-image')).toHaveLength(20);
+    expect(resolveDramaMentionItems(library, '', 'ai-image')).toHaveLength(22);
     expect(resolveDramaMentionItems({ ...library, characters: silent }, '', 'ai-audio')).toEqual([]);
   });
 

@@ -6,9 +6,10 @@
  * 卡片走 onMouseDown + preventDefault，避免抢走 contenteditable 的光标。
  */
 import { Icon } from '@iconify/react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { CharacterCropRect } from '../../types/dramaAssets';
 import { AVATAR_ASPECT, cropImageStyle } from '../character/characterReferencePresentation';
+import ViewportImage from './ViewportImage';
 
 export interface MentionPickerTab {
   id: string;
@@ -81,10 +82,30 @@ export default function MentionPicker({
   mediaAspectRatio,
 }: MentionPickerProps) {
   const hasChipRow = !!leading || (chips?.length ?? 0) > 0;
+  const gridRef = useRef<HTMLDivElement>(null);
+  const activeItemRef = useRef<HTMLButtonElement>(null);
   const playerRef = useRef<HTMLAudioElement | null>(null);
   const [playingKey, setPlayingKey] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState(false);
   const previewSources = JSON.stringify(items.map((item) => [item.key, item.audioPreviewUrl]));
+
+  useLayoutEffect(() => {
+    // 分类、搜索和下钻内容变化时从顶部显示，悬浮高亮不重置滚动。
+    if (gridRef.current) gridRef.current.scrollTop = 0;
+  }, [activeTab, activeChip, previewSources]);
+
+  useLayoutEffect(() => {
+    const grid = gridRef.current;
+    const activeItem = activeItemRef.current;
+    if (!grid || !activeItem) return;
+    const viewport = grid.getBoundingClientRect();
+    const item = activeItem.getBoundingClientRect();
+    const scaleY = grid.offsetHeight > 0 ? viewport.height / grid.offsetHeight : 1;
+    if (scaleY <= 0) return;
+    // 只滚动卡片列表；不让 scrollIntoView 带动画布或宿主弹窗一起滚动。
+    if (item.top < viewport.top) grid.scrollTop += (item.top - viewport.top) / scaleY;
+    else if (item.bottom > viewport.bottom) grid.scrollTop += (item.bottom - viewport.bottom) / scaleY;
+  }, [activeKey, activeTab, activeChip, previewSources]);
 
   useEffect(() => {
     return () => {
@@ -125,7 +146,7 @@ export default function MentionPicker({
   };
 
   return (
-    <div className={`mention-picker ${className}`}>
+    <div className={`mention-picker nowheel nodrag nopan ${className}`}>
       {tabs.length > 1 && (
         <div className="mention-picker-tabs" role="tablist" aria-label={ariaLabel}>
           {tabs.map((tab) => (
@@ -161,13 +182,14 @@ export default function MentionPicker({
         </div>
       )}
 
-      <div className="mention-picker-grid" id={listId} role="listbox" aria-label={ariaLabel}>
+      <div ref={gridRef} className="mention-picker-grid" id={listId} role="listbox" aria-label={ariaLabel}>
         {items.length === 0 ? (
           <div className="mention-picker-empty">{emptyText}</div>
         ) : (
           items.map((item) => (
             <div key={item.key} className="relative min-w-0" role="presentation">
             <button
+              ref={item.key === activeKey ? activeItemRef : undefined}
               key={item.key}
               id={item.domId}
               type="button"
@@ -186,13 +208,16 @@ export default function MentionPicker({
                 {/* 图标垫在底层：缩略图加载失败时自己隐藏，露出图标而不是空白卡 */}
                 <Icon icon={item.icon || 'mdi:vector-square'} width="26" height="26" />
                 {item.thumbnailUrl && (
-                  <img
+                  <ViewportImage
+                    key={item.thumbnailUrl}
                     src={item.thumbnailUrl}
+                    rootMargin="160px 0px"
                     className={item.thumbnailCrop ? 'is-cropped' : undefined}
                     style={cropImageStyle(item.thumbnailCrop)}
                     alt=""
                     loading="lazy"
                     draggable={false}
+                    onLoad={(e) => { e.currentTarget.style.display = ''; }}
                     onError={(e) => { e.currentTarget.style.display = 'none'; }}
                   />
                 )}

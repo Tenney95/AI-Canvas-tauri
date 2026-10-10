@@ -158,7 +158,8 @@ export function resolveDramaMentionItems(
     })),
   ];
   const candidates = nodeType === 'ai-audio' ? items.filter((item) => item.voice) : items;
-  if (!query) return candidates.slice(0, 20);
+  // 分类数量和筛选共用完整候选，不能提前截断而丢失排在后面的场景或道具。
+  if (!query) return candidates;
   const normalizedQuery = query.toLowerCase();
-  return candidates.filter((asset) => asset.name.toLowerCase().includes(normalizedQuery)).slice(0, 20);
+  return candidates.filter((asset) => asset.name.toLowerCase().includes(normalizedQuery));
 }
