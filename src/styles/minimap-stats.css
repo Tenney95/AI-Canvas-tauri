@@ -3,31 +3,20 @@
    只引用 base.css 的变量，明暗主题自动适配
    ============================================ */
 
-/* 与小地图同位的悬浮热区：
-   15px 外边距复刻 .react-flow__panel 的几何，保证小地图位置与改造前一致。 */
+/* 包含 React Flow 面板四周的 8px 外边距；与底部工具栏共用右侧边距，
+   外层不再叠加偏移，底部仅留工具栏高度和紧凑间距。 */
 .minimap-stats-zone {
   position: absolute;
-  right: 0.25rem;
+  right: 0;
   bottom: 3rem;
-  width: 180px;
-  height: 120px;
-  margin: 15px;
+  width: calc(180px + 16px);
+  height: calc(120px + 16px);
   z-index: 6;
-}
-
-.minimap-stats-zone > .react-flow__minimap {
-  margin: 0;
-}
-
-@media (max-width: 900px) {
-  .minimap-stats-zone {
-    bottom: 7rem;
-  }
 }
 
 .minimap-stats-card {
   position: absolute;
-  right: 0;
+  right: 8px;
   bottom: calc(100% + 8px);
   min-width: 152px;
   padding: 8px 10px;
