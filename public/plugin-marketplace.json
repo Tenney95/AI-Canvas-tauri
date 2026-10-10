@@ -4,6 +4,12 @@
     {
       "repository": "https://github.com/luckcatlin2000/ai-canvas-video-frame-review-plugin",
       "featured": false
+    },
+    {
+      "repository": "https://github.com/Tenney95/AI-Canvas-Plugin",
+      "directory": "video-replica",
+      "releaseTag": "video-replica-v0.1.0",
+      "featured": false
     }
   ]
 }
