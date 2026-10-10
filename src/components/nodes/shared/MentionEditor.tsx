@@ -10,7 +10,8 @@ import { Icon } from '@iconify/react';
 import { listGlobalFiles, listExternalFolderFiles, type AssetFileEntry } from '../../../services/fileService';
 import { getAllAssetMeta } from '../../../services/indexedDbService';
 import { springSmooth, fadeFast } from '../../../utils/motion';
-import { calcAnchoredPosition } from '../../../utils/popupPosition';
+import { calcAnchoredPosition, calcFixedPosition } from '../../../utils/popupPosition';
+import { resolveMentionPreview } from './connectedNodesPreviewInteractions';
 import { AnimatePresence, motion } from 'framer-motion';
 import PopupCloseButton from '../../shared/PopupCloseButton';
 import MentionPicker, { type MentionPickerChip, type MentionPickerItem } from '../../shared/MentionPicker';
@@ -939,30 +940,59 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
     [emitDOM],
   );
 
-  // ── 芯片 hover：① 发布节点 id 联动 connected-nodes-float 高亮；② 显示节点名字浮层 ──
+  // ── 芯片 hover：读取对应内容的小卡片，保留原有引用高亮联动 ──
   const lastHoverIdRef = useRef<string | null>(null);
-  const [chipTip, setChipTip] = useState<{ label: string; x: number; y: number } | null>(null);
-  const handleEditorMouseOver = useCallback((e: React.MouseEvent) => {
-    const el = (e.target as HTMLElement).closest?.('[data-ref-id]') as HTMLElement | null;
-    const id = el?.getAttribute('data-ref-id') ?? null;
-    if (id === lastHoverIdRef.current) return; // 同一芯片，跳过避免抖动
-    lastHoverIdRef.current = id;
-    useAppStore.getState().setHoveredMentionNodeId(id);
-    if (el && id) {
-      const label = el.getAttribute('data-ref-label') || '节点';
-      const r = el.getBoundingClientRect();
-      setChipTip({ label, x: r.left + r.width / 2, y: r.top });
-    } else {
-      setChipTip(null);
-    }
-  }, []);
+  const chipHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [chipTip, setChipTip] = useState<{ id: string; label: string; x: number; y: number; width: number; ownerNodeId?: string } | null>(null);
   const handleEditorMouseLeave = useCallback(() => {
+    if (chipHoverTimer.current !== null) clearTimeout(chipHoverTimer.current);
+    chipHoverTimer.current = null;
     lastHoverIdRef.current = null;
     useAppStore.getState().setHoveredMentionNodeId(null);
     setChipTip(null);
   }, []);
-  // 卸载时清除，避免残留 hover 高亮
-  useEffect(() => () => { useAppStore.getState().setHoveredMentionNodeId(null); }, []);
+  const handleEditorMouseOver = useCallback((e: React.MouseEvent) => {
+    const el = (e.target as HTMLElement).closest?.('[data-ref-id]') as HTMLElement | null;
+    const id = el?.getAttribute('data-ref-id') ?? null;
+    if (id === lastHoverIdRef.current) return; // 同一芯片，跳过避免抖动
+    handleEditorMouseLeave();
+    lastHoverIdRef.current = id;
+    useAppStore.getState().setHoveredMentionNodeId(id);
+    if (el && id) {
+      const label = el.getAttribute('data-ref-label') || '节点';
+      chipHoverTimer.current = setTimeout(() => {
+        chipHoverTimer.current = null;
+        if (lastHoverIdRef.current !== id || !el.isConnected) return;
+        const rect = el.getBoundingClientRect();
+        const width = Math.min(264, window.innerWidth - 24);
+        const height = Math.min(208, window.innerHeight - 24);
+        // 优先放在编辑器内的下方，空间不足时使用既有锚定翻转算法。
+        const position = rect.bottom + 8 + height <= window.innerHeight - 12
+          ? calcFixedPosition(rect.left, rect.bottom + 8, width, height, 12)
+          : calcAnchoredPosition(rect, width, height, 8, 12);
+        setChipTip({ id, label, x: position.left, y: position.top, width, ownerNodeId: nodeId });
+      }, 120);
+    }
+  }, [handleEditorMouseLeave, nodeId]);
+  const chipPreview = chipTip && chipTip.ownerNodeId === nodeId
+    ? resolveMentionPreview(nodes, chipTip.id, chipTip.label, nodeMetaMap.get(chipTip.id)?.thumbnailUrl)
+    : null;
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && lastHoverIdRef.current) handleEditorMouseLeave();
+    };
+    window.addEventListener('resize', handleEditorMouseLeave);
+    window.addEventListener('scroll', handleEditorMouseLeave, true);
+    window.addEventListener('keydown', escape);
+    return () => {
+      if (chipHoverTimer.current !== null) clearTimeout(chipHoverTimer.current);
+      lastHoverIdRef.current = null;
+      useAppStore.getState().setHoveredMentionNodeId(null);
+      window.removeEventListener('resize', handleEditorMouseLeave);
+      window.removeEventListener('scroll', handleEditorMouseLeave, true);
+      window.removeEventListener('keydown', escape);
+    };
+  }, [nodeId, handleEditorMouseLeave]);
 
   // ── @ 面板数据：输入图（画布节点） / 资产库（短剧资产） / ComfyUI 节点（工作流 IO） ──
   const dramaThumbOf = useCallback((item: { imageNodeId?: string; imageUrl?: string }) => {
@@ -1232,19 +1262,39 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         spellCheck={false}
       />
 
-      {/* 芯片 hover 名字浮层（Portal，避免被编辑器 overflow 裁剪）*/}
+      {/* 保留 chip-name-tip 的 Portal 标记，宿主点外关闭逻辑继续识别。 */}
       {createPortal(
         <AnimatePresence>
-          {chipTip && (
+          {chipTip && chipPreview && (
             <motion.div
-              className="chip-name-tip"
-              style={{ left: chipTip.x, top: chipTip.y }}
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 4, transition: fadeFast }}
+              key={chipTip.id}
+              className="chip-name-tip reference-chip-card ui-card p-2"
+              role="tooltip"
+              data-reference-preview-open=""
+              style={{ left: chipTip.x, top: chipTip.y, width: chipTip.width }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, transition: fadeFast }}
               transition={fadeFast}
             >
-              {chipTip.label}
+              <div className="reference-chip-content flex h-32 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-canvas-bg">
+                {chipPreview.thumbnailUrl ? (
+                  chipPreview.sprite ? (
+                    <div role="img" aria-label={chipPreview.label} className="h-full w-full bg-no-repeat" style={{ backgroundImage: `url(${JSON.stringify(chipPreview.thumbnailUrl)})`, ...chipPreview.sprite }} />
+                  ) : (
+                    <img src={chipPreview.thumbnailUrl} alt={chipPreview.label} className="h-full w-full object-contain" />
+                  )
+                ) : chipPreview.text ? (
+                  <p className="line-clamp-5 whitespace-pre-wrap break-words p-2 text-xs leading-5 text-canvas-text-secondary">{chipPreview.text}</p>
+                ) : (
+                  <Icon icon={MEDIA_ICONS[chipPreview.outputType]} className="text-3xl text-canvas-text-muted" aria-hidden="true" />
+                )}
+              </div>
+              <p className="mt-2 line-clamp-2 break-words text-xs font-medium text-canvas-text">{chipPreview.label}</p>
+              <span className="mt-1 text-[11px] text-canvas-text-muted">
+                {chipPreview.displayId != null ? `#${chipPreview.displayId} · ` : ''}
+                {chipPreview.missing ? '引用节点已不存在' : ({ image: '图像素材', video: '视频素材', audio: '音频素材', text: '文本内容' }[chipPreview.outputType])}
+              </span>
             </motion.div>
           )}
         </AnimatePresence>,

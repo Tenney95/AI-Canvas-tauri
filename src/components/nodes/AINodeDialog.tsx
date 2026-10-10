@@ -85,7 +85,6 @@ function AINodeDialog() {
   const directorDialogBlocked = (node?.type === 'ai-director' || nodeType === 'ai-director') && !isPrevis;
 
   const panelRef = useRef<HTMLDivElement>(null);
-  const previewRef = useRef<HTMLDivElement>(null);
   const cancellingNodeIdsRef = useRef(new Set<string>());
   const [isExpanded, setIsExpanded] = useState(false);
   const [billingOpen, setBillingOpen] = useState(false);
@@ -104,7 +103,6 @@ function AINodeDialog() {
 
   useLayoutEffect(() => {
     const panel = panelRef.current;
-    const preview = previewRef.current;
     if (!panel || !activeNodeId || isExpanded) return;
 
     let scheduledFrame = 0;
@@ -123,10 +121,6 @@ function AINodeDialog() {
       const offsetY = computeVerticalOffset(nodeHasMedia);
       panel.style.left = `${anchor.x}px`;
       panel.style.top = `${anchor.y + offsetY}px`;
-      if (preview) {
-        preview.style.left = `${anchor.x}px`;
-        preview.style.top = `${anchor.y + offsetY - 42}px`;
-      }
     };
 
     const readNodeHasMedia = (): boolean => {
@@ -158,12 +152,10 @@ function AINodeDialog() {
     const panCanvasWithDialog = (deltaX: number, deltaY: number, duration: number) => {
       cancelAnimationFrame(releaseTransitionFrame);
       panel.style.transition = 'none';
-      if (preview) preview.style.transition = 'none';
       const startAnchor = syncDialogToNode();
       if (!startAnchor) {
         adjustmentLocked = false;
         panel.style.removeProperty('transition');
-        preview?.style.removeProperty('transition');
         return;
       }
 
@@ -190,7 +182,6 @@ function AINodeDialog() {
           useAppStore.getState().openNodeDialog(activeNodeId, finalAnchor);
           releaseTransitionFrame = requestAnimationFrame(() => {
             panel.style.removeProperty('transition');
-            preview?.style.removeProperty('transition');
             adjustmentLocked = false;
             scheduleUpdate();
           });
@@ -253,7 +244,6 @@ function AINodeDialog() {
       cancelAnimationFrame(releaseTransitionFrame);
       window.clearTimeout(settleTimer);
       panel.style.removeProperty('transition');
-      preview?.style.removeProperty('transition');
       observer.disconnect();
       window.removeEventListener('resize', scheduleUpdate);
       window.visualViewport?.removeEventListener('resize', scheduleUpdate);
@@ -306,6 +296,8 @@ function AINodeDialog() {
         }
         // 先让顶层 UI Kit 下拉处理 Escape，保留当前节点参数弹窗。
         if (document.querySelector('[data-ui-select-portal]')) return;
+        // 引用扇形和芯片预览先处理 Escape，再关闭节点对话框。
+        if (document.querySelector('[data-reference-preview-open]')) return;
         e.stopPropagation();
         if (polishOpen) {
           closePolish();
@@ -1068,21 +1060,6 @@ function AINodeDialog() {
 
   return (
     <>
-      {/* Connected nodes preview — below dialog (model-dropdown covers it) */}
-      {!isExpanded && (
-        <div
-          ref={previewRef}
-          className="ai-dialog-preview-float"
-          style={dialogPosition ? {
-            left: `${dialogPosition.x}px`,
-            top: `${dialogPosition.y + dialogOffsetY - 58}px`,
-            transform: 'translateX(-50%)',
-          } : undefined}
-        >
-          <ConnectedNodesPreview nodeId={activeNodeId} onInsertMention={handleInsertMention} />
-        </div>
-      )}
-
       {isExpanded && (
         <button
           type="button"
@@ -1105,6 +1082,14 @@ function AINodeDialog() {
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
+        {!isExpanded && (
+          <ConnectedNodesPreview
+            key={`${currentProjectId}:${activeNodeId}`}
+            nodeId={activeNodeId}
+            onInsertMention={handleInsertMention}
+            presentation="corner"
+          />
+        )}
         {data.status === 'loading' && !performanceMode && (
           <LazyLoadBoundary label="生成边框特效" errorFallback={null}>
             <Suspense fallback={null}>

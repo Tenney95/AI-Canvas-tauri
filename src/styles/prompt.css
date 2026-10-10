@@ -1131,7 +1131,125 @@
   cursor: var(--cursor-not-allowed, not-allowed);
 }
 
-/* @ 芯片 hover 名字浮层（Portal 到 body，固定定位在芯片上方）*/
+/* 提示词左上角的纯材质圆弧；展开状态通过 class 控制，坐标只用于几何定位。 */
+.connected-nodes-float.connected-reference-corner {
+  position: absolute;
+  top: -20px;
+  left: -20px;
+  z-index: 6;
+  width: 44px;
+  height: 44px;
+  max-width: none;
+  padding: 0;
+}
+.connected-reference-arc {
+  position: relative;
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ui-radius-lg);
+  background: transparent;
+  cursor: var(--cursor-pointer, pointer);
+}
+.connected-reference-arc-shape,
+.connected-reference-arc-material {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 32px;
+  height: 32px;
+  pointer-events: none;
+}
+.connected-reference-arc-material {
+  background:
+    linear-gradient(var(--glass-bg-light), var(--glass-bg-light)),
+    var(--glass-bevel-border);
+  backdrop-filter: blur(var(--glass-blur-md));
+}
+.connected-reference-arc-reflection {
+  fill: none;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  stroke-width: 0.8px;
+}
+.connected-reference-arc-highlight {
+  stop-color: color-mix(in srgb, var(--theme-text) 30%, transparent);
+}
+.connected-reference-arc-refraction {
+  stop-color: var(--glass-ring);
+}
+.connected-reference-arc:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.connected-reference-corner .connected-reference-fan {
+  position: absolute;
+  inset: 0;
+  display: block;
+  visibility: hidden;
+  pointer-events: none;
+  transition: visibility 0s var(--dur-fast);
+}
+.connected-reference-corner.is-open .connected-reference-fan {
+  visibility: visible;
+  transition-delay: 0s;
+}
+.connected-reference-fan .connected-node-thumb {
+  position: absolute;
+  top: 22px;
+  left: 22px;
+  width: 64px;
+  height: 64px;
+  margin: -32px;
+  border-color: var(--theme-border);
+  border-radius: var(--ui-radius-lg);
+  background: var(--theme-card);
+  box-shadow: var(--glass-shadow-floating);
+  opacity: 0;
+  transform: translate(0, 0) scale(0.92);
+  pointer-events: none;
+  transition: transform var(--dur-fast) var(--ease-out-quart), opacity var(--transition-base);
+}
+.connected-reference-corner.is-open .connected-reference-fan-card {
+  opacity: 1;
+  transform: translate(var(--fan-x), var(--fan-y)) rotate(var(--fan-rotation));
+  pointer-events: auto;
+}
+.connected-reference-fan .connected-node-thumb:hover,
+.connected-reference-fan .connected-node-thumb:focus-within,
+.connected-reference-fan .connected-node-thumb.is-highlighted {
+  z-index: 3;
+  border-color: var(--brand);
+}
+.connected-reference-fan .thumb-text {
+  padding: 4px;
+  font-size: 7px;
+  -webkit-line-clamp: 6;
+}
+.connected-reference-storyboard .sb-cell-item {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+}
+
+/* @ 芯片预览仍使用原 Portal 标记，复用 UI Kit 卡片。 */
+.chip-name-tip.reference-chip-card {
+  transform: none;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  padding: 8px;
+  border-radius: var(--ui-radius-lg);
+  white-space: normal;
+  text-overflow: clip;
+}
+@media (prefers-reduced-motion: reduce) {
+  .connected-reference-corner .connected-reference-fan,
+  .connected-reference-fan .connected-node-thumb { transition: none; }
+}
+
+/* 旧名字提示的基础材质与定位标记，内容预览由上面的变体覆盖。 */
 .chip-name-tip {
   position: fixed;
   z-index: 10050;
