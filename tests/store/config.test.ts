@@ -47,6 +47,21 @@ beforeEach(() => {
 });
 
 describe('config hydration guard', () => {
+  it.each(['enter', 'shift-enter', 'ctrl-enter', 'alt-enter'] as const)('发送快捷键 %s 通过现有配置保存并在重新加载后恢复', async (shortcut) => {
+    fileMocks.loadConfig.mockResolvedValue({ providers: {}, theme: 'dark' });
+    await useAppStore.getState().loadConfig();
+    expect(useAppStore.getState().config.promptSubmitShortcut).toBeUndefined();
+    useAppStore.getState().updateConfig({ promptSubmitShortcut: shortcut });
+    expect(useAppStore.getState().configDirty).toBe(true);
+    await useAppStore.getState().saveConfig({ silent: true });
+    const saved = fileMocks.saveConfig.mock.calls.at(-1)?.[0] as AppConfig;
+    expect(saved.promptSubmitShortcut).toBe(shortcut);
+    fileMocks.loadConfig.mockResolvedValue(saved);
+    useAppStore.setState(useAppStore.getInitialState(), true);
+    await useAppStore.getState().loadConfig();
+    expect(useAppStore.getState().config.promptSubmitShortcut).toBe(shortcut);
+  });
+
   it('repairs missing CCC addresses on load while retaining custom addresses, group Keys and model identities', async () => {
     fileMocks.loadConfig.mockResolvedValue({ providers: {
       cccapi: { name: 'CCC', apiKey: 'legacy-fixture' },

@@ -180,6 +180,13 @@ const settings = {
 
   // ── ShortcutSettings ──
   '键盘快捷键配置': 'Keyboard shortcuts',
+  '发送快捷键': 'Send shortcut',
+  '右键设置发送快捷键': 'Right-click to change the send shortcut',
+  '用于画布节点提示词，也可右键发送按钮修改。': 'Used for canvas node prompts. You can also right-click the send button to change it.',
+  '({newline} 换行，{submit} 发送)': '({newline} for a new line, {submit} to send)',
+  '输入提示词开始创作': 'Enter a prompt to start creating',
+  '按 @ 引用素材；连线素材需 @ 后才会传给模型，仅连线不生效；\n描述想要生成的内容；\n/ 呼出指令；': '@ to reference assets; connected assets must also be @-mentioned to reach the model;\nDescribe what you want to generate;\n/ for commands;',
+  '按 @ 引用连线图片或完整分镜表，描述空间、人物走位和运镜；': 'Reference a connected image or the full shot list with @, then describe the space, blocking and camera movement;',
   '保存画布': 'Save canvas',
   '复制节点': 'Copy node',
   '粘贴节点': 'Paste node',

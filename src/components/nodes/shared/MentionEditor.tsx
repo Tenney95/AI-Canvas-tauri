@@ -3,7 +3,8 @@
  */
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
-import type { WorkflowIONodeType } from '../../../types';
+import type { PromptSubmitShortcut, WorkflowIONodeType } from '../../../types';
+import { resolvePromptEnterAction } from '../../../utils/promptSubmitShortcut';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../../store/useAppStore';
 import { Icon } from '@iconify/react';
@@ -66,6 +67,7 @@ export interface MentionEditorProps {
   selectedWorkflowId?: string;
   canSubmit?: boolean;
   submitOnShiftEnter?: boolean;
+  submitShortcut?: PromptSubmitShortcut;
   onFocus?: () => void;
   onBlur?: () => void;
   onSlashTrigger?: () => void;
@@ -90,6 +92,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   selectedWorkflowId,
   canSubmit = true,
   submitOnShiftEnter = false,
+  submitShortcut,
   onFocus,
   onBlur,
   onSlashTrigger,
@@ -770,11 +773,12 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       // 输入法组合中：回车/方向键属于候选框，不该触发提交或 @ 选中
-      if (e.nativeEvent.isComposing) return;
+      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+      const enterAction = resolvePromptEnterAction(e, submitShortcut ?? (submitOnShiftEnter ? 'shift-enter' : 'enter'), showMention);
       // 方向键导航前先补好行首芯片的光标落点（ZWSP），否则光标跳不到芯片前
       if (e.key.startsWith('Arrow') && editorRef.current) normalizeChipSlots(editorRef.current);
       // @ mention: Enter → select first match
-      if (showMention && e.key === 'Enter' && !e.shiftKey) {
+      if (enterAction === 'mention') {
         e.preventDefault();
         selectFirstMentionRef.current?.();
         return;
@@ -786,14 +790,15 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
         return;
       }
       // Submit with the shortcut chosen by the parent; mention selection keeps plain Enter.
-      if (e.key === 'Enter' && e.shiftKey === submitOnShiftEnter) {
+      if (enterAction === 'submit') {
         e.preventDefault();
+        if (e.repeat) return;
         const text = editorRef.current ? serializeDOM(editorRef.current) : '';
         if (canSubmit && text.trim() && onSubmit) onSubmit();
         return;
       }
       // 换行时手动插入单个 <br>，避免浏览器在芯片旁默认插入两个 <br>（换两行）
-      if (e.key === 'Enter' && e.shiftKey !== submitOnShiftEnter) {
+      if (enterAction === 'newline') {
         e.preventDefault();
         const sel = window.getSelection();
         if (!sel || !sel.rangeCount) return;
@@ -918,6 +923,7 @@ const MentionEditor = forwardRef<MentionEditorHandle, MentionEditorProps>(functi
       canSubmit,
       onSubmit,
       submitOnShiftEnter,
+      submitShortcut,
       emitDOM,
     ],
   );

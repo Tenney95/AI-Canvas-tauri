@@ -4,6 +4,9 @@
  * 列出保存、撤销、复制粘贴、节点创建、画布复位、小地图等快捷键一览。
  */
 import { useT } from '../../i18n';
+import Select from '../shared/Select';
+import { useAppStore } from '../../store/useAppStore';
+import { getPromptSubmitShortcutHint, normalizePromptSubmitShortcut, PROMPT_SUBMIT_SHORTCUT_OPTIONS } from '../../utils/promptSubmitShortcut';
 
 const IS_MAC = typeof navigator !== 'undefined' && /Macintosh|Mac OS X/.test(navigator.userAgent);
 
@@ -42,9 +45,25 @@ function getShortcutList(t: ReturnType<typeof useT>): { action: string; key: str
 
 export default function ShortcutSettings() {
   const t = useT();
+  const shortcut = useAppStore((state) => normalizePromptSubmitShortcut(state.config.promptSubmitShortcut));
+  const configHydrated = useAppStore((state) => state.configHydrated);
+  const updateConfig = useAppStore((state) => state.updateConfig);
+  const saveConfig = useAppStore((state) => state.saveConfig);
   return (
     <div className="space-y-1">
       <p className="text-sm text-canvas-text-muted mb-4">{t('键盘快捷键配置')}</p>
+      <div className="flex items-center justify-between gap-3 p-2 rounded-lg hover:bg-canvas-hover">
+        <div className="min-w-0 space-y-1 text-sm">
+          <span className="text-canvas-text">{t('发送快捷键')}</span>
+          <p className="ui-hint">{t('用于画布节点提示词，也可右键发送按钮修改。')} {getPromptSubmitShortcutHint(shortcut)}</p>
+        </div>
+        <Select value={shortcut} options={PROMPT_SUBMIT_SHORTCUT_OPTIONS} size="sm" className="w-36 shrink-0"
+          aria-label={t('发送快捷键')} disabled={!configHydrated}
+          onChange={(value) => {
+            updateConfig({ promptSubmitShortcut: value });
+            void saveConfig({ silent: true }).catch(() => {});
+          }} />
+      </div>
       {getShortcutList(t).map(({ action, key, description }) => (
         <div key={action} className="flex items-center justify-between gap-4 py-2 px-2.5 rounded-lg hover:bg-canvas-hover">
           <div className="min-w-0 space-y-1 text-sm">

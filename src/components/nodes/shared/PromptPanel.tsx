@@ -2,6 +2,7 @@
  * PromptPanel 提示词面板 — AI 生成节点的核心输入面板，集成模型选择器、提示词编辑器、质量/比例/视频参数、生成按钮、/ 指令菜单
  */
 import Select from '../../shared/Select';
+import { createPortal } from 'react-dom';
 import { Icon } from '@iconify/react';
 import LazyLoadBoundary from '../../shared/LazyLoadBoundary';
 import { lazy, Suspense, useState, useRef, useCallback, useEffect, useMemo, type ReactNode } from 'react';
@@ -25,6 +26,7 @@ import type {
   ImagePostProcess,
   ModelOption,
   NodeType,
+  PromptSubmitShortcut,
   UserPreset,
   UserSkill,
   WorkflowDefinition,
@@ -56,6 +58,8 @@ import { useT } from '../../../i18n';
 import WorkflowApiParameterFields from './WorkflowApiParameterFields';
 import { DREAMINA_IMAGE_RATIOS, getDreaminaImageModel } from '../../../services/ai/dreaminaModels';
 import { resolveImageParameterCapability } from '../../../services/ai/mediaModelCapabilities';
+import { calcAnchoredPosition } from '../../../utils/popupPosition';
+import { getPromptSubmitShortcutHint, normalizePromptSubmitShortcut, PROMPT_SUBMIT_SHORTCUT_OPTIONS } from '../../../utils/promptSubmitShortcut';
 
 const IMAGE_RATIO_CLASS_NAMES: Record<string, string> = {
   '1:1': 'img-rp-sq',
@@ -509,13 +513,18 @@ export default function PromptPanel({
 }: PromptPanelProps) {
   const t = useT();
   const reduceMotion = useReducedMotion();
+  const submitShortcut = useAppStore((state) => normalizePromptSubmitShortcut(state.config.promptSubmitShortcut));
+  const configHydrated = useAppStore((state) => state.configHydrated);
+  const updateConfig = useAppStore((state) => state.updateConfig);
+  const saveConfig = useAppStore((state) => state.saveConfig);
   const appearanceMode = useAppStore((state) => resolveAppearanceMode(
     state.config.appearance?.mode ?? state.config.theme,
   ));
   const customAnimation = nodeType === 'ai-animation' && animationAction === 'custom';
-  const effectivePlaceholder = customAnimation
+  const placeholderText = customAnimation
     ? t('描述角色和自定义动作，例如：原地转身并挥手，动作连贯、首尾循环')
-    : placeholder ?? t('输入提示词开始创作   (Enter 生成，Shift+Enter 换行)');
+    : placeholder ?? t('输入提示词开始创作');
+  const effectivePlaceholder = `${placeholderText}\n${getPromptSubmitShortcutHint(submitShortcut)}`;
   const [focused, setFocused] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
   const [skillManagerOpen, setSkillManagerOpen] = useState(false);
@@ -523,6 +532,8 @@ export default function PromptPanel({
   const slashBtnRef = useRef<HTMLButtonElement>(null);
   const promptInputRef = useRef<HTMLDivElement>(null);
   const batchTriggerRef = useRef<HTMLDivElement>(null);
+  const shortcutMenuRef = useRef<HTMLDivElement>(null);
+  const [shortcutMenuPosition, setShortcutMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const batchLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressSubmitClickRef = useRef(false);
   const [batchMenuOpen, setBatchMenuOpen] = useState(false);
@@ -638,6 +649,49 @@ export default function PromptPanel({
   }, [handleSubmit, onChangeBatchCount]);
 
   useEffect(() => clearBatchLongPress, [clearBatchLongPress]);
+
+  const openShortcutMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    clearBatchLongPress();
+    suppressSubmitClickRef.current = false;
+    setBatchMenuOpen(false);
+    const rect = event.currentTarget.getBoundingClientRect();
+    const { left, top } = calcAnchoredPosition({ left: rect.right - 208, top: rect.top, bottom: rect.bottom }, 208, 172);
+    setShortcutMenuPosition({ left, top });
+  };
+  const chooseSubmitShortcut = (shortcut: PromptSubmitShortcut) => {
+    if (!configHydrated) return;
+    updateConfig({ promptSubmitShortcut: shortcut });
+    void saveConfig({ silent: true }).catch(() => {}); // Store 保留失败状态并显示错误提示。
+    setShortcutMenuPosition(null);
+    batchTriggerRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+  };
+  useEffect(() => {
+    if (!shortcutMenuPosition) return;
+    shortcutMenuRef.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
+    const dismiss = () => setShortcutMenuPosition(null);
+    const outside = (event: PointerEvent) => {
+      if (!shortcutMenuRef.current?.contains(event.target as globalThis.Node)) dismiss();
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+      batchTriggerRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    };
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', escape, true);
+    window.addEventListener('resize', dismiss);
+    window.addEventListener('scroll', dismiss, true);
+    return () => {
+      document.removeEventListener('pointerdown', outside, true);
+      document.removeEventListener('keydown', escape, true);
+      window.removeEventListener('resize', dismiss);
+      window.removeEventListener('scroll', dismiss, true);
+    };
+  }, [shortcutMenuPosition]);
 
   useEffect(() => {
     if (!batchMenuOpen) return;
@@ -803,14 +857,13 @@ export default function PromptPanel({
       className={`prompt-btn prompt-submit-btn${isGenerating ? ' is-generating' : ''} ${!canGenerate || !hasGenerationInput ? 'disabled' : ''}`}
       aria-label={isGenerating ? t('生成中') : t('调用模型生成')}
       disabled={!canGenerate || !hasGenerationInput}
-      aria-haspopup={batchSupported ? 'menu' : undefined}
-      aria-expanded={batchSupported ? batchMenuOpen : undefined}
-      data-tooltip={isGenerating ? t('生成中') : (batchSupported ? t('点击生成 1 张，长按选择数量') : t('调用模型生成'))}
+      aria-haspopup="menu"
+      aria-expanded={!!shortcutMenuPosition || (batchSupported && batchMenuOpen)}
+      data-tooltip={`${isGenerating ? t('生成中') : (batchSupported ? t('点击生成 1 张，长按选择数量') : t('调用模型生成'))} · ${t('右键设置发送快捷键')}`}
       onPointerDown={handleBatchPointerDown}
       onPointerUp={clearBatchLongPress}
       onPointerCancel={clearBatchLongPress}
       onPointerLeave={clearBatchLongPress}
-      onContextMenu={(event) => { if (batchSupported) event.preventDefault(); }}
       onClick={handleSubmitClick}
     >
       {isGenerating && !performanceMode ? (
@@ -841,7 +894,7 @@ export default function PromptPanel({
           value={prompt}
           onChange={onChange}
           onSubmit={handleSingleSubmit}
-          submitOnShiftEnter
+          submitShortcut={submitShortcut}
           placeholder={effectivePlaceholder}
           nodeId={nodeId}
           selectedWorkflowId={selectedWorkflowId}
@@ -1103,6 +1156,7 @@ export default function PromptPanel({
             <div
               ref={batchTriggerRef}
               className={`prompt-submit-wrap${batchMenuOpen ? ' batch-open' : ''}`}
+              onContextMenu={openShortcutMenu}
             >
               {performanceMode || reduceMotion ? submitButton : (
                 <LazyLoadBoundary label="生成按钮特效" errorFallback={submitButton}>
@@ -1152,6 +1206,40 @@ export default function PromptPanel({
         </div>
       </div>
     </div>
+    {shortcutMenuPosition && createPortal(
+      <div
+        ref={shortcutMenuRef}
+        className="ui-menu w-52"
+        style={{ position: 'fixed', ...shortcutMenuPosition, zIndex: 10000 }}
+        role="menu"
+        aria-label={t('发送快捷键')}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+        onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
+        onKeyDown={(event) => {
+          if (event.key === 'Tab') { setShortcutMenuPosition(null); return; }
+          if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+          const index = items.findIndex((item) => item === document.activeElement);
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+            : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+          items[next]?.focus();
+        }}
+      >
+        <span className="ui-menu__label">{t('发送快捷键')}</span>
+        {PROMPT_SUBMIT_SHORTCUT_OPTIONS.map((option) => (
+          <button key={option.value} type="button" role="menuitemradio"
+            className={`ui-menu__item${submitShortcut === option.value ? ' is-active' : ''}`}
+            aria-checked={submitShortcut === option.value} disabled={!configHydrated}
+            onClick={() => chooseSubmitShortcut(option.value)}>
+            <span className="flex-1 font-mono">{option.label}</span>
+            {submitShortcut === option.value && <Icon icon="lucide:check" width={14} aria-hidden="true" />}
+          </button>
+        ))}
+      </div>, document.body,
+    )}
     {slashOpen && (
       <SlashCommandMenu
         nodeType={nodeType}

@@ -713,6 +713,8 @@ export interface CanvasQuickAction {
   url?: string;
 }
 
+export type PromptSubmitShortcut = 'enter' | 'shift-enter' | 'ctrl-enter' | 'alt-enter';
+
 export interface AppConfig {
   providers: Record<string, ApiProviderConfig>;
   /** 当前用于 Agent 联网搜索的厂商；旧配置未设置时优先沿用 Tavily。 */
@@ -729,6 +731,7 @@ export interface AppConfig {
   nodeLabelVisible?: boolean; // 是否显示节点顶部标题标签，默认 true
   canvasNoteToolbarVisible?: boolean; // 是否显示画布笔记工具栏，默认 true
   autoMentionOnConnect?: boolean; // 连线后自动在生成节点提示词中 @ 上游素材，默认 true
+  promptSubmitShortcut?: PromptSubmitShortcut; // 节点提示词发送快捷键，未设置时为 Shift+Enter
   canvasHistoryPinned?: boolean; // 操作记录浮层是否锁定常显（默认悬浮才显示）
   outputHistoryPinned?: boolean; // 输出历史面板是否固定常驻（固定后跳转节点不关闭面板）
   canvasQuickActions?: CanvasQuickAction[]; // 画布空白处长按圆环，最多 6 个槽位
